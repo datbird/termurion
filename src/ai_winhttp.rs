@@ -408,7 +408,7 @@ impl Worker {
         let never = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
         check(unsafe { WinHttpSetOption(session.0, WINHTTP_OPTION_REDIRECT_POLICY, (&never as *const u32).cast(), 4) })?;
 
-        let (mut target, mut method, mut body) = (target.clone(), request.method, request.body.clone());
+        let (mut target, mut method, mut body, mut headers) = (target.clone(), request.method, request.body.clone(), request.headers.clone());
         let mut redirects = 0;
         loop {
             let host = wide(&target.host);
@@ -417,7 +417,7 @@ impl Worker {
                 return Err(Fail::Code(last_error()));
             }
             let mut hop = self.open(connect.0, method, &target, body.clone())?;
-            let end = self.hop(&mut hop, request, delivery);
+            let end = self.hop(&mut hop, &headers, request.stream, delivery);
             self.finish(&mut hop);
             drop(connect);
             let (status, location) = match end? {
@@ -430,18 +430,19 @@ impl Worker {
             redirects += 1;
             target = follow(&target, &location).map_err(Fail::Text)?;
             // URLSession, as browsers: 303, and 301 or 302 after a POST, repeat as a GET without
-            // the body; 307 and 308 repeat the request as it was.
+            // the body and the headers that describe it (Fetch's request-body-header names); 307
+            // and 308 repeat the request as it was.
             if status == 303 || (matches!(status, 301 | 302) && method == "POST") {
                 method = "GET";
                 body.clear();
+                headers.retain(|(n, _)| !["Content-Type", "Content-Encoding", "Content-Language", "Content-Location"].iter().any(|b| n.eq_ignore_ascii_case(b)));
             }
         }
     }
 
     /// One request handle: send, read the status, and either follow a redirect or read the body.
-    fn hop(&self, hop: &mut Hop, request: &HttpRequest, delivery: &mut Delivery) -> Result<HopEnd, Fail> {
-        let lines: String = request
-            .headers
+    fn hop(&self, hop: &mut Hop, headers: &[(String, String)], stream: bool, delivery: &mut Delivery) -> Result<HopEnd, Fail> {
+        let lines: String = headers
             .iter()
             .filter(|(n, v)| crate::ai_policy::header_name_valid(n) && crate::ai_policy::header_value_valid(v))
             .map(|(n, v)| format!("{n}: {v}\r\n"))
@@ -467,7 +468,7 @@ impl Worker {
                 return Ok(HopEnd::Redirect(status, location));
             }
         }
-        *delivery = Delivery::new(status, request.stream);
+        *delivery = Delivery::new(status, stream);
         let buf = hop.ctx.buf.get();
         loop {
             self.call(|h| unsafe { WinHttpQueryDataAvailable(h, std::ptr::null_mut()) })?;
@@ -506,32 +507,69 @@ impl Worker {
 /// `ERROR_INSUFFICIENT_BUFFER`.
 const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
 
-/// Where a redirect from `current` to `location` goes, resolved as a browser would, when it
-/// stays on the host the consent gate checked and does not drop https; else the refusal text.
+/// Where a redirect from `current` to `location` goes, resolved as a browser would (RFC 3986
+/// section 5: a fragment is never sent, a query-only reference keeps the path, dot segments
+/// are removed), when it stays on the host the consent gate checked and does not drop https;
+/// else the refusal text.
 fn follow(current: &Target, location: &str) -> Result<Target, String> {
+    let location = location.split('#').next().unwrap_or_default();
     let scheme = if current.secure { "https" } else { "http" };
     let host = if current.host.contains(':') { format!("[{}]", current.host) } else { current.host.clone() };
     let origin = format!("{scheme}://{host}:{}", current.port);
     let absolute = location.split_once("://").is_some_and(|(s, _)| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"+-.".contains(&b)));
+    let path = current.path.split('?').next().unwrap_or("/");
     let url = if absolute {
         location.to_string()
     } else if location.starts_with("//") {
         format!("{scheme}:{location}")
+    } else if location.is_empty() {
+        format!("{origin}{}", current.path)
     } else if location.starts_with('/') {
         format!("{origin}{location}")
+    } else if location.starts_with('?') {
+        format!("{origin}{path}{location}")
     } else {
-        let path = current.path.split(['?', '#']).next().unwrap_or("/");
         let dir = &path[..path.rfind('/').map_or(0, |i| i + 1)];
         format!("{origin}{dir}{location}")
     };
-    let next = parse_url(&url).map_err(|_| redirect_refused("an address Tandem cannot read"))?;
+    let mut next = parse_url(&url).map_err(|_| redirect_refused("an address Tandem cannot read"))?;
     if next.host != current.host {
         return Err(redirect_refused(&format!("another host ({})", next.host)));
     }
     if current.secure && !next.secure {
         return Err(redirect_refused("plain http"));
     }
+    next.path = without_dot_segments(&next.path);
     Ok(next)
+}
+
+/// RFC 3986's `remove_dot_segments` on the path, the query kept as it is.
+fn without_dot_segments(path_and_query: &str) -> String {
+    let (path, query) = path_and_query.split_once('?').map_or((path_and_query, None), |(p, q)| (p, Some(q)));
+    let segments: Vec<&str> = path.split('/').skip(1).collect();
+    let mut out: Vec<&str> = Vec::new();
+    for (i, segment) in segments.iter().enumerate() {
+        let last = i + 1 == segments.len();
+        match *segment {
+            "." => {}
+            ".." => {
+                out.pop();
+            }
+            other => {
+                out.push(other);
+                continue;
+            }
+        }
+        // A path ending in a dot segment still names a directory.
+        if last {
+            out.push("");
+        }
+    }
+    let path = format!("/{}", out.join("/"));
+    match query {
+        Some(q) => format!("{path}?{q}"),
+        None => path,
+    }
 }
 
 
@@ -959,6 +997,16 @@ mod tests {
         assert_eq!(follow(&here, "http://api.test/v1"), Err(redirect_refused("plain http")));
         assert_eq!(follow(&here, "https://evil.test\\@api.test/"), Err(redirect_refused("an address Tandem cannot read")));
         assert_eq!(follow(&here, "ftp://api.test/"), Err(redirect_refused("an address Tandem cannot read")));
+        // Relative references as RFC 3986 resolves them.
+        assert_eq!(follow(&here, "?y=2"), Ok(t("https://api.test:8443/v1/chat?y=2")), "a query keeps the path");
+        assert_eq!(follow(&here, "#top"), Ok(t("https://api.test:8443/v1/chat?x=1")), "a fragment alone keeps the address");
+        assert_eq!(follow(&here, "other#top").map(|t| t.path), Ok("/v1/other".to_string()), "a fragment is never sent");
+        assert_eq!(follow(&here, "../v2/./m?q=a/../b").map(|t| t.path), Ok("/v2/m?q=a/../b".to_string()), "dot segments go, the query is kept");
+        assert_eq!(follow(&here, "/a/b/../../../c").map(|t| t.path), Ok("/c".to_string()));
+        assert_eq!(follow(&here, "https://api.test/a/./b/..").map(|t| t.path), Ok("/a/".to_string()));
+        assert_eq!(follow(&here, "./").map(|t| t.path), Ok("/v1/".to_string()));
+        assert_eq!(follow(&here, "..").map(|t| t.path), Ok("/".to_string()));
+        assert_eq!(without_dot_segments("/a//b/"), "/a//b/");
 
         // The same host on another port: followed, with the method, headers and body (307).
         let (seen_tx, seen_rx) = mpsc::channel();
@@ -978,6 +1026,27 @@ mod tests {
         assert!(head.starts_with("POST /y HTTP/1.1\r\n"), "{head}");
         assert!(head.to_ascii_lowercase().contains("\r\nx-key: k\r\n"), "{head}");
         assert_eq!(body, br#"{"q":1}"#);
+
+        // A 303 repeats as a GET without the body or its Content-Type; the fragment stays home.
+        let (seen_tx, seen_rx) = mpsc::channel();
+        let second = serve(move |mut s| {
+            seen_tx.send(read_request(&mut s)).unwrap();
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        });
+        let to = format!("{second}/a/../y?z=1#frag");
+        let first = serve(move |mut s| {
+            read_request(&mut s);
+            let _ = s.write_all(format!("HTTP/1.1 303 See Other\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes());
+        });
+        let headers = vec![("Content-Type".into(), "application/json".into()), ("X-Key".into(), "k".into())];
+        let request = HttpRequest { method: "POST", url: format!("{first}/x"), headers, body: br#"{"q":1}"#.to_vec(), stream: false };
+        let mut call = WinHttp.start(request, off(Duration::from_secs(10)), no_notify());
+        assert_eq!(collect(&mut call, Duration::from_secs(10)), [HttpEvent::Done { body: "ok".into(), error: None }]);
+        let (head, body) = seen_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(head.starts_with("GET /y?z=1 HTTP/1.1\r\n"), "{head}");
+        let lower = head.to_ascii_lowercase();
+        assert!(lower.contains("\r\nx-key: k\r\n") && !lower.contains("content-type"), "{head}");
+        assert!(body.is_empty());
 
         // Another host: not followed, and it sees no connection.
         let other = TcpListener::bind("127.0.0.1:0").unwrap();

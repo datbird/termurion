@@ -322,12 +322,18 @@ impl Reply {
 pub struct Recorded {
     replies: std::sync::Mutex<std::collections::VecDeque<Reply>>,
     requests: std::sync::Mutex<Vec<HttpRequest>>,
+    cancels: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(test)]
 impl Recorded {
     pub fn new(replies: Vec<Reply>) -> Recorded {
-        Recorded { replies: std::sync::Mutex::new(replies.into()), requests: std::sync::Mutex::new(Vec::new()) }
+        Recorded { replies: std::sync::Mutex::new(replies.into()), requests: std::sync::Mutex::new(Vec::new()), cancels: Arc::default() }
+    }
+
+    /// How many of its calls were cancelled.
+    pub fn cancels(&self) -> usize {
+        self.cancels.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The requests sent so far, in order.
@@ -339,6 +345,7 @@ impl Recorded {
 #[cfg(test)]
 struct RecordedCall {
     events: std::collections::VecDeque<HttpEvent>,
+    cancels: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(test)]
@@ -349,6 +356,7 @@ impl Call for RecordedCall {
 
     fn cancel(&mut self) {
         self.events.clear();
+        self.cancels.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn finished(&self) -> bool {
@@ -371,7 +379,7 @@ impl Transport for Recorded {
             events
         };
         notify();
-        Box::new(RecordedCall { events: events.into() })
+        Box::new(RecordedCall { events: events.into(), cancels: self.cancels.clone() })
     }
 }
 

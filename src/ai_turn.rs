@@ -1620,4 +1620,40 @@ mod tests {
         assert_eq!(r.poll(), [], "the live call was cancelled");
         assert!(r.turn().is_idle());
     }
+
+    /// The Decision "only the first of two streamed calls runs": a call that another part
+    /// follows is dispatched once, mid-stream, and the rest of the answer is dropped with its
+    /// HTTP call cancelled; in one chunk or one event per chunk.
+    #[test]
+    fn mid_stream_call_dispatches_once() {
+        let status = json!({"status": "s"}).to_string();
+        for second in [call_event("f", "{\"x\":1}", Some("c2")), status] {
+            let events = [call_event("f", "{}", Some("c1")), second, text("after"), END.to_string()];
+            let whole = sse(&events.iter().map(String::as_str).collect::<Vec<_>>());
+            let each: Vec<String> = events.iter().map(|e| sse(&[e])).collect();
+            for chunks in [vec![whole], each] {
+                let (t, _) = turn_of(input(openai(), true));
+                let (mut r, rec) = runner(t, vec![Reply::ok(&chunks.iter().map(String::as_bytes).collect::<Vec<_>>())]);
+                assert_eq!(r.start(Some(&key("sk-a"))), [Out::WillSend]);
+                assert_eq!(r.poll(), [invoke("f", "{}", Some("c1"))], "{chunks:?}");
+                assert_eq!(r.poll(), [], "nothing after the dispatch, and no StreamEnd");
+                assert_eq!(rec.cancels(), 1, "the stream was cancelled");
+                assert_eq!(rec.requests().len(), 1);
+                assert_eq!(r.tool_done(ToolResult::Canceled("stopped".into())), [Out::Failed("stopped".into())], "the call was waiting for its tool");
+            }
+        }
+
+        // An unknown name: the model is told so once, the first stream stays cancelled, and the
+        // new request is read in the same poll.
+        // (Text would merge into the call as its arguments, as Anthropic streams them.)
+        let first = sse(&[&call_event("nope", "{}", Some("c1")), &json!({"status": "s"}).to_string(), &text("after")]);
+        let (t, seen) = turn_of(input(openai(), true));
+        let (mut r, rec) = runner(t, vec![Reply::ok(&[first.as_bytes()]), Reply::ok(&[sse(&[&text("ok")]).as_bytes()])]);
+        assert_eq!(r.start(Some(&key("sk-a"))), [Out::WillSend]);
+        assert_eq!(r.poll(), [Out::WillSend, delta("ok"), Out::StreamEnd]);
+        assert_eq!(r.poll(), []);
+        assert_eq!((rec.cancels(), rec.requests().len()), (1, 2));
+        assert_eq!(last(&seen).messages.last().and_then(Message::content).as_deref(), Some(UNKNOWN_FUNCTION));
+        assert!(r.turn().is_idle());
+    }
 }
