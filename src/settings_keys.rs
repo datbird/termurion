@@ -23,6 +23,87 @@ pub fn set_snippets(list: &[crate::snippets::Snippet]) {
     SNIPPETS.with(|s| *s.borrow_mut() = list.to_vec());
 }
 
+thread_local! {
+    /// "Show indicators for non-default values"; the settings window sets it each frame.
+    static INDICATE_NON_DEFAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether controls mark a non-default value (the settings window calls this each frame from
+/// `NoSyncHideDefaultValuedSettings`, `PP:1111-1121`).
+pub fn set_indicate_non_default(on: bool) {
+    INDICATE_NON_DEFAULT.with(|c| c.set(on));
+}
+
+pub fn indicate_non_default() -> bool {
+    INDICATE_NON_DEFAULT.with(std::cell::Cell::get)
+}
+
+/// The note under General > Experimental's right-to-left checkbox (`XIB:8743`).
+pub const EXPERIMENTAL_NOTE: &str = "This setting also enables ligature support in the GPU renderer.";
+/// The right-to-left checkbox's tooltip: iTerm2's xib carries this unrelated text on it
+/// (`XIB:8720`), kept as iTerm2 shows it.
+pub const RTL_TOOLTIP: &str = "Buried sessions appear under Session > Buried Sessions. When this setting is enabled, window sizes are restored when attaching to an existing tmux session.";
+
+/// The settings panes' tolerance for numbers (`iTermPreferencesBaseViewController.m:287-292`:
+/// "otherwise colors don't compare equal when they ought to").
+const INDICATOR_EPSILON: f64 = 0.001;
+
+/// `it_hasZeroValue`: 0 (or false), an empty text, list or table.
+fn has_zero_value(v: &Value) -> bool {
+    match v {
+        Value::Integer(i) => *i == 0,
+        Value::Float(f) => *f == 0.0,
+        Value::Boolean(b) => !b,
+        Value::String(s) => s.is_empty(),
+        Value::Array(a) => a.is_empty(),
+        Value::Table(t) => t.is_empty(),
+        Value::Datetime(_) => false,
+    }
+}
+
+/// `isApproximatelyEqualToObject:epsilon:` (`NSObject+iTerm.m:25-105`): numbers within the
+/// epsilon, tables with the same keys and lists of the same length element by element.
+fn approximately_equal(a: &Value, b: &Value) -> bool {
+    let number = |v: &Value| v.as_float().or_else(|| v.as_integer().map(|i| i as f64));
+    match (a, b) {
+        (Value::Table(x), Value::Table(y)) => x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| approximately_equal(v, w))),
+        (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(v, w)| approximately_equal(v, w)),
+        _ => match (number(a), number(b)) {
+            (Some(x), Some(y)) => (x - y).abs() < INDICATOR_EPSILON,
+            _ => a == b,
+        },
+    }
+}
+
+/// `isNullablyEqualToObject:epsilon:` (`NSObject+iTerm.m:168-179`): approximately equal, or
+/// one missing and the other zero or empty.
+pub fn nullably_equal(a: Option<&Value>, b: Option<&Value>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => approximately_equal(x, y),
+        (None, Some(v)) | (Some(v), None) => has_zero_value(v),
+    }
+}
+
+/// Whether a global control shows its default (`PBVC:287-292`): the value (the stored one, else
+/// the schema default) nullably equals the default.
+pub fn global_is_default(g: &Globals, s: &Setting) -> bool {
+    nullably_equal(g.get(&s.key).as_ref(), s.default.as_ref())
+}
+
+/// The non-default indicator (`NonDefaultIndicator.swift`): a 2-point bar in the accent color
+/// the full height of `control`, 4 points left of it; hidden with a disabled control
+/// (`NDI:67-78`).
+pub fn non_default_bar(ui: &egui::Ui, control: egui::Rect, enabled: bool) {
+    if !enabled {
+        return;
+    }
+    let bar = egui::Rect::from_x_y_ranges(control.left() - 4.0..=control.left() - 2.0, control.y_range());
+    // The bar may sit left of the scroll area's content edge.
+    let painter = ui.painter().clone().with_clip_rect(ui.clip_rect().expand2(egui::vec2(6.0, 0.0)));
+    painter.rect_filled(bar, 0.0, ui.visuals().selection.bg_fill);
+}
+
 /// Send Snippet's name for a stored key.
 fn snippet_name(key: &str) -> String {
     SNIPPETS.with(|s| crate::user_actions::snippet_action_name(s.borrow().iter().find(|x| x.matches_key(key)).map(|x| x.title.as_str())))
@@ -581,30 +662,41 @@ pub fn pointer_editor(ctx: &egui::Context, e: &mut PointerEditor, profiles: &[(S
 pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: bool) -> bool {
     let mut changed = false;
     ui.add_enabled_ui(enabled && !s.macos_only, |ui| {
-        match s.kind {
+        let control = match s.kind {
             Kind::Bool => {
                 let mut b = g.bool(&s.key);
-                if ui.checkbox(&mut b, &s.label).changed() {
+                let r = ui.checkbox(&mut b, &s.label);
+                if r.changed() {
                     g.set(&s.key, Value::Boolean(b));
                     changed = true;
                 }
+                Some(r.rect)
             }
             Kind::Enum => {
                 ui.horizontal(|ui| {
                     ui.label(&s.label);
                     let now = g.get(&s.key);
                     let shown = s.choices.iter().find(|c| Some(&c.value) == now.as_ref()).map_or(String::new(), |c| c.label.clone());
-                    egui::ComboBox::from_id_salt(&s.key).selected_text(shown).show_ui(ui, |ui| {
-                        for c in &s.choices {
-                            if ui.selectable_label(Some(&c.value) == now.as_ref(), &c.label).clicked() {
-                                g.set(&s.key, c.value.clone());
-                                changed = true;
+                    egui::ComboBox::from_id_salt(&s.key)
+                        .selected_text(shown)
+                        .show_ui(ui, |ui| {
+                            for c in &s.choices {
+                                if ui.selectable_label(Some(&c.value) == now.as_ref(), &c.label).clicked() {
+                                    g.set(&s.key, c.value.clone());
+                                    changed = true;
+                                }
                             }
-                        }
-                    });
-                });
+                        })
+                        .response
+                        .rect
+                })
+                .inner
+                .into()
             }
-            _ => {}
+            _ => None,
+        };
+        if let Some(rect) = control.filter(|_| indicate_non_default() && !global_is_default(g, s)) {
+            non_default_bar(ui, rect, ui.is_enabled());
         }
     })
     .response
@@ -648,8 +740,13 @@ pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profile
             ui.label("Leader:");
             let leader = keystroke::parse(&g.string("Leader"));
             let text = if st.leader_recording { "Press the keys...".to_string() } else { leader.as_ref().map_or("Click to record".to_string(), Keystroke::label) };
-            if ui.button(text).clicked() {
+            let button = ui.button(text);
+            if button.clicked() {
                 st.leader_recording = !st.leader_recording;
+            }
+            // Marked while a Leader is set (`KeysPreferencesViewController.m:116`).
+            if indicate_non_default() && leader.is_some() {
+                non_default_bar(ui, button.rect, true);
             }
             if leader.is_some() && ui.button("Clear").clicked() {
                 g.set("Leader", Value::String(String::new()));
@@ -754,6 +851,11 @@ pub fn add_icon_font(ctx: &egui::Context) {
     let Some(bytes) = ["SegoeIcons.ttf", "segmdl2.ttf"].iter().find_map(|f| std::fs::read(dir.join(f)).ok()) else { return };
     ctx.add_font(FontInsert::new("tandem-icons", egui::FontData::from_owned(bytes), vec![InsertFontFamily { family: icon_family(), priority: FontPriority::Highest }]));
     ctx.data_mut(|d| d.insert_temp(icon_font_id(), true));
+}
+
+/// A glyph of the icon font, or None when `add_icon_font` did not find it.
+pub fn icon_text(ctx: &egui::Context, glyph: char) -> Option<egui::RichText> {
+    has_icon_font(ctx).then(|| egui::RichText::new(glyph.to_string()).family(icon_family()))
 }
 
 /// Whether `add_icon_font` found the icon font (without it the "icons" family is not defined
@@ -868,6 +970,9 @@ pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> bool {
                 let was_on = g.bool(&s.key);
                 let c = global_control(ui, g, s, enabled);
                 changed |= c;
+                if s.key == "Bidi" {
+                    ui.label(egui::RichText::new(EXPERIMENTAL_NOTE).small().weak());
+                }
                 // Turned on with no folder named: the folder picker opens (`GP:4247-4259`).
                 if c && s.key == "UseCustomScriptsFolder" && !was_on && g.bool(&s.key) && g.string("CustomScriptsFolder").is_empty() && choose_scripts_folder(g).is_some() {
                     ui.ctx().data_mut(|d| d.remove_temp::<bool>(folder_pending_id()));
@@ -968,9 +1073,14 @@ pub fn profile_key_mappings(ui: &mut egui::Ui, p: &mut Profile, st: &mut KeysSta
         }
     });
     let mut ctrl_h = delete_sends_ctrl_h(&map);
-    if ui.checkbox(&mut ctrl_h, "Delete sends ^H").changed() {
+    let check = ui.checkbox(&mut ctrl_h, "Delete sends ^H");
+    if check.changed() {
         set_delete_sends_ctrl_h(&mut map, ctrl_h);
         changed = true;
+    }
+    // Marked while on (`ProfilesKeysPreferencesViewController.m:549`).
+    if indicate_non_default() && ctrl_h {
+        non_default_bar(ui, check.rect, ui.is_enabled());
     }
     if st.key_editor.as_ref().is_some_and(|e| e.target == Target::Profile) && finish_key_editor(ui.ctx(), st, &mut map, profiles) {
         changed = true;
@@ -1172,6 +1282,68 @@ mod tests {
         let label = "Folder for config files. There must not be a space in the path.";
         assert_eq!(base.label, label);
         assert_eq!(base.help, format!("{label}\nIf empty, then %APPDATA%\\Tandem will be the default location."));
+    }
+
+    /// `PP:1096-1121`, `PBVC:902-909`: "Show indicators for non-default values" is
+    /// `NoSyncHideDefaultValuedSettings` (`PREF:252`, default NO `PREF:780`); a control is
+    /// default when its value is nullably and approximately (0.001) equal to the default.
+    #[test]
+    fn indicators_follow_iterm2() {
+        let s = schema::find_global("NoSyncHideDefaultValuedSettings").expect("NoSyncHideDefaultValuedSettings");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Stored", "Settings", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        assert_eq!(s.label, crate::settings_ui::SHOW_INDICATORS);
+        let mut g = Globals::empty(std::path::Path::new("unused-settings.toml"));
+        let ffm = schema::find_global("FocusFollowsMouse").unwrap();
+        assert!(global_is_default(&g, ffm));
+        g.set("FocusFollowsMouse", Value::Boolean(true));
+        assert!(!global_is_default(&g, ffm));
+        g.set("FocusFollowsMouse", Value::Boolean(false));
+        assert!(!g.values.contains_key("FocusFollowsMouse"), "the file drops a default");
+        assert!(global_is_default(&g, ffm));
+        // Numbers: within 0.001 of the default is default (`isNullablyEqualToObject:epsilon:0.001`).
+        let height = schema::find_global("statusBarHeight").unwrap();
+        g.values.insert("statusBarHeight".into(), Value::Float(21.0005));
+        assert!(global_is_default(&g, height));
+        g.values.insert("statusBarHeight".into(), Value::Integer(21));
+        assert!(global_is_default(&g, height));
+        g.values.insert("statusBarHeight".into(), Value::Float(21.01));
+        assert!(!global_is_default(&g, height));
+        // An optional bool has no default: a stored No or Yes is not default, unset is.
+        let prevent = schema::find_global("PreventEscapeSequenceFromChangingProfile").unwrap();
+        assert!(global_is_default(&g, prevent));
+        g.values.insert(prevent.key.clone(), Value::Boolean(true));
+        assert!(!global_is_default(&g, prevent));
+        // A missing value equals a zero, empty or false one (`it_hasZeroValue`).
+        assert!(nullably_equal(None, Some(&Value::Integer(0))));
+        assert!(nullably_equal(Some(&Value::String(String::new())), None));
+        assert!(!nullably_equal(Some(&Value::String("x".into())), None));
+        let color = |r: f64| Value::Table(toml::toml! { r = r g = 0.5 b = 0.5 a = 1.0 });
+        assert!(nullably_equal(Some(&color(0.2)), Some(&color(0.2009))));
+        assert!(!nullably_equal(Some(&color(0.2)), Some(&color(0.21))));
+        set_indicate_non_default(true);
+        assert!(indicate_non_default());
+        set_indicate_non_default(false);
+        assert!(!indicate_non_default());
+    }
+
+    /// `XIB:8708-8750`, `GP:2559-2566`, `PREF:105-106`, `PREF:757-758`: General > Experimental.
+    #[test]
+    fn experimental_rows_follow_iterm2() {
+        let bidi = schema::find_global("Bidi").expect("Bidi");
+        assert_eq!((bidi.tab.as_str(), bidi.section.as_str(), bidi.kind), ("General", "Experimental", Kind::Bool));
+        assert_eq!(bidi.default, Some(Value::Boolean(true)));
+        assert_eq!(bidi.label, "Enable support for right-to-left scripts");
+        assert_eq!(bidi.help, RTL_TOOLTIP);
+        let ssh = schema::find_global("SshIntegrationForURLs").expect("SshIntegrationForURLs");
+        assert_eq!((ssh.tab.as_str(), ssh.section.as_str(), ssh.kind), ("General", "Experimental", Kind::Bool));
+        assert_eq!(ssh.default, Some(Value::Boolean(false)));
+        assert_eq!(ssh.label, "Use SSH integration for ssh: URLs");
+        assert_eq!(EXPERIMENTAL_NOTE, "This setting also enables ligature support in the GPU renderer.");
+        assert_eq!(RTL_TOOLTIP, "Buried sessions appear under Session > Buried Sessions. When this setting is enabled, window sizes are restored when attaching to an existing tmux session.");
+        // Experimental is the General pane's last section, as in iTerm2's xib.
+        let last = schema::global().iter().filter(|s| s.tab == "General").last().unwrap();
+        assert_eq!(last.section, "Experimental");
     }
 
     #[test]

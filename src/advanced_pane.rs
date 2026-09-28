@@ -336,6 +336,7 @@ mod tests {
             ("NoSyncAutoBurialReveal", "Warnings", Kind::Bool, bool(false)),
             ("NoSyncEnableAutomaticProfileSwitchingLogging", "Script Console", Kind::Bool, bool(false)),
             ("Use background pattern indicator", "Broadcast", Kind::Bool, bool(false)),
+            ("NoSyncHideDefaultValuedSettings", "Settings", Kind::Bool, bool(false)),
         ];
         for (key, section, kind, default) in &expect {
             let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));

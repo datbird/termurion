@@ -63,6 +63,13 @@ pub enum Page {
     Arrangements,
 }
 
+/// The page bar's options menu item (`PP:1096-1107`), bound to `NoSyncHideDefaultValuedSettings`.
+pub const SHOW_INDICATORS: &str = "Show indicators for non-default values";
+/// The options menu's name (iTerm2's search field menu, `PP:1096`), shown on hover.
+pub const SEARCH_OPTIONS: &str = "Search Options";
+/// The options menu button's glyph: Segoe Fluent Icons' Search.
+const SEARCH_GLYPH: char = '\u{E721}';
+
 /// Panes that arrive with later milestones.
 const LATER_PAGES: [(&str, u8); 0] = [];
 
@@ -264,6 +271,7 @@ impl SettingsWindow {
         let arr = &mut self.arr;
         let shortcuts = &mut self.shortcuts;
         settings_keys::set_snippets(&snippets.snippets);
+        settings_keys::set_indicate_non_default(globals.bool("NoSyncHideDefaultValuedSettings"));
         let hk = &mut self.hotkeys;
         let configure_status_bar = &mut self.configure_status_bar;
         let tmux_session = self.tmux_session;
@@ -287,6 +295,19 @@ impl SettingsWindow {
                         for (name, m) in LATER_PAGES {
                             ui.add_enabled(false, egui::Button::new(name)).on_disabled_hover_text(format!("Comes in milestone {m}."));
                         }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let title = settings_keys::icon_text(ui.ctx(), SEARCH_GLYPH).unwrap_or_else(|| egui::RichText::new(SEARCH_OPTIONS));
+                            ui.menu_button(title, |ui| {
+                                let mut on = globals.bool("NoSyncHideDefaultValuedSettings");
+                                if ui.checkbox(&mut on, SHOW_INDICATORS).changed() {
+                                    globals.set("NoSyncHideDefaultValuedSettings", Value::Boolean(on));
+                                    settings_keys::set_indicate_non_default(on);
+                                    edit = Edit::GlobalsChanged;
+                                }
+                            })
+                            .response
+                            .on_hover_text(SEARCH_OPTIONS);
+                        });
                     });
                 });
                 if page != Page::Profiles {
@@ -594,6 +615,27 @@ pub fn edit_key(profile: &Profile, s: &Setting, dark: bool) -> String {
     }
 }
 
+/// Whether a profile control shows its default (`iTermProfilePreferencesBaseViewController.m:253-265`):
+/// the value of `key` (`edit_key`: the setting or its Light or Dark variant) nullably equals
+/// DefaultBookmark.plist's (the schema's seed) or else iTerm2's default, within 0.001. The
+/// fonts compare with Tandem's new-profile font, which stands in for Monaco 12; the Guid has no
+/// control and is never marked.
+pub fn profile_is_default(profile: &Profile, s: &Setting, key: &str) -> bool {
+    if key == profile::GUID {
+        return true;
+    }
+    let (value, preset) = if let Some(variant) = key.strip_prefix(s.key.as_str()).filter(|v| !v.is_empty()) {
+        let (seed, default) = if variant == " (Dark)" { (&s.seed_dark, &s.default_dark) } else { (&s.seed_light, &s.default_light) };
+        let preset = seed.clone().or_else(|| default.clone());
+        (profile.values.get(key).cloned().or_else(|| default.clone()).or_else(|| profile.get(&s.key)), preset)
+    } else if FONT_KEYS[..2].contains(&key) {
+        (profile.get(key), Some(Value::String(profile::WINDOWS_FONT.into())))
+    } else {
+        (profile.get(key), s.seed.clone().or_else(|| s.default.clone()))
+    };
+    settings_keys::nullably_equal(value.as_ref(), preset.as_ref())
+}
+
 /// Font settings follow the default profile until each pane can have its own renderer.
 pub const FONT_KEYS: [&str; 5] = ["Normal Font", "Non Ascii Font", "Use Non-ASCII Font", "Horizontal Spacing", "Vertical Spacing"];
 
@@ -611,15 +653,20 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
     };
     let mut changed = None;
     let mut commit = false;
+    // The widget that takes the value, and whether it is enabled, for the non-default bar.
+    let mut widget: Option<(egui::Rect, bool)> = None;
     ui.horizontal(|ui| {
         ui.add_enabled_ui(!s.macos_only && !font_locked, |ui| {
+            let enabled = ui.is_enabled();
             match s.kind {
                 Kind::Bool => {
                     let mut b = current.as_ref().and_then(|v| v.as_bool()).unwrap_or(false);
-                    if ui.checkbox(&mut b, &s.label).changed() {
+                    let r = ui.checkbox(&mut b, &s.label);
+                    if r.changed() {
                         changed = Some(Value::Boolean(b));
                         commit = true;
                     }
+                    widget = Some((r.rect, enabled));
                 }
                 Kind::Int => {
                     ui.label(&s.label);
@@ -632,6 +679,7 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                     if r.changed() {
                         changed = Some(Value::Integer(i));
                     }
+                    widget = Some((r.rect, enabled));
                     commit = r.drag_stopped() || (r.changed() && !r.dragged());
                 }
                 Kind::Float => {
@@ -644,6 +692,7 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                     if r.changed() {
                         changed = Some(Value::Float(f));
                     }
+                    widget = Some((r.rect, enabled));
                     commit = r.drag_stopped() || (r.changed() && !r.dragged());
                 }
                 Kind::String | Kind::Font => {
@@ -653,21 +702,24 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                     if r.changed() {
                         changed = Some(Value::String(text));
                     }
+                    widget = Some((r.rect, enabled));
                     commit = r.lost_focus();
                 }
                 Kind::Color => {
                     ui.label(&s.label);
                     let mut c = current.as_ref().map(rgb_of).unwrap_or([0, 0, 0]);
-                    if ui.color_edit_button_srgb(&mut c).changed() {
+                    let r = ui.color_edit_button_srgb(&mut c);
+                    if r.changed() {
                         changed = Some(value_of_rgb(c));
                         commit = true;
                     }
+                    widget = Some((r.rect, enabled));
                 }
                 Kind::Enum => {
                     ui.label(&s.label);
                     let now = current.clone();
                     let shown = s.choices.iter().find(|c| Some(&c.value) == now.as_ref()).map_or("".to_string(), |c| c.label.clone());
-                    egui::ComboBox::from_id_salt(&s.key).selected_text(shown).show_ui(ui, |ui| {
+                    let r = egui::ComboBox::from_id_salt(&s.key).selected_text(shown).show_ui(ui, |ui| {
                         for c in &s.choices {
                             if ui.selectable_label(Some(&c.value) == now.as_ref(), &c.label).clicked() {
                                 changed = Some(c.value.clone());
@@ -675,6 +727,7 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                             }
                         }
                     });
+                    widget = Some((r.response.rect, enabled));
                 }
                 Kind::List | Kind::Dict | Kind::Data => {
                     let n = match &current {
@@ -682,7 +735,8 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                         Some(Value::Table(t)) => t.len(),
                         _ => 0,
                     };
-                    ui.label(format!("{}: {n} item(s)", s.label)).on_hover_text("This editor arrives with its feature's milestone.");
+                    let r = ui.label(format!("{}: {n} item(s)", s.label)).on_hover_text("This editor arrives with its feature's milestone.");
+                    widget = Some((r.rect, enabled));
                 }
             }
         })
@@ -697,6 +751,9 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
     });
     if let Some(v) = changed {
         profile.set(&key, v);
+    }
+    if let Some((rect, enabled)) = widget.filter(|_| settings_keys::indicate_non_default() && !profile_is_default(profile, s, &key)) {
+        settings_keys::non_default_bar(ui, rect, enabled);
     }
     commit
 }
@@ -763,6 +820,51 @@ mod tests {
         assert_eq!(items, vec![item("Built-in components", ""), item("Hello", "com.ex.t"), item("Old", "com.old")]);
         assert_eq!(title_choice(2, Some(item("Old", "com.old")), &[]).1, vec![item("Built-in components", ""), item("Old", "com.old")], "kept while not Custom too");
         assert_eq!(title_choice(16, None, &providers).0, "Built-in components");
+    }
+
+    /// `iTermProfilePreferencesBaseViewController.m:253-265`: a profile control is default when
+    /// its value equals DefaultBookmark.plist's (the schema's seed) or else iTerm2's default,
+    /// within 0.001.
+    #[test]
+    fn profile_indicators_follow_iterm2() {
+        assert_eq!(SHOW_INDICATORS, "Show indicators for non-default values");
+        assert_eq!(SEARCH_OPTIONS, "Search Options");
+        let mut p = Profile::new("Default");
+        let cols = crate::schema::find("Columns").unwrap();
+        assert!(profile_is_default(&p, cols, "Columns"));
+        p.set("Columns", Value::Integer(132));
+        assert!(!profile_is_default(&p, cols, "Columns"));
+        p.set("Columns", Value::Integer(80));
+        assert!(profile_is_default(&p, cols, "Columns"));
+        // The name compares with DefaultBookmark.plist's "Default" (the source; see the report).
+        let name = crate::schema::find("Name").unwrap();
+        assert!(profile_is_default(&p, name, "Name"));
+        assert!(!profile_is_default(&Profile::new("New Profile"), name, "Name"));
+        // The Guid has no control and is never marked.
+        assert!(profile_is_default(&Profile::new("x"), name, "Guid"));
+        // A color's variant key compares with the variant's seed or, without one, its default.
+        let fg = crate::schema::find("Foreground Color").unwrap();
+        let fresh = Profile::new("Default");
+        assert!(profile_is_default(&fresh, fg, "Foreground Color (Dark)"));
+        assert!(profile_is_default(&fresh, fg, "Foreground Color (Light)"));
+        let mut q = Profile::default();
+        assert!(!profile_is_default(&q, fg, "Foreground Color (Dark)"), "a missing variant reads iTerm2's default, not the seed");
+        q.set("Foreground Color (Dark)", fg.seed_dark.clone().unwrap());
+        assert!(profile_is_default(&q, fg, "Foreground Color (Dark)"));
+        q.set("Foreground Color (Dark)", fg.default_dark.clone().unwrap());
+        assert!(!profile_is_default(&q, fg, "Foreground Color (Dark)"), "the seed wins over the default");
+        q.set("Foreground Color (Light)", value_of_rgb([255, 0, 0]));
+        assert!(!profile_is_default(&q, fg, "Foreground Color (Light)"));
+        // Within 0.001 of the seed is default.
+        let near = |v: &Value| Value::Table(v.as_table().unwrap().iter().map(|(k, x)| (k.clone(), Value::Float(x.as_float().unwrap() + 0.0005))).collect());
+        q.set("Foreground Color (Dark)", near(fg.seed_dark.as_ref().unwrap()));
+        assert!(profile_is_default(&q, fg, "Foreground Color (Dark)"));
+        // Tandem's new-profile font stands in for Monaco 12.
+        let font = crate::schema::find("Normal Font").unwrap();
+        let mut f = Profile::new("Default");
+        assert!(profile_is_default(&f, font, "Normal Font"));
+        f.set("Normal Font", Value::String("Monaco 12".into()));
+        assert!(!profile_is_default(&f, font, "Normal Font"));
     }
 
     /// `PSV:569-573`: opened from a tmux session, both status bar controls are disabled.

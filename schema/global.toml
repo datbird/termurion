@@ -1760,3 +1760,30 @@ label = "Folder for config files. There must not be a space in the path."
 type = "string"
 default = ""
 help = "Folder for config files. There must not be a space in the path.\nIf empty, then %APPDATA%\\Tandem will be the default location."
+
+[[setting]]
+key = "NoSyncHideDefaultValuedSettings"
+tab = "Stored"
+section = "Settings"
+label = "Show indicators for non-default values"
+type = "bool"
+default = false
+help = "Settings marks each control whose value is not the default with a bar at its left."
+
+[[setting]]
+key = "Bidi"
+tab = "General"
+section = "Experimental"
+label = "Enable support for right-to-left scripts"
+type = "bool"
+default = true
+help = "Buried sessions appear under Session > Buried Sessions. When this setting is enabled, window sizes are restored when attaching to an existing tmux session."
+
+[[setting]]
+key = "SshIntegrationForURLs"
+tab = "General"
+section = "Experimental"
+label = "Use SSH integration for ssh: URLs"
+type = "bool"
+default = false
+help = "Use SSH integration for ssh: URLs"
