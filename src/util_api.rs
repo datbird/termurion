@@ -90,7 +90,7 @@ fn launch(args: &[String], io: &mut Io, own_dir: &Path, is_file: &dyn Fn(&Path) 
     let program = argv.remove(0);
     argv.push(script.to_string_lossy().into_owned());
     argv.extend(args.iter().cloned());
-    let cmd = Cmd { program, args: argv, cwd: None, stdin: None, inherit: true, quiet: false, env: Vec::new() };
+    let cmd = Cmd { program, args: argv, cwd: None, stdin: None, inherit: true, quiet: false, env: Vec::new(), merge_stderr: false };
     match (io.run)(&cmd) {
         Ok(done) => done.code,
         Err(e) => {

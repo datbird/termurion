@@ -82,6 +82,7 @@ pub mod util_simple;
 pub mod util_git;
 pub mod util_tip;
 pub mod util_query;
+pub mod util_it2ssh;
 #[cfg(windows)]
 pub mod util_console;
 pub mod utilities;

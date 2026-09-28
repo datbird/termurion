@@ -9,9 +9,8 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// iTerm2's bundled utilities that Tandem ports, sorted (it2ssh is milestone 14; the Swift
-/// `it2` is not ported).
-pub const NAMES: [&str; 16] = [
+/// iTerm2's bundled utilities that Tandem ports, sorted (the Swift `it2` is not ported).
+pub const NAMES: [&str; 17] = [
     "imgcat",
     "imgls",
     "it2api",
@@ -25,6 +24,7 @@ pub const NAMES: [&str; 16] = [
     "it2profile",
     "it2setcolor",
     "it2setkeylabel",
+    "it2ssh",
     "it2tip",
     "it2ul",
     "it2universion",
@@ -112,6 +112,9 @@ pub struct Cmd {
     pub quiet: bool,
     /// Environment changes for the program: a value sets the variable, None removes it.
     pub env: Vec<(String, Option<String>)>,
+    /// Standard error joins the captured standard output (the scripts' `2>&1`); ignored for
+    /// an `inherit` run.
+    pub merge_stderr: bool,
 }
 
 /// A finished program: its exit code and captured standard output.
@@ -137,6 +140,11 @@ pub struct Io<'a> {
     pub run: &'a mut dyn FnMut(&Cmd) -> Result<Output, String>,
     /// `builtin command -V <name>` succeeds (the scripts' `check_dependency`).
     pub have: &'a dyn Fn(&str) -> bool,
+    /// An SSH origin secret from Tandem's secret pipe (`ssh_secret_win::fetch`); None when
+    /// no Tandem of this user answers.
+    pub secret: &'a mut dyn FnMut() -> Option<String>,
+    /// `command env`: every environment variable, in the process's order.
+    pub env_all: &'a dyn Fn() -> Vec<(String, String)>,
 }
 
 /// A path a utility may open (following links): not a network or device path in any
@@ -220,6 +228,7 @@ pub fn run(name: &str, args: &[String], io: &mut Io) -> i32 {
         "it2profile" => util_query::it2profile(args, io),
         "it2ul" => util_query::it2ul(args, io),
         "it2api" => crate::util_api::it2api(args, io),
+        "it2ssh" => crate::util_it2ssh::run(args, io),
         #[cfg(windows)]
         "imgls" => {
             let fs = crate::util_imgls::WinFs::new(io.cwd.clone());
@@ -364,8 +373,8 @@ impl Tty for FakeTty {
 }
 
 /// A utility run in memory: its streams, environment, console, the programs it ran (each
-/// answered from `answers`, else an error), the commands `have` reports missing, and the
-/// `$RANDOM` values it gets.
+/// answered from `answers`, else an error), the commands `have` reports missing, the
+/// `$RANDOM` values it gets, and the SSH origin secrets it fetches (none left: None).
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct Harness {
@@ -381,6 +390,7 @@ pub(crate) struct Harness {
     pub answers: std::collections::VecDeque<Result<Output, String>>,
     pub missing: Vec<String>,
     pub randoms: std::collections::VecDeque<u32>,
+    pub secrets: std::collections::VecDeque<Option<String>>,
 }
 
 #[cfg(test)]
@@ -392,11 +402,13 @@ impl Harness {
 
     /// Calls `f` with an `Io` over the harness's fields (a utility's inner entry point).
     pub fn with_io(&mut self, f: &mut dyn FnMut(&mut Io) -> i32) -> i32 {
-        let Harness { out, err, input, stdin_tty, stdout_tty, env, cwd, tty, runs, answers, missing, randoms } = self;
+        let Harness { out, err, input, stdin_tty, stdout_tty, env, cwd, tty, runs, answers, missing, randoms, secrets } = self;
         let mut input: &[u8] = input;
         let env_fn = |k: &str| env.get(k).cloned();
         let have = |p: &str| !missing.iter().any(|m| m == p);
         let mut random = || randoms.pop_front().expect("Harness: no $RANDOM value left");
+        let mut secret = || secrets.pop_front().flatten();
+        let env_all = || env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         let mut run_fn = |c: &Cmd| {
             runs.push(c.clone());
             answers.pop_front().unwrap_or_else(|| Err(format!("Harness: no answer for {}", c.program)))
@@ -413,6 +425,8 @@ impl Harness {
             random: &mut random,
             run: &mut run_fn,
             have: &have,
+            secret: &mut secret,
+            env_all: &env_all,
         };
         f(&mut io)
     }
@@ -431,15 +445,16 @@ mod tests {
         let mut sorted = NAMES;
         sorted.sort();
         assert_eq!(sorted, NAMES);
-        assert_eq!(NAMES.len(), 16);
-        assert!(!NAMES.contains(&"it2ssh") && !NAMES.contains(&"it2"));
+        assert_eq!(NAMES.len(), 17);
+        assert!(NAMES.contains(&"it2ssh") && !NAMES.contains(&"it2"));
         assert_eq!(name_of("C:\\t\\utilities\\IMGCAT.EXE"), Some("imgcat"));
         assert_eq!(name_of("it2ul"), Some("it2ul"));
         assert_eq!(name_of("tandem-utils.exe"), None);
         assert_eq!(pick(&strings(&["C:\\t\\tandem-utils.exe", "it2check", "2.0"])), Ok(("it2check", strings(&["2.0"]))));
         assert_eq!(pick(&strings(&["imgcat.exe", "a.png"])), Ok(("imgcat", strings(&["a.png"]))));
         assert_eq!(pick(&strings(&["tandem-utils.exe"])), Err(multi_usage()));
-        assert_eq!(pick(&strings(&["tandem-utils.exe", "it2ssh"])), Err(multi_usage()));
+        assert_eq!(pick(&strings(&["tandem-utils.exe", "it2ssh", "h"])), Ok(("it2ssh", strings(&["h"]))));
+        assert_eq!(pick(&strings(&["tandem-utils.exe", "it2"])), Err(multi_usage()));
         assert!(multi_usage().starts_with("Usage: tandem-utils <utility> [arguments...]\nUtilities: imgcat, imgls, "));
         assert!(multi_usage().ends_with(", it2universion\n"));
     }
