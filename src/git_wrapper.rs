@@ -24,11 +24,17 @@ pub fn failure(args: &[String]) -> String {
 /// arguments, each quoted for the MSVC runtime's `CommandLineToArgvW` rules. The program
 /// name is only wrapped in quotes (argv[0] takes no escapes).
 pub fn command_line(wrapper: &Path, git: &Path, args: &[String]) -> String {
-    let program = wrapper.to_string_lossy();
+    let all: Vec<String> = std::iter::once(git.to_string_lossy().into_owned()).chain(args.iter().cloned()).collect();
+    program_line(wrapper, &all)
+}
+
+/// A program and its arguments as one command line by `command_line`'s rules.
+pub fn program_line(program: &Path, args: &[String]) -> String {
+    let program = program.to_string_lossy();
     let mut out = if program.contains([' ', '\t']) { format!("\"{program}\"") } else { program.into_owned() };
-    for a in std::iter::once(git.to_string_lossy().into_owned()).chain(args.iter().cloned()) {
+    for a in args {
         out.push(' ');
-        quote_arg(&a, &mut out);
+        quote_arg(a, &mut out);
     }
     out
 }

@@ -60,6 +60,12 @@ pub(super) enum Then {
     ImportDone(std::path::PathBuf),
     /// "Could Not Install Script": OK (0), or Try Again (1) with the same file.
     ImportFailed(std::path::PathBuf),
+    /// Manage Dependencies' "Run this Command?": OK (0) runs the pip command in a window on
+    /// the next loop pass; Cancel (1) does nothing.
+    RunPip(Box<super::script_deps_app::RunPip>),
+    /// "Confirm Python Downgrade" / "Confirm Python Upgrade" for a container and the version
+    /// picked: OK (0) asks the download consent, then rebuilds; Cancel (1) keeps the version.
+    VersionChange(std::path::PathBuf, String),
 }
 
 impl Then {
@@ -216,6 +222,18 @@ impl App {
                 }
             }
             Then::InvalidFolder(plan) => self.new_script_save(plan),
+            Then::RunPip(run) => {
+                if index == 0 {
+                    self.deps_run_confirmed(*run);
+                }
+            }
+            Then::VersionChange(container, version) => {
+                if index == 0 {
+                    self.deps_version_confirmed(container, version);
+                } else {
+                    self.deps_push();
+                }
+            }
             Then::OpenNewScript(path) => {
                 if index == 0 {
                     self.edit_new_script(&path);

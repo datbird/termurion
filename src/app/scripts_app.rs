@@ -178,7 +178,7 @@ pub(super) fn script_item_id(item: &crate::menus::Item) -> String {
 
 /// What a full environment is built from (`M:1009-1016`): the version its marker recorded,
 /// else its `setup.cfg` pin, else the default; the dependencies `setup.cfg` lists.
-fn container_inputs(container: &Path) -> (String, Vec<String>) {
+pub(super) fn container_inputs(container: &Path) -> (String, Vec<String>) {
     let cfg = std::fs::read_to_string(container.join(rt::SETUP_CFG)).ok().and_then(|t| rt::SetupCfg::parse(&t)).unwrap_or_default();
     let recorded = std::fs::read_to_string(container.join(rt::MARKER)).ok().and_then(|t| rt::Marker::parse(&t)).map(|m| m.python);
     let version = recorded.or(cfg.python_version).unwrap_or_else(|| rt::DEFAULT_PYTHON.to_string());

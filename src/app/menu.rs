@@ -419,6 +419,7 @@ impl App {
             "openREPL:" => self.open_repl(),
             "importScript:" => self.import_scripts(),
             "exportScript:" => self.export_scripts(event_loop),
+            "openDependencyEditor:" => self.open_dependency_editor(event_loop),
             "openScriptConsole:" => self.open_script_console(event_loop),
             "editCurrentSession:" => {
                 let guid = self.focused_guid();

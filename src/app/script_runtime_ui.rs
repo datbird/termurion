@@ -31,12 +31,23 @@ pub(super) enum After {
     /// An imported full environment (the folder being built) is moved into place; a failure
     /// or a declined download ends the import (restoring what it replaced).
     Import(PathBuf),
-    /// The dependency editor continues here (Task 10).
-    #[allow(dead_code)]
-    Deps(PathBuf),
+    /// Manage Dependencies changed a full environment's Python version (the container): its
+    /// `setup.cfg` takes the version built; a failure shows "Could Not Change Python Version";
+    /// a declined download changes nothing.
+    DepsVersion(PathBuf),
+    /// Manage Dependencies' Upgrade: the basic script moves into the full environment built
+    /// in `folder`; a failure shows "Installation Failed" (`DE:492-500`).
+    DepsUpgrade { script: PathBuf, folder: PathBuf },
     /// New Python Script's full environment is built: its files are written; a failure shows
     /// "Installation Failed" (`M:1180-1197`).
     NewScript(crate::script_new::Plan),
+}
+
+/// The "scripts" banner while jobs run: "Rebuilding the Python environment\u{2026}" while a
+/// rebuild (Rebuild Python Environment? or a Python version change) is among them
+/// (`DE:713`), else "Setting up the Python environment\u{2026}".
+fn busy_banner<'a>(mut pending: impl Iterator<Item = &'a After>) -> &'static str {
+    if pending.any(|a| matches!(a, After::Rebuild(_) | After::DepsVersion(_))) { crate::script_launch::REBUILDING } else { rt::SETTING_UP }
 }
 
 /// Tandem's uv folder, `%APPDATA%\Tandem\uv`.
@@ -54,7 +65,7 @@ fn arch() -> Arch {
 fn env_name(target: &Target, after: &After) -> String {
     let stem = |p: &Path| p.file_stem().map(|s| s.to_string_lossy().into_owned());
     match (after, target) {
-        (After::Import(p) | After::Deps(p), _) => stem(p),
+        (After::Import(p) | After::DepsVersion(p) | After::DepsUpgrade { folder: p, .. }, _) => stem(p),
         // iTerm2 names the launched path's last component (`M:915-917`).
         (After::Launch(r) | After::Rebuild(r), _) => r.path.file_name().map(|s| s.to_string_lossy().into_owned()),
         (_, Target::Container(c)) => c.file_name().map(|s| s.to_string_lossy().into_owned()),
@@ -117,7 +128,7 @@ impl App {
         self.ask_scripts(Ask { heading: heading.to_string(), text, buttons: vec![crate::api_auth::OK.to_string()], silence: None, then: Then::Nothing });
     }
 
-    fn consent(&mut self, (heading, text): (&str, String), jobs: Vec<(Job, After)>) {
+    pub(super) fn consent(&mut self, (heading, text): (&str, String), jobs: Vec<(Job, After)>) {
         let buttons = vec![crate::api_auth::OK.to_string(), "Cancel".to_string()];
         self.ask_scripts(Ask { heading: heading.to_string(), text, buttons, silence: None, then: Then::Consent(jobs) });
     }
@@ -209,8 +220,7 @@ impl App {
     /// (a build makes many file events; iTerm2 skips them), then it is scanned once.
     fn provision_busy(&mut self, busy: bool) {
         if busy {
-            let rebuilding = self.provision_after.values().any(|a| matches!(a, After::Rebuild(_)));
-            self.banners.set("scripts", if rebuilding { crate::script_launch::REBUILDING } else { rt::SETTING_UP });
+            self.banners.set("scripts", busy_banner(self.provision_after.values()));
         } else {
             self.banners.clear("scripts");
         }
@@ -287,6 +297,8 @@ impl App {
                     After::NewScript(_) => self.runtime_alert(crate::script_new::INSTALLATION_FAILED, crate::script_new::env_create_error(&e)),
                     After::Repl => self.repl_environment_failed(&e),
                     After::Import(_) => self.import_install_done(Err(super::scripts_app::Failure::Error(crate::script_archive::runtime_install_failed(&e)))),
+                    After::DepsVersion(container) => self.deps_version_failed(&container, &e),
+                    After::DepsUpgrade { .. } => self.runtime_alert(crate::script_deps::INSTALLATION_FAILED, crate::script_deps::upgrade_error(&e)),
                     _ => self.runtime_alert(rt::ENV_UNAVAILABLE_HEADING, rt::env_unavailable(&e)),
                 }
             }
@@ -320,8 +332,8 @@ impl App {
             After::NewScript(plan) => self.finish_new_script(plan),
             After::Repl => self.repl_ready(python),
             After::Import(folder) => self.import_environment_ready(&folder),
-            // Task 10 continues this with the interpreter.
-            After::Deps(_) => {}
+            After::DepsVersion(container) => self.deps_version_ready(&container),
+            After::DepsUpgrade { script, folder } => self.deps_upgrade_ready(&script, &folder),
         }
     }
 
@@ -332,6 +344,9 @@ impl App {
         if jobs.iter().any(|(_, a)| matches!(a, After::Import(_))) {
             self.import_install_done(Err(super::scripts_app::Failure::Canceled));
         }
+        if jobs.iter().any(|(_, a)| matches!(a, After::DepsVersion(_))) {
+            self.deps_version_declined();
+        }
     }
 
     /// The Scripts > Manage runtime item's title follows whether uv is installed (`SR:62-79`).
@@ -339,5 +354,20 @@ impl App {
         if let Some(item) = self.menu_bar.as_ref().and_then(|b| b.install_runtime.as_ref()) {
             item.set_text(rt::menu_title(self.uv_installed));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn busy_banner_follows_iterm2() {
+        let req = crate::script_launch::Request { path: PathBuf::from(r"C:\S\a.py"), args: Vec::new(), explicit: true };
+        assert_eq!(busy_banner([After::Repl].iter()), rt::SETTING_UP);
+        assert_eq!(busy_banner([After::Repl, After::Rebuild(req)].iter()), crate::script_launch::REBUILDING);
+        // A Python version change from Manage Dependencies rebuilds too (`DE:713`).
+        assert_eq!(busy_banner([After::DepsVersion(PathBuf::from(r"C:\S\t"))].iter()), crate::script_launch::REBUILDING);
+        assert_eq!(busy_banner([After::DepsUpgrade { script: PathBuf::from(r"C:\S\t.py"), folder: PathBuf::from(r"C:\S\t") }].iter()), rt::SETTING_UP);
     }
 }

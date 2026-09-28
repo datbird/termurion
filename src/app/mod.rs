@@ -115,6 +115,7 @@ mod script_runtime_ui;
 mod scripts_alerts;
 mod scripts_app;
 mod script_console_app;
+mod script_deps_app;
 mod builtin_ui;
 
 pub enum UserEvent {
@@ -684,6 +685,12 @@ pub struct App {
     /// for (a `Minors` job run off the UI thread).
     script_picker: Option<crate::script_new_ui::PickerWindow>,
     script_picker_minors: Option<std::sync::mpsc::Receiver<Vec<String>>>,
+    /// Manage Dependencies (app-wide): its window, its state (kept while the window is
+    /// closed, so a command still finishes), and the pip command whose window's end it
+    /// waits for.
+    script_deps: Option<crate::script_deps_ui::DepsWindow>,
+    script_deps_state: script_deps_app::Deps,
+    script_deps_pending: Option<(PaneId, script_deps_app::Pending)>,
     /// The Script Console and the Scripting Inspector (app-wide).
     script_console: Option<crate::script_console_ui::ConsoleWindow>,
     script_inspector: Option<crate::script_inspector_ui::InspectorWindow>,
@@ -1097,6 +1104,9 @@ pub fn run() {
         script_exports: Vec::new(),
         script_picker: None,
         script_picker_minors: None,
+        script_deps: None,
+        script_deps_state: script_deps_app::Deps::new(),
+        script_deps_pending: None,
         script_console: None,
         script_inspector: None,
         script_console_reveal: None,
@@ -1533,6 +1543,7 @@ impl App {
                     self.scripts_all = crate::scripts::all_scripts(&result.tree);
                     self.scripts_tree = result.tree;
                     self.refresh_scripts_menu();
+                    self.deps_tree_changed();
                 }
                 crate::scripts_scan::ScanEvent::Done(result) => self.archives_found(&result.archives),
             }
@@ -1679,8 +1690,10 @@ impl App {
 
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
-        // A git command's window closed any way ends its command.
+        // A git command's window closed any way ends its command, as does Manage
+        // Dependencies' pip command.
         self.single_use_ended(id);
+        self.deps_command_ended(id);
         // A buried session that ends leaves the Buried Sessions menu.
         if self.buried.take(id).is_some() {
             self.menus_dirty = true;
@@ -2966,6 +2979,8 @@ impl ApplicationHandler<UserEvent> for App {
         let provision_due = self.provision_tick();
         self.scripts_tick();
         self.script_picker_tick();
+        self.deps_tick();
+        self.open_pending_deps_run(event_loop);
         let console_due = self.script_console_tick(event_loop);
         self.open_pending_repl(event_loop);
         let import_due = self.import_tick();
@@ -3072,6 +3087,7 @@ impl ApplicationHandler<UserEvent> for App {
             // A git command's short-lived window ends without an alert.
             let short_lived = self.short_lived(id);
             self.single_use_ended(id);
+            self.deps_command_ended(id);
             if !short_lived {
                 self.session_ended(id);
             }
@@ -3095,7 +3111,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
             return;
         }
         for profiles in [false, true] {
