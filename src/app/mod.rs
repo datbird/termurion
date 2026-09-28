@@ -3697,10 +3697,6 @@ impl App {
         if button == MouseButton::Left && self.caption_layout().and_then(|l| l.menu).is_some_and(|m| m.contains(x, y)) {
             return self.show_caption_menu(false);
         }
-        // A click on the window name beside the tabs edits the window title (`PT:1235-1241`).
-        if button == MouseButton::Left && self.caption_layout().is_some_and(|l| crate::caption::name_hit(&l, x, y)) {
-            return self.open_title_prompt(event_loop, false);
-        }
         // The side bar's drag handle, on its inner edge, before its rows (`RTV:1860-1895`).
         if button == MouseButton::Left && self.side_handle().is_some_and(|h| h.contains(x, y)) {
             self.drag = Drag::SideBar { start_x: x, start_width: self.side_bar_width() / self.scale() };

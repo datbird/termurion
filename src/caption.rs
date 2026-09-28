@@ -94,23 +94,87 @@ pub fn name_beside_tabs(mode: NameMode, compact_window: bool, full_screen: bool,
 }
 
 /// The name's width (`natural`, its text's measured width) within the `allowance` the tabs leave,
-/// in one unit: at most `NAME_MAX`, and 0 (no name) when the allowance is under `NAME_MIN`.
+/// in one unit, at most `NAME_MAX` (`measuredWindowNameBesideTabsTextWidth`, `RTV:647-671`): a
+/// name that fits shows whole, and one that must be cut is hidden (0) when the room is under
+/// `NAME_MIN` (the minimum gates truncation, not slack).
 pub fn name_width(natural: f32, allowance: f32) -> f32 {
-    if natural <= 0.0 || allowance < NAME_MIN {
+    let allowance = allowance.min(NAME_MAX);
+    if natural <= 0.0 || (natural > allowance && allowance < NAME_MIN) {
         return 0.0;
     }
-    natural.min(NAME_MAX).min(allowance)
+    natural.min(allowance)
 }
 
-/// The room the tabs leave the name (`RTV:590-620`): the tab area's width less every tab's minimum
-/// and the name's two margins; pixels, `min_tab_w` in pixels, never negative.
-pub fn name_allowance(tabs_w: f32, tab_count: usize, min_tab_w: f32, scale: f32) -> f32 {
-    (tabs_w - tab_count as f32 * min_tab_w - (NAME_LEFT + NAME_RIGHT) * scale).max(0.0)
+/// The room the tabs leave the name (`RTV:590-620`): the tab area's width less what the tabs
+/// need and the name's two margins; pixels, never negative. The tabs need every tab's minimum
+/// (`min_tab_w`), or on a bar that scrolls (`scrollable_tab_w`, `ScrollableTabWidth` in pixels)
+/// at most one scrollable tab, since the rest are a scroll away (`minimumUsableCellAreaWidth`,
+/// `PSM:3077-3090`).
+pub fn name_allowance(tabs_w: f32, tab_count: usize, min_tab_w: f32, scrollable_tab_w: Option<f32>, scale: f32) -> f32 {
+    let all = tab_count as f32 * min_tab_w;
+    let need = scrollable_tab_w.map_or(all, |w| all.min(w));
+    (tabs_w - need - (NAME_LEFT + NAME_RIGHT) * scale).max(0.0)
 }
 
-/// Whether a click at (`x`, `y`) is on the name.
-pub fn name_hit(l: &Layout, x: f32, y: f32) -> bool {
-    l.name.is_some_and(|n| n.contains(x, y))
+/// What a point of the strip is, for the pointer: the one answer the hit test (`hit`), a right
+/// click (`strip_right_click` asks the bar only where this is not a button) and a double click
+/// (`strip_double_click`) share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StripPart {
+    /// The resize border along the top.
+    Top,
+    Button(Button),
+    /// The menu button.
+    Menu,
+    /// The window name: painted over the strip, its clicks are the strip's (`RTV:358-361`).
+    Name,
+    /// A tab, a chip, or a button of the tab bar (`over_item`).
+    Item,
+    /// The strip with nothing on it.
+    Empty,
+}
+
+/// The part of the strip at the client point (`x`, `y`), None outside the strip. `over_item`:
+/// the point is over a tab, a chip or a button of the tab bar.
+pub fn strip_part(l: &Layout, x: f32, y: f32, over_item: bool) -> Option<StripPart> {
+    if !l.bar.contains(x, y) {
+        return None;
+    }
+    if !l.maximized && y < l.resize_top {
+        return Some(StripPart::Top);
+    }
+    if l.menu.is_some_and(|m| m.contains(x, y)) {
+        return Some(StripPart::Menu);
+    }
+    if let Some((b, _)) = l.buttons.iter().find(|(_, r)| r.contains(x, y)) {
+        return Some(StripPart::Button(*b));
+    }
+    Some(if l.name.is_some_and(|n| n.contains(x, y)) {
+        StripPart::Name
+    } else if over_item {
+        StripPart::Item
+    } else {
+        StripPart::Empty
+    })
+}
+
+/// What a double click where Windows answers caption does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StripDoubleClick {
+    /// Edit Window Title (`iTermTabBarDoubleClickAtPointInWindow:`, `RTV:2213-2219`).
+    EditName,
+    /// The title bar's own double click (maximize or restore).
+    TitleBar,
+}
+
+/// A double click at the client point (`x`, `y`): on the window name it edits the window title,
+/// elsewhere it is the title bar's (`iTermTabBarControlView.m:418-433`).
+pub fn strip_double_click(l: &Layout, x: f32, y: f32) -> StripDoubleClick {
+    if strip_part(l, x, y, false) == Some(StripPart::Name) {
+        StripDoubleClick::EditName
+    } else {
+        StripDoubleClick::TitleBar
+    }
 }
 
 /// `text` cut to `room` pixels with a trailing ellipsis; empty when not even the ellipsis fits.
@@ -147,6 +211,8 @@ pub enum Event {
     Menu(bool),
     /// A right click where Windows answers caption, at this client point (`strip_right_click`).
     RightClick(i32, i32),
+    /// A double click on the window name (`strip_double_click`).
+    EditName,
 }
 
 /// The button a release clicks: the one pressed and let go over the same button.
@@ -354,32 +420,22 @@ pub enum Hit {
     Close,
 }
 
-/// The answer for the client point (`x`, `y`): the top resize border first, then a button, then
-/// the strip (`over_tab`: the point is over a tab or a button of the tab bar, which stay client).
+/// The answer for the client point (`x`, `y`) (`strip_part`): the top resize border first, then
+/// the menu button (client) and the window buttons, then the strip (`over_tab`: the point is over
+/// a tab or a button of the tab bar, which stay client). The name and the empty strip drag.
 pub fn hit(l: &Layout, x: f32, y: f32, over_tab: bool) -> Hit {
     let in_drag_region = l.drag_regions.iter().any(|r| r.contains(x, y));
-    if !l.bar.contains(x, y) {
+    match strip_part(l, x, y, over_tab) {
         // A bottom bar's edge strip lies outside the top strip.
-        return if in_drag_region { Hit::Caption } else { Hit::Client };
-    }
-    if !l.maximized && y < l.resize_top {
-        return Hit::Top;
-    }
-    if l.menu.is_some_and(|m| m.contains(x, y)) {
-        return Hit::Client;
-    }
-    if let Some((b, _)) = l.buttons.iter().find(|(_, r)| r.contains(x, y)) {
-        return match b {
-            Button::Minimize => Hit::Min,
-            Button::Maximize => Hit::Max,
-            Button::Close => Hit::Close,
-        };
-    }
-    // The edge strip moves the window even over a tab (the bar takes no mouse downs there).
-    if over_tab && !in_drag_region {
-        Hit::Client
-    } else {
-        Hit::Caption
+        None if in_drag_region => Hit::Caption,
+        None | Some(StripPart::Menu) => Hit::Client,
+        Some(StripPart::Top) => Hit::Top,
+        Some(StripPart::Button(Button::Minimize)) => Hit::Min,
+        Some(StripPart::Button(Button::Maximize)) => Hit::Max,
+        Some(StripPart::Button(Button::Close)) => Hit::Close,
+        // The edge strip moves the window even over a tab (the bar takes no mouse downs there).
+        Some(StripPart::Item) if !in_drag_region => Hit::Client,
+        Some(StripPart::Item | StripPart::Name | StripPart::Empty) => Hit::Caption,
     }
 }
 
@@ -727,28 +783,51 @@ mod tests {
         assert_eq!(name_width(60.0, 30.0), 0.0);
         assert_eq!(name_width(0.0, 100.0), 0.0);
         assert_eq!(name_width(300.0, 44.0), 44.0);
+        // The minimum gates truncation, not slack (`RTV:661-670`): a name that fits whole shows.
+        assert_eq!(name_width(30.0, 40.0), 30.0);
+        assert_eq!(name_width(44.0, 44.0), 44.0);
+        assert_eq!(name_width(41.0, 40.0), 0.0, "cut below the minimum: hidden");
+        assert_eq!(name_width(30.0, 0.0), 0.0);
     }
 
     #[test]
     fn window_name_allowance_follows_the_tabs() {
         // 800 wide, 3 tabs of at least 75, margins 6 + 14 at scale 1: 800 - 225 - 20.
-        assert_eq!(name_allowance(800.0, 3, 75.0, 1.0), 555.0);
+        assert_eq!(name_allowance(800.0, 3, 75.0, None, 1.0), 555.0);
         // Scaled by 2: the margins and the tabs' minimum are pixels already for the minimum.
-        assert_eq!(name_allowance(1600.0, 3, 150.0, 2.0), 1600.0 - 450.0 - 40.0);
+        assert_eq!(name_allowance(1600.0, 3, 150.0, None, 2.0), 1600.0 - 450.0 - 40.0);
         // The tabs take everything: nothing is left, never negative.
-        assert_eq!(name_allowance(100.0, 3, 75.0, 1.0), 0.0);
+        assert_eq!(name_allowance(100.0, 3, 75.0, None, 1.0), 0.0);
+        // A scrollable bar needs one scrollable tab at most, not every tab (`PSM:3085-3090`).
+        assert_eq!(name_allowance(800.0, 10, 75.0, Some(120.0), 1.0), 800.0 - 120.0 - 20.0);
+        assert_eq!(name_allowance(800.0, 10, 75.0, None, 1.0), 30.0, "a bar that does not scroll counts them all");
+        assert_eq!(name_allowance(800.0, 1, 75.0, Some(120.0), 1.0), 800.0 - 75.0 - 20.0, "never more than all of them");
     }
 
+    /// The name is painted over the strip and its clicks belong to the bar underneath
+    /// (`RTV:358-361`): a press there drags the window like the empty strip, and only a double
+    /// click on it edits the window title (`RTV:2213-2219`, `iTermTabBarControlView.m:418-433`);
+    /// a double click elsewhere on the strip stays the title bar's.
     #[test]
-    fn window_name_stays_client_for_the_click() {
+    fn window_name_drags_and_edits_on_double_click() {
         let mut l = layout(1000.0, 38.0, 1.0, 75.0, 0.0, 60.0, 0.0, 8.0, false);
         l.menu = None;
         let n = l.name.unwrap();
-        assert_eq!(hit(&l, n.x + 5.0, 20.0, true), Hit::Client);
-        assert_eq!(name_hit(&l, n.x + 5.0, 20.0), true);
-        assert_eq!(name_hit(&l, n.x + n.w + 1.0, 20.0), false);
+        assert_eq!(strip_part(&l, n.x + 5.0, 20.0, false), Some(StripPart::Name));
+        assert_eq!(hit(&l, n.x + 5.0, 20.0, false), Hit::Caption, "a press on the name drags the window");
+        assert_eq!(hit(&l, n.x + 5.0, 20.0, true), Hit::Caption, "whatever the client rects say");
+        assert_eq!(strip_double_click(&l, n.x + 5.0, 20.0), StripDoubleClick::EditName);
+        assert_eq!(strip_double_click(&l, n.x + n.w + 1.0, 20.0), StripDoubleClick::TitleBar);
+        assert_eq!(strip_double_click(&l, 500.0, 20.0), StripDoubleClick::TitleBar);
+        assert_eq!(strip_double_click(&l, n.x + 5.0, 3.0), StripDoubleClick::TitleBar, "the resize edge above it");
         let none = layout(1000.0, 38.0, 1.0, 75.0, 0.0, 0.0, 0.0, 8.0, false);
-        assert_eq!(name_hit(&none, 10.0, 20.0), false);
+        assert_eq!(strip_double_click(&none, 10.0, 20.0), StripDoubleClick::TitleBar);
+        // One classification for the rest of the strip.
+        assert_eq!(strip_part(&l, 500.0, 20.0, true), Some(StripPart::Item));
+        assert_eq!(strip_part(&l, 500.0, 20.0, false), Some(StripPart::Empty));
+        assert_eq!(strip_part(&l, 990.0, 20.0, false), Some(StripPart::Button(Button::Close)));
+        assert_eq!(strip_part(&l, 500.0, 3.0, true), Some(StripPart::Top));
+        assert_eq!(strip_part(&l, 500.0, 100.0, true), None, "below the strip");
     }
 
     #[test]

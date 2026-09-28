@@ -225,6 +225,12 @@ fn client_point(hwnd: HWND, lparam: LPARAM) -> Option<(i32, i32)> {
     (unsafe { ScreenToClient(hwnd, &mut p) } != 0).then_some((p.x, p.y))
 }
 
+/// A double click at the screen point in lparam is on the window name (`caption::strip_double_click`).
+fn name_double_click(hwnd: HWND, lparam: LPARAM) -> bool {
+    let Some((x, y)) = client_point(hwnd, lparam) else { return false };
+    STATES.with(|s| s.borrow().get(&(hwnd as isize)).and_then(|st| st.layout.as_ref()).is_some_and(|l| caption::strip_double_click(l, x as f32, y as f32) == caption::StripDoubleClick::EditName))
+}
+
 unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
     // Alt alone and F10 open the caption's menu: seen here before winit, which never hands them to
     // Windows' own menu handling while muda has the menu bar detached. The message goes on to
@@ -322,6 +328,12 @@ unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             0
         }
+        // A double click on the window name edits the window title; elsewhere on the strip it stays
+        // the title bar's (`caption::strip_double_click`).
+        WM_NCLBUTTONDBLCLK if wparam as u32 == HTCAPTION && name_double_click(hwnd, lparam) => {
+            tell(hwnd as isize, Event::EditName);
+            0
+        }
         WM_NCLBUTTONUP => {
             // Let go elsewhere: a held button is let go.
             tell(hwnd as isize, Event::Hover(None));
@@ -354,8 +366,9 @@ impl App {
         let mut l = caption::layout(width, bar_h, scale, setting, extra, 0.0, self.caption_label_w, resize_top, maximized);
         // The window name beside the tabs takes the room the tabs leave (`RTV:590-620`).
         if self.caption_name_w > 0.0 {
-            let min_tab = self.tab_settings().prefs.min_width * scale;
-            let allowance = caption::name_allowance(l.tabs.w, self.tabs.len(), min_tab, scale) / scale;
+            let prefs = self.tab_settings().prefs;
+            let scrollable = prefs.scrollable.then_some(prefs.scrollable_width * scale);
+            let allowance = caption::name_allowance(l.tabs.w, self.tabs.len(), prefs.min_width * scale, scrollable, scale) / scale;
             let name_w = caption::name_width(self.caption_name_w / scale, allowance) * scale;
             if name_w > 0.0 {
                 l = caption::layout(width, bar_h, scale, setting, extra, name_w, self.caption_label_w, resize_top, maximized);
@@ -413,13 +426,11 @@ impl App {
     }
 
     /// The rects in the strip that stay client for hit tests: each shown tab, group chip and the
-    /// bar's "+" and overflow buttons, window pixels.
+    /// bar's "+" and overflow buttons, window pixels. Not the window name: its clicks are the
+    /// strip's (`caption::strip_part`).
     fn caption_client_rects(&self) -> Vec<Rect> {
         let Some(bar) = self.tab_bar_rect().filter(|_| self.tab_position() == TabPosition::Top) else { return Vec::new() };
-        // The window name answers HTCLIENT so a click on it reaches Tandem (Edit Window Title).
-        let name = self.caption_layout().and_then(|l| l.name);
         let mut rects: Vec<Rect> = self.bar_tab_rects().into_iter().filter(|r| r.w > 0.0).collect();
-        rects.extend(name);
         rects.extend(self.bar_pills(None).into_iter().map(|p| p.rect));
         let scale = self.scale();
         rects.extend(tab_layout::add_rect_px(&self.tab_bar, self.bar_offset(), (bar.x, bar.y), scale));
@@ -517,6 +528,8 @@ impl App {
         match e {
             Event::Menu(at_cursor) => return self.show_caption_menu(at_cursor),
             Event::RightClick(x, y) => return self.caption_right_click(x as f32, y as f32),
+            // After the double click's messages are done, as iTerm2 defers it (`PT:1235-1241`).
+            Event::EditName => return self.open_title_prompt(event_loop, false),
             Event::Hover(h) => {
                 self.caption_hover = h;
                 // A button held while the pointer left it is let go.
