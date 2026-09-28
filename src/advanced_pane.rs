@@ -501,6 +501,43 @@ mod tests {
         assert_eq!(format_float(0.125), "0.125");
     }
 
+    /// Every Advanced row carries iTerm2's description (`iTermAdvancedSettingsModel.m`) with
+    /// "iTerm2" read as "Tandem": `label` is its first line and `help` the whole of it.
+    #[test]
+    fn advanced_texts_follow_iterm2() {
+        for s in schema::global().iter().filter(|s| s.tab == "Advanced") {
+            assert_eq!(s.help.split('\n').next(), Some(s.label.as_str()), "{}", s.key);
+        }
+        let text = |key: &str| {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            (s.label.as_str(), s.help.as_str())
+        };
+        assert_eq!(
+            text("statusBarHeight"),
+            ("Height of the status bar in points.", "Height of the status bar in points.\nThis will also affect the height of per-pane title bars becuase the status bar may be embedded in it. You must restart Tandem after changing this setting for it to take effect.")
+        );
+        assert_eq!(
+            text("anonymousTmuxWindowsOpenInCurrentWindow"),
+            (
+                "Where should new tmux windows not created by Tandem open?",
+                "Where should new tmux windows not created by Tandem open?\n\u{201c}Focused window\u{201d} (the default) attaches the window as a tab of whichever Tandem window currently has keyboard focus. \u{201c}Topmost session window\u{201d} attaches it to the frontmost Tandem window that already shows a tab from this tmux session, regardless of focus."
+            )
+        );
+        assert_eq!(
+            text("killJobsInServersOnQuit"),
+            ("User-initiated Quit (\u{2318}Q) of Tandem will kill all running jobs.", "User-initiated Quit (\u{2318}Q) of Tandem will kill all running jobs.\nApplies only when session restoration is on.")
+        );
+        assert_eq!(
+            text("fileDropCoprocess").1,
+            "When files are dropped into a terminal window, execute a silent coprocess.\nThis is an interpolated string. Use \\(filenames) to reference the shell-quoted, space-delimited full paths to the dropped files. If this preference is empty, the filenames get pasted instead."
+        );
+        assert_eq!(text("disableTmuxWindowResizing"), ("Don't automatically resize tmux windows", "Don't automatically resize tmux windows"));
+        // iTerm2's description ends in a newline with nothing after it.
+        assert_eq!(text("PasteHistoryMaxOptions").1, "Number of entries to save in Paste History.\n");
+        // The Windows folder stands in for iTerm2's ~/.config/iterm2.
+        assert_eq!(text("PreferredBaseDir").1, "Folder for config files. There must not be a space in the path.\nIf empty, then %APPDATA%\\Tandem will be the default location.");
+    }
+
     #[test]
     fn texts_follow_iterm2() {
         assert_eq!(ONLY_NON_DEFAULT, "Show only non-default values");
