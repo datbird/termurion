@@ -541,7 +541,7 @@ pub fn migrate_legacy_headers(g: &mut Globals) -> bool {
 /// "Import from iTerm2..." may have replaced the manual models and the legacy headers, so the
 /// migration runs again over them. It fills only missing or empty header lists, as iTerm2's does.
 pub fn migrate_after_import(g: &mut Globals) -> bool {
-    g.values.remove(MIGRATION_FLAG);
+    g.set(MIGRATION_FLAG, Value::Boolean(false));
     migrate_legacy_headers(g)
 }
 
@@ -933,5 +933,19 @@ mod tests {
         assert!(migrate_after_import(&mut imported));
         assert_eq!(named(&read(&imported), "a").custom_headers, [("X-Key".to_string(), "1".to_string())]);
         assert!(imported.bool(MIGRATION_FLAG));
+
+        // An entry that is not a table survives unchanged; a table whose name is not a string
+        // is still a dictionary to iTerm2, so it gets the headers and keeps everything else
+        // (`iTermMigrationHelper.m:483-498`).
+        let mut odd = globals_with(r#"["loose", 7, {name=7, url="u", extra="kept"}, {name="a", url="u"}]"#);
+        odd.set(ai::CUSTOM_HEADERS_ENABLED, Value::Boolean(true));
+        odd.set(ai::CUSTOM_HEADERS, value(r#"[{name="X-Key", value="1"}]"#));
+        assert!(migrate_legacy_headers(&mut odd));
+        let Some(Value::Array(after)) = odd.get(ai::MANUAL_MODELS) else { panic!("configurations kept") };
+        assert_eq!(after.len(), 4);
+        assert_eq!(after[0], Value::String("loose".into()));
+        assert_eq!(after[1], Value::Integer(7));
+        assert_eq!(after[2], value(r#"{name=7, url="u", extra="kept", customHeaders=[{name="X-Key", value="1"}]}"#));
+        assert_eq!(named(&read(&odd), "a").custom_headers, [("X-Key".to_string(), "1".to_string())]);
     }
 }

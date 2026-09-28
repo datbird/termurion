@@ -132,11 +132,12 @@ pub fn from_dynamic_json(text: &str) -> Result<Vec<Profile>, String> {
 }
 
 /// The global settings (iTerm2 user defaults) in a com.googlecode.iterm2.plist, for the
-/// keys Tandem's global schema knows. Other keys are left out.
 /// Settings that stand between a person and an AI request; a person opts in again on Windows,
 /// so import never brings them, even from a hand-edited plist (Review Focus 3).
 pub const NEVER_IMPORTED: [&str; 3] = ["EnableAI", "AICompletions", "NoSyncAIRequestConsent"];
 
+/// The global settings (iTerm2 user defaults) in a com.googlecode.iterm2.plist, for the
+/// keys Tandem's global schema knows. Other keys are left out.
 pub fn globals_from_file(path: &Path) -> Result<Vec<(String, Value)>, String> {
     let root = plist::Value::from_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let dict = root.as_dictionary().ok_or_else(|| format!("{}: not a settings plist", path.display()))?;
