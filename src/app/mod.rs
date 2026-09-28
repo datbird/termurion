@@ -367,6 +367,9 @@ pub struct App {
     /// The width in pixels of the window switch label's slot in the caption (its text measured
     /// plus padding), 0 without one; kept by `sync_caption_label` since layout cannot measure.
     caption_label_w: f32,
+    /// The window name's text measured in pixels (its natural width), 0 without a name; kept by
+    /// `sync_caption_label`.
+    caption_name_w: f32,
     /// The current window's frame before a vertical Window > Zoom, which the next Zoom
     /// restores (a full Zoom maximizes, and Windows keeps that frame itself).
     zoom_restore: Option<Rect>,
@@ -1182,6 +1185,7 @@ pub fn run() {
         caption_hover: None,
         caption_pressed: None,
         caption_label_w: 0.0,
+        caption_name_w: 0.0,
         zoom_restore: None,
         belt: Default::default(),
         tool_gen: 0,
@@ -3688,6 +3692,10 @@ impl App {
         // The caption's menu button pops the whole menu (the native bar cannot sit under the strip).
         if button == MouseButton::Left && self.caption_layout().and_then(|l| l.menu).is_some_and(|m| m.contains(x, y)) {
             return self.show_caption_menu(false);
+        }
+        // A click on the window name beside the tabs edits the window title (`PT:1235-1241`).
+        if button == MouseButton::Left && self.caption_layout().is_some_and(|l| crate::caption::name_hit(&l, x, y)) {
+            return self.open_title_prompt(event_loop, false);
         }
         // The side bar's drag handle, on its inner edge, before its rows (`RTV:1860-1895`).
         if button == MouseButton::Left && self.side_handle().is_some_and(|h| h.contains(x, y)) {

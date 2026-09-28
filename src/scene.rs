@@ -1497,6 +1497,19 @@ pub fn caption_title(frame: &mut Frame, text: &str, rect: Rect, width: f32, pal:
     caption_row(frame, text, x, rect, crate::tab_theme::over(pal.bar, pal.text_selected), pal, font_scale, line);
 }
 
+/// The window name beside the tabs: left-aligned in `rect` at `NAME_ALPHA` over the bar in the
+/// selected text color, cut with an ellipsis to the rect's width (`measure` gives a text's pixels).
+#[allow(clippy::too_many_arguments)]
+pub fn caption_name(frame: &mut Frame, text: &str, rect: Rect, measure: &mut dyn FnMut(&str) -> f32, pal: &crate::tab_theme::TabPalette, _scale: f32, font_scale: f32, line: f32) {
+    let text = crate::caption::fit_name(text, rect.w, measure);
+    if text.is_empty() {
+        return;
+    }
+    let full = crate::tab_theme::over(pal.bar, pal.text_selected);
+    let color = crate::tab_theme::over(pal.bar, crate::tab_theme::Fill { color: full, alpha: crate::caption::NAME_ALPHA });
+    caption_row(frame, &text, rect.x, rect, color, pal, font_scale, line);
+}
+
 /// The window switch label (R11) right-aligned in `rect` (`caption::layout`'s shortcut, the
 /// measured `width` plus padding, half of it on each side), in the unselected text color.
 #[allow(clippy::too_many_arguments)]
@@ -3056,6 +3069,26 @@ mod tests {
         let mut wide = Frame::default();
         caption_title(&mut wide, "vim", rect, 900.0, &pal, 1.0, 0.1, 20.0);
         assert_eq!(wide.rows[0].x, 0.0);
+    }
+
+    /// The window name beside the tabs: left-aligned in its rect at alpha 0.55 over the bar, cut with
+    /// an ellipsis to the rect's width.
+    #[test]
+    fn caption_name_draws_dim_and_truncated() {
+        use crate::tab_theme::{Fill, TabStyle, over};
+        let pal = caption_palette(TabStyle::Dark, true);
+        let rect = Rect { x: 6.0, y: 0.0, w: 50.0, h: 38.0 };
+        let mut m = |t: &str| t.chars().count() as f32 * 10.0;
+        let mut f = Frame::default();
+        caption_name(&mut f, "build-all", rect, &mut m, &pal, 1.0, 0.1, 20.0);
+        assert_eq!(f.rows.len(), 1);
+        assert_eq!((f.rows[0].x, f.rows[0].clip), (6.0, rect));
+        assert_eq!(f.rows[0].spans[0].text, "buil\u{2026}");
+        let full = over(pal.bar, pal.text_selected);
+        assert_eq!(f.rows[0].spans[0].color, over(pal.bar, Fill { color: full, alpha: crate::caption::NAME_ALPHA }));
+        let mut none = Frame::default();
+        caption_name(&mut none, "", rect, &mut m, &pal, 1.0, 0.1, 20.0);
+        assert!(none.rows.is_empty());
     }
 
     /// The bar draws with its palette: the material, the unselected fill, no fill for a clear

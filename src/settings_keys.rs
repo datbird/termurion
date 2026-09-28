@@ -2047,6 +2047,17 @@ mod tests {
     }
 
     #[test]
+    fn window_name_row_follows_iterm2() {
+        let row = schema::find_global("ShowWindowNameBesideTabs").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Windows"));
+        assert_eq!(row.kind, Kind::Enum);
+        assert_eq!(row.default, Some(Value::Integer(1)));
+        assert_eq!(row.label, "Show the window name beside the tabs in the Compact and Minimal themes?");
+        let choices: Vec<(Value, &str)> = row.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
+        assert_eq!(choices, [(Value::Integer(0), "Never"), (Value::Integer(1), "When a custom name is set"), (Value::Integer(2), "Always")]);
+    }
+
+    #[test]
     fn drag_region_rows_follow_iterm2() {
         for (key, label, default) in [
             ("MinimalEdgeDragSize", "In the Minimal theme, you can move the window by dragging starting in a region on the edge near the window border. This gives the size of that region.", Value::Float(12.0)),

@@ -280,7 +280,7 @@ unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 
 impl App {
     /// The current window's caption strip as `caption::layout` places it, in window pixels; None
-    /// in a window that is not Minimal or Compact. The window name (Task 8) is not laid out yet.
+    /// in a window that is not Minimal or Compact. The window name is laid out when it shows and the tabs leave room.
     pub(super) fn caption_layout(&self) -> Option<Layout> {
         let bar_h = self.caption_strip()?;
         let g = self.gpu.as_ref()?;
@@ -292,7 +292,17 @@ impl App {
         let thickness = self.hwnd().map_or((8.0 * scale).round(), frame_thickness);
         let maximized = g.window.is_maximized();
         let resize_top = caption::resize_top(thickness, maximized, g.window.is_resizable());
-        let mut l = caption::layout(g.config.width as f32, bar_h, scale, setting, extra, 0.0, self.caption_label_w, resize_top, maximized);
+        let width = g.config.width as f32;
+        let mut l = caption::layout(width, bar_h, scale, setting, extra, 0.0, self.caption_label_w, resize_top, maximized);
+        // The window name beside the tabs takes the room the tabs leave (`RTV:590-620`).
+        if self.caption_name_w > 0.0 {
+            let min_tab = self.tab_settings().prefs.min_width * scale;
+            let allowance = caption::name_allowance(l.tabs.w, self.tabs.len(), min_tab, scale) / scale;
+            let name_w = caption::name_width(self.caption_name_w / scale, allowance) * scale;
+            if name_w > 0.0 {
+                l = caption::layout(width, bar_h, scale, setting, extra, name_w, self.caption_label_w, resize_top, maximized);
+            }
+        }
         // The native menu bar cannot sit under the strip: its button opens the menu instead.
         l = caption::with_menu_button(l, scale);
         // The edge strip drags the window (Task 7, F10): filled in here so `layout` keeps its arguments.
@@ -316,23 +326,42 @@ impl App {
     /// measuring needs the renderer) and kept in `caption_label_w`.
     pub(super) fn sync_caption_label(&mut self) {
         let label = self.caption_strip().and_then(|_| self.compact_caption().1);
+        let name = self.caption_strip().and_then(|_| self.window_name());
         let scale = self.scale();
         let pt = crate::tab_theme::font_pt(self.resolved_style());
-        let w = match (label, self.gpu.as_mut()) {
-            (Some(text), Some(g)) => {
+        let (w, name_w) = match self.gpu.as_mut() {
+            Some(g) => {
                 let row_scale = pt * scale / g.renderer.font_px().max(1.0);
-                (g.renderer.prose_width(&text, false, row_scale) + 8.0 * scale).ceil()
+                let w = label.map_or(0.0, |text| (g.renderer.prose_width(&text, false, row_scale) + 8.0 * scale).ceil());
+                (w, name.map_or(0.0, |text| g.renderer.prose_width(&text, false, row_scale).ceil()))
             }
-            _ => 0.0,
+            None => (0.0, 0.0),
         };
         self.caption_label_w = w;
+        self.caption_name_w = name_w;
+    }
+
+    /// The window name that shows beside the tabs (`ShowWindowNameBesideTabs`), None when the
+    /// setting, the window or the bar rules it out. The custom name is Edit Window Title's format
+    /// evaluated, and only while that format is set (`PT:13636-13639`); the automatic name is the
+    /// window's title without its number.
+    pub(super) fn window_name(&self) -> Option<String> {
+        let top_bar = self.tab_bar_visible() && self.tab_position() == TabPosition::Top;
+        let mode = caption::name_mode(self.globals.int("ShowWindowNameBesideTabs"));
+        let focused = self.tabs.get(self.active).map(|t| t.focused);
+        let custom = self.win_title.as_deref().filter(|f| !f.is_empty()).map(|f| self.window_title_text(f, focused));
+        let automatic = if mode == caption::NameMode::Always && self.compact_window() { self.caption_base() } else { String::new() };
+        caption::name_beside_tabs(mode, self.compact_window(), self.full_screen(), top_bar, custom.as_deref(), &automatic)
     }
 
     /// The rects in the strip that stay client for hit tests: each shown tab, group chip and the
     /// bar's "+" and overflow buttons, window pixels.
     fn caption_client_rects(&self) -> Vec<Rect> {
         let Some(bar) = self.tab_bar_rect().filter(|_| self.tab_position() == TabPosition::Top) else { return Vec::new() };
+        // The window name answers HTCLIENT so a click on it reaches Tandem (Edit Window Title).
+        let name = self.caption_layout().and_then(|l| l.name);
         let mut rects: Vec<Rect> = self.bar_tab_rects().into_iter().filter(|r| r.w > 0.0).collect();
+        rects.extend(name);
         rects.extend(self.bar_pills(None).into_iter().map(|p| p.rect));
         let scale = self.scale();
         rects.extend(tab_layout::add_rect_px(&self.tab_bar, self.bar_offset(), (bar.x, bar.y), scale));
@@ -400,6 +429,13 @@ impl App {
         let (title, label) = self.compact_caption();
         if let (Some(s), Some(text)) = (l.shortcut, label) {
             scene::caption_shortcut(frame, &text, s, s.w - 8.0 * scale, &pal, scale, font_scale, cell.1);
+        }
+        if let (Some(n), Some(text)) = (l.name, self.window_name()) {
+            let row_scale = pal.font_pt * scale / font_px;
+            if let Some(g) = self.gpu.as_mut() {
+                let mut measure = |t: &str| g.renderer.prose_width(t, false, row_scale);
+                scene::caption_name(frame, &text, n, &mut measure, &pal, scale, font_scale, cell.1);
+            }
         }
         let top_bar = self.tab_bar_visible() && self.tab_position() == TabPosition::Top;
         if !top_bar && !title.is_empty() {

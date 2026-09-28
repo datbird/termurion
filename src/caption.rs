@@ -11,9 +11,13 @@ use crate::tab_theme::TabStyle;
 pub const BUTTON_W: f32 = 46.0;
 /// `CompactTabBarStoplightButtonsWidth`'s default: the width iTerm2 reserves for its stoplights.
 const REFERENCE_SETTING: f32 = 75.0;
-/// The window name's margins in points (`RTV:54-70`).
-const NAME_LEFT: f32 = 6.0;
-const NAME_RIGHT: f32 = 14.0;
+/// The window name's metrics in points (`RTV:54-70`): margins, the widest and narrowest it gets,
+/// and the alpha it draws at over the bar.
+pub const NAME_LEFT: f32 = 6.0;
+pub const NAME_RIGHT: f32 = 14.0;
+pub const NAME_MAX: f32 = 180.0;
+pub const NAME_MIN: f32 = 44.0;
+pub const NAME_ALPHA: f32 = 0.55;
 
 /// The caption's menu button in points: the native menu bar cannot sit under the strip, so the
 /// button pops the whole menu instead.
@@ -54,6 +58,74 @@ pub struct Layout {
     /// The resize border along the top, in pixels: the frame thickness, 0 when maximized.
     pub resize_top: f32,
     pub maximized: bool,
+}
+
+/// `ShowWindowNameBesideTabs` (`AS:706`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NameMode {
+    Never,
+    WhenCustom,
+    Always,
+}
+
+/// The mode of the stored value; anything unknown is the default, When a custom name is set.
+pub fn name_mode(v: i64) -> NameMode {
+    match v {
+        0 => NameMode::Never,
+        2 => NameMode::Always,
+        _ => NameMode::WhenCustom,
+    }
+}
+
+/// The name shown beside the tabs (`rootTerminalViewWindowNameBesideTabs`, `PT:1203-1233`): None in
+/// full screen, in a window that is not compact, when no top bar shows, and for Never; the custom
+/// name for When custom; the custom name, else the automatic title, for Always. `custom` is the
+/// evaluated Edit Window Title text, Some only while its format is set. An empty name shows nothing.
+pub fn name_beside_tabs(mode: NameMode, compact_window: bool, full_screen: bool, top_bar_visible: bool, custom: Option<&str>, automatic: &str) -> Option<String> {
+    if full_screen || !compact_window || !top_bar_visible {
+        return None;
+    }
+    let name = match mode {
+        NameMode::Never => return None,
+        NameMode::WhenCustom => custom?,
+        NameMode::Always => custom.unwrap_or(automatic),
+    };
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// The name's width (`natural`, its text's measured width) within the `allowance` the tabs leave,
+/// in one unit: at most `NAME_MAX`, and 0 (no name) when the allowance is under `NAME_MIN`.
+pub fn name_width(natural: f32, allowance: f32) -> f32 {
+    if natural <= 0.0 || allowance < NAME_MIN {
+        return 0.0;
+    }
+    natural.min(NAME_MAX).min(allowance)
+}
+
+/// The room the tabs leave the name (`RTV:590-620`): the tab area's width less every tab's minimum
+/// and the name's two margins; pixels, `min_tab_w` in pixels, never negative.
+pub fn name_allowance(tabs_w: f32, tab_count: usize, min_tab_w: f32, scale: f32) -> f32 {
+    (tabs_w - tab_count as f32 * min_tab_w - (NAME_LEFT + NAME_RIGHT) * scale).max(0.0)
+}
+
+/// Whether a click at (`x`, `y`) is on the name.
+pub fn name_hit(l: &Layout, x: f32, y: f32) -> bool {
+    l.name.is_some_and(|n| n.contains(x, y))
+}
+
+/// `text` cut to `room` pixels with a trailing ellipsis; empty when not even the ellipsis fits.
+pub fn fit_name(text: &str, room: f32, measure: &mut dyn FnMut(&str) -> f32) -> String {
+    if text.is_empty() || measure(text) <= room {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    for n in (0..chars.len()).rev() {
+        let cut: String = chars[..n].iter().collect::<String>() + "\u{2026}";
+        if measure(&cut) <= room {
+            return cut;
+        }
+    }
+    String::new()
 }
 
 /// The room reserved at the right for the buttons: their width and the setting's difference from
@@ -467,5 +539,63 @@ mod tests {
     #[test]
     fn caption_glyphs_are_segoe_fluent() {
         assert_eq!((MINIMIZE_GLYPH, MAXIMIZE_GLYPH, RESTORE_GLYPH, CLOSE_GLYPH), ('\u{E921}', '\u{E922}', '\u{E923}', '\u{E8BB}'));
+    }
+
+    #[test]
+    fn window_name_beside_tabs_follows_iterm2() {
+        assert_eq!(name_mode(0), NameMode::Never);
+        assert_eq!(name_mode(1), NameMode::WhenCustom);
+        assert_eq!(name_mode(2), NameMode::Always);
+        assert_eq!(name_mode(7), NameMode::WhenCustom);
+        assert_eq!(name_mode(-1), NameMode::WhenCustom);
+        let s = |x: &str| Some(x.to_string());
+        assert_eq!(name_beside_tabs(NameMode::WhenCustom, true, false, true, Some("build"), "zsh"), s("build"));
+        assert_eq!(name_beside_tabs(NameMode::WhenCustom, true, false, true, None, "zsh"), None);
+        assert_eq!(name_beside_tabs(NameMode::Always, true, false, true, None, "zsh"), s("zsh"));
+        assert_eq!(name_beside_tabs(NameMode::Always, true, false, true, Some("b"), "zsh"), s("b"));
+        assert_eq!(name_beside_tabs(NameMode::Never, true, false, true, Some("b"), "zsh"), None);
+        assert_eq!(name_beside_tabs(NameMode::Always, false, false, true, Some("b"), "zsh"), None, "a window with a title bar");
+        assert_eq!(name_beside_tabs(NameMode::Always, true, true, true, Some("b"), "zsh"), None, "full screen");
+        assert_eq!(name_beside_tabs(NameMode::Always, true, false, false, Some("b"), "zsh"), None, "the title already fills the bar");
+        assert_eq!(name_beside_tabs(NameMode::Always, true, false, true, None, ""), None, "an empty automatic title shows nothing");
+        assert_eq!((NAME_LEFT, NAME_RIGHT, NAME_MAX, NAME_MIN, NAME_ALPHA), (6.0, 14.0, 180.0, 44.0, 0.55));
+        assert_eq!(name_width(60.0, 180.0), 60.0);
+        assert_eq!(name_width(300.0, 180.0), 180.0);
+        assert_eq!(name_width(300.0, 100.0), 100.0);
+        assert_eq!(name_width(60.0, 30.0), 0.0);
+        assert_eq!(name_width(0.0, 100.0), 0.0);
+        assert_eq!(name_width(300.0, 44.0), 44.0);
+    }
+
+    #[test]
+    fn window_name_allowance_follows_the_tabs() {
+        // 800 wide, 3 tabs of at least 75, margins 6 + 14 at scale 1: 800 - 225 - 20.
+        assert_eq!(name_allowance(800.0, 3, 75.0, 1.0), 555.0);
+        // Scaled by 2: the margins and the tabs' minimum are pixels already for the minimum.
+        assert_eq!(name_allowance(1600.0, 3, 150.0, 2.0), 1600.0 - 450.0 - 40.0);
+        // The tabs take everything: nothing is left, never negative.
+        assert_eq!(name_allowance(100.0, 3, 75.0, 1.0), 0.0);
+    }
+
+    #[test]
+    fn window_name_stays_client_for_the_click() {
+        let mut l = layout(1000.0, 38.0, 1.0, 75.0, 0.0, 60.0, 0.0, 8.0, false);
+        l.menu = None;
+        let n = l.name.unwrap();
+        assert_eq!(hit(&l, n.x + 5.0, 20.0, true), Hit::Client);
+        assert_eq!(name_hit(&l, n.x + 5.0, 20.0), true);
+        assert_eq!(name_hit(&l, n.x + n.w + 1.0, 20.0), false);
+        let none = layout(1000.0, 38.0, 1.0, 75.0, 0.0, 0.0, 0.0, 8.0, false);
+        assert_eq!(name_hit(&none, 10.0, 20.0), false);
+    }
+
+    #[test]
+    fn window_name_truncates_with_an_ellipsis() {
+        let mut m = |t: &str| t.chars().count() as f32 * 10.0;
+        assert_eq!(fit_name("build", 50.0, &mut m), "build");
+        assert_eq!(fit_name("build-all", 50.0, &mut m), "buil\u{2026}");
+        assert_eq!(fit_name("build-all", 10.0, &mut m), "\u{2026}");
+        assert_eq!(fit_name("build-all", 5.0, &mut m), "");
+        assert_eq!(fit_name("", 50.0, &mut m), "");
     }
 }

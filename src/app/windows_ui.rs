@@ -74,6 +74,7 @@ pub(super) struct WinSlot {
     caption_hover: Option<crate::caption::Button>,
     caption_pressed: Option<crate::caption::Button>,
     caption_label_w: f32,
+    caption_name_w: f32,
     zoom_restore: Option<Rect>,
     mru: Mru,
     mru_mods: Option<Mods>,
@@ -149,6 +150,7 @@ impl WinSlot {
             caption_hover: None,
             caption_pressed: None,
             caption_label_w: 0.0,
+            caption_name_w: 0.0,
             zoom_restore: None,
             mru: Mru::default(),
             mru_mods: None,
@@ -239,6 +241,7 @@ impl App {
         swap(&mut self.caption_hover, &mut s.caption_hover);
         swap(&mut self.caption_pressed, &mut s.caption_pressed);
         swap(&mut self.caption_label_w, &mut s.caption_label_w);
+        swap(&mut self.caption_name_w, &mut s.caption_name_w);
         swap(&mut self.zoom_restore, &mut s.zoom_restore);
         swap(&mut self.mru, &mut s.mru);
         swap(&mut self.mru_mods, &mut s.mru_mods);
@@ -649,7 +652,7 @@ impl App {
 
     /// The current window's title before its number: the title rules, then the tmux client's
     /// name when the number shows (`PT:3105-3122`).
-    fn caption_base(&self) -> String {
+    pub(super) fn caption_base(&self) -> String {
         let focused = self.tabs.get(self.active).map(|t| t.focused);
         // The gate is the FORMAT being non-empty, not its evaluated text (`PT:13636-13639`).
         let custom = self.win_title.as_deref().filter(|f| !f.is_empty()).map(|f| self.window_title_text(f, focused));
@@ -794,6 +797,7 @@ impl WinSlot {
             caption_hover: None,
             caption_pressed: None,
             caption_label_w: 0.0,
+            caption_name_w: 0.0,
             zoom_restore: None,
             mru: Mru::default(),
             mru_mods: None,

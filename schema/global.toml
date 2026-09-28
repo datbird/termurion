@@ -2993,6 +2993,16 @@ default = 38.0
 help = "Tab bar height (points) for the Minimal theme.\nThe default is 38. Use 22 to match the compact theme's height."
 
 [[setting]]
+key = "ShowWindowNameBesideTabs"
+tab = "Advanced"
+section = "Windows"
+label = "Show the window name beside the tabs in the Compact and Minimal themes?"
+type = "enum"
+default = 1
+choices = [ { value = 0, label = "Never" }, { value = 1, label = "When a custom name is set" }, { value = 2, label = "Always" } ]
+help = "Show the window name beside the tabs in the Compact and Minimal themes?\nThose themes have no title bar, so the window name is otherwise only visible when the tab bar is hidden. \u201cWhen a custom name is set\u201d (the default) shows it only after you name the window with Window > Edit Window Title, leaving windows you have not named unchanged. \u201cAlways\u201d also shows the automatic title. This has no effect in themes that have a title bar."
+
+[[setting]]
 key = "ExtraSpaceBeforeCompactTopTabBar"
 tab = "Advanced"
 section = "Windows"
