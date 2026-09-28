@@ -88,6 +88,13 @@ impl Reducer {
                     self.mode = match b {
                         0x40..=0x7e => Mode::Ground,
                         0x1b => Mode::Esc,
+                        // CAN and SUB cancel the sequence.
+                        0x18 | 0x1a => Mode::Ground,
+                        // A control inside a sequence still runs (a lone CR or LF is a piece).
+                        13 | 10 => {
+                            out.push(if b == 13 { "\r" } else { "\n" }.to_string());
+                            Mode::Csi
+                        }
                         _ => Mode::Csi,
                     }
                 }
@@ -201,5 +208,15 @@ mod tests {
             r.feed(&all[..k]);
             r.feed(&all[k..]);
         }
+    }
+
+    #[test]
+    fn controls_inside_a_csi_follow_iterm2() {
+        // A LF inside a CSI is its own piece and the sequence goes on; CAN cancels it.
+        let mut r = Reducer::default();
+        assert_eq!(r.feed(b"a\x1b[1\n2mb"), vec!["a", "\n", "b"]);
+        assert_eq!(r.feed(b"a\x1b[1\x18b"), vec!["a", "b"], "CAN ends the sequence");
+        assert_eq!(r.feed(b"a\x1b[1\x1ab"), vec!["a", "b"], "SUB too");
+        assert_eq!(r.feed(b"\x1b[1\r\tmx"), vec!["\r", "x"], "a CR is a piece, a tab is dropped");
     }
 }
