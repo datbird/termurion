@@ -823,6 +823,13 @@ pub struct App {
     /// The chats' permission overrides (app-wide, never swapped); every chat's stored
     /// permissions are merged in when the database opens.
     ai_overrides: crate::ai_permissions::Overrides,
+    /// The text an AI typed onto each pane's prompt line without submitting it (ruling
+    /// R12cd-2), app-wide, the one accumulator 12f's orchestration typing shares.
+    #[allow(dead_code)] // Read by the tool arms `ai_run_tool` (Task 11) reaches.
+    ai_staged: HashMap<PaneId, crate::ai_actions::Staged>,
+    /// Each pane's Get-Help running on a worker; `ai_help_tick` collects the answer.
+    #[allow(dead_code)] // Filled by `get_man_page`, which `ai_run_tool` (Task 11) reaches.
+    ai_helps: HashMap<PaneId, std::sync::mpsc::Receiver<String>>,
     /// Launched scripts' processes by their Script Console entry's id (their key), the
     /// launches waiting for "Enable Python API?" to be answered, and the script whose
     /// failure notification was posted last (a click reveals its entry; a session's alert
@@ -1390,6 +1397,8 @@ pub fn run() {
         chat_db_failed: false,
         chat_broker: crate::chat_broker::Broker::new(),
         ai_overrides: crate::ai_permissions::Overrides::default(),
+        ai_staged: HashMap::new(),
+        ai_helps: HashMap::new(),
         script_procs: HashMap::new(),
         script_jobs_left: Vec::new(),
         script_after_enable: Vec::new(),

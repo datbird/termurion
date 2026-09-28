@@ -4,21 +4,34 @@
 //! file only through `ai_run_tool`, after the permission gate.
 
 use super::App;
+use crate::ai_actions::{self, FileTarget};
+use crate::ai_shell::{self, ShellKind};
 use crate::ai_terminal::{self, Facts, Outcome};
 use crate::ai_tools::Call;
+use crate::broadcast::Write;
 use crate::layout::PaneId;
 
 /// The answer to a call that reached no arm (only a browser call can, before milestone 13
 /// adds its runner). Tandem's text.
 pub(super) const NOT_AVAILABLE: &str = "This function is not available.";
 
+/// The answer of a writing tool whose session is gone. Tandem's text.
+const NO_SESSION: &str = "Error: that session is no longer open.";
+
+/// The chat's notice for a finished Get-Help (`PS:848`).
+const MANPAGE_NOTICE: &str = "manpage provided to AI.";
+
+fn done(model: impl Into<String>, notice: impl Into<String>) -> ToolStart {
+    ToolStart::Done(Outcome { model: model.into(), notice: Some(notice.into()) })
+}
+
 /// How a started tool call goes on.
-#[allow(dead_code)] // `Pending` is Task 6's, `Waiting` the 13x AI browser tools plan's.
+#[allow(dead_code)] // `Waiting` is the 13x AI browser tools plan's.
 #[derive(Debug)]
 pub(super) enum ToolStart {
     /// Answered now.
     Done(Outcome),
-    /// A Get-Help runs on a worker (Task 6); `ai_help_tick` finishes it.
+    /// A Get-Help runs on a worker; `ai_help_tick` finishes it.
     Pending,
     /// A browser call runs under this token (m13 ruling Q4); the browser tools plan records
     /// it by token and finishes it through `ai_tool_finished`. No 12c arm answers it.
@@ -82,10 +95,143 @@ impl App {
     /// arms. A call no arm handles answers `NOT_AVAILABLE` with no notice.
     #[allow(dead_code)] // Called by `ai_run_tool` (Task 11).
     pub(super) fn ai_tool_start(&mut self, pane: PaneId, call: &Call) -> ToolStart {
+        if let Some(started) = self.ai_write_tool(pane, call) {
+            return started;
+        }
         let facts = self.ai_facts(pane, call);
         match ai_terminal::answer(call, &facts) {
             Some(o) => ToolStart::Done(o),
             None => ToolStart::Done(Outcome { model: NOT_AVAILABLE.to_string(), notice: None }),
         }
+    }
+
+    /// The session's shell kind, whether it is this machine's, and its cwd: the one detector's
+    /// answer (the `shell` variable, `ai_terminal::detected_shell`), classified.
+    fn ai_shell_of(&self, pane: PaneId) -> (ShellKind, bool, Option<String>) {
+        let vars = self.variables_with(pane, false);
+        let local = super::statusbar_content::is_localhost(vars.session.get("hostname").map(String::as_str));
+        (ai_shell::shell_kind(vars.session.get("shell").map(String::as_str), local), local, vars.session.get("path").cloned())
+    }
+
+    /// The writing tools. None for a call that is not one. Every byte goes through
+    /// `user_write(pane, bytes, Write::Agent)`: never broadcast, no other writer.
+    fn ai_write_tool(&mut self, pane: PaneId, call: &Call) -> Option<ToolStart> {
+        if !matches!(call, Call::SetClipboard { .. } | Call::InsertTextAtCursor { .. } | Call::DeleteCurrentLine | Call::RestartSession | Call::GetManPage { .. } | Call::CreateFile { .. }) {
+            return None;
+        }
+        if !self.panes.contains_key(&pane) {
+            return Some(ToolStart::Done(Outcome { model: NO_SESSION.to_string(), notice: None }));
+        }
+        Some(match call {
+            // The agent's write is permission-gated; "AllowClipboardAccess" governs OSC 52 (Decision).
+            Call::SetClipboard { text } => match self.clipboard.as_mut().map(|c| c.set_text(text.clone())) {
+                Some(Ok(())) => done(ai_actions::COPIED, "Clipboard contents changed by AI."),
+                Some(Err(e)) => done(format!("Error: {e}"), "Clipboard contents changed by AI."),
+                None => done("Error: the clipboard is not available.", "Clipboard contents changed by AI."),
+            },
+            Call::InsertTextAtCursor { text } => match ai_actions::insert_plan(text) {
+                Err(answer) if answer == ai_actions::LINE_END_REFUSED => done(answer, ai_actions::LINE_END_NOTICE),
+                Err(answer) => done(answer, ai_actions::ESCAPE_NOTICE),
+                Ok(typed) => {
+                    self.user_write(pane, typed.as_bytes(), Write::Agent);
+                    let prompts = self.panes.get(&pane).map_or(0, |p| p.own().prompts_seen());
+                    self.ai_staged.entry(pane).or_default().push(prompts, &typed);
+                    done(ai_actions::inserted(typed.chars().count()), "Text inserted by AI.")
+                }
+            },
+            Call::DeleteCurrentLine => {
+                self.user_write(pane, ai_actions::DELETE_LINE, Write::Agent);
+                self.ai_staged.remove(&pane);
+                done(ai_actions::DONE, "Current line deleted by AI.")
+            }
+            Call::RestartSession => {
+                // `api_restart_session`'s rule (`isRestartable`).
+                let restartable = self.panes.get(&pane).is_some_and(|p| p.tmux_io().is_none() && !p.gateway && !p.dvr.read_only);
+                if !restartable {
+                    return Some(done(ai_actions::NOT_RESTARTABLE, "AI tried to restart the session but it is not restartable."));
+                }
+                self.enter_pane_window(pane);
+                self.restart_pane(pane);
+                self.ai_staged.remove(&pane);
+                self.redraw();
+                done(ai_actions::RESTARTING, "Session restarted by AI.")
+            }
+            Call::GetManPage { cmd } => {
+                let (kind, ..) = self.ai_shell_of(pane);
+                match ai_actions::man_page_plan(cmd, kind) {
+                    Some(args) => self.ai_help_start(pane, args),
+                    None => done(ai_actions::man_page_unavailable(cmd), MANPAGE_NOTICE),
+                }
+            }
+            Call::CreateFile { filename, content } => {
+                let (_, local, cwd) = self.ai_shell_of(pane);
+                let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from);
+                let Some(home) = home else { return Some(done(ai_actions::create_failed("the home folder is not known"), ai_actions::create_failed_notice(filename, "the home folder is not known"))) };
+                match ai_actions::file_target(filename, cwd.as_deref(), local, &home) {
+                    FileTarget::Refused(why) => done(why.clone(), ai_actions::create_failed_notice(filename, &why)),
+                    FileTarget::Local(path) => match std::fs::write(&path, content) {
+                        Ok(()) => {
+                            self.ai_reveal_file(&path);
+                            done("Ok", ai_actions::created_notice(filename))
+                        }
+                        Err(e) => done(ai_actions::create_failed(&e.to_string()), ai_actions::create_failed_notice(filename, &e.to_string())),
+                    },
+                }
+            }
+            _ => return None,
+        })
+    }
+
+    /// Shows the new file selected in Explorer; nothing runs it.
+    fn ai_reveal_file(&mut self, path: &std::path::Path) {
+        let mut cmd = std::process::Command::new("explorer.exe");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.raw_arg(format!("/select,{}", crate::semantic::cmd_quote(&path.to_string_lossy().replace('/', "\\"))));
+        }
+        #[cfg(not(windows))]
+        cmd.arg(path);
+        if let Err(e) = cmd.spawn() {
+            self.banners.set("action", format!("Could not show {}: {e}", path.display()));
+        }
+    }
+
+    /// Starts `get_help` on a worker thread (a first Get-Help can take seconds and must never
+    /// block the UI thread), wakes the loop when it finishes, and keeps the answer's receiver
+    /// for `ai_help_tick`. A newer Get-Help on the pane replaces the older one.
+    fn ai_help_start(&mut self, pane: PaneId, args: Vec<String>) -> ToolStart {
+        #[cfg(windows)]
+        {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let notify = self.notify.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(ai_actions::get_help(&args));
+                notify();
+            });
+            self.ai_helps.insert(pane, rx);
+            ToolStart::Pending
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (pane, args);
+            done("Error running Get-Help: PowerShell is not available.", MANPAGE_NOTICE)
+        }
+    }
+
+    /// Each finished Get-Help, polled from `ai_helps` with `try_recv`; the chat maps the pane
+    /// to its request (Task 11), as `ai_exec_tick` does for a command.
+    pub(super) fn ai_help_tick(&mut self) -> Vec<(PaneId, Outcome)> {
+        let mut finished = Vec::new();
+        for pane in self.ai_helps.keys().copied().collect::<Vec<_>>() {
+            let text = match self.ai_helps.get(&pane).map(|rx| rx.try_recv()) {
+                Some(Ok(text)) => text,
+                Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => "Error running Get-Help: the help reader stopped.".to_string(),
+                _ => continue,
+            };
+            self.ai_helps.remove(&pane);
+            finished.push((pane, Outcome { model: text, notice: Some(MANPAGE_NOTICE.to_string()) }));
+        }
+        finished
     }
 }

@@ -247,6 +247,9 @@ impl App {
     /// The chats' part of the loop; answers when it next needs to run. The agents, their
     /// commands and checks join it in later tasks.
     pub(super) fn chat_tick(&mut self) -> Option<Instant> {
+        // Task 11 hands each finished Get-Help to its chat's request; nothing starts one
+        // before `ai_run_tool` exists, so no answer is dropped here.
+        let _finished = self.ai_help_tick();
         None
     }
 }

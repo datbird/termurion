@@ -2,7 +2,7 @@
 //! the one way user input reaches sessions (the sender's domain, or the sender alone).
 
 use super::*;
-use crate::broadcast::{self, Route, TabView, View, Write};
+use crate::broadcast::{self, TabView, View, Write};
 
 impl App {
     /// The stripe tile for this display's scale (made once per scale).
@@ -36,12 +36,8 @@ impl App {
     /// User input from `sender`: to every session of its broadcast domain (the same bytes,
     /// as the sender encoded them), or to the sender alone.
     pub(super) fn user_write(&mut self, sender: PaneId, bytes: &[u8], what: Write) {
-        let targets = match broadcast::route(what) {
-            Route::Broadcast => self.broadcast.targets(&self.broadcast_view(), sender),
-            Route::Local => vec![sender],
-        };
         let gateways = self.tmux_gateways();
-        let targets = broadcast::without_gateways(targets, sender, &gateways);
+        let targets = broadcast::write_targets(&self.broadcast, &self.broadcast_view(), sender, what, &gateways);
         for t in targets {
             // A tmux gateway reads typing as its Command Menu's keys; reports and other
             // bytes would land in tmux's command stream, so they are dropped there.
