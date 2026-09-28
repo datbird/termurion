@@ -23,6 +23,7 @@ use crate::input::{self, Clicks, Wheel};
 use crate::keyroute::{self, Route};
 use crate::keys::{self, Action, AltSide, Key, KeyOptions};
 use crate::keystroke;
+use crate::tab_drag;
 use crate::tab_flash;
 use crate::tab_layout;
 use crate::tab_position::{self, TabPosition};
@@ -96,6 +97,7 @@ mod close_ui;
 mod coprocess_ui;
 mod aps_ui;
 mod windows_ui;
+mod tab_drag_ui;
 mod undo_ui;
 mod arrange_ui;
 mod restore_ui;
@@ -191,6 +193,12 @@ enum Drag {
     /// A side tab bar's drag handle: where the press was (pixels) and the bar's width then
     /// (points).
     SideBar { start_x: f32, start_width: f32 },
+    /// A left press on a tab (`tab_drag_ui`): the tab's index, where the press was (pixels),
+    /// and whether the pointer has moved far enough to drag it.
+    Tab { from: usize, start: (f32, f32), began: bool },
+    /// A left press on the "+" button, where it was (pixels): moving far enough drags the
+    /// window.
+    AddButton { start: (f32, f32) },
 }
 
 struct Gpu {
@@ -597,6 +605,15 @@ pub struct App {
     /// `SelectsTabsOnMouseDown` as it was when this window opened (iTerm2 copies it into each
     /// tab bar it makes, `iTermTabBarControlView.m:58`; a change affects new windows only).
     tab_selects_on_down: bool,
+    /// `MinimumTabDragDistance` in pixels, read once at startup (iTerm2 reads it when it makes
+    /// a tab bar, `iTermTabBarControlView.m:44`; its help asks for a restart).
+    min_tab_drag: f32,
+    /// The slot a dragged tab would drop at in this window's bar, while a tab drag is under
+    /// way over it (the drop marker).
+    tab_drop_marker: Option<usize>,
+    /// The tab bar and each tab's rect as last drawn, pixels, window coordinates (None
+    /// without a bar): where a tab dragged from another window drops (`window_bar_hit`).
+    tab_bar_drawn: Option<(Rect, Vec<Rect>)>,
     /// A side tab bar's preferred width in points: `LeftTabBarWidth` when the window opened,
     /// then the width its drag handle sets.
     side_bar_preferred: f32,
@@ -972,6 +989,7 @@ pub fn run() {
     // The first window's tab bar takes SelectsTabsOnMouseDown now; later windows at opening.
     let tab_selects_on_down = globals.bool("SelectsTabsOnMouseDown");
     let side_bar_preferred = side_bar_default(&globals);
+    let min_tab_drag = globals.int("MinimumTabDragDistance") as f32;
     // Session restoration: shells run in tandem-host so they outlive Tandem (read once:
     // a change needs a restart, as in iTerm2).
     // A second Tandem (the host serves the first) neither restores nor saves windows: the
@@ -1210,6 +1228,9 @@ pub fn run() {
         tab_seen: None,
         tab_press: None,
         tab_selects_on_down,
+        min_tab_drag,
+        tab_drop_marker: None,
+        tab_bar_drawn: None,
         side_bar_preferred,
         side_bar_scroll: 0.0,
         tab_flash: crate::tab_flash::Flash::new(),
@@ -1626,7 +1647,6 @@ impl App {
     /// cell scrolled and placed (`tab_position::rects_from_cells`), on a side bar its row as
     /// last drawn. A tab not shown (in the overflow menu, collapsed, or with no bar) is
     /// zero-size. 13d's drags and 13h's pane drop read the tabs' places here.
-    #[allow(dead_code)]
     pub(super) fn bar_tab_rects(&self) -> Vec<Rect> {
         let n = self.tabs.len();
         let zero = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
@@ -1733,11 +1753,6 @@ impl App {
     /// At each layout: the selected tab is brought into view again while it is kept there
     /// (`note_tab_changes`), and the offset stays within the tabs.
     fn follow_active_tab(&mut self) {
-        // A tab closed or moved under a held press: the press goes, so its release (or the
-        // held close button drawn) never lands on another tab.
-        if self.tab_press_moved() {
-            self.tab_press = None;
-        }
         if self.tab_keep_selected {
             self.scroll_active_tab_into_view();
         }
@@ -1755,7 +1770,6 @@ impl App {
 
     /// The "+" button in pixels, window coordinates; None while the bar hides or with
     /// `RemoveAddTabButton`. 13d drags the window by it.
-    #[allow(dead_code)]
     pub(super) fn new_tab_button_rect(&self) -> Option<Rect> {
         let bar = self.horizontal_bar_rect()?;
         tab_layout::add_rect_px(&self.tab_bar, self.tab_scroll, (bar.x, bar.y), self.scale())
@@ -1846,6 +1860,7 @@ impl App {
             MouseButton::Left => {
                 let clicks = self.count_tab_click(hit);
                 self.tab_press = Some((hit, clicks, alt, id));
+                self.tab_drag_press(hit);
                 if let Hit::Tab(i) = hit {
                     if tab_layout::press_selects(self.tab_selects_on_down, alt, clicks) {
                         self.select_tab(i);
@@ -1883,8 +1898,10 @@ impl App {
         }
         let moved = self.tab_press_moved();
         self.tab_press = None;
+        let began = self.tab_drag_began();
         // The pressed tab is no longer where it was pressed: the release acts on no tab.
         if moved {
+            self.end_tab_drag();
             self.redraw();
             return true;
         }
@@ -1902,8 +1919,15 @@ impl App {
         if down == Hit::Add && up == Some(Hit::Add) {
             self.add_tab_button();
         }
+        let clicked = tab_layout::release(Some(down), up, clicks, self.globals.bool("DoubleClickTabToEdit"), self.globals.bool("TabCloseButtonsAlwaysVisible"));
+        // A drag that began drops the tab; one that never began leaves the click.
+        if began {
+            self.tab_drag_release(event_loop);
+        } else {
+            self.end_tab_drag();
+        }
         let n = self.tabs.len();
-        match tab_layout::release(Some(down), up, clicks, self.globals.bool("DoubleClickTabToEdit"), self.globals.bool("TabCloseButtonsAlwaysVisible")) {
+        match tab_drag::after_drag(began, clicked) {
             Release::Close(i) => self.close_tab_at(i, event_loop),
             Release::Select(i) if live(i, n) => self.select_tab(i),
             Release::EditTitle(i) if live(i, n) => {
@@ -3390,6 +3414,8 @@ impl App {
                 self.save_globals();
                 self.update_side_handle_hover();
             }
+            // Its press went (the tab moved away under it): the drag ends with nothing dropped.
+            Drag::Tab { .. } | Drag::AddButton { .. } => self.tab_drop_marker = None,
             Drag::Select { pane } => {
                 let empty = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string()).map_or(true, |s| s.is_empty());
                 if empty {
@@ -3452,6 +3478,11 @@ impl App {
             Drag::SideBar { start_x, start_width } => {
                 let (start_x, start_width) = (*start_x, *start_width);
                 self.side_bar_drag(start_x, start_width, x);
+            }
+            Drag::Tab { .. } => self.tab_drag_move(x, y),
+            Drag::AddButton { start } => {
+                let start = *start;
+                self.add_button_drag(start, x, y);
             }
             Drag::Select { pane } => {
                 let pane = *pane;
@@ -3569,6 +3600,11 @@ impl App {
         let flash_over = self.tab_flash.flashing() && !self.tab_bar_takes_room();
         let mut bar_layer = Frame::default();
         let bar_frame = if flash_over { &mut bar_layer } else { &mut frame };
+        // A tab closed or moved under a held press: the press goes before the looks are made,
+        // so no other tab draws its close button held for a frame.
+        if self.tab_press_moved() {
+            self.tab_press = None;
+        }
         if let Some(area) = self.horizontal_bar_rect() {
             let w = area.w;
             let mut looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
@@ -3583,7 +3619,9 @@ impl App {
             let scrolled = (self.tab_scroll > 0.0).then(|| self.layout_tab_bar(&looks, w, self.tab_scroll));
             let scale = self.scale();
             let font_px = self.gpu.as_ref().map_or(cell.1, |g| g.renderer.font_px()).max(1.0);
-            scene::tab_bar(bar_frame, &looks, self.active, scrolled.as_ref().unwrap_or(&self.tab_bar), area, scale, scale / font_px, cell.1, self.focused && self.app_active, matches!(self.tab_press, Some((tab_layout::Hit::Overflow, _, _, _))));
+            // A dragged tab follows the pointer along the bar, drawn over the others.
+            let dragged = self.dragged_bar(scrolled.as_ref().unwrap_or(&self.tab_bar), &mut looks, area);
+            scene::tab_bar(bar_frame, &looks, self.active, dragged.as_ref().or(scrolled.as_ref()).unwrap_or(&self.tab_bar), area, scale, scale / font_px, cell.1, self.focused && self.app_active, matches!(self.tab_press, Some((tab_layout::Hit::Overflow, _, _, _))));
             self.side_rects.clear();
         } else if let Some((area, row)) = self.side_rows() {
             let looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
@@ -3599,6 +3637,8 @@ impl App {
             self.tab_hover = None;
             self.tab_tip = None;
         }
+        self.tab_bar_drawn = self.tab_bar_rect().map(|bar| (bar, self.bar_tab_rects()));
+        self.draw_drop_marker(bar_frame);
         let area = self.content_area();
         let backgrounds = self.pane_backgrounds();
         let mut block_buttons = Vec::new();

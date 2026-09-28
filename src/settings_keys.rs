@@ -1779,6 +1779,27 @@ mod tests {
     }
 
     #[test]
+    fn drag_rows_follow_iterm2() {
+        for (key, label) in [
+            ("AllowDragOfTabIntoNewWindow", "Allow a tab to be dragged and dropped outside any existing tab bar to create a new window."),
+            ("AllowDragOnAddTabButton", "Allow dragging window by the Add Tab button in the tab bar?"),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"), "{key}");
+            assert_eq!(row.kind, Kind::Bool, "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(true)), "{key}");
+            assert!(!row.inverted, "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, label), "{key}");
+        }
+        let row = schema::find_global("MinimumTabDragDistance").expect("MinimumTabDragDistance");
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"));
+        assert_eq!(row.kind, Kind::Int);
+        assert_eq!(row.default, Some(Value::Integer(10)));
+        assert_eq!(row.label, "How far must the mouse move before a tab drag is initiated?");
+        assert!(row.help.ends_with("You must restart Tandem after changing this setting for it to take effect."), "{}", row.help);
+    }
+
+    #[test]
     fn preserve_rows_follow_iterm2() {
         for (key, label) in [
             ("PreserveWindowSizeWhenTabBarVisibilityChanges", "Preserve window size when tab bar shows or hides"),

@@ -77,7 +77,7 @@ impl App {
                     if let Some(first) = self.tmux_window_panes(gw, window).first().copied() {
                         // The tab may still wait to become a window.
                         let mut pending = self.pending_windows.iter_mut().flat_map(|w| match w {
-                            windows_ui::NewWindow::Tab(t) => std::slice::from_mut(t),
+                            windows_ui::NewWindow::Tab(t) | windows_ui::NewWindow::TornOff(t, _) => std::slice::from_mut(t),
                             windows_ui::NewWindow::Tabs(ts) => ts.as_mut_slice(),
                             _ => &mut [],
                         });

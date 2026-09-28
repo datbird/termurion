@@ -245,7 +245,7 @@ impl App {
         let index = self.tabs.iter().position(|x| x.id == t.id);
         let foreground = index == Some(self.active);
         let processing = activity_ui::tab_processing(self.any_processing(&panes), foreground, self.globals.bool("HideActivityIndicator"));
-        scene::TabLook { title, subtitle, dot, color, icon, processing, number: index.map_or(0, |i| i + 1), close_pressed: false }
+        scene::TabLook { title, subtitle, dot, color, icon, processing, number: index.map_or(0, |i| i + 1), close_pressed: false, dragged: false }
     }
 
     /// Colors every pane of the tab (None: no color), as iTerm2's Tab Color does for each

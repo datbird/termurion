@@ -47,6 +47,11 @@ pub(super) struct WinSlot {
     bar_grown: (f32, f32),
     /// A side tab bar's rows as last drawn, one per tab (pixels, window coordinates).
     side_rects: Vec<Rect>,
+    /// The slot a dragged tab would drop at in this window's bar (the drop marker).
+    tab_drop_marker: Option<usize>,
+    /// The tab bar and each tab's rect as last drawn (pixels, window coordinates): where a
+    /// tab dragged from another window drops (`window_bar_hit`).
+    pub(super) tab_bar_drawn: Option<(Rect, Vec<Rect>)>,
     /// The pointer is on a side bar's drag handle (the resize pointer shows).
     side_handle_hover: bool,
     /// The tab whose tooltip the pointer is waiting on or showing, and when it settled there.
@@ -78,6 +83,11 @@ pub(super) struct WinSlot {
 }
 
 impl WinSlot {
+    /// Its Lock Size and Lock Layout.
+    pub(super) fn locks(&self) -> crate::winmodel::Locks {
+        self.win_locks
+    }
+
     /// The tab it has in front.
     pub(super) fn active_tab(&self) -> Option<&Tab> {
         self.tabs.get(self.active)
@@ -109,6 +119,8 @@ impl WinSlot {
             bar_was_visible: false,
             bar_grown: (0.0, 0.0),
             side_rects: Vec::new(),
+            tab_drop_marker: None,
+            tab_bar_drawn: None,
             side_handle_hover: false,
             tab_tip: None,
             block_buttons: Vec::new(),
@@ -189,6 +201,8 @@ impl App {
         swap(&mut self.bar_was_visible, &mut s.bar_was_visible);
         swap(&mut self.bar_grown, &mut s.bar_grown);
         swap(&mut self.side_rects, &mut s.side_rects);
+        swap(&mut self.tab_drop_marker, &mut s.tab_drop_marker);
+        swap(&mut self.tab_bar_drawn, &mut s.tab_bar_drawn);
         swap(&mut self.side_handle_hover, &mut s.side_handle_hover);
         swap(&mut self.tab_tip, &mut s.tab_tip);
         swap(&mut self.block_buttons, &mut s.block_buttons);
@@ -353,7 +367,7 @@ impl App {
             Err(e) => {
                 // A tab on its way to the new window stays where it was.
                 match first {
-                    NewWindow::Tab(tab) => self.tabs.push(tab),
+                    NewWindow::Tab(tab) | NewWindow::TornOff(tab, _) => self.tabs.push(tab),
                     NewWindow::Tabs(tabs) => self.tabs.extend(tabs),
                     NewWindow::Profile(_) | NewWindow::Arrangement(_) | NewWindow::Orphans(_) | NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..) => {}
                 }
@@ -376,7 +390,7 @@ impl App {
         self.registry.open(key(id));
         let first_guid = match &first {
             NewWindow::Profile(g) => g.clone(),
-            NewWindow::Tab(t) => self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile)),
+            NewWindow::Tab(t) | NewWindow::TornOff(t, _) => self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile)),
             NewWindow::Tabs(ts) => ts.first().and_then(|t| self.panes.get(&t.focused)).map(|p| self.store.shared_guid(&p.profile)),
             NewWindow::Arrangement(w) => self.first_arrangement_guid(w),
             NewWindow::Orphans(_) => None,
@@ -389,9 +403,13 @@ impl App {
         // `openSingleUseWindowWithCommand:` uses the default window type instead).
         let style = if self.start_command_override.is_some() && style == crate::frames::FULL_SCREEN { crate::frames::NORMAL } else { style };
         let arranged = matches!(first, NewWindow::Arrangement(_) | NewWindow::HotkeyRestored(..));
+        let torn_at = match &first {
+            NewWindow::TornOff(_, at) => Some(*at),
+            _ => None,
+        };
         match first {
             NewWindow::Profile(guid) => self.new_tab(guid.as_deref()),
-            NewWindow::Tab(tab) => {
+            NewWindow::Tab(tab) | NewWindow::TornOff(tab, _) => {
                 self.tabs.push(tab);
                 self.active = 0;
                 self.relayout();
@@ -425,7 +443,13 @@ impl App {
         // frame is its style's (it is not placed like a new window).
         let restored_hotkey = hotkey && arranged;
         let steps = crate::winmodel::open_steps(arranged || restored_hotkey);
-        if steps.place && !hotkey {
+        if let Some((x, y)) = torn_at {
+            // A torn-off tab's window has its top-left corner where the tab was dropped.
+            self.claim_slot();
+            if let Some(g) = &self.gpu {
+                g.window.set_outer_position(PhysicalPosition::new(x, y));
+            }
+        } else if steps.place && !hotkey {
             self.place_window();
         } else {
             self.claim_slot();
@@ -607,6 +631,8 @@ impl WinSlot {
             bar_was_visible: false,
             bar_grown: (0.0, 0.0),
             side_rects: Vec::new(),
+            tab_drop_marker: None,
+            tab_bar_drawn: None,
             side_handle_hover: false,
             tab_tip: None,
             block_buttons: Vec::new(),
@@ -707,6 +733,9 @@ pub(super) enum NewWindow {
     Profile(Option<String>),
     /// A tab moved from another window.
     Tab(Tab),
+    /// A tab dragged out of every tab bar, and the screen point it was dropped at (the new
+    /// window's top-left corner).
+    TornOff(Tab, (i32, i32)),
     /// Tabs brought back by Undo Close.
     Tabs(Vec<Tab>),
     /// A window table from an arrangement.
@@ -1077,11 +1106,17 @@ impl App {
 
     /// False (with a beep) when Lock Layout forbids the change.
     pub(super) fn layout_allowed(&self, op: crate::winmodel::LayoutOp) -> bool {
-        if self.win_locks.forbids(op) {
+        if !self.layout_allowed_quiet(op) {
             unsafe { windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK) };
             return false;
         }
         true
+    }
+
+    /// False, without a beep, when Lock Layout forbids the change (a tab drag that never
+    /// begins, `PT:7610-7616`).
+    pub(super) fn layout_allowed_quiet(&self, op: crate::winmodel::LayoutOp) -> bool {
+        !self.win_locks.forbids(op)
     }
 
     pub(super) fn toggle_lock(&mut self, layout: bool) {

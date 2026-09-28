@@ -2697,3 +2697,30 @@ label = "Animation duration for fade in/out animation of tabs in full screen, in
 type = "float"
 default = 0.25
 help = "Animation duration for fade in/out animation of tabs in full screen, in seconds."
+
+[[setting]]
+key = "AllowDragOfTabIntoNewWindow"
+tab = "Advanced"
+section = "Tabs"
+label = "Allow a tab to be dragged and dropped outside any existing tab bar to create a new window."
+type = "bool"
+default = true
+help = "Allow a tab to be dragged and dropped outside any existing tab bar to create a new window."
+
+[[setting]]
+key = "AllowDragOnAddTabButton"
+tab = "Advanced"
+section = "Tabs"
+label = "Allow dragging window by the Add Tab button in the tab bar?"
+type = "bool"
+default = true
+help = "Allow dragging window by the Add Tab button in the tab bar?"
+
+[[setting]]
+key = "MinimumTabDragDistance"
+tab = "Advanced"
+section = "Tabs"
+label = "How far must the mouse move before a tab drag is initiated?"
+type = "int"
+default = 10
+help = "How far must the mouse move before a tab drag is initiated?\nYou must restart Tandem after changing this setting for it to take effect."

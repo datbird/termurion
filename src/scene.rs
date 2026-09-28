@@ -804,6 +804,9 @@ pub struct TabLook {
     pub number: usize,
     /// The close button is held down (`closeButtonPressed`).
     pub close_pressed: bool,
+    /// Dragged along the bar (`app::tab_drag_ui`): drawn on its own background, over the
+    /// tabs it passes.
+    pub dragged: bool,
 }
 
 /// A tab's indicator, in iTerm2's order after the status dot.
@@ -927,8 +930,8 @@ pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::
             continue;
         }
         let back = if *i == active { TAB_ACTIVE } else { TAB_BAR };
-        if *i == active {
-            frame.quads.push(Quad { rect: cell, color: rgba(TAB_ACTIVE, 1.0) });
+        if *i == active || tab.dragged {
+            frame.quads.push(Quad { rect: cell, color: rgba(back, 1.0) });
         }
         if let Some(col) = tab.color {
             let h = (3.0 * scale).round();
@@ -2925,6 +2928,26 @@ mod tests {
         let mut f = Frame::default();
         tab_bar(&mut f, &held, 0, &bar, area, 1.0, 0.1, 20.0, true, false);
         assert!(f.quads.iter().any(|q| q.color == shade && q.rect == close), "{:?}", f.quads);
+    }
+
+    #[test]
+    fn dragged_tab_has_its_own_background() {
+        use crate::tab_layout::{self, TabInput};
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let looks = vec![TabLook { title: "a".into(), number: 1, ..TabLook::default() }, TabLook { title: "b".into(), number: 2, ..TabLook::default() }];
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number }).collect();
+        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, None, &s, &six);
+        let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 24.0 };
+        let cell = bar.cells[1].2;
+        let back = |looks: &[TabLook]| {
+            let mut f = Frame::default();
+            tab_bar(&mut f, looks, 0, &bar, area, 1.0, 0.1, 20.0, true, false);
+            f.quads.iter().any(|q| q.rect == cell && q.color == rgba(TAB_BAR, 1.0))
+        };
+        assert!(!back(&looks), "an inactive tab draws on the bar");
+        let dragged: Vec<TabLook> = looks.iter().cloned().enumerate().map(|(i, l)| TabLook { dragged: i == 1, ..l }).collect();
+        assert!(back(&dragged), "a dragged tab covers the tabs it passes");
     }
 
     #[test]

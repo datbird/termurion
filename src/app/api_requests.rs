@@ -1428,7 +1428,7 @@ impl App {
             .pending_windows
             .iter()
             .flat_map(|w| match w {
-                super::windows_ui::NewWindow::Tab(t) => std::slice::from_ref(t),
+                super::windows_ui::NewWindow::Tab(t) | super::windows_ui::NewWindow::TornOff(t, _) => std::slice::from_ref(t),
                 super::windows_ui::NewWindow::Tabs(ts) => ts.as_slice(),
                 _ => &[],
             })
@@ -1453,7 +1453,7 @@ impl App {
             .pending_windows
             .iter()
             .flat_map(|w| match w {
-                super::windows_ui::NewWindow::Tab(t) => std::slice::from_ref(t),
+                super::windows_ui::NewWindow::Tab(t) | super::windows_ui::NewWindow::TornOff(t, _) => std::slice::from_ref(t),
                 super::windows_ui::NewWindow::Tabs(ts) => ts.as_slice(),
                 _ => &[],
             })
