@@ -413,8 +413,8 @@ impl Dialect for Completions {
         Ok(Some(Parsed { messages, response_id: None, prompt_tokens: v["usage"]["prompt_tokens"].as_i64(), ignore: false, error: None }))
     }
 
-    fn split(&self, buffer: &str) -> (Option<String>, String) {
-        ai_sse::split_lines(buffer)
+    fn split(&self, buffer: &str, at: &mut ai_sse::Cursor) -> Option<String> {
+        ai_sse::split_lines(buffer, at)
     }
 
     /// `LegacyStreamingResponse` (`LO:95-118`), the `{model, created_at, response, done}` shape
@@ -927,7 +927,9 @@ mod tests {
         }
         assert_eq!(Completions.parse_event(r#"{"model":"m","created_at":"t","response":"","done":true}"#), Ok(None), "done ends the stream");
         assert!(Completions.parse_event("nope").is_err());
-        assert_eq!(Completions.split("data: {\"a\":1}\nrest"), (Some("{\"a\":1}".to_string()), "rest".to_string()));
+        let mut at = ai_sse::Cursor::default();
+        assert_eq!(Completions.split("data: {\"a\":1}\nrest", &mut at).as_deref(), Some("{\"a\":1}"));
+        assert_eq!(at.rest("data: {\"a\":1}\nrest"), "rest");
     }
 
     fn key() -> Secret {

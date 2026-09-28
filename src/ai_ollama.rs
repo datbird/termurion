@@ -232,8 +232,8 @@ impl Dialect for Ollama {
         Ok(Some(Parsed { messages: vec![m], ..Parsed::default() }))
     }
 
-    fn split(&self, buffer: &str) -> (Option<String>, String) {
-        ai_sse::split_ndjson(buffer)
+    fn split(&self, buffer: &str, at: &mut ai_sse::Cursor) -> Option<String> {
+        ai_sse::split_ndjson(buffer, at)
     }
 
     /// One streamed line (`LL:96-176`, `LL:187-189`): the done line gives nothing (a call it

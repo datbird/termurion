@@ -133,24 +133,22 @@ impl Body {
                 // Only item ids are compared: OpenAI streams arguments without the call id, and
                 // DeepSeek sends ids only with a call's first part.
                 Body::FunctionCall(more, id) if id.is_none() || id.as_ref().map(|i| &i.item_id) == original_id.as_ref().map(|i| &i.item_id) => {
-                    let id = if original.id.is_some() || more.id.is_some() {
+                    // Appended in place, so a call streamed in many parts costs its length once.
+                    if original.id.is_some() || more.id.is_some() {
                         // The ids concatenate, as iTerm2's.
-                        Some(format!("{}{}", original.id.as_deref().unwrap_or(""), more.id.as_deref().unwrap_or("")))
-                    } else {
-                        None
-                    };
-                    *original = FunctionCall {
-                        name: Some(format!("{}{}", original.name.as_deref().unwrap_or(""), more.name.as_deref().unwrap_or(""))),
-                        arguments: Some(format!("{}{}", original.arguments.as_deref().unwrap_or(""), more.arguments.as_deref().unwrap_or(""))),
-                        id,
-                        thought_signature: original.thought_signature.clone().or_else(|| more.thought_signature.clone()),
-                    };
+                        original.id.get_or_insert_with(String::new).push_str(more.id.as_deref().unwrap_or(""));
+                    }
+                    original.name.get_or_insert_with(String::new).push_str(more.name.as_deref().unwrap_or(""));
+                    original.arguments.get_or_insert_with(String::new).push_str(more.arguments.as_deref().unwrap_or(""));
+                    if original.thought_signature.is_none() {
+                        original.thought_signature = more.thought_signature.clone();
+                    }
                     true
                 }
                 // Anthropic streams a call's arguments as text.
                 Body::Text(more) => {
                     original.name = Some(original.name.take().unwrap_or_default());
-                    original.arguments = Some(format!("{}{more}", original.arguments.as_deref().unwrap_or("")));
+                    original.arguments.get_or_insert_with(String::new).push_str(more);
                     true
                 }
                 _ => false,
