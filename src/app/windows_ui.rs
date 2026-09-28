@@ -70,6 +70,7 @@ pub(super) struct WinSlot {
     window_menu_text: (String, String),
     border_applied: Option<u32>,
     menu_hidden: bool,
+    zoom_restore: Option<Rect>,
     mru: Mru,
     mru_mods: Option<Mods>,
     laid_out: Option<crate::statusbar_layout::Room>,
@@ -140,6 +141,7 @@ impl WinSlot {
             window_menu_text: Default::default(),
             border_applied: None,
             menu_hidden: false,
+            zoom_restore: None,
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
@@ -225,6 +227,7 @@ impl App {
         swap(&mut self.window_menu_text, &mut s.window_menu_text);
         swap(&mut self.border_applied, &mut s.border_applied);
         swap(&mut self.menu_hidden, &mut s.menu_hidden);
+        swap(&mut self.zoom_restore, &mut s.zoom_restore);
         swap(&mut self.mru, &mut s.mru);
         swap(&mut self.mru_mods, &mut s.mru_mods);
         swap(&mut self.laid_out, &mut s.laid_out);
@@ -451,7 +454,7 @@ impl App {
         let style = first_guid.as_deref().and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).int("Window Type");
         // A git command's single-use window is never full screen (`iTermController.m`
         // `openSingleUseWindowWithCommand:` uses the default window type instead).
-        let style = if self.start_command_override.is_some() && style == crate::frames::FULL_SCREEN { crate::frames::NORMAL } else { style };
+        let style = if self.start_command_override.is_some() && matches!(style, crate::frames::FULL_SCREEN | crate::frames::LION_FULL_SCREEN) { crate::frames::NORMAL } else { style };
         let arranged = matches!(first, NewWindow::Arrangement(..) | NewWindow::HotkeyRestored(..));
         let torn_at = match &first {
             NewWindow::TornOff(_, at) => Some(*at),
@@ -763,6 +766,7 @@ impl WinSlot {
             window_menu_text: Default::default(),
             border_applied: None,
             menu_hidden: false,
+            zoom_restore: None,
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
@@ -1085,7 +1089,12 @@ impl App {
             return self.banners.set("window", "Could not read this window's monitor.");
         };
         let profile = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).and_then(|p| self.store.get(&p.profile)).unwrap_or_else(|| self.store.default_profile()).clone();
-        let mut percent = (profile.float("Width Percentage"), profile.float("Height Percentage"));
+        // `measurements(profile:)`: an eligible type's explicit percentages, else cells.
+        let percents = {
+            let (w, h) = frames::profile_percents(&profile);
+            frames::percents(style, w, h)
+        };
+        let mut percent = (percents.0.unwrap_or(-1.0), percents.1.unwrap_or(-1.0));
         let s = frames::unthemed(style);
         if from_menu {
             match s {
@@ -1104,7 +1113,11 @@ impl App {
         let input = Input {
             style: s,
             percent,
-            cells: (profile.int("Columns").clamp(1, 1000) as u16, profile.int("Rows").clamp(1, 1000) as u16),
+            // A percentage is whole cells of that share of the work area (`WSH:223-233`).
+            cells: (
+                percents.0.map_or(profile.int("Columns").clamp(1, 1000) as u16, |p| frames::percent_cells(p, cw, work.w)),
+                percents.1.map_or(profile.int("Rows").clamp(1, 1000) as u16, |p| frames::percent_cells(p, ch, work.h)),
+            ),
             cell: (cw, ch),
             chrome,
             initial: Rect { x: pos.x as f32, y: pos.y as f32, w: outer.width as f32, h: outer.height as f32 },
@@ -1119,12 +1132,20 @@ impl App {
             w.set_fullscreen(None);
             w.set_decorations(f.decorations);
             w.set_maximized(f.maximized);
-            if !f.maximized && s != frames::NORMAL && s != frames::NO_TITLE_BAR {
+            if !f.maximized && !matches!(s, frames::NORMAL | frames::NO_TITLE_BAR | frames::ACCESSORY) {
                 // The frame is the outer frame; the inner size leaves the borders out.
                 let (dw, dh) = if f.decorations { (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height)) } else { (0, 0) };
                 w.set_outer_position(PhysicalPosition::new(f.rect.x.round() as i32, f.rect.y.round() as i32));
                 let _ = w.request_inner_size(PhysicalSize::new((f.rect.w as u32).saturating_sub(dw).max(1), (f.rect.h as u32).saturating_sub(dh).max(1)));
             }
+        }
+        // Accessory (iTerm2's floating panel) stays above other windows without a taskbar
+        // button; leaving it gives both back. A hotkey window keeps its own.
+        if self.hotkey.is_none() && (s == frames::ACCESSORY) != (self.win_style == frames::ACCESSORY) {
+            use winit::platform::windows::WindowExtWindows;
+            let accessory = s == frames::ACCESSORY;
+            w.set_window_level(if accessory { winit::window::WindowLevel::AlwaysOnTop } else { winit::window::WindowLevel::Normal });
+            w.set_skip_taskbar(accessory);
         }
         self.win_style = s;
         // The style may enter or leave full screen: the border follows at once.

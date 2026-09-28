@@ -349,6 +349,9 @@ pub struct App {
     border_applied: Option<u32>,
     /// The current window's menu bar is hidden (full screen, `HideMenuBarInFullscreen`).
     menu_hidden: bool,
+    /// The current window's frame before a vertical Window > Zoom, which the next Zoom
+    /// restores (a full Zoom maximizes, and Windows keeps that frame itself).
+    zoom_restore: Option<Rect>,
     /// The current window's toolbelt.
     belt: toolbelt_ui::Belt,
     /// Bumped when something a toolbelt tool shows changes (`tools_changed`).
@@ -1154,6 +1157,7 @@ pub fn run() {
         window_menu_text: Default::default(),
         border_applied: None,
         menu_hidden: false,
+        zoom_restore: None,
         belt: Default::default(),
         tool_gen: 0,
         belt_keys: Default::default(),
@@ -2836,17 +2840,37 @@ impl App {
         }
     }
 
-    /// Sizes the window to the default profile's Columns and Rows.
+    /// Sizes the window to the profile's Columns and Rows, or to its percentages of the work area.
     fn size_window(&mut self, guid: Option<&str>) {
         let p = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).clone();
         let (cw, ch) = self.cell();
         let pad = 2.0 * PAD * self.scale();
         // The line under the title bar is part of the window's decoration (`PT:13235-13237`).
         let line = self.division_height();
-        let (w, h) = (p.int("Columns").max(10) as f32 * cw + pad, p.int("Rows").max(4) as f32 * ch + pad + line);
-        if let Some(g) = self.gpu.as_ref() {
-            let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new(w.ceil() as u32, h.ceil() as u32));
+        let Some(g) = self.gpu.as_ref() else { return };
+        // A percent-eligible type sizes by its explicit percentages of the work area, in whole
+        // cells (`TerminalWindowSizeHelper.measurements`, `measurementToCells`).
+        let work = self.monitor_rects().map(|(work, _)| work);
+        let (pw, ph) = {
+            let (w, h) = crate::frames::profile_percents(&p);
+            crate::frames::percents(p.int("Window Type"), w, h)
+        };
+        let columns = match (pw, work) {
+            (Some(pct), Some(work)) => i64::from(crate::frames::percent_cells(pct, cw, work.w)),
+            _ => p.int("Columns").max(10),
+        };
+        let rows = match (ph, work) {
+            (Some(pct), Some(work)) => i64::from(crate::frames::percent_cells(pct, ch, work.h)),
+            _ => p.int("Rows").max(4),
+        };
+        let (mut w, mut h) = (columns as f32 * cw + pad, rows as f32 * ch + pad + line);
+        if let Some(work) = work.filter(|_| pw.is_some() || ph.is_some()) {
+            // The whole window stays on the work area.
+            let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
+            w = w.min(work.w - outer.width.saturating_sub(inner.width) as f32);
+            h = h.min(work.h - outer.height.saturating_sub(inner.height) as f32);
         }
+        let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new(w.max(1.0).ceil() as u32, h.max(1.0).ceil() as u32));
     }
 
     /// "Always open in a new window, never in a tab": a new tab of `guid` opens as a window

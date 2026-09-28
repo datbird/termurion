@@ -644,11 +644,7 @@ impl App {
                     w.set_minimized(true);
                 }
             }
-            "performZoom:" => {
-                if let Some(w) = &window {
-                    w.set_maximized(!w.is_maximized());
-                }
-            }
+            "performZoom:" => self.zoom_window(),
             "toggleFullScreenMode:" => {
                 let entering = window.as_ref().is_some_and(|w| w.fullscreen().is_none());
                 toggle_fullscreen(window.as_deref());

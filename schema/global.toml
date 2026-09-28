@@ -680,6 +680,15 @@ default = true
 help = "If enabled, changes to font size will try to preserve session dimensions."
 
 [[setting]]
+key = "MaxVertically"
+tab = "General"
+section = "Window"
+label = "Zoom maximizes vertically only"
+type = "bool"
+default = false
+help = "Window > Zoom stretches the window to the screen's height and keeps its width and position across."
+
+[[setting]]
 key = "SeparateWindowTitlePerTab"
 tab = "General"
 section = "Window"

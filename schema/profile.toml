@@ -1519,9 +1519,9 @@ section = "Window Size"
 label = "Width, % of screen"
 type = "float"
 default = 100
-min = 1
+min = -1
 max = 100
-help = "Initial window width as a percentage of screen width instead of a fixed column count."
+help = "Initial window width as a percentage of screen width instead of a fixed column count. -1 (or any negative value) means the Columns count; unset, only the Top and Bottom of Screen styles span the screen's width."
 light_dark = false
 macos_only = false
 
@@ -1532,9 +1532,9 @@ section = "Window Size"
 label = "Height, % of screen"
 type = "float"
 default = 100
-min = 1
+min = -1
 max = 100
-help = "Initial window height as a percentage of screen height instead of a fixed row count."
+help = "Initial window height as a percentage of screen height instead of a fixed row count. -1 (or any negative value) means the Rows count; unset, only the Left and Right of Screen styles span the screen's height."
 light_dark = false
 macos_only = false
 
@@ -1571,8 +1571,8 @@ section = "Window Style"
 label = "Window style"
 type = "enum"
 default = 0
-choices = [ { value = 0, label = "Normal" }, { value = 1, label = "Full Screen" }, { value = 15, label = "Maximized" }, { value = 12, label = "No Title Bar" }, { value = 17, label = "Centered" }, { value = 19, label = "Centered, No Title Bar" }, { value = 2, label = "Top of Screen (% of screen width)" }, { value = 5, label = "Bottom of Screen (% of screen width)" }, { value = 6, label = "Left of Screen (% of screen height)" }, { value = 7, label = "Right of Screen (% of screen height)" }, { value = 9, label = "Top of Screen (rows)" }, { value = 8, label = "Bottom of Screen (rows)" }, { value = 10, label = "Left of Screen (columns)" }, { value = 11, label = "Right of Screen (columns)" } ]
-help = "The window's style. The edge styles span the width or height given by Width and Height Percentage (a percent form), or by Columns and Rows (the cells form, which iTerm2 stores when neither units popup says % of screen). iTerm2's Compact forms (13, 16, 18) open as Normal, Maximized, and Centered."
+choices = [ { value = 0, label = "Normal" }, { value = 1, label = "Full Screen" }, { value = 15, label = "Maximized" }, { value = 12, label = "No Title Bar" }, { value = 17, label = "Centered" }, { value = 19, label = "Centered, No Title Bar" }, { value = 5, label = "Bottom of Screen" }, { value = 2, label = "Top of Screen" }, { value = 6, label = "Left of Screen" }, { value = 7, label = "Right of Screen" } ]
+help = "The window's style. Each edge style is one entry: its units popups choose a size in percent of the screen (stored as 2, 5, 6, 7) or in columns and rows (the cells form, 9, 8, 10, 11, stored when neither popup says % of screen). Normal, No Title Bar and the Centered styles may be sized in percent too. iTerm2's Compact forms (13, 16, 18) open as Normal, Maximized, and Centered; its native full screen (4) opens as Full Screen and its Accessory type (14) as a Normal window that stays on top without a taskbar button."
 light_dark = false
 macos_only = false
 

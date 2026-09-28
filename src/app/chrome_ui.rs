@@ -2,7 +2,10 @@
 
 use super::*;
 use crate::chrome;
-use windows_sys::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DwmSetWindowAttribute};
+use windows_sys::Win32::Foundation::RECT;
+use windows_sys::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_EXTENDED_FRAME_BOUNDS, DWMWA_WINDOW_CORNER_PREFERENCE, DwmGetWindowAttribute, DwmSetWindowAttribute};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_SHIFT};
+use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
 /// Gives the window's frame a border color (a COLORREF, or `chrome::COLOR_DEFAULT`). Only
 /// Windows 11 (build 22000 on) takes the attribute; Windows 10's refusal is ignored and the
@@ -27,7 +30,60 @@ pub(super) fn show_menu(menu: &muda::Menu, hwnd: isize) -> Result<(), String> {
     unsafe { menu.show_for_hwnd(hwnd) }.map_err(|e| e.to_string())
 }
 
+/// How far the outer frame reaches past the visible one at the top and the bottom: DWM's
+/// invisible resize borders (0 without DWM's bounds).
+fn invisible_top_bottom(hwnd: isize) -> (f32, f32) {
+    let (mut outer, mut visible): (RECT, RECT) = unsafe { (std::mem::zeroed(), std::mem::zeroed()) };
+    if unsafe { GetWindowRect(hwnd as _, &mut outer) } == 0 {
+        return (0.0, 0.0);
+    }
+    if unsafe { DwmGetWindowAttribute(hwnd as _, DWMWA_EXTENDED_FRAME_BOUNDS as u32, (&mut visible as *mut RECT).cast(), std::mem::size_of::<RECT>() as u32) } != 0 {
+        return (0.0, 0.0);
+    }
+    ((visible.top - outer.top).max(0) as f32, (outer.bottom - visible.bottom).max(0) as f32)
+}
+
+/// Moves and sizes a window to an outer frame; the inner size leaves the borders out.
+fn set_outer_frame(w: &winit::window::Window, r: Rect) {
+    let (outer, inner) = (w.outer_size(), w.inner_size());
+    let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
+    w.set_outer_position(winit::dpi::PhysicalPosition::new(r.x.round() as i32, r.y.round() as i32));
+    let _ = w.request_inner_size(winit::dpi::PhysicalSize::new((r.w.round() as u32).saturating_sub(dw).max(1), (r.h.round() as u32).saturating_sub(dh).max(1)));
+}
+
 impl App {
+    /// Window > Zoom (`PT:7055-7110`): a zoomed window goes back (a maximized one restores,
+    /// a vertically zoomed one takes its earlier frame); otherwise `chrome::zoom_frame`
+    /// decides: the whole work area maximizes as Windows does, a vertical zoom spans the work
+    /// area's height and keeps the frame before it. The menu item counts as a key Zoom, so
+    /// MaxVertically alone decides; Tandem has no zoom button (the caption's maximize button
+    /// stays Windows' own). Full screen has nothing to zoom.
+    pub(super) fn zoom_window(&mut self) {
+        if self.full_screen() {
+            return;
+        }
+        let Some(g) = self.gpu.as_ref() else { return };
+        let w = g.window.clone();
+        let current = Self::outer_rect(g);
+        if w.is_maximized() {
+            self.zoom_restore = None;
+            return w.set_maximized(false);
+        }
+        if let Some(before) = self.zoom_restore.take() {
+            return set_outer_frame(&w, before);
+        }
+        let Some((work, _)) = self.monitor_rects() else { return };
+        let shift = unsafe { GetKeyState(i32::from(VK_SHIFT)) } < 0;
+        let target = chrome::zoom_frame(current, work, self.globals.bool("MaxVertically"), true, shift);
+        if target == work {
+            return w.set_maximized(true);
+        }
+        // The visible frame fills the work area's height; DWM's invisible borders lie outside it.
+        let (top, bottom) = self.hwnd().map_or((0.0, 0.0), invisible_top_bottom);
+        self.zoom_restore = Some(current);
+        set_outer_frame(&w, Rect { y: target.y - top, h: target.h + top + bottom, ..target });
+    }
+
     /// Hides the current window's menu bar in full screen with `HideMenuBarInFullscreen`, and
     /// shows it again otherwise (`menu_should_hide`). Every way in or out of full screen draws
     /// a frame after it, so this runs from `render`; the setting's change reaches each window

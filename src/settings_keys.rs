@@ -2532,6 +2532,15 @@ mod tests {
         assert_eq!(s.help, "If enabled, changes to font size will try to preserve session dimensions.");
     }
 
+    /// Zoom's vertical-only preference (`P:734`, `XIB:8213`).
+    #[test]
+    fn max_vertically_row_follows_iterm2() {
+        let s = schema::find_global("MaxVertically").expect("MaxVertically");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("General", "Window", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        assert_eq!(s.label, "Zoom maximizes vertically only");
+    }
+
     /// The window number's advanced settings (`AS:710-711`).
     #[test]
     fn number_rows_follow_iterm2() {

@@ -7,6 +7,8 @@ pub use crate::layout::Rect;
 pub const NORMAL: i64 = 0;
 pub const FULL_SCREEN: i64 = 1;
 pub const TOP_PERCENT: i64 = 2;
+/// macOS's native full screen; Tandem opens it as Full Screen.
+pub const LION_FULL_SCREEN: i64 = 4;
 pub const BOTTOM_PERCENT: i64 = 5;
 pub const LEFT_PERCENT: i64 = 6;
 pub const RIGHT_PERCENT: i64 = 7;
@@ -15,6 +17,9 @@ pub const TOP_CELLS: i64 = 9;
 pub const LEFT_CELLS: i64 = 10;
 pub const RIGHT_CELLS: i64 = 11;
 pub const NO_TITLE_BAR: i64 = 12;
+/// A floating panel in iTerm2 (scripting and the command line only); Tandem's is a Normal
+/// window on top of the others without a taskbar button.
+pub const ACCESSORY: i64 = 14;
 pub const MAXIMIZED: i64 = 15;
 /// The Compact theme's Maximized.
 pub const COMPACT_MAXIMIZED: i64 = 16;
@@ -38,6 +43,67 @@ pub const MENU: [(i64, &str); 14] = [
     (LEFT_CELLS, "Left of Screen"),
     (RIGHT_CELLS, "Right of Screen"),
 ];
+
+/// The profile's Window Style popup (`XIB`, outlet `_windowStyle`), in its order: one entry
+/// per edge, its units popups choosing the percent or the cells form.
+pub const PROFILE_MENU: [(i64, &str); 10] = [
+    (NORMAL, "Normal"),
+    (FULL_SCREEN, "Full Screen"),
+    (MAXIMIZED, "Maximized"),
+    (NO_TITLE_BAR, "No Title Bar"),
+    (CENTERED, "Centered"),
+    (CENTERED_NO_TITLE_BAR, "Centered, No Title Bar"),
+    (BOTTOM_PERCENT, "Bottom of Screen"),
+    (TOP_PERCENT, "Top of Screen"),
+    (LEFT_PERCENT, "Left of Screen"),
+    (RIGHT_PERCENT, "Right of Screen"),
+];
+
+/// The profile popup's entry for a stored type (`PWV:477-520`): the Compact forms show as
+/// theirs, the cells ids 8 to 11 as their edge's entry.
+pub fn profile_menu_value(stored: i64) -> i64 {
+    match unthemed(stored) {
+        BOTTOM_CELLS => BOTTOM_PERCENT,
+        TOP_CELLS => TOP_PERCENT,
+        LEFT_CELLS => LEFT_PERCENT,
+        RIGHT_CELLS => RIGHT_PERCENT,
+        s => s,
+    }
+}
+
+/// Whether a type may be sized in percent of the screen (`percentageEligible`, `WSH:44-62`):
+/// the percentage edge styles, Normal, No Title Bar, Centered, Centered No Title Bar and the
+/// Compact and Compact Centered forms.
+pub fn percent_eligible(style: i64) -> bool {
+    matches!(style, TOP_PERCENT | BOTTOM_PERCENT | LEFT_PERCENT | RIGHT_PERCENT | NORMAL | NO_TITLE_BAR | 13 | CENTERED | 18 | CENTERED_NO_TITLE_BAR)
+}
+
+/// Each axis's share of the screen for a new window, or None for its columns or rows
+/// (`measurements(profile:)`, `WSH:170-215`): an eligible type's explicit, non-negative
+/// Width and Height Percentage; unset, the percentage edge styles span their attached edge.
+pub fn percents(style: i64, width: Option<f64>, height: Option<f64>) -> (Option<f64>, Option<f64>) {
+    if !percent_eligible(style) {
+        return (None, None);
+    }
+    let axis = |set: Option<f64>, spans: bool| match set {
+        Some(p) if p < 0.0 => None,
+        Some(p) => Some(p),
+        None => spans.then_some(100.0),
+    };
+    (axis(width, matches!(style, TOP_PERCENT | BOTTOM_PERCENT)), axis(height, matches!(style, LEFT_PERCENT | RIGHT_PERCENT)))
+}
+
+/// A profile's Width and Height Percentage when explicitly set (a missing key is None, as
+/// iTerm2's `valueIsExplicitlySetForKey:` and `profile[KEY_WIDTH_PERCENTAGE] as? Double` read it).
+pub fn profile_percents(p: &crate::profile::Profile) -> (Option<f64>, Option<f64>) {
+    let get = |k: &str| p.values.get(k).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
+    (get("Width Percentage"), get("Height Percentage"))
+}
+
+/// The cells a percentage of the screen holds (`measurementToCells`, `WSH:223-233`).
+pub fn percent_cells(percent: f64, cell: f32, screen: f32) -> u16 {
+    (f64::from(screen) * percent / (100.0 * f64::from(cell.max(1.0)))).round().clamp(1.0, f64::from(u16::MAX)) as u16
+}
 
 pub fn name(style: i64) -> &'static str {
     MENU.iter().find(|(id, _)| *id == unthemed(style)).map_or("Normal", |(_, n)| n)
@@ -79,6 +145,21 @@ pub fn unthemed(style: i64) -> i64 {
     }
 }
 
+/// The theme's form of a type (`iTermThemedWindowType`, `ITAddressBookMgr.m:120-175`): under
+/// the Compact and Minimal themes Normal, Maximized and Centered become their Compact forms,
+/// and back under the others; every other type is itself.
+pub fn themed(style: i64, compact_theme: bool) -> i64 {
+    match (style, compact_theme) {
+        (NORMAL | 13, true) => 13,
+        (NORMAL | 13, false) => NORMAL,
+        (MAXIMIZED | COMPACT_MAXIMIZED, true) => COMPACT_MAXIMIZED,
+        (MAXIMIZED | COMPACT_MAXIMIZED, false) => MAXIMIZED,
+        (CENTERED | 18, true) => 18,
+        (CENTERED | 18, false) => CENTERED,
+        (s, _) => s,
+    }
+}
+
 /// The id the profile stores for an edge style: the cells form when neither units popup
 /// says "% of screen" (iTerm2's ProfilesWindowPreferencesViewController).
 pub fn store_id(style: i64, width_percent: bool, height_percent: bool) -> i64 {
@@ -117,7 +198,7 @@ pub fn frame(i: &Input) -> Frame {
     let pct = percent_size(i);
     let pref = preferred(i);
     match s {
-        FULL_SCREEN => Frame { rect: i.screen, decorations: false, maximized: false, fullscreen: true },
+        FULL_SCREEN | LION_FULL_SCREEN => Frame { rect: i.screen, decorations: false, maximized: false, fullscreen: true },
         MAXIMIZED => Frame { rect: work, decorations: true, maximized: true, fullscreen: false },
         CENTERED | CENTERED_NO_TITLE_BAR => plain(Rect { x: center_x(pref.0), y: center_y(pref.1), w: pref.0, h: pref.1 }, s == CENTERED),
         TOP_PERCENT | BOTTOM_PERCENT => {
@@ -199,6 +280,51 @@ mod tests {
         let n = frame(&input(NORMAL));
         assert!(n.decorations && n.rect == input(0).initial && !n.maximized);
         assert!(!frame(&input(NO_TITLE_BAR)).decorations);
+    }
+
+    #[test]
+    fn window_types_follow_iterm2() {
+        let lion = frame(&input(LION_FULL_SCREEN));
+        assert!(lion.fullscreen && lion.rect == input(0).screen, "Lion Full Screen opens full screen");
+        let accessory = frame(&input(ACCESSORY));
+        assert!(accessory.decorations && !accessory.fullscreen && !accessory.maximized);
+        assert_eq!(accessory.rect, input(0).initial, "an Accessory window has the Normal frame");
+        for s in [0, 12, 13, 17, 18, 19, 2, 5, 6, 7] {
+            assert!(percent_eligible(s), "{s}");
+        }
+        for s in [1, 4, 8, 9, 10, 11, 14, 15, 16] {
+            assert!(!percent_eligible(s), "{s}");
+        }
+        assert_eq!((profile_menu_value(9), profile_menu_value(8), profile_menu_value(10), profile_menu_value(11), profile_menu_value(0)), (2, 5, 6, 7, 0));
+        let ids: Vec<i64> = PROFILE_MENU.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, [0, 1, 15, 12, 17, 19, 5, 2, 6, 7], "the profile popup's order");
+        assert_eq!(PROFILE_MENU[6], (BOTTOM_PERCENT, "Bottom of Screen"));
+        assert_eq!(PROFILE_MENU[5], (CENTERED_NO_TITLE_BAR, "Centered, No Title Bar"));
+    }
+
+    #[test]
+    fn window_size_follows_iterm2() {
+        // An explicit percentage sizes an eligible style in whole cells of that share of the
+        // screen (`WSH:170-235`): 50% of 1920 at 10 px is 96 columns.
+        assert_eq!(percents(NORMAL, Some(50.0), None), (Some(50.0), None));
+        assert_eq!(percents(NORMAL, Some(-1.0), Some(-1.0)), (None, None), "negative is cells");
+        assert_eq!(percents(MAXIMIZED, Some(50.0), Some(50.0)), (None, None), "not eligible");
+        assert_eq!(percents(TOP_CELLS, Some(50.0), None), (None, None));
+        // Unset, the edge styles span their attached edge.
+        assert_eq!(percents(TOP_PERCENT, None, None), (Some(100.0), None));
+        assert_eq!(percents(RIGHT_PERCENT, None, None), (None, Some(100.0)));
+        assert_eq!(percent_cells(50.0, 10.0, 1920.0), 96);
+        assert_eq!(percent_cells(25.0, 22.0, 1040.0), 12, "260 / 22 rounds to 12");
+        assert_eq!(percent_cells(100.0, 0.5, 100.0), 100, "a cell under 1 counts as 1");
+    }
+
+    #[test]
+    fn themed_window_types_follow_iterm2() {
+        assert_eq!((themed(NORMAL, true), themed(13, true), themed(13, false)), (13, 13, 0));
+        assert_eq!((themed(MAXIMIZED, true), themed(16, false)), (16, 15));
+        assert_eq!((themed(CENTERED, true), themed(18, false)), (18, 17));
+        assert_eq!((themed(FULL_SCREEN, true), themed(TOP_CELLS, true)), (1, 9), "only Normal, Maximized and Centered have compact forms");
+        assert_eq!(unthemed(13), NORMAL, "the frame math is unchanged");
     }
 
     #[test]

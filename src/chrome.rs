@@ -1,7 +1,7 @@
 //! Window chrome rules: the border around a window (when it shows, its color), the corner
 //! preference, the line under the title bar, the snap to the cell grid while resizing and
-//! whether programs may resize the window and the window's size after a font size change, as
-//! iTerm2 decides them.
+//! whether programs may resize the window, the window's size after a font size change, the
+//! Zoom frame and the profile's size units, as iTerm2 decides them.
 
 use crate::layout::Rect;
 use crate::palette::Rgb;
@@ -244,6 +244,74 @@ pub fn resize_permission(disable: bool, disable_unfocused: bool, focused: bool) 
     }
 }
 
+/// Window > Zoom's frame (`windowWillUseStandardFrame:defaultFrame:`, `PT:7055-7110`): the
+/// work area, or with a vertical zoom the window's own x and width over the work area's
+/// height. A Zoom from a key is vertical with MaxVertically; any other Zoom is vertical with
+/// MaxVertically or Shift, not both.
+pub fn zoom_frame(current: Rect, work: Rect, max_vertically: bool, from_key: bool, shift: bool) -> Rect {
+    let vertical = if from_key { max_vertically } else { max_vertically != shift };
+    if vertical {
+        Rect { x: current.x, y: work.y, w: current.w, h: work.h }
+    } else {
+        work
+    }
+}
+
+/// What a window size field counts: cells (columns or rows) or percent of the screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Units {
+    Cells,
+    Percent,
+}
+
+/// The profile's Columns and Rows row (`updateWindowTypeControlFromSettings`, `PWV:477-700`):
+/// each axis's units popup and which field it shows (None: no popup, the cells field alone),
+/// whether the fields take input, and whether "by" stands between the two halves.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UnitsRow {
+    pub columns_units: Option<Units>,
+    pub rows_units: Option<Units>,
+    pub columns_enabled: bool,
+    pub rows_enabled: bool,
+    pub by_label: bool,
+}
+
+/// The row for a stored type and its explicitly set Width and Height Percentage: an axis is
+/// cells when its percentage is unset or negative. Maximized and the full screen types hide
+/// the popups and disable the fields; Accessory shows the fields alone; the left and right
+/// edges drop "by"; the cells ids 8 to 11 show their cells fields.
+pub fn units_rows(style: i64, width_percent: Option<f64>, height_percent: Option<f64>) -> UnitsRow {
+    use crate::frames::{self, ACCESSORY, BOTTOM_CELLS, FULL_SCREEN, LEFT_CELLS, LEFT_PERCENT, LION_FULL_SCREEN, MAXIMIZED, RIGHT_CELLS, RIGHT_PERCENT, TOP_CELLS};
+    let units = |p: Option<f64>| if p.is_some_and(|p| p >= 0.0) { Units::Percent } else { Units::Cells };
+    let row = |c: Option<Units>, r: Option<Units>, enabled: bool, by_label: bool| UnitsRow { columns_units: c, rows_units: r, columns_enabled: enabled, rows_enabled: enabled, by_label };
+    match frames::unthemed(style) {
+        MAXIMIZED | FULL_SCREEN | LION_FULL_SCREEN => row(None, None, false, false),
+        ACCESSORY => row(None, None, true, false),
+        TOP_CELLS | BOTTOM_CELLS => row(Some(Units::Cells), Some(Units::Cells), true, true),
+        LEFT_CELLS | RIGHT_CELLS => row(Some(Units::Cells), Some(Units::Cells), true, false),
+        s => row(Some(units(width_percent)), Some(units(height_percent)), true, !matches!(s, LEFT_PERCENT | RIGHT_PERCENT)),
+    }
+}
+
+/// What a change in the row stores (`saveWindowType`, `PWV:394-475`): the Window Type, the
+/// Width Percentage and the Height Percentage. A cells axis stores -1; a negative percent
+/// falls back to 25 (width) and 50 (height); an edge style stores its cells form unless either
+/// popup says percent; Maximized and the full screen types store only the type.
+pub fn units_save(style: i64, columns_units: Units, rows_units: Units, width_percent: f64, height_percent: f64) -> (i64, f64, f64) {
+    use crate::frames::{self, ACCESSORY, FULL_SCREEN, LION_FULL_SCREEN, MAXIMIZED};
+    let style = frames::profile_menu_value(style);
+    if matches!(style, MAXIMIZED | FULL_SCREEN | LION_FULL_SCREEN | ACCESSORY) {
+        return (style, width_percent, height_percent);
+    }
+    let percent = |u: Units, p: f64, fallback: f64| match u {
+        Units::Cells => -1.0,
+        Units::Percent if p < 0.0 => fallback,
+        Units::Percent => p,
+    };
+    let stored = frames::store_id(style, columns_units == Units::Percent, rows_units == Units::Percent);
+    (stored, percent(columns_units, width_percent, 25.0), percent(rows_units, height_percent, 50.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,6 +474,49 @@ mod tests {
         assert_eq!(outer_screen((1920.0, 1040.0), (934.0, 768.0), (934.0, 768.0)), (1920.0, 1040.0));
         // An outer frame that fills it shows exactly the work area.
         assert_eq!(fill_screen(true, 1929.0, 1932.0, 10.0, 1934.0), 1934.0);
+    }
+
+    #[test]
+    fn vertical_zoom_follows_iterm2() {
+        let current = Rect { x: 100.0, y: 200.0, w: 800.0, h: 500.0 };
+        let work = Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1040.0 };
+        let tall = Rect { x: 100.0, y: 0.0, w: 800.0, h: 1040.0 };
+        assert_eq!(zoom_frame(current, work, true, true, false), tall);
+        assert_eq!(zoom_frame(current, work, false, true, false), work);
+        // A mouse Zoom with Shift inverts MaxVertically; a key Zoom ignores Shift.
+        assert_eq!(zoom_frame(current, work, false, false, true), tall);
+        assert_eq!(zoom_frame(current, work, true, false, true), work);
+        assert_eq!(zoom_frame(current, work, false, true, true), work);
+    }
+
+    #[test]
+    fn units_follow_iterm2() {
+        use crate::frames::{FULL_SCREEN, LEFT_CELLS, LEFT_PERCENT, MAXIMIZED, NORMAL, TOP_PERCENT};
+        use Units::{Cells, Percent};
+        let normal = units_rows(NORMAL, None, None);
+        assert_eq!(normal, UnitsRow { columns_units: Some(Cells), rows_units: Some(Cells), columns_enabled: true, rows_enabled: true, by_label: true });
+        assert_eq!(units_rows(NORMAL, Some(50.0), None).columns_units, Some(Percent));
+        assert_eq!(units_rows(NORMAL, Some(50.0), None).rows_units, Some(Cells));
+        assert_eq!(units_rows(NORMAL, Some(-1.0), None).columns_units, Some(Cells), "negative is cells");
+        assert_eq!(units_rows(13, None, Some(40.0)).rows_units, Some(Percent), "Compact is Normal");
+        let max = units_rows(MAXIMIZED, Some(50.0), Some(50.0));
+        assert_eq!(max, UnitsRow { columns_units: None, rows_units: None, columns_enabled: false, rows_enabled: false, by_label: false });
+        assert_eq!(units_rows(FULL_SCREEN, None, None), max);
+        assert_eq!(units_rows(crate::frames::LION_FULL_SCREEN, None, None), max);
+        let left = units_rows(LEFT_PERCENT, None, None);
+        assert_eq!((left.columns_units, left.rows_units, left.by_label), (Some(Cells), Some(Cells), false));
+        assert!(!units_rows(LEFT_CELLS, None, None).by_label);
+        assert!(units_rows(crate::frames::TOP_CELLS, None, None).by_label);
+        // Accessory: the fields without the popups.
+        let acc = units_rows(crate::frames::ACCESSORY, None, None);
+        assert_eq!(acc, UnitsRow { columns_units: None, rows_units: None, columns_enabled: true, rows_enabled: true, by_label: false });
+
+        assert_eq!(units_save(TOP_PERCENT, Cells, Cells, 100.0, 100.0), (9, -1.0, -1.0), "the cells form");
+        assert_eq!(units_save(TOP_PERCENT, Percent, Cells, 100.0, 100.0), (2, 100.0, -1.0));
+        assert_eq!(units_save(crate::frames::TOP_CELLS, Cells, Percent, 100.0, 30.0), (2, -1.0, 30.0), "a stored cells id saves as its edge");
+        assert_eq!(units_save(NORMAL, Percent, Percent, -5.0, -5.0), (0, 25.0, 50.0), "iTerm2's fallbacks");
+        assert_eq!(units_save(NORMAL, Cells, Cells, 40.0, 60.0), (0, -1.0, -1.0));
+        assert_eq!(units_save(MAXIMIZED, Percent, Percent, 40.0, 60.0), (15, 40.0, 60.0), "only the type");
     }
 
     #[test]
