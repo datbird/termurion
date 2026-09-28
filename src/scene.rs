@@ -807,7 +807,17 @@ pub struct TabLook {
     /// Dragged along the bar (`app::tab_drag_ui`): drawn on its own background, over the
     /// tabs it passes.
     pub dragged: bool,
+    /// Pinned (`Tab.pinned`): the pin at the tab's left, and on a horizontal bar only the
+    /// title's first character (`YS:915-1027`).
+    pub pinned: bool,
 }
+
+/// A pinned tab's mark (Segoe Fluent Icons "Pin"; iTerm2's SF Symbol "pin.fill").
+pub const PIN_GLYPH: char = '\u{E718}';
+/// `PinnedTabWidth`'s default in points (`AS:321`); the drawn width comes from the key.
+pub const PINNED_TAB_WIDTH: f32 = 64.0;
+/// The pin's alpha in a key window and otherwise (`YS:922`).
+const PIN_ALPHA: (f32, f32) = (0.6, 0.3);
 
 /// A tab's indicator, in iTerm2's order after the status dot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -957,6 +967,12 @@ pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::
             }
             glyph(frame, TAB_CLOSE_GLYPH, close, blend(back, color, alpha));
         }
+        // The pin at the cell's left margin (`YS:915-930`).
+        if tab.pinned {
+            let alpha = if key { PIN_ALPHA.0 } else { PIN_ALPHA.1 };
+            let em = TAB_GLYPH_PT * scale;
+            glyph(frame, PIN_GLYPH, Rect { x: cell.x + tab_layout::CELL_MARGIN * scale, w: em, ..cell }, blend(back, color, alpha));
+        }
         // The status dot is the tab's icon (`tabStatusDotImage`), else the indicator glyph.
         if let Some(ir) = c.icon.map(px) {
             if let Some(dot) = tab.dot {
@@ -1075,9 +1091,16 @@ pub fn tab_bar_vertical(frame: &mut Frame, tabs: &[TabLook], active: usize, area
             indicator: tab.processing,
             title_width: measure(&tab.title),
             min_label: MIN_SIDE_LABEL,
+            pinned: tab.pinned,
         };
         let c = tab_layout::cell(&input);
         let at = |r: Rect| Rect { x: row.x + r.x, y: row.y + r.y, ..r };
+        // The pin at the row's left margin; a side bar keeps the whole title (`YS:915-930`).
+        if tab.pinned {
+            let y = row.y + ((row.h - cell.1) / 2.0).floor();
+            let pin = blend(if i == active { TAB_ACTIVE } else { TAB_BAR }, color, PIN_ALPHA.0);
+            frame.rows.push(TextRow { x: row.x + tab_layout::CELL_MARGIN, y, spans: vec![span(PIN_GLYPH.to_string(), pin, true)], clip, scale: 1.0 });
+        }
         if let Some(ir) = c.icon.map(at) {
             if let Some(dot) = tab.dot {
                 let d = (cell.1 / 2.0).floor();
@@ -2776,7 +2799,7 @@ mod tests {
         ];
         let inputs: Vec<TabInput> = looks
             .iter()
-            .map(|l| TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: l.dot.is_some() || l.icon.is_some(), processing: l.processing, number: l.number })
+            .map(|l| TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: l.dot.is_some() || l.icon.is_some(), processing: l.processing, number: l.number, pinned: false })
             .collect();
         let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
         let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
@@ -2825,7 +2848,7 @@ mod tests {
         // HTML: an underlined run gets a one-pixel line under it.
         let html = tab_layout::Settings { html: true, ..s.clone() };
         let ul = vec![TabLook { title: "<u>ab</u>".into(), ..TabLook::default() }, TabLook::default()];
-        let uin: Vec<TabInput> = ul.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: 0 }).collect();
+        let uin: Vec<TabInput> = ul.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: 0, pinned: false }).collect();
         let bar = tab_layout::build(&uin, 0, 400.0, 0.0, None, &html, &six);
         let mut f = Frame::default();
         tab_bar(&mut f, &ul, 0, &bar, area, 2.0, 0.1, 20.0, true, false);
@@ -2835,7 +2858,7 @@ mod tests {
         // A subtitle line on a tall bar: the title 5 points up, the subtitle under it at 9 points.
         let tall = tab_layout::Settings { height: 28.0, ..s.clone() };
         let st = vec![TabLook { title: "t".into(), subtitle: "sub".into(), ..TabLook::default() }, TabLook::default()];
-        let sin: Vec<TabInput> = st.iter().map(|l| TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: false, processing: false, number: 0 }).collect();
+        let sin: Vec<TabInput> = st.iter().map(|l| TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: false, processing: false, number: 0, pinned: false }).collect();
         let bar = tab_layout::build(&sin, 0, 400.0, 0.0, None, &tall, &six);
         let area = Rect { x: 0.0, y: 0.0, w: 800.0, h: 56.0 };
         let mut f = Frame::default();
@@ -2853,7 +2876,7 @@ mod tests {
         let base = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
         let s = tab_layout::Settings { prefs: tab_layout::Prefs { stretch: false, scrollable: true, ..base.prefs }, ..base };
         let looks: Vec<TabLook> = (1..=10).map(|i| TabLook { title: format!("tab{i}"), number: i, ..TabLook::default() }).collect();
-        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number }).collect();
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false }).collect();
         let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
         // 120-point tabs scrolled by 100: tab 5 runs from 500 to 620, past the "+" at 576.
         let bar = tab_layout::build(&inputs, 5, 600.0, 100.0, None, &s, &six);
@@ -2880,7 +2903,7 @@ mod tests {
         let base = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
         let s = tab_layout::Settings { prefs: tab_layout::Prefs { scrollable: false, ..base.prefs }, ..base };
         let looks: Vec<TabLook> = (1..=10).map(|i| TabLook { title: format!("tab{i}"), number: i, ..TabLook::default() }).collect();
-        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number }).collect();
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false }).collect();
         let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
         let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, None, &s, &six);
         let overflow = bar.overflow.expect("tabs overflow");
@@ -2905,7 +2928,7 @@ mod tests {
         use crate::tab_layout::{self, TabInput};
         let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
         let looks = vec![TabLook { title: "a".into(), number: 1, ..TabLook::default() }, TabLook { title: "b".into(), number: 2, ..TabLook::default() }];
-        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number }).collect();
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false }).collect();
         let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
         // Tab 1 hovered and not active: its close button over the bar's color.
         let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, Some(1), &s, &six);
@@ -2931,11 +2954,49 @@ mod tests {
     }
 
     #[test]
+    fn pinned_look_follows_iterm2() {
+        use crate::tab_layout::{self, TabInput};
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let looks = vec![TabLook { title: "vim".into(), number: 1, pinned: true, ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: l.pinned }).collect();
+        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        // Hovered, the pinned tab still has no close button.
+        let bar = tab_layout::build(&inputs, 1, 400.0, 0.0, Some(0), &s, &six);
+        let cell = bar.cells[0].2;
+        assert_eq!(cell.w, PINNED_TAB_WIDTH);
+        let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 24.0 };
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false);
+        let in_cell = |r: &&TextRow| cell.contains(r.x, r.y + 1.0);
+        let pins: Vec<&TextRow> = f.rows.iter().filter(|r| r.spans.iter().any(|s| s.icon && s.text == PIN_GLYPH.to_string())).collect();
+        assert_eq!(pins.len(), 1, "one pin");
+        assert_eq!(pins[0].x, cell.x + 6.0, "at the cell's left margin");
+        let texts: Vec<String> = f.rows.iter().filter(in_cell).filter(|r| r.spans.iter().all(|s| !s.icon)).map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
+        assert_eq!(texts, vec!["v".to_string()], "only the first character");
+        assert!(!f.rows.iter().filter(in_cell).any(|r| r.spans.iter().any(|s| s.text == TAB_CLOSE_GLYPH.to_string())), "no close button");
+        // The pin at iTerm2's alpha 0.6 in a key window, 0.3 otherwise.
+        assert_eq!(pins[0].spans[0].color, blend(TAB_BAR, TAB_TEXT_DIM, 0.6));
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, false, false);
+        let pin = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == PIN_GLYPH.to_string())).unwrap();
+        assert_eq!(pin.spans[0].color, blend(TAB_BAR, TAB_TEXT_DIM, 0.3));
+
+        // A side bar: the pin, then the whole title.
+        let mut f = Frame::default();
+        let side = Rect { x: 0.0, y: 0.0, w: 150.0, h: 100.0 };
+        let rects = tab_bar_vertical(&mut f, &looks, 1, side, (8.0, 16.0), 24.0, 0.0);
+        let pin = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == PIN_GLYPH.to_string())).expect("the pin");
+        assert_eq!(pin.x, rects[0].x + 6.0);
+        let vim = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "vim")).expect("the whole title");
+        assert!(rects[0].contains(vim.x, vim.y) && vim.x >= rects[0].x + 6.0 + 16.0 + 4.0);
+    }
+
+    #[test]
     fn dragged_tab_has_its_own_background() {
         use crate::tab_layout::{self, TabInput};
         let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
         let looks = vec![TabLook { title: "a".into(), number: 1, ..TabLook::default() }, TabLook { title: "b".into(), number: 2, ..TabLook::default() }];
-        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number }).collect();
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false }).collect();
         let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
         let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, None, &s, &six);
         let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 24.0 };

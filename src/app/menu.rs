@@ -793,16 +793,8 @@ impl App {
                     self.select_tab(if item.selector == "nextTab:" { (self.active + 1) % n } else { (self.active + n - 1) % n });
                 }
             }
-            "moveTabLeft:" | "moveTabRight:" if !self.layout_allowed(crate::winmodel::LayoutOp::ReorderTab) => {}
-            "moveTabLeft:" | "moveTabRight:" => {
-                let n = self.tabs.len();
-                if n > 1 {
-                    let to = if item.selector == "moveTabRight:" { (self.active + 1) % n } else { (self.active + n - 1) % n };
-                    self.tabs.swap(self.active, to);
-                    self.active = to;
-                    self.tmux_reorder();
-                }
-            }
+            "moveTabLeft:" => self.move_active_tab(-1),
+            "moveTabRight:" => self.move_active_tab(1),
             "selectPaneUp:" | "selectPaneDown:" | "selectPaneLeft:" | "selectPaneRight:" => {
                 let dir = match item.selector.as_str() {
                     "selectPaneUp:" => Dir::Up,

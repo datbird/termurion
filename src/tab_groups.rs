@@ -277,6 +277,13 @@ pub const PALETTE: [Rgb; 7] = [
     rgb(255, 45, 85),
 ];
 
+/// `didChangePinnedState` (`PTS:400-416`): where the tab at `index` moves when its pin
+/// changes, keeping pinned tabs in front: one past the last pinned tab other than itself.
+/// The index is `moveTabAtIndex:toIndex:`'s (the tab is taken out, then put back there).
+pub fn pin_target(pinned: &[bool], index: usize) -> usize {
+    pinned.iter().enumerate().filter(|&(i, p)| *p && i != index).map(|(i, _)| i + 1).last().unwrap_or(0)
+}
+
 /// `nextTabGroupColor` (`PT:9149-9166`): a new group's color, cycling the palette by the
 /// number of groups already in the window so consecutive groups look distinct.
 pub fn next_color(groups_in_window: usize) -> Rgb {
@@ -400,6 +407,13 @@ mod tests {
         assert_eq!(select_by_offset(&[A], 0, 1), None);
         assert_eq!(normalized_collapsed(&[A, A, B], &[true, false, true], 2), vec![false, false, false], "a mixed group expands; b holds the active tab");
         assert_eq!(normalized_collapsed(&[A, A, N], &[true, true, false], 2), vec![true, true, false]);
+    }
+
+    #[test]
+    fn pin_moves_follow_iterm2() {
+        assert_eq!(pin_target(&[true, false, false], 2), 1, "pinning moves the tab right after the pinned zone");
+        assert_eq!(pin_target(&[true, true, false], 0), 2, "unpinning tab 0: its own pin is excluded");
+        assert_eq!(pin_target(&[false, false], 1), 0);
     }
 
     #[test]

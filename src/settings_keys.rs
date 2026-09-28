@@ -1800,6 +1800,15 @@ mod tests {
     }
 
     #[test]
+    fn pinned_width_row_follows_iterm2() {
+        let row = schema::find_global("PinnedTabWidth").expect("PinnedTabWidth");
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"));
+        assert_eq!(row.kind, Kind::Int);
+        assert_eq!(row.default, Some(Value::Integer(64)));
+        assert_eq!((row.label.as_str(), row.help.as_str()), ("Width of pinned tabs in pixels.", "Width of pinned tabs in pixels."));
+    }
+
+    #[test]
     fn preserve_rows_follow_iterm2() {
         for (key, label) in [
             ("PreserveWindowSizeWhenTabBarVisibilityChanges", "Preserve window size when tab bar shows or hides"),

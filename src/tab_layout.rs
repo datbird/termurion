@@ -91,17 +91,29 @@ pub struct Widths {
 
 /// Lays out tabs with the given desired widths (`YS desiredWidthOfCell`) on a bar `bar_width`
 /// points wide; `scale` is the device pixels per point that equal shares are rounded to (iTerm2
-/// passes 2).
-pub fn widths(desired: &[f32], bar_width: f32, p: &Prefs, scale: f32) -> Widths {
+/// passes 2). `pinned` (parallel to `desired`; empty for none) marks the pinned tabs, which are
+/// `pinned_width` wide whatever the rule (`PinnedTabWidth`).
+pub fn widths(desired: &[f32], pinned: &[bool], pinned_width: f32, bar_width: f32, p: &Prefs, scale: f32) -> Widths {
     let n = desired.len();
+    let is_pinned = |i: usize| pinned.get(i).copied().unwrap_or(false);
     // The left margin is the bar's inset, 0 here (`YS leftMarginForTabBarControl`).
     let available = |overflow: bool| bar_width - right_margin(overflow, p.add_button);
     if p.scrollable && n > 0 {
         // `PSM layoutScrollableHorizontalTabsWithCellCount:animate:`: when the natural widths
-        // pass the room they scroll, else the bar looks as it does without scrolling.
+        // pass the room they scroll, else the bar looks as it does without scrolling
+        // (`PSM naturalHorizontalCellWidths`).
         let natural: Vec<f32> = desired
             .iter()
-            .map(|&d| if p.uneven { p.scrollable_width.max(MAX_WIDTH.min(d)) } else { p.scrollable_width })
+            .enumerate()
+            .map(|(i, &d)| {
+                if is_pinned(i) {
+                    pinned_width
+                } else if p.uneven {
+                    p.scrollable_width.max(MAX_WIDTH.min(d))
+                } else {
+                    p.scrollable_width
+                }
+            })
             .collect();
         let total: f32 = natural.iter().sum();
         if total > available(false) {
@@ -110,35 +122,64 @@ pub fn widths(desired: &[f32], bar_width: f32, p: &Prefs, scale: f32) -> Widths 
     }
     // `PSM settledHorizontalCellWidths`: the overflow variant when the regular widths drop tabs
     // (or the add-tab button already takes the same margin).
-    let regular = arrange(desired, available(false), p, scale);
-    let widths = if p.add_button || regular.len() < n { arrange(desired, available(true), p, scale) } else { regular };
+    let pinned: Vec<bool> = (0..n).map(is_pinned).collect();
+    let arrange = |room: f32| arrange(desired, &pinned, pinned_width, room, p, scale);
+    let regular = arrange(available(false));
+    let widths = if p.add_button || regular.len() < n { arrange(available(true)) } else { regular };
     let overflow = widths.len() < n;
     Widths { widths, overflow, content: 0.0 }
 }
 
-/// `PSM cellWidthsForHorizontalArrangementWithOverflow:` without pinned tabs or group chips
-/// (13d) and with iTerm2's Yosemite intercell spacing of 0.
-fn arrange(desired: &[f32], available: f32, p: &Prefs, scale: f32) -> Vec<f32> {
+/// `PSM cellWidthsForHorizontalArrangementWithOverflow:` without group chips (Task 9) and with
+/// iTerm2's Yosemite intercell spacing of 0. Pinned tabs are `pinned_width` wide and come off
+/// the room first; the unpinned tabs share the rest by the usual rule. The result is a prefix
+/// of the tabs: at the first tab that does not fit, it and the rest overflow.
+fn arrange(desired: &[f32], pinned: &[bool], pinned_width: f32, available: f32, p: &Prefs, scale: f32) -> Vec<f32> {
     let n = desired.len();
+    let pinned_count = pinned.iter().filter(|p| **p).count();
+    let unpinned = n - pinned_count;
     if p.uneven {
         // `PSM variableCellWidthsWithOverflow:`: only when every tab fits at its clamped width.
-        let clamped: Vec<f32> = desired.iter().map(|&d| p.min_width.max(d.min(MAX_WIDTH))).collect();
+        let clamped: Vec<f32> =
+            desired.iter().zip(pinned).map(|(&d, &pin)| if pin { pinned_width } else { p.min_width.max(d.min(MAX_WIDTH)) }).collect();
         if clamped.iter().sum::<f32>() <= available {
             return clamped;
         }
     }
+    // `PSM totalPinnedSpaceForPinnedCount:unpinnedCount:` with no spacing.
+    let room = (available - pinned_count as f32 * pinned_width).max(0.0);
     // `PSM shouldUseOptimalWidthWithOverflow:`.
-    if !p.stretch && p.optimum * n as f32 <= available {
-        return vec![p.optimum; n];
-    }
-    let visible = if p.min_width * n as f32 <= available {
-        n
-    } else if p.min_width > 0.0 {
-        ((available / p.min_width).floor().max(0.0) as usize).min(n)
+    let shares = if unpinned == 0 || (pinned_count > 0 && room <= 0.0) {
+        Vec::new()
+    } else if !p.stretch && p.optimum * unpinned as f32 <= room {
+        vec![p.optimum; unpinned]
     } else {
-        n
+        let visible = if p.min_width * unpinned as f32 <= room {
+            unpinned
+        } else if p.min_width > 0.0 {
+            ((room / p.min_width).floor().max(0.0) as usize).min(unpinned)
+        } else {
+            unpinned
+        };
+        equal_shares(room, visible, scale)
     };
-    equal_shares(available, visible, scale)
+    // `PSM:3180-3202`: the tabs in order until one does not fit.
+    let mut out = Vec::with_capacity(n);
+    let (mut used, mut next) = (0.0, 0);
+    for &pin in pinned {
+        if pin {
+            if used + pinned_width > available {
+                break;
+            }
+            out.push(pinned_width);
+            used += pinned_width;
+        } else {
+            let Some(&w) = shares.get(next) else { break };
+            out.push(w);
+            next += 1;
+        }
+    }
+    out
 }
 
 /// `PSM computeCellFramesInContainerOfWidth:...`: `room` shared by `n` tabs in whole device
@@ -285,6 +326,8 @@ pub struct CellInput {
     pub title_width: f32,
     /// `MinimumTabLabelWidth`: the icon is dropped unless the label keeps more than this.
     pub min_label: f32,
+    /// A pinned tab: no close button; its pin takes the close button's room (`YS:854-915`).
+    pub pinned: bool,
 }
 
 /// Where one tab's parts go (`YS drawInteriorWithTabCell:inView:highlightAmount:`), in points.
@@ -299,7 +342,8 @@ pub struct CellLayout {
     pub counter: Option<Rect>,
     /// The label's box, the tab's full height: the drawer places the text line(s) in it.
     pub label: Rect,
-    /// The label is too long to center: it is drawn left-aligned and truncated.
+    /// The label is too long to center: it is drawn left-aligned and truncated. `build` also
+    /// sets it for a pinned tab's single character, which iTerm2 draws left-aligned.
     pub truncate: bool,
     /// Room on the left kept for a close button that shows only on hover.
     pub reserved: f32,
@@ -313,7 +357,10 @@ pub fn cell(input: &CellInput) -> CellLayout {
     let mut reserved = 0.0;
     let mut close = None;
     let mut close_alpha = 0.0;
-    if input.close_buttons {
+    if input.pinned {
+        // `YS drawInteriorWithTabCell:`: room for the pin where the close button would be.
+        label_x += CLOSE_SIZE + CELL_PADDING;
+    } else if input.close_buttons {
         close = Some(Rect { x: x + CELL_MARGIN, y: centered(CLOSE_SIZE), w: CLOSE_SIZE, h: CLOSE_SIZE });
         if input.close_always {
             label_x += CLOSE_SIZE + CELL_PADDING;
@@ -651,6 +698,8 @@ pub struct TabInput {
     pub processing: bool,
     /// The tab's number, from 1; 0 for none.
     pub number: usize,
+    /// Pinned: `Settings::pinned_width` wide, with its pin and only its first character.
+    pub pinned: bool,
 }
 
 /// A tab's texts as drawn, measured in points: the title's styled runs with their widths, the
@@ -720,6 +769,8 @@ pub struct Settings {
     pub modifier: &'static str,
     /// The bar's height in points.
     pub height: f32,
+    /// `PinnedTabWidth`: a pinned tab's width in points.
+    pub pinned_width: f32,
 }
 
 impl Settings {
@@ -746,6 +797,7 @@ impl Settings {
             min_label: num("MinimumTabLabelWidth", 35.0),
             modifier: modifier_string(g.int("SwitchTabModifier")),
             height: bar_height(num("DefaultTabBarHeight", 24.0)),
+            pinned_width: num("PinnedTabWidth", crate::scene::PINNED_TAB_WIDTH),
         }
     }
 }
@@ -821,14 +873,32 @@ pub fn build(
             }
         })
         .collect();
-    let plains: Vec<String> = runs.iter().map(|r| r.iter().map(|r| r.text.as_str()).collect()).collect();
+    let plain_of = |runs: &[Run]| -> String { runs.iter().map(|r| r.text.as_str()).collect() };
+    // The bar-wide rule reads every tab's whole title.
+    let whole: Vec<String> = runs.iter().map(|r| plain_of(r)).collect();
+    let how = truncation(&whole.iter().map(String::as_str).collect::<Vec<_>>(), s.smart);
+    // `YS:1016-1027`: a pinned tab shows only its first character, in its style.
+    let runs: Vec<Vec<Run>> = runs
+        .into_iter()
+        .zip(tabs)
+        .map(|(r, t)| {
+            if !t.pinned {
+                return r;
+            }
+            r.iter()
+                .find_map(|run| run.text.chars().next().map(|c| Run { text: c.to_string(), ..run.clone() }))
+                .into_iter()
+                .collect()
+        })
+        .collect();
+    let plains: Vec<String> = runs.iter().map(|r| plain_of(r)).collect();
     let title_widths: Vec<f32> = plains.iter().map(|t| measure(t, font)).collect();
     let counters: Vec<Option<(String, f32)>> = tabs
         .iter()
         .enumerate()
         .map(|(i, t)| {
-            // `TAB:1303-1305`: no count with `HideTabNumber`.
-            (!s.hide_numbers && t.number > 0).then(|| {
+            // `TAB:1303-1305`: no count with `HideTabNumber`; a pinned tab has no room for one.
+            (!s.hide_numbers && t.number > 0 && !t.pinned).then(|| {
                 let text = counter_text(t.number, i + 1 == n, s.modifier);
                 let w = measure(&text, font);
                 (text, w)
@@ -839,8 +909,8 @@ pub fn build(
         .map(|i| desired_width(title_widths[i], tabs[i].icon, counters[i].as_ref().map(|c| counter_width(c.1)), tabs[i].processing))
         .collect();
     // iTerm2 rounds equal shares to half points (`PSM:3205-3232`).
-    let laid = widths(&desired, bar_width, &s.prefs, 2.0);
-    let how = truncation(&plains.iter().map(String::as_str).collect::<Vec<_>>(), s.smart);
+    let pinned: Vec<bool> = tabs.iter().map(|t| t.pinned).collect();
+    let laid = widths(&desired, &pinned, s.pinned_width, bar_width, &s.prefs, 2.0);
 
     let mut bar = Bar {
         cells: Vec::new(),
@@ -857,7 +927,7 @@ pub fn build(
     let mut x = -offset;
     for (i, &w) in laid.widths.iter().enumerate() {
         let t = &tabs[i];
-        let layout = cell(&CellInput {
+        let mut layout = cell(&CellInput {
             x,
             width: w,
             height: s.height,
@@ -869,8 +939,11 @@ pub fn build(
             indicator: t.processing,
             title_width: title_widths[i],
             min_label: s.min_label,
+            pinned: t.pinned,
         });
-        let title = truncate(&plains[i], layout.label.w, how, &|text| measure(text, font));
+        // A pinned tab's character is drawn whole and left-aligned (`YS:1018-1027`).
+        layout.truncate |= t.pinned;
+        let title = if t.pinned { plains[i].clone() } else { truncate(&plains[i], layout.label.w, how, &|text| measure(text, font)) };
         let placed: Vec<(Run, f32)> =
             cut_runs(&runs[i], &title, how).into_iter().map(|r| { let w = measure(&r.text, font); (r, w) }).collect();
         // The subtitle is measured on its own in the title's label room (`YS drawSubtitle:`).
@@ -879,7 +952,8 @@ pub fn build(
         } else {
             (layout.label.x, layout.label.w)
         };
-        let (subtitle, sub_w, sub_label, sub_truncate) = if shows_subtitle(s.height, &t.subtitle) {
+        // `YS:1044`: no subtitle on a pinned tab.
+        let (subtitle, sub_w, sub_label, sub_truncate) = if !t.pinned && shows_subtitle(s.height, &t.subtitle) {
             let whole = measure(&t.subtitle, sub_font);
             let cut = (full_w - whole) / 2.0 < layout.reserved;
             let label = if cut {
@@ -1075,53 +1149,53 @@ mod tests {
         let p = prefs();
         let three = [100.0; 3];
         // Stretched: 576 points shared in half points.
-        let w = widths(&three, 600.0, &p, 2.0);
+        let w = widths(&three, &[], 0.0, 600.0, &p, 2.0);
         assert_eq!(w, Widths { widths: vec![192.0, 192.0, 192.0], overflow: false, content: 0.0 });
         // 553 points is 1106 device pixels: 368 each and 2 left over for the first tabs.
-        assert_eq!(widths(&three, 577.0, &p, 2.0).widths, vec![184.5, 184.5, 184.0]);
+        assert_eq!(widths(&three, &[], 0.0, 577.0, &p, 2.0).widths, vec![184.5, 184.5, 184.0]);
 
         let fixed = Prefs { stretch: false, ..p };
-        assert_eq!(widths(&three, 600.0, &fixed, 2.0).widths, vec![175.0, 175.0, 175.0]);
+        assert_eq!(widths(&three, &[], 0.0, 600.0, &fixed, 2.0).widths, vec![175.0, 175.0, 175.0]);
         // 5 x 175 does not fit in 576, 5 x 75 does: stretched instead.
         assert_eq!(
-            widths(&[100.0; 5], 600.0, &fixed, 2.0).widths,
+            widths(&[100.0; 5], &[], 0.0, 600.0, &fixed, 2.0).widths,
             vec![115.5, 115.5, 115.0, 115.0, 115.0]
         );
 
         // 9 tabs of minimum 75 in 476 points: floor(476 / 75) = 6 show, the rest overflow.
-        let w = widths(&[100.0; 9], 500.0, &p, 2.0);
+        let w = widths(&[100.0; 9], &[], 0.0, 500.0, &p, 2.0);
         assert_eq!(w.widths.len(), 6);
         assert!(w.overflow);
         assert_eq!(w.content, 0.0);
         // Without the add-tab button the regular layout drops tabs, so the overflow variant
         // (24 points of margin) is used, not the full 500.
         let bare = Prefs { add_button: false, ..p };
-        let w = widths(&[100.0; 9], 500.0, &bare, 2.0);
+        let w = widths(&[100.0; 9], &[], 0.0, 500.0, &bare, 2.0);
         assert_eq!(w.widths.len(), 6);
         assert!(w.overflow);
         assert_eq!(w.widths.iter().sum::<f32>(), 476.0);
         // Without the add-tab button and nothing dropped, the whole bar is used.
-        assert_eq!(widths(&three, 600.0, &bare, 2.0).widths, vec![200.0, 200.0, 200.0]);
+        assert_eq!(widths(&three, &[], 0.0, 600.0, &bare, 2.0).widths, vec![200.0, 200.0, 200.0]);
 
         // Uneven: clamped to the minimum and 280 when every tab fits.
         let uneven = Prefs { uneven: true, ..p };
         let desired = [60.0, 150.0, 400.0];
-        assert_eq!(widths(&desired, 800.0, &uneven, 2.0).widths, vec![75.0, 150.0, 280.0]);
+        assert_eq!(widths(&desired, &[], 0.0, 800.0, &uneven, 2.0).widths, vec![75.0, 150.0, 280.0]);
         // The clamped sum 505 passes 476: the equal rule, 952 device pixels over 3.
-        assert_eq!(widths(&desired, 500.0, &uneven, 2.0).widths, vec![159.0, 158.5, 158.5]);
+        assert_eq!(widths(&desired, &[], 0.0, 500.0, &uneven, 2.0).widths, vec![159.0, 158.5, 158.5]);
     }
 
     #[test]
     fn scrolling_follows_iterm2() {
         let p = Prefs { scrollable: true, ..prefs() };
-        let w = widths(&[100.0; 10], 600.0, &p, 2.0);
+        let w = widths(&[100.0; 10], &[], 0.0, 600.0, &p, 2.0);
         assert_eq!(w, Widths { widths: vec![120.0; 10], overflow: false, content: 1200.0 });
         // Tabs that fit at 120 use the normal rule and do not scroll.
-        let w = widths(&[100.0; 3], 600.0, &p, 2.0);
+        let w = widths(&[100.0; 3], &[], 0.0, 600.0, &p, 2.0);
         assert_eq!(w, Widths { widths: vec![192.0, 192.0, 192.0], overflow: false, content: 0.0 });
         // Uneven: max(120, min(280, desired)).
         let uneven = Prefs { uneven: true, ..p };
-        let w = widths(&[60.0, 150.0, 400.0, 200.0, 300.0], 600.0, &uneven, 2.0);
+        let w = widths(&[60.0, 150.0, 400.0, 200.0, 300.0], &[], 0.0, 600.0, &uneven, 2.0);
         assert_eq!(
             w,
             Widths { widths: vec![120.0, 150.0, 280.0, 200.0, 280.0], overflow: false, content: 1030.0 }
@@ -1179,6 +1253,48 @@ mod tests {
         assert_eq!(counter_width(30.0), 38.0);
     }
 
+    #[test]
+    fn build_gives_pinned_tabs_their_width() {
+        let base = defaults();
+        assert_eq!(base.pinned_width, 64.0, "PinnedTabWidth");
+        let s = Settings { prefs: Prefs { add_button: false, stretch: true, ..base.prefs }, ..base };
+        let tabs = [TabInput { pinned: true, ..input("vim", 1) }, input("two", 2), input("three", 3)];
+        let bar = build(&tabs, 1, 600.0, 0.0, Some(0), &s, &six_per_char);
+        let (i, c, r) = &bar.cells[0];
+        assert_eq!((*i, *r), (0, Rect { x: 0.0, y: 0.0, w: 64.0, h: 24.0 }));
+        assert_eq!((c.close, c.counter), (None, None), "no close button and no number");
+        assert_eq!(bar.titles[0], "v", "only the first character");
+        assert!(c.truncate, "drawn left-aligned");
+        assert_eq!(c.label.x, 6.0 + 16.0 + 4.0, "after the pin's room");
+        assert_eq!(bar.cells[1].2, Rect { x: 64.0, y: 0.0, w: 268.0, h: 24.0 });
+        assert_eq!(bar.cells[2].2, Rect { x: 332.0, y: 0.0, w: 268.0, h: 24.0 });
+        assert!(bar.cells[1].1.counter.is_some());
+        // Every tab unpinned: 13c's layout (`build_follows_iterm2`'s stretched thirds).
+        let plain: Vec<TabInput> = tabs.iter().map(|t| TabInput { pinned: false, ..t.clone() }).collect();
+        let bar = build(&plain, 1, 600.0, 0.0, None, &defaults(), &six_per_char);
+        assert_eq!(bar.cells[2].2, Rect { x: 384.0, y: 0.0, w: 192.0, h: 24.0 });
+        assert_eq!(bar.add, Some(Rect { x: 576.0, y: 0.0, w: 24.0, h: 24.0 }));
+        // Not stretched: the unpinned tabs take the optimum when it fits after the pinned room.
+        let fixed = Settings { prefs: Prefs { stretch: false, ..s.prefs }, ..s.clone() };
+        let bar = build(&tabs, 1, 600.0, 0.0, None, &fixed, &six_per_char);
+        assert_eq!(bar.cells.iter().map(|c| c.2.w).collect::<Vec<_>>(), vec![64.0, 175.0, 175.0]);
+        // A scrolling bar: the pinned cell keeps its width in the natural widths.
+        let many: Vec<TabInput> = (0..10).map(|i| TabInput { pinned: i == 0, ..input("t", i + 1) }).collect();
+        let bar = build(&many, 0, 600.0, 0.0, None, &s, &six_per_char);
+        assert_eq!(bar.content, 64.0 + 9.0 * 120.0);
+        assert_eq!(bar.cells[0].2.w, 64.0);
+        // Too many tabs: the pinned room comes off first, the unpinned share the rest at the
+        // minimum or more, the others overflow: 476 - 128 = 348 fits 4 of minimum 75.
+        let mut pins = [false; 9];
+        pins[..2].copy_from_slice(&[true, true]);
+        let w = widths(&[100.0; 9], &pins, 64.0, 500.0, &Prefs { scrollable: false, ..s.prefs }, 2.0);
+        assert_eq!(w.widths, vec![64.0, 64.0, 87.0, 87.0, 87.0, 87.0]);
+        assert!(w.overflow);
+        // Scrolled, the pinned cell moves with the others (`PSM:3396-3403` shifts the whole walk).
+        let bar = build(&many, 0, 600.0, 100.0, None, &s, &six_per_char);
+        assert_eq!(bar.cells[0].2.x, -100.0);
+    }
+
     fn tab() -> CellInput {
         CellInput {
             x: 0.0,
@@ -1192,6 +1308,7 @@ mod tests {
             indicator: false,
             title_width: 40.0,
             min_label: 35.0,
+            pinned: false,
         }
     }
 
@@ -1372,7 +1489,7 @@ mod tests {
     }
 
     fn input(title: &str, number: usize) -> TabInput {
-        TabInput { title: title.into(), subtitle: String::new(), icon: false, processing: false, number }
+        TabInput { title: title.into(), subtitle: String::new(), icon: false, processing: false, number, pinned: false }
     }
 
     #[test]

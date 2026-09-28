@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::tab_drag::Target;
-use crate::tab_groups::{self, TabGroup};
+use crate::tab_groups;
 use crate::winmodel::LayoutOp;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -177,13 +177,7 @@ impl App {
         if resolved.as_deref() == tab.group.as_ref().map(|g| g.id.as_str()) {
             return;
         }
-        let mut group = resolved.map(|id| TabGroup { id, name: String::new(), color: tab_groups::PALETTE[0], collapsed: false });
-        let mut pinned = tab.pinned;
-        let others: Vec<(Option<&TabGroup>, bool)> = self.tabs.iter().enumerate().filter(|(i, _)| *i != at).map(|(_, t)| (t.group.as_ref(), t.pinned)).collect();
-        tab_groups::reconcile(&mut group, &mut pinned, &others);
-        let tab = &mut self.tabs[at];
-        tab.group = group;
-        tab.pinned = pinned;
+        self.set_tab_group(at, resolved);
     }
 
     /// The tabs take iTerm2's canonical order (`tab_groups::canonical_order`: pinned tabs

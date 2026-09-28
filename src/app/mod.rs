@@ -98,6 +98,7 @@ mod coprocess_ui;
 mod aps_ui;
 mod windows_ui;
 mod tab_drag_ui;
+mod tab_groups_ui;
 mod undo_ui;
 mod arrange_ui;
 mod restore_ui;
@@ -1676,7 +1677,7 @@ impl App {
         let s = tab_layout::Settings::from_globals(&self.globals);
         let inputs: Vec<tab_layout::TabInput> = looks
             .iter()
-            .map(|l| tab_layout::TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: l.dot.is_some() || l.icon.is_some(), processing: l.processing, number: l.number })
+            .map(|l| tab_layout::TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: l.dot.is_some() || l.icon.is_some(), processing: l.processing, number: l.number, pinned: l.pinned })
             .collect();
         let (scale, active, hovered) = (self.scale(), self.active, self.tab_hover.map(|(i, _)| i));
         let renderer = self.gpu.as_mut().map(|g| std::cell::RefCell::new(&mut g.renderer));
