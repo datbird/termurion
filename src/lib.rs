@@ -107,6 +107,8 @@ pub mod trigger_events;
 pub mod proctree;
 pub mod winmodel;
 pub mod wintitle;
+pub mod chrome;
+pub mod tab_theme;
 pub mod frames;
 pub mod placement;
 pub mod arrangement;

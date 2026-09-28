@@ -68,6 +68,7 @@ pub(super) struct WinSlot {
     win_locks: crate::winmodel::Locks,
     win_title: Option<String>,
     window_menu_text: (String, String),
+    border_applied: Option<u32>,
     mru: Mru,
     mru_mods: Option<Mods>,
     laid_out: Option<crate::statusbar_layout::Room>,
@@ -136,6 +137,7 @@ impl WinSlot {
             win_locks: Default::default(),
             win_title: None,
             window_menu_text: Default::default(),
+            border_applied: None,
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
@@ -219,6 +221,7 @@ impl App {
         swap(&mut self.win_locks, &mut s.win_locks);
         swap(&mut self.win_title, &mut s.win_title);
         swap(&mut self.window_menu_text, &mut s.window_menu_text);
+        swap(&mut self.border_applied, &mut s.border_applied);
         swap(&mut self.mru, &mut s.mru);
         swap(&mut self.mru_mods, &mut s.mru_mods);
         swap(&mut self.laid_out, &mut s.laid_out);
@@ -526,6 +529,9 @@ impl App {
             }
             return Err(why);
         }
+        // Square corners are set once, when the window is made (iTerm2 needs a restart).
+        self.apply_corners();
+        self.apply_border();
         // A hotkey window made by its hotkey shows now; a restored one waits for the hotkey.
         if hotkey && !arranged {
             self.roll_in();
@@ -750,6 +756,7 @@ impl WinSlot {
             win_locks: Default::default(),
             win_title: None,
             window_menu_text: Default::default(),
+            border_applied: None,
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,

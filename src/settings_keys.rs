@@ -2531,4 +2531,29 @@ mod tests {
             assert_eq!((s.label.as_str(), s.help.as_str()), (label, label), "{key}");
         }
     }
+
+    /// The border rows: Appearance's check box (`XIB:8935-8939`) and the advanced settings
+    /// (`AS:707-709`, `:719`).
+    #[test]
+    fn border_rows_follow_iterm2() {
+        let s = schema::find_global("UseBorder").expect("UseBorder");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Appearance", "Windows", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        assert_eq!(s.label, "Heavy border around windows in light mode");
+        let rows = [
+            ("WindowBorderColor", Kind::String, Value::String(String::new()), "Border color for focused windows."),
+            ("WindowBorderColorUnfocused", Kind::String, Value::String(String::new()), "Border color for unfocused windows."),
+            ("BordersOnlyInLightMode", Kind::Bool, Value::Boolean(true), "Opaque windows have a border only in light mode."),
+            ("SquareWindowCorners", Kind::Bool, Value::Boolean(false), "Windows have square corners."),
+        ];
+        for (key, kind, default, label) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Windows", kind), "{key}");
+            assert_eq!(s.default, Some(default), "{key}");
+            assert_eq!(s.label, label, "{key}");
+            assert!(s.help.starts_with(&format!("{label}\n")), "{key}");
+        }
+        let s = schema::find_global("SquareWindowCorners").expect("SquareWindowCorners");
+        assert!(s.help.ends_with("You must restart Tandem after changing this setting for it to take effect."));
+    }
 }

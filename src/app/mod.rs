@@ -97,6 +97,8 @@ mod close_ui;
 mod coprocess_ui;
 mod aps_ui;
 mod windows_ui;
+#[cfg(windows)]
+mod chrome_ui;
 mod tab_drag_ui;
 mod tab_groups_ui;
 mod undo_ui;
@@ -341,6 +343,8 @@ pub struct App {
     /// The current window's Window menu texts as last drawn: its title as the OS shows it
     /// without the label, and its title without the number (`caption_text`).
     window_menu_text: (String, String),
+    /// The border color last given to the current window's DWM frame (`apply_border`).
+    border_applied: Option<u32>,
     /// The current window's toolbelt.
     belt: toolbelt_ui::Belt,
     /// Bumped when something a toolbelt tool shows changes (`tools_changed`).
@@ -1144,6 +1148,7 @@ pub fn run() {
         win_locks: Default::default(),
         win_title: None,
         window_menu_text: Default::default(),
+        border_applied: None,
         belt: Default::default(),
         tool_gen: 0,
         belt_keys: Default::default(),
@@ -2243,6 +2248,17 @@ impl App {
         self.gpu.as_ref().and_then(|g| g.window.theme()).is_none_or(|t| t == winit::window::Theme::Dark)
     }
 
+    /// The Theme setting (`TabStyleWithAutomaticOption`), Automatic when unset.
+    pub(super) fn tab_style(&self) -> crate::tab_theme::TabStyle {
+        use crate::tab_theme::{KEY, TabStyle, from_value};
+        self.globals.get(KEY).and_then(|v| v.as_integer()).map_or(TabStyle::Automatic, from_value)
+    }
+
+    /// The fixed style the current window draws (`crate::tab_theme::resolved`).
+    pub(super) fn resolved_style(&self) -> crate::tab_theme::TabStyle {
+        crate::tab_theme::resolved(self.tab_style(), self.dark(), false)
+    }
+
     fn start_pane(&mut self, rect: Rect, guid: Option<&str>) -> Option<PaneId> {
         let id = self.next_id;
         let started = self.start_pane_as(id, rect, guid);
@@ -2632,6 +2648,8 @@ impl App {
         self.sync_checks();
         self.register_hotkeys();
         self.scripts_folder_changed();
+        // The border settings, or the Theme, may have changed.
+        self.apply_border_everywhere();
     }
 
     /// Starts watching and scanning the Scripts folder the settings name (`FM:236-252`).
@@ -4475,7 +4493,11 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         match event {
-            WindowEvent::ThemeChanged(_) => self.refresh_panes(),
+            WindowEvent::ThemeChanged(_) => {
+                self.refresh_panes();
+                // A light or dark window may gain or lose its border (`BordersOnlyInLightMode`).
+                self.apply_border();
+            }
             WindowEvent::DroppedFile(path) => {
                 let (x, y) = self.cursor;
                 let pane = self.pane_at(x, y).map(|(p, _)| p).or_else(|| self.focused_id());
@@ -4496,6 +4518,8 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.relayout();
                 self.tmux_save_all_windows();
+                // Entering or leaving full screen resizes the window: the border goes or comes back.
+                self.apply_border();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let _ = scale_factor;
@@ -4524,6 +4548,8 @@ impl ApplicationHandler<UserEvent> for App {
                     self.composer_keys.clear();
                 }
                 self.focused = f;
+                // The border takes the focused or unfocused color.
+                self.apply_border();
                 // Tandem going to the background saves the windows (iTerm2 saves on resign
                 // active); a switch between Tandem's own windows gains focus again at once.
                 self.focus_lost = !f;
