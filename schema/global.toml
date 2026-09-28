@@ -1357,6 +1357,15 @@ default = true
 help = "Requres tmux version 2.9 or later."
 
 [[setting]]
+key = "accelerateUploads"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Make uploads with it2ul really fast."
+type = "bool"
+default = true
+help = "Make uploads with it2ul really fast."
+
+[[setting]]
 key = "smartLoggingWithAutoComposer"
 tab = "Advanced"
 section = "Experimental Features"

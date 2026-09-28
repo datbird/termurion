@@ -81,6 +81,7 @@ pub mod util_imgls;
 pub mod util_simple;
 pub mod util_git;
 pub mod util_tip;
+pub mod util_query;
 #[cfg(windows)]
 pub mod util_console;
 pub mod builtin_fns;

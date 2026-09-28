@@ -285,6 +285,12 @@ pub fn upload_archive(paths: &[std::path::PathBuf]) -> Result<Vec<u8>, String> {
     gz.finish().map_err(|e| e.to_string())
 }
 
+/// How much of an upload goes out every 10 ms: 40960 bytes with `accelerateUploads`
+/// (`PasteContext.m:52-56`), else the quick-paste default of 768 (`iTermPasteHelper.m:34`).
+pub fn upload_chunk(accelerate: bool) -> usize {
+    if accelerate { 40960 } else { 768 }
+}
+
 /// The archive as sent: base64 in 76-column lines each ending CR, then CR CR.
 pub fn upload_lines(archive: &[u8]) -> Vec<u8> {
     use base64::Engine;
@@ -454,6 +460,45 @@ mod tests {
         assert_eq!(parts[0].len(), 76);
         assert!(text.ends_with("\r\r\r"), "the last line's CR, then CR CR");
         assert!(!text.contains('\n'));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn upload_pace_follows_iterm2() {
+        assert_eq!(upload_chunk(true), 40960);
+        assert_eq!(upload_chunk(false), 768);
+    }
+
+    /// The entry names of an upload archive, sorted, with `/` separators and no trailing one
+    /// (the tar crate writes the first folder as "a/" and the ones inside it as "a/deep").
+    fn entries(archive: &[u8]) -> Vec<String> {
+        let mut names: Vec<String> =
+            tar::Archive::new(flate2::read::GzDecoder::new(archive)).entries().unwrap().map(|e| e.unwrap().path().unwrap().to_string_lossy().replace('\\', "/").trim_end_matches('/').to_string()).collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn folder_uploads_follow_iterm2() {
+        // iTerm2 names entries "./<path>" relative to the base; the tar crate drops the "./".
+        let dir = std::env::temp_dir().join(format!("tandem-up-folders-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("top").join("a").join("deep")).unwrap();
+        std::fs::create_dir_all(dir.join("top").join("b")).unwrap();
+        std::fs::write(dir.join("top").join("a").join("deep").join("x.txt"), b"x").unwrap();
+        std::fs::write(dir.join("top").join("b").join("y.txt"), b"y").unwrap();
+        std::fs::write(dir.join("top").join("f.txt"), b"f").unwrap();
+        let top = dir.join("top");
+        // One folder alone: relative to its parent, so the folder's own name leads.
+        assert_eq!(entries(&upload_archive(&[top.join("a")]).unwrap()), ["a", "a/deep", "a/deep/x.txt"]);
+        assert_eq!(entries(&upload_archive(&[top.clone()]).unwrap()), ["top", "top/a", "top/a/deep", "top/a/deep/x.txt", "top/b", "top/b/y.txt", "top/f.txt"]);
+        // Two folders: relative to their lowest common folder.
+        assert_eq!(entries(&upload_archive(&[top.join("a"), top.join("b")]).unwrap()), ["a", "a/deep", "a/deep/x.txt", "b", "b/y.txt"]);
+        assert_eq!(entries(&upload_archive(&[top.join("a").join("deep"), top.join("b")]).unwrap()), ["a/deep", "a/deep/x.txt", "b", "b/y.txt"]);
+        // A file and a folder under the same parent: relative to that parent.
+        assert_eq!(entries(&upload_archive(&[top.join("f.txt"), top.join("b")]).unwrap()), ["b", "b/y.txt", "f.txt"]);
+        // One file: relative to its folder.
+        assert_eq!(entries(&upload_archive(&[top.join("f.txt")]).unwrap()), ["f.txt"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

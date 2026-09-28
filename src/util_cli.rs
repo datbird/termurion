@@ -154,7 +154,7 @@ pub fn term(io: &Io) -> Option<String> {
 /// calls `std::process::exit`: the console's restore (`Drop`, then `real_main`'s restore of
 /// every saved mode) runs only when it returns.
 pub fn run(name: &str, args: &[String], io: &mut Io) -> i32 {
-    use crate::{util_files, util_git, util_simple, util_tip};
+    use crate::{util_files, util_git, util_query, util_simple, util_tip};
     match name {
         "imgcat" => util_files::imgcat(args, io),
         "it2cat" => util_files::it2cat(args, io),
@@ -166,6 +166,10 @@ pub fn run(name: &str, args: &[String], io: &mut Io) -> i32 {
         "it2setkeylabel" => util_simple::it2setkeylabel(args, io),
         "it2git" => util_git::it2git(args, io),
         "it2tip" => util_tip::it2tip(args, io),
+        "it2check" => util_query::it2check(args, io),
+        "it2getvar" => util_query::it2getvar(args, io),
+        "it2profile" => util_query::it2profile(args, io),
+        "it2ul" => util_query::it2ul(args, io),
         #[cfg(windows)]
         "imgls" => {
             let fs = crate::util_imgls::WinFs::new(io.cwd.clone());

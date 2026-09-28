@@ -1148,6 +1148,17 @@ mod tests {
     }
 
     #[test]
+    fn upload_row_follows_iterm2() {
+        let row = schema::find_global("accelerateUploads").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"));
+        assert_eq!(row.kind, Kind::Bool);
+        assert_eq!(row.default, Some(Value::Boolean(true)));
+        assert_eq!(row.label, "Make uploads with it2ul really fast.");
+        assert_eq!(row.help, "Make uploads with it2ul really fast.");
+        assert!(Globals::empty(std::path::Path::new("upload-row-test.toml")).bool("accelerateUploads"), "on until turned off");
+    }
+
+    #[test]
     fn pointer_rows_show_labels() {
         let rows = pointer_rows(crate::globals::keymaps::factory_pointer());
         assert!(rows.contains(&("Button,1,1,,".to_string(), "Right button, single click".to_string(), "Open Context Menu".to_string())));

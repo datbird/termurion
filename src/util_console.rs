@@ -442,6 +442,17 @@ mod tests {
         0
     }
 
+    /// `probe:modes <utility> <args>`: runs the utility, then prints the console input mode
+    /// before and after it as `BEFORE <hex> AFTER <hex>`, and exits with the utility's code.
+    fn probe_modes(io: &mut Io, args: &[String]) -> i32 {
+        let c = Console::open();
+        let before = mode_of(c.conin);
+        let code = util_cli::run(&args[0], &args[1..], io);
+        say(io, "");
+        say(io, &format!("BEFORE {before:x} AFTER {:x}", mode_of(c.conin)));
+        code
+    }
+
     /// The child half of the ConPTY tests: `TANDEM_UTILITY_CHILD` holds, in hex, a name and
     /// its arguments separated by U+001F; runs that probe or utility over the real console and
     /// exits with its code (so libtest's summary never decides it).
@@ -459,6 +470,7 @@ mod tests {
             "probe:out" => probe_out(io),
             "probe:in" => probe_in(io),
             "probe:dsr" => probe_dsr(io),
+            "probe:modes" => probe_modes(io, &args),
             other => util_cli::run(other, &args, io),
         });
         std::process::exit(code);
@@ -581,6 +593,60 @@ mod tests {
         let shown = screen.images.by_id.values().next().unwrap();
         assert_eq!((shown.width_px, shown.height_px), (200, 200));
         assert!(!shown.broken);
+    }
+
+    /// The query utilities through the shipped ConPTY: the screen answers it2check's
+    /// `CSI 1337 n` and `CSI 5 n` itself; ReportVariable and RequestUpload are answered as
+    /// Tandem's window does. Each child puts the console modes back.
+    #[test]
+    fn queries_through_conpty() {
+        use crate::prompted::{UPLOAD_OK, upload_archive, upload_lines, variable_reply};
+        let restored = |screen: &Screen, what: &str| {
+            let before = field(screen, "BEFORE").unwrap_or_else(|| panic!("{what}: no BEFORE in {:?}", screen.text()));
+            assert_eq!(field(screen, "AFTER"), Some(before), "{what}: the console modes are put back");
+        };
+        let (code, _, screen) = run_in_conpty(&["probe:modes", "it2check"], &mut |_, _| {});
+        assert_eq!(code, Some(0), "it2check: {:?}", screen.text());
+        restored(&screen, "it2check");
+        let (code, _, screen) = run_in_conpty(&["probe:modes", "it2check", "9.0"], &mut |_, _| {});
+        assert_eq!(code, Some(1));
+        restored(&screen, "it2check 9.0");
+
+        let mut asked = Vec::new();
+        let (code, _, screen) = run_in_conpty(&["probe:modes", "it2getvar", "profileName"], &mut |r, back| {
+            if let Request::ReportVariable(name) = r {
+                asked.push(name.clone());
+                back.extend(variable_reply(Some("Default")));
+            }
+        });
+        assert_eq!(code, Some(0), "it2getvar: {:?}", screen.text());
+        assert_eq!(asked, [b64(b"profileName")]);
+        assert!(screen.text().lines().any(|l| l.split_whitespace().any(|w| w == "Default")), "{:?}", screen.text());
+        restored(&screen, "it2getvar");
+
+        let root = std::env::temp_dir().join(format!("tandem-it2ul-conpty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (from, to) = (root.join("from"), root.join("to dir"));
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        let bytes: Vec<u8> = (0..5000u32).map(|i| (i * 7 % 251) as u8).collect();
+        std::fs::write(from.join("up.bin"), &bytes).unwrap();
+        let archive = upload_archive(&[from.join("up.bin")]).unwrap();
+        let mut requests = 0;
+        let (code, _, screen) = run_in_conpty(&["probe:modes", "it2ul", &to.to_string_lossy()], &mut |r, back| {
+            if let Request::RequestUpload(params) = r {
+                requests += 1;
+                assert!(params.starts_with("format=tgz;version="), "{params}");
+                back.extend_from_slice(UPLOAD_OK);
+                back.extend(upload_lines(&archive));
+            }
+        });
+        let got = std::fs::read(to.join("up.bin"));
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(code, Some(0), "it2ul: {:?}", screen.text());
+        assert_eq!(requests, 1);
+        assert_eq!(got.ok(), Some(bytes), "the file arrives with its bytes");
+        restored(&screen, "it2ul");
     }
 
     /// A measurement (pre-flight ruling): run by hand with
