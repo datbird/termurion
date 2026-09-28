@@ -1,0 +1,114 @@
+# Milestone 13e acceptance checklist
+
+Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+`tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
+`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+
+Nothing in this milestone was checked on screen while it was built, so every line here is a
+first look. Most of the Win32 work (the caption frame, the hit tests, the key and menu paths, the
+DPI handling, the forced title bar) was only unit tested through its pure parts, so the rows for
+it are the ones to read twice. Setup: the Theme popup is Settings > Appearance > General; the
+tab rows are Settings > Advanced ("Tabs") and the caption rows Settings > Advanced ("Windows");
+a tab's color is the profile's Tab Color (Profiles > Colors) or the tab menu's Tab Color. Use two
+tabs unless a row says otherwise, one of them colored. Have two windows open for the rows that
+switch windows. Mark each line pass or fail.
+
+## Theme popup and Regular
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Settings > Appearance > General > Theme lists, in order: Regular, Minimal, Compact, Light, Dark, Light (High Contrast), Dark (High Contrast). A fresh settings file shows Regular. | |
+| 2 | Regular: switch Windows between light and dark mode (Settings > Personalization > Colors): the tab bar, the title bar and the menu bar follow at once. Turn on a Windows contrast theme: the tab bar changes to a High Contrast look at the next redraw (click in the window). Turn it off: back to the ordinary look. | |
+| 3 | Regular in light mode: the selected tab is clear against a light grey bar, unselected tabs are slightly darker, thin lines between tabs. Dark mode: the unselected tabs are dark and the selected one is the bar's color. Tab text is 11 points and dims in a background window. | |
+
+## Forced themes
+
+| # | Check | Result |
+|---|---|---|
+| 4 | Light: with Windows in dark mode the title bar, the menu bar, the Settings window, the Password Manager and the replay panel all turn light. Dark: with Windows in light mode they all turn dark. | |
+| 5 | With Theme Dark and Windows in light mode, change a Windows setting (switch the mode, then back, or change the accent color): the title bar stays dark each time and never flashes back to light. Repeat with Light in dark mode. Not run live before: this is the forced title bar across a Windows setting change. | |
+| 6 | Set the Theme to Regular after a forced one: the title bar goes back to following Windows, also after the next Windows setting change. Open a new window while Dark is forced: it opens dark (a brief light title bar flash on open is a kept cost). | |
+| 7 | A profile with "Use separate colors for light and dark mode" on, under Dark or Light: the terminal colors switch to that mode's set even when Windows is in the other mode. Under Regular they follow Windows. | |
+| 8 | Profiles > Colors with separate light and dark colors on: under Light, Dark, Light (High Contrast) or Dark (High Contrast) the warning text shows under the "Editing the ... mode colors" line; under Regular, Minimal and Compact it does not. With separate colors off it never shows. | |
+| 9 | Light (High Contrast): tab text is black, the selected tab matches the window background, unselected tabs are mid grey, text 12 points. Dark (High Contrast) with Advanced HighVisibility on (the default): the selected tab is light grey with black text and unselected tabs are near black with white text. Turn HighVisibility off: the selected tab is dark grey with white text. Light (High Contrast) does not change with it. | |
+| 10 | Kept gap: right-click menus and other popup menus follow Windows' mode, not the forced theme (a light context menu under Dark is expected). | |
+
+## Colored tabs
+
+| # | Check | Result |
+|---|---|---|
+| 11 | Give one tab a Tab Color: it is filled with the color (brighter on the selected tab, softer when unselected) and the selected colored tab has a thin outline (white on a dark color, black on a light one). Tab text turns black or white by the fill. An uncolored tab beside it still follows the theme. | |
+| 12 | Change Advanced ColoredSelectedTabOutlineStrength to 3 (thick) and 0 (none), and ColoredUnselectedTabTextProminence to 1 and 0.2: the outline and the unselected text change accordingly. | |
+| 13 | Change Advanced LightModeInactiveTabDarkness and DarkModeInactiveTabDarkness: unselected tabs get darker in the Light and Dark themes respectively. | |
+
+## Minimal
+
+| # | Check | Result |
+|---|---|---|
+| 14 | Minimal: the tab bar takes the current session's background. Change the profile's background color (Profiles > Colors) or open a tab with another profile: the bar follows the selected tab's session. | |
+| 15 | Minimal with two tabs: the selected tab is the bar color and the other is slightly different (Advanced MinimalTabStyleBackgroundColorDifference), and a thin line (the notch) runs along the bar's lower edge up to the selected tab, around its sides and on to the far end. With the first tab selected the left part is skipped. No lines between tabs and no line between the bar and the terminal. | |
+| 16 | Minimal in a background window with Advanced Dim background windows on: the bar dims. Click the window: it returns to full color. With Dim background windows off nothing dims. | |
+| 17 | Minimal with a colored tab: the tab color shows at full strength when selected and half when not; the selected colored tab has a two-line underline. Advanced MinimalSelectedTabUnderlineProminence and MinimalDeslectedColoredTabAlpha change them. | |
+| 18 | Minimal with many tabs (so some go to the overflow menu) and the selected tab in the overflow menu: the bar still shows its edge line up to the overflow button. Repeat with a Left or Right tab bar (Appearance > Tabs). | |
+| 19 | Advanced MinimalTabStyleOutlineStrength, MinimalTextLegibilityAdjustment and MinimalTabStyleTreatLeftInsetAsPartOfFirstTab change the outline, the text contrast and the first tab's left line. | |
+
+## Minimal and Compact windows: tabs in the caption
+
+| # | Check | Result |
+|---|---|---|
+| 20 | Minimal and Compact: the tabs move up into the caption area, with minimize, maximize and close buttons at the right (Windows 11 look: 46 points wide, Segoe Fluent Icons glyphs, the close button red on hover). The Minimal bar is 38 points tall (Advanced CompactMinimalTabBarHeight); Compact stays 24. The panes start right below it and the window's grid does not change. | |
+| 21 | Hover the maximize button: Windows' snap layouts flyout appears, and choosing a layout snaps the window. Click maximize: the window maximizes and the glyph becomes restore. Minimize and close work, and the close button turns red under the pointer. Press a button and drag off it before releasing: nothing happens. | |
+| 22 | With one tab (the bar hidden) the caption shows the window title where the bar would be, at the bar's height; open a second tab: the tabs replace it and the panes do not move. | |
+| 23 | The window switch label ("Alt+Win+1") sits right-aligned before the caption buttons in Minimal and Compact windows. With Advanced "Show window number in titlebar accessory?" off the label goes and the caption title reads "1. <title>". | |
+| 24 | The menu bar is not shown in a Minimal or Compact window. A menu button (three lines) at the left of the strip opens the whole menu under it. Alt pressed and released alone opens it, and so does F10. Alt with another key (Alt+Tab) or with Shift does not. AltGr on a non-US layout types its characters and opens nothing. | |
+| 25 | Right-click on the empty space of the tab strip: the whole menu opens at the pointer. Right-click on a tab (also within its top 12 points): the tab menu. Right-click on a group's chip: the group menu. Right-click on a tab's close button: the tab menu. | |
+| 26 | Not run live before: a Minimal window dragged from a 100% monitor to a 150% or 200% monitor and back keeps its client (Columns x Rows) and the tab strip does not grow or shrink. Repeat with a Compact window and with a maximized one (it stays maximized). | |
+| 27 | Switch the Theme between Regular and Minimal several times with a window open: the window keeps its client size each time and the menu bar hides and returns. Full screen (Ctrl+Win+F) in a Minimal window shows a plain full-screen window and leaving restores the strip. | |
+| 28 | Advanced CompactTabBarStoplightButtonsWidth: 75 reserves exactly the three buttons; a larger value leaves more room at the right of the tabs, a smaller value lets the tabs run under the buttons. ExtraSpaceBeforeCompactTopTabBar adds a gap between the last tab (and the "+") and the buttons. Neither applies with a bottom or side bar. | |
+| 29 | A Compact window with a top bar shows no top lines on the tabs (the bar is not attached to a title bar). | |
+
+## Dragging the window
+
+| # | Check | Result |
+|---|---|---|
+| 30 | In a Minimal or Compact window with two or more tabs, press and drag in the top 12 points (Minimal) or 10 points (Compact, Advanced MinimalEdgeDragSize and CompactEdgeDragSize) of a tab: the window moves (and snaps to screen edges). Lower on the tab, a drag reorders the tabs. | |
+| 31 | Drag from empty bar space: the window moves. Double click empty bar space: the window maximizes (and again restores); it does not open a tab. | |
+| 32 | With one tab in a Minimal or Compact window, drag the tab: the window moves. Turn off Advanced ConvertTabDragToWindowDragForSolitaryTabInCompactOrMinimalTheme: dragging the only tab behaves as in Regular (it tears off into a new window at the drop point). A No Title Bar window (profile Window style) with one tab behaves the same in Regular. | |
+| 33 | With one tab in a Minimal window and the key on, drag the tab a long way: the window follows the pointer and no second window is made. | |
+| 34 | Alt+drag from a tab, from empty bar space, from the "+" button and from a group chip, in Regular, Minimal and Compact: the window moves each time. Alt+click on a tab selects it (or closes it on its close button); Alt held only after the drag has started also moves the window. Not run live before. | |
+| 35 | A Compact Centered window (profile Window style Centered under Compact) has no top edge strip; Alt+drag still moves it (a kept cost). | |
+| 36 | A Left or Right tab bar never has an edge strip: a drag on a side tab reorders, never moves the window. | |
+
+## The window name
+
+| # | Check | Result |
+|---|---|---|
+| 37 | Edit Window Title (Session menu) and type a name: in a Minimal or Compact window with two tabs the name shows beside the tabs, dimmed. With Advanced ShowWindowNameBesideTabs "Never" it goes; "When a custom name is set" (default) shows it only with a custom name; "Always" shows the window title when there is no custom name. | |
+| 38 | A long name is cut with an ellipsis and shrinks as tabs are added; with too many tabs for it (under 44 points) it hides. With a scrolling tab bar it keeps its room. | |
+| 39 | Double click the name: Edit Window Title opens (the window does not maximize). Press and drag on the name: the window moves. A single click does nothing. Not run live before. | |
+| 40 | A Regular window, a full-screen window and a window with a Left, Right or Bottom bar never show the name. | |
+
+## Dividers
+
+| # | Check | Result |
+|---|---|---|
+| 41 | Split a tab: the divider is light grey in Regular light, Light and Light (High Contrast), and dark grey in Regular dark, Dark and Dark (High Contrast). | |
+| 42 | Minimal with a split: the divider is the session background nudged toward white (dark) or black (light) by MinimalSplitPaneDividerProminence (0.15). Set it to 0 with Dim background windows on: the divider is invisible when the other panes share one background. Set it to 1: a strong line. | |
+
+## Kept bugs and rulings a person can see
+
+| # | Kept behavior | Result |
+|---|---|---|
+| 43 | The tabs look like iTerm2 on macOS 15 (the pre-Tahoe styles); the Tahoe look is not drawn. The light and dark bar materials are fixed colors (rgb 225 and rgb 58), and Light (High Contrast)'s window color is rgb 236. | |
+| 44 | Regular reads a Windows contrast theme as macOS's increased contrast; a contrast change applies at the next redraw, with no polling. | |
+| 45 | Context and popup menus follow Windows' mode under a forced theme. | |
+| 46 | The window may show a brief system-colored title bar when a forced-theme window opens. | |
+| 47 | The caption buttons are Tandem's own, at the right: no menu bar in Minimal and Compact windows (the menu button, Alt and F10 replace it); Alt+Space still opens the Windows system menu. | |
+| 48 | Shift+Alt alone does not open the menu; F10 opens it on the key press, not the release. | |
+| 49 | A double click in the edge strip over a tab maximizes the window (Windows' title bar double click) rather than editing the tab. | |
+| 50 | Alt+drag moves a Compact Centered window although it has no edge strip. | |
+| 51 | An Alt drag starts after the pointer passes MinimumTabDragDistance, so a very small Alt jitter is still a click. | |
+| 52 | The window name has no letter tracking, and a Minimal window's menu button has no hover highlight. | |
+| 53 | With many tabs the window name hides even when the tabs would overflow anyway (all tabs count toward its room), and pinned tabs' and chips' real minimum widths are not counted. | |
+| 54 | The Dark theme's one-point bottom edge is a solid black line, not iTerm2's gradient; DrawBottomLineForHorizontalTabBar does nothing. | |
+| 55 | A compact window's taskbar title keeps the "N. " prefix while its caption shows the label at the right. | |
