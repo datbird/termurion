@@ -3186,9 +3186,16 @@ impl ApplicationHandler<UserEvent> for App {
                     let edit = slot.as_mut().unwrap().redraw(&mut self.store, &mut self.globals, &mut self.snippets);
                     // Profiles > Session's "Configure Status Bar" opens the setup window.
                     let setup = slot.as_mut().and_then(|s| s.configure_status_bar.take());
+                    // Configure SSH's help button opens its page in the browser.
+                    let url = slot.as_mut().and_then(|s| s.open_url.take());
                     self.apply_edit(edit);
                     if let Some(guid) = setup {
                         self.open_status_setup(statusbar_ui::SetupTarget::Shared(guid), None, false, event_loop);
+                    }
+                    if let Some(url) = url {
+                        if let Err(e) = semantic_ui::shell_open(&url, None, false) {
+                            self.banners.set("window", format!("Could not open {url}: {e}"));
+                        }
                     }
                 }
                 other => {

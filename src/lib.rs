@@ -144,6 +144,7 @@ pub mod ssh_probe;
 pub mod ssh_handshake;
 pub mod ssh_session;
 pub mod ssh_secret;
+pub mod ssh_config;
 #[cfg(windows)]
 pub mod ssh_probe_win;
 #[cfg(windows)]
@@ -208,6 +209,7 @@ pub mod settings_lists;
 pub mod settings_arrangements;
 pub mod settings_shortcuts;
 pub mod settings_hotkey;
+pub mod settings_ssh;
 pub mod restore_state;
 pub mod host_proto;
 pub mod host;
