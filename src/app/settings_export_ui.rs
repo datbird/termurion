@@ -187,12 +187,16 @@ fn stage_import(file: &Path, temp: &Path, appdata: &Path) -> Result<(), String> 
 
 /// The staged User Defaults entity applied to the files on disk, as a custom folder's settings
 /// are at launch: the syncable settings replace the local ones in `settings.toml`, and the
-/// profiles and the default replace `profiles.toml`. A file that cannot be read is never
+/// profiles and the default replace `profiles.toml`. Loading from a custom folder or URL is
+/// then turned off and its location unset (`IE:836-852`), or the load that follows at this
+/// same start would replace what was imported. A file that cannot be read is never
 /// overwritten (as at launch); an entity that is missing or empty changes nothing.
 fn apply_user_defaults(file: &Path, appdata: &Path) {
     let Some(snap) = std::fs::read_to_string(file).ok().and_then(|t| Snapshot::parse(&t)) else { return };
     let (Ok(mut g), Ok(mut store)) = (Globals::load(&appdata.join("settings.toml")), Store::load(&appdata.join("profiles.toml"))) else { return };
     super::prefs_ui::apply_snapshot(&snap, &mut g, &mut store);
+    g.set(crate::remote_prefs::LOAD_KEY, toml::Value::Boolean(false));
+    g.unset(crate::remote_prefs::FOLDER_KEY);
     let _ = g.save();
     let _ = store.save();
 }
@@ -219,8 +223,9 @@ fn stage_scripts(from: &Path, to: &Path) -> Vec<PathBuf> {
 /// profiles, the Application Support files (hidden and excluded names kept out, links not
 /// followed: the Python API consent never comes from an archive), and the script zips moved to
 /// `.import-scripts`; the staging folder goes last. A stale marker is removed and nothing
-/// changes; a staging folder that now holds a link (`staged_links`) is removed unapplied. Returns the zips for the app to import once it runs. The Python Runtimes entity
-/// installs nothing: each script is provisioned on its first launch (`IE:788-793`, under uv).
+/// changes; a staging folder that now holds a link (`staged_links`) is removed unapplied.
+/// Returns the zips for the app to import once it runs. The Python Runtimes entity installs
+/// nothing: each script is provisioned on its first launch (`IE:788-793`, under uv).
 pub(super) fn finish_import(appdata_tandem: &Path) -> Vec<PathBuf> {
     let marker = appdata_tandem.join(se::MARKER);
     let text = std::fs::read_to_string(&marker).ok();
@@ -588,7 +593,10 @@ mod tests {
         let root = temp("finish");
         let tandem = root.join("Tandem");
         std::fs::create_dir_all(&tandem).unwrap();
-        std::fs::write(tandem.join("settings.toml"), "[settings]\nFocusFollowsMouse = false\nNoSyncX = true\n").unwrap();
+        // The final review's Important 1: a custom settings folder is turned off by the import
+        // (`IE:836-852`), so the next load does not replace what was imported.
+        let local_settings = "[settings]\nFocusFollowsMouse = false\nNoSyncX = true\nLoadPrefsFromCustomFolder = true\nPrefsCustomFolder = 'D:\\s'\n";
+        std::fs::write(tandem.join("settings.toml"), local_settings).unwrap();
         std::fs::write(tandem.join("snippets.json"), "old").unwrap();
         let staging = se::staging_dir(&root, "U");
         std::fs::create_dir_all(staging.join("user-defaults")).unwrap();
@@ -607,6 +615,8 @@ mod tests {
         let g = crate::globals::Globals::load(&tandem.join("settings.toml")).unwrap();
         assert_eq!(g.values.get("FocusFollowsMouse"), Some(&toml::Value::Boolean(true)));
         assert_eq!(g.values.get("NoSyncX"), Some(&toml::Value::Boolean(true)), "a key that does not sync stays");
+        assert!(!g.bool(crate::remote_prefs::LOAD_KEY), "loading from a custom folder is off");
+        assert!(!g.values.contains_key(crate::remote_prefs::FOLDER_KEY), "the custom folder is unset");
         let store = crate::store::Store::load(&tandem.join("profiles.toml")).unwrap();
         let names: Vec<String> = store.profiles.iter().map(|p| p.name()).collect();
         assert_eq!(names, ["Imported"]);
@@ -655,9 +665,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Beyond the plan: an export imported into another Tandem folder through the real tar.exe
-    /// (the first phase names the staging folder in the marker; the next start applies it),
-    /// and a file that is not an archive fails with nothing left behind.
     #[test]
     fn import_refuses_links() {
         // The Task 10 review's Important 1 (invariant 5): an export holding a link, a junction
@@ -699,6 +706,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Beyond the plan: an export imported into another Tandem folder through the real tar.exe
+    /// (the first phase names the staging folder in the marker; the next start applies it),
+    /// and a file that is not an archive fails with nothing left behind.
     #[test]
     fn import_round_trips_an_export() {
         let root = temp("round");

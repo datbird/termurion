@@ -1025,10 +1025,15 @@ fn prefs_valid_id() -> egui::Id {
 
 /// Whether the Save changes popup, its label and Save Now take input (`GP:4239-4244`): the
 /// setting is on and the location is a valid folder (never a URL).
-pub fn prefs_save_enabled(g: &Globals, home: &std::path::Path, writable: &dyn Fn(&std::path::Path) -> bool) -> bool {
+pub fn prefs_save_enabled(
+    g: &Globals,
+    home: &std::path::Path,
+    read_link: &dyn Fn(&std::path::Path) -> Option<std::path::PathBuf>,
+    writable: &dyn Fn(&std::path::Path) -> bool,
+) -> bool {
     use crate::remote_prefs as rp;
     let text = g.string(rp::FOLDER_KEY);
-    g.bool(rp::LOAD_KEY) && !rp::is_url(&rp::expanded(&text, home)) && rp::location_valid(&text, home, writable)
+    g.bool(rp::LOAD_KEY) && !rp::is_url(&rp::expanded(&text, home)) && rp::location_valid(&text, home, read_link, writable)
 }
 
 /// `choosePrefsCustomFolder`: the folder picker; a picked folder becomes the location, which
@@ -1084,7 +1089,7 @@ fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path
         }
     }
     let on = g.bool(rp::LOAD_KEY);
-    if on && !was_on && g.string(rp::FOLDER_KEY).is_empty() && choose_prefs_folder(g).is_some() && rp::location_valid(&g.string(rp::FOLDER_KEY), home, &rp::writable) {
+    if on && !was_on && g.string(rp::FOLDER_KEY).is_empty() && choose_prefs_folder(g).is_some() && rp::location_valid(&g.string(rp::FOLDER_KEY), home, &crate::scripts::read_link, &rp::writable) {
         action = PrefsAction::CopyNow;
     }
     let mut text = g.string(rp::FOLDER_KEY);
@@ -1111,7 +1116,7 @@ fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path
         valid = match cached {
             Some((checked, valid)) if checked == text => valid,
             _ => {
-                let valid = rp::location_valid(&text, home, &rp::writable);
+                let valid = rp::location_valid(&text, home, &crate::scripts::read_link, &rp::writable);
                 ui.ctx().data_mut(|d| d.insert_temp(prefs_valid_id(), (text.clone(), valid)));
                 valid
             }
@@ -1123,8 +1128,8 @@ fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path
     })
     .response
     .on_hover_text(setting.map_or("", |s| s.help.as_str()));
-    // The folder's probe answered above; a URL or a network path is never probed.
-    let enabled = prefs_save_enabled(g, home, &|_| valid);
+    // The folder's probe (and its link check) answered above; a URL or a network path is never probed.
+    let enabled = prefs_save_enabled(g, home, &|_| None, &|_| valid);
     ui.add_enabled_ui(enabled, |ui| {
         ui.horizontal(|ui| {
             ui.label(rp::SAVE_CHANGES);
@@ -1439,14 +1444,16 @@ mod tests {
         assert!(row_enabled(&g, FOLDER_KEY));
         let writable = |p: &std::path::Path| p == std::path::Path::new(r"D:\s");
         g.set(FOLDER_KEY, Value::String("https://h/p".into()));
-        assert!(!prefs_save_enabled(&g, home, &writable), "a URL is never saved to");
+        assert!(!prefs_save_enabled(&g, home, &|_| None, &writable), "a URL is never saved to");
         g.set(FOLDER_KEY, Value::String(r"D:\s".into()));
-        assert!(prefs_save_enabled(&g, home, &writable));
+        assert!(prefs_save_enabled(&g, home, &|_| None, &writable));
+        let to_share = |p: &std::path::Path| (p == std::path::Path::new(r"D:\s")).then(|| std::path::PathBuf::from(r"\\h\s"));
+        assert!(!prefs_save_enabled(&g, home, &to_share, &writable), "a folder linked to a network path");
         g.set(FOLDER_KEY, Value::String(r"D:\t".into()));
-        assert!(!prefs_save_enabled(&g, home, &writable), "a folder that cannot be written");
+        assert!(!prefs_save_enabled(&g, home, &|_| None, &writable), "a folder that cannot be written");
         g.set(FOLDER_KEY, Value::String(r"D:\s".into()));
         g.set(LOAD_KEY, Value::Boolean(false));
-        assert!(!prefs_save_enabled(&g, home, &writable), "off");
+        assert!(!prefs_save_enabled(&g, home, &|_| None, &writable), "off");
         assert!(!row_enabled(&g, FOLDER_KEY));
     }
 

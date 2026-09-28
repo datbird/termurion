@@ -122,9 +122,10 @@ fn fetched(text: &str, url: &str, result: Fetched) -> Start {
     }
 }
 
-/// What the launch finds at the location (`freshCopyOfRemotePreferences`). A network path is
-/// never read; an empty location reads nothing.
-fn start(g: &Globals, home: &Path, fetch: &dyn Fn(&str, Option<f64>) -> Fetched) -> Start {
+/// What the launch finds at the location (`freshCopyOfRemotePreferences`). A network path, or a
+/// folder or file reached through a link to one (`rp::local_folder`), is never read; an empty
+/// location reads nothing.
+fn start(g: &Globals, home: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>, fetch: &dyn Fn(&str, Option<f64>) -> Fetched) -> Start {
     if !g.bool(rp::LOAD_KEY) {
         return Start::Off;
     }
@@ -139,10 +140,13 @@ fn start(g: &Globals, home: &Path, fetch: &dyn Fn(&str, Option<f64>) -> Fetched)
     if text.is_empty() {
         return Start::Ask(location_not_set());
     }
-    if rp::is_unc(&text) || rp::is_unc(&location) {
+    if rp::is_unc(&text) || !rp::local_folder(Path::new(&location), read_link) {
         return Start::Ask(failed_folder(&text));
     }
     let file = rp::prefs_file(Path::new(&location), &|p| p.is_file());
+    if !rp::local_folder(&file, read_link) {
+        return Start::Ask(failed_folder(&text));
+    }
     match std::fs::read_to_string(&file).ok().and_then(|t| Snapshot::parse(&t)) {
         Some(snap) => Start::Loaded(snap),
         None => Start::Ask(failed_folder(&text)),
@@ -167,7 +171,7 @@ pub(super) fn apply_snapshot(snap: &Snapshot, g: &mut Globals, store: &mut Store
 /// the local ones. Returns the snapshot loaded (iTerm2's `savedRemotePrefs`) and the questions
 /// or failures to show after the first window opens.
 pub(super) fn load_at_start(g: &mut Globals, store: &mut Store, fetch: &dyn Fn(&str, Option<f64>) -> Fetched) -> (Option<Snapshot>, Vec<Ask>) {
-    match start(g, &home(), fetch) {
+    match start(g, &home(), &crate::scripts::read_link, fetch) {
         Start::Off => (None, Vec::new()),
         Start::Ask(ask) => (None, vec![ask]),
         Start::Loaded(snap) => {
@@ -196,9 +200,10 @@ pub(super) fn curl_fetch(url: &str, timeout: Option<f64>) -> Fetched {
     }
 }
 
-/// Writes the snapshot through a temporary file and a rename. A network path is never written.
-fn write_snapshot(snap: &Snapshot, file: &Path) -> Result<(), String> {
-    if rp::is_unc(&file.to_string_lossy()) {
+/// Writes the snapshot through a temporary file and a rename. A network path, or a file reached
+/// through a link to one, is never written.
+fn write_snapshot(snap: &Snapshot, file: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(), String> {
+    if !rp::local_folder(file, read_link) {
         return Err(format!("{}: network paths are not supported", file.display()));
     }
     let mut tmp = file.as_os_str().to_owned();
@@ -216,14 +221,15 @@ impl App {
         (text, location)
     }
 
-    /// The settings file in the folder; None for a URL, a blank location or a network path,
-    /// which are never touched as files.
+    /// The settings file in the folder; None for a URL, a blank location, a network path or a
+    /// folder or file reached through a link to one, which are never touched as files.
     fn prefs_file(&self) -> Option<PathBuf> {
         let (text, location) = self.prefs_location();
-        if rp::is_url(&location) || text.trim().is_empty() || rp::is_unc(&text) || rp::is_unc(&location) {
+        let read_link = crate::scripts::read_link;
+        if rp::is_url(&location) || text.trim().is_empty() || rp::is_unc(&text) || !rp::local_folder(Path::new(&location), &read_link) {
             return None;
         }
-        Some(rp::prefs_file(Path::new(&location), &|p| p.is_file()))
+        Some(rp::prefs_file(Path::new(&location), &|p| p.is_file())).filter(|file| rp::local_folder(file, &read_link))
     }
 
     /// The local settings as the folder would hold them.
@@ -255,7 +261,7 @@ impl App {
     fn prefs_autosave(&mut self) {
         let Some(file) = self.prefs_file() else { return };
         let snap = self.prefs_local();
-        if write_snapshot(&snap, &file).is_ok() {
+        if write_snapshot(&snap, &file, &crate::scripts::read_link).is_ok() {
             self.prefs_saved = Some(snap);
         }
     }
@@ -265,7 +271,7 @@ impl App {
         let snap = self.prefs_local();
         let file = self.prefs_file();
         if let Some(f) = &file {
-            if write_snapshot(&snap, f).is_ok() {
+            if write_snapshot(&snap, f, &crate::scripts::read_link).is_ok() {
                 self.prefs_saved = Some(snap);
                 return;
             }
@@ -640,10 +646,48 @@ mod tests {
     fn written_snapshots_read_back() {
         let dir = temp("write");
         let file = dir.join(rp::PREFS_FILE);
-        write_snapshot(&remote(), &file).unwrap();
+        write_snapshot(&remote(), &file, &|_| None).unwrap();
         assert_eq!(Snapshot::parse(&std::fs::read_to_string(&file).unwrap()), Some(remote()));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "the temporary file is renamed");
-        assert!(write_snapshot(&remote(), Path::new(r"\\host\share\tandem-settings.toml")).is_err());
+        assert!(write_snapshot(&remote(), Path::new(r"\\host\share\tandem-settings.toml"), &|_| None).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_linked_to_a_network_path_is_never_read_or_written() {
+        // The final review's Important 2 (invariant 5): the folder holds a good file, but it is
+        // reached through a link to \\h\s, so the launch falls back without reading it and the
+        // save writes nothing.
+        let dir = temp("linked");
+        let folder = dir.join("T");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(rp::PREFS_FILE), remote().to_toml()).unwrap();
+        let t = folder.display().to_string();
+        let to_share = |p: &Path| (p == folder.as_path()).then(|| PathBuf::from(r"\\h\s"));
+        let (g, _) = local(&dir, &t);
+        match start(&g, Path::new(r"C:\Users\u"), &to_share, &never) {
+            Start::Ask(ask) => {
+                assert_eq!((ask.heading.as_str(), ask.text.as_str()), (rp::FAILED_FOLDER, rp::missing_file(&t).as_str()));
+                assert_eq!(buttons(&ask), ["OK"]);
+            }
+            _ => panic!("a folder linked to a network path is never read"),
+        }
+        // The same file named directly, and a link on the file itself.
+        let named = folder.join(rp::PREFS_FILE);
+        let (g, _) = local(&dir, &named.display().to_string());
+        assert!(matches!(start(&g, Path::new(r"C:\Users\u"), &to_share, &never), Start::Ask(_)));
+        let file_to_share = |p: &Path| (p == named.as_path()).then(|| PathBuf::from(r"\\h\s\f.toml"));
+        let (g, _) = local(&dir, &t);
+        assert!(matches!(start(&g, Path::new(r"C:\Users\u"), &file_to_share, &never), Start::Ask(_)));
+        // With no link the same folder loads.
+        assert!(matches!(start(&g, Path::new(r"C:\Users\u"), &|_| None, &never), Start::Loaded(_)));
+
+        let before = std::fs::read_to_string(&named).unwrap();
+        let other = Snapshot { default: "g2".into(), ..remote() };
+        assert!(write_snapshot(&other, &named, &to_share).is_err());
+        assert!(write_snapshot(&other, &named, &file_to_share).is_err());
+        assert_eq!(std::fs::read_to_string(&named).unwrap(), before, "nothing written");
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1, "no temporary file either");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

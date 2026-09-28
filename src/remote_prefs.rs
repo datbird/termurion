@@ -119,16 +119,26 @@ pub fn prefs_file(base: &Path, exists: &dyn Fn(&Path) -> bool) -> PathBuf {
     base.join(PREFS_FILE)
 }
 
-/// `remoteLocationIsValid` (`RP:315-328`): a URL with a host, or a writable folder. A network path
-/// is never valid and never probed.
-pub fn location_valid(text: &str, home: &Path, writable: &dyn Fn(&Path) -> bool) -> bool {
+/// `remoteLocationIsValid` (`RP:315-328`): a URL with a host, or a writable folder. A network path,
+/// or a folder reached through a link to one (`local_folder`), is never valid and never probed.
+pub fn location_valid(text: &str, home: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>, writable: &dyn Fn(&Path) -> bool) -> bool {
     if is_url(text) {
         return url_has_host(text);
     }
     if text.trim().is_empty() || is_unc(text) {
         return false;
     }
-    writable(Path::new(&expanded(text, home)))
+    let folder = expanded(text, home);
+    local_folder(Path::new(&folder), read_link) && writable(Path::new(&folder))
+}
+
+/// Whether the settings folder (or its file) may be read, probed or written: not a network path,
+/// and neither it nor any folder above it a link or junction whose chain reaches one
+/// (`scripts::ancestors_stay_local`, as the Scripts folder and the export are checked). A mapped
+/// drive letter stays allowed; a link is refused, since its text does not show that it leaves the
+/// machine. Reads only the links.
+pub fn local_folder(location: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> bool {
+    !is_unc(&location.to_string_lossy()) && crate::scripts::ancestors_stay_local(location, read_link)
 }
 
 /// The authority between `//` and the path, less any user and port, is not empty.
@@ -352,24 +362,45 @@ mod tests {
         let txt = |p: &Path| p == Path::new(r"D:\s\mine.txt");
         assert_eq!(prefs_file(Path::new(r"D:\s\mine.txt"), &txt), Path::new(r"D:\s\mine.txt\tandem-settings.toml"));
         let always = |_: &Path| true;
-        assert!(location_valid("https://h/p", home, &none));
-        assert!(!location_valid("https://", home, &always));
-        assert!(!location_valid("  ", home, &always));
+        let no_link = |_: &Path| None;
+        assert!(location_valid("https://h/p", home, &no_link, &none));
+        assert!(!location_valid("https://", home, &no_link, &always));
+        assert!(!location_valid("  ", home, &no_link, &always));
         let probed = Cell::new(false);
         let spy = |_: &Path| {
             probed.set(true);
             true
         };
-        assert!(!location_valid(r"\\h\s", home, &spy));
-        assert!(!location_valid("//h/s", home, &spy));
+        assert!(!location_valid(r"\\h\s", home, &no_link, &spy));
+        assert!(!location_valid("//h/s", home, &no_link, &spy));
         assert!(!probed.get(), "a network path is never probed");
-        assert!(location_valid("https://h/p", home, &spy));
+        assert!(location_valid("https://h/p", home, &no_link, &spy));
         assert!(!probed.get(), "a URL is never probed");
         let d = |p: &Path| p == Path::new(r"D:\s");
-        assert!(location_valid("D:\\s", home, &d));
-        assert!(!location_valid("D:\\t", home, &d));
+        assert!(location_valid("D:\\s", home, &no_link, &d));
+        assert!(!location_valid("D:\\t", home, &no_link, &d));
         let h = |p: &Path| p == Path::new(r"C:\Users\u\s");
-        assert!(location_valid("~\\s", home, &h));
+        assert!(location_valid("~\\s", home, &no_link, &h));
+    }
+
+    #[test]
+    fn a_folder_linked_to_a_network_path_is_never_probed() {
+        // The final review's Important 2 (invariant 5): D:\s is a link to \\h\s, or sits under
+        // one, so it is neither probed, read nor written.
+        let home = Path::new(r"C:\Users\u");
+        let to_share = |p: &Path| (p == Path::new(r"D:\s")).then(|| PathBuf::from(r"\\h\s"));
+        let never = |_: &Path| -> bool { panic!("a folder reached through a link to a network path is never probed") };
+        assert!(!location_valid(r"D:\s", home, &to_share, &never));
+        assert!(!location_valid(r"D:\s\sub", home, &to_share, &never), "a folder under the link");
+        assert!(!location_valid(r"D:\s\mine.toml", home, &to_share, &never));
+        assert!(!local_folder(Path::new(r"D:\s"), &to_share));
+        assert!(!local_folder(Path::new(r"D:\s\tandem-settings.toml"), &to_share));
+        assert!(!local_folder(Path::new(r"\\h\s"), &|_| None));
+        // A link to a local folder, and a plain folder, stay usable.
+        let to_local = |p: &Path| (p == Path::new(r"D:\s")).then(|| PathBuf::from(r"E:\t"));
+        assert!(local_folder(Path::new(r"D:\s"), &to_local));
+        assert!(local_folder(Path::new(r"D:\t"), &to_share));
+        assert!(location_valid(r"D:\s", home, &to_local, &|p| p == Path::new(r"D:\s")));
     }
 
     #[test]
