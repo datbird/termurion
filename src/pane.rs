@@ -572,6 +572,34 @@ impl Pane {
         self.ssh_hook.unhook();
     }
 
+    /// The pane's SSH integration level (`conductor::level`).
+    pub fn ssh_level(&self) -> u8 {
+        crate::conductor::level(self.conductor.as_deref())
+    }
+
+    /// unhookSSHConductor (`PS:20179-20204`) for the screen: the innermost conductor goes,
+    /// its saved state is restored, and its parent becomes current. The hops are the caller's.
+    /// False when there was none.
+    pub fn pop_conductor(&mut self) -> bool {
+        let Some(c) = crate::conductor::pop(&mut self.conductor) else { return false };
+        if let Some(saved) = &c.saved {
+            self.own_mut().restore_ssh_saved(saved);
+        }
+        true
+    }
+
+    /// Whether the hop ids are the conductor chain's unique ids, outermost first.
+    pub fn ssh_chain_in_step(&self) -> bool {
+        let mut ids = Vec::new();
+        let mut c = self.conductor.as_deref();
+        while let Some(conductor) = c {
+            ids.push(conductor.setup.client_unique_id.as_str());
+            c = conductor.parent.as_deref();
+        }
+        ids.reverse();
+        self.ssh.chain.hops.iter().map(|h| h.unique_id.as_str()).eq(ids)
+    }
+
     /// What the user sends: keys, pastes. Held while Buffer Input is on. Nothing reaches a
     /// replaying pane: iTerm2's tab then shows the replay's synthetic session, which has no
     /// task (`PS:1457-1467`).
@@ -1128,6 +1156,44 @@ mod tests {
         p.write_session(b"c");
         assert_eq!(p.tmux_io().unwrap().take_input(), b"c");
         assert!(p.take_ssh_held().is_empty());
+    }
+
+    #[test]
+    fn popping_a_conductor_restores_its_saved_state() {
+        use crate::conductor::{Conductor, SavedState, Setup};
+        use crate::ssh_session::Hop;
+        let at = |id: &str| Setup { client_unique_id: id.into(), ..Setup::default() };
+        let hop = |id: &str| Hop { unique_id: id.into(), location: String::new() };
+        let mut p = Pane::with(5, None, 80, 24);
+        assert_eq!(p.ssh_level(), 0);
+        assert!(p.ssh_chain_in_step());
+        assert!(!p.pop_conductor(), "nothing to pop");
+
+        let local = SavedState { cwd: Some("/local".into()), host: Some("laptop".into()), user: Some("me".into()) };
+        let first_host = SavedState { cwd: Some("/srv".into()), host: Some("a".into()), user: Some("u".into()) };
+        let mut a = Conductor::new(at("a"), None, "U");
+        a.saved = Some(local.clone());
+        a.handle_unhook();
+        let mut b = Conductor::new(at("b"), Some(Box::new(a)), "V");
+        b.saved = Some(first_host.clone());
+        p.conductor = Some(Box::new(b));
+        p.ssh.chain.push(hop("a"));
+        assert!(!p.ssh_chain_in_step(), "one hop for two conductors");
+        p.ssh.chain.push(hop("b"));
+        assert!(p.ssh_chain_in_step());
+        assert_eq!(p.ssh_level(), 1);
+        p.own_mut().restore_ssh_saved(&SavedState { cwd: Some("/far".into()), host: Some("b".into()), user: None });
+
+        assert!(p.pop_conductor());
+        assert_eq!(p.own().ssh_saved(), first_host, "the popped conductor's saved state");
+        assert_eq!(p.conductor.as_ref().map(|c| c.setup.client_unique_id.as_str()), Some("a"));
+        assert_eq!(p.ssh.chain.hops.len(), 2, "the hops are not touched");
+        p.conductor.as_mut().unwrap().framed_pid = Some(1);
+        assert_eq!(p.ssh_level(), 2);
+        assert!(p.pop_conductor());
+        assert_eq!(p.own().ssh_saved(), local);
+        assert!(p.conductor.is_none());
+        assert_eq!(p.ssh_level(), 0);
     }
 
     #[test]

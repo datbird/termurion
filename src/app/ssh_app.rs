@@ -50,15 +50,43 @@ impl App {
                     p.write_no_broadcast(&bytes);
                 }
             }
-            // The write before the banner, as `PS:20269` then `TD:4043-4046`.
+            // `PS:20253-20275`: the hops end through the matching one, then one conductor
+            // per hop is popped, innermost first, so the outermost popped one's saved state
+            // is what remains; the write before the banner, as `PS:20269` then `TD:4043-4046`.
             Request::SshEnd(id) => {
-                if let Some(banner) = p.ssh.end_ssh(&id) {
+                let n = p.ssh.chain.count_to(&id);
+                let banner = p.ssh.end_ssh(&id);
+                for _ in 0..n {
+                    self.ssh_pop_conductor(pane);
+                }
+                let Some(p) = self.panes.get_mut(&pane) else { return };
+                debug_assert!(p.ssh_chain_in_step(), "the hops follow the conductors");
+                if let Some(banner) = banner {
                     p.write_no_broadcast(END_WRITE);
                     p.own_mut().append_banner(&banner);
                 }
             }
             _ => {}
         }
+    }
+
+    /// unhookSSHConductor (`PS:20179-20204`) for one conductor: the pane's innermost goes and
+    /// its saved state is restored. Its hop is not touched (EndSSH has ended it already).
+    pub(super) fn ssh_pop_conductor(&mut self, pane: PaneId) {
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        if p.pop_conductor() {
+            self.redraw();
+        }
+    }
+
+    /// Drops the pane's innermost conductor and its hop, keeping the two chains in step:
+    /// every path that drops a conductor but EndSSH comes here.
+    #[allow(dead_code)] // Task 9's abort is the first caller.
+    pub(super) fn ssh_unhook_conductor(&mut self, pane: PaneId) {
+        self.ssh_pop_conductor(pane);
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        p.ssh.chain.pop();
+        debug_assert!(p.ssh_chain_in_step(), "the hops follow the conductors");
     }
 
     /// Runs what each pane's SSH hook found, in order. Before `tmux_pump`: output released
@@ -132,6 +160,7 @@ impl App {
         let hop = Hop { unique_id: c.setup.client_unique_id.clone(), location: c.identity().compact(&crate::ssh_args::local_user()) };
         p.conductor = Some(Box::new(c));
         p.ssh.chain.push(hop);
+        debug_assert!(p.ssh_chain_in_step(), "the hops follow the conductors");
         self.redraw();
     }
 

@@ -423,6 +423,23 @@ pub fn hook_banner(sshargs: &str) -> String {
     format!("ssh {sshargs}")
 }
 
+/// Takes the pane's innermost conductor; its parent becomes current (`PS:20199`).
+pub fn pop(chain: &mut Option<Box<Conductor>>) -> Option<Box<Conductor>> {
+    let mut innermost = chain.take()?;
+    *chain = innermost.parent.take();
+    Some(innermost)
+}
+
+/// The SSH integration level of a pane whose current conductor is `c` (`PS:25624-25636`):
+/// 0 with none, 1 while not framing, 2 while framing.
+pub fn level(c: Option<&Conductor>) -> u8 {
+    match c {
+        None => 0,
+        Some(c) if c.framing() => 2,
+        Some(_) => 1,
+    }
+}
+
 /// One conductor.sh (or framer.py) on the other side of an ssh (`CD`).
 pub struct Conductor {
     pub setup: Setup,
@@ -1981,5 +1998,208 @@ mod tests {
         let notices: Vec<String> = c.take_effects().into_iter().filter_map(|e| if let Effect::Notice(t) = e { Some(t) } else { None }).collect();
         assert_eq!(notices.len(), 1, "{notices:?}");
         assert!(notices[0].starts_with("A Files to Copy tarball for /$HOME was skipped: "), "{}", notices[0]);
+    }
+
+    /// The recorder's line prefix UUID (`scripts/record-conductor.py`).
+    const RECORDER_PREFIX: &str = "8C3A5E1F-0000-4000-8000-00000000A11E";
+
+    /// Feeds `outs` to the pane's conductor as `ssh_pump` does (an Init hooks a conductor
+    /// with `hook`), collecting every effect in the order it was taken.
+    fn dispatch(current: &mut Option<Box<Conductor>>, outs: Vec<crate::ssh_hook::Out>, hook: &dyn Fn(&Init, Option<Box<Conductor>>) -> Conductor) -> Vec<Effect> {
+        use crate::conductor_parser::Token;
+        use crate::ssh_hook::Out;
+        let mut effects = Vec::new();
+        for out in outs {
+            match out {
+                Out::Screen(_) => {}
+                Out::Ssh(Token::Init(init), _) => {
+                    let mut c = hook(&init, current.take());
+                    c.start();
+                    *current = Some(Box::new(c));
+                }
+                Out::Ssh(token, depth) => {
+                    let Some(c) = current.as_mut() else { continue };
+                    match token {
+                        Token::Begin(id) => c.handle_begin(&id, depth),
+                        Token::Line(line) => c.handle_line(&line, depth),
+                        Token::End { id, status, kind } => c.handle_end(&id, &kind, status, depth),
+                        Token::Unhook => c.handle_unhook(),
+                        Token::Init(_) => {}
+                    }
+                }
+            }
+            loop {
+                let taken = current.as_mut().map(|c| c.take_effects()).unwrap_or_default();
+                if taken.is_empty() {
+                    break;
+                }
+                for effect in taken {
+                    // What was typed while connecting (nothing here) goes through sendKeys.
+                    if effect == Effect::StopQueueingInput {
+                        if let Some(c) = current.as_mut() {
+                            c.send_keys(b"");
+                        }
+                    }
+                    effects.push(effect);
+                }
+            }
+        }
+        effects
+    }
+
+    /// The command a pre-framer write carries: its chunks after the prefix, joined and
+    /// base64-decoded.
+    fn decoded_command(bytes: &[u8], prefix: &str) -> String {
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        let body: String = text.lines().filter_map(|l| l.strip_prefix(prefix)).collect();
+        String::from_utf8(base64::engine::general_purpose::STANDARD.decode(body).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn level_one_follows_iterm2() {
+        let dir = std::env::temp_dir().join(format!("tandem-conductor-level1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let hello = dir.join("hello.txt");
+        std::fs::write(&hello, b"hi\n").unwrap();
+        let hello_path = hello.to_string_lossy().to_string();
+
+        let env = env_pairs(&[("FOO", "bar")]);
+        let hook = |init: &Init, parent: Option<Box<Conductor>>| {
+            let setup = setup_for_hook(init, true, &env, &s(&["FOO"]), Some("/tmp".into()), true, &crate::ssh_args::NoConfig);
+            let mut c = Conductor::new(setup, parent, RECORDER_PREFIX);
+            c.add_path(&hello_path, "~/.t", &dir);
+            c
+        };
+        let recording = std::fs::read("tests/fixtures/ssh/level1-nopython.bin").unwrap();
+        let mut ssh = crate::ssh_hook::Hook::with_ids(|| "D".into());
+        let mut current = None;
+        let effects = dispatch(&mut current, ssh.feed(&recording), &hook);
+        let c = current.as_deref().unwrap();
+
+        // The commands, decoded.
+        let prefix = format!("\u{3}{RECORDER_PREFIX}");
+        let writes: Vec<Vec<u8>> = effects.iter().filter_map(|e| if let Effect::Write(b) = e { Some(b.clone()) } else { None }).collect();
+        assert_eq!(writes[0], format!("{prefix}\n").into_bytes(), "the line prefix first");
+        let (packed, skipped) = tarballs(&[Payload { source: Source::Disk(hello.clone()), destination: "/$HOME/.t".into() }]);
+        assert!(skipped.is_empty(), "{skipped:?}");
+        let write = Command::Write { data: packed[0].0.clone(), dest: "/$HOME/.t".into() }.string_value();
+        let commands: Vec<String> = writes[1..].iter().map(|w| decoded_command(w, &prefix)).collect();
+        assert_eq!(commands, ["getshell", "setenv FOO bar", write.as_str(), "cd /tmp", "pythonversion", "exec_login_shell"]);
+
+        // Every line but the write's is the recording's, byte for byte.
+        let recorded = std::fs::read("tests/fixtures/ssh/level1-nopython.in.bin").unwrap();
+        let first = recorded.iter().position(|&b| b == b'\n').unwrap() + 1;
+        let mut segments = vec![recorded[..first].to_vec()];
+        let mut at = first;
+        while let Some(end) = recorded[at..].windows(2).position(|w| w == b"\n\n") {
+            segments.push(recorded[at..at + end + 2].to_vec());
+            at += end + 2;
+        }
+        assert_eq!(&recorded[at..], b"echo hi\nexit\n", "typed after the unhook, not the conductor's");
+        assert_eq!(segments.len(), writes.len());
+        for (i, (ours, theirs)) in writes.iter().zip(&segments).enumerate() {
+            if i == 3 {
+                assert_eq!(decoded_command(theirs, &prefix).split(' ').nth(2), Some("/$HOME/.t"), "the recorded write");
+                continue;
+            }
+            assert_eq!(ours, theirs, "command {i}");
+        }
+
+        // The login shell: input stops queueing just before it, Initial Text after its end.
+        let login = sent_with(&Command::ExecLoginShell(vec![]), &prefix);
+        let at_login = effects.iter().position(|e| *e == Effect::Write(login.clone())).unwrap();
+        assert_eq!(effects[at_login - 1], Effect::StopQueueingInput);
+        assert!(effects[at_login + 1..].contains(&Effect::SendInitialText));
+        assert!(!effects[..at_login].contains(&Effect::SendInitialText));
+        assert!(effects.iter().all(|e| !matches!(e, Effect::Abort(_))), "{effects:?}");
+
+        assert!(c.unhooked());
+        assert_eq!(level(Some(c)), 1);
+        assert!(!c.queue_writes());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What `write()` puts on the wire for a command under `prefix`.
+    fn sent_with(cmd: &Command, prefix: &str) -> Vec<u8> {
+        (encode(cmd, prefix) + "\n").into_bytes()
+    }
+
+    #[test]
+    fn end_ssh_pops_the_chain() {
+        use crate::ssh_session::{Chain, Hop, PaneSsh};
+        let at = |id: &str, host: &str| {
+            let parsed = ParsedArgs { host: host.into(), hostname: host.into(), port: 22, ..ParsedArgs::default() };
+            Setup { client_unique_id: id.into(), parsed, ..Setup::default() }
+        };
+        let hop = |c: &Conductor| Hop { unique_id: c.setup.client_unique_id.clone(), location: c.identity().compact("me") };
+        let a = Conductor::new(at("a", "alpha.example"), None, "U");
+        let a_compact = a.identity().compact("me");
+        let b = Conductor::new(at("b", "beta.example"), Some(Box::new(a)), "V");
+        let c = Conductor::new(at("c", "gamma.example"), Some(Box::new(b)), "W");
+        let hops = {
+            let b = c.parent.as_deref().unwrap();
+            vec![hop(b.parent.as_deref().unwrap()), hop(b), hop(&c)]
+        };
+        let mut current = Some(Box::new(c));
+        let mut ssh = PaneSsh { chain: Chain { hops: hops.clone() }, ..PaneSsh::default() };
+
+        let n = ssh.chain.count_to("b");
+        assert_eq!(n, 2);
+        for _ in 0..n {
+            assert!(pop(&mut current).is_some());
+        }
+        assert_eq!(current.as_ref().map(|c| c.setup.client_unique_id.as_str()), Some("a"));
+        assert!(current.as_ref().unwrap().parent.is_none());
+        assert_eq!(ssh.end_ssh("b"), Some(format!("2 ssh sessions ended. \u{2014} now at {a_compact}.")));
+        assert_eq!(a_compact, "alpha.example");
+        assert_eq!(ssh.chain.hops, hops[..1]);
+
+        // An id no conductor has: nothing counted, ended or popped.
+        let a = Conductor::new(at("a", "alpha.example"), None, "U");
+        let b = Conductor::new(at("b", "beta.example"), Some(Box::new(a)), "V");
+        let mut ssh = PaneSsh { chain: Chain { hops: hops[..2].to_vec() }, ..PaneSsh::default() };
+        let mut current = Some(Box::new(b));
+        assert_eq!(ssh.chain.count_to("zzz"), 0);
+        assert_eq!(ssh.end_ssh("zzz"), None);
+        assert_eq!(ssh.chain.hops, hops[..2]);
+        assert_eq!(current.as_ref().map(|c| c.setup.client_unique_id.as_str()), Some("b"));
+        assert_eq!(Chain { hops: hops.clone() }.count_to("c"), 1);
+
+        // Popping the last leaves none; popping none gives none.
+        assert_eq!(pop(&mut current).map(|c| c.setup.client_unique_id.clone()).as_deref(), Some("b"));
+        assert_eq!(pop(&mut current).map(|c| c.setup.client_unique_id.clone()).as_deref(), Some("a"));
+        assert!(current.is_none());
+        assert!(pop(&mut current).is_none());
+
+        assert_eq!(level(None), 0);
+        let mut framed = Conductor::new(setup("F"), None, "U");
+        assert_eq!(level(Some(&framed)), 1);
+        framed.framed_pid = Some(1);
+        assert_eq!(level(Some(&framed)), 2);
+    }
+
+    #[test]
+    fn nested_setup_follows_iterm2() {
+        // A level 1 session: set up, then unhooked.
+        let mut first = started(setup("A"));
+        first.handle_unhook();
+        first.take_effects();
+        assert_eq!(level(Some(&first)), 1);
+        assert!(!first.queue_writes());
+
+        // it2ssh typed at its prompt.
+        let mut second = Conductor::new(setup("B"), Some(Box::new(first)), "V");
+        assert_eq!(second.depth(), 0, "an unframed parent: the same depth");
+        assert!(!second.queue_writes(), "an unhooked parent never holds typing");
+        second.start();
+        assert!(!second.queue_writes());
+        assert_eq!(
+            second.effects,
+            [Effect::Write(b"\x03V\n".to_vec()), Effect::Write(sent_with(&Command::GetShell, "\u{3}V"))],
+            "written through the parent, in the child's effects"
+        );
+        assert!(second.parent.as_ref().unwrap().effects.is_empty());
+        assert_eq!(level(Some(&second)), 1);
     }
 }
