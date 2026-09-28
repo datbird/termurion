@@ -280,25 +280,27 @@ per-user pipe); Configure… holds iTerm2's four settings (SSH Integration, vari
 copy, Path to SSH), partial until milestone 14b makes them act; OSC 1337 `Env` (report=all), `it2ssh`, `SendConductor` and `EndSSH` are read
 as iTerm2 reads them, with its version and end banners, the hop chain, and `\x03\n` releasing
 it2ssh's local read loop; the session host speaks protocol 4 so an SSH session can be hosted.
-Until milestone 14b's conductor hook exists (`CONDUCTOR_READY` false), it2ssh and SSH profiles
-run plain ssh with a one-line notice and no typing is ever held. The Shell > ssh menu items and
+Until milestone 14b's conductor hook existed (`CONDUCTOR_READY` false), it2ssh and SSH profiles
+ran plain ssh with a one-line notice and no typing was ever held. The Shell > ssh menu items and
 seven SSH settings in 02 (sshSchemePath, alternateSSHIntegrationScript, unameCommand,
 validCharactersInSSHUserNames, sshURLsSupportPath, restoreKeyModeAutomaticallyOnHostChange,
 channelsEnabled) belong to milestone 14 (ruling 6). Every kept quirk is listed in
 `docs/acceptance/m14a-checklist.md` and ruled on in `docs/superpowers/rulings/m14a-rulings.txt`.
-Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status:
-the Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial
-until milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while
-iTerm2's unmodified conductor.sh sets up, and Tandem writes it the bytes iTerm2 writes, pinned
-against recordings of the real script: getshell, the environment variables to copy, Files to Copy
-and iTerm2's shell integration files as gzip tarballs, the injection for zsh, fish and xonsh
-(bash only at level 2, as iTerm2), the profile's remote directory, the Python check and the login
-shell. Typing, pastes, terminal reports and coprocess output made during setup reach the remote
-once, in order, after it; the conductor's own writes are never held. Python 3.7 or later also
-gets level 1 until milestone 14c. Every setup step has a 30-second limit, and a failure shows
-iTerm2's error text, lets output show again and never leaves typing held; EndSSH pops the conductor
-chain and restores each hop's saved state. The iTerm2 bugs met (B1 to B17) are kept or fixed one
-by one. Every kept quirk is listed in `docs/acceptance/m14b-checklist.md` and ruled on in
+Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
+Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
+milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's
+unmodified conductor.sh sets up, and Tandem writes it the bytes iTerm2 writes, pinned against
+recordings of the real script: getshell, the environment variables to copy, Files to Copy and
+iTerm2's shell integration files as gzip tarballs, the injection for zsh, fish and xonsh (bash only
+at level 2, as iTerm2), the profile's remote directory, the Python check and the login shell.
+Typing, pastes, terminal reports and coprocess output made during setup reach the remote once, in
+order, after it; the conductor's own writes are never held. Python 3.7 or later also gets level 1
+until milestone 14c. Every setup step has a 30-second limit (a Files to Copy write gets more with
+its size, since conductor.sh reads it in time that grows with the square of its size), and a failure
+shows iTerm2's error text, lets output show again and never leaves typing held (typing made during a
+failed or ended setup is dropped, as in iTerm2); EndSSH pops the conductor chain and restores each
+hop's saved state. The iTerm2 bugs met (B1 to B17) are kept or fixed one by one. Every kept quirk is
+listed in `docs/acceptance/m14b-checklist.md` and ruled on in
 `docs/superpowers/rulings/m14b-rulings.txt`.
 
 ## Order
