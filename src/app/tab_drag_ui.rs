@@ -180,26 +180,6 @@ impl App {
         self.set_tab_group(at, resolved);
     }
 
-    /// The tabs take iTerm2's canonical order (`tab_groups::canonical_order`: pinned tabs
-    /// first, each group's members together), keeping the selected tab by id
-    /// (`PT enforceTabGroupContiguityInvariant`). Task 8 adds the collapse normalization.
-    pub(super) fn settle_tabs(&mut self) {
-        let order = {
-            let groups: Vec<Option<&str>> = self.tabs.iter().map(|t| t.group.as_ref().map(|g| g.id.as_str())).collect();
-            let pinned: Vec<bool> = self.tabs.iter().map(|t| t.pinned).collect();
-            tab_groups::canonical_order(&groups, &pinned)
-        };
-        if order.iter().enumerate().all(|(k, i)| k == *i) {
-            return;
-        }
-        let active = self.tabs.get(self.active).map(|t| t.id);
-        let mut old: Vec<Option<Tab>> = std::mem::take(&mut self.tabs).into_iter().map(Some).collect();
-        self.tabs = order.into_iter().filter_map(|i| old.get_mut(i).and_then(Option::take)).collect();
-        if let Some(a) = active.and_then(|a| self.tabs.iter().position(|t| t.id == a)) {
-            self.active = a;
-        }
-    }
-
     /// A drop in another window's bar (`window`, its registry key) at `slot`: the tab leaves
     /// this window (which closes when it was its last tab), goes into that one kept in its
     /// zone, takes its group there, and is selected in the window, which comes to the front

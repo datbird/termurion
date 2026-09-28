@@ -822,6 +822,8 @@ impl App {
                 let at = tab_index.map_or(self.tabs.len(), |i| i.min(self.tabs.len()));
                 self.tabs.insert(at, tab);
                 self.active = at;
+                // A tmux tab never pins: it goes after any pinned tabs.
+                self.settle_tabs();
                 self.relayout();
             }
             // The sibling's window is still waiting to open (every window of one attach

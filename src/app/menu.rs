@@ -610,16 +610,27 @@ impl App {
             }
             "newSessionAlternate:" => {
                 let (before, active) = (self.tabs.len(), self.active);
+                let group = self.tabs.get(active).and_then(|t| t.group.as_ref()).map(|g| g.id.clone());
                 self.new_tab(None);
                 if let Some(at) = super::move_new_tab(&mut self.tabs, before, active) {
                     self.active = at;
+                    // Landing just after a grouped tab, it joins the group
+                    // (`PT groupIDToInheritForNewTabAtIndex:`, `PT:14377-14390`).
+                    if group.is_some() {
+                        self.set_tab_group(at, group);
+                    }
+                    // Beside a pinned tab it goes after the pinned ones.
+                    if self.settle_tabs() {
+                        self.tmux_reorder();
+                    }
                 }
             }
             "newWindowWithSameProfile:" => {
                 let g = self.focused_guid();
                 self.new_window(event_loop, g.as_deref());
             }
-            "newSessionWithSameProfile:" | "duplicateTab:" | "duplicateSession:" => {
+            "duplicateTab:" => self.duplicate_tab(self.active),
+            "newSessionWithSameProfile:" | "duplicateSession:" => {
                 let g = self.focused_guid();
                 self.new_tab(g.as_deref());
             }
@@ -795,6 +806,18 @@ impl App {
             }
             "moveTabLeft:" => self.move_active_tab(-1),
             "moveTabRight:" => self.move_active_tab(1),
+            "nextTabGroup:" => self.select_tab_group(1),
+            "previousTabGroup:" => self.select_tab_group(-1),
+            "addTabToNewGroupAction:" => {
+                if let Some(id) = self.tabs.get(self.active).map(|t| t.id) {
+                    self.add_tab_to_new_group(event_loop, id);
+                }
+            }
+            "removeTabFromGroupAction:" => {
+                if let Some(id) = self.tabs.get(self.active).map(|t| t.id) {
+                    self.remove_tab_from_group(id);
+                }
+            }
             "selectPaneUp:" | "selectPaneDown:" | "selectPaneLeft:" | "selectPaneRight:" => {
                 let dir = match item.selector.as_str() {
                     "selectPaneUp:" => Dir::Up,

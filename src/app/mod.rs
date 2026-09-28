@@ -357,9 +357,9 @@ pub struct App {
     /// What the current window's terminals were laid out for: the content area and every
     /// pane's terminal rectangle, per-pane bars included.
     laid_out: Option<crate::statusbar_layout::Room>,
-    /// The save-arrangement window (true: all windows), and menus to rebuild (arrangements
+    /// The save-arrangement window and what it saves, and menus to rebuild (arrangements
     /// changed).
-    arrange_prompt: Option<(crate::prompt_ui::PromptWindow, bool)>,
+    arrange_prompt: Option<(crate::prompt_ui::PromptWindow, arrange_ui::SaveWhat)>,
     menus_dirty: bool,
     /// The folder the next pane starts in, for a restored arrangement's session.
     start_dir_override: Option<crate::arrangement::Folder>,
@@ -379,6 +379,9 @@ pub struct App {
     undo_capture: Option<undo_ui::Capture>,
     /// The Edit Window Title or Edit Tab Title window, and what it names.
     title_prompt: Option<(crate::prompt_ui::PromptWindow, windows_ui::TitleEdit)>,
+    /// The New Tab Group or Rename Tab Group window, and what it names (app-wide, like the
+    /// title window).
+    group_prompt: Option<(crate::prompt_ui::PromptWindow, tab_groups_ui::GroupPrompt)>,
     /// Windows to open at the next turn of the event loop (new windows need it).
     pending_windows: Vec<windows_ui::NewWindow>,
     /// Automatic Profile Switching: each session's stack, and this computer's name.
@@ -1101,6 +1104,7 @@ pub fn run() {
         action_edit_undo: None,
         laid_out: None,
         title_prompt: None,
+        group_prompt: None,
         arrange_prompt: None,
         menus_dirty: false,
         start_dir_override: None,
@@ -1538,14 +1542,16 @@ impl App {
         wake
     }
 
-    /// Makes tab `i` the selected tab, as a click, a key or a command does: the bar flashes in
-    /// full screen and brings the tab into view (`PT tabView:didSelectTabViewItem:`).
+    /// Makes tab `i` the selected tab, as a click, a key or a command does: a collapsed group
+    /// it is hidden in expands, the bar flashes in full screen and brings the tab into view
+    /// (`PT tabView:didSelectTabViewItem:`).
     pub(super) fn select_tab(&mut self, i: usize) {
         if i >= self.tabs.len() {
             return;
         }
         let changed = i != self.active;
         self.active = i;
+        self.expand_selected_group();
         if changed {
             self.flash_tab_bar();
         }
@@ -2764,6 +2770,8 @@ impl App {
                 self.mru.forget(gone.id);
                 self.api_vars.forget(crate::api_vars::Scope::Tab, &gone.id.to_string());
                 self.active = crate::close_rules::active_after_close(self.active, t, self.tabs.len(), self.globals.bool("moveLeftAfterClosingTab"));
+                // The neighbor selected may be hidden in a collapsed group.
+                self.expand_selected_group();
             }
         }
         if self.tabs.is_empty() {
@@ -4207,7 +4215,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

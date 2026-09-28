@@ -2726,6 +2726,15 @@ default = 10
 help = "How far must the mouse move before a tab drag is initiated?\nYou must restart Tandem after changing this setting for it to take effect."
 
 [[setting]]
+key = "DuplicatedTabsOpenAdjacentToOriginal"
+tab = "Advanced"
+section = "Tabs"
+label = "When you duplicate a tab, should the copy open immediately to the right of the original tab?"
+type = "bool"
+default = true
+help = "When you duplicate a tab, should the copy open immediately to the right of the original tab?\nWhen disabled, duplicated tabs follow the general \u201cNew tabs are added\u201d placement setting instead."
+
+[[setting]]
 key = "PinnedTabWidth"
 tab = "Advanced"
 section = "Tabs"

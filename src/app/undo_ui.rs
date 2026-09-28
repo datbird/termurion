@@ -155,6 +155,8 @@ impl App {
                     let at = index.min(self.tabs.len());
                     self.tabs.insert(at, tab);
                     self.active = at;
+                    // Pinned tabs first and groups together, around a tab come back.
+                    self.settle_tabs();
                 } else {
                     self.pending_windows.push(windows_ui::NewWindow::Tabs(vec![tab]));
                 }

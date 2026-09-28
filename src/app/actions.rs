@@ -346,15 +346,8 @@ impl App {
                     self.mru_mods = Some(self.mods);
                 }
             }
-            33 | 34 if !self.layout_allowed(crate::winmodel::LayoutOp::ReorderTab) => {}
-            33 | 34 => {
-                let n = self.tabs.len();
-                if n > 1 {
-                    let to = if b.action == 34 { (self.active + 1) % n } else { (self.active + n - 1) % n };
-                    self.tabs.swap(self.active, to);
-                    self.active = to;
-                }
-            }
+            // Move Tab Left and Right, as the menu's.
+            33 | 34 => self.move_active_tab(if b.action == 34 { 1 } else { -1 }),
             37 => self.set_profile(&b.text),
             49 => self.grow_focused(Axis::Column, false),
             50 => self.grow_focused(Axis::Column, true),

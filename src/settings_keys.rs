@@ -1809,6 +1809,16 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_row_follows_iterm2() {
+        let row = schema::find_global("DuplicatedTabsOpenAdjacentToOriginal").expect("DuplicatedTabsOpenAdjacentToOriginal");
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"));
+        assert_eq!(row.kind, Kind::Bool);
+        assert_eq!(row.default, Some(Value::Boolean(true)));
+        assert_eq!(row.label, "When you duplicate a tab, should the copy open immediately to the right of the original tab?");
+        assert_eq!(row.help, "When you duplicate a tab, should the copy open immediately to the right of the original tab?\nWhen disabled, duplicated tabs follow the general \u{201c}New tabs are added\u{201d} placement setting instead.");
+    }
+
+    #[test]
     fn preserve_rows_follow_iterm2() {
         for (key, label) in [
             ("PreserveWindowSizeWhenTabBarVisibilityChanges", "Preserve window size when tab bar shows or hides"),

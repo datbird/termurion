@@ -265,6 +265,58 @@ pub fn normalized_collapsed(order: &[Option<&str>], collapsed: &[bool], active: 
         .collect()
 }
 
+/// The new group prompt's title (`PT:8958`).
+pub const NEW_GROUP_TITLE: &str = "New Tab Group";
+/// The rename prompt's title (`PT:9747`).
+pub const RENAME_GROUP_TITLE: &str = "Rename Tab Group";
+/// Both prompts' text (`PT:8996`).
+pub const GROUP_PROMPT: &str = "Enter a name for this tab group.";
+/// A new group's name when the tab has no label (`PT:8957`).
+pub const DEFAULT_GROUP_NAME: &str = "Group";
+/// An empty group name in a menu of groups (`PT:8912`).
+pub const UNTITLED: &str = "Untitled";
+
+/// The name a new group's prompt starts with (`PT addTab:toNewGroupWithDefaultName:`,
+/// `PT:8953-8967`, `PT:8993-9004`): the tab's label, "Group" when it is empty, trimmed of
+/// white space and line breaks (a label ends in a line break).
+pub fn default_name(label: &str) -> String {
+    let name = if label.is_empty() { DEFAULT_GROUP_NAME } else { label };
+    name.trim().to_string()
+}
+
+/// Which tabs a group menu's close command closes (`PT closeTabGroup:`,
+/// `closeTabsOutsideGroup:`, `closeTabsRightOfGroup:`, `PT:9845-9888`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseTabs {
+    /// Close Group: every member, pinned ones too.
+    Group,
+    /// Close Other Tabs: every tab outside the group but the pinned ones.
+    Outside,
+    /// Close Tabs to the Right (Below on a side bar): every tab after the group's last
+    /// member but the pinned ones.
+    Right,
+}
+
+/// The heading of the one question those commands ask (`PT:9906`).
+pub const CLOSE_TABS_HEADING: &str = "Close Tabs";
+
+/// The question the group close commands ask once for `count` tabs (`PT closeTabs:`,
+/// `PT:9890-9917`): "<question> (N tabs)".
+pub fn close_question(what: CloseTabs, vertical: bool, count: usize) -> String {
+    let question = match what {
+        CloseTabs::Group => "Close this tab group?",
+        CloseTabs::Outside => "Close all tabs outside this group?",
+        CloseTabs::Right if vertical => "Close all tabs below this group?",
+        CloseTabs::Right => "Close all tabs to the right of this group?",
+    };
+    format!("{question} ({count} tabs)")
+}
+
+/// A duplicated group's name (`PT duplicateTabGroup:`, `PT:9808-9809`): "<name> copy".
+pub fn copy_name(name: &str) -> String {
+    format!("{name} copy")
+}
+
 /// `nextTabGroupColor`'s palette (`PT:9149-9166`): system blue, green, orange, purple and
 /// red, #50afbc, and system pink.
 pub const PALETTE: [Rgb; 7] = [
@@ -446,6 +498,24 @@ mod tests {
         assert_eq!(apply_pin(&[N, N, N, N], &[true, true, false, false], &[0], false), vec![1, 2, 0, 3], "a lone tab lands after the first unpinned tab");
         assert_eq!(apply_pin(&[N, A, A], &[false, false, false], &[1, 2], true), vec![1, 2, 0], "pinning a group keeps its order in front");
         assert_eq!(apply_pin(&[N, N], &[true, false], &[0], true), vec![0, 1], "no change, no move");
+    }
+
+    #[test]
+    fn group_commands_follow_iterm2() {
+        assert_eq!(default_name("vim\n"), "vim", "trimmed");
+        assert_eq!(default_name(""), "Group");
+        assert_eq!(default_name("  "), "", "a label of spaces is not empty, so it seeds the field and trims to nothing (`PT:8958`, `:9004`)");
+        assert_eq!(NEW_GROUP_TITLE, "New Tab Group");
+        assert_eq!(RENAME_GROUP_TITLE, "Rename Tab Group");
+        assert_eq!(GROUP_PROMPT, "Enter a name for this tab group.");
+        assert_eq!(DEFAULT_GROUP_NAME, "Group");
+        assert_eq!(UNTITLED, "Untitled");
+        assert_eq!(close_question(CloseTabs::Group, false, 3), "Close this tab group? (3 tabs)");
+        assert_eq!(close_question(CloseTabs::Outside, false, 1), "Close all tabs outside this group? (1 tabs)");
+        assert_eq!(close_question(CloseTabs::Right, false, 2), "Close all tabs to the right of this group? (2 tabs)");
+        assert_eq!(close_question(CloseTabs::Right, true, 2), "Close all tabs below this group? (2 tabs)");
+        assert_eq!(CLOSE_TABS_HEADING, "Close Tabs");
+        assert_eq!(copy_name("Build"), "Build copy");
     }
 
     #[test]

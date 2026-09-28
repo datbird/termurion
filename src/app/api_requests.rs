@@ -500,6 +500,8 @@ impl App {
                     if let Some(a) = active.and_then(|a| self.tabs.iter().position(|t| t.id == a)) {
                         self.active = a;
                     }
+                    // Pinned tabs stay first and groups together (`PT tabsDidReorder`).
+                    self.settle_tabs();
                     self.tmux_reorder();
                     self.relayout();
                     self.redraw();
@@ -1129,6 +1131,8 @@ impl App {
         }
         for k in touched {
             if self.window_id_of_key(k).is_some_and(|id| self.enter(id)) {
+                // Pinned tabs stay first and groups together (`PT tabsDidReorder`).
+                self.settle_tabs();
                 self.tmux_reorder();
                 self.relayout();
                 self.redraw();

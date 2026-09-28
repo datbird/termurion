@@ -460,6 +460,8 @@ impl App {
         self.tabs.insert(0, Tab::new(self.next_tab_id, Layout::new(id), id));
         self.next_tab_id += 1;
         self.active = 0;
+        // After any pinned tabs.
+        self.settle_tabs();
         self.relayout();
         self.recording_replay = Some(id);
     }

@@ -417,6 +417,7 @@ impl App {
             NewWindow::Tabs(tabs) => {
                 self.tabs.extend(tabs);
                 self.active = 0;
+                self.settle_tabs();
                 self.relayout();
             }
             NewWindow::Arrangement(w) => {
@@ -918,6 +919,10 @@ impl App {
                 }
             }
             drop(slot);
+        }
+        // Merged pinned tabs go to the front, and groups stay together.
+        if self.settle_tabs() {
+            self.tmux_reorder();
         }
         self.relayout();
         self.redraw();
