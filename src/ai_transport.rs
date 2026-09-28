@@ -287,23 +287,31 @@ pub struct Reply {
     pub status: u32,
     pub chunks: Vec<Vec<u8>>,
     pub failure: Option<String>,
+    /// Bytes in the final body that no chunk delivered: iTerm2's race, where the completion
+    /// arrives before the last chunks were read.
+    pub late: Vec<u8>,
 }
 
 #[cfg(test)]
 impl Reply {
     /// 200 with these reads.
     pub fn ok(chunks: &[&[u8]]) -> Reply {
-        Reply { status: 200, chunks: chunks.iter().map(|c| c.to_vec()).collect(), failure: None }
+        Reply { status: 200, chunks: chunks.iter().map(|c| c.to_vec()).collect(), failure: None, late: Vec::new() }
     }
 
     /// `code` with the whole body in one read.
     pub fn status(code: u32, body: &[u8]) -> Reply {
-        Reply { status: code, chunks: vec![body.to_vec()], failure: None }
+        Reply { status: code, chunks: vec![body.to_vec()], failure: None, late: Vec::new() }
     }
 
     /// No response: the transport failed with `text` (for example "The request timed out.").
     pub fn failed(text: &str) -> Reply {
-        Reply { status: 0, chunks: Vec::new(), failure: Some(text.to_string()) }
+        Reply { status: 0, chunks: Vec::new(), failure: Some(text.to_string()), late: Vec::new() }
+    }
+
+    /// 200 whose final body holds `late` after what the chunks delivered.
+    pub fn raced(chunks: &[&[u8]], late: &[u8]) -> Reply {
+        Reply { late: late.to_vec(), ..Reply::ok(chunks) }
     }
 }
 
@@ -355,7 +363,10 @@ impl Transport for Recorded {
             invalid_url_events()
         } else {
             let reply = self.replies.lock().unwrap().pop_front().expect("Recorded has a reply for every request");
-            let events = events_for(reply.status, &reply.chunks, request.stream, reply.failure.as_deref());
+            let mut events = events_for(reply.status, &reply.chunks, request.stream, reply.failure.as_deref());
+            if let Some(HttpEvent::Done { body, .. }) = events.last_mut() {
+                body.push_str(&String::from_utf8_lossy(&reply.late));
+            }
             self.requests.lock().unwrap().push(request);
             events
         };

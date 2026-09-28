@@ -288,6 +288,10 @@ pub mod ai_policy;
 pub mod ai_models;
 pub mod ai_model;
 pub mod ai_transport;
+pub mod ai_msg;
+pub mod ai_json;
+pub mod ai_sse;
+pub mod ai_turn;
 #[cfg(windows)]
 pub mod ai_winhttp;
 pub mod ai_wire_log;
