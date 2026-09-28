@@ -8,6 +8,7 @@ use std::time::SystemTime;
 
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::Handler;
 
 use crate::osc::{Osc, PromptKind};
@@ -245,10 +246,22 @@ pub struct LeftOn {
     pub paste: bool,
 }
 
-/// Each mode's "off" sequence, as Session > Terminal State's toggles send.
-const FOCUS_OFF: &[u8] = b"\x1b[?1004l";
-const MOUSE_OFF: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l";
-const PASTE_OFF: &[u8] = b"\x1b[?2004l";
+/// iTerm2's Session > Terminal State toggles: label, escape to turn on, escape to turn
+/// off, and the mode that shows the check mark. A host change turns modes off with the
+/// same sequences.
+pub const TOGGLES: [(&str, &str, &str, TermMode); 6] = [
+    ("Alternate Screen", "\x1b[?1049h", "\x1b[?1049l", TermMode::ALT_SCREEN),
+    ("Focus Reporting", "\x1b[?1004h", "\x1b[?1004l", TermMode::FOCUS_IN_OUT),
+    ("Mouse Reporting", "\x1b[?1000h", "\x1b[?1000l\x1b[?1002l\x1b[?1003l", TermMode::MOUSE_MODE),
+    ("Paste Bracketing", "\x1b[?2004h", "\x1b[?2004l", TermMode::BRACKETED_PASTE),
+    ("Application Cursor", "\x1b[?1h", "\x1b[?1l", TermMode::APP_CURSOR),
+    ("Application Keypad", "\x1b=", "\x1b>", TermMode::APP_KEYPAD),
+];
+
+/// A Terminal State toggle's "off" sequence (empty for an unknown label).
+pub fn toggle_off(label: &str) -> &'static [u8] {
+    TOGGLES.iter().find(|t| t.0 == label).map_or(&[], |t| t.2.as_bytes())
+}
 
 impl Screen {
     /// Clears from grid line `line` to the end (iTerm2 clearFromAbsoluteLineToEnd). The
@@ -784,9 +797,9 @@ impl Screen {
         // Mouse reporting counts only where the pane may report the mouse; fish handles
         // paste bracketing itself. iTerm2's order: mouse, focus, paste.
         let modes = [
-            (policy.mouse_allowed && self.mouse_modes().tracking != crate::mouse::Tracking::Off, policy.mouse, MOUSE_OFF),
-            (mode.contains(alacritty_terminal::term::TermMode::FOCUS_IN_OUT), policy.focus, FOCUS_OFF),
-            (!fish && mode.contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE), policy.paste, PASTE_OFF),
+            (policy.mouse_allowed && self.mouse_modes().tracking != crate::mouse::Tracking::Off, policy.mouse, toggle_off("Mouse Reporting")),
+            (mode.contains(TermMode::FOCUS_IN_OUT), policy.focus, toggle_off("Focus Reporting")),
+            (!fish && mode.contains(TermMode::BRACKETED_PASTE), policy.paste, toggle_off("Paste Bracketing")),
         ];
         let mut offers = [false; 3];
         for (i, (on, saved, off)) in modes.into_iter().enumerate() {
@@ -1818,6 +1831,15 @@ mod tests {
 
     /// Host change offers: only when a previous host existed, the name changed and the two
     /// are not both this machine (`PS:17929-17940`); the fish flag rides along.
+    /// A host change turns modes off with Terminal State's own sequences (one table).
+    #[test]
+    fn host_change_uses_the_terminal_state_toggles() {
+        assert_eq!(toggle_off("Mouse Reporting"), b"\x1b[?1000l\x1b[?1002l\x1b[?1003l");
+        assert_eq!(toggle_off("Focus Reporting"), b"\x1b[?1004l");
+        assert_eq!(toggle_off("Paste Bracketing"), b"\x1b[?2004l");
+        assert_eq!(toggle_off("No Such Toggle"), b"");
+    }
+
     #[test]
     fn host_change_follows_iterm2() {
         assert!(!host_changed(None, "b", "PC"), "no previous host");

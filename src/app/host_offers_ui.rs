@@ -123,9 +123,9 @@ impl App {
 
     /// Turns a mode off with its Terminal State toggle's "off" sequence.
     pub(super) fn turn_off(&mut self, pane: PaneId, o: Offer) {
-        let Some((_, _, off, _)) = super::menu::TOGGLES.iter().find(|t| t.0 == toggle_label(o)) else { return };
+        let off = crate::marks::toggle_off(toggle_label(o));
         if let Some(p) = self.panes.get_mut(&pane) {
-            p.own_mut().feed(off.as_bytes());
+            p.own_mut().feed(off);
             self.redraw();
         }
     }

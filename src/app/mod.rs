@@ -2145,6 +2145,8 @@ impl App {
             Action::Copy => {
                 if let Some(id) = self.tabs.get(self.active).map(|t| t.focused) {
                     self.copy_selection(id);
+                    // Tandem's copy chord is iTerm2's Cmd-C to the frustration detector.
+                    self.frustration_copy(id);
                 }
             }
             Action::Paste => self.paste(),

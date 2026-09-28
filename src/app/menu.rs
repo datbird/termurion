@@ -4,7 +4,6 @@ use std::collections::HashMap;
 
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
-use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{CharsetIndex, Handler, StandardCharset};
 use muda::{CheckMenuItem, ContextMenu, IsMenuItem, Menu, MenuItem, MenuTheme, PredefinedMenuItem, Submenu};
 use winit::event_loop::ActiveEventLoop;
@@ -14,18 +13,8 @@ use winit::window::Fullscreen;
 use super::*;
 use crate::commands::{self, Status};
 use crate::layout::{Dir, visible_rects};
+use crate::marks::TOGGLES;
 use crate::menus::{self, Chord, Item};
-
-/// iTerm2's Session > Terminal State toggles: label, escape to turn on, escape to turn
-/// off, and the mode that shows the check mark.
-pub(super) const TOGGLES: [(&str, &str, &str, TermMode); 6] = [
-    ("Alternate Screen", "\x1b[?1049h", "\x1b[?1049l", TermMode::ALT_SCREEN),
-    ("Focus Reporting", "\x1b[?1004h", "\x1b[?1004l", TermMode::FOCUS_IN_OUT),
-    ("Mouse Reporting", "\x1b[?1000h", "\x1b[?1000l\x1b[?1002l\x1b[?1003l", TermMode::MOUSE_MODE),
-    ("Paste Bracketing", "\x1b[?2004h", "\x1b[?2004l", TermMode::BRACKETED_PASTE),
-    ("Application Cursor", "\x1b[?1h", "\x1b[?1l", TermMode::APP_CURSOR),
-    ("Application Keypad", "\x1b=", "\x1b>", TermMode::APP_KEYPAD),
-];
 
 /// Session > Terminal State's key reporting radio group.
 const KEY_MODES: [(&str, crate::keyproto::KeyMode); 5] = [

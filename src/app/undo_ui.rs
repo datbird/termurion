@@ -14,6 +14,16 @@ pub(super) enum Undone {
     Window { tabs: Vec<Tab>, panes: Vec<Pane> },
 }
 
+impl Undone {
+    /// The panes it holds.
+    pub(super) fn panes(&self) -> impl Iterator<Item = &Pane> {
+        match self {
+            Undone::Session { pane, .. } => std::slice::from_ref(pane).iter(),
+            Undone::Tab { panes, .. } | Undone::Window { panes, .. } => panes.iter(),
+        }
+    }
+}
+
 /// A close in progress: the panes it takes, collected by `close_pane`.
 pub(super) struct Capture {
     kind: Kind,
@@ -194,6 +204,17 @@ fn keep_held(tabs: Vec<(Tab, usize)>, held: &[PaneId]) -> Vec<(Tab, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stashed pane is still found (Send Signal must see a pane closed for Undo Close).
+    #[test]
+    fn stashed_panes_are_found() {
+        let session = Undone::Session { pane: Pane::recording(1, 10, 4), tab: 0, window: None };
+        let tab = Tab { id: 0, layout: Layout::from_tree(crate::layout::Tree::Leaf(2)), focused: 2, zoomed: None, title: None };
+        let tabbed = Undone::Tab { tab: tab.clone(), panes: vec![Pane::recording(2, 10, 4), Pane::recording(3, 10, 4)], index: 0, window: None };
+        let window = Undone::Window { tabs: vec![tab], panes: vec![Pane::recording(4, 10, 4)] };
+        let ids = |u: &Undone| u.panes().map(|p| p.id).collect::<Vec<_>>();
+        assert_eq!((ids(&session), ids(&tabbed), ids(&window)), (vec![1], vec![2, 3], vec![4]));
+    }
 
     #[test]
     fn undo_keeps_only_the_panes_it_holds() {

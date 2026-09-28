@@ -1129,8 +1129,8 @@ impl App {
                 continue;
             }
             // A hosted pane's console belongs to tandem-host, which sends the event: Tandem
-            // never attaches to it.
-            let pane = self.panes.values().find(|p| p.shell_pid() == Some(req.shell));
+            // never attaches to it. A pane closed for Undo Close still has its console.
+            let pane = self.panes.values().chain(self.undo.iter().flat_map(|u| u.panes())).find(|p| p.shell_pid() == Some(req.shell));
             let hosted = if console { pane.and_then(|p| p.hosted_signal(req.way == SignalWay::CtrlBreak)) } else { None };
             // A local console paused for an inline file's question is never attached to.
             let stop = pane.and_then(|p| p.console_pause_flag()).unwrap_or_default();
