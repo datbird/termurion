@@ -23,6 +23,7 @@ use crate::input::{self, Clicks, Wheel};
 use crate::keyroute::{self, Route};
 use crate::keys::{self, Action, AltSide, Key, KeyOptions};
 use crate::keystroke;
+use crate::tab_layout;
 use crate::mru::Mru;
 use crate::pointer::{self, Down, Up};
 use crate::layout::{Axis, Layout, PaneId, Rect};
@@ -1161,8 +1162,39 @@ impl App {
         self.gpu.as_ref().map_or((8.0, 16.0), |g| g.renderer.cell)
     }
 
+    /// The tab bar shows: more than one tab, or always with `HideTab` off.
+    fn tab_bar_shown(&self) -> bool {
+        tab_layout::bar_shown(self.tabs.len(), self.globals.bool("HideTab"))
+    }
+
+    /// The tab bar's height in pixels: `DefaultTabBarHeight` points while the bar shows.
     fn tab_height(&self) -> f32 {
-        if self.tabs.len() > 1 { (self.cell().1 * 1.6).round() } else { 0.0 }
+        if self.tab_bar_shown() {
+            (tab_layout::Settings::from_globals(&self.globals).height * self.scale()).round()
+        } else {
+            0.0
+        }
+    }
+
+    /// Lays out the tab bar `width` pixels wide, measuring labels in the prose font.
+    fn layout_tab_bar(&mut self, looks: &[scene::TabLook], width: f32) -> tab_layout::Bar {
+        let s = tab_layout::Settings::from_globals(&self.globals);
+        let inputs: Vec<tab_layout::TabInput> = looks
+            .iter()
+            .map(|l| tab_layout::TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: l.dot.is_some() || l.icon.is_some(), processing: l.processing, number: l.number })
+            .collect();
+        let (scale, active) = (self.scale(), self.active);
+        let renderer = self.gpu.as_mut().map(|g| std::cell::RefCell::new(&mut g.renderer));
+        // Points to pixels and back: a text of `pt` points is drawn at `pt * scale` pixels.
+        let measure = |text: &str, pt: f32| match &renderer {
+            Some(r) => {
+                let mut r = r.borrow_mut();
+                let row_scale = pt * scale / r.font_px().max(1.0);
+                r.text_width(text, true, row_scale) / scale
+            }
+            None => text.chars().count() as f32 * pt * 0.5,
+        };
+        tab_layout::build(&inputs, active, width / scale, 0.0, None, &s, &measure)
     }
 
     /// The window's room below the tab bar and above any banner, the toolbelt's included.
@@ -2609,10 +2641,15 @@ impl App {
         let mut frame = Frame { clear: rgba(palette_bg, 1.0), ..Default::default() };
         let (w, _) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         self.tab_rects.clear();
-        if self.tabs.len() > 1 {
-            let titles: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
-            let bar = Rect { x: 0.0, y: 0.0, w, h: self.tab_height() };
-            self.tab_rects = scene::tab_bar(&mut frame, &titles, self.active, bar, cell);
+        if self.tab_bar_shown() {
+            let looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
+            let area = Rect { x: 0.0, y: 0.0, w, h: self.tab_height() };
+            let bar = self.layout_tab_bar(&looks, w);
+            let scale = self.scale();
+            // The shown tabs are a prefix, so a rectangle's place is its tab's index.
+            self.tab_rects = bar.cells.iter().map(|(_, _, r)| tab_layout::to_px(*r, scale)).collect();
+            let font_px = self.gpu.as_ref().map_or(cell.1, |g| g.renderer.font_px()).max(1.0);
+            scene::tab_bar(&mut frame, &looks, self.active, &bar, area, scale, scale / font_px, cell.1);
         }
         let area = self.content_area();
         let backgrounds = self.pane_backgrounds();

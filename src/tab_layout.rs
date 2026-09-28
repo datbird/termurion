@@ -597,6 +597,327 @@ fn hex_color(word: &str) -> Option<Rgb> {
     Some(rgb(to8(r), to8(g), to8(b)))
 }
 
+/// The label font's size without `UseCustomTabBarFontSize` (`YS fontSize`).
+pub const DEFAULT_FONT: f32 = 11.0;
+/// The subtitle line shows only on a bar this tall (`YS supportsMultiLineLabels`).
+pub const SUBTITLE_MIN_BAR: f32 = 28.0;
+/// The title moves up this much when a subtitle is drawn under it
+/// (`YS verticalOffsetForTitleWhenSubtitlePresent`).
+pub const TITLE_OFFSET_WITH_SUBTITLE: f32 = -5.0;
+/// The subtitle sits this much closer to the title (`YS verticalOffsetForSubtitle`).
+pub const SUBTITLE_OFFSET: f32 = -2.0;
+
+/// The bar's height in points: `DefaultTabBarHeight` (`YS tabBarHeight`).
+pub fn bar_height(default_height: f32) -> f32 {
+    default_height.max(0.0)
+}
+
+/// The tab bar shows with more than one tab, or always with `HideTab` off
+/// (`PT tabBarAlwaysVisible`).
+pub fn bar_shown(tab_count: usize, hide_tab: bool) -> bool {
+    tab_count > 1 || !hide_tab
+}
+
+/// The label font's size: `CustomTabBarFontSize` with `UseCustomTabBarFontSize`, else 11.
+pub fn font_size(custom: bool, size: f32) -> f32 {
+    if custom {
+        size
+    } else {
+        DEFAULT_FONT
+    }
+}
+
+/// The subtitle's font size (`YS subtitleFontSize`).
+pub fn subtitle_size(font: f32) -> f32 {
+    (font * 0.8).round()
+}
+
+/// A subtitle line is drawn: a tall enough bar and something to draw (`YS willDrawSubtitle:`).
+pub fn shows_subtitle(bar_height: f32, subtitle: &str) -> bool {
+    bar_height >= SUBTITLE_MIN_BAR && !subtitle.is_empty()
+}
+
+/// One tab as the bar lays it out.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TabInput {
+    /// The title as the session names it (HTML when `HTMLTabTitles` is on).
+    pub title: String,
+    /// The subtitle line, the status joined in (`subtitle_text`).
+    pub subtitle: String,
+    /// The tab shows an icon (the status dot, dead, bell, new output, idle).
+    pub icon: bool,
+    /// The activity spinner shows (`activity_ui::tab_processing`).
+    pub processing: bool,
+    /// The tab's number, from 1; 0 for none.
+    pub number: usize,
+}
+
+/// A tab's texts as drawn, measured in points: the title's styled runs with their widths, the
+/// subtitle's width and its own label box, and the number.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CellText {
+    pub runs: Vec<(Run, f32)>,
+    pub subtitle_width: f32,
+    /// The subtitle's label box and whether it is left-aligned and truncated; it is measured
+    /// apart from the title (`YS drawSubtitle:...`).
+    pub subtitle_label: Rect,
+    pub subtitle_truncate: bool,
+    pub counter: String,
+    pub counter_width: f32,
+}
+
+impl CellText {
+    /// The title's width, all runs together.
+    pub fn title_width(&self) -> f32 {
+        self.runs.iter().map(|(_, w)| w).sum()
+    }
+}
+
+/// The laid-out bar, in points from the bar's left, the scroll offset applied.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bar {
+    /// The shown tabs: tab index, inside, and the tab's rectangle.
+    pub cells: Vec<(usize, CellLayout, Rect)>,
+    /// Per cell, the title as drawn (plain text, truncated).
+    pub titles: Vec<String>,
+    /// Per cell, the subtitle as drawn; empty when none shows.
+    pub subtitles: Vec<String>,
+    /// Per cell, the texts measured.
+    pub texts: Vec<CellText>,
+    /// Tabs in the overflow menu.
+    pub hidden: Vec<usize>,
+    pub add: Option<Rect>,
+    pub overflow: Option<Rect>,
+    /// The scroll extent; 0 when nothing scrolls.
+    pub content: f32,
+    pub height: f32,
+    /// The label font's size.
+    pub font: f32,
+}
+
+/// The tab bar's settings (`RTV:1984-1990`, `PT:10112-10124`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Settings {
+    pub prefs: Prefs,
+    /// `HideTabNumber`.
+    pub hide_numbers: bool,
+    /// `TabsHaveCloseButton`.
+    pub close_buttons: bool,
+    /// `TabCloseButtonsAlwaysVisible`.
+    pub close_always: bool,
+    /// `HideActivityIndicator`.
+    pub hide_activity: bool,
+    /// `HTMLTabTitles`.
+    pub html: bool,
+    /// `TabTitlesUseSmartTruncation`.
+    pub smart: bool,
+    /// The label font's size in points; 13e sets it from its theme unless the custom size is on.
+    pub font: f32,
+    /// `MinimumTabLabelWidth`.
+    pub min_label: f32,
+    /// The tab number's modifier (`modifier_string`).
+    pub modifier: &'static str,
+    /// The bar's height in points.
+    pub height: f32,
+}
+
+impl Settings {
+    pub fn from_globals(g: &crate::globals::Globals) -> Settings {
+        let num = |key: &str, default: f32| g.number(key).map_or(default, |v| v as f32);
+        let hide_numbers = g.bool("HideTabNumber");
+        Settings {
+            prefs: Prefs {
+                uneven: g.bool("UseUnevenTabs"),
+                min_width: min_width(hide_numbers, num("MinTabWidth", 75.0), num("MinCompactTabWidth", 60.0)),
+                optimum: num("OptimumTabWidth", 175.0),
+                scrollable_width: num("ScrollableTabWidth", 120.0),
+                stretch: g.bool("StretchTabsToFillBar"),
+                scrollable: g.bool("ScrollableSideTabBar"),
+                add_button: !g.bool("RemoveAddTabButton"),
+            },
+            hide_numbers,
+            close_buttons: g.bool("TabsHaveCloseButton"),
+            close_always: g.bool("TabCloseButtonsAlwaysVisible"),
+            hide_activity: g.bool("HideActivityIndicator"),
+            html: g.bool("HTMLTabTitles"),
+            smart: g.bool("TabTitlesUseSmartTruncation"),
+            font: font_size(g.bool("UseCustomTabBarFontSize"), num("CustomTabBarFontSize", DEFAULT_FONT)),
+            min_label: num("MinimumTabLabelWidth", 35.0),
+            modifier: modifier_string(g.int("SwitchTabModifier")),
+            height: bar_height(num("DefaultTabBarHeight", 24.0)),
+        }
+    }
+}
+
+/// A rectangle in points as device pixels.
+pub fn to_px(r: Rect, scale: f32) -> Rect {
+    Rect { x: r.x * scale, y: r.y * scale, w: r.w * scale, h: r.h * scale }
+}
+
+/// The styled runs of `truncated`, a cut of the runs' text by `truncate`: each kept character
+/// keeps its style, the ellipsis takes its neighbor's.
+fn cut_runs(runs: &[Run], truncated: &str, how: Truncation) -> Vec<Run> {
+    let styled: Vec<(char, [bool; 3])> =
+        runs.iter().flat_map(|r| r.text.chars().map(move |c| (c, [r.bold, r.italic, r.underline]))).collect();
+    let plain: String = styled.iter().map(|(c, _)| c).collect();
+    if plain == truncated {
+        return runs.to_vec();
+    }
+    let kept = truncated.chars().count().saturating_sub(1);
+    let chars: Vec<(char, [bool; 3])> = match how {
+        Truncation::Tail => {
+            let mut v = styled[..kept].to_vec();
+            v.push(('\u{2026}', v.last().or(styled.first()).map_or([false; 3], |s| s.1)));
+            v
+        }
+        Truncation::Head => {
+            let tail = &styled[styled.len() - kept..];
+            let mut v = vec![('\u{2026}', tail.first().or(styled.last()).map_or([false; 3], |s| s.1))];
+            v.extend_from_slice(tail);
+            v
+        }
+    };
+    let mut out: Vec<Run> = Vec::new();
+    for (c, st) in chars {
+        match out.last_mut() {
+            Some(r) if [r.bold, r.italic, r.underline] == st => r.text.push(c),
+            _ => out.push(Run { text: c.to_string(), bold: st[0], italic: st[1], underline: st[2] }),
+        }
+    }
+    out
+}
+
+/// Lays out the bar (`PSM update:` with the Yosemite style), `bar_width` points wide, scrolled by
+/// `offset`, `hovered` the tab under the pointer. `measure(text, font_points)` is a text's width
+/// in points. The tabs keep their order; iTerm2 moves no tab out of the overflow menu for the
+/// selection, so `_active` does not change the layout.
+pub fn build(
+    tabs: &[TabInput],
+    _active: usize,
+    bar_width: f32,
+    offset: f32,
+    hovered: Option<usize>,
+    s: &Settings,
+    measure: &dyn Fn(&str, f32) -> f32,
+) -> Bar {
+    let n = tabs.len();
+    let font = s.font;
+    let sub_font = subtitle_size(font);
+    let runs: Vec<Vec<Run>> = tabs
+        .iter()
+        .map(|t| {
+            let title = limit_title(&t.title);
+            if s.html {
+                html_runs(&title)
+            } else if title.is_empty() {
+                Vec::new()
+            } else {
+                vec![Run { text: title, bold: false, italic: false, underline: false }]
+            }
+        })
+        .collect();
+    let plains: Vec<String> = runs.iter().map(|r| r.iter().map(|r| r.text.as_str()).collect()).collect();
+    let title_widths: Vec<f32> = plains.iter().map(|t| measure(t, font)).collect();
+    let counters: Vec<Option<(String, f32)>> = tabs
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            // `TAB:1303-1305`: no count with `HideTabNumber`.
+            (!s.hide_numbers && t.number > 0).then(|| {
+                let text = counter_text(t.number, i + 1 == n, s.modifier);
+                let w = measure(&text, font);
+                (text, w)
+            })
+        })
+        .collect();
+    let desired: Vec<f32> = (0..n)
+        .map(|i| desired_width(title_widths[i], tabs[i].icon, counters[i].as_ref().map(|c| counter_width(c.1)), tabs[i].processing))
+        .collect();
+    // iTerm2 rounds equal shares to half points (`PSM:3205-3232`).
+    let laid = widths(&desired, bar_width, &s.prefs, 2.0);
+    let how = truncation(&plains.iter().map(String::as_str).collect::<Vec<_>>(), s.smart);
+
+    let mut bar = Bar {
+        cells: Vec::new(),
+        titles: Vec::new(),
+        subtitles: Vec::new(),
+        texts: Vec::new(),
+        hidden: (laid.widths.len()..n).collect(),
+        add: None,
+        overflow: None,
+        content: laid.content,
+        height: s.height,
+        font,
+    };
+    let mut x = -offset;
+    for (i, &w) in laid.widths.iter().enumerate() {
+        let t = &tabs[i];
+        let layout = cell(&CellInput {
+            x,
+            width: w,
+            height: s.height,
+            close_buttons: s.close_buttons,
+            close_always: s.close_always,
+            hovered: hovered == Some(i),
+            counter: counters[i].as_ref().map(|c| counter_width(c.1)),
+            icon: t.icon,
+            indicator: t.processing,
+            title_width: title_widths[i],
+            min_label: s.min_label,
+        });
+        let title = truncate(&plains[i], layout.label.w, how, &|text| measure(text, font));
+        let placed: Vec<(Run, f32)> =
+            cut_runs(&runs[i], &title, how).into_iter().map(|r| { let w = measure(&r.text, font); (r, w) }).collect();
+        // The subtitle is measured on its own in the title's label room (`YS drawSubtitle:`).
+        let (full_x, full_w) = if layout.truncate {
+            (layout.label.x - layout.reserved, layout.label.w + layout.reserved)
+        } else {
+            (layout.label.x, layout.label.w)
+        };
+        let (subtitle, sub_w, sub_label, sub_truncate) = if shows_subtitle(s.height, &t.subtitle) {
+            let whole = measure(&t.subtitle, sub_font);
+            let cut = (full_w - whole) / 2.0 < layout.reserved;
+            let label = if cut {
+                Rect { x: full_x + layout.reserved, y: 0.0, w: (full_w - layout.reserved).max(0.0), h: s.height }
+            } else {
+                Rect { x: full_x, y: 0.0, w: full_w, h: s.height }
+            };
+            let text = truncate(&t.subtitle, label.w, how, &|text| measure(text, sub_font));
+            let w = measure(&text, sub_font);
+            (text, w, label, cut)
+        } else {
+            (String::new(), 0.0, layout.label, false)
+        };
+        let (counter, counter_w) = counters[i].clone().unwrap_or_default();
+        bar.cells.push((i, layout, Rect { x, y: 0.0, w, h: s.height }));
+        bar.titles.push(title);
+        bar.subtitles.push(subtitle);
+        bar.texts.push(CellText {
+            runs: placed,
+            subtitle_width: sub_w,
+            subtitle_label: sub_label,
+            subtitle_truncate: sub_truncate,
+            counter,
+            counter_width: counter_w,
+        });
+        x += w;
+    }
+    if laid.overflow {
+        // `PSM setupButtons`: the overflow button fills the right margin but its first point.
+        let m = right_margin(true, s.prefs.add_button);
+        bar.overflow = Some(Rect { x: bar_width - m + 1.0, y: 0.0, w: m - 1.0, h: s.height });
+    } else if s.prefs.add_button {
+        // `PSM finishUpdateWithRegularWidths:...`: right after the last tab, or pinned in the
+        // right margin when the tabs scroll past it.
+        let mut ax: f32 = laid.widths.iter().sum();
+        if laid.content > 0.0 && ax + ADD_BUTTON > bar_width {
+            ax = bar_width - right_margin(false, true);
+        }
+        bar.add = Some(Rect { x: ax, y: 0.0, w: ADD_BUTTON, h: s.height });
+    }
+    bar
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -898,5 +1219,139 @@ mod tests {
         assert_eq!(tab_colors(""), DEFAULT_COLORS.to_vec());
         assert_eq!(tab_colors("nope #12"), DEFAULT_COLORS.to_vec());
         assert_eq!(tab_colors("nope  #123456 #zzzzzz #00ff00"), vec![rgb(0x12, 0x34, 0x56), rgb(0, 0xff, 0)]);
+    }
+
+    fn six_per_char(s: &str, _font: f32) -> f32 {
+        s.chars().count() as f32 * 6.0
+    }
+
+    fn defaults() -> Settings {
+        Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")))
+    }
+
+    fn input(title: &str, number: usize) -> TabInput {
+        TabInput { title: title.into(), subtitle: String::new(), icon: false, processing: false, number }
+    }
+
+    #[test]
+    fn bar_metrics_follow_iterm2() {
+        assert_eq!(bar_height(24.0), 24.0);
+        // One tab hides the bar by default (`HideTab` on); off, the bar always shows.
+        assert!(!bar_shown(1, true));
+        assert!(bar_shown(1, false));
+        assert!(bar_shown(2, true));
+        assert!(bar_shown(0, false));
+        assert_eq!(font_size(false, 14.0), 11.0);
+        assert_eq!(font_size(true, 14.0), 14.0);
+        assert_eq!(subtitle_size(11.0), 9.0);
+        assert!(!shows_subtitle(24.0, "x"));
+        assert!(shows_subtitle(28.0, "x"));
+        assert!(!shows_subtitle(28.0, ""));
+
+        let s = defaults();
+        assert_eq!(s.height, 24.0);
+        assert_eq!(s.font, 11.0);
+        assert_eq!(s.prefs.optimum, 175.0);
+        assert_eq!(s.prefs.min_width, 75.0);
+        assert!(s.prefs.scrollable);
+        assert!(s.prefs.stretch);
+        assert!(s.prefs.add_button);
+        assert!(s.close_buttons);
+        assert!(!s.close_always);
+        assert!(s.smart);
+        assert_eq!(s.modifier, "Win+");
+        assert_eq!(s.min_label, 35.0);
+        let tabs = [input("one", 1), input("two", 2), input("three", 3)];
+        let bar = build(&tabs, 0, 600.0, 0.0, None, &s, &six_per_char);
+        assert!(bar.cells.iter().all(|(_, c, _)| c.counter.is_some()));
+        assert_eq!(bar.texts[0].counter, "Win+1");
+
+        let mut g = crate::globals::Globals::empty(std::path::Path::new("unused.toml"));
+        g.set("HideTabNumber", toml::Value::Boolean(true));
+        let s = Settings::from_globals(&g);
+        assert_eq!(s.prefs.min_width, 60.0);
+        let bar = build(&tabs, 0, 600.0, 0.0, None, &s, &six_per_char);
+        assert!(bar.cells.iter().all(|(_, c, _)| c.counter.is_none()));
+        assert_eq!(bar.texts[0].counter, "");
+    }
+
+    #[test]
+    fn build_follows_iterm2() {
+        let s = defaults();
+        // 40 characters, 240 points: one prefix and three suffixes, so the head gives way.
+        let long = |end: &str| format!("server-a: {}{end}", "x".repeat(25));
+        let tabs = [input(&long("one11"), 1), input(&long("two22"), 2), input(&long("six33"), 3)];
+        let bar = build(&tabs, 1, 600.0, 0.0, None, &s, &six_per_char);
+        assert_eq!(bar.cells.len(), 3);
+        assert_eq!(bar.cells[1].0, 1, "tab order kept, the active tab at its own index");
+        // 576 stretched over 3 tabs.
+        assert_eq!(bar.cells[2].2, Rect { x: 384.0, y: 0.0, w: 192.0, h: 24.0 });
+        assert_eq!(bar.add, Some(Rect { x: 576.0, y: 0.0, w: 24.0, h: 24.0 }));
+        assert_eq!(bar.overflow, None);
+        assert!(bar.hidden.is_empty());
+        assert_eq!(bar.height, 24.0);
+        // The label: 192 - 6 - 4 - (38 + 4) = 140, truncated after the reserved 20: 120 points,
+        // 19 characters and the ellipsis.
+        let c = &bar.cells[0].1;
+        assert!(c.truncate);
+        assert_eq!(c.label.w, 120.0);
+        let t0 = long("one11");
+        let tail: String = t0.chars().skip(40 - 19).collect();
+        assert_eq!(bar.titles[0], format!("\u{2026}{tail}"));
+        assert_eq!(bar.texts[0].title_width(), 120.0);
+        // The bar-wide rule: tail truncation with smart truncation off.
+        let plain = build(&tabs, 1, 600.0, 0.0, None, &Settings { smart: false, ..s.clone() }, &six_per_char);
+        assert!(plain.titles[0].ends_with('\u{2026}'));
+        // No subtitle on a 24-point bar.
+        let sub = [TabInput { subtitle: "sub".into(), ..input("a", 1) }, input("b", 2)];
+        assert_eq!(build(&sub, 0, 600.0, 0.0, None, &s, &six_per_char).subtitles[0], "");
+        let tall = build(&sub, 0, 600.0, 0.0, None, &Settings { height: 28.0, ..s.clone() }, &six_per_char);
+        assert_eq!(tall.subtitles[0], "sub");
+        assert_eq!(tall.texts[0].subtitle_width, 18.0);
+        assert!(!tall.texts[0].subtitle_truncate);
+        // The icon and the spinner reach the inside.
+        let busy = [TabInput { icon: true, processing: true, ..input("a", 1) }, input("b", 2)];
+        let b = build(&busy, 0, 600.0, 0.0, Some(0), &s, &six_per_char);
+        assert!(b.cells[0].1.icon.is_some() && b.cells[0].1.indicator.is_some());
+        assert_eq!(b.cells[0].1.close_alpha, 1.0, "hovered");
+        assert_eq!(b.cells[1].1.close_alpha, 0.0);
+
+        // HTML runs survive truncation with their styles.
+        let html = Settings { html: true, ..s.clone() };
+        let b = build(&[input("<b>bold</b> x", 1), input("b", 2)], 0, 600.0, 0.0, None, &html, &six_per_char);
+        assert_eq!(b.titles[0], "bold x");
+        assert_eq!(
+            b.texts[0].runs,
+            vec![(run("bold", true, false, false), 24.0), (run(" x", false, false, false), 12.0)]
+        );
+        assert_eq!(
+            cut_runs(&[run("ab", true, false, false), run("cd", false, false, true)], "abc\u{2026}", Truncation::Tail),
+            vec![run("ab", true, false, false), run("c\u{2026}", false, false, true)]
+        );
+
+        // `RemoveAddTabButton`: no button and no right margin.
+        let bare = Settings { prefs: Prefs { add_button: false, ..s.prefs }, ..s.clone() };
+        let b = build(&tabs, 0, 600.0, 0.0, None, &bare, &six_per_char);
+        assert_eq!(b.add, None);
+        assert_eq!(b.cells[2].2.x + b.cells[2].2.w, 600.0);
+
+        // 20 tabs on a bar that does not scroll: floor(576 / 75) = 7 show, the rest overflow.
+        let many: Vec<TabInput> = (1..=20).map(|i| input(&format!("tab {i}"), i)).collect();
+        let fixed = Settings { prefs: Prefs { scrollable: false, ..s.prefs }, ..s.clone() };
+        let b = build(&many, 0, 600.0, 0.0, None, &fixed, &six_per_char);
+        assert_eq!(b.cells.len(), 7);
+        assert_eq!(b.hidden, (7..20).collect::<Vec<_>>());
+        assert_eq!(b.overflow, Some(Rect { x: 577.0, y: 0.0, w: 23.0, h: 24.0 }));
+        assert_eq!(b.add, None);
+        // The default scrolls: 20 x 120, the add button pinned in the right margin, the offset
+        // moving the tabs.
+        let b = build(&many, 0, 600.0, 130.0, None, &s, &six_per_char);
+        assert_eq!(b.cells.len(), 20);
+        assert_eq!(b.content, 2400.0);
+        assert_eq!(b.add, Some(Rect { x: 576.0, y: 0.0, w: 24.0, h: 24.0 }));
+        assert_eq!(b.cells[1].2.x, -10.0);
+        assert_eq!(b.cells[1].1.close.unwrap().x, b.cells[1].2.x + 6.0);
+
+        assert_eq!(to_px(Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0 }, 1.5), Rect { x: 1.5, y: 3.0, w: 4.5, h: 6.0 });
     }
 }

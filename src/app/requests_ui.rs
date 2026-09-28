@@ -161,7 +161,8 @@ impl App {
         let _ = g.window.request_inner_size(PhysicalSize::new((w - dw).max(1.0).round() as u32, (h - dh).max(1.0).round() as u32));
     }
 
-    /// A tab's title, status, and colors for the tab bar.
+    /// A tab's title, subtitle (the status joined in), colors, icon, spinner and number for the
+    /// tab bar.
     pub(super) fn tab_look(&self, t: &Tab) -> scene::TabLook {
         use crate::tabstatus::{self, xterm_color};
         let title = self.tmux_tab_label(t.focused).or_else(|| t.title.clone()).unwrap_or_else(|| self.session_title(t.focused));
@@ -175,13 +176,10 @@ impl App {
             let patterns = self.status_patterns();
             panes.iter().filter_map(status_of).enumerate().min_by_key(|(i, s)| (crate::status_tool::priority(s.status.as_deref(), &patterns), *i)).map(|(_, s)| s)
         });
-        let show_text = self.globals.bool(crate::status_tool::SUBTITLE_KEY);
-        // Shown in its display form (`localizedStatusForDisplay`).
-        let status = st.filter(|_| show_text).and_then(|s| {
-            let text = crate::status_tool::display_status(s.status.as_deref().filter(|t| !t.is_empty())?);
-            let color = s.status_color.as_deref().and_then(xterm_color).unwrap_or(rgb_of(0xc7, 0xc7, 0xc7));
-            Some((text, color))
-        });
+        // The status text in its display form (`localizedStatusForDisplay`) joins the subtitle
+        // line (`TAB:740-751`); it no longer prefixes the title.
+        let status = st.and_then(|s| s.status.as_deref().filter(|t| !t.is_empty())).map(crate::status_tool::display_status);
+        let subtitle = crate::tab_layout::subtitle_text(&self.subtitle_text(t.focused), status.as_deref(), self.globals.bool(crate::status_tool::SUBTITLE_KEY));
         let dot = st.and_then(|s| s.indicator.as_deref()).and_then(xterm_color);
         // A program's (or tmux's saved) tab color, else the profile's.
         let color = self.tab_colors.get(&t.focused).copied().or_else(|| self.panes.get(&t.focused).and_then(|p| self.store.get(&p.profile)).and_then(|pr| pr.tab_color(self.dark())));
@@ -189,7 +187,18 @@ impl App {
         let bell = panes.iter().any(|id| self.bell_icons.contains(id));
         let (new_output, idle) = self.activity_icons(&panes);
         let icon = scene::tab_icon(dot.is_some(), dead, bell, new_output, idle);
-        scene::TabLook { title, status, dot, color, icon }
+        let index = self.tabs.iter().position(|x| x.id == t.id);
+        let foreground = index == Some(self.active);
+        let processing = activity_ui::tab_processing(self.any_processing(&panes), foreground, self.globals.bool("HideActivityIndicator"));
+        scene::TabLook { title, subtitle, dot, color, icon, processing, number: index.map_or(0, |i| i + 1) }
+    }
+
+    /// A session's subtitle: its profile's Subtitle over the session's variables, as the badge.
+    fn subtitle_text(&self, pane: PaneId) -> String {
+        let Some(p) = self.panes.get(&pane) else { return String::new() };
+        let template = self.store.get(&p.profile).map(|pr| pr.string("Subtitle")).unwrap_or_default();
+        let s = p.own();
+        crate::badge::text(&template, &|n| s.trigger_var(n, 0))
     }
 
     /// Forgets pane flashes and fireworks that are over.
@@ -220,10 +229,6 @@ impl App {
         }
         next
     }
-}
-
-fn rgb_of(r: u8, g: u8, b: u8) -> alacritty_terminal::vte::ansi::Rgb {
-    alacritty_terminal::vte::ansi::Rgb { r, g, b }
 }
 
 /// The primary monitor's height in pixels (it sits at the virtual screen's origin).
