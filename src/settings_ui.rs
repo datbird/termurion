@@ -106,12 +106,23 @@ pub struct SettingsWindow {
     /// The registered session title providers as (display name, unique id), for the Title
     /// Function popup; the app sets them when the window opens and when they change.
     pub title_providers: Vec<(String, String)>,
+    /// Settings > General > AI: its sub-tab and whether it was just revealed.
+    pub ai: crate::settings_ai::State,
 }
 
 impl SettingsWindow {
     /// Turns to one pane of the settings.
     pub fn show_page(&mut self, page: Page) {
         self.page = page;
+    }
+
+    /// Shows Settings > General > AI on one of its sub-tabs (the gate's Reveal, Codecierge's
+    /// Reveal Setting; iTerm2 opens Settings at `Enable AI`, `GK:61-63`, `CC:741-743`).
+    pub fn show_ai(&mut self, sub: crate::settings_ai::SubTab) {
+        self.page = Page::General;
+        self.ai.sub = sub;
+        self.ai.reveal = true;
+        self.host.window.request_redraw();
     }
 
     /// Whether a custom scripts folder was typed and not yet applied, clearing the note
@@ -184,6 +195,7 @@ impl SettingsWindow {
             tmux_session: false,
             open_editor: None,
             title_providers: Vec::new(),
+            ai: Default::default(),
         })
     }
 

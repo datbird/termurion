@@ -259,9 +259,6 @@ const CC_BUTTON_PAD: f32 = 24.0;
 const CC_GAP: f32 = 8.0;
 const CODECIERGE_BAR: &str = "toolbelt-codecierge";
 const CODECIERGE_LATER: &str = "AI features come in milestone 12.";
-/// The admin switch (`iTermAdvancedSettingsModel.generativeAIAllowed`); `EnableAI` is off until
-/// milestone 12.
-const AI_ALLOWED_KEY: &str = "GenerativeAIAllowed";
 
 /// What Jobs shows: the shell it is rooted at, its rows, and the tree they came from (each
 /// process's creation time and command line).
@@ -1567,9 +1564,9 @@ impl App {
 
     // ---- Codecierge (`CC`) ----
 
-    /// Codecierge's state: the admin switch, and AI never enabled before milestone 12.
+    /// Codecierge's state: the admin switch, then "Enable generative AI features".
     pub(super) fn codecierge_now(&self) -> CodeciergeState {
-        tt::codecierge_state(self.globals.bool(AI_ALLOWED_KEY), false)
+        tt::codecierge_state(self.globals.bool(crate::ai_settings::ADMIN), self.globals.bool(crate::ai_settings::ENABLE_AI))
     }
 
     /// Codecierge laid out in `area`: its label lines (x, y, text), its button, the button's
@@ -1606,8 +1603,9 @@ impl App {
         scene::codecierge(frame, &d, cell, self.list_metrics().text_scale, self.scale());
     }
 
-    /// A press on Codecierge's button: Reveal Setting answers that AI comes later (the
-    /// Settings control "Enable AI" arrives with milestone 12); a disabled button does nothing.
+    /// A press on Codecierge's button: Reveal Setting opens Settings > General > AI (`CC:741-743`
+    /// opens Settings at Enable AI); Get Started asks the gate first, then answers that the rest
+    /// of Codecierge comes later; a disabled button does nothing.
     pub(super) fn codecierge_press(&mut self, area: Rect, button: MouseButton, x: f32, y: f32) {
         if button != MouseButton::Left {
             return;
@@ -1616,10 +1614,16 @@ impl App {
         if !enabled || !rect.contains(x, y) {
             return;
         }
-        if self.codecierge_now() == CodeciergeState::NeedsAi {
-            if let Some(pane) = self.focused_id() {
-                self.ask(pane, CODECIERGE_BAR, CODECIERGE_LATER, &["OK"], false);
+        match self.codecierge_now() {
+            CodeciergeState::NeedsAi => self.ai_reveal = Some(crate::settings_ai::SubTab::General),
+            CodeciergeState::Ready => {
+                if self.ai_check(false)
+                    && let Some(pane) = self.focused_id()
+                {
+                    self.ask(pane, CODECIERGE_BAR, CODECIERGE_LATER, &["OK"], false);
+                }
             }
+            CodeciergeState::AdminDisabled => {}
         }
     }
 }
