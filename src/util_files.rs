@@ -76,10 +76,10 @@ pub fn text_file(term: Option<&str>, name: Option<&str>, data: &[u8], kind: Opti
 /// it2dl's `send_file_data` with `encoded` already base64: under tmux or screen a Multipart
 /// transfer in 200-character parts; else one literal `ESC ] ... BEL` with `encoded` as is.
 fn send_file_data(term: Option<&str>, name: &str, encoded: &str, size: usize) -> String {
-    let name = b64(name.as_bytes());
     if !wrapped(term) {
-        return format!("\x1b]1337;File=name={name};size={size}:{encoded}\x07");
+        return format!("{}{encoded}\x07", plain_head(name, size as u64));
     }
+    let name = b64(name.as_bytes());
     let mut s = seq(term, &format!("1337;MultipartFile=name={name};size={size}"));
     for part in fold(encoded, 200) {
         s.push_str(&seq(term, &format!("1337;FilePart={part}")));
@@ -87,6 +87,14 @@ fn send_file_data(term: Option<&str>, name: &str, encoded: &str, size: usize) ->
     s.push_str(&seq(term, "1337;FileEnd"));
     s
 }
+
+/// The plain path's literal head, up to the data: `ESC ]1337;File=name=<base64>;size=<n>:`.
+fn plain_head(name: &str, size: u64) -> String {
+    format!("\x1b]1337;File=name={};size={size}:", b64(name.as_bytes()))
+}
+
+/// Bytes it2dl reads per piece on the plain path (a multiple of 3).
+const PIECE: usize = 57 * 1024;
 
 /// it2dl's `send_file`: `send_file_data` for a file, whose base64 comes from
 /// `b64_encode < file` straight to stdout, so macOS base64's newline is kept (before BEL on
@@ -201,7 +209,7 @@ fn error(io: &mut Io, msg: &str) {
 /// What `[ -r "$1" ]` and `cat "$1"` find for an argument, resolved against `cwd`.
 pub(crate) enum Found {
     File(Vec<u8>),
-    Dir(PathBuf),
+    Dir,
     Missing,
 }
 
@@ -209,7 +217,7 @@ pub(crate) enum Found {
 /// missing).
 pub(crate) fn find(cwd: &Path, arg: &str) -> Found {
     match locate(cwd, arg) {
-        Some((p, true)) => Found::Dir(p),
+        Some((_, true)) => Found::Dir,
         Some((p, false)) => std::fs::read(&p).map_or(Found::Missing, Found::File),
         None => Found::Missing,
     }
@@ -340,7 +348,7 @@ fn view(tool: Viewer, args: &[String], io: &mut Io) -> i32 {
                 } else {
                     match find(&io.cwd, a) {
                         Found::File(b) => b,
-                        Found::Dir(_) => {
+                        Found::Dir => {
                             put(io.err, &format!("cat: {a}: Is a directory\n"));
                             Vec::new()
                         }
@@ -395,17 +403,40 @@ pub fn it2dl(args: &[String], io: &mut Io) -> i32 {
     let term = util_cli::term(io);
     let term = term.as_deref();
     for arg in args {
-        match find(&io.cwd, arg) {
-            Found::Missing => put(io.err, &format!("File or directory {arg} does not exist or is not readable.\n")),
+        let missing = |io: &mut Io| put(io.err, &format!("File or directory {arg} does not exist or is not readable.\n"));
+        match locate(&io.cwd, arg) {
+            None => missing(io),
             // The archive's base64 comes from `$(...)` through `printf '%s'`: no newline.
-            Found::Dir(p) => match folder_archive(&p) {
-                Ok(archive) => put(io.out, &send_file_data(term, &format!("{}.tar.gz", basename(arg)), &b64(&archive), archive.len())),
-                Err(_) => put(io.err, &format!("Error: Failed to create tar.gz archive for directory: {arg}\n")),
+            Some((p, true)) => match real_folder(&p).map(|dir| folder_archive(&dir)) {
+                None => missing(io),
+                Some(Ok(archive)) => put(io.out, &send_file_data(term, &format!("{}.tar.gz", basename(arg)), &b64(&archive), archive.len())),
+                Some(Err(_)) => put(io.err, &format!("Error: Failed to create tar.gz archive for directory: {arg}\n")),
             },
-            Found::File(bytes) => put(io.out, &download(term, basename(arg), &bytes)),
+            Some((p, false)) if wrapped(term) => match std::fs::read(&p) {
+                Ok(bytes) => put(io.out, &download(term, basename(arg), &bytes)),
+                Err(_) => missing(io),
+            },
+            // `b64_encode < file` streams: the head, the base64 piece by piece, then macOS
+            // base64's newline and BEL.
+            Some((p, false)) => match std::fs::File::open(&p).and_then(|f| Ok((f.metadata()?.len(), f))) {
+                Ok((size, mut f)) => {
+                    put(io.out, &plain_head(basename(arg), size));
+                    crate::util_osc::stream_b64(&mut f, PIECE, &mut |text| put(io.out, text));
+                    put(io.out, "\n\x07");
+                }
+                Err(_) => missing(io),
+            },
         }
     }
     0
+}
+
+/// A folder by its real name (`..` and `.` resolved), in `local_form`; None when that name
+/// may not be opened (`util_cli::may_open`).
+fn real_folder(dir: &Path) -> Option<PathBuf> {
+    let real = std::fs::canonicalize(dir).ok()?;
+    let real = PathBuf::from(util_cli::local_form(&real.to_string_lossy()));
+    util_cli::may_open(&real).then_some(real)
 }
 
 #[cfg(test)]
@@ -513,6 +544,26 @@ mod tests {
             text(&h.out),
             "\x1b]1337;MultipartFile=inline=1;size=7;name=aHR0cDovL2gveC5wbmc=\x07\x1b]1337;FilePart=UE5HREFUQQ==\x07\x1b]1337;FileEnd\x07\n"
         );
+
+        // -H sets the height only.
+        let mut h = harness(&dir);
+        assert_eq!(h.run("imgcat", &["-H", "5", "a.png"]), 0);
+        assert_eq!(
+            text(&h.out),
+            "\x1b]1337;MultipartFile=inline=1;size=7;name=YS5wbmc=;height=5\x07\x1b]1337;FilePart=UE5HREFUQQ==\x07\x1b]1337;FileEnd\x07\n"
+        );
+
+        // -f turns URL mode back off: the second name is a file, curl runs once.
+        let mut h = harness(&dir);
+        h.answers.push_back(Ok(Output { code: 0, stdout: b"PNGDATA".to_vec() }));
+        assert_eq!(h.run("imgcat", &["-u", "http://h/x.png", "-f", "a.png"]), 0);
+        assert_eq!(h.runs.len(), 1);
+        assert!(text(&h.out).ends_with(A_PNG), "{:?}", text(&h.out));
+
+        // -l under tmux: the one File= sequence, wrapped.
+        let mut h = with_term(&dir, "tmux-256color");
+        assert_eq!(h.run("imgcat", &["-l", "a.png"]), 0);
+        assert_eq!(text(&h.out), format!("{TMUX_OSC}1337;File=inline=1;size=7;name=YS5wbmc=:UE5HREFUQQ=={TMUX_ST}\n"));
 
         // A folder reads as empty data with cat's complaint (the script's `$(cat dir | ...)`).
         std::fs::create_dir_all(dir.join("sub")).unwrap();
@@ -637,9 +688,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn sorted(mut v: Vec<String>) -> Vec<String> {
+        v.sort();
+        v
+    }
+
     fn entries(archive: &[u8]) -> Vec<String> {
         let mut a = tar::Archive::new(flate2::read::GzDecoder::new(archive));
         a.entries().unwrap().map(|e| String::from_utf8_lossy(&e.unwrap().path_bytes()).into_owned()).collect()
+    }
+
+    /// The name and the decoded data of one plain `File=name=...;size=...:<data>BEL`.
+    fn sent(out: &[u8]) -> (String, Vec<u8>) {
+        let out = text(out);
+        let rest = out.strip_prefix("\x1b]1337;File=name=").unwrap_or_else(|| panic!("{out:?}"));
+        let (name, rest) = rest.split_once(';').unwrap();
+        let (_, data) = rest.split_once(':').unwrap();
+        let name = String::from_utf8(crate::util_osc::unb64(name)).unwrap();
+        (name, crate::util_osc::unb64(data.trim_end_matches('\x07')))
     }
 
     #[test]
@@ -667,6 +733,41 @@ mod tests {
         assert_eq!(h.run("it2dl", &["dir"]), 0);
         // The archive's base64 comes from `$(...)` and `printf '%s'`: no newline.
         assert_eq!(text(&h.out), format!("\x1b]1337;File=name=ZGlyLnRhci5neg==;size={}:{}\x07", archive.len(), b64(&archive)));
+
+        // Under screen the folder goes as a Multipart transfer in 200-character parts.
+        let mut h = with_term(&dir, "screen");
+        assert_eq!(h.run("it2dl", &["dir"]), 0);
+        let mut want = format!("{TMUX_OSC}1337;MultipartFile=name=ZGlyLnRhci5neg==;size={}{TMUX_ST}", archive.len());
+        for part in crate::util_osc::fold(&b64(&archive), 200) {
+            want.push_str(&format!("{TMUX_OSC}1337;FilePart={part}{TMUX_ST}"));
+        }
+        want.push_str(&format!("{TMUX_OSC}1337;FileEnd{TMUX_ST}"));
+        assert_eq!(text(&h.out), want);
+
+        // A file larger than one streamed piece, and an empty one, as the whole-file form.
+        let big: Vec<u8> = (0..200_000u32).map(|i| (i * 31 % 251) as u8).collect();
+        std::fs::write(dir.join("big.bin"), &big).unwrap();
+        std::fs::write(dir.join("empty.bin"), b"").unwrap();
+        for (name, bytes) in [("big.bin", &big[..]), ("empty.bin", &[][..])] {
+            let mut h = harness(&dir);
+            assert_eq!(h.run("it2dl", &[name]), 0);
+            assert!(text(&h.out) == download(None, name, bytes), "{name}");
+        }
+
+        // `..` and `.` send the script's names ("...tar.gz", "..tar.gz") with the folder's
+        // entries under its real name (tar would write "./" or strip "../").
+        std::fs::create_dir_all(dir.join("dir").join("deeper")).unwrap();
+        let mut h = harness(&dir.join("dir").join("deeper"));
+        assert_eq!(h.run("it2dl", &[".."]), 0);
+        assert!(h.err.is_empty(), "{:?}", text(&h.err));
+        let (name, archive) = sent(&h.out);
+        assert_eq!(name, "...tar.gz");
+        assert_eq!(sorted(entries(&archive)), ["dir/", "dir/deeper", "dir/f.txt"]);
+        let mut h = harness(&dir.join("dir"));
+        assert_eq!(h.run("it2dl", &["."]), 0);
+        let (name, archive) = sent(&h.out);
+        assert_eq!(name, "..tar.gz");
+        assert_eq!(sorted(entries(&archive)), ["dir/", "dir/deeper", "dir/f.txt"]);
 
         let mut h = harness(&dir);
         assert_eq!(h.run("it2dl", &[]), 1);

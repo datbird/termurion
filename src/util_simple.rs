@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 
 use crate::util_cli::{self, Io};
 use crate::util_files::locate;
-use crate::util_osc::{b64, fold, osc, seq, st};
+use crate::util_osc::{fold, osc, seq, st};
 
 fn put(w: &mut dyn Write, s: &str) {
     let _ = w.write_all(s.as_bytes());
@@ -63,36 +63,10 @@ enum Source {
 /// pieces encode and `fold` exactly as the whole input would.
 const PIECE: usize = 60 * 1024;
 
-/// Reads until `buf` is full or the input ends; the count, and whether a read failed.
-fn fill(r: &mut dyn Read, buf: &mut [u8]) -> (usize, bool) {
-    let mut n = 0;
-    while n < buf.len() {
-        match r.read(&mut buf[n..]) {
-            Ok(0) => break,
-            Ok(k) => n += k,
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(_) => return (n, true),
-        }
-    }
-    (n, false)
-}
-
 /// `base64 < source` as macOS's writes it, streamed: `each` gets the text piece by piece,
 /// then the newline; empty input writes nothing. A read error ends the data there.
 fn stream_b64(r: &mut dyn Read, each: &mut dyn FnMut(&str)) {
-    let mut buf = vec![0u8; PIECE];
-    let mut any = false;
-    loop {
-        let (n, failed) = fill(r, &mut buf);
-        if n > 0 {
-            any = true;
-            each(&b64(&buf[..n]));
-        }
-        if n < PIECE || failed {
-            break;
-        }
-    }
-    if any {
+    if crate::util_osc::stream_b64(r, PIECE, each) > 0 {
         each("\n");
     }
 }

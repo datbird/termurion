@@ -356,14 +356,16 @@ pub fn program_links_local(program: &Path) -> bool {
     links_local(program, 0)
 }
 
-/// `git.exe` in the first local PATH folder that has it. Network and relative folders, and
-/// folders reached through a link to a network path, are skipped without being looked in
-/// (a UNC entry probed on every poll would leak).
+/// `git.exe` in the first `util_cli::path_dirs` folder that has it, with no link on the way
+/// to a network path. Network and relative folders, and folders reached through a link to a
+/// network path, are skipped without being looked in (a UNC entry probed on every poll would
+/// leak).
 pub fn find_git(path_var: &str, is_file: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
-    path_var.split(';').map(unquote).filter(|d| local_path_ok(d)).map(exe_in).find(|p| links_local(p, 0) && is_file(p))
+    crate::util_cli::path_dirs(path_var).map(|d| d.join("git.exe")).find(|p| links_local(p, 0) && is_file(p))
 }
 
-fn unquote(s: &str) -> &str {
+/// A PATH entry trimmed, its surrounding double quotes removed.
+pub(crate) fn unquote(s: &str) -> &str {
     let s = s.trim();
     s.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(s)
 }

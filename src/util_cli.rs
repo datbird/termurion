@@ -162,6 +162,37 @@ pub fn join_local(cwd: &std::path::Path, arg: &str) -> PathBuf {
     std::path::Path::new(local_form(&cwd)).join(local_form(arg))
 }
 
+/// The folders of a PATH value that may be looked in, in order: each `;`-separated entry
+/// trimmed and unquoted (`"C:\Program Files\x"` is that folder), in `local_form`, kept only
+/// when it is a local drive path (`prompted::local_path_ok`: never the working folder, a
+/// relative, drive-relative, rooted or network folder) with no link on the way to a network
+/// path (`may_open`). Nothing but link targets is read. The one rule for every PATH walker:
+/// `found_on_path`, `util_api::python_candidates` and `git_state::find_git`.
+pub fn path_dirs(path_var: &str) -> impl Iterator<Item = PathBuf> + '_ {
+    path_var
+        .split(';')
+        .map(crate::git_state::unquote)
+        .map(local_form)
+        .filter(|d| crate::prompted::local_path_ok(d))
+        .map(PathBuf::from)
+        .filter(|d| may_open(d))
+}
+
+/// `builtin command -V <program>` over `path_var`, `pathext` and `cwd`: a name with a
+/// separator is that file (in `cwd` when relative); else a file of that name, with a
+/// `pathext` extension or none, in a `path_dirs` folder. `is_file` is asked only about paths
+/// that pass `may_open`.
+pub fn found_on_path(program: &str, path_var: &str, pathext: &str, cwd: &std::path::Path, is_file: &dyn Fn(&std::path::Path) -> bool) -> bool {
+    let local = |p: &std::path::Path| may_open(p) && is_file(p);
+    if program.contains(['\\', '/']) {
+        return !crate::prompted::network_path(local_form(program)) && local(&join_local(cwd, program));
+    }
+    path_dirs(path_var).any(|dir| {
+        let base = dir.join(program);
+        local(&base) || pathext.split(';').filter(|e| !e.is_empty()).any(|e| local(&PathBuf::from(format!("{}{e}", base.display()))))
+    })
+}
+
 /// `$TERM`.
 pub fn term(io: &Io) -> Option<String> {
     (io.env)("TERM")
@@ -489,6 +520,60 @@ mod tests {
             Err(e) => eprintln!("MEASURED: no symbolic link to a network path made ({e}); git_state's link tests cover the rule"),
         }
         let _ = std::fs::remove_dir(dir.join("net"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn path_folders_are_local() {
+        use std::cell::RefCell;
+        use std::path::Path;
+        let dir = std::env::temp_dir().join(format!("tandem-util-cli-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let net = dir.join("net");
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_dir("\\\\nohost.invalid\\share", &net).is_ok();
+        #[cfg(not(windows))]
+        let linked = false;
+        if !linked {
+            eprintln!("MEASURED: no symbolic link to a network path made; network_paths_are_never_opened covers the rule");
+        }
+        let path = format!("/\\h\\s;\\/h/s;\\\\?\\UNC\\h\\s;\\\\h\\s;//h/s; \"C:\\Q\" ;{};relative;.;C:rel;\\rooted;;\\\\?\\C:\\V", net.display());
+        let mut want = vec![PathBuf::from("C:\\Q")];
+        if !linked {
+            want.push(net.clone());
+        }
+        want.push(PathBuf::from("C:\\V"));
+        assert_eq!(path_dirs(&path).collect::<Vec<_>>(), want);
+
+        // `command -V curl` asks about nothing outside those folders.
+        let probed = RefCell::new(Vec::new());
+        let none = |p: &Path| {
+            probed.borrow_mut().push(p.to_path_buf());
+            false
+        };
+        assert!(!found_on_path("curl", &path, ".COM;.EXE;", Path::new("C:\\w"), &none));
+        let probed = probed.into_inner();
+        assert!(probed.iter().all(|p| p.starts_with("C:\\Q") || p.starts_with("C:\\V") || (!linked && p.starts_with(&net))), "{probed:?}");
+        for f in ["C:\\Q\\curl", "C:\\Q\\curl.COM", "C:\\Q\\curl.EXE", "C:\\V\\curl.EXE"] {
+            assert!(probed.contains(&PathBuf::from(f)), "{f} in {probed:?}");
+        }
+        let exe = |p: &Path| p == Path::new("C:\\Q\\curl.EXE");
+        assert!(found_on_path("curl", &path, ".COM;.EXE", Path::new("C:\\w"), &exe));
+
+        // A name with a separator is the file itself, in the working folder when relative;
+        // a network one is never asked about.
+        let probed = RefCell::new(Vec::new());
+        let at = |p: &Path| {
+            probed.borrow_mut().push(p.to_path_buf());
+            p == Path::new("C:\\w\\bin\\curl.exe")
+        };
+        assert!(found_on_path("bin\\curl.exe", "", ".EXE", Path::new("C:\\w"), &at));
+        for p in ["\\\\h\\s\\curl.exe", "//h/s/curl.exe", "/\\h\\s\\curl.exe", "\\/h/s/curl.exe", "\\\\?\\UNC\\h\\s\\curl.exe"] {
+            assert!(!found_on_path(p, "", ".EXE", Path::new("C:\\w"), &at), "{p}");
+        }
+        assert_eq!(probed.into_inner(), [PathBuf::from("C:\\w\\bin\\curl.exe")]);
+        let _ = std::fs::remove_dir(&net);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -25,21 +25,21 @@ pub fn script() -> String {
 
 /// The Pythons it2api may run, best first: the first `py.exe` on PATH as `py -3`, then each
 /// `python.exe` and `python3.exe` on PATH in PATH order, skipping the WindowsApps aliases
-/// (they open the Store instead of running Python). Only absolute PATH folders that are not
-/// network paths, and have no link on the way to one (`util_cli::may_open`), are looked in:
+/// (they open the Store instead of running Python). Only `util_cli::path_dirs` folders are
+/// looked in (local drive paths, quoted ones too, with no link on the way to a network path):
 /// never the working folder, a relative, drive-relative or rooted one, or a share; `is_file`
-/// is never asked about any other.
+/// is never asked about any other, nor about a candidate that is a link to a share.
 pub fn python_candidates(path_var: &str, is_file: &dyn Fn(&Path) -> bool) -> Vec<Vec<String>> {
-    let dirs: Vec<&str> = path_var.split(';').map(str::trim).filter(|d| !d.is_empty() && Path::new(d).is_absolute()).collect();
+    let dirs: Vec<PathBuf> = crate::util_cli::path_dirs(path_var).collect();
     let alias = |p: &Path| p.to_string_lossy().to_ascii_lowercase().replace('/', "\\").contains("\\windowsapps\\");
     let usable = |p: &Path| !alias(p) && crate::util_cli::may_open(p) && is_file(p);
     let mut out = Vec::new();
-    if let Some(py) = dirs.iter().map(|d| Path::new(d).join("py.exe")).find(|p| usable(p)) {
+    if let Some(py) = dirs.iter().map(|d| d.join("py.exe")).find(|p| usable(p)) {
         out.push(vec![py.to_string_lossy().into_owned(), "-3".to_string()]);
     }
     for dir in &dirs {
         for name in ["python.exe", "python3.exe"] {
-            let exe = Path::new(dir).join(name);
+            let exe = dir.join(name);
             if usable(&exe) {
                 out.push(vec![exe.to_string_lossy().into_owned()]);
             }

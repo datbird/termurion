@@ -232,7 +232,9 @@ sessions get iTerm2's variables (`TERM_PROGRAM=iTerm.app`, `TERM_PROGRAM_VERSION
 `ITERM2 3.7.0`, so it2check passes; RequestUpload takes files or folders (a Files/Folders bar
 first) at iTerm2's pace (`accelerateUploads`, else the quick-paste settings); and Install Shell
 Integration offers iTerm2 Utilities for bash-family shells. iTerm2's bash scripts still work in
-WSL, Git Bash and over ssh. it2setcolor's presets wait for milestone 13 and it2ssh for milestone
+WSL, Git Bash and over ssh, except it2check: ConPTY takes its reply's leading `ESC [ I` for a
+focus report and drops it, so the script's check fails there (measured in WSL and Git Bash, a
+kept ConPTY limitation; the native it2check restores the prefix). it2setcolor's presets wait for milestone 13 and it2ssh for milestone
 14; the Swift `it2` CLI is not ported. Every kept quirk is listed in
 `docs/acceptance/m11e-checklist.md` and ruled on in `docs/superpowers/rulings/m11e-rulings.txt`.
 

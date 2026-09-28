@@ -529,19 +529,12 @@ impl Ls<'_, '_> {
         let head = |name: &str, size: u64| {
             format!("\x1b]1337;File=inline=1;height={};width={};preserveAspectRatio={};name={name};size={size}:", o.height, o.width, o.preserve)
         };
-        // Reads until `buf` is full or the file ends; Err when a read failed (an interrupted
-        // read is tried again).
+        // Reads until `buf` is full or the file ends; Err when a read failed.
         let fill = |r: &mut dyn std::io::Read, buf: &mut [u8]| -> Result<usize, ()> {
-            let mut n = 0;
-            while n < buf.len() {
-                match r.read(&mut buf[n..]) {
-                    Ok(0) => break,
-                    Ok(k) => n += k,
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(_) => return Err(()),
-                }
+            match crate::util_osc::fill(r, buf) {
+                (n, false) => Ok(n),
+                (_, true) => Err(()),
             }
-            Ok(n)
         };
         let encode = |bytes: &[u8]| -> String { bytes.chunks(57).map(|c| format!("{}\n", b64(c))).collect() };
         if let Some((f, size)) = file

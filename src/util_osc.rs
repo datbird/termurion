@@ -1,6 +1,7 @@
 //! The utilities' shared writer (milestone 11e): the scripts' `print_osc` / `print_st` (the
 //! tmux wrapping they choose by `TERM`), macOS `base64` (one unwrapped line), `base64 -di`
-//! and `fold -w N`. Pure; each utility builds its bytes from these.
+//! and `fold -w N`, and the streamed `base64 < file` the file utilities share. Pure; each
+//! utility builds its bytes from these.
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -42,6 +43,40 @@ pub fn b64_line(bytes: &[u8]) -> String {
     let mut s = b64(bytes);
     s.push('\n');
     s
+}
+
+/// Reads until `buf` is full or the input ends (an interrupted read is tried again); the
+/// count, and whether a read failed.
+pub fn fill(r: &mut dyn std::io::Read, buf: &mut [u8]) -> (usize, bool) {
+    let mut n = 0;
+    while n < buf.len() {
+        match r.read(&mut buf[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return (n, true),
+        }
+    }
+    (n, false)
+}
+
+/// `base64 < source` as one unwrapped line without its newline, streamed: `each` gets the
+/// base64 of each `piece` bytes read (a multiple of 3, so the pieces join into the whole
+/// input's text). A read error ends the data there. Returns the number of bytes read.
+pub fn stream_b64(r: &mut dyn std::io::Read, piece: usize, each: &mut dyn FnMut(&str)) -> u64 {
+    debug_assert!(piece > 0 && piece % 3 == 0);
+    let mut buf = vec![0u8; piece];
+    let mut total = 0u64;
+    loop {
+        let (n, failed) = fill(r, &mut buf);
+        if n > 0 {
+            total += n as u64;
+            each(&b64(&buf[..n]));
+        }
+        if n < piece || failed {
+            return total;
+        }
+    }
 }
 
 /// `base64 -di`: characters outside the alphabet (whitespace, padding) are ignored and an

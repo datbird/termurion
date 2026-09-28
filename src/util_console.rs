@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 use std::io::{IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -296,23 +296,13 @@ pub fn run_command(c: &Cmd) -> Result<Output, String> {
     Ok(Output { code: out.status.code().unwrap_or(1), stdout: out.stdout })
 }
 
-/// `builtin command -V <program>`: a path naming a file, or a file of that name (with a
-/// PATHEXT extension or none) in a PATH folder. Network folders and PATH entries that are
-/// not absolute (the current folder) are never probed.
+/// `builtin command -V <program>` (`util_cli::found_on_path`) over the process's PATH,
+/// PATHEXT and working folder.
 pub fn on_path(program: &str) -> bool {
-    let local = |p: &Path| {
-        let s = p.to_string_lossy();
-        !(s.starts_with("\\\\") || s.starts_with("//")) && p.is_file()
-    };
-    if program.contains(['\\', '/']) {
-        return local(Path::new(program));
-    }
     let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
     let path = std::env::var("PATH").unwrap_or_default();
-    path.split(';').map(str::trim).filter(|d| Path::new(d).is_absolute()).any(|dir| {
-        let base = Path::new(dir).join(program);
-        local(&base) || exts.split(';').filter(|e| !e.is_empty()).any(|e| local(&PathBuf::from(format!("{}{e}", base.display()))))
-    })
+    let cwd = std::env::current_dir().unwrap_or_default();
+    util_cli::found_on_path(program, &path, &exts, &cwd, &|p: &Path| p.is_file())
 }
 
 /// `$RANDOM`: 0 to 32767, from the standard library's per-process random hash keys.
@@ -513,10 +503,24 @@ mod tests {
             hex(child.join("\u{1f}").as_bytes()),
             exe.display()
         );
-        let pty = pty::spawn(&shipped(), &cmdline, 200, 50).unwrap();
+        let (code, all, screen) = drive_command(&cmdline, Duration::from_secs(60), replies, answer, watch);
+        assert!(code.is_some(), "the child {child:?} did not finish within 60 s; output {:?}", String::from_utf8_lossy(&all));
+        (code, all, screen)
+    }
+
+    /// `drive` for any command line, given up after `limit` (the exit code is then None and
+    /// the pseudo console closes with the command still running).
+    fn drive_command(
+        cmdline: &str,
+        limit: Duration,
+        replies: bool,
+        answer: &mut dyn FnMut(&Request, &mut Vec<u8>),
+        watch: &mut dyn FnMut(&Screen, &mut Vec<u8>),
+    ) -> (Option<u32>, Vec<u8>, Screen) {
+        let pty = pty::spawn(&shipped(), cmdline, 200, 50).unwrap();
         let mut screen = Screen::new(200, 50);
         let mut all = Vec::new();
-        let end = Instant::now() + Duration::from_secs(60);
+        let end = Instant::now() + limit;
         let mut exited_at: Option<Instant> = None;
         loop {
             let mut back = Vec::new();
@@ -545,7 +549,9 @@ mod tests {
                 Some(t) if t.elapsed() > Duration::from_millis(500) => break,
                 _ => {}
             }
-            assert!(Instant::now() < end, "the child {child:?} did not finish within 60 s; output {:?}", String::from_utf8_lossy(&all));
+            if Instant::now() >= end {
+                break;
+            }
         }
         (pty.exit_code(), all, screen)
     }
@@ -697,5 +703,51 @@ mod tests {
         assert_eq!(code, Some(0));
         let got = unhex(&field(&screen, "GOT").unwrap_or_default());
         println!("MEASURED dsr answered by ConPTY: {} (got {:?})", !got.is_empty(), String::from_utf8_lossy(&got));
+    }
+
+    /// A measurement (final review, finding 4): iTerm2's own it2check (`it2check` at
+    /// `64791fc`, kept as `tests/fixtures/iterm2/it2check`) under Git Bash in the shipped
+    /// ConPTY, the screen answering as Tandem's pane does; then the raw bytes bash reads
+    /// after `CSI 1337 n` and `CSI 5 n`, as hex. WSL's bash the same way when it is installed.
+    /// Run by hand with
+    /// `cargo test --lib util_console::tests::iterm2_it2check_through_conpty -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn iterm2_it2check_through_conpty() {
+        const GIT_BASH: &str = r"C:\Program Files\Git\bin\bash.exe";
+        // `stty raw min 0 time 10`: dd ends one second after the last byte.
+        const READ_REPLY: &str =
+            r"stty -echo raw min 0 time 10; printf '\033[1337n\033[5n'; x=$(dd bs=1 count=64 2>/dev/null | od -An -tx1 | tr -d ' \n'); stty sane; echo GOT $x";
+        let script = std::env::temp_dir().join(format!("tandem-it2check-{}", std::process::id()));
+        std::fs::write(&script, std::fs::read("tests/fixtures/iterm2/it2check").unwrap()).unwrap();
+        let script_fwd = script.to_string_lossy().replace('\\', "/");
+        let mut shells: Vec<(&str, String, String)> = Vec::new();
+        if Path::new(GIT_BASH).is_file() {
+            shells.push(("git-bash", format!("\"{GIT_BASH}\" --noprofile --norc \"{script_fwd}\""), format!("\"{GIT_BASH}\" --noprofile --norc -c \"{READ_REPLY}\"")));
+        } else {
+            println!("MEASURED git-bash: not installed at {GIT_BASH}");
+        }
+        let wsl_script = format!("/mnt/{}{}", script_fwd[..1].to_ascii_lowercase(), &script_fwd[2..]);
+        if std::process::Command::new("wsl.exe").arg("-l").output().is_ok_and(|o| o.status.success()) {
+            shells.push(("wsl", format!("wsl.exe -e bash --noprofile --norc {wsl_script}"), format!("wsl.exe -e bash --noprofile --norc -c \"{READ_REPLY}\"")));
+        } else {
+            println!("MEASURED wsl: not installed");
+        }
+        assert!(!shells.is_empty(), "no bash on this machine");
+        for (name, check, read) in &shells {
+            let wait = Duration::from_secs(20);
+            let (code, _, _) = drive_command(check, wait, true, &mut |_, _| {}, &mut |_, _| {});
+            println!("MEASURED {name} it2check exit code: {code:?} (None: still waiting after {wait:?})");
+            let (_, _, screen) = drive_command(read, wait, true, &mut |_, _| {}, &mut |_, _| {});
+            let got = unhex(&field(&screen, "GOT").unwrap_or_default());
+            println!("MEASURED {name} bytes read after CSI 1337 n, CSI 5 n: {:?}", String::from_utf8_lossy(&got));
+            println!("MEASURED {name} reply keeps its ESC [ I: {}", got.starts_with(b"\x1b[ITERM2 "));
+            // Measured 2026-09-28 (Git Bash 5.2, WSL Ubuntu): ConPTY takes the ESC [ I for a
+            // focus report, so the script reads "RM2" as the name; Git Bash's copy never
+            // ended within the wait, WSL's exited 1. A kept ConPTY limitation (rulings).
+            assert_eq!(got, b"TERM2 3.7.0n\x1b[0n", "{name}");
+            assert_ne!(code, Some(0), "{name}");
+        }
+        let _ = std::fs::remove_file(&script);
     }
 }
