@@ -53,6 +53,18 @@ pub(super) fn save_plan(url: bool, remote_changed: bool) -> SavePlan {
     }
 }
 
+/// `customFolderChanged` (`GP:2213-2216`): the location as it was at launch, until it first
+/// differs; then None for the rest of the session, even if it is typed back.
+pub(super) fn launch_location_after(launch: Option<String>, now: &str) -> Option<String> {
+    launch.filter(|l| l == now)
+}
+
+/// Whether the exit waits: any alert showing or queued, so a question at quit, the failure
+/// to copy after it (`RP:376-386`) or any other alert is seen before Tandem ends.
+pub(super) fn exit_waits(showing: Option<&Ask>, queued: &std::collections::VecDeque<Ask>) -> bool {
+    showing.is_some() || !queued.is_empty()
+}
+
 fn home() -> PathBuf {
     std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default()
 }
@@ -223,6 +235,7 @@ impl App {
     /// difference from what the folder held (or nothing held), the folder is written half a
     /// second later.
     pub(super) fn prefs_changed(&mut self) {
+        self.prefs_note_location();
         let g = &self.globals;
         if !g.bool(rp::LOAD_KEY) || rp::save_mode(g.bool(rp::HAVE_SELECTION_KEY), g.int(rp::SELECTION_KEY)) != rp::SaveMode::Always || self.prefs_save_due.is_some() {
             return;
@@ -349,15 +362,26 @@ impl App {
         }
     }
 
-    /// Whether a question the quit waits for is showing or queued.
+    /// Whether an alert the exit waits for is showing or queued.
     fn prefs_quit_question_open(&self) -> bool {
-        let at_quit = |a: &Ask| matches!(a.then, Then::PrefsQuit | Then::PrefsOverwrite);
-        self.scripts_alert.as_ref().is_some_and(|(_, a)| at_quit(a)) || self.scripts_alerts.iter().any(at_quit)
+        exit_waits(self.scripts_alert.as_ref().map(|(_, a)| a), &self.scripts_alerts)
+    }
+
+    /// Notes an edit of the location since launch (`customFolderChanged`).
+    fn prefs_note_location(&mut self) {
+        let now = self.globals.string(rp::FOLDER_KEY);
+        self.prefs_launch_folder = launch_location_after(self.prefs_launch_folder.take(), &now);
     }
 
     /// `applicationWillTerminate` (`RP:1646-1744`), the last step before Tandem ends. True: end
-    /// now. False: a question was queued, and `prefs_tick` ends Tandem after its answer.
+    /// now. False: an alert is showing or was queued, and `prefs_tick` ends Tandem once it and
+    /// any alert after it are answered. Skipped when the location was edited this session
+    /// (`iTermApplicationDelegate.m:1115-1117`).
     pub(super) fn prefs_before_exit(&mut self) -> bool {
+        self.prefs_note_location();
+        if self.prefs_launch_folder.is_none() {
+            return true;
+        }
         let g = &self.globals;
         let on = g.bool(rp::LOAD_KEY);
         let mode = rp::save_mode(g.bool(rp::HAVE_SELECTION_KEY), g.int(rp::SELECTION_KEY));
@@ -576,6 +600,25 @@ mod tests {
         assert_untouched(&g, &store);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn quit_skips_an_edited_location() {
+        let launch = Some("C:\\A".to_string());
+        assert_eq!(launch_location_after(launch.clone(), "C:\\A"), launch);
+        assert_eq!(launch_location_after(launch.clone(), "C:\\B"), None);
+        assert_eq!(launch_location_after(None, "C:\\A"), None, "typed back, still changed");
+        assert_eq!(launch_location_after(Some(String::new()), ""), Some(String::new()));
+    }
+
+    #[test]
+    fn exit_waits_for_any_alert() {
+        let failed = || Ask { heading: rp::FAILED_COPY.to_string(), text: rp::tried_to_copy("f", "f"), buttons: ok(), silence: None, then: Then::Nothing };
+        let mut queued = std::collections::VecDeque::new();
+        assert!(!exit_waits(None, &queued));
+        assert!(exit_waits(Some(&failed()), &queued), "the failure to copy is seen before the exit");
+        queued.push_back(failed());
+        assert!(exit_waits(None, &queued));
     }
 
     #[test]

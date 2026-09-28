@@ -746,6 +746,9 @@ pub struct App {
     prefs_startup: Vec<scripts_alerts::Ask>,
     prefs_reveal: bool,
     prefs_gpu: Option<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)>,
+    /// The custom folder's location as typed at launch; None once it was edited this session,
+    /// which skips the quit step (`customFolderChanged`).
+    prefs_launch_folder: Option<String>,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -825,6 +828,7 @@ pub fn run() {
     // "Load settings from a custom folder or URL": the location's settings replace the local
     // ones before anything reads them; its questions and failures show with the first window.
     let (prefs_saved, prefs_startup) = prefs_ui::load_at_start(&mut globals, &mut store, &prefs_ui::curl_fetch);
+    let prefs_launch_folder = Some(globals.string(crate::remote_prefs::FOLDER_KEY));
     if prefs_saved.is_some() {
         if let Err(e) = globals.save() {
             banners.set("globals", format!("Could not save settings: {e}"));
@@ -1159,6 +1163,7 @@ pub fn run() {
         prefs_startup,
         prefs_reveal: false,
         prefs_gpu: None,
+        prefs_launch_folder,
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
