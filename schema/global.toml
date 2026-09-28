@@ -1274,6 +1274,41 @@ default = false
 help = "Suppress warning about broadcasting input."
 
 [[setting]]
+key = "NoSyncClearAllBroadcast"
+tab = "Advanced"
+section = "Warnings"
+label = "Send Clear Session to all broadcasted-to sessions?"
+type = "bool"
+help = "Send Clear Session to all broadcasted-to sessions?"
+
+[[setting]]
+key = "NoSyncConfirmRemoveAnnotation"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress confirmation to remove annotation?"
+type = "bool"
+default = false
+help = "Suppress confirmation to remove annotation?"
+
+[[setting]]
+key = "NoSyncSuppressDownloadConfirmation"
+tab = "Advanced"
+section = "General"
+label = "Suppress confirmation of terminal-initiated downloads?"
+type = "bool"
+default = false
+help = "Suppress confirmation of terminal-initiated downloads?"
+
+[[setting]]
+key = "NoSyncSuppressRestartSessionConfirmationAlert"
+tab = "Advanced"
+section = "Session"
+label = "Suppress restart session confirmation alert."
+type = "bool"
+default = false
+help = "Suppress restart session confirmation alert.\nDon't ask for a confirmation when manually restarting a session."
+
+[[setting]]
 key = "NoSyncTmuxHung"
 tab = "Stored"
 section = "Warnings"

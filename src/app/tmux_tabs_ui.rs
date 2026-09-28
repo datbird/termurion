@@ -1096,26 +1096,44 @@ impl App {
         }
     }
 
-    /// New Tab or New Window while a tmux pane is current: None when it is not one (or the
-    /// person chose the default profile); Some(()) when tmux makes it or it was cancelled.
+    /// New Tab or New Window while a tmux pane is current: None when it is not one; Some(())
+    /// when tmux makes it or, with `ask`, the question is asked (its answer, or the remembered
+    /// one, makes the tmux one, a tab or window with the default profile, or nothing:
+    /// `tmux_new_answered`).
     pub(super) fn tmux_new(&mut self, window: bool, ask: bool) -> Option<()> {
         let pane = self.focused_id()?;
-        let (gw, _, tmux_window) = self.tmux_of(pane)?;
+        self.tmux_of(pane)?;
         if ask {
-            let legacy = self.globals.bool("NoSyncNewWindowOrTabFromTmuxOpensTmux");
-            let specific = self.globals.bool(crate::tmux_edits::new_kind_key(window, false));
-            let answer = if crate::tmux_edits::skip_new_kind_question(legacy, specific) {
-                Some(true)
-            } else {
-                let (heading, text, b) = crate::tmux_edits::new_kind_question(window);
-                super::broadcast_ui::yes_no_cancel(self.hwnd(), heading, &format!("{text}\n\nYes: {}. No: {}.", b[0], b[1]))
-            };
-            match answer {
-                None => return Some(()),
-                Some(false) => return None,
-                Some(true) => {}
-            }
+            let legacy = crate::warnings::is_silenced(&self.globals, crate::tmux_edits::new_kind_key(window, true), super::warnings_app::unix_now());
+            self.ask_scripts(tmux_new_ask(pane, window, legacy));
+            return Some(());
         }
+        self.tmux_new_at(pane, window)
+    }
+
+    /// The question answered for the tmux pane `anchor`: a new tmux window or tab (0), or a
+    /// window or tab with the default profile (1), in the window it was asked from; Cancel
+    /// does nothing.
+    pub(super) fn tmux_new_answered(&mut self, anchor: PaneId, window: bool, index: usize) {
+        if index > 1 || !self.enter_pane_window(anchor) {
+            return;
+        }
+        match (index, window) {
+            (0, _) => {
+                self.tmux_new_at(anchor, window);
+            }
+            (_, true) => {
+                self.pending_windows.push(super::windows_ui::NewWindow::Profile(None));
+                self.redraw();
+            }
+            (_, false) => self.new_tab(None),
+        }
+    }
+
+    /// A new tmux window (`window`) or tab next to the tmux window of `pane`. None when the
+    /// pane is not a tmux pane.
+    fn tmux_new_at(&mut self, pane: PaneId, window: bool) -> Option<()> {
+        let (gw, _, tmux_window) = self.tmux_of(pane)?;
         let dir = self.tmux_dir(pane);
         let size = self.profile_of(pane).map(|p| (p.int("Columns").max(1) as u32, p.int("Rows").max(1) as u32));
         let affinity = (!window).then_some(tmux_window);
@@ -1317,6 +1335,15 @@ pub(super) fn tmux_close_window_ask(anchor: PaneId, gw: PaneId, whole: bool, n: 
     Some(super::scripts_alerts::ask("", text, &buttons, Some("ClosingTmuxWindowKillsTmuxWindows"), crate::warnings::Kind::Permanent, super::scripts_alerts::Then::TmuxClose(anchor, id)))
 }
 
+/// "What kind of tab (or window) do you want to open?" from the tmux pane `anchor`, under the
+/// legacy key while it is silenced (`legacy`), else the window's or the tab's key; permanently
+/// silenceable (`possiblyTmuxValueForWindow:cancel:`, `AD:3788-3825`).
+pub(super) fn tmux_new_ask(anchor: PaneId, window: bool, legacy: bool) -> super::scripts_alerts::Ask {
+    let (heading, text, buttons) = crate::tmux_edits::new_kind_question(window);
+    let id = crate::tmux_edits::new_kind_key(window, legacy);
+    super::scripts_alerts::ask(heading, text, &buttons, Some(id), crate::warnings::Kind::Permanent, super::scripts_alerts::Then::TmuxNew { anchor, window })
+}
+
 /// A window's outer origin (screen pixels) and its size for `@per_window_settings`: the
 /// outer size in logical pixels, or full screen.
 /// None while the window is minimized (Windows parks it off screen at a caption's size).
@@ -1340,5 +1367,26 @@ pub(super) fn tmux_dir_of(p: Option<&Profile>) -> crate::tmux_edits::Dir {
         "Yes" => Dir::Custom(p.string("Working Directory")),
         "Recycle" => Dir::Recycle,
         _ => Dir::Home,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::warnings::Kind;
+
+    /// `possiblyTmuxValueForWindow:cancel:` (`AD:3788-3825`): the legacy key while it is
+    /// silenced, else the window's or the tab's; permanently silenceable, Cancel last.
+    #[test]
+    fn tmux_new_question_follows_iterm2() {
+        let a = tmux_new_ask(5, false, false);
+        let (heading, text, buttons) = crate::tmux_edits::new_kind_question(false);
+        assert_eq!((a.spec.heading.as_str(), a.spec.text.as_str(), a.spec.labels.clone()), (heading, text, buttons.map(String::from).to_vec()));
+        assert_eq!(a.spec.id.as_deref(), Some("NoSyncNewTabFromTmuxOpensTmux"));
+        assert_eq!((a.spec.kind, a.spec.cancel), (Kind::Permanent, Some(2)));
+        assert_eq!(a.then, super::super::scripts_alerts::Then::TmuxNew { anchor: 5, window: false });
+        assert_eq!(tmux_new_ask(5, true, false).spec.id.as_deref(), Some("NoSyncNewWindowFromTmuxOpensTmux"));
+        assert_eq!(tmux_new_ask(5, true, true).spec.id.as_deref(), Some("NoSyncNewWindowOrTabFromTmuxOpensTmux"));
+        assert_eq!(tmux_new_ask(5, false, true).spec.id.as_deref(), Some("NoSyncNewWindowOrTabFromTmuxOpensTmux"));
     }
 }

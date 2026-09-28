@@ -1352,6 +1352,16 @@ impl App {
         self.start_pane_as(id, rect, guid.as_deref());
     }
 
+    /// "Restart session?" answered OK: the pane restarts in its own window (gone: nothing
+    /// happens).
+    pub(super) fn restart_answered(&mut self, id: PaneId) {
+        if !self.panes.contains_key(&id) {
+            return;
+        }
+        self.enter_pane_window(id);
+        self.restart_pane(id);
+    }
+
     /// The session variables for pane `id`, about to start with profile `p` (`PS:3246-3350`),
     /// and the cookie minted for it: a Session cookie in the jar, only while "Enable Python
     /// API" and `setCookie` are both on and the server runs. The numbers are those at launch:

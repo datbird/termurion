@@ -558,9 +558,15 @@ impl App {
             "saveCurrentWindowAsArrangement:" => self.open_save_arrangement(event_loop, false),
             "importWindowArrangement:" => self.load_arrangement_file(),
             "changeProfileInArrangement:" => self.open_settings_page(event_loop, crate::settings_ui::Page::Arrangements),
+            // A session whose shell has exited restarts at once; a running one asks first
+            // (`restartSessionWithConfirmation:`). The API's RestartSession never asks.
             "restartSession:" => {
                 if let Some(id) = self.focused_id() {
-                    self.restart_pane(id);
+                    if restart_asks(self.panes.get(&id).is_some_and(|p| p.exited.is_some())) {
+                        self.ask_scripts(super::scripts_alerts::Ask::new(restart_spec(), super::scripts_alerts::Then::Restart(id)));
+                    } else {
+                        self.restart_pane(id);
+                    }
                 }
             }
             "copy:" => {
@@ -1046,4 +1052,45 @@ pub(super) fn info_box(text: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK, MessageBoxW};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Tandem").as_ptr(), MB_OK | MB_ICONINFORMATION) };
+}
+
+/// Whether Restart Session asks first: only while the session's shell runs (`PT:2851`).
+pub(super) fn restart_asks(exited: bool) -> bool {
+    !exited
+}
+
+/// "Restart session?" (`PT:2855-2866`): the object API with no cancel label, so Cancel may be
+/// remembered, as in iTerm2.
+pub(super) fn restart_spec() -> crate::warnings::Spec {
+    use crate::api_auth::{CANCEL, OK};
+    crate::warnings::Spec {
+        id: Some("NoSyncSuppressRestartSessionConfirmationAlert".to_string()),
+        kind: crate::warnings::Kind::Permanent,
+        heading: "Restart session?".to_string(),
+        text: "Running jobs will be killed.".to_string(),
+        labels: vec![OK.to_string(), CANCEL.to_string()],
+        cancel: None,
+        never_remember: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::warnings::{Kind, checkbox_label};
+
+    /// `restartSessionWithConfirmation:` (`PT:2848-2870`): built with the object API, which
+    /// sets no cancel label, so Cancel may be remembered and two buttons count (Review Focus 2).
+    #[test]
+    fn restart_confirmation_follows_iterm2() {
+        let s = super::restart_spec();
+        assert_eq!((s.heading.as_str(), s.text.as_str()), ("Restart session?", "Running jobs will be killed."));
+        assert_eq!(s.labels, ["OK", "Cancel"]);
+        assert_eq!(s.id.as_deref(), Some("NoSyncSuppressRestartSessionConfirmationAlert"));
+        assert_eq!((s.kind, s.cancel), (Kind::Permanent, None));
+        assert!(s.never_remember.is_empty());
+        assert!(s.rememberable(1), "Cancel may be remembered");
+        assert_eq!(checkbox_label(&s), Some("Remember my choice"));
+        assert!(!super::restart_asks(true), "an exited session restarts at once");
+        assert!(super::restart_asks(false));
+    }
 }

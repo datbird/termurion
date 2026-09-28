@@ -1468,6 +1468,24 @@ mod tests {
         assert_eq!(c.default, Some(Value::Table(toml::Table::new())));
     }
 
+    /// The confirmations' rows (`ASM:504,668,785,787`).
+    #[test]
+    fn confirmation_rows_follow_iterm2() {
+        let rows = [
+            ("NoSyncSuppressRestartSessionConfirmationAlert", "Session", Some(false), "Suppress restart session confirmation alert.", "Suppress restart session confirmation alert.\nDon't ask for a confirmation when manually restarting a session."),
+            ("NoSyncSuppressDownloadConfirmation", "General", Some(false), "Suppress confirmation of terminal-initiated downloads?", "Suppress confirmation of terminal-initiated downloads?"),
+            ("NoSyncClearAllBroadcast", "Warnings", None, "Send Clear Session to all broadcasted-to sessions?", "Send Clear Session to all broadcasted-to sessions?"),
+            ("NoSyncConfirmRemoveAnnotation", "Warnings", Some(false), "Suppress confirmation to remove annotation?", "Suppress confirmation to remove annotation?"),
+        ];
+        for (key, section, default, label, help) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", section, Kind::Bool), "{key}");
+            assert_eq!(s.default, default.map(Value::Boolean), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (label, help), "{key}");
+        }
+        assert!(schema::find_global("NoSyncClearAllBroadcast").unwrap().optional_bool());
+    }
+
     #[test]
     fn erase_row_follows_iterm2() {
         let s = schema::find_global("DryRunEraseAllSettingsAndData").expect("row");

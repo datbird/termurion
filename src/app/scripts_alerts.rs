@@ -40,7 +40,15 @@ pub(super) fn ask(heading: &str, text: &str, labels: &[&str], id: Option<&str>, 
         cancel: labels.iter().position(|l| *l == crate::api_auth::CANCEL),
         never_remember: then.never_remember(),
     };
-    Ask { spec, then, remembered: None }
+    Ask::new(spec, then)
+}
+
+impl Ask {
+    /// An alert for a warning built in full: for the object API's warnings, whose "Cancel" is
+    /// not the cancel button (restart session).
+    pub(super) fn new(spec: Spec, then: Then) -> Ask {
+        Ask { spec, then, remembered: None }
+    }
 }
 
 /// How a closed alert answers (ruling R13x67-1): a button, or closed with none.
@@ -140,6 +148,19 @@ pub(super) enum Then {
     /// are the ones turned on) and the menu selector; OK (0) turns it on; Cancel (1) does
     /// nothing.
     BroadcastInput(crate::layout::PaneId, &'static str),
+    /// "Restart session?" for the pane: OK (0) restarts it; Cancel (1) does nothing.
+    Restart(crate::layout::PaneId),
+    /// A terminal-initiated download and whether its question was silenced when asked: Yes
+    /// (0) saves it, after the large file question when that follows; No (1) drops it.
+    Download(crate::inline_file::Download, bool),
+    /// "Allow Large File Download?": Allow (0) saves it; Deny (1) drops it.
+    BigDownload(crate::inline_file::Download),
+    /// Clear Buffer (`clear`) or Reset with broadcast, asked from `me` with the broadcast
+    /// sessions `targets`: Clear All (0), Current Session Only (1) or Cancel (2).
+    Broadcast { clear: bool, me: crate::layout::PaneId, targets: Vec<crate::layout::PaneId> },
+    /// New Tab or New Window (`window`) from the tmux pane `anchor`: New tmux Tab or Window
+    /// (0), Use Default Profile (1) or Cancel (2).
+    TmuxNew { anchor: crate::layout::PaneId, window: bool },
 }
 
 impl Then {
@@ -289,6 +310,19 @@ impl App {
                     self.broadcast_granted(anchor, selector);
                 }
             }
+            Then::Restart(pane) => {
+                if index == 0 {
+                    self.restart_answered(pane);
+                }
+            }
+            Then::Download(d, was_silenced) => self.download_answered(d, was_silenced, index),
+            Then::BigDownload(d) => {
+                if index == 0 {
+                    self.save_download(d);
+                }
+            }
+            Then::Broadcast { clear, me, targets } => self.clear_or_reset_answered(clear, me, super::broadcast_ui::broadcast_targets(index, me, targets)),
+            Then::TmuxNew { anchor, window } => self.tmux_new_answered(anchor, window, index),
             Then::Malformed(path) => {
                 if index == 1 {
                     self.reveal_path(&path);
