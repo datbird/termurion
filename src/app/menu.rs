@@ -883,9 +883,9 @@ impl App {
                     }
                 }
             }
-            "biggerFont:" => self.font_offset += 1.0,
-            "smallerFont:" => self.font_offset = (self.font_offset - 1.0).max(-8.0),
-            "returnToDefaultSize:" => self.font_offset = 0.0,
+            "biggerFont:" => self.set_font_offset(self.font_offset + 1.0),
+            "smallerFont:" => self.set_font_offset((self.font_offset - 1.0).max(-8.0)),
+            "returnToDefaultSize:" => self.set_font_offset(0.0),
             "maximizePane:" if self.tabs.get(self.active).is_some_and(|t| self.tmux_of(t.focused).is_some()) => {
                 let f = self.tabs[self.active].focused;
                 self.tmux_zoom(f);

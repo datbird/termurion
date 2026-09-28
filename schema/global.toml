@@ -671,6 +671,15 @@ default = true
 help = "Quitting asks first while a terminal window is open."
 
 [[setting]]
+key = "AdjustWindowForFontSizeChange"
+tab = "General"
+section = "Window"
+label = "Adjust window when changing font size"
+type = "bool"
+default = true
+help = "If enabled, changes to font size will try to preserve session dimensions."
+
+[[setting]]
 key = "SeparateWindowTitlePerTab"
 tab = "General"
 section = "Window"

@@ -2521,6 +2521,17 @@ mod tests {
         assert_eq!(s.help, "Show window title when the tab bar is not visible?\nWhen disabled, the tab's title will be shown where the window title would normally go.");
     }
 
+    /// The window follows a font size change: General's check box (`XIB:8221-8224`, on by
+    /// default, `P:733`).
+    #[test]
+    fn font_window_rows_follow_iterm2() {
+        let s = schema::find_global("AdjustWindowForFontSizeChange").expect("AdjustWindowForFontSizeChange");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("General", "Window", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(true)));
+        assert_eq!(s.label, "Adjust window when changing font size");
+        assert_eq!(s.help, "If enabled, changes to font size will try to preserve session dimensions.");
+    }
+
     /// The window number's advanced settings (`AS:710-711`).
     #[test]
     fn number_rows_follow_iterm2() {

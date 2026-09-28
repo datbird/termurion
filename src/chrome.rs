@@ -1,7 +1,9 @@
 //! Window chrome rules: the border around a window (when it shows, its color), the corner
 //! preference, the line under the title bar, the snap to the cell grid while resizing and
-//! whether programs may resize the window, as iTerm2 decides them.
+//! whether programs may resize the window and the window's size after a font size change, as
+//! iTerm2 decides them.
 
+use crate::layout::Rect;
 use crate::palette::Rgb;
 use crate::tab_theme::TabStyle;
 
@@ -186,6 +188,16 @@ pub fn resizable(locked: bool, allow_live: bool) -> bool {
     !locked && allow_live
 }
 
+/// The window's outer frame after a font size change (`windowFrameForTabSize:`,
+/// `PT:11770-11825`): the grid at the new `cell` plus the `chrome` around the text (the
+/// decoration and the padding), no larger than the work area; the top-left stays unless the
+/// frame would pass the work area's right or bottom edge.
+pub fn font_fit(grid: (u16, u16), cell: (f32, f32), chrome: (f32, f32), work: Rect, outer: Rect) -> Rect {
+    let w = (f32::from(grid.0) * cell.0 + chrome.0).min(work.w);
+    let h = (f32::from(grid.1) * cell.1 + chrome.1).min(work.h);
+    Rect { x: outer.x.min(work.x + work.w - w), y: outer.y.min(work.y + work.h - h), w, h }
+}
+
 /// Whether a program may resize or move its window (`screenShouldInitiateWindowResize`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResizePermission {
@@ -321,6 +333,19 @@ mod tests {
         assert_eq!(fill_screen(true, 1915.0, 1916.0, 10.0, 1920.0), 1915.0);
         assert_eq!(fill_screen(false, 1915.0, 1918.0, 10.0, 1920.0), 1915.0);
         assert_eq!(fill_screen(true, 1900.0, 1918.0, 10.0, 1920.0), 1900.0);
+    }
+
+    #[test]
+    fn font_change_fit_follows_iterm2() {
+        let work = Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1040.0 };
+        let outer = Rect { x: 100.0, y: 100.0, w: 900.0, h: 600.0 };
+        // 80 x 11 + 24 by 25 x 22 + 72, the top-left kept.
+        assert_eq!(font_fit((80, 25), (11.0, 22.0), (24.0, 72.0), work, outer), Rect { x: 100.0, y: 100.0, w: 904.0, h: 622.0 });
+        // 2224 by 1392 is larger than the work area: its size, moved onto it.
+        assert_eq!(font_fit((200, 60), (11.0, 22.0), (24.0, 72.0), work, outer), Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1040.0 });
+        // Height 952 from y 500 would pass the bottom: y = 1040 - 952.
+        let low = Rect { x: 100.0, y: 500.0, w: 900.0, h: 600.0 };
+        assert_eq!(font_fit((80, 40), (11.0, 22.0), (24.0, 72.0), work, low), Rect { x: 100.0, y: 88.0, w: 904.0, h: 952.0 });
     }
 
     #[test]

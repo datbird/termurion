@@ -2797,6 +2797,45 @@ impl App {
         }
     }
 
+    /// Make Text Bigger, Make Text Smaller and Make Text Normal Size: the shared font offset
+    /// becomes `offset`. With `AdjustWindowForFontSizeChange`, a window that may change size
+    /// (`window_can_fit`: not full screen, maximized, snapped or size-locked) then keeps its
+    /// tab's grid at the new cell (`reallyChangeSessionFontSize:adjustWindow:`,
+    /// `TAB:2189-2205`); else the panes refit the window as it is, and a tmux tab tells tmux
+    /// through the size report. The caller lays out. 13n's `change_font_size` takes this over.
+    fn set_font_offset(&mut self, offset: f32) {
+        let grid = self.grid_size(self.content_area());
+        self.font_offset = offset;
+        let sig = self.font_sig.clone();
+        self.apply_fonts();
+        if sig != self.font_sig && self.globals.bool("AdjustWindowForFontSizeChange") && self.window_can_fit() {
+            self.fit_window_to_grid(grid);
+        }
+    }
+
+    /// Resizes the current window so its tab shows `grid` at the current cell, the top-left
+    /// kept and the frame kept on the work area (`chrome::font_fit`). The decoration and the
+    /// padding around the grid are the ones the edge snap measures (`snap_grid`); the Resized
+    /// event that follows lays the window out at its new size.
+    pub(super) fn fit_window_to_grid(&mut self, grid: (u16, u16)) {
+        let Some(snap) = self.snap_grid() else { return };
+        let Some((work, _)) = self.monitor_rects() else { return };
+        let Some(g) = self.gpu.as_ref() else { return };
+        let chrome = (snap.decoration.0 + snap.margins.0, snap.decoration.1 + snap.margins.1);
+        let now = Self::outer_rect(g);
+        let r = crate::chrome::font_fit(grid, snap.cell, chrome, work, now);
+        if (r.x, r.y) != (now.x, now.y) {
+            g.window.set_outer_position(winit::dpi::PhysicalPosition::new(r.x.round() as i32, r.y.round() as i32));
+        }
+        // The frame is the outer frame; the inner size leaves the borders out.
+        let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
+        let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
+        let size = winit::dpi::PhysicalSize::new((r.w.round() as u32).saturating_sub(dw).max(1), (r.h.round() as u32).saturating_sub(dh).max(1));
+        if size != inner {
+            let _ = g.window.request_inner_size(size);
+        }
+    }
+
     /// Sizes the window to the default profile's Columns and Rows.
     fn size_window(&mut self, guid: Option<&str>) {
         let p = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).clone();
