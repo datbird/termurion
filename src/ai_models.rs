@@ -240,10 +240,6 @@ impl ManualModel {
         }
         ai_policy::host_of(&self.url).unwrap_or_else(|| self.url.clone())
     }
-
-    fn vendor(&self) -> Vendor {
-        manual_vendor(self.api(), &self.url, &self.name)
-    }
 }
 
 /// The stored configurations; an entry that is not a table, or whose name or URL is not a
@@ -361,30 +357,6 @@ pub struct Endpoint {
     pub custom_headers: Vec<(String, String)>,
 }
 
-impl Endpoint {
-    fn of_manual(m: &ManualModel) -> Endpoint {
-        Endpoint { vendor: m.vendor(), model: m.name.clone(), url: m.url.clone(), api: m.api(), custom_headers: m.custom_headers.clone() }
-    }
-}
-
-/// The request-time manual models (`LM:162-174`): the usable configurations, else (when the
-/// recommended model is not in use) the legacy model, which inherits the legacy global headers
-/// (`LM:491-535`).
-fn request_manual_models(g: &Globals) -> Vec<Endpoint> {
-    let configured: Vec<Endpoint> = usable(&read(g)).into_iter().map(Endpoint::of_manual).collect();
-    if !configured.is_empty() || g.bool(ai::USE_RECOMMENDED) {
-        return configured;
-    }
-    let url = g.string(ai::URL);
-    if url.is_empty() {
-        return Vec::new();
-    }
-    let name = g.string(ai::MODEL);
-    let api = Api::from_raw(g.int(ai::API)).unwrap_or(Api::ChatCompletions);
-    let custom_headers = legacy_headers(g);
-    vec![Endpoint { vendor: manual_vendor(api, &url, &name), model: name, url, api, custom_headers }]
-}
-
 /// The legacy global custom headers the legacy manual model inherits (`LM:528-534`): the
 /// stored list while `AICustomHeadersEnabled` is on, else none.
 pub fn legacy_headers(g: &Globals) -> Vec<(String, String)> {
@@ -395,40 +367,15 @@ pub fn legacy_headers(g: &Globals) -> Vec<(String, String)> {
     }
 }
 
-/// The recommended model of a vendor (`LM:126-161`). Ollama's models are discovered (12b); until
-/// then it is the chosen regular model, else the pending placeholder. Apple Intelligence has no
-/// endpoint on Windows (ruling 7).
-fn recommended_endpoint(g: &Globals, v: Vendor, catalog: &Catalog) -> Option<Endpoint> {
-    match v {
-        Vendor::OpenAI | Vendor::Anthropic | Vendor::Gemini | Vendor::DeepSeek => {
-            let m = catalog.recommended(v)?;
-            if m.url.is_empty() {
-                return None;
-            }
-            Some(Endpoint { vendor: m.vendor, model: m.name.clone(), url: m.url.clone(), api: m.api, custom_headers: Vec::new() })
-        }
-        Vendor::Llama => {
-            let chosen = g.string(ai::OLLAMA_REGULAR);
-            let model = if chosen.is_empty() { OLLAMA_PENDING.to_string() } else { chosen };
-            Some(Endpoint { vendor: Vendor::Llama, model, url: OLLAMA_ENDPOINT.to_string(), api: Api::Llama, custom_headers: Vec::new() })
-        }
-        Vendor::Apple => None,
-    }
-}
-
-/// The default model for new chats (`LM:203-218`): the vendor's recommended model, else the
-/// manual model named by `AiModel`, else the first manual model. None when there is nothing to
-/// send to (the gate refuses with a reason).
+/// The default model for new chats (`LM:203-218`) as an endpoint: the model
+/// `ai_model::configured` picks (one pick for Settings, the gate and the request), with no
+/// discovered Ollama tags. None when there is nothing to send to (an Apple Intelligence vendor,
+/// a model without a URL), which the gate refuses with a reason. A request is gated on the
+/// endpoint of the model it actually sends (`ai_model::endpoint`), which can differ once
+/// discovery has found tags.
 pub fn default_endpoint(g: &Globals, catalog: &Catalog) -> Option<Endpoint> {
-    if g.bool(ai::USE_RECOMMENDED) {
-        if let Some(v) = Vendor::from_raw(g.int(ai::VENDOR)) {
-            return recommended_endpoint(g, v, catalog);
-        }
-    }
-    let mut models = request_manual_models(g);
-    let name = g.string(ai::MODEL);
-    let pick = models.iter().position(|m| m.model == name).unwrap_or(0);
-    (pick < models.len()).then(|| models.swap_remove(pick))
+    let m = crate::ai_model::configured(g, catalog, &crate::ai_model::Discovered::default())?;
+    (!m.url.is_empty()).then(|| crate::ai_model::endpoint(&m))
 }
 
 /// The vendor whose key a request uses (`LM:78-89`).
@@ -1254,8 +1201,11 @@ mod tests {
             default_endpoint(&g, cat),
             Some(Endpoint { vendor: Vendor::Llama, model: OLLAMA_PENDING.into(), url: OLLAMA_ENDPOINT.into(), api: Api::Llama, custom_headers: vec![] })
         );
+        // A Regular pick that discovery has not found waits on the placeholder (`LM:139-150`),
+        // at the same endpoint.
         g.set(ai::OLLAMA_REGULAR, Value::String("qwen3".into()));
-        assert_eq!(default_endpoint(&g, cat).unwrap().model, "qwen3");
+        assert_eq!(default_endpoint(&g, cat).unwrap().model, OLLAMA_PENDING);
+        assert_eq!(default_endpoint(&g, cat).unwrap().url, OLLAMA_ENDPOINT);
         assert_eq!(effective_vendor(&g, cat), Vendor::Llama);
 
         g.set(ai::VENDOR, Value::Integer(5));

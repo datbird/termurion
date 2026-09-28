@@ -131,8 +131,8 @@ impl Discovered {
 }
 
 /// The manual models a request can use (`MD:163-174`): the usable configured entries in stored
-/// order, else (unless the recommended model is in use) the legacy model. A dynamic entry yields
-/// nothing here yet; Task 9 expands it from `found`.
+/// order, else (unless the recommended model is in use) the legacy model. 12a's `usable` drops a
+/// dynamic entry, so it yields nothing here yet; Task 9 expands it from `found`.
 pub fn manual_models(g: &Globals, catalog: &Catalog, _found: &Discovered) -> Vec<Model> {
     let configured: Vec<Model> = ai_models::usable(&ai_models::read(g)).into_iter().map(|m| from_manual(m, catalog)).collect();
     if !configured.is_empty() || g.bool(ai::USE_RECOMMENDED) {
@@ -172,6 +172,13 @@ pub fn configured(g: &Globals, catalog: &Catalog, found: &Discovered) -> Option<
     let name = g.string(ai::MODEL);
     let pick = models.iter().position(|m| m.name == name).unwrap_or(0);
     (pick < models.len()).then(|| models.swap_remove(pick))
+}
+
+/// Where a model's requests go: its vendor, name, URL, API and custom headers. The consent gate
+/// checks this endpoint of the model a request actually sends, so the host it allowed is the host
+/// the transport connects to (12a's `default_endpoint` is this of `configured`).
+pub fn endpoint(m: &Model) -> ai_models::Endpoint {
+    ai_models::Endpoint { vendor: m.vendor, model: m.name.clone(), url: m.url.clone(), api: m.api, custom_headers: m.custom_headers.clone() }
 }
 
 /// A pinned or persisted model name (`MD:194-201`): a manual model wins over the catalog entry of
@@ -396,21 +403,64 @@ mod tests {
         let c = bundled();
         let none = Discovered::default();
         let mut cases = vec![empty()];
-        for v in [0, 1, 2, 4, 3] {
+        for v in [0, 1, 2, 4, 3, 5, 9] {
             let mut g = empty();
             g.set(ai::VENDOR, Value::Integer(v));
             cases.push(g);
         }
+        // An Ollama Regular pick that discovery has not found.
+        let mut pick = empty();
+        pick.set(ai::VENDOR, Value::Integer(3));
+        pick.set(ai::OLLAMA_REGULAR, Value::String("qwen3".into()));
+        cases.push(pick);
         cases.push(manual_mode(r#"[{name="a", url="https://a.test/v1", api=2}, {name="b", url="https://h.test/v1/chat/completions", customHeaders=[{name="X-A", value="1"}]}]"#));
         cases.last_mut().unwrap().set(ai::MODEL, Value::String("b".into()));
+        // `AiModel` names a dynamic entry: it is not a model, so the first usable entry is picked.
+        cases.push(manual_mode(r#"[{name="d", url="http://d.test:11434", dynamicModels=true}, {name="a", url="https://a.test/v1", api=2}]"#));
+        cases.last_mut().unwrap().set(ai::MODEL, Value::String("d".into()));
+        let mut legacy = empty();
+        legacy.set(ai::USE_RECOMMENDED, Value::Boolean(false));
+        legacy.set(ai::URL, Value::String("https://my.host/v1/chat/completions".into()));
+        legacy.set(ai::MODEL, Value::String("m".into()));
+        cases.push(legacy);
         for (i, g) in cases.iter().enumerate() {
-            let e = ai_models::default_endpoint(g, c).expect("12a has an endpoint");
-            let m = configured(g, c, &none).expect("a configured model");
-            assert_eq!((&m.name, &m.url, m.api, &m.custom_headers), (&e.model, &e.url, e.api, &e.custom_headers), "case {i}");
-            assert_eq!(m.vendor, ai_models::effective_vendor(g, c), "case {i}");
+            let m = configured(g, c, &none);
+            let e = ai_models::default_endpoint(g, c);
+            assert_eq!(e, m.as_ref().filter(|m| !m.url.is_empty()).map(endpoint), "case {i}: one pick for 12a and the request");
+            if let Some(e) = &e {
+                assert_eq!(e.vendor, ai_models::effective_vendor(g, c), "case {i}");
+                assert_eq!(ai_policy::host_of(&e.url), ai_policy::host_of(&m.as_ref().unwrap().url), "case {i}");
+            }
         }
-        // The manual case really carries its header.
-        assert_eq!(configured(cases.last().unwrap(), c, &none).unwrap().custom_headers, [("X-A".to_string(), "1".to_string())]);
+        // The manual case really carries its header, the dynamic case picks "a", and the
+        // undiscovered pick waits on the placeholder at the default endpoint.
+        let n = cases.len();
+        assert_eq!(configured(&cases[n - 3], c, &none).unwrap().custom_headers, [("X-A".to_string(), "1".to_string())]);
+        assert_eq!(name_of(configured(&cases[n - 2], c, &none)).as_deref(), Some("a"));
+        let e = ai_models::default_endpoint(&cases[n - 4], c).unwrap();
+        assert_eq!((e.model.as_str(), e.url.as_str(), e.vendor), (OLLAMA_PENDING, OLLAMA_ENDPOINT, Vendor::Llama));
+        // Apple Intelligence: the catalog entry, which has nowhere to send (the gate's NoEndpoint,
+        // the turn's APPLE_UNAVAILABLE).
+        let apple = configured(&cases[6], c, &none).unwrap();
+        assert_eq!((apple.name.as_str(), apple.api, apple.url.as_str()), ("apple-on-device", Api::AppleIntelligence, ""));
+        assert_eq!(ai_models::default_endpoint(&cases[6], c), None);
+        assert_eq!(configured(&cases[7], c, &none), None, "an out-of-range vendor finds no manual model");
+    }
+
+    #[test]
+    fn endpoint_is_where_the_model_goes() {
+        let c = bundled();
+        let mut models: Vec<Model> = c.models.clone();
+        models.push(pending_ollama_model());
+        models.extend(manual_models(&globals_with(r#"[{name="p", url="http://user:pw@[::1]:8080/v1", customHeaders=[{name="X-A", value="1"}]}]"#), c, &Discovered::default()));
+        for m in &models {
+            let e = endpoint(m);
+            assert_eq!((e.vendor, &e.model, &e.url, e.api, &e.custom_headers), (m.vendor, &m.name, &m.url, m.api, &m.custom_headers), "{}", m.name);
+            // Gemini's request URL substitutes the model into the path only, so the host the
+            // gate checks is the host the request goes to.
+            let sent = m.url.replace("{{MODEL}}", effective_name(m));
+            assert_eq!(ai_policy::host_of(&e.url), ai_policy::host_of(&sent), "{}", m.name);
+        }
     }
 
     #[test]
