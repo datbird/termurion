@@ -1296,11 +1296,13 @@ pub fn cut_out(frame: &mut Frame, r: Rect, line_h: f32) {
 /// `alpha`: its boxes go in `popups` (over the sessions' backgrounds and images) with their
 /// alpha scaled, its boxes' own popups and overlay likewise, and its text is blended from
 /// `under` (the sessions' background) toward its color by `alpha`. The sessions' text behind
-/// `area` is cut out while the bar is at least half opaque.
+/// `area` is cut out while the bar is at least half opaque, and so is their overlay (which
+/// draws after all text: dividers, dimming, cursors, underlines).
 pub fn lay_over(frame: &mut Frame, layer: Frame, area: Rect, alpha: f32, under: Rgb, line_h: f32) {
     let alpha = alpha.clamp(0.0, 1.0);
     if alpha >= 0.5 {
         cut_out(frame, area, line_h);
+        frame.overlay = frame.overlay.drain(..).flat_map(|q| outside(q.rect, area).into_iter().map(move |rect| Quad { rect, ..q })).collect();
     }
     let faded = |q: Quad| Quad { color: [q.color[0], q.color[1], q.color[2], q.color[3] * alpha], ..q };
     frame.popups.extend(layer.quads.into_iter().chain(layer.popups).map(faded));
@@ -1313,6 +1315,26 @@ pub fn lay_over(frame: &mut Frame, layer: Frame, area: Rect, alpha: f32, under: 
         }
         row
     }));
+}
+
+/// The parts of `r` outside `hole`: `r` itself when they do not meet, else up to four
+/// pieces (above, below, then left and right of `hole` within its height); none when `hole`
+/// covers `r`.
+fn outside(r: Rect, hole: Rect) -> Vec<Rect> {
+    let (top, bottom) = (r.y.max(hole.y), (r.y + r.h).min(hole.y + hole.h));
+    let (left, right) = (r.x.max(hole.x), (r.x + r.w).min(hole.x + hole.w));
+    if top >= bottom || left >= right {
+        return vec![r];
+    }
+    [
+        Rect { h: top - r.y, ..r },
+        Rect { y: bottom, h: r.y + r.h - bottom, ..r },
+        Rect { y: top, w: left - r.x, h: bottom - top, ..r },
+        Rect { x: right, y: top, w: r.x + r.w - right, h: bottom - top },
+    ]
+    .into_iter()
+    .filter(|p| p.w > 0.0 && p.h > 0.0)
+    .collect()
 }
 
 /// The completion list at the cursor (Autocomplete, Auto Command Completion): rows with
@@ -2213,6 +2235,16 @@ mod tests {
             let mut f = Frame::default();
             f.quads.push(Quad { rect: pane, color: rgba(rgb(0, 0, 0), 1.0) });
             f.rows.push(TextRow { x: 0.0, y: 0.0, spans: vec![span(rgb(9, 9, 9))], clip: pane, scale: 1.0 });
+            // The sessions' overlay: a divider through the bar, an unfocused pane's dim, a
+            // beam cursor on the top row, and a link underline below the bar.
+            for rect in [
+                Rect { x: 50.0, y: 0.0, w: 1.0, h: 100.0 },
+                pane,
+                Rect { x: 10.0, y: 2.0, w: 2.0, h: 16.0 },
+                Rect { x: 0.0, y: 40.0, w: 30.0, h: 1.0 },
+            ] {
+                f.overlay.push(Quad { rect, color: rgba(rgb(1, 1, 1), 0.5) });
+            }
             f
         };
         let layer = || {
@@ -2229,11 +2261,19 @@ mod tests {
         assert_eq!(f.rows[0].clip.h, 100.0);
         assert_eq!(f.rows[0].clip.w, 0.0, "the session text behind the bar is cut out");
         assert_eq!(f.rows[1].spans[0].color, rgb(200, 100, 0));
+        // Nothing the sessions put in the overlay shows over the bar: what crosses it keeps
+        // its part outside, what lies inside it goes.
+        let overlay: Vec<Rect> = f.overlay.iter().map(|q| q.rect).collect();
+        assert_eq!(
+            overlay,
+            vec![Rect { x: 50.0, y: 20.0, w: 1.0, h: 80.0 }, Rect { x: 0.0, y: 20.0, w: 100.0, h: 80.0 }, Rect { x: 0.0, y: 40.0, w: 30.0, h: 1.0 }]
+        );
 
         let mut f = base();
         lay_over(&mut f, layer(), bar, 0.25, rgb(0, 0, 0), 16.0);
         assert_eq!(f.popups[0].color, rgba(rgb(50, 50, 50), 0.25));
         assert_eq!(f.rows[0].clip, pane, "a mostly clear bar leaves the text behind it");
+        assert_eq!(f.overlay.len(), 4, "and the overlay behind it");
         assert_eq!(f.rows[1].spans[0].color, rgb(50, 25, 0));
     }
 
