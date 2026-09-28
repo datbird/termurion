@@ -98,8 +98,12 @@ impl State {
 
     /// A probe, a model fetch or a connection test is running: the window keeps drawing so its
     /// spinner turns and the answer shows at once.
+    /// A test waiting for the key prompt is not: the prompt's answer asks for a redraw.
     pub fn busy(&self) -> bool {
-        self.probing.is_some() || self.tester.is_some() || self.editor.as_ref().is_some_and(|e| e.fetching.is_some() || e.testing)
+        let waits_for_key = self.tester.as_ref().is_some_and(|t| t.needs_key().is_some());
+        self.probing.is_some()
+            || (!waits_for_key && (self.tester.is_some() || self.editor.as_ref().is_some_and(|e| e.testing)))
+            || self.editor.as_ref().is_some_and(|e| e.fetching.is_some())
     }
 }
 
@@ -462,13 +466,18 @@ pub fn requests_text(g: &Globals, catalog: &Catalog, found: &Discovered) -> Stri
 /// a "Missing Information" alert), then the consent gate for the probe's own endpoint: anything
 /// but Pass asks the App to show the gate's alert, and the test does not start (after Allow the
 /// person presses again, Decision 16); otherwise the App builds the tester.
-pub fn test_click(g: &Globals, form: &EditorForm, found: &Discovered) -> Result<AiRequest, &'static str> {
+pub fn test_click(g: &Globals, form: &EditorForm, found: &Discovered) -> Result<AiRequest, (&'static str, &'static str)> {
     let url = form.url.trim().to_string();
     let headers = form.named_headers();
     let cached = if form.dynamic { ad::names_at(found, &url, &headers).into_iter().next() } else { None };
     let chosen = if form.dynamic { form.selected.trim() } else { form.name.trim() };
     if let Some(text) = tc::missing(chosen, &url, form.dynamic, cached.as_deref()) {
-        return Err(text);
+        return Err((tc::MISSING_TITLE, text));
+    }
+    // A URL with no host sends nothing, so it needs no gate (whose refusal would name the
+    // default model): "The URL is not valid." at once, as iTerm2's test ends.
+    if crate::ai_policy::host_of(&url).is_none() {
+        return Err((tc::FAILED_TITLE, tc::BAD_URL));
     }
     let name = if chosen.is_empty() { cached.unwrap_or_default() } else { chosen.to_string() };
     let probe = tc::Probe { name, url, api: Api::from_raw_or_chat(form.api), function_calling: form.function_calling, supports_temperature: form.temperature, headers };
@@ -1245,7 +1254,7 @@ fn editor_modal(ctx: &egui::Context, g: &Globals, e: &mut Editor, models: &[Manu
             let title = if e.testing { tc::TESTING } else { am::TEST_CONNECTION };
             if ui.add_enabled(!e.testing, egui::Button::new(title).min_size(egui::vec2(150.0, 30.0))).clicked() {
                 match test_click(g, &e.form, found) {
-                    Err(text) => e.alert = Some((tc::MISSING_TITLE.to_string(), text.to_string(), now)),
+                    Err((title, text)) => e.alert = Some((title.to_string(), text.to_string(), now)),
                     Ok(request) => {
                         e.testing = matches!(request, AiRequest::BuildTester(_));
                         e.request = Some(request);
@@ -1893,7 +1902,7 @@ mod tests {
         let none = Discovered::default();
         let mut form = EditorForm::from_model(&manual("m", " http://localhost:1234/v1/chat/completions ", 1), cat);
         form.name = " ".into();
-        assert_eq!(test_click(&g, &form, &none), Err(tc::MISSING_TEXT));
+        assert_eq!(test_click(&g, &form, &none), Err((tc::MISSING_TITLE, tc::MISSING_TEXT)));
         form.name = "  qwen3 ".into();
         form.headers = pairs(&[("X-Team", "blue"), ("  ", "dropped")]);
         form.temperature = false;
@@ -1915,7 +1924,7 @@ mod tests {
         // Auto-discovery: the popup's choice, else the first discovered tag.
         let url = "http://localhost:1234/v1/chat/completions";
         form.set_dynamic(true);
-        assert_eq!(test_click(&g, &form, &none), Err(tc::MISSING_DISCOVERED));
+        assert_eq!(test_click(&g, &form, &none), Err((tc::MISSING_TITLE, tc::MISSING_DISCOVERED)));
         let mut m = crate::ai_model::pending_ollama_model();
         m.name = "llama3.3".into();
         m.url = url.into();
@@ -1926,6 +1935,13 @@ mod tests {
         let Ok(AiRequest::BuildTester(p)) = test_click(&g, &form, &found) else { panic!("a test") };
         assert_eq!(p.name, "qwen3:8b");
         form.url = " ".into();
-        assert_eq!(test_click(&g, &form, &found), Err(tc::MISSING_TEXT));
+        assert_eq!(test_click(&g, &form, &found), Err((tc::MISSING_TITLE, tc::MISSING_TEXT)));
+
+        // A URL with no host fails at once with "The URL is not valid.", before any gate.
+        form.set_dynamic(false);
+        for url in ["not a url", "http:///x"] {
+            form.url = url.into();
+            assert_eq!(test_click(&g, &form, &none), Err((tc::FAILED_TITLE, tc::BAD_URL)), "{url}");
+        }
     }
 }

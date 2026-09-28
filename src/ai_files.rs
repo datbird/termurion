@@ -5,7 +5,7 @@
 
 use crate::ai_catalog::{Model, VectorStore};
 use crate::ai_model::display_name;
-use crate::ai_policy::{self, KeyPolicy, SELF_HOSTED_PLACEHOLDER};
+use crate::ai_policy;
 use crate::ai_settings::{Api, Vendor};
 use crate::ai_transport::{Call, HttpEvent, HttpRequest, Notify, Options, Transport};
 use crate::ai_turn::{could_not_decode, error_reason, provider_error, NO_KEY, REVIEW_KEY};
@@ -25,10 +25,13 @@ pub const INGEST_ERROR: &str = "An error occurred while ingesting files to vecto
 pub const NOT_WELL_FORMED: &str = "The file may not be well formed.";
 pub const UPLOAD_UNSUPPORTED: &str = "File upload not supported with this LLM vendor";
 pub const UPLOAD_UNSUPPORTED_PROVIDER: &str = "File upload is not supported with this LLM provider";
-/// A Responses model whose vector store is disabled (`LV:132-134`).
+/// A Responses model whose vector store is disabled (`LV:104-106`).
 pub const ADD_UNSUPPORTED_PROVIDER: &str = "Adding to vector store is not supported with this LLM provider";
 pub const STORE_NOT_ENABLED: &str = "The vector store has not been enabled in settings";
 pub const NO_STORE_PROVIDER: &str = "No vector store is available for this LLM provider.";
+/// Tandem's refusal for a model whose own host is not api.openai.com (Decision: iTerm2 sends
+/// that model's key, custom headers or Azure api-key to OpenAI along with the file).
+pub const OPENAI_MODELS_ONLY: &str = "Files can be sent to OpenAI only with a model at api.openai.com, so that another server\u{2019}s key or headers never reach OpenAI.";
 
 /// An error envelope in the answer to adding files (`LV:152-154`).
 pub fn add_failed_detail(message: &str) -> String {
@@ -36,8 +39,10 @@ pub fn add_failed_detail(message: &str) -> String {
 }
 
 /// `createMultipartBody` (`HH:18-46`): each field, then the file part named "file", then the
-/// closing boundary.
+/// closing boundary. A quote, CR or LF in the file name is dropped so it cannot end the part's
+/// header (iTerm2 writes the name as is).
 pub fn multipart(boundary: &str, fields: &[(&str, &str)], file_name: &str, mime: &str, content: &[u8]) -> Vec<u8> {
+    let file_name: String = file_name.chars().filter(|c| !matches!(c, '"' | '\r' | '\n')).collect();
     let mut body = Vec::new();
     for (name, value) in fields {
         body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes());
@@ -150,7 +155,8 @@ impl FileRunner {
     }
 
     /// Starts the job with the stored key; `NeedKey` asks for one, and `start` is called again
-    /// with the answer. A runner starts once.
+    /// with the answer. A runner starts once. Refusals that need no request come before the key
+    /// (iTerm2 asks for the key first), so nobody is asked for a key a job would never send.
     pub fn start(&mut self, key: Option<&Secret>) -> Vec<FileOut> {
         if !matches!(self.state, State::Ready) {
             return Vec::new();
@@ -160,20 +166,38 @@ impl FileRunner {
             self.state = State::Done;
             return vec![FileOut::Failed(NO_KEY.to_string())];
         }
-        // iTerm2's `registration` (`T:200-219`): a model that must not receive the vendor key
-        // sends the placeholder, else the given key when it is not blank.
-        self.key = if ai_policy::key_policy(&self.model.url, self.model.api) != KeyPolicy::VendorKey {
-            Some(Secret::new(SELF_HOSTED_PLACEHOLDER.to_string()))
-        } else {
-            key.filter(|k| !k.expose().trim_start().is_empty()).map(Secret::duplicate)
+        let sent = match self.request() {
+            Ok(sent) => sent,
+            Err(text) => {
+                self.state = State::Done;
+                return vec![FileOut::Failed(text.to_string())];
+            }
         };
+        // Every file request goes to api.openai.com with the model's credentials, so only a
+        // model at that host may send one (Decision; iTerm2 sends a gateway's or Azure's
+        // credentials, or a private host's placeholder and the file, to OpenAI).
+        if !ai_policy::host_is_openai(&self.model.url) {
+            self.state = State::Done;
+            return vec![FileOut::Failed(OPENAI_MODELS_ONLY.to_string())];
+        }
+        // iTerm2's `registration` (`T:200-219`): the given key when it is not blank. A model at
+        // api.openai.com always takes the vendor key.
+        self.key = key.filter(|k| !k.expose().trim_start().is_empty()).map(Secret::duplicate);
         if self.key.is_none() {
             return vec![FileOut::NeedKey(self.model.vendor)];
         }
+        let (step, url, content_type, body) = sent;
+        self.send(step, "POST", url, Some(content_type), body);
+        Vec::new()
+    }
+
+    /// The job's request (step, URL, content type, body), or iTerm2's text for a job this model
+    /// cannot do.
+    fn request(&self) -> Result<(Step, String, String, Vec<u8>), &'static str> {
         let responses = self.model.api == Api::Responses;
         let openai_store = self.model.vector_store == VectorStore::OpenAI;
-        let sent = match self.job.clone() {
-            // `LV:210-246`.
+        match self.job.clone() {
+            // `LV:165-185`.
             Job::CreateStore { name } if responses && openai_store => {
                 let body = serde_json::json!({ "name": name }).to_string().into_bytes();
                 Ok((Step::Create, STORES_URL.to_string(), "application/json".to_string(), body))
@@ -194,16 +218,6 @@ impl FileRunner {
             Job::AddFiles { ids, store } => {
                 let body = serde_json::json!({ "file_ids": ids }).to_string().into_bytes();
                 Ok((Step::Add, format!("{STORES_URL}/{store}/file_batches"), "application/json".to_string(), body))
-            }
-        };
-        match sent {
-            Err(text) => {
-                self.state = State::Done;
-                vec![FileOut::Failed(text.to_string())]
-            }
-            Ok((step, url, content_type, body)) => {
-                self.send(step, "POST", url, Some(content_type), body);
-                Vec::new()
             }
         }
     }
@@ -382,6 +396,48 @@ mod tests {
         assert_eq!(upload_mime("a.unknownext"), "application/octet-stream");
         assert_eq!(upload_mime("notes.md"), "text/markdown");
         assert_eq!(upload_mime("Makefile"), "application/octet-stream");
+        // A quote, CR or LF cannot end the part's header.
+        let body = multipart("B", &[], "a\"b\r\nX: y.txt", "text/plain", b"");
+        assert!(String::from_utf8(body).unwrap().contains("filename=\"abX: y.txt\"\r\n"));
+    }
+
+    #[test]
+    fn file_jobs_only_for_openai_models() {
+        let jobs = || [Job::CreateStore { name: "chat".into() }, Job::Upload { name: "a.txt".into(), content: b"secret".to_vec() }, Job::AddFiles { ids: vec!["f".into()], store: "vs_1".into() }];
+        // A gateway with its own credential header, an Azure deployment (api-key) and a private
+        // host (the placeholder): each refuses before any request and asks for no key.
+        let mut gateway = store_model();
+        gateway.url = "https://gateway.example/v1/responses".into();
+        gateway.custom_headers = vec![("Authorization".to_string(), "Bearer gateway-secret".to_string())];
+        let mut azure = store_model();
+        azure.url = "https://team.openai.azure.com/openai/v1/responses".into();
+        let mut local = store_model();
+        local.url = "http://localhost:1234/v1/responses".into();
+        for model in [gateway, azure, local] {
+            for job in jobs() {
+                for key in [None, Some(key())] {
+                    let t = Arc::new(Recorded::new(vec![Reply::ok(&[br#"{"id":"x"}"#])]));
+                    let mut r = FileRunner::new(model.clone(), job.clone(), t.clone(), options(), noop());
+                    assert_eq!(r.start(key.as_ref()), [FileOut::Failed(OPENAI_MODELS_ONLY.into())], "{} {job:?}", model.url);
+                    assert_eq!(r.poll(Instant::now()), []);
+                    assert!(t.requests().is_empty(), "{} sent nothing", model.url);
+                }
+            }
+        }
+        // iTerm2's own refusals still come first.
+        let mut local_chat = fixture("m", "http://localhost:1234/v1/chat/completions", Api::ChatCompletions);
+        local_chat.vector_store = VectorStore::OpenAI;
+        let (out, reqs, _) = run(local_chat, Job::Upload { name: "a.txt".into(), content: b"x".to_vec() }, vec![]);
+        assert_eq!((out, reqs.len()), (vec![FileOut::Failed(UPLOAD_UNSUPPORTED.into())], 0));
+        // A model at api.openai.com still sends, with its key and headers.
+        for job in jobs() {
+            let (out, reqs, _) = run(store_model(), job, vec![Reply::ok(&[br#"{"id":"x","status":"completed"}"#])]);
+            assert_eq!(out.len(), 1);
+            assert!(!matches!(out[0], FileOut::Failed(_)), "{out:?}");
+            assert_eq!(reqs.len(), 1);
+            assert!(ai_policy::host_is_openai(&reqs[0].url));
+            assert!(header(&reqs[0], "Authorization") == Some("Bearer sk-a"), "Authorization carries the key");
+        }
     }
 
     #[test]
@@ -492,15 +548,6 @@ mod tests {
         let mut r = FileRunner::new(store_model(), Job::Upload { name: "a.txt".into(), content: b"x".to_vec() }, t.clone(), options(), noop());
         assert_eq!(r.start(Some(&Secret::new(REVIEW_KEY.into()))), [FileOut::Failed(NO_KEY.into())]);
         assert!(t.requests().is_empty());
-
-        // A model on a private host sends the placeholder, never the vendor key.
-        let mut local = store_model();
-        local.url = "http://localhost:1234/v1/responses".into();
-        let t = Arc::new(Recorded::new(vec![Reply::ok(&[br#"{"id":"vs_3"}"#])]));
-        let mut r = FileRunner::new(local, Job::CreateStore { name: "chat".into() }, t.clone(), options(), noop());
-        assert_eq!(r.start(None), []);
-        assert_eq!(r.poll(Instant::now()), [FileOut::Created("vs_3".into())]);
-        assert_eq!(header(&t.requests()[0], "Authorization"), Some("Bearer Placeholder for self-hosted"));
 
         // Cancel stops the call and anything due.
         let t = Arc::new(Recorded::new(vec![Reply::ok(&[br#"{"id":"vsfb_1","status":"in_progress"}"#])]));

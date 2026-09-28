@@ -140,6 +140,12 @@ impl SettingsWindow {
         apply
     }
 
+    /// Whether Settings > General > AI > General shows, where the model popup, the Ollama
+    /// pickers and Manage AI Models read the discovered models.
+    pub fn shows_ai_models(&self) -> bool {
+        self.mode == Mode::Settings && self.page == Page::General && self.ai.sub == crate::settings_ai::SubTab::General
+    }
+
     /// Whether a custom scripts folder was typed and not yet applied, clearing the note
     /// (`settings_keys::take_folder_pending`).
     pub fn take_folder_pending(&mut self) -> bool {

@@ -59,11 +59,15 @@ impl App {
 
     fn ai_gate_answer(&mut self, check: &ai_gate::Check, silent: bool) -> bool {
         let Some(alert) = ai_gate::alert(check) else { return true };
-        let pending = self.ai_asks.iter().chain(self.ai_alert.as_ref().map(|(_, a)| a)).any(ai_gate::is_gate);
-        if !silent && !pending {
+        if !silent && !self.ai_gate_pending() {
             self.ask_ai(alert);
         }
         false
+    }
+
+    /// Whether a gate alert is queued or showing (at most one at a time).
+    fn ai_gate_pending(&self) -> bool {
+        self.ai_asks.iter().chain(self.ai_alert.as_ref().map(|(_, a)| a)).any(ai_gate::is_gate)
     }
 
     /// Opens the next queued AI alert when none shows.
@@ -223,7 +227,6 @@ impl App {
     /// The discovered Ollama models of the configured servers, for model resolution
     /// (`ai_model::configured`, `named`, `economy`). Reading them asks stale servers again, as
     /// iTerm2's reads do (`OC:158-170`).
-    #[allow(dead_code)] // 12c's chat turn and 12e's features resolve models with it.
     pub(crate) fn ai_found(&mut self) -> crate::ai_model::Discovered {
         self.ai_discovery_read();
         self.ai_discovery.discovered(&crate::ai_discovery::configs(&self.globals))
@@ -241,11 +244,12 @@ impl App {
 
     /// Takes the settings window's AI request after its frame and acts on it (ruling R12ab-3): a
     /// discovery answer reaches the same window through `ai_discovery_tick`, a tester and a key
-    /// prompt's answer through its `State`, and an alert goes on the AI alert queue. The frame
-    /// read the discovered models (the model popup, the Regular and Budget pickers), which asks
-    /// stale servers again.
+    /// prompt's answer through its `State`, and an alert goes on the AI alert queue (a gate
+    /// alert only when none is queued or showing). A frame of Settings > General > AI > General
+    /// read the discovered models (the model popup, the Regular and Budget pickers, Manage AI
+    /// Models), which asks stale servers again; other pages read none.
     pub(crate) fn drain_ai_requests(&mut self, _event_loop: &ActiveEventLoop) {
-        if self.settings.is_some() {
+        if self.settings.as_ref().is_some_and(|s| s.shows_ai_models()) {
             self.ai_discovery_read();
         }
         let Some(request) = self.settings.as_mut().and_then(|s| s.ai.pending.take()) else { return };
@@ -254,7 +258,11 @@ impl App {
                 let t = self.ai_discovery.refresh(&endpoint, &headers, force, &*self.ai_transport, self.notify.clone());
                 self.ai_probe = Some(t);
             }
-            AiRequest::Alert(alert) => self.ask_ai(alert),
+            AiRequest::Alert(alert) => {
+                if !(ai_gate::is_gate(&alert) && self.ai_gate_pending()) {
+                    self.ask_ai(alert);
+                }
+            }
             AiRequest::BuildTester(probe) => {
                 let wire = crate::ai_turn::Wire::from_globals(&self.globals);
                 let options = crate::ai_transport::options_from(&self.globals);
