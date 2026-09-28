@@ -3211,6 +3211,9 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_tmux_command_prompt(event_loop);
         self.open_requested_advanced_paste(event_loop);
         self.feed_shell_history();
+        // The conductors' command timers, before tmux_send_input: a timed-out conductor in a
+        // tmux integration pane writes through the gateway.
+        let ssh_due = self.tick_ssh();
         // Writes that did not come through user_write (mouse reports, Buffer Input).
         self.tmux_send_input();
         self.tmux_focus_tick();
@@ -3220,7 +3223,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.tmux_events(gw, events, event_loop);
         }
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)

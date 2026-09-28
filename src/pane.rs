@@ -611,7 +611,98 @@ impl Pane {
         for _ in 0..n {
             self.pop_conductor();
         }
+        if banner.is_some() {
+            self.write_no_broadcast(crate::ssh_session::END_WRITE);
+            // Controller ruling: what a conductor still setting up held goes out once nothing
+            // holds writes (iTerm2 keeps it for a later unhook), after END_WRITE's ^C.
+            if !self.conductor.as_ref().is_some_and(|c| c.queue_writes()) {
+                let held = self.take_ssh_held();
+                self.write_no_broadcast(&held);
+            }
+        }
         banner
+    }
+
+    /// Drops the pane's innermost conductor and its hop, keeping the two chains in step:
+    /// every path that drops a conductor but EndSSH comes here (`PS:20179-20204`).
+    pub fn ssh_unhook_conductor(&mut self) {
+        if self.pop_conductor() {
+            self.ssh.chain.pop();
+        }
+        debug_assert!(self.ssh_chain_in_step(), "the hops follow the conductors");
+    }
+
+    /// conductorAbort (`PS:25587-25601`): the error, the reason and the end banner, then the
+    /// conductor and its hop go. Then Tandem's part: the DCS hook lets go, so later output
+    /// shows (ruling 14b-3, iTerm2 bugs B4 and B13), and what setup held (the connecting
+    /// queue and the held writes, the raw `exec_login_shell` line among them) is dropped:
+    /// the remote is still conductor.sh, which would misread raw typing (iTerm2 strands it).
+    /// Typing after this goes straight to the pty.
+    pub fn abort_ssh(&mut self, reason: &str) {
+        let location = self.conductor.as_ref().and_then(|c| c.parent.as_ref()).map(|p| p.identity().compact(&crate::ssh_args::local_user()));
+        let screen = self.own_mut();
+        screen.print_message(crate::conductor::SETUP_ERROR);
+        screen.print_message(reason);
+        screen.append_banner(&crate::ssh_handshake::end_banner(1, location.as_deref()));
+        self.ssh_unhook_conductor();
+        self.unhook_ssh();
+        self.ssh.stop_queueing();
+        self.ssh_held.clear();
+    }
+
+    /// Applies what the pane's conductors asked for, until they ask nothing more. True when
+    /// the pane changed in a way the window must redraw.
+    pub fn apply_ssh_effects(&mut self) -> bool {
+        use crate::conductor::Effect;
+        let mut redraw = false;
+        loop {
+            let effects = self.conductor.as_mut().map(|c| c.take_effects()).unwrap_or_default();
+            if effects.is_empty() {
+                break;
+            }
+            for effect in effects {
+                match effect {
+                    Effect::Write(bytes) => self.write_no_broadcast(&bytes),
+                    Effect::SessionWrite(bytes) => self.write_unless_held(&bytes),
+                    Effect::Keys(bytes) => self.write_session(&bytes),
+                    // `PS:25614-25617`: what was typed while connecting goes through sendKeys,
+                    // ahead of later typing; its effects are applied by the next pass.
+                    Effect::StopQueueingInput => {
+                        let queued = self.ssh.stop_queueing();
+                        if let Some(c) = self.conductor.as_mut() {
+                            c.send_keys(&queued);
+                        }
+                    }
+                    // Decision: Tandem sends no Initial Text anywhere yet; it goes here.
+                    Effect::SendInitialText => {}
+                    Effect::StateChanged => redraw = true,
+                    Effect::Notice(text) => {
+                        self.own_mut().append_banner(&text);
+                        redraw = true;
+                    }
+                    // A failed conductor's keys still pending (the connecting queue it was
+                    // handed) go with it, as its held writes do.
+                    Effect::Abort(reason) => {
+                        self.abort_ssh(&reason);
+                        redraw = true;
+                    }
+                }
+            }
+        }
+        redraw
+    }
+
+    /// The command timer of the pane's current conductor at `now`, then its effects. True
+    /// when the pane must be redrawn.
+    pub fn tick_ssh(&mut self, now: std::time::Instant) -> bool {
+        let Some(c) = self.conductor.as_mut() else { return false };
+        c.tick(now);
+        self.apply_ssh_effects()
+    }
+
+    /// When the pane's current conductor times out if nothing happens first.
+    pub fn ssh_deadline(&self) -> Option<std::time::Instant> {
+        self.conductor.as_ref().and_then(|c| c.deadline())
     }
 
     /// Whether the hop ids are the conductor chain's unique ids, outermost first.
@@ -1280,6 +1371,141 @@ mod tests {
         assert_eq!(current_id(&p), None);
         assert!(hops(&p).is_empty());
         assert_eq!(p.own().ssh_saved().host.as_deref(), Some("local"));
+    }
+
+    /// A pane whose DCS hook is hooked, running conductor "a" (at a.example) started at
+    /// `t0` with its first writes taken. `nested`: inside a level 1 session at o.example,
+    /// whose unhooked conductor holds nothing; else the pane's first conductor, which holds
+    /// typing while it sets up.
+    fn hooked_setup(t0: std::time::Instant, nested: bool) -> Pane {
+        use crate::conductor::{Conductor, Setup};
+        use crate::ssh_session::Hop;
+        let at = |id: &str| Setup { client_unique_id: id.into(), parsed: crate::ssh_args::ParsedArgs { hostname: format!("{id}.example"), port: 22, ..Default::default() }, ..Setup::default() };
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        p.ssh.begin(true);
+        p.tmux_io().unwrap().push_output(b"\x1bP2000pnone a YQ== - Yg==\n");
+        p.pump();
+        p.take_ssh();
+        p.tmux_io().unwrap().push_output(b"hidden");
+        p.pump();
+        assert!(!p.screen.all_text().contains("hidden"), "the hook takes the output");
+        let parent = nested.then(|| {
+            let mut outer = Conductor::new(at("o"), None, "O");
+            outer.handle_unhook();
+            p.ssh.chain.push(Hop { unique_id: "o".into(), location: "o.example".into() });
+            Box::new(outer)
+        });
+        let mut c = Conductor::new(at("a"), parent, "U");
+        c.fake_now = Some(t0);
+        c.start();
+        p.conductor = Some(Box::new(c));
+        p.ssh.chain.push(Hop { unique_id: "a".into(), location: "a.example".into() });
+        assert!(!p.apply_ssh_effects());
+        assert!(p.tmux_io().unwrap().take_input().starts_with(b"\x03U\n"), "the prefix, then getshell");
+        assert_eq!(p.conductor.as_ref().unwrap().queue_writes(), !nested);
+        p
+    }
+
+    #[test]
+    fn abort_leaves_nothing_held() {
+        let mut p = hooked_setup(std::time::Instant::now(), false);
+        p.write_unless_held(b"exec_login_shell\n");
+        p.ssh.stop_queueing();
+        p.write_session(b"ls\r");
+        assert_eq!(p.ssh_held, b"exec_login_shell\nls\r");
+
+        p.abort_ssh("boom");
+        assert!(p.tmux_io().unwrap().take_input().is_empty(), "the held bytes are dropped, never sent");
+        assert!(p.ssh_held.is_empty());
+        assert!(p.conductor.is_none());
+        assert!(p.ssh.chain.hops.is_empty(), "the hop goes with its conductor");
+        let text = p.screen.all_text();
+        assert!(text.contains("An error occurred while setting up the SSH environment:\nboom\n"), "{text}");
+        assert!(text.contains("ssh exited."), "{text}");
+        p.write_session(b"x");
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"x", "typing goes straight to the pty");
+        assert!(p.ssh_held.is_empty());
+
+        // Nested: the parent becomes current and the banner names where the pane is now.
+        let mut p = hooked_setup(std::time::Instant::now(), true);
+        p.abort_ssh("boom");
+        assert_eq!(p.conductor.as_ref().map(|c| c.setup.client_unique_id.as_str()), Some("o"));
+        assert_eq!(p.ssh.chain.hops.len(), 1);
+        assert!(p.ssh_chain_in_step());
+        assert!(p.screen.all_text().contains("ssh exited \u{2014} now at o.example."));
+        p.write_session(b"x");
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"x");
+    }
+
+    #[test]
+    fn a_failed_setup_never_holds_typing() {
+        let t0 = std::time::Instant::now();
+        let secs = std::time::Duration::from_secs;
+        let mut p = hooked_setup(t0, false);
+        p.write_session(b"early");
+        assert_eq!(p.ssh.connecting.as_deref(), Some(&b"early"[..]), "typed while connecting");
+        assert!(!p.tick_ssh(t0 + secs(29)));
+        assert_eq!(p.ssh_deadline(), Some(t0 + secs(30)));
+
+        assert!(p.tick_ssh(t0 + secs(31)));
+        assert!(p.tmux_io().unwrap().take_input().is_empty(), "neither the raw exec_login_shell nor the typing");
+        assert_eq!(p.ssh.connecting, None, "connecting ended");
+        assert!(p.ssh_held.is_empty());
+        assert!(p.conductor.is_none());
+        assert_eq!(p.ssh_deadline(), None);
+        assert!(p.screen.all_text().contains("getshell: No response after 30 seconds"));
+        p.write_session(b"ls\r");
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"ls\r");
+        // iTerm2 bug B13 fixed: output shows again.
+        p.tmux_io().unwrap().push_output(b"visible");
+        p.pump();
+        assert!(!p.has_ssh());
+        assert!(p.screen.all_text().contains("visible"));
+    }
+
+    #[test]
+    fn a_stalled_ground_never_holds_typing() {
+        // iTerm2 bug B6: getshell's non-zero status leaves setup in ground, nothing in flight.
+        let t0 = std::time::Instant::now();
+        let secs = std::time::Duration::from_secs;
+        let mut p = hooked_setup(t0, false);
+        p.ssh.stop_queueing();
+        let c = p.conductor.as_mut().unwrap();
+        c.fake_now = Some(t0 + secs(5));
+        c.handle_begin("1", 0);
+        c.handle_end("1", "r", 1, 0);
+        assert!(!p.apply_ssh_effects());
+        p.write_session(b"ls\r");
+        assert_eq!(p.ssh_held, b"ls\r", "held while setup waits");
+        assert_eq!(p.ssh_deadline(), Some(t0 + secs(35)));
+        assert!(!p.tick_ssh(t0 + secs(34)));
+
+        assert!(p.tick_ssh(t0 + secs(36)));
+        assert!(p.tmux_io().unwrap().take_input().is_empty());
+        assert!(p.ssh_held.is_empty());
+        assert!(p.screen.all_text().contains("getshell: No response after 30 seconds"));
+        p.write_session(b"pwd\r");
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"pwd\r");
+    }
+
+    #[test]
+    fn end_ssh_releases_held_typing() {
+        // Controller ruling: EndSSH ending a conductor that still sets up sends what it held.
+        let mut p = hooked_setup(std::time::Instant::now(), false);
+        p.ssh.stop_queueing();
+        p.write_session(b"ls\r");
+        assert_eq!(p.ssh_held, b"ls\r");
+        assert_eq!(p.end_ssh("a").as_deref(), Some("ssh exited."));
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"\x03\nls\r", "after END_WRITE, so its ^C does not eat them");
+        assert!(p.ssh_held.is_empty());
+
+        // An id no hop has: the conductor still sets up, so they stay held.
+        let mut p = hooked_setup(std::time::Instant::now(), false);
+        p.ssh.stop_queueing();
+        p.write_session(b"ls\r");
+        assert_eq!(p.end_ssh("zzz"), None);
+        assert!(p.tmux_io().unwrap().take_input().is_empty());
+        assert_eq!(p.ssh_held, b"ls\r");
     }
 
     #[test]

@@ -7,6 +7,7 @@ use crate::conductor_parser::Init;
 use crate::ssh_args::{HostnameFinder, Identity, ParsedArgs};
 use crate::ssh_inject::{expand_local_tilde, injection_payloads, last_component, modify_remote, shell_supports_injection, tarballs, tweak_destination, Payload, Source, INTEGRATION_SUBDIR};
 use std::path::Path;
+use std::time::{Duration, Instant};
 use base64::Engine;
 
 fn b64(bytes: &[u8]) -> String {
@@ -142,6 +143,26 @@ impl Command {
     pub fn streams(&self) -> bool {
         false
     }
+
+    /// Whether a command written while framing keeps the command timeout (ruling M14-I2: a
+    /// sleeping laptop must not end SSH integration). None in 14b; 14d's file commands but
+    /// `file zip` add the true arm.
+    pub fn timed_when_framed(&self) -> bool {
+        false
+    }
+}
+
+/// How long a timed command may go without a begin, a line or its end (Tandem's; iTerm2
+/// waits forever, ruling 2).
+pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The first line of the abort text (`PS:25594`).
+pub const SETUP_ERROR: &str = "An error occurred while setting up the SSH environment:";
+
+/// The failure text for a command the remote stopped answering (Tandem's), built from its
+/// description so a tarball never lands on the screen, and a setenv value never does.
+pub fn timeout_text(cmd: &Command) -> String {
+    format!("{}: No response after {} seconds", shown_description(cmd), COMMAND_TIMEOUT.as_secs())
 }
 
 /// Swift's description of a `[String]` (`["a", "b"]`): each element's debugDescription
@@ -292,6 +313,20 @@ pub struct Context {
     pub command: Command,
     pub handler: Handler,
     canceled: bool,
+    /// Whether the conductor was framing when this command was written.
+    framed_at_write: bool,
+}
+
+impl Context {
+    /// Whether the command timeout applies while it is in flight (ruling M14-I2): written
+    /// before framing and not streaming, or written while framing and timed even then.
+    fn timed(&self) -> bool {
+        if self.framed_at_write {
+            self.command.timed_when_framed()
+        } else {
+            !self.command.streams()
+        }
+    }
 }
 
 /// The conductor's state (`CD:1483-1507`). 14c adds `Recovery` and `Recovered`.
@@ -329,10 +364,16 @@ pub fn unexpected_status(cmd: &Command, status: u8) -> String {
 }
 
 /// A command's operationDescription as the person sees it: a setenv names the variable
-/// only, since the value may be a secret.
+/// only, since the value may be a secret, and a login shell's argv[0] is the shell's name
+/// only (the remote reported the path).
 fn shown_description(cmd: &Command) -> String {
     match cmd {
         Command::Setenv { key, .. } => format!("setting {key}"),
+        Command::ExecLoginShell(args) if !args.is_empty() => {
+            let mut args = args.clone();
+            args[0] = last_component(&args[0]).to_string();
+            Command::ExecLoginShell(args).description()
+        }
         cmd => cmd.description(),
     }
 }
@@ -460,6 +501,13 @@ pub struct Conductor {
     /// Set while a handler runs and while commands are written: `send` only enqueues, and
     /// the transition's own dequeue sends it next (`CD:384-391`, `CD:2964-2969`).
     transition: bool,
+    /// When the conductor last wrote a command or heard a begin, a line or an end for one.
+    /// None before the first write and after a failure.
+    last_activity: Option<Instant>,
+    /// The timeout text of the last command written, for a setup stalled in ground.
+    last_written: Option<String>,
+    /// The clock for tests: `now()` reads this when set.
+    pub(crate) fake_now: Option<Instant>,
     /// Every handler call with the state at that moment, for the tests.
     #[cfg(test)]
     updates: Vec<(Command, Partial, State)>,
@@ -492,6 +540,9 @@ impl Conductor {
             state: State::Ground,
             queue: Vec::new(),
             transition: false,
+            last_activity: None,
+            last_written: None,
+            fake_now: None,
             #[cfg(test)]
             updates: Vec::new(),
         }
@@ -706,7 +757,7 @@ impl Conductor {
     /// is written at once. During a transition it only enqueues. In flight, iTerm2 tops up
     /// a pipeline, which no 14b command joins (14c). Unhooked, it stays queued, unsent.
     pub fn send(&mut self, cmd: Command, handler: Handler, high_priority: bool) {
-        let context = Context { command: cmd, handler, canceled: false };
+        let context = Context { command: cmd, handler, canceled: false, framed_at_write: false };
         if high_priority {
             self.queue.insert(0, context);
         } else {
@@ -739,7 +790,10 @@ impl Conductor {
             dropped.push((self.queue.remove(0), Partial::Canceled));
         }
         if !self.queue.is_empty() {
-            let context = self.queue.remove(0);
+            let mut context = self.queue.remove(0);
+            context.framed_at_write = self.framing();
+            self.last_activity = Some(self.now());
+            self.last_written = Some(timeout_text(&context.command));
             let text = encode(&context.command, &self.line_prefix);
             self.in_transition(|c| {
                 c.state = State::WillExecute(vec![context]);
@@ -759,8 +813,17 @@ impl Conductor {
         self.transition = saved;
     }
 
-    /// handleCommandBegin (`CD:2468-2472`): iTerm2 only logs it.
-    pub fn handle_begin(&mut self, _id: &str, _depth: i32) {}
+    /// handleCommandBegin (`CD:2468-2472`): iTerm2 only logs it; Tandem's command clock
+    /// restarts. A begin from a deeper framed conductor is its parent's, as a line.
+    pub fn handle_begin(&mut self, id: &str, depth: i32) {
+        if depth != self.depth && self.framing() {
+            self.via_parent(|parent| parent.handle_begin(id, depth));
+            return;
+        }
+        if self.in_flight().is_some() {
+            self.last_activity = Some(self.now());
+        }
+    }
 
     /// handle(line:depth:) (`CD:2413-2433`).
     pub fn handle_line(&mut self, line: &str, depth: i32) {
@@ -780,6 +843,7 @@ impl Conductor {
                 return;
             }
         }
+        self.last_activity = Some(self.now());
         #[cfg(test)]
         if let State::Executing(context, _) = &self.state {
             self.updates.push((context.command.clone(), Partial::Line(line.to_string()), self.state.clone()));
@@ -800,6 +864,8 @@ impl Conductor {
             // Ground and unhooked tolerate stray input.
             State::Ground | State::Unhooked => return,
         };
+        // Before the handler, so a failure it causes clears the clock.
+        self.last_activity = Some(self.now());
         self.in_transition(|c| c.update(&context, Partial::End(status)));
         if pending.is_empty() {
             self.state = State::Ground;
@@ -850,9 +916,47 @@ impl Conductor {
     /// base64 or the blank line conductor.sh needs: iTerm2 bug B3, kept), then the abort.
     pub fn fail(&mut self, reason: &str) {
         self.force_ground();
+        // Nothing more is expected of a failed conductor: no deadline, one abort.
+        self.last_activity = None;
         let line = Command::ExecLoginShell(Vec::new()).string_value() + "\n";
         self.effects.push(Effect::SessionWrite(line.into_bytes()));
         self.effects.push(Effect::Abort(reason.to_string()));
+    }
+
+    fn now(&self) -> Instant {
+        self.fake_now.unwrap_or_else(Instant::now)
+    }
+
+    /// When `tick` fails the conductor if nothing happens first: the in-flight command's
+    /// last activity plus `COMMAND_TIMEOUT` when it is timed; in ground, the last activity
+    /// plus `COMMAND_TIMEOUT` while writes are held and the conductor does not frame (iTerm2
+    /// bugs B5 and B6: a setup stalled there holds typing forever); else none.
+    pub fn deadline(&self) -> Option<Instant> {
+        let timed = match &self.state {
+            State::WillExecute(contexts) => contexts[0].timed(),
+            State::Executing(context, _) => context.timed(),
+            State::Ground => self.queue_writes() && !self.framing(),
+            State::Unhooked => false,
+        };
+        if timed {
+            self.last_activity.map(|t| t + COMMAND_TIMEOUT)
+        } else {
+            None
+        }
+    }
+
+    /// The command timer: at or past the deadline, setup fails with the timeout text of the
+    /// command in flight, or in ground of the last command written. A pre-framer command's
+    /// late `end` would otherwise be credited to the next command.
+    pub fn tick(&mut self, now: Instant) {
+        if !self.deadline().is_some_and(|due| now >= due) {
+            return;
+        }
+        let reason = match self.in_flight() {
+            Some(cmd) => timeout_text(cmd),
+            None => self.last_written.clone().unwrap_or_default(),
+        };
+        self.fail(&reason);
     }
 
     /// The in-flight command's reply line, kept in place by its handler (iTerm2's StringArray
@@ -924,6 +1028,7 @@ impl Conductor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use Command::Cd;
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
@@ -1546,10 +1651,10 @@ mod tests {
         assert_eq!(c.in_flight(), Some(&cd("/a")), "only queued commands are canceled");
         c.handle_end("1", "r", 0, 0);
         assert_eq!(wire(&mut c), sent(&Command::Run("x".into())), "the canceled command is dropped, the next written");
-        let run_in_flight = State::WillExecute(vec![Context { command: Command::Run("x".into()), handler: Handler::FailIfNonzero, canceled: false }]);
+        let run_in_flight = State::WillExecute(vec![Context { command: Command::Run("x".into()), handler: Handler::FailIfNonzero, canceled: false, framed_at_write: false }]);
         assert_eq!(
             c.updates,
-            [(cd("/a"), Partial::End(0), State::WillExecute(vec![Context { command: cd("/a"), handler: Handler::FailIfNonzero, canceled: false }])), (cd("/b"), Partial::Canceled, run_in_flight)],
+            [(cd("/a"), Partial::End(0), State::WillExecute(vec![Context { command: cd("/a"), handler: Handler::FailIfNonzero, canceled: false, framed_at_write: false }])), (cd("/b"), Partial::Canceled, run_in_flight)],
             "the canceled handler runs once the state is consistent"
         );
     }
@@ -2201,5 +2306,175 @@ mod tests {
         );
         assert!(second.parent.as_ref().unwrap().effects.is_empty());
         assert_eq!(level(Some(&second)), 1);
+    }
+
+    /// A conductor with its clock at `t`: the next call reads `t` as now.
+    fn at(c: &mut Conductor, t: Instant) -> &mut Conductor {
+        c.fake_now = Some(t);
+        c
+    }
+
+    const SECS: fn(u64) -> Duration = Duration::from_secs;
+
+    #[test]
+    fn stalled_command_times_out() {
+        let t0 = Instant::now();
+        let mut c = Conductor::new(setup("A"), None, "U");
+        at(&mut c, t0).start();
+        c.take_effects();
+        assert_eq!(c.deadline(), Some(t0 + SECS(30)));
+        c.tick(t0 + SECS(29));
+        assert!(c.take_effects().is_empty(), "not yet");
+        assert_eq!(c.in_flight(), Some(&Command::GetShell));
+        c.send(cd("/queued"), Handler::FailIfNonzero, false);
+        c.tick(t0 + SECS(31));
+        assert_eq!(c.take_effects(), [Effect::SessionWrite(b"exec_login_shell\n".to_vec()), Effect::Abort("getshell: No response after 30 seconds".into())]);
+        assert_eq!((c.state(), c.in_flight()), (&State::Ground, None));
+        assert!(c.queue.is_empty());
+        assert_eq!(c.deadline(), None, "a failed conductor waits for nothing");
+        c.tick(t0 + SECS(3600));
+        assert!(c.take_effects().is_empty(), "it fails once");
+        c.handle_unhook();
+        assert_eq!(c.deadline(), None);
+
+        // An unhooked conductor has no deadline, even with a command in flight before it.
+        let mut c = Conductor::new(setup("A"), None, "U");
+        at(&mut c, t0).start();
+        c.handle_unhook();
+        assert_eq!(c.deadline(), None);
+        c.tick(t0 + SECS(31));
+        assert!(!c.take_effects().iter().any(|e| matches!(e, Effect::Abort(_))));
+
+        // No 14b command streams, so every one written before framing is timed.
+        for cmd in pre_framer().into_iter().chain(framer()) {
+            assert!(!cmd.streams(), "{cmd:?}");
+        }
+
+        // The recorded stall: quirks.bin cut right after its first begin.
+        let recording = std::fs::read("tests/fixtures/ssh/quirks.bin").unwrap();
+        let begin = recording.windows(8).position(|w| w == b":begin 0").unwrap();
+        let cut = begin + recording[begin..].windows(2).position(|w| w == b"\x1b\\").unwrap() + 2;
+        let hook = |init: &Init, parent: Option<Box<Conductor>>| {
+            let mut c = Conductor::new(setup_for_hook(init, false, &[], &[], None, false, &crate::ssh_args::NoConfig), parent, RECORDER_PREFIX);
+            c.fake_now = Some(t0);
+            c
+        };
+        let mut ssh = crate::ssh_hook::Hook::with_ids(|| "D".into());
+        let mut current = None;
+        dispatch(&mut current, ssh.feed(&recording[..cut]), &hook);
+        let c = current.as_deref_mut().unwrap();
+        assert_eq!(c.in_flight(), Some(&Command::GetShell), "its begin came, nothing more");
+        assert_eq!(c.deadline(), Some(t0 + SECS(30)));
+        c.tick(t0 + SECS(30));
+        assert_eq!(c.take_effects().last(), Some(&Effect::Abort("getshell: No response after 30 seconds".into())));
+
+        // The silent stall (iTerm2 bugs B5 and B6): getshell's non-zero status leaves setup in
+        // ground with nothing in flight while typing is held.
+        let mut c = Conductor::new(setup("A"), None, "U");
+        at(&mut c, t0).start();
+        reply(at(&mut c, t0 + SECS(5)), &["/bin/sh\n/home/u"], 1);
+        c.take_effects();
+        assert_eq!((c.state(), c.in_flight()), (&State::Ground, None));
+        assert!(c.queue_writes());
+        assert_eq!(c.deadline(), Some(t0 + SECS(35)), "30 s after the last activity");
+        c.tick(t0 + SECS(34));
+        assert!(c.take_effects().is_empty());
+        c.tick(t0 + SECS(36));
+        assert_eq!(c.take_effects(), [Effect::SessionWrite(b"exec_login_shell\n".to_vec()), Effect::Abort("getshell: No response after 30 seconds".into())], "the last command written");
+        assert_eq!(c.deadline(), None);
+
+        // A silent unhook of the hook (garbage, an unknown word) leaves a command in flight:
+        // it times out as a stalled command does. Ground stalls are only for a conductor
+        // that holds writes and does not frame.
+        let mut framing = Conductor::new(setup("A"), None, "U");
+        at(&mut framing, t0).start();
+        reply(at(&mut framing, t0), &["/bin/sh\n/home/u"], 1);
+        framing.framed_pid = Some(4242);
+        assert_eq!(framing.deadline(), None, "a framing conductor has no ground deadline");
+        let mut unhooked = started(setup("A"));
+        unhooked.handle_unhook();
+        assert_eq!(unhooked.deadline(), None);
+        let mut parent = started(setup("P"));
+        parent.handle_unhook();
+        let mut child = Conductor::new(setup("C"), Some(Box::new(parent)), "V");
+        at(&mut child, t0).start();
+        assert_eq!(child.deadline(), Some(t0 + SECS(30)), "its own command is timed");
+        reply(at(&mut child, t0), &["/bin/sh\n/home/u"], 1);
+        assert!(!child.queue_writes());
+        assert_eq!((child.state(), child.deadline()), (&State::Ground, None), "writes do not queue: nothing is held, nothing to end");
+    }
+
+    #[test]
+    fn framed_commands_are_not_timed_out() {
+        // Ruling M14-I2: a sleeping laptop must not end SSH integration.
+        let t0 = Instant::now();
+        let mut c = root();
+        c.framed_pid = Some(4242);
+        at(&mut c, t0).send(Command::FramerGetenv("PATH".into()), Handler::FireAndForget, false);
+        c.take_effects();
+        assert_eq!(c.in_flight(), Some(&Command::FramerGetenv("PATH".into())));
+        assert_eq!(c.deadline(), None);
+        for later in [SECS(31), SECS(3600)] {
+            c.tick(t0 + later);
+            assert!(c.take_effects().is_empty());
+            assert!(c.framing());
+            assert_eq!(c.in_flight(), Some(&Command::FramerGetenv("PATH".into())));
+        }
+        for cmd in pre_framer().into_iter().chain(framer()) {
+            assert!(!cmd.timed_when_framed(), "{cmd:?}");
+        }
+
+        // Written before framing began: its 30 s stand.
+        let mut c = root();
+        at(&mut c, t0).send(cd("/a"), Handler::FailIfNonzero, false);
+        c.framed_pid = Some(4242);
+        assert_eq!(c.deadline(), Some(t0 + SECS(30)));
+        c.take_effects();
+        c.tick(t0 + SECS(31));
+        assert_eq!(c.take_effects().last(), Some(&Effect::Abort("changing directory to /a: No response after 30 seconds".into())));
+    }
+
+    #[test]
+    fn activity_restarts_the_clock() {
+        let t0 = Instant::now();
+        let mut c = root();
+        at(&mut c, t0).send(cd("/a"), Handler::FailIfNonzero, false);
+        c.send(cd("/b"), Handler::FailIfNonzero, false);
+        assert_eq!(c.deadline(), Some(t0 + SECS(30)));
+        at(&mut c, t0 + SECS(20)).handle_begin("1", 0);
+        assert_eq!(c.deadline(), Some(t0 + SECS(50)), "a begin");
+        at(&mut c, t0 + SECS(40)).handle_line("out", 0);
+        assert_eq!(c.deadline(), Some(t0 + SECS(70)), "a line");
+        c.tick(t0 + SECS(69));
+        c.take_effects();
+        assert_eq!(c.in_flight(), Some(&cd("/a")));
+        at(&mut c, t0 + SECS(45)).handle_end("1", "r", 0, 0);
+        assert_eq!(c.in_flight(), Some(&cd("/b")));
+        assert_eq!(c.deadline(), Some(t0 + SECS(75)), "the next command's clock starts at its write");
+        c.tick(t0 + SECS(76));
+        assert_eq!(c.take_effects().last(), Some(&Effect::Abort("changing directory to /b: No response after 30 seconds".into())));
+
+        // Stray input in ground restarts nothing.
+        let mut c = started(setup("A"));
+        reply(at(&mut c, t0), &["/bin/sh\n/home/u"], 1);
+        at(&mut c, t0 + SECS(20)).handle_begin("2", 0);
+        at(&mut c, t0 + SECS(20)).handle_line("x", 0);
+        at(&mut c, t0 + SECS(20)).handle_end("2", "r", 0, 0);
+        assert_eq!(c.deadline(), Some(t0 + SECS(30)));
+    }
+
+    #[test]
+    fn texts_follow_iterm2() {
+        assert_eq!(SETUP_ERROR, "An error occurred while setting up the SSH environment:");
+        assert_eq!(COMMAND_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(unexpected_status(&Cd("/a".into()), 1), "cd /a: Unepected status 1");
+        assert_eq!(timeout_text(&Command::Write { data: vec![0; 3], dest: "/$HOME/x".into() }), "copying files to /$HOME/x: No response after 30 seconds");
+        assert_eq!(timeout_text(&Command::GetShell), "getshell: No response after 30 seconds");
+        // Never an environment value, and a shell by its name only.
+        let secret = Command::Setenv { key: "TOKEN".into(), value: "s3cret".into() };
+        assert_eq!(timeout_text(&secret), "setting TOKEN: No response after 30 seconds");
+        let login = Command::ExecLoginShell(s(&["/opt/secret/bin/bash", "--posix"]));
+        assert_eq!(timeout_text(&login), "starting login shell with args bash --posix: No response after 30 seconds");
+        assert_eq!(timeout_text(&Command::ExecLoginShell(vec![])), "starting login shell with args : No response after 30 seconds");
     }
 }

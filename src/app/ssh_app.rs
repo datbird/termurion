@@ -4,11 +4,11 @@
 //! time (`PS:20118-20170`) and the conductor's effects.
 
 use super::*;
-use crate::conductor::{hook_banner, setup_for_hook, Conductor, Effect};
+use crate::conductor::{hook_banner, setup_for_hook, Conductor};
 use crate::conductor_parser::{Init, Token};
 use crate::screen::Request;
 use crate::ssh_hook::Out;
-use crate::ssh_session::{conductor_bytes, Hop, CONDUCTOR_READY, END_WRITE};
+use crate::ssh_session::{conductor_bytes, Hop, CONDUCTOR_READY};
 
 /// iTerm2's ssh_config search order in this user's folders (`ssh_args::config_paths`), from
 /// the environment only; a folder that is unset, relative or a network path is left out.
@@ -50,38 +50,18 @@ impl App {
                     p.write_no_broadcast(&bytes);
                 }
             }
-            // `PS:20253-20275` (`Pane::end_ssh`); the write before the banner, as `PS:20269`
-            // then `TD:4043-4046`.
+            // `PS:20253-20275` (`Pane::end_ssh`, which writes END_WRITE); the banner after
+            // the write, as `PS:20269` then `TD:4043-4046`.
             Request::SshEnd(id) => {
                 let banner = p.end_ssh(&id);
                 debug_assert!(p.ssh_chain_in_step(), "the hops follow the conductors");
                 if let Some(banner) = banner {
-                    p.write_no_broadcast(END_WRITE);
                     p.own_mut().append_banner(&banner);
                     self.redraw();
                 }
             }
             _ => {}
         }
-    }
-
-    /// unhookSSHConductor (`PS:20179-20204`) for one conductor: the pane's innermost goes and
-    /// its saved state is restored. Its hop is not touched (EndSSH has ended it already).
-    pub(super) fn ssh_pop_conductor(&mut self, pane: PaneId) {
-        let Some(p) = self.panes.get_mut(&pane) else { return };
-        if p.pop_conductor() {
-            self.redraw();
-        }
-    }
-
-    /// Drops the pane's innermost conductor and its hop, keeping the two chains in step:
-    /// every path that drops a conductor but EndSSH comes here.
-    #[allow(dead_code)] // Task 9's abort is the first caller.
-    pub(super) fn ssh_unhook_conductor(&mut self, pane: PaneId) {
-        self.ssh_pop_conductor(pane);
-        let Some(p) = self.panes.get_mut(&pane) else { return };
-        p.ssh.chain.pop();
-        debug_assert!(p.ssh_chain_in_step(), "the hops follow the conductors");
     }
 
     /// Runs what each pane's SSH hook found, in order. Before `tmux_pump`: output released
@@ -166,46 +146,27 @@ impl App {
         self.redraw();
     }
 
-    /// Applies what the pane's conductors asked for, until they ask nothing more.
+    /// Applies what the pane's conductors asked for (`Pane::apply_ssh_effects`, which runs
+    /// a failed conductor's abort, `PS:25587-25601`).
     pub(super) fn ssh_apply(&mut self, pane: PaneId) {
+        if self.panes.get_mut(&pane).is_some_and(|p| p.apply_ssh_effects()) {
+            self.redraw();
+        }
+    }
+
+    /// The conductors' command timers: every pane's current conductor is ticked and its
+    /// effects applied. Returns the earliest deadline left.
+    pub(super) fn tick_ssh(&mut self) -> Option<Instant> {
+        let now = Instant::now();
         let mut redraw = false;
-        loop {
-            let Some(p) = self.panes.get_mut(&pane) else { return };
-            let effects = p.conductor.as_mut().map(|c| c.take_effects()).unwrap_or_default();
-            if effects.is_empty() {
-                break;
-            }
-            for effect in effects {
-                match effect {
-                    Effect::Write(bytes) => p.write_no_broadcast(&bytes),
-                    Effect::SessionWrite(bytes) => p.write_unless_held(&bytes),
-                    Effect::Keys(bytes) => p.write_session(&bytes),
-                    // `PS:25614-25617`: what was typed while connecting goes through sendKeys,
-                    // ahead of later typing; its effects are applied by the next pass.
-                    Effect::StopQueueingInput => {
-                        let queued = p.ssh.stop_queueing();
-                        if let Some(c) = p.conductor.as_mut() {
-                            c.send_keys(&queued);
-                        }
-                    }
-                    // Decision: Tandem sends no Initial Text anywhere yet; it goes here.
-                    Effect::SendInitialText => {}
-                    Effect::StateChanged => redraw = true,
-                    Effect::Notice(text) => {
-                        p.own_mut().append_banner(&text);
-                        redraw = true;
-                    }
-                    // Task 9 replaces this with the full abort.
-                    Effect::Abort(reason) => {
-                        p.own_mut().print_message(&reason);
-                        p.unhook_ssh();
-                        redraw = true;
-                    }
-                }
-            }
+        let mut next: Option<Instant> = None;
+        for p in self.panes.values_mut().filter(|p| p.conductor.is_some()) {
+            redraw |= p.tick_ssh(now);
+            next = [next, p.ssh_deadline()].into_iter().flatten().min();
         }
         if redraw {
             self.redraw();
         }
+        next
     }
 }
