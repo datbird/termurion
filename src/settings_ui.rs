@@ -721,8 +721,11 @@ mod tests {
     #[test]
     fn stored_rows_are_in_no_pane() {
         use crate::advanced_pane::STORED_TAB;
+        // `sections` reads the profile schema, which has no Stored tab, so this first assertion
+        // holds trivially; the global checks below are the real guard.
         assert!(sections(STORED_TAB).is_empty());
-        // The only tabs a Page draws with settings_keys::schema_page.
+        // The only tabs a Page draws from the global schema: General and Appearance with
+        // settings_keys::schema_page, Advanced with settings_advanced_pane::page.
         assert!(!["General", "Appearance", "Advanced"].contains(&STORED_TAB));
         assert!(crate::schema::global().iter().any(|s| s.tab == STORED_TAB));
     }
