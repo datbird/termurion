@@ -2,7 +2,7 @@
 //! Duplicate Window that rebuilds a window from its own snapshot.
 
 use super::*;
-use crate::arrangement::{self, Value, WindowFacts};
+use crate::arrangement::{self, ProfileChoice, Value, WindowFacts};
 use crate::arrangements::{self, Store as Arrangements};
 use crate::prompt_ui::{PromptResult, PromptWindow};
 
@@ -239,6 +239,32 @@ pub(super) fn yes_no(owner: Option<isize>, title: &str, text: &str) -> bool {
     unsafe { MessageBoxW(owner, wide(text).as_ptr(), wide(title).as_ptr(), MB_YESNO | MB_ICONQUESTION) == IDYES }
 }
 
+/// The bad folder announcement's id: iTerm2 reuses the missing-profile identifier
+/// (`iTermNaggingControllerArrangementProfileMissingIdentifier`, `NC:281`).
+pub(super) const BAD_FOLDER_BAR: &str = "ThisProfileNoLongerExists";
+pub(super) const DONT_WARN_AGAIN: &str = "Don\u{2019}t Warn Again";
+pub(super) const REPAIR: &str = "Repair";
+pub(super) const BAD_FOLDER_BUTTONS: [&str; 2] = [DONT_WARN_AGAIN, REPAIR];
+/// Don't Warn Again's setting (`ASM:780-781`).
+pub(super) const BAD_FOLDER_KEY: &str = "NoSyncSuppressBadPWDInArrangementWarning";
+/// Keeps "iTerm2": the bug was iTerm2's, and such arrangements come from iTerm2.
+pub(super) const BROKEN_PROFILE: &str = "This arrangement\u{2019}s profile is missing. This could be due to a bug in iTerm2 version 3.5.7, which caused profiles to be corrupted in saved arrangements.";
+pub(super) const BROKEN_PROFILE_BAR: &str = "ArrangementMissingProfile";
+pub(super) const ASSIGN_PROFILE: &str = "Assign Profile";
+pub(super) const BROKEN_PROFILE_BUTTONS: [&str; 1] = [ASSIGN_PROFILE];
+pub(super) const SELECT_PROFILE: &str = "Select a profile to use for this session. Your selection will be saved back to the arrangement.";
+
+pub(super) fn bad_folder_text(arrangement: &str, folder: &str) -> String {
+    format!("The saved arrangement \u{201c}{arrangement}\u{201d} has a bad initial directory of \u{201c}{folder}\u{201d} for this session.")
+}
+
+/// Whether a restored session's folder is announced as bad: only for a named arrangement
+/// (there is one to repair), never for a UNC folder (never probed), and only when it is
+/// not a folder.
+pub(super) fn check_folder(named: bool, folder: &str, is_dir: &dyn Fn(&std::path::Path) -> bool) -> bool {
+    named && !folder.trim().is_empty() && !crate::remote_prefs::is_unc(folder) && !is_dir(std::path::Path::new(folder))
+}
+
 /// Menu ids of the Restore Window Arrangement submenus' entries.
 pub(super) const RESTORE_ID: &str = "arrangement-restore:";
 pub(super) const RESTORE_TABS_ID: &str = "arrangement-tabs:";
@@ -248,29 +274,58 @@ impl App {
         self.store.profiles.iter().map(|p| (p.guid(), p.name())).collect()
     }
 
-    /// The profile of an arrangement window's first session (for the window's size and style).
+    /// The profile of an arrangement window's first session (for the window's size and
+    /// style): the saved one, or for the arrangement's own copy the saved profile it was
+    /// copied from, else None (the default).
     pub(super) fn first_arrangement_guid(&self, w: &Value) -> Option<String> {
         let tab = w.get("Tabs")?.as_array()?.first()?;
         let tree = arrangement::tree_of(tab.get("Root")?).ok()?;
         let first = tree.leaves().first().map(|v| (*v).clone())?;
-        arrangement::resolve_profile(&first, &self.profile_list())
+        let saved = self.profile_list();
+        match arrangement::choose_profile(&first, &saved) {
+            ProfileChoice::Saved(g) => Some(g),
+            ProfileChoice::Embedded(t) => t.get(crate::session_profile::ORIGINAL_GUID).and_then(|v| v.as_str()).filter(|g| saved.iter().any(|(s, _)| s == g)).map(str::to_string),
+            ProfileChoice::Broken | ProfileChoice::Default => None,
+        }
     }
 
-    /// Builds one tab of an arrangement in the current window: a pane per session.
-    fn build_tab(&mut self, t: &Value) -> Result<Tab, String> {
+    /// A session copy holding an arrangement's own profile (iTerm2's `needDivorce`): the
+    /// saved profile it was copied from, or the default, with the copy's values on top.
+    /// Its Guid.
+    fn arrangement_copy(&mut self, table: &toml::Table) -> String {
+        let original = table.get(crate::session_profile::ORIGINAL_GUID).and_then(|v| v.as_str()).and_then(|g| self.store.profiles.iter().find(|p| p.guid() == g));
+        let shared = original.unwrap_or_else(|| self.store.default_profile()).clone();
+        let mut copy = crate::session_profile::divorce(&shared, uuid::Uuid::new_v4().to_string().to_uppercase());
+        let values: Vec<(String, Option<Value>)> = table.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
+        copy.set(&values, &shared);
+        let guid = copy.profile.guid();
+        self.store.sessions.push(copy);
+        guid
+    }
+
+    /// Builds one tab of an arrangement in the current window: a pane per session. `name`
+    /// is the saved arrangement's (None for window restoration, a file, or Duplicate Window).
+    fn build_tab(&mut self, t: &Value, name: Option<&str>) -> Result<Tab, String> {
         let root = t.get("Root").ok_or("a tab in the arrangement has no panes")?;
         let tree = arrangement::tree_of(root)?;
         let profiles = self.profile_list();
         let area = self.content_area();
         let mut started: Vec<PaneId> = Vec::new();
         let mut failed = None;
-        let mut missing = false;
         let ids = tree.map(&mut |session| {
             if failed.is_some() {
                 return 0;
             }
-            let guid = arrangement::resolve_profile(&session, &profiles);
-            missing |= guid.is_none();
+            let choice = arrangement::choose_profile(&session, &profiles);
+            // A missing profile restores from the arrangement's own copy, even a broken one
+            // (`PS:2019-2025`); only the saved profile is shared.
+            let guid = match &choice {
+                ProfileChoice::Saved(g) => Some(g.clone()),
+                ProfileChoice::Embedded(copy) => Some(self.arrangement_copy(copy)),
+                ProfileChoice::Broken => arrangement::profile_of(&session).map(|(_, _, copy)| copy.clone()).map(|copy| self.arrangement_copy(&copy)),
+                ProfileChoice::Default => None,
+            };
+            let copied = guid.clone().filter(|_| !matches!(choice, ProfileChoice::Saved(_)));
             self.start_dir_override = Some(arrangement::folder_for(&session));
             let id = match super::restore_ui::attach_key(&session) {
                 Some((host_id, pid, since)) => match self.attach_pane(area, guid.as_deref(), host_id, pid, since, super::restore_ui::saved_cookie(&session)) {
@@ -297,10 +352,14 @@ impl App {
                         }
                     }
                     self.restore_clippings(id, &session);
+                    self.arrangement_announcements(id, &session, &choice, name);
                     started.push(id);
                     id
                 }
                 None => {
+                    if let Some(g) = copied {
+                        self.forget_session_profile(&g);
+                    }
                     failed = Some(self.banners.text().unwrap_or_else(|| "a session could not start".to_string()));
                     0
                 }
@@ -310,18 +369,17 @@ impl App {
             for id in started {
                 self.clips.remove(&id);
                 self.focus_order.remove(&id);
+                self.bars.remove(&id);
                 if let Some(p) = self.panes.remove(&id) {
                     if let Some(pid) = p.shell_pid() {
                         self.jobs.forget(pid);
                     }
                     self.forget_cookie(&p);
+                    self.forget_session_profile(&p.profile);
                     self.pane_gone(id);
                 }
             }
             return Err(e);
-        }
-        if missing {
-            self.banners.set("arrangement", "A profile in the arrangement no longer exists; the default profile is used.");
         }
         let layout = Layout::from_tree(ids);
         let panes = layout.panes();
@@ -331,12 +389,80 @@ impl App {
         Ok(tab)
     }
 
+    /// A restored pane's announcements: a broken profile offers Assign Profile
+    /// (`PS:1960-1969`); a named arrangement's session remembers where it came from and
+    /// offers Repair when its folder is gone (`PS:3561-3570`).
+    fn arrangement_announcements(&mut self, pane: PaneId, session: &Value, choice: &ProfileChoice, name: Option<&str>) {
+        let from = name.zip(arrangement::session_guid(session)).map(|(n, g)| (n.to_string(), g));
+        if let Some(p) = self.panes.get_mut(&pane) {
+            p.arrangement = from.clone();
+        }
+        if *choice == ProfileChoice::Broken {
+            self.ask(pane, BROKEN_PROFILE_BAR, BROKEN_PROFILE, &BROKEN_PROFILE_BUTTONS, true);
+        }
+        let Some((name, _)) = from else { return };
+        let folder = session.get("Working Directory").and_then(|v| v.as_str()).unwrap_or_default();
+        if !self.globals.bool(BAD_FOLDER_KEY) && check_folder(true, folder, &|p| p.is_dir()) {
+            self.ask(pane, BAD_FOLDER_BAR, &bad_folder_text(&name, folder), &BAD_FOLDER_BUTTONS, false);
+        }
+    }
+
+    /// The arrangement announcements' answers. False for other bars.
+    pub(super) fn arrangement_bar(&mut self, pane: PaneId, id: &str, button: Option<&str>, event_loop: &ActiveEventLoop) -> bool {
+        if id != BAD_FOLDER_BAR && id != BROKEN_PROFILE_BAR {
+            return false;
+        }
+        let from = self.panes.get(&pane).and_then(|p| p.arrangement.clone());
+        match (id, button, from) {
+            (BAD_FOLDER_BAR, Some(DONT_WARN_AGAIN), _) => {
+                self.globals.set(BAD_FOLDER_KEY, Value::Boolean(true));
+                self.save_globals();
+            }
+            // A folder is picked and written back to that session in that arrangement
+            // (`PS:24041-24057`).
+            (BAD_FOLDER_BAR, Some(REPAIR), Some((name, session))) => {
+                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    let dir = dir.to_string_lossy().into_owned();
+                    self.repair_arrangement(&name, &|w| arrangement::replace_folder(w, &session, &dir));
+                }
+            }
+            (BROKEN_PROFILE_BAR, Some(ASSIGN_PROFILE), Some((name, session))) => self.open_assign_profile(event_loop, pane, name, session),
+            _ => {}
+        }
+        true
+    }
+
+    /// Assign Profile's list of the saved profiles (`PS:24071-24101`).
+    fn open_assign_profile(&mut self, event_loop: &ActiveEventLoop, pane: PaneId, name: String, session: String) {
+        let tags = |p: &crate::profile::Profile| p.values.get("Tags").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|t| t.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+        let rows: Vec<(String, String)> = self.store.profiles.iter().map(|p| (p.name(), tags(p))).collect();
+        let guids: Vec<String> = self.store.profiles.iter().map(|p| p.guid()).collect();
+        self.open_list_popup_for(event_loop, pane, SELECT_PROFILE, ["Profile Name", "Tags"], rows, guids, super::shell_history_ui::PopupFor::AssignProfile { arrangement: name, session });
+    }
+
+    /// A pick from Assign Profile: the saved profile goes into that session of the
+    /// arrangement; the running pane keeps its profile (`PS:24104-24114`).
+    pub(super) fn assign_arrangement_profile(&mut self, name: &str, session: &str, guid: &str) {
+        let Some(profile) = self.store.profiles.iter().find(|p| p.guid() == guid) else { return };
+        let table: toml::Table = profile.values.clone().into_iter().collect();
+        self.repair_arrangement(name, &|w| arrangement::replace_profile(w, session, &table));
+    }
+
+    /// Rewrites a saved arrangement and saves it; nothing when it is gone.
+    fn repair_arrangement(&mut self, name: &str, repair: &dyn Fn(&[Value]) -> Vec<Value>) {
+        let mut store = self.arrangements();
+        let Some(windows) = store.get(name) else { return };
+        let repaired = repair(windows);
+        store.replace(name, repaired);
+        self.put_arrangements(&store);
+    }
+
     /// Fills the current (new) window from an arrangement window table: its tabs, selected
     /// tab, title, locks, style, and frame.
-    pub(super) fn apply_arrangement_window(&mut self, w: &Value) -> Result<(), String> {
+    pub(super) fn apply_arrangement_window(&mut self, w: &Value, name: Option<&str>) -> Result<(), String> {
         let tabs = w.get("Tabs").and_then(|t| t.as_array()).cloned().unwrap_or_default();
         for t in &tabs {
-            let tab = self.build_tab(t)?;
+            let tab = self.build_tab(t, name)?;
             self.tabs.push(tab);
         }
         let f = arrangement::window_facts(w);
@@ -376,7 +502,7 @@ impl App {
         if as_tabs {
             for w in &windows {
                 for t in w.get("Tabs").and_then(|t| t.as_array()).cloned().unwrap_or_default() {
-                    match self.build_tab(&t) {
+                    match self.build_tab(&t, Some(name)) {
                         Ok(tab) => {
                             self.tabs.push(tab);
                             self.active = self.tabs.len() - 1;
@@ -388,7 +514,7 @@ impl App {
             self.relayout();
         } else {
             for w in windows {
-                self.pending_windows.push(super::windows_ui::NewWindow::Arrangement(w));
+                self.pending_windows.push(super::windows_ui::NewWindow::Arrangement(w, Some(name.to_string())));
             }
         }
         self.redraw();
@@ -462,9 +588,42 @@ impl App {
             }
         }
         for w in windows {
-            self.pending_windows.push(super::windows_ui::NewWindow::Arrangement(w));
+            self.pending_windows.push(super::windows_ui::NewWindow::Arrangement(w, None));
         }
         self.banners.clear("arrangement");
         self.redraw();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The arrangement announcements' texts, buttons and ids (`NC:115-129`, `NC:266-298`,
+    /// `PS:24071`) and when a folder is checked (`PS:3561-3570`).
+    #[test]
+    fn bad_folder_follows_iterm2() {
+        assert_eq!(bad_folder_text("Work", r"D:\gone"), "The saved arrangement \u{201c}Work\u{201d} has a bad initial directory of \u{201c}D:\\gone\u{201d} for this session.");
+        assert_eq!(BAD_FOLDER_BUTTONS, [DONT_WARN_AGAIN, REPAIR]);
+        assert_eq!((DONT_WARN_AGAIN, REPAIR), ("Don\u{2019}t Warn Again", "Repair"));
+        assert_eq!(BAD_FOLDER_BAR, "ThisProfileNoLongerExists", "iTerm2 reuses the missing-profile identifier");
+        assert_eq!(BROKEN_PROFILE, "This arrangement\u{2019}s profile is missing. This could be due to a bug in iTerm2 version 3.5.7, which caused profiles to be corrupted in saved arrangements.");
+        assert_eq!(BROKEN_PROFILE_BAR, "ArrangementMissingProfile");
+        assert_eq!(BROKEN_PROFILE_BUTTONS, [ASSIGN_PROFILE]);
+        assert_eq!(ASSIGN_PROFILE, "Assign Profile");
+        assert_eq!(SELECT_PROFILE, "Select a profile to use for this session. Your selection will be saved back to the arrangement.");
+        assert_eq!(BAD_FOLDER_KEY, "NoSyncSuppressBadPWDInArrangementWarning");
+        let none = |_: &std::path::Path| false;
+        let probed = std::cell::Cell::new(false);
+        let watch = |_: &std::path::Path| {
+            probed.set(true);
+            false
+        };
+        assert!(check_folder(true, r"D:\gone", &none), "a named arrangement whose folder is missing");
+        assert!(!check_folder(true, r"C:\here", &|_: &std::path::Path| true), "a folder that exists");
+        assert!(!check_folder(false, r"D:\gone", &none), "window restoration has no arrangement to repair");
+        assert!(!check_folder(true, "", &none), "no folder");
+        assert!(!check_folder(true, r"\\host\share\x", &watch) && !probed.get(), "a UNC folder is never probed");
+        assert!(!check_folder(true, "//host/share", &watch) && !probed.get());
     }
 }

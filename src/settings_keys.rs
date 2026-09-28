@@ -1705,6 +1705,21 @@ mod tests {
         assert!(schema::find_global("NoSyncClearAllBroadcast").unwrap().optional_bool());
     }
 
+    /// The arrangement announcements' rows (`ASM:779-781`).
+    #[test]
+    fn arrangement_rows_follow_iterm2() {
+        let rows = [
+            ("NoSyncSuppressMissingProfileInArrangementWarning", "Suppress the notification that a restored session\u{2019}s profile no longer exists?"),
+            ("NoSyncSuppressBadPWDInArrangementWarning", "Suppress the notification that a saved arrangement has a bad initial working directory."),
+        ];
+        for (key, text) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(false)), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
+        }
+    }
+
     #[test]
     fn erase_row_follows_iterm2() {
         let s = schema::find_global("DryRunEraseAllSettingsAndData").expect("row");

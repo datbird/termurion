@@ -1351,6 +1351,24 @@ type = "bool"
 help = "Always turn off paste bracketing when host changes?"
 
 [[setting]]
+key = "NoSyncSuppressMissingProfileInArrangementWarning"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress the notification that a restored session\u2019s profile no longer exists?"
+type = "bool"
+default = false
+help = "Suppress the notification that a restored session\u2019s profile no longer exists?"
+
+[[setting]]
+key = "NoSyncSuppressBadPWDInArrangementWarning"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress the notification that a saved arrangement has a bad initial working directory."
+type = "bool"
+default = false
+help = "Suppress the notification that a saved arrangement has a bad initial working directory."
+
+[[setting]]
 key = "NoSyncNeverAskAboutMouseReportingFrustration"
 tab = "Advanced"
 section = "Warnings"

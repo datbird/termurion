@@ -3056,14 +3056,23 @@ impl ApplicationHandler<UserEvent> for App {
         let mut hotkey_saved: Vec<(String, crate::arrangement::Value)> = hotkey_saved.into_iter().filter_map(|w| crate::arrangement::hotkey_guid(&w).filter(|g| hotkey_profiles.contains(g)).map(|g| (g, w))).collect();
         let saved = (system_policy && !regular_saved.is_empty()).then_some(regular_saved);
         let has_saved = saved.is_some() || !hotkey_saved.is_empty();
-        let default_arrangement = self.globals.bool("OpenArrangementAtStartup").then(|| self.arrangements().default_name().and_then(|n| self.arrangements().get(n).cloned())).flatten().filter(|w| !w.is_empty());
+        // The default arrangement is restored by name (window restoration has none).
+        let default_arrangement = self
+            .globals
+            .bool("OpenArrangementAtStartup")
+            .then(|| {
+                let store = self.arrangements();
+                store.default_name().and_then(|n| store.get(n).cloned().map(|w| (Some(n.to_string()), w)))
+            })
+            .flatten()
+            .filter(|(_, w)| !w.is_empty());
         let has_arrangement = default_arrangement.is_some();
-        let startup_arrangement = if startup_hotkey.is_some() { None } else { saved.or(default_arrangement) };
+        let startup_arrangement = if startup_hotkey.is_some() { None } else { saved.map(|w| (None, w)).or(default_arrangement) };
         let mut arranged = false;
         match startup_arrangement {
-            Some(mut windows) => {
+            Some((name, mut windows)) => {
                 let first = windows.remove(0);
-                match self.apply_arrangement_window(&first) {
+                match self.apply_arrangement_window(&first, name.as_deref()) {
                     Ok(()) => arranged = !self.tabs.is_empty(),
                     Err(e) => self.banners.set("arrangement", e),
                 }
@@ -3071,14 +3080,14 @@ impl ApplicationHandler<UserEvent> for App {
                     self.new_tab(None);
                 }
                 for w in windows {
-                    self.pending_windows.push(windows_ui::NewWindow::Arrangement(w));
+                    self.pending_windows.push(windows_ui::NewWindow::Arrangement(w, name.clone()));
                 }
             }
             None => match &startup_hotkey {
                 Some(guid) => {
                     if let Some(i) = hotkey_saved.iter().position(|(g, _)| g == guid) {
                         let (_, w) = hotkey_saved.remove(i);
-                        match self.apply_arrangement_window(&w) {
+                        match self.apply_arrangement_window(&w, None) {
                             Ok(()) => arranged = !self.tabs.is_empty(),
                             Err(e) => self.banners.set("arrangement", e),
                         }
