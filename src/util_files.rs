@@ -335,7 +335,7 @@ fn view(tool: Viewer, args: &[String], io: &mut Io) -> i32 {
             _ => {
                 let data = if is_url {
                     // `curl -fs "$1" | b64_encode` under pipefail: curl's code decides.
-                    let cmd = Cmd { program: "curl".into(), args: vec!["-fs".into(), a.to_string()], cwd: Some(io.cwd.clone()), stdin: None, inherit: false, quiet: false, env: Vec::new() };
+                    let cmd = Cmd { program: "curl".into(), args: vec!["-fs".into(), a.to_string()], cwd: Some(io.cwd.clone()), stdin: None, inherit: false, quiet: false, env: Vec::new(), merge_stderr: false };
                     match (io.run)(&cmd) {
                         Ok(o) if o.code == 0 => o.stdout,
                         other => {
@@ -538,7 +538,7 @@ mod tests {
         assert_eq!(h.run("imgcat", &["-u", "http://h/x.png"]), 0);
         assert_eq!(
             h.runs,
-            vec![Cmd { program: "curl".into(), args: vec!["-fs".into(), "http://h/x.png".into()], cwd: Some(dir.clone()), stdin: None, inherit: false, quiet: false, env: Vec::new() }]
+            vec![Cmd { program: "curl".into(), args: vec!["-fs".into(), "http://h/x.png".into()], cwd: Some(dir.clone()), stdin: None, inherit: false, quiet: false, env: Vec::new(), merge_stderr: false }]
         );
         assert_eq!(
             text(&h.out),
@@ -810,6 +810,7 @@ mod tests {
             assert_eq!(h.run("imgcat", args), 0);
             let mut s = Screen::new(80, 24);
             s.feed(&h.out);
+            s.allow_inline();
             assert_eq!(s.images.by_id.len(), 1, "{term:?} {args:?}");
             let img = s.images.by_id.values().next().unwrap();
             assert_eq!((img.width_px, img.height_px), (2, 2), "{term:?} {args:?}");

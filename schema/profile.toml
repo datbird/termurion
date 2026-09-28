@@ -354,7 +354,7 @@ section = ""
 label = "Configure SSH"
 type = "dict"
 default = {}
-help = "Dictionary holding host, user, port, and auth for the SSH command type, filled in via a sheet."
+help = "SSH Integration, the environment variables and files to copy to the remote host, and the path to ssh, for the SSH command type."
 light_dark = false
 macos_only = false
 

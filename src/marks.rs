@@ -8,6 +8,7 @@ use std::time::SystemTime;
 
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::Handler;
 
 use crate::osc::{Osc, PromptKind};
@@ -199,6 +200,67 @@ pub fn clear_start(marks: &[i32], prompt_line: Option<i32>, cursor: i32) -> i32 
         Some(l) => l + 1,
         None => i32::MIN,
     }
+}
+
+/// Whether a reported host is a host change that may reset modes: a previous host existed,
+/// the name differs (exactly, as iTerm2's `isEqualToString:`), and the two are not both this
+/// machine (`local`, compared ignoring case as Windows names are).
+pub fn host_changed(previous: Option<&str>, new: &str, local: &str) -> bool {
+    let is_local = |h: &str| !local.is_empty() && h.eq_ignore_ascii_case(local);
+    previous.is_some_and(|p| p != new && !(is_local(p) && is_local(new)))
+}
+
+/// What a host change does with a mode left on, from its saved answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostStep {
+    Off,
+    Offer,
+    Nothing,
+}
+
+/// True turns the mode off, unset offers, false leaves it (`PS:17953-17962`).
+pub fn host_step(saved: Option<bool>) -> HostStep {
+    match saved {
+        Some(true) => HostStep::Off,
+        None => HostStep::Offer,
+        Some(false) => HostStep::Nothing,
+    }
+}
+
+/// A host change's settings, pushed to each screen before its output is read: the saved
+/// answers (`NoSyncTurnOff...OnHostChange`) and whether the pane may report the mouse
+/// (iTerm2's "ever allowed").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HostPolicy {
+    pub focus: Option<bool>,
+    pub mouse: Option<bool>,
+    pub paste: Option<bool>,
+    pub mouse_allowed: bool,
+}
+
+/// The modes a host change offers to turn off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LeftOn {
+    pub mouse: bool,
+    pub focus: bool,
+    pub paste: bool,
+}
+
+/// iTerm2's Session > Terminal State toggles: label, escape to turn on, escape to turn
+/// off, and the mode that shows the check mark. A host change turns modes off with the
+/// same sequences.
+pub const TOGGLES: [(&str, &str, &str, TermMode); 6] = [
+    ("Alternate Screen", "\x1b[?1049h", "\x1b[?1049l", TermMode::ALT_SCREEN),
+    ("Focus Reporting", "\x1b[?1004h", "\x1b[?1004l", TermMode::FOCUS_IN_OUT),
+    ("Mouse Reporting", "\x1b[?1000h", "\x1b[?1000l\x1b[?1002l\x1b[?1003l", TermMode::MOUSE_MODE),
+    ("Paste Bracketing", "\x1b[?2004h", "\x1b[?2004l", TermMode::BRACKETED_PASTE),
+    ("Application Cursor", "\x1b[?1h", "\x1b[?1l", TermMode::APP_CURSOR),
+    ("Application Keypad", "\x1b=", "\x1b>", TermMode::APP_KEYPAD),
+];
+
+/// A Terminal State toggle's "off" sequence (empty for an unknown label).
+pub fn toggle_off(label: &str) -> &'static [u8] {
+    TOGGLES.iter().find(|t| t.0 == label).map_or(&[], |t| t.2.as_bytes())
 }
 
 impl Screen {
@@ -711,11 +773,56 @@ impl Screen {
         self.apply_osc(osc);
         // Directory, host, and user changes are events for triggers.
         let after = (self.shell.cwd.clone(), self.shell.host.clone(), self.shell.user.clone());
+        // Another account (the first one too) reaches the app (`VT100ScreenMutableState.m:4123-4137`),
+        // with the modes a program on the previous host left on and which may be turned off
+        // (`PS:17929-17940`).
+        if after.1.is_some() && (before.1 != after.1 || before.2 != after.2) {
+            let new = after.1.as_deref().unwrap_or_default();
+            let moved = before.1 != after.1 && host_changed(before.1.as_deref(), new, &std::env::var("COMPUTERNAME").unwrap_or_default());
+            let left_on = if moved { self.reset_modes_on_host_change() } else { LeftOn::default() };
+            self.requests.push(Request::HostChanged(left_on));
+        }
         for (kind, old, new) in [(EventKind::DirectoryChanged, before.0, after.0), (EventKind::HostChanged, before.1, after.1), (EventKind::UserChanged, before.2, after.2)] {
             if let Some(v) = new.filter(|n| Some(n) != old.as_ref()) {
                 self.fire_event(kind, &EventFacts { value: v.clone(), ..Default::default() }, &[v]);
             }
         }
+    }
+
+    /// `maybeResetTerminalStateOnHostChange` (`PS:17987-18008`), here in the output where the
+    /// host was reported, as iTerm2 stops reading until it is done: the modes as the previous
+    /// host left them are turned off, offered, or left alone, so the new host's own modes
+    /// that follow in the same read are never touched. Gives the offers, for the app.
+    fn reset_modes_on_host_change(&mut self) -> LeftOn {
+        let policy = self.host_policy;
+        let mode = *self.term().mode();
+        let fish = self.shell.shell.as_deref() == Some("fish");
+        // Mouse reporting counts only where the pane may report the mouse; fish handles
+        // paste bracketing itself. iTerm2's order: mouse, focus, paste.
+        let modes = [
+            (policy.mouse_allowed && self.mouse_modes().tracking != crate::mouse::Tracking::Off, policy.mouse, toggle_off("Mouse Reporting")),
+            (mode.contains(TermMode::FOCUS_IN_OUT), policy.focus, toggle_off("Focus Reporting")),
+            (!fish && mode.contains(TermMode::BRACKETED_PASTE), policy.paste, toggle_off("Paste Bracketing")),
+        ];
+        let mut offers = [false; 3];
+        for (i, (on, saved, off)) in modes.into_iter().enumerate() {
+            if !on {
+                continue;
+            }
+            match host_step(saved) {
+                HostStep::Off => {
+                    let reply = self.feed_raw(off);
+                    self.replies.extend(reply);
+                }
+                HostStep::Offer => offers[i] = true,
+                HostStep::Nothing => {}
+            }
+        }
+        // iTerm2 also turns DEC 2048 (resize reports) off outright here; Tandem has no resize
+        // reports yet. 13o Task 6 adds `if self.resize_reports() { self.set_resize_reports(false) }`
+        // at this site (R8).
+        let [mouse, focus, paste] = offers;
+        LeftOn { mouse, focus, paste }
     }
 
     fn apply_osc(&mut self, osc: Osc) {
@@ -911,10 +1018,14 @@ impl Screen {
                 }
                 "ShellIntegrationVersion" => {
                     let mut parts = value.split(';');
-                    self.shell.version = parts.next().and_then(|v| v.trim().parse().ok());
-                    if let Some(sh) = parts.find_map(|p| p.strip_prefix("shell=")) {
-                        self.shell.shell = Some(sh.to_string());
+                    self.shell.version = parts.next().and_then(crate::shell_version::version_value);
+                    let shell = crate::shell_version::reported_shell(parts).map(str::to_string);
+                    if let Some(sh) = &shell {
+                        self.shell.shell = Some(sh.clone());
                     }
+                    // The app decides whether the scripts are out of date, with this report's
+                    // shell (`VT100ScreenMutableState+TerminalDelegate.m:2814-2852`).
+                    self.requests.push(Request::ShellIntegrationReported { version: self.shell.version, shell });
                 }
                 "Notification" => {
                     use base64::Engine;
@@ -1037,10 +1148,26 @@ impl Screen {
                 }
                 "ExecFailed" => self.exec_failed = true,
                 "Env" if self.trusted => {
-                    use base64::Engine;
-                    if let Some(b) = value.strip_prefix("report=all:").and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok()) {
-                        self.env = Some(String::from_utf8_lossy(&b).into_owned());
+                    if let crate::osc1337::EnvUpdate::Set(v) = crate::osc1337::parse_env(&value) {
+                        self.env = v;
                     }
+                }
+                // Not trust-gated (`T:4524-4527`).
+                "it2ssh" => {
+                    if let Some(flags) = crate::ssh_handshake::parse_it2ssh(&value) {
+                        self.requests.push(Request::SshWillBegin);
+                        self.ssh_flags = Some(flags);
+                    }
+                }
+                "SendConductor" => match crate::ssh_handshake::send_conductor(&value, self.ssh_flags.take()) {
+                    crate::ssh_handshake::SendConductor::Ignore => {}
+                    crate::ssh_handshake::SendConductor::Banner(text) => self.append_banner(text),
+                    crate::ssh_handshake::SendConductor::Send(h) => self.requests.push(Request::SshSendConductor(h)),
+                },
+                // Trusted and non-empty only (`T:4528-4531`); the flags go (`TD:4033`).
+                "EndSSH" if self.trusted && !value.is_empty() => {
+                    self.ssh_flags = None;
+                    self.requests.push(Request::SshEnd(value));
                 }
                 "SetKeyLabel" => self.key_labels.set(&value),
                 "PushKeyLabels" => self.key_labels.push(&value),
@@ -1192,6 +1319,24 @@ mod tests {
         s.feed(b"\x1b]1337;CurrentDir=C:\\Users\\rob\x07\x1b]1337;ShellIntegrationVersion=1;shell=pwsh\x07");
         assert_eq!(s.shell.cwd.as_deref(), Some("C:\\Users\\rob"));
         assert_eq!((s.shell.shell.as_deref(), s.shell.version), (Some("pwsh"), Some(1)));
+    }
+
+    /// Each version report reaches the app with the shell it names, never an earlier
+    /// report's (`VT100ScreenMutableState+TerminalDelegate.m:2814-2852`).
+    #[test]
+    fn version_reports_reach_the_app() {
+        let reported = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::ShellIntegrationReported { .. })).collect::<Vec<_>>();
+        let r = |version, shell: Option<&str>| Request::ShellIntegrationReported { version, shell: shell.map(str::to_string) };
+        let mut s = Screen::new(40, 10);
+        s.feed(b"\x1b]1337;ShellIntegrationVersion=4;shell=bash\x07");
+        assert_eq!(reported(&mut s), [r(Some(4), Some("bash"))]);
+        s.feed(b"\x1b]1337;ShellIntegrationVersion=3\x07\x1b]1337;ShellIntegrationVersion=x;shell=zsh\x07");
+        assert_eq!(reported(&mut s), [r(Some(3), None), r(None, Some("zsh"))]);
+        assert_eq!(s.shell.shell.as_deref(), Some("zsh"));
+        s.feed(b"\x1b[?1049h\x1b]1337;ShellIntegrationVersion=5;shell=fish\x07");
+        assert_eq!(reported(&mut s), [r(Some(5), Some("fish"))], "reported on the alternate screen too");
+        s.feed(b"\x1b]1337;ShellIntegrationVersion=22beta;shell=sh;shell=bash\x07");
+        assert_eq!(reported(&mut s), [r(Some(22), Some("bash"))], "integerValue's leading digits; the last shell");
     }
 
     #[test]
@@ -1721,5 +1866,96 @@ mod tests {
         s.api_watch = false;
         s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07\x1b]133;D;0\x07\x1b]1337;Custom=id=me:hi\x07");
         assert!(s.api_events.is_empty());
+    }
+
+    /// Host change offers: only when a previous host existed, the name changed and the two
+    /// are not both this machine (`PS:17929-17940`); the fish flag rides along.
+    /// A host change turns modes off with Terminal State's own sequences (one table).
+    #[test]
+    fn host_change_uses_the_terminal_state_toggles() {
+        assert_eq!(toggle_off("Mouse Reporting"), b"\x1b[?1000l\x1b[?1002l\x1b[?1003l");
+        assert_eq!(toggle_off("Focus Reporting"), b"\x1b[?1004l");
+        assert_eq!(toggle_off("Paste Bracketing"), b"\x1b[?2004l");
+        assert_eq!(toggle_off("No Such Toggle"), b"");
+    }
+
+    #[test]
+    fn host_change_follows_iterm2() {
+        assert!(!host_changed(None, "b", "PC"), "no previous host");
+        assert!(!host_changed(Some("a"), "a", "PC"));
+        assert!(host_changed(Some("a"), "A", "PC"), "iTerm2 compares names exactly (isEqualToString:)");
+        assert!(host_changed(Some("a"), "b", "PC"));
+        assert!(!host_changed(Some("pc"), "PC", "PC"), "both this machine");
+        assert!(host_changed(Some("PC"), "b", "PC"));
+        let changes = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::HostChanged(l) if *l != LeftOn::default())).collect::<Vec<_>>();
+        let offer = |mouse, focus, paste| vec![Request::HostChanged(LeftOn { mouse, focus, paste })];
+        let mut s = Screen::new(40, 10);
+        s.host_policy.mouse_allowed = true;
+        s.feed(b"\x1b[?1000h\x1b[?1004h\x1b[?2004h\x1b]1337;RemoteHost=u@a\x07");
+        assert!(changes(&mut s).is_empty(), "the first host is not a change");
+        s.feed(b"\x1b]1337;RemoteHost=u@a\x07\x1b]1337;RemoteHost=v@a\x07");
+        assert!(changes(&mut s).is_empty(), "same host, another user");
+        s.feed(b"\x1b]1337;RemoteHost=u@b\x07");
+        assert_eq!(changes(&mut s), offer(true, true, true), "unset answers offer each mode left on");
+        // Mouse reporting counts only where the pane may report the mouse; nothing left on,
+        // nothing offered.
+        s.host_policy.mouse_allowed = false;
+        s.feed(b"\x1b]1337;RemoteHost=u@c\x07");
+        assert_eq!(changes(&mut s), offer(false, true, true));
+        s.feed(b"\x1b[?1000l\x1b[?1004l\x1b[?2004l\x1b]1337;RemoteHost=u@d\x07");
+        assert!(changes(&mut s).is_empty());
+        // fish handles paste bracketing itself.
+        let mut f = Screen::new(40, 10);
+        f.feed(b"\x1b]1337;ShellIntegrationVersion=5;shell=fish\x07\x1b]1337;RemoteHost=u@a\x07\x1b[?2004h\x1b]1337;RemoteHost=u@b\x07");
+        assert!(changes(&mut f).is_empty());
+    }
+
+    /// Every host report that changes the account (user or host name), the first included,
+    /// reaches the app, which removes a waiting outdated scripts notice (`PS:17909`,
+    /// `VT100ScreenMutableState.m:4123-4137`); offers come only with a host change.
+    #[test]
+    fn every_host_change_reaches_the_app() {
+        let changes = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::HostChanged(_))).collect::<Vec<_>>();
+        let none = vec![Request::HostChanged(LeftOn::default())];
+        let mut s = Screen::new(40, 10);
+        s.feed(b"\x1b]1337;RemoteHost=u@a\x07");
+        assert_eq!(changes(&mut s), none, "the first host");
+        s.feed(b"\x1b]1337;RemoteHost=u@a\x07\x1b]1337;CurrentDir=/tmp\x07");
+        assert!(changes(&mut s).is_empty(), "the same account");
+        s.feed(b"\x1b]1337;RemoteHost=v@a\x07");
+        assert_eq!(changes(&mut s), none, "another user");
+        s.feed(b"\x1b]7;file://w@b/tmp\x07");
+        assert_eq!(changes(&mut s), none, "OSC 7");
+    }
+
+    /// The modes are judged where the host was reported, as iTerm2 stops reading there
+    /// (`VT100ScreenMutableState.m:4133`): the new shell turning paste bracketing on in the
+    /// same read is its own, never offered and never turned off.
+    #[test]
+    fn host_change_judges_modes_where_reported() {
+        let paste_on = |s: &Screen| s.term().mode().contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE);
+        let changes = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::HostChanged(l) if *l != LeftOn::default())).collect::<Vec<_>>();
+        for saved in [None, Some(true), Some(false)] {
+            let mut s = Screen::new(40, 10);
+            s.host_policy.paste = saved;
+            s.feed(b"\x1b]1337;RemoteHost=u@a\x07\x1b]1337;RemoteHost=u@b\x07\x1b[?2004h");
+            assert!(changes(&mut s).is_empty(), "{saved:?}");
+            assert!(paste_on(&s), "{saved:?}");
+        }
+        // Left on by the previous host: Always turns it off before the new shell's own
+        // output, which then turns it on again; Never leaves it; unset offers.
+        let mut s = Screen::new(40, 10);
+        s.host_policy.paste = Some(true);
+        s.feed(b"\x1b]1337;RemoteHost=u@a\x07\x1b[?2004h");
+        s.feed(b"\x1b]1337;RemoteHost=u@b\x07");
+        assert!(!paste_on(&s), "Always turns it off");
+        s.feed(b"\x1b[?2004h\x1b]1337;RemoteHost=u@c\x07\x1b[?2004h");
+        assert!(changes(&mut s).is_empty());
+        assert!(paste_on(&s), "the new shell's own paste bracketing stays");
+        let mut s = Screen::new(40, 10);
+        s.host_policy.paste = Some(false);
+        s.feed(b"\x1b]1337;RemoteHost=u@a\x07\x1b[?2004h\x1b]1337;RemoteHost=u@b\x07");
+        assert!(changes(&mut s).is_empty());
+        assert!(paste_on(&s), "Never leaves it");
     }
 }

@@ -178,12 +178,18 @@ impl App {
                     }
                     self.redraw();
                 }
-                NoteEvent::Delete => {
-                    if let (Some(p), Some(n)) = (self.panes.get_mut(&pane), note) {
-                        p.screen.remove_note(n);
+                // Delete asks "Really remove annotation?" unless its answer is remembered.
+                NoteEvent::RequestDelete => match self.warning_preempt(&crate::note_ui::remove_spec()) {
+                    crate::warnings::Preempt::Answer(0) => self.remove_annotation(pane, note),
+                    _ => {
+                        if let Some((w, _, _)) = self.note_win.as_mut() {
+                            w.confirm_delete();
+                        }
                     }
-                    self.note_win = None;
-                    self.redraw();
+                },
+                NoteEvent::Delete { suppress } => {
+                    self.warning_answered(&crate::note_ui::remove_spec(), 0, suppress);
+                    self.remove_annotation(pane, note);
                 }
             },
             other => {
@@ -191,5 +197,14 @@ impl App {
             }
         }
         true
+    }
+
+    /// Removes the annotation `note` of `pane` (confirmed or answered) and closes its window.
+    fn remove_annotation(&mut self, pane: PaneId, note: Option<u32>) {
+        if let (Some(p), Some(n)) = (self.panes.get_mut(&pane), note) {
+            p.screen.remove_note(n);
+        }
+        self.note_win = None;
+        self.redraw();
     }
 }

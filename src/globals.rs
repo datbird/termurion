@@ -110,6 +110,17 @@ impl Globals {
         }
     }
 
+    /// An optional bool (`Setting::optional_bool`): the stored value, or None when the key
+    /// was never set (the schema has no default to fall back on).
+    pub fn optional_bool(&self, key: &str) -> Option<bool> {
+        self.values.get(key).and_then(Value::as_bool)
+    }
+
+    /// Removes a stored value, so the file drops the key (an optional bool's Unspecified).
+    pub fn unset(&mut self, key: &str) {
+        self.values.remove(key);
+    }
+
     /// A number stored as a float or an integer, else iTerm2's default; None when neither
     /// the file nor the schema has one (an undeclared key read with its own default).
     pub fn number(&self, key: &str) -> Option<f64> {
@@ -185,6 +196,30 @@ mod tests {
         let names: Vec<&str> = keymaps::presets().iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["Natural Text Editing", "Simulate Numlock", "Terminal.app Compatibility"]);
         assert_eq!(keymaps::presets()[0].1.len(), 8);
+    }
+
+    #[test]
+    fn optional_bools_follow_iterm2() {
+        let prevent = crate::schema::find_global("PreventEscapeSequenceFromChangingProfile").unwrap();
+        assert!(prevent.optional_bool());
+        assert_eq!(prevent.default, None);
+        assert!(!crate::schema::find_global("NoSyncDisableOpenURL").unwrap().optional_bool());
+        let path = scratch("optional");
+        let mut g = Globals::empty(&path);
+        assert_eq!(g.optional_bool("PreventEscapeSequenceFromChangingProfile"), None);
+        // A stored No is not the default (there is none), so the file keeps it.
+        g.set("PreventEscapeSequenceFromChangingProfile", Value::Boolean(false));
+        assert_eq!(g.optional_bool("PreventEscapeSequenceFromChangingProfile"), Some(false));
+        g.save().unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("PreventEscapeSequenceFromChangingProfile"));
+        // Unspecified removes the key.
+        g.unset("PreventEscapeSequenceFromChangingProfile");
+        assert_eq!(g.optional_bool("PreventEscapeSequenceFromChangingProfile"), None);
+        g.save().unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("PreventEscapeSequenceFromChangingProfile"));
+        // Removing a key never set does nothing.
+        g.unset("PreventEscapeSequenceFromChangingProfile");
+        assert!(g.values.is_empty());
     }
 
     #[test]

@@ -146,7 +146,7 @@ pub fn it2git(_args: &[String], io: &mut Io) -> i32 {
     let env = git_env();
     let mut exec = |args: Vec<String>, quiet: bool| {
         let program = program.as_ref()?;
-        let cmd = Cmd { program: program.to_string_lossy().into_owned(), args, cwd: Some(cwd.clone()), stdin: None, inherit: false, quiet, env: env.clone() };
+        let cmd = Cmd { program: program.to_string_lossy().into_owned(), args, cwd: Some(cwd.clone()), stdin: None, inherit: false, quiet, env: env.clone(), merge_stderr: false };
         run(&cmd).ok().map(|o| (o.code, String::from_utf8_lossy(&o.stdout).into_owned()))
     };
     let allowed = match &vet {
@@ -376,6 +376,8 @@ mod tests {
             random: &mut random,
             run: &mut run,
             have: &have,
+            secret: &mut || None,
+            env_all: &Vec::new,
         };
         assert_eq!(it2git(&[], &mut io), 0);
         let text = String::from_utf8(out).unwrap();
@@ -445,6 +447,8 @@ mod tests {
             random: &mut random,
             run: &mut run,
             have: &have,
+            secret: &mut || None,
+            env_all: &Vec::new,
         };
         assert_eq!(it2git(&[], &mut io), 0);
         let text = String::from_utf8(out).unwrap();

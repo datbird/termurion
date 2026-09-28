@@ -134,12 +134,6 @@ pub fn new_kind_question(window: bool) -> (&'static str, &'static str, [&'static
     }
 }
 
-/// The Advanced switches that silence the question: either one on makes a tmux tab or
-/// window without asking.
-pub fn skip_new_kind_question(legacy: bool, specific: bool) -> bool {
-    legacy || specific
-}
-
 /// The key that remembers the answer; the legacy key wins once it holds one.
 pub fn new_kind_key(window: bool, legacy_set: bool) -> &'static str {
     if legacy_set {
@@ -188,13 +182,6 @@ mod tests {
         assert_eq!(new_kind_key(true, false), "NoSyncNewWindowFromTmuxOpensTmux");
         assert_eq!(new_kind_key(false, false), "NoSyncNewTabFromTmuxOpensTmux");
         assert_eq!(new_kind_key(false, true), "NoSyncNewWindowOrTabFromTmuxOpensTmux", "the legacy key wins once it is set");
-    }
-
-    #[test]
-    fn silenced_questions_make_tmux_tabs() {
-        assert!(!skip_new_kind_question(false, false), "ask");
-        assert!(skip_new_kind_question(true, false), "the legacy switch covers both");
-        assert!(skip_new_kind_question(false, true));
     }
 
     #[test]

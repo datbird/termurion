@@ -5,9 +5,9 @@
 use super::*;
 use crate::broadcast::Write;
 use crate::paste::{self, Job, Speed, Warning};
+use crate::warnings;
 
-/// The question before a paste and the progress bar (its Cancel button).
-const PASTE_ASK: &str = "paste-ask";
+/// The progress bar (its Cancel button).
 const PASTE_BAR: &str = "paste-progress";
 
 /// A paste waiting for its questions' answers.
@@ -42,13 +42,10 @@ impl App {
     fn warn_prefs(&self) -> paste::WarnPrefs {
         let g = &self.globals;
         paste::WarnPrefs {
-            multiline_off: g.bool("NoSyncDoNotWarnBeforeMultilinePaste"),
-            one_line_off: g.bool("NoSyncDoNotWarnBeforePastingOneLineEndingInNewlineAtShellPrompt"),
             when_not_at_prompt: g.bool("PromptForPasteWhenNotAtPrompt"),
             skip_one_line_newline: g.bool("SuppressMultilinePasteWarningWhenPastingOneLineWithTerminalNewline"),
             skip_not_at_prompt: g.bool("SuppressMultilinePasteWarningWhenNotAtShellPrompt"),
             size_limit: g.int("AlwaysWarnBeforePastingOverSize"),
-            tabs_off: g.bool("AboutToPasteTabsWithCancel"),
         }
     }
 
@@ -63,6 +60,11 @@ impl App {
         let warnings = paste::check(&job.text, p.own().at_prompt(), bracketed, job.flags, &self.warn_prefs());
         if warnings.is_empty() {
             return self.paste_run(sender, job, speed, what);
+        }
+        // A paste while the pane's question waits is dropped: iTerm2's question is modal, so
+        // no second paste starts under it, and the answer belongs to the first.
+        if self.paste_asks.contains_key(&sender) {
+            return;
         }
         self.paste_asks.insert(sender, Asking { job, speed, what, warnings });
         self.paste_ask_next(sender);
@@ -79,9 +81,20 @@ impl App {
         allowed && p.own().term().mode().contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
     }
 
+    /// The paste's next question, as an alert (iTerm2's modal `iTermWarning`); a silenced one
+    /// answers its remembered button at once.
     fn paste_ask_next(&mut self, pane: PaneId) {
         let Some(w) = self.paste_asks.get(&pane).and_then(|a| a.warnings.first().cloned()) else { return };
-        self.ask(pane, PASTE_ASK, &format!("{}: {}", w.heading(), w.text()), w.buttons(), true);
+        let spec = w.spec(w.heading(), &w.text());
+        // Issue 5115 (`iTermPasteHelper.m:850`): a multi-line question silenced with Cancel
+        // asks again.
+        if let (Warning::Lines { .. } | Warning::OneLine { .. }, Some(id)) = (&w, spec.id.as_deref()) {
+            if warnings::is_silenced(&self.globals, id, super::warnings_app::unix_now()) && spec.cancel == Some(warnings::saved_selection(&self.globals, id)) {
+                self.globals.unset(id);
+                self.save_globals();
+            }
+        }
+        self.ask_scripts(scripts_alerts::ask(&spec.heading, &spec.text, w.buttons(), spec.id.as_deref(), spec.kind, scripts_alerts::Then::Paste(pane)));
     }
 
     /// Transforms the paste and queues it; the first chunk goes now.
@@ -181,20 +194,23 @@ impl App {
         self.paste_tick();
     }
 
-    /// The paste questions' and the progress bar's answers. True when the bar was one of these.
+    /// The progress bar's answer. True when the bar was it.
     pub(super) fn paste_bar(&mut self, pane: PaneId, id: &str, button: Option<&str>) -> bool {
-        if id == PASTE_BAR {
-            if button == Some("Cancel") {
-                self.cancel_paste(pane);
-            }
-            return true;
-        }
-        if id != PASTE_ASK {
+        if id != PASTE_BAR {
             return false;
         }
-        let Some(mut a) = self.paste_asks.remove(&pane) else { return true };
+        if button == Some("Cancel") {
+            self.cancel_paste(pane);
+        }
+        true
+    }
+
+    /// The paste question's answer, button `index` of its warning (`Then::Paste`); None when
+    /// the question will never show (the alert queue was full), which cancels the paste.
+    pub(super) fn paste_answered(&mut self, pane: PaneId, index: Option<usize>) {
+        let Some(mut a) = self.paste_asks.remove(&pane) else { return };
         let w = a.warnings.remove(0);
-        match button {
+        match index.and_then(|i| w.buttons().get(i).copied()) {
             Some("Paste") | Some("OK") => {}
             Some("Paste Without Newline") => a.job.text = a.job.text.trim_end_matches(['\r', '\n']).to_string(),
             Some("Convert tabs to spaces") => {
@@ -204,19 +220,17 @@ impl App {
             // Advanced...: the Advanced Paste window with this text; this paste stops.
             Some("Advanced...") => {
                 self.advanced_paste_request = Some((pane, a.job.text));
-                return true;
+                return;
             }
-            // Cancel, or dismissed.
-            _ => return true,
+            // Cancel, or dropped.
+            _ => return,
         }
-        let _ = w;
         if a.warnings.is_empty() {
             self.paste_run(pane, a.job, a.speed, a.what);
         } else {
             self.paste_asks.insert(pane, a);
             self.paste_ask_next(pane);
         }
-        true
     }
 
     /// Edit > Paste Special's items (by label where selectors repeat). False for others.
@@ -239,9 +253,16 @@ impl App {
                 self.save_globals();
                 self.menus_dirty = true;
             }
+            // Off silences the tabs question with OK remembered; on unsilences it
+            // (`togglePromptToConvertTabsToSpacesWhenPasting`, `iTermPasteHelper.m:165-171`).
             ("promptToConvertTabsToSpacesWhenPasting:", _) => {
-                let on = !self.globals.bool("AboutToPasteTabsWithCancel");
-                self.globals.set("AboutToPasteTabsWithCancel", toml::Value::Boolean(on));
+                const TABS_ID: &str = "AboutToPasteTabsWithCancel";
+                if self.globals.bool(TABS_ID) {
+                    self.globals.unset(TABS_ID);
+                } else {
+                    self.globals.set(TABS_ID, toml::Value::Boolean(true));
+                    self.globals.set(&warnings::selection_key(TABS_ID), toml::Value::Integer(0));
+                }
                 self.save_globals();
                 self.menus_dirty = true;
             }

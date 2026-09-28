@@ -57,6 +57,8 @@ impl App {
     }
 
     fn clipboard_write(&mut self, pane: PaneId, text: String) {
+        // The program copied for itself, allowed or not (`screenTerminalAttemptedPasteboardAccess`).
+        self.frustration(pane, |d| d.copied_by_sequence());
         if !self.globals.bool("AllowClipboardAccess") {
             if !self.globals.bool("NoSyncSuppressClipboardAccessDeniedWarning") {
                 self.ask(

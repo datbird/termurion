@@ -23,6 +23,87 @@ pub fn set_snippets(list: &[crate::snippets::Snippet]) {
     SNIPPETS.with(|s| *s.borrow_mut() = list.to_vec());
 }
 
+thread_local! {
+    /// "Show indicators for non-default values"; the settings window sets it each frame.
+    static INDICATE_NON_DEFAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether controls mark a non-default value (the settings window calls this each frame from
+/// `NoSyncHideDefaultValuedSettings`, `PP:1111-1121`).
+pub fn set_indicate_non_default(on: bool) {
+    INDICATE_NON_DEFAULT.with(|c| c.set(on));
+}
+
+pub fn indicate_non_default() -> bool {
+    INDICATE_NON_DEFAULT.with(std::cell::Cell::get)
+}
+
+/// The note under General > Experimental's right-to-left checkbox (`XIB:8743`).
+pub const EXPERIMENTAL_NOTE: &str = "This setting also enables ligature support in the GPU renderer.";
+/// The right-to-left checkbox's tooltip: iTerm2's xib carries this unrelated text on it
+/// (`XIB:8720`), kept as iTerm2 shows it.
+pub const RTL_TOOLTIP: &str = "Buried sessions appear under Session > Buried Sessions. When this setting is enabled, window sizes are restored when attaching to an existing tmux session.";
+
+/// The settings panes' tolerance for numbers (`iTermPreferencesBaseViewController.m:287-292`:
+/// "otherwise colors don't compare equal when they ought to").
+const INDICATOR_EPSILON: f64 = 0.001;
+
+/// `it_hasZeroValue`: 0 (or false), an empty text, list or table.
+fn has_zero_value(v: &Value) -> bool {
+    match v {
+        Value::Integer(i) => *i == 0,
+        Value::Float(f) => *f == 0.0,
+        Value::Boolean(b) => !b,
+        Value::String(s) => s.is_empty(),
+        Value::Array(a) => a.is_empty(),
+        Value::Table(t) => t.is_empty(),
+        Value::Datetime(_) => false,
+    }
+}
+
+/// `isApproximatelyEqualToObject:epsilon:` (`NSObject+iTerm.m:25-105`): numbers within the
+/// epsilon, tables with the same keys and lists of the same length element by element.
+fn approximately_equal(a: &Value, b: &Value) -> bool {
+    let number = |v: &Value| v.as_float().or_else(|| v.as_integer().map(|i| i as f64));
+    match (a, b) {
+        (Value::Table(x), Value::Table(y)) => x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| approximately_equal(v, w))),
+        (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(v, w)| approximately_equal(v, w)),
+        _ => match (number(a), number(b)) {
+            (Some(x), Some(y)) => (x - y).abs() < INDICATOR_EPSILON,
+            _ => a == b,
+        },
+    }
+}
+
+/// `isNullablyEqualToObject:epsilon:` (`NSObject+iTerm.m:168-179`): approximately equal, or
+/// one missing and the other zero or empty.
+pub fn nullably_equal(a: Option<&Value>, b: Option<&Value>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => approximately_equal(x, y),
+        (None, Some(v)) | (Some(v), None) => has_zero_value(v),
+    }
+}
+
+/// Whether a global control shows its default (`PBVC:287-292`): the value (the stored one, else
+/// the schema default) nullably equals the default.
+pub fn global_is_default(g: &Globals, s: &Setting) -> bool {
+    nullably_equal(g.get(&s.key).as_ref(), s.default.as_ref())
+}
+
+/// The non-default indicator (`NonDefaultIndicator.swift`): a 2-point bar in the accent color
+/// the full height of `control`, 4 points left of it; hidden with a disabled control
+/// (`NDI:67-78`).
+pub fn non_default_bar(ui: &egui::Ui, control: egui::Rect, enabled: bool) {
+    if !enabled {
+        return;
+    }
+    let bar = egui::Rect::from_x_y_ranges(control.left() - 4.0..=control.left() - 2.0, control.y_range());
+    // The bar may sit left of the scroll area's content edge.
+    let painter = ui.painter().clone().with_clip_rect(ui.clip_rect().expand2(egui::vec2(6.0, 0.0)));
+    painter.rect_filled(bar, 0.0, ui.visuals().selection.bg_fill);
+}
+
 /// Send Snippet's name for a stored key.
 fn snippet_name(key: &str) -> String {
     SNIPPETS.with(|s| crate::user_actions::snippet_action_name(s.borrow().iter().find(|x| x.matches_key(key)).map(|x| x.title.as_str())))
@@ -173,6 +254,17 @@ pub struct KeysState {
     pub leader: Option<Keystroke>,
     /// The recorder has seen the Leader and waits for the key after it.
     leader_seen: bool,
+    /// A warning an editor raised, for the settings window to show (`SettingsWindow::sheet`).
+    pub ask: Option<SheetWarning>,
+    /// A binding whose save waits for the override warning's OK.
+    held: Option<HeldKey>,
+}
+
+/// A saved binding held for a warning: the editor and the profile Guid it belongs to (None for
+/// the global map).
+struct HeldKey {
+    editor: KeyEditor,
+    profile: Option<String>,
 }
 
 impl KeysState {
@@ -580,34 +672,51 @@ pub fn pointer_editor(ctx: &egui::Context, e: &mut PointerEditor, profiles: &[(S
     out
 }
 
+/// What a bool row's checkbox shows for the stored value: the opposite for an
+/// inverted row. Storing the checkbox back applies the same rule.
+pub fn checkbox_shows(stored: bool, inverted: bool) -> bool {
+    stored != inverted
+}
+
 /// A control for one global setting (checkbox, menu, or text).
 pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: bool) -> bool {
     let mut changed = false;
     ui.add_enabled_ui(enabled && !s.macos_only, |ui| {
-        match s.kind {
+        let control = match s.kind {
             Kind::Bool => {
-                let mut b = g.bool(&s.key);
-                if ui.checkbox(&mut b, &s.label).changed() {
-                    g.set(&s.key, Value::Boolean(b));
+                let mut b = checkbox_shows(g.bool(&s.key), s.inverted);
+                let r = ui.checkbox(&mut b, &s.label);
+                if r.changed() {
+                    g.set(&s.key, Value::Boolean(checkbox_shows(b, s.inverted)));
                     changed = true;
                 }
+                Some(r.rect)
             }
             Kind::Enum => {
                 ui.horizontal(|ui| {
                     ui.label(&s.label);
                     let now = g.get(&s.key);
                     let shown = s.choices.iter().find(|c| Some(&c.value) == now.as_ref()).map_or(String::new(), |c| c.label.clone());
-                    egui::ComboBox::from_id_salt(&s.key).selected_text(shown).show_ui(ui, |ui| {
-                        for c in &s.choices {
-                            if ui.selectable_label(Some(&c.value) == now.as_ref(), &c.label).clicked() {
-                                g.set(&s.key, c.value.clone());
-                                changed = true;
+                    egui::ComboBox::from_id_salt(&s.key)
+                        .selected_text(shown)
+                        .show_ui(ui, |ui| {
+                            for c in &s.choices {
+                                if ui.selectable_label(Some(&c.value) == now.as_ref(), &c.label).clicked() {
+                                    g.set(&s.key, c.value.clone());
+                                    changed = true;
+                                }
                             }
-                        }
-                    });
-                });
+                        })
+                        .response
+                        .rect
+                })
+                .inner
+                .into()
             }
-            _ => {}
+            _ => None,
+        };
+        if let Some(rect) = control.filter(|_| indicate_non_default() && !global_is_default(g, s)) {
+            non_default_bar(ui, rect, ui.is_enabled());
         }
     })
     .response
@@ -620,7 +729,8 @@ fn globals_in(section: &str) -> Vec<&'static Setting> {
 }
 
 /// iTerm2's Keys pane.
-pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profiles: &[(String, String)]) -> bool {
+/// `key_maps` are every profile's Key Mappings, for the possible override warning.
+pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profiles: &[(String, String)], key_maps: &[toml::Table]) -> bool {
     let mut changed = false;
     if let Some(k) = st.leader_recorded.take() {
         g.set("Leader", Value::String(k.serialized()));
@@ -651,8 +761,13 @@ pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profile
             ui.label("Leader:");
             let leader = keystroke::parse(&g.string("Leader"));
             let text = if st.leader_recording { "Press the keys...".to_string() } else { leader.as_ref().map_or("Click to record".to_string(), Keystroke::label) };
-            if ui.button(text).clicked() {
+            let button = ui.button(text);
+            if button.clicked() {
                 st.leader_recording = !st.leader_recording;
+            }
+            // Marked while a Leader is set (`KeysPreferencesViewController.m:116`).
+            if indicate_non_default() && leader.is_some() {
+                non_default_bar(ui, button.rect, true);
             }
             if leader.is_some() && ui.button("Clear").clicked() {
                 g.set("Leader", Value::String(String::new()));
@@ -683,7 +798,7 @@ pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profile
     });
     if st.key_editor.as_ref().is_some_and(|e| e.target == Target::Global) {
         let mut map = g.table("GlobalKeyMap");
-        if finish_key_editor(ui.ctx(), st, &mut map, profiles) {
+        if finish_key_editor(ui.ctx(), st, &mut map, None, &|stroke| any_profile_maps(&key_maps.iter().collect::<Vec<_>>(), stroke), profiles) {
             g.set("GlobalKeyMap", Value::Table(map));
             changed = true;
         }
@@ -697,7 +812,11 @@ fn editor_for(map: &toml::Table, key: &str, target: Target) -> Option<KeyEditor>
 }
 
 /// Shows the key editor; on OK writes the binding into `map`. True when `map` changed.
-fn finish_key_editor(ctx: &egui::Context, st: &mut KeysState, map: &mut toml::Table, profiles: &[(String, String)]) -> bool {
+/// `overrides` tells whether the new key would override, or be overridden by, another map's
+/// binding: then the save is held for iTerm2's warning (`PK:639-643`, `KP:763-766`), and the
+/// settings window saves it with `held_answered`. `profile` is the Guid of the profile `map`
+/// belongs to, None for the global map.
+fn finish_key_editor(ctx: &egui::Context, st: &mut KeysState, map: &mut toml::Table, profile: Option<String>, overrides: &dyn Fn(&Keystroke) -> bool, profiles: &[(String, String)]) -> bool {
     let Some(e) = st.key_editor.as_mut() else { return false };
     match key_editor(ctx, e, profiles) {
         Outcome::Open => false,
@@ -707,34 +826,238 @@ fn finish_key_editor(ctx: &egui::Context, st: &mut KeysState, map: &mut toml::Ta
         }
         Outcome::Save => {
             let e = st.key_editor.take().unwrap();
-            if let Some(old) = &e.old_key {
-                map.remove(old);
+            if e.stroke.as_ref().is_some_and(overrides) {
+                let spec = if e.target == Target::Global { possible_override_spec() } else { override_spec() };
+                st.ask = Some(SheetWarning::new(spec, SheetThen::SaveKey));
+                st.held = Some(HeldKey { editor: e, profile });
+                ctx.request_repaint();
+                return false;
             }
-            let Some(stroke) = e.stroke else { return false };
-            // Replace any binding for the same key stored in another form.
-            let same: Vec<String> = map.keys().filter(|k| keystroke::parse(k).is_some_and(|s| s.same_key(&stroke))).cloned().collect();
-            for k in same {
-                map.remove(&k);
-            }
-            let key = stroke.serialized();
-            map.insert(key.clone(), e.binding.to_value());
-            if e.target == Target::Global {
-                st.selected = Some(key);
-            } else {
-                st.profile_selected = Some(key);
-            }
-            true
+            save_binding(st, map, e)
         }
     }
 }
 
+/// Writes an edited binding into `map`, replacing the row edited and any binding for the same
+/// key stored in another form. True when `map` changed.
+fn save_binding(st: &mut KeysState, map: &mut toml::Table, e: KeyEditor) -> bool {
+    if let Some(old) = &e.old_key {
+        map.remove(old);
+    }
+    let Some(stroke) = e.stroke else { return false };
+    // Replace any binding for the same key stored in another form.
+    let same: Vec<String> = map.keys().filter(|k| keystroke::parse(k).is_some_and(|s| s.same_key(&stroke))).cloned().collect();
+    for k in same {
+        map.remove(&k);
+    }
+    let key = stroke.serialized();
+    map.insert(key.clone(), e.binding.to_value());
+    if e.target == Target::Global {
+        st.selected = Some(key);
+    } else {
+        st.profile_selected = Some(key);
+    }
+    true
+}
+
+/// What a held binding's save changed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Saved {
+    Nothing,
+    Global,
+    /// The profile with this Guid.
+    Profile(String),
+}
+
+/// The override warning answered with button `index`: OK saves the held binding, Cancel drops
+/// it without saving (iTerm2 returns before writing).
+pub fn held_answered(st: &mut KeysState, index: usize, g: &mut Globals, store: &mut crate::store::Store) -> Saved {
+    let Some(held) = st.held.take() else { return Saved::Nothing };
+    if index != 0 {
+        return Saved::Nothing;
+    }
+    match held.profile {
+        None => {
+            let mut map = g.table("GlobalKeyMap");
+            if !save_binding(st, &mut map, held.editor) {
+                return Saved::Nothing;
+            }
+            g.set("GlobalKeyMap", Value::Table(map));
+            Saved::Global
+        }
+        Some(guid) => {
+            let Some(p) = store.get_mut(&guid) else { return Saved::Nothing };
+            let mut map = p.get("Keyboard Map").and_then(|v| v.as_table().cloned()).unwrap_or_default();
+            if !save_binding(st, &mut map, held.editor) {
+                return Saved::Nothing;
+            }
+            p.set("Keyboard Map", Value::Table(map));
+            Saved::Profile(guid)
+        }
+    }
+}
+
+/// `haveGlobalKeyMappingForKeystroke:`: the global map `map` has a binding for this key.
+pub fn profile_overrides(map: &toml::Table, stroke: &Keystroke) -> bool {
+    map.keys().any(|k| keystroke::parse(k).is_some_and(|s| s.same_key(stroke)))
+}
+
+/// `anyProfileHasMappingForKeystroke:`: some profile's Key Mappings bind this key.
+pub fn any_profile_maps(profiles: &[&toml::Table], stroke: &Keystroke) -> bool {
+    profiles.iter().any(|m| profile_overrides(m, stroke))
+}
+
+/// A settings warning (`iTermWarning` on the settings window, 13b Task 6): no heading, so
+/// iTerm2's "Warning" shows; OK, and Cancel when given, the cancel button.
+fn settings_spec(id: &str, text: String, labels: &[&str]) -> crate::warnings::Spec {
+    crate::warnings::Spec {
+        id: Some(id.to_string()),
+        kind: crate::warnings::Kind::Permanent,
+        heading: String::new(),
+        text,
+        labels: labels.iter().map(|l| l.to_string()).collect(),
+        cancel: labels.iter().position(|l| *l == crate::api_auth::CANCEL),
+        never_remember: Vec::new(),
+    }
+}
+
+/// Choosing Meta for an Option key (`PK:727-736`).
+pub fn meta_spec() -> crate::warnings::Spec {
+    let text = "You have chosen to have an option key act as Meta. This option is useful for backward compatibility with older systems. The \"Esc+\" option is recommended for most users.";
+    settings_spec("NeverWarnAboutMeta", text.into(), &[crate::api_auth::OK])
+}
+
+/// A profile binding for a key the global map binds (`PK:712-725`).
+pub fn override_spec() -> crate::warnings::Spec {
+    let text = "The keyboard shortcut you have set for this profile will take precedence over an existing shortcut for the same key combination in a global shortcut.";
+    settings_spec("NeverWarnAboutOverrides", text.into(), &[crate::api_auth::OK, crate::api_auth::CANCEL])
+}
+
+/// A global binding for a key some profile binds (`KP:704-719`).
+pub fn possible_override_spec() -> crate::warnings::Spec {
+    let text = "The global keyboard shortcut you have set is overridden by at least one profile. Check your profiles\u{2019} keyboard settings if it doesn't work as expected.";
+    settings_spec("NeverWarnAboutPossibleOverrides", text.into(), &[crate::api_auth::OK, crate::api_auth::CANCEL])
+}
+
+/// Copy to Profile's question (`PP:780-791`); 13t's Copy to Profile asks it.
+pub fn replace_profile_spec(name: &str) -> crate::warnings::Spec {
+    let text = format!("Replace profile \u{201c}{name}\u{201d} with the current session's settings?");
+    settings_spec("NoSyncReplaceProfileWarning", text, &["Replace", crate::api_auth::CANCEL])
+}
+
+/// What a settings warning's answer does.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SheetThen {
+    Nothing,
+    /// Saves the held binding on OK (`held_answered`).
+    SaveKey,
+    /// Create a Dedicated Hotkey Window's question, with the hotkey profiles as (Guid, name).
+    CreateHotkey(Vec<(String, String)>),
+}
+
+/// A warning shown over the settings window, with its checkbox's state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SheetWarning {
+    pub spec: crate::warnings::Spec,
+    pub then: SheetThen,
+    suppress: bool,
+}
+
+impl SheetWarning {
+    pub fn new(spec: crate::warnings::Spec, then: SheetThen) -> SheetWarning {
+        SheetWarning { spec, then, suppress: false }
+    }
+}
+
+/// A settings warning's answer: button `index` (the spec's labels' length is "Permanently
+/// Forget Saved Selection", after which the warning shows again), `automatic` when it was
+/// answered from a remembered choice without showing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SheetAnswer {
+    pub spec: crate::warnings::Spec,
+    pub index: usize,
+    pub automatic: bool,
+}
+
+/// The no-drawing half of `sheet_warning`: a remembered answer, when `preempt:` gives one.
+pub fn sheet_preempt(g: &Globals, w: &SheetWarning, show_remembered: bool, now: f64) -> Option<SheetAnswer> {
+    match crate::warnings::preempt(&w.spec, g, now, show_remembered) {
+        crate::warnings::Preempt::Answer(index) => Some(SheetAnswer { spec: w.spec.clone(), index, automatic: true }),
+        _ => None,
+    }
+}
+
+/// Shows a warning over the settings window, as iTerm2's sheet: modal, the heading, the text
+/// (with the remembered explanation and "Permanently Forget Saved Selection" when "Always show
+/// alerts with remembered selections" shows a remembered one), iTerm2's checkbox and the
+/// buttons; Enter is the first button, Escape the Cancel button and Alt plus a button's letter
+/// that button. A remembered answer returns at once without drawing. A clicked button's
+/// answer is remembered per the checkbox; Forget clears it.
+pub fn sheet_warning(ctx: &egui::Context, g: &mut Globals, w: &mut SheetWarning, show_remembered: bool) -> Option<SheetAnswer> {
+    use crate::warnings;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    if let Some(answer) = sheet_preempt(g, w, show_remembered, now) {
+        return Some(answer);
+    }
+    let remembered = match warnings::preempt(&w.spec, g, now, show_remembered) {
+        warnings::Preempt::ShowRemembered { saved_label } => Some(saved_label),
+        _ => None,
+    };
+    let text = remembered.as_deref().map_or_else(|| w.spec.text.clone(), |saved| warnings::remembered_text(&w.spec.text, saved));
+    let mut chosen = None;
+    egui::Modal::new(egui::Id::new("settings-warning")).show(ctx, |ui| {
+        ui.set_max_width(420.0);
+        ui.strong(w.spec.shown_heading());
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(text.as_str()).wrap());
+        if let Some(label) = warnings::checkbox_label(&w.spec) {
+            ui.add_space(6.0);
+            ui.checkbox(&mut w.suppress, label);
+        }
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            for (i, label) in w.spec.labels.iter().enumerate() {
+                if ui.button(label.as_str()).clicked() {
+                    chosen = Some(i);
+                }
+            }
+            if remembered.is_some() && ui.button(warnings::FORGET).clicked() {
+                chosen = Some(w.spec.labels.len());
+            }
+        });
+    });
+    let keys = ctx.input_mut(|i| {
+        if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+            return Some(0);
+        }
+        if let Some(c) = w.spec.cancel.filter(|_| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            return Some(c);
+        }
+        warnings::shortcuts(&w.spec.labels).iter().enumerate().find_map(|(n, s)| {
+            let key = egui::Key::from_name(&s.as_ref()?.1.to_ascii_uppercase().to_string())?;
+            i.consume_key(egui::Modifiers::ALT, key).then_some(n)
+        })
+    });
+    let index = chosen.or(keys)?;
+    if index == w.spec.labels.len() {
+        if let Some(id) = w.spec.id.as_deref() {
+            warnings::clear_saved(g, id);
+        }
+    } else {
+        warnings::remember(&w.spec, g, index, w.suppress, now);
+    }
+    Some(SheetAnswer { spec: w.spec.clone(), index, automatic: false })
+}
+
 /// Whether a global row takes input: the Python API's authentication popup only while the API
 /// is on (`GP:2055-2057`), the custom scripts folder only while its checkbox is on
-/// (`GP:2152-2154`); every other row always.
+/// (`GP:2152-2154`), the settings folder only while "Load settings from a custom folder or URL"
+/// is on (`GP:2210-2212`); every other row always.
 pub fn row_enabled(g: &Globals, key: &str) -> bool {
     match key {
         "API Authentication Method" => g.bool("EnableAPIServer"),
         "CustomScriptsFolder" => g.bool("UseCustomScriptsFolder"),
+        crate::remote_prefs::FOLDER_KEY => g.bool(crate::remote_prefs::LOAD_KEY),
         _ => true,
     }
 }
@@ -757,6 +1080,11 @@ pub fn add_icon_font(ctx: &egui::Context) {
     let Some(bytes) = ["SegoeIcons.ttf", "segmdl2.ttf"].iter().find_map(|f| std::fs::read(dir.join(f)).ok()) else { return };
     ctx.add_font(FontInsert::new("tandem-icons", egui::FontData::from_owned(bytes), vec![InsertFontFamily { family: icon_family(), priority: FontPriority::Highest }]));
     ctx.data_mut(|d| d.insert_temp(icon_font_id(), true));
+}
+
+/// A glyph of the icon font, or None when `add_icon_font` did not find it.
+pub fn icon_text(ctx: &egui::Context, glyph: char) -> Option<egui::RichText> {
+    has_icon_font(ctx).then(|| egui::RichText::new(glyph.to_string()).family(icon_family()))
 }
 
 /// Whether `add_icon_font` found the icon font (without it the "icons" family is not defined
@@ -864,15 +1192,17 @@ pub fn page_rows(tab: &str) -> Vec<&'static Setting> {
 }
 
 /// A pane that shows only the global settings the schema has for it so far, by section
-/// (General and Advanced; the rest of each comes in milestone 13).
-pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> bool {
+/// (General and Appearance). Returns whether a setting changed, and what the custom settings
+/// folder's rows asked for.
+pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> (bool, PrefsAction) {
     schema_page_with(ui, g, tab, &mut |_, _| false)
 }
 
 /// `schema_page` with more drawn after its last section (General's AI section): `extra`
 /// gets the globals the scroll area already holds, and its answer joins the result.
-pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &mut dyn FnMut(&mut egui::Ui, &mut Globals) -> bool) -> bool {
+pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &mut dyn FnMut(&mut egui::Ui, &mut Globals) -> bool) -> (bool, PrefsAction) {
     let mut changed = false;
+    let mut prefs = PrefsAction::None;
     let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_default();
     let rows = page_rows(tab);
     egui::ScrollArea::vertical().show(ui, |ui| {
@@ -891,10 +1221,22 @@ pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &m
                     changed |= ended;
                     continue;
                 }
+                // The custom settings folder's rows draw its text field with the checkbox.
+                if s.key == crate::remote_prefs::LOAD_KEY {
+                    prefs = prefs_rows(ui, g, &home);
+                    changed |= matches!(prefs, PrefsAction::Changed | PrefsAction::CopyNow | PrefsAction::SaveNow);
+                    continue;
+                }
+                if s.key == crate::remote_prefs::FOLDER_KEY {
+                    continue;
+                }
                 let enabled = row_enabled(g, &s.key);
                 let was_on = g.bool(&s.key);
                 let c = global_control(ui, g, s, enabled);
                 changed |= c;
+                if s.key == "Bidi" {
+                    ui.label(egui::RichText::new(EXPERIMENTAL_NOTE).small().weak());
+                }
                 // Turned on with no folder named: the folder picker opens (`GP:4247-4259`).
                 if c && s.key == "UseCustomScriptsFolder" && !was_on && g.bool(&s.key) && g.string("CustomScriptsFolder").is_empty() && choose_scripts_folder(g).is_some() {
                     ui.ctx().data_mut(|d| d.remove_temp::<bool>(folder_pending_id()));
@@ -903,9 +1245,170 @@ pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &m
             ui.add_space(8.0);
         }
         changed |= extra(ui, g);
-        ui.weak("The rest of this pane comes in milestone 13.");
     });
-    changed
+    (changed, prefs)
+}
+
+/// What General > Settings' external settings, backup and reset rows asked for: a setting
+/// changed; the folder was just picked with the checkbox turned on, so "Copy local settings to
+/// custom folder now?" asks (`GP:4262-4292`); Save Now was pressed; or one of the Export All,
+/// Import All and Erase All buttons (`GP:4084-4096`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrefsAction {
+    None,
+    Changed,
+    CopyNow,
+    SaveNow,
+    ExportAll,
+    ImportAll,
+    EraseAll,
+}
+
+/// Where a window's egui memory keeps the last settings location checked and whether it was
+/// valid (the check writes a probe file, so it runs when the text changes, not every frame).
+fn prefs_valid_id() -> egui::Id {
+    egui::Id::new("tandem-prefs-folder-valid")
+}
+
+/// Whether the Save changes popup, its label and Save Now take input (`GP:4239-4244`): the
+/// setting is on and the location is a valid folder (never a URL).
+pub fn prefs_save_enabled(
+    g: &Globals,
+    home: &std::path::Path,
+    read_link: &dyn Fn(&std::path::Path) -> Option<std::path::PathBuf>,
+    writable: &dyn Fn(&std::path::Path) -> bool,
+) -> bool {
+    use crate::remote_prefs as rp;
+    let text = g.string(rp::FOLDER_KEY);
+    g.bool(rp::LOAD_KEY) && !rp::is_url(&rp::expanded(&text, home)) && rp::location_valid(&text, home, read_link, writable)
+}
+
+/// `choosePrefsCustomFolder`: the folder picker; a picked folder becomes the location, which
+/// is returned.
+fn choose_prefs_folder(g: &mut Globals) -> Option<String> {
+    let dir = rfd::FileDialog::new().pick_folder()?;
+    let text = dir.display().to_string();
+    g.set(crate::remote_prefs::FOLDER_KEY, Value::String(text.clone()));
+    Some(text)
+}
+
+/// General > Settings' labeled rows (`XIB:8360-8480`): "External settings:" with the custom
+/// folder rows, "Backup & restore:" with Export All and Import All one above the other, and
+/// "Reset:" with Erase All.
+pub fn prefs_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path) -> PrefsAction {
+    use crate::remote_prefs as rp;
+    let mut action = PrefsAction::None;
+    egui::Grid::new("tandem-prefs-rows").num_columns(2).show(ui, |ui| {
+        ui.label(rp::EXTERNAL_SETTINGS);
+        ui.vertical(|ui| action = custom_folder_rows(ui, g, home));
+        ui.end_row();
+        ui.label(rp::BACKUP_RESTORE);
+        ui.vertical(|ui| {
+            if ui.button(rp::EXPORT_ALL).clicked() {
+                action = PrefsAction::ExportAll;
+            }
+            if ui.button(rp::IMPORT_ALL).clicked() {
+                action = PrefsAction::ImportAll;
+            }
+        });
+        ui.end_row();
+        ui.label(rp::RESET);
+        if ui.button(rp::ERASE_ALL).clicked() {
+            action = PrefsAction::EraseAll;
+        }
+        ui.end_row();
+    });
+    action
+}
+
+/// The custom folder rows (`GP:2167-2218`, `GP:4221-4292`, `XIB:8360-8440`): the checkbox; the
+/// location field and Browse, both enabled with it, and the mark saying whether the location
+/// is usable; "Save changes:" with its popup and Save Now, enabled for an on, valid folder.
+/// Turning the checkbox on with no location opens the folder picker, and a usable pick offers
+/// to copy the local settings there.
+fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path) -> PrefsAction {
+    use crate::remote_prefs::{self as rp, SaveMode};
+    let mut action = PrefsAction::None;
+    let was_on = g.bool(rp::LOAD_KEY);
+    if let Some(s) = schema::find_global(rp::LOAD_KEY) {
+        if global_control(ui, g, s, true) {
+            action = PrefsAction::Changed;
+        }
+    }
+    let on = g.bool(rp::LOAD_KEY);
+    if on && !was_on && g.string(rp::FOLDER_KEY).is_empty() && choose_prefs_folder(g).is_some() && rp::location_valid(&g.string(rp::FOLDER_KEY), home, &crate::scripts::read_link, &rp::writable) {
+        action = PrefsAction::CopyNow;
+    }
+    let mut text = g.string(rp::FOLDER_KEY);
+    let setting = schema::find_global(rp::FOLDER_KEY);
+    let mut valid = false;
+    ui.horizontal(|ui| {
+        ui.add_enabled_ui(on, |ui| {
+            let field = ui.add(egui::TextEdit::singleline(&mut text).hint_text(rp::FOLDER_HINT));
+            if field.changed() {
+                g.set(rp::FOLDER_KEY, Value::String(text.clone()));
+                action = action.max_changed();
+            }
+            if setting.is_some_and(|s| indicate_non_default() && !global_is_default(g, s)) {
+                non_default_bar(ui, field.rect, ui.is_enabled());
+            }
+            if ui.button(rp::BROWSE).clicked() {
+                if let Some(picked) = choose_prefs_folder(g) {
+                    text = picked;
+                    action = action.max_changed();
+                }
+            }
+        });
+        let cached = ui.ctx().data(|d| d.get_temp::<(String, bool)>(prefs_valid_id()));
+        valid = match cached {
+            Some((checked, valid)) if checked == text => valid,
+            _ => {
+                let valid = rp::location_valid(&text, home, &crate::scripts::read_link, &rp::writable);
+                ui.ctx().data_mut(|d| d.insert_temp(prefs_valid_id(), (text.clone(), valid)));
+                valid
+            }
+        };
+        if let (Some((glyph, alpha)), true) = (crate::scripts::folder_glyph(on, &text, valid), has_icon_font(ui.ctx())) {
+            let color = ui.visuals().text_color().gamma_multiply(alpha);
+            ui.label(egui::RichText::new(glyph.to_string()).family(icon_family()).color(color));
+        }
+    })
+    .response
+    .on_hover_text(setting.map_or("", |s| s.help.as_str()));
+    // The folder's probe (and its link check) answered above; a URL or a network path is never probed.
+    let enabled = prefs_save_enabled(g, home, &|_| None, &|_| valid);
+    ui.add_enabled_ui(enabled, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(rp::SAVE_CHANGES);
+            let mode = rp::save_mode(g.bool(rp::HAVE_SELECTION_KEY), g.int(rp::SELECTION_KEY));
+            let choices = [(rp::AUTOMATICALLY, SaveMode::Always), (rp::MANUALLY, SaveMode::Never), (rp::WHEN_QUITTING, SaveMode::OnQuit)];
+            let shown = choices.iter().find(|(_, m)| *m == mode).map_or("", |(label, _)| label);
+            let combo = egui::ComboBox::from_id_salt(rp::SELECTION_KEY).selected_text(shown).show_ui(ui, |ui| {
+                for (label, m) in choices {
+                    if ui.selectable_label(m == mode, label).clicked() {
+                        // A pick is the popup's "have selection" (`GP:2179-2187`).
+                        g.set(rp::HAVE_SELECTION_KEY, Value::Boolean(true));
+                        g.set(rp::SELECTION_KEY, Value::Integer(m.tag()));
+                        action = action.max_changed();
+                    }
+                }
+            });
+            if schema::find_global(rp::SELECTION_KEY).is_some_and(|s| indicate_non_default() && !global_is_default(g, s)) {
+                non_default_bar(ui, combo.response.rect, ui.is_enabled());
+            }
+            if ui.button(rp::SAVE_NOW).clicked() {
+                action = PrefsAction::SaveNow;
+            }
+        });
+    });
+    action
+}
+
+impl PrefsAction {
+    /// Changed, unless something more was asked for.
+    fn max_changed(self) -> PrefsAction {
+        if self == PrefsAction::None { PrefsAction::Changed } else { self }
+    }
 }
 
 /// iTerm2's Pointer pane.
@@ -964,7 +1467,8 @@ pub fn pointer_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, prof
 }
 
 /// The profile Keys tab's Key Mappings block: the table, presets, and Delete sends ^H.
-pub fn profile_key_mappings(ui: &mut egui::Ui, p: &mut Profile, st: &mut KeysState, profiles: &[(String, String)]) -> bool {
+/// `global` is the global key map, for the override warning.
+pub fn profile_key_mappings(ui: &mut egui::Ui, p: &mut Profile, st: &mut KeysState, profiles: &[(String, String)], global: &toml::Table) -> bool {
     let mut changed = false;
     let mut map = p.get("Keyboard Map").and_then(|v| v.as_table().cloned()).unwrap_or_default();
     ui.add_space(8.0);
@@ -997,11 +1501,16 @@ pub fn profile_key_mappings(ui: &mut egui::Ui, p: &mut Profile, st: &mut KeysSta
         }
     });
     let mut ctrl_h = delete_sends_ctrl_h(&map);
-    if ui.checkbox(&mut ctrl_h, "Delete sends ^H").changed() {
+    let check = ui.checkbox(&mut ctrl_h, "Delete sends ^H");
+    if check.changed() {
         set_delete_sends_ctrl_h(&mut map, ctrl_h);
         changed = true;
     }
-    if st.key_editor.as_ref().is_some_and(|e| e.target == Target::Profile) && finish_key_editor(ui.ctx(), st, &mut map, profiles) {
+    // Marked while on (`ProfilesKeysPreferencesViewController.m:549`).
+    if indicate_non_default() && ctrl_h {
+        non_default_bar(ui, check.rect, ui.is_enabled());
+    }
+    if st.key_editor.as_ref().is_some_and(|e| e.target == Target::Profile) && finish_key_editor(ui.ctx(), st, &mut map, Some(p.guid()), &|stroke| profile_overrides(global, stroke), profiles) {
         changed = true;
     }
     if changed {
@@ -1117,6 +1626,143 @@ mod tests {
     }
 
     #[test]
+    fn prefs_rows_follow_iterm2() {
+        let row = |key: &str| schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+        for (key, tab, section, kind, default, label) in [
+            ("LoadPrefsFromCustomFolder", "General", "Settings", Kind::Bool, Value::Boolean(false), Some("Load settings from a custom folder or URL")),
+            ("PrefsCustomFolder", "General", "Settings", Kind::String, Value::String(String::new()), Some("Custom folder")),
+            ("NoSyncNeverRemindPrefsChangesLostForFile_selection", "Stored", "Settings", Kind::Int, Value::Integer(0), None),
+            ("NoSyncPromptBeforeLoadingPrefsFromURL", "Stored", "Settings", Kind::String, Value::String(String::new()), None),
+            (
+                "NoSyncNeverRemindPrefsChangesLostForFile",
+                "Advanced",
+                "Warnings",
+                Kind::Bool,
+                Value::Boolean(false),
+                Some("Suppress changed-setting warning when settings are loaded from a custom folder."),
+            ),
+            (
+                "NoSyncNeverRemindPrefsChangesLostForUrl",
+                "Advanced",
+                "Warnings",
+                Kind::Bool,
+                Value::Boolean(false),
+                Some("Suppress changed-setting warning when settings are loaded from a URL."),
+            ),
+            ("NoSyncDownloadPrefsTimeout", "Advanced", "General", Kind::Float, Value::Float(5.0), Some("Timeout for downloading settings")),
+        ] {
+            let s = row(key);
+            assert_eq!((s.tab.as_str(), s.section.as_str()), (tab, section), "{key}");
+            assert_eq!(s.kind, kind, "{key}");
+            assert_eq!(s.default, Some(default), "{key}");
+            if let Some(label) = label {
+                assert_eq!(s.label, label, "{key}");
+                if tab == "Advanced" {
+                    assert_eq!(s.help, label, "{key}");
+                }
+            }
+        }
+        assert_eq!(
+            row("PrefsCustomFolder").help,
+            "The folder (or http:// or https:// URL) holding tandem-settings.toml. Network paths are not supported."
+        );
+        // The rows sit before "Save copy/paste and command history to disk" (Task 8's order).
+        let general: Vec<&str> = schema::global().iter().filter(|s| s.tab == "General" && s.section == "Settings").map(|s| s.key.as_str()).collect();
+        assert_eq!(&general[..3], ["LoadPrefsFromCustomFolder", "PrefsCustomFolder", "SavePasteHistory"]);
+    }
+
+    #[test]
+    fn export_rows_follow_iterm2() {
+        let s = schema::find_global("RevealExportedSettingsAndData").expect("row");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(true)));
+        let text = "Reveal file created by \u{201c}Export All Settings and Data\u{201d} in Explorer upon completion";
+        assert_eq!((s.label.as_str(), s.help.as_str()), (text, text));
+    }
+
+    #[test]
+    fn warning_rows_follow_iterm2() {
+        let s = schema::find_global("AlertsIndicateShortcuts").expect("row");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        let label = "Buttons in modal alerts indicate keyboard shortcuts.";
+        assert_eq!(s.label, label);
+        assert_eq!(s.help, format!("{label}\nDo you miss Windows 95? I do."));
+        let c = schema::find_global(crate::warnings::CATALOG_KEY).expect("row");
+        assert_eq!((c.tab.as_str(), c.section.as_str(), c.kind), ("Stored", "Warnings", Kind::Dict));
+        assert_eq!(c.default, Some(Value::Table(toml::Table::new())));
+    }
+
+    /// The confirmations' rows (`ASM:504,668,785,787`).
+    #[test]
+    fn confirmation_rows_follow_iterm2() {
+        let rows = [
+            ("NoSyncSuppressRestartSessionConfirmationAlert", "Session", Some(false), "Suppress restart session confirmation alert.", "Suppress restart session confirmation alert.\nDon't ask for a confirmation when manually restarting a session."),
+            ("NoSyncSuppressDownloadConfirmation", "General", Some(false), "Suppress confirmation of terminal-initiated downloads?", "Suppress confirmation of terminal-initiated downloads?"),
+            ("NoSyncClearAllBroadcast", "Warnings", None, "Send Clear Session to all broadcasted-to sessions?", "Send Clear Session to all broadcasted-to sessions?"),
+            ("NoSyncConfirmRemoveAnnotation", "Warnings", Some(false), "Suppress confirmation to remove annotation?", "Suppress confirmation to remove annotation?"),
+        ];
+        for (key, section, default, label, help) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", section, Kind::Bool), "{key}");
+            assert_eq!(s.default, default.map(Value::Boolean), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (label, help), "{key}");
+        }
+        assert!(schema::find_global("NoSyncClearAllBroadcast").unwrap().optional_bool());
+    }
+
+    /// The arrangement announcements' rows (`ASM:779-781`).
+    #[test]
+    fn arrangement_rows_follow_iterm2() {
+        let rows = [
+            ("NoSyncSuppressMissingProfileInArrangementWarning", "Suppress the notification that a restored session\u{2019}s profile no longer exists?"),
+            ("NoSyncSuppressBadPWDInArrangementWarning", "Suppress the notification that a saved arrangement has a bad initial working directory."),
+        ];
+        for (key, text) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(false)), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
+        }
+    }
+
+    #[test]
+    fn erase_row_follows_iterm2() {
+        let s = schema::find_global("DryRunEraseAllSettingsAndData").expect("row");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        let label = "Dry-run \u{201c}Erase All Settings and Data\u{201d}.";
+        assert_eq!(s.label, label);
+        assert_eq!(
+            s.help,
+            format!("{label}\nWhen enabled, the Erase All Settings and Data button logs what it would delete (to the debug output) instead of actually deleting anything, and does not quit. Intended for testing the feature.")
+        );
+    }
+
+    #[test]
+    fn prefs_row_enabling_follows_iterm2() {
+        use crate::remote_prefs::{FOLDER_KEY, LOAD_KEY};
+        let home = std::path::Path::new(r"C:\Users\u");
+        let mut g = Globals::empty(std::path::Path::new("prefs-rows-test.toml"));
+        assert!(!row_enabled(&g, FOLDER_KEY));
+        g.set(LOAD_KEY, Value::Boolean(true));
+        assert!(row_enabled(&g, FOLDER_KEY));
+        let writable = |p: &std::path::Path| p == std::path::Path::new(r"D:\s");
+        g.set(FOLDER_KEY, Value::String("https://h/p".into()));
+        assert!(!prefs_save_enabled(&g, home, &|_| None, &writable), "a URL is never saved to");
+        g.set(FOLDER_KEY, Value::String(r"D:\s".into()));
+        assert!(prefs_save_enabled(&g, home, &|_| None, &writable));
+        let to_share = |p: &std::path::Path| (p == std::path::Path::new(r"D:\s")).then(|| std::path::PathBuf::from(r"\\h\s"));
+        assert!(!prefs_save_enabled(&g, home, &to_share, &writable), "a folder linked to a network path");
+        g.set(FOLDER_KEY, Value::String(r"D:\t".into()));
+        assert!(!prefs_save_enabled(&g, home, &|_| None, &writable), "a folder that cannot be written");
+        g.set(FOLDER_KEY, Value::String(r"D:\s".into()));
+        g.set(LOAD_KEY, Value::Boolean(false));
+        assert!(!prefs_save_enabled(&g, home, &|_| None, &writable), "off");
+        assert!(!row_enabled(&g, FOLDER_KEY));
+    }
+
+    #[test]
     fn scripts_folder_rows_follow_iterm2() {
         let use_custom = schema::find_global("UseCustomScriptsFolder").unwrap();
         assert_eq!((use_custom.tab.as_str(), use_custom.section.as_str(), use_custom.label.as_str()), ("General", "Python API", "Custom Python API Scripts Folder"));
@@ -1182,6 +1828,101 @@ mod tests {
     }
 
     #[test]
+    fn plumbed_rows_follow_iterm2() {
+        let row = |key: &str| schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+        let vars = row("NoSyncVariablesToReport");
+        assert_eq!((vars.tab.as_str(), vars.section.as_str(), vars.kind), ("Advanced", "Terminal", Kind::String));
+        assert_eq!(vars.default, Some(Value::String(String::new())));
+        assert_eq!(vars.label, "Variables to report via control sequence");
+        assert_eq!(
+            vars.help,
+            "Variables to report via control sequence\nThis is a comma-delimited list of variables that can be reported with the OSC 1337 ReportVariable=name control sequence. Each variable name must be prefixed with \u{201c}allow:\u{201d} or \u{201c}deny:\u{201d}."
+        );
+        let prevent = row("PreventEscapeSequenceFromChangingProfile");
+        assert_eq!((prevent.tab.as_str(), prevent.section.as_str(), prevent.kind), ("Advanced", "Terminal", Kind::Bool));
+        assert_eq!(prevent.default, None);
+        let text = "Prevent control sequences from changing the current profile?";
+        assert_eq!((prevent.label.as_str(), prevent.help.as_str()), (text, text));
+        for (key, text) in [
+            ("NoSyncSuppressClipboardAccessDeniedWarning", "Suppress the notification that the terminal attempted to access the clipboard but it was denied?"),
+            ("NoSyncDisableOpenURL", "Disable control sequence to open URLs?"),
+        ] {
+            let r = row(key);
+            assert_eq!((r.tab.as_str(), r.section.as_str(), r.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
+            assert_eq!(r.default, Some(Value::Boolean(false)), "{key}");
+            assert_eq!((r.label.as_str(), r.help.as_str()), (text, text), "{key}");
+        }
+        let base = row("PreferredBaseDir");
+        assert_eq!((base.tab.as_str(), base.section.as_str(), base.kind), ("Advanced", "General", Kind::String));
+        assert_eq!(base.default, Some(Value::String(String::new())));
+        let label = "Folder for config files. There must not be a space in the path.";
+        assert_eq!(base.label, label);
+        assert_eq!(base.help, format!("{label}\nIf empty, then %APPDATA%\\Tandem will be the default location."));
+    }
+
+    /// `PP:1096-1121`, `PBVC:902-909`: "Show indicators for non-default values" is
+    /// `NoSyncHideDefaultValuedSettings` (`PREF:252`, default NO `PREF:780`); a control is
+    /// default when its value is nullably and approximately (0.001) equal to the default.
+    #[test]
+    fn indicators_follow_iterm2() {
+        let s = schema::find_global("NoSyncHideDefaultValuedSettings").expect("NoSyncHideDefaultValuedSettings");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Stored", "Settings", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        assert_eq!(s.label, crate::settings_ui::SHOW_INDICATORS);
+        let mut g = Globals::empty(std::path::Path::new("unused-settings.toml"));
+        let ffm = schema::find_global("FocusFollowsMouse").unwrap();
+        assert!(global_is_default(&g, ffm));
+        g.set("FocusFollowsMouse", Value::Boolean(true));
+        assert!(!global_is_default(&g, ffm));
+        g.set("FocusFollowsMouse", Value::Boolean(false));
+        assert!(!g.values.contains_key("FocusFollowsMouse"), "the file drops a default");
+        assert!(global_is_default(&g, ffm));
+        // Numbers: within 0.001 of the default is default (`isNullablyEqualToObject:epsilon:0.001`).
+        let height = schema::find_global("statusBarHeight").unwrap();
+        g.values.insert("statusBarHeight".into(), Value::Float(21.0005));
+        assert!(global_is_default(&g, height));
+        g.values.insert("statusBarHeight".into(), Value::Integer(21));
+        assert!(global_is_default(&g, height));
+        g.values.insert("statusBarHeight".into(), Value::Float(21.01));
+        assert!(!global_is_default(&g, height));
+        // An optional bool has no default: a stored No or Yes is not default, unset is.
+        let prevent = schema::find_global("PreventEscapeSequenceFromChangingProfile").unwrap();
+        assert!(global_is_default(&g, prevent));
+        g.values.insert(prevent.key.clone(), Value::Boolean(true));
+        assert!(!global_is_default(&g, prevent));
+        // A missing value equals a zero, empty or false one (`it_hasZeroValue`).
+        assert!(nullably_equal(None, Some(&Value::Integer(0))));
+        assert!(nullably_equal(Some(&Value::String(String::new())), None));
+        assert!(!nullably_equal(Some(&Value::String("x".into())), None));
+        let color = |r: f64| Value::Table(toml::toml! { r = r g = 0.5 b = 0.5 a = 1.0 });
+        assert!(nullably_equal(Some(&color(0.2)), Some(&color(0.2009))));
+        assert!(!nullably_equal(Some(&color(0.2)), Some(&color(0.21))));
+        set_indicate_non_default(true);
+        assert!(indicate_non_default());
+        set_indicate_non_default(false);
+        assert!(!indicate_non_default());
+    }
+
+    /// `XIB:8708-8750`, `GP:2559-2566`, `PREF:105-106`, `PREF:757-758`: General > Experimental.
+    #[test]
+    fn experimental_rows_follow_iterm2() {
+        let bidi = schema::find_global("Bidi").expect("Bidi");
+        assert_eq!((bidi.tab.as_str(), bidi.section.as_str(), bidi.kind), ("General", "Experimental", Kind::Bool));
+        assert_eq!(bidi.default, Some(Value::Boolean(true)));
+        assert_eq!(bidi.label, "Enable support for right-to-left scripts");
+        assert_eq!(bidi.help, RTL_TOOLTIP);
+        let ssh = schema::find_global("SshIntegrationForURLs").expect("SshIntegrationForURLs");
+        assert_eq!((ssh.tab.as_str(), ssh.section.as_str(), ssh.kind), ("General", "Experimental", Kind::Bool));
+        assert_eq!(ssh.default, Some(Value::Boolean(false)));
+        assert_eq!(ssh.label, "Use SSH integration for ssh: URLs");
+        assert_eq!(EXPERIMENTAL_NOTE, "This setting also enables ligature support in the GPU renderer.");
+        assert_eq!(RTL_TOOLTIP, "Buried sessions appear under Session > Buried Sessions. When this setting is enabled, window sizes are restored when attaching to an existing tmux session.");
+        // Experimental is the General pane's last section, as in iTerm2's xib.
+        let last = schema::global().iter().filter(|s| s.tab == "General").last().unwrap();
+        assert_eq!(last.section, "Experimental");
+    }
+
+    #[test]
     fn utilities_rows_follow_iterm2() {
         let lc = "Set LC_TERMINAL=iTerm2.";
         for (key, label, help) in [
@@ -1198,6 +1939,16 @@ mod tests {
     }
 
     #[test]
+    fn software_update_row_follows_iterm2() {
+        let key = "NotifyOnlyForCriticalShellIntegrationUpdates";
+        let row = schema::find_global(key).expect("row");
+        assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("General", "Software Update", Kind::Bool));
+        assert_eq!(row.default, Some(Value::Boolean(true)));
+        assert_eq!(row.label, "Ignore non-critical shell integration updates");
+        assert!(Globals::empty(std::path::Path::new("software-update-row-test.toml")).bool(key), "on until turned off");
+    }
+
+    #[test]
     fn upload_row_follows_iterm2() {
         let row = schema::find_global("accelerateUploads").unwrap();
         assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"));
@@ -1206,6 +1957,125 @@ mod tests {
         assert_eq!(row.label, "Make uploads with it2ul really fast.");
         assert_eq!(row.help, "Make uploads with it2ul really fast.");
         assert!(Globals::empty(std::path::Path::new("upload-row-test.toml")).bool("accelerateUploads"), "on until turned off");
+    }
+
+    #[test]
+    fn tab_appearance_rows_follow_iterm2() {
+        for (key, default, inverted, label) in [
+            ("HideTab", true, true, "Show tab bar even when there is only one tab"),
+            ("HideTabNumber", false, true, "Show tab numbers"),
+            ("TabsHaveCloseButton", true, false, "Tabs have close buttons"),
+            ("HideActivityIndicator", false, true, "Show activity indicator"),
+            ("StretchTabsToFillBar", true, false, "Stretch tabs to fill bar"),
+            ("HTMLTabTitles", false, false, "Support basic HTML tags in tab titles"),
+            ("ScrollableSideTabBar", true, false, "Tab bar scrolls when tabs don\u{2019}t fit"),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "Tabs"), "{key}");
+            assert_eq!(row.kind, Kind::Bool, "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(default)), "{key}");
+            assert_eq!(row.inverted, inverted, "{key}");
+            assert_eq!(row.label, label, "{key}");
+        }
+        // The one row with an iTerm2 tooltip (`PreferencePanel.xib`, "Support basic HTML tags") uses it verbatim.
+        assert_eq!(
+            schema::find_global("HTMLTabTitles").unwrap().help,
+            "The following tags are recognized: <u>, <i>, and <b>. You can also use &lt; and &amp;."
+        );
+        // An inverted checkbox shows the opposite of the stored bool (`kPreferenceInfoTypeInvertedCheckbox`).
+        assert!(checkbox_shows(true, false));
+        assert!(!checkbox_shows(false, false));
+        assert!(!checkbox_shows(true, true));
+        assert!(checkbox_shows(false, true));
+    }
+
+    #[test]
+    fn tab_advanced_rows_follow_iterm2() {
+        let b = Value::Boolean;
+        let i = Value::Integer;
+        let f = Value::Float;
+        let plain = |s: &str| (s.to_string(), s.to_string());
+        let more = |label: &str, rest: &str| (label.to_string(), format!("{label}\n{rest}"));
+        for (key, kind, default, (label, help)) in [
+            ("UseUnevenTabs", Kind::Bool, b(false), plain("Uneven tab widths allowed.")),
+            ("MinTabWidth", Kind::Int, i(75), plain("Minimum tab width when using uneven tab widths.")),
+            ("MinCompactTabWidth", Kind::Int, i(60), plain("Minimum tab width when using uneven tab widths for compact tabs.")),
+            ("OptimumTabWidth", Kind::Int, i(175), plain("Preferred tab width when tabs are equally sized.")),
+            (
+                "ScrollableTabWidth",
+                Kind::Int,
+                i(120),
+                more("Tab width when the tab bar is scrollable.", "Used as the fixed width when tabs are equally sized, and as the minimum width when uneven tab widths are allowed."),
+            ),
+            (
+                "TabTitlesUseSmartTruncation",
+                Kind::Bool,
+                b(true),
+                more(
+                    "Use \u{201c}smart truncation\u{201d} for tab titles.",
+                    "If a tab\u{2018}s title is too long to fit, ellipsize the start of the title if more tabs have unique suffixes than prefixes in a given window.",
+                ),
+            ),
+            ("MiddleClickClosesTab", Kind::Bool, b(true), plain("Should middle-click on a tab in the tab bar close the tab?")),
+            (
+                "DefaultTabBarHeight",
+                Kind::Float,
+                f(24.0),
+                more(
+                    "Default tab bar height",
+                    "This does not affect the minimal or compact themes. On macOS 26 Tahoe-style tabs, the top (horizontal) tab bar uses the system height and ignores this setting; left/right (vertical) tabs use max(26, this value) for each tab\u{2019}s height.",
+                ),
+            ),
+            ("DoubleClickTabToEdit", Kind::Bool, b(true), plain("Should double-clicking a tab open a window to edit its title?")),
+            (
+                "MinimumTabLabelWidth",
+                Kind::Float,
+                f(35.0),
+                more("Minimum width for tab labels.", "The activity/bell icon will be hidden when the space for the label drops below this size (in points)"),
+            ),
+            ("DrawBottomLineForHorizontalTabBar", Kind::Bool, b(true), plain("Draw bottom line for horizontal tabbar in Regular, Dark and Light theme?")),
+            ("DisableTabBarTooltips", Kind::Bool, b(false), plain("Disable tab bar tooltips?")),
+            (
+                "UseCustomTabBarFontSize",
+                Kind::Bool,
+                b(false),
+                more("Use custom font size for tab labels?", "See also advanced setting \u{201c}Custom tab label font size\u{201d}."),
+            ),
+            (
+                "CustomTabBarFontSize",
+                Kind::Float,
+                f(11.0),
+                more("Custom tab label font size", "For this to take effect, turn on \u{201c}Use custom font size for tab labels?\u{201d}."),
+            ),
+            ("SelectsTabsOnMouseDown", Kind::Bool, b(true), more("Select tabs on mouse-down?", "Changing this setting will not affect existing windows.")),
+            (
+                "TabColorMenuOptions",
+                Kind::String,
+                Value::String("#fb6b62 #f6ac47 #f0dc4f #b5d749 #5fa3f8 #c18ed9 #787878".into()),
+                more(
+                    "Colors for tab color menu item.",
+                    "Space delimited strings like #rrggbb or #rgb in sRGB color space. If the P3 color space is available, you can use strings like: color(p3 1 0.5 0.25)",
+                ),
+            ),
+            ("RemoveAddTabButton", Kind::Bool, b(false), plain("Remove the \u{201c}new tab\u{201d} button from horizontal tab bars?")),
+            (
+                "AddTabButtonUsesCurrentProfile",
+                Kind::Bool,
+                b(false),
+                more(
+                    "Should the \u{201c}new tab\u{201d} button in the tab bar use the current session\u{2019}s profile?",
+                    "When enabled, clicking the \u{201c}+\u{201d} button opens a new tab with the current session\u{2019}s profile instead of the default profile.",
+                ),
+            ),
+            ("TabCloseButtonsAlwaysVisible", Kind::Bool, b(false), plain("Should tab close buttons always remain visible?")),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert!(!row.inverted, "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label.as_str(), help.as_str()), "{key}");
+        }
     }
 
     #[test]
@@ -1390,5 +2260,114 @@ mod tests {
         // Schema order is kept.
         let order: Vec<&str> = schema::global().iter().filter(|s| s.tab == "Advanced" && !row_hidden(&s.key)).map(|s| s.key.as_str()).collect();
         assert_eq!(advanced.iter().map(|s| s.key.as_str()).collect::<Vec<_>>(), order);
+    }
+
+    /// The settings warnings' specs (`PK:712-736`, `KP:704-719`, `PP:780-791`): texts, buttons,
+    /// identifiers and kinds; none has a heading, so each shows iTerm2's "Warning".
+    #[test]
+    fn key_warnings_follow_iterm2() {
+        use crate::warnings::{Kind::Permanent, checkbox_label};
+        let meta = meta_spec();
+        assert_eq!(meta.text, "You have chosen to have an option key act as Meta. This option is useful for backward compatibility with older systems. The \"Esc+\" option is recommended for most users.");
+        assert_eq!((meta.labels.clone(), meta.cancel, meta.id.as_deref(), meta.kind), (vec!["OK".to_string()], None, Some("NeverWarnAboutMeta"), Permanent));
+        assert_eq!(checkbox_label(&meta), Some("Suppress this message permanently"));
+        let o = override_spec();
+        assert_eq!(o.text, "The keyboard shortcut you have set for this profile will take precedence over an existing shortcut for the same key combination in a global shortcut.");
+        assert_eq!((o.labels.clone(), o.cancel, o.id.as_deref(), o.kind), (vec!["OK".to_string(), "Cancel".into()], Some(1), Some("NeverWarnAboutOverrides"), Permanent));
+        assert_eq!(checkbox_label(&o), Some("Suppress this message permanently"));
+        let p = possible_override_spec();
+        assert_eq!(p.text, "The global keyboard shortcut you have set is overridden by at least one profile. Check your profiles\u{2019} keyboard settings if it doesn't work as expected.");
+        assert_eq!((p.labels.clone(), p.cancel, p.id.as_deref(), p.kind), (vec!["OK".to_string(), "Cancel".into()], Some(1), Some("NeverWarnAboutPossibleOverrides"), Permanent));
+        let r = replace_profile_spec("Work");
+        assert_eq!(r.text, "Replace profile \u{201c}Work\u{201d} with the current session's settings?");
+        assert_eq!((r.labels.clone(), r.cancel, r.id.as_deref(), r.kind), (vec!["Replace".to_string(), "Cancel".into()], Some(1), Some("NoSyncReplaceProfileWarning"), Permanent));
+        for spec in [&meta, &o, &p, &r] {
+            assert_eq!(spec.shown_heading(), crate::warnings::DEFAULT_HEADING, "{:?}", spec.id);
+            assert!(spec.never_remember.is_empty());
+        }
+    }
+
+    /// `haveGlobalKeyMappingForKeystroke:` and `anyProfileHasMappingForKeystroke:`: a binding
+    /// for the same key, in whatever form it is stored.
+    #[test]
+    fn override_detection_follows_iterm2() {
+        let ctrl_a = Keystroke::new(0x61, keystroke::CONTROL, Some(0x0), 0x1);
+        let ctrl_b = Keystroke::new(0x62, keystroke::CONTROL, Some(0xb), 0x2);
+        let global: toml::Table = toml::from_str("\"0x61-0x40000-0x0\" = { Action = 13 }").unwrap();
+        assert!(profile_overrides(&global, &ctrl_a));
+        assert!(!profile_overrides(&global, &ctrl_b));
+        // The legacy form without a keycode is the same key.
+        let legacy: toml::Table = toml::from_str("\"0x61-0x40000\" = { Action = 13 }").unwrap();
+        assert!(profile_overrides(&legacy, &ctrl_a));
+        assert!(any_profile_maps(&[&toml::Table::new(), &global], &ctrl_a));
+        assert!(!any_profile_maps(&[&global], &ctrl_b));
+        assert!(!any_profile_maps(&[], &ctrl_a));
+    }
+
+    /// `preempt:` for a warning in the settings window: a remembered answer comes back at once,
+    /// marked automatic (the app lists it in Suppressed Alerts); anything else draws the sheet.
+    #[test]
+    fn sheet_answers_are_recorded() {
+        let mut g = Globals::empty(std::path::Path::new("sheet-test.toml"));
+        let w = SheetWarning::new(override_spec(), SheetThen::SaveKey);
+        assert_eq!(sheet_preempt(&g, &w, false, 1000.0), None);
+        g.set("NeverWarnAboutOverrides", Value::Boolean(true));
+        g.set("NeverWarnAboutOverrides_selection", Value::Integer(0));
+        assert_eq!(sheet_preempt(&g, &w, false, 1000.0), Some(SheetAnswer { spec: override_spec(), index: 0, automatic: true }));
+        // "Always show alerts with remembered selections": the sheet draws.
+        assert_eq!(sheet_preempt(&g, &w, true, 1000.0), None);
+        // A remembered Cancel is never replayed.
+        g.set("NeverWarnAboutOverrides_selection", Value::Integer(1));
+        assert_eq!(sheet_preempt(&g, &w, false, 1000.0), None);
+    }
+
+    /// The settings warnings' Advanced rows (`ASM:752-755,774`).
+    #[test]
+    fn key_warning_rows_follow_iterm2() {
+        let meta = "Suppress a warning when Alt Key Acts as Meta is enabled in Settings > Profiles > Keys.";
+        let rows = [
+            ("NeverWarnAboutMeta", meta),
+            ("NeverWarnAboutOverrides", "Suppress a warning about a change to a Profile key setting that overrides a global setting."),
+            ("NeverWarnAboutPossibleOverrides", "Suppress a warning about a change to a global key that's overridden by a Profile."),
+            ("NoSyncReplaceProfileWarning", "Suppress warning about copying a session's settings over a Profile"),
+        ];
+        for (key, text) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(false)), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
+        }
+    }
+
+    /// The host change offers' rows are optional bools (`ASM:775-777`).
+    #[test]
+    fn host_rows_follow_iterm2() {
+        let rows = [
+            ("NoSyncTurnOffFocusReportingOnHostChange", "Always turn off focus reporting when host changes?"),
+            ("NoSyncTurnOffMouseReportingOnHostChange", "Always turn off mouse reporting when host changes?"),
+            ("NoSyncTurnOffBracketedPasteOnHostChange", "Always turn off paste bracketing when host changes?"),
+        ];
+        for (key, text) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
+            assert_eq!(s.default, None, "{key}");
+            assert!(s.optional_bool(), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
+        }
+    }
+
+    /// The frustration offers' rows (`ASM:782-783`), Cmd-C read as Win+C.
+    #[test]
+    fn frustration_rows_follow_iterm2() {
+        let rows = [
+            ("NoSyncNeverAskAboutMouseReportingFrustration", "Suppress the notification asking if you want to disable mouse reporting that is shown after a drag followed by Win+C when mouse reporting is on?"),
+            ("NoSyncNeverAskAboutDEC2048Frustration", "Suppress the notification asking if you want to disable resize reporting"),
+        ];
+        for (key, text) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(false)), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
+        }
     }
 }

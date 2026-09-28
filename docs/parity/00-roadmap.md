@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 173 | 122 | 19 |
-| `02-global-settings.md` | 823 | 322 | 78 | 423 |
-| `03-features-and-menus.md` | 644 | 517 | 45 | 82 |
-| Total | 1,781 | 1,012 | 245 | 524 |
+| `01-profile-settings.md` | 314 | 174 | 121 | 19 |
+| `02-global-settings.md` | 823 | 382 | 80 | 361 |
+| `03-features-and-menus.md` | 645 | 520 | 48 | 77 |
+| Total | 1,782 | 1,076 | 249 | 457 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -266,6 +266,88 @@ uploads and vector stores are built for 12c, only for models at api.openai.com. 
 which is the first to send a conversation, comes with 12c, so Streaming responses and the two AI
 logging rows read partial until then. Every kept quirk is listed in
 `docs/acceptance/m12b-checklist.md` and ruled on in `docs/superpowers/rulings/m12b-rulings.txt`.
+Milestone 13a built Settings > Advanced as iTerm2's pane (02): the rows under iTerm2's 19
+categories in Finder order with bold, pinned headers; a search that matches every typed word in a
+row's description or category; "Show only non-default values", which keeps the row being edited
+until editing ends; and each kind edited as iTerm2 does (No/Yes, Unspecified/No/Yes where
+Unspecified removes the key, a list storing the index, integers and floats read as iTerm2's
+`integerValue` and `doubleValue`, text as typed). Twenty keys that are not iTerm2 Advanced
+settings moved to a "Stored" tab no pane draws, and the Advanced texts are iTerm2's descriptions
+with Tandem's Windows wording where it behaves differently. "Show indicators for non-default
+values" (a menu at the right of the Settings page bar) marks changed controls with iTerm2's bar,
+including its per-control rules; General > Experimental holds the right-to-left and ssh: URL
+checkboxes; a plist import consumes the legacy Control and single-hotkey-window keys. General >
+Settings loads settings from a custom folder (one `tandem-settings.toml`; network folders
+refused) or an `http(s)` URL (fetched with `curl.exe`), with Save Now, the Save changes popup and
+iTerm2's load, overwrite and quit questions; snippets, notes and icons do not sync. Export All
+writes `Tandem State.tandemexport` (a gzip tar of the Python runtimes list, the settings, the
+`%APPDATA%\Tandem` files and the scripts as unsigned zips; the Python API consent never leaves),
+Import All stages an export and applies it at one restart, and Erase All empties Tandem's folders
+and quits, or logs a dry run to the debug output. PreferredBaseDir and
+noSyncNeverRemindPrefsChangesLostForUrl are stored and inert. Every kept quirk is listed in
+`docs/acceptance/m13a-checklist.md` and ruled on in `docs/superpowers/rulings/m13a-rulings.txt`.
+Milestone 14a opened milestone 14 (SSH integration) with the transport, the SSH profile and the
+handshake (01, 03; 01: no row to have, 03: 2 rows to have and 4 to partial). A probe against a
+loopback sshd in WSL measured the transports; Robert chose the shipped ConPTY in passthrough mode
+(ruling 1), which carries iTerm2's protocol byte for byte except that invalid UTF-8 arrives as
+U+FFFD. The Command type SSH runs `ssh <command>`, or with SSH Integration on Tandem's own
+`it2ssh` (a `tandem-utils` command following iTerm2's script, with the origin secret from a
+per-user pipe); Configure… holds iTerm2's four settings (SSH Integration, variables and files to
+copy, Path to SSH), partial until milestone 14b makes them act; OSC 1337 `Env` (report=all), `it2ssh`, `SendConductor` and `EndSSH` are read
+as iTerm2 reads them, with its version and end banners, the hop chain, and `\x03\n` releasing
+it2ssh's local read loop; the session host speaks protocol 4 so an SSH session can be hosted.
+Until milestone 14b's conductor hook exists (`CONDUCTOR_READY` false), it2ssh and SSH profiles
+run plain ssh with a one-line notice and no typing is ever held. The Shell > ssh menu items and
+seven SSH settings in 02 (sshSchemePath, alternateSSHIntegrationScript, unameCommand,
+validCharactersInSSHUserNames, sshURLsSupportPath, restoreKeyModeAutomaticallyOnHostChange,
+channelsEnabled) belong to milestone 14 (ruling 6). Every kept quirk is listed in
+`docs/acceptance/m14a-checklist.md` and ruled on in `docs/superpowers/rulings/m14a-rulings.txt`.
+Milestone 13c built iTerm2's tab bar (02: Appearance > Tabs and the Advanced tab rows; 01:
+Subtitle): 24 points tall (`defaultTabBarHeight`; Tandem's old 1.6 cells is gone) and hidden with
+one tab (`HideTab`); iTerm2's width rules (equal tabs stretched to fill in whole device pixels, 175
+points with stretching off, uneven widths only when every tab fits, a minimum of 75 points or 60
+with tab numbers hidden); a bar whose tabs do not fit scrolls at 120 points with Shift+wheel or a
+horizontal wheel and keeps the selected tab in view (`ScrollableSideTabBar`, which the horizontal
+bar reads too), else an overflow menu lists the hidden tabs. Inside a tab: a close button on the
+left shown on hover (or always), the title centered in Segoe UI at 11 points (or the custom size)
+and cut at its start or end by iTerm2's smart truncation, basic HTML (`<b>`, `<i>`, `<u>`), the
+profile's Subtitle on a second line at 28 points or more with the session status joined to it,
+the icon, the spinner of a background tab that is printing, and the tab's shortcut ("Win+1" to
+"Win+8", "Win+9" on the last tab). A plain press selects (or the release, with `selectsTabsOnMouseDown` off, read as a window opens), the close
+button and a middle click close through Close Tab, a double click on a tab opens Edit Tab Title and
+on the empty bar opens a tab, "+" opens a tab (a tmux tab in a tmux window; the current profile
+with `addTabButtonUsesCurrentProfile`), and a tooltip shows the tab's name, profile and command.
+Each window keeps its own scroll offset, hover and press. The Tab Color picker (Default, swatches
+from `tabColorMenuOptions`, Choose Color... with Windows' color dialog) is built; it opens from
+milestone 13d's tab menu, so `tabColorMenuOptions` stays partial until then, and the side tab bar
+is 13d's. `drawBottomLineForHorizontalTabBar` is stored and inert (no iTerm2 style reads it). The
+eight number and text Advanced > Tabs rows are edited in Settings > Advanced > Tabs with milestone
+13a's controls.
+Every kept quirk is listed in `docs/acceptance/m13c-checklist.md` and ruled on in
+`docs/superpowers/rulings/m13c-rulings.txt`.
+Milestone 13b put every question Tandem remembers an answer to on iTerm2's warning model (02:
+the Warnings rows, 03: Suppressed Alerts): one checkbox rule ("Suppress this message
+permanently" for one button that may be remembered, "Remember my choice" for several, with the
+ten-minute and 30-day forms), Cancel and the do-not-remember buttons never remembered, a
+persistent warning never silenced, and each button answering to Alt plus its letter (underlined
+with "Buttons in modal alerts indicate keyboard shortcuts"). Every answer given automatically is
+listed in Tandem > Suppressed Alerts, whose menu title counts them with the newest one's age;
+Un-suppress asks again, and "Always show alerts with remembered selections" shows them with the
+saved answer and "Permanently Forget Saved Selection". The paste and tmux close questions moved
+from pane bars to alert windows, the broadcast input warning got its checkbox, and Clear and
+Reset with broadcast ask iTerm2's three-button warning (a stored No no longer answers "current
+only"). New: iTerm2's Restart Session, download and inline display (with the 1 GiB follow-up),
+annotation removal, Meta and key override confirmations; the offers to turn focus reporting,
+mouse reporting and paste bracketing off after a host change (Always and Never write the
+Advanced pane's Unspecified/No/Yes rows); the offer to disable mouse reporting after a drag then
+Copy; the arrangement announcements (a missing profile restores from the arrangement's own copy
+with no banner, a broken copy offers Assign Profile, a missing folder starts in home with iTerm2's
+banner or, for an SSH profile, offers Repair); and the out-of-date shell integration notice, read
+from iTerm2's version tables (Tandem's PowerShell script is in none).
+noSyncSuppressMissingProfileInArrangementWarning and noSyncNeverAskAboutDEC2048Frustration are
+stored and shown with nothing reading them; the Replace Profile warning waits for 13t's Copy to
+Profile and DEC mode 2048 (a new 03 row) for 13o. Every kept quirk is listed in
+`docs/acceptance/m13b-checklist.md` and ruled on in `docs/superpowers/rulings/m13b-rulings.txt`.
 
 ## Order
 

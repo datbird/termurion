@@ -19,7 +19,22 @@ pub(super) struct WinSlot {
     hover: Option<(PaneId, crate::find::Match)>,
     find_bar_rect: Option<Rect>,
     find_mode_rect: Option<Rect>,
-    tab_rects: Vec<Rect>,
+    /// The tab bar as last laid out, in points, not scrolled (`build_frame`).
+    tab_bar: crate::tab_layout::Bar,
+    /// The tab bar's scroll offset in points.
+    tab_scroll: f32,
+    /// The tab under the pointer, and whether the pointer is on its close button.
+    tab_hover: Option<(usize, bool)>,
+    /// Every layout brings the selected tab into view, until the bar is scrolled by hand.
+    tab_keep_selected: bool,
+    /// The selected tab's id and the tab count at the last layout: a change selects anew.
+    tab_seen: Option<(u64, usize)>,
+    /// The press on the tab bar: what it hit, its click count, Alt, and the tab's id.
+    tab_press: Option<super::TabPress>,
+    /// `SelectsTabsOnMouseDown` as it was when the window opened.
+    tab_selects_on_down: bool,
+    /// The tab whose tooltip the pointer is waiting on or showing, and when it settled there.
+    tab_tip: Option<(usize, Instant)>,
     block_buttons: Vec<blocks_ui::BlockButton>,
     block_hover: Option<(PaneId, u32, i32, i32)>,
     porthole_hits: Vec<porthole_ui::PortholeHit>,
@@ -64,7 +79,14 @@ impl WinSlot {
             hover: None,
             find_bar_rect: None,
             find_mode_rect: None,
-            tab_rects: Vec::new(),
+            tab_bar: crate::tab_layout::Bar::default(),
+            tab_scroll: 0.0,
+            tab_hover: None,
+            tab_keep_selected: true,
+            tab_seen: None,
+            tab_press: None,
+            tab_selects_on_down: true,
+            tab_tip: None,
             block_buttons: Vec::new(),
             block_hover: None,
             porthole_hits: Vec::new(),
@@ -129,7 +151,14 @@ impl App {
         swap(&mut self.hover, &mut s.hover);
         swap(&mut self.find_bar_rect, &mut s.find_bar_rect);
         swap(&mut self.find_mode_rect, &mut s.find_mode_rect);
-        swap(&mut self.tab_rects, &mut s.tab_rects);
+        swap(&mut self.tab_bar, &mut s.tab_bar);
+        swap(&mut self.tab_scroll, &mut s.tab_scroll);
+        swap(&mut self.tab_hover, &mut s.tab_hover);
+        swap(&mut self.tab_keep_selected, &mut s.tab_keep_selected);
+        swap(&mut self.tab_seen, &mut s.tab_seen);
+        swap(&mut self.tab_press, &mut s.tab_press);
+        swap(&mut self.tab_selects_on_down, &mut s.tab_selects_on_down);
+        swap(&mut self.tab_tip, &mut s.tab_tip);
         swap(&mut self.block_buttons, &mut s.block_buttons);
         swap(&mut self.block_hover, &mut s.block_hover);
         swap(&mut self.porthole_hits, &mut s.porthole_hits);
@@ -235,6 +264,11 @@ impl App {
         id.is_some_and(|id| self.enter(id))
     }
 
+    /// Every window's menu bar: the current window's and each parked window's.
+    pub(super) fn menu_bars(&self) -> impl Iterator<Item = &menu::MenuBar> {
+        self.menu_bar.iter().chain(self.windows.parked().filter_map(|(_, s)| s.menu_bar.as_ref()))
+    }
+
     /// The current window's id.
     pub(super) fn current_window(&self) -> Option<WindowId> {
         self.gpu.as_ref().map(|g| g.window.id())
@@ -294,7 +328,7 @@ impl App {
                 match first {
                     NewWindow::Tab(tab) => self.tabs.push(tab),
                     NewWindow::Tabs(tabs) => self.tabs.extend(tabs),
-                    NewWindow::Profile(_) | NewWindow::Arrangement(_) | NewWindow::Orphans(_) | NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..) => {}
+                    NewWindow::Profile(_) | NewWindow::Arrangement(..) | NewWindow::Orphans(_) | NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..) => {}
                 }
                 self.relayout();
                 return Err(e);
@@ -304,6 +338,8 @@ impl App {
         let id = gpu.window.id();
         let mut slot = WinSlot::new(gpu);
         self.swap_live(&mut slot);
+        // iTerm2 reads it once per tab bar it makes: a change affects new windows only.
+        self.tab_selects_on_down = self.globals.bool("SelectsTabsOnMouseDown");
         if let Some(old) = self.windows.current() {
             self.windows.park(old, slot);
         }
@@ -313,7 +349,7 @@ impl App {
             NewWindow::Profile(g) => g.clone(),
             NewWindow::Tab(t) => self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile)),
             NewWindow::Tabs(ts) => ts.first().and_then(|t| self.panes.get(&t.focused)).map(|p| self.store.shared_guid(&p.profile)),
-            NewWindow::Arrangement(w) => self.first_arrangement_guid(w),
+            NewWindow::Arrangement(w, _) => self.first_arrangement_guid(w),
             NewWindow::Orphans(_) => None,
             NewWindow::Hotkey(g, _) | NewWindow::HotkeyRestored(g, _) => Some(g.clone()),
         };
@@ -323,7 +359,7 @@ impl App {
         // A git command's single-use window is never full screen (`iTermController.m`
         // `openSingleUseWindowWithCommand:` uses the default window type instead).
         let style = if self.start_command_override.is_some() && style == crate::frames::FULL_SCREEN { crate::frames::NORMAL } else { style };
-        let arranged = matches!(first, NewWindow::Arrangement(_) | NewWindow::HotkeyRestored(..));
+        let arranged = matches!(first, NewWindow::Arrangement(..) | NewWindow::HotkeyRestored(..));
         match first {
             NewWindow::Profile(guid) => self.new_tab(guid.as_deref()),
             NewWindow::Tab(tab) => {
@@ -336,8 +372,8 @@ impl App {
                 self.active = 0;
                 self.relayout();
             }
-            NewWindow::Arrangement(w) => {
-                if let Err(e) = self.apply_arrangement_window(&w) {
+            NewWindow::Arrangement(w, name) => {
+                if let Err(e) = self.apply_arrangement_window(&w, name.as_deref()) {
                     self.banners.set("arrangement", e);
                 }
             }
@@ -349,7 +385,7 @@ impl App {
                 self.hotkey = Some(h);
             }
             NewWindow::HotkeyRestored(guid, w) => {
-                if let Err(e) = self.apply_arrangement_window(&w) {
+                if let Err(e) = self.apply_arrangement_window(&w, None) {
                     self.banners.set("arrangement", e);
                 }
                 self.hotkey = Some(super::hotkey_ui::HotkeyWin::new(guid));
@@ -444,6 +480,17 @@ impl App {
         self.end_undo();
     }
 
+    /// Close Tab for the tab `index` (the menu's Close Tab, a tab's close button, a middle
+    /// click): a tmux tab asks tmux; any other asks the close confirmation, then closes.
+    pub(super) fn close_tab_at(&mut self, index: usize, event_loop: &ActiveEventLoop) {
+        if index >= self.tabs.len() || !self.layout_allowed(crate::winmodel::LayoutOp::CloseTab) || self.tmux_close_tab(index) {
+            return;
+        }
+        if self.confirm_close(close_ui::Closing::Tab(index)) {
+            self.close_tab_now(index, event_loop);
+        }
+    }
+
     /// Closes the current window's tab `index` and its sessions as one undoable close, asking
     /// nothing.
     pub(super) fn close_tab_now(&mut self, index: usize, event_loop: &ActiveEventLoop) {
@@ -517,7 +564,14 @@ impl WinSlot {
             hover: None,
             find_bar_rect: None,
             find_mode_rect: None,
-            tab_rects: Vec::new(),
+            tab_bar: crate::tab_layout::Bar::default(),
+            tab_scroll: 0.0,
+            tab_hover: None,
+            tab_keep_selected: true,
+            tab_seen: None,
+            tab_press: None,
+            tab_selects_on_down: true,
+            tab_tip: None,
             block_buttons: Vec::new(),
             block_hover: None,
             porthole_hits: Vec::new(),
@@ -618,8 +672,9 @@ pub(super) enum NewWindow {
     Tab(Tab),
     /// Tabs brought back by Undo Close.
     Tabs(Vec<Tab>),
-    /// A window table from an arrangement.
-    Arrangement(crate::arrangement::Value),
+    /// A window table from an arrangement, and the saved arrangement's name (None for
+    /// window restoration, a file, or Duplicate Window).
+    Arrangement(crate::arrangement::Value, Option<String>),
     /// Host sessions nobody claimed at launch: (host session id, pid), a tab each.
     Orphans(Vec<(u64, u32)>),
     /// A profile's hotkey window, made on its first press (and the window that was in
@@ -811,7 +866,7 @@ impl App {
         }
         // A window of loaded recordings only has nothing to duplicate.
         let Some(snap) = self.snapshot_window(super::arrange_ui::Contents::None) else { return };
-        self.pending_windows.push(NewWindow::Arrangement(snap));
+        self.pending_windows.push(NewWindow::Arrangement(snap, None));
         self.redraw();
     }
 }

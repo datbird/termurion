@@ -54,6 +54,10 @@ pub struct Setting {
     pub light_dark: bool,
     #[serde(default)]
     pub macos_only: bool,
+    /// The checkbox shows the opposite of the stored bool (iTerm2's
+    /// `kPreferenceInfoTypeInvertedCheckbox`, e.g. `HideTab` as "Show tab bar...").
+    #[serde(default)]
+    pub inverted: bool,
 }
 
 fn number(v: &toml::Value) -> Option<f64> {
@@ -67,6 +71,12 @@ impl Setting {
 
     pub fn max_f64(&self) -> Option<f64> {
         self.max.as_ref().and_then(number)
+    }
+
+    /// iTerm2's DEFINE_OPTIONAL_BOOL: a bool with no default, so a key never set reads as
+    /// "unspecified" and the Advanced pane offers Unspecified, No and Yes.
+    pub fn optional_bool(&self) -> bool {
+        self.kind == Kind::Bool && self.default.is_none()
     }
 }
 

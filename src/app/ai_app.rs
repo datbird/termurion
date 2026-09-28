@@ -7,7 +7,6 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
 
-use super::scripts_alerts::silence_keys;
 use super::App;
 use crate::ai_gate::{self, Alert, Then};
 use crate::ai_key_ui::{KeyResult, KeyWindow};
@@ -32,8 +31,8 @@ impl App {
     /// whose answer was remembered is answered at once without showing (`scripts_alerts`).
     pub(super) fn ask_ai(&mut self, alert: Alert) {
         if let Some(id) = alert.silence.as_deref() {
-            let (flag, selection) = silence_keys(id);
-            if self.globals.bool(&flag) {
+            let selection = crate::warnings::selection_key(id);
+            if self.globals.bool(id) {
                 let index = usize::try_from(self.globals.int(&selection)).unwrap_or(0);
                 return self.ai_answered(alert.then, index);
             }
@@ -89,7 +88,7 @@ impl App {
         }
         let Some(g) = self.gpu.as_ref() else { return };
         let Some(alert) = self.ai_asks.pop_front() else { return };
-        match ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &alert.heading, &alert.text, &alert.buttons, alert.silence.is_some()) {
+        match ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &alert.heading, &alert.text, &alert.buttons, alert.silence.is_some().then_some(ConfirmWindow::SUPPRESS), &[], false, false) {
             Ok(w) => self.ai_alert = Some((w, alert)),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
@@ -113,9 +112,8 @@ impl App {
         };
         let Some((_, alert)) = self.ai_alert.take() else { return true };
         if let (true, Some(id)) = (suppress, alert.silence.as_deref()) {
-            let (flag, selection) = silence_keys(id);
-            self.globals.set(&flag, toml::Value::Boolean(true));
-            self.globals.set(&selection, toml::Value::Integer(index as i64));
+            self.globals.set(id, toml::Value::Boolean(true));
+            self.globals.set(&crate::warnings::selection_key(id), toml::Value::Integer(index as i64));
             self.save_globals();
         }
         self.ai_answered(alert.then, index);

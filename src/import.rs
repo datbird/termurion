@@ -131,21 +131,133 @@ pub fn from_dynamic_json(text: &str) -> Result<Vec<Profile>, String> {
     .map(unique)
 }
 
-/// The global settings (iTerm2 user defaults) in a com.googlecode.iterm2.plist, for the
-/// Settings that stand between a person and an AI request; a person opts in again on Windows,
-/// so import never brings them, even from a hand-edited plist (Review Focus 3).
-pub const NEVER_IMPORTED: [&str; 3] = ["EnableAI", "AICompletions", "NoSyncAIRequestConsent"];
+/// The user-defaults key iTerm2 stores an Advanced setting under: its name with the first
+/// letter capitalized (`stringByCapitalizingFirstLetter`), "tmuxTitlePrefix" as "TmuxTitlePrefix".
+pub fn defaults_key(key: &str) -> String {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
 
 /// The global settings (iTerm2 user defaults) in a com.googlecode.iterm2.plist, for the
-/// keys Tandem's global schema knows. Other keys are left out.
+/// The global settings (iTerm2 user defaults) in a com.googlecode.iterm2.plist, for the
+/// keys Tandem's global schema knows. Other keys are left out. A schema key spelled with a
+/// lower-case first letter is also found under iTerm2's capitalized defaults key; the exact
+/// spelling wins when a file holds both. The settings that stand between a person and an AI
+/// request (`ai_settings::guards_consent`) never come, even from a hand-edited plist: a person
+/// opts in again on Windows (Review Focus 3, ruling I5).
 pub fn globals_from_file(path: &Path) -> Result<Vec<(String, Value)>, String> {
     let root = plist::Value::from_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let dict = root.as_dictionary().ok_or_else(|| format!("{}: not a settings plist", path.display()))?;
     Ok(crate::schema::global()
         .iter()
-        .filter(|s| !NEVER_IMPORTED.contains(&s.key.as_str()))
-        .filter_map(|s| Some((s.key.clone(), from_plist(dict.get(&s.key)?)?)))
+        .filter(|s| !crate::ai_settings::guards_consent(&s.key))
+        .filter_map(|s| {
+            let v = dict.get(&s.key).or_else(|| dict.get(&defaults_key(&s.key)))?;
+            Some((s.key.clone(), from_plist(v)?))
+        })
         .collect())
+}
+
+/// The legacy iTerm2 keys an old settings plist may carry (`PREF:145`, `:174-176`, `:216`),
+/// read so the import can migrate them as iTerm2 does at launch. They are consumed, not stored.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Legacy {
+    /// `Control`: the remap both Control keys fall back to (`PREF:1221-1263`).
+    pub control: Option<i64>,
+    /// `HotKeyTogglesWindow`: the app hotkey opens a dedicated window.
+    pub toggles_window: bool,
+    /// `HotKeyBookmark`: that window's profile.
+    pub profile_guid: Option<String>,
+    /// `HotkeyAutoHides` (absent is true, `PREF:875`).
+    pub auto_hides: bool,
+    /// `HotkeyMigratedFromSingleToMulti`: the migration already ran.
+    pub migrated: bool,
+    /// `DockIconTogglesWindow` (the Advanced setting dockIconTogglesWindow, `ASM:471`).
+    pub dock_icon_toggles: bool,
+}
+
+/// The legacy keys in a com.googlecode.iterm2.plist, with iTerm2's defaults for those absent.
+pub fn legacy_from_file(path: &Path) -> Result<Legacy, String> {
+    let root = plist::Value::from_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let dict = root.as_dictionary().ok_or_else(|| format!("{}: not a settings plist", path.display()))?;
+    let value = |k: &str| dict.get(k).and_then(from_plist);
+    let int = |v: &Value| v.as_integer().or_else(|| v.as_float().map(|f| f as i64)).or_else(|| v.as_bool().map(i64::from));
+    let bool = |k: &str, absent: bool| value(k).map_or(absent, |v| int(&v).is_some_and(|i| i != 0));
+    Ok(Legacy {
+        control: value("Control").as_ref().and_then(int),
+        toggles_window: bool("HotKeyTogglesWindow", false),
+        profile_guid: value("HotKeyBookmark").and_then(|v| v.as_str().map(str::to_string)),
+        auto_hides: bool("HotkeyAutoHides", true),
+        migrated: bool("HotkeyMigratedFromSingleToMulti", false),
+        dock_icon_toggles: bool("DockIconTogglesWindow", false),
+    })
+}
+
+/// iTerm2's legacy right Control tag (`kPreferencesModifierTagLegacyRightControl`), which acts
+/// as right Control (`iTermModifierRemapper.m:56-58`, `:122-123`).
+const LEGACY_RIGHT_CONTROL: i64 = 1;
+/// The Control remap choice "Right Control" (`schema/global.toml` LeftControl, RightControl).
+const RIGHT_CONTROL: i64 = 12;
+
+/// Applies the legacy keys to an import's global values and profiles, as iTerm2 does:
+/// `Control` fills each Control remap the file does not set (`PREF:1221-1263`), and, once
+/// (`HKM:34-73`), a single hotkey window (`Hotkey` and `HotKeyTogglesWindow`) moves to the
+/// profile `HotKeyBookmark` names (`HKM:252-278`) and the app hotkey is cleared; the migrated
+/// flag is set either way. A dynamic hotkey profile and the children warning are not migrated
+/// (Tandem's dynamic profiles import once).
+pub fn migrate_legacy(values: &mut Vec<(String, Value)>, legacy: &Legacy, profiles: &mut [Profile]) {
+    fn get<'a>(values: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
+        values.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v)
+    }
+    fn put(values: &mut Vec<(String, Value)>, key: &str, v: Value) {
+        values.retain(|(k, _)| k != key);
+        values.push((key.to_string(), v));
+    }
+    let number = |values: &[(String, Value)], key: &str| get(values, key).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
+    if let Some(control) = legacy.control {
+        let remap = if control == LEGACY_RIGHT_CONTROL { RIGHT_CONTROL } else { control };
+        for key in ["LeftControl", "RightControl"] {
+            if get(values, key).is_none() {
+                put(values, key, Value::Integer(remap));
+            }
+        }
+    }
+    if legacy.migrated {
+        return;
+    }
+    let enabled = get(values, "Hotkey").and_then(Value::as_bool).unwrap_or(false);
+    if enabled && legacy.toggles_window {
+        let code = number(values, "HotkeyCode").unwrap_or(0.0) as i64;
+        // A unichar: the character's low 16 bits; 0 (or a lone surrogate) is no character.
+        let character = number(values, "HotkeyChar").unwrap_or(0.0) as i64 as u16;
+        let characters = if character == 0 { String::new() } else { char::from_u32(u32::from(character)).map(String::from).unwrap_or_default() };
+        let modifiers = number(values, "HotkeyModifiers").unwrap_or(0.0) as i64;
+        let duration = number(values, "hotkeyTermAnimationDuration")
+            .or_else(|| crate::schema::find_global("hotkeyTermAnimationDuration").and_then(|s| s.default.as_ref()).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))))
+            .unwrap_or(0.0);
+        // iTermHotKeyDockPreferenceShowIfNoOtherWindowsOpen, else DoNotShow.
+        let dock = if legacy.dock_icon_toggles { 2 } else { 0 };
+        if let Some(p) = legacy.profile_guid.as_deref().and_then(|g| profiles.iter_mut().find(|p| p.guid() == g)) {
+            p.set("Has Hotkey", Value::Boolean(true));
+            p.set("HotKey Key Code", Value::Integer(code));
+            p.set("HotKey Characters", Value::String(characters.clone()));
+            p.set("HotKey Characters Ignoring Modifiers", Value::String(characters));
+            p.set("HotKey Modifier Flags", Value::Integer(modifiers));
+            p.set("HotKey Window AutoHides", Value::Boolean(legacy.auto_hides));
+            p.set("HotKey Window Reopens On Activation", Value::Boolean(false));
+            p.set("HotKey Window Animates", Value::Boolean(duration > 0.0));
+            p.set("HotKey Window Floats", Value::Boolean(false));
+            p.set("HotKey Window Dock Click Action", Value::Integer(dock));
+        }
+        // "Erase the legacy prefs so the keystroke doesn't show up as the global app toggle."
+        put(values, "Hotkey", Value::Boolean(false));
+        put(values, "HotkeyCode", Value::Integer(0));
+        put(values, "HotkeyChar", Value::Integer(0));
+    }
+    put(values, "HotkeyMigratedFromSingleToMulti", Value::Boolean(true));
 }
 
 pub fn from_file(path: &Path) -> Result<Vec<Profile>, String> {
@@ -177,6 +289,186 @@ mod tests {
         assert_eq!(got[0].1["0x61-0x100000"]["Action"].as_integer(), Some(13));
     }
 
+    /// `PREF:1221-1263` (Left and Right Control fall back to `Control`; tag 1, the legacy right
+    /// Control, acts as right Control, `iTermModifierRemapper.m:56-58`, `:122-123`) and
+    /// `HKM:34-73`, `:252-278` (the single hotkey window moves to its profile once).
+    #[test]
+    fn legacy_keys_follow_iterm2() {
+        let int = |i: i64| Value::Integer(i);
+        let get = |values: &[(String, Value)], k: &str| values.iter().rev().find(|(x, _)| x == k).map(|(_, v)| v.clone());
+        // Control fills both remaps only when they are absent.
+        let mut values = vec![];
+        migrate_legacy(&mut values, &Legacy { control: Some(1), ..Default::default() }, &mut []);
+        assert_eq!(get(&values, "LeftControl"), Some(int(12)));
+        assert_eq!(get(&values, "RightControl"), Some(int(12)));
+        let mut values = vec![];
+        migrate_legacy(&mut values, &Legacy { control: Some(2), ..Default::default() }, &mut []);
+        assert_eq!(get(&values, "LeftControl"), Some(int(2)));
+        assert_eq!(get(&values, "RightControl"), Some(int(2)));
+        let mut values = vec![("LeftControl".to_string(), int(11))];
+        migrate_legacy(&mut values, &Legacy { control: Some(1), ..Default::default() }, &mut []);
+        assert_eq!(get(&values, "LeftControl"), Some(int(11)));
+        assert_eq!(get(&values, "RightControl"), Some(int(12)));
+        assert_eq!(values.iter().filter(|(k, _)| k == "LeftControl").count(), 1);
+        let mut values = vec![];
+        migrate_legacy(&mut values, &Legacy { migrated: true, ..Default::default() }, &mut []);
+        assert!(get(&values, "LeftControl").is_none() && get(&values, "RightControl").is_none());
+
+        // The single hotkey window moves to its profile.
+        let hotkey = || vec![("Hotkey".to_string(), Value::Boolean(true)), ("HotkeyCode".to_string(), int(50)), ("HotkeyChar".to_string(), int(96)), ("HotkeyModifiers".to_string(), int(1048576))];
+        let legacy = Legacy { toggles_window: true, profile_guid: Some("G".into()), auto_hides: false, migrated: false, dock_icon_toggles: true, ..Default::default() };
+        let profile = |guid: &str| {
+            let mut p = Profile::default();
+            p.set("Guid", Value::String(guid.into()));
+            p
+        };
+        let mut values = hotkey();
+        let mut profiles = [profile("G"), profile("H")];
+        migrate_legacy(&mut values, &legacy, &mut profiles);
+        let g = &profiles[0];
+        assert_eq!(g.values.get("Has Hotkey"), Some(&Value::Boolean(true)));
+        assert_eq!(g.values.get("HotKey Key Code"), Some(&int(50)));
+        assert_eq!(g.values.get("HotKey Characters"), Some(&Value::String("`".into())));
+        assert_eq!(g.values.get("HotKey Characters Ignoring Modifiers"), Some(&Value::String("`".into())));
+        assert_eq!(g.values.get("HotKey Modifier Flags"), Some(&int(1048576)));
+        assert_eq!(g.values.get("HotKey Window AutoHides"), Some(&Value::Boolean(false)));
+        assert_eq!(g.values.get("HotKey Window Reopens On Activation"), Some(&Value::Boolean(false)));
+        assert_eq!(g.values.get("HotKey Window Animates"), Some(&Value::Boolean(true)), "the default 0.25 is above 0");
+        assert_eq!(g.values.get("HotKey Window Floats"), Some(&Value::Boolean(false)));
+        assert_eq!(g.values.get("HotKey Window Dock Click Action"), Some(&int(2)));
+        assert!(!profiles[1].values.contains_key("Has Hotkey"), "only the named profile");
+        assert_eq!(get(&values, "Hotkey"), Some(Value::Boolean(false)));
+        assert_eq!(get(&values, "HotkeyCode"), Some(int(0)));
+        assert_eq!(get(&values, "HotkeyChar"), Some(int(0)));
+        assert_eq!(get(&values, "HotkeyMigratedFromSingleToMulti"), Some(Value::Boolean(true)));
+        let mut values = hotkey();
+        values.push(("hotkeyTermAnimationDuration".to_string(), Value::Float(0.0)));
+        let mut profiles = [profile("G")];
+        migrate_legacy(&mut values, &Legacy { dock_icon_toggles: false, ..legacy.clone() }, &mut profiles);
+        assert_eq!(profiles[0].values.get("HotKey Window Animates"), Some(&Value::Boolean(false)));
+        assert_eq!(profiles[0].values.get("HotKey Window Dock Click Action"), Some(&int(0)));
+        // A character of 0 is an empty text.
+        let mut values = hotkey();
+        values.retain(|(k, _)| k != "HotkeyChar");
+        let mut profiles = [profile("G")];
+        migrate_legacy(&mut values, &legacy, &mut profiles);
+        assert_eq!(profiles[0].values.get("HotKey Characters"), Some(&Value::String(String::new())));
+
+        // A guid naming no imported profile still clears the app hotkey and sets the flag.
+        let mut values = hotkey();
+        let mut profiles = [profile("H")];
+        migrate_legacy(&mut values, &legacy, &mut profiles);
+        assert!(!profiles[0].values.contains_key("Has Hotkey"));
+        assert_eq!(get(&values, "Hotkey"), Some(Value::Boolean(false)));
+        assert_eq!(get(&values, "HotkeyCode"), Some(int(0)));
+        assert_eq!(get(&values, "HotkeyChar"), Some(int(0)));
+        assert_eq!(get(&values, "HotkeyMigratedFromSingleToMulti"), Some(Value::Boolean(true)));
+        // Already migrated: nothing but the Control remaps.
+        let mut values = hotkey();
+        let mut profiles = [profile("G")];
+        migrate_legacy(&mut values, &Legacy { migrated: true, control: Some(2), ..legacy.clone() }, &mut profiles);
+        let mut want = hotkey();
+        want.push(("LeftControl".to_string(), int(2)));
+        want.push(("RightControl".to_string(), int(2)));
+        assert_eq!(values, want);
+        assert!(profiles[0].values.get("Has Hotkey").is_none());
+        // Not a dedicated window: no profile changes and the app hotkey stays; the flag is set.
+        let mut values = hotkey();
+        let mut profiles = [profile("G")];
+        migrate_legacy(&mut values, &Legacy { toggles_window: false, ..legacy.clone() }, &mut profiles);
+        assert!(profiles[0].values.get("Has Hotkey").is_none());
+        assert_eq!(get(&values, "Hotkey"), Some(Value::Boolean(true)));
+        assert_eq!(get(&values, "HotkeyCode"), Some(int(50)));
+        assert_eq!(get(&values, "HotkeyMigratedFromSingleToMulti"), Some(Value::Boolean(true)));
+        // The app hotkey off: nothing moves; the flag is set.
+        let mut values = vec![("Hotkey".to_string(), Value::Boolean(false))];
+        let mut profiles = [profile("G")];
+        migrate_legacy(&mut values, &legacy, &mut profiles);
+        assert!(profiles[0].values.get("Has Hotkey").is_none());
+        assert_eq!(get(&values, "HotkeyMigratedFromSingleToMulti"), Some(Value::Boolean(true)));
+
+        // The flag's row (`PREF:216`, default NO `PREF:914`).
+        let row = crate::schema::find_global("HotkeyMigratedFromSingleToMulti").expect("HotkeyMigratedFromSingleToMulti");
+        assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Stored", "Hotkey", crate::schema::Kind::Bool));
+        assert_eq!(row.default, Some(Value::Boolean(false)));
+    }
+
+    /// `PREF:145`, `:174-176`, `:216`, defaults `PREF:848`, `:873-875`, `:914`.
+    #[test]
+    fn legacy_keys_read_from_the_plist() {
+        let path = std::env::temp_dir().join(format!("tandem-import-legacy-{}.plist", std::process::id()));
+        std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>Control</key><integer>2</integer>
+  <key>HotKeyTogglesWindow</key><true/>
+  <key>HotKeyBookmark</key><string>G</string>
+  <key>DockIconTogglesWindow</key><true/>
+</dict></plist>"#).unwrap();
+        let got = legacy_from_file(&path).unwrap();
+        assert_eq!(got, Legacy { control: Some(2), toggles_window: true, profile_guid: Some("G".into()), auto_hides: true, migrated: false, dock_icon_toggles: true });
+        std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>HotkeyAutoHides</key><false/>
+  <key>HotkeyMigratedFromSingleToMulti</key><true/>
+</dict></plist>"#).unwrap();
+        let got = legacy_from_file(&path).unwrap();
+        assert_eq!(got, Legacy { auto_hides: false, migrated: true, ..Default::default() });
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn import_matches_iterm2_defaults_keys() {
+        assert_eq!(defaults_key("tmuxTitlePrefix"), "TmuxTitlePrefix");
+        assert_eq!(defaults_key("NoSyncDisableOpenURL"), "NoSyncDisableOpenURL");
+        assert_eq!(defaults_key(""), "");
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("tandem-import-defaults-keys-{}.plist", std::process::id()));
+        std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>TmuxTitlePrefix</key><string>x </string>
+  <key>NoSyncDisableOpenURL</key><true/>
+</dict></plist>"#).unwrap();
+        let got = globals_from_file(&path).unwrap();
+        assert!(got.contains(&("tmuxTitlePrefix".to_string(), Value::String("x ".into()))), "{got:?}");
+        assert!(got.contains(&("NoSyncDisableOpenURL".to_string(), Value::Boolean(true))), "{got:?}");
+        // Both spellings present: the exact one wins.
+        let both = dir.join(format!("tandem-import-defaults-keys-both-{}.plist", std::process::id()));
+        std::fs::write(&both, r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>tmuxTitlePrefix</key><string>exact</string>
+  <key>TmuxTitlePrefix</key><string>capitalized</string>
+</dict></plist>"#).unwrap();
+        let got = globals_from_file(&both).unwrap();
+        assert_eq!(got, [("tmuxTitlePrefix".to_string(), Value::String("exact".into()))]);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&both);
+    }
+
+    /// Controller ruling I5: Import from iTerm2, with 13a's capitalized defaults keys and its
+    /// legacy key migration, brings none of the AI consent switches (`ai_settings::guards_consent`).
+    #[test]
+    fn legacy_import_never_brings_the_ai_consent_switches() {
+        use crate::ai_settings as ai;
+        let path = std::env::temp_dir().join(format!("tandem-import-ai-legacy-{}.plist", std::process::id()));
+        let mut body = String::from("<key>Control</key><integer>2</integer><key>FocusFollowsMouse</key><true/>");
+        for key in [ai::ADMIN, ai::ENABLE_AI, ai::AI_COMPLETIONS] {
+            body += &format!("<key>{}</key><{}/>", defaults_key(key), if key == ai::ADMIN { "false" } else { "true" });
+        }
+        for (key, _) in ai::PERMISSIONS {
+            body += &format!("<key>{}</key><integer>1</integer>", defaults_key(key));
+        }
+        std::fs::write(&path, format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>{body}</dict></plist>"#)).unwrap();
+        let mut values = globals_from_file(&path).unwrap();
+        migrate_legacy(&mut values, &legacy_from_file(&path).unwrap(), &mut []);
+        let _ = std::fs::remove_file(&path);
+        let keys: Vec<&str> = values.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"FocusFollowsMouse") && keys.contains(&"LeftControl"), "{keys:?}");
+        for key in keys {
+            assert!(!ai::guards_consent(key), "{key} was imported");
+        }
+    }
+
     #[test]
     fn ai_consent_is_never_imported() {
         let path = std::env::temp_dir().join(format!("tandem-import-ai-{}.plist", std::process::id()));
@@ -201,7 +493,9 @@ mod tests {
         let config = &got[0].1[0];
         assert_eq!(config["api"].as_integer(), Some(7));
         assert_eq!(config["streaming"].as_bool(), Some(true));
-        assert_eq!(NEVER_IMPORTED, ["EnableAI", "AICompletions", "NoSyncAIRequestConsent"]);
+        for key in ["EnableAI", "AICompletions", "NoSyncAIRequestConsent"] {
+            assert!(crate::ai_settings::guards_consent(key), "{key}");
+        }
     }
 
     const PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>

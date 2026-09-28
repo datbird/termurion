@@ -41,6 +41,14 @@ impl View {
         self.tabs.iter().flat_map(|t| t.panes.iter().copied()).collect()
     }
 
+    /// This view with pane `p` and its tab current, or None when `p` is not in it (an answered
+    /// warning acts where it was asked).
+    pub fn at(mut self, p: PaneId) -> Option<View> {
+        self.current_tab = self.tabs.iter().position(|t| t.panes.contains(&p))?;
+        self.current = p;
+        Some(self)
+    }
+
     fn cur(&self) -> Option<&TabView> {
         self.tabs.get(self.current_tab)
     }
@@ -152,6 +160,18 @@ impl Broadcast {
         }
         self.raw = mode;
         true
+    }
+
+    /// The warning before turning broadcasting on answered OK: All Tabs (`all_tabs`) or All
+    /// Panes in Current Tab goes on, but only while broadcasting is still off (the warning
+    /// is not modal, so the mode may have changed since it was asked). False when nothing
+    /// changed.
+    pub fn grant(&mut self, v: &mut View, all_tabs: bool) -> bool {
+        if self.mode(v) != Mode::Off {
+            return false;
+        }
+        let to = if all_tabs { Mode::AllTabs } else { Mode::AllPanes };
+        self.set_mode(v, to, &mut |_| true)
     }
 
     /// Shell > Broadcast Input > Send Input to Current Session Only.
@@ -387,6 +407,39 @@ mod tests {
             true
         });
         assert_eq!((asked, b.mode(&v)), (0, Mode::AllTabs));
+    }
+
+    /// An answered warning acts where it was asked: the anchor pane's tab and the anchor
+    /// become current; a pane no longer in the window gives nothing.
+    #[test]
+    fn a_view_anchors_on_the_asking_pane() {
+        let v = view().at(3).unwrap();
+        assert_eq!((v.current_tab, v.current), (1, 3));
+        let mut b = Broadcast::default();
+        let mut v = view().at(2).unwrap();
+        b.current_tab(&mut v, &mut yes());
+        assert_eq!((v.tabs[0].broadcasting, v.tabs[1].broadcasting), (true, false));
+        let mut v = view().at(3).unwrap();
+        let mut b = Broadcast::default();
+        b.current_tab(&mut v, &mut yes());
+        assert_eq!((v.tabs[0].broadcasting, v.tabs[1].broadcasting), (false, true), "the anchor's tab, not the front one");
+        assert!(view().at(9).is_none());
+    }
+
+    /// The warning is not modal: an OK acts only while broadcasting is still off, so a second
+    /// queued warning's OK never turns it back off.
+    #[test]
+    fn a_granted_warning_turns_on_only_while_off() {
+        for all_tabs in [true, false] {
+            let (mut b, mut v) = (Broadcast::default(), view());
+            assert!(b.grant(&mut v, all_tabs));
+            let on = if all_tabs { Mode::AllTabs } else { Mode::AllPanes };
+            assert_eq!(b.mode(&v), on);
+            assert!(!b.grant(&mut v, all_tabs), "the second OK changes nothing");
+            assert_eq!(b.mode(&v), on);
+            assert!(!b.grant(&mut v, !all_tabs), "nor the other item's");
+            assert_eq!(b.mode(&v), on);
+        }
     }
 
     #[test]

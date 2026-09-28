@@ -177,10 +177,42 @@ impl Profile {
     }
 }
 
-/// The command line a profile starts. "Login Shell" means the Windows default shell.
-pub fn command_line(p: &Profile, default_shell: &str) -> String {
+/// Whether the profile's command type is SSH (`Custom Command` "SSH").
+pub fn is_ssh(p: &Profile) -> bool {
+    p.string("Custom Command") == "SSH"
+}
+
+/// Whether an SSH profile runs through Tandem's `it2ssh` (`AB:893-926`): SSH with a non-blank
+/// Command, SSH Integration on, and `it2ssh` usable.
+pub fn ssh_integrated(p: &Profile, it2ssh: Option<&std::path::Path>) -> bool {
+    is_ssh(p) && !p.string("Command").trim().is_empty() && crate::ssh_config::from_profile(p).ssh_integration && it2ssh.is_some()
+}
+
+/// The remote folder an SSH profile's session starts in: the custom Working Directory, only
+/// when it is a POSIX path (starts with `/` or `~`); a Windows path cannot name a remote
+/// folder (iTerm2 sends the local `PWD`, `PS:20129-20132`).
+pub fn ssh_initial_directory(p: &Profile) -> Option<String> {
+    if p.string("Custom Directory") != "Yes" {
+        return None;
+    }
+    let wanted = p.string("Working Directory");
+    let wanted = wanted.trim();
+    wanted.starts_with(['/', '~']).then(|| wanted.to_string())
+}
+
+/// The command line a profile starts. "Login Shell" means the Windows default shell. SSH runs
+/// `ssh <Command>`, or `it2ssh.exe <Command>` with SSH Integration (`AB:862-926`); the joined
+/// text is trimmed, and a blank Command runs the shell.
+pub fn command_line(p: &Profile, default_shell: &str, it2ssh: Option<&std::path::Path>) -> String {
     match p.string("Custom Command").as_str() {
         "Yes" | "Custom Shell" if !p.string("Command").trim().is_empty() => p.string("Command"),
+        "SSH" if !p.string("Command").trim().is_empty() => {
+            let program = match it2ssh.filter(|_| ssh_integrated(p, it2ssh)) {
+                Some(exe) => format!("\"{}\"", exe.display()),
+                None => "ssh".to_string(),
+            };
+            format!("{program} {}", p.string("Command")).trim().to_string()
+        }
         _ => default_shell.to_string(),
     }
 }
@@ -200,10 +232,28 @@ pub fn local_path(reported: &str) -> Option<std::path::PathBuf> {
     (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':').then(|| std::path::PathBuf::from(s.replace('/', "\\")))
 }
 
+/// A saved folder as the Windows path a shell starts in: `local_path`'s, or "~" or a path
+/// under it in the home folder (iTerm2 standardizes the path, expanding the tilde, before it
+/// checks it, `iTermSessionFactory.m:346-354`). None for any other path ("~user", WSL, MSYS,
+/// relative).
+pub fn local_folder(saved: &str) -> Option<std::path::PathBuf> {
+    let Some(rest) = saved.strip_prefix('~') else { return local_path(saved) };
+    if !rest.is_empty() && !rest.starts_with(['/', '\\']) {
+        return None;
+    }
+    let rest = rest.trim_start_matches(['/', '\\']);
+    Some(if rest.is_empty() { home() } else { home().join(rest.replace('/', "\\")) })
+}
+
+/// The home folder a session starts in: %USERPROFILE%.
+pub fn home() -> std::path::PathBuf {
+    std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir)
+}
+
 /// `start_dir`, with the directory of the session a new one comes from ("Reuse previous
 /// session's directory"). A missing or unusable directory falls back to home.
 pub fn start_dir_with(p: &Profile, previous: Option<&std::path::Path>) -> (std::path::PathBuf, Option<String>) {
-    let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let home = home();
     if p.string("Custom Directory") == "Recycle" {
         return (previous.filter(|d| d.is_dir()).map(|d| d.to_path_buf()).unwrap_or(home), None);
     }
@@ -249,6 +299,13 @@ mod tests {
         assert_eq!(local_path("/C:/Users/rob"), Some(std::path::PathBuf::from("C:\\Users\\rob")));
         assert_eq!(local_path("C:\\Users\\rob"), Some(std::path::PathBuf::from("C:\\Users\\rob")));
         assert_eq!(local_path("/home/rob"), None);
+        assert_eq!(local_folder("/D:/x"), Some(std::path::PathBuf::from("D:\\x")));
+        assert_eq!(local_folder("~/www/a"), Some(home().join("www\\a")));
+        assert_eq!(local_folder("~\\www"), Some(home().join("www")));
+        assert_eq!(local_folder("~"), Some(home()));
+        assert_eq!(local_folder("~rob/www"), None);
+        assert_eq!(local_folder("/home/rob"), None);
+        assert_eq!(local_folder("src"), None);
     }
 
     #[test]
@@ -289,12 +346,61 @@ mod tests {
     }
 
     #[test]
+    fn ssh_command_line_follows_iterm2() {
+        let u = std::path::Path::new(r"C:\T\utilities\it2ssh.exe");
+        let s = |v: &str| toml::Value::String(v.into());
+        let mut p = Profile::default();
+        p.set("Custom Command", s("SSH"));
+        p.set("Command", s("user@host -p 2222"));
+        assert!(is_ssh(&p));
+        assert_eq!(command_line(&p, "pwsh.exe", Some(u)), "\"C:\\T\\utilities\\it2ssh.exe\" user@host -p 2222");
+        assert!(ssh_integrated(&p, Some(u)));
+        assert!(!ssh_integrated(&p, None));
+        assert_eq!(command_line(&p, "pwsh.exe", None), "ssh user@host -p 2222");
+        let mut off = toml::Table::new();
+        off.insert("sshIntegration".into(), toml::Value::Boolean(false));
+        let mut q = p.clone();
+        q.set("SSH", toml::Value::Table(off));
+        assert_eq!(command_line(&q, "pwsh.exe", Some(u)), "ssh user@host -p 2222");
+        assert!(!ssh_integrated(&q, Some(u)));
+        p.set("Command", s("  host \n"));
+        assert_eq!(command_line(&p, "pwsh.exe", None), "ssh   host", "the joined string is trimmed, as iTerm2 trims");
+        p.set("Command", s("   "));
+        assert_eq!(command_line(&p, "pwsh.exe", Some(u)), "pwsh.exe");
+        assert!(!ssh_integrated(&p, Some(u)), "a blank Command runs the shell");
+        p.set("Custom Command", s("Yes"));
+        p.set("Command", s("x"));
+        assert!(!is_ssh(&p));
+        assert_eq!(command_line(&p, "pwsh.exe", Some(u)), "x");
+        p.set("Custom Command", s("No"));
+        assert_eq!(command_line(&p, "pwsh.exe", Some(u)), "pwsh.exe");
+    }
+
+    #[test]
+    fn ssh_initial_directory_follows_windows() {
+        let s = |v: &str| toml::Value::String(v.into());
+        let mut p = Profile::default();
+        p.set("Custom Directory", s("Yes"));
+        p.set("Working Directory", s("/srv/app"));
+        assert_eq!(ssh_initial_directory(&p).as_deref(), Some("/srv/app"));
+        p.set("Working Directory", s("~/proj"));
+        assert_eq!(ssh_initial_directory(&p).as_deref(), Some("~/proj"));
+        p.set("Working Directory", s("C:\\work"));
+        assert_eq!(ssh_initial_directory(&p), None, "a Windows path cannot name a remote folder");
+        p.set("Working Directory", s("/srv/app"));
+        p.set("Custom Directory", s("No"));
+        assert_eq!(ssh_initial_directory(&p), None);
+        p.set("Custom Directory", s("Recycle"));
+        assert_eq!(ssh_initial_directory(&p), None);
+    }
+
+    #[test]
     fn command_line_follows_custom_command() {
         let mut p = Profile::default();
-        assert_eq!(command_line(&p, "pwsh.exe"), "pwsh.exe");
+        assert_eq!(command_line(&p, "pwsh.exe", None), "pwsh.exe");
         p.set("Custom Command", toml::Value::String("Yes".into()));
         p.set("Command", toml::Value::String("wsl.exe -d Ubuntu".into()));
-        assert_eq!(command_line(&p, "pwsh.exe"), "wsl.exe -d Ubuntu");
+        assert_eq!(command_line(&p, "pwsh.exe", None), "wsl.exe -d Ubuntu");
     }
 
     #[test]

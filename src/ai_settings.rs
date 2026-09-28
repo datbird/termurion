@@ -182,11 +182,18 @@ pub fn allowed(g: &Globals) -> bool {
     g.bool(ADMIN) && g.bool(ENABLE_AI)
 }
 
-/// Whether Toggle Setting may flip this key. The switches that stand between a person and an AI
-/// request (the administrator's, EnableAI, AICompletions, the consent list and the default chat
-/// permissions) are never offered and never flipped, so a key binding cannot bypass consent.
+/// The switches that stand between a person and an AI request: the administrator's, EnableAI,
+/// AICompletions, the consent list and the default chat permissions. The one list Toggle
+/// Setting, SetPreference, Import from iTerm2 and every settings load (a custom folder or URL,
+/// Import All) refuse, so none of them can bypass consent.
+pub fn guards_consent(key: &str) -> bool {
+    [ADMIN, ENABLE_AI, AI_COMPLETIONS, CONSENT].contains(&key) || PERMISSIONS.iter().any(|(k, _)| *k == key)
+}
+
+/// Whether Toggle Setting may flip this key: the consent switches (`guards_consent`) are never
+/// offered and never flipped, so a key binding cannot bypass consent.
 pub fn toggle_allowed(key: &str) -> bool {
-    ![ADMIN, ENABLE_AI, AI_COMPLETIONS, CONSENT].contains(&key) && !PERMISSIONS.iter().any(|(k, _)| *k == key)
+    !guards_consent(key)
 }
 
 #[cfg(test)]

@@ -22,6 +22,13 @@ impl App {
         (new_output, idle)
     }
 
+    /// Whether any of these panes is processing (output within the last 2 s), apart from
+    /// whether the output was seen.
+    pub(super) fn any_processing(&self, panes: &[PaneId]) -> bool {
+        let now = Instant::now();
+        panes.iter().any(|id| self.activity.get(id).is_some_and(|a| a.is_processing(now)))
+    }
+
     /// Output since the last tick, the user's view, and the events. When to come back.
     pub(super) fn tick_activity(&mut self) -> Option<Instant> {
         let now = Instant::now();
@@ -47,7 +54,9 @@ impl App {
         for (pane, e) in events {
             self.activity_event(pane, e);
         }
-        if changed {
+        // A spinner turns at each tick while a session is processing.
+        let spinning = !self.globals.bool("HideActivityIndicator") && self.activity.values().any(|a| a.is_processing(now));
+        if changed || spinning {
             self.redraw();
         }
         waiting.then(|| now + Duration::from_millis(500))
@@ -70,6 +79,27 @@ impl App {
                 }
             }
             ActivityEvent::ActivityAfterIdle => {}
+        }
+    }
+}
+
+/// A tab shows the activity spinner while it is processing and not the foreground tab, unless
+/// `HideActivityIndicator` (`TAB:1328-1332`). New output is apart: unseen output while
+/// processing (`activity_icons`).
+pub(super) fn tab_processing(any_processing: bool, foreground: bool, hide: bool) -> bool {
+    any_processing && !foreground && !hide
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tab_processing;
+
+    #[test]
+    fn processing_is_apart_from_new_output() {
+        // The spinner: a processing background tab, unless `HideActivityIndicator`.
+        assert!(tab_processing(true, false, false));
+        for (any, foreground, hide) in [(false, false, false), (true, true, false), (true, false, true), (false, true, true), (true, true, true)] {
+            assert!(!tab_processing(any, foreground, hide), "{any} {foreground} {hide}");
         }
     }
 }

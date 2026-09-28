@@ -1,6 +1,7 @@
 //! Tandem: an iTerm2-style terminal for Windows.
 
 pub mod mouse;
+pub mod mouse_frustration;
 pub mod globals;
 pub mod keystroke;
 pub mod keyaction;
@@ -22,6 +23,7 @@ pub mod smartsel;
 pub mod semantic;
 pub mod synthetic;
 pub mod tabstatus;
+pub mod tab_layout;
 pub mod status_tool;
 pub mod seltools;
 pub mod copymode;
@@ -49,6 +51,8 @@ pub mod expr;
 pub mod interp;
 pub mod script_fn;
 pub mod script_eval;
+pub mod warnings;
+pub mod shell_version;
 pub mod script_statusbar;
 pub mod script_provision;
 pub mod script_runtime;
@@ -60,6 +64,7 @@ pub mod script_deps;
 pub mod zip_check;
 #[cfg(windows)]
 pub mod script_deps_ui;
+pub mod suppressed_alerts_ui;
 #[cfg(windows)]
 pub mod script_export_ui;
 #[cfg(windows)]
@@ -82,6 +87,7 @@ pub mod util_simple;
 pub mod util_git;
 pub mod util_tip;
 pub mod util_query;
+pub mod util_it2ssh;
 #[cfg(windows)]
 pub mod util_console;
 pub mod utilities;
@@ -138,6 +144,16 @@ pub mod statusbar_sparkline;
 pub mod statusbar_text;
 pub mod git_state;
 pub mod git_wrapper;
+pub mod ssh_transport;
+pub mod ssh_probe;
+pub mod ssh_handshake;
+pub mod ssh_session;
+pub mod ssh_secret;
+pub mod ssh_config;
+#[cfg(windows)]
+pub mod ssh_probe_win;
+#[cfg(windows)]
+pub mod ssh_secret_win;
 
 #[cfg(windows)]
 pub mod conpty;
@@ -193,11 +209,16 @@ pub mod replay_window;
 
 pub mod settings_keys;
 pub mod settings_advanced;
+pub mod advanced_pane;
+pub mod remote_prefs;
+pub mod settings_export;
+pub mod settings_advanced_pane;
 pub mod settings_triggers;
 pub mod settings_lists;
 pub mod settings_arrangements;
 pub mod settings_shortcuts;
 pub mod settings_hotkey;
+pub mod settings_ssh;
 pub mod restore_state;
 pub mod host_proto;
 pub mod host;

@@ -117,11 +117,14 @@ pub struct Limits {
     pub transfer: usize,
     /// Bytes `CopyToClipboard` captures before it stops.
     pub copy: usize,
+    /// Bytes of output held unread behind an inline file that waits for the person (a tmux
+    /// pane cannot pause); past it the file is dropped, as a No.
+    pub held: usize,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { images: 768 << 20, transfer: 512 << 20, copy: 100 << 20 }
+        Limits { images: 768 << 20, transfer: 512 << 20, copy: 100 << 20, held: 16 << 20 }
     }
 }
 
@@ -148,6 +151,13 @@ pub struct Screen {
     pub downloads: Vec<crate::inline_file::Download>,
     /// A MultipartFile in progress.
     pub multipart: Option<crate::inline_file::Multipart>,
+    /// An inline file waiting for the person to allow its display; while it waits, the output
+    /// after it is held unread in `held_output` (iTerm2 pauses its parser for the question).
+    pub(crate) inline_hold: Option<crate::inline_file::InlineHold>,
+    pub(crate) held_output: Vec<u8>,
+    /// How many inline files have waited: each one's number, so a late answer to a dropped
+    /// one never answers the next.
+    pub(crate) inline_holds: u64,
     /// Kitty graphics images and transfers.
     pub kitty: crate::kitty::Kitty,
     /// Answers the terminal owes the program (kitty graphics), sent with `feed`'s reply.
@@ -199,8 +209,11 @@ pub struct Screen {
     /// changes across panes (Session Status' "older first", its snooze, and the tool's
     /// refresh). 0 until the first change.
     pub tab_status_gen: u64,
-    /// The program's `Env=report=all` environment, kept for the SSH integration.
-    pub env: Option<String>,
+    /// The program's `Env=report=all` environment as `(name, value)` tuples in its order,
+    /// kept for the SSH integration (iTerm2's `exfiltratedEnvironment`).
+    pub env: Option<Vec<(String, String)>>,
+    /// `it2ssh=`'s flags, until a `SendConductor=` takes them (iTerm2's `_sshIntegrationFlags`).
+    pub(crate) ssh_flags: Option<Vec<String>>,
     /// ExecFailed: the command could not start.
     pub exec_failed: bool,
     /// UnicodeVersion and the Touch Bar key labels.
@@ -213,6 +226,8 @@ pub struct Screen {
     pub(crate) color_sets: Vec<(String, crate::osc1337::Color)>,
     /// Whether programs may write the clipboard (for the Capabilities report).
     pub clipboard_allowed: bool,
+    /// What a host change does with modes left on (the app's settings for this pane).
+    pub host_policy: crate::marks::HostPolicy,
     /// Mode 2031 (color scheme reports) and the scheme last reported.
     color_reports: bool,
     last_dark: bool,
@@ -291,6 +306,20 @@ pub enum Request {
     SetBadge(String),
     /// SetBadgeFormat with a function call: refused.
     BadgeRefused,
+    /// Shell integration reported another account (user or host, the first report included):
+    /// a waiting outdated scripts notice goes, and at a host change (`marks::host_changed`)
+    /// these modes, left on by the previous host, are offered for turning off (empty when
+    /// nothing is offered).
+    HostChanged(crate::marks::LeftOn),
+    /// ShellIntegrationVersion: the version and the shell this report names (None when it
+    /// names none), for the outdated scripts notice.
+    ShellIntegrationReported { version: Option<u32>, shell: Option<String> },
+    /// `it2ssh=`: the pane starts connecting (`screenWillBeginSSHIntegration`).
+    SshWillBegin,
+    /// A version 3 `SendConductor=`: type the conductor bootstrap.
+    SshSendConductor(crate::ssh_handshake::Handshake),
+    /// Trusted `EndSSH=`: end the pane's hops through this it2ssh unique id.
+    SshEnd(String),
 }
 
 /// Key reporting and emulation chosen in Session > Terminal State.
@@ -364,6 +393,9 @@ impl Screen {
             images: crate::images::Store::default(),
             downloads: Vec::new(),
             multipart: None,
+            inline_hold: None,
+            held_output: Vec::new(),
+            inline_holds: 0,
             kitty: crate::kitty::Kitty::default(),
             replies: Vec::new(),
             limits: Limits::default(),
@@ -387,12 +419,14 @@ impl Screen {
             porthole_wide_default: false,
             porthole_selection: None,
             env: None,
+            ssh_flags: None,
             exec_failed: false,
             unicode: crate::osc1337::Unicode::default(),
             profile_unicode: 9,
             key_labels: crate::osc1337::KeyLabels::default(),
             color_sets: Vec::new(),
             clipboard_allowed: false,
+            host_policy: Default::default(),
             requests: Vec::new(),
             copy: crate::clipboard_osc::Copy::default(),
             capture: None,
@@ -561,6 +595,18 @@ impl Screen {
     }
 
     fn feed_chunk(&mut self, bytes: &[u8]) -> Vec<u8> {
+        // An inline file waits for the person: nothing after it is read until they answer.
+        if self.inline_hold.is_some() {
+            if self.held_output.len() + bytes.len() <= self.limits.held {
+                self.held_output.extend_from_slice(bytes);
+                return Vec::new();
+            }
+            // Too much waits on the person: the file is dropped, as a No, and all of it is read.
+            self.inline_hold = None;
+            let mut held = std::mem::take(&mut self.held_output);
+            held.extend_from_slice(bytes);
+            return self.feed(&held);
+        }
         if self.keys.literal {
             let reply = self.feed_raw(&literal(bytes));
             self.run_triggers_after_feed();
@@ -569,9 +615,11 @@ impl Screen {
         // Shell-integration OSCs act where they appear in the stream, so the output is fed in
         // pieces that end at each one.
         let events = self.osc.scan_spans(bytes);
-        let pending = self.osc.pending;
+        let mut pending = self.osc.pending;
         let mut reply = Vec::new();
         let mut at = 0;
+        // Where this chunk's reading stops: its end, or just after an inline file that waits.
+        let mut stop = bytes.len();
         let mut still_held = false;
         if self.capture.is_some() && !self.capture_hold.is_empty() {
             if events.first().is_some_and(|e| e.0 == 0) {
@@ -610,6 +658,15 @@ impl Screen {
                 }
             }
             reply.append(&mut self.replies);
+            if self.inline_hold.is_some() {
+                // The rest of the chunk is read again when the person answers, by a scanner
+                // back where this sequence left it (between sequences).
+                self.held_output.extend_from_slice(&bytes[at..]);
+                self.osc = Default::default();
+                pending = None;
+                stop = at;
+                break;
+            }
         }
         if !still_held {
             match pending.filter(|p| *p >= at) {
@@ -617,10 +674,10 @@ impl Screen {
                     self.capture_bytes(&bytes[at..p]);
                     self.capture_hold = bytes[p..].to_vec();
                 }
-                _ => self.capture_bytes(&bytes[at..]),
+                _ => self.capture_bytes(&bytes[at..stop]),
             }
         }
-        reply.extend(self.feed_raw(&bytes[at..]));
+        reply.extend(self.feed_raw(&bytes[at..stop]));
         reply.extend(self.color_scheme_change());
         self.composer_accrue();
         self.run_triggers_after_feed();
@@ -891,6 +948,13 @@ impl Screen {
             last += 1;
         }
         Some((n, first, last))
+    }
+
+    /// The exfiltrated tuples whose name is in `names`, in stored order; all of them for
+    /// None; none without an environment (iTerm2's `exfiltratedEnvironmentVariables:`).
+    pub fn exfiltrated(&self, names: Option<&[&str]>) -> Vec<(String, String)> {
+        let Some(env) = &self.env else { return Vec::new() };
+        env.iter().filter(|(k, _)| names.is_none_or(|n| n.contains(&k.as_str()))).cloned().collect()
     }
 
     /// What output asked the window to do since the last call.
@@ -1307,6 +1371,17 @@ impl Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exfiltrated_follows_iterm2() {
+        let mut s = Screen::new(80, 24);
+        let p = |k: &str, v: &str| (k.to_string(), v.to_string());
+        assert_eq!(s.exfiltrated(None), vec![]);
+        s.env = Some(vec![p("A", "1"), p("B", "2"), p("A", "3")]);
+        assert_eq!(s.exfiltrated(Some(&["A"])), vec![p("A", "1"), p("A", "3")]);
+        assert_eq!(s.exfiltrated(None), vec![p("A", "1"), p("B", "2"), p("A", "3")]);
+        assert_eq!(s.exfiltrated(Some(&[])), vec![]);
+    }
 
     #[test]
     fn answers_background_color_query() {
