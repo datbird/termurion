@@ -158,14 +158,25 @@ fn appdata_tandem() -> PathBuf {
     settings.parent().unwrap_or(&settings).to_path_buf()
 }
 
+/// An extracted export holding a link, a junction or a file with another hard link is refused
+/// (11d's rule for script zips, `sa::unsafe_entry`), so nothing the import reads or copies can
+/// reach outside the staging folder or onto a network path.
+fn staged_links(staging: &Path) -> Result<(), String> {
+    match crate::script_archive::unsafe_entry(staging, &super::scripts_app::stage_entries) {
+        Some(entry) => Err(crate::script_archive::unsafe_entry_text(entry.strip_prefix(staging).unwrap_or(&entry))),
+        None => Ok(()),
+    }
+}
+
 /// Import's first phase (`Importer.importEntities`, `IE:81-110`): `file` extracted into a fresh
-/// `<temp>\.tandem-import-<uuid>`, then the marker in `appdata` naming it. On a failure nothing
-/// is left behind.
+/// `<temp>\.tandem-import-<uuid>`, refused when it holds a link (`staged_links`), then the
+/// marker in `appdata` naming it. On a failure nothing is left behind.
 fn stage_import(file: &Path, temp: &Path, appdata: &Path) -> Result<(), String> {
     let staging = se::staging_dir(temp, &uuid::Uuid::new_v4().to_string());
     let staged = std::fs::create_dir_all(&staging)
         .map_err(|e| format!("{}: {e}", staging.display()))
         .and_then(|_| super::scripts_app::run_tar(se::extract_args(file, &staging)))
+        .and_then(|_| staged_links(&staging))
         .and_then(|_| std::fs::create_dir_all(appdata).map_err(|e| format!("{}: {e}", appdata.display())))
         .and_then(|_| std::fs::write(appdata.join(se::MARKER), staging.to_string_lossy().as_bytes()).map_err(|e| format!("{}: {e}", appdata.join(se::MARKER).display())));
     if staged.is_err() {
@@ -208,7 +219,7 @@ fn stage_scripts(from: &Path, to: &Path) -> Vec<PathBuf> {
 /// profiles, the Application Support files (hidden and excluded names kept out, links not
 /// followed: the Python API consent never comes from an archive), and the script zips moved to
 /// `.import-scripts`; the staging folder goes last. A stale marker is removed and nothing
-/// changes. Returns the zips for the app to import once it runs. The Python Runtimes entity
+/// changes; a staging folder that now holds a link (`staged_links`) is removed unapplied. Returns the zips for the app to import once it runs. The Python Runtimes entity
 /// installs nothing: each script is provisioned on its first launch (`IE:788-793`, under uv).
 pub(super) fn finish_import(appdata_tandem: &Path) -> Vec<PathBuf> {
     let marker = appdata_tandem.join(se::MARKER);
@@ -222,6 +233,11 @@ pub(super) fn finish_import(appdata_tandem: &Path) -> Vec<PathBuf> {
         Pending::Apply(staging) => staging,
     };
     if std::fs::remove_file(&marker).is_err() {
+        return Vec::new();
+    }
+    // Checked again at start: the staging folder sat in %TEMP% across the restart.
+    if staged_links(&staging).is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
         return Vec::new();
     }
     apply_user_defaults(&staging.join(Entity::UserDefaults.key()).join(se::USER_DEFAULTS_FILE), appdata_tandem);
@@ -384,18 +400,14 @@ impl App {
     }
 
     /// The second button of the confirmation (`Eraser`, `IE:224-329`): the Scripts folder is
-    /// resolved first (its settings are erased with the rest; one on, or reached through a link
-    /// to, a network path is left alone), then the list of every entry of `%APPDATA%\Tandem`
+    /// resolved first as the one Tandem uses (`scripts_folder`, iTerm2's `scriptsPath`; its
+    /// settings are erased with the rest; one on, or reached through a link to, a network path
+    /// is left alone), then the list of every entry of `%APPDATA%\Tandem`
     /// and of that folder. A dry run logs each path and says so; otherwise the host's shells
     /// end, every path goes (links as links) and Tandem exits at once, saving nothing (iTerm2's
     /// `_exit(0)`). Credential Manager entries are not touched.
     pub(super) fn erase_confirmed(&mut self, dry_run: bool) {
-        let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-        let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
-        let text = self.globals.string("CustomScriptsFolder");
-        let custom = if text.is_empty() { text } else { crate::scripts::expand_tilde(&text, &home).to_string_lossy().into_owned() };
-        let scripts = se::scripts_to_erase(self.globals.bool("UseCustomScriptsFolder"), &custom, &crate::scripts::default_folder(&appdata))
-            .filter(|s| crate::scripts::ancestors_stay_local(s, &crate::scripts::read_link));
+        let scripts = se::scripts_to_erase(self.scripts_folder()).filter(|s| crate::scripts::ancestors_stay_local(s, &crate::scripts::read_link));
         let tandem = appdata_tandem();
         let listed = all_entries(&tandem).map_err(|e| format!("{}: {e}", tandem.display())).and_then(|own| {
             let scripts = match &scripts {
@@ -646,6 +658,47 @@ mod tests {
     /// Beyond the plan: an export imported into another Tandem folder through the real tar.exe
     /// (the first phase names the staging folder in the marker; the next start applies it),
     /// and a file that is not an archive fails with nothing left behind.
+    #[test]
+    fn import_refuses_links() {
+        // The Task 10 review's Important 1 (invariant 5): an export holding a link, a junction
+        // or a hard-linked file is refused at staging, leaving nothing, and a staging folder
+        // that gained one before the restart is removed unapplied.
+        let root = temp("links");
+        let src = root.join("Src");
+        std::fs::create_dir_all(src.join("app-support")).unwrap();
+        std::fs::write(src.join(r"app-support\a.txt"), "a").unwrap();
+        std::fs::hard_link(src.join(r"app-support\a.txt"), src.join(r"app-support\b.txt")).unwrap();
+        let out = root.join("linked.tandemexport");
+        tar(&["-czf", &out.to_string_lossy(), "-C", &src.to_string_lossy(), "app-support"]);
+        let (to, temp_dir) = (root.join("To"), root.join("Temp"));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let refused = stage_import(&out, &temp_dir, &to).unwrap_err();
+        assert!(refused.contains("is a link or has another name"), "{refused}");
+        assert!(!to.join(se::MARKER).exists());
+        assert!(entries(&temp_dir).is_empty(), "a refused archive leaves nothing");
+
+        // A junction (no rights needed) planted in a staged folder before the next start.
+        let staging = se::staging_dir(&temp_dir, "U");
+        std::fs::create_dir_all(staging.join("user-defaults")).unwrap();
+        std::fs::write(staging.join(r"user-defaults\UserDefaults.toml"), "[settings]\nFocusFollowsMouse = true\n").unwrap();
+        assert_eq!(staged_links(&staging), Ok(()));
+        let outside = root.join("Outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("x.txt"), "x").unwrap();
+        let junction = staging.join("app-support");
+        let made = std::process::Command::new("cmd.exe").args(["/d", "/c", "mklink", "/J"]).arg(&junction).arg(&outside).output().unwrap();
+        assert!(made.status.success(), "{made:?}");
+        assert!(staged_links(&staging).is_err());
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(to.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
+        assert!(finish_import(&to).is_empty());
+        assert!(!to.join(se::MARKER).exists());
+        assert!(!to.join("settings.toml").exists(), "nothing was applied");
+        assert!(!staging.exists(), "the staging folder is gone");
+        assert!(outside.join("x.txt").exists(), "the junction's target is untouched");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn import_round_trips_an_export() {
         let root = temp("round");

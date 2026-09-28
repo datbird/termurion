@@ -255,15 +255,14 @@ pub fn erase_confirm_body() -> String {
     .join("\n")
 }
 
-/// The Scripts folder whose entries the erase removes (`Eraser.init`, `IE:246-250`), resolved
-/// before anything is removed, since the settings naming a custom folder go with the rest: the
-/// custom folder when it is on and named (an empty one is not used, as
-/// `scripts::scripts_folder` says), else the default. A network path is never erased (None).
-pub fn scripts_to_erase(use_custom: bool, custom: &str, default_folder: &Path) -> Option<PathBuf> {
-    if !use_custom || custom.is_empty() {
-        return Some(default_folder.to_path_buf());
-    }
-    (!crate::scripts::is_network_path(custom)).then(|| PathBuf::from(custom))
+/// The Scripts folder whose entries the erase removes (`Eraser.init`, `IE:262-266`), given the
+/// folder Tandem uses (`scripts::scripts_folder`, iTerm2's `scriptsPath`: the custom folder
+/// only when it is on and valid, else the default), resolved before anything is removed, since
+/// the settings naming a custom folder go with the rest. A custom folder Tandem does not use
+/// (invalid: a space, missing, a file, a network path) is never touched. A folder on a network
+/// path (the default one under a redirected `%APPDATA%`) is never erased (None).
+pub fn scripts_to_erase(folder: PathBuf) -> Option<PathBuf> {
+    (!crate::scripts::is_network_path(&folder.to_string_lossy())).then_some(folder)
 }
 
 /// What the erase removes, in order (`IE:255-329`): every entry of `%APPDATA%\Tandem`, then
@@ -373,14 +372,38 @@ mod tests {
 
     #[test]
     fn erase_plan_follows_iterm2() {
-        let d = Path::new(r"C:\A\Scripts");
-        assert_eq!(scripts_to_erase(false, "", d), Some(d.to_path_buf()));
-        assert_eq!(scripts_to_erase(true, r"E:\s", d), Some(PathBuf::from(r"E:\s")));
-        assert_eq!(scripts_to_erase(true, r"\\h\s", d), None);
-        assert_eq!(scripts_to_erase(true, "", d), Some(d.to_path_buf()));
-        // Beyond the plan: an off custom folder is not used, and `//host` is a network path too.
-        assert_eq!(scripts_to_erase(false, r"E:\s", d), Some(d.to_path_buf()));
-        assert_eq!(scripts_to_erase(true, "//h/s", d), None);
+        // The folder is iTerm2's `scriptsPath` (`IE:262-266`, `FM:236-252`): a custom folder
+        // Tandem does not use (a space, missing, a file, a network path) falls back to the
+        // default, and the typed folder is never erased (the Task 10 review's Critical 1).
+        struct Dirs(&'static [&'static str]);
+        impl crate::scripts::Fs for Dirs {
+            fn list(&self, _: &Path) -> Vec<(String, bool)> {
+                Vec::new()
+            }
+            fn is_file(&self, p: &Path) -> bool {
+                p == Path::new(r"E:\file")
+            }
+            fn is_dir(&self, p: &Path) -> bool {
+                self.0.iter().any(|d| Path::new(d) == p)
+            }
+            fn canonical(&self, dir: &Path) -> Option<PathBuf> {
+                Some(dir.to_path_buf())
+            }
+        }
+        let fs = Dirs(&[r"E:\s", r"E:\My Files", r"C:\Users\John Smith\s"]);
+        let (appdata, home) = (Path::new(r"C:\A"), Path::new(r"C:\Users\John Smith"));
+        let d = Some(PathBuf::from(r"C:\A\Tandem\Scripts"));
+        let erased = |on: bool, text: &str| scripts_to_erase(crate::scripts::scripts_folder(on, text, appdata, home, &fs));
+        assert_eq!(erased(false, ""), d);
+        assert_eq!(erased(true, r"E:\s"), Some(PathBuf::from(r"E:\s")));
+        assert_eq!(erased(true, ""), d);
+        assert_eq!(erased(false, r"E:\s"), d);
+        for unused in [r"E:\My Files", r"~\s", r"E:\missing", r"E:\file", r"\\h\s", "//h/s"] {
+            assert_eq!(erased(true, unused), d, "{unused}");
+        }
+        // A Scripts folder on a network path (a redirected %APPDATA%) is never erased.
+        assert_eq!(scripts_to_erase(PathBuf::from(r"\\h\s\Tandem\Scripts")), None);
+        assert_eq!(scripts_to_erase(PathBuf::from("//h/s/Scripts")), None);
         let p = |s: &str| PathBuf::from(s);
         assert_eq!(
             erase_list(&[p(r"A\settings.toml"), p(r"A\Scripts")], Some((Path::new(r"E:\s"), vec![p(r"E:\s\a.py")]))),

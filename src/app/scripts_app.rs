@@ -824,7 +824,7 @@ fn hard_links(p: &Path) -> u32 {
 /// point (`FILE_ATTRIBUTE_REPARSE_POINT`: a symbolic link, a junction or any other kind), a
 /// folder, or a file with its hard link count. A folder that cannot be read reads as a
 /// reparse point, so the archive is refused.
-fn stage_entries(dir: &Path) -> Vec<(String, sa::Stat)> {
+pub(super) fn stage_entries(dir: &Path) -> Vec<(String, sa::Stat)> {
     use std::os::windows::fs::MetadataExt;
     const REPARSE: u32 = 0x400;
     let Ok(rd) = std::fs::read_dir(dir) else { return vec![(String::new(), sa::Stat::Reparse)] };
