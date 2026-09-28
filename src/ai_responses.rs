@@ -367,7 +367,7 @@ impl Dialect for Responses {
             })
             .into_iter()
             .collect();
-        Ok(Some(Parsed { messages, response_id: string(&v["id"]), prompt_tokens: v["usage"]["input_tokens"].as_i64(), ignore: false }))
+        Ok(Some(Parsed { messages, response_id: string(&v["id"]), prompt_tokens: v["usage"]["input_tokens"].as_i64(), ignore: false, error: None }))
     }
 
     fn parse_event(&self, json: &str) -> Result<Option<Parsed>, String> {

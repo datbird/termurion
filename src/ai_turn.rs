@@ -138,6 +138,8 @@ pub struct Parsed {
     pub prompt_tokens: Option<i64>,
     /// A status event nobody shows; its usage still counts.
     pub ignore: bool,
+    /// A mid-stream error event's message (ruling 12b-3): the turn fails with it.
+    pub error: Option<String>,
 }
 
 /// A wire format: the request body and URL, and the parsers of its answers.
@@ -163,7 +165,8 @@ pub fn dialect_for(api: Api) -> Option<Box<dyn Dialect>> {
         Api::ChatCompletions => Some(Box::new(crate::ai_chat::ChatCompletions)),
         Api::EarlyO1 => Some(Box::new(crate::ai_chat::EarlyO1)),
         Api::Completions => Some(Box::new(crate::ai_chat::Completions)),
-        Api::Gemini | Api::Llama | Api::DeepSeek | Api::Anthropic | Api::AppleIntelligence => None,
+        Api::Anthropic => Some(Box::new(crate::ai_anthropic::Anthropic)),
+        Api::Gemini | Api::Llama | Api::DeepSeek | Api::AppleIntelligence => None,
     }
 }
 
@@ -548,6 +551,15 @@ impl Turn {
                     // Usage counts even on an ignored event.
                     if let Some(t) = p.prompt_tokens {
                         self.prompt_tokens = Some(t);
+                    }
+                    if let Some(error) = p.error {
+                        // Text that came before the error still shows; a call it cut short
+                        // does not run.
+                        if matches!(st.message.body, Body::Text(_) | Body::Attachment(_)) {
+                            drain(&mut st.message, &mut out, &mut self.streamed);
+                        }
+                        out.extend(self.fail(provider_error(display_name(&self.model), &error, None), true));
+                        return out;
                     }
                     if p.ignore {
                         continue;
@@ -1001,6 +1013,7 @@ mod tests {
             response_id: v["id"].as_str().map(str::to_string),
             prompt_tokens: v["tokens"].as_i64(),
             ignore: v["ignore"].as_bool().unwrap_or(false),
+            error: None,
         };
         if v["empty"] == json!(true) {
             return Ok(Some(p));

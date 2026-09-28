@@ -386,7 +386,7 @@ impl Dialect for Completions {
         let v = object(body)?;
         let choices = v["choices"].as_array().ok_or_else(|| "the response has no choices".to_string())?;
         let messages = choices.first().map(|c| Message::text(Role::Assistant, c["text"].as_str().unwrap_or_default())).into_iter().collect();
-        Ok(Some(Parsed { messages, response_id: None, prompt_tokens: v["usage"]["prompt_tokens"].as_i64(), ignore: false }))
+        Ok(Some(Parsed { messages, response_id: None, prompt_tokens: v["usage"]["prompt_tokens"].as_i64(), ignore: false, error: None }))
     }
 
     fn split(&self, buffer: &str) -> (Option<String>, String) {
@@ -549,7 +549,7 @@ pub fn parse_modern(body: &[u8]) -> Result<Option<Parsed>, String> {
         Some(choice) => vec![whole_message(&choice["message"])?],
         None => Vec::new(),
     };
-    Ok(Some(Parsed { messages, response_id: None, prompt_tokens: v["usage"]["prompt_tokens"].as_i64(), ignore: false }))
+    Ok(Some(Parsed { messages, response_id: None, prompt_tokens: v["usage"]["prompt_tokens"].as_i64(), ignore: false, error: None }))
 }
 
 /// `coercedContentString` (`MP:454-475`): streamed content as one string.
