@@ -487,6 +487,9 @@ mod tests {
         assert_eq!(zoom_frame(current, work, false, false, true), tall);
         assert_eq!(zoom_frame(current, work, true, false, true), work);
         assert_eq!(zoom_frame(current, work, false, true, true), work);
+        // A menu click without Shift: MaxVertically alone.
+        assert_eq!(zoom_frame(current, work, true, false, false), tall);
+        assert_eq!(zoom_frame(current, work, false, false, false), work);
     }
 
     #[test]

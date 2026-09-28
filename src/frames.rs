@@ -100,6 +100,13 @@ pub fn profile_percents(p: &crate::profile::Profile) -> (Option<f64>, Option<f64
     (get("Width Percentage"), get("Height Percentage"))
 }
 
+/// The Width and Height Percentage an arrangement saves for a window's profile: an explicit
+/// non-negative percentage, else -1 for cells, as the units popups store it (`saveWindowType`).
+pub fn saved_percents(width: Option<f64>, height: Option<f64>) -> (f64, f64) {
+    let axis = |p: Option<f64>| p.filter(|p| *p >= 0.0).unwrap_or(-1.0);
+    (axis(width), axis(height))
+}
+
 /// The cells a percentage of the screen holds (`measurementToCells`, `WSH:223-233`).
 pub fn percent_cells(percent: f64, cell: f32, screen: f32) -> u16 {
     (f64::from(screen) * percent / (100.0 * f64::from(cell.max(1.0)))).round().clamp(1.0, f64::from(u16::MAX)) as u16
@@ -316,6 +323,10 @@ mod tests {
         assert_eq!(percent_cells(50.0, 10.0, 1920.0), 96);
         assert_eq!(percent_cells(25.0, 22.0, 1040.0), 12, "260 / 22 rounds to 12");
         assert_eq!(percent_cells(100.0, 0.5, 100.0), 100, "a cell under 1 counts as 1");
+        // An arrangement saves what the units popups would store: -1 for a cells axis.
+        assert_eq!(saved_percents(None, None), (-1.0, -1.0), "unset is cells, not the schema's 100");
+        assert_eq!(saved_percents(Some(50.0), Some(-1.0)), (50.0, -1.0));
+        assert_eq!(saved_percents(Some(0.0), Some(30.0)), (0.0, 30.0));
     }
 
     #[test]

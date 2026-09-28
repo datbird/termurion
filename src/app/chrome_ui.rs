@@ -55,9 +55,10 @@ impl App {
     /// Window > Zoom (`PT:7055-7110`): a zoomed window goes back (a maximized one restores,
     /// a vertically zoomed one takes its earlier frame); otherwise `chrome::zoom_frame`
     /// decides: the whole work area maximizes as Windows does, a vertical zoom spans the work
-    /// area's height and keeps the frame before it. The menu item counts as a key Zoom, so
-    /// MaxVertically alone decides; Tandem has no zoom button (the caption's maximize button
-    /// stays Windows' own). Full screen has nothing to zoom.
+    /// area's height and keeps the frame before it. Its shortcut is a key Zoom, where
+    /// MaxVertically alone decides; a click on the menu item is not, and Shift held inverts
+    /// MaxVertically. Tandem has no zoom button (the caption's maximize button stays Windows'
+    /// own). Full screen has nothing to zoom.
     pub(super) fn zoom_window(&mut self) {
         if self.full_screen() {
             return;
@@ -74,7 +75,9 @@ impl App {
         }
         let Some((work, _)) = self.monitor_rects() else { return };
         let shift = unsafe { GetKeyState(i32::from(VK_SHIFT)) } < 0;
-        let target = chrome::zoom_frame(current, work, self.globals.bool("MaxVertically"), true, shift);
+        // A Zoom chosen while a key press is routed is a key Zoom; a menu click (or a pointer
+        // action or the API) is not, and Shift then inverts MaxVertically (`PT:7065-7078`).
+        let target = chrome::zoom_frame(current, work, self.globals.bool("MaxVertically"), self.key_down, shift);
         if target == work {
             return w.set_maximized(true);
         }

@@ -155,7 +155,11 @@ impl App {
             title: self.win_title.clone(),
             size_locked: self.win_locks.size,
             layout_locked: self.win_locks.layout,
-            percent: (profile.float("Width Percentage"), profile.float("Height Percentage")),
+            // What the units popups store: -1 for cells, not the schema's default 100.
+            percent: {
+                let (w, h) = crate::frames::profile_percents(profile);
+                crate::frames::saved_percents(w, h)
+            },
             cells: (profile.int("Columns").clamp(1, 1000) as u16, profile.int("Rows").clamp(1, 1000) as u16),
         };
         let mut w = arrangement::window(facts, tabs);

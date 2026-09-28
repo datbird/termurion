@@ -619,6 +619,9 @@ pub struct App {
     sent_keys: keyproto_ui::Held,
     /// The physical key of the press being routed now.
     typing: Option<PhysicalKey>,
+    /// A key press (typed or a Win chord from the hook) is being routed now: iTerm2's
+    /// `[NSApp currentEvent]` is a key-down, which Window > Zoom's Shift rule asks.
+    key_down: bool,
     cursor: (f32, f32),
     drag: Drag,
     clicks: Clicks,
@@ -1293,6 +1296,7 @@ pub fn run() {
         bg_images: HashMap::new(),
         rotators: HashMap::new(),
         typing: None,
+        key_down: false,
         cursor: (0.0, 0.0),
         drag: Drag::None,
         clicks: Clicks::default(),
@@ -3396,6 +3400,19 @@ impl App {
     /// Runs a key press: the Leader, number shortcuts, key mappings, then the terminal
     /// (or, for a Win chord from the hook, its menu command).
     pub(super) fn dispatch(
+        &mut self,
+        press: keyroute::Press,
+        fallback: Option<Vec<u8>>,
+        typed: Option<(Key, Option<Key>)>,
+        chord: Option<&crate::menus::Chord>,
+        event_loop: &ActiveEventLoop,
+    ) {
+        let outer = std::mem::replace(&mut self.key_down, true);
+        self.route_press(press, fallback, typed, chord, event_loop);
+        self.key_down = outer;
+    }
+
+    fn route_press(
         &mut self,
         press: keyroute::Press,
         fallback: Option<Vec<u8>>,
