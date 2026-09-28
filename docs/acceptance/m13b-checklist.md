@@ -29,8 +29,8 @@ modal alerts indicate keyboard shortcuts." (General). Mark each line pass or fai
 | # | Check | Result |
 |---|---|---|
 | 9 | Session > Restart Session in a pane whose shell is running: "Restart session?" ("Running jobs will be killed.", OK and Cancel, the box "Remember my choice"). OK restarts the shell. In a pane whose shell has exited, Restart Session restarts at once without asking. | |
-| 10 | In the WSL pane, `printf '\033]1337;File=name=YS50eHQ=;size=3:YWJj\a'`: "Allow Terminal-Initiated Download?" ("The terminal has initiated transfer of a file named “a.txt” of size 3 bytes. Download it?", Yes and No). Yes saves `a.txt` (or a renamed copy) to Downloads; No saves nothing. | |
-| 11 | `printf '\033]1337;File=name=YS50eHQ=;size=3;inline=1:YWJj\a'`: "Allow Terminal-Initiated Display?" asks before the file shows, and the pane's later output waits until it is answered. | |
+| 10 | In the WSL pane, `printf '\033]1337;File=name=YS50eHQ=;size=3:YWJj\a'`: "Allow Terminal-Initiated Download?" ("The terminal has initiated transfer of a file named “a.txt” of size 3 bytes. Download it?", Yes and No). Yes saves `a.txt` (or a renamed copy) to Downloads; No saves nothing, and so does closing the question with the title bar X or Alt+F4. | |
+| 11 | `printf '\033]1337;File=name=YS50eHQ=;size=3;inline=1:YWJj\a'`: "Allow Terminal-Initiated Display?" asks before the file shows, and the pane's later output waits until it is answered. Closing it with the title bar X or Alt+F4 does not show the file (No) and the output goes on. | |
 | 12 | Open an annotation (Annotate Selection) and press its Delete: "Really remove annotation?" (heading "Confirm", OK and Cancel, "Suppress this message permanently"). OK removes it; with the box checked, the next Delete removes at once. | |
 | 13 | Settings > Profiles > Keys, set Option Key Sends (Left) to "Set high bit (not recommended) / Meta": the warning "You have chosen to have an option key act as Meta..." shows over the settings window with OK only and "Suppress this message permanently". | |
 | 14 | Add a profile key binding for a keystroke the global key bindings already have: "The keyboard shortcut you have set for this profile will take precedence over an existing shortcut for the same key combination in a global shortcut." (OK and Cancel); Cancel does not save the binding, OK saves it. Add a global binding for a key some profile binds: "The global keyboard shortcut you have set is overridden by at least one profile..." (OK and Cancel). | |
@@ -54,7 +54,7 @@ modal alerts indicate keyboard shortcuts." (General). Mark each line pass or fai
 
 | # | Check | Result |
 |---|---|---|
-| 20 | Make a profile whose Command type is SSH, open a window with it in a folder you can delete (a local Windows folder), save it as a named arrangement, delete the folder, and restore the arrangement: the bar "The saved arrangement “<name>” has a bad initial directory of “<folder>” for this session." offers Don’t Warn Again and Repair. Repair asks for a folder; restore again: the session starts in the picked folder and nothing is offered. Don’t Warn Again turns on the Advanced setting and the bar never shows. | |
+| 20 | Make a profile whose Command type is SSH, open a window with it in a folder you can delete (a local Windows folder), save it as a named arrangement, delete the folder, and restore the arrangement: the bar "The saved arrangement “<name>” has a bad initial directory of “<folder>” for this session." offers Don’t Warn Again and Repair. Repair asks for a folder; restore again: the session starts in the picked folder and nothing is offered. Don’t Warn Again turns on the Advanced setting and the bar never shows. An SSH-profile session saved with a Unix folder (`/home/...`) shows the same bar on restore. | |
 | 21 | The same with an ordinary (Login Shell) profile: the session starts in the home folder and the pane shows the line "The directory “<folder>” is unavailable. Started in home directory instead."; no bar. A folder saved as a Unix path (a WSL pane's `/home/...`) shows neither. | |
 | 22 | Restore an arrangement saved on another machine (or edit one so its session's Guid names no local profile): the session restores with the arrangement's own profile settings (its colors and command), as a session copy, with no banner, even when a local profile has the same name. | |
 | 23 | Edit an arrangement so a session's embedded profile has no Name or no Guid and restore it by name: the bar "This arrangement’s profile is missing. This could be due to a bug in iTerm2 version 3.5.7, which caused profiles to be corrupted in saved arrangements." offers Assign Profile; it opens a profile list ("Select a profile to use for this session. Your selection will be saved back to the arrangement."), Enter picks, and the next restore uses the picked profile without asking. | |
@@ -88,3 +88,13 @@ modal alerts indicate keyboard shortcuts." (General). Mark each line pass or fai
 | 41 | A temporary silence imported from iTerm2 reads as long expired and asks again. | |
 | 42 | Ctrl+C from the Jobs tool is refused while its pane waits on an inline file question; a Copy or Send ^C key that brings the frustration offer also sends ^C to the program. | |
 | 43 | The bad folder bar closes on a key press (iTerm2's announcement is not important); Repair appears only for a profile whose Command type is SSH, not for a Command profile that runs ssh.exe. | |
+
+## Final fix wave
+
+| # | Check | Result |
+|---|---|---|
+| 44 | While the download question of check 10 is open, send the same `printf` twice more in that pane: no second question queues (the later files are refused, as No), and a two-line paste in another pane still asks its question after it. | |
+| 45 | Settings folder: pick a custom folder with its checkbox on so "Copy local settings to custom folder now?" asks; closing it with the title bar X copies nothing (Don't Copy). | |
+| 46 | Session > Restart Session picked twice before answering asks once. | |
+| 47 | A file name the terminal sends with control or right-to-left characters, or over 200 characters, is shown without them (cut with an ellipsis) in the download and display questions. | |
+| 48 | An ordinary profile's arrangement folder `~/gone` (edited by hand) starts in home with the unavailable banner; an existing `~/x` is used as that folder under home. | |
