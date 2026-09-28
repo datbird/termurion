@@ -1078,11 +1078,11 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | sshURLsSupportPath | sshURLsSupportPath (bool, default YES) | SSH URLs respect the path. | missing |  |
 | useDivorcedProfileToSplit | useDivorcedProfileToSplit (bool, default YES) | When splitting a pane, use the profile with local modifications, not the backing profile. | missing |  |
 | synergyModifierRemappingEnabled | synergyModifierRemappingEnabled (bool, default YES) | Support modifier remapping for keystrokes originated by Synergy. | missing |  |
-| shouldSetLCTerminal | shouldSetLCTerminal (bool, default YES) | Set LC_TERMINAL=iTerm2. | missing |  |
+| shouldSetLCTerminal | shouldSetLCTerminal (bool, default YES) | Set LC_TERMINAL=iTerm2. | have | Milestone 11e: on by default, new sessions get `LC_TERMINAL=iTerm2` and `LC_TERMINAL_VERSION=3.7.0`; every new session also gets `TERM_PROGRAM=iTerm.app`, `TERM_PROGRAM_VERSION=3.7.0`, `COLORTERM=truecolor` and `TERM_FEATURES`, as iTerm2 sets them. |
 | clearBellIconAggressively | clearBellIconAggressively (bool, default YES) | Clear bell icon when a session becomes active. | partial | Milestone 6b uses iTerm2's default; changing it comes with the advanced settings sweep (milestone 13). |
 | workAroundNumericKeypadBug | workAroundNumericKeypadBug (bool, default YES) | Treat the equals sign on the numeric keypad as a key on the numeric keypad. | missing |  |
 | enableCharacterAccentMenu | enableCharacterAccentMenu (bool, default NO) | Enable character accent menu. | missing |  |
-| accelerateUploads | accelerateUploads (bool, default YES) | Make uploads with it2ul really fast. | missing |  |
+| accelerateUploads | accelerateUploads (bool, default YES) | Make uploads with it2ul really fast. | have | Milestone 11e: on by default, it2ul uploads go 40960 bytes every 10 ms; off, they go at the quick-paste pace (QuickPasteBytesPerCall, QuickPasteDelayBetweenCalls), as iTerm2's paste context does. |
 | multiserver | multiserver (bool, default YES) | Enable multi-server daemon. | missing |  |
 | useRestorableStateController | useRestorableStateController (bool, default YES) | Enable restorable state controller? This makes window restoration more reliable. | missing |  |
 | fixMouseWheel | fixMouseWheel (bool, default YES) | Mouse wheel always scrolls when scroll bars are visible. | missing |  |
@@ -1108,7 +1108,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | aiProxy | aiProxy (string, default @"") | Host and port for proxy for AI requests. | missing |  |
 | ollamaNumCtx | ollamaNumCtx (int, default 0) | Ollama context window size (num_ctx) for native /api/chat requests. | missing |  |
 | ollamaKeepAlive | ollamaKeepAlive (string, default @"30m") | Ollama keep_alive for native /api/chat requests. | missing |  |
-| addUtilitiesToPATH | addUtilitiesToPATH (bool, default YES) | Add path to iTerm2 utilities to $PATH for new sessions? | missing |  |
+| addUtilitiesToPATH | addUtilitiesToPATH (bool, default YES) | Add path to iTerm2 utilities to $PATH for new sessions? | have | Milestone 11e: on by default, each new session's PATH ends with the `utilities` folder beside tandem.exe (16 hard links to `tandem-utils.exe` plus `it2api.py`, refreshed at every start), appended even when already present, as iTerm2 does; not added when Tandem runs from a network folder or a folder that is not a drive path (a banner says why). |
 | autoSearch | autoSearch (bool, default NO) | Automatically search for selected text after making a selection? | missing |  |
 | smartLoggingWithAutoComposer | smartLoggingWithAutoComposer (bool, default NO) | Enable more compact logging when using auto composer? This will avoid logging raw data in your prompt and your interactions with it. | partial | Milestone 9l: the setting is stored with its own help text and toggleable in Advanced settings, but has no effect: Tandem has no session logging yet for it to change. |
 | disclaimChildren | disclaimChildren (bool, default NO) | Disclaim ownership of children. | missing |  |

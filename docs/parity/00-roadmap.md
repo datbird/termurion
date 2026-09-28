@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 173 | 122 | 19 |
-| `02-global-settings.md` | 823 | 272 | 72 | 479 |
-| `03-features-and-menus.md` | 643 | 486 | 43 | 114 |
-| Total | 1,780 | 931 | 237 | 612 |
+| `02-global-settings.md` | 823 | 275 | 72 | 476 |
+| `03-features-and-menus.md` | 643 | 516 | 42 | 85 |
+| Total | 1,780 | 964 | 236 | 580 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -219,6 +219,22 @@ the Script Console. pythonRuntimeUsesUV, the three runtime manifest URLs and set
 and inert (no macOS runtime, no AppleScript target); signed `.its` archives are refused. Every kept
 quirk is listed in `docs/acceptance/m11d-checklist.md` and ruled on in
 `docs/superpowers/rulings/m11d-rulings.txt`.
+Milestone 11e closed the utilities (03, 02): one console program, `tandem-utils.exe`, holds
+Windows builds of imgcat, imgls, it2cat, it2dl, it2ul, it2copy, it2setcolor, it2check,
+it2attention, it2universion, it2getvar, it2profile, it2setkeylabel, it2git, it2tip and it2api,
+each writing the bytes, texts and exit codes of iTerm2's script (tmux and screen wrapping exactly
+where each script wraps, macOS `base64`), with replies read from the console in raw or cbreak mode
+and every console mode restored on exit, Ctrl+C and panic. Tandem makes `utilities\` beside
+tandem.exe at every start (16 hard links plus iTerm2's own `it2api.py`, refreshed when stale,
+failures shown in a banner) and appends it to each new session's PATH (`addUtilitiesToPATH`);
+sessions get iTerm2's variables (`TERM_PROGRAM=iTerm.app`, `TERM_PROGRAM_VERSION`, `COLORTERM`,
+`TERM_FEATURES`, and `LC_TERMINAL=iTerm2` under `shouldSetLCTerminal`); `CSI 1337 n` answers
+`ITERM2 3.7.0`, so it2check passes; RequestUpload takes files or folders (a Files/Folders bar
+first) at iTerm2's pace (`accelerateUploads`, else the quick-paste settings); and Install Shell
+Integration offers iTerm2 Utilities for bash-family shells. iTerm2's bash scripts still work in
+WSL, Git Bash and over ssh. it2setcolor's presets wait for milestone 13 and it2ssh for milestone
+14; the Swift `it2` CLI is not ported. Every kept quirk is listed in
+`docs/acceptance/m11e-checklist.md` and ruled on in `docs/superpowers/rulings/m11e-rulings.txt`.
 
 ## Order
 
