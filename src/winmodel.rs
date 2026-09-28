@@ -165,17 +165,6 @@ pub fn open_target(request: OpenRequest, prevent_tab: bool, profiles_in_new_wind
     if prevent_tab { Target::Window } else { wanted }
 }
 
-/// A window's title: "N. " first when Show window number is on (number shown from 1).
-pub fn title(base: &str, number: usize, show_number: bool) -> String {
-    if show_number { format!("{}. {base}", number + 1) } else { base.to_string() }
-}
-
-/// The Window menu's entry: the title and the switch shortcut (Alt+Win+1 to 9), or the
-/// number from 10 on.
-pub fn menu_title(base: &str, number: usize) -> String {
-    if number < 9 { format!("{base} - Alt+Win+{}", number + 1) } else { format!("{base} - {}", number + 1) }
-}
-
 /// The state of every window but the current one. The current window's state lives in the
 /// caller (`live`); `enter` swaps another window's state in.
 #[derive(Debug)]
@@ -361,14 +350,6 @@ mod tests {
         let mut one = Registry::default();
         one.open(1);
         assert_eq!(one.next(1), Some(1));
-    }
-
-    #[test]
-    fn titles_carry_the_number() {
-        assert_eq!(title("pwsh", 0, true), "1. pwsh");
-        assert_eq!(title("pwsh", 2, false), "pwsh");
-        assert_eq!(menu_title("pwsh", 0), "pwsh - Alt+Win+1");
-        assert_eq!(menu_title("pwsh", 9), "pwsh - 10");
     }
 
     #[test]

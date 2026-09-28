@@ -97,6 +97,10 @@ mod close_ui;
 mod coprocess_ui;
 mod aps_ui;
 mod windows_ui;
+#[cfg(windows)]
+mod chrome_ui;
+#[cfg(windows)]
+mod sizing_ui;
 mod tab_drag_ui;
 mod tab_groups_ui;
 mod undo_ui;
@@ -343,6 +347,16 @@ pub struct App {
     /// The current window's Lock Size and Lock Layout, and its Edit Window Title text.
     win_locks: crate::winmodel::Locks,
     win_title: Option<String>,
+    /// The current window's Window menu texts as last drawn: its title as the OS shows it
+    /// without the label, and its title without the number (`caption_text`).
+    window_menu_text: (String, String),
+    /// The border color last given to the current window's DWM frame (`apply_border`).
+    border_applied: Option<u32>,
+    /// The current window's menu bar is hidden (full screen, `HideMenuBarInFullscreen`).
+    menu_hidden: bool,
+    /// The current window's frame before a vertical Window > Zoom, which the next Zoom
+    /// restores (a full Zoom maximizes, and Windows keeps that frame itself).
+    zoom_restore: Option<Rect>,
     /// The current window's toolbelt.
     belt: toolbelt_ui::Belt,
     /// Bumped when something a toolbelt tool shows changes (`tools_changed`).
@@ -610,6 +624,9 @@ pub struct App {
     sent_keys: keyproto_ui::Held,
     /// The physical key of the press being routed now.
     typing: Option<PhysicalKey>,
+    /// A key press (typed or a Win chord from the hook) is being routed now: iTerm2's
+    /// `[NSApp currentEvent]` is a key-down, which Window > Zoom's Shift rule asks.
+    key_down: bool,
     cursor: (f32, f32),
     drag: Drag,
     clicks: Clicks,
@@ -1181,6 +1198,10 @@ pub fn run() {
         slots: Default::default(),
         win_locks: Default::default(),
         win_title: None,
+        window_menu_text: Default::default(),
+        border_applied: None,
+        menu_hidden: false,
+        zoom_restore: None,
         belt: Default::default(),
         tool_gen: 0,
         belt_keys: Default::default(),
@@ -1316,6 +1337,7 @@ pub fn run() {
         bg_images: HashMap::new(),
         rotators: HashMap::new(),
         typing: None,
+        key_down: false,
         cursor: (0.0, 0.0),
         drag: Drag::None,
         clicks: Clicks::default(),
@@ -2254,12 +2276,27 @@ impl App {
         }
     }
 
-    /// The window's room above any banner, which the toolbelt, the tab bar and the sessions
-    /// share (`window_layout`).
+    /// The window's room below the line under the title bar and above any banner, which the
+    /// toolbelt, the tab bar and the sessions share (`window_layout`). The line's pixel is
+    /// taken here, so panes and tmux's size report see it (`PT:13235-13237`).
     fn window_room(&self) -> Rect {
         let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         let bottom = if self.banners.text().is_some() { self.cell().1 + 8.0 } else { 0.0 };
-        Rect { x: 0.0, y: 0.0, w, h: (h - bottom).max(1.0) }
+        let top = self.division_height();
+        Rect { x: 0.0, y: top, w, h: (h - bottom - top).max(1.0) }
+    }
+
+    /// The line under the title bar's height in the current window's pixels: one point, or
+    /// none when it does not show (`chrome::division_height`).
+    fn division_height(&self) -> f32 {
+        crate::chrome::division_height(self.division_visible(), self.scale())
+    }
+
+    /// The line under the title bar shows in the current window (`chrome::division_visible`).
+    fn division_visible(&self) -> bool {
+        let decorated = self.gpu.as_ref().is_some_and(|g| g.window.is_decorated());
+        let top_bar = self.tab_bar_visible() && self.tab_position() == TabPosition::Top;
+        crate::chrome::division_visible(self.globals.bool("EnableDivisionView"), self.tab_style(), decorated, self.compact_window(), self.full_screen(), top_bar)
     }
 
     /// The window's room for tabs: beside the tab bar, above any banner, left of the toolbelt.
@@ -2295,6 +2332,17 @@ impl App {
 
     fn dark(&self) -> bool {
         self.gpu.as_ref().and_then(|g| g.window.theme()).is_none_or(|t| t == winit::window::Theme::Dark)
+    }
+
+    /// The Theme setting (`TabStyleWithAutomaticOption`), Automatic when unset.
+    pub(super) fn tab_style(&self) -> crate::tab_theme::TabStyle {
+        use crate::tab_theme::{KEY, TabStyle, from_value};
+        self.globals.get(KEY).and_then(|v| v.as_integer()).map_or(TabStyle::Automatic, from_value)
+    }
+
+    /// The fixed style the current window draws (`crate::tab_theme::resolved`).
+    pub(super) fn resolved_style(&self) -> crate::tab_theme::TabStyle {
+        crate::tab_theme::resolved(self.tab_style(), self.dark(), false)
     }
 
     fn start_pane(&mut self, rect: Rect, guid: Option<&str>) -> Option<PaneId> {
@@ -2686,6 +2734,10 @@ impl App {
         self.sync_checks();
         self.register_hotkeys();
         self.scripts_folder_changed();
+        // The border settings, or the Theme, may have changed.
+        self.apply_border_everywhere();
+        // AllowLiveResize may have changed.
+        self.apply_resizable_everywhere();
     }
 
     /// Starts watching and scanning the Scripts folder the settings name (`FM:236-252`).
@@ -2811,15 +2863,77 @@ impl App {
         }
     }
 
-    /// Sizes the window to the default profile's Columns and Rows.
+    /// Make Text Bigger, Make Text Smaller and Make Text Normal Size: the shared font offset
+    /// becomes `offset`. With `AdjustWindowForFontSizeChange`, a window that may change size
+    /// (`window_can_fit`: a Normal or No Title Bar window that is not full screen, maximized,
+    /// minimized, snapped, size-locked or a hotkey window) then keeps its
+    /// tab's grid at the new cell (`reallyChangeSessionFontSize:adjustWindow:`,
+    /// `TAB:2189-2205`); else the panes refit the window as it is, and a tmux tab tells tmux
+    /// through the size report. The caller lays out. 13n's `change_font_size` takes this over.
+    fn set_font_offset(&mut self, offset: f32) {
+        let grid = self.grid_size(self.content_area());
+        self.font_offset = offset;
+        let sig = self.font_sig.clone();
+        self.apply_fonts();
+        if sig != self.font_sig && self.globals.bool("AdjustWindowForFontSizeChange") && self.window_can_fit() {
+            self.fit_window_to_grid(grid);
+        }
+    }
+
+    /// Resizes the current window so its tab shows `grid` at the current cell, the top-left
+    /// kept and the frame kept on the work area (`chrome::font_fit`). The decoration and the
+    /// padding around the grid are the ones the edge snap measures (`snap_grid`); the Resized
+    /// event that follows lays the window out at its new size.
+    pub(super) fn fit_window_to_grid(&mut self, grid: (u16, u16)) {
+        let Some(snap) = self.snap_grid() else { return };
+        let Some((work, _)) = self.monitor_rects() else { return };
+        let Some(g) = self.gpu.as_ref() else { return };
+        let chrome = (snap.decoration.0 + snap.margins.0, snap.decoration.1 + snap.margins.1);
+        let now = Self::outer_rect(g);
+        let r = crate::chrome::font_fit(grid, snap.cell, chrome, work, now);
+        if (r.x, r.y) != (now.x, now.y) {
+            g.window.set_outer_position(winit::dpi::PhysicalPosition::new(r.x.round() as i32, r.y.round() as i32));
+        }
+        // The frame is the outer frame; the inner size leaves the borders out.
+        let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
+        let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
+        let size = winit::dpi::PhysicalSize::new((r.w.round() as u32).saturating_sub(dw).max(1), (r.h.round() as u32).saturating_sub(dh).max(1));
+        if size != inner {
+            let _ = g.window.request_inner_size(size);
+        }
+    }
+
+    /// Sizes the window to the profile's Columns and Rows, or to its percentages of the work area.
     fn size_window(&mut self, guid: Option<&str>) {
         let p = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).clone();
         let (cw, ch) = self.cell();
         let pad = 2.0 * PAD * self.scale();
-        let (w, h) = (p.int("Columns").max(10) as f32 * cw + pad, p.int("Rows").max(4) as f32 * ch + pad);
-        if let Some(g) = self.gpu.as_ref() {
-            let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new(w.ceil() as u32, h.ceil() as u32));
+        // The line under the title bar is part of the window's decoration (`PT:13235-13237`).
+        let line = self.division_height();
+        let Some(g) = self.gpu.as_ref() else { return };
+        // A percent-eligible type sizes by its explicit percentages of the work area, in whole
+        // cells (`TerminalWindowSizeHelper.measurements`, `measurementToCells`).
+        let work = self.monitor_rects().map(|(work, _)| work);
+        let (pw, ph) = {
+            let (w, h) = crate::frames::profile_percents(&p);
+            crate::frames::percents(p.int("Window Type"), w, h)
+        };
+        let columns = match (pw, work) {
+            (Some(pct), Some(work)) => i64::from(crate::frames::percent_cells(pct, cw, work.w)),
+            _ => p.int("Columns").max(10),
+        };
+        let rows = match (ph, work) {
+            (Some(pct), Some(work)) => i64::from(crate::frames::percent_cells(pct, ch, work.h)),
+            _ => p.int("Rows").max(4),
+        };
+        let (mut w, mut h) = (columns as f32 * cw + pad, rows as f32 * ch + pad + line);
+        if let Some(work) = work.filter(|_| pw.is_some() || ph.is_some()) {
+            // The whole window stays on the work area.
+            let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
+            w = w.min(work.w - outer.width.saturating_sub(inner.width) as f32);
+            h = h.min(work.h - outer.height.saturating_sub(inner.height) as f32);
         }
+        let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new(w.max(1.0).ceil() as u32, h.max(1.0).ceil() as u32));
     }
 
     /// "Always open in a new window, never in a tab": a new tab of `guid` opens as a window
@@ -2846,7 +2960,12 @@ impl App {
         }
         let area = self.content_area();
         if let Some(id) = self.start_pane(area, guid) {
-            self.tabs.push(Tab::new(self.next_tab_id, Layout::new(id), id));
+            // The new tab's profile may give it a title (`PT:15265-15269`).
+            let title = self.panes.get(&id).and_then(|p| {
+                let profile = self.store.get(&p.profile)?;
+                crate::wintitle::custom_tab_format(profile.bool("Use Custom Tab Title"), &profile.string("Custom Tab Title"), p.tmux_io().is_some())
+            });
+            self.tabs.push(Tab { title, ..Tab::new(self.next_tab_id, Layout::new(id), id) });
             self.next_tab_id += 1;
             self.active = self.tabs.len() - 1;
             self.relayout();
@@ -3340,6 +3459,19 @@ impl App {
     /// Runs a key press: the Leader, number shortcuts, key mappings, then the terminal
     /// (or, for a Win chord from the hook, its menu command).
     pub(super) fn dispatch(
+        &mut self,
+        press: keyroute::Press,
+        fallback: Option<Vec<u8>>,
+        typed: Option<(Key, Option<Key>)>,
+        chord: Option<&crate::menus::Chord>,
+        event_loop: &ActiveEventLoop,
+    ) {
+        let outer = std::mem::replace(&mut self.key_down, true);
+        self.route_press(press, fallback, typed, chord, event_loop);
+        self.key_down = outer;
+    }
+
+    fn route_press(
         &mut self,
         press: keyroute::Press,
         fallback: Option<Vec<u8>>,
@@ -3980,6 +4112,10 @@ impl App {
         self.draw_toolbelt(&mut frame, cell);
         self.draw_status_bars(&mut frame, cell);
         let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
+        let line = self.division_height();
+        if line > 0.0 {
+            scene::division_line(&mut frame, ww, line, crate::chrome::division_color(self.resolved_style(), self.focused));
+        }
         self.draw_find_cursor(&mut frame, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
         if let Some((text, _)) = self.toast.as_ref().filter(|(_, until)| Instant::now() < *until) {
             scene::toast(&mut frame, text, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
@@ -4004,15 +4140,15 @@ impl App {
     fn render(&mut self) {
         // A status bar field whose bar went away gives the keyboard back before drawing.
         self.check_composer_fields();
+        self.sync_menu_hidden();
+        // The next edge drag snaps to what this frame shows.
+        self.publish_snap();
         let frame = self.build_frame();
-        let title = match &self.win_title {
-            Some(t) => t.clone(),
-            None => self.tabs.get(self.active).map_or_else(|| "Tandem".to_string(), |t| self.window_title(t.focused)),
-        };
-        let show_number = self.globals.bool("WindowNumber");
-        let title = crate::winmodel::title(&title, self.window_number(), show_number);
-        let client = self.tabs.get(self.active).and_then(|t| self.tmux_client_of(t.focused));
-        let title = crate::tmux_windows::window_title(&title, show_number, self.globals.bool("tmuxIncludeClientNameInWindowTitle"), client.as_deref());
+        let (title, menu_text) = self.caption_text();
+        if self.window_menu_text != menu_text {
+            self.window_menu_text = menu_text;
+            self.refresh_window_list();
+        }
         // iTerm2 shows the Leader as sparkles on the cursor; Tandem says so in the title.
         let title = if self.leader_on { format!("[Leader] {title}") } else { title };
         let Some(gpu) = self.gpu.as_mut() else { return };
@@ -4125,6 +4261,9 @@ impl ApplicationHandler<UserEvent> for App {
                 self.gpu = Some(gpu);
                 self.windows.start(k);
                 self.registry.open(k);
+                // Edge drags snap to the cell grid, and follow AllowLiveResize.
+                self.install_sizing();
+                self.apply_corners();
                 // The settings folder's questions and failures from the launch.
                 for ask in std::mem::take(&mut self.prefs_startup) {
                     self.ask_scripts(ask);
@@ -4209,6 +4348,9 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 None => self.new_tab(None),
             },
+        }
+        if !arranged {
+            self.apply_custom_window_title(startup_hotkey.as_deref());
         }
         for (guid, w) in hotkey_saved {
             self.pending_windows.push(windows_ui::NewWindow::HotkeyRestored(guid, w));
@@ -4525,7 +4667,11 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         match event {
-            WindowEvent::ThemeChanged(_) => self.refresh_panes(),
+            WindowEvent::ThemeChanged(_) => {
+                self.refresh_panes();
+                // A light or dark window may gain or lose its border (`BordersOnlyInLightMode`).
+                self.apply_border();
+            }
             WindowEvent::DroppedFile(path) => {
                 let (x, y) = self.cursor;
                 let pane = self.pane_at(x, y).map(|(p, _)| p).or_else(|| self.focused_id());
@@ -4546,6 +4692,8 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.relayout();
                 self.tmux_save_all_windows();
+                // Entering or leaving full screen resizes the window: the border goes or comes back.
+                self.apply_border();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let _ = scale_factor;
@@ -4574,6 +4722,8 @@ impl ApplicationHandler<UserEvent> for App {
                     self.composer_keys.clear();
                 }
                 self.focused = f;
+                // The border takes the focused or unfocused color.
+                self.apply_border();
                 // Tandem going to the background saves the windows (iTerm2 saves on resign
                 // active); a switch between Tandem's own windows gains focus again at once.
                 self.focus_lost = !f;
@@ -4583,6 +4733,8 @@ impl ApplicationHandler<UserEvent> for App {
                 if f {
                     self.last_window = Some(id);
                     self.stamp_focus();
+                    // The Window menu checks the focused window.
+                    self.refresh_window_list();
                 }
                 self.jobs.set_fast(f);
                 // Keys held while the window loses focus send no release to Tandem.
@@ -4838,18 +4990,34 @@ fn tab_click_count(last: (Instant, Option<usize>, u8), now: Instant, hit: tab_la
 
 /// What a session's screen takes from its profile, at start (`install_pane`) and after every
 /// profile edit (`refresh_panes`), as iTerm2 re-applies them (`PTYSession.m:7013-7016`): the
-/// prompt column, the profile's Unicode version, scrollback with the status bar, the triggers.
+/// prompt column, the profile's Unicode version, scrollback with the status bar, the triggers,
+/// whether programs may set the title (`PS:19364-19371`).
 fn screen_follows_profile(screen: &mut crate::screen::Screen, p: &Profile) {
     screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
+    screen.allow_title = p.bool("Allow Title Setting");
     screen.profile_unicode = crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer()));
     screen.set_scrollback_with_status_bar(p.bool("Scrollback With Status Bar"));
     let (list, prefs) = triggers_ui::triggers_of(p);
     screen.set_triggers(list, prefs);
 }
 
+/// Whether a window's menu bar hides: in full screen with `HideMenuBarInFullscreen`
+/// (`P:830`); leaving full screen brings it back.
+fn menu_should_hide(full_screen: bool, hide_key: bool) -> bool {
+    full_screen && hide_key
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_bar_hides_in_full_screen() {
+        assert!(menu_should_hide(true, true));
+        assert!(!menu_should_hide(true, false));
+        assert!(!menu_should_hide(false, true));
+        assert!(!menu_should_hide(false, false));
+    }
 
     #[test]
     fn add_button_follows_iterm2() {

@@ -388,6 +388,8 @@ impl App {
         }
         if size == Some(crate::tmux_persist::WinSize::FullScreen) {
             w.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+            // A full screen window has no border.
+            self.apply_border();
         }
     }
 
@@ -736,6 +738,7 @@ impl App {
         let (list, prefs) = triggers_ui::triggers_of(&profile);
         pane.screen.set_triggers(list, prefs);
         pane.screen.set_scrollback_with_status_bar(profile.bool("Scrollback With Status Bar"));
+        pane.screen.allow_title = profile.bool("Allow Title Setting");
         pane.profile = profile.guid();
         pane.dvr = crate::dvr::Dvr::new(crate::pane::capacity_for(self.globals.int("IRMemory")));
         // TERM is tmux's default-terminal, else "screen" (iTerm2's termType for tmux panes).

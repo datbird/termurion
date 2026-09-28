@@ -6,6 +6,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
 
+use crate::chrome;
 use crate::globals::Globals;
 use crate::mouse::Mods;
 use crate::profile::{self, Profile};
@@ -610,6 +611,23 @@ impl SettingsWindow {
                                 }
                                 continue;
                             }
+                            // The Window Style popup and the Columns and Rows row with its
+                            // units popups (`PWV:394-700`); the percent fields are in that row.
+                            if s.key == "Window Type" {
+                                if window_type_row(ui, profile, s) {
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
+                            if s.key == "Columns" {
+                                if window_size_row(ui, profile) {
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
+                            if matches!(s.key.as_str(), "Rows" | "Width Percentage" | "Height Percentage") {
+                                continue;
+                            }
                             if s.key == "Title Function" {
                                 if title_function_row(ui, profile, s, title_providers) {
                                     edit = Edit::Changed(selected.clone());
@@ -747,6 +765,124 @@ fn title_function_row(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, pro
             true
         }
     }
+}
+
+/// Stores a window type with the units popups' choices and the percent fields
+/// (`chrome::units_save`); the percentages are written only for a type that keeps them.
+fn save_window_type(profile: &mut Profile, style: i64, columns: chrome::Units, rows: chrome::Units) {
+    use crate::frames::{ACCESSORY, FULL_SCREEN, LION_FULL_SCREEN, MAXIMIZED};
+    let (stored, w, h) = chrome::units_save(style, columns, rows, profile.float("Width Percentage"), profile.float("Height Percentage"));
+    profile.set("Window Type", Value::Integer(stored));
+    if !matches!(stored, MAXIMIZED | FULL_SCREEN | LION_FULL_SCREEN | ACCESSORY) {
+        profile.set("Width Percentage", Value::Float(w));
+        profile.set("Height Percentage", Value::Float(h));
+    }
+}
+
+/// The units popups' choices for the profile now; a hidden popup (Maximized, full screen)
+/// keeps what the percentages say.
+fn shown_units(profile: &Profile) -> (chrome::Units, chrome::Units) {
+    let (w, h) = crate::frames::profile_percents(profile);
+    let row = chrome::units_rows(profile.int("Window Type"), w, h);
+    let unit = |p: Option<f64>| if p.is_some_and(|p| p >= 0.0) { chrome::Units::Percent } else { chrome::Units::Cells };
+    (row.columns_units.unwrap_or(unit(w)), row.rows_units.unwrap_or(unit(h)))
+}
+
+/// The profile's Window Style popup: iTerm2's ten entries (`frames::PROFILE_MENU`), a stored
+/// cells id or Compact form showing as its entry without being rewritten until a pick. True
+/// when the profile changed.
+fn window_type_row(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting) -> bool {
+    use crate::frames::{profile_menu_value, PROFILE_MENU};
+    let now = profile_menu_value(profile.int("Window Type"));
+    let shown = PROFILE_MENU.iter().find(|(id, _)| *id == now).map_or("", |(_, n)| n);
+    let mut picked = None;
+    let mut popup_rect = None;
+    ui.horizontal(|ui| {
+        ui.label(&s.label);
+        let r = egui::ComboBox::from_id_salt(&s.key).selected_text(shown).show_ui(ui, |ui| {
+            for (id, name) in PROFILE_MENU {
+                if ui.selectable_label(id == now, name).clicked() {
+                    picked = Some(id);
+                }
+            }
+        });
+        popup_rect = Some(r.response.rect);
+    })
+    .response
+    .on_hover_text(&s.help);
+    if let Some(rect) = popup_rect.filter(|_| settings_keys::indicate_non_default() && !profile_is_default(profile, s, &s.key)) {
+        settings_keys::non_default_bar(ui, rect, ui.is_enabled());
+    }
+    let Some(style) = picked else { return false };
+    let (columns, rows) = shown_units(profile);
+    save_window_type(profile, style, columns, rows);
+    true
+}
+
+/// The Columns and Rows row (`updateWindowTypeControlFromSettings`, `PWV:477-700`, laid out
+/// by `chrome::units_rows`): each axis's field in cells or percent of the screen and its
+/// units popup, "by" between them; without popups (Maximized, the full screen types) the
+/// fields read "columns by" and "rows", disabled. True when a change is committed.
+fn window_size_row(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
+    use chrome::Units;
+    let (w, h) = crate::frames::profile_percents(profile);
+    let row = chrome::units_rows(profile.int("Window Type"), w, h);
+    let mut commit = false;
+    let mut units = (row.columns_units, row.rows_units);
+    let mut units_changed = false;
+    ui.horizontal(|ui| {
+        let mut axis = |ui: &mut egui::Ui, u: &mut Option<Units>, enabled: bool, cells_key: &str, percent_key: &str, titles: (&str, &str), id: &str| {
+            let percent = *u == Some(Units::Percent);
+            let key = if percent { percent_key } else { cells_key };
+            let setting = schema::find(key);
+            let r = ui.add_enabled_ui(enabled, |ui| {
+                let mut v = if percent { profile.float(key).round() as i64 } else { profile.int(key) };
+                let range = if percent { 0..=100 } else { 1..=1250 };
+                let r = ui.add(egui::DragValue::new(&mut v).range(range));
+                if r.changed() {
+                    profile.set(key, if percent { Value::Float(v as f64) } else { Value::Integer(v) });
+                }
+                if let Some(s) = setting {
+                    r.clone().on_hover_text(&s.help);
+                    if settings_keys::indicate_non_default() && !profile_is_default(profile, s, key) {
+                        settings_keys::non_default_bar(ui, r.rect, enabled);
+                    }
+                }
+                r.drag_stopped() || (r.changed() && !r.dragged())
+            });
+            commit |= r.inner;
+            if let Some(now) = *u {
+                let label = |x: Units| if x == Units::Percent { titles.1 } else { titles.0 };
+                egui::ComboBox::from_id_salt(id).selected_text(label(now)).show_ui(ui, |ui| {
+                    for x in [Units::Cells, Units::Percent] {
+                        if ui.selectable_label(now == x, label(x)).clicked() && now != x {
+                            *u = Some(x);
+                            units_changed = true;
+                        }
+                    }
+                });
+            }
+        };
+        axis(ui, &mut units.0, row.columns_enabled, "Columns", "Width Percentage", ("Columns", "% of screen width"), "window-columns-units");
+        if units.0.is_none() {
+            ui.label("columns by");
+        }
+        if row.by_label {
+            ui.label("by");
+        }
+        axis(ui, &mut units.1, row.rows_enabled, "Rows", "Height Percentage", ("Rows", "% of screen height"), "window-rows-units");
+        if units.1.is_none() {
+            ui.label("rows");
+        }
+    });
+    let percent_edit = commit && (units.0 == Some(Units::Percent) || units.1 == Some(Units::Percent));
+    if units_changed || percent_edit {
+        // A popup change or a percent edit saves the type again (`saveWindowType`).
+        let style = crate::frames::profile_menu_value(profile.int("Window Type"));
+        save_window_type(profile, style, units.0.unwrap_or(Units::Cells), units.1.unwrap_or(Units::Cells));
+        commit = true;
+    }
+    commit
 }
 
 /// updateStatusBarSettingsEnabled (`PSV:569-573`): whether "Status bar enabled" and

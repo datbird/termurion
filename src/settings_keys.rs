@@ -2505,4 +2505,103 @@ mod tests {
             assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
         }
     }
+
+    /// The window title rows: General's check box (`GPV:2321`, `XIB:8249`) and the advanced
+    /// setting (`AS:705`).
+    #[test]
+    fn title_rows_follow_iterm2() {
+        let s = schema::find_global("SeparateWindowTitlePerTab").expect("SeparateWindowTitlePerTab");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("General", "Window", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(true)));
+        assert_eq!(s.label, "Each tab may have its own window title");
+        let s = schema::find_global("ShowWindowTitleWhenTabBarInvisible").expect("ShowWindowTitleWhenTabBarInvisible");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Windows", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(true)));
+        assert_eq!(s.label, "Show window title when the tab bar is not visible?");
+        assert_eq!(s.help, "Show window title when the tab bar is not visible?\nWhen disabled, the tab's title will be shown where the window title would normally go.");
+    }
+
+    /// The window follows a font size change: General's check box (`XIB:8221-8224`, on by
+    /// default, `P:733`).
+    #[test]
+    fn font_window_rows_follow_iterm2() {
+        let s = schema::find_global("AdjustWindowForFontSizeChange").expect("AdjustWindowForFontSizeChange");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("General", "Window", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(true)));
+        assert_eq!(s.label, "Adjust window when changing font size");
+        assert_eq!(s.help, "If enabled, changes to font size will try to preserve session dimensions.");
+    }
+
+    /// Zoom's vertical-only preference (`P:734`, `XIB:8213`).
+    #[test]
+    fn max_vertically_row_follows_iterm2() {
+        let s = schema::find_global("MaxVertically").expect("MaxVertically");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("General", "Window", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        assert_eq!(s.label, "Zoom maximizes vertically only");
+    }
+
+    /// The window number's advanced settings (`AS:710-711`).
+    #[test]
+    fn number_rows_follow_iterm2() {
+        for (key, label) in [("UseShortcutAccessoryViewController", "Show window number in titlebar accessory?"), ("IncludeShortcutInWindowsMenu", "Include keyboard shortcut for windows in Window menu?")] {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Windows", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(true)), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (label, label), "{key}");
+        }
+    }
+
+    /// The border rows: Appearance's check box (`XIB:8935-8939`) and the advanced settings
+    /// (`AS:707-709`, `:719`).
+    #[test]
+    fn border_rows_follow_iterm2() {
+        let s = schema::find_global("UseBorder").expect("UseBorder");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Appearance", "Windows", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        assert_eq!(s.label, "Heavy border around windows in light mode");
+        let rows = [
+            ("WindowBorderColor", Kind::String, Value::String(String::new()), "Border color for focused windows."),
+            ("WindowBorderColorUnfocused", Kind::String, Value::String(String::new()), "Border color for unfocused windows."),
+            ("BordersOnlyInLightMode", Kind::Bool, Value::Boolean(true), "Opaque windows have a border only in light mode."),
+            ("SquareWindowCorners", Kind::Bool, Value::Boolean(false), "Windows have square corners."),
+        ];
+        for (key, kind, default, label) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Windows", kind), "{key}");
+            assert_eq!(s.default, Some(default), "{key}");
+            assert_eq!(s.label, label, "{key}");
+            assert!(s.help.starts_with(&format!("{label}\n")), "{key}");
+        }
+        let s = schema::find_global("SquareWindowCorners").expect("SquareWindowCorners");
+        assert!(s.help.ends_with("You must restart Tandem after changing this setting for it to take effect."));
+    }
+
+    /// The resize settings (`AS:692`, `:720`).
+    #[test]
+    fn resize_rows_follow_iterm2() {
+        let rows = [
+            ("DisableWindowSizeSnap", false, "Terminal windows resize smoothly.", "Terminal windows resize smoothly.\nDisables snapping to character grid. Holding Control will temporarily disable snap-to-grid."),
+            ("AllowLiveResize", true, "Allow window resizing by dragging edges and corners?", "Allow window resizing by dragging edges and corners?"),
+        ];
+        for (key, default, label, help) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Windows", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(default)), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (label, help), "{key}");
+        }
+    }
+
+    /// The full screen menu bar and the division line: Appearance's check boxes
+    /// (`XIB:8785`, `:8986`), both on by default (`P:830`, `:843`).
+    #[test]
+    fn full_screen_chrome_rows_follow_iterm2() {
+        let rows = [("HideMenuBarInFullscreen", "Auto-hide menu bar in non-native fullscreen"), ("EnableDivisionView", "Show line under title bar when the tab bar is not visible")];
+        for (key, label) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Appearance", "Windows", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(true)), "{key}");
+            assert_eq!(s.label, label, "{key}");
+        }
+    }
 }

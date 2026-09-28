@@ -67,6 +67,10 @@ pub(super) struct WinSlot {
     win_slot: Option<(String, u32)>,
     win_locks: crate::winmodel::Locks,
     win_title: Option<String>,
+    window_menu_text: (String, String),
+    border_applied: Option<u32>,
+    menu_hidden: bool,
+    zoom_restore: Option<Rect>,
     mru: Mru,
     mru_mods: Option<Mods>,
     laid_out: Option<crate::statusbar_layout::Room>,
@@ -134,6 +138,10 @@ impl WinSlot {
             win_slot: None,
             win_locks: Default::default(),
             win_title: None,
+            window_menu_text: Default::default(),
+            border_applied: None,
+            menu_hidden: false,
+            zoom_restore: None,
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
@@ -216,6 +224,10 @@ impl App {
         swap(&mut self.win_slot, &mut s.win_slot);
         swap(&mut self.win_locks, &mut s.win_locks);
         swap(&mut self.win_title, &mut s.win_title);
+        swap(&mut self.window_menu_text, &mut s.window_menu_text);
+        swap(&mut self.border_applied, &mut s.border_applied);
+        swap(&mut self.menu_hidden, &mut s.menu_hidden);
+        swap(&mut self.zoom_restore, &mut s.zoom_restore);
         swap(&mut self.mru, &mut s.mru);
         swap(&mut self.mru_mods, &mut s.mru_mods);
         swap(&mut self.laid_out, &mut s.laid_out);
@@ -315,6 +327,26 @@ impl App {
         self.menu_bar.iter().chain(self.windows.parked().filter_map(|(_, s)| s.menu_bar.as_ref()))
     }
 
+    pub(super) fn menu_bars_mut(&mut self) -> impl Iterator<Item = &mut menu::MenuBar> {
+        self.menu_bar.iter_mut().chain(self.windows.parked_mut().filter_map(|(_, s)| s.menu_bar.as_mut()))
+    }
+
+    /// Every terminal window for the Window menu: (registry key, number, its title as the OS
+    /// shows it without the label, its title without the number), by number. A window not
+    /// drawn yet is "Untitled".
+    pub(super) fn window_menu_entries(&self) -> Vec<(u64, usize, String, String)> {
+        let current = self.windows.current();
+        self.registry
+            .order()
+            .into_iter()
+            .filter_map(|k| {
+                let texts = if current == Some(k) { Some(&self.window_menu_text) } else { self.windows.parked().find(|(kk, _)| **kk == k).map(|(_, s)| &s.window_menu_text) }?;
+                let (text, title) = if texts.0.is_empty() { (crate::wintitle::UNTITLED.to_string(), crate::wintitle::UNTITLED.to_string()) } else { texts.clone() };
+                Some((k, self.registry.number(k)?, text, title))
+            })
+            .collect()
+    }
+
     /// The current window's id.
     pub(super) fn current_window(&self) -> Option<WindowId> {
         self.gpu.as_ref().map(|g| g.window.id())
@@ -350,6 +382,15 @@ impl App {
     /// Opens a terminal window with one tab of `guid` (the default profile when None).
     pub(super) fn open_window(&mut self, event_loop: &ActiveEventLoop, guid: Option<&str>) -> Result<WindowId, String> {
         self.open_window_with(event_loop, NewWindow::Profile(guid.map(str::to_string)))
+    }
+
+    /// The current window's title from its first tab's profile (iTerm2 keeps the initial
+    /// profile's custom window title, `PT:486-491`, `:887-890`): that session's profile, else
+    /// `guid`'s, else the default profile.
+    pub(super) fn apply_custom_window_title(&mut self, guid: Option<&str>) {
+        let session = self.tabs.first().and_then(|t| self.panes.get(&t.focused)).and_then(|p| self.store.get(&p.profile));
+        let profile = session.or_else(|| guid.and_then(|g| self.store.get(g))).unwrap_or_else(|| self.store.default_profile());
+        self.win_title = crate::wintitle::custom_window_format(profile.bool("Use Custom Window Title"), &profile.string("Custom Window Title"));
     }
 
     fn open_window_with(&mut self, event_loop: &ActiveEventLoop, first: NewWindow) -> Result<WindowId, String> {
@@ -389,6 +430,8 @@ impl App {
         let id = gpu.window.id();
         let mut slot = WinSlot::new(gpu);
         self.swap_live(&mut slot);
+        // Edge drags snap to the cell grid, and follow AllowLiveResize.
+        self.install_sizing();
         // iTerm2 reads it once per tab bar it makes: a change affects new windows only.
         self.tab_selects_on_down = self.globals.bool("SelectsTabsOnMouseDown");
         // A new window's side bar starts at `LeftTabBarWidth`.
@@ -411,7 +454,7 @@ impl App {
         let style = first_guid.as_deref().and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).int("Window Type");
         // A git command's single-use window is never full screen (`iTermController.m`
         // `openSingleUseWindowWithCommand:` uses the default window type instead).
-        let style = if self.start_command_override.is_some() && style == crate::frames::FULL_SCREEN { crate::frames::NORMAL } else { style };
+        let style = if self.start_command_override.is_some() && matches!(style, crate::frames::FULL_SCREEN | crate::frames::LION_FULL_SCREEN) { crate::frames::NORMAL } else { style };
         let arranged = matches!(first, NewWindow::Arrangement(..) | NewWindow::HotkeyRestored(..));
         let torn_at = match &first {
             NewWindow::TornOff(_, at) => Some(*at),
@@ -448,6 +491,11 @@ impl App {
                 }
                 self.hotkey = Some(super::hotkey_ui::HotkeyWin::new(guid));
             }
+        }
+        // The first tab's profile may give the window a title (`PT:887-890`); an arrangement's
+        // window keeps its own.
+        if !arranged {
+            self.apply_custom_window_title(first_guid.as_deref());
         }
         self.install_menus();
         // An arrangement's window has its own frame, style, and locks. A hotkey window's
@@ -489,6 +537,9 @@ impl App {
             }
             return Err(why);
         }
+        // Square corners are set once, when the window is made (iTerm2 needs a restart).
+        self.apply_corners();
+        self.apply_border();
         // A hotkey window made by its hotkey shows now; a restored one waits for the hotkey.
         if hotkey && !arranged {
             self.roll_in();
@@ -582,12 +633,68 @@ impl App {
         self.windows.current().and_then(|k| self.registry.number(k)).unwrap_or(0)
     }
 
+    /// The current window's title before its number: the title rules, then the tmux client's
+    /// name when the number shows (`PT:3105-3122`).
+    fn caption_base(&self) -> String {
+        let focused = self.tabs.get(self.active).map(|t| t.focused);
+        // The gate is the FORMAT being non-empty, not its evaluated text (`PT:13636-13639`).
+        let custom = self.win_title.as_deref().filter(|f| !f.is_empty()).map(|f| self.window_title_text(f, focused));
+        let title = crate::wintitle::window_title(
+            custom.as_deref(),
+            self.tab_bar_visible(),
+            self.globals.bool("ShowWindowTitleWhenTabBarInvisible"),
+            focused.map(|f| self.window_title(f)).as_deref(),
+            focused.map(|f| self.session_title(f)).as_deref(),
+        );
+        let client = focused.and_then(|f| self.tmux_client_of(f));
+        crate::tmux_windows::window_title(&title, self.globals.bool("WindowNumber"), self.globals.bool("tmuxIncludeClientNameInWindowTitle"), client.as_deref())
+    }
+
+    /// Whether the current window has a title bar to carry the number label: decorated, not
+    /// full screen, and not a Compact or Minimal window (whose own caption draws the label,
+    /// `compact_caption`).
+    fn window_titled(&self) -> bool {
+        let decorated = self.gpu.as_ref().is_some_and(|g| g.window.is_decorated() && g.window.fullscreen().is_none());
+        decorated && !self.compact_window()
+    }
+
+    /// Whether the current window is a Compact or Minimal window. 13e replaces this body;
+    /// until then no window is.
+    pub(super) fn compact_window(&self) -> bool {
+        false
+    }
+
+    /// The current window's OS caption (`PT setWindowTitle:subtitle:`): `caption_base` with the
+    /// "N. " prefix or the shortcut label (R11). Also its Window menu texts: the caption as
+    /// iTerm2's window title (the prefix, no label) and the title without the number.
+    pub(super) fn caption_text(&self) -> (String, (String, String)) {
+        use crate::wintitle::{caption, number_prefix};
+        let base = self.caption_base();
+        let show = self.globals.bool("WindowNumber");
+        let accessory = self.globals.bool("UseShortcutAccessoryViewController");
+        let titled = self.window_titled();
+        let number = self.window_number();
+        let shown = caption(&base, show, accessory, titled, self.globals.int("SwitchWindowModifier"), number);
+        let text = format!("{}{base}", number_prefix(show, accessory, titled, number).unwrap_or_default());
+        (shown, (text, base))
+    }
+
+    /// What a Compact or Minimal window's caption draws: its title, and the number label
+    /// right-aligned (R11).
+    #[allow(dead_code)] // 13e Task 6 draws it.
+    pub(super) fn compact_caption(&self) -> (String, Option<String>) {
+        let show = self.globals.bool("WindowNumber");
+        let accessory = self.globals.bool("UseShortcutAccessoryViewController");
+        crate::wintitle::compact_caption(&self.caption_base(), show, accessory, self.globals.int("SwitchWindowModifier"), self.window_number())
+    }
+
     /// A window closed: its number and id go, and so do its API variables.
     fn forget_window(&mut self, k: u64) {
         if let Some(g) = self.registry.guid(k) {
             self.api_vars.forget(crate::api_vars::Scope::Window, g);
         }
         self.registry.close(k);
+        self.refresh_window_list();
     }
 
     /// The window that shows `pane`, the current one or a parked one.
@@ -657,6 +764,10 @@ impl WinSlot {
             win_slot: None,
             win_locks: Default::default(),
             win_title: None,
+            window_menu_text: Default::default(),
+            border_applied: None,
+            menu_hidden: false,
+            zoom_restore: None,
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
@@ -979,7 +1090,12 @@ impl App {
             return self.banners.set("window", "Could not read this window's monitor.");
         };
         let profile = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).and_then(|p| self.store.get(&p.profile)).unwrap_or_else(|| self.store.default_profile()).clone();
-        let mut percent = (profile.float("Width Percentage"), profile.float("Height Percentage"));
+        // `measurements(profile:)`: an eligible type's explicit percentages, else cells.
+        let percents = {
+            let (w, h) = frames::profile_percents(&profile);
+            frames::percents(style, w, h)
+        };
+        let mut percent = (percents.0.unwrap_or(-1.0), percents.1.unwrap_or(-1.0));
         let s = frames::unthemed(style);
         if from_menu {
             match s {
@@ -998,7 +1114,11 @@ impl App {
         let input = Input {
             style: s,
             percent,
-            cells: (profile.int("Columns").clamp(1, 1000) as u16, profile.int("Rows").clamp(1, 1000) as u16),
+            // A percentage is whole cells of that share of the work area (`WSH:223-233`).
+            cells: (
+                percents.0.map_or(profile.int("Columns").clamp(1, 1000) as u16, |p| frames::percent_cells(p, cw, work.w)),
+                percents.1.map_or(profile.int("Rows").clamp(1, 1000) as u16, |p| frames::percent_cells(p, ch, work.h)),
+            ),
             cell: (cw, ch),
             chrome,
             initial: Rect { x: pos.x as f32, y: pos.y as f32, w: outer.width as f32, h: outer.height as f32 },
@@ -1013,14 +1133,24 @@ impl App {
             w.set_fullscreen(None);
             w.set_decorations(f.decorations);
             w.set_maximized(f.maximized);
-            if !f.maximized && s != frames::NORMAL && s != frames::NO_TITLE_BAR {
+            if !f.maximized && !matches!(s, frames::NORMAL | frames::NO_TITLE_BAR | frames::ACCESSORY) {
                 // The frame is the outer frame; the inner size leaves the borders out.
                 let (dw, dh) = if f.decorations { (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height)) } else { (0, 0) };
                 w.set_outer_position(PhysicalPosition::new(f.rect.x.round() as i32, f.rect.y.round() as i32));
                 let _ = w.request_inner_size(PhysicalSize::new((f.rect.w as u32).saturating_sub(dw).max(1), (f.rect.h as u32).saturating_sub(dh).max(1)));
             }
         }
+        // Accessory (iTerm2's floating panel) stays above other windows without a taskbar
+        // button; leaving it gives both back. A hotkey window keeps its own.
+        if self.hotkey.is_none() && (s == frames::ACCESSORY) != (self.win_style == frames::ACCESSORY) {
+            use winit::platform::windows::WindowExtWindows;
+            let accessory = s == frames::ACCESSORY;
+            w.set_window_level(if accessory { winit::window::WindowLevel::AlwaysOnTop } else { winit::window::WindowLevel::Normal });
+            w.set_skip_taskbar(accessory);
+        }
         self.win_style = s;
+        // The style may enter or leave full screen: the border follows at once.
+        self.apply_border();
         self.redraw();
     }
 }
@@ -1125,11 +1255,9 @@ impl App {
             self.win_locks.size = true;
             self.win_locks.layout = false;
         }
-        if let Some(g) = &self.gpu {
-            g.window.set_resizable(!self.win_locks.size);
-            if p.bool("Hide After Opening") {
-                g.window.set_minimized(true);
-            }
+        self.apply_resizable();
+        if let Some(g) = self.gpu.as_ref().filter(|_| p.bool("Hide After Opening")) {
+            g.window.set_minimized(true);
         }
     }
 
@@ -1154,9 +1282,7 @@ impl App {
         } else {
             self.win_locks.toggle_size();
         }
-        if let Some(g) = &self.gpu {
-            g.window.set_resizable(!self.win_locks.size);
-        }
+        self.apply_resizable();
     }
 
     /// Window > Resize Window: one cell narrower, wider, shorter, or taller.

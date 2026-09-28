@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 176 | 119 | 19 |
-| `02-global-settings.md` | 823 | 400 | 75 | 348 |
+| `01-profile-settings.md` | 314 | 189 | 108 | 17 |
+| `02-global-settings.md` | 823 | 415 | 75 | 333 |
 | `03-features-and-menus.md` | 647 | 532 | 47 | 68 |
-| Total | 1,784 | 1,108 | 241 | 435 |
+| Total | 1,784 | 1,136 | 230 | 418 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -389,6 +389,28 @@ job or its ancestors (merged with the user's `graphic_icons.json`, `graphic_colo
 image. Duplicate Tab copies every pane next to the original. Nothing of 13d was checked on
 screen during the build. Every kept quirk is listed in `docs/acceptance/m13d-checklist.md` and
 ruled on in `docs/superpowers/rulings/m13d-rulings.txt`.
+Milestone 13f built the window chrome, titles and sizing (01: 13 rows to have; 02: 15 rows to
+have and the window number row's note corrected). Titles follow iTerm2's rules: "Allow title setting" off ignores programs' titles, "Each
+tab may have its own window title" off copies a program's title to every session of its window,
+and with the tab bar hidden and showWindowTitleWhenTabBarInvisible off the caption shows the
+session's title. A profile's custom window and tab titles apply when its window or tab opens and,
+like Edit Window Title and Edit Tab Title, are interpolated strings. A titled window shows its
+switch shortcut after its title ("vim    Alt+Win+1", R11) and the Window menu lists every
+window with its shortcut. "Heavy border around windows in light mode" (UseBorder) colors the
+window's DWM border on Windows 11, with iTerm2's focused and unfocused colors; SquareWindowCorners
+squares a new window's corners. Full screen hides the window's menu bar by default, and a
+one-point line shows under the title bar when no tab bar is at the top (both on by default as in
+iTerm2). Windows snap to whole cells while an edge is dragged (R3; Ctrl alone, or
+DisableWindowSizeSnap, resizes smoothly), AllowLiveResize off stops edge resizing, and "Terminal
+may resize window when not focused" off refuses SetWindowFrame from an unfocused pane. Make Text
+Bigger, Smaller and Normal Size resize the window to keep its grid (R3), Window > Zoom maximizes
+vertically only with MaxVertically, Window Type 4 opens full screen and 14 as a topmost window
+without a taskbar button, and the profile's Window style popup has iTerm2's ten entries with
+units popups sizing Normal, No Title Bar, Centered and edge windows in cells or percent of the
+screen. SizeChangesAffectProfile stays missing for milestone 13n. The Compact and Minimal
+caption label waits for 13e, and a transparent pane forcing the border for 13g. Nothing of 13f
+was checked on screen during the build. Every kept quirk is listed in
+`docs/acceptance/m13f-checklist.md` and ruled on in `docs/superpowers/rulings/m13f-rulings.txt`.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's

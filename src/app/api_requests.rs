@@ -784,6 +784,8 @@ impl App {
                         let Some(on) = api_props::as_bool(&value) else { return Status::InvalidValue };
                         if g.window.fullscreen().is_some() != on {
                             super::menu::toggle_fullscreen(Some(&*g.window));
+                            // The border goes in full screen and comes back after it.
+                            self.apply_border();
                             // Entering full screen flashes the tab bar (`windowDidEnterFullScreen`).
                             if on {
                                 self.flash_tab_bar();

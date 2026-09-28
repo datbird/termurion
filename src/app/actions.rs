@@ -307,6 +307,8 @@ impl App {
                 if let Some(w) = &window {
                     w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) });
                 }
+                // The border goes in full screen and comes back after it, size change or not.
+                self.apply_border();
             }
             25 => match find_menu_item(&b.text, false) {
                 Some(item) => self.run_command(item, event_loop),
