@@ -100,6 +100,12 @@ fn load_overrides(store: &Store, overrides: &mut Overrides) {
     }
 }
 
+/// Whether removing messages from `chat` must stop it first: a turn in progress, a driver
+/// still reading, a parked request or a running command would outlive the messages (ruling F12).
+fn removal_needs_stop(broker: &Broker, agent: Option<&Agent>, chat: &str) -> bool {
+    broker.turn_in_progress(chat) || agent.is_some_and(|a| a.in_turn || a.driver.is_some() || !a.parks.is_empty() || a.running.is_some())
+}
+
 /// The first open of a run (ruling F1): pane ids restart at 1 every launch, so a chat linked to
 /// a pane id, and any grant stored under one, names a session of an earlier run and would
 /// control an unrelated new pane. Each such chat is unlinked, and its stored entries keyed by a
@@ -251,6 +257,26 @@ impl App {
             let _ = db.delete_chat(chat);
         }
         self.chat_broker.forget(chat);
+    }
+
+    /// `ChatBroker.deleteMessages` (`ChatBroker.swift:147-160`) with its effects applied as
+    /// `chat_publish` applies them: the messages leave the database and the chat's blobs go.
+    /// A turn, a parked request or a running command of the chat stops first, so none outlives
+    /// its messages (ruling F12). The removed ids are a suffix of the chat.
+    #[allow(dead_code)] // Called by the chat window (12d).
+    pub(crate) fn chat_remove(&mut self, chat: &str, ids: &[String]) {
+        if removal_needs_stop(&self.chat_broker, self.chat_agents.get(chat), chat) {
+            self.chat_stop(chat);
+        }
+        if self.chat_db().is_none() {
+            return;
+        }
+        let effects = self.chat_broker.remove(chat, ids.to_vec());
+        if let Some(db) = self.chat_db.as_mut() {
+            for e in &effects {
+                let _ = db.atomically(|s| write_effect(s, e));
+            }
+        }
     }
 
     /// A category's global default as stored (0 Ask, 1 Allow, 2 Never; `P:276-285`).
@@ -820,6 +846,25 @@ mod tests {
         assert_eq!(relaunched.get(&source, SESSION, Category::RunCommands, &ask), Permission::Never);
         assert_eq!(relaunched.get(&fork, SESSION, Category::RunCommands, &ask), Permission::Always);
         assert_eq!(relaunched.encoded(&hostile.id), "[]", "a row grants nothing to another chat, itself included");
+    }
+
+    #[test]
+    fn edit_during_a_parked_request_stops_it() {
+        let broker = Broker::new();
+        let mut agent = Agent::default();
+        assert!(!removal_needs_stop(&broker, None, "c"), "an idle chat needs no stop");
+        assert!(!removal_needs_stop(&broker, Some(&agent), "c"));
+        agent.parks.push(chat_agent::Park { call_id: String::new(), request_id: "r".into(), call: Call::ExecuteCommand { command: "ls".into() }, safe: None, cleared_typing: true, guid: "S-7".into(), send: None });
+        assert!(removal_needs_stop(&broker, Some(&agent), "c"), "a parked request outlives its message otherwise");
+        agent.parks.clear();
+        agent.running = Some(("r".into(), "S-7".into()));
+        assert!(removal_needs_stop(&broker, Some(&agent), "c"), "a running command");
+        agent.running = None;
+        agent.in_turn = true;
+        assert!(removal_needs_stop(&broker, Some(&agent), "c"), "a turn");
+        let mut busy = Broker::new();
+        busy.turn("c", crate::chat_message::TurnEvent::Started);
+        assert!(removal_needs_stop(&busy, None, "c"));
     }
 
     #[test]

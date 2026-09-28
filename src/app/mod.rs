@@ -138,6 +138,7 @@ mod prefs_ui;
 mod settings_export_ui;
 mod ai_app;
 mod chat_app;
+mod chat_window_app;
 mod chat_engine;
 mod ai_tools_app;
 mod ai_exec_app;
@@ -865,6 +866,14 @@ pub struct App {
     chat_db: Option<crate::chat_store::Store>,
     chat_db_failed: bool,
     chat_broker: crate::chat_broker::Broker,
+    /// The AI Chat window (app-wide, never swapped: one per app), the broker subscription it
+    /// reads every chat through, the chat it shows, and its toolbar as last computed (rebuilt
+    /// only when `chat_toolbar_dirty`, so a streamed chunk never re-reads the providers).
+    chat_window: Option<crate::chat_window_ui::ChatWindow>,
+    chat_sub: Option<crate::chat_broker::SubId>,
+    chat_shown: Option<String>,
+    chat_toolbar: crate::chat_window_ui::ToolbarData,
+    chat_toolbar_dirty: bool,
     /// The chats' permission overrides (app-wide, never swapped); every chat's stored
     /// permissions are merged in when the database opens.
     ai_overrides: crate::ai_permissions::Overrides,
@@ -1472,6 +1481,11 @@ pub fn run() {
         chat_db: None,
         chat_db_failed: false,
         chat_broker: crate::chat_broker::Broker::new(),
+        chat_window: None,
+        chat_sub: None,
+        chat_shown: None,
+        chat_toolbar: crate::chat_window_ui::ToolbarData::default(),
+        chat_toolbar_dirty: false,
         ai_overrides: crate::ai_permissions::Overrides::default(),
         ai_staged: HashMap::new(),
         ai_consent_asked: false,
@@ -4668,6 +4682,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.ai_discovery_tick();
         let ai_due = self.ai_discovery_due();
         let chat_due = self.chat_tick();
+        let chat_window_due = self.chat_window_tick();
         self.open_script_dialogs(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
@@ -4692,7 +4707,7 @@ impl ApplicationHandler<UserEvent> for App {
         let tip_due = self.tick_tab_tip();
         let flash_due = self.tick_tab_flash();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, chat_window_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -4725,6 +4740,10 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Chord(c) => {
                 // Win+B, Win+U and Win+C in a password manager window are its own keys.
                 if self.pwm_take_chord(&c) {
+                    return;
+                }
+                // Win+W and Shift+Win+Y in the AI Chat window are its own keys.
+                if self.chat_take_chord(&c, event_loop) {
                     return;
                 }
                 if let Some(w) = self.last_window {
@@ -4801,7 +4820,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.chat_window_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

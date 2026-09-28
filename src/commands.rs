@@ -75,7 +75,7 @@ pub const DONE: &[&str] = &[
     "setWindowStyle:|Full-Height Left of Screen", "setWindowStyle:|Full-Height Right of Screen",
     "setWindowStyle:|Bottom of Screen", "setWindowStyle:|Top of Screen", "setWindowStyle:|Left of Screen",
     "setWindowStyle:|Right of Screen", "toggleToolbeltVisibility:", "setDefaultToolbeltWidth:",
-    "irPrev:", "clearInstantReplay:", "exportRecording:", "loadRecording:", "openPasswordManager:",
+    "irPrev:", "clearInstantReplay:", "exportRecording:", "loadRecording:", "openAIChats:", "openAIChat:", "openPasswordManager:",
 ];
 
 /// Commands that work with a known difference for now.
@@ -246,6 +246,15 @@ mod tests {
     }
 
     #[test]
+    fn window_commands_are_done() {
+        use crate::menus::ChordKey::Char;
+        let chord = |shift: bool, ctrl: bool| crate::menus::Chord { key: Char('y'), cmd: true, alt: false, shift, ctrl };
+        assert_eq!(command_for_chord(&chord(true, false)).unwrap().selector, "openAIChats:");
+        assert_eq!(command_for_chord(&chord(true, true)).unwrap().selector, "openAIChat:");
+        assert!(command_for_chord(&chord(false, false)).is_none(), "Win+Y stays unbound until 12e");
+    }
+
+    #[test]
     fn every_context_menu_id_resolves() {
         for id in CONTEXT {
             assert!(id.is_empty() || crate::menus::by_id(id).is_some(), "{id}");
@@ -283,6 +292,8 @@ mod tests {
         assert_eq!(status(find("exportScript:", "Export...")), Status::Done, "11d");
         assert_eq!(status(find("openDependencyEditor:", "Manage Dependencies...")), Status::Done, "11d");
         assert_eq!(status(find("showSuppressedAlerts:", "Suppressed Alerts...")), Status::Done, "13b");
+        assert_eq!(status(find("openAIChats:", "AI Chats")), Status::Done, "12d");
+        assert_eq!(status(find("openAIChat:", "Open AI Chat...")), Status::Done, "12d");
         assert_eq!(status(find("sshDisconnect:", "Disconnect")), Status::Later(14), "14c");
         assert_eq!(status(find("downloadFiles:", "Download Files...")), Status::Later(14), "14d");
         assert_eq!(

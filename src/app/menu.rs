@@ -691,6 +691,8 @@ impl App {
                 }
             }
             "openDashboard:" => self.open_tmux_dashboard(event_loop),
+            "openAIChats:" => self.open_ai_chats(event_loop),
+            "openAIChat:" => self.open_ai_chat(event_loop),
             "toggleTmuxPausePane:" => self.tmux_toggle_pause(),
             "forceDetachTmux:" => self.tmux_force_detach(),
             "newTmuxWindow:" => {
