@@ -204,6 +204,13 @@ pub fn wheel_scroll(
     Some(clamp_scroll(offset - lines * optimum, content, viewport))
 }
 
+/// A precise (pixel) wheel delta in lines of one optimum tab width, so it scrolls by its own
+/// distance; a line is at least one pixel, so a zero `OptimumTabWidth` gives no NaN.
+pub fn pixel_lines(px_x: f64, px_y: f64, optimum: f32, scale: f32) -> (f32, f32) {
+    let per_line = (optimum * scale).max(1.0);
+    (px_x as f32 / per_line, px_y as f32 / per_line)
+}
+
 /// The tab number's modifier for `SwitchTabModifier` in Windows words, in iTerm2's glyph order
 /// (`PSM _modifierString`: Control, Option, Shift, then Cmd). Empty with no shortcut.
 pub fn modifier_string(switch_tab_modifier: i64) -> &'static str {
@@ -1146,6 +1153,18 @@ mod tests {
         assert_eq!(wheel_scroll(600.0, -2.0, 0.0, false, 175.0, 1200.0, 576.0), Some(624.0));
         // Nothing scrolls.
         assert_eq!(wheel_scroll(0.0, -2.0, 0.0, false, 175.0, 0.0, 576.0), None);
+    }
+
+    #[test]
+    fn precise_deltas_survive_a_zero_optimum_width() {
+        // 350 pixels at scale 2 over a 175-point optimum width is one line.
+        assert_eq!(pixel_lines(-350.0, 0.0, 175.0, 2.0), (-1.0, 0.0));
+        // A zero OptimumTabWidth (an emptied number field) gives finite lines, not NaN or
+        // infinity, and the bar does not jump to its end.
+        let (dx, dy) = pixel_lines(-30.0, 10.0, 0.0, 1.0);
+        assert!(dx.is_finite() && dy.is_finite());
+        assert_eq!(wheel_scroll(100.0, dx, dy, false, 0.0, 1200.0, 576.0), Some(100.0));
+        assert_eq!(pixel_lines(0.0, 0.0, 0.0, 1.0), (0.0, 0.0));
     }
 
     #[test]

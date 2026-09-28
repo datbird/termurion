@@ -569,9 +569,12 @@ pub struct App {
     tab_keep_selected: bool,
     /// The selected tab's id and the tab count at the last layout: a change selects anew.
     tab_seen: Option<(u64, usize)>,
-    /// The press on the tab bar: what it hit, its click count (0 for the middle button) and
-    /// whether Alt was held.
-    tab_press: Option<(tab_layout::Hit, u8, bool)>,
+    /// The press on the tab bar: what it hit, its click count (0 for the middle button),
+    /// whether Alt was held, and the id of the tab it hit.
+    tab_press: Option<TabPress>,
+    /// `SelectsTabsOnMouseDown` as it was when this window opened (iTerm2 copies it into each
+    /// tab bar it makes, `iTermTabBarControlView.m:58`; a change affects new windows only).
+    tab_selects_on_down: bool,
     /// The tab whose tooltip the pointer is waiting on or showing, and when the pointer
     /// settled on it; the tip shows `TIP_DELAY` later.
     tab_tip: Option<(usize, Instant)>,
@@ -855,6 +858,8 @@ pub fn run() {
     // The Script Console starts with the Automatic Profile Switching entry while its logging
     // is on (`SH:340-351`).
     let aps_logging = globals.bool(aps_ui::LOG_KEY);
+    // The first window's tab bar takes SelectsTabsOnMouseDown now; later windows at opening.
+    let tab_selects_on_down = globals.bool("SelectsTabsOnMouseDown");
     // Session restoration: shells run in tandem-host so they outlive Tandem (read once:
     // a change needs a restart, as in iTerm2).
     // A second Tandem (the host serves the first) neither restores nor saves windows: the
@@ -1092,6 +1097,7 @@ pub fn run() {
         tab_keep_selected: true,
         tab_seen: None,
         tab_press: None,
+        tab_selects_on_down,
         tab_tip: None,
         tab_tip_wake: None,
         tab_clicks: (Instant::now(), None, 0),
@@ -1265,10 +1271,20 @@ impl App {
             self.tab_seen = seen;
             self.tab_keep_selected = true;
         }
+        // A tab closed or moved under a held press: the press goes, so its release (or the
+        // held close button drawn) never lands on another tab.
+        if self.tab_press_moved() {
+            self.tab_press = None;
+        }
         if self.tab_keep_selected {
             self.scroll_active_tab_into_view();
         }
         self.tab_scroll = tab_layout::clamp_scroll(self.tab_scroll, self.tab_bar.content, self.tab_viewport());
+    }
+
+    /// The held press is on a tab that is no longer at the pressed index.
+    fn tab_press_moved(&self) -> bool {
+        press_on_moved_tab(self.tab_press, |i| self.tabs.get(i).map(|t| t.id))
     }
 
     /// The "+" button in pixels, window coordinates; None while the bar hides or with
@@ -1349,11 +1365,15 @@ impl App {
     fn tab_bar_press(&mut self, button: MouseButton, hit: tab_layout::Hit) {
         use tab_layout::Hit;
         let alt = self.mods.alt;
+        let id = match hit {
+            Hit::Tab(i) | Hit::Close(i) => self.tabs.get(i).map(|t| t.id),
+            _ => None,
+        };
         match button {
             // The button draws pressed while its menu is open: the menu's modal loop draws
             // nothing, so the frame is drawn before it opens (`PSMOverflowPopUpButton mouseDown:`).
             MouseButton::Left if hit == Hit::Overflow => {
-                self.tab_press = Some((hit, 1, alt));
+                self.tab_press = Some((hit, 1, alt, None));
                 self.render();
                 self.show_tab_overflow();
                 self.tab_press = None;
@@ -1361,15 +1381,15 @@ impl App {
             }
             MouseButton::Left => {
                 let clicks = self.count_tab_click(hit);
-                self.tab_press = Some((hit, clicks, alt));
+                self.tab_press = Some((hit, clicks, alt, id));
                 if let Hit::Tab(i) = hit {
-                    if tab_layout::press_selects(self.globals.bool("SelectsTabsOnMouseDown"), alt, clicks) {
+                    if tab_layout::press_selects(self.tab_selects_on_down, alt, clicks) {
                         self.active = i;
                     }
                 }
                 self.redraw();
             }
-            MouseButton::Middle => self.tab_press = Some((hit, 0, alt)),
+            MouseButton::Middle => self.tab_press = Some((hit, 0, alt, id)),
             _ => {}
         }
     }
@@ -1387,7 +1407,7 @@ impl App {
     /// False when no press on the bar waits for this button.
     fn tab_bar_release(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) -> bool {
         use tab_layout::{Hit, Release};
-        let Some((down, clicks, _)) = self.tab_press else { return false };
+        let Some((down, clicks, _, _)) = self.tab_press else { return false };
         let middle = clicks == 0;
         let ours = match button {
             MouseButton::Left => !middle,
@@ -1397,7 +1417,13 @@ impl App {
         if !ours {
             return false;
         }
+        let moved = self.tab_press_moved();
         self.tab_press = None;
+        // The pressed tab is no longer where it was pressed: the release acts on no tab.
+        if moved {
+            self.redraw();
+            return true;
+        }
         let (x, y) = self.cursor;
         let up = self.tab_bar_hit(x, y);
         let live = |i: usize, n: usize| i < n;
@@ -1467,10 +1493,7 @@ impl App {
         // A notched wheel moves in lines; precise deltas are already a distance (pixels here).
         let (dx, dy) = match delta {
             MouseScrollDelta::LineDelta(x, y) => (x, y),
-            MouseScrollDelta::PixelDelta(p) => {
-                let per_line = optimum * self.scale();
-                (p.x as f32 / per_line, p.y as f32 / per_line)
-            }
+            MouseScrollDelta::PixelDelta(p) => tab_layout::pixel_lines(p.x, p.y, optimum, self.scale()),
         };
         let Some(to) = tab_layout::wheel_scroll(self.tab_scroll, dx, dy, self.mods.shift, optimum, self.tab_bar.content, self.tab_viewport()) else {
             return false;
@@ -2950,7 +2973,7 @@ impl App {
             let scrolled = (self.tab_scroll > 0.0).then(|| self.layout_tab_bar(&looks, w, self.tab_scroll));
             let scale = self.scale();
             let font_px = self.gpu.as_ref().map_or(cell.1, |g| g.renderer.font_px()).max(1.0);
-            scene::tab_bar(&mut frame, &looks, self.active, scrolled.as_ref().unwrap_or(&self.tab_bar), area, scale, scale / font_px, cell.1, self.focused && self.app_active, matches!(self.tab_press, Some((tab_layout::Hit::Overflow, _, _))));
+            scene::tab_bar(&mut frame, &looks, self.active, scrolled.as_ref().unwrap_or(&self.tab_bar), area, scale, scale / font_px, cell.1, self.focused && self.app_active, matches!(self.tab_press, Some((tab_layout::Hit::Overflow, _, _, _))));
         } else {
             self.tab_bar = tab_layout::Bar::default();
             self.tab_scroll = 0.0;
@@ -3578,6 +3601,8 @@ impl ApplicationHandler<UserEvent> for App {
                     if self.tab_press.take().is_some() {
                         self.redraw();
                     }
+                    // And the tab tooltip goes, as a macOS tooltip does when the app deactivates.
+                    self.hide_tab_tip();
                     self.belt_keys.clear();
                     self.replay_keys.clear();
                     self.composer_keys.clear();
@@ -3756,11 +3781,25 @@ fn live_tab_hit(hit: Option<tab_layout::Hit>, tabs: usize) -> Option<tab_layout:
     hit.filter(|h| !matches!(h, Hit::Tab(i) | Hit::Close(i) if *i >= tabs))
 }
 
+/// A press on the tab bar: what it hit, its click count (0 for the middle button), whether Alt
+/// was held, and the id of the tab it hit (None off the tabs).
+pub(super) type TabPress = (tab_layout::Hit, u8, bool, Option<u64>);
+
+/// The press was on a tab (or its close button) that `id_at` no longer finds at the pressed
+/// index: a tab before it closed, or the tabs moved. iTerm2 holds the cell itself, so its
+/// release can never act on another tab.
+fn press_on_moved_tab(press: Option<TabPress>, id_at: impl Fn(usize) -> Option<u64>) -> bool {
+    match press {
+        Some((tab_layout::Hit::Tab(i) | tab_layout::Hit::Close(i), _, _, id)) => id_at(i) != id,
+        _ => false,
+    }
+}
+
 /// The close button a press holds down: a left press on it (the middle button's count is 0;
 /// iTerm2 marks it pressed in `mouseDown:` only).
-fn held_close(press: Option<(tab_layout::Hit, u8, bool)>) -> Option<usize> {
+fn held_close(press: Option<TabPress>) -> Option<usize> {
     match press {
-        Some((tab_layout::Hit::Close(i), clicks, _)) if clicks > 0 => Some(i),
+        Some((tab_layout::Hit::Close(i), clicks, _, _)) if clicks > 0 => Some(i),
         _ => None,
     }
 }
@@ -3873,11 +3912,30 @@ mod tests {
     fn only_a_left_press_holds_a_close_button() {
         use tab_layout::Hit;
         // iTerm2 sets `closeButtonPressed` in `mouseDown:` only, never for the middle button.
-        assert_eq!(held_close(Some((Hit::Close(2), 1, false))), Some(2));
-        assert_eq!(held_close(Some((Hit::Close(2), 2, true))), Some(2));
-        assert_eq!(held_close(Some((Hit::Close(2), 0, false))), None, "a middle press");
-        assert_eq!(held_close(Some((Hit::Tab(2), 1, false))), None);
+        assert_eq!(held_close(Some((Hit::Close(2), 1, false, Some(7)))), Some(2));
+        assert_eq!(held_close(Some((Hit::Close(2), 2, true, Some(7)))), Some(2));
+        assert_eq!(held_close(Some((Hit::Close(2), 0, false, Some(7)))), None, "a middle press");
+        assert_eq!(held_close(Some((Hit::Tab(2), 1, false, Some(7)))), None);
         assert_eq!(held_close(None), None);
+    }
+
+    #[test]
+    fn a_press_on_a_tab_that_moved_is_dropped() {
+        use tab_layout::Hit;
+        let ids = [10u64, 11, 12];
+        let at = |i: usize| ids.get(i).copied();
+        // The pressed tab is still where it was pressed.
+        assert!(!press_on_moved_tab(Some((Hit::Close(1), 1, false, Some(11))), at));
+        assert!(!press_on_moved_tab(Some((Hit::Tab(2), 0, false, Some(12))), at));
+        // A tab before it closed: index 1 now holds another tab, which must not close.
+        assert!(press_on_moved_tab(Some((Hit::Close(1), 1, false, Some(10))), at));
+        assert!(press_on_moved_tab(Some((Hit::Tab(1), 0, false, Some(10))), at), "a middle press");
+        // The pressed tab itself is gone off the end.
+        assert!(press_on_moved_tab(Some((Hit::Tab(3), 1, false, Some(13))), at));
+        // Presses off the tabs keep no tab.
+        assert!(!press_on_moved_tab(Some((Hit::Add, 1, false, None)), at));
+        assert!(!press_on_moved_tab(Some((Hit::Bar, 2, false, None)), at));
+        assert!(!press_on_moved_tab(None, at));
     }
 
     #[test]

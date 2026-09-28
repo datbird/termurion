@@ -442,7 +442,7 @@ section = "Tabs"
 label = "Show session status in tab"
 type = "bool"
 default = true
-help = "Shows the status text a program sets with OSC 21337 in its tab, in the status color."
+help = "The status text a program sets with OSC 21337 joins the tab's subtitle line, before the profile's Subtitle, in the subtitle's color; the subtitle line shows only when the tab bar is 28 points or taller (Advanced > Tabs \"Default tab bar height\")."
 
 [[setting]]
 key = "StretchTabsToFillBar"
