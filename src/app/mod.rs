@@ -345,6 +345,8 @@ pub struct App {
     window_menu_text: (String, String),
     /// The border color last given to the current window's DWM frame (`apply_border`).
     border_applied: Option<u32>,
+    /// The current window's menu bar is hidden (full screen, `HideMenuBarInFullscreen`).
+    menu_hidden: bool,
     /// The current window's toolbelt.
     belt: toolbelt_ui::Belt,
     /// Bumped when something a toolbelt tool shows changes (`tools_changed`).
@@ -1149,6 +1151,7 @@ pub fn run() {
         win_title: None,
         window_menu_text: Default::default(),
         border_applied: None,
+        menu_hidden: false,
         belt: Default::default(),
         tool_gen: 0,
         belt_keys: Default::default(),
@@ -2205,12 +2208,21 @@ impl App {
         }
     }
 
-    /// The window's room above any banner, which the toolbelt, the tab bar and the sessions
-    /// share (`window_layout`).
+    /// The window's room below the line under the title bar and above any banner, which the
+    /// toolbelt, the tab bar and the sessions share (`window_layout`). The line's pixel is
+    /// taken here, so panes and tmux's size report see it (`PT:13235-13237`).
     fn window_room(&self) -> Rect {
         let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         let bottom = if self.banners.text().is_some() { self.cell().1 + 8.0 } else { 0.0 };
-        Rect { x: 0.0, y: 0.0, w, h: (h - bottom).max(1.0) }
+        let top = if self.division_visible() { crate::chrome::DIVISION_HEIGHT } else { 0.0 };
+        Rect { x: 0.0, y: top, w, h: (h - bottom - top).max(1.0) }
+    }
+
+    /// The line under the title bar shows in the current window (`chrome::division_visible`).
+    fn division_visible(&self) -> bool {
+        let decorated = self.gpu.as_ref().is_some_and(|g| g.window.is_decorated());
+        let top_bar = self.tab_bar_visible() && self.tab_position() == TabPosition::Top;
+        crate::chrome::division_visible(self.globals.bool("EnableDivisionView"), self.tab_style(), decorated, self.compact_window(), self.full_screen(), top_bar)
     }
 
     /// The window's room for tabs: beside the tab bar, above any banner, left of the toolbelt.
@@ -2780,7 +2792,9 @@ impl App {
         let p = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).clone();
         let (cw, ch) = self.cell();
         let pad = 2.0 * PAD * self.scale();
-        let (w, h) = (p.int("Columns").max(10) as f32 * cw + pad, p.int("Rows").max(4) as f32 * ch + pad);
+        // The line under the title bar is part of the window's decoration (`PT:13235-13237`).
+        let line = if self.division_visible() { crate::chrome::DIVISION_HEIGHT } else { 0.0 };
+        let (w, h) = (p.int("Columns").max(10) as f32 * cw + pad, p.int("Rows").max(4) as f32 * ch + pad + line);
         if let Some(g) = self.gpu.as_ref() {
             let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new(w.ceil() as u32, h.ceil() as u32));
         }
@@ -3949,6 +3963,9 @@ impl App {
         self.draw_toolbelt(&mut frame, cell);
         self.draw_status_bars(&mut frame, cell);
         let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
+        if self.division_visible() {
+            scene::division_line(&mut frame, ww, crate::chrome::division_color(self.resolved_style(), self.focused));
+        }
         self.draw_find_cursor(&mut frame, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
         if let Some((text, _)) = self.toast.as_ref().filter(|(_, until)| Instant::now() < *until) {
             scene::toast(&mut frame, text, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
@@ -3973,6 +3990,7 @@ impl App {
     fn render(&mut self) {
         // A status bar field whose bar went away gives the keyboard back before drawing.
         self.check_composer_fields();
+        self.sync_menu_hidden();
         let frame = self.build_frame();
         let (title, menu_text) = self.caption_text();
         if self.window_menu_text != menu_text {
@@ -4827,9 +4845,23 @@ fn screen_follows_profile(screen: &mut crate::screen::Screen, p: &Profile) {
     screen.set_triggers(list, prefs);
 }
 
+/// Whether a window's menu bar hides: in full screen with `HideMenuBarInFullscreen`
+/// (`P:830`); leaving full screen brings it back.
+fn menu_should_hide(full_screen: bool, hide_key: bool) -> bool {
+    full_screen && hide_key
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_bar_hides_in_full_screen() {
+        assert!(menu_should_hide(true, true));
+        assert!(!menu_should_hide(true, false));
+        assert!(!menu_should_hide(false, true));
+        assert!(!menu_should_hide(false, false));
+    }
 
     #[test]
     fn add_button_follows_iterm2() {

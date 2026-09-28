@@ -69,6 +69,7 @@ pub(super) struct WinSlot {
     win_title: Option<String>,
     window_menu_text: (String, String),
     border_applied: Option<u32>,
+    menu_hidden: bool,
     mru: Mru,
     mru_mods: Option<Mods>,
     laid_out: Option<crate::statusbar_layout::Room>,
@@ -138,6 +139,7 @@ impl WinSlot {
             win_title: None,
             window_menu_text: Default::default(),
             border_applied: None,
+            menu_hidden: false,
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
@@ -222,6 +224,7 @@ impl App {
         swap(&mut self.win_title, &mut s.win_title);
         swap(&mut self.window_menu_text, &mut s.window_menu_text);
         swap(&mut self.border_applied, &mut s.border_applied);
+        swap(&mut self.menu_hidden, &mut s.menu_hidden);
         swap(&mut self.mru, &mut s.mru);
         swap(&mut self.mru_mods, &mut s.mru_mods);
         swap(&mut self.laid_out, &mut s.laid_out);
@@ -757,6 +760,7 @@ impl WinSlot {
             win_title: None,
             window_menu_text: Default::default(),
             border_applied: None,
+            menu_hidden: false,
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,

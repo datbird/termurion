@@ -626,6 +626,24 @@ default = false
 help = "Draws a border around the window when the OS otherwise would not. This is effective in light mode or when the window contains a transparent pane. Windows 11 draws it; Windows 10 shows none."
 
 [[setting]]
+key = "HideMenuBarInFullscreen"
+tab = "Appearance"
+section = "Windows"
+label = "Auto-hide menu bar in non-native fullscreen"
+type = "bool"
+default = true
+help = "A full screen window hides its menu bar, which comes back when the window leaves full screen. Turn this off to keep the menu bar visible; this is useful for multi-monitor systems."
+
+[[setting]]
+key = "EnableDivisionView"
+tab = "Appearance"
+section = "Windows"
+label = "Show line under title bar when the tab bar is not visible"
+type = "bool"
+default = true
+help = "A one-pixel line separates the title bar from the terminal when no tab bar shows at the top of the window. It is not drawn in full screen, in windows without a title bar, or with the Minimal theme."
+
+[[setting]]
 key = "OnlyWhenMoreTabs"
 tab = "General"
 section = "Closing"

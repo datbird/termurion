@@ -1,6 +1,7 @@
-//! Window chrome rules: the border around a window (when it shows, its color) and the corner
-//! preference, as iTerm2 decides them.
+//! Window chrome rules: the border around a window (when it shows, its color), the corner
+//! preference and the line under the title bar, as iTerm2 decides them.
 
+use crate::palette::Rgb;
 use crate::tab_theme::TabStyle;
 
 /// A color with its opacity, components 0 to 255 and alpha 0 to 1.
@@ -90,9 +91,33 @@ pub fn is_dark_style(resolved: TabStyle) -> bool {
     matches!(resolved, TabStyle::Dark | TabStyle::DarkHighContrast)
 }
 
+/// The line under the title bar is one pixel tall (`kDivisionViewHeight`, `RTV:47`).
+pub const DIVISION_HEIGHT: f32 = 1.0;
+
+/// Whether the line under the title bar shows (`divisionViewShouldBeVisible`, `PT:1168-1181`):
+/// with `EnableDivisionView`, a Theme other than Minimal, a title bar (`decorated`) that is
+/// not a Compact window's (13e draws that caption), not full screen, and no tab bar on top.
+pub fn division_visible(enabled: bool, style: TabStyle, decorated: bool, compact: bool, full_screen: bool, top_bar_visible: bool) -> bool {
+    enabled && style != TabStyle::Minimal && decorated && !compact && !full_screen && !top_bar_visible
+}
+
+/// The line's color (`RTV:1435-1450`): a light style grey 0.70 in the focused window and 0.86
+/// in the others, a dark style 0.1 and 0.07.
+pub fn division_color(resolved: TabStyle, focused: bool) -> Rgb {
+    let brightness = match (is_dark_style(resolved), focused) {
+        (false, true) => 0.70,
+        (false, false) => 0.86,
+        (true, true) => 0.1,
+        (true, false) => 0.07,
+    };
+    let v = (brightness * 255.0_f32).round() as u8;
+    crate::palette::rgb(v, v, v)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::palette::rgb;
 
     fn rgba(r: u8, g: u8, b: u8, a: f32) -> Rgba {
         Rgba { r, g, b, a }
@@ -125,6 +150,27 @@ mod tests {
         assert!(is_dark_style(TabStyle::Dark));
         assert!(!is_dark_style(TabStyle::Light));
         assert!(!is_dark_style(TabStyle::LightHighContrast));
+    }
+
+    #[test]
+    fn division_line_follows_iterm2() {
+        use TabStyle::*;
+        assert!(division_visible(true, Automatic, true, false, false, false));
+        assert!(!division_visible(false, Automatic, true, false, false, false));
+        assert!(!division_visible(true, Minimal, true, false, false, false));
+        // No title bar.
+        assert!(!division_visible(true, Automatic, false, false, false, false));
+        // A compact window's caption is 13e's.
+        assert!(!division_visible(true, Automatic, true, true, false, false));
+        assert!(!division_visible(true, Automatic, true, false, true, false));
+        // A top tab bar shows.
+        assert!(!division_visible(true, Automatic, true, false, false, true));
+        assert_eq!(division_color(Light, true), rgb(179, 179, 179));
+        assert_eq!(division_color(Light, false), rgb(219, 219, 219));
+        assert_eq!(division_color(LightHighContrast, true), rgb(179, 179, 179));
+        assert_eq!(division_color(Dark, true), rgb(26, 26, 26));
+        assert_eq!(division_color(Dark, false), rgb(18, 18, 18));
+        assert_eq!(DIVISION_HEIGHT, 1.0);
     }
 
     #[test]

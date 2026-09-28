@@ -2556,4 +2556,17 @@ mod tests {
         let s = schema::find_global("SquareWindowCorners").expect("SquareWindowCorners");
         assert!(s.help.ends_with("You must restart Tandem after changing this setting for it to take effect."));
     }
+
+    /// The full screen menu bar and the division line: Appearance's check boxes
+    /// (`XIB:8785`, `:8986`), both on by default (`P:830`, `:843`).
+    #[test]
+    fn full_screen_chrome_rows_follow_iterm2() {
+        let rows = [("HideMenuBarInFullscreen", "Auto-hide menu bar in non-native fullscreen"), ("EnableDivisionView", "Show line under title bar when the tab bar is not visible")];
+        for (key, label) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Appearance", "Windows", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(true)), "{key}");
+            assert_eq!(s.label, label, "{key}");
+        }
+    }
 }
