@@ -117,6 +117,7 @@ mod warnings_app;
 mod suppressed_app;
 mod host_offers_ui;
 mod frustration_ui;
+mod shell_version_ui;
 mod prefs_ui;
 mod settings_export_ui;
 mod ai_app;

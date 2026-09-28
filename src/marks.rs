@@ -773,11 +773,14 @@ impl Screen {
         self.apply_osc(osc);
         // Directory, host, and user changes are events for triggers.
         let after = (self.shell.cwd.clone(), self.shell.host.clone(), self.shell.user.clone());
-        // Modes a program on the previous host left on may be turned off (`PS:17929-17940`).
-        if let Some(new) = after.1.as_deref().filter(|_| before.1 != after.1) {
-            if host_changed(before.1.as_deref(), new, &std::env::var("COMPUTERNAME").unwrap_or_default()) {
-                self.reset_modes_on_host_change();
-            }
+        // Another account (the first one too) reaches the app (`VT100ScreenMutableState.m:4123-4137`),
+        // with the modes a program on the previous host left on and which may be turned off
+        // (`PS:17929-17940`).
+        if after.1.is_some() && (before.1 != after.1 || before.2 != after.2) {
+            let new = after.1.as_deref().unwrap_or_default();
+            let moved = before.1 != after.1 && host_changed(before.1.as_deref(), new, &std::env::var("COMPUTERNAME").unwrap_or_default());
+            let left_on = if moved { self.reset_modes_on_host_change() } else { LeftOn::default() };
+            self.requests.push(Request::HostChanged(left_on));
         }
         for (kind, old, new) in [(EventKind::DirectoryChanged, before.0, after.0), (EventKind::HostChanged, before.1, after.1), (EventKind::UserChanged, before.2, after.2)] {
             if let Some(v) = new.filter(|n| Some(n) != old.as_ref()) {
@@ -789,8 +792,8 @@ impl Screen {
     /// `maybeResetTerminalStateOnHostChange` (`PS:17987-18008`), here in the output where the
     /// host was reported, as iTerm2 stops reading until it is done: the modes as the previous
     /// host left them are turned off, offered, or left alone, so the new host's own modes
-    /// that follow in the same read are never touched. The offers go to the app.
-    fn reset_modes_on_host_change(&mut self) {
+    /// that follow in the same read are never touched. Gives the offers, for the app.
+    fn reset_modes_on_host_change(&mut self) -> LeftOn {
         let policy = self.host_policy;
         let mode = *self.term().mode();
         let fish = self.shell.shell.as_deref() == Some("fish");
@@ -819,9 +822,7 @@ impl Screen {
         // reports yet. 13o Task 6 adds `if self.resize_reports() { self.set_resize_reports(false) }`
         // at this site (R8).
         let [mouse, focus, paste] = offers;
-        if mouse || focus || paste {
-            self.requests.push(Request::HostChanged(LeftOn { mouse, focus, paste }));
-        }
+        LeftOn { mouse, focus, paste }
     }
 
     fn apply_osc(&mut self, osc: Osc) {
@@ -1018,9 +1019,13 @@ impl Screen {
                 "ShellIntegrationVersion" => {
                     let mut parts = value.split(';');
                     self.shell.version = parts.next().and_then(|v| v.trim().parse().ok());
-                    if let Some(sh) = parts.find_map(|p| p.strip_prefix("shell=")) {
-                        self.shell.shell = Some(sh.to_string());
+                    let shell = parts.find_map(|p| p.strip_prefix("shell=")).map(str::to_string);
+                    if let Some(sh) = &shell {
+                        self.shell.shell = Some(sh.clone());
                     }
+                    // The app decides whether the scripts are out of date, with this report's
+                    // shell (`VT100ScreenMutableState+TerminalDelegate.m:2814-2852`).
+                    self.requests.push(Request::ShellIntegrationReported { version: self.shell.version, shell });
                 }
                 "Notification" => {
                     use base64::Engine;
@@ -1298,6 +1303,22 @@ mod tests {
         s.feed(b"\x1b]1337;CurrentDir=C:\\Users\\rob\x07\x1b]1337;ShellIntegrationVersion=1;shell=pwsh\x07");
         assert_eq!(s.shell.cwd.as_deref(), Some("C:\\Users\\rob"));
         assert_eq!((s.shell.shell.as_deref(), s.shell.version), (Some("pwsh"), Some(1)));
+    }
+
+    /// Each version report reaches the app with the shell it names, never an earlier
+    /// report's (`VT100ScreenMutableState+TerminalDelegate.m:2814-2852`).
+    #[test]
+    fn version_reports_reach_the_app() {
+        let reported = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::ShellIntegrationReported { .. })).collect::<Vec<_>>();
+        let r = |version, shell: Option<&str>| Request::ShellIntegrationReported { version, shell: shell.map(str::to_string) };
+        let mut s = Screen::new(40, 10);
+        s.feed(b"\x1b]1337;ShellIntegrationVersion=4;shell=bash\x07");
+        assert_eq!(reported(&mut s), [r(Some(4), Some("bash"))]);
+        s.feed(b"\x1b]1337;ShellIntegrationVersion=3\x07\x1b]1337;ShellIntegrationVersion=x;shell=zsh\x07");
+        assert_eq!(reported(&mut s), [r(Some(3), None), r(None, Some("zsh"))]);
+        assert_eq!(s.shell.shell.as_deref(), Some("zsh"));
+        s.feed(b"\x1b[?1049h\x1b]1337;ShellIntegrationVersion=5;shell=fish\x07");
+        assert_eq!(reported(&mut s), [r(Some(5), Some("fish"))], "reported on the alternate screen too");
     }
 
     #[test]
@@ -1848,7 +1869,7 @@ mod tests {
         assert!(host_changed(Some("a"), "b", "PC"));
         assert!(!host_changed(Some("pc"), "PC", "PC"), "both this machine");
         assert!(host_changed(Some("PC"), "b", "PC"));
-        let changes = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::HostChanged(_))).collect::<Vec<_>>();
+        let changes = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::HostChanged(l) if *l != LeftOn::default())).collect::<Vec<_>>();
         let offer = |mouse, focus, paste| vec![Request::HostChanged(LeftOn { mouse, focus, paste })];
         let mut s = Screen::new(40, 10);
         s.host_policy.mouse_allowed = true;
@@ -1871,13 +1892,31 @@ mod tests {
         assert!(changes(&mut f).is_empty());
     }
 
+    /// Every host report that changes the account (user or host name), the first included,
+    /// reaches the app, which removes a waiting outdated scripts notice (`PS:17909`,
+    /// `VT100ScreenMutableState.m:4123-4137`); offers come only with a host change.
+    #[test]
+    fn every_host_change_reaches_the_app() {
+        let changes = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::HostChanged(_))).collect::<Vec<_>>();
+        let none = vec![Request::HostChanged(LeftOn::default())];
+        let mut s = Screen::new(40, 10);
+        s.feed(b"\x1b]1337;RemoteHost=u@a\x07");
+        assert_eq!(changes(&mut s), none, "the first host");
+        s.feed(b"\x1b]1337;RemoteHost=u@a\x07\x1b]1337;CurrentDir=/tmp\x07");
+        assert!(changes(&mut s).is_empty(), "the same account");
+        s.feed(b"\x1b]1337;RemoteHost=v@a\x07");
+        assert_eq!(changes(&mut s), none, "another user");
+        s.feed(b"\x1b]7;file://w@b/tmp\x07");
+        assert_eq!(changes(&mut s), none, "OSC 7");
+    }
+
     /// The modes are judged where the host was reported, as iTerm2 stops reading there
     /// (`VT100ScreenMutableState.m:4133`): the new shell turning paste bracketing on in the
     /// same read is its own, never offered and never turned off.
     #[test]
     fn host_change_judges_modes_where_reported() {
         let paste_on = |s: &Screen| s.term().mode().contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE);
-        let changes = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::HostChanged(_))).collect::<Vec<_>>();
+        let changes = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::HostChanged(l) if *l != LeftOn::default())).collect::<Vec<_>>();
         for saved in [None, Some(true), Some(false)] {
             let mut s = Screen::new(40, 10);
             s.host_policy.paste = saved;

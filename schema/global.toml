@@ -2502,6 +2502,15 @@ default = false
 help = "Set once the single hotkey window of an older iTerm2 settings file has moved to its profile, so the move happens only once."
 
 [[setting]]
+key = "NotifyOnlyForCriticalShellIntegrationUpdates"
+tab = "General"
+section = "Software Update"
+label = "Ignore non-critical shell integration updates"
+type = "bool"
+default = true
+help = "Sessions whose shell integration scripts are out of date show \"This account\u2019s Shell Integration scripts are out of date.\" When on, only critically old scripts (bash, zsh or fish before version 5, tcsh before 2) and scripts that name no shell are announced; when off, any script older than the latest for its shell is."
+
+[[setting]]
 key = "Bidi"
 tab = "General"
 section = "Experimental"

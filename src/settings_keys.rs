@@ -1933,6 +1933,16 @@ mod tests {
     }
 
     #[test]
+    fn software_update_row_follows_iterm2() {
+        let key = "NotifyOnlyForCriticalShellIntegrationUpdates";
+        let row = schema::find_global(key).expect("row");
+        assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("General", "Software Update", Kind::Bool));
+        assert_eq!(row.default, Some(Value::Boolean(true)));
+        assert_eq!(row.label, "Ignore non-critical shell integration updates");
+        assert!(Globals::empty(std::path::Path::new("software-update-row-test.toml")).bool(key), "on until turned off");
+    }
+
+    #[test]
     fn upload_row_follows_iterm2() {
         let row = schema::find_global("accelerateUploads").unwrap();
         assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"));

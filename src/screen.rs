@@ -306,6 +306,9 @@ pub enum Request {
     /// Shell integration reported another host (`marks::host_changed`) and these modes, left
     /// on by the previous host, are to be offered for turning off.
     HostChanged(crate::marks::LeftOn),
+    /// ShellIntegrationVersion: the version and the shell this report names (None when it
+    /// names none), for the outdated scripts notice.
+    ShellIntegrationReported { version: Option<u32>, shell: Option<String> },
 }
 
 /// Key reporting and emulation chosen in Session > Terminal State.

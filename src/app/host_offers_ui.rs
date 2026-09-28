@@ -78,10 +78,13 @@ fn toggle_label(o: Offer) -> &'static str {
 }
 
 impl App {
-    /// The pane's screen found modes the previous host left on at a host change and turned
-    /// off those whose answer is saved (`marks::Screen::reset_modes_on_host_change`); the rest
-    /// are offered here, in iTerm2's order.
+    /// The pane's shell integration reported another account. A waiting outdated scripts
+    /// notice goes (`PS:17909`). At a host change the screen found modes the previous host
+    /// left on and turned off those whose answer is saved
+    /// (`marks::Screen::reset_modes_on_host_change`); the rest are offered here, in iTerm2's
+    /// order.
     pub(super) fn host_changed(&mut self, pane: PaneId, left_on: LeftOn) {
+        self.drop_shell_version_notice(pane);
         let asked = [(left_on.mouse, Offer::Mouse), (left_on.focus, Offer::Focus), (left_on.paste, Offer::Paste)];
         for (_, o) in asked.into_iter().filter(|(on, _)| *on) {
             // A waiting offer with the same id is replaced, so one waits per mode.

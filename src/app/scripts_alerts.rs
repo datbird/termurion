@@ -169,6 +169,9 @@ pub(super) enum Then {
     /// New Tab or New Window (`window`) from the tmux pane `anchor`: New tmux Tab or Window
     /// (0), Use Default Profile (1) or Cancel (2).
     TmuxNew { anchor: crate::layout::PaneId, window: bool },
+    /// Upgrade's "It looks like you're not at a command prompt." for the pane: Run Installer
+    /// Anyway (0) runs the installer there; Cancel (1) does nothing.
+    InstallShellIntegration(crate::layout::PaneId),
 }
 
 impl Then {
@@ -335,6 +338,11 @@ impl App {
             }
             Then::Broadcast { clear, me, targets } => self.clear_or_reset_answered(clear, me, super::broadcast_ui::broadcast_targets(index, me, targets)),
             Then::TmuxNew { anchor, window } => self.tmux_new_answered(anchor, window, index),
+            Then::InstallShellIntegration(pane) => {
+                if index == 0 {
+                    self.install_shell_integration_in(pane);
+                }
+            }
             Then::Malformed(path) => {
                 if index == 1 {
                     self.reveal_path(&path);

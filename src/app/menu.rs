@@ -1001,7 +1001,14 @@ fn ask(text: &str) -> bool {
 impl App {
     /// iTerm2 > Install Shell Integration, for the focused pane's shell.
     pub(super) fn install_shell_integration(&mut self) {
-        let Some(guid) = self.focused_guid() else { return };
+        if let Some(pane) = self.focused_id() {
+            self.install_shell_integration_in(pane);
+        }
+    }
+
+    /// Install Shell Integration for `pane`: types the installer for its profile's shell.
+    pub(super) fn install_shell_integration_in(&mut self, pane: PaneId) {
+        let Some(guid) = self.panes.get(&pane).map(|p| self.store.shared_guid(&p.profile)) else { return };
         let cmdline = crate::profile::command_line(&self.profile(Some(&guid)), &self.shell);
         let typed = match install_plan(&cmdline) {
             Plan::Unsupported => {
@@ -1026,9 +1033,9 @@ impl App {
                 pwsh_install_command(&path)
             }
         };
-        if let Some(pane) = self.focused_pane() {
-            pane.scroll(Scroll::Bottom);
-            pane.input(typed.as_bytes());
+        if let Some(p) = self.panes.get_mut(&pane) {
+            p.scroll(Scroll::Bottom);
+            p.input(typed.as_bytes());
         }
     }
 }
