@@ -100,7 +100,8 @@ impl App {
                         }
                         // The parser already let go; the setup fails with the reason now.
                         Token::Error(reason) => c.fail(&reason),
-                        Token::Init(_) => {}
+                        // The framer's tokens are Task 3 and 5's.
+                        Token::Init(_) | Token::Output { .. } | Token::Terminate { .. } | Token::It2(_) => {}
                     }
                 }
             }

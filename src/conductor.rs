@@ -1891,7 +1891,7 @@ mod tests {
                     c.handle_end(&id, &kind, status, 0);
                     break;
                 }
-                Token::Init(_) | Token::Unhook | Token::Error(_) => {}
+                Token::Init(_) | Token::Unhook | Token::Error(_) | Token::Output { .. } | Token::Terminate { .. } | Token::It2(_) => {}
             }
         }
         assert_eq!(c.shell.as_deref(), Some("/bin/sh"));
@@ -2230,7 +2230,7 @@ mod tests {
                         Token::End { id, status, kind } => c.handle_end(&id, &kind, status, depth),
                         Token::Unhook => c.handle_unhook(),
                         Token::Error(reason) => c.fail(&reason),
-                        Token::Init(_) => {}
+                        Token::Init(_) | Token::Output { .. } | Token::Terminate { .. } | Token::It2(_) => {}
                     }
                 }
             }

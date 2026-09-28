@@ -17,6 +17,11 @@ pub enum Out {
     Ssh(Token, i32),
 }
 
+/// Why the conductor ends when its parser lets go without saying so (Tandem's): a cap, an
+/// unknown word, output that is not a reply. Without it the pane would go on framing keys
+/// into a session whose output is no longer read.
+pub const LOST_OUTPUT: &str = "SSH integration lost the remote's output";
+
 /// A fresh parser id (iTerm2 gives each DCS 2000p hook a new UUID).
 pub fn new_dcs_id() -> String {
     uuid::Uuid::new_v4().hyphenated().to_string().to_uppercase()
@@ -60,7 +65,12 @@ impl Hook {
         loop {
             if let Some(parser) = &mut self.parser {
                 let fed = parser.feed(&data);
+                // A parser that unhooks with no word of its own gets one here (F28).
+                let silent = fed.rest.is_some() && !matches!(fed.tokens.last(), Some(Token::Unhook | Token::Error(_)));
                 out.extend(fed.tokens.into_iter().map(|t| Out::Ssh(t, 0)));
+                if silent {
+                    out.push(Out::Ssh(Token::Error(LOST_OUTPUT.into()), 0));
+                }
                 match fed.rest {
                     None => break,
                     Some(rest) => {
@@ -205,10 +215,10 @@ mod tests {
         assert_eq!(parse_init("t u YmE= -", "D").unwrap().sshargs, "", "the id counts as a word");
         assert_eq!(parse_init("none 1 YmE= - c3M=", "D").unwrap().token, "none");
         let mut h = hook();
-        assert_eq!(h.feed(b"\x1bP2000p\xff\xfe - Yg==\nls"), vec![s(b"\nls")], "a non-UTF-8 line is dropped");
+        assert_eq!(h.feed(b"\x1bP2000p\xff\xfe - Yg==\nls"), vec![lost(), s(b"\nls")], "a non-UTF-8 line is dropped");
         assert!(!h.active());
         let mut h = hook();
-        assert_eq!(h.feed(b"\x1bP2000pbad\nls\r\n"), vec![s(b"\nls\r\n")], "a rejected line unhooks");
+        assert_eq!(h.feed(b"\x1bP2000pbad\nls\r\n"), vec![lost(), s(b"\nls\r\n")], "a rejected line unhooks");
         assert!(!h.active());
     }
 
@@ -217,7 +227,7 @@ mod tests {
         assert_eq!(hooked().feed(b"\x1b]135;:begin 7\x1b\\"), vec![begin("7")]);
         assert_eq!(hooked().feed(b"\x1b]135;junk:begin 7\x1b\\"), vec![begin("7")], "text before the colon is ignored");
         let mut h = hooked();
-        assert_eq!(h.feed(b"\x1b]135;begin 7\x1b\\"), vec![], "no colon: an empty payload unhooks silently");
+        assert_eq!(h.feed(b"\x1b]135;begin 7\x1b\\"), vec![lost()], "no colon: an empty payload unhooks");
         assert!(!h.active());
         assert_eq!(hooked().feed(b"\x1b]135;:begin 7\x07\x1b\\"), vec![begin("7\u{7}")], "BEL does not end an OSC");
         assert_eq!(hooked().feed(b"\x1b]135;:beg\x1b]135;:begin 9\x1b\\"), vec![begin("9")], "an interrupted OSC restarts");
@@ -234,10 +244,10 @@ mod tests {
         assert_eq!(h.feed(b"\x1b]134;:end 1 0 r\x1b\\"), vec![end("1", 0, "r")]);
         assert_eq!(h.feed(b"\x1b]135;:begin 2\x1b\\"), vec![begin("2")], "ground again");
         let mut h = in_body();
-        assert_eq!(h.feed(b"oops"), vec![s(b"oops")]);
+        assert_eq!(h.feed(b"oops"), vec![lost(), s(b"oops")]);
         assert!(!h.active());
         let mut h = in_body();
-        assert_eq!(h.feed(b"\x1b]7;:x\x1b\\"), vec![s(b"\x1b]7;:x\x1b\\")], "another OSC is output");
+        assert_eq!(h.feed(b"\x1b]7;:x\x1b\\"), vec![lost(), s(b"\x1b]7;:x\x1b\\")], "another OSC is output");
         assert!(!h.active());
     }
 
@@ -261,7 +271,7 @@ mod tests {
         assert_eq!(h.feed(b"\x1b]135;:unhook\x1b\\$ "), vec![ssh(Token::Unhook), s(b"$ ")]);
         assert!(!h.active());
         let mut h = hooked();
-        assert_eq!(h.feed(b"\x1b]135;:what\x1b\\x"), vec![s(b"x")], "an unknown word unhooks silently");
+        assert_eq!(h.feed(b"\x1b]135;:what\x1b\\x"), vec![lost(), s(b"x")], "an unknown word unhooks");
         assert!(!h.active());
         let mut h = hooked();
         let out = h.feed(b"\x1b]135;:unhook\x1b\\x\x1bP2000pnone 1 YQ== - Yg==\n");
@@ -280,7 +290,7 @@ mod tests {
         assert_eq!(h.feed(b"\x1b]134;:%ping\x1b\\"), vec![]);
         assert!(h.active(), "an unknown notification is ignored");
         let mut h = hooked();
-        assert_eq!(h.feed(b"\x1b]134;:nonsense\x1b\\z"), vec![s(b"z")]);
+        assert_eq!(h.feed(b"\x1b]134;:nonsense\x1b\\z"), vec![lost(), s(b"z")]);
         assert!(!h.active());
     }
 
@@ -317,23 +327,23 @@ mod tests {
         assert_eq!(h.feed(START), vec![]);
         assert_eq!(trickle(&mut h, &flood, 4096), vec![], "up to the cap it waits");
         assert!(h.active());
-        assert_eq!(h.feed(b"a"), vec![s(&vec![b'a'; MAX_HELD + 1])]);
+        assert_eq!(h.feed(b"a"), vec![lost(), s(&vec![b'a'; MAX_HELD + 1])]);
         assert!(!h.active());
         let mut h = hook();
         assert_eq!(h.feed(b"\x1bP2000p"), vec![]);
         let out = trickle(&mut h, &[&flood[..], b"a"].concat(), 4095);
-        assert_eq!(out, vec![s(&[&flood[..], b"a"].concat())]);
+        assert_eq!(out, vec![lost(), s(&[&flood[..], b"a"].concat())]);
         assert!(!h.active());
         assert_eq!(h.feed(b"\nls"), vec![s(b"\nls")], "the newline after it is output too");
         // A line that ends inside the read that passes the cap is a line (here a rejected one).
         let mut h = hook();
         assert_eq!(h.feed(START), vec![]);
-        assert_eq!(trickle(&mut h, &[&flood[..], b"a\nls"].concat(), MAX_HELD), vec![s(b"\nls")]);
+        assert_eq!(trickle(&mut h, &[&flood[..], b"a\nls"].concat(), MAX_HELD), vec![lost(), s(b"\nls")]);
         // An OSC that never ends, in ground and in a reply.
         for mut h in [hooked(), in_body()] {
             let osc = [&b"\x1b]135;:"[..], &flood[..]].concat();
             let out = trickle(&mut h, &osc, 4096);
-            assert_eq!(out, vec![s(&osc)]);
+            assert_eq!(out, vec![lost(), s(&osc)]);
             assert!(!h.active());
             assert_eq!(h.feed(b"$ "), vec![s(b"$ ")]);
         }
@@ -441,5 +451,45 @@ mod tests {
         assert!(lines(&all[3]).contains(&"bad command nosuch"));
         let ends: Vec<u8> = t.iter().filter_map(|t| if let Token::End { status, .. } = t { Some(*status) } else { None }).collect();
         assert_eq!(ends, [0, 0, 0, 0], "every status is 0 (iTerm2 bug B1)");
+    }
+
+    fn lost() -> Out {
+        ssh(Token::Error(LOST_OUTPUT.into()))
+    }
+
+    #[test]
+    fn a_silent_unhook_is_an_error() {
+        use crate::ssh_fixtures::osc134;
+        use crate::conductor_parser::MAX_HELD;
+        // Garbage in ground, and an unknown OSC 134 word.
+        let mut h = hooked();
+        assert_eq!(h.feed(&[osc134("nonsense"), b"z".to_vec()].concat()), vec![lost(), s(b"z")]);
+        assert!(!h.active());
+        let mut h = hooked();
+        assert_eq!(h.feed(&[osc134("%output 1 x -1 0"), b"z".to_vec()].concat()), vec![lost(), s(b"z")]);
+        // The 1 MiB cap.
+        let mut h = hooked();
+        let osc = [&b"\x1b]134;:"[..], &vec![b'a'; MAX_HELD][..]].concat();
+        let out = trickle(&mut h, &osc, 4096);
+        assert_eq!(out, vec![lost(), s(&osc)]);
+        assert!(!h.active());
+        // A reply cut short by output that is not an OSC.
+        let mut h = in_body();
+        assert_eq!(h.feed(b"oops"), vec![lost(), s(b"oops")]);
+        // A rejected init line.
+        assert_eq!(hook().feed(b"\x1bP2000pbad\nls"), vec![lost(), s(b"\nls")]);
+        // A real unhook, and a parser error that already says why, add nothing.
+        assert_eq!(hooked().feed(&[osc135("unhook"), b"$ ".to_vec()].concat()), vec![ssh(Token::Unhook), s(b"$ ")]);
+        let long = "7".repeat(crate::conductor_parser::MAX_ID + 1);
+        let out = hooked().feed(&osc134(&format!("begin {long}")));
+        assert_eq!(out, vec![ssh(Token::Error(crate::conductor_parser::ID_TOO_LONG.into()))]);
+        // Byte by byte, once.
+        let mut h = hooked();
+        let out = trickle(&mut h, &[osc134("nonsense"), b"z".to_vec()].concat(), 1);
+        assert_eq!(out, vec![lost(), s(b"z")]);
+    }
+
+    fn osc135(p: &str) -> Vec<u8> {
+        crate::ssh_fixtures::osc135(p)
     }
 }
