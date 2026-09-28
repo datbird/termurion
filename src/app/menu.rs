@@ -416,6 +416,7 @@ impl App {
             "installPythonRuntime:" => self.install_python_runtime(),
             "revealScriptsInFinder:" => self.reveal_scripts_folder(),
             "newPythonScript:" => self.new_python_script(event_loop),
+            "openScriptConsole:" => self.open_script_console(event_loop),
             "editCurrentSession:" => {
                 let guid = self.focused_guid();
                 let tmux = self.focused_id().is_some_and(|id| self.panes.get(&id).is_some_and(|p| p.tmux_io().is_some()));

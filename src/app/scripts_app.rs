@@ -31,7 +31,7 @@ const FIRST_LINE_LIMIT: u64 = 4096;
 const OUTPUT_PER_PASS: usize = 64 * 1024;
 
 /// A script's first line (`L:677-723` reads it with `fgetln`).
-fn first_line(p: &Path) -> Option<String> {
+pub(super) fn first_line(p: &Path) -> Option<String> {
     let file = std::fs::File::open(p).ok()?;
     let mut line = Vec::new();
     std::io::BufReader::new(file.take(FIRST_LINE_LIMIT)).read_until(b'\n', &mut line).ok()?;
@@ -290,12 +290,14 @@ impl App {
         }
     }
 
-    /// Restart (`SC:224-232`): Terminate, then the same launch again, as a person's.
-    // Called by the Script Console (Task 8).
-    #[allow(dead_code)]
+    /// Restart (`SC:224-232`): Terminate (only a running entry with one process,
+    /// `terminateScriptOnRow:`), then the same launch again, as a person's.
     pub(super) fn relaunch_script(&mut self, id: &str) {
-        let relaunch = self.script_history.find(id).and_then(|e| e.relaunch.clone());
-        self.terminate_script(id);
+        let Some(e) = self.script_history.find(id) else { return };
+        let (relaunch, ends) = (e.relaunch.clone(), e.running && e.only_pid().is_some());
+        if ends {
+            self.terminate_script(id);
+        }
         if let Some(r) = relaunch {
             self.launch_script(Request { path: r.path, args: r.args, explicit: true });
         }
@@ -371,10 +373,20 @@ impl App {
         self.refresh_scripts_menu();
     }
 
-    /// A failed script's notification was clicked: its Script Console entry shows its end
-    /// (`revealTailOfHistoryEntry:`). The Script Console window is Task 8's; until it exists
-    /// nothing opens.
-    pub(super) fn reveal_script_entry(&mut self, _id: &str) {}
+    /// A failed script's notification was clicked, or the function error alert's "Reveal in
+    /// Script Console": its Script Console entry shows its end (`revealTailOfHistoryEntry:`,
+    /// `reveal_in_console`) on the next loop pass, which has the event loop to open the
+    /// console with.
+    pub(super) fn reveal_script_entry(&mut self, id: &str) {
+        self.script_console_reveal = Some(id.to_string());
+    }
+
+    /// `couldLaunchScriptWithAbsolutePath:` (`M:1046-1079`): a basic script, a full
+    /// environment, or one that needs rebuilding. A path reached through a link to a network
+    /// path is never probed.
+    pub(super) fn could_launch(path: &Path) -> bool {
+        crate::scripts::ancestors_stay_local(path, &crate::scripts::read_link) && matches!(sl::classify(path, &crate::scripts::RealFs, &first_line), Kind::Basic { .. } | Kind::Full { .. } | Kind::NeedsRebuild { .. })
+    }
 
     /// Selects `path` in Explorer; nothing runs it.
     pub(super) fn reveal_path(&self, path: &Path) {

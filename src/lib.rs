@@ -58,6 +58,10 @@ pub mod script_new;
 #[cfg(windows)]
 pub mod script_new_ui;
 #[cfg(windows)]
+pub mod script_console_ui;
+#[cfg(windows)]
+pub mod script_inspector_ui;
+#[cfg(windows)]
 pub mod script_proc;
 pub mod scripts;
 #[cfg(windows)]

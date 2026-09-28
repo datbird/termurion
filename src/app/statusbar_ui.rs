@@ -96,8 +96,9 @@ pub(super) enum Click {
     /// Call Script Function (`FN:170-194`): invokes the function call in the bar's session
     /// with the timeout, side effects on; an error is reported with the label as origin.
     Invoke { invocation: String, timeout: f64, label: String },
-    /// A failed script component (`RPC:533-555`): its error text in an alert.
-    ScriptError(String),
+    /// A failed script component (`RPC:533-555`): its error text in an alert, and its unique
+    /// id (which names the script that could fix it).
+    ScriptError { text: String, id: String },
     /// A script component (`RPC:557-571`): its script's click handler, by unique id.
     ScriptClick(String),
 }
@@ -728,7 +729,7 @@ impl App {
                         let scope = super::script_ui::ScopeSpec::Session { pane: bar.pane, frame: crate::api_vars::Values::new() };
                         self.invoke(&invocation, scope, crate::script_eval::Timeout::from_secs(timeout), true, super::script_ui::Origin::Report(label));
                     }
-                    Click::ScriptError(text) => self.script_component_error(&text),
+                    Click::ScriptError { text, id } => self.script_component_error(&text, &id),
                     Click::ScriptClick(id) => self.script_component_click(bar.pane, &id),
                     Click::Field => {
                         let Some((i, pl)) = hit.and_then(|i| p.placed.iter().find(|pl| pl.index == i).map(|pl| (i, *pl))) else { return true };

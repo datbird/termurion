@@ -31,6 +31,30 @@ pub const KNOBS_PATH: &str = "__knobs";
 /// The heading of a failed component's alert (`RPC:552`; assigned last of the two).
 pub const ERROR_HEADING: &str = "Status Bar Script Error";
 
+/// Appended to a failed component's text when its script could fix it by launching
+/// (`RPC:548`).
+pub const NOT_RUNNING_SUFFIX: &str = "It looks like the script is not running. Launching it might fix the problem.";
+/// The failed component alert's recovery buttons (`RPC:540-545`; "Reveal in Finder").
+pub const LAUNCH_SCRIPT: &str = "Launch Script";
+pub const REVEAL_IN_EXPLORER: &str = "Reveal in Explorer";
+
+/// The setting that remembers which script registered a component (its full path), written
+/// at registration (`H:1880-1896`, `H:1385-1387`).
+pub fn script_path_key(unique_id: &str) -> String {
+    format!("NoSyncScriptNameForStatusBarComponent_{unique_id}")
+}
+
+/// A failed component's click (`RPC:533-555`): when its script is known, not running and
+/// could launch, the text gains `NOT_RUNNING_SUFFIX` and the alert Launch Script and Reveal in
+/// Explorer; else the text alone with OK.
+pub fn recovery(error: &str, path_known: bool, running: bool, could_launch: bool) -> (String, Vec<&'static str>) {
+    if path_known && !running && could_launch {
+        (format!("{error}{NOT_RUNNING_SUFFIX}"), vec![crate::api_auth::OK, LAUNCH_SCRIPT, REVEAL_IN_EXPLORER])
+    } else {
+        (error.to_string(), vec![crate::api_auth::OK])
+    }
+}
+
 /// A registration's status bar attributes (none for another role).
 fn attributes(r: &pb::RpcRegistrationRequest) -> Option<&StatusBarComponentAttributes> {
     match r.role_specific_attributes.as_ref()? {
@@ -593,6 +617,19 @@ mod tests {
         assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
         assert_eq!(html_text("&#x41;&amp;&unknown;&"), "A&&unknown;&");
         assert_eq!(ERROR_HEADING, "Status Bar Script Error");
+    }
+
+    #[test]
+    fn status_bar_recovery_follows_iterm2() {
+        assert_eq!(
+            recovery("boom\n\n", true, false, true),
+            ("boom\n\nIt looks like the script is not running. Launching it might fix the problem.".to_string(), vec!["OK", "Launch Script", "Reveal in Explorer"])
+        );
+        assert_eq!(recovery("boom\n\n", true, true, true), ("boom\n\n".to_string(), vec!["OK"]));
+        assert_eq!(recovery("boom\n\n", false, false, true), ("boom\n\n".to_string(), vec!["OK"]));
+        assert_eq!(recovery("boom\n\n", true, false, false), ("boom\n\n".to_string(), vec!["OK"]));
+        assert_eq!(script_path_key("com.x"), "NoSyncScriptNameForStatusBarComponent_com.x");
+        assert_eq!((LAUNCH_SCRIPT, REVEAL_IN_EXPLORER), ("Launch Script", "Reveal in Explorer"));
     }
 
     #[test]

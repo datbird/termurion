@@ -475,6 +475,12 @@ impl Registry {
         items
     }
 
+    /// Every registration: its signature, its connection and its request (the Scripting
+    /// Inspector's table, `serverOriginatedRPCSubscriptions`), in signature order.
+    pub fn registrations(&self) -> Vec<(String, u64, &pb::RpcRegistrationRequest)> {
+        self.regs.iter().map(|(sig, (conn, r))| (sig.clone(), *conn, r)).collect()
+    }
+
     /// Bumped whenever registrations were added, or a closed connection took some away.
     pub fn generation(&self) -> u64 {
         self.generation
@@ -792,6 +798,13 @@ mod tests {
         assert!(fns.status_bar_component("com.z").is_none());
         assert_eq!(fns.status_bar_component("com.x").map(|r| fns.owner(&reg_signature(r)).is_some()), Some(true));
         assert_eq!(fns.owner("nothing()"), None);
+        // Every registration for the Scripting Inspector: signature, connection and role, in
+        // signature order.
+        let all: Vec<(String, u64, Option<i32>)> = fns.registrations().into_iter().map(|(sig, conn, r)| (sig, conn, r.role)).collect();
+        assert_eq!(all.len(), 5);
+        assert!(all.windows(2).all(|w| w[0].0 < w[1].0));
+        assert!(all.contains(&("generic()".to_string(), 1, None)));
+        assert_eq!(all.iter().filter(|(_, conn, _)| *conn == 2).count(), 1);
         // Title providers by unique id; only a title registration bumps the title generation,
         // never another role's or a closed connection (`H:1935-1941`, `H:2190`).
         assert!(fns.has_title_provider("com.x-y"));
