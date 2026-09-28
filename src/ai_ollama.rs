@@ -27,12 +27,12 @@ const MAX_RESPONSE_RESERVE: i64 = 8192;
 const IMAGE_TOKEN_FLOOR: i64 = 85;
 const IMAGE_TOKEN_CAP: i64 = 12288;
 
+/// The least power of two at or above `n` (1 for n below 2), i64::MAX past the largest.
 fn power_of_two_at_least(n: i64) -> i64 {
-    let mut p = 1;
-    while p < n {
-        p <<= 1;
+    if n < 2 {
+        return 1;
     }
-    p
+    (n as u64).checked_next_power_of_two().and_then(|p| i64::try_from(p).ok()).unwrap_or(i64::MAX)
 }
 
 /// `computedNumCtx` (`LL:279-295`): a positive `ollamaNumCtx` override as it is; else the prompt
@@ -345,6 +345,14 @@ mod tests {
 
     fn file(name: &str, mime: &str, content: &[u8]) -> Body {
         Body::Attachment(Attachment::File { name: name.into(), mime: mime.into(), content: content.to_vec() })
+    }
+
+    #[test]
+    fn power_of_two_never_loops() {
+        assert_eq!([-5, 0, 1, 2, 3, 4096, 4097].map(power_of_two_at_least), [1, 1, 1, 2, 4, 4096, 8192]);
+        assert_eq!(power_of_two_at_least(1 << 62), 1 << 62);
+        assert_eq!(power_of_two_at_least((1 << 62) + 1), i64::MAX, "past the largest, where the loop wrapped to 0");
+        assert_eq!(power_of_two_at_least(i64::MAX), i64::MAX);
     }
 
     #[test]

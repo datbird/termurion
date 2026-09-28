@@ -4,6 +4,26 @@
 
 use serde_json::Value;
 
+/// Standard padded base64, as Swift's `base64EncodedString()`.
+pub fn base64(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// A JSON string's value.
+pub fn string(v: &Value) -> Option<String> {
+    v.as_str().map(str::to_string)
+}
+
+/// A call's arguments as a JSON object, else an empty one (Anthropic's `parseArguments`,
+/// `AN:524-531`, and Gemini's `encodedArgs`, `GE:93-104`).
+pub fn arguments(arguments: Option<&str>) -> Value {
+    match arguments.and_then(|a| serde_json::from_str::<Value>(a).ok()) {
+        Some(v @ Value::Object(_)) => v,
+        _ => Value::Object(serde_json::Map::new()),
+    }
+}
+
 /// Compact JSON with every object's keys sorted by their bytes, at every level. Unlike Swift's
 /// encoder it does not escape "/" (Decision 2).
 pub fn sorted(v: &Value) -> String {

@@ -4,7 +4,7 @@
 //! answers. Pure; ports `AITerm/CompletionsOpenAI.swift` (`CO:8-67`), `LLMModernProtocol.swift`
 //! (`MP:9-675`), `O1OpenAI.swift` (`O1:9-46`) and `LegacyOpenAI.swift` (`LO:18-146`).
 
-use crate::ai_json::splice_at_key;
+use crate::ai_json::{base64, splice_at_key};
 use crate::ai_model::{dynamic_models_supported, mime_is_textual};
 use crate::ai_msg::{Attachment, Body, CallId, FunctionCall, Message, Role};
 use crate::ai_sse;
@@ -18,10 +18,6 @@ pub struct ChatCompletions;
 pub struct EarlyO1;
 /// The legacy Completions API (`/v1/completions`): one prompt string.
 pub struct Completions;
-
-fn base64(bytes: &[u8]) -> String {
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
 
 /// Strict base64, as Swift's `Data(base64Encoded:)`; empty when it does not decode.
 fn unbase64(s: &str) -> Vec<u8> {

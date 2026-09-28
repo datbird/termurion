@@ -3,7 +3,7 @@
 //! breakpoint, and the parsers of streamed events and whole answers. Pure; ports
 //! `AITerm/CompletionsAnthropic.swift` (`AN:43-183`, `AN:533-790`, `AN:792-1188`).
 
-use crate::ai_json::{sorted, splice_at_key};
+use crate::ai_json::{arguments, sorted, splice_at_key, string};
 use crate::ai_model::mime_is_textual;
 use crate::ai_msg::{Attachment, Body, CallId, FunctionCall, Message, Role};
 use crate::ai_turn::{max_tokens_for, Build, Dialect, Parsed, TOKEN_LIMIT};
@@ -32,14 +32,6 @@ fn tool_use(call: &FunctionCall, id: &str) -> Value {
 
 fn tool_result(id: &str, output: &str) -> Value {
     json!({"content": output, "tool_use_id": id, "type": "tool_result"})
-}
-
-/// `parseArguments` (`AN:524-531`): the arguments as a JSON object, else an empty one.
-fn arguments(arguments: Option<&str>) -> Value {
-    match arguments.and_then(|a| serde_json::from_str::<Value>(a).ok()) {
-        Some(v @ Value::Object(_)) => v,
-        _ => json!({}),
-    }
 }
 
 /// A file: textual types (SVG included) as text, other images and PDFs as base64 blocks, and
@@ -265,10 +257,6 @@ pub fn mark_cache(messages: &mut Vec<Value>) {
 fn prompt_tokens(usage: &Value) -> Option<i64> {
     let input = usage["input_tokens"].as_i64()?;
     Some(input + usage["cache_read_input_tokens"].as_i64().unwrap_or(0) + usage["cache_creation_input_tokens"].as_i64().unwrap_or(0))
-}
-
-fn string(v: &Value) -> Option<String> {
-    v.as_str().map(str::to_string)
 }
 
 /// The reason of an error event that gives no message.

@@ -277,9 +277,24 @@ enum State {
 }
 
 /// The key a request uses.
-enum Key<'a> {
+#[derive(Debug, PartialEq, Eq)]
+pub enum Key<'a> {
+    /// The App Review key: nothing is contacted.
     Review,
     Use(&'a str),
+}
+
+/// iTerm2's `registration` (`T:83-96`, `T:200-219`), shared by the turn and Test Connection: the
+/// review key wins over everything; then a model that must not receive the vendor key gets the
+/// placeholder; then the given key, when it is not blank. None asks for a key.
+pub fn registration<'a>(url: &str, api: Api, key: Option<&'a Secret>) -> Option<Key<'a>> {
+    if key.is_some_and(|k| k.expose() == REVIEW_KEY) {
+        return Some(Key::Review);
+    }
+    if ai_policy::key_policy(url, api) != KeyPolicy::VendorKey {
+        return Some(Key::Use(SELF_HOSTED_PLACEHOLDER));
+    }
+    key.filter(|k| !k.expose().trim_start().is_empty()).map(|k| Key::Use(k.expose()))
 }
 
 pub struct Turn {
@@ -403,17 +418,9 @@ impl Turn {
         self.send(messages)
     }
 
-    /// iTerm2's `registration` (`T:83-96`, `T:200-219`): the review key wins over everything;
-    /// then a model that must not receive the vendor key gets the placeholder; then the given
-    /// key, when it is not blank.
+    /// The key this turn's requests use (`registration`).
     fn key(&self) -> Option<Key<'_>> {
-        if self.key.as_ref().is_some_and(|k| k.expose() == REVIEW_KEY) {
-            return Some(Key::Review);
-        }
-        if ai_policy::key_policy(&self.model.url, self.model.api) != KeyPolicy::VendorKey {
-            return Some(Key::Use(SELF_HOSTED_PLACEHOLDER));
-        }
-        self.key.as_ref().filter(|k| !k.expose().trim_start().is_empty()).map(|k| Key::Use(k.expose()))
+        registration(&self.model.url, self.model.api, self.key.as_ref())
     }
 
     /// `requestCompletion` (`T:648-704`).
@@ -1311,6 +1318,20 @@ mod tests {
         for secret in ["sk-a", "Bearer mine", "application/json"] {
             assert!(!text.contains(secret), "the request's Debug shows no header value");
         }
+    }
+
+    /// One rule for the turn and Test Connection (final review Minor 1).
+    #[test]
+    fn registration_follows_iterm2() {
+        let (public, private) = ("https://api.openai.com/v1/responses", "http://192.168.0.2:8080/v1/chat/completions");
+        let (sk, blank, review) = (key("sk-a"), key("  "), key(REVIEW_KEY));
+        assert_eq!(registration(public, Api::Responses, Some(&review)), Some(Key::Review));
+        assert_eq!(registration(private, Api::ChatCompletions, Some(&review)), Some(Key::Review), "the review key wins over the placeholder");
+        assert_eq!(registration(private, Api::ChatCompletions, Some(&sk)), Some(Key::Use(SELF_HOSTED_PLACEHOLDER)));
+        assert_eq!(registration(private, Api::ChatCompletions, None), Some(Key::Use(SELF_HOSTED_PLACEHOLDER)), "no prompt for a private host");
+        assert_eq!(registration(public, Api::Responses, Some(&sk)), Some(Key::Use("sk-a")));
+        assert_eq!(registration(public, Api::Responses, Some(&blank)), None);
+        assert_eq!(registration(public, Api::Responses, None), None);
     }
 
     #[test]

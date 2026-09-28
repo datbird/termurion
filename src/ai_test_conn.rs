@@ -7,10 +7,10 @@
 use crate::ai_catalog::{Feature, Model};
 use crate::ai_models::{manual_vendor, Endpoint};
 use crate::ai_msg::{Message, Role};
-use crate::ai_policy::{self, KeyPolicy, SELF_HOSTED_PLACEHOLDER};
+use crate::ai_policy;
 use crate::ai_settings::{Api, Vendor};
 use crate::ai_transport::{self, Call, HttpEvent, Notify, Options, Transport};
-use crate::ai_turn::{self, error_reason, Build, Hosted, Wire, APPLE_UNAVAILABLE, REVIEW_KEY};
+use crate::ai_turn::{self, error_reason, Build, Hosted, Key, Wire, APPLE_UNAVAILABLE, REVIEW_KEY};
 use crate::pwm::Secret;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -128,13 +128,10 @@ impl Tester {
         if self.started() {
             return None;
         }
-        let review = stored.is_some_and(|k| k.expose() == REVIEW_KEY);
-        if !review && ai_policy::key_policy(&self.probe.url, self.probe.api) != KeyPolicy::VendorKey {
-            return self.send(SELF_HOSTED_PLACEHOLDER);
-        }
-        // A registration needs a key that is not blank (`T:83-96`).
-        match stored.filter(|k| !k.expose().trim_start().is_empty()) {
-            Some(key) => self.send(key.expose()),
+        // The turn's `registration`, on the probe's URL and API.
+        match ai_turn::registration(&self.probe.url, self.probe.api, stored) {
+            Some(Key::Review) => self.send(REVIEW_KEY),
+            Some(Key::Use(key)) => self.send(key),
             None => {
                 self.state = State::NeedKey(self.model.vendor);
                 None

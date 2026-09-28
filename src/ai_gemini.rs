@@ -3,7 +3,7 @@
 //! streamed events (each SSE event is a whole response). Pure; ports `AITerm/Gemini.swift`
 //! (`GE:8-479`) and `LLMProvider.url` (`P:18-39`).
 
-use crate::ai_json::splice_at_key;
+use crate::ai_json::{arguments, splice_at_key};
 use crate::ai_model::mime_is_textual;
 use crate::ai_msg::{Attachment, Body, FunctionCall, Message, Role};
 use crate::ai_policy;
@@ -137,14 +137,6 @@ pub fn sanitize(schema: &Value) -> Value {
         }
         Value::Array(items) => Value::Array(items.iter().map(sanitize).collect()),
         other => other.clone(),
-    }
-}
-
-/// `encodedArgs` (`GE:93-104`): the arguments as a JSON object, else an empty one.
-fn arguments(arguments: Option<&str>) -> Value {
-    match arguments.and_then(|a| serde_json::from_str::<Value>(a).ok()) {
-        Some(v @ Value::Object(_)) => v,
-        _ => json!({}),
     }
 }
 

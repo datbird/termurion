@@ -5,11 +5,10 @@
 //! (`RR:1335-1399`, `RR:1507-1520`).
 
 use crate::ai_catalog::Feature;
-use crate::ai_json::{sorted, splice_at_key};
+use crate::ai_json::{base64, sorted, splice_at_key, string};
 use crate::ai_model::{has, mime_is_textual};
 use crate::ai_msg::{Attachment, Body, CallId, FunctionCall, Message, ReasoningItem, Role, Status};
 use crate::ai_turn::{max_tokens_for, Build, Dialect, Hosted, Parsed, ToolDecl};
-use base64::Engine;
 use serde_json::{json, Map, Value};
 
 /// "Something went wrong: <message>", a `response.failed` event's text.
@@ -26,10 +25,6 @@ pub fn refused(text: &str) -> String {
 }
 
 pub struct Responses;
-
-fn base64(bytes: &[u8]) -> String {
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
 
 /// An `input` message item; `content` is a string or a list of content parts.
 fn message_item(role: &str, content: Value) -> Value {
@@ -182,10 +177,6 @@ pub fn status_of(event: &Value) -> Option<Status> {
 fn status_message(status: Status) -> Message {
     let id = uuid::Uuid::new_v4().to_string().to_uppercase();
     Message::new(Some(Role::Assistant), Body::Attachment(Attachment::Status { id, inline: true, status }))
-}
-
-fn string(v: &Value) -> Option<String> {
-    v.as_str().map(str::to_string)
 }
 
 /// Summary texts, the empty ones dropped (`RS:579`, `RR:1375`).
