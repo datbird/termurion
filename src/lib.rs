@@ -204,6 +204,10 @@ pub mod replay_window;
 
 pub mod settings_keys;
 pub mod settings_advanced;
+pub mod advanced_pane;
+pub mod remote_prefs;
+pub mod settings_export;
+pub mod settings_advanced_pane;
 pub mod settings_triggers;
 pub mod settings_lists;
 pub mod settings_arrangements;
@@ -294,3 +298,14 @@ pub mod api_notify;
 pub mod session_env;
 #[cfg(windows)]
 pub mod api_server;
+pub mod ai_settings;
+pub mod ai_catalog;
+pub mod ai_policy;
+pub mod ai_models;
+pub mod ai_keys;
+pub mod ai_gate;
+pub mod ai_prompts;
+pub mod settings_ai;
+pub mod secret_field;
+#[cfg(windows)]
+pub mod ai_key_ui;

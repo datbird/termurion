@@ -1711,7 +1711,9 @@ impl App {
                 return self.composer_advanced_paste_menu();
             }
             composer::Chord::Ai => {
-                self.ask(pane, AI_BAR, composer::AI_LATER, &["OK"], false);
+                if self.ai_check(false) {
+                    self.ask(pane, AI_BAR, composer::AI_LATER, &["OK"], false);
+                }
             }
             composer::Chord::Find | composer::Chord::Close => return false,
             composer::Chord::History => {
@@ -1775,7 +1777,9 @@ impl App {
                 let origin = self.gpu.as_ref().and_then(|g| g.window.inner_position().ok()).unwrap_or_default();
                 self.composer_windows.help_at = Some((origin.x as f64 + f64::from(l.help.x + l.help.w / 2.0), origin.y as f64 + f64::from(l.help.y)));
             } else if ai && l.ai.contains(x, y) {
-                self.ask(pane, AI_BAR, composer::AI_LATER, &["OK"], false);
+                if self.ai_check(false) {
+                    self.ask(pane, AI_BAR, composer::AI_LATER, &["OK"], false);
+                }
             } else if l.handle.contains(x, y) {
                 self.drag = Drag::Composer { pane, kind: ComposerDrag::Resize { start_y: y, start_h: l.panel.h / scale } };
             } else if l.text.contains(x, y) {

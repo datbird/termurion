@@ -64,9 +64,10 @@ impl Store {
         Store { default_guid: p.guid(), profiles: vec![p], path: path.to_path_buf(), sessions: Vec::new() }
     }
 
-    pub fn save(&self) -> Result<(), String> {
-        let profile = self
-            .profiles
+    /// The profiles as the file holds them: values that differ from the defaults, plus Guid and
+    /// Name.
+    pub fn file_profiles(&self) -> Vec<BTreeMap<String, Value>> {
+        self.profiles
             .iter()
             .map(|p| {
                 p.values
@@ -77,7 +78,11 @@ impl Store {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect()
             })
-            .collect();
+            .collect()
+    }
+
+    pub fn save(&self) -> Result<(), String> {
+        let profile = self.file_profiles();
         let text = toml::to_string(&FileFormat { default: self.default_guid.clone(), profile })
             .map_err(|e| format!("saving profiles: {e}"))?;
         if let Some(dir) = self.path.parent() {

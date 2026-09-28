@@ -336,7 +336,8 @@ pub fn profile_row(ui: &mut egui::Ui, guid: &str, p: &mut Profile, st: &mut Hotk
     let mut on = p.bool("Has Hotkey");
     ui.horizontal(|ui| {
         ui.label("Hotkey window:");
-        if ui.checkbox(&mut on, "A hotkey opens a dedicated window with this profile").changed() {
+        let check = ui.checkbox(&mut on, "A hotkey opens a dedicated window with this profile");
+        if check.changed() {
             // Turning it on with no hotkey yet opens the sheet instead (iTerm2).
             if on && !Prefs::from_profile(p).assigned() {
                 st.sheet = Some(Sheet::edit(guid, p));
@@ -344,6 +345,11 @@ pub fn profile_row(ui: &mut egui::Ui, guid: &str, p: &mut Profile, st: &mut Hotk
                 p.set("Has Hotkey", Value::Boolean(on));
                 changed = true;
             }
+        }
+        // `ProfilesKeysPreferencesViewController.m:196-198`: marked while Has Hotkey is on.
+        let marked = crate::schema::find("Has Hotkey").is_some_and(|s| !crate::settings_ui::profile_is_default(p, s, "Has Hotkey"));
+        if crate::settings_keys::indicate_non_default() && marked {
+            crate::settings_keys::non_default_bar(ui, check.rect, ui.is_enabled());
         }
         if ui.add_enabled(on, egui::Button::new("Configure Hotkey Window")).clicked() {
             st.sheet = Some(Sheet::edit(guid, p));

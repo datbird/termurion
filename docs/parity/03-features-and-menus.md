@@ -189,7 +189,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Session > Open Command History... | Shift+Cmd+; | Opens the Toolbelt command history panel/popup. (milestone 9) | have, milestone 9c |
 | Session > Open Recent Directories... | Opt+Cmd+/ | Opens the Toolbelt recent directories panel/popup. (milestone 9) | have, milestone 9c |
 | Session > Open Paste History... | Shift+Cmd+H | Opens the paste history popup for re-pasting earlier clipboard entries. (milestone 9) | have, milestone 9b |
-| Session > Open AI Chat... | Ctrl+Cmd+Y | Opens an AI chat window scoped to the current session. (milestone 12) | missing |
+| Session > Open AI Chat... | Ctrl+Shift+Cmd+Y | Opens an AI chat window scoped to the current session. (milestone 12) | missing |
 | Session > Triggers > Add Trigger... | no shortcut | Adds a new trigger rule, a regex matched action on output, for the profile. (milestone 6) | have, milestone 6a |
 | Session > Triggers > Edit Triggers | no shortcut | Opens the trigger list editor for the current profile. (milestone 6) | have, milestone 6a |
 | Session > Triggers > Enable Triggers in Interactive Apps | no shortcut | Allows triggers to fire even while a full-screen interactive app such as vim is running. (milestone 6) | have, milestone 6a |
@@ -316,8 +316,8 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Window > Resize Window > Decrease Width | no shortcut | Shrinks the window width by one column via keyboard. (milestone 7) | have, milestone 7a |
 | Window > Resize Window > Increase Width | no shortcut | Grows the window width by one column via keyboard. (milestone 7) | have, milestone 7a |
 | Window > Password Manager | Opt+Cmd+F | Opens the Password Manager window for storing and injecting credentials. (milestone 10) | have | Milestone 10b: Win+Alt+F, one window per terminal window, owned by it; opens for the focused (or given) session, unburying and revealing it first. |
-| Window > AI Chats | Cmd+Y | Opens the window listing all AI chat conversations. (milestone 12) | missing |
-| Window > Cockpit | Opt+Cmd+C | Opens the Cockpit window, a command and session overview dashboard. (milestone 12) | missing |
+| Window > AI Chats | Shift+Cmd+Y | Opens the window listing all AI chat conversations. (milestone 12) | missing |
+| Window > Cockpit | Opt+Shift+Cmd+C | Opens the Cockpit, a floating panel listing every session by status, window or workgroup, with a composer that types into chosen sessions; it has no LLM and is not gated on EnableAI. (milestone 12) | missing |
 | Window > Pin Hotkey Window | Shift+Cmd+- | Pins the hotkey (Quake-style dropdown) window so it stays open. (milestone 7) | have |
 | Window > Bring All To Front | no shortcut | Brings all of the app's windows to the front. | have |
 
@@ -510,7 +510,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Toolbelt | Paste History tool | Lists recently pasted text snippets for reuse, disabled automatically when secure keyboard entry is on. | have | Milestone 9j: oldest first, newlines turned to spaces, cut to 256 characters with no ellipsis; no search field, no help button; Clear asks "Erase Paste History"; double-click sets the clipboard and pastes. Ruling: the secure-keyboard warning never shows (Windows has no Secure Keyboard Entry). |
 | Toolbelt | Profiles tool | Lists all saved profiles with buttons to open one in a new tab, window, or split. | have | Milestone 9j: search field with tag:/name:/command: tokens (command: also matches the profile name, per source), multi-select rows with tags on a second line, no shortcut column, no tags pane; New Tab/New Window/New Horizontal Split/New Vertical Split/Open popup, each disabled with nothing selected; double-click opens a split/window/tab per Ctrl/Option/Shift, for every selected profile. Source departure, kept: choosing a popup item opens the selected profiles at once, not only remembers the pick. |
 | Toolbelt | Snippets tool | Lists saved reusable text snippets to insert into the session. | have | Milestone 9j: search field and Help; tree with untagged snippets before folders, folders sorted case-insensitively, folders start collapsed and not saved; Send/Advanced Paste on the left, Edit/Remove/Add on the right, each needing their own selection counts; Option wins over Shift on double-click, Send and Return (Advanced Paste vs Composer, which shows the milestone 9h refusal text until 9l); Remove and Delete push undo, the root-only drag reorder does not. Kept iTerm2 bug: a root reorder passes the outline child index straight into the unfiltered list. |
-| Toolbelt | Codecierge tool | An AI assistant panel that suggests or walks through commands, part of iTerm2's AI features. | partial | Milestone 9k: the onboarding panel only ("Get Started" / "Reveal Setting"); GenerativeAIAllowed off shows the admin-disabled text, otherwise EnableAI is always off so it shows "You must enable AI features..." with an info bar saying AI comes in milestone 12. The AI features themselves are milestone 12. |
+| Toolbelt | Codecierge tool | An AI assistant panel that suggests or walks through commands, part of iTerm2's AI features. | partial | Milestone 9k: the onboarding panel only ("Get Started" / "Reveal Setting"). Milestone 12a: GenerativeAIAllowed off shows the admin-disabled text; EnableAI off shows "You must enable AI features..." and Reveal Setting opens Settings > General > AI; with it on, Get Started asks the gate (and the per-host consent), then an info bar says AI comes in milestone 12. The AI features themselves are milestone 12e. |
 | Toolbelt | Dynamic web tools | User-added tools that embed an arbitrary web page inside the toolbelt as a persistent panel. | partial | Milestone 11c: RegisterTool answers iTerm2's statuses (REQUEST_MALFORMED, PERMISSION_DENIED for a built-in name) and writes NoSyncDynamicTools; the tool joins the Toolbelt menu and toggles like iTerm2's, but a shown tool draws nothing (Decision: web views deferred to milestone 13, which hosts WebView2). |
 
 ### triggers
@@ -682,10 +682,11 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | AI features | Terminal hard rules / guardrails | Hard-coded limits on what an AI agent is allowed to do to the terminal, regardless of provider. | missing | |
 | AI features | Agentic tool calling into the terminal | Exposes tools letting the AI check prompt state, run commands, read command history/output/screen contents, get terminal size, detect SSH, get cwd, set clipboard, insert text at cursor, read a man page, create a file, search/load a web page, and restart the session. | missing | |
 | AI features | Streaming responses | Chat responses stream token by token instead of waiting for the full reply. | missing | |
-| AI features | Custom API headers / keys | Lets the user supply custom auth headers and API keys per provider. | missing | |
-| AI features | Withheld-key advice | Warns the user when no API key is configured and explains how to add one. | missing | |
+| AI features | Custom API headers / keys | Lets the user supply custom auth headers and API keys per provider. | have | Milestone 12a: custom headers per manual model in the model editor (RFC 7230 names, iTerm2's refusals); API keys per vendor in Windows Credential Manager under `TandemAI/` (ruling 3). |
+| AI features | Withheld-key advice | Warns the user when no API key is configured and explains how to add one. | have | Milestone 12a: the pure advice (a local endpoint gets no vendor key; a credential custom header suppresses the hint) and the self-hosted key hint in Settings; the advice on a failed request shows from 12b. |
 | AI features | Chat history persistence | Chats and messages are stored in a local database and browsable later. | missing | |
 | AI features | In-chat find | Search within AI chat transcripts. | missing | |
+| AI features | Orchestration mode | An AI chat that drives many sessions: the model asks to switch it on (request_orchestration_enable), then gets the orchestration prompt, 16 orchestration tools and session_* mirrors. | missing | Milestone 12f; the workgroup-only tools wait for the milestone 13 Workgroups sub-part. |
 
 ### Python API
 | Subsystem | Feature | What it does | Tandem status | Windows note |

@@ -170,6 +170,10 @@ impl App {
 
     fn toggle_setting(&mut self, json: &str) {
         let Some((key, is_profile)) = toggle_target(json) else { return };
+        // A hand-edited or imported binding never flips an AI consent switch.
+        if !crate::ai_settings::toggle_allowed(&key) {
+            return;
+        }
         if is_profile {
             let Some(guid) = self.focused_pane_id().and_then(|id| self.panes.get(&id)).map(|p| self.store.shared_guid(&p.profile)) else { return };
             if let Some(p) = self.store.get_mut(&guid) {

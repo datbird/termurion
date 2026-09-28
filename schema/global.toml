@@ -310,16 +310,16 @@ help = "Maximum number of bytes of selection to provide to Python API.\nA large 
 key = "disablePotentiallyInsecureEscapeSequences"
 tab = "Advanced"
 section = "General"
-label = "Disable potentially insecure escape sequences"
+label = "Disable potentially insecure escape sequences."
 type = "bool"
 default = false
-help = "Ignores escape sequences that can change settings, reach the clipboard, save files, or report window and screen details (iTerm2's trust gate)."
+help = "Disable potentially insecure escape sequences.\nSome features of Tandem expand the surface area for security issues. Consider turning this on when viewing untrusted content. The following custom escape sequences will be disabled: RemoteHost, StealFocus, CurrentDir, SetProfile, CopyToClipboard, EndCopy, File, SetBackgroundImageFile, OSC 6\u2019s proxy icon-changing feature. The following DEC sequences are disabled: DECRQCRA. The following xterm extensions are disabled: Window Title Reporting, Icon Title Reporting. This will break displaying inline images, file download, some shell integration features, and other features."
 
 [[setting]]
 key = "onePasswordAccount"
 tab = "Advanced"
 section = "General"
-label = "1Password account name"
+label = "1Password account name."
 type = "string"
 default = ""
 help = "1Password account name.\nThis is used if you\u2019ve enabled the 1Password integration in the password manager. Use `op account list` to get the list of accounts. This can be an account shorthand, sign-in address, account ID, or user ID."
@@ -327,38 +327,38 @@ help = "1Password account name.\nThis is used if you\u2019ve enabled the 1Passwo
 [[setting]]
 key = "defaultWideMode"
 tab = "Advanced"
-section = "General"
-label = "Rendered documents start in Wide mode"
+section = "Terminal"
+label = "When rendering natively, use wide mode by default?"
 type = "bool"
 default = false
-help = "Documents shown rendered in place (Render Selection Natively, OSC 1337 Block render=1, File= text) start without wrapping, scrolled sideways."
+help = "When rendering natively, use wide mode by default?"
 
 [[setting]]
 key = "nativeRenderingCSSDark"
 tab = "Advanced"
-section = "General"
-label = "Rendered code theme (dark background)"
+section = "Drawing"
+label = "Path to CSS file to customize native drawing (for dark background colors)."
 type = "string"
 default = ""
-help = "A CSS file of highlight.js class colors for documents shown rendered in place on a dark background. ${fg}, ${bg}, and ${red} and the other ANSI color names fill in from the profile. Empty: the built-in theme."
+help = "Path to CSS file to customize native drawing (for dark background colors)."
 
 [[setting]]
 key = "nativeRenderingCSSLight"
 tab = "Advanced"
-section = "General"
-label = "Rendered code theme (light background)"
+section = "Drawing"
+label = "Path to CSS file to customize native drawing (for light background colors)."
 type = "string"
 default = ""
-help = "As the dark one, for a light background."
+help = "Path to CSS file to customize native drawing (for light background colors)."
 
 [[setting]]
 key = "screenshotSaveLocation"
 tab = "Advanced"
 section = "General"
-label = "Screenshot save folder"
+label = "Folder where the \u201cSave\u201d button in the screenshot window writes files."
 type = "string"
 default = ""
-help = "Folder where Save in the Make Screenshot panel writes files (a ~ start means your user folder). Empty or not a folder: the Desktop."
+help = "Folder where the \u201cSave\u201d button in the screenshot window writes files.\nLeave empty to save to the Desktop. The \u201cSave As\u2026\u201d button ignores this and always prompts for a location."
 
 [[setting]]
 key = "ShowNewOutputIndicator"
@@ -372,29 +372,29 @@ help = "A tab whose session printed something you have not looked at shows the n
 [[setting]]
 key = "silentUserNotifications"
 tab = "Advanced"
-section = "Notifications"
-label = "Notifications make no sound"
+section = "General"
+label = "System notifications should be silent."
 type = "bool"
 default = false
-help = "Notifications from Tandem show without the Windows notification sound."
+help = "System notifications should be silent."
 
 [[setting]]
 key = "simpleNotifications"
 tab = "Advanced"
-section = "Notifications"
-label = "Escape-sequence notifications show only their message"
+section = "General"
+label = "Omit session identifier from notifications."
 type = "bool"
 default = false
-help = "An OSC 9 or OSC 1337 notification without a title shows only its message, without the session name and tab number."
+help = "Omit session identifier from notifications.\nWhen enabled, notifications will only show the message without the session name and tab number prefix."
 
 [[setting]]
 key = "sessionEndMessageText"
 tab = "Advanced"
-section = "Notifications"
-label = "Session Ended notification title"
+section = "Session"
+label = "Text displayed when a session ends. Leave empty to use default."
 type = "string"
 default = ""
-help = "The title of the notification that a session ended. Empty: \"Session Ended\"."
+help = "Text displayed when a session ends. Leave empty to use default."
 
 [[setting]]
 key = "ShowSessionStatusInTabSubtitle"
@@ -426,43 +426,43 @@ help = "Shell > Print leaves out text and background colors."
 [[setting]]
 key = "fileDropCoprocess"
 tab = "Advanced"
-section = "General"
-label = "Coprocess for dropped files"
+section = "Terminal"
+label = "When files are dropped into a terminal window, execute a silent coprocess."
 type = "string"
 default = ""
-help = "A command run as a silent coprocess when files are dropped on a session; \\(filenames) becomes the dropped paths. Empty: the paths are pasted."
+help = "When files are dropped into a terminal window, execute a silent coprocess.\nThis is an interpolated string. Use \\(filenames) to reference the shell-quoted, space-delimited full paths to the dropped files. If this preference is empty, the filenames get pasted instead."
 
 [[setting]]
 key = "disableTopRightIndicators"
 tab = "Advanced"
-section = "General"
-label = "Hide the indicators at the top right of a session"
+section = "Drawing"
+label = "Disable indicator icons that appear in the top right of a session?"
 type = "bool"
 default = false
-help = "Hides the icons in a session's top-right corner, such as the one that shows a coprocess is running."
+help = "Disable indicator icons that appear in the top right of a session?\nThis includes the following indicators: maximized pane, broadcast input, coprocess running, alert on next mark, output suppression, zoom, copy mode, and debug logging."
 
 [[setting]]
 key = "showAutomaticProfileSwitchingBanner"
 tab = "Advanced"
-section = "General"
-label = "Say when Automatic Profile Switching changes the profile"
+section = "Session"
+label = "Show a \u201cSwitched to profile\u201d message when Automatic Profile Switching activates."
 type = "bool"
 default = true
-help = "Shows \"Switched to profile\" when a session's profile changes because of an Automatic Profile Switching rule."
+help = "Show a \u201cSwitched to profile\u201d message when Automatic Profile Switching activates."
 
 [[setting]]
 key = "preserveFontSizeOnAutomaticProfileSwitch"
 tab = "Advanced"
-section = "General"
-label = "Keep the text size when Automatic Profile Switching changes the profile"
+section = "Session"
+label = "Preserve font zoom level when Automatic Profile Switching changes profiles."
 type = "bool"
 default = true
-help = "A session that was made bigger or smaller keeps that change when its profile switches."
+help = "Preserve font zoom level when Automatic Profile Switching changes profiles."
 
 [[setting]]
 key = "NoSyncEnableAutomaticProfileSwitchingLogging"
-tab = "Advanced"
-section = "General"
+tab = "Stored"
+section = "Script Console"
 label = "Write Automatic Profile Switching debug logs"
 type = "bool"
 default = false
@@ -480,11 +480,11 @@ help = "Window titles start with the window's number (1, 2, ...), which Alt+Win+
 [[setting]]
 key = "openProfilesInNewWindow"
 tab = "Advanced"
-section = "General"
-label = "Profiles menu opens new windows"
+section = "Tabs"
+label = "Choosing a profile from the \u201cProfiles\u201d menu opens a new window."
 type = "bool"
 default = false
-help = "A profile picked in the Profiles menu opens in a new window, and with Alt held in a new tab (the reverse of the usual)."
+help = "Choosing a profile from the \u201cProfiles\u201d menu opens a new window.\nWith Alt held, the profile opens in a new tab instead (the reverse of the usual). A change here takes effect at once."
 
 [[setting]]
 key = "WindowPlacement"
@@ -517,11 +517,11 @@ help = "Closing a tab or window with more than one running session asks first."
 [[setting]]
 key = "moveLeftAfterClosingTab"
 tab = "Advanced"
-section = "General"
-label = "Select the tab to the left after closing a tab"
+section = "Tabs"
+label = "Select the tab to the left when closing a tab?"
 type = "bool"
 default = false
-help = "After the selected tab closes, the tab to its left is selected instead of the one to its right."
+help = "Select the tab to the left when closing a tab?\nIf disabled, the tab to the right of the closing tab will be selected."
 
 [[setting]]
 key = "PromptOnQuit"
@@ -647,43 +647,43 @@ help = "Tandem looks for Python API scripts in this folder instead of %APPDATA%\
 key = "openNewWindowAtStartup"
 tab = "Advanced"
 section = "General"
-label = "Open a new window when Tandem starts"
+label = "Open a window at startup?"
 type = "bool"
 default = true
-help = "Tandem opens a terminal window at launch unless the Startup settings say otherwise."
+help = "Open a window at startup?\nThis is useful if you wish to use the system window restoration settings but not create a new window if none would be restored."
 
 [[setting]]
 key = "runJobsInServers"
 tab = "Advanced"
 section = "Session"
-label = "Enable session restoration"
+label = "Enable session restoration."
 type = "bool"
 default = true
-help = "Session restoration runs jobs in a separate process (tandem-host). They survive crashes, force quits, and upgrades. You must restart Tandem for this change to take effect."
+help = "Enable session restoration.\nSession restoration runs jobs in a separate process (tandem-host). They will survive crashes, force quits, and upgrades.\nYou must restart Tandem for this change to take effect."
 
 [[setting]]
 key = "killJobsInServersOnQuit"
 tab = "Advanced"
 section = "Session"
-label = "Quit ends all running jobs"
+label = "User-initiated Quit (Win+Q) of Tandem will kill all running jobs."
 type = "bool"
 default = true
-help = "A Quit you choose (Cmd+Q) ends all running jobs. Applies only when session restoration is on."
+help = "User-initiated Quit (Win+Q) of Tandem will kill all running jobs.\nApplies only when session restoration is on."
 
 [[setting]]
 key = "showSessionRestoredBanner"
 tab = "Advanced"
 section = "Session"
-label = "Show the Session Contents Restored banner"
+label = "When restoring a session without restoring a running job, draw a banner saying \u201cSession Contents Restored\u201d below the restored contents."
 type = "bool"
 default = true
-help = "When restoring a session without restoring a running job, draw a banner saying \"Session Contents Restored\" below the restored contents."
+help = "When restoring a session without restoring a running job, draw a banner saying \u201cSession Contents Restored\u201d below the restored contents."
 
 [[setting]]
 key = "composerClearSequence"
 tab = "Advanced"
 section = "Session"
-label = "Hex codes to send to clear the command line when entering the composer"
+label = "Hex codes to send to clear the command line when entering the composer."
 type = "string"
 default = "0x15 0x0b"
 help = "Hex codes to send to clear the command line when entering the composer.\n0x15 is ^U, 0x0b is ^K."
@@ -692,7 +692,7 @@ help = "Hex codes to send to clear the command line when entering the composer.\
 key = "alwaysUseStatusBarComposer"
 tab = "Advanced"
 section = "Session"
-label = "Use the status bar composer when a status bar is present"
+label = "Temporarily add a composer to the status bar instead of opening the large composer view when a status bar is present."
 type = "bool"
 default = false
 help = "Temporarily add a composer to the status bar instead of opening the large composer view when a status bar is present."
@@ -701,7 +701,7 @@ help = "Temporarily add a composer to the status bar instead of opening the larg
 key = "timeoutForDaemonAttachment"
 tab = "Advanced"
 section = "Session"
-label = "Seconds to wait for the session host at startup"
+label = "How long to wait when trying to attach to the session host at startup when restoring windows (in seconds)?"
 type = "float"
 default = 10.0
 help = "How long to wait when trying to attach to the session host at startup when restoring windows (in seconds)?"
@@ -737,7 +737,7 @@ help = "Convert italics to reverse video in tmux integration, even when TERM mat
 key = "echoProbeDuration"
 tab = "Advanced"
 section = "Terminal"
-label = "Seconds to wait while testing if echo is on"
+label = "Amount of time to wait while testing if echo is on (seconds)."
 type = "float"
 default = 0.5
 help = "Amount of time to wait while testing if echo is on (seconds).\nThis is used by the password manager to ensure you're at a password prompt. Set to 0 to disable echo probe."
@@ -746,7 +746,7 @@ help = "Amount of time to wait while testing if echo is on (seconds).\nThis is u
 key = "disablePasswordManagerAnimations"
 tab = "Advanced"
 section = "Terminal"
-label = "Disable animations for showing/hiding password manager"
+label = "Disable animations for showing/hiding password manager."
 type = "bool"
 default = false
 help = "Disable animations for showing/hiding password manager."
@@ -771,7 +771,7 @@ help = "How long (seconds) terminal echo must remain disabled before Tandem trea
 
 [[setting]]
 key = "RequireAuthenticationToOpenPasswordManager"
-tab = "Advanced"
+tab = "Stored"
 section = "Password Manager"
 label = "Require authentication to open the password manager"
 type = "bool"
@@ -780,7 +780,7 @@ help = "Asks for Windows Hello (or your Windows password) before the password ma
 
 [[setting]]
 key = "RequireAuthenticationAfterScreenLocks"
-tab = "Advanced"
+tab = "Stored"
 section = "Password Manager"
 label = "Require authentication after the screen locks"
 type = "bool"
@@ -789,7 +789,7 @@ help = "Locking the screen ends the password manager's authentication, and close
 
 [[setting]]
 key = "RequireAuthenticationOnEveryPasswordManagerOpen"
-tab = "Advanced"
+tab = "Stored"
 section = "Password Manager"
 label = "Require authentication on every open"
 type = "bool"
@@ -800,7 +800,7 @@ help = "Asks again each time the password manager opens, instead of once until T
 key = "restoreWindowContents"
 tab = "Advanced"
 section = "Terminal"
-label = "Restore window contents at startup"
+label = "Restore window contents at startup."
 type = "bool"
 default = true
 help = "Restore window contents at startup."
@@ -809,16 +809,16 @@ help = "Restore window contents at startup."
 key = "maxHistoryLinesToRestore"
 tab = "Advanced"
 section = "Terminal"
-label = "Maximum number of lines of history to restore"
+label = "Maximum number of lines of history to restore."
 type = "int"
 default = 20000
-help = "When the app is relaunched, only the last N lines of history are restored to avoid making launch too slow. If you reduce this number, existing sessions won't be affected until their history is cleared."
+help = "Maximum number of lines of history to restore.\nWhen the app is relaunched, only the last N lines of history are restored to avoid making launch too slow. If you reduce this number, existing sessions won't be affected until their history is cleared."
 
 [[setting]]
 key = "restoreWindowsWithinScreens"
 tab = "Advanced"
 section = "Windows"
-label = "Keep restored windows within the displays"
+label = "When restoring a window arrangement, ensure windows are entirely within the bounds of the current displays."
 type = "bool"
 default = true
 help = "When restoring a window arrangement, ensure windows are entirely within the bounds of the current displays."
@@ -863,10 +863,10 @@ help = "The app hotkey's modifiers (iTerm2's flags; Command is Win, Option is Al
 key = "hotkeyTermAnimationDuration"
 tab = "Advanced"
 section = "Hotkey"
-label = "Hotkey window animation seconds"
+label = "Duration in seconds of the hotkey window animation."
 type = "float"
 default = 0.25
-help = "Duration in seconds of the hotkey window animation. Warning: reducing this value may cause problems if you have multiple displays."
+help = "Duration in seconds of the hotkey window animation.\nWarning: reducing this value may cause problems if you have multiple displays."
 
 [[setting]]
 key = "OpenQuicklyHotkeyCode"
@@ -899,7 +899,7 @@ help = "The Open Quickly hotkey's modifiers (iTerm2's flags; Command is Win, Opt
 key = "openQuicklyAnimationDuration"
 tab = "Advanced"
 section = "Hotkey"
-label = "Open Quickly animation duration"
+label = "Duration in seconds of the Open Quickly window height animation."
 type = "float"
 default = 0.12
 help = "Duration in seconds of the Open Quickly window height animation.\nSet to 0 to disable the animation."
@@ -908,7 +908,7 @@ help = "Duration in seconds of the Open Quickly window height animation.\nSet to
 key = "hotKeyDoubleTapMaxDelay"
 tab = "Advanced"
 section = "Hotkey"
-label = "Double-tap maximum delay"
+label = "The maximum amount of time allowed between presses of a modifier key when performing a modifier double-tap."
 type = "float"
 default = 0.3
 help = "The maximum amount of time allowed between presses of a modifier key when performing a modifier double-tap."
@@ -917,7 +917,7 @@ help = "The maximum amount of time allowed between presses of a modifier key whe
 key = "hotKeyDoubleTapMinDelay"
 tab = "Advanced"
 section = "Hotkey"
-label = "Double-tap minimum delay"
+label = "The minimum amount of time required between presses of a modifier key when performing a modifier double-tap."
 type = "float"
 default = 0.01
 help = "The minimum amount of time required between presses of a modifier key when performing a modifier double-tap."
@@ -988,7 +988,7 @@ help = "When pasting more than this many characters, require confirmation.\nSet 
 [[setting]]
 key = "EscapeWithQuotes"
 tab = "Advanced"
-section = "Pasteboard"
+section = "Experimental Features"
 label = "Escape file names with single quotes instead of backslashes."
 type = "bool"
 default = false
@@ -997,7 +997,7 @@ help = "Escape file names with single quotes instead of backslashes.\nThis is in
 [[setting]]
 key = "StripZeroWidthFormatCharactersOnPaste"
 tab = "Advanced"
-section = "Pasteboard"
+section = "Terminal"
 label = "Strip zero-width bidi/format characters when pasting?"
 type = "bool"
 default = false
@@ -1005,8 +1005,8 @@ help = "Strip zero-width bidi/format characters when pasting?\nCharacters like t
 
 [[setting]]
 key = "PasteTabToStringTabStopSize"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Paste"
 label = "The number of spaces for each tab when a paste converts tabs to spaces."
 type = "int"
 default = 4
@@ -1058,6 +1058,24 @@ default = false
 help = "Suppress warning about pasting a single line ending in a newline when at the shell prompt.\nThis requires Shell Integration to be installed."
 
 [[setting]]
+key = "LoadPrefsFromCustomFolder"
+tab = "General"
+section = "Settings"
+label = "Load settings from a custom folder or URL"
+type = "bool"
+default = false
+help = "Load settings from a custom folder or URL"
+
+[[setting]]
+key = "PrefsCustomFolder"
+tab = "General"
+section = "Settings"
+label = "Custom folder"
+type = "string"
+default = ""
+help = "The folder (or http:// or https:// URL) holding tandem-settings.toml. Network paths are not supported."
+
+[[setting]]
 key = "SavePasteHistory"
 tab = "General"
 section = "Settings"
@@ -1073,7 +1091,7 @@ section = "Pasteboard"
 label = "Number of entries to save in Paste History."
 type = "int"
 default = 20
-help = "Number of entries to save in Paste History."
+help = "Number of entries to save in Paste History.\n"
 
 [[setting]]
 key = "IncludePasteHistoryInAdvancedPaste"
@@ -1088,15 +1106,15 @@ help = "Include paste history in the advanced paste menu."
 key = "AdvancedPasteWaitsForPromptByDefault"
 tab = "Advanced"
 section = "Pasteboard"
-label = "Should Advanced Paste automatically enable \"Wait for shell prompt before pasting each line\" by default when shell integration is detected?"
+label = "Should Advanced Paste automatically enable \u201cWait for shell prompt before pasting each line\u201d by default when shell integration is detected?"
 type = "bool"
 default = true
-help = "Should Advanced Paste automatically enable \"Wait for shell prompt before pasting each line\" by default when shell integration is detected?"
+help = "Should Advanced Paste automatically enable \u201cWait for shell prompt before pasting each line\u201d by default when shell integration is detected?"
 
 [[setting]]
 key = "PasteSpecialChunkSize"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: chunk size"
 type = "int"
 default = 1024
@@ -1104,8 +1122,8 @@ help = "Advanced Paste's chunk size, remembered."
 
 [[setting]]
 key = "PasteSpecialChunkDelay"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: chunk delay"
 type = "float"
 default = 0.01
@@ -1113,8 +1131,8 @@ help = "Advanced Paste's delay between chunks, remembered."
 
 [[setting]]
 key = "NumberOfSpacesPerTab"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: spaces per tab"
 type = "int"
 default = 4
@@ -1122,8 +1140,8 @@ help = "Advanced Paste's spaces for each tab, remembered."
 
 [[setting]]
 key = "TabTransform"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: tab transform"
 type = "int"
 default = 0
@@ -1131,8 +1149,8 @@ help = "Advanced Paste's tab choice (0 keep, 1 spaces, 2 escape with ^V), rememb
 
 [[setting]]
 key = "EscapeShellCharsWithBackslash"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: escape shell characters with backslash"
 type = "bool"
 default = false
@@ -1140,8 +1158,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "ConvertUnicodePunctuation"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: convert Unicode punctuation"
 type = "bool"
 default = false
@@ -1149,8 +1167,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "ConvertDosNewlines"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: convert DOS newlines"
 type = "bool"
 default = true
@@ -1158,8 +1176,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "RemoveControlCodes"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: remove control codes"
 type = "bool"
 default = true
@@ -1167,8 +1185,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "BracketedPasteMode"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: use bracketed paste mode"
 type = "bool"
 default = true
@@ -1176,8 +1194,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "PasteSpecialUseRegexSubstitution"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: use regex substitution"
 type = "bool"
 default = false
@@ -1185,8 +1203,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "PasteSpecialRegex"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: regex"
 type = "string"
 default = ""
@@ -1194,8 +1212,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "PasteSpecialSubstitution"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: substitution"
 type = "string"
 default = ""
@@ -1204,20 +1222,20 @@ help = "Remembered by Advanced Paste."
 [[setting]]
 key = "CommandHistoryUsePower"
 tab = "Advanced"
-section = "Session"
-label = "Command history's use count weight (the power of log10(10 + uses)) in its ranking."
+section = "General"
+label = "When sorting command history for auto command completion: how much should number of uses of a command contribute to its score? A higher score moves the command closer to the top of the list."
 type = "float"
 default = 3.0
-help = "Command history's use count weight (the power of log10(10 + uses)) in its ranking."
+help = "When sorting command history for auto command completion: how much should number of uses of a command contribute to its score? A higher score moves the command closer to the top of the list.\nUse 0 to ignore number of uses."
 
 [[setting]]
 key = "CommandHistoryAgePower"
 tab = "Advanced"
-section = "Session"
-label = "Command history's age weight (the power of log10(10 + age in seconds)) in its ranking."
+section = "General"
+label = "When sorting command history for auto command completion: how much should the time-since-last-use of a command contribute to its score? A higher score moves the command closer to the top of the list."
 type = "float"
 default = 1.0
-help = "Command history's age weight (the power of log10(10 + age in seconds)) in its ranking."
+help = "When sorting command history for auto command completion: how much should the time-since-last-use of a command contribute to its score? A higher score moves the command closer to the top of the list.\nUse 0 to ignore time since last use."
 
 [[setting]]
 key = "AutoCommandHistory"
@@ -1231,7 +1249,7 @@ help = "Shows the commands from the shell history that start with what is typed 
 [[setting]]
 key = "AutocompleteMaxOptions"
 tab = "Advanced"
-section = "Session"
+section = "General"
 label = "Number of autocomplete options to present."
 type = "int"
 default = 20
@@ -1240,7 +1258,7 @@ help = "Number of autocomplete options to present.\nA value less than 100 is rec
 [[setting]]
 key = "clippingSeparator"
 tab = "Advanced"
-section = "Session"
+section = "Pasteboard"
 label = "Separator inserted between multiple clippings when sending or copying them."
 type = "string"
 default = "\\n--\\n"
@@ -1250,14 +1268,14 @@ help = "Separator inserted between multiple clippings when sending or copying th
 key = "NoSyncSuppressBroadcastInputWarning"
 tab = "Advanced"
 section = "Warnings"
-label = "Suppress warning about broadcasting input"
+label = "Suppress warning about broadcasting input."
 type = "bool"
 default = false
 help = "Suppress warning about broadcasting input."
 
 [[setting]]
 key = "NoSyncTmuxHung"
-tab = "Advanced"
+tab = "Stored"
 section = "Warnings"
 label = "Suppress warning about a slow tmux response"
 type = "bool"
@@ -1271,11 +1289,11 @@ section = "Tmux Integration"
 label = "Tolerate unrecognized commands from server."
 type = "bool"
 default = false
-help = "If disabled, an unknown command from tmux (such as output from ssh or wall) will end the session. Turning this off helps detect dead ssh sessions."
+help = "Tolerate unrecognized commands from server.\nIf disabled, an unknown command from tmux (such as output from ssh or wall) will end the session. Turning this off helps detect dead ssh sessions."
 
 [[setting]]
 key = "Use background pattern indicator"
-tab = "Advanced"
+tab = "Stored"
 section = "Broadcast"
 label = "Show Background Pattern Indicator"
 type = "bool"
@@ -1318,7 +1336,7 @@ label = "Where should new tmux windows not created by Tandem open?"
 type = "enum"
 default = 1
 choices = [ { value = 0, label = "New window" }, { value = 1, label = "Focused window" }, { value = 2, label = "Topmost session window" } ]
-help = "\"Focused window\" (the default) attaches the window as a tab of whichever Tandem window currently has keyboard focus, unless it has tabs of another tmux session."
+help = "Where should new tmux windows not created by Tandem open?\n\u201cFocused window\u201d (the default) attaches the window as a tab of whichever Tandem window currently has keyboard focus. \u201cTopmost session window\u201d attaches it to the frontmost Tandem window that already shows a tab from this tmux session, regardless of focus."
 
 [[setting]]
 key = "pollForTmuxForegroundJob"
@@ -1342,7 +1360,7 @@ help = "Insert this string at the start of tab and window titles to indicate tmu
 key = "tmuxIncludeClientNameInWindowTitle"
 tab = "Advanced"
 section = "Tmux Integration"
-label = "Include the tmux client name in the window title"
+label = "When using tmux integration, should the tmux client name (typically the name of the attaching session or the host name) appear in brackets in the window title?"
 type = "bool"
 default = true
 help = "When using tmux integration, should the tmux client name (typically the name of the attaching session or the host name) appear in brackets in the window title?"
@@ -1354,7 +1372,7 @@ section = "Experimental Features"
 label = "Allow variable window sizes in tmux integration."
 type = "bool"
 default = true
-help = "Requres tmux version 2.9 or later."
+help = "Allow variable window sizes in tmux integration.\nRequres tmux version 2.9 or later."
 
 [[setting]]
 key = "accelerateUploads"
@@ -1390,7 +1408,7 @@ section = "Experimental Features"
 label = "Enable more compact logging when using auto composer?"
 type = "bool"
 default = false
-help = "This will avoid logging raw data in your prompt and your interactions with it. Instead, the prompt is logged once in plain text and the command is logged when sent."
+help = "Enable more compact logging when using auto composer?\nThis will avoid logging raw data in your prompt and your interactions with it. Instead, the prompt is logged once in plain text and the command is logged when sent."
 
 [[setting]]
 key = "disableTmuxWindowResizing"
@@ -1399,7 +1417,7 @@ section = "Tmux Integration"
 label = "Don't automatically resize tmux windows"
 type = "bool"
 default = true
-help = "Tandem keeps its window size and tmux's layout shrinks to fit it."
+help = "Don't automatically resize tmux windows"
 
 [[setting]]
 key = "disableTmuxWindowPositionRestoration"
@@ -1417,7 +1435,7 @@ section = "Tmux Integration"
 label = "Remember window sizes in tmux integration?"
 type = "bool"
 default = true
-help = "Requires tmux 2.9 or later. The \"variable window size\" advanced setting must be enabled."
+help = "Remember window sizes in tmux integration?\nRequires tmux 2.9 or later. The \u201cvariable window size\u201d advanced setting must be enabled."
 
 [[setting]]
 key = "NoSyncNewWindowOrTabFromTmuxOpensTmux"
@@ -1426,7 +1444,7 @@ section = "Tmux Integration"
 label = "Suppress alert asking what kind of tab/window to open in tmux integration. Affects both windows and tabs."
 type = "bool"
 default = false
-help = "Suppress alert asking what kind of tab/window to open in tmux integration. Affects both windows and tabs. On: New tmux Tab or Window; off: ask."
+help = "Suppress alert asking what kind of tab/window to open in tmux integration. Affects both windows and tabs.\nThis setting predates having separate settings for windows vs tabs. If it is off, then the two new settings will take effect."
 
 [[setting]]
 key = "NoSyncNewWindowFromTmuxOpensTmux"
@@ -1435,7 +1453,7 @@ section = "Tmux Integration"
 label = "Suppress alert asking what kind of window to open in tmux integration."
 type = "bool"
 default = false
-help = "Suppress alert asking what kind of window to open in tmux integration. On: New tmux Tab or Window; off: ask."
+help = "Suppress alert asking what kind of window to open in tmux integration.\nNOTE: This only takes effect if the now-deprecated \u201cSuppress alert asking what kind of tab/window to open in tmux integration\u201d setting is off."
 
 [[setting]]
 key = "NoSyncNewTabFromTmuxOpensTmux"
@@ -1444,7 +1462,7 @@ section = "Tmux Integration"
 label = "Suppress alert asking what kind of tab to open in tmux integration."
 type = "bool"
 default = false
-help = "Suppress alert asking what kind of tab to open in tmux integration. On: New tmux Tab or Window; off: ask."
+help = "Suppress alert asking what kind of tab to open in tmux integration.\nNOTE: This only takes effect if the now-deprecated \u201cSuppress alert asking what kind of tab/window to open in tmux integration\u201d setting is off."
 
 [[setting]]
 key = "ClosingTmuxTabKillsTmuxWindows"
@@ -1453,7 +1471,7 @@ section = "Warnings"
 label = "Suppress kill/hide dialog when closing a tmux tab."
 type = "bool"
 default = false
-help = "Suppress kill/hide dialog when closing a tmux tab. On: the tmux windows are hidden without asking."
+help = "Suppress kill/hide dialog when closing a tmux tab."
 
 [[setting]]
 key = "ClosingTmuxWindowKillsTmuxWindows"
@@ -1462,7 +1480,7 @@ section = "Warnings"
 label = "Suppress kill/hide dialog when closing a tmux window."
 type = "bool"
 default = false
-help = "Suppress kill/hide dialog when closing a tmux window. On: the tmux windows are hidden without asking."
+help = "Suppress kill/hide dialog when closing a tmux window."
 
 [[setting]]
 key = "TmuxPauseModeAgeLimit"
@@ -1495,38 +1513,521 @@ help = "Shows how many seconds are left before tmux pauses a pane that buffers t
 key = "NoSyncSuppressCaptureOutputToolNotVisibleWarning"
 tab = "Advanced"
 section = "Warnings"
-label = "Suppress warning that a Capture Output trigger fired while the Captured Output tool is not visible."
+label = "Suppress warning that the Captured Output tool is not visible."
 type = "bool"
 default = false
-help = "Suppress warning that a Capture Output trigger fired while the Captured Output tool is not visible.\nSet by the warning's Silence Warning button."
+help = "Suppress warning that the Captured Output tool is not visible."
 
 [[setting]]
 key = "NoSyncSuppressCaptureOutputRequiresShellIntegrationWarning"
 tab = "Advanced"
 section = "Warnings"
-label = "Suppress warning that a Capture Output trigger fired without Shell Integration."
+label = "Suppress warning \u201cShell Integration is required for Capture Output.\u201d"
 type = "bool"
 default = false
-help = "Suppress warning that a Capture Output trigger fired without Shell Integration.\nSet by the warning's Silence Warning button."
+help = "Suppress warning \u201cShell Integration is required for Capture Output.\u201d"
 
 [[setting]]
 key = "NoSyncSuppressSendSignal"
 tab = "Advanced"
 section = "Warnings"
-label = "Suppress the confirmation before the Jobs tool sends a signal."
+label = "Suppress warning about sending a signal to terminate a job."
 type = "bool"
 default = false
-help = "Suppress the confirmation before the Jobs tool sends a signal.\nSet by the confirmation's \"Suppress this message permanently\" checkbox."
+help = "Suppress warning about sending a signal to terminate a job.\nThis is used in the process tree, which you can find the toolbelt or by clicking the Jobs status bar component."
 
 [[setting]]
 key = "GenerativeAIAllowed"
 tab = "Advanced"
-section = "AI"
+section = "General"
 label = "Allow the use of large language model APIs?"
 type = "bool"
 default = true
 help = "Allow the use of large language model APIs?\nThe purpose of this setting is to make it easy for managed environments to disable the use of LLMs. The user defaults key is `GenerativeAIAllowed`."
 
+
+[[setting]]
+key = "EnableAI"
+tab = "General"
+section = "AI"
+label = "Enable generative AI features"
+type = "bool"
+default = false
+help = "Enable generative AI features\nNo data is sent to third parties without your explicit permission. You will always be prompted before data is shared."
+
+[[setting]]
+key = "AICompletions"
+tab = "General"
+section = "AI"
+label = "Offer AI command suggestion in Composer & Auto Composer"
+type = "bool"
+default = false
+help = "Offer AI command suggestion in Composer & Auto Composer\nWhen enabled, everything you type in the Composer will be shared with your AI provider."
+
+[[setting]]
+key = "AIVendor"
+tab = "General"
+section = "AI"
+label = "AI vendor"
+type = "int"
+default = 2
+help = "AI vendor\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "UseRecommendedAIModel"
+tab = "General"
+section = "AI"
+label = "Use the vendor's recommended model"
+type = "bool"
+default = true
+help = "Use the vendor's recommended model\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AiModel"
+tab = "General"
+section = "AI"
+label = "AI model"
+type = "string"
+default = "gpt-4o-mini"
+help = "AI model\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AiMaxTokens"
+tab = "General"
+section = "AI"
+label = "Context tokens"
+type = "int"
+default = 128000
+help = "Context tokens\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AiResponseMaxTokens"
+tab = "General"
+section = "AI"
+label = "Max response tokens"
+type = "int"
+default = 8192
+help = "Max response tokens\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AI Timeout"
+tab = "General"
+section = "AI"
+label = "AI timeout"
+type = "int"
+default = 1200
+help = "AI timeout\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AitermURL"
+tab = "General"
+section = "AI"
+label = "AI endpoint URL"
+type = "string"
+default = ""
+help = "AI endpoint URL\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AitermUseLegacyAPI"
+tab = "General"
+section = "AI"
+label = "Use the legacy API (deprecated)"
+type = "bool"
+default = false
+help = "Use the legacy API (deprecated)\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AITermAPI"
+tab = "General"
+section = "AI"
+label = "AI API"
+type = "int"
+default = 2
+help = "AI API\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AIFeatureHostedFileSearch"
+tab = "General"
+section = "AI"
+label = "Hosted file search"
+type = "bool"
+default = false
+help = "Hosted file search\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AIFeatureHostedCodeInterpeter"
+tab = "General"
+section = "AI"
+label = "Hosted code interpreter"
+type = "bool"
+default = false
+help = "Hosted code interpreter\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AIFeatureHostedWebSearch"
+tab = "General"
+section = "AI"
+label = "Hosted web search"
+type = "bool"
+default = false
+help = "Hosted web search\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AIFeatureFunctionCalling"
+tab = "General"
+section = "AI"
+label = "Function calling"
+type = "bool"
+default = false
+help = "Function calling\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AIFeatureStreamingResponses"
+tab = "General"
+section = "AI"
+label = "Streaming responses"
+type = "bool"
+default = false
+help = "Streaming responses\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AIVectorStore"
+tab = "General"
+section = "AI"
+label = "Vector store"
+type = "int"
+default = 0
+help = "Vector store\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AIManualModelConfigurations"
+tab = "General"
+section = "AI"
+label = "Manual AI Models"
+type = "list"
+default = []
+help = "Manual AI Models\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIEconomyModelName"
+tab = "General"
+section = "AI"
+label = "Economy model"
+type = "string"
+default = ""
+help = "Economy model\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIOllamaRegularModel"
+tab = "General"
+section = "AI"
+label = "Regular:"
+type = "string"
+default = ""
+help = "Regular:\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIOllamaEconomyModel"
+tab = "General"
+section = "AI"
+label = "Budget:"
+type = "string"
+default = ""
+help = "Budget:\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AI Safety Check"
+tab = "General"
+section = "AI"
+label = "Use AI to check safety of commands before running them"
+type = "bool"
+default = false
+help = "Use AI to check safety of commands before running them\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AICustomHeadersEnabled"
+tab = "General"
+section = "AI"
+label = "Custom headers (legacy)"
+type = "bool"
+default = false
+help = "Custom headers (legacy)\nLegacy; copied once into each manual model."
+
+[[setting]]
+key = "AICustomHeaders"
+tab = "General"
+section = "AI"
+label = "Custom header list (legacy)"
+type = "list"
+default = []
+help = "Custom header list (legacy)\nLegacy; copied once into each manual model."
+
+[[setting]]
+key = "AIZeroDataRetention"
+tab = "General"
+section = "AI"
+label = "Enable \u201czero data retention\u201d (send whole conversation every time)"
+type = "bool"
+default = false
+help = "Enable \u201czero data retention\u201d (send whole conversation every time)\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIModelUpdatesEnabled"
+tab = "General"
+section = "AI"
+label = "Automatically update available AI models from live online database"
+type = "bool"
+default = false
+help = "Automatically update available AI models from live online database\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIPermissionCheckTerminalState"
+tab = "General"
+section = "AI"
+label = "Check Terminal State"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Provide Automatically" }, { value = 2, label = "Never Allow" } ]
+help = "Check Terminal State\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIPermissionRunCommands"
+tab = "General"
+section = "AI"
+label = "Run Commands"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
+help = "Run Commands\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIPermissionViewHistory"
+tab = "General"
+section = "AI"
+label = "View Contents"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
+help = "View Contents\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIPermissionWriteToClipboard"
+tab = "General"
+section = "AI"
+label = "Write to Clipboard"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
+help = "Write to Clipboard\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIPermissionTypeForYou"
+tab = "General"
+section = "AI"
+label = "Control Terminal"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
+help = "Control Terminal\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIPermissionViewManpages"
+tab = "General"
+section = "AI"
+label = "View Manpages"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
+help = "View Manpages\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIPermissionWriteToFilesystem"
+tab = "General"
+section = "AI"
+label = "Write to Filesystem"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
+help = "Write to Filesystem\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIPermissionActInWebBrowser"
+tab = "General"
+section = "AI"
+label = "Act in Web Browser"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
+help = "Act in Web Browser\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AI Prompt"
+tab = "General"
+section = "AI"
+label = "Edit > Engage Artifical Intelligence"
+type = "string"
+help = "Edit > Engage Artifical Intelligence\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for AI Chat with no function calling"
+tab = "General"
+section = "AI"
+label = "AI Chat (no function calling)"
+type = "string"
+help = "AI Chat (no function calling)\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for AI Chat with ReadOnlyTerminal"
+tab = "General"
+section = "AI"
+label = "AI Chat + Read-Only Terminal Access"
+type = "string"
+help = "AI Chat + Read-Only Terminal Access\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for AI Chat with ReadWriteTerminal"
+tab = "General"
+section = "AI"
+label = "AI Chat + Full Terminal Access"
+type = "string"
+help = "AI Chat + Full Terminal Access\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for AI Chat with Browser"
+tab = "General"
+section = "AI"
+label = "AI Chat + Browser Access"
+type = "string"
+help = "AI Chat + Browser Access\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for AI Chat with ReadOnlyTerminalBrowser"
+tab = "General"
+section = "AI"
+label = "AI Chat + Read-Only Terminal + Browser Access"
+type = "string"
+help = "AI Chat + Read-Only Terminal + Browser Access\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for AI Chat with ReadWriteTerminalBrowser"
+tab = "General"
+section = "AI"
+label = "AI Chat + Full Terminal + Browser Access"
+type = "string"
+help = "AI Chat + Full Terminal + Browser Access\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for AI Chat Orchestration"
+tab = "General"
+section = "AI"
+label = "AI Chat + Orchestration"
+type = "string"
+help = "AI Chat + Orchestration\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for Code Review"
+tab = "General"
+section = "AI"
+label = "Code Review Prompt"
+type = "string"
+help = "Code Review Prompt\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for Code Review System"
+tab = "General"
+section = "AI"
+label = "Code Review System Prompt"
+type = "string"
+help = "Code Review System Prompt\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for Chat Icon"
+tab = "General"
+section = "AI"
+label = "Chat List Icon"
+type = "string"
+help = "Chat List Icon\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "llmPlatform"
+tab = "Advanced"
+section = "General"
+label = "LLM Platform."
+type = "string"
+default = "OpenAI"
+help = "LLM Platform.\nLegal values are: OpenAI, Azure, Gemini. This determines the format of requests and responses."
+
+[[setting]]
+key = "aiModelCatalogURL"
+tab = "Advanced"
+section = "General"
+label = "URL to check for updates to the AI model catalog."
+type = "string"
+default = "https://iterm2.com/downloads/ai/manifest.json"
+help = "URL to check for updates to the AI model catalog.\nThe catalog defines the built-in AI models (context window, capabilities, and the recommended model per vendor). Tandem ships its catalog with each release and never downloads a newer one, so this URL is not used."
+
+[[setting]]
+key = "aiChatVerboseConsoleLogging"
+tab = "Advanced"
+section = "Debugging"
+label = "Log AI chat traffic to the system console."
+type = "bool"
+default = false
+help = "Log AI chat traffic to the system console.\nEmits per-turn user / agent / tool entries so you can trace exactly what the agent received and produced. Useful for debugging tool dispatch and history translation. Off by default; turn on only while reproducing an issue."
+
+[[setting]]
+key = "aiChatRawWireLogging"
+tab = "Advanced"
+section = "Debugging"
+label = "Log raw AI API requests and responses to disk."
+type = "bool"
+default = false
+help = "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Tandem\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. API keys in Authorization, x-api-key, api-key and x-goog-api-key headers, and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished."
+
+[[setting]]
+key = "unameCommand"
+tab = "Advanced"
+section = "SSH Integration"
+label = "Command used to set the `uname` variable."
+type = "string"
+default = "uname -s"
+help = "Command used to set the `uname` variable.\nThe main use of this is to use in the AI prompt so the language model knows the operating system."
+
+[[setting]]
+key = "aiModernModelPrefixes"
+tab = "Advanced"
+section = "Experimental Features"
+label = "AI model name substrings that use the modern 'completions' API."
+type = "string"
+default = "gpt-"
+help = "AI model name substrings that use the modern 'completions' API.\nSubstrings should be space-delimited. This handles OpenRouter-style names like 'openai/gpt-4o'. Note that o1 models use a different API and have hard-coded behavior."
+
+[[setting]]
+key = "aiProxy"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Host and port for proxy for AI requests."
+type = "string"
+default = ""
+help = "Host and port for proxy for AI requests.\ni.e., example.com:8080"
+
+[[setting]]
+key = "ollamaNumCtx"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Ollama context window size (num_ctx) for native /api/chat requests."
+type = "int"
+default = 0
+help = "Ollama context window size (num_ctx) for native /api/chat requests.\nOllama defaults num_ctx to a small value (around 4096) regardless of the model, silently truncating long prompts. 0 means size it automatically per request, capped at the model\u2019s context window. A positive value overrides that and is sent verbatim (larger values use more memory)."
+
+[[setting]]
+key = "ollamaKeepAlive"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Ollama keep_alive for native /api/chat requests."
+type = "string"
+default = "30m"
+help = "Ollama keep_alive for native /api/chat requests.\nHow long Ollama keeps the model resident after a request, e.g. 30m, 1h, or 0 to unload immediately. Empty means omit the field and use Ollama\u2019s own default."
 [[setting]]
 key = "noSyncDontWarnAboutTmuxPause"
 tab = "Advanced"
@@ -1565,7 +2066,7 @@ help = "Buried sessions appear under Session > Buried Sessions. When this settin
 
 [[setting]]
 key = "NoSyncAutoBurialReveal"
-tab = "Advanced"
+tab = "Stored"
 section = "Warnings"
 label = "The \"Session Buried\" notification was shown"
 type = "bool"
@@ -1595,10 +2096,10 @@ help = "Each split pane shows its own profile's status bar; off, the window show
 key = "statusBarHeight"
 tab = "Advanced"
 section = "General"
-label = "Height of the status bar in points"
+label = "Height of the status bar in points."
 type = "float"
 default = 21.0
-help = "Height of the status bar in points."
+help = "Height of the status bar in points.\nThis will also affect the height of per-pane title bars becuase the status bar may be embedded in it. A change here takes effect at once."
 
 [[setting]]
 key = "UseTmuxStatusBar"
@@ -1613,16 +2114,16 @@ help = "In a tmux tab with the status bar on, the bar shows tmux's status-left a
 key = "gitSearchPath"
 tab = "Advanced"
 section = "General"
-label = "Folders searched for git (status bar)"
+label = "PATH used when running git for the status bar component."
 type = "string"
 default = ""
-help = "The first folder in this ;-separated list holds the git.exe the status bar runs. Empty: git from PATH. Takes effect at once."
+help = "PATH used when running git for the status bar component.\nChange this to use a custom install of git. The first folder in this ;-separated list holds the git.exe the status bar runs; empty runs git from PATH. A change here takes effect at once."
 
 [[setting]]
 key = "gitTimeout"
 tab = "Advanced"
 section = "General"
-label = "git timeout for the status bar, in seconds"
+label = "Timeout in seconds when running git for the status bar component."
 type = "float"
 default = 4.0
 help = "Timeout in seconds when running git for the status bar component."
@@ -1631,10 +2132,10 @@ help = "Timeout in seconds when running git for the status bar component."
 key = "excludeUtunFromNetworkUtilization"
 tab = "Advanced"
 section = "General"
-label = "Leave tunnel interfaces out of Network Throughput"
+label = "Exclude tunnel interfaces from network utilization?"
 type = "bool"
 default = true
-help = "Leaves Windows tunnel adapters (a VPN's Wintun interface, for example) out of Network Throughput's totals. Useful if you want to see only the traffic that crosses Wi-Fi or Ethernet."
+help = "Exclude tunnel interfaces from network utilization?\nThis is useful if you use a VPN and only want to see the traffic that goes over Wi-Fi or Ethernet."
 
 [[setting]]
 key = "lastpassGroups"
@@ -1649,10 +2150,10 @@ help = "Comma-separated list of LastPass groups for the password manager to look
 key = "animateGraphStatusBarComponents"
 tab = "Advanced"
 section = "Drawing"
-label = "Animate graph status bar components"
+label = "Animate graph-based status bar components?"
 type = "bool"
 default = true
-help = "Off: the graphs jump once a second instead of sliding, which redraws less."
+help = "Animate graph-based status bar components?\nTurn this off to reduce CPU/GPU usage: the graphs jump once a second instead of sliding."
 
 [[setting]]
 key = "Default Toolbelt Width"
@@ -1666,20 +2167,20 @@ help = "Width in points of the toolbelt in new windows. View > Toolbelt > Set De
 [[setting]]
 key = "toolbeltFont"
 tab = "Advanced"
-section = "Toolbelt"
+section = "Windows"
 label = "Toolbelt font family name"
 type = "string"
 default = "Menlo"
-help = "Menlo is not on Windows: a missing font draws in Consolas."
+help = "Toolbelt font family name\nMenlo is not on Windows: a missing font draws in Consolas."
 
 [[setting]]
 key = "toolbeltFontSize"
 tab = "Advanced"
-section = "Toolbelt"
-label = "Toolbelt font size in points"
+section = "Windows"
+label = "Toolbelt font size in points."
 type = "float"
 default = 0.0
-help = "Toolbelt font size in points.\nSet to 0 to use the system default (11 points). Changing this setting does not affect existing windows."
+help = "Toolbelt font size in points.\nSet to 0 to use the system default. Changing this setting does not affect existing windows."
 
 [[setting]]
 key = "setCookie"
@@ -1743,3 +2244,146 @@ label = "Set IT2_APP_PATH environment variable on new sessions, pointing at this
 type = "bool"
 default = false
 help = "Set IT2_APP_PATH environment variable on new sessions, pointing at this Tandem build\u2019s app bundle?\nThis disambiguates the AppleScript target when multiple Tandem builds with the same bundle identifier are running, so that the \u201cit2\u201d CLI requests its cookie from this Tandem instance. Intended for Tandem developers. Only affects sessions created after changing this setting."
+
+[[setting]]
+key = "NoSyncVariablesToReport"
+tab = "Advanced"
+section = "Terminal"
+label = "Variables to report via control sequence"
+type = "string"
+default = ""
+help = "Variables to report via control sequence\nThis is a comma-delimited list of variables that can be reported with the OSC 1337 ReportVariable=name control sequence. Each variable name must be prefixed with \u201callow:\u201d or \u201cdeny:\u201d."
+
+[[setting]]
+key = "PreventEscapeSequenceFromChangingProfile"
+tab = "Advanced"
+section = "Terminal"
+label = "Prevent control sequences from changing the current profile?"
+type = "bool"
+help = "Prevent control sequences from changing the current profile?"
+
+[[setting]]
+key = "NoSyncSuppressClipboardAccessDeniedWarning"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress the notification that the terminal attempted to access the clipboard but it was denied?"
+type = "bool"
+default = false
+help = "Suppress the notification that the terminal attempted to access the clipboard but it was denied?"
+
+[[setting]]
+key = "NoSyncDisableOpenURL"
+tab = "Advanced"
+section = "Warnings"
+label = "Disable control sequence to open URLs?"
+type = "bool"
+default = false
+help = "Disable control sequence to open URLs?"
+
+[[setting]]
+key = "PreferredBaseDir"
+tab = "Advanced"
+section = "General"
+label = "Folder for config files. There must not be a space in the path."
+type = "string"
+default = ""
+help = "Folder for config files. There must not be a space in the path.\nIf empty, then %APPDATA%\\Tandem will be the default location."
+
+[[setting]]
+key = "NoSyncHideDefaultValuedSettings"
+tab = "Stored"
+section = "Settings"
+label = "Show indicators for non-default values"
+type = "bool"
+default = false
+help = "Settings marks each control whose value is not the default with a bar at its left."
+
+[[setting]]
+key = "NoSyncNeverRemindPrefsChangesLostForFile_selection"
+tab = "Stored"
+section = "Settings"
+label = "Save changes to the custom folder"
+type = "int"
+default = 0
+help = "The Save changes popup's choice (0 When Quitting, 1 Manually, 2 Automatically), and the answer to the silenced quit question."
+
+[[setting]]
+key = "NoSyncPromptBeforeLoadingPrefsFromURL"
+tab = "Stored"
+section = "Settings"
+label = "Ask before loading settings from this URL"
+type = "string"
+default = ""
+help = "Remembered at quit when local changes would be lost to the settings URL; the next load from it asks first."
+
+[[setting]]
+key = "NoSyncNeverRemindPrefsChangesLostForFile"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress changed-setting warning when settings are loaded from a custom folder."
+type = "bool"
+default = false
+help = "Suppress changed-setting warning when settings are loaded from a custom folder."
+
+[[setting]]
+key = "NoSyncNeverRemindPrefsChangesLostForUrl"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress changed-setting warning when settings are loaded from a URL."
+type = "bool"
+default = false
+help = "Suppress changed-setting warning when settings are loaded from a URL."
+
+[[setting]]
+key = "NoSyncDownloadPrefsTimeout"
+tab = "Advanced"
+section = "General"
+label = "Timeout for downloading settings"
+type = "float"
+default = 5.0
+help = "Timeout for downloading settings"
+
+[[setting]]
+key = "RevealExportedSettingsAndData"
+tab = "Advanced"
+section = "General"
+label = "Reveal file created by \u201cExport All Settings and Data\u201d in Explorer upon completion"
+type = "bool"
+default = true
+help = "Reveal file created by \u201cExport All Settings and Data\u201d in Explorer upon completion"
+
+[[setting]]
+key = "DryRunEraseAllSettingsAndData"
+tab = "Advanced"
+section = "General"
+label = "Dry-run \u201cErase All Settings and Data\u201d."
+type = "bool"
+default = false
+help = "Dry-run \u201cErase All Settings and Data\u201d.\nWhen enabled, the Erase All Settings and Data button logs what it would delete (to the debug output) instead of actually deleting anything, and does not quit. Intended for testing the feature."
+
+[[setting]]
+key = "HotkeyMigratedFromSingleToMulti"
+tab = "Stored"
+section = "Hotkey"
+label = "Legacy hotkey window migrated"
+type = "bool"
+default = false
+help = "Set once the single hotkey window of an older iTerm2 settings file has moved to its profile, so the move happens only once."
+
+[[setting]]
+key = "Bidi"
+tab = "General"
+section = "Experimental"
+label = "Enable support for right-to-left scripts"
+type = "bool"
+default = true
+help = "Buried sessions appear under Session > Buried Sessions. When this setting is enabled, window sizes are restored when attaching to an existing tmux session."
+
+[[setting]]
+key = "SshIntegrationForURLs"
+tab = "General"
+section = "Experimental"
+label = "Use SSH integration for ssh: URLs"
+type = "bool"
+default = false
+help = "Use SSH integration for ssh: URLs"

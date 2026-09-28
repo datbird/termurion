@@ -23,6 +23,87 @@ pub fn set_snippets(list: &[crate::snippets::Snippet]) {
     SNIPPETS.with(|s| *s.borrow_mut() = list.to_vec());
 }
 
+thread_local! {
+    /// "Show indicators for non-default values"; the settings window sets it each frame.
+    static INDICATE_NON_DEFAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether controls mark a non-default value (the settings window calls this each frame from
+/// `NoSyncHideDefaultValuedSettings`, `PP:1111-1121`).
+pub fn set_indicate_non_default(on: bool) {
+    INDICATE_NON_DEFAULT.with(|c| c.set(on));
+}
+
+pub fn indicate_non_default() -> bool {
+    INDICATE_NON_DEFAULT.with(std::cell::Cell::get)
+}
+
+/// The note under General > Experimental's right-to-left checkbox (`XIB:8743`).
+pub const EXPERIMENTAL_NOTE: &str = "This setting also enables ligature support in the GPU renderer.";
+/// The right-to-left checkbox's tooltip: iTerm2's xib carries this unrelated text on it
+/// (`XIB:8720`), kept as iTerm2 shows it.
+pub const RTL_TOOLTIP: &str = "Buried sessions appear under Session > Buried Sessions. When this setting is enabled, window sizes are restored when attaching to an existing tmux session.";
+
+/// The settings panes' tolerance for numbers (`iTermPreferencesBaseViewController.m:287-292`:
+/// "otherwise colors don't compare equal when they ought to").
+const INDICATOR_EPSILON: f64 = 0.001;
+
+/// `it_hasZeroValue`: 0 (or false), an empty text, list or table.
+fn has_zero_value(v: &Value) -> bool {
+    match v {
+        Value::Integer(i) => *i == 0,
+        Value::Float(f) => *f == 0.0,
+        Value::Boolean(b) => !b,
+        Value::String(s) => s.is_empty(),
+        Value::Array(a) => a.is_empty(),
+        Value::Table(t) => t.is_empty(),
+        Value::Datetime(_) => false,
+    }
+}
+
+/// `isApproximatelyEqualToObject:epsilon:` (`NSObject+iTerm.m:25-105`): numbers within the
+/// epsilon, tables with the same keys and lists of the same length element by element.
+fn approximately_equal(a: &Value, b: &Value) -> bool {
+    let number = |v: &Value| v.as_float().or_else(|| v.as_integer().map(|i| i as f64));
+    match (a, b) {
+        (Value::Table(x), Value::Table(y)) => x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| approximately_equal(v, w))),
+        (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(v, w)| approximately_equal(v, w)),
+        _ => match (number(a), number(b)) {
+            (Some(x), Some(y)) => (x - y).abs() < INDICATOR_EPSILON,
+            _ => a == b,
+        },
+    }
+}
+
+/// `isNullablyEqualToObject:epsilon:` (`NSObject+iTerm.m:168-179`): approximately equal, or
+/// one missing and the other zero or empty.
+pub fn nullably_equal(a: Option<&Value>, b: Option<&Value>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => approximately_equal(x, y),
+        (None, Some(v)) | (Some(v), None) => has_zero_value(v),
+    }
+}
+
+/// Whether a global control shows its default (`PBVC:287-292`): the value (the stored one, else
+/// the schema default) nullably equals the default.
+pub fn global_is_default(g: &Globals, s: &Setting) -> bool {
+    nullably_equal(g.get(&s.key).as_ref(), s.default.as_ref())
+}
+
+/// The non-default indicator (`NonDefaultIndicator.swift`): a 2-point bar in the accent color
+/// the full height of `control`, 4 points left of it; hidden with a disabled control
+/// (`NDI:67-78`).
+pub fn non_default_bar(ui: &egui::Ui, control: egui::Rect, enabled: bool) {
+    if !enabled {
+        return;
+    }
+    let bar = egui::Rect::from_x_y_ranges(control.left() - 4.0..=control.left() - 2.0, control.y_range());
+    // The bar may sit left of the scroll area's content edge.
+    let painter = ui.painter().clone().with_clip_rect(ui.clip_rect().expand2(egui::vec2(6.0, 0.0)));
+    painter.rect_filled(bar, 0.0, ui.visuals().selection.bg_fill);
+}
+
 /// Send Snippet's name for a stored key.
 fn snippet_name(key: &str) -> String {
     SNIPPETS.with(|s| crate::user_actions::snippet_action_name(s.borrow().iter().find(|x| x.matches_key(key)).map(|x| x.title.as_str())))
@@ -311,10 +392,13 @@ fn menu_combo(ui: &mut egui::Ui, salt: &str, text: &mut String, pointer: bool) -
     changed
 }
 
-/// Boolean settings Toggle Setting can flip: every global and profile checkbox.
+/// Boolean settings Toggle Setting can flip: every global and profile checkbox except the AI
+/// consent switches (`ai_settings::toggle_allowed`).
 fn toggle_choices() -> Vec<(String, bool, String)> {
     let bools = |list: &'static [Setting], is_profile: bool| {
-        list.iter().filter(|s| s.kind == Kind::Bool && !s.macos_only).map(move |s| (s.key.clone(), is_profile, s.label.clone()))
+        list.iter()
+            .filter(|s| s.kind == Kind::Bool && !s.macos_only && crate::ai_settings::toggle_allowed(&s.key))
+            .map(move |s| (s.key.clone(), is_profile, s.label.clone()))
     };
     bools(schema::global(), false).chain(bools(schema::profile(), true)).collect()
 }
@@ -581,30 +665,41 @@ pub fn pointer_editor(ctx: &egui::Context, e: &mut PointerEditor, profiles: &[(S
 pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: bool) -> bool {
     let mut changed = false;
     ui.add_enabled_ui(enabled && !s.macos_only, |ui| {
-        match s.kind {
+        let control = match s.kind {
             Kind::Bool => {
                 let mut b = g.bool(&s.key);
-                if ui.checkbox(&mut b, &s.label).changed() {
+                let r = ui.checkbox(&mut b, &s.label);
+                if r.changed() {
                     g.set(&s.key, Value::Boolean(b));
                     changed = true;
                 }
+                Some(r.rect)
             }
             Kind::Enum => {
                 ui.horizontal(|ui| {
                     ui.label(&s.label);
                     let now = g.get(&s.key);
                     let shown = s.choices.iter().find(|c| Some(&c.value) == now.as_ref()).map_or(String::new(), |c| c.label.clone());
-                    egui::ComboBox::from_id_salt(&s.key).selected_text(shown).show_ui(ui, |ui| {
-                        for c in &s.choices {
-                            if ui.selectable_label(Some(&c.value) == now.as_ref(), &c.label).clicked() {
-                                g.set(&s.key, c.value.clone());
-                                changed = true;
+                    egui::ComboBox::from_id_salt(&s.key)
+                        .selected_text(shown)
+                        .show_ui(ui, |ui| {
+                            for c in &s.choices {
+                                if ui.selectable_label(Some(&c.value) == now.as_ref(), &c.label).clicked() {
+                                    g.set(&s.key, c.value.clone());
+                                    changed = true;
+                                }
                             }
-                        }
-                    });
-                });
+                        })
+                        .response
+                        .rect
+                })
+                .inner
+                .into()
             }
-            _ => {}
+            _ => None,
+        };
+        if let Some(rect) = control.filter(|_| indicate_non_default() && !global_is_default(g, s)) {
+            non_default_bar(ui, rect, ui.is_enabled());
         }
     })
     .response
@@ -648,8 +743,13 @@ pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profile
             ui.label("Leader:");
             let leader = keystroke::parse(&g.string("Leader"));
             let text = if st.leader_recording { "Press the keys...".to_string() } else { leader.as_ref().map_or("Click to record".to_string(), Keystroke::label) };
-            if ui.button(text).clicked() {
+            let button = ui.button(text);
+            if button.clicked() {
                 st.leader_recording = !st.leader_recording;
+            }
+            // Marked while a Leader is set (`KeysPreferencesViewController.m:116`).
+            if indicate_non_default() && leader.is_some() {
+                non_default_bar(ui, button.rect, true);
             }
             if leader.is_some() && ui.button("Clear").clicked() {
                 g.set("Leader", Value::String(String::new()));
@@ -727,11 +827,13 @@ fn finish_key_editor(ctx: &egui::Context, st: &mut KeysState, map: &mut toml::Ta
 
 /// Whether a global row takes input: the Python API's authentication popup only while the API
 /// is on (`GP:2055-2057`), the custom scripts folder only while its checkbox is on
-/// (`GP:2152-2154`); every other row always.
+/// (`GP:2152-2154`), the settings folder only while "Load settings from a custom folder or URL"
+/// is on (`GP:2210-2212`); every other row always.
 pub fn row_enabled(g: &Globals, key: &str) -> bool {
     match key {
         "API Authentication Method" => g.bool("EnableAPIServer"),
         "CustomScriptsFolder" => g.bool("UseCustomScriptsFolder"),
+        crate::remote_prefs::FOLDER_KEY => g.bool(crate::remote_prefs::LOAD_KEY),
         _ => true,
     }
 }
@@ -741,7 +843,7 @@ fn icon_font_id() -> egui::Id {
     egui::Id::new("tandem-settings-icons")
 }
 
-fn icon_family() -> egui::FontFamily {
+pub(crate) fn icon_family() -> egui::FontFamily {
     egui::FontFamily::Name("icons".into())
 }
 
@@ -754,6 +856,11 @@ pub fn add_icon_font(ctx: &egui::Context) {
     let Some(bytes) = ["SegoeIcons.ttf", "segmdl2.ttf"].iter().find_map(|f| std::fs::read(dir.join(f)).ok()) else { return };
     ctx.add_font(FontInsert::new("tandem-icons", egui::FontData::from_owned(bytes), vec![InsertFontFamily { family: icon_family(), priority: FontPriority::Highest }]));
     ctx.data_mut(|d| d.insert_temp(icon_font_id(), true));
+}
+
+/// A glyph of the icon font, or None when `add_icon_font` did not find it.
+pub fn icon_text(ctx: &egui::Context, glyph: char) -> Option<egui::RichText> {
+    has_icon_font(ctx).then(|| egui::RichText::new(glyph.to_string()).family(icon_family()))
 }
 
 /// Whether `add_icon_font` found the icon font (without it the "icons" family is not defined
@@ -848,31 +955,64 @@ pub fn custom_scripts_folder_row(ui: &mut egui::Ui, g: &mut Globals, home: &std:
     (changed, ended)
 }
 
+/// Rows a schema page never draws: the Advanced rows that need Apple Intelligence, which is
+/// not available on Windows (ruling 7). Ruling 12e-4 also keeps them out of the schema.
+pub fn row_hidden(key: &str) -> bool {
+    matches!(key, "aiGeneratedTabTitles" | "logAITabTitleCorpus")
+}
+
+/// The global rows a schema page draws, in schema order: the tab's rows without the General
+/// tab's "AI" section (`settings_ai` draws it) and without hidden rows.
+pub fn page_rows(tab: &str) -> Vec<&'static Setting> {
+    schema::global().iter().filter(|s| s.tab == tab && !(tab == "General" && s.section == "AI") && !row_hidden(&s.key)).collect()
+}
+
 /// A pane that shows only the global settings the schema has for it so far, by section
-/// (General and Advanced; the rest of each comes in milestone 13).
-pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> bool {
+/// (General and Appearance). Returns whether a setting changed, and what the custom settings
+/// folder's rows asked for.
+pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> (bool, PrefsAction) {
+    schema_page_with(ui, g, tab, &mut |_, _| false)
+}
+
+/// `schema_page` with more drawn after its last section (General's AI section): `extra`
+/// gets the globals the scroll area already holds, and its answer joins the result.
+pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &mut dyn FnMut(&mut egui::Ui, &mut Globals) -> bool) -> (bool, PrefsAction) {
     let mut changed = false;
+    let mut prefs = PrefsAction::None;
     let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_default();
+    let rows = page_rows(tab);
     egui::ScrollArea::vertical().show(ui, |ui| {
         let mut sections: Vec<&str> = Vec::new();
-        for s in schema::global().iter().filter(|s| s.tab == tab) {
+        for s in &rows {
             if !sections.contains(&s.section.as_str()) {
                 sections.push(&s.section);
             }
         }
         for section in sections {
             ui.strong(section);
-            for s in schema::global().iter().filter(|s| s.tab == tab && s.section == section) {
+            for s in rows.iter().copied().filter(|s| s.section == section) {
                 if s.key == "CustomScriptsFolder" {
                     // The typed text is saved and applied when editing ends, not per key.
                     let (_, ended) = custom_scripts_folder_row(ui, g, &home);
                     changed |= ended;
                     continue;
                 }
+                // The custom settings folder's rows draw its text field with the checkbox.
+                if s.key == crate::remote_prefs::LOAD_KEY {
+                    prefs = prefs_rows(ui, g, &home);
+                    changed |= matches!(prefs, PrefsAction::Changed | PrefsAction::CopyNow | PrefsAction::SaveNow);
+                    continue;
+                }
+                if s.key == crate::remote_prefs::FOLDER_KEY {
+                    continue;
+                }
                 let enabled = row_enabled(g, &s.key);
                 let was_on = g.bool(&s.key);
                 let c = global_control(ui, g, s, enabled);
                 changed |= c;
+                if s.key == "Bidi" {
+                    ui.label(egui::RichText::new(EXPERIMENTAL_NOTE).small().weak());
+                }
                 // Turned on with no folder named: the folder picker opens (`GP:4247-4259`).
                 if c && s.key == "UseCustomScriptsFolder" && !was_on && g.bool(&s.key) && g.string("CustomScriptsFolder").is_empty() && choose_scripts_folder(g).is_some() {
                     ui.ctx().data_mut(|d| d.remove_temp::<bool>(folder_pending_id()));
@@ -880,9 +1020,171 @@ pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> bool {
             }
             ui.add_space(8.0);
         }
-        ui.weak("The rest of this pane comes in milestone 13.");
+        changed |= extra(ui, g);
     });
-    changed
+    (changed, prefs)
+}
+
+/// What General > Settings' external settings, backup and reset rows asked for: a setting
+/// changed; the folder was just picked with the checkbox turned on, so "Copy local settings to
+/// custom folder now?" asks (`GP:4262-4292`); Save Now was pressed; or one of the Export All,
+/// Import All and Erase All buttons (`GP:4084-4096`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrefsAction {
+    None,
+    Changed,
+    CopyNow,
+    SaveNow,
+    ExportAll,
+    ImportAll,
+    EraseAll,
+}
+
+/// Where a window's egui memory keeps the last settings location checked and whether it was
+/// valid (the check writes a probe file, so it runs when the text changes, not every frame).
+fn prefs_valid_id() -> egui::Id {
+    egui::Id::new("tandem-prefs-folder-valid")
+}
+
+/// Whether the Save changes popup, its label and Save Now take input (`GP:4239-4244`): the
+/// setting is on and the location is a valid folder (never a URL).
+pub fn prefs_save_enabled(
+    g: &Globals,
+    home: &std::path::Path,
+    read_link: &dyn Fn(&std::path::Path) -> Option<std::path::PathBuf>,
+    writable: &dyn Fn(&std::path::Path) -> bool,
+) -> bool {
+    use crate::remote_prefs as rp;
+    let text = g.string(rp::FOLDER_KEY);
+    g.bool(rp::LOAD_KEY) && !rp::is_url(&rp::expanded(&text, home)) && rp::location_valid(&text, home, read_link, writable)
+}
+
+/// `choosePrefsCustomFolder`: the folder picker; a picked folder becomes the location, which
+/// is returned.
+fn choose_prefs_folder(g: &mut Globals) -> Option<String> {
+    let dir = rfd::FileDialog::new().pick_folder()?;
+    let text = dir.display().to_string();
+    g.set(crate::remote_prefs::FOLDER_KEY, Value::String(text.clone()));
+    Some(text)
+}
+
+/// General > Settings' labeled rows (`XIB:8360-8480`): "External settings:" with the custom
+/// folder rows, "Backup & restore:" with Export All and Import All one above the other, and
+/// "Reset:" with Erase All.
+pub fn prefs_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path) -> PrefsAction {
+    use crate::remote_prefs as rp;
+    let mut action = PrefsAction::None;
+    egui::Grid::new("tandem-prefs-rows").num_columns(2).show(ui, |ui| {
+        ui.label(rp::EXTERNAL_SETTINGS);
+        ui.vertical(|ui| action = custom_folder_rows(ui, g, home));
+        ui.end_row();
+        ui.label(rp::BACKUP_RESTORE);
+        ui.vertical(|ui| {
+            if ui.button(rp::EXPORT_ALL).clicked() {
+                action = PrefsAction::ExportAll;
+            }
+            if ui.button(rp::IMPORT_ALL).clicked() {
+                action = PrefsAction::ImportAll;
+            }
+        });
+        ui.end_row();
+        ui.label(rp::RESET);
+        if ui.button(rp::ERASE_ALL).clicked() {
+            action = PrefsAction::EraseAll;
+        }
+        ui.end_row();
+    });
+    action
+}
+
+/// The custom folder rows (`GP:2167-2218`, `GP:4221-4292`, `XIB:8360-8440`): the checkbox; the
+/// location field and Browse, both enabled with it, and the mark saying whether the location
+/// is usable; "Save changes:" with its popup and Save Now, enabled for an on, valid folder.
+/// Turning the checkbox on with no location opens the folder picker, and a usable pick offers
+/// to copy the local settings there.
+fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path) -> PrefsAction {
+    use crate::remote_prefs::{self as rp, SaveMode};
+    let mut action = PrefsAction::None;
+    let was_on = g.bool(rp::LOAD_KEY);
+    if let Some(s) = schema::find_global(rp::LOAD_KEY) {
+        if global_control(ui, g, s, true) {
+            action = PrefsAction::Changed;
+        }
+    }
+    let on = g.bool(rp::LOAD_KEY);
+    if on && !was_on && g.string(rp::FOLDER_KEY).is_empty() && choose_prefs_folder(g).is_some() && rp::location_valid(&g.string(rp::FOLDER_KEY), home, &crate::scripts::read_link, &rp::writable) {
+        action = PrefsAction::CopyNow;
+    }
+    let mut text = g.string(rp::FOLDER_KEY);
+    let setting = schema::find_global(rp::FOLDER_KEY);
+    let mut valid = false;
+    ui.horizontal(|ui| {
+        ui.add_enabled_ui(on, |ui| {
+            let field = ui.add(egui::TextEdit::singleline(&mut text).hint_text(rp::FOLDER_HINT));
+            if field.changed() {
+                g.set(rp::FOLDER_KEY, Value::String(text.clone()));
+                action = action.max_changed();
+            }
+            if setting.is_some_and(|s| indicate_non_default() && !global_is_default(g, s)) {
+                non_default_bar(ui, field.rect, ui.is_enabled());
+            }
+            if ui.button(rp::BROWSE).clicked() {
+                if let Some(picked) = choose_prefs_folder(g) {
+                    text = picked;
+                    action = action.max_changed();
+                }
+            }
+        });
+        let cached = ui.ctx().data(|d| d.get_temp::<(String, bool)>(prefs_valid_id()));
+        valid = match cached {
+            Some((checked, valid)) if checked == text => valid,
+            _ => {
+                let valid = rp::location_valid(&text, home, &crate::scripts::read_link, &rp::writable);
+                ui.ctx().data_mut(|d| d.insert_temp(prefs_valid_id(), (text.clone(), valid)));
+                valid
+            }
+        };
+        if let (Some((glyph, alpha)), true) = (crate::scripts::folder_glyph(on, &text, valid), has_icon_font(ui.ctx())) {
+            let color = ui.visuals().text_color().gamma_multiply(alpha);
+            ui.label(egui::RichText::new(glyph.to_string()).family(icon_family()).color(color));
+        }
+    })
+    .response
+    .on_hover_text(setting.map_or("", |s| s.help.as_str()));
+    // The folder's probe (and its link check) answered above; a URL or a network path is never probed.
+    let enabled = prefs_save_enabled(g, home, &|_| None, &|_| valid);
+    ui.add_enabled_ui(enabled, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(rp::SAVE_CHANGES);
+            let mode = rp::save_mode(g.bool(rp::HAVE_SELECTION_KEY), g.int(rp::SELECTION_KEY));
+            let choices = [(rp::AUTOMATICALLY, SaveMode::Always), (rp::MANUALLY, SaveMode::Never), (rp::WHEN_QUITTING, SaveMode::OnQuit)];
+            let shown = choices.iter().find(|(_, m)| *m == mode).map_or("", |(label, _)| label);
+            let combo = egui::ComboBox::from_id_salt(rp::SELECTION_KEY).selected_text(shown).show_ui(ui, |ui| {
+                for (label, m) in choices {
+                    if ui.selectable_label(m == mode, label).clicked() {
+                        // A pick is the popup's "have selection" (`GP:2179-2187`).
+                        g.set(rp::HAVE_SELECTION_KEY, Value::Boolean(true));
+                        g.set(rp::SELECTION_KEY, Value::Integer(m.tag()));
+                        action = action.max_changed();
+                    }
+                }
+            });
+            if schema::find_global(rp::SELECTION_KEY).is_some_and(|s| indicate_non_default() && !global_is_default(g, s)) {
+                non_default_bar(ui, combo.response.rect, ui.is_enabled());
+            }
+            if ui.button(rp::SAVE_NOW).clicked() {
+                action = PrefsAction::SaveNow;
+            }
+        });
+    });
+    action
+}
+
+impl PrefsAction {
+    /// Changed, unless something more was asked for.
+    fn max_changed(self) -> PrefsAction {
+        if self == PrefsAction::None { PrefsAction::Changed } else { self }
+    }
 }
 
 /// iTerm2's Pointer pane.
@@ -974,9 +1276,14 @@ pub fn profile_key_mappings(ui: &mut egui::Ui, p: &mut Profile, st: &mut KeysSta
         }
     });
     let mut ctrl_h = delete_sends_ctrl_h(&map);
-    if ui.checkbox(&mut ctrl_h, "Delete sends ^H").changed() {
+    let check = ui.checkbox(&mut ctrl_h, "Delete sends ^H");
+    if check.changed() {
         set_delete_sends_ctrl_h(&mut map, ctrl_h);
         changed = true;
+    }
+    // Marked while on (`ProfilesKeysPreferencesViewController.m:549`).
+    if indicate_non_default() && ctrl_h {
+        non_default_bar(ui, check.rect, ui.is_enabled());
     }
     if st.key_editor.as_ref().is_some_and(|e| e.target == Target::Profile) && finish_key_editor(ui.ctx(), st, &mut map, profiles) {
         changed = true;
@@ -1017,6 +1324,17 @@ mod tests {
         // A backspace binding stored in the legacy form counts too.
         let old: toml::Table = toml::from_str("\"0x7f-0x0\" = { Action = 16 }").unwrap();
         assert!(delete_sends_ctrl_h(&old));
+    }
+
+    #[test]
+    fn toggle_setting_never_offers_ai_consent() {
+        let keys: Vec<String> = toggle_choices().into_iter().map(|(k, _, _)| k).collect();
+        for key in ["GenerativeAIAllowed", "EnableAI", "AICompletions"] {
+            assert!(!keys.iter().any(|k| k == key), "{key}");
+        }
+        // Other AI checkboxes and ordinary settings are still offered.
+        assert!(keys.iter().any(|k| k == "AI Safety Check"));
+        assert!(keys.iter().any(|k| k == "FocusFollowsMouse"));
     }
 
     #[test]
@@ -1080,6 +1398,97 @@ mod tests {
         g.set("EnableAPIServer", Value::Boolean(true));
         assert!(row_enabled(&g, "API Authentication Method"));
         assert!(row_enabled(&g, "IRMemory"));
+    }
+
+    #[test]
+    fn prefs_rows_follow_iterm2() {
+        let row = |key: &str| schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+        for (key, tab, section, kind, default, label) in [
+            ("LoadPrefsFromCustomFolder", "General", "Settings", Kind::Bool, Value::Boolean(false), Some("Load settings from a custom folder or URL")),
+            ("PrefsCustomFolder", "General", "Settings", Kind::String, Value::String(String::new()), Some("Custom folder")),
+            ("NoSyncNeverRemindPrefsChangesLostForFile_selection", "Stored", "Settings", Kind::Int, Value::Integer(0), None),
+            ("NoSyncPromptBeforeLoadingPrefsFromURL", "Stored", "Settings", Kind::String, Value::String(String::new()), None),
+            (
+                "NoSyncNeverRemindPrefsChangesLostForFile",
+                "Advanced",
+                "Warnings",
+                Kind::Bool,
+                Value::Boolean(false),
+                Some("Suppress changed-setting warning when settings are loaded from a custom folder."),
+            ),
+            (
+                "NoSyncNeverRemindPrefsChangesLostForUrl",
+                "Advanced",
+                "Warnings",
+                Kind::Bool,
+                Value::Boolean(false),
+                Some("Suppress changed-setting warning when settings are loaded from a URL."),
+            ),
+            ("NoSyncDownloadPrefsTimeout", "Advanced", "General", Kind::Float, Value::Float(5.0), Some("Timeout for downloading settings")),
+        ] {
+            let s = row(key);
+            assert_eq!((s.tab.as_str(), s.section.as_str()), (tab, section), "{key}");
+            assert_eq!(s.kind, kind, "{key}");
+            assert_eq!(s.default, Some(default), "{key}");
+            if let Some(label) = label {
+                assert_eq!(s.label, label, "{key}");
+                if tab == "Advanced" {
+                    assert_eq!(s.help, label, "{key}");
+                }
+            }
+        }
+        assert_eq!(
+            row("PrefsCustomFolder").help,
+            "The folder (or http:// or https:// URL) holding tandem-settings.toml. Network paths are not supported."
+        );
+        // The rows sit before "Save copy/paste and command history to disk" (Task 8's order).
+        let general: Vec<&str> = schema::global().iter().filter(|s| s.tab == "General" && s.section == "Settings").map(|s| s.key.as_str()).collect();
+        assert_eq!(&general[..3], ["LoadPrefsFromCustomFolder", "PrefsCustomFolder", "SavePasteHistory"]);
+    }
+
+    #[test]
+    fn export_rows_follow_iterm2() {
+        let s = schema::find_global("RevealExportedSettingsAndData").expect("row");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(true)));
+        let text = "Reveal file created by \u{201c}Export All Settings and Data\u{201d} in Explorer upon completion";
+        assert_eq!((s.label.as_str(), s.help.as_str()), (text, text));
+    }
+
+    #[test]
+    fn erase_row_follows_iterm2() {
+        let s = schema::find_global("DryRunEraseAllSettingsAndData").expect("row");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        let label = "Dry-run \u{201c}Erase All Settings and Data\u{201d}.";
+        assert_eq!(s.label, label);
+        assert_eq!(
+            s.help,
+            format!("{label}\nWhen enabled, the Erase All Settings and Data button logs what it would delete (to the debug output) instead of actually deleting anything, and does not quit. Intended for testing the feature.")
+        );
+    }
+
+    #[test]
+    fn prefs_row_enabling_follows_iterm2() {
+        use crate::remote_prefs::{FOLDER_KEY, LOAD_KEY};
+        let home = std::path::Path::new(r"C:\Users\u");
+        let mut g = Globals::empty(std::path::Path::new("prefs-rows-test.toml"));
+        assert!(!row_enabled(&g, FOLDER_KEY));
+        g.set(LOAD_KEY, Value::Boolean(true));
+        assert!(row_enabled(&g, FOLDER_KEY));
+        let writable = |p: &std::path::Path| p == std::path::Path::new(r"D:\s");
+        g.set(FOLDER_KEY, Value::String("https://h/p".into()));
+        assert!(!prefs_save_enabled(&g, home, &|_| None, &writable), "a URL is never saved to");
+        g.set(FOLDER_KEY, Value::String(r"D:\s".into()));
+        assert!(prefs_save_enabled(&g, home, &|_| None, &writable));
+        let to_share = |p: &std::path::Path| (p == std::path::Path::new(r"D:\s")).then(|| std::path::PathBuf::from(r"\\h\s"));
+        assert!(!prefs_save_enabled(&g, home, &to_share, &writable), "a folder linked to a network path");
+        g.set(FOLDER_KEY, Value::String(r"D:\t".into()));
+        assert!(!prefs_save_enabled(&g, home, &|_| None, &writable), "a folder that cannot be written");
+        g.set(FOLDER_KEY, Value::String(r"D:\s".into()));
+        g.set(LOAD_KEY, Value::Boolean(false));
+        assert!(!prefs_save_enabled(&g, home, &|_| None, &writable), "off");
+        assert!(!row_enabled(&g, FOLDER_KEY));
     }
 
     #[test]
@@ -1148,6 +1557,101 @@ mod tests {
     }
 
     #[test]
+    fn plumbed_rows_follow_iterm2() {
+        let row = |key: &str| schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+        let vars = row("NoSyncVariablesToReport");
+        assert_eq!((vars.tab.as_str(), vars.section.as_str(), vars.kind), ("Advanced", "Terminal", Kind::String));
+        assert_eq!(vars.default, Some(Value::String(String::new())));
+        assert_eq!(vars.label, "Variables to report via control sequence");
+        assert_eq!(
+            vars.help,
+            "Variables to report via control sequence\nThis is a comma-delimited list of variables that can be reported with the OSC 1337 ReportVariable=name control sequence. Each variable name must be prefixed with \u{201c}allow:\u{201d} or \u{201c}deny:\u{201d}."
+        );
+        let prevent = row("PreventEscapeSequenceFromChangingProfile");
+        assert_eq!((prevent.tab.as_str(), prevent.section.as_str(), prevent.kind), ("Advanced", "Terminal", Kind::Bool));
+        assert_eq!(prevent.default, None);
+        let text = "Prevent control sequences from changing the current profile?";
+        assert_eq!((prevent.label.as_str(), prevent.help.as_str()), (text, text));
+        for (key, text) in [
+            ("NoSyncSuppressClipboardAccessDeniedWarning", "Suppress the notification that the terminal attempted to access the clipboard but it was denied?"),
+            ("NoSyncDisableOpenURL", "Disable control sequence to open URLs?"),
+        ] {
+            let r = row(key);
+            assert_eq!((r.tab.as_str(), r.section.as_str(), r.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
+            assert_eq!(r.default, Some(Value::Boolean(false)), "{key}");
+            assert_eq!((r.label.as_str(), r.help.as_str()), (text, text), "{key}");
+        }
+        let base = row("PreferredBaseDir");
+        assert_eq!((base.tab.as_str(), base.section.as_str(), base.kind), ("Advanced", "General", Kind::String));
+        assert_eq!(base.default, Some(Value::String(String::new())));
+        let label = "Folder for config files. There must not be a space in the path.";
+        assert_eq!(base.label, label);
+        assert_eq!(base.help, format!("{label}\nIf empty, then %APPDATA%\\Tandem will be the default location."));
+    }
+
+    /// `PP:1096-1121`, `PBVC:902-909`: "Show indicators for non-default values" is
+    /// `NoSyncHideDefaultValuedSettings` (`PREF:252`, default NO `PREF:780`); a control is
+    /// default when its value is nullably and approximately (0.001) equal to the default.
+    #[test]
+    fn indicators_follow_iterm2() {
+        let s = schema::find_global("NoSyncHideDefaultValuedSettings").expect("NoSyncHideDefaultValuedSettings");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Stored", "Settings", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        assert_eq!(s.label, crate::settings_ui::SHOW_INDICATORS);
+        let mut g = Globals::empty(std::path::Path::new("unused-settings.toml"));
+        let ffm = schema::find_global("FocusFollowsMouse").unwrap();
+        assert!(global_is_default(&g, ffm));
+        g.set("FocusFollowsMouse", Value::Boolean(true));
+        assert!(!global_is_default(&g, ffm));
+        g.set("FocusFollowsMouse", Value::Boolean(false));
+        assert!(!g.values.contains_key("FocusFollowsMouse"), "the file drops a default");
+        assert!(global_is_default(&g, ffm));
+        // Numbers: within 0.001 of the default is default (`isNullablyEqualToObject:epsilon:0.001`).
+        let height = schema::find_global("statusBarHeight").unwrap();
+        g.values.insert("statusBarHeight".into(), Value::Float(21.0005));
+        assert!(global_is_default(&g, height));
+        g.values.insert("statusBarHeight".into(), Value::Integer(21));
+        assert!(global_is_default(&g, height));
+        g.values.insert("statusBarHeight".into(), Value::Float(21.01));
+        assert!(!global_is_default(&g, height));
+        // An optional bool has no default: a stored No or Yes is not default, unset is.
+        let prevent = schema::find_global("PreventEscapeSequenceFromChangingProfile").unwrap();
+        assert!(global_is_default(&g, prevent));
+        g.values.insert(prevent.key.clone(), Value::Boolean(true));
+        assert!(!global_is_default(&g, prevent));
+        // A missing value equals a zero, empty or false one (`it_hasZeroValue`).
+        assert!(nullably_equal(None, Some(&Value::Integer(0))));
+        assert!(nullably_equal(Some(&Value::String(String::new())), None));
+        assert!(!nullably_equal(Some(&Value::String("x".into())), None));
+        let color = |r: f64| Value::Table(toml::toml! { r = r g = 0.5 b = 0.5 a = 1.0 });
+        assert!(nullably_equal(Some(&color(0.2)), Some(&color(0.2009))));
+        assert!(!nullably_equal(Some(&color(0.2)), Some(&color(0.21))));
+        set_indicate_non_default(true);
+        assert!(indicate_non_default());
+        set_indicate_non_default(false);
+        assert!(!indicate_non_default());
+    }
+
+    /// `XIB:8708-8750`, `GP:2559-2566`, `PREF:105-106`, `PREF:757-758`: General > Experimental.
+    #[test]
+    fn experimental_rows_follow_iterm2() {
+        let bidi = schema::find_global("Bidi").expect("Bidi");
+        assert_eq!((bidi.tab.as_str(), bidi.section.as_str(), bidi.kind), ("General", "Experimental", Kind::Bool));
+        assert_eq!(bidi.default, Some(Value::Boolean(true)));
+        assert_eq!(bidi.label, "Enable support for right-to-left scripts");
+        assert_eq!(bidi.help, RTL_TOOLTIP);
+        let ssh = schema::find_global("SshIntegrationForURLs").expect("SshIntegrationForURLs");
+        assert_eq!((ssh.tab.as_str(), ssh.section.as_str(), ssh.kind), ("General", "Experimental", Kind::Bool));
+        assert_eq!(ssh.default, Some(Value::Boolean(false)));
+        assert_eq!(ssh.label, "Use SSH integration for ssh: URLs");
+        assert_eq!(EXPERIMENTAL_NOTE, "This setting also enables ligature support in the GPU renderer.");
+        assert_eq!(RTL_TOOLTIP, "Buried sessions appear under Session > Buried Sessions. When this setting is enabled, window sizes are restored when attaching to an existing tmux session.");
+        // Experimental is the General pane's last section, as in iTerm2's xib.
+        let last = schema::global().iter().filter(|s| s.tab == "General").last().unwrap();
+        assert_eq!(last.section, "Experimental");
+    }
+
+    #[test]
     fn utilities_rows_follow_iterm2() {
         let lc = "Set LC_TERMINAL=iTerm2.";
         for (key, label, help) in [
@@ -1178,5 +1682,183 @@ mod tests {
     fn pointer_rows_show_labels() {
         let rows = pointer_rows(crate::globals::keymaps::factory_pointer());
         assert!(rows.contains(&("Button,1,1,,".to_string(), "Right button, single click".to_string(), "Open Context Menu".to_string())));
+    }
+
+    /// Settings > General > AI rows: key, kind, default, label, help after the label.
+    fn ai_rows() -> Vec<(&'static str, Kind, Value, &'static str, &'static str)> {
+        const GENERAL: &str = "Set by Settings > General > AI.";
+        const MODEL: &str = "Set by the AI Model popup and the model editor.";
+        const LEGACY: &str = "Legacy; copied once into each manual model.";
+        let b = Value::Boolean;
+        let i = Value::Integer;
+        let s = |t: &str| Value::String(t.to_string());
+        vec![
+            (
+                "EnableAI",
+                Kind::Bool,
+                b(false),
+                "Enable generative AI features",
+                "No data is sent to third parties without your explicit permission. You will always be prompted before data is shared.",
+            ),
+            (
+                "AICompletions",
+                Kind::Bool,
+                b(false),
+                "Offer AI command suggestion in Composer & Auto Composer",
+                "When enabled, everything you type in the Composer will be shared with your AI provider.",
+            ),
+            ("AIVendor", Kind::Int, i(2), "AI vendor", MODEL),
+            ("UseRecommendedAIModel", Kind::Bool, b(true), "Use the vendor's recommended model", MODEL),
+            ("AiModel", Kind::String, s("gpt-4o-mini"), "AI model", MODEL),
+            ("AiMaxTokens", Kind::Int, i(128000), "Context tokens", MODEL),
+            ("AiResponseMaxTokens", Kind::Int, i(8192), "Max response tokens", MODEL),
+            ("AI Timeout", Kind::Int, i(1200), "AI timeout", GENERAL),
+            ("AitermURL", Kind::String, s(""), "AI endpoint URL", MODEL),
+            ("AitermUseLegacyAPI", Kind::Bool, b(false), "Use the legacy API (deprecated)", GENERAL),
+            ("AITermAPI", Kind::Int, i(2), "AI API", MODEL),
+            ("AIFeatureHostedFileSearch", Kind::Bool, b(false), "Hosted file search", MODEL),
+            ("AIFeatureHostedCodeInterpeter", Kind::Bool, b(false), "Hosted code interpreter", MODEL),
+            ("AIFeatureHostedWebSearch", Kind::Bool, b(false), "Hosted web search", MODEL),
+            ("AIFeatureFunctionCalling", Kind::Bool, b(false), "Function calling", MODEL),
+            ("AIFeatureStreamingResponses", Kind::Bool, b(false), "Streaming responses", MODEL),
+            ("AIVectorStore", Kind::Int, i(0), "Vector store", MODEL),
+            ("AIManualModelConfigurations", Kind::List, Value::Array(Vec::new()), "Manual AI Models", GENERAL),
+            ("AIEconomyModelName", Kind::String, s(""), "Economy model", GENERAL),
+            ("AIOllamaRegularModel", Kind::String, s(""), "Regular:", GENERAL),
+            ("AIOllamaEconomyModel", Kind::String, s(""), "Budget:", GENERAL),
+            ("AI Safety Check", Kind::Bool, b(false), "Use AI to check safety of commands before running them", GENERAL),
+            ("AICustomHeadersEnabled", Kind::Bool, b(false), "Custom headers (legacy)", LEGACY),
+            ("AICustomHeaders", Kind::List, Value::Array(Vec::new()), "Custom header list (legacy)", LEGACY),
+            ("AIZeroDataRetention", Kind::Bool, b(false), "Enable \u{201c}zero data retention\u{201d} (send whole conversation every time)", GENERAL),
+            ("AIModelUpdatesEnabled", Kind::Bool, b(false), "Automatically update available AI models from live online database", GENERAL),
+        ]
+    }
+
+    #[test]
+    fn ai_rows_follow_iterm2() {
+        for (key, kind, default, label, rest) in ai_rows() {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("General", "AI"), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default.as_ref(), Some(&default), "{key}");
+            assert_eq!(row.label, label, "{key}");
+            assert_eq!(row.help, format!("{label}\n{rest}"), "{key}");
+        }
+        for (key, label) in crate::ai_settings::PERMISSIONS {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("General", "AI"), "{key}");
+            assert_eq!(row.kind, Kind::Enum, "{key}");
+            assert_eq!(row.default, Some(Value::Integer(0)), "{key}");
+            assert_eq!(row.label, label, "{key}");
+            assert_eq!(row.help, format!("{label}\nSet by Settings > General > AI."), "{key}");
+            let allow = if key == "AIPermissionCheckTerminalState" { "Provide Automatically" } else { "Allow Without Asking" };
+            let choices: Vec<(Value, &str)> = row.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
+            assert_eq!(choices, [(Value::Integer(0), "Ask Each Time"), (Value::Integer(1), allow), (Value::Integer(2), "Never Allow")], "{key}");
+        }
+        let g = Globals::empty(std::path::Path::new("ai-rows-test.toml"));
+        assert_eq!(g.int("AIVendor"), 2);
+        assert!(g.bool("UseRecommendedAIModel"));
+        assert_eq!(g.string("AiModel"), "gpt-4o-mini");
+        assert_eq!(g.int("AI Timeout"), 1200);
+        assert_eq!(g.int("AITermAPI"), 2);
+        assert!(!g.bool("EnableAI"));
+    }
+
+    #[test]
+    fn advanced_ai_rows_follow_iterm2() {
+        let s = |t: &str| Value::String(t.to_string());
+        let rows: Vec<(&str, &str, Kind, Value, String)> = vec![
+            ("llmPlatform", "General", Kind::String, s("OpenAI"), "LLM Platform.\nLegal values are: OpenAI, Azure, Gemini. This determines the format of requests and responses.".into()),
+            (
+                "aiModelCatalogURL",
+                "General",
+                Kind::String,
+                s("https://iterm2.com/downloads/ai/manifest.json"),
+                "URL to check for updates to the AI model catalog.\nThe catalog defines the built-in AI models (context window, capabilities, and the recommended model per vendor). Tandem ships its catalog with each release and never downloads a newer one, so this URL is not used.".into(),
+            ),
+            (
+                "aiChatVerboseConsoleLogging",
+                "Debugging",
+                Kind::Bool,
+                Value::Boolean(false),
+                "Log AI chat traffic to the system console.\nEmits per-turn user / agent / tool entries so you can trace exactly what the agent received and produced. Useful for debugging tool dispatch and history translation. Off by default; turn on only while reproducing an issue.".into(),
+            ),
+            (
+                "aiChatRawWireLogging",
+                "Debugging",
+                Kind::Bool,
+                Value::Boolean(false),
+                "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Tandem\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. API keys in Authorization, x-api-key, api-key and x-goog-api-key headers, and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished.".into(),
+            ),
+            (
+                "unameCommand",
+                "SSH Integration",
+                Kind::String,
+                s("uname -s"),
+                "Command used to set the `uname` variable.\nThe main use of this is to use in the AI prompt so the language model knows the operating system.".into(),
+            ),
+            (
+                "aiModernModelPrefixes",
+                "Experimental Features",
+                Kind::String,
+                s("gpt-"),
+                "AI model name substrings that use the modern 'completions' API.\nSubstrings should be space-delimited. This handles OpenRouter-style names like 'openai/gpt-4o'. Note that o1 models use a different API and have hard-coded behavior.".into(),
+            ),
+            ("aiProxy", "Experimental Features", Kind::String, s(""), "Host and port for proxy for AI requests.\ni.e., example.com:8080".into()),
+            (
+                "ollamaNumCtx",
+                "Experimental Features",
+                Kind::Int,
+                Value::Integer(0),
+                "Ollama context window size (num_ctx) for native /api/chat requests.\nOllama defaults num_ctx to a small value (around 4096) regardless of the model, silently truncating long prompts. 0 means size it automatically per request, capped at the model\u{2019}s context window. A positive value overrides that and is sent verbatim (larger values use more memory).".into(),
+            ),
+            (
+                "ollamaKeepAlive",
+                "Experimental Features",
+                Kind::String,
+                s("30m"),
+                "Ollama keep_alive for native /api/chat requests.\nHow long Ollama keeps the model resident after a request, e.g. 30m, 1h, or 0 to unload immediately. Empty means omit the field and use Ollama\u{2019}s own default.".into(),
+            ),
+        ];
+        for (key, section, kind, default, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default.as_ref(), Some(&default), "{key}");
+            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
+            assert_eq!(row.help, help, "{key}");
+        }
+        // The Apple-only rows are left out of the schema (ruling 12e-4).
+        assert!(schema::find_global("aiGeneratedTabTitles").is_none());
+        assert!(schema::find_global("logAITabTitleCorpus").is_none());
+        let admin = schema::find_global("GenerativeAIAllowed").unwrap();
+        assert_eq!((admin.tab.as_str(), admin.section.as_str()), ("Advanced", "General"));
+        assert_eq!(admin.kind, Kind::Bool);
+        assert_eq!(admin.default, Some(Value::Boolean(true)));
+        assert_eq!(admin.label, "Allow the use of large language model APIs?");
+        assert_eq!(
+            admin.help,
+            "Allow the use of large language model APIs?\nThe purpose of this setting is to make it easy for managed environments to disable the use of LLMs. The user defaults key is `GenerativeAIAllowed`."
+        );
+    }
+
+    #[test]
+    fn page_rows_leave_ai_to_its_section() {
+        let general = page_rows("General");
+        assert!(general.iter().all(|s| s.section != "AI"));
+        assert!(general.iter().any(|s| s.key == "EnableAPIServer"));
+        assert!(general.iter().all(|s| s.tab == "General"));
+        let advanced = page_rows("Advanced");
+        let has = |key: &str| advanced.iter().any(|s| s.key == key);
+        assert!(has("GenerativeAIAllowed"));
+        assert!(has("unameCommand"));
+        assert!(!has("aiGeneratedTabTitles"));
+        assert!(!has("logAITabTitleCorpus"));
+        assert!(row_hidden("aiGeneratedTabTitles"));
+        assert!(row_hidden("logAITabTitleCorpus"));
+        assert!(!row_hidden("aiProxy"));
+        // Schema order is kept.
+        let order: Vec<&str> = schema::global().iter().filter(|s| s.tab == "Advanced" && !row_hidden(&s.key)).map(|s| s.key.as_str()).collect();
+        assert_eq!(advanced.iter().map(|s| s.key.as_str()).collect::<Vec<_>>(), order);
     }
 }

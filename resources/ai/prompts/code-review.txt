@@ -1,0 +1,11 @@
+Review the pending changes in this repo. Flag issues a careful maintainer would block on before merge, in roughly this order:
+  1. Correctness — logic errors, broken invariants, missed edge cases, off-by-one, races, lifetime/memory bugs, error paths that swallow failures.
+  2. Security — injection, authn/authz mistakes, secret handling, unsafe deserialization, unsafe defaults, TOCTOU.
+  3. Reliability & performance — blocking the wrong thread, unbounded resource use, accidental O(N²), retries without backoff, silent failure paths.
+  4. Contract risk — behavior changes callers rely on, silently changed defaults, broken backward compatibility, missing migrations.
+
+For each finding cite `file:line`, explain *why* it is wrong (not what the code does), and propose a concrete fix when one is obvious. Be calibrated: if a finding is not high-confidence, say so or skip it. Verify claims against the actual code rather than inferring from names.
+
+Skip pure style, formatting, naming, and anything a linter or CI already enforces.
+
+If you find nothing worth fixing, say so plainly.
