@@ -270,6 +270,72 @@ pub struct Setup {
     pub parsed: ParsedArgs,
 }
 
+/// How a command's results are handled (`CD:1205-1221`). Task 6 adds `GetShell` and
+/// `CheckForPython`; 14c adds handlers holding an `f64`, so no `Eq`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Handler {
+    FailIfNonzero,
+    FireAndForget,
+    NonFramerLogin,
+    WriteOnSuccess(String),
+}
+
+/// A command with its handler (ExecutionContext, `CD:1159-1164`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Context {
+    pub command: Command,
+    pub handler: Handler,
+    canceled: bool,
+}
+
+/// The conductor's state (`CD:1483-1507`). 14c adds `Recovery` and `Recovered`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum State {
+    /// Nothing written, nothing expected.
+    Ground,
+    /// Written, its begin not yet parsed. Never empty.
+    WillExecute(Vec<Context>),
+    /// The first has had a line; the rest were written behind it.
+    Executing(Context, Vec<Context>),
+    /// Not using the conductor: input and output are direct.
+    Unhooked,
+}
+
+/// What a handler is told (PartialResult, `CD:1509-1515`; side-channel lines are 14c).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Partial {
+    Line(String),
+    /// The exit status.
+    End(u8),
+    /// The command could not be sent, or the conductor went away.
+    Abort,
+    Canceled,
+}
+
+/// The failure text for a command that ended with an unexpected status (`CD:2115,2124`,
+/// iTerm2's typo kept). A setenv shows its name only: the value may be a secret.
+pub fn unexpected_status(cmd: &Command, status: u8) -> String {
+    let shown = match cmd {
+        Command::Setenv { key, .. } => format!("setenv {key}"),
+        cmd => cmd.string_value(),
+    };
+    format!("{shown}: Unepected status {status}")
+}
+
+/// A command's operationDescription as the person sees it: a setenv names the variable
+/// only, since the value may be a secret.
+fn shown_description(cmd: &Command) -> String {
+    match cmd {
+        Command::Setenv { key, .. } => format!("setting {key}"),
+        cmd => cmd.description(),
+    }
+}
+
+/// The failure text for python code that did not run (`CD:2255`).
+pub fn python_status(status: u8) -> String {
+    format!("Status {status} when running python code")
+}
+
 /// One conductor.sh (or framer.py) on the other side of an ssh (`CD`).
 pub struct Conductor {
     pub setup: Setup,
@@ -285,6 +351,14 @@ pub struct Conductor {
     line_prefix: String,
     depth: i32,
     effects: Vec<Effect>,
+    state: State,
+    queue: Vec<Context>,
+    /// Set while a handler runs and while commands are written: `send` only enqueues, and
+    /// the transition's own dequeue sends it next (`CD:384-391`, `CD:2964-2969`).
+    transition: bool,
+    /// Every handler call with the state at that moment, for the tests.
+    #[cfg(test)]
+    updates: Vec<(Command, Partial, State)>,
 }
 
 impl Conductor {
@@ -311,6 +385,11 @@ impl Conductor {
             line_prefix: format!("\u{3}{prefix_uuid}"),
             depth,
             effects: Vec::new(),
+            state: State::Ground,
+            queue: Vec::new(),
+            transition: false,
+            #[cfg(test)]
+            updates: Vec::new(),
         }
     }
 
@@ -351,23 +430,250 @@ impl Conductor {
 
     /// The conductor's own bytes as a parent carries them for a child's `write()`: an
     /// unframed parent writes them raw (sendKeys with `_queueWrites` cleared, never held).
-    #[cfg_attr(not(test), allow(dead_code))] // Task 5's state machine is the first caller.
     fn write_through(&mut self, bytes: Vec<u8>) {
         self.effects.push(Effect::Write(bytes));
     }
 
-    /// write (`CD:3039-3058`): `text` plus `\n`, through the parent when there is one. What
-    /// the parent queues for it moves into this conductor's queue, after its own.
-    #[cfg_attr(not(test), allow(dead_code))] // Task 5's state machine is the first caller.
+    /// Runs `f` on the parent, if any, and moves what the parent queues meanwhile into this
+    /// conductor's queue after its own, so the effects keep the order they were made in.
+    fn via_parent(&mut self, f: impl FnOnce(&mut Conductor)) {
+        if let Some(parent) = self.parent.as_deref_mut() {
+            let before = parent.effects.len();
+            f(parent);
+            self.effects.extend(parent.effects.drain(before..));
+        }
+    }
+
+    /// write (`CD:3039-3058`): `text` plus `\n`, through the parent when there is one.
+    /// `_queueWrites` is not toggled: an `Effect::Write` is never held.
     pub(crate) fn write(&mut self, text: &str) {
         let bytes = format!("{text}\n").into_bytes();
-        match self.parent.as_mut() {
-            Some(parent) => {
-                let before = parent.effects.len();
-                parent.write_through(bytes);
-                self.effects.extend(parent.effects.drain(before..));
+        if self.parent.is_some() {
+            self.via_parent(|parent| parent.write_through(bytes));
+        } else {
+            self.effects.push(Effect::Write(bytes));
+        }
+    }
+
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+
+    pub fn unhooked(&self) -> bool {
+        self.state == State::Unhooked
+    }
+
+    /// The command written and not yet ended, for the command timer (Task 9) and tests.
+    pub fn in_flight(&self) -> Option<&Command> {
+        match &self.state {
+            State::WillExecute(contexts) => contexts.first().map(|c| &c.command),
+            State::Executing(context, _) => Some(&context.command),
+            State::Ground | State::Unhooked => None,
+        }
+    }
+
+    /// queueWrites (`CD:656-670`): the session holds its writes while this is true. Only
+    /// `write()` clears iTerm2's own flag, and Tandem's writes are never held, so the flag
+    /// is the state; a conductor under an unhooked parent never holds writes.
+    pub fn queue_writes(&self) -> bool {
+        !self.unhooked() && self.parent.as_ref().is_none_or(|p| p.queue_writes())
+    }
+
+    /// handlesKeystrokes (`CD:700-703`): route writes through `send_keys`.
+    pub fn handles_keystrokes(&self) -> bool {
+        self.framing() && self.queue_writes()
+    }
+
+    /// currentOperationDescription (`CD:3060-3083`), with setenv values hidden.
+    pub fn description(&self) -> String {
+        match &self.state {
+            State::Ground => "waiting".into(),
+            State::Executing(context, pending) if pending.is_empty() => shown_description(&context.command),
+            State::Executing(context, pending) => format!("{} and {} more", shown_description(&context.command), pending.len()),
+            State::WillExecute(contexts) => {
+                let first = format!("{} (preparation stage)", shown_description(&contexts[0].command));
+                match contexts.len() {
+                    1 => first,
+                    n => format!("{first} and {} more", n - 1),
+                }
             }
-            None => self.effects.push(Effect::Write(bytes)),
+            State::Unhooked => "unhooked".into(),
+        }
+    }
+
+    /// send (`CD:2802-2846`): enqueue (first when `high_priority`); from ground the command
+    /// is written at once. During a transition it only enqueues. In flight, iTerm2 tops up
+    /// a pipeline, which no 14b command joins (14c). Unhooked, it stays queued, unsent.
+    pub fn send(&mut self, cmd: Command, handler: Handler, high_priority: bool) {
+        let context = Context { command: cmd, handler, canceled: false };
+        if high_priority {
+            self.queue.insert(0, context);
+        } else {
+            self.queue.push(context);
+        }
+        if self.transition {
+            return;
+        }
+        if self.state == State::Ground {
+            self.dequeue();
+        }
+    }
+
+    /// cancelEnqueuedRequests (`CD:2848-2858`): matching queued commands are dropped with
+    /// `Partial::Canceled` when their turn comes.
+    pub fn cancel_enqueued(&mut self, pred: &dyn Fn(&Command) -> bool) {
+        for context in self.queue.iter_mut().filter(|c| pred(&c.command)) {
+            context.canceled = true;
+        }
+    }
+
+    /// dequeue and extendPipeline from ground (`CD:2860-2869`, `CD:2888-2960`), one context
+    /// at a time (14c pipelines): canceled contexts are dropped, the next one becomes the
+    /// state before it is written, and the dropped handlers run once the state is
+    /// consistent.
+    fn dequeue(&mut self) {
+        debug_assert_eq!(self.state, State::Ground);
+        let mut dropped = Vec::new();
+        while self.queue.first().is_some_and(|c| c.canceled) {
+            dropped.push((self.queue.remove(0), Partial::Canceled));
+        }
+        if !self.queue.is_empty() {
+            let context = self.queue.remove(0);
+            let text = encode(&context.command, &self.line_prefix);
+            self.in_transition(|c| {
+                c.state = State::WillExecute(vec![context]);
+                c.write(&text);
+            });
+        }
+        for (context, result) in dropped {
+            self.update(&context, result);
+        }
+    }
+
+    /// withPipelineTransition (`CD:2964-2969`): nested transitions restore the flag.
+    fn in_transition(&mut self, f: impl FnOnce(&mut Conductor)) {
+        let saved = self.transition;
+        self.transition = true;
+        f(self);
+        self.transition = saved;
+    }
+
+    /// handleCommandBegin (`CD:2468-2472`): iTerm2 only logs it.
+    pub fn handle_begin(&mut self, _id: &str, _depth: i32) {}
+
+    /// handle(line:depth:) (`CD:2413-2433`).
+    pub fn handle_line(&mut self, line: &str, depth: i32) {
+        if depth != self.depth && self.framing() {
+            self.via_parent(|parent| parent.handle_line(line, depth));
+            return;
+        }
+        let context = match std::mem::replace(&mut self.state, State::Ground) {
+            State::WillExecute(mut contexts) => {
+                let first = contexts.remove(0);
+                self.state = State::Executing(first.clone(), contexts);
+                first
+            }
+            State::Executing(context, pending) => {
+                self.state = State::Executing(context.clone(), pending);
+                context
+            }
+            // Ground and unhooked tolerate stray input.
+            other => {
+                self.state = other;
+                return;
+            }
+        };
+        self.update(&context, Partial::Line(line.to_string()));
+    }
+
+    /// handleCommandEnd (`CD:2475-2537`): `kind` is "f" for framer.py, "r" for conductor.sh.
+    pub fn handle_end(&mut self, id: &str, kind: &str, status: u8, depth: i32) {
+        let expect_framing = self.framing() || matches!(&self.state, State::Executing(c, _) if c.command.is_framer());
+        if (!expect_framing && kind == "f") || (self.framing() && depth != self.depth) {
+            self.via_parent(|parent| parent.handle_end(id, kind, status, depth));
+            return;
+        }
+        let (context, pending) = match &self.state {
+            State::WillExecute(contexts) => (contexts[0].clone(), contexts[1..].to_vec()),
+            State::Executing(context, pending) => (context.clone(), pending.clone()),
+            // Ground and unhooked tolerate stray input.
+            State::Ground | State::Unhooked => return,
+        };
+        self.in_transition(|c| c.update(&context, Partial::End(status)));
+        if pending.is_empty() {
+            self.state = State::Ground;
+            self.dequeue();
+        } else {
+            // amendPipeline: nothing joins a 14b pipeline, so only the state changes.
+            self.state = State::WillExecute(pending);
+        }
+    }
+
+    /// handleUnhook (`CD:2435-2466`): the in-flight and queued contexts are taken, the
+    /// state is set, and only then their handlers hear `Abort`.
+    pub fn handle_unhook(&mut self) {
+        let mut aborted: Vec<Context> = match std::mem::replace(&mut self.state, State::Unhooked) {
+            State::WillExecute(mut contexts) => vec![contexts.remove(0)],
+            State::Executing(context, _) => vec![context],
+            State::Ground | State::Unhooked => Vec::new(),
+        };
+        aborted.append(&mut self.queue);
+        for context in aborted {
+            self.update(&context, Partial::Abort);
+        }
+        self.state = State::Unhooked;
+    }
+
+    /// forceReturnToGroundState (`CD:3085-3093`): ground, the queue aborted (the in-flight
+    /// command is dropped unheard), then the parent's. The queue is taken before its
+    /// handlers run, so a send from one of them is not dropped with it.
+    pub fn force_ground(&mut self) {
+        self.state = State::Ground;
+        let aborted = std::mem::take(&mut self.queue);
+        for context in aborted {
+            self.update(&context, Partial::Abort);
+        }
+        self.via_parent(Conductor::force_ground);
+    }
+
+    /// fail (`CD:3095-3103`): back to ground, then the raw `exec_login_shell` line through
+    /// the session (outside `write()`, so it is held like typing; without the line prefix,
+    /// base64 or the blank line conductor.sh needs: iTerm2 bug B3, kept), then the abort.
+    pub fn fail(&mut self, reason: &str) {
+        self.force_ground();
+        let line = Command::ExecLoginShell(Vec::new()).string_value() + "\n";
+        self.effects.push(Effect::SessionWrite(line.into_bytes()));
+        self.effects.push(Effect::Abort(reason.to_string()));
+    }
+
+    /// update(executionContext:result:) (`CD:2106-2396`) for the 14b handlers.
+    fn update(&mut self, context: &Context, result: Partial) {
+        #[cfg(test)]
+        self.updates.push((context.command.clone(), result.clone(), self.state.clone()));
+        let Partial::End(status) = result else {
+            return;
+        };
+        match &context.handler {
+            Handler::FireAndForget => {}
+            Handler::FailIfNonzero => {
+                if status != 0 {
+                    self.fail(&unexpected_status(&context.command, status));
+                }
+            }
+            Handler::NonFramerLogin => {
+                if status == 0 {
+                    self.effects.push(Effect::SendInitialText);
+                } else {
+                    self.fail(&unexpected_status(&context.command, status));
+                }
+            }
+            Handler::WriteOnSuccess(code) => {
+                if status == 0 {
+                    self.write(&format!("{code}\nEOF\n"));
+                } else {
+                    self.fail(&python_status(status));
+                }
+            }
         }
     }
 }
@@ -665,5 +971,307 @@ mod tests {
         child.write("z");
         assert_eq!(child.take_effects(), [Effect::StateChanged, Effect::Write(b"z\n".to_vec())]);
         assert!(child.effects.is_empty() && child.parent.as_ref().unwrap().effects.is_empty());
+    }
+
+    /// The concatenated `Effect::Write` bytes taken so far.
+    fn wire(c: &mut Conductor) -> Vec<u8> {
+        c.take_effects()
+            .into_iter()
+            .filter_map(|e| match e {
+                Effect::Write(bytes) => Some(bytes),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// What `write()` puts on the wire for a command of a conductor with prefix `U`.
+    fn sent(cmd: &Command) -> Vec<u8> {
+        (encode(cmd, "\u{3}U") + "\n").into_bytes()
+    }
+
+    fn cd(dir: &str) -> Command {
+        Command::Cd(dir.into())
+    }
+
+    fn root() -> Conductor {
+        Conductor::new(setup("A"), None, "U")
+    }
+
+    #[test]
+    fn queue_follows_iterm2() {
+        let mut c = root();
+        assert_eq!((c.state(), c.description().as_str()), (&State::Ground, "waiting"));
+        c.send(cd("/a"), Handler::FailIfNonzero, false);
+        assert_eq!(wire(&mut c), sent(&cd("/a")), "ground writes at once");
+        assert_eq!(c.description(), "changing directory to /a (preparation stage)");
+        assert_eq!(c.in_flight(), Some(&cd("/a")));
+        c.send(cd("/b"), Handler::FailIfNonzero, false);
+        assert!(wire(&mut c).is_empty(), "one in flight: the next waits");
+
+        let before = c.state().clone();
+        c.handle_begin("1", 0);
+        assert_eq!(c.state(), &before, "a begin is only logged (CD:2468-2472)");
+        assert_eq!(c.description(), "changing directory to /a (preparation stage)");
+        c.handle_line("out", 0);
+        assert!(matches!(c.state(), State::Executing(ctx, rest) if ctx.command == cd("/a") && rest.is_empty()));
+        assert_eq!(c.description(), "changing directory to /a");
+
+        c.handle_end("1", "r", 0, 0);
+        assert_eq!(wire(&mut c), sent(&cd("/b")));
+        assert_eq!(c.description(), "changing directory to /b (preparation stage)");
+        c.handle_end("2", "r", 0, 0);
+        assert_eq!(c.description(), "waiting");
+        assert_eq!((c.state(), c.in_flight()), (&State::Ground, None));
+        assert!(wire(&mut c).is_empty());
+
+        // A high-priority send goes before older queued commands.
+        c.send(cd("/c"), Handler::FireAndForget, false);
+        c.send(cd("/d"), Handler::FireAndForget, false);
+        c.send(cd("/e"), Handler::FireAndForget, true);
+        assert_eq!(wire(&mut c), sent(&cd("/c")));
+        c.handle_end("3", "r", 0, 0);
+        assert_eq!(wire(&mut c), sent(&cd("/e")));
+        c.handle_end("4", "r", 0, 0);
+        assert_eq!(wire(&mut c), sent(&cd("/d")));
+        c.handle_end("5", "r", 0, 0);
+
+        // During a transition a send only enqueues; the transition's own dequeue sends it.
+        c.transition = true;
+        c.send(cd("/f"), Handler::FireAndForget, false);
+        assert!(wire(&mut c).is_empty());
+        assert_eq!(c.state(), &State::Ground);
+        c.transition = false;
+        c.dequeue();
+        assert_eq!(wire(&mut c), sent(&cd("/f")));
+    }
+
+    #[test]
+    fn lines_follow_iterm2() {
+        let mut c = root();
+        c.send(Command::GetShell, Handler::FireAndForget, false);
+        c.take_effects();
+        assert!(matches!(c.state(), State::WillExecute(v) if v.len() == 1));
+        c.handle_line("/bin/zsh", 0);
+        assert!(matches!(c.state(), State::Executing(..)));
+        c.handle_line("/home/u", 0);
+        let got: Vec<(Command, Partial)> = c.updates.iter().map(|(cmd, p, _)| (cmd.clone(), p.clone())).collect();
+        assert_eq!(got, [(Command::GetShell, Partial::Line("/bin/zsh".into())), (Command::GetShell, Partial::Line("/home/u".into()))]);
+        assert!(matches!(&c.updates[0].2, State::Executing(..)), "the state moves before the handler sees the line");
+
+        // Ground tolerates lines and ends.
+        let mut g = root();
+        g.handle_line("stray", 0);
+        g.handle_begin("7", 0);
+        g.handle_end("7", "r", 1, 0);
+        assert_eq!(g.state(), &State::Ground);
+        assert!(g.take_effects().is_empty() && g.updates.is_empty());
+
+        // So does unhooked.
+        g.handle_unhook();
+        g.handle_line("stray", 0);
+        g.handle_end("7", "r", 1, 0);
+        assert_eq!(g.state(), &State::Unhooked);
+        assert!(g.take_effects().is_empty() && g.updates.is_empty());
+    }
+
+    #[test]
+    fn end_passes_to_the_parent_follows_iterm2() {
+        let child_under_busy_parent = || {
+            let mut parent = root();
+            parent.framed_pid = Some(1);
+            parent.send(Command::FramerPoll, Handler::FireAndForget, false);
+            assert_eq!(wire(&mut parent), b"cG9sbA==\n\n");
+            Conductor::new(setup("C"), Some(Box::new(parent)), "V")
+        };
+
+        let mut child = child_under_busy_parent();
+        child.handle_end("9", "f", 0, 0);
+        let parent = child.parent.as_ref().unwrap();
+        assert_eq!((parent.state(), parent.in_flight()), (&State::Ground, None), "a framer end goes to the parent (CD:2487-2496)");
+        assert_eq!(parent.updates.iter().map(|(_, p, _)| p.clone()).collect::<Vec<_>>(), [Partial::End(0)]);
+        assert_eq!(child.state(), &State::Ground);
+        assert!(child.updates.is_empty());
+
+        let mut child = child_under_busy_parent();
+        child.handle_end("9", "r", 0, 0);
+        let parent = child.parent.as_ref().unwrap();
+        assert_eq!(parent.in_flight(), Some(&Command::FramerPoll), "a regular end stays with the child");
+        assert!(parent.updates.is_empty());
+    }
+
+    #[test]
+    fn unhook_follows_iterm2() {
+        let mut c = root();
+        c.send(cd("/a"), Handler::FailIfNonzero, false);
+        c.send(cd("/b"), Handler::FailIfNonzero, false);
+        c.take_effects();
+        assert!(c.queue_writes());
+        c.handle_unhook();
+        assert!(c.unhooked());
+        assert!(!c.queue_writes());
+        assert!(c.queue.is_empty());
+        assert_eq!(c.description(), "unhooked");
+        assert_eq!(c.in_flight(), None);
+        assert_eq!(
+            c.updates,
+            [(cd("/a"), Partial::Abort, State::Unhooked), (cd("/b"), Partial::Abort, State::Unhooked)],
+            "the in-flight command first, each handler after the state is set"
+        );
+        assert!(c.take_effects().is_empty(), "an aborted FailIfNonzero writes nothing");
+        c.send(cd("/c"), Handler::FailIfNonzero, false);
+        assert!(wire(&mut c).is_empty());
+        assert_eq!(c.state(), &State::Unhooked);
+    }
+
+    #[test]
+    fn queue_writes_follow_iterm2() {
+        let c = root();
+        assert!(c.queue_writes());
+        assert!(!c.handles_keystrokes(), "unframed");
+
+        let mut parent = root();
+        parent.handle_unhook();
+        let child = Conductor::new(setup("C"), Some(Box::new(parent)), "V");
+        assert!(!child.unhooked());
+        assert!(!child.queue_writes(), "transitive: the parent is unhooked (CD:656-670)");
+
+        let mut framed = root();
+        framed.framed_pid = Some(7);
+        assert!(framed.handles_keystrokes(), "framing and writes queue (CD:700-703)");
+        framed.handle_unhook();
+        assert!(!framed.handles_keystrokes());
+
+        let mut parent = root();
+        parent.handle_unhook();
+        let mut child = Conductor::new(setup("C"), Some(Box::new(parent)), "V");
+        child.framed_pid = Some(8);
+        assert!(!child.handles_keystrokes(), "the parent's unhook stops the child's queueing");
+    }
+
+    #[test]
+    fn fail_follows_iterm2() {
+        let mut parent = root();
+        parent.send(cd("/p1"), Handler::FailIfNonzero, false);
+        parent.send(cd("/p2"), Handler::FailIfNonzero, false);
+        let mut c = Conductor::new(setup("C"), Some(Box::new(parent)), "V");
+        c.send(cd("/a"), Handler::FailIfNonzero, false);
+        c.send(cd("/b"), Handler::FailIfNonzero, false);
+        c.take_effects();
+
+        c.fail("boom");
+        assert_eq!(c.take_effects(), [Effect::SessionWrite(b"exec_login_shell\n".to_vec()), Effect::Abort("boom".into())]);
+        assert_eq!((c.state(), c.in_flight()), (&State::Ground, None));
+        assert!(c.queue.is_empty());
+        assert_eq!(c.updates, [(cd("/b"), Partial::Abort, State::Ground)], "the queue is aborted, the in-flight command dropped (CD:3085-3093)");
+        assert!(c.queue_writes(), "fail writes outside write(): writes still queue");
+        let parent = c.parent.as_ref().unwrap();
+        assert_eq!((parent.state(), parent.queue.is_empty()), (&State::Ground, true));
+        assert_eq!(parent.updates, [(cd("/p2"), Partial::Abort, State::Ground)], "and the parent's");
+    }
+
+    #[test]
+    fn handlers_follow_iterm2() {
+        // FailIfNonzero: 0 does nothing, then the next command goes.
+        let mut c = root();
+        c.send(cd("/a"), Handler::FailIfNonzero, false);
+        c.send(cd("/b"), Handler::FailIfNonzero, false);
+        c.take_effects();
+        c.handle_end("1", "r", 0, 0);
+        assert_eq!(c.take_effects(), [Effect::Write(sent(&cd("/b")))]);
+
+        // Non-zero fails, and the fail wins over the dequeue that follows the handler.
+        let mut c = root();
+        c.send(cd("/a"), Handler::FailIfNonzero, false);
+        c.send(cd("/b"), Handler::FailIfNonzero, false);
+        c.take_effects();
+        c.handle_end("1", "r", 1, 0);
+        assert_eq!(unexpected_status(&cd("/a"), 1), "cd /a: Unepected status 1");
+        assert_eq!(c.take_effects(), [Effect::SessionWrite(b"exec_login_shell\n".to_vec()), Effect::Abort("cd /a: Unepected status 1".into())]);
+        assert_eq!(c.state(), &State::Ground);
+        assert!(c.queue.is_empty());
+
+        // NonFramerLogin.
+        let login = Command::ExecLoginShell(vec![]);
+        let mut c = root();
+        c.send(login.clone(), Handler::NonFramerLogin, false);
+        c.take_effects();
+        c.handle_line("ignored", 0);
+        c.handle_end("1", "r", 0, 0);
+        assert_eq!(c.take_effects(), [Effect::SendInitialText]);
+        c.send(login.clone(), Handler::NonFramerLogin, false);
+        c.take_effects();
+        c.handle_end("2", "r", 3, 0);
+        assert_eq!(c.take_effects(), [Effect::SessionWrite(b"exec_login_shell\n".to_vec()), Effect::Abort("exec_login_shell: Unepected status 3".into())]);
+
+        // WriteOnSuccess: the code, "\nEOF\n" and write()'s own newline (CD:2253, CD:3039-3058).
+        let py = Command::RunPython("print(1)".into());
+        let mut c = root();
+        c.send(py.clone(), Handler::WriteOnSuccess("code".into()), false);
+        c.take_effects();
+        c.handle_end("1", "r", 0, 0);
+        assert_eq!(c.take_effects(), [Effect::Write(b"code\nEOF\n\n".to_vec())]);
+        c.send(py.clone(), Handler::WriteOnSuccess("code".into()), false);
+        c.take_effects();
+        c.handle_end("2", "r", 2, 0);
+        assert_eq!(python_status(2), "Status 2 when running python code");
+        assert_eq!(c.take_effects(), [Effect::SessionWrite(b"exec_login_shell\n".to_vec()), Effect::Abort("Status 2 when running python code".into())]);
+
+        // Nested under an unframed parent: the parent carries it raw.
+        let mut c = Conductor::new(setup("C"), Some(Box::new(root())), "V");
+        c.send(py.clone(), Handler::WriteOnSuccess("code".into()), false);
+        c.take_effects();
+        c.handle_end("1", "r", 0, 0);
+        assert_eq!(c.take_effects(), [Effect::Write(b"code\nEOF\n\n".to_vec())]);
+
+        // FireAndForget ignores everything.
+        let mut c = root();
+        for status in [0, 5] {
+            c.send(cd("/x"), Handler::FireAndForget, false);
+            c.take_effects();
+            c.handle_line("l", 0);
+            c.handle_end("1", "r", status, 0);
+            assert!(c.take_effects().is_empty());
+            assert_eq!(c.state(), &State::Ground);
+        }
+        c.send(cd("/x"), Handler::FireAndForget, false);
+        c.take_effects();
+        c.handle_unhook();
+        assert!(c.take_effects().is_empty());
+    }
+
+    #[test]
+    fn cancel_follows_iterm2() {
+        let mut c = root();
+        c.send(cd("/a"), Handler::FailIfNonzero, false);
+        c.send(cd("/b"), Handler::FailIfNonzero, false);
+        c.send(Command::Run("x".into()), Handler::FailIfNonzero, false);
+        c.take_effects();
+        c.cancel_enqueued(&|cmd| matches!(cmd, Command::Cd(_)));
+        assert_eq!(c.in_flight(), Some(&cd("/a")), "only queued commands are canceled");
+        c.handle_end("1", "r", 0, 0);
+        assert_eq!(wire(&mut c), sent(&Command::Run("x".into())), "the canceled command is dropped, the next written");
+        let run_in_flight = State::WillExecute(vec![Context { command: Command::Run("x".into()), handler: Handler::FailIfNonzero, canceled: false }]);
+        assert_eq!(
+            c.updates,
+            [(cd("/a"), Partial::End(0), State::WillExecute(vec![Context { command: cd("/a"), handler: Handler::FailIfNonzero, canceled: false }])), (cd("/b"), Partial::Canceled, run_in_flight)],
+            "the canceled handler runs once the state is consistent"
+        );
+    }
+
+    #[test]
+    fn shown_texts_hide_environment_values() {
+        let setenv = Command::Setenv { key: "TOKEN".into(), value: "s3cret".into() };
+        assert_eq!(unexpected_status(&setenv, 1), "setenv TOKEN: Unepected status 1");
+        let mut c = root();
+        c.send(setenv.clone(), Handler::FailIfNonzero, false);
+        assert_eq!(c.description(), "setting TOKEN (preparation stage)");
+        c.handle_line("x", 0);
+        assert_eq!(c.description(), "setting TOKEN");
+        c.take_effects();
+        c.handle_end("1", "r", 1, 0);
+        let effects = c.take_effects();
+        assert_eq!(effects.last(), Some(&Effect::Abort("setenv TOKEN: Unepected status 1".into())));
+        assert!(!format!("{effects:?}").contains("s3cret"));
     }
 }
