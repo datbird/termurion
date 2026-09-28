@@ -303,8 +303,10 @@ pub enum Request {
     SetBadge(String),
     /// SetBadgeFormat with a function call: refused.
     BadgeRefused,
-    /// Shell integration reported another host (`marks::host_changed`) and these modes, left
-    /// on by the previous host, are to be offered for turning off.
+    /// Shell integration reported another account (user or host, the first report included):
+    /// a waiting outdated scripts notice goes, and at a host change (`marks::host_changed`)
+    /// these modes, left on by the previous host, are offered for turning off (empty when
+    /// nothing is offered).
     HostChanged(crate::marks::LeftOn),
     /// ShellIntegrationVersion: the version and the shell this report names (None when it
     /// names none), for the outdated scripts notice.

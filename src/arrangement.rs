@@ -400,13 +400,16 @@ pub enum Folder {
     None,
 }
 
-/// A restored session's folder rule. Contents force only a Windows path: another (WSL, MSYS,
-/// a remote host's) cannot be a Windows shell's folder, so the profile's rule decides.
+/// A restored session's folder rule, with the folder as the Windows path it names (the OSC 7
+/// form "/D:/x" is D:\x, "~" the home folder: `profile::local_folder`). Contents force only
+/// such a path: another (WSL, MSYS, a remote host's) cannot be a Windows shell's folder, so
+/// the profile's rule decides.
 pub fn folder_for(session: &Value) -> Folder {
-    match session.get("Working Directory").and_then(|v| v.as_str()) {
-        Some(d) if (contents(session).is_some() || styled_contents(session).is_some()) && crate::profile::local_path(d).is_some() => Folder::Forced(d.into()),
-        Some(d) => Folder::Previous(d.into()),
-        None => Folder::None,
+    let Some(d) = session.get("Working Directory").and_then(|v| v.as_str()) else { return Folder::None };
+    match crate::profile::local_folder(d).map(|p| p.display().to_string()) {
+        Some(local) if contents(session).is_some() || styled_contents(session).is_some() => Folder::Forced(local),
+        Some(local) => Folder::Previous(local),
+        None => Folder::Previous(d.into()),
     }
 }
 
@@ -674,6 +677,15 @@ mod tests {
         let mut unix = session(80, 24, Table::new(), "s", Some("/home/rob/src"));
         unix.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
         assert_eq!(folder_for(&unix), Folder::Previous("/home/rob/src".into()));
+        // The OSC 7 form and "~" are forced as the Windows paths they name, so an existing one
+        // is not reported as missing.
+        let mut osc7 = session(80, 24, Table::new(), "s", Some("/D:/x"));
+        osc7.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
+        assert_eq!(folder_for(&osc7), Folder::Forced(r"D:\x".into()));
+        let mut tilde = session(80, 24, Table::new(), "s", Some("~/www"));
+        tilde.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
+        assert_eq!(folder_for(&tilde), Folder::Forced(crate::profile::home().join("www").display().to_string()));
+        assert_eq!(folder_for(&session(80, 24, Table::new(), "s", Some("/D:/x"))), Folder::Previous(r"D:\x".into()));
         assert_eq!(contents(&with), Some("x"));
     }
 

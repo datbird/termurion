@@ -289,21 +289,27 @@ pub(super) enum FolderNotice {
 }
 
 /// A restored session's folder: nothing for a shell taken back, an empty folder, a UNC
-/// folder (never probed), a folder that is not a Windows path (WSL, MSYS or a remote host's,
-/// which cannot be checked here, as iTerm2 skips such a path, `iTermSessionFactory.m:342-345`)
-/// or one that exists.
+/// folder (never probed) or one that exists.
+/// - A local launch checks the path the shell starts in, "~" expanded (`profile::local_folder`,
+///   `iTermSessionFactory.m:340-358`); a path that is not a Windows path (WSL, MSYS, a remote
+///   host's) is not one a Windows shell can start in, so it is not checked.
+/// - An ssh launch keeps the folder unchecked (`iTermSessionFactory.m:342-345`, it names the
+///   remote host's folder), and a session of a named arrangement then checks it on this machine
+///   as it is (`PS:3560-3568`), so a folder that is not a Windows path is missing here.
 pub(super) fn folder_notice(launch: Launch, folder: &str, is_dir: &dyn Fn(&std::path::Path) -> bool) -> FolderNotice {
     if !launch.launched || folder.trim().is_empty() || crate::remote_prefs::is_unc(folder) {
         return FolderNotice::Nothing;
     }
-    match crate::profile::local_path(folder) {
-        Some(path) if !is_dir(&path) => {}
-        _ => return FolderNotice::Nothing,
+    if launch.ssh {
+        if !launch.named {
+            return FolderNotice::Nothing;
+        }
+        let missing = crate::profile::local_path(folder).is_none_or(|path| !is_dir(&path));
+        return if missing { FolderNotice::Repair } else { FolderNotice::Nothing };
     }
-    match (launch.ssh, launch.named) {
-        (false, _) => FolderNotice::Unavailable,
-        (true, true) => FolderNotice::Repair,
-        (true, false) => FolderNotice::Nothing,
+    match crate::profile::local_folder(folder) {
+        Some(path) if !is_dir(&path) => FolderNotice::Unavailable,
+        _ => FolderNotice::Nothing,
     }
 }
 
@@ -706,12 +712,23 @@ mod tests {
         assert_eq!(folder_notice(local(true), r"\\host\share\x", &watch), Nothing);
         assert_eq!(folder_notice(ssh(true), "//host/share", &watch), Nothing);
         assert!(!probed.get(), "a UNC folder is never probed");
-        // Not a Windows path (WSL, MSYS, a remote host's): nothing to check here, as iTerm2
-        // skips a path it cannot check against this machine (`iTermSessionFactory.m:342-345`).
+        // Not a Windows path (WSL, MSYS, a remote host's): a local launch cannot start there,
+        // so it is not checked.
         assert_eq!(folder_notice(local(true), "/home/rob/src", &watch), Nothing, "a Unix path is not missing");
-        assert_eq!(folder_notice(ssh(true), "/home/rob/src", &watch), Nothing, "nor for ssh");
-        assert_eq!(folder_notice(local(true), "~/www", &watch), Nothing);
+        assert_eq!(folder_notice(local(true), "~rob/www", &watch), Nothing);
         assert!(!probed.get(), "a path that is not a Windows path is never probed");
+        // An ssh session of a named arrangement checks its folder on this machine as it is
+        // (`PS:3560-3568`): a Unix or "~" path is missing here, with no probe.
+        assert_eq!(folder_notice(ssh(true), "/home/rob/src", &watch), Repair);
+        assert_eq!(folder_notice(ssh(true), "~/www", &watch), Repair);
+        assert_eq!(folder_notice(ssh(false), "/home/rob/src", &watch), Nothing, "no arrangement to repair");
+        assert!(!probed.get(), "nor probed for ssh");
+        assert_eq!(folder_notice(ssh(true), r"C:\here", &|_: &std::path::Path| true), Nothing, "an ssh folder that exists here");
+        // A local "~" path is checked in the home folder, as iTerm2 standardizes it first.
+        let home = crate::profile::home();
+        let only_home = |p: &std::path::Path| p == home;
+        assert_eq!(folder_notice(local(true), "~/www", &only_home), Unavailable, "a missing folder under home");
+        assert_eq!(folder_notice(local(true), "~", &only_home), Nothing, "home exists");
         let seen = std::cell::RefCell::new(None);
         let record = |p: &std::path::Path| {
             *seen.borrow_mut() = Some(p.to_path_buf());

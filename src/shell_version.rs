@@ -10,6 +10,29 @@ pub const LATEST: [(&str, i64); 5] = [("bash", 22), ("fish", 25), ("tcsh", 9), (
 /// `NotifyOnlyForCriticalShellIntegrationUpdates` is on (its default).
 pub const CRITICAL: [(&str, i64); 4] = [("tcsh", 2), ("bash", 5), ("zsh", 5), ("fish", 5)];
 
+/// A report's version as `integerValue` reads it: leading blanks, an optional sign, then the
+/// leading digits ("22beta" is 22); None when no digit leads, and for a negative number (the
+/// field is unsigned; ruled to read as 0).
+pub fn version_value(s: &str) -> Option<u32> {
+    let s = s.trim_start();
+    let (negative, rest) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 || negative {
+        return None;
+    }
+    Some(rest[..digits].bytes().fold(0u32, |n, d| n.saturating_mul(10).saturating_add(u32::from(d - b'0'))))
+}
+
+/// A report's `shell=` value: the last one, as iTerm2's dictionary of the report's
+/// parameters keeps the last of a repeated key.
+pub fn reported_shell<'a>(params: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    params.filter_map(|p| p.strip_prefix("shell=")).last()
+}
+
 /// Whether a report of `version` (None when it did not read as a number, which iTerm2's
 /// `integerValue` reads as 0) from `shell` (None when the report names none) suggests an
 /// upgrade: no shell, or older than the table's version for it. A shell no table names has
@@ -62,6 +85,20 @@ pub const RUN_ANYWAY: [&str; 2] = ["Run Installer Anyway", "Cancel"];
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `integerValue` and the parameter dictionary (`VT100ScreenMutableState+TerminalDelegate.m:2816-2830`).
+    #[test]
+    fn reports_read_like_iterm2() {
+        assert_eq!(version_value("22"), Some(22));
+        assert_eq!(version_value(" 22beta"), Some(22));
+        assert_eq!(version_value("+5"), Some(5));
+        assert_eq!(version_value("x"), None);
+        assert_eq!(version_value(""), None);
+        assert_eq!(version_value("-3"), None, "negative reads as 0 (ruled)");
+        assert_eq!(version_value("99999999999"), Some(u32::MAX));
+        assert_eq!(reported_shell(["shell=bash", "x=1", "shell=zsh"].into_iter()), Some("zsh"));
+        assert_eq!(reported_shell(["x=1"].into_iter()), None);
+    }
 
     #[test]
     fn outdated_follows_iterm2() {

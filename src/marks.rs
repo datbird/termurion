@@ -1018,8 +1018,8 @@ impl Screen {
                 }
                 "ShellIntegrationVersion" => {
                     let mut parts = value.split(';');
-                    self.shell.version = parts.next().and_then(|v| v.trim().parse().ok());
-                    let shell = parts.find_map(|p| p.strip_prefix("shell=")).map(str::to_string);
+                    self.shell.version = parts.next().and_then(crate::shell_version::version_value);
+                    let shell = crate::shell_version::reported_shell(parts).map(str::to_string);
                     if let Some(sh) = &shell {
                         self.shell.shell = Some(sh.clone());
                     }
@@ -1319,6 +1319,8 @@ mod tests {
         assert_eq!(s.shell.shell.as_deref(), Some("zsh"));
         s.feed(b"\x1b[?1049h\x1b]1337;ShellIntegrationVersion=5;shell=fish\x07");
         assert_eq!(reported(&mut s), [r(Some(5), Some("fish"))], "reported on the alternate screen too");
+        s.feed(b"\x1b]1337;ShellIntegrationVersion=22beta;shell=sh;shell=bash\x07");
+        assert_eq!(reported(&mut s), [r(Some(22), Some("bash"))], "integerValue's leading digits; the last shell");
     }
 
     #[test]
