@@ -17,7 +17,7 @@ pub const DEFAULT_CONTEXT: i64 = 32768;
 pub const UNKNOWN_PLATFORM: &str = "Unknown Platform";
 
 /// A model with iTerm2's `AIMetadata.Model` defaults for everything not given.
-fn model(name: &str, url: &str, api: Api, vendor: Vendor, context: i64, response: i64, features: BTreeSet<Feature>) -> Model {
+pub fn model(name: &str, url: &str, api: Api, vendor: Vendor, context: i64, response: i64, features: BTreeSet<Feature>) -> Model {
     Model {
         name: name.to_string(),
         vendor,

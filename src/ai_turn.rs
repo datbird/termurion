@@ -822,6 +822,26 @@ fn function_message(name: Option<String>, content: &str, id: Option<CallId>) -> 
     Message::new(Some(Role::Function), body)
 }
 
+/// A single request with no tools, no streaming, no hosted tools, no previous response and no
+/// volatile text: Engage AI, Composer suggestions and the safety classifier (12c, 12e).
+pub fn one_shot(model: Model, messages: Vec<Message>, wire: Wire, legacy_url_pref: String) -> Turn {
+    Turn::new(TurnInput {
+        model,
+        messages,
+        tools: Vec::new(),
+        stream: false,
+        hosted: Hosted::default(),
+        previous_response_id: None,
+        should_think: None,
+        effort: None,
+        tier: None,
+        volatile: Box::new(|| None),
+        frozen: None,
+        wire,
+        legacy_url_pref,
+    })
+}
+
 /// Joins a `Turn` to a `Transport`: each `Send` starts a call, and `poll` feeds the call's events
 /// to the turn.
 pub struct Runner {
@@ -1727,5 +1747,32 @@ mod tests {
         assert_eq!((rec.cancels(), rec.requests().len()), (1, 2));
         assert_eq!(last(&seen).messages.last().and_then(Message::content).as_deref(), Some(UNKNOWN_FUNCTION));
         assert!(r.turn().is_idle());
+    }
+
+    #[test]
+    fn one_shot_follows_iterm2() {
+        let answer: &[u8] = br#"{"choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}]}"#;
+        let rec = Arc::new(Recorded::new(vec![Reply::ok(&[answer])]));
+        let chat = fixture("gpt-4o", "https://api.openai.com/v1/chat/completions", Api::ChatCompletions);
+        let turn = one_shot(chat, vec![Message::text(Role::User, "hi")], wire(), String::new());
+        let options = Options { idle: Duration::from_secs(1200), proxy: Proxy::System };
+        let mut r = Runner::new(turn, rec.clone(), options.clone(), Arc::new(|| {}));
+        assert_eq!(r.start(Some(&Secret::new("sk-a".into()))), [Out::WillSend]);
+        assert_eq!(r.poll(), [Out::Choice("Hello".into())]);
+        let req = &rec.requests()[0];
+        assert!(!req.stream);
+        let body: Value = serde_json::from_slice(&req.body).unwrap();
+        assert_eq!(body["stream"], json!(false));
+        assert!(body.get("tools").is_none() && body.get("tool_choice").is_none(), "no tools");
+
+        let rec = Arc::new(Recorded::new(vec![Reply::ok(&[br#"{"id":"resp_1","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}]}]}"#])]));
+        let responses = fixture("gpt-5", "https://api.openai.com/v1/responses", Api::Responses);
+        let turn = one_shot(responses, vec![Message::text(Role::User, "hi")], wire(), String::new());
+        let mut r = Runner::new(turn, rec.clone(), options, Arc::new(|| {}));
+        r.start(Some(&Secret::new("sk-a".into())));
+        assert_eq!(r.poll(), [Out::Choice("Hi".into())]);
+        let body = String::from_utf8(rec.requests()[0].body.clone()).unwrap();
+        assert!(body.contains(r#""stream":false,"tool_choice":"none","tools":[]"#), "{body}");
+        assert!(!body.contains("previous_response_id"));
     }
 }

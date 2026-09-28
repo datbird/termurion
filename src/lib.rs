@@ -299,6 +299,8 @@ pub mod ai_gemini;
 pub mod ai_deepseek;
 pub mod ai_ollama;
 pub mod ai_discovery;
+pub mod ai_files;
+pub mod ai_test_conn;
 #[cfg(windows)]
 pub mod ai_winhttp;
 pub mod ai_wire_log;

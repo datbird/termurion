@@ -17,13 +17,14 @@ use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 use crate::pwm::Secret;
 use crate::settings_ai::{AiRequest, SubTab};
 
-/// What a given or refused key continues (ruling 12e-1). 12b adds `TestConnection`, 12c
-/// `Turn(String)`, 12e `Run(u64)`, `Codecierge(String)` and `Explain`, each with its arm in
-/// `App::ai_key_given`.
-#[allow(dead_code)] // 12a asks for no key itself; 12b is the first caller.
+/// What a given or refused key continues (ruling 12e-1). 12c adds `Turn(String)`, 12e
+/// `Run(u64)`, `Codecierge(String)` and `Explain`, each with its arm in `App::ai_key_given`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum KeyThen {
+    #[allow(dead_code)] // Later callers that only store the key.
     Nothing,
+    /// The settings window's model editor runs Test Connection.
+    TestConnection,
 }
 
 impl App {
@@ -110,7 +111,6 @@ impl App {
     /// caller's own endpoint (ruling R12ab-2: never the default model's, so a caller going to
     /// another host is not shown the wrong consent). A closed gate or missing consent answers
     /// None at once, after the gate's alert; otherwise the prompt waits its turn.
-    #[allow(dead_code)] // 12b's Test Connection, 12c's chat turn and 12e's features call it.
     pub(crate) fn ask_ai_key(&mut self, vendor: Vendor, endpoint: Option<&crate::ai_models::Endpoint>, then: KeyThen) {
         if !self.ai_check_endpoint(endpoint, false) {
             return self.ai_key_given(then, None);
@@ -167,6 +167,13 @@ impl App {
     fn ai_key_given(&mut self, then: KeyThen, key: Option<Secret>) {
         match then {
             KeyThen::Nothing => drop(key),
+            // The editor's next frame hands it to its tester (`settings_ai::drive_test`).
+            KeyThen::TestConnection => {
+                if let Some(s) = self.settings.as_mut() {
+                    s.ai.test_key = Some(key);
+                    s.request_redraw();
+                }
+            }
         }
     }
 
@@ -232,10 +239,11 @@ impl App {
         self.ai_discovery.wanted(std::time::Instant::now(), &*self.ai_transport, &configs, self.notify.clone());
     }
 
-    /// Takes the settings window's AI request after its frame and starts it (ruling R12ab-3);
-    /// the answer reaches the same window through `ai_discovery_tick`. The frame read the
-    /// discovered models (the model popup, the Regular and Budget pickers), which asks stale
-    /// servers again.
+    /// Takes the settings window's AI request after its frame and acts on it (ruling R12ab-3): a
+    /// discovery answer reaches the same window through `ai_discovery_tick`, a tester and a key
+    /// prompt's answer through its `State`, and an alert goes on the AI alert queue. The frame
+    /// read the discovered models (the model popup, the Regular and Budget pickers), which asks
+    /// stale servers again.
     pub(crate) fn drain_ai_requests(&mut self, _event_loop: &ActiveEventLoop) {
         if self.settings.is_some() {
             self.ai_discovery_read();
@@ -246,6 +254,18 @@ impl App {
                 let t = self.ai_discovery.refresh(&endpoint, &headers, force, &*self.ai_transport, self.notify.clone());
                 self.ai_probe = Some(t);
             }
+            AiRequest::Alert(alert) => self.ask_ai(alert),
+            AiRequest::BuildTester(probe) => {
+                let wire = crate::ai_turn::Wire::from_globals(&self.globals);
+                let options = crate::ai_transport::options_from(&self.globals);
+                let tester = crate::ai_test_conn::Tester::new(probe, wire, self.ai_transport.clone(), options, self.notify.clone());
+                if let Some(s) = self.settings.as_mut() {
+                    s.ai.tester = Some(tester);
+                    s.request_redraw();
+                }
+            }
+            // Ruling R12ab-2: the gate and the prompt are for the probe's own endpoint.
+            AiRequest::AskKey(vendor, endpoint) => self.ask_ai_key(vendor, Some(&endpoint), KeyThen::TestConnection),
         }
     }
 

@@ -12,6 +12,7 @@ use crate::ai_keys::{self, KeyStore, Keys};
 use crate::ai_models::{self as am, default_endpoint, manual_vendor, EditorForm, ManualModel};
 use crate::ai_policy::{self, KeyPolicy};
 use crate::ai_prompts::{self as ap, Prompt};
+use crate::ai_test_conn::{self as tc, Tester};
 use crate::ai_settings::{self as ai, Api, Vendor};
 use crate::globals::Globals;
 use crate::pwm::Secret;
@@ -25,13 +26,20 @@ pub enum SubTab {
     Features,
 }
 
-/// Work the settings window asks of the App, which alone holds the discovery cache, the transport
-/// and the loop's wake (ruling R12ab-3): the App takes it after the frame and answers in
-/// `State::probe`. Task 10 adds more variants.
+/// Work the settings window asks of the App, which alone holds the discovery cache, the
+/// transport, the loop's wake, the AI alert queue and the key prompt (ruling R12ab-3): the App
+/// takes it after the frame and answers in `State::probe`, `State::tester` or `State::test_key`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AiRequest {
     /// Refresh one Ollama server's models now.
     Discover { endpoint: String, headers: Vec<(String, String)>, force: bool },
+    /// Test Connection needs this vendor's key for this endpoint (`App::ask_ai_key`); the answer
+    /// arrives in `State::test_key`.
+    AskKey(Vendor, am::Endpoint),
+    /// Show this alert on the AI alert queue (Test Connection's consent, `App::ask_ai`).
+    Alert(ai_gate::Alert),
+    /// Build the tester for this probe into `State::tester`.
+    BuildTester(tc::Probe),
 }
 
 /// The Ollama probe sheet (`G:3055-3104`): the default in effect before Ollama was picked,
@@ -76,6 +84,10 @@ pub struct State {
     probing: Option<ProbeSheet>,
     /// "Could Not Reach Ollama" after a failed probe: its text and the frame it opened in.
     tell: Option<(String, u64)>,
+    /// The editor's Test Connection once the App built it; the editor's frames drive it.
+    pub tester: Option<Tester>,
+    /// The key prompt's answer for the running test (None: refused), taken by the next frame.
+    pub test_key: Option<Option<Secret>>,
 }
 
 impl State {
@@ -84,10 +96,10 @@ impl State {
         self.error.take()
     }
 
-    /// A probe or a model fetch is waiting on the App: the window keeps drawing so its spinner
-    /// turns and the answer shows at once.
+    /// A probe, a model fetch or a connection test is running: the window keeps drawing so its
+    /// spinner turns and the answer shows at once.
     pub fn busy(&self) -> bool {
-        self.probing.is_some() || self.editor.as_ref().is_some_and(|e| e.fetching.is_some())
+        self.probing.is_some() || self.tester.is_some() || self.editor.as_ref().is_some_and(|e| e.fetching.is_some() || e.testing)
     }
 }
 
@@ -136,6 +148,8 @@ struct Editor {
     alert: Option<(String, String, u64)>,
     /// The URL the auto-discovery Model popup was last built for; a change clears the choice.
     popup_url: Option<String>,
+    /// Test Connection runs: the button reads "Testing\u{2026}" and is disabled.
+    testing: bool,
 }
 
 impl Editor {
@@ -154,6 +168,7 @@ impl Editor {
             menu: None,
             alert: None,
             popup_url: None,
+            testing: false,
         }
     }
 
@@ -204,7 +219,6 @@ pub const KEYS_HEADING: &str = "Manage AI API Keys";
 pub const KEYS_TEXT: &str = "Keys are stored securely in the Windows Credential Manager.";
 pub const NO_KEY_USED: &str = "No API key is used.";
 pub const SELF_HOSTED: &str = "No API key is sent to a local endpoint. If it requires authentication, use a custom header.";
-const LATER: &str = "Comes in milestone 12.";
 pub const RESET: &str = "Reset";
 
 pub fn key_placeholder(provider: &str) -> String {
@@ -440,6 +454,69 @@ pub fn requests_text(g: &Globals, catalog: &Catalog, found: &Discovered) -> Stri
         format!("Requests go to {host} ({provider}). You allowed them.")
     } else {
         format!("Requests go to {host} ({provider}). Tandem asks before the first one.")
+    }
+}
+
+/// Test Connection pressed (`G:1460-1510`): the form's trimmed URL and name (in auto-discovery
+/// mode the popup's choice, else the first discovered tag), `missing` first (Err is its text for
+/// a "Missing Information" alert), then the consent gate for the probe's own endpoint: anything
+/// but Pass asks the App to show the gate's alert, and the test does not start (after Allow the
+/// person presses again, Decision 16); otherwise the App builds the tester.
+pub fn test_click(g: &Globals, form: &EditorForm, found: &Discovered) -> Result<AiRequest, &'static str> {
+    let url = form.url.trim().to_string();
+    let headers = form.named_headers();
+    let cached = if form.dynamic { ad::names_at(found, &url, &headers).into_iter().next() } else { None };
+    let chosen = if form.dynamic { form.selected.trim() } else { form.name.trim() };
+    if let Some(text) = tc::missing(chosen, &url, form.dynamic, cached.as_deref()) {
+        return Err(text);
+    }
+    let name = if chosen.is_empty() { cached.unwrap_or_default() } else { chosen.to_string() };
+    let probe = tc::Probe { name, url, api: Api::from_raw_or_chat(form.api), function_calling: form.function_calling, supports_temperature: form.temperature, headers };
+    Ok(match ai_gate::alert(&ai_gate::check_endpoint(g, Some(&tc::endpoint(&probe)))) {
+        Some(alert) => AiRequest::Alert(alert),
+        None => AiRequest::BuildTester(probe),
+    })
+}
+
+/// Drives the editor's Test Connection each frame (`G:1511-1540`): it starts with the vendor's
+/// stored key, asks the App for a key when one is needed, takes the prompt's answer, polls, and
+/// shows the outcome over the editor ("Connection Succeeded" or "Connection Failed"; nothing
+/// when the key prompt was refused). Closing the editor drops the test.
+fn drive_test(st: &mut State, now: u64) {
+    let Some(t) = st.tester.as_mut() else {
+        // A key answered after its test ended is never used by a later one.
+        st.test_key = None;
+        return;
+    };
+    let Some(e) = st.editor.as_mut() else {
+        st.tester = None;
+        st.test_key = None;
+        return;
+    };
+    let outcome = if !t.started() {
+        // One request for the App per frame: a start that needs a key waits for a free slot.
+        if st.pending.is_some() {
+            return;
+        }
+        let vendor = tc::endpoint(t.probe()).vendor;
+        let stored = keys().get(vendor, &mut *ai_keys::system_store());
+        let o = t.start(stored.as_ref());
+        if let Some(v) = t.needs_key() {
+            st.pending = Some(AiRequest::AskKey(v, tc::endpoint(t.probe())));
+        }
+        o
+    } else if t.needs_key().is_some() {
+        st.test_key.take().and_then(|k| t.key_given(k))
+    } else {
+        t.poll()
+    };
+    let Some(outcome) = outcome else { return };
+    st.tester = None;
+    e.testing = false;
+    match outcome {
+        tc::Outcome::Canceled => {}
+        tc::Outcome::Success(text) => e.alert = Some((tc::SUCCEEDED_TITLE.to_string(), text, now)),
+        tc::Outcome::Failure(text) => e.alert = Some((tc::FAILED_TITLE.to_string(), text, now)),
     }
 }
 
@@ -681,9 +758,12 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
         }
     }
     if let Some(request) = st.editor.as_mut().and_then(|e| e.request.take()) {
-        st.probe = None;
+        if matches!(request, AiRequest::Discover { .. }) {
+            st.probe = None;
+        }
         st.pending = Some(request);
     }
+    drive_test(st, now);
     if let Some(p) = &st.probing {
         let canceled = probe_modal(ui.ctx(), p.opened);
         let answer = if canceled { Some(Probe::Restore) } else { st.probe.take().map(|o| ad::probe_outcome(&o, false)) };
@@ -796,7 +876,7 @@ pub fn default_keys(opening: bool, enter: bool, escape: bool, focus_takes_return
 /// `default_keys` for a modal drawn in `ui` that opened in frame `opened`. `keeps` names the
 /// fields that keep the focus on Return (the key fields) and still let it act; egui's text
 /// fields give the focus up on Return, so they need no entry.
-fn modal_keys(ui: &egui::Ui, opened: u64, keeps: &[egui::Id]) -> (bool, bool) {
+pub fn modal_keys(ui: &egui::Ui, opened: u64, keeps: &[egui::Id]) -> (bool, bool) {
     let (enter, escape) = enter_escape(ui);
     let ctx = ui.ctx();
     let focus_takes_return = ctx.memory(|m| m.focused()).filter(|id| !keeps.contains(id)).and_then(|id| ctx.read_response(id)).is_some_and(|r| r.enabled() && r.sense.senses_click());
@@ -946,7 +1026,7 @@ fn sheet_modal(ctx: &egui::Context, g: &mut Globals, sh: &mut Sheet, editor: &mu
         _ => {}
     }
     if let Some(e) = editor.as_mut() {
-        match editor_modal(ctx, e, &sh.models, catalog, found) {
+        match editor_modal(ctx, g, e, &sh.models, catalog, found) {
             Some(Some(m)) => {
                 sh.selected = Some(am::save_edit(g, &mut sh.models, e.editing, m, catalog));
                 *editor = None;
@@ -968,8 +1048,8 @@ fn editor_label(ui: &mut egui::Ui, text: &str) {
 const FIELD_WIDTH: f32 = 400.0;
 
 /// The model editor (`G:645-1640`). None while open; Some(None) on Cancel; Some(Some(model))
-/// when Save passed its checks. Test Connection is Task 10's, shown disabled.
-fn editor_modal(ctx: &egui::Context, e: &mut Editor, models: &[ManualModel], catalog: &Catalog, found: &Discovered) -> Option<Option<ManualModel>> {
+/// when Save passed its checks. Test Connection hands its request to the App (`test_click`).
+fn editor_modal(ctx: &egui::Context, g: &Globals, e: &mut Editor, models: &[ManualModel], catalog: &Catalog, found: &Discovered) -> Option<Option<ManualModel>> {
     let mut out = None;
     let blocked = e.failure.is_some() || e.alert.is_some() || e.menu.is_some();
     let now = ctx.cumulative_frame_nr();
@@ -1161,7 +1241,20 @@ fn editor_modal(ctx: &egui::Context, e: &mut Editor, models: &[ManualModel], cat
         ui.add_space(12.0);
         let (enter, escape) = modal_keys(ui, e.opened, &[]);
         ui.horizontal(|ui| {
-            ui.add_enabled(false, egui::Button::new(am::TEST_CONNECTION).min_size(egui::vec2(150.0, 30.0))).on_disabled_hover_text(LATER);
+            // `G:1497-1510`: disabled with a spinner while the test runs.
+            let title = if e.testing { tc::TESTING } else { am::TEST_CONNECTION };
+            if ui.add_enabled(!e.testing, egui::Button::new(title).min_size(egui::vec2(150.0, 30.0))).clicked() {
+                match test_click(g, &e.form, found) {
+                    Err(text) => e.alert = Some((tc::MISSING_TITLE.to_string(), text.to_string(), now)),
+                    Ok(request) => {
+                        e.testing = matches!(request, AiRequest::BuildTester(_));
+                        e.request = Some(request);
+                    }
+                }
+            }
+            if e.testing {
+                ui.add(egui::Spinner::new().size(16.0));
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // iTerm2 titles the button Add while adding (`G:927-929`).
                 let title = if e.editing.is_some() { am::SAVE } else { am::ADD };
@@ -1790,5 +1883,49 @@ mod tests {
         assert_eq!(key_prompt(Vendor::OpenAI).1, "OpenAI API key");
         let typed = Secret::new(" \t ".to_string());
         assert_eq!(crate::ai_keys::normalized(typed.expose()), None, "a blank key writes nothing and continues with None");
+    }
+
+    #[test]
+    fn test_click_follows_iterm2() {
+        let cat = bundled();
+        let mut g = with_models(&[]);
+        g.set(crate::ai_settings::ENABLE_AI, Value::Boolean(true));
+        let none = Discovered::default();
+        let mut form = EditorForm::from_model(&manual("m", " http://localhost:1234/v1/chat/completions ", 1), cat);
+        form.name = " ".into();
+        assert_eq!(test_click(&g, &form, &none), Err(tc::MISSING_TEXT));
+        form.name = "  qwen3 ".into();
+        form.headers = pairs(&[("X-Team", "blue"), ("  ", "dropped")]);
+        form.temperature = false;
+        form.function_calling = true;
+        // Consent first: the gate's alert for the probe's own host, and no test.
+        let Ok(AiRequest::Alert(alert)) = test_click(&g, &form, &none) else { panic!("the consent alert") };
+        assert_eq!(alert.then, crate::ai_gate::Then::Grant("localhost".into()));
+        crate::ai_gate::grant(&mut g, "localhost");
+        let probe = tc::Probe {
+            name: "qwen3".into(),
+            url: "http://localhost:1234/v1/chat/completions".into(),
+            api: Api::ChatCompletions,
+            function_calling: true,
+            supports_temperature: false,
+            headers: pairs(&[("X-Team", "blue")]),
+        };
+        assert_eq!(test_click(&g, &form, &none), Ok(AiRequest::BuildTester(probe)));
+
+        // Auto-discovery: the popup's choice, else the first discovered tag.
+        let url = "http://localhost:1234/v1/chat/completions";
+        form.set_dynamic(true);
+        assert_eq!(test_click(&g, &form, &none), Err(tc::MISSING_DISCOVERED));
+        let mut m = crate::ai_model::pending_ollama_model();
+        m.name = "llama3.3".into();
+        m.url = url.into();
+        let found = Discovered { servers: vec![crate::ai_model::Server { endpoint: url.into(), headers: pairs(&[("X-Team", "blue")]), models: vec![m] }] };
+        let Ok(AiRequest::BuildTester(p)) = test_click(&g, &form, &found) else { panic!("a test") };
+        assert_eq!((p.name.as_str(), p.api), ("llama3.3", Api::Llama));
+        form.selected = "qwen3:8b".into();
+        let Ok(AiRequest::BuildTester(p)) = test_click(&g, &form, &found) else { panic!("a test") };
+        assert_eq!(p.name, "qwen3:8b");
+        form.url = " ".into();
+        assert_eq!(test_click(&g, &form, &found), Err(tc::MISSING_TEXT));
     }
 }

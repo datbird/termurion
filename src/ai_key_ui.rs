@@ -27,6 +27,8 @@ pub struct KeyWindow {
     key: Secret,
     /// The field takes the focus on the first frame.
     focus: bool,
+    /// The frame it first drew in, where Return and Escape do nothing (12a's modal key guard).
+    opened: Option<u64>,
 }
 
 /// The field's width, as the key dialog's (`G:3556-3561`: 620 less the 104-point label column).
@@ -36,7 +38,7 @@ impl KeyWindow {
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, v: Vendor) -> Result<KeyWindow, String> {
         let (heading, hint) = key_prompt(v);
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, &heading, f64::from(FIELD_WIDTH) + 40.0, 130.0)?;
-        Ok(KeyWindow { host, hint, key: Secret::new(String::new()), focus: true })
+        Ok(KeyWindow { host, hint, key: Secret::new(String::new()), focus: true, opened: None })
     }
 
     pub fn id(&self) -> WindowId {
@@ -54,7 +56,7 @@ impl KeyWindow {
     pub fn redraw(&mut self) -> KeyResult {
         let mut ok = false;
         let mut cancel = false;
-        let (hint, key, focus) = (&self.hint, &mut self.key, &mut self.focus);
+        let (hint, key, focus, opened) = (&self.hint, &mut self.key, &mut self.focus, &mut self.opened);
         self.host.paint(|ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.label(KEYS_TEXT);
@@ -65,7 +67,9 @@ impl KeyWindow {
                     ui.memory_mut(|m| m.request_focus(id));
                 }
                 ui.add_space(10.0);
-                let (enter, escape) = ui.input(|i| (crate::settings_ai::fresh_return(&i.events), i.key_pressed(egui::Key::Escape)));
+                // The key that opened the prompt does not answer it; Return in the key field does.
+                let first = *opened.get_or_insert_with(|| ui.ctx().cumulative_frame_nr());
+                let (enter, escape) = crate::settings_ai::modal_keys(ui, first, &[id]);
                 ui.horizontal(|ui| {
                     ok = ui.add(egui::Button::new("OK").min_size(egui::vec2(76.0, 24.0))).clicked() || enter;
                     cancel = ui.add(egui::Button::new("Cancel").min_size(egui::vec2(76.0, 24.0))).clicked() || escape;
