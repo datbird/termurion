@@ -802,6 +802,8 @@ pub struct TabLook {
     pub processing: bool,
     /// The tab's number, from 1.
     pub number: usize,
+    /// The close button is held down (`closeButtonPressed`).
+    pub close_pressed: bool,
 }
 
 /// A tab's indicator, in iTerm2's order after the status dot.
@@ -882,6 +884,8 @@ fn tab_icon_glyph(i: TabIcon) -> char {
 
 /// Segoe Fluent Icons "ChromeClose": a tab's close button.
 pub const TAB_CLOSE_GLYPH: char = '\u{E8BB}';
+/// How far a held close button's shade goes from the tab's color toward its text color.
+const TAB_CLOSE_PRESSED: f32 = 0.3;
 /// Segoe Fluent Icons "Add": the new tab button.
 pub const TAB_ADD_GLYPH: char = '\u{E710}';
 /// Segoe Fluent Icons "ChevronDown": the overflow button, a popup of the hidden tabs.
@@ -939,7 +943,12 @@ pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::
         // is not key.
         if let Some(close) = c.close.filter(|_| c.close_alpha > 0.0) {
             let alpha = if key { c.close_alpha } else { c.close_alpha / 2.0 };
-            glyph(frame, TAB_CLOSE_GLYPH, px(close), blend(back, color, alpha));
+            let close = px(close);
+            // Held down: iTerm2's darker "down" image, here a shade behind the glyph.
+            if tab.close_pressed {
+                frame.quads.push(Quad { rect: close, color: rgba(blend(back, color, TAB_CLOSE_PRESSED * alpha), 1.0) });
+            }
+            glyph(frame, TAB_CLOSE_GLYPH, close, blend(back, color, alpha));
         }
         // The status dot is the tab's icon (`tabStatusDotImage`), else the indicator glyph.
         if let Some(ir) = c.icon.map(px) {
@@ -2601,6 +2610,16 @@ mod tests {
         };
         assert_eq!(close_color(true), TAB_TEXT_DIM, "full alpha in the key window");
         assert_eq!(close_color(false), blend(TAB_BAR, TAB_TEXT_DIM, 0.5), "half alpha otherwise (YS drawInteriorWithTabCell:)");
+        // Held down, a shade shows behind the glyph in its box.
+        let close = bar.cells[1].1.close.unwrap();
+        let shade = rgba(blend(TAB_BAR, TAB_TEXT_DIM, TAB_CLOSE_PRESSED), 1.0);
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, true);
+        assert!(!f.quads.iter().any(|q| q.color == shade), "not held");
+        let held: Vec<TabLook> = looks.iter().cloned().enumerate().map(|(i, l)| TabLook { close_pressed: i == 1, ..l }).collect();
+        let mut f = Frame::default();
+        tab_bar(&mut f, &held, 0, &bar, area, 1.0, 0.1, 20.0, true);
+        assert!(f.quads.iter().any(|q| q.color == shade && q.rect == close), "{:?}", f.quads);
     }
 
     #[test]

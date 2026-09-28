@@ -971,6 +971,71 @@ pub fn add_rect_px(bar: &Bar, offset: f32, origin: (f32, f32), scale: f32) -> Op
     })
 }
 
+/// A left press selects its tab at once: a single press without Alt when `SelectsTabsOnMouseDown`
+/// is on (`PSM mouseDown:`); otherwise the release decides.
+pub fn press_selects(selects_on_down: bool, alt: bool, clicks: u8) -> bool {
+    selects_on_down && !alt && clicks == 1
+}
+
+/// What a left release on the bar does (`PSM handleMouseUp:`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Release {
+    Close(usize),
+    Select(usize),
+    EditTitle(usize),
+    NewTab,
+    Nothing,
+}
+
+/// A left release at `up` after a press at `down`, `clicks` the press's click count.
+/// `double_click_edits` is `DoubleClickTabToEdit`; `close_always` is
+/// `TabCloseButtonsAlwaysVisible` (off, iTerm2 sets `disableTabClose` and a press on the close
+/// button that slides onto the tab body still counts as a click on the tab). The "+" and the
+/// overflow button are buttons of their own and give Nothing here.
+pub fn release(down: Option<Hit>, up: Option<Hit>, clicks: u8, double_click_edits: bool, close_always: bool) -> Release {
+    let (Some(down), Some(up)) = (down, up) else { return Release::Nothing };
+    // The close button that was pressed.
+    if let (Hit::Close(a), Hit::Close(b)) = (down, up) {
+        if a == b {
+            return Release::Close(a);
+        }
+    }
+    // Two clicks off any tab: iTerm2's New Tab (`tabViewDoubleClickTabBar:`).
+    if up == Hit::Bar {
+        return if clicks == 2 { Release::NewTab } else { Release::Nothing };
+    }
+    let tab_of = |h: Hit| match h {
+        Hit::Tab(i) | Hit::Close(i) => Some(i),
+        _ => None,
+    };
+    let (Some(from), Some(to)) = (tab_of(down), tab_of(up)) else { return Release::Nothing };
+    // `closeButtonDoesNotInterfere`.
+    let interferes = matches!(down, Hit::Close(_)) && close_always;
+    if from != to || interferes {
+        return Release::Nothing;
+    }
+    match clicks {
+        1 => Release::Select(to),
+        // `PT tabView:doubleClickTabViewItem:` selects, then edits when the setting is on.
+        2 if double_click_edits => Release::EditTitle(to),
+        2 => Release::Select(to),
+        _ => Release::Nothing,
+    }
+}
+
+/// A middle release closes the tab it was pressed on, anywhere on that tab, when
+/// `MiddleClickClosesTab` is on (`PSM otherMouseUp:`, `PT:7272-7276`).
+pub fn middle_release(down: Option<Hit>, up: Option<Hit>, middle_closes: bool) -> Option<usize> {
+    let tab_of = |h: Option<Hit>| match h {
+        Some(Hit::Tab(i) | Hit::Close(i)) => Some(i),
+        _ => None,
+    };
+    match (tab_of(down), tab_of(up)) {
+        (Some(a), Some(b)) if a == b && middle_closes => Some(a),
+        _ => None,
+    }
+}
+
 /// The width in points the tabs draw in on a bar `bar_width` wide: left of the right margin on
 /// a bar that scrolls, so no tab draws under the pinned "+" (the tabs are a scroll view left of
 /// the margin, `PSM scrollViewportLength`); the whole bar otherwise.
@@ -1479,6 +1544,39 @@ mod tests {
         // `RemoveAddTabButton`.
         let bare = Settings { prefs: Prefs { add_button: false, ..s.prefs }, ..s.clone() };
         assert_eq!(add_rect_px(&build(&tabs, 0, 600.0, 0.0, None, &bare, &six_per_char), 0.0, (0.0, 30.0), 2.0), None);
+    }
+
+    #[test]
+    fn clicks_follow_iterm2() {
+        use Hit::{Bar, Close, Tab};
+        assert!(press_selects(true, false, 1));
+        assert!(!press_selects(true, true, 1), "Alt waits for the release");
+        assert!(!press_selects(false, false, 1));
+        assert!(!press_selects(true, false, 2));
+        // Close buttons always visible: a press on the close button owns the release.
+        assert_eq!(release(Some(Close(1)), Some(Close(1)), 1, true, true), Release::Close(1));
+        assert_eq!(release(Some(Tab(1)), Some(Close(1)), 1, true, true), Release::Select(1), "the close button closes only when it was pressed");
+        assert_eq!(release(Some(Close(1)), Some(Tab(1)), 1, true, true), Release::Nothing, "a press on the close button that slides off does not select");
+        // Source over brief: with hover-only close buttons (the default) iTerm2's
+        // `disableTabClose` is on and the slide-off counts as a click on the tab.
+        assert_eq!(release(Some(Close(1)), Some(Tab(1)), 1, true, false), Release::Select(1));
+        assert_eq!(release(Some(Close(1)), Some(Close(1)), 1, true, false), Release::Close(1));
+        assert_eq!(release(Some(Close(1)), Some(Close(2)), 1, true, true), Release::Nothing);
+        assert_eq!(release(Some(Tab(1)), Some(Tab(2)), 1, true, true), Release::Nothing);
+        assert_eq!(release(Some(Tab(1)), Some(Tab(1)), 2, true, true), Release::EditTitle(1));
+        assert_eq!(release(Some(Tab(1)), Some(Tab(1)), 2, false, true), Release::Select(1), "a double click selects, and edits only with the setting");
+        assert_eq!(release(Some(Tab(1)), Some(Tab(1)), 3, true, true), Release::Nothing);
+        assert_eq!(release(Some(Bar), Some(Bar), 2, true, true), Release::NewTab);
+        assert_eq!(release(Some(Bar), Some(Bar), 2, false, false), Release::NewTab);
+        assert_eq!(release(Some(Bar), Some(Bar), 1, true, true), Release::Nothing);
+        assert_eq!(release(Some(Bar), Some(Bar), 1, false, false), Release::Nothing);
+        assert_eq!(release(Some(Hit::Add), Some(Hit::Add), 1, true, true), Release::Nothing, "the + is its own button");
+        assert_eq!(release(Some(Tab(1)), None, 1, true, true), Release::Nothing, "released off the bar");
+        assert_eq!(middle_release(Some(Tab(2)), Some(Tab(2)), true), Some(2));
+        assert_eq!(middle_release(Some(Tab(2)), Some(Tab(2)), false), None);
+        assert_eq!(middle_release(Some(Tab(1)), Some(Tab(2)), true), None);
+        assert_eq!(middle_release(Some(Close(2)), Some(Tab(2)), true), Some(2), "a middle click anywhere on the tab closes it");
+        assert_eq!(middle_release(Some(Bar), Some(Bar), true), None);
     }
 
     #[test]

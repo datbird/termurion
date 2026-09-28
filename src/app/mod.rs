@@ -564,6 +564,12 @@ pub struct App {
     tab_keep_selected: bool,
     /// The selected tab's id and the tab count at the last layout: a change selects anew.
     tab_seen: Option<(u64, usize)>,
+    /// The press on the tab bar: what it hit, its click count (0 for the middle button) and
+    /// whether Alt was held.
+    tab_press: Option<(tab_layout::Hit, u8, bool)>,
+    /// The last left press on a tab bar (any window): when, on which tab (None off the tabs)
+    /// and its click count.
+    tab_clicks: (Instant, Option<usize>, u8),
     banners: Banners,
     /// The `utilities` folder beside tandem.exe, when `utilities::ensure` made it at start.
     utilities: Option<PathBuf>,
@@ -1074,6 +1080,8 @@ pub fn run() {
         tab_hover: None,
         tab_keep_selected: true,
         tab_seen: None,
+        tab_press: None,
+        tab_clicks: (Instant::now(), None, 0),
         banners,
         utilities,
         clipboard: arboard::Clipboard::new().ok(),
@@ -1271,6 +1279,119 @@ impl App {
         if hover != self.tab_hover {
             self.tab_hover = hover;
             self.redraw();
+        }
+    }
+
+    /// A press on the tab bar (`PSM mouseDown:`, `otherMouseDown:`): the left button keeps the
+    /// press and its click count, and selects the tab at once when `press_selects` says so (a
+    /// press on a close button shows it pressed instead); the middle button keeps its hit for
+    /// the release; other buttons do nothing on the bar.
+    fn tab_bar_press(&mut self, button: MouseButton, hit: tab_layout::Hit) {
+        use tab_layout::Hit;
+        let alt = self.mods.alt;
+        match button {
+            MouseButton::Left if hit == Hit::Overflow => self.show_tab_overflow(),
+            MouseButton::Left => {
+                let clicks = self.count_tab_click(hit);
+                self.tab_press = Some((hit, clicks, alt));
+                if let Hit::Tab(i) = hit {
+                    if tab_layout::press_selects(self.globals.bool("SelectsTabsOnMouseDown"), alt, clicks) {
+                        self.active = i;
+                    }
+                }
+                self.redraw();
+            }
+            MouseButton::Middle => self.tab_press = Some((hit, 0, alt)),
+            _ => {}
+        }
+    }
+
+    /// The click count of a left press on the bar: one more than the last when it is on the
+    /// same tab (or again off the tabs) within the double-click time, else 1. A press on the
+    /// "+" counts 1 and starts the count over.
+    fn count_tab_click(&mut self, hit: tab_layout::Hit) -> u8 {
+        use tab_layout::Hit;
+        let now = Instant::now();
+        let on = match hit {
+            Hit::Tab(i) | Hit::Close(i) => Some(i),
+            _ => None,
+        };
+        let (then, last, n) = self.tab_clicks;
+        let again = n > 0 && last == on && now.duration_since(then).as_millis() <= clippings_ui::double_click_ms();
+        let clicks = if again { n.saturating_add(1) } else { 1 };
+        self.tab_clicks = (now, on, if hit == Hit::Add { 0 } else { clicks });
+        clicks
+    }
+
+    /// The release that ends a press on the tab bar (`PSM handleMouseUp:`, `otherMouseUp:`).
+    /// False when no press on the bar waits for this button.
+    fn tab_bar_release(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) -> bool {
+        use tab_layout::{Hit, Release};
+        let Some((down, clicks, _)) = self.tab_press else { return false };
+        let middle = clicks == 0;
+        let ours = match button {
+            MouseButton::Left => !middle,
+            MouseButton::Middle => middle,
+            _ => false,
+        };
+        if !ours {
+            return false;
+        }
+        self.tab_press = None;
+        let (x, y) = self.cursor;
+        let up = self.tab_bar_hit(x, y);
+        let live = |i: usize, n: usize| i < n;
+        if middle {
+            if let Some(i) = tab_layout::middle_release(Some(down), up, self.globals.bool("MiddleClickClosesTab")) {
+                self.close_tab_at(i, event_loop);
+            }
+            self.redraw();
+            return true;
+        }
+        // The "+" is a button of its own: it acts when released where it was pressed.
+        if down == Hit::Add && up == Some(Hit::Add) {
+            self.add_tab_button();
+        }
+        let n = self.tabs.len();
+        match tab_layout::release(Some(down), up, clicks, self.globals.bool("DoubleClickTabToEdit"), self.globals.bool("TabCloseButtonsAlwaysVisible")) {
+            Release::Close(i) => self.close_tab_at(i, event_loop),
+            Release::Select(i) if live(i, n) => self.active = i,
+            Release::EditTitle(i) if live(i, n) => {
+                self.active = i;
+                self.open_title_prompt(event_loop, true);
+            }
+            // iTerm2's New Tab (`PT tabViewDoubleClickTabBar:`), a tmux tab when tmux makes it.
+            Release::NewTab => {
+                if self.tmux_new(false, true).is_none() {
+                    self.new_tab(None);
+                }
+            }
+            _ => {}
+        }
+        self.redraw();
+        true
+    }
+
+    /// The "+" button (`PT tabViewDidClickAddTabButton:`): a tmux tab for a tmux session, else
+    /// a tab with the default profile, or with `AddTabButtonUsesCurrentProfile` the current
+    /// session's (a fresh private copy when the session has one).
+    pub(super) fn add_tab_button(&mut self) {
+        let pane = self.focused_id();
+        let tmux = pane.is_some_and(|p| self.tmux_of(p).is_some());
+        match add_tab_choice(tmux, self.globals.bool("AddTabButtonUsesCurrentProfile")) {
+            AddTab::TmuxTab => {
+                self.tmux_new(false, false);
+            }
+            AddTab::Default => self.new_tab(None),
+            AddTab::CurrentProfile => {
+                let guid = pane.and_then(|p| self.profile_for_new_session(p));
+                let (tabs, windows) = (self.tabs.len(), self.pending_windows.len());
+                self.new_tab(guid.as_deref());
+                // Nothing opened: a copy made for it goes.
+                if let Some(g) = guid.filter(|_| self.tabs.len() == tabs && self.pending_windows.len() == windows) {
+                    self.forget_session_profile(&g);
+                }
+            }
         }
     }
 
@@ -2411,18 +2532,8 @@ impl App {
         if self.composer_press(button, x, y) {
             return;
         }
-        match self.tab_bar_hit(x, y) {
-            Some(tab_layout::Hit::Tab(i) | tab_layout::Hit::Close(i)) => {
-                self.active = i;
-                return self.redraw();
-            }
-            Some(tab_layout::Hit::Overflow) => {
-                if button == MouseButton::Left {
-                    self.show_tab_overflow();
-                }
-                return;
-            }
-            _ => {}
+        if let Some(hit) = self.tab_bar_hit(x, y) {
+            return self.tab_bar_press(button, hit);
         }
         if self.status_press(button, x, y, event_loop) {
             return;
@@ -2565,6 +2676,9 @@ impl App {
     }
 
     fn mouse_release(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
+        if self.tab_bar_release(button, event_loop) {
+            return;
+        }
         let b = button_number(button);
         if let Some(pd) = self.pointer_down.take() {
             if pd.button == b {
@@ -2758,7 +2872,12 @@ impl App {
         let mut frame = Frame { clear: rgba(palette_bg, 1.0), ..Default::default() };
         let (w, _) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         if self.tab_bar_shown() {
-            let looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
+            let mut looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
+            if let Some((tab_layout::Hit::Close(i), _, _)) = self.tab_press {
+                if let Some(l) = looks.get_mut(i) {
+                    l.close_pressed = true;
+                }
+            }
             let area = Rect { x: 0.0, y: 0.0, w, h: self.tab_height() };
             // Kept unscrolled for hits; the scroll offset applies at each use.
             self.tab_bar = self.layout_tab_bar(&looks, w, 0.0);
@@ -3532,6 +3651,27 @@ fn move_new_tab<T>(tabs: &mut Vec<T>, before: usize, active: usize) -> Option<us
     Some(at)
 }
 
+/// What the "+" button opens (`PT tabViewDidClickAddTabButton:`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AddTab {
+    /// A tmux tab: the current session is a tmux client.
+    TmuxTab,
+    /// A tab with the default profile.
+    Default,
+    /// A tab with the current session's profile (`AddTabButtonUsesCurrentProfile`).
+    CurrentProfile,
+}
+
+fn add_tab_choice(tmux_client: bool, use_current: bool) -> AddTab {
+    if tmux_client {
+        AddTab::TmuxTab
+    } else if use_current {
+        AddTab::CurrentProfile
+    } else {
+        AddTab::Default
+    }
+}
+
 /// A hit on the tab bar, unless it names a tab that no longer exists.
 fn live_tab_hit(hit: Option<tab_layout::Hit>, tabs: usize) -> Option<tab_layout::Hit> {
     use tab_layout::Hit;
@@ -3552,6 +3692,14 @@ fn screen_follows_profile(screen: &mut crate::screen::Screen, p: &Profile) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_button_follows_iterm2() {
+        assert_eq!(add_tab_choice(true, false), AddTab::TmuxTab);
+        assert_eq!(add_tab_choice(true, true), AddTab::TmuxTab);
+        assert_eq!(add_tab_choice(false, false), AddTab::Default);
+        assert_eq!(add_tab_choice(false, true), AddTab::CurrentProfile);
+    }
 
     #[test]
     fn profile_edits_reach_the_screen() {

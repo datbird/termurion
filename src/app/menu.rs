@@ -574,12 +574,7 @@ impl App {
                     self.close_session_undoable(id, event_loop);
                 }
             }
-            "closeCurrentTab:" if self.layout_allowed(crate::winmodel::LayoutOp::CloseTab) && self.tmux_close_tab(self.active) => {}
-            "closeCurrentTab:" => {
-                if self.tabs.get(self.active).is_some() && self.layout_allowed(crate::winmodel::LayoutOp::CloseTab) && self.confirm_close(close_ui::Closing::Tab(self.active)) {
-                    self.close_tab_now(self.active, event_loop);
-                }
-            }
+            "closeCurrentTab:" => self.close_tab_at(self.active, event_loop),
             "undoCloseSession:" => self.undo_close(),
             "saveWindowArrangement:" => self.open_save_arrangement(event_loop, true),
             "saveCurrentWindowAsArrangement:" => self.open_save_arrangement(event_loop, false),

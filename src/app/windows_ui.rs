@@ -29,6 +29,9 @@ pub(super) struct WinSlot {
     tab_keep_selected: bool,
     /// The selected tab's id and the tab count at the last layout: a change selects anew.
     tab_seen: Option<(u64, usize)>,
+    /// The press on the tab bar: what it hit, its click count (0 for the middle button) and
+    /// whether Alt was held.
+    tab_press: Option<(crate::tab_layout::Hit, u8, bool)>,
     block_buttons: Vec<blocks_ui::BlockButton>,
     block_hover: Option<(PaneId, u32, i32, i32)>,
     porthole_hits: Vec<porthole_ui::PortholeHit>,
@@ -78,6 +81,7 @@ impl WinSlot {
             tab_hover: None,
             tab_keep_selected: true,
             tab_seen: None,
+            tab_press: None,
             block_buttons: Vec::new(),
             block_hover: None,
             porthole_hits: Vec::new(),
@@ -147,6 +151,7 @@ impl App {
         swap(&mut self.tab_hover, &mut s.tab_hover);
         swap(&mut self.tab_keep_selected, &mut s.tab_keep_selected);
         swap(&mut self.tab_seen, &mut s.tab_seen);
+        swap(&mut self.tab_press, &mut s.tab_press);
         swap(&mut self.block_buttons, &mut s.block_buttons);
         swap(&mut self.block_hover, &mut s.block_hover);
         swap(&mut self.porthole_hits, &mut s.porthole_hits);
@@ -461,6 +466,17 @@ impl App {
         self.end_undo();
     }
 
+    /// Close Tab for the tab `index` (the menu's Close Tab, a tab's close button, a middle
+    /// click): a tmux tab asks tmux; any other asks the close confirmation, then closes.
+    pub(super) fn close_tab_at(&mut self, index: usize, event_loop: &ActiveEventLoop) {
+        if index >= self.tabs.len() || !self.layout_allowed(crate::winmodel::LayoutOp::CloseTab) || self.tmux_close_tab(index) {
+            return;
+        }
+        if self.confirm_close(close_ui::Closing::Tab(index)) {
+            self.close_tab_now(index, event_loop);
+        }
+    }
+
     /// Closes the current window's tab `index` and its sessions as one undoable close, asking
     /// nothing.
     pub(super) fn close_tab_now(&mut self, index: usize, event_loop: &ActiveEventLoop) {
@@ -539,6 +555,7 @@ impl WinSlot {
             tab_hover: None,
             tab_keep_selected: true,
             tab_seen: None,
+            tab_press: None,
             block_buttons: Vec::new(),
             block_hover: None,
             porthole_hits: Vec::new(),
