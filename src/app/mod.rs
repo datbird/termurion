@@ -555,6 +555,8 @@ pub struct App {
     focused: bool,
     tab_rects: Vec<Rect>,
     banners: Banners,
+    /// The `utilities` folder beside tandem.exe, when `utilities::ensure` made it at start.
+    utilities: Option<PathBuf>,
     clipboard: Option<arboard::Clipboard>,
     store: Store,
     settings: Option<SettingsWindow>,
@@ -785,6 +787,13 @@ pub fn run() {
             }
             Err(e2) => return message_box(&format!("No ConPTY: {e}; {e2}")),
         },
+    };
+    let utilities = match crate::utilities::ensure(&exe_dir) {
+        Ok(folder) => Some(folder),
+        Err(e) => {
+            banners.set("utilities", format!("The utilities folder could not be made: {e}"));
+            None
+        }
     };
 
     let path = store::default_path();
@@ -1043,6 +1052,7 @@ pub fn run() {
         focused: true,
         tab_rects: Vec::new(),
         banners,
+        utilities,
         clipboard: arboard::Clipboard::new().ok(),
         store,
         settings: None,
@@ -1243,7 +1253,25 @@ impl App {
         });
         let name = p.name();
         let id = id.to_string();
-        let facts = crate::session_env::Facts { window, tab, pane, id: &id, profile_name: &name, cookie: cookie.as_deref() };
+        let version = p.values.get("Unicode Version").and_then(|v| v.as_integer()).map_or(9, |v| v.clamp(0, 255) as u8);
+        let features = crate::osc1337::Features { clipboard_writable: self.globals.bool("AllowClipboardAccess"), ambiguous_wide: false, unicode_version: version };
+        let term_features = crate::osc1337::capabilities(features);
+        let path = self
+            .utilities
+            .as_ref()
+            .filter(|_| self.globals.bool("addUtilitiesToPATH"))
+            .map(|folder| crate::utilities::path_with(&std::env::var("PATH").unwrap_or_default(), &folder.display().to_string()));
+        let facts = crate::session_env::Facts {
+            window,
+            tab,
+            pane,
+            id: &id,
+            profile_name: &name,
+            cookie: cookie.as_deref(),
+            term_features: &term_features,
+            lc_terminal: self.globals.bool("shouldSetLCTerminal"),
+            path: path.as_deref(),
+        };
         (crate::session_env::overlay(crate::session_env::vars(&facts), &extra), cookie)
     }
 

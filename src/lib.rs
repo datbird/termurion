@@ -84,6 +84,7 @@ pub mod util_tip;
 pub mod util_query;
 #[cfg(windows)]
 pub mod util_console;
+pub mod utilities;
 pub mod builtin_fns;
 pub mod activity;
 pub mod alerts;

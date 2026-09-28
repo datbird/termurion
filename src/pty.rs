@@ -918,6 +918,22 @@ pub(crate) mod tests {
         let p = spawn_notify(&shipped(), cmd, None, &[], 200, 24, Arc::new(|| {})).unwrap();
         let got = p.read_until(b"env-done", secs(10)).unwrap_or_else(|got| panic!("{:?}", text(&got)));
         assert!(text(&got).contains("[%ITERM_SESSION_ID%]"), "{:?}", text(&got));
+
+        // The utilities folder on PATH (`utilities::path_with`) and iTerm2's TERM_PROGRAM.
+        let dir = std::env::temp_dir().join(format!("tandem-env-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("probe.cmd"), "").unwrap();
+        let path = crate::utilities::path_with(&std::env::var("PATH").unwrap_or_default(), &dir.display().to_string());
+        let env = [format!("PATH={path}"), format!("TERM_PROGRAM={}", crate::session_env::TERM_PROGRAM)];
+        let cmd = "cmd.exe /c where probe && echo [%TERM_PROGRAM%^]&& echo env^-done";
+        let p = spawn_notify(&shipped(), cmd, None, &env, 200, 24, Arc::new(|| {})).unwrap();
+        let got = p.read_until(b"env-done", secs(10)).unwrap_or_else(|got| panic!("{:?}", text(&got)));
+        let got = text(&got);
+        assert!(got.to_lowercase().contains(&dir.join("probe.cmd").display().to_string().to_lowercase()), "{got:?}");
+        assert!(got.contains("[iTerm.app]"), "{got:?}");
+        drop(p);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

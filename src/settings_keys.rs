@@ -1148,6 +1148,22 @@ mod tests {
     }
 
     #[test]
+    fn utilities_rows_follow_iterm2() {
+        let lc = "Set LC_TERMINAL=iTerm2.";
+        for (key, label, help) in [
+            ("addUtilitiesToPATH", "Add path to Tandem utilities to $PATH for new sessions?", "Add path to Tandem utilities to $PATH for new sessions?".to_string()),
+            ("shouldSetLCTerminal", lc, format!("{lc}\nopenssh and mosh pass this to hosts you connect to. It communicates the current terminal emulator. This is useful for enabling terminal emulator-specific features.")),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"), "{key}");
+            assert_eq!(row.kind, Kind::Bool, "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(true)), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+            assert!(Globals::empty(std::path::Path::new("utilities-row-test.toml")).bool(key), "{key} on until turned off");
+        }
+    }
+
+    #[test]
     fn upload_row_follows_iterm2() {
         let row = schema::find_global("accelerateUploads").unwrap();
         assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"));
