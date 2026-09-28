@@ -1294,6 +1294,19 @@ impl Screen {
         self.keys = KeyState { literal: self.keys.literal, ..KeyState::new(self.keys.profile_csi_u) };
     }
 
+    /// What an SSH conductor restores when it unhooks (iTerm2's savedState, Decision: the
+    /// remote host and the working directory).
+    pub fn ssh_saved(&self) -> crate::conductor::SavedState {
+        crate::conductor::SavedState { cwd: self.shell.cwd.clone(), host: self.shell.host.clone(), user: self.shell.user.clone() }
+    }
+
+    /// restoreSavedState (`PS:20183-20185`) for what `ssh_saved` kept.
+    pub fn restore_ssh_saved(&mut self, s: &crate::conductor::SavedState) {
+        self.shell.cwd = s.cwd.clone();
+        self.shell.host = s.host.clone();
+        self.shell.user = s.user.clone();
+    }
+
     pub fn mouse_modes(&self) -> Modes {
         let mode = self.term.mode();
         let tracking = if mode.contains(TermMode::MOUSE_MOTION) {
@@ -1489,6 +1502,21 @@ mod tests {
         assert_eq!(s.all_text(), "prompt>\n");
         let cursor = s.term().grid().cursor.point;
         assert_eq!((cursor.line.0, cursor.column.0), (0, 8));
+    }
+
+    #[test]
+    fn ssh_saved_follows_iterm2() {
+        let mut s = Screen::new(80, 24);
+        s.shell.cwd = Some("/home/me".into());
+        s.shell.host = Some("laptop".into());
+        s.shell.user = Some("me".into());
+        let saved = s.ssh_saved();
+        assert_eq!(saved, crate::conductor::SavedState { cwd: Some("/home/me".into()), host: Some("laptop".into()), user: Some("me".into()) });
+        s.shell.cwd = Some("/srv".into());
+        s.shell.host = Some("far".into());
+        s.shell.user = None;
+        s.restore_ssh_saved(&saved);
+        assert_eq!((s.shell.cwd.as_deref(), s.shell.host.as_deref(), s.shell.user.as_deref()), (Some("/home/me"), Some("laptop"), Some("me")));
     }
 
     #[test]

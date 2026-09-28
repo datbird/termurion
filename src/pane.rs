@@ -218,6 +218,16 @@ pub struct Pane {
     /// What the hook found, in order, for the window's tmux gateway. Output behind a tmux
     /// line waits here too, so "Detached" lands before what followed `%exit`.
     tmux_q: Vec<crate::tmux_hook::Out>,
+    /// SSH integration's entry (the DCS 2000p hook), ahead of the tmux hook.
+    ssh_hook: crate::ssh_hook::Hook,
+    /// What the SSH hook found, in order, for the app. Output behind a conductor token waits
+    /// here too, so it lands after what the token does.
+    ssh_q: Vec<crate::ssh_hook::Out>,
+    /// The innermost SSH conductor; its parents hang off it (iTerm2's `_conductor`).
+    pub conductor: Option<Box<crate::conductor::Conductor>>,
+    /// Session writes held while the conductor sets up (`_sshWriteQueue`, `PS:4191-4197`),
+    /// sent when it unhooks.
+    ssh_held: Vec<u8>,
     /// A screen-like TERM: italics as reverse video (iTerm2's translateFromScreenTerminal).
     pub screen_filter: Option<crate::screenterm::Filter>,
     /// A tmux gateway: its pty carries tmux commands only, so no input reaches it.
@@ -358,59 +368,33 @@ impl Pane {
     fn with(id: PaneId, pty: Option<Io>, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = pty.is_some();
-        Pane { id, screen, pty, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, ssh: Default::default() }
+        Pane { id, screen, pty, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, ssh: Default::default() }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
     pub fn pump(&mut self) -> bool {
         let Some(pty) = &self.pty else { return false };
-        let mut changed = false;
+        let mut chunks = Vec::new();
         while let Read::Data(chunk) = pty.try_read() {
-            changed = true;
             self.got_output = true;
             self.throughput.add(Instant::now(), chunk.len());
             // The coprocess gets every byte, before parsing (iTerm2 tees the raw read).
             if let Some(c) = self.coprocess.as_mut() {
                 c.write(&chunk);
             }
-            // tmux control mode is found before anything can drop output.
-            let dropping = self.suppress_output || self.coprocess.as_ref().is_some_and(|c| c.mute);
-            for out in self.tmux_hook.feed(&chunk) {
+            chunks.push(chunk);
+        }
+        let mut changed = !chunks.is_empty();
+        // SSH integration, then tmux control mode, are found before anything can drop output.
+        for chunk in chunks {
+            for out in self.ssh_hook.feed(&chunk) {
                 match out {
-                    crate::tmux_hook::Out::Screen(_) if dropping => {}
-                    crate::tmux_hook::Out::Screen(bytes) if self.tmux_q.is_empty() => {
-                        if let Some(p) = self.echo_probe.as_mut() {
-                            p.output(&bytes);
-                        }
-                        let bytes = match self.screen_filter.as_mut() {
-                            Some(f) => f.feed(&bytes),
-                            None => bytes,
-                        };
-                        let reply = self.live.as_mut().unwrap_or(&mut self.screen).feed(&bytes);
-                        // A report is a write to the session: it cancels the composer's clear
-                        // probe (`PS:16212-16221` to `writeTaskImpl`, `PS:4154-4158`), whether
-                        // or not a tmux pane then drops it (iTerm2 cancels before routing).
-                        if !reply.is_empty() {
-                            self.composer.probe = None;
-                        }
-                        // tmux answers queries for its panes itself, but OSC 4 when this
-                        // client is the elected one.
-                        let reply = match pty {
-                            Io::Tmux(t) if t.answers_osc4.get() => crate::tmux_clients::osc4_answers(&reply),
-                            Io::Tmux(_) => Vec::new(),
-                            _ => reply,
-                        };
-                        // A report passes the connecting queue (`PS:16212-16220`).
-                        if !reply.is_empty() {
-                            if let Err(e) = pty.write(&reply) {
-                                self.error = Some(e);
-                            }
-                        }
-                    }
-                    other => self.tmux_q.push(other),
+                    crate::ssh_hook::Out::Screen(bytes) if self.ssh_q.is_empty() => self.route_output(bytes),
+                    other => self.ssh_q.push(other),
                 }
             }
         }
+        let Some(pty) = &self.pty else { return changed };
         if let Some(c) = self.coprocess.as_mut() {
             // Its output goes to the shell as typed, while the shell keeps up.
             loop {
@@ -447,6 +431,48 @@ impl Pane {
             self.stop_coprocess();
         }
         changed
+    }
+
+    /// Output the SSH hook let through: tmux control mode is looked for, then the screen gets
+    /// it unless output is dropped, and its reports go back to the session.
+    fn route_output(&mut self, bytes: Vec<u8>) {
+        let dropping = self.suppress_output || self.coprocess.as_ref().is_some_and(|c| c.mute);
+        for out in self.tmux_hook.feed(&bytes) {
+            match out {
+                crate::tmux_hook::Out::Screen(_) if dropping => {}
+                crate::tmux_hook::Out::Screen(bytes) if self.tmux_q.is_empty() => {
+                    if let Some(p) = self.echo_probe.as_mut() {
+                        p.output(&bytes);
+                    }
+                    let bytes = match self.screen_filter.as_mut() {
+                        Some(f) => f.feed(&bytes),
+                        None => bytes,
+                    };
+                    let reply = self.live.as_mut().unwrap_or(&mut self.screen).feed(&bytes);
+                    // A report is a write to the session: it cancels the composer's clear
+                    // probe (`PS:16212-16221` to `writeTaskImpl`, `PS:4154-4158`), whether
+                    // or not a tmux pane then drops it (iTerm2 cancels before routing).
+                    if !reply.is_empty() {
+                        self.composer.probe = None;
+                    }
+                    let Some(pty) = &self.pty else { continue };
+                    // tmux answers queries for its panes itself, but OSC 4 when this
+                    // client is the elected one.
+                    let reply = match pty {
+                        Io::Tmux(t) if t.answers_osc4.get() => crate::tmux_clients::osc4_answers(&reply),
+                        Io::Tmux(_) => Vec::new(),
+                        _ => reply,
+                    };
+                    // A report passes the connecting queue (`PS:16212-16220`).
+                    if !reply.is_empty() {
+                        if let Err(e) = pty.write(&reply) {
+                            self.error = Some(e);
+                        }
+                    }
+                }
+                other => self.tmux_q.push(other),
+            }
+        }
     }
 
     /// The time between this pane's frames now (`cadence::frame_gap`): `visible` when it is
@@ -501,6 +527,49 @@ impl Pane {
     /// Ends tmux control mode here without an `%exit`.
     pub fn unhook_tmux(&mut self) {
         self.tmux_hook.unhook();
+    }
+
+    /// What the SSH hook found since the last call.
+    pub fn take_ssh(&mut self) -> Vec<crate::ssh_hook::Out> {
+        std::mem::take(&mut self.ssh_q)
+    }
+
+    pub fn has_ssh(&self) -> bool {
+        !self.ssh_q.is_empty()
+    }
+
+    /// Output that waited behind a conductor token.
+    pub fn feed_after_ssh(&mut self, bytes: &[u8]) {
+        self.route_output(bytes.to_vec());
+    }
+
+    /// A write to the session in iTerm2's order (`PS:4411-4432`, `PS:4191-4197`): the
+    /// connecting queue first, then held while the conductor sets up, else to the pty.
+    pub fn write_session(&mut self, bytes: &[u8]) {
+        if !self.ssh.queue(bytes) {
+            self.write_unless_held(bytes);
+        }
+    }
+
+    /// Held while the conductor sets up, else to the pty, past the connecting queue (iTerm2's
+    /// `conductorWrite` outside the conductor's own `write()`).
+    pub fn write_unless_held(&mut self, bytes: &[u8]) {
+        if self.conductor.as_ref().is_some_and(|c| c.queue_writes()) {
+            self.composer.probe = None;
+            self.ssh_held.extend_from_slice(bytes);
+        } else {
+            self.write_no_broadcast(bytes);
+        }
+    }
+
+    /// The writes held while the conductor set up, in order.
+    pub fn take_ssh_held(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.ssh_held)
+    }
+
+    /// Leaves the conductor without an `unhook`: what follows is output again.
+    pub fn unhook_ssh(&mut self) {
+        self.ssh_hook.unhook();
     }
 
     /// What the user sends: keys, pastes. Held while Buffer Input is on. Nothing reaches a
@@ -1041,6 +1110,64 @@ mod tests {
         assert_eq!(p.ssh.connecting, None);
     }
 
+    fn setting_up() -> Option<Box<crate::conductor::Conductor>> {
+        Some(Box::new(crate::conductor::Conductor::new(Default::default(), None, "U")))
+    }
+
+    #[test]
+    fn held_writes_flush_in_order() {
+        let mut p = Pane::tmux(5, 1, 3, 20, 4);
+        p.conductor = setting_up();
+        p.write_session(b"a");
+        p.write_no_broadcast(b"C");
+        p.write_session(b"b");
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"C", "the conductor's own bytes are never held");
+        assert_eq!(p.take_ssh_held(), b"ab");
+        assert!(p.take_ssh_held().is_empty());
+        p.conductor.as_mut().unwrap().handle_unhook();
+        p.write_session(b"c");
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"c");
+        assert!(p.take_ssh_held().is_empty());
+    }
+
+    #[test]
+    fn write_layers_follow_iterm2() {
+        let mut p = Pane::with(5, None, 80, 24);
+        p.conductor = setting_up();
+        p.ssh.begin(true);
+        p.write_session(b"x");
+        assert_eq!(p.ssh.connecting, Some(b"x".to_vec()), "the connecting queue comes first");
+        assert!(p.ssh_held.is_empty());
+        p.ssh.stop_queueing();
+        p.write_session(b"y");
+        assert_eq!(p.ssh_held, b"y");
+    }
+
+    #[test]
+    fn ssh_output_waits_behind_its_token() {
+        use crate::conductor_parser::Token;
+        use crate::ssh_hook::Out;
+        let mut p = Pane::tmux(5, 1, 3, 20, 4);
+        p.tmux_io().unwrap().push_output(b"before\x1bP2000pnone 1 YQ== - Yg==\n");
+        p.tmux_io().unwrap().push_output(b"\x1b]135;:unhook\x1b\\after");
+        assert!(p.pump());
+        assert!(p.has_ssh());
+        let outs = p.take_ssh();
+        assert!(matches!(&outs[0], Out::Ssh(Token::Init(i), 0) if i.unique_id == "1"), "{outs:?}");
+        assert_eq!(outs[1..], [Out::Ssh(Token::Unhook, 0), Out::Screen(b"after".to_vec())]);
+        assert!(!p.has_ssh());
+        assert!(p.screen.all_text().contains("before"));
+        assert!(!p.screen.all_text().contains("after"), "output after a token waits for it");
+        p.feed_after_ssh(b"after");
+        assert!(p.screen.all_text().contains("beforeafter"));
+        // Suppress All Output drops output, never the hook's view of it.
+        p.suppress_output = true;
+        p.tmux_io().unwrap().push_output(b"x\x1bP2000pnone 1 YQ== - Yg==\n");
+        p.pump();
+        assert!(matches!(&p.take_ssh()[..], [Out::Ssh(Token::Init(_), 0)]));
+        assert!(!p.screen.all_text().contains("afterx"));
+    }
+
     #[test]
     fn tmux_panes_do_not_answer_queries() {
         let mut p = Pane::tmux(5, 1, 3, 20, 4);
@@ -1052,7 +1179,7 @@ mod tests {
 
     #[test]
     fn gateway_panes_take_no_input() {
-        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, ssh: Default::default() };
+        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, ssh: Default::default() };
         p.buffer.on = true;
         p.input(b"a");
         p.gateway = true;
@@ -1065,7 +1192,7 @@ mod tests {
         // During a replay iTerm2's tab shows the task-less synthetic session, so nothing
         // the user sends reaches the live shell; the live session's own writes (a
         // trigger's Send Text) still do.
-        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, ssh: Default::default() };
+        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, ssh: Default::default() };
         p.buffer.on = true;
         p.input(b"a");
         p.replay = Some(replay::Replay { decoder: None, read_only: false });
@@ -1080,7 +1207,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, ssh: Default::default() };
+        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, ssh: Default::default() };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);

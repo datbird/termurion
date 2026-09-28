@@ -621,18 +621,21 @@ fn tarball_within(sources: &[Source], job: &TarJob, mut budget: Budget) -> Resul
 }
 
 /// Every job's tarball and its remote folder (enumeratePayloads,
-/// `ConductorPayloadBuilder.swift:20-26`): a job that fails to pack is skipped.
-pub fn tarballs(payloads: &[Payload]) -> Vec<(Vec<u8>, String)> {
-    group(payloads)
+/// `ConductorPayloadBuilder.swift:20-26`), and why each job that failed to pack was skipped
+/// (for the pane, where the person sees it; iTerm2 only logs it).
+pub fn tarballs(payloads: &[Payload]) -> (Vec<(Vec<u8>, String)>, Vec<String>) {
+    let mut skipped = Vec::new();
+    let packed = group(payloads)
         .into_iter()
         .filter_map(|(job, sources)| match tarball(&sources, &job) {
             Ok(t) => Some((t, job.destination)),
             Err(e) => {
-                eprintln!("Tandem: a Files to Copy tarball for {} was skipped: {e}", job.destination);
+                skipped.push(format!("A Files to Copy tarball for {} was skipped: {e}", job.destination));
                 None
             }
         })
-        .collect()
+        .collect();
+    (packed, skipped)
 }
 
 #[cfg(test)]
@@ -875,9 +878,9 @@ mod tests {
         let mut payloads = injection_payloads();
         payloads.extend([vimrc.clone(), missing]);
         assert_eq!(group(&payloads).len(), 3, "the two disk files share a job");
-        let out = tarballs(&payloads);
+        let (out, _) = tarballs(&payloads);
         assert_eq!(out.iter().map(|(_, d)| d.as_str()).collect::<Vec<_>>(), [PAYLOAD_BASE, "/$HOME/.iterm2/shell-integration/fish/vendor_conf.d"]);
-        let out = tarballs(&[vimrc]);
+        let (out, _) = tarballs(&[vimrc]);
         assert_eq!(untar(&out[0].0), vec![(".vimrc".to_string(), 0o644, b"set nu\n".to_vec())]);
         assert_eq!(out[0].1, "/$HOME");
 
@@ -890,7 +893,7 @@ mod tests {
         let long = "d".repeat(120);
         std::fs::create_dir_all(dir.join(&long)).unwrap();
         std::fs::write(dir.join(&long).join("f"), b"deep").unwrap();
-        let out = tarballs(&[Payload { source: Source::Disk(dir.join(&long)), destination: "/$HOME".into() }]);
+        let (out, _) = tarballs(&[Payload { source: Source::Disk(dir.join(&long)), destination: "/$HOME".into() }]);
         assert_eq!(untar(&out[0].0), vec![(long.clone(), 0o755, Vec::new()), (format!("{long}/f"), 0o644, b"deep".to_vec())]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -921,7 +924,7 @@ mod tests {
         let small = dir.join("small");
         std::fs::write(&small, b"s").unwrap();
         let to = |p: &Path, d: &str| Payload { source: Source::Disk(p.to_path_buf()), destination: d.into() };
-        let out = tarballs(&[to(&big, "/$HOME"), to(&small, "/opt")]);
+        let (out, _) = tarballs(&[to(&big, "/$HOME"), to(&small, "/opt")]);
         assert_eq!(out.iter().map(|(_, d)| d.as_str()).collect::<Vec<_>>(), ["/opt"]);
         let _ = std::fs::remove_dir_all(&dir);
     }

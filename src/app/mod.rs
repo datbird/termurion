@@ -1491,7 +1491,7 @@ impl App {
         let it2ssh = exe.as_deref();
         // A blank Command runs the shell, not ssh, so it gets no banner.
         let runs_ssh = profile::is_ssh(p) && !p.string("Command").trim().is_empty();
-        match profile_banner(runs_ssh, crate::ssh_config::from_profile(p).ssh_integration, CONDUCTOR_READY, present) {
+        match profile_banner(runs_ssh, crate::ssh_config::from_profile(p).ssh_integration, present) {
             Some(text) => self.banners.set("ssh", text),
             None => self.banners.clear("ssh"),
         }
@@ -3293,6 +3293,7 @@ impl ApplicationHandler<UserEvent> for App {
                 exited.push(*id);
             }
         }
+        changed |= self.ssh_pump();
         changed |= self.tmux_pump(event_loop);
         self.api_output(&outputs);
         self.api_session_events();

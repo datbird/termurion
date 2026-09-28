@@ -3,7 +3,8 @@
 //! Pure: it talks to the app only through the `Effect`s it queues (the tmux gateway's
 //! `take_writes` pattern).
 
-use crate::ssh_args::{Identity, ParsedArgs};
+use crate::conductor_parser::Init;
+use crate::ssh_args::{HostnameFinder, Identity, ParsedArgs};
 use crate::ssh_inject::{expand_local_tilde, injection_payloads, last_component, modify_remote, shell_supports_injection, tarballs, tweak_destination, Payload, Source, INTEGRATION_SUBDIR};
 use std::path::Path;
 use base64::Engine;
@@ -246,6 +247,8 @@ pub enum Effect {
     StopQueueingInput,
     SendInitialText,
     StateChanged,
+    /// A message for the pane (a Files to Copy job that was skipped).
+    Notice(String),
     Abort(String),
 }
 
@@ -378,6 +381,48 @@ fn shell_line(parts: &[&str]) -> usize {
     parts.windows(2).position(|pair| pair[0].starts_with('/') && plausible_shell(pair[0]) && pair[1].starts_with('/')).unwrap_or(0)
 }
 
+/// A hook's setup (`PS:20118-20170`): `env` is every variable Env reported, in stored order
+/// (`Screen::exfiltrated(None)`), `env_names` the profile's Environment Variables to Copy. A
+/// variable reported twice keeps its first place and its last value, as iTerm2's dictionary
+/// (`VT100Screen.m:1941-1949`); only a local origin sends any, in the configured order
+/// (Decision: iTerm2's dictionary order is arbitrary).
+pub fn setup_for_hook(init: &Init, local: bool, env: &[(String, String)], env_names: &[String], directory: Option<String>, inject: bool, finder: &dyn HostnameFinder) -> Setup {
+    let mut client_vars: Vec<(String, String)> = Vec::new();
+    for (name, value) in env {
+        match client_vars.iter_mut().find(|(n, _)| n == name) {
+            Some(kept) => kept.1 = value.clone(),
+            None => client_vars.push((name.clone(), value.clone())),
+        }
+    }
+    let mut vars_to_send: Vec<(String, String)> = Vec::new();
+    if local {
+        for name in env_names {
+            if vars_to_send.iter().any(|(n, _)| n == name) {
+                continue;
+            }
+            if let Some(var) = client_vars.iter().find(|(n, _)| n == name) {
+                vars_to_send.push(var.clone());
+            }
+        }
+    }
+    Setup {
+        sshargs: init.sshargs.clone(),
+        bool_args: init.bool_args.clone(),
+        dcs_id: init.dcs_id.clone(),
+        client_unique_id: init.unique_id.clone(),
+        vars_to_send,
+        client_vars,
+        initial_directory: directory,
+        inject,
+        parsed: crate::ssh_args::parse(&init.sshargs, &init.bool_args, finder),
+    }
+}
+
+/// The banner a hook appends (`TD:3860`).
+pub fn hook_banner(sshargs: &str) -> String {
+    format!("ssh {sshargs}")
+}
+
 /// One conductor.sh (or framer.py) on the other side of an ssh (`CD`).
 pub struct Conductor {
     pub setup: Setup,
@@ -491,7 +536,9 @@ impl Conductor {
         for (key, value) in vars {
             self.send(Command::Setenv { key, value }, Handler::FailIfNonzero, false);
         }
-        for (data, dest) in tarballs(&self.payloads) {
+        let (packed, skipped) = tarballs(&self.payloads);
+        self.effects.extend(skipped.into_iter().map(Effect::Notice));
+        for (data, dest) in packed {
             self.send(Command::Write { data, dest }, Handler::FailIfNonzero, false);
         }
         if let Some(dir) = self.setup.initial_directory.clone() {
@@ -1883,5 +1930,56 @@ mod tests {
         let order: Vec<String> = commands_sent(&mut c, 6).into_iter().filter(|w| w.starts_with("write ")).collect();
         assert_eq!(order, ["write /$HOME", "write /$HOME/.iterm2/shell-integration", "write /$HOME/.iterm2/shell-integration/fish/vendor_conf.d"]);
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    struct Hosts;
+
+    impl crate::ssh_args::HostnameFinder for Hosts {
+        fn hostname(&self, host: &str) -> String {
+            format!("{host}.internal")
+        }
+    }
+
+    fn env_pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
+        v.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn setup_for_hook_follows_iterm2() {
+        let init = crate::conductor_parser::Init { token: "t".into(), unique_id: "12345".into(), bool_args: "46AaCf".into(), sshargs: "-p 2222 example.com ".into(), dcs_id: "D1".into() };
+        let env = env_pairs(&[("A", "1"), ("B", "2"), ("C", "3"), ("A", "4")]);
+        let names = s(&["C", "A", "X"]);
+        let local = setup_for_hook(&init, true, &env, &names, Some("/srv".into()), true, &Hosts);
+        assert_eq!(local.vars_to_send, env_pairs(&[("C", "3"), ("A", "4")]), "configured order, missing names skipped, the last value");
+        assert_eq!(local.client_vars, env_pairs(&[("A", "4"), ("B", "2"), ("C", "3")]), "first appearance, last value");
+        assert_eq!(local.sshargs, "-p 2222 example.com ");
+        assert_eq!(local.bool_args, "46AaCf");
+        assert_eq!(local.dcs_id, "D1");
+        assert_eq!(local.client_unique_id, "12345");
+        assert_eq!(local.initial_directory.as_deref(), Some("/srv"));
+        assert!(local.inject);
+        assert_eq!(local.parsed, crate::ssh_args::parse("-p 2222 example.com ", "46AaCf", &Hosts));
+        assert_eq!(local.parsed.hostname, "example.com.internal");
+        let remote = setup_for_hook(&init, false, &env, &names, None, false, &Hosts);
+        assert_eq!(remote.vars_to_send, vec![], "a remote origin sends nothing (`PS:20137-20146`)");
+        assert_eq!(remote.client_vars, local.client_vars);
+        assert_eq!(remote.initial_directory, None);
+        assert!(!remote.inject);
+        let twice = setup_for_hook(&init, true, &env, &s(&["A", "A"]), None, false, &Hosts);
+        assert_eq!(twice.vars_to_send, env_pairs(&[("A", "4")]), "a name listed twice is sent once, as a dictionary");
+        assert_eq!(hook_banner("example.com "), "ssh example.com ");
+    }
+
+    #[test]
+    fn skipped_files_reach_the_pane() {
+        let missing = std::env::temp_dir().join(format!("tandem-conductor-missing-{}", std::process::id())).join("nothing.txt");
+        let mut c = Conductor::new(setup("A"), None, "U");
+        c.add_path(&missing.to_string_lossy(), "~/", Path::new("C:\\"));
+        c.start();
+        c.take_effects();
+        reply(&mut c, &["/bin/sh\n/home/u\n"], 0);
+        let notices: Vec<String> = c.take_effects().into_iter().filter_map(|e| if let Effect::Notice(t) = e { Some(t) } else { None }).collect();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].starts_with("A Files to Copy tarball for /$HOME was skipped: "), "{}", notices[0]);
     }
 }
