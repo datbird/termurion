@@ -3,6 +3,7 @@
 //! the search and the one-instance lock. Pure over rusqlite. Every value is a bound parameter;
 //! no SQL text is built from data, and nothing here logs a message's contents.
 
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
@@ -372,13 +373,14 @@ fn err(e: impl std::fmt::Display) -> String {
 /// The open chat database. The lock file is held for the store's life.
 pub struct Store {
     conn: Connection,
-    #[allow(dead_code)] // Held, never read: dropping the store releases the lock.
-    lock: Option<File>,
+    /// Held, never read: dropping the store releases the lock.
+    _lock: Option<File>,
 }
 
 impl Store {
-    /// Takes the lock, opens the database at `path` (creating its folder) and brings the
-    /// schema up to date. Any failure leaves no store; the caller shows `OPEN_FAILED`.
+    /// Takes the lock, opens the database at `path` (creating its folder), checks it and brings
+    /// the schema up to date. Any failure leaves no store; the caller shows `OPEN_FAILED`, never
+    /// the error text (it can name the path).
     pub fn open(path: &Path, lock_path: &Path) -> Result<Store, String> {
         for dir in [path.parent(), lock_path.parent()].into_iter().flatten() {
             if !dir.as_os_str().is_empty() {
@@ -390,15 +392,25 @@ impl Store {
         // No URI parsing: the path is only ever `default_path()`.
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
         let mut conn = Connection::open_with_flags(path, flags).map_err(err)?;
+        // `open` (`iTermDatabase.m:255-329`): a database that fails the check is closed before
+        // anything is written to it. iTerm2's one-in-a-hundred full `integrity_check` and its
+        // slow-check dialog are left out (Decision).
+        let check = conn.query_row("pragma quick_check", [], |row| row.get_ref(0).map(text_of)).map_err(err)?;
+        if check.as_deref() != Some("ok") {
+            return Err("the chat database failed its integrity check".to_string());
+        }
+        // An imported file's triggers and views cannot call SQL functions with side effects.
+        conn.pragma_update(None, "trusted_schema", false).map_err(err)?;
         prepare(&mut conn).map_err(err)?;
-        Ok(Store { conn, lock: Some(lock) })
+        Ok(Store { conn, _lock: Some(lock) })
     }
 
     /// A private database for tests; no lock.
     pub fn open_in_memory() -> Result<Store, String> {
         let mut conn = Connection::open_in_memory().map_err(err)?;
+        conn.pragma_update(None, "trusted_schema", false).map_err(err)?;
         prepare(&mut conn).map_err(err)?;
-        Ok(Store { conn, lock: None })
+        Ok(Store { conn, _lock: None })
     }
 
     /// Every chat, most recently modified first.
@@ -530,7 +542,7 @@ impl Store {
     /// The unique id of the chat's highest-seq message.
     pub fn newest_id(&self, chat: &str) -> Result<Option<String>, String> {
         self.conn
-            .query_row("select uniqueID from Message where chatID = ? order by seq desc limit 1", [chat], |row| row.get::<_, Option<String>>(0))
+            .query_row("select uniqueID from Message where chatID = ? order by seq desc limit 1", [chat], |row| row.get_ref(0).map(text_of))
             .optional()
             .map(Option::flatten)
             .map_err(err)
@@ -571,19 +583,35 @@ impl Store {
         blobs_in(&self.conn, chat).map_err(err)
     }
 
-    /// Copies `from`'s blobs into `to` with fresh seqs and the same blob ids: all of them, or
-    /// only those strictly before the blob `before_blob_id` (none when that blob is not there).
-    pub fn copy_blobs(&mut self, from: &str, to: &str, before_blob_id: Option<&str>) -> Result<(), String> {
+    /// A fork's blobs (`ChatWindowController.swift:944-979`): when the retained messages'
+    /// `firstBlobRef`s, in order, are exactly the first blob ids of `from`
+    /// (`ChatBlobAssembler.forkBlobPrefix`), those blobs are copied into `to`, each with a
+    /// fresh blob id, and `from`'s `blobProtocol` goes with them; any gap copies nothing.
+    /// Answers the old-to-new blob id map (empty when nothing was copied), with which the
+    /// caller points the forked messages at their copies (`set_first_blob_ref`).
+    pub fn copy_blobs(&mut self, from: &str, to: &str, retained_refs: &[String]) -> Result<HashMap<String, String>, String> {
         let tx = self.conn.transaction().map_err(err)?;
-        let mut blobs = blobs_in(&tx, from).map_err(err)?;
-        if let Some(id) = before_blob_id {
-            let end = blobs.iter().position(|b| b.blob_id == id).unwrap_or(0);
-            blobs.truncate(end);
+        let blobs = blobs_in(&tx, from).map_err(err)?;
+        let mut map = HashMap::new();
+        if retained_refs.is_empty() || retained_refs.len() > blobs.len() || blobs.iter().zip(retained_refs).any(|(b, r)| b.blob_id != *r) {
+            return Ok(map);
         }
-        for blob in &blobs {
-            insert_blob(&tx, &BlobRow { chat_id: to.to_string(), ..blob.clone() }).map_err(err)?;
+        for blob in &blobs[..retained_refs.len()] {
+            let copy = BlobRow { blob_id: new_id(), chat_id: to.to_string(), ..blob.clone() };
+            insert_blob(&tx, &copy).map_err(err)?;
+            map.insert(blob.blob_id.clone(), copy.blob_id);
         }
-        tx.commit().map_err(err)
+        tx.execute("update Chat set blobProtocol = (select blobProtocol from Chat where uuid = ?) where uuid = ? and exists (select 1 from Chat where uuid = ? and blobProtocol is not null)", params![from, to, from])
+            .map_err(err)?;
+        tx.commit().map_err(err)?;
+        Ok(map)
+    }
+
+    /// Links a message to the blob of the round it begins (`ChatListModel.setFirstBlobRef`);
+    /// false when the chat has no such message.
+    pub fn set_first_blob_ref(&mut self, chat: &str, unique_id: &str, blob_ref: &str) -> Result<bool, String> {
+        let changed = self.conn.execute("update Message set firstBlobRef = ? where chatID = ? and uniqueID = ?", params![blob_ref, chat, unique_id]).map_err(err)?;
+        Ok(changed > 0)
     }
 
     /// (chat id, message unique id) of every message whose stored JSON contains each
@@ -596,7 +624,7 @@ impl Store {
         }
         let mut stmt = self.conn.prepare(&search_sql(patterns.len())).map_err(err)?;
         let found = stmt
-            .query_map(params_from_iter(patterns.iter()), |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)))
+            .query_map(params_from_iter(patterns.iter()), |row| Ok((text_of(row.get_ref(0)?), text_of(row.get_ref(1)?))))
             .map_err(err)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(err)?;
@@ -692,7 +720,7 @@ mod tests {
         prepare(&mut conn).unwrap();
         assert_eq!(dump(&conn), before);
 
-        let mut store = Store { conn, lock: None };
+        let mut store = Store { conn, _lock: None };
         let chats = store.chats().unwrap();
         assert_eq!((chats[0].id.as_str(), chats[0].title.as_str(), chats[0].creation_date, chats[0].last_modified_date), ("C1", "Old", 1700000000.0, 1700000001.0));
         assert!(!chats[0].orchestration_enabled);
@@ -828,18 +856,103 @@ mod tests {
         let token: String = store.conn.query_row("select tokenCount from ChatBlob where seq = ?", [s1], |row| row.get(0)).unwrap();
         assert_eq!(token, "42");
 
-        store.copy_blobs("a", "b", Some("X3")).unwrap();
-        let copied = store.blobs("b").unwrap();
-        assert_eq!(copied.iter().map(|b| b.blob_id.as_str()).collect::<Vec<_>>(), ["X1", "X2"]);
-        assert!(copied[0].seq > s3 && copied[1].seq > copied[0].seq);
-        assert_eq!(copied[0], BlobRow { seq: copied[0].seq, chat_id: "b".into(), ..full });
-        store.copy_blobs("a", "c", None).unwrap();
-        assert_eq!(store.blobs("c").unwrap().len(), 3);
-        store.copy_blobs("a", "d", Some("X1")).unwrap();
-        assert!(store.blobs("d").unwrap().is_empty());
-        store.copy_blobs("a", "e", Some("missing")).unwrap();
-        assert!(store.blobs("e").unwrap().is_empty());
         assert_eq!(store.blobs("a").unwrap().len(), 3);
+    }
+
+    #[test]
+    fn fork_blobs_follow_iterm2() {
+        let mut store = Store::open_in_memory().unwrap();
+        let mut full = blob("a", "X1");
+        full.response_id = Some("r".into());
+        full.token_count = Some(42);
+        full.protocol = 5;
+        store.add_blob(&full).unwrap();
+        for id in ["X2", "X3"] {
+            store.add_blob(&blob("a", id)).unwrap();
+        }
+        let refs = |ids: &[&str]| ids.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        // Nothing copies for no refs, more refs than blobs, a mismatch or a gap.
+        for (to, retained) in [("n1", refs(&[])), ("n2", refs(&["X1", "X2", "X3", "X4"])), ("n3", refs(&["X2"])), ("n4", refs(&["X1", "X3"]))] {
+            assert!(store.copy_blobs("a", to, &retained).unwrap().is_empty(), "{retained:?}");
+            assert!(store.blobs(to).unwrap().is_empty(), "{retained:?}");
+        }
+
+        // A fork of the first two rounds: fresh ids, everything else copied.
+        let mut source = Chat::new("S", 1.0);
+        source.id = "a".into();
+        source.blob_protocol = Some("5".into());
+        store.add_chat(&source).unwrap();
+        let fork = Chat::new("F", 2.0);
+        store.add_chat(&fork).unwrap();
+        let mut m1 = Message::new("a", Participant::User, Content::PlainText { text: "one".into(), context: None }, 1.0);
+        m1.first_blob_ref = Some("X1".into());
+        let mut m2 = Message::new("a", Participant::User, Content::PlainText { text: "two".into(), context: None }, 2.0);
+        m2.first_blob_ref = Some("X2".into());
+        let reply = Message::new("a", Participant::Agent, Content::Markdown("ok".into()), 3.0);
+        let kept = [m1, reply, m2];
+        let retained: Vec<String> = kept.iter().filter_map(|m| m.first_blob_ref.clone()).collect();
+        let map = store.copy_blobs("a", &fork.id, &retained).unwrap();
+        let copied = store.blobs(&fork.id).unwrap();
+        assert_eq!(copied.len(), 2);
+        assert_eq!(map.len(), 2);
+        let originals = store.blobs("a").unwrap();
+        for (copy, original) in copied.iter().zip(&originals) {
+            assert!(originals.iter().all(|o| o.blob_id != copy.blob_id), "a fork shares no blob id with its source");
+            assert_eq!(map[&original.blob_id], copy.blob_id);
+            assert_eq!(*copy, BlobRow { seq: copy.seq, blob_id: copy.blob_id.clone(), chat_id: fork.id.clone(), ..original.clone() });
+        }
+        assert_eq!(store.chat(&fork.id).unwrap().unwrap().blob_protocol.as_deref(), Some("5"), "the source's protocol goes with the blobs");
+
+        // The fork's clones point at the copies.
+        for m in &kept {
+            let clone = Message { unique_id: new_id(), chat_id: fork.id.clone(), first_blob_ref: None, ..m.clone() };
+            store.add_message(&clone).unwrap();
+            if let Some(new_ref) = m.first_blob_ref.as_ref().and_then(|r| map.get(r)) {
+                assert!(store.set_first_blob_ref(&fork.id, &clone.unique_id, new_ref).unwrap());
+            }
+        }
+        assert!(!store.set_first_blob_ref(&fork.id, "missing", "X1").unwrap());
+        store.delete_chat("a").unwrap();
+        let blob_ids: Vec<String> = store.blobs(&fork.id).unwrap().into_iter().map(|b| b.blob_id).collect();
+        assert_eq!(blob_ids.len(), 2, "deleting the source keeps the fork's blobs");
+        let linked: Vec<String> = store.messages(&fork.id).unwrap().into_iter().filter_map(|m| m.first_blob_ref).collect();
+        assert_eq!(linked.len(), 2);
+        assert!(linked.iter().all(|r| blob_ids.contains(r)), "every forked message's firstBlobRef resolves in the fork");
+    }
+
+    #[test]
+    fn corrupt_database_does_not_open() {
+        let dir = std::env::temp_dir().join(format!("tandem-chatdb-corrupt-{}", crate::chat_message::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE_NAME);
+        let garbage: Vec<u8> = (0..8192u32).map(|i| (i * 7 % 251) as u8).collect();
+        std::fs::write(&path, &garbage).unwrap();
+        assert!(Store::open(&path, &dir.join(LOCK_NAME)).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), garbage, "nothing is written to a file that fails the check");
+
+        // A real database cut short.
+        let good = dir.join("good.sqlite");
+        {
+            let mut store = Store::open(&good, &dir.join("good-lock")).unwrap();
+            for i in 0..200 {
+                store.add_message(&Message::new("C", Participant::User, Content::Markdown(format!("message {i} {}", "x".repeat(200))), 1.0)).unwrap();
+            }
+        }
+        let bytes = std::fs::read(&good).unwrap();
+        let cut = dir.join("cut.sqlite");
+        std::fs::write(&cut, &bytes[..bytes.len() / 2]).unwrap();
+        assert!(Store::open(&cut, &dir.join("cut-lock")).is_err());
+        // A readable database with one broken page: the schema reads, the check does not pass.
+        let page = u16::from_be_bytes([bytes[16], bytes[17]]) as usize;
+        let mut broken = bytes.clone();
+        broken[bytes.len() - page] = 0;
+        let bad = dir.join("bad.sqlite");
+        std::fs::write(&bad, &broken).unwrap();
+        assert!(Store::open(&bad, &dir.join("bad-lock")).is_err());
+        assert_eq!(std::fs::read(&bad).unwrap(), broken, "nothing is written to a database that fails the check");
+        assert!(Store::open(&good, &dir.join("good-lock")).is_ok(), "an intact database opens");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
