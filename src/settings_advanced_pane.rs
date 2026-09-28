@@ -152,39 +152,56 @@ pub fn page(ui: &mut egui::Ui, g: &mut Globals, st: &mut AdvancedState) -> bool 
     let items = advanced_pane::filtered(rows, &st.query, st.only_non_default, &|k| g.values.get(k).cloned(), keep.as_deref());
     egui::ScrollArea::vertical().show(ui, |ui| {
         let label_width = (ui.available_width() * 0.65).max(200.0);
-        egui::Grid::new("advanced-settings").num_columns(2).min_row_height(30.0).striped(true).show(ui, |ui| {
-            ui.strong(advanced_pane::SETTING_COLUMN);
-            ui.strong(advanced_pane::VALUE_COLUMN);
-            ui.end_row();
-            for item in items {
-                match item {
-                    Item::Header(category) => {
-                        ui.vertical(|ui| {
-                            ui.add_space(8.0);
-                            ui.label(egui::RichText::new(category).strong().size(20.0));
-                        });
-                        ui.label("");
-                    }
-                    Item::Setting(i) => {
-                        let row = &rows[i];
-                        ui.vertical(|ui| {
-                            ui.set_width(label_width);
+        let setting_row = |ui: &mut egui::Ui, label: &mut dyn FnMut(&mut egui::Ui), value: &mut dyn FnMut(&mut egui::Ui)| {
+            ui.horizontal(|ui| {
+                ui.set_min_height(30.0);
+                ui.allocate_ui_with_layout(egui::vec2(label_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.set_width(label_width);
+                    label(ui);
+                });
+                value(ui);
+            });
+        };
+        setting_row(ui, &mut |ui| _ = ui.strong(advanced_pane::SETTING_COLUMN), &mut |ui| _ = ui.strong(advanced_pane::VALUE_COLUMN));
+        for (n, item) in items.into_iter().enumerate() {
+            // Striped as the table's rows; the stripe goes under the row once its height is known.
+            let stripe = ui.painter().add(egui::Shape::Noop);
+            let top = ui.cursor().top();
+            match item {
+                // A group row (`ASVC:709-713`): the header spans the whole row.
+                Item::Header(category) => {
+                    ui.vertical(|ui| {
+                        ui.set_min_height(30.0);
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(category).strong().size(20.0));
+                    });
+                }
+                Item::Setting(i) => {
+                    let row = &rows[i];
+                    let enabled = row_enabled(g, row.key) && !row.macos_only;
+                    let hover = if row.macos_only { format!("{} (macOS only)", row.description) } else { row.description.to_string() };
+                    setting_row(
+                        ui,
+                        &mut |ui| {
                             ui.add(egui::Label::new(row.label).wrap());
                             if let Some(subtitle) = row.subtitle {
                                 let weak = ui.visuals().weak_text_color();
                                 ui.add(egui::Label::new(egui::RichText::new(subtitle).size(11.0).color(weak)).wrap());
                             }
-                        });
-                        let enabled = row_enabled(g, row.key) && !row.macos_only;
-                        let hover = if row.macos_only { format!("{} (macOS only)", row.description) } else { row.description.to_string() };
-                        let cell = ui.add_enabled_ui(enabled, |ui| value_cell(ui, g, st, row));
-                        changed |= cell.inner;
-                        cell.response.on_hover_text(hover);
-                    }
+                        },
+                        &mut |ui| {
+                            let cell = ui.add_enabled_ui(enabled, |ui| value_cell(ui, g, st, row));
+                            changed |= cell.inner;
+                            cell.response.on_hover_text(hover.as_str());
+                        },
+                    );
                 }
-                ui.end_row();
             }
-        });
+            if n % 2 == 1 {
+                let rect = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.min_rect().bottom());
+                ui.painter().set(stripe, egui::Shape::rect_filled(rect, 0.0, ui.visuals().faint_bg_color));
+            }
+        }
     });
     changed
 }
