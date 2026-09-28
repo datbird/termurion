@@ -135,9 +135,11 @@ fn owner(item: &Item) -> u8 {
         || sel("History") || sel("Directories") || sel("Autocomplete") || sel("Clippings") || sel("Snippet")
     {
         9
+    } else if sel("ssh") || sel("downloadFiles") || sel("RemoteHost") {
+        14
     } else if has("Terminal State") || sel("copyWith") || sel("CopyMode") || sel("undo") || sel("redo") || sel("cut:")
-        || sel("replaceSelection") || sel("renderSelection") || sel("print") || sel("PageLayout") || sel("ssh")
-        || sel("downloadFiles") || sel("RemoteHost") || sel("Screenshot") || sel("BufferInput")
+        || sel("replaceSelection") || sel("renderSelection") || sel("print") || sel("PageLayout") || sel("Screenshot")
+        || sel("BufferInput")
     {
         5
     } else {
@@ -208,7 +210,7 @@ mod tests {
         for i in items().iter().filter(|i| !i.separator && !i.submenu && !i.selector.is_empty()) {
             let s = status(i);
             if let Status::Later(m) = s {
-                assert!((4..=13).contains(&m), "{} -> milestone {m}", i.id());
+                assert!((4..=14).contains(&m), "{} -> milestone {m}", i.id());
             }
         }
     }
@@ -279,6 +281,14 @@ mod tests {
         assert_eq!(status(find("importScript:", "Import...")), Status::Done, "11d");
         assert_eq!(status(find("exportScript:", "Export...")), Status::Done, "11d");
         assert_eq!(status(find("openDependencyEditor:", "Manage Dependencies...")), Status::Done, "11d");
+        assert_eq!(status(find("sshDisconnect:", "Disconnect")), Status::Later(14), "14c");
+        assert_eq!(status(find("downloadFiles:", "Download Files...")), Status::Later(14), "14d");
+        assert_eq!(
+            status(find("toggleRemoteHostCanControlIterm2:", "Remote host can control iTerm2")),
+            Status::Later(14),
+            "14"
+        );
+        assert_eq!(owner(find("toggleCopyMode:", "Copy Mode")), 5, "done in 5, and not moved with ssh");
         assert!(DISABLED_UNDER_UV.contains(&"installAlreadyDownloadedPythonRuntime:"));
         for sel in DISABLED_UNDER_UV {
             assert!(items().iter().any(|i| i.selector == *sel), "{sel} is not in the menu");

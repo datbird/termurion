@@ -663,7 +663,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | detectPasswordInput | detectPasswordInput (bool, default YES) | Show key at cursor at password prompt? | have | Milestone 10b: off turns off the console-mode watch entirely, so the key cursor never shows and nothing opens automatically. |
 | detectPasswordInputDebounce | detectPasswordInputDebounce (float, default 0.2) | How long (seconds) terminal echo must remain disabled before iTerm2 treats it as a password prompt. | have | Milestone 10b: a port of `iTermPasswordInputDebouncer`; 0 or negative turns on at once, and a reading that stops echoing off resets at once. |
 | tabsWrapAround | tabsWrapAround (bool, default NO) | Tabs wrap around to the next line. | missing |  |
-| sshSchemePath | sshSchemePath (string, default @"ssh") | Command to run when handling an ssh:// URL. | missing |  |
+| sshSchemePath | sshSchemePath (string, default @"ssh") | Command to run when handling an ssh:// URL. | missing | Milestone 14 (SSH integration, ruling 6): 14e handles ssh: URLs. |
 | defaultTabStopWidth | defaultTabStopWidth (int, default 8) | Default tab stop width for new sessions. | missing |  |
 | convertItalicsToReverseVideoForTmux | convertItalicsToReverseVideoForTmux (bool, default YES) | Convert italics to reverse video in tmux integration? This is effective when the default TERM reported by tmux matches *screen*. | have | Milestone 8f: SGR 3 and 23 become 7 and 27 in a pane whose TERM contains screen (a tmux pane takes tmux's default-terminal, else screen). |
 | convertItalicsToReverseVideoForTmuxBugwardsCompatible | convertItalicsToReverseVideoForTmuxBugwardsCompatible (bool, default NO) | Convert italics to reverse video in tmux integration, even when TERM matches *tmux*? This was the default behavior for a long time, but it was incorrect. | have | Milestone 8f: TERM containing tmux counts too. |
@@ -862,7 +862,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | aiChatVerboseConsoleLogging | aiChatVerboseConsoleLogging (bool, default NO) | Log AI chat traffic to the system console. | missing |  |
 | aiChatRawWireLogging | aiChatRawWireLogging (bool, default NO) | Log raw AI API requests and responses to disk. | missing |  |
 | logAITabTitleCorpus | logAITabTitleCorpus (bool, default NO) | Log AI tab-title generations to a corpus file. | missing |  |
-| alternateSSHIntegrationScript | alternateSSHIntegrationScript (string, default @"") | Alternate SSH integration python script. | missing |  |
+| alternateSSHIntegrationScript | alternateSSHIntegrationScript (string, default @"") | Alternate SSH integration python script. | missing | Milestone 14 (SSH integration, ruling 6); iTerm2 reads it only in debug builds (ruling 8). |
 
 ### Session
 
@@ -956,8 +956,8 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| unameCommand | unameCommand (string, default @"uname -s") | Command used to set the `uname` variable. | missing |  |
-| validCharactersInSSHUserNames | validCharactersInSSHUserNames (string, default @"_-+.") | Valid characters in SSH user names Alphanumerics are always valid. | missing |  |
+| unameCommand | unameCommand (string, default @"uname -s") | Command used to set the `uname` variable. | missing | Milestone 14 (SSH integration, ruling 6). |
+| validCharactersInSSHUserNames | validCharactersInSSHUserNames (string, default @"_-+.") | Valid characters in SSH user names Alphanumerics are always valid. | missing | Milestone 14 (SSH integration, ruling 6). |
 
 ### Warnings
 
@@ -1075,7 +1075,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | throttleMetalConcurrentFrames | throttleMetalConcurrentFrames (bool, default YES) | Reduce number of frames in flight when GPU can't produce drawables quickly. | missing |  |
 | metalSynchronizedDrawing | metalSynchronizedDrawing (bool, default NO) | Use synchronized Metal drawable presentation? Defers drawable acquisition until rendering completes, presents synchronously with Core Animation, and acquires drawables on the private render queue. | missing |  |
 | metalRowOutputCacheEnabled | metalRowOutputCacheEnabled (bool, default NO) | Cache per-row GPU build output? Skips rebuilding the glyph and color data for rows whose content and configuration have not changed since the last frame. | missing |  |
-| sshURLsSupportPath | sshURLsSupportPath (bool, default YES) | SSH URLs respect the path. | missing |  |
+| sshURLsSupportPath | sshURLsSupportPath (bool, default YES) | SSH URLs respect the path. | missing | Milestone 14 (SSH integration, ruling 6): 14e handles ssh: URLs. |
 | useDivorcedProfileToSplit | useDivorcedProfileToSplit (bool, default YES) | When splitting a pane, use the profile with local modifications, not the backing profile. | missing |  |
 | synergyModifierRemappingEnabled | synergyModifierRemappingEnabled (bool, default YES) | Support modifier remapping for keystrokes originated by Synergy. | missing |  |
 | shouldSetLCTerminal | shouldSetLCTerminal (bool, default YES) | Set LC_TERMINAL=iTerm2. | have | Milestone 11e: on by default, new sessions get `LC_TERMINAL=iTerm2` and `LC_TERMINAL_VERSION=3.7.0`; every new session also gets `TERM_PROGRAM=iTerm.app`, `TERM_PROGRAM_VERSION=3.7.0`, `COLORTERM=truecolor` and `TERM_FEATURES`, as iTerm2 sets them. |
@@ -1113,13 +1113,13 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | smartLoggingWithAutoComposer | smartLoggingWithAutoComposer (bool, default NO) | Enable more compact logging when using auto composer? This will avoid logging raw data in your prompt and your interactions with it. | partial | Milestone 9l: the setting is stored with its own help text and toggleable in Advanced settings, but has no effect: Tandem has no session logging yet for it to change. |
 | disclaimChildren | disclaimChildren (bool, default NO) | Disclaim ownership of children. | missing |  |
 | usePosixSpawn | usePosixSpawn (bool, default YES_IF_BETA_ELSE_NO) | Use posix_spawn instead of fork and exec to launch sessions? This is a newer launch mechanism that avoids a slow file-descriptor-closing step. | missing |  |
-| restoreKeyModeAutomaticallyOnHostChange | restoreKeyModeAutomaticallyOnHostChange (bool, default YES) | Automatically restore keyboard mode when an ssh session ends? | missing |  |
+| restoreKeyModeAutomaticallyOnHostChange | restoreKeyModeAutomaticallyOnHostChange (bool, default YES) | Automatically restore keyboard mode when an ssh session ends? | missing | Milestone 14 (SSH integration, ruling 6). |
 | chaseAnchoredScreen | chaseAnchoredScreen (bool, default NO) | Aggressively keep windows on the screen they were configured to be on. | missing |  |
 | codeciergeGhostRidingPrompt | codeciergeGhostRidingPrompt (string, default @"You operate a terminal emulator for me. My goal is $GOAL. $CONTEXT. Ask clarifying questions as needed and run commands using the execute function when you're ready. When I've reached my goal, remind me to click the End Task button.") | Prompt to send to LLM for Codecierge when it is able to execute commands automatically. | missing |  |
 | codeciergeCommandWarningCount | codeciergeCommandWarningCount (int, default 10) | After this many commands, make codecierge confirm that you intend to keep it enabled. | missing |  |
 | codeciergeRegularPrompt | codeciergeRegularPrompt (string, default @"You help a me in a terminal emulator. My goal is $GOAL. $CONTEXT. Start by suggesting a command. Don't overwhelm me with too much information: just go one step at a time. When I've reached my goal, remind me to click the End Task button.") | Prompt to send to LLM for Codecierge when it is NOT able to execute commands automatically. | missing |  |
 | aquaSKKBugfixEnabled | aquaSKKBugfixEnabled (bool, default NO) | Enable AquaSKK bugfix? | missing |  |
-| channelsEnabled | channelsEnabled (bool, default NO) | Enable Channels feature? | missing |  |
+| channelsEnabled | channelsEnabled (bool, default NO) | Enable Channels feature? | missing | Milestone 14 (SSH integration, ruling 6); wrap and Channels are experimental and off by default in iTerm2 (ruling 4). |
 | rightJustifyRTLLines | rightJustifyRTLLines (bool, default YES) | Right-justify lines in paragraphs with base writing direction of right-to-left? Requires BOTH “right-to-left text support” and “auto-detect paragraph writing detection” to be enabled. | missing |  |
 | detectParagraphDirection | detectParagraphDirection (bool, default NO) | Auto-detect paragraph writing direction based on the first strong directional character? Requires right-to-left text support to be enabled. | missing |  |
 | disableBidiInAlternateScreen | disableBidiInAlternateScreen (bool, default NO) | Do not reorder right-to-left text in the alternate screen? Full-screen apps (editors and some CLIs) position their own text and may already order it for display, so reordering it again fights their layout. | missing |  |

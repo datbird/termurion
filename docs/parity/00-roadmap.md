@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 173 | 122 | 19 |
+| `01-profile-settings.md` | 314 | 174 | 121 | 19 |
 | `02-global-settings.md` | 823 | 275 | 72 | 476 |
-| `03-features-and-menus.md` | 643 | 514 | 44 | 85 |
-| Total | 1,780 | 962 | 238 | 580 |
+| `03-features-and-menus.md` | 643 | 516 | 47 | 80 |
+| Total | 1,780 | 965 | 240 | 575 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -237,6 +237,22 @@ focus report and drops it, so the script's check fails there (measured in WSL an
 the same ConPTY input, a kept ConPTY limitation; the native it2check restores the prefix). it2setcolor's presets wait for milestone 13 and it2ssh for milestone
 14; the Swift `it2` CLI is not ported. Every kept quirk is listed in
 `docs/acceptance/m11e-checklist.md` and ruled on in `docs/superpowers/rulings/m11e-rulings.txt`.
+Milestone 14a opened milestone 14 (SSH integration) with the transport, the SSH profile and the
+handshake (01, 03; 01: 1 row to have, 03: 2 rows to have and 4 to partial). A probe against a
+loopback sshd in WSL measured the transports; Robert chose the shipped ConPTY in passthrough mode
+(ruling 1), which carries iTerm2's protocol byte for byte except that invalid UTF-8 arrives as
+U+FFFD. The Command type SSH runs `ssh <command>`, or with SSH Integration on Tandem's own
+`it2ssh` (a `tandem-utils` command following iTerm2's script, with the origin secret from a
+per-user pipe); Configure… holds iTerm2's four settings (SSH Integration, variables and files to
+copy, Path to SSH); OSC 1337 `Env` (report=all), `it2ssh`, `SendConductor` and `EndSSH` are read
+as iTerm2 reads them, with its version and end banners, the hop chain, and `\x03\n` releasing
+it2ssh's local read loop; the session host speaks protocol 4 so an SSH session can be hosted.
+Until milestone 14b's conductor hook exists (`CONDUCTOR_READY` false), it2ssh and SSH profiles
+run plain ssh with a one-line notice and no typing is ever held. The Shell > ssh menu items and
+seven SSH settings in 02 (sshSchemePath, alternateSSHIntegrationScript, unameCommand,
+validCharactersInSSHUserNames, sshURLsSupportPath, restoreKeyModeAutomaticallyOnHostChange,
+channelsEnabled) belong to milestone 14 (ruling 6). Every kept quirk is listed in
+`docs/acceptance/m14a-checklist.md` and ruled on in `docs/superpowers/rulings/m14a-rulings.txt`.
 
 ## Order
 
