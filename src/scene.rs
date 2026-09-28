@@ -1247,9 +1247,9 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
             TabPosition::Right => Rect { w: 1.0, ..area },
         };
         let solid = crate::tab_theme::Fill { color: rgb(0, 0, 0), alpha: 1.0 };
-        // Unattached, the Dark style's bottom line is its top line's color at 0.3 (`DRK:52-56`).
-        let dark_line = if pal.attached || bar.position != TabPosition::Top { solid } else { crate::tab_theme::Fill { color: pal.top.color, alpha: 0.3 } };
-        fill_quad(frame, edge, if pal.dark_edge_gradient { dark_line } else { pal.edge });
+        // Attached or not, Dark's gradient (`DRK:113-125`) covers its 0.3 divider on the same row, so
+        // the line stays solid.
+        fill_quad(frame, edge, if pal.dark_edge_gradient { solid } else { pal.edge });
     }
     // What is drawn over the selected tab and the lines (`drawPostHocDecorationsOnSelectedCell:`),
     // only in a window with a colored tab: Minimal's underline (`MIN:278-325`) or the Regular
@@ -2943,8 +2943,8 @@ mod tests {
     }
 
     /// Compact with a Top bar is not attached to the title bar (`PT:10142`): no top line on any
-    /// tab, none past the "+", and Dark's bottom line is the top-line color at 0.3
-    /// (`YOS:1628-1646`, `YOS:1326`, `DRK:52-56`); Minimal and the others stay attached.
+    /// tab, none past the "+", and Dark's bottom line stays solid (its gradient covers the 0.3
+    /// divider, `DRK:113-125`) (`YOS:1628-1646`, `YOS:1326`); Minimal and the others stay attached.
     #[test]
     fn unattached_top_bar_follows_iterm2() {
         use crate::tab_layout::{self, TabInput};
@@ -2969,10 +2969,10 @@ mod tests {
         let top_lines = |f: &Frame| f.quads.iter().filter(|q| q.rect.y == area.y && q.rect.h == 1.0 && q.rect.w < 400.0).count();
         assert!(top_lines(&draw(true)) >= 2, "attached: the unselected tab's line and the run past the add button");
         assert_eq!(top_lines(&draw(false)), 0, "unattached: no top lines at all");
-        // The bottom line: the top-line color at 0.3.
+        // The bottom line stays solid: Dark's gradient covers the 0.3 divider (`DRK:113-125`).
         let f = draw(false);
         let bottom = f.quads.iter().find(|q| q.rect.y == area.y + area.h - 1.0 && q.rect.w == 400.0).unwrap();
-        assert_eq!(bottom.color, rgba(rgb(0, 0, 0), 0.3));
+        assert_eq!(bottom.color, rgba(rgb(0, 0, 0), 1.0));
         // A bar on the bottom draws its lines whatever `attached` says.
         let mut low = bar.clone();
         low.position = crate::tab_position::TabPosition::Bottom;

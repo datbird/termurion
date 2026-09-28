@@ -143,9 +143,10 @@ pub enum Event {
     Hover(Option<Button>),
     Down(Button),
     Up(Button),
-    /// The caption menu asked for: Alt or F10 (the button's corner), a right click on the strip
-    /// (`true`: at the pointer).
+    /// The caption menu asked for: Alt or F10 (the button's corner), `true`: at the pointer.
     Menu(bool),
+    /// A right click where Windows answers caption, at this client point (`strip_right_click`).
+    RightClick(i32, i32),
 }
 
 /// The button a release clicks: the one pressed and let go over the same button.
@@ -178,6 +179,95 @@ pub fn with_menu_button(mut l: Layout, scale: f32) -> Layout {
 /// `SC_KEYMENU` with `lparam` 0. Alt+Space and mnemonics carry a character and are not.
 pub fn is_key_menu(wparam: usize, lparam: isize) -> bool {
     wparam & 0xFFF0 == 0xF100 && lparam == 0
+}
+
+/// Virtual key codes the key menu watches: Alt (`VK_MENU`; `VK_LMENU` and `VK_RMENU` are Alt too)
+/// and F10.
+pub const VK_ALT: u16 = 0x12;
+pub const VK_F10: u16 = 0x79;
+
+fn is_alt(vk: u16) -> bool {
+    matches!(vk, VK_ALT | 0xA4 | 0xA5)
+}
+
+/// A message the key menu tracker sees before winit: a key press (`WM_KEYDOWN`, or with `sys`
+/// `WM_SYSKEYDOWN`; `repeat` is auto-repeat, lparam bit 30), a key release, a mouse press, or
+/// the keyboard focus leaving.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyMsg {
+    Down { vk: u16, repeat: bool, sys: bool },
+    Up { vk: u16, sys: bool },
+    Pointer,
+    FocusLost,
+}
+
+/// Alt pressed and released alone, and F10, in a window whose menu bar muda detached (a Minimal or
+/// Compact window): winit hands `WM_SYSKEYUP` to `DefWindowProc` only while a menu bar is attached
+/// (`event_loop.rs:1773-1779`), so Windows never sends `SC_KEYMENU`, and the caption subclass
+/// tracks the keys itself.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KeyMenu {
+    /// Alt is down and nothing else happened since its press.
+    alt_alone: bool,
+}
+
+impl KeyMenu {
+    /// Takes one message (`shift_or_ctrl`: Shift or Ctrl is held); true when it opens the menu:
+    /// the release of an Alt pressed alone, or an F10 press without Alt, Shift or Ctrl. Any
+    /// other key, a click (Alt+drag) or a lost focus between cancels the Alt.
+    pub fn feed(&mut self, m: KeyMsg, shift_or_ctrl: bool) -> bool {
+        match m {
+            KeyMsg::Down { vk, repeat, sys } if is_alt(vk) => {
+                if !repeat {
+                    self.alt_alone = sys && !shift_or_ctrl;
+                }
+                false
+            }
+            KeyMsg::Down { vk, repeat, sys } => {
+                // F10 comes as a system key; with Alt held it is Alt+F10, a chord.
+                let alt_held = std::mem::replace(&mut self.alt_alone, false);
+                vk == VK_F10 && sys && !repeat && !shift_or_ctrl && !alt_held
+            }
+            KeyMsg::Up { vk, sys } if is_alt(vk) => std::mem::replace(&mut self.alt_alone, false) && sys,
+            KeyMsg::Up { .. } => false,
+            KeyMsg::Pointer | KeyMsg::FocusLost => {
+                self.alt_alone = false;
+                false
+            }
+        }
+    }
+}
+
+/// The menu a right click in the strip gives where Windows answers caption (the empty strip, or
+/// the edge strip over the bar), from what the tab bar has at the point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StripMenu {
+    /// The tab's menu (over a tab or its close button).
+    Tab(usize),
+    /// The group's menu (over a group chip).
+    Group,
+    /// The whole menu at the pointer.
+    Main,
+}
+
+/// `PSM menuForEvent:` (`PSM:3961-3985`): the cell's menu first, then the chip's; elsewhere the
+/// whole menu, as iTerm2 does where its menu bar is out of reach.
+pub fn strip_right_click(hit: Option<crate::tab_layout::Hit>) -> StripMenu {
+    use crate::tab_layout::Hit as TabHit;
+    match hit {
+        Some(TabHit::Tab(i) | TabHit::Close(i)) => StripMenu::Tab(i),
+        Some(TabHit::Chip(_)) => StripMenu::Group,
+        _ => StripMenu::Main,
+    }
+}
+
+/// The client size to hand `ScaleFactorChanged`'s `inner_size_writer` when a caption window moves
+/// to a monitor of another DPI: winit's own answer (the old client, `old`, scaled from `old_dpi`
+/// to `new_dpi` and rounded, `event_loop.rs:2273-2280`) less the height the subclass removes at
+/// the new DPI, since winit then frames it for a style that still has its title bar.
+pub fn dpi_inner(old: (u32, u32), old_dpi: u32, new_dpi: u32, removed: i32) -> (u32, u32) {
+    let scale = |v: u32| (v as f64 / (old_dpi.max(1) as f64 / 96.0) * (new_dpi as f64 / 96.0)).round() as u32;
+    (scale(old.0), corrected_inner(scale(old.1), removed))
 }
 
 /// The height a caption subclass takes off a window winit sized for a style with its title bar:
@@ -467,6 +557,78 @@ mod tests {
             });
             assert_eq!(w.client(), c, "and back");
             assert_eq!(w.outer, 600);
+        }
+    }
+
+    /// winit sends `ScaleFactorChanged` inside `WM_DPICHANGED` before it resizes, with the old
+    /// client scaled to the new DPI as the size it will set (`event_loop.rs:2273-2291`); the
+    /// writer gets that less the title bar the subclass removes at the new DPI.
+    #[test]
+    fn caption_dpi_change_keeps_the_client() {
+        assert_eq!(dpi_inner((800, 562), 96, 144, 45), (1200, 798));
+        assert_eq!(dpi_inner((1200, 843), 144, 96, 31), (800, 531));
+        // winit rounds the scaled size: 801 * 1.25 = 1001.25, 563 * 1.25 = 703.75.
+        assert_eq!(dpi_inner((801, 563), 96, 120, 0), (1001, 704));
+        assert_eq!(dpi_inner((10, 10), 96, 96, 40), (10, 1), "never below 1");
+    }
+
+    /// Alt pressed and released with nothing between, and F10, open the menu (what Windows'
+    /// `DefWindowProc` does for a window with a menu bar); a chord, a click or a lost focus
+    /// between the Alt press and release does not.
+    #[test]
+    fn caption_key_menu_tracks_alt_alone() {
+        use KeyMsg::{Down, FocusLost, Pointer, Up};
+        let alt_down = |repeat| Down { vk: VK_ALT, repeat, sys: true };
+        let alt_up = Up { vk: VK_ALT, sys: true };
+        let mut k = KeyMenu::default();
+        assert!(!k.feed(alt_down(false), false));
+        assert!(!k.feed(alt_down(true), false), "auto-repeat keeps it");
+        assert!(k.feed(alt_up, false), "Alt alone");
+        assert!(!k.feed(alt_up, false), "an Alt release with no press before it");
+        // Alt+Space (the system menu) and Alt+F (a chord) keep working: no menu at the release.
+        for vk in [0x20, 0x46] {
+            k.feed(alt_down(false), false);
+            assert!(!k.feed(Down { vk, repeat: false, sys: true }, false));
+            assert!(!k.feed(Up { vk, sys: true }, false));
+            assert!(!k.feed(alt_up, false), "a chord with {vk:#x}");
+        }
+        // Ctrl+Alt reaches the window as a plain key down.
+        k.feed(alt_down(false), false);
+        k.feed(Down { vk: 0x11, repeat: false, sys: false }, false);
+        assert!(!k.feed(alt_up, false));
+        k.feed(alt_down(false), false);
+        k.feed(Pointer, false);
+        assert!(!k.feed(alt_up, false), "a click between (Alt+drag)");
+        k.feed(alt_down(false), false);
+        k.feed(FocusLost, false);
+        assert!(!k.feed(alt_up, false), "Alt+Tab");
+        k.feed(alt_down(false), true);
+        assert!(!k.feed(alt_up, false), "Shift+Alt switches the input language");
+        // The left and right Alt keys are Alt too.
+        k.feed(Down { vk: 0xA5, repeat: false, sys: true }, false);
+        assert!(k.feed(Up { vk: 0xA5, sys: true }, false));
+        // F10 opens it on its press, once; Shift+F10 and Ctrl+F10 do not.
+        assert!(k.feed(Down { vk: VK_F10, repeat: false, sys: true }, false));
+        assert!(!k.feed(Down { vk: VK_F10, repeat: true, sys: true }, false));
+        assert!(!k.feed(Up { vk: VK_F10, sys: true }, false));
+        assert!(!k.feed(Down { vk: VK_F10, repeat: false, sys: true }, true));
+        // Alt held, then F10: Alt+F10 is a chord.
+        k.feed(alt_down(false), false);
+        assert!(!k.feed(Down { vk: VK_F10, repeat: false, sys: true }, false));
+        assert!(!k.feed(alt_up, false));
+    }
+
+    /// A right click in the strip that Windows answers as caption (the edge strip over a tab or
+    /// a chip, or the empty strip): the tab's menu over a tab or its close button, the group's
+    /// over a chip, the whole menu elsewhere (`PSM menuForEvent:`, `PSM:3961-3985`).
+    #[test]
+    fn caption_right_click_follows_the_bar() {
+        use crate::tab_layout::Hit as TabHit;
+        assert_eq!(strip_right_click(Some(TabHit::Tab(2))), StripMenu::Tab(2));
+        assert_eq!(strip_right_click(Some(TabHit::Close(1))), StripMenu::Tab(1));
+        assert_eq!(strip_right_click(Some(TabHit::Chip(0))), StripMenu::Group);
+        for h in [Some(TabHit::Bar), Some(TabHit::Add), Some(TabHit::Overflow), None] {
+            assert_eq!(strip_right_click(h), StripMenu::Main, "{h:?}");
         }
     }
 

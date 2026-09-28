@@ -169,6 +169,12 @@ pub fn themed(style: i64, compact_theme: bool) -> i64 {
     }
 }
 
+/// The user may drag a window of this type (`ptyWindowIsDraggable:`, `PT:2106-2135`): not a
+/// centered or edge-docked one, nor full screen.
+pub fn draggable(style: i64) -> bool {
+    matches!(style, NORMAL | MAXIMIZED | NO_TITLE_BAR | ACCESSORY | COMPACT | COMPACT_MAXIMIZED)
+}
+
 /// The type is one of the Compact theme's forms (13, 16, 18), whose caption area holds the tabs.
 pub fn is_compact(style: i64) -> bool {
     matches!(style, COMPACT | COMPACT_MAXIMIZED | COMPACT_CENTERED)
@@ -334,6 +340,18 @@ mod tests {
         assert_eq!(saved_percents(None, None), (-1.0, -1.0), "unset is cells, not the schema's 100");
         assert_eq!(saved_percents(Some(50.0), Some(-1.0)), (50.0, -1.0));
         assert_eq!(saved_percents(Some(0.0), Some(30.0)), (0.0, 30.0));
+    }
+
+    /// `ptyWindowIsDraggable:` (`PT:2106-2135`): centered and edge-docked windows and full
+    /// screen are not; Normal, Maximized, No Title Bar, Accessory and the Compact forms are.
+    #[test]
+    fn draggable_types_follow_iterm2() {
+        for t in [NORMAL, MAXIMIZED, NO_TITLE_BAR, ACCESSORY, COMPACT, COMPACT_MAXIMIZED] {
+            assert!(draggable(t), "{}", name(t));
+        }
+        for t in [FULL_SCREEN, LION_FULL_SCREEN, CENTERED, COMPACT_CENTERED, CENTERED_NO_TITLE_BAR, TOP_PERCENT, BOTTOM_PERCENT, LEFT_PERCENT, RIGHT_PERCENT, TOP_CELLS, BOTTOM_CELLS, LEFT_CELLS, RIGHT_CELLS] {
+            assert!(!draggable(t), "{}", name(t));
+        }
     }
 
     #[test]

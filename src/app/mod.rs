@@ -225,6 +225,10 @@ enum Drag {
     /// A left press on the "+" button, where it was (pixels): moving far enough drags the
     /// window.
     AddButton { start: (f32, f32) },
+    /// A left press on the bar that only a drag converts, to a window drag (`tab_drag::Arm::Window`:
+    /// the empty bar, a close button, a tab Lock Layout keeps in place), where it was (pixels).
+    /// It never selects or reorders; the press clicks as usual.
+    Window { start: (f32, f32) },
 }
 
 struct Gpu {
@@ -3884,7 +3888,7 @@ impl App {
                 self.update_side_handle_hover();
             }
             // Its press went (the tab moved away under it): the drag ends with nothing dropped.
-            Drag::Tab { .. } | Drag::Chip { .. } | Drag::AddButton { .. } => self.end_tab_drag(),
+            Drag::Tab { .. } | Drag::Chip { .. } | Drag::AddButton { .. } | Drag::Window { .. } => self.end_tab_drag(),
             Drag::Select { pane } => {
                 let empty = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string()).map_or(true, |s| s.is_empty());
                 if empty {
@@ -3960,7 +3964,7 @@ impl App {
                 let (start_x, start_width) = (*start_x, *start_width);
                 self.side_bar_drag(start_x, start_width, x);
             }
-            Drag::Tab { .. } | Drag::Chip { .. } => self.tab_drag_move(x, y),
+            Drag::Tab { .. } | Drag::Chip { .. } | Drag::Window { .. } => self.tab_drag_move(x, y),
             Drag::AddButton { start } => {
                 let start = *start;
                 self.add_button_drag(start, x, y);
@@ -4832,11 +4836,11 @@ impl ApplicationHandler<UserEvent> for App {
                 // Entering or leaving full screen resizes the window: the border goes or comes back.
                 self.apply_border();
             }
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                let _ = scale_factor;
-                // winit sized the window for a title bar the caption subclass removes.
-                if let Some(g) = &self.gpu {
-                    caption_ui::dpi_changed(&g.window);
+            WindowEvent::ScaleFactorChanged { mut inner_size_writer, .. } => {
+                // winit is about to size the window for a title bar the caption subclass removes:
+                // the size it sets is corrected here, before it does (`caption_ui::dpi_size`).
+                if let Some(size) = self.hwnd().and_then(caption_ui::dpi_size) {
+                    let _ = inner_size_writer.request_inner_size(size);
                 }
                 self.apply_fonts();
                 self.relayout();

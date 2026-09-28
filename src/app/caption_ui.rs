@@ -6,15 +6,16 @@
 //! thread-local map it reads, and button hovers, presses and releases go back as user events.
 
 use super::*;
-use crate::caption::{self, Button, Event, Hit, Layout};
+use crate::caption::{self, Button, Event, Hit, KeyMenu, KeyMsg, Layout, StripMenu};
 use std::cell::RefCell;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
 use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, GetSystemMetricsForDpi};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, TrackMouseEvent, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, VK_CONTROL, VK_SHIFT};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GWL_STYLE, GetClientRect, GetWindowLongPtrW, GetWindowRect, HTCAPTION, WM_NCRBUTTONUP, WM_SYSCOMMAND, WS_CAPTION, HTCLIENT, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HTTOP, IsIconic, IsZoomed, NCCALCSIZE_PARAMS, SM_CXPADDEDBORDER, SM_CYSIZEFRAME, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+    GWL_EXSTYLE, GWL_STYLE, GetClientRect, GetWindowLongPtrW, GetWindowRect, HTCAPTION, WM_DPICHANGED, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_NCMBUTTONDOWN,
+    WM_NCRBUTTONDOWN, WM_NCRBUTTONUP, WM_NCXBUTTONDOWN, WM_RBUTTONDOWN, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WS_CAPTION, HTCLIENT, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HTTOP, IsIconic, IsZoomed, NCCALCSIZE_PARAMS, SM_CXPADDEDBORDER, SM_CYSIZEFRAME, SWP_FRAMECHANGED, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE,
     WM_NCMOUSEMOVE,
 };
@@ -30,6 +31,13 @@ struct State {
     over: Vec<Rect>,
     /// The button the pointer is over (the app is told when it changes).
     hover: Option<Button>,
+    /// Alt pressed alone, and F10 (the menu bar is detached, so Windows sends no `SC_KEYMENU`).
+    keys: KeyMenu,
+    /// The window's DPI, as of its last `WM_DPICHANGED`.
+    dpi: u32,
+    /// A DPI change winit is about to size the window for: the client before it (pixels), the
+    /// old DPI and the new; taken by the `ScaleFactorChanged` that follows (`dpi_size`).
+    dpi_from: Option<((u32, u32), u32, u32)>,
 }
 
 thread_local! {
@@ -108,17 +116,21 @@ pub(super) fn request_inner_size(window: &winit::window::Window, size: impl Into
     window.request_inner_size(winit::dpi::PhysicalSize::new(size.width, caption::corrected_inner(size.height, removed)))
 }
 
-/// The window moved to a monitor of another DPI: winit sized it for a title bar the subclass then
-/// removed, so the client came out one title bar taller; asks for what it was.
-pub(super) fn dpi_changed(window: &winit::window::Window) {
-    let Some(hwnd) = super::menu::hwnd_of(window) else { return };
+/// The client size for `ScaleFactorChanged`'s `inner_size_writer`: winit sends the event from
+/// inside `WM_DPICHANGED` before it sizes the window (`event_loop.rs:2283-2291`, then `:2295-2400`)
+/// for a style that still has its title bar, so the size it would set, the old client scaled, is
+/// handed back less the title bar the subclass removes (`caption::dpi_inner`). The old client was
+/// noted by the subclass before winit ran, so a buffered event (dispatched after winit's resize)
+/// gets the same answer. None leaves winit's size: no subclass, no title bar (full screen), or a
+/// maximized or minimized window (winit keeps its size then).
+pub(super) fn dpi_size(hwnd: isize) -> Option<winit::dpi::PhysicalSize<u32>> {
+    let (old, from, to) = STATES.with(|s| s.borrow_mut().get_mut(&hwnd)?.dpi_from.take())?;
     let removed = removed_by_subclass(hwnd);
-    // SAFETY: state queries of a live window.
-    if removed == 0 || unsafe { IsZoomed(hwnd as HWND) != 0 || IsIconic(hwnd as HWND) != 0 } {
-        return;
+    if removed == 0 {
+        return None;
     }
-    let inner = window.inner_size();
-    request_inner_size(window, winit::dpi::PhysicalSize::new(inner.width, inner.height.saturating_sub(removed as u32)));
+    let (w, h) = caption::dpi_inner(old, from, to, removed);
+    Some(winit::dpi::PhysicalSize::new(w, h))
 }
 
 /// The frame's thickness along the top in pixels at the window's DPI (`SM_CYSIZEFRAME` plus
@@ -135,7 +147,9 @@ fn frame_thickness(hwnd: isize) -> f32 {
 /// (`keep_client`) around this and the menu bar's change.
 pub(super) fn install(hwnd: isize, wake: EventLoopProxy<UserEvent>) {
     WAKE.with(|w| *w.borrow_mut() = Some(wake));
-    STATES.with(|s| s.borrow_mut().insert(hwnd, State::default()));
+    // SAFETY: a plain query of this window.
+    let dpi = unsafe { GetDpiForWindow(hwnd as HWND) };
+    STATES.with(|s| s.borrow_mut().insert(hwnd, State { dpi, ..State::default() }));
     // SAFETY: the HWND is this window's; the proc only answers frame messages.
     unsafe { SetWindowSubclass(hwnd as HWND, Some(subclass), SUBCLASS_ID, 0) };
 }
@@ -191,8 +205,54 @@ fn hover_to(hwnd: HWND, now: Option<Button>) {
     }
 }
 
-unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
+/// The key menu's view of a window message: keys, mouse presses (a click between Alt's press and
+/// release, as in an Alt+drag, cancels it) and the focus leaving.
+fn key_msg(msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<KeyMsg> {
+    let vk = wparam as u16;
     match msg {
+        WM_KEYDOWN | WM_SYSKEYDOWN => Some(KeyMsg::Down { vk, repeat: lparam & (1 << 30) != 0, sys: msg == WM_SYSKEYDOWN }),
+        WM_KEYUP | WM_SYSKEYUP => Some(KeyMsg::Up { vk, sys: msg == WM_SYSKEYUP }),
+        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN | WM_NCLBUTTONDOWN | WM_NCRBUTTONDOWN | WM_NCMBUTTONDOWN | WM_NCXBUTTONDOWN => Some(KeyMsg::Pointer),
+        WM_KILLFOCUS => Some(KeyMsg::FocusLost),
+        _ => None,
+    }
+}
+
+/// The client point of a non-client mouse message (lparam holds screen coordinates).
+fn client_point(hwnd: HWND, lparam: LPARAM) -> Option<(i32, i32)> {
+    let mut p = POINT { x: (lparam & 0xFFFF) as i16 as i32, y: ((lparam >> 16) & 0xFFFF) as i16 as i32 };
+    // SAFETY: the HWND is live and the POINT is ours.
+    (unsafe { ScreenToClient(hwnd, &mut p) } != 0).then_some((p.x, p.y))
+}
+
+unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
+    // Alt alone and F10 open the caption's menu: seen here before winit, which never hands them to
+    // Windows' own menu handling while muda has the menu bar detached. The message goes on to
+    // winit either way (the terminal still sees F10, the app Alt's release).
+    if let Some(m) = key_msg(msg, wparam, lparam) {
+        // SAFETY: plain keyboard state queries on the window's thread.
+        let shift_or_ctrl = unsafe { GetKeyState(VK_SHIFT as i32) < 0 || GetKeyState(VK_CONTROL as i32) < 0 };
+        let open = STATES.with(|s| s.borrow_mut().get_mut(&(hwnd as isize)).is_some_and(|st| st.keys.feed(m, shift_or_ctrl) && st.layout.as_ref().is_some_and(|l| l.menu.is_some())));
+        if open {
+            tell(hwnd as isize, Event::Menu(false));
+        }
+    }
+    match msg {
+        // The DPI changes: the client before winit sizes the window, for `dpi_size`.
+        WM_DPICHANGED => {
+            let to = (wparam & 0xFFFF) as u32;
+            let mut client = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            // SAFETY: state queries of this live window and a RECT of ours.
+            let sized = unsafe { IsZoomed(hwnd) == 0 && IsIconic(hwnd) == 0 && GetClientRect(hwnd, &mut client) != 0 };
+            STATES.with(|s| {
+                if let Some(st) = s.borrow_mut().get_mut(&(hwnd as isize)) {
+                    let from = std::mem::replace(&mut st.dpi, to);
+                    let old = ((client.right - client.left).max(0) as u32, (client.bottom - client.top).max(0) as u32);
+                    st.dpi_from = (sized && from != to).then_some((old, from, to));
+                }
+            });
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+        }
         // Without a title bar (full screen) there is nothing to take away.
         WM_NCCALCSIZE if unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) } as u32 & WS_CAPTION != WS_CAPTION => unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) },
         WM_NCCALCSIZE => {
@@ -221,15 +281,12 @@ unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             if answer != HTCLIENT as LRESULT {
                 return answer;
             }
-            let mut p = POINT { x: (lparam & 0xFFFF) as i16 as i32, y: ((lparam >> 16) & 0xFFFF) as i16 as i32 };
-            if unsafe { ScreenToClient(hwnd, &mut p) } == 0 {
-                return answer;
-            }
+            let Some((px, py)) = client_point(hwnd, lparam) else { return answer };
             let hit = STATES.with(|s| {
                 let s = s.borrow();
                 let st = s.get(&(hwnd as isize))?;
                 let l = st.layout.as_ref()?;
-                let (x, y) = (p.x as f32, p.y as f32);
+                let (x, y) = (px as f32, py as f32);
                 Some(caption::hit(l, x, y, st.over.iter().any(|r| r.contains(x, y))))
             });
             hit.map_or(answer, hit_code)
@@ -253,15 +310,16 @@ unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             0
         }
-        // Alt pressed and released alone, and F10: the native menu bar cannot sit under the strip, so
-        // the caption's menu button's popup opens instead (Alt+Space stays the system menu).
-        WM_SYSCOMMAND if caption::is_key_menu(wparam, lparam) && STATES.with(|s| s.borrow().get(&(hwnd as isize)).is_some_and(|st| st.layout.as_ref().is_some_and(|l| l.menu.is_some()))) => {
-            tell(hwnd as isize, Event::Menu(false));
-            0
-        }
-        // A right click on the empty strip gives the menu, not Windows' system menu (`PSM:3978-3982`).
+        // Windows' own keyboard menu (Alt or F10 alone; with no menu bar, the system menu's
+        // invisible mode that eats the next key) never starts: the key menu above opened ours.
+        // Alt+Space carries its character and stays the system menu.
+        WM_SYSCOMMAND if caption::is_key_menu(wparam, lparam) && STATES.with(|s| s.borrow().get(&(hwnd as isize)).is_some_and(|st| st.layout.as_ref().is_some_and(|l| l.menu.is_some()))) => 0,
+        // A right click where Windows answers caption, not its system menu: the app gives the menu
+        // of the tab or chip under it (the edge strip), else the whole menu (`PSM:3961-3985`).
         WM_NCRBUTTONUP if wparam as u32 == HTCAPTION => {
-            tell(hwnd as isize, Event::Menu(true));
+            if let Some((x, y)) = client_point(hwnd, lparam) {
+                tell(hwnd as isize, Event::RightClick(x, y));
+            }
             0
         }
         WM_NCLBUTTONUP => {
@@ -458,6 +516,7 @@ impl App {
         }
         match e {
             Event::Menu(at_cursor) => return self.show_caption_menu(at_cursor),
+            Event::RightClick(x, y) => return self.caption_right_click(x as f32, y as f32),
             Event::Hover(h) => {
                 self.caption_hover = h;
                 // A button held while the pointer left it is let go.
@@ -478,6 +537,23 @@ impl App {
             }
         }
         self.redraw();
+    }
+
+    /// A right click where Windows answers caption, at the window point (`x`, `y`): the menu of
+    /// the tab or group chip there, else the whole menu at the pointer (`caption::strip_right_click`).
+    fn caption_right_click(&mut self, x: f32, y: f32) {
+        match caption::strip_right_click(self.tab_bar_hit(x, y)) {
+            StripMenu::Tab(i) => {
+                if let Some(tab) = self.tabs.get(i).map(|t| t.id) {
+                    self.show_tab_menu(tab);
+                }
+            }
+            StripMenu::Group => match self.bar_chip_at(x, y) {
+                Some(group) => self.show_group_menu(&group),
+                None => self.show_caption_menu(true),
+            },
+            StripMenu::Main => self.show_caption_menu(true),
+        }
     }
 
     /// Pops the whole menu: under the caption's menu button (Alt, F10, a click on it) or at the

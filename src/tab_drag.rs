@@ -85,6 +85,36 @@ pub fn target(own_bar_hit: Option<usize>, other: Option<(u64, usize)>, tabs_in_w
     }
 }
 
+/// What a left press on the bar arms for the pointer's drag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm {
+    /// The tab's drag (which may move the window instead when it begins).
+    Tab,
+    /// The group's drag by its chip (never the window).
+    Chip,
+    /// The "+" button's drag, which moves the window (`AllowDragOnAddTabButton`).
+    AddButton,
+    /// Only the window's drag: the press itself still clicks.
+    Window,
+    None,
+}
+
+/// What a left press at `hit` arms (`PSM mouseDragged:`, `PSM:3766-3796`): a chip its group's
+/// drag; any other point of the bar asks the window drag conversion before a cell is looked up,
+/// so the empty bar, a close button and a tab Lock Layout keeps in place (`reorder`: the tab may
+/// move, `PT:7610-7616`) arm the window's drag, and a movable tab its own. The "+" and the
+/// overflow button are buttons of their own: the "+" drags the window with `add_drags`.
+pub fn press_arm(hit: crate::tab_layout::Hit, reorder: bool, add_drags: bool) -> Arm {
+    use crate::tab_layout::Hit;
+    match hit {
+        Hit::Tab(_) if reorder => Arm::Tab,
+        Hit::Tab(_) | Hit::Close(_) | Hit::Bar => Arm::Window,
+        Hit::Chip(_) => Arm::Chip,
+        Hit::Add if add_drags => Arm::AddButton,
+        Hit::Add | Hit::Overflow => Arm::None,
+    }
+}
+
 /// The release that ends a press on a tab: nothing once the drag began (no select, close or
 /// title edit follows a drag), else 13c's release `r`.
 pub fn after_drag(began: bool, r: Release) -> Release {
@@ -248,6 +278,24 @@ pub fn group_target(own_bar_hit: Option<usize>, other: Option<(u64, usize)>, tab
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a left press on the bar arms (`PSM mouseDragged:`, `PSM:3788-3796`): the window
+    /// drag conversion is asked before any cell is looked up, so a press on the empty bar, on a
+    /// close button, or on a tab that Lock Layout keeps in place still moves the window on a
+    /// drag (Alt, the edge strip, a solitary tab); only a group chip never does.
+    #[test]
+    fn bar_press_arms_the_window_drag_anywhere() {
+        use crate::tab_layout::Hit;
+        assert_eq!(press_arm(Hit::Tab(0), true, false), Arm::Tab);
+        assert_eq!(press_arm(Hit::Tab(0), false, false), Arm::Window, "a layout lock keeps the tab in place");
+        assert_eq!(press_arm(Hit::Close(0), true, false), Arm::Window);
+        assert_eq!(press_arm(Hit::Bar, true, false), Arm::Window);
+        assert_eq!(press_arm(Hit::Chip(0), true, false), Arm::Chip);
+        assert_eq!(press_arm(Hit::Chip(0), false, false), Arm::Chip, "Lock Layout refuses a chip's drop instead");
+        assert_eq!(press_arm(Hit::Add, true, true), Arm::AddButton);
+        assert_eq!(press_arm(Hit::Add, true, false), Arm::None);
+        assert_eq!(press_arm(Hit::Overflow, true, true), Arm::None);
+    }
 
     fn r(x: f32, y: f32, w: f32, h: f32) -> Rect {
         Rect { x, y, w, h }
