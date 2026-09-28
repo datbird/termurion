@@ -407,6 +407,7 @@ impl App {
             // A tmux tab's Edit Tab Title text is kept by the gateway (its `title` holds the
             // tmux window's name).
             let tmux = self.tmux_window_of(tab.focused);
+            // For a tmux tab the gateway keeps the evaluated text, so the "format" is that text.
             let (over, format) = match tmux {
                 Some((gw, win)) => {
                     let text = self.tmux.get(&gw).and_then(|g| g.tab_overrides.get(&win)).cloned();

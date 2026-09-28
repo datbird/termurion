@@ -637,7 +637,8 @@ impl App {
     /// name when the number shows (`PT:3105-3122`).
     fn caption_base(&self) -> String {
         let focused = self.tabs.get(self.active).map(|t| t.focused);
-        let custom = self.win_title.as_deref().map(|f| self.window_title_text(f, focused));
+        // The gate is the FORMAT being non-empty, not its evaluated text (`PT:13636-13639`).
+        let custom = self.win_title.as_deref().filter(|f| !f.is_empty()).map(|f| self.window_title_text(f, focused));
         let title = crate::wintitle::window_title(
             custom.as_deref(),
             self.tab_bar_visible(),

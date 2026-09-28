@@ -4,13 +4,13 @@
 pub const UNTITLED: &str = "Untitled";
 
 /// The text a window's caption shows before its number and client name (iTerm2's
-/// `undecoratedWindowTitle`, `PT:13636-13644`): a non-empty custom title (Edit Window Title or
-/// the profile's); with the tab bar hidden and `show_window_title`
+/// `undecoratedWindowTitle`, `PT:13636-13644`): a custom title whose FORMAT is not empty (Edit Window Title or
+/// the profile's), even when it evaluates to nothing; with the tab bar hidden and `show_window_title`
 /// (ShowWindowTitleWhenTabBarInvisible) off, the session's title; else the window title the
 /// session's program set, falling back to its session title. "Untitled" when the chosen one
 /// is missing.
 pub fn window_title(custom: Option<&str>, bar_visible: bool, show_window_title: bool, window_title: Option<&str>, session_title: Option<&str>) -> String {
-    if let Some(c) = custom.filter(|c| !c.is_empty()) {
+    if let Some(c) = custom {
         return c.to_string();
     }
     let chosen = if !bar_visible && !show_window_title { session_title } else { window_title };
@@ -141,9 +141,10 @@ mod tests {
 
     #[test]
     fn window_title_follows_iterm2() {
-        // A custom title wins (PT:13636-13644); an empty one is no custom title.
+        // A custom title wins (PT:13636-13644), even one that evaluated to nothing (the caller
+        // passes None for an empty format).
         assert_eq!(window_title(Some("build"), true, true, Some("vim"), Some("zsh")), "build");
-        assert_eq!(window_title(Some(""), true, true, Some("vim"), Some("zsh")), "vim");
+        assert_eq!(window_title(Some(""), true, true, Some("vim"), Some("zsh")), "");
         assert_eq!(window_title(None, true, true, Some("vim"), Some("zsh")), "vim");
         // The bar hidden and ShowWindowTitleWhenTabBarInvisible off: the session's title.
         assert_eq!(window_title(None, false, false, Some("vim"), Some("zsh")), "zsh");

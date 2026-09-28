@@ -2807,7 +2807,8 @@ impl App {
 
     /// Make Text Bigger, Make Text Smaller and Make Text Normal Size: the shared font offset
     /// becomes `offset`. With `AdjustWindowForFontSizeChange`, a window that may change size
-    /// (`window_can_fit`: not full screen, maximized, snapped or size-locked) then keeps its
+    /// (`window_can_fit`: a Normal or No Title Bar window that is not full screen, maximized,
+    /// minimized, snapped, size-locked or a hotkey window) then keeps its
     /// tab's grid at the new cell (`reallyChangeSessionFontSize:adjustWindow:`,
     /// `TAB:2189-2205`); else the panes refit the window as it is, and a tmux tab tells tmux
     /// through the size report. The caller lays out. 13n's `change_font_size` takes this over.

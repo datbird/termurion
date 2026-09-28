@@ -586,7 +586,7 @@ section = "Windows"
 label = "Show window number"
 type = "bool"
 default = true
-help = "A window with a title bar shows its number (1, 2, ...) as a label at the right of the title, with its Alt+Win+number shortcut. A window without a title bar, or in full screen, starts its title with \"N. \" instead."
+help = "A window with a title bar shows its number (1, 2, ...) as a label at the right of the title, with its switch shortcut. A window without a title bar, in full screen, or with Show window number in titlebar accessory? off, starts its title with \"N. \" instead."
 
 [[setting]]
 key = "openProfilesInNewWindow"
@@ -641,7 +641,7 @@ section = "Windows"
 label = "Show line under title bar when the tab bar is not visible"
 type = "bool"
 default = true
-help = "A one-pixel line separates the title bar from the terminal when no tab bar shows at the top of the window. It is not drawn in full screen, in windows without a title bar, or with the Minimal theme."
+help = "A one-point line (2 pixels at 150% scale and above) separates the title bar from the terminal when no tab bar shows at the top of the window. It is not drawn in full screen, in windows without a title bar, or with the Minimal theme."
 
 [[setting]]
 key = "OnlyWhenMoreTabs"
