@@ -148,7 +148,7 @@ const BAR_BUTTON: Rgb = rgb(0xff, 0xff, 0xff);
 const LABEL_TEXT: Rgb = rgb(0x00, 0x00, 0x00);
 pub const FIND_ERROR: Rgb = rgb(0xff, 0x6b, 0x6b);
 /// How much an unfocused pane fades toward the background, as iTerm2 dims inactive splits.
-const DIM_ALPHA: f32 = 0.4;
+pub(crate) const DIM_ALPHA: f32 = 0.4;
 
 fn srgb_to_linear(c: u8) -> f32 {
     let c = c as f32 / 255.0;
@@ -1029,6 +1029,7 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
     let (title_h, sub_h) = (line * title_scale, line * sub_scale);
     let turn = spinner_turn();
     let any_colored = tabs.iter().any(|t| t.color.is_some());
+    let mut selected_back = None;
     let span = |text: String, color: Rgb, bold: bool, italic: bool, icon: bool| Span { text, color, bold, italic, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false };
     for (k, (i, c, r)) in bar.cells.iter().enumerate() {
         let Some(tab) = tabs.get(*i) else { continue };
@@ -1043,34 +1044,56 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
         let selected = *i == active;
         let (tab_fill, mut text_fill) = if selected { (pal.selected, pal.text_selected) } else { (pal.unselected, pal.text_unselected) };
         let mut back = over(pal.bar, tab_fill);
-        // With any colored tab, a colored tab is filled with its color (`YOS:611-636`) and every
-        // tab's text follows the brightness of its effective fill (`YOS:466-509`).
-        let colored = tab.color.map(|col| crate::tab_theme::colored_fill(col, selected, key));
+        // With any colored tab, a colored tab is filled with its color (`YOS:611-636`; Minimal:
+        // the color itself at an alpha, `MIN:937-946`) and every tab's text follows the
+        // brightness of its effective fill (`YOS:466-509`).
+        let colored = tab.color.map(|col| match &pal.minimal {
+            Some(m) => crate::tab_theme::minimal_colored_fill(col, selected, key, m.deselected_colored_alpha),
+            None => crate::tab_theme::Fill { color: crate::tab_theme::colored_fill(col, selected, key), alpha: 1.0 },
+        });
+        if let Some(fill) = colored {
+            back = over(back, fill);
+        }
         if any_colored {
             text_fill = match colored {
-                Some(fill) => crate::tab_theme::colored_text(fill, selected, pal.colored_text_prominence),
+                Some(_) => crate::tab_theme::colored_text(back, selected, pal.colored_text_prominence),
                 None => crate::tab_theme::text_for_brightness(crate::tab_theme::fill_brightness(tab_fill, pal.dark_controls), selected, pal.colored_text_prominence),
             };
         }
-        if let Some(fill) = colored {
-            back = fill;
+        if selected {
+            selected_back = Some(back);
         }
-        // A dragged tab covers the tabs it passes, so it is opaque.
-        if tab.dragged || colored.is_some() {
+        // A dragged tab covers the tabs it passes, so it is opaque; so is an opaque color.
+        if tab.dragged || colored.is_some_and(|f| f.alpha >= 1.0) {
             frame.quads.push(Quad { rect: cell, color: rgba(back, 1.0) });
         } else {
             fill_quad(frame, cell, tab_fill);
+            if let Some(fill) = colored {
+                fill_quad(frame, cell, fill);
+            }
         }
-        // The selected tab's two strokes (`YOS:805-839`).
         if selected && any_colored {
-            let o = crate::tab_theme::selected_outline(back, pal.colored_outline, key);
-            let width = (o.width * scale).round().max(1.0);
-            let stroke = scale.round().max(1.0);
-            for (inset, f) in [(width - stroke, o.outer), (width, o.inner)] {
-                let r = Rect { x: cell.x + inset, y: cell.y + inset, w: cell.w - 2.0 * inset, h: cell.h - 2.0 * inset };
-                if r.w > 2.0 * stroke && r.h > 2.0 * stroke {
-                    for e in [Rect { h: stroke, ..r }, Rect { y: r.y + r.h - stroke, h: stroke, ..r }, Rect { w: stroke, ..r }, Rect { x: r.x + r.w - stroke, w: stroke, ..r }] {
-                        fill_quad(frame, e, f);
+            if let Some(m) = &pal.minimal {
+                // `MIN:278-325`: two 2-point strokes along the cell's bottom, from the bar's start
+                // when the first tab takes the left inset. The tab's darkness is `brightness < 0`
+                // in iTerm2 (never true), so the outer stroke is white over a dark bar.
+                let from = if k == 0 && m.left_inset_is_first_tab && !bar.vertical { area.x } else { cell.x };
+                let u = crate::tab_theme::minimal_underline(crate::tab_theme::hsp(back) < 0.0, pal.dark_controls, m.underline, key);
+                let t = (2.0 * scale).round().max(1.0);
+                for (rise, f) in [(t, u.outer), (2.0 * t, u.inner)] {
+                    fill_quad(frame, Rect { x: from, y: cell.y + cell.h - rise, w: cell.x + cell.w - from, h: t }, f);
+                }
+            } else {
+                // The selected tab's two strokes (`YOS:805-839`).
+                let o = crate::tab_theme::selected_outline(back, pal.colored_outline, key);
+                let width = (o.width * scale).round().max(1.0);
+                let stroke = scale.round().max(1.0);
+                for (inset, f) in [(width - stroke, o.outer), (width, o.inner)] {
+                    let r = Rect { x: cell.x + inset, y: cell.y + inset, w: cell.w - 2.0 * inset, h: cell.h - 2.0 * inset };
+                    if r.w > 2.0 * stroke && r.h > 2.0 * stroke {
+                        for e in [Rect { h: stroke, ..r }, Rect { y: r.y + r.h - stroke, h: stroke, ..r }, Rect { w: stroke, ..r }, Rect { x: r.x + r.w - stroke, w: stroke, ..r }] {
+                            fill_quad(frame, e, f);
+                        }
                     }
                 }
             }
@@ -1160,6 +1183,21 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
             frame.rows.push(TextRow { x, y, spans: vec![span(sub.clone(), color, false, false, false)], clip, scale: sub_scale });
         }
     }
+    // Minimal: the bar's room before the first tab is drawn as an unselected tab, or as the selected
+    // one when the first tab is selected and the setting says so (`drawStartInset`, `MIN:439-453`).
+    if let Some(m) = &pal.minimal {
+        let first = bar.cells.iter().min_by(|a, b| (a.2.x + a.2.y).total_cmp(&(b.2.x + b.2.y)));
+        if let Some((i, _, r)) = first {
+            let gap = if bar.vertical { Rect { h: (px(*r).y - area.y).max(0.0), ..area } } else { Rect { w: (px(*r).x - area.x).max(0.0), ..area } };
+            if gap.w > 0.0 && gap.h > 0.0 {
+                let color = match selected_back {
+                    Some(back) if *i == active && m.left_inset_is_first_tab => back,
+                    _ => pal.margin.color,
+                };
+                frame.quads.push(Quad { rect: gap, color: rgba(color, 1.0) });
+            }
+        }
+    }
     group_runs(frame, tabs, bar, area, tabs_area, scale, font_scale, line);
     // The tabs' quads (backgrounds, colors, dots, spinners, underlines, group runs) are cut like
     // their text.
@@ -1227,6 +1265,25 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
         let solid = crate::tab_theme::Fill { color: rgb(0, 0, 0), alpha: 1.0 };
         fill_quad(frame, edge, if pal.dark_edge_gradient { solid } else { pal.edge });
     }
+    // Minimal: the outline notch around the selected tab replaces the edge line (`MIN:600-875`).
+    if let Some(m) = &pal.minimal {
+        let first = bar.cells.iter().map(|(i, _, r)| (*i, r.x + r.y)).min_by(|a, b| a.1.total_cmp(&b.1)).map(|c| c.0);
+        if let Some((_, _, r)) = bar.cells.iter().find(|(i, _, _)| *i == active) {
+            use crate::tab_position::TabPosition;
+            // One tab: a bottom bar draws no outline, a top bar none when the inset joins the
+            // tab (`MIN:594-598`, `:735-737`).
+            let skip = bar.cells.len() == 1 && match bar.position {
+                TabPosition::Top => m.left_inset_is_first_tab,
+                TabPosition::Bottom => true,
+                _ => false,
+            };
+            if !skip {
+                for r in minimal_notch(area, px(*r), bar.position, m.left_inset_is_first_tab, first == Some(active)) {
+                    fill_quad(frame, r, m.outline);
+                }
+            }
+        }
+    }
     // The "+" and the overflow button (`PSM setupButtons`), over the tabs' right margin (a side
     // bar's overflow button is its bottom row). The overflow button is two chevrons a gap
     // apart, in the text color while its menu is open (`PSMOverflowPopUpButton`
@@ -1244,6 +1301,50 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
             frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, false, false, true)], clip: clip_rect(rect, area), scale: s });
         }
     }
+}
+
+/// The 1-pixel lines of the Minimal outline notch (`MIN:600-875`) as disjoint rectangles: along
+/// the bar's content side up to the selected tab (`selected`), up its left side, down its right
+/// side and on to the bar's far end. A first tab drops the part before it when the left inset
+/// counts as part of it (a bottom bar drops it whatever the setting says). In a side bar the
+/// lines run down the inner edge and across the selected row's first and last pixel rows.
+pub fn minimal_notch(bar: Rect, selected: Rect, position: crate::tab_position::TabPosition, left_inset_is_first_tab: bool, first_selected: bool) -> Vec<Rect> {
+    use crate::tab_position::TabPosition::{Bottom, Left, Right, Top};
+    let mut out = Vec::new();
+    let mut add = |r: Rect| {
+        if r.w > 0.0 && r.h > 0.0 {
+            out.push(r);
+        }
+    };
+    match position {
+        Top | Bottom => {
+            let top = position == Top;
+            let (line_y, side_y) = if top { (bar.y + bar.h - 1.0, bar.y) } else { (bar.y, bar.y + 1.0) };
+            let side_h = bar.h - 1.0;
+            if !(first_selected && (!top || left_inset_is_first_tab)) {
+                add(Rect { x: bar.x, y: line_y, w: selected.x - bar.x, h: 1.0 });
+                if selected.x - 1.0 >= bar.x {
+                    add(Rect { x: selected.x - 1.0, y: side_y, w: 1.0, h: side_h });
+                }
+            }
+            let after = selected.x + selected.w;
+            if after < bar.x + bar.w {
+                add(Rect { x: after, y: side_y, w: 1.0, h: side_h });
+                add(Rect { x: after, y: line_y, w: bar.x + bar.w - after, h: 1.0 });
+            }
+        }
+        Left | Right => {
+            let edge = if position == Left { bar.x + bar.w - 1.0 } else { bar.x };
+            if !(first_selected && left_inset_is_first_tab) {
+                add(Rect { x: edge, y: bar.y, w: 1.0, h: selected.y - bar.y });
+                add(Rect { x: bar.x, y: selected.y, w: bar.w, h: 1.0 });
+            }
+            let below = selected.y + selected.h;
+            add(Rect { x: bar.x, y: below - 1.0, w: bar.w, h: 1.0 });
+            add(Rect { x: edge, y: below, w: 1.0, h: bar.y + bar.h - below });
+        }
+    }
+    out
 }
 
 /// A quad of `f` over what is behind it; nothing when it is clear.
@@ -2532,7 +2633,7 @@ mod tests {
         let red = rgb(255, 0, 0);
         let pal = palette(
             TabStyle::Light,
-            &Inputs { system_dark: false, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5 },
+            &Inputs { system_dark: false, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 2 },
         );
         let looks = vec![TabLook { title: "one".into(), number: 1, color: Some(red), ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
         let inputs: Vec<TabInput> = looks
@@ -2572,7 +2673,7 @@ mod tests {
     fn top_lines_follow_iterm2() {
         use crate::tab_layout::{self, TabInput};
         use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
-        let inputs = Inputs { system_dark: true, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5 };
+        let inputs = Inputs { system_dark: true, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 2 };
         let looks = vec![TabLook { title: "one".into(), number: 1, ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
         let tabs: Vec<TabInput> = looks
             .iter()
@@ -2607,7 +2708,7 @@ mod tests {
         use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
         let pal = palette(
             TabStyle::Light,
-            &Inputs { system_dark: false, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5 },
+            &Inputs { system_dark: false, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 2 },
         );
         let looks = vec![TabLook { title: "one".into(), number: 1, ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
         let inputs: Vec<TabInput> = looks
@@ -2649,10 +2750,104 @@ mod tests {
         let text = |t: &str| f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == t)).unwrap().spans[0].color;
         assert_eq!((text("one"), text("two")), (rgb(0, 0, 0), rgb(0, 0, 0)), "black text for a focused window");
         let mut off = Frame::default();
-        let unfocused = palette(TabStyle::Light, &Inputs { focused: false, system_dark: false, system_high_contrast: false, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5 });
+        let unfocused = palette(TabStyle::Light, &Inputs { focused: false, system_dark: false, system_high_contrast: false, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 2 });
         tab_bar(&mut off, &looks, 1, &bar, area, 1.0, 0.1, 20.0, false, false, &unfocused);
         let text = |t: &str| off.rows.iter().find(|r| r.spans.iter().any(|s| s.text == t)).unwrap().spans[0].color;
         assert_eq!((text("one"), text("two")), (rgb(164, 164, 164), rgb(189, 189, 189)), "unfocused: the two greys");
+    }
+
+    #[test]
+    fn minimal_notch_follows_iterm2() {
+        use super::*;
+        use crate::tab_position::TabPosition::{Bottom, Left, Right, Top};
+        let r = |x: f32, y: f32, w: f32, h: f32| Rect { x, y, w, h };
+        let top = r(0.0, 0.0, 400.0, 38.0);
+        let tab = r(100.0, 0.0, 100.0, 38.0);
+        // A top bar (`MIN:804-875`): the bottom line to the tab's left edge, up it, down the
+        // right edge and on along the bottom.
+        assert_eq!(minimal_notch(top, tab, Top, false, false), [r(0.0, 37.0, 100.0, 1.0), r(99.0, 0.0, 1.0, 37.0), r(200.0, 0.0, 1.0, 37.0), r(200.0, 37.0, 200.0, 1.0)]);
+        // The first tab with the left inset counted as part of it draws no left part.
+        let first = r(20.0, 0.0, 100.0, 38.0);
+        assert_eq!(minimal_notch(top, first, Top, true, true), [r(120.0, 0.0, 1.0, 37.0), r(120.0, 37.0, 280.0, 1.0)]);
+        assert_eq!(minimal_notch(top, first, Top, false, true).len(), 4, "the inset apart from the tab: both parts");
+        assert_eq!(minimal_notch(top, first, Top, true, false).len(), 4, "another tab selected: both parts");
+        // A first tab at the very edge has no room for a left part.
+        assert_eq!(minimal_notch(top, r(0.0, 0.0, 100.0, 38.0), Top, false, true), [r(100.0, 0.0, 1.0, 37.0), r(100.0, 37.0, 300.0, 1.0)]);
+        // A bottom bar mirrors it along the top; only its first tab drops the left part, the
+        // setting not consulted (`MIN:702-715`).
+        let bottom = minimal_notch(top, tab, Bottom, false, false);
+        assert_eq!(bottom, [r(0.0, 0.0, 100.0, 1.0), r(99.0, 1.0, 1.0, 37.0), r(200.0, 1.0, 1.0, 37.0), r(200.0, 0.0, 200.0, 1.0)]);
+        assert_eq!(minimal_notch(top, first, Bottom, false, true), [r(120.0, 1.0, 1.0, 37.0), r(120.0, 0.0, 280.0, 1.0)]);
+        // A side bar (`MIN:600-662`): on the inner edge around the selected row, the lines across
+        // the row's first and last pixel rows.
+        let side = r(0.0, 0.0, 120.0, 400.0);
+        let row = r(0.0, 100.0, 120.0, 40.0);
+        assert_eq!(minimal_notch(side, row, Left, false, false), [r(119.0, 0.0, 1.0, 100.0), r(0.0, 100.0, 120.0, 1.0), r(0.0, 139.0, 120.0, 1.0), r(119.0, 140.0, 1.0, 260.0)]);
+        assert_eq!(minimal_notch(side, row, Right, false, false), [r(0.0, 0.0, 1.0, 100.0), r(0.0, 100.0, 120.0, 1.0), r(0.0, 139.0, 120.0, 1.0), r(0.0, 140.0, 1.0, 260.0)]);
+        // The first row with the top inset joined draws no part above it.
+        assert_eq!(minimal_notch(side, r(0.0, 0.0, 120.0, 40.0), Left, true, true), [r(0.0, 39.0, 120.0, 1.0), r(119.0, 40.0, 1.0, 360.0)]);
+        assert_eq!(minimal_notch(side, r(0.0, 0.0, 120.0, 40.0), Left, false, true).len(), 3, "no vertical stub above a row at the edge");
+    }
+
+    #[test]
+    fn minimal_bar_draws_notch_inset_and_underline() {
+        use crate::tab_layout::{self, TabInput};
+        use crate::tab_position::TabPosition;
+        use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
+        let inputs = |focused: bool, tabs: usize, knobs: MinimalKnobs| Inputs { system_dark: false, system_high_contrast: false, focused, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: knobs, colored_outline: 0.5, colored_text_prominence: 0.5, tabs };
+        let pal = palette(TabStyle::Minimal, &inputs(true, 2, MinimalKnobs::default()));
+        let mut looks = vec![TabLook { title: "one".into(), number: 1, ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
+        let items: Vec<TabInput> = looks
+            .iter()
+            .map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
+            .collect();
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::build(&items, 1, 400.0, 0.0, None, &s, &six);
+        let area = Rect { x: 0.0, y: 10.0, w: 400.0, h: 24.0 };
+        let px = |r: Rect| Rect { x: area.x + r.x, y: area.y + r.y, w: r.w, h: r.h };
+        let (first, second) = (px(bar.cells[0].2), px(bar.cells[1].2));
+        let draw = |looks: &[TabLook], pal: &crate::tab_theme::TabPalette, active: usize, bar: &tab_layout::Bar| {
+            let mut f = Frame::default();
+            tab_bar(&mut f, looks, active, bar, area, 1.0, 0.1, 20.0, true, false, pal);
+            f
+        };
+        let f = draw(&looks, &pal, 1, &bar);
+        let outline = rgba(rgb(255, 255, 255), 0.2);
+        // The notch: the bottom line before the selected tab and after it, its sides; no line
+        // between the tabs and none under the selected one.
+        assert!(f.quads.iter().any(|q| q.color == outline && q.rect == Rect { x: area.x, y: area.y + area.h - 1.0, w: second.x - area.x, h: 1.0 }), "the bottom line before the tab");
+        assert!(f.quads.iter().any(|q| q.color == outline && q.rect == Rect { x: second.x - 1.0, y: area.y, w: 1.0, h: area.h - 1.0 }), "the tab's left side");
+        assert!(!f.quads.iter().any(|q| q.color == outline && q.rect.x >= second.x && q.rect.x < second.x + second.w && q.rect.w > 1.0), "open under the selected tab");
+        assert!(f.quads.iter().all(|q| q.color != rgba(rgb(0, 0, 0), 1.0) || q.rect.h != 1.0), "no black edge line");
+        // The room before the first tab is drawn as an unselected tab.
+        let bar_at = |x: f32| tab_layout::Bar { cells: bar.cells.iter().map(|(i, c, r)| (*i, c.clone(), Rect { x: r.x + x, ..*r })).collect(), ..bar.clone() };
+        let shifted = bar_at(30.0);
+        let inset = |f: &Frame| f.quads.iter().any(|q| q.rect == Rect { x: area.x, y: area.y, w: 30.0, h: area.h } && q.color == rgba(rgb(13, 13, 13), 1.0));
+        assert!(inset(&draw(&looks, &pal, 1, &shifted)), "the left inset in the unselected color");
+        // ...or as the selected tab when the first tab is selected and the setting is on.
+        let joined = palette(TabStyle::Minimal, &inputs(true, 2, MinimalKnobs { left_inset_is_first_tab: true, ..MinimalKnobs::default() }));
+        assert!(!inset(&draw(&looks, &joined, 0, &shifted)), "joined to the selected first tab");
+        assert!(inset(&draw(&looks, &joined, 1, &shifted)), "not joined when another tab is selected");
+        // A colored tab: its color over the tab at the deselected alpha, and with any colored
+        // tab the selected one's two-stroke underline (outer white, inner black on a dark bar).
+        looks[0].color = Some(rgb(255, 0, 0));
+        let f = draw(&looks, &pal, 1, &bar);
+        assert!(f.quads.iter().any(|q| q.rect == first && q.color == rgba(rgb(255, 0, 0), 0.5)), "the deselected colored tab at half alpha");
+        let under = |k: f32, w: f32| Rect { x: second.x, y: second.y + second.h - k, w, h: 2.0 };
+        assert!(f.quads.iter().any(|q| q.rect == under(2.0, second.w) && q.color == rgba(rgb(255, 255, 255), 0.75)), "the outer underline");
+        assert!(f.quads.iter().any(|q| q.rect == under(4.0, second.w) && q.color == rgba(rgb(0, 0, 0), 0.75f32.sqrt())), "the inner underline");
+        assert!(!f.quads.iter().any(|q| q.color == rgba(rgb(255, 255, 255), 0.5) || q.color == rgba(rgb(0, 0, 0), 0.5)), "no Regular outline strokes");
+        // A bottom bar's notch is on its top edge; one tab in a bottom bar draws none.
+        let bottom = draw(&looks, &pal, 1, &tab_layout::Bar { position: TabPosition::Bottom, ..bar.clone() });
+        assert!(bottom.quads.iter().any(|q| q.color == outline && q.rect == Rect { x: area.x, y: area.y, w: second.x - area.x, h: 1.0 }), "the top line of a bottom bar");
+        let mut one = looks.clone();
+        one.truncate(1);
+        let single = tab_layout::build(&items[..1], 0, 400.0, 0.0, None, &s, &six);
+        let solo = draw(&one, &pal, 0, &tab_layout::Bar { position: TabPosition::Bottom, ..single.clone() });
+        assert!(!solo.quads.iter().any(|q| q.color == outline), "one tab in a bottom bar: no outline");
+        let solo_top = draw(&one, &pal, 0, &single);
+        assert!(solo_top.quads.iter().any(|q| q.color == outline), "one tab in a top bar: the outline");
     }
 
     /// A flashing bar over the sessions: its boxes over theirs at the bar's alpha, its text

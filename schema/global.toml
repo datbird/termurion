@@ -2957,6 +2957,60 @@ default = 0.5
 help = "How prominent should the text in a non-selected tab be when there are colored tabs in a window?\nTakes a value in 0 to 1, the alpha value."
 
 [[setting]]
+key = "MinimalTabStyleBackgroundColorDifference"
+tab = "Advanced"
+section = "Tabs"
+label = "In the Minimal theme, how different should the background color of the selected tab be from the others?"
+type = "float"
+default = 0.05
+help = "In the Minimal theme, how different should the background color of the selected tab be from the others?\nTakes a value in 0 to 1, where 0 is no difference and 1 very different."
+
+[[setting]]
+key = "MinimalTabStyleOutlineStrength"
+tab = "Advanced"
+section = "Tabs"
+label = "In the Minimal theme, how prominent should the tab outline be?"
+type = "float"
+default = 0.2
+help = "In the Minimal theme, how prominent should the tab outline be?\nTakes a value in 0 to 1, where 0 is invisible and 1 is very prominent"
+
+[[setting]]
+key = "MinimalTextLegibilityAdjustment"
+tab = "Advanced"
+section = "Tabs"
+label = "How much should contrast be increased for text in tabs in the Minimal theme?"
+type = "float"
+default = 1.0
+help = "How much should contrast be increased for text in tabs in the Minimal theme?\nChoose a value larger than 1 to increase contrast. Values between 0 and 1 have less contrast than the default."
+
+[[setting]]
+key = "MinimalTabStyleTreatLeftInsetAsPartOfFirstTab"
+tab = "Advanced"
+section = "Tabs"
+label = "In the Minimal theme, should the area left of the tab bar be treated as part of the first tab?"
+type = "bool"
+default = false
+help = "In the Minimal theme, should the area left of the tab bar be treated as part of the first tab?"
+
+[[setting]]
+key = "MinimalSelectedTabUnderlineProminence"
+tab = "Advanced"
+section = "Tabs"
+label = "Prominence of selected tab underline indicator in the Minimal theme when there is at least one colored tab."
+type = "float"
+default = 1.0
+help = "Prominence of selected tab underline indicator in the Minimal theme when there is at least one colored tab."
+
+[[setting]]
+key = "MinimalDeslectedColoredTabAlpha"
+tab = "Advanced"
+section = "Tabs"
+label = "Alpha value for tab color for non-selected colored tabs in the Minimal theme."
+type = "float"
+default = 0.5
+help = "Alpha value for tab color for non-selected colored tabs in the Minimal theme.\nMust be between 0 and 1."
+
+[[setting]]
 key = "DrawBottomLineForHorizontalTabBar"
 tab = "Advanced"
 section = "Tabs"

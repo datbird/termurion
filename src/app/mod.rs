@@ -2299,27 +2299,74 @@ impl App {
     /// The colors the tab bar draws with (`tab_theme::palette`), from the Theme, Windows' modes,
     /// the window being key, the three tab darkness keys and the focused pane's background.
     pub(super) fn tab_palette(&self) -> crate::tab_theme::TabPalette {
-        use crate::tab_theme::{Inputs, MinimalKnobs};
+        use crate::tab_theme::{Inputs, MinimalKnobs, dimming, DIMMING_AMOUNT};
         let g = &self.globals;
         let session_bg = self
             .tabs
             .get(self.active)
             .and_then(|t| self.panes.get(&t.focused))
             .map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
+        let focused = self.focused && self.app_active;
+        let float = |key: &str, default: f32| g.number(key).map_or(default, |v| v as f32);
+        let base = MinimalKnobs::default();
+        let mut minimal = MinimalKnobs {
+            difference: float("MinimalTabStyleBackgroundColorDifference", base.difference),
+            outline: float("MinimalTabStyleOutlineStrength", base.outline),
+            legibility: float("MinimalTextLegibilityAdjustment", base.legibility),
+            left_inset_is_first_tab: g.bool("MinimalTabStyleTreatLeftInsetAsPartOfFirstTab"),
+            underline: float("MinimalSelectedTabUnderlineProminence", base.underline),
+            deselected_colored_alpha: float("MinimalDeslectedColoredTabAlpha", base.deselected_colored_alpha),
+        };
+        // `shouldTweakMinimalTabOutlineAlpha` (`PT:10053-10107`): a dimmed inactive pane against the
+        // bar raises the outline toward 1 by the dimming amount x 0.375.
+        if self.dimmed_pane_touches_bar() {
+            let a = DIMMING_AMOUNT * 0.375;
+            minimal.outline = a + minimal.outline * (1.0 - a);
+        }
         let inputs = Inputs {
             system_dark: self.system_dark(),
             system_high_contrast: crate::tab_theme::system_high_contrast(),
-            focused: self.focused && self.app_active,
+            focused,
             light_darkness: g.number("LightModeInactiveTabDarkness").map_or(0.07, |v| v as f32),
             dark_darkness: g.number("DarkModeInactiveTabDarkness").map_or(0.5, |v| v as f32),
             high_visibility: g.bool("HighVisibility"),
             session_bg,
-            dimming: 0.0,
-            minimal: MinimalKnobs::default(),
+            dimming: dimming(g.bool("DimBackgroundWindows"), focused, DIMMING_AMOUNT),
+            minimal,
             colored_outline: g.number("ColoredSelectedTabOutlineStrength").map_or(0.5, |v| v as f32),
             colored_text_prominence: g.number("ColoredUnselectedTabTextProminence").map_or(0.5, |v| v as f32),
+            tabs: self.tabs.len(),
         };
         crate::tab_theme::palette(self.tab_style(), &inputs)
+    }
+
+    /// Whether a pane is drawn undimmed: the focused pane of a window that is not key while Dim
+    /// background windows is off, or (in the key window) a pane the broadcast input reaches.
+    fn pane_undimmed(&self, id: PaneId, focused_pane: PaneId, receives: bool, bview: &crate::broadcast::View) -> bool {
+        (!self.focused && id == focused_pane && !self.globals.bool("DimBackgroundWindows")) || (self.focused && receives && self.broadcast.should_broadcast_to(bview, focused_pane, Some(focused_pane)))
+    }
+
+    /// Whether a dimmed pane other than the tab's focused one lies against the tab bar's edge
+    /// (`shouldTweakMinimalTabOutlineAlpha`): not in a background window that dims as a whole,
+    /// whose dimming looks fine under the outline.
+    fn dimmed_pane_touches_bar(&self) -> bool {
+        use tab_position::TabPosition::{Bottom, Left, Right, Top};
+        if self.tab_style() != crate::tab_theme::TabStyle::Minimal || (self.globals.bool("DimBackgroundWindows") && !self.focused) {
+            return false;
+        }
+        let Some(tab) = self.tabs.get(self.active) else { return false };
+        let area = self.content_area_for(tab);
+        let bview = self.broadcast_view();
+        let position = self.tab_position();
+        self.visible(tab).into_iter().any(|(id, r)| {
+            let touches = match position {
+                Top => r.y <= area.y + 1.0,
+                Bottom => r.y + r.h >= area.y + area.h - 1.0,
+                Left => r.x <= area.x + 1.0,
+                Right => r.x + r.w >= area.x + area.w - 1.0,
+            };
+            touches && id != tab.focused && !self.pane_undimmed(id, tab.focused, self.broadcast.receives(&bview, id), &bview)
+        })
     }
 
     /// The Theme setting (`TabStyleWithAutomaticOption`), Automatic when unset.
@@ -4031,7 +4078,7 @@ impl App {
                     let matches = if labeled.is_empty() { self.finds.get(&id).filter(|f| f.open).map(|f| f.results.matches.as_slice()).unwrap_or_default() } else { labeled.as_slice() };
                     let hover = self.hover.filter(|(h, _)| *h == id).map(|(_, m)| m);
                     let notes: Vec<(crate::find::Match, Option<String>)> = self.note_cells(id).into_iter().map(|(m, _, t)| (m, t)).collect();
-                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, undimmed: (!self.focused && id == tab.focused && !self.globals.bool("DimBackgroundWindows")) || (self.focused && receives && self.broadcast.should_broadcast_to(&bview, tab.focused, Some(tab.focused))), key_cursor: self.focused && id == tab.focused && p.at_password_prompt() };
+                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, undimmed: self.pane_undimmed(id, tab.focused, receives, &bview), key_cursor: self.focused && id == tab.focused && p.at_password_prompt() };
                     // An Auto Composer hides the terminal cursor and the rows it covers.
                     let cover = self.auto_composer_cover(id, rect);
                     let overlay_from = frame.overlay.len();

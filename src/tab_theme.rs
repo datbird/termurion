@@ -154,7 +154,7 @@ pub const HIGH_CONTRAST_FONT_PT: f32 = 12.0;
 /// The label size of the other styles in points (`YOS:557-563`).
 pub const REGULAR_FONT_PT: f32 = 11.0;
 
-/// The Minimal style's parts of a palette (Task 4 fills them; `None` for the other styles).
+/// The Minimal style's parts of a palette (`None` for the other styles).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MinimalLook {
     /// The outline drawn around the selected tab.
@@ -249,6 +249,8 @@ pub struct Inputs {
     pub colored_outline: f32,
     /// `ColoredUnselectedTabTextProminence`.
     pub colored_text_prominence: f32,
+    /// How many tabs the bar has (Minimal: one tab is not tinted apart from the bar).
+    pub tabs: usize,
 }
 
 /// The label size in points a resolved style draws (`font_pt` of its palette): 12 for the High
@@ -278,7 +280,7 @@ const WHITE: Rgb = rgb(255, 255, 255);
 
 /// The palette a style draws with (`PSMYosemiteTabStyle` and its Dark, Light High Contrast and
 /// Dark High Contrast subclasses). Automatic, Minimal and Compact draw as the style they
-/// resolve to; Task 4 adds the Minimal parts.
+/// resolve to; Minimal adds its own colors (`minimal_palette`).
 pub fn palette(style: TabStyle, i: &Inputs) -> TabPalette {
     let resolved = resolved(style, i.system_dark, i.system_high_contrast);
     let focused = i.focused;
@@ -364,7 +366,113 @@ pub fn palette(style: TabStyle, i: &Inputs) -> TabPalette {
         _ => {}
     }
     p.font_pt = font_pt(resolved);
+    if style == TabStyle::Minimal {
+        minimal_palette(&mut p, i);
+    }
     p
+}
+
+/// The Minimal style's colors (`PSMMinimalTabStyle`), over `p`, the palette of the style it
+/// resolves to: the bar is the session's background (dimmed in a background window), the selected
+/// tab is the bar, an unselected tab (and the bar's room beyond the tabs) differs by the
+/// difference, and there are no lines (the notch outline replaces the edge).
+fn minimal_palette(p: &mut TabPalette, i: &Inputs) {
+    let k = i.minimal;
+    let bar = dimmed(i.session_bg, i.dimming);
+    // `nonSelectedTabColor` dims the already dimmed bar color once more (`MIN:218-244`).
+    let apart = dimmed(non_selected(bar, k.difference), i.dimming);
+    let opaque = |c: Rgb| Fill::new(c, 1.0);
+    let unselected = if i.tabs > 1 { apart } else { bar };
+    let clear = Fill::new(bar, 0.0);
+    p.bar = bar;
+    p.selected = opaque(bar);
+    p.unselected = opaque(unselected);
+    p.margin = opaque(apart);
+    p.text_selected = minimal_text(bar, true, i.focused, k.legibility);
+    p.text_unselected = minimal_text(unselected, false, i.focused, k.legibility);
+    p.between = clear;
+    p.edge = clear;
+    p.top = clear;
+    p.top_selected = clear;
+    p.dark_edge_gradient = false;
+    p.dark_controls = hsp(bar) < 0.5;
+    p.minimal = Some(MinimalLook { outline: minimal_outline(bar, k.outline), left_inset_is_first_tab: k.left_inset_is_first_tab, underline: k.underline, deselected_colored_alpha: k.deselected_colored_alpha });
+}
+
+/// iTerm2's default split pane dimming amount (`SplitPaneDimmingAmount`), the same as the panes'
+/// own fade (`scene::DIM_ALPHA`); the dimming keys of 13i replace it.
+pub const DIMMING_AMOUNT: f32 = crate::scene::DIM_ALPHA;
+
+/// `colorByDimmingColor:` (`MIN:245-257`): every component moved toward 0.5 by `amount`.
+pub fn dimmed(c: Rgb, amount: f32) -> Rgb {
+    let mix = |v: u8| ((amount * 0.5 + (1.0 - amount) * f32::from(v) / 255.0) * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8;
+    rgb(mix(c.r), mix(c.g), mix(c.b))
+}
+
+/// The dimming amount of a background window (`iTermDimmingAmount`, `PT:10038-10051`): none in the
+/// key window or unless Dim background windows is on (Dim only text has no key yet, so it is
+/// off), else the amount clamped to 0 to 0.9.
+pub fn dimming(dim_background_windows: bool, focused: bool, amount: f32) -> f32 {
+    if focused || !dim_background_windows { 0.0 } else { amount.clamp(0.0, 0.9) }
+}
+
+/// `psm_nonSelectedColorWithDifference:` (`MIN:13-26`): every component moved by `-difference`,
+/// the sign flipped when the HSP brightness would leave 0 to 1. Rounded half up.
+pub fn non_selected(c: Rgb, difference: f32) -> Rgb {
+    let mut delta = -f64::from(difference);
+    let proposed = f64::from(hsp(c)) + delta;
+    if !(0.0..=1.0).contains(&proposed) {
+        delta = -delta;
+    }
+    let mix = |v: u8| ((f64::from(v) / 255.0 + delta) * 255.0 + 0.5 + 1e-6).floor().clamp(0.0, 255.0) as u8;
+    rgb(mix(c.r), mix(c.g), mix(c.b))
+}
+
+/// The text over a background (`textColorDefaultSelected:`, the opaque path, `MIN:98-156`): a
+/// grey `min(1, b + delta)` over a dark background or `max(0, b - delta)` over a light one
+/// (delta 0.85 selected, 0.5 not), at alpha 0.75 in the key window, else 0.5, raised to
+/// `1 / legibility` when that is above 0.
+pub fn minimal_text(bg: Rgb, selected: bool, focused: bool, legibility: f32) -> Fill {
+    let b = hsp(bg);
+    let delta = if selected { 0.85 } else { 0.5 };
+    let value = if b < 0.5 { (b + delta).min(1.0) } else { (b - delta).max(0.0) };
+    let base: f32 = if focused { 0.75 } else { 0.5 };
+    let alpha = if legibility > 0.0 { base.powf(1.0 / legibility) } else { base };
+    Fill::new(grey(value), alpha)
+}
+
+/// The outline drawn around the selected tab (`outlineColor`, `MIN:326-344`): white over a dark
+/// bar, black over a light one, at `strength`.
+pub fn minimal_outline(bar: Rgb, strength: f32) -> Fill {
+    Fill::new(if hsp(bar) < 0.5 { WHITE } else { BLACK }, strength)
+}
+
+/// A colored tab's fill in Minimal (`cellBackgroundColorForTabColor:`, `MIN:937-946`): the tab
+/// color itself, opaque when selected, else at `deselected_alpha`, halved in a window that is
+/// not key. Laid over the tab's own background.
+pub fn minimal_colored_fill(tab: Rgb, selected: bool, focused: bool, deselected_alpha: f32) -> Fill {
+    let alpha = if selected { 1.0 } else { deselected_alpha };
+    Fill::new(tab, if focused { alpha } else { alpha * 0.5 })
+}
+
+/// The two 2-point strokes under the selected colored tab.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Underline {
+    pub outer: Fill,
+    pub inner: Fill,
+}
+
+/// `drawPostHocDecorationsOnSelectedCell:` (`MIN:278-325`): alpha `(key ? 0.75 : 0.5) x
+/// prominence`; when the tab and the bar differ in darkness the outer stroke is white at alpha
+/// and the inner black at its square root, else the outer black at the square root and the inner
+/// white.
+pub fn minimal_underline(tab_dark: bool, bar_dark: bool, prominence: f32, focused: bool) -> Underline {
+    let alpha = (if focused { 0.75 } else { 0.5 }) * prominence;
+    if tab_dark != bar_dark {
+        Underline { outer: Fill::new(WHITE, alpha), inner: Fill::new(BLACK, alpha.sqrt()) }
+    } else {
+        Underline { outer: Fill::new(BLACK, alpha.sqrt()), inner: Fill::new(WHITE, alpha) }
+    }
 }
 
 /// The perceived brightness of a color in 0 to 1 (HSP: `sqrt(0.241 r^2 + 0.691 g^2 + 0.068 b^2)`,
@@ -497,6 +605,7 @@ mod tests {
             minimal: MinimalKnobs::default(),
             colored_outline: 0.5,
             colored_text_prominence: 0.5,
+            tabs: 2,
         }
     }
 
@@ -562,8 +671,8 @@ mod tests {
         assert_eq!((plain.text_selected, plain.text_unselected), (fill(255, 255, 255, 1.0), fill(255, 255, 255, 1.0)));
         // Light High Contrast ignores HighVisibility.
         assert_eq!(palette(TabStyle::LightHighContrast, &Inputs { high_visibility: false, ..inputs(true) }), l);
-        // Automatic, Minimal and Compact draw as what they resolve to.
-        for style in [TabStyle::Automatic, TabStyle::Minimal, TabStyle::Compact] {
+        // Automatic and Compact draw as what they resolve to (Minimal has its own colors).
+        for style in [TabStyle::Automatic, TabStyle::Compact] {
             let auto = palette(style, &Inputs { system_dark: true, ..inputs(true) });
             assert_eq!(auto, TabPalette { style, ..palette(TabStyle::Dark, &inputs(true)) });
             assert_eq!(auto.resolved, TabStyle::Dark);
@@ -590,6 +699,74 @@ mod tests {
         assert_eq!(selected_outline(rgb(240, 240, 240), 0.5, true), Outline { width: 1.0, outer: white(0.5), inner: black(0.5) });
         assert_eq!(selected_outline(rgb(20, 20, 20), 2.0, false), Outline { width: 2.0, outer: black(0.6), inner: white(0.6) });
         assert_eq!(selected_outline(rgb(20, 20, 20), 0.0, true).outer.alpha, 0.0);
+    }
+
+    #[test]
+    fn minimal_colors_follow_iterm2() {
+        let (black, white, grey) = (rgb(0, 0, 0), rgb(255, 255, 255), rgb(128, 128, 128));
+        assert_eq!(non_selected(black, 0.05), rgb(13, 13, 13), "proposed brightness below 0 flips the sign");
+        assert_eq!(non_selected(white, 0.05), rgb(242, 242, 242));
+        assert_eq!(non_selected(grey, 0.05), rgb(115, 115, 115));
+        let p = palette(TabStyle::Minimal, &inputs(true));
+        assert_eq!(p.bar, black);
+        assert_eq!(p.selected, fill(0, 0, 0, 1.0));
+        assert_eq!(p.unselected, fill(13, 13, 13, 1.0), "two tabs: the bar moved by the difference");
+        assert_eq!(p.margin, fill(13, 13, 13, 1.0), "the room beyond the tabs is the unselected color");
+        assert!(p.dark_controls);
+        assert_eq!(p.resolved, TabStyle::Light, "the other parts draw as Regular");
+        let one = palette(TabStyle::Minimal, &Inputs { tabs: 1, ..inputs(true) });
+        assert_eq!(one.unselected, fill(0, 0, 0, 1.0), "one tab: the bar color");
+        assert_eq!(one.margin, fill(13, 13, 13, 1.0));
+        for line in [p.between, p.edge, p.top, p.top_selected] {
+            assert_eq!(line.alpha, 0.0, "Minimal draws no lines");
+        }
+        assert!(!p.dark_edge_gradient);
+        assert_eq!(p.minimal, Some(MinimalLook { outline: fill(255, 255, 255, 0.2), left_inset_is_first_tab: false, underline: 1.0, deselected_colored_alpha: 0.5 }));
+        assert_eq!(p.text_selected, fill(217, 217, 217, 0.75));
+        assert_eq!(p.text_unselected, minimal_text(rgb(13, 13, 13), false, true, 1.0));
+        // A light session background, a window that is not key.
+        let light = palette(TabStyle::Minimal, &Inputs { session_bg: white, focused: false, ..inputs(false) });
+        assert_eq!(light.bar, white);
+        assert_eq!(light.text_selected, fill(38, 38, 38, 0.5));
+        assert_eq!(light.minimal.unwrap().outline, fill(0, 0, 0, 0.2));
+        // Other themes have no Minimal parts.
+        assert_eq!(palette(TabStyle::Compact, &inputs(true)).minimal, None);
+        // The text (`MIN:98-156`).
+        assert_eq!(minimal_text(black, true, true, 1.0), fill(217, 217, 217, 0.75));
+        assert_eq!(minimal_text(black, false, true, 1.0), fill(128, 128, 128, 0.75));
+        assert_eq!(minimal_text(white, true, false, 1.0), fill(38, 38, 38, 0.5));
+        assert!((minimal_text(black, true, true, 2.0).alpha - 0.866_025_4).abs() < 1e-5, "0.75^(1/2)");
+        assert_eq!(minimal_text(black, true, true, 0.0).alpha, 0.75, "no adjustment at 0");
+        // The outline, dimming.
+        assert_eq!(minimal_outline(black, 0.2), fill(255, 255, 255, 0.2));
+        assert_eq!(minimal_outline(white, 0.2), fill(0, 0, 0, 0.2));
+        assert_eq!(dimmed(black, 0.4), rgb(51, 51, 51));
+        assert_eq!(dimmed(white, 0.0), white);
+        assert_eq!(dimming(true, false, 0.4), 0.4);
+        assert_eq!(dimming(true, true, 0.4), 0.0);
+        assert_eq!(dimming(false, false, 0.4), 0.0);
+        assert_eq!(dimming(true, false, 0.95), 0.9);
+        assert_eq!(dimming(true, false, -1.0), 0.0);
+        assert_eq!(DIMMING_AMOUNT, 0.4);
+        // A background window's bar is dimmed, and its unselected tabs dimmed once more (`MIN:218-244`).
+        let dim = palette(TabStyle::Minimal, &Inputs { dimming: 0.4, ..inputs(false) });
+        assert_eq!(dim.bar, rgb(51, 51, 51));
+        assert_eq!(dim.unselected.color, dimmed(non_selected(rgb(51, 51, 51), 0.05), 0.4));
+    }
+
+    #[test]
+    fn minimal_colored_follows_iterm2() {
+        let red = rgb(255, 0, 0);
+        assert_eq!(minimal_colored_fill(red, true, true, 0.5), fill(255, 0, 0, 1.0));
+        assert_eq!(minimal_colored_fill(red, false, true, 0.5), fill(255, 0, 0, 0.5));
+        assert_eq!(minimal_colored_fill(red, false, false, 0.5), fill(255, 0, 0, 0.25));
+        assert_eq!(minimal_colored_fill(red, true, false, 0.5), fill(255, 0, 0, 0.5));
+        let (white, black) = (rgb(255, 255, 255), rgb(0, 0, 0));
+        let u = minimal_underline(false, true, 1.0, true);
+        assert_eq!(u, Underline { outer: Fill { color: white, alpha: 0.75 }, inner: Fill { color: black, alpha: 0.75f32.sqrt() } });
+        let u = minimal_underline(true, true, 1.0, false);
+        assert_eq!(u, Underline { outer: Fill { color: black, alpha: 0.5f32.sqrt() }, inner: Fill { color: white, alpha: 0.5 } });
+        assert_eq!(minimal_underline(false, true, 0.5, true).outer.alpha, 0.375, "the prominence scales the alpha");
     }
 
     #[test]

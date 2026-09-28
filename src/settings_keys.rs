@@ -2022,6 +2022,24 @@ mod tests {
     }
 
     #[test]
+    fn minimal_rows_follow_iterm2() {
+        for (key, label, default) in [
+            ("MinimalTabStyleBackgroundColorDifference", "In the Minimal theme, how different should the background color of the selected tab be from the others?", Value::Float(0.05)),
+            ("MinimalTabStyleOutlineStrength", "In the Minimal theme, how prominent should the tab outline be?", Value::Float(0.2)),
+            ("MinimalTextLegibilityAdjustment", "How much should contrast be increased for text in tabs in the Minimal theme?", Value::Float(1.0)),
+            ("MinimalTabStyleTreatLeftInsetAsPartOfFirstTab", "In the Minimal theme, should the area left of the tab bar be treated as part of the first tab?", Value::Boolean(false)),
+            ("MinimalSelectedTabUnderlineProminence", "Prominence of selected tab underline indicator in the Minimal theme when there is at least one colored tab.", Value::Float(1.0)),
+            ("MinimalDeslectedColoredTabAlpha", "Alpha value for tab color for non-selected colored tabs in the Minimal theme.", Value::Float(0.5)),
+        ] {
+            let row = schema::find_global(key).unwrap();
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"), "{key}");
+            assert_eq!(row.kind, if matches!(default, Value::Boolean(_)) { Kind::Bool } else { Kind::Float }, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.label, label, "{key}");
+        }
+    }
+
+    #[test]
     fn theme_row_follows_iterm2() {
         let row = schema::find_global("TabStyleWithAutomaticOption").unwrap();
         assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "General"));
