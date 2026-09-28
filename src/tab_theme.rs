@@ -256,6 +256,28 @@ pub struct Inputs {
     pub tabs: usize,
 }
 
+/// A tab bar's thickness in points (`PT:12686-12739`): Minimal in a compact window with a top bar,
+/// or Minimal with a side bar, is `minimal_tall` (`CompactMinimalTabBarHeight`); else `regular`.
+pub fn bar_height(style: TabStyle, compact_window: bool, position: crate::tab_position::TabPosition, regular: f32, minimal_tall: f32) -> f32 {
+    use crate::tab_position::{TabPosition, vertical};
+    let tall = style == TabStyle::Minimal && (vertical(position) || (compact_window && position == TabPosition::Top));
+    if tall {
+        minimal_tall
+    } else {
+        regular
+    }
+}
+
+/// A side bar's narrowest width in points (`RTV:2030-2044`): wider for Minimal and Compact.
+pub fn side_minimum(style: TabStyle) -> f32 {
+    use crate::tab_position::{MIN_SIDE_WIDTH, MIN_SIDE_WIDTH_MINIMAL};
+    if matches!(style, TabStyle::Minimal | TabStyle::Compact) {
+        MIN_SIDE_WIDTH_MINIMAL
+    } else {
+        MIN_SIDE_WIDTH
+    }
+}
+
 /// The label size in points a resolved style draws (`font_pt` of its palette): 12 for the High
 /// Contrast styles, else 11. Pure, so hot paths need no palette.
 pub fn font_pt(resolved: TabStyle) -> f32 {
@@ -849,5 +871,23 @@ mod tests {
         assert!((perceived(rgb(255, 0, 0)) - 0.30).abs() < 1e-6);
         assert!((perceived(rgb(0, 255, 0)) - 0.59).abs() < 1e-6);
         assert_eq!(toward_gray(rgb(100, 100, 100), 0.0, 1.0), rgb(100, 100, 100));
+    }
+
+    #[test]
+    fn bar_height_follows_iterm2() {
+        use crate::tab_position::TabPosition::*;
+        use TabStyle::*;
+        assert_eq!(bar_height(Minimal, true, Top, 24.0, 38.0), 38.0);
+        assert_eq!(bar_height(Minimal, false, Top, 24.0, 38.0), 24.0);
+        assert_eq!(bar_height(Minimal, false, Left, 24.0, 38.0), 38.0, "Minimal side rows");
+        assert_eq!(bar_height(Compact, true, Top, 24.0, 38.0), 24.0);
+        assert_eq!(bar_height(Minimal, true, Bottom, 24.0, 38.0), 24.0);
+    }
+
+    #[test]
+    fn side_minimum_follows_iterm2() {
+        use TabStyle::*;
+        assert_eq!((side_minimum(Minimal), side_minimum(Compact)), (114.0, 114.0));
+        assert_eq!((side_minimum(Automatic), side_minimum(DarkHighContrast)), (50.0, 50.0));
     }
 }

@@ -2031,6 +2031,22 @@ mod tests {
     }
 
     #[test]
+    fn compact_rows_follow_iterm2() {
+        for (key, section, default, label) in [
+            ("CompactMinimalTabBarHeight", "Tabs", 38.0, "Tab bar height (points) for the Minimal theme."),
+            ("ExtraSpaceBeforeCompactTopTabBar", "Windows", 0.0, "Amount of extra space (in points) between stoplight buttons and inline tab bar."),
+            ("CompactTabBarStoplightButtonsWidth", "Windows", 75.0, "Width (in points) reserved for the window buttons (close/minimize/zoom) before the inline tab bar."),
+        ] {
+            let row = schema::find_global(key).unwrap();
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
+            assert_eq!(row.kind, Kind::Float, "{key}");
+            assert_eq!(row.default, Some(Value::Float(default)), "{key}");
+            assert_eq!(row.label, label, "{key}");
+            assert!(section != "Windows" || row.help.contains("On Windows"), "{key}: the help adds the Windows note");
+        }
+    }
+
+    #[test]
     fn minimal_rows_follow_iterm2() {
         for (key, label, default) in [
             ("MinimalTabStyleBackgroundColorDifference", "In the Minimal theme, how different should the background color of the selected tab be from the others?", Value::Float(0.05)),

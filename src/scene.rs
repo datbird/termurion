@@ -1394,6 +1394,89 @@ fn fill_quad(frame: &mut Frame, rect: Rect, f: crate::tab_theme::Fill) {
     }
 }
 
+/// The icon font's size for the caption buttons' glyphs, in points (Windows 11's are 10).
+const CAPTION_GLYPH_PT: f32 = 10.0;
+/// Windows 11's caption button colors: the close button's red, and the hover and press tints of
+/// the others (black on a light bar, white on a dark one).
+const CAPTION_CLOSE: Rgb = rgb(0xc4, 0x2b, 0x1c);
+const CAPTION_HOVER: (f32, f32) = (0.0373, 0.0605);
+const CAPTION_PRESS: (f32, f32) = (0.0241, 0.0419);
+
+/// The strip a Minimal or Compact window's tab bar and caption sit in, under everything drawn
+/// there: the bar's material and its margin fill.
+pub fn caption_bar(frame: &mut Frame, bar: Rect, pal: &crate::tab_theme::TabPalette) {
+    frame.quads.push(Quad { rect: bar, color: rgba(pal.bar, 1.0) });
+    fill_quad(frame, bar, pal.margin);
+}
+
+/// The three window buttons in their rects (`caption::layout`): each glyph from the icon font in
+/// the selected tab's text color, a hover or press fill behind it (Windows 11's colors), the
+/// close button red with a white glyph, Restore in place of Maximize in a maximized window.
+#[allow(clippy::too_many_arguments)]
+pub fn caption_buttons(frame: &mut Frame, buttons: &[(crate::caption::Button, Rect); 3], hover: Option<crate::caption::Button>, pressed: Option<crate::caption::Button>, maximized: bool, pal: &crate::tab_theme::TabPalette, scale: f32, font_scale: f32, line: f32) {
+    use crate::caption::{Button, CLOSE_GLYPH, MAXIMIZE_GLYPH, MINIMIZE_GLYPH, RESTORE_GLYPH};
+    let ink = crate::tab_theme::over(pal.bar, pal.text_selected);
+    let s = CAPTION_GLYPH_PT * font_scale;
+    let em = CAPTION_GLYPH_PT * scale;
+    for (button, rect) in buttons {
+        let down = pressed == Some(*button);
+        let over = down || (pressed.is_none() && hover == Some(*button));
+        let mut color = ink;
+        if over {
+            let fill = match (button, pal.dark_controls) {
+                (Button::Close, _) => Some(rgba(CAPTION_CLOSE, if down { 0.9 } else { 1.0 })),
+                (_, false) => Some(rgba(rgb(0, 0, 0), if down { CAPTION_PRESS.0 } else { CAPTION_HOVER.0 })),
+                (_, true) => Some(rgba(rgb(255, 255, 255), if down { CAPTION_PRESS.1 } else { CAPTION_HOVER.1 })),
+            };
+            frame.quads.extend(fill.map(|color| Quad { rect: *rect, color }));
+            if *button == Button::Close {
+                color = rgb(255, 255, 255);
+            }
+        }
+        let glyph = match button {
+            Button::Minimize => MINIMIZE_GLYPH,
+            Button::Maximize if maximized => RESTORE_GLYPH,
+            Button::Maximize => MAXIMIZE_GLYPH,
+            Button::Close => CLOSE_GLYPH,
+        };
+        let span = Span { text: glyph.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
+        let x = rect.x + ((rect.w - em) / 2.0).floor();
+        let y = rect.y + ((rect.h - line * s) / 2.0).floor();
+        frame.rows.push(TextRow { x, y, spans: vec![span], clip: *rect, scale: s });
+    }
+}
+
+/// A caption text row in the bar's prose font, `width` pixels wide, at `x`.
+#[allow(clippy::too_many_arguments)]
+fn caption_row(frame: &mut Frame, text: &str, x: f32, rect: Rect, color: Rgb, pal: &crate::tab_theme::TabPalette, font_scale: f32, line: f32) {
+    let s = pal.font_pt * font_scale;
+    let span = Span { text: text.to_string(), color, bold: false, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false };
+    let y = rect.y + ((rect.h - line * s) / 2.0).floor();
+    frame.rows.push(TextRow { x, y, spans: vec![span], clip: rect, scale: s });
+}
+
+/// The window's title in the caption where no tab bar shows: centered in `rect` (left-aligned and
+/// clipped when `width`, its measured pixels, is more than the room), in the selected text color.
+#[allow(clippy::too_many_arguments)]
+pub fn caption_title(frame: &mut Frame, text: &str, rect: Rect, width: f32, pal: &crate::tab_theme::TabPalette, _scale: f32, font_scale: f32, line: f32) {
+    if text.is_empty() {
+        return;
+    }
+    let x = rect.x + ((rect.w - width) / 2.0).floor().max(0.0);
+    caption_row(frame, text, x, rect, crate::tab_theme::over(pal.bar, pal.text_selected), pal, font_scale, line);
+}
+
+/// The window switch label (R11) right-aligned in `rect` (`caption::layout`'s shortcut, the
+/// measured `width` plus padding, half of it on each side), in the unselected text color.
+#[allow(clippy::too_many_arguments)]
+pub fn caption_shortcut(frame: &mut Frame, text: &str, rect: Rect, width: f32, pal: &crate::tab_theme::TabPalette, scale: f32, font_scale: f32, line: f32) {
+    if text.is_empty() {
+        return;
+    }
+    let x = rect.x + rect.w - width - 4.0 * scale;
+    caption_row(frame, text, x, rect, crate::tab_theme::over(pal.bar, pal.text_unselected), pal, font_scale, line);
+}
+
 /// The squared group run decoration of iTerm2's non-Tahoe styles (`YS:1348-1600`), over the
 /// tabs: for each chip whose run shows a tab, a solid block of the group color from the chip
 /// to the first tab with the name in bold in the contrasting color, and a 1-point outline in
@@ -2812,6 +2895,94 @@ mod tests {
         assert!(bar.add.is_some_and(|a| f.quads.iter().any(|q| q.rect.x == area.x + a.x && q.rect.y == area.y && q.rect.h == 1.0 && q.color == black)), "past the add button");
         let f = draw(TabStyle::Light);
         assert!(!f.quads.iter().any(|q| q.rect.y == area.y && q.rect.h == 1.0 && q.rect.w < 400.0), "Light has no top line");
+    }
+
+    fn caption_palette(style: crate::tab_theme::TabStyle, dark: bool) -> crate::tab_theme::TabPalette {
+        use crate::tab_theme::{Inputs, MinimalKnobs, palette};
+        palette(style, &Inputs { system_dark: dark, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 2 })
+    }
+
+    fn caption_button_rects() -> [(crate::caption::Button, Rect); 3] {
+        use crate::caption::Button::*;
+        [(Minimize, Rect { x: 862.0, y: 0.0, w: 46.0, h: 38.0 }), (Maximize, Rect { x: 908.0, y: 0.0, w: 46.0, h: 38.0 }), (Close, Rect { x: 954.0, y: 0.0, w: 46.0, h: 38.0 })]
+    }
+
+    /// The three caption buttons: glyphs in the selected text color, the Windows 11 hover and press
+    /// colors, the restore glyph in a maximized window.
+    #[test]
+    fn caption_buttons_draw() {
+        use crate::caption::{Button, CLOSE_GLYPH, MAXIMIZE_GLYPH, MINIMIZE_GLYPH, RESTORE_GLYPH};
+        use crate::tab_theme::{TabStyle, over};
+        let light = caption_palette(TabStyle::Light, false);
+        let rects = caption_button_rects();
+        let mut f = Frame::default();
+        caption_buttons(&mut f, &rects, None, None, false, &light, 1.0, 0.1, 20.0);
+        let glyphs: Vec<(String, Rgb)> = f.rows.iter().map(|r| (r.spans[0].text.clone(), r.spans[0].color)).collect();
+        let ink = over(light.bar, light.text_selected);
+        assert_eq!(glyphs, vec![(MINIMIZE_GLYPH.to_string(), ink), (MAXIMIZE_GLYPH.to_string(), ink), (CLOSE_GLYPH.to_string(), ink)]);
+        assert!(f.rows.iter().all(|r| r.spans[0].icon), "drawn in the icon font");
+        assert!(f.quads.is_empty(), "no hover, no fill");
+        // A hovered Close: Windows 11's red with a white glyph.
+        let mut f = Frame::default();
+        caption_buttons(&mut f, &rects, Some(Button::Close), None, false, &light, 1.0, 0.1, 20.0);
+        assert_eq!(f.quads.len(), 1);
+        assert_eq!((f.quads[0].rect, f.quads[0].color), (rects[2].1, rgba(rgb(0xc4, 0x2b, 0x1c), 1.0)));
+        assert_eq!(f.rows.iter().find(|r| r.spans[0].text == CLOSE_GLYPH.to_string()).unwrap().spans[0].color, rgb(255, 255, 255));
+        // A hovered Minimize: black at 0.0373 on a light bar, white at 0.0605 on a dark one.
+        let mut f = Frame::default();
+        caption_buttons(&mut f, &rects, Some(Button::Minimize), None, false, &light, 1.0, 0.1, 20.0);
+        assert_eq!((f.quads[0].rect, f.quads[0].color), (rects[0].1, rgba(rgb(0, 0, 0), 0.0373)));
+        let dark = caption_palette(TabStyle::Dark, true);
+        let mut f = Frame::default();
+        caption_buttons(&mut f, &rects, Some(Button::Minimize), None, false, &dark, 1.0, 0.1, 20.0);
+        assert_eq!((f.quads[0].rect, f.quads[0].color), (rects[0].1, rgba(rgb(255, 255, 255), 0.0605)));
+        // Pressed is a little stronger; a pressed Close is the red at 0.9.
+        let mut f = Frame::default();
+        caption_buttons(&mut f, &rects, None, Some(Button::Close), false, &light, 1.0, 0.1, 20.0);
+        assert_eq!(f.quads[0].color, rgba(rgb(0xc4, 0x2b, 0x1c), 0.9));
+        // A maximized window offers Restore.
+        let mut f = Frame::default();
+        caption_buttons(&mut f, &rects, None, None, true, &light, 1.0, 0.1, 20.0);
+        assert!(f.rows.iter().any(|r| r.spans[0].text == RESTORE_GLYPH.to_string()));
+        assert!(!f.rows.iter().any(|r| r.spans[0].text == MAXIMIZE_GLYPH.to_string()));
+    }
+
+    /// R11: the window switch label draws right-aligned in its rect in the unselected text color;
+    /// no text, no row.
+    #[test]
+    fn caption_shortcut_draws() {
+        use crate::tab_theme::{TabStyle, over};
+        let pal = caption_palette(TabStyle::Light, false);
+        let rect = Rect { x: 792.0, y: 0.0, w: 70.0, h: 38.0 };
+        let mut f = Frame::default();
+        caption_shortcut(&mut f, "Alt+Win+1", rect, 62.0, &pal, 1.0, 0.1, 20.0);
+        assert_eq!(f.rows.len(), 1);
+        let row = &f.rows[0];
+        assert_eq!(row.spans[0].text, "Alt+Win+1");
+        assert_eq!(row.spans[0].color, over(pal.bar, pal.text_unselected));
+        assert_eq!(row.x + 62.0, rect.x + rect.w - 4.0, "right-aligned with the padding's half on the right");
+        assert!(row.y >= rect.y && row.y < rect.y + rect.h);
+        let mut none = Frame::default();
+        caption_shortcut(&mut none, "", rect, 0.0, &pal, 1.0, 0.1, 20.0);
+        assert!(none.rows.is_empty() && none.quads.is_empty());
+    }
+
+    /// The caption text (a window with no tab bar showing) is centered in its rect, in the selected
+    /// text color, clipped to it.
+    #[test]
+    fn caption_title_draws_centered() {
+        use crate::tab_theme::{TabStyle, over};
+        let pal = caption_palette(TabStyle::Dark, true);
+        let rect = Rect { x: 0.0, y: 0.0, w: 862.0, h: 38.0 };
+        let mut f = Frame::default();
+        caption_title(&mut f, "vim", rect, 100.0, &pal, 1.0, 0.1, 20.0);
+        assert_eq!(f.rows.len(), 1);
+        assert_eq!((f.rows[0].x, f.rows[0].clip), (381.0, rect));
+        assert_eq!(f.rows[0].spans[0].color, over(pal.bar, pal.text_selected));
+        // Wider than the room: left-aligned and clipped.
+        let mut wide = Frame::default();
+        caption_title(&mut wide, "vim", rect, 900.0, &pal, 1.0, 0.1, 20.0);
+        assert_eq!(wide.rows[0].x, 0.0);
     }
 
     /// The bar draws with its palette: the material, the unselected fill, no fill for a clear

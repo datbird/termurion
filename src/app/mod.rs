@@ -101,6 +101,8 @@ mod windows_ui;
 mod chrome_ui;
 #[cfg(windows)]
 mod sizing_ui;
+#[cfg(windows)]
+mod caption_ui;
 mod tab_drag_ui;
 mod tab_groups_ui;
 mod undo_ui;
@@ -157,6 +159,9 @@ pub enum UserEvent {
     /// A system setting changed under a forced Theme: winit reset the title bars to the
     /// system mode, so the windows take the forced mode again.
     ThemeReset,
+    /// A window button of a Minimal or Compact window's caption was hovered, pressed or released:
+    /// the window (its HWND) and what happened (`caption_ui`).
+    Caption(isize, crate::caption::Event),
 }
 
 #[derive(Clone)]
@@ -355,6 +360,13 @@ pub struct App {
     theme_applied: Option<bool>,
     /// The current window's menu bar is hidden (full screen, `HideMenuBarInFullscreen`).
     menu_hidden: bool,
+    /// The caption button under the pointer and the one held down in the current Minimal or
+    /// Compact window (`caption_ui`).
+    caption_hover: Option<crate::caption::Button>,
+    caption_pressed: Option<crate::caption::Button>,
+    /// The width in pixels of the window switch label's slot in the caption (its text measured
+    /// plus padding), 0 without one; kept by `sync_caption_label` since layout cannot measure.
+    caption_label_w: f32,
     /// The current window's frame before a vertical Window > Zoom, which the next Zoom
     /// restores (a full Zoom maximizes, and Windows keeps that frame itself).
     zoom_restore: Option<Rect>,
@@ -1167,6 +1179,9 @@ pub fn run() {
         border_applied: None,
         theme_applied: None,
         menu_hidden: false,
+        caption_hover: None,
+        caption_pressed: None,
+        caption_label_w: 0.0,
         zoom_restore: None,
         belt: Default::default(),
         tool_gen: 0,
@@ -1561,6 +1576,8 @@ impl App {
         let delta = match (visible, tab_position::vertical(self.tab_position())) {
             (false, _) => self.bar_grown,
             (true, true) => (self.side_bar_width().round(), 0.0),
+            // A compact window's top bar sits in the caption strip, which is there anyway.
+            (true, false) if self.caption_strip().is_some() && self.tab_position() == TabPosition::Top => (0.0, 0.0),
             (true, false) => (0.0, self.tab_height().round()),
         };
         self.fit_window_to_bar(visible, delta)
@@ -1673,7 +1690,7 @@ impl App {
 
     /// A side bar's narrowest width in points (`RTV minimumTabBarWidth`).
     pub(super) fn side_bar_minimum(&self) -> f32 {
-        tab_position::MIN_SIDE_WIDTH
+        crate::tab_theme::side_minimum(self.tab_style())
     }
 
     /// A side tab bar's width in pixels: the window's preferred width (`LeftTabBarWidth` when
@@ -1691,14 +1708,25 @@ impl App {
     /// (`tab_height` on the top or bottom, `side_bar_width` on a side) from its edge of the
     /// rest. No bar rect while the bar hides, no toolbelt rect while it hides.
     pub(super) fn window_layout(&self) -> (Option<Rect>, Rect, Option<Rect>) {
-        let room = self.window_room();
+        let mut room = self.window_room();
         let scale = self.scale();
+        // A Minimal or Compact window's caption strip takes the top of the room, across the whole
+        // window, tabs or no tabs (`caption_strip`); a top bar shows in it, and never moves the
+        // sessions, whether it takes room or flashes.
+        let strip = self.caption_strip().map(|h| Rect { h, ..room });
+        if let Some(s) = strip {
+            room = Rect { y: room.y + s.h, h: (room.h - s.h).max(1.0), ..room };
+        }
+        let in_strip = strip.is_some() && self.tab_position() == TabPosition::Top;
         let belt = self.belt.visible.then(|| crate::toolbelt::clamp_width(self.belt.width, room.w / scale) * scale);
         let bar = self.tab_bar_visible().then(|| {
             let position = self.tab_position();
             (position, if tab_position::vertical(position) { self.side_bar_width() } else { self.tab_height() })
         });
-        let (rect, sessions, belt_rect) = tab_position::window_split(room, belt, bar);
+        let (rect, sessions, belt_rect) = tab_position::window_split(room, belt, bar.filter(|_| !in_strip));
+        if in_strip {
+            return (strip.filter(|_| bar.is_some()), sessions, belt_rect);
+        }
         if bar.is_some() && !self.tab_bar_takes_room() {
             // A flashing bar lies over the sessions: they keep the room they had.
             return (rect, tab_position::window_split(room, belt, None).1, belt_rect);
@@ -1706,9 +1734,14 @@ impl App {
         (rect, sessions, belt_rect)
     }
 
-    /// The tab bar's rect in pixels, window coordinates; None while it hides.
+    /// The tab bar's rect in pixels, window coordinates; None while it hides. In a Minimal or
+    /// Compact window's caption the top bar is the strip's tab area, clear of the window buttons.
     pub(super) fn tab_bar_rect(&self) -> Option<Rect> {
-        self.window_layout().0
+        let bar = self.window_layout().0?;
+        match self.caption_layout().filter(|_| self.tab_position() == TabPosition::Top) {
+            Some(l) => crate::caption::tab_bar_rect(&l, true).map(|t| Rect { x: t.x, w: t.w, ..bar }),
+            None => Some(bar),
+        }
     }
 
     /// The horizontal tab bar's rect: the bar's, on the top or bottom edge.
@@ -2293,7 +2326,26 @@ impl App {
     /// theme draws (`tab_theme::font_pt`) unless a custom size is on. The one place that builds
     /// them, so layout, hits and drags agree.
     pub(super) fn tab_settings(&self) -> tab_layout::Settings {
-        tab_layout::Settings::from_globals(&self.globals).with_theme_font(&self.globals, crate::tab_theme::font_pt(self.resolved_style()))
+        let mut s = tab_layout::Settings::from_globals(&self.globals).with_theme_font(&self.globals, crate::tab_theme::font_pt(self.resolved_style()));
+        s.height = self.theme_bar_height(self.compact_window(), self.tab_position(), s.height);
+        s
+    }
+
+    /// A tab bar's thickness in points under the Theme (`tab_theme::bar_height`): Minimal's
+    /// `CompactMinimalTabBarHeight` in a compact window's top bar and in a side bar, else `regular`.
+    fn theme_bar_height(&self, compact_window: bool, position: TabPosition, regular: f32) -> f32 {
+        let tall = self.globals.number("CompactMinimalTabBarHeight").map_or(38.0, |v| v as f32);
+        crate::tab_theme::bar_height(self.tab_style(), compact_window, position, regular, tall)
+    }
+
+    /// A Minimal or Compact window's caption strip in pixels, at the bar's height whatever the bar's
+    /// position or whether a bar shows (the panes never move when it hides); None in any other window.
+    pub(super) fn caption_strip(&self) -> Option<f32> {
+        if !self.compact_window() {
+            return None;
+        }
+        let regular = tab_layout::Settings::from_globals(&self.globals).height;
+        Some((self.theme_bar_height(true, TabPosition::Top, regular) * self.scale()).round())
     }
 
     /// The colors the tab bar draws with (`tab_theme::palette`), from the Theme, Windows' modes,
@@ -2968,7 +3020,7 @@ impl App {
         let (cw, ch) = self.cell();
         let pad = 2.0 * PAD * self.scale();
         // The line under the title bar is part of the window's decoration (`PT:13235-13237`).
-        let line = self.division_height();
+        let line = self.division_height() + self.caption_strip().unwrap_or(0.0);
         let Some(g) = self.gpu.as_ref() else { return };
         // A percent-eligible type sizes by its explicit percentages of the work area, in whole
         // cells (`TerminalWindowSizeHelper.measurements`, `measurementToCells`).
@@ -3211,6 +3263,7 @@ impl App {
             self.redraw();
             return;
         }
+        self.sync_caption_label();
         self.layout_toolbelt();
         self.laid_out = Some(self.room());
         if let Some(t) = self.tabs.get(self.active) {
@@ -3873,6 +3926,10 @@ impl App {
 
     fn mouse_move(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
+        // The pointer is in the client area: it is not over a caption button.
+        if self.caption_hover.take().is_some() | self.caption_pressed.take().is_some() {
+            self.redraw();
+        }
         self.update_tab_hover();
         self.update_side_handle_hover();
         self.toolbelt_move(x, y);
@@ -4021,6 +4078,9 @@ impl App {
         let palette_bg = self.panes.values().next().map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
         let mut frame = Frame { clear: rgba(palette_bg, 1.0), ..Default::default() };
         self.note_tab_changes();
+        // A Minimal or Compact window's caption strip is under the tab bar and the sessions.
+        self.sync_caption_label();
+        self.draw_caption_bar(&mut frame);
         // A flashing bar is drawn apart, then laid over the sessions at its alpha.
         let flash_over = self.tab_flash.flashing() && !self.tab_bar_takes_room();
         let mut bar_layer = Frame::default();
@@ -4075,6 +4135,7 @@ impl App {
         }
         self.tab_bar_drawn = self.tab_bar_rect().map(|bar| (bar, self.bar_tab_rects(), self.bar_pills(None)));
         self.draw_drop_marker(bar_frame);
+        self.draw_caption_content(&mut frame);
         let area = self.content_area();
         let backgrounds = self.pane_backgrounds();
         let mut block_buttons = Vec::new();
@@ -4206,6 +4267,8 @@ impl App {
         // The next edge drag snaps to what this frame shows.
         self.publish_snap();
         let frame = self.build_frame();
+        // The caption's hit tests answer from what this frame drew.
+        self.publish_caption();
         let (title, menu_text) = self.caption_text();
         if self.window_menu_text != menu_text {
             self.window_menu_text = menu_text;
@@ -4327,6 +4390,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.install_sizing();
                 // A forced Theme's title bar survives system setting changes.
                 self.guard_theme();
+                self.refresh_caption_frame();
                 self.apply_corners();
                 // The settings folder's questions and failures from the launch.
                 for ask in std::mem::take(&mut self.prefs_startup) {
@@ -4618,6 +4682,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::NotificationClicked => return self.reveal_notified(),
             UserEvent::JobsChanged => return self.jobs_changed(),
             UserEvent::ThemeReset => return self.reapply_forced_theme(),
+            UserEvent::Caption(hwnd, e) => return self.caption_event(hwnd, e, event_loop),
             UserEvent::Wake => {}
         }
         let mut changed = false;
@@ -4861,6 +4926,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             // The pointer left the window: no Help tooltip stays up.
             WindowEvent::CursorLeft { .. } => {
+                self.caption_hover = None;
                 let composer = self.composer_hover.take().is_some();
                 let tab = self.tab_hover.take().is_some();
                 self.tab_tip = None;

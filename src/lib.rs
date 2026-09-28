@@ -110,6 +110,7 @@ pub mod wintitle;
 pub mod chrome;
 pub mod tab_theme;
 pub mod frames;
+pub mod caption;
 pub mod placement;
 pub mod arrangement;
 pub mod arrangements;

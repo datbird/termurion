@@ -126,7 +126,9 @@ impl App {
     /// a frame after it, so this runs from `render`; the setting's change reaches each window
     /// on its next frame.
     pub(super) fn sync_menu_hidden(&mut self) {
-        let hide = menu_should_hide(self.full_screen(), self.globals.bool("HideMenuBarInFullscreen"));
+        // A Minimal or Compact window has no room for the native menu bar: its caption strip is
+        // where the title bar and menu bar were (`caption_ui`).
+        let hide = menu_should_hide(self.full_screen(), self.globals.bool("HideMenuBarInFullscreen")) || self.compact_window();
         if hide == self.menu_hidden {
             return;
         }
@@ -150,6 +152,9 @@ impl App {
     /// Gives the current window the border `chrome::show_border` asks for, in its focused or
     /// unfocused color, or the system's border; DWM is told only when the color changes.
     pub(super) fn apply_border(&mut self) {
+        // Every way a window's chrome changes (a new window, its style, full screen, the Theme)
+        // ends here, so the caption frame follows too.
+        self.refresh_caption_frame();
         let Some(hwnd) = self.hwnd() else { return };
         let g = &self.globals;
         let show = chrome::show_border(g.bool("UseBorder"), self.any_pane_is_transparent(), g.bool("BordersOnlyInLightMode"), chrome::is_dark_style(self.resolved_style()), self.full_screen());

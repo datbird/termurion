@@ -71,6 +71,9 @@ pub(super) struct WinSlot {
     border_applied: Option<u32>,
     theme_applied: Option<bool>,
     menu_hidden: bool,
+    caption_hover: Option<crate::caption::Button>,
+    caption_pressed: Option<crate::caption::Button>,
+    caption_label_w: f32,
     zoom_restore: Option<Rect>,
     mru: Mru,
     mru_mods: Option<Mods>,
@@ -143,6 +146,9 @@ impl WinSlot {
             border_applied: None,
             theme_applied: None,
             menu_hidden: false,
+            caption_hover: None,
+            caption_pressed: None,
+            caption_label_w: 0.0,
             zoom_restore: None,
             mru: Mru::default(),
             mru_mods: None,
@@ -230,6 +236,9 @@ impl App {
         swap(&mut self.border_applied, &mut s.border_applied);
         swap(&mut self.theme_applied, &mut s.theme_applied);
         swap(&mut self.menu_hidden, &mut s.menu_hidden);
+        swap(&mut self.caption_hover, &mut s.caption_hover);
+        swap(&mut self.caption_pressed, &mut s.caption_pressed);
+        swap(&mut self.caption_label_w, &mut s.caption_label_w);
         swap(&mut self.zoom_restore, &mut s.zoom_restore);
         swap(&mut self.mru, &mut s.mru);
         swap(&mut self.mru_mods, &mut s.mru_mods);
@@ -659,14 +668,17 @@ impl App {
     /// full screen, and not a Compact or Minimal window (whose own caption draws the label,
     /// `compact_caption`).
     fn window_titled(&self) -> bool {
-        let decorated = self.gpu.as_ref().is_some_and(|g| g.window.is_decorated() && g.window.fullscreen().is_none());
-        decorated && !self.compact_window()
+        let decorated = self.gpu.as_ref().is_some_and(|g| g.window.is_decorated());
+        crate::wintitle::has_title_bar(decorated, self.full_screen(), self.compact_window())
     }
 
-    /// Whether the current window is a Compact or Minimal window. 13e replaces this body;
-    /// until then no window is.
+    /// Whether the current window is a Compact or Minimal window: its type as the Theme
+    /// themes it (`frames::themed`) is one of the compact forms, and it is not full screen. Worked
+    /// out here, never stored: `win_style` stays the unthemed type (arrangements, hotkey slides
+    /// and snapping read it), so a Theme change needs no new type.
     pub(super) fn compact_window(&self) -> bool {
-        false
+        use crate::frames;
+        !self.full_screen() && frames::is_compact(frames::themed(self.win_style, crate::tab_theme::compact_theme(self.tab_style())))
     }
 
     /// The current window's OS caption (`PT setWindowTitle:subtitle:`): `caption_base` with the
@@ -686,7 +698,6 @@ impl App {
 
     /// What a Compact or Minimal window's caption draws: its title, and the number label
     /// right-aligned (R11).
-    #[allow(dead_code)] // 13e Task 6 draws it.
     pub(super) fn compact_caption(&self) -> (String, Option<String>) {
         let show = self.globals.bool("WindowNumber");
         let accessory = self.globals.bool("UseShortcutAccessoryViewController");
@@ -773,6 +784,9 @@ impl WinSlot {
             border_applied: None,
             theme_applied: None,
             menu_hidden: false,
+            caption_hover: None,
+            caption_pressed: None,
+            caption_label_w: 0.0,
             zoom_restore: None,
             mru: Mru::default(),
             mru_mods: None,
