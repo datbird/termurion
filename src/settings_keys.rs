@@ -311,10 +311,13 @@ fn menu_combo(ui: &mut egui::Ui, salt: &str, text: &mut String, pointer: bool) -
     changed
 }
 
-/// Boolean settings Toggle Setting can flip: every global and profile checkbox.
+/// Boolean settings Toggle Setting can flip: every global and profile checkbox except the AI
+/// consent switches (`ai_settings::toggle_allowed`).
 fn toggle_choices() -> Vec<(String, bool, String)> {
     let bools = |list: &'static [Setting], is_profile: bool| {
-        list.iter().filter(|s| s.kind == Kind::Bool && !s.macos_only).map(move |s| (s.key.clone(), is_profile, s.label.clone()))
+        list.iter()
+            .filter(|s| s.kind == Kind::Bool && !s.macos_only && crate::ai_settings::toggle_allowed(&s.key))
+            .map(move |s| (s.key.clone(), is_profile, s.label.clone()))
     };
     bools(schema::global(), false).chain(bools(schema::profile(), true)).collect()
 }
@@ -1025,6 +1028,17 @@ mod tests {
         // A backspace binding stored in the legacy form counts too.
         let old: toml::Table = toml::from_str("\"0x7f-0x0\" = { Action = 16 }").unwrap();
         assert!(delete_sends_ctrl_h(&old));
+    }
+
+    #[test]
+    fn toggle_setting_never_offers_ai_consent() {
+        let keys: Vec<String> = toggle_choices().into_iter().map(|(k, _, _)| k).collect();
+        for key in ["GenerativeAIAllowed", "EnableAI", "AICompletions"] {
+            assert!(!keys.iter().any(|k| k == key), "{key}");
+        }
+        // Other AI checkboxes and ordinary settings are still offered.
+        assert!(keys.iter().any(|k| k == "AI Safety Check"));
+        assert!(keys.iter().any(|k| k == "FocusFollowsMouse"));
     }
 
     #[test]

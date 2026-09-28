@@ -182,6 +182,13 @@ pub fn allowed(g: &Globals) -> bool {
     g.bool(ADMIN) && g.bool(ENABLE_AI)
 }
 
+/// Whether Toggle Setting may flip this key. The switches that stand between a person and an AI
+/// request (the administrator's, EnableAI, AICompletions, the consent list and the default chat
+/// permissions) are never offered and never flipped, so a key binding cannot bypass consent.
+pub fn toggle_allowed(key: &str) -> bool {
+    ![ADMIN, ENABLE_AI, AI_COMPLETIONS, CONSENT].contains(&key) && !PERMISSIONS.iter().any(|(k, _)| *k == key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,5 +253,18 @@ mod tests {
         assert!(allowed(&g));
         g.set(ADMIN, Value::Boolean(false));
         assert!(!allowed(&g));
+    }
+
+    #[test]
+    fn toggle_setting_never_reaches_ai_consent() {
+        for key in [ADMIN, ENABLE_AI, AI_COMPLETIONS, CONSENT] {
+            assert!(!toggle_allowed(key), "{key}");
+        }
+        for (key, _) in PERMISSIONS {
+            assert!(!toggle_allowed(key), "{key}");
+        }
+        for key in [SAFETY_CHECK, ZERO_DATA_RETENTION, FEATURE_STREAMING, "FocusFollowsMouse"] {
+            assert!(toggle_allowed(key), "{key}");
+        }
     }
 }

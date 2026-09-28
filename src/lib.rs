@@ -261,3 +261,4 @@ pub mod session_env;
 #[cfg(windows)]
 pub mod api_server;
 pub mod ai_settings;
+pub mod ai_catalog;
