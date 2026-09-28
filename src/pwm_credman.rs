@@ -328,4 +328,19 @@ mod tests {
         assert!(matches!(read_generic("Other/x", "API key"), Err(e) if e == "Not a Tandem credential."));
         assert_eq!(delete_generic("Other/x"), Err("Not a Tandem credential.".to_string()));
     }
+
+    #[test]
+    fn too_long_secrets_are_refused_with_their_name() {
+        // One byte over the limit: refused before any Win32 call, naming the secret, never
+        // showing it.
+        let long = Secret::new("k".repeat(CRED_MAX_CREDENTIAL_BLOB_SIZE as usize + 1));
+        assert_eq!(
+            write_generic("Tandem/site/me", "me", &long, "c", "password"),
+            Err("The password is too long for Windows Credential Manager (at most 2560 bytes).".to_string())
+        );
+        assert_eq!(
+            write_generic("TandemAI/OpenAI", "OpenAI API Key for Tandem", &long, "c", "API key"),
+            Err("The API key is too long for Windows Credential Manager (at most 2560 bytes).".to_string())
+        );
+    }
 }
