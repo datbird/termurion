@@ -737,18 +737,22 @@ impl Conductor {
     }
 
     /// forceReturnToGroundState (`CD:3085-3093`): ground, the queue aborted (the in-flight
-    /// command is dropped unheard), then the parent's. The queue is taken before its
-    /// handlers run, so a send from one of them is not dropped with it. An unhooked
-    /// conductor stays unhooked (iTerm2 bug B17 fixed): iTerm2 grounds every parent, so a
-    /// failed nested setup makes the unhooked level 1 parent hold typing forever.
+    /// command is dropped unheard), then the parent's. The handlers run in a transition and
+    /// the queue is cleared after them, so what an abort handler sends (CheckForPython's
+    /// login shell) is dropped too, never written after the failure. An unhooked conductor
+    /// stays unhooked (iTerm2 bug B17 fixed): iTerm2 grounds every parent, so a failed
+    /// nested setup makes the unhooked level 1 parent hold typing forever.
     pub fn force_ground(&mut self) {
         if !self.unhooked() {
             self.state = State::Ground;
         }
-        let aborted = std::mem::take(&mut self.queue);
-        for context in aborted {
-            self.update(&context, Partial::Abort);
-        }
+        let aborted = self.queue.clone();
+        self.in_transition(|c| {
+            for context in aborted {
+                c.update(&context, Partial::Abort);
+            }
+        });
+        self.queue.clear();
         self.via_parent(Conductor::force_ground);
     }
 
@@ -1334,6 +1338,36 @@ mod tests {
         assert_eq!(grandparent.state(), &State::Ground, "the force still reaches past it");
         assert!(!c.queue_writes(), "so typing is still not held");
         assert_eq!(c.state(), &State::Ground);
+    }
+
+    #[test]
+    fn fail_drops_what_abort_handlers_send() {
+        // CheckForPython's abort arm sends exec_login_shell; iTerm2 clears the queue after
+        // the abort loop (CD:3085-3093), so nothing is written after the failure.
+        let mut c = Conductor::new(Setup { initial_directory: Some("/srv".into()), ..setup("A") }, None, "U");
+        c.start();
+        c.take_effects();
+        c.handle_end("1", "r", 0, 0);
+        c.take_effects();
+        assert_eq!(c.in_flight(), Some(&cd("/srv")));
+        assert_eq!(c.queue.iter().map(|q| q.command.clone()).collect::<Vec<_>>(), [Command::PythonVersion]);
+        c.handle_end("2", "r", 1, 0);
+        assert_eq!(
+            c.take_effects(),
+            [Effect::StopQueueingInput, Effect::SessionWrite(b"exec_login_shell\n".to_vec()), Effect::Abort("cd /srv: Unepected status 1".into())]
+        );
+        assert_eq!((c.state(), c.in_flight()), (&State::Ground, None));
+        assert!(c.queue.is_empty());
+
+        // The same from outside a handler.
+        let mut c = Conductor::new(Setup { initial_directory: Some("/srv".into()), ..setup("A") }, None, "U");
+        c.start();
+        c.handle_end("1", "r", 0, 0);
+        c.take_effects();
+        c.fail("boom");
+        assert_eq!(c.take_effects(), [Effect::StopQueueingInput, Effect::SessionWrite(b"exec_login_shell\n".to_vec()), Effect::Abort("boom".into())]);
+        assert_eq!((c.state(), c.in_flight()), (&State::Ground, None));
+        assert!(c.queue.is_empty());
     }
 
     #[test]
