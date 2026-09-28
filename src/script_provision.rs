@@ -487,7 +487,7 @@ impl RealRunner {
 
     /// A Windows tool from System32 (curl.exe, tar.exe), so a program of the same name on PATH
     /// is never run instead; the bare name when System32 is not found.
-    fn system_tool(name: &str) -> PathBuf {
+    pub fn system_tool(name: &str) -> PathBuf {
         std::env::var_os("SystemRoot").map(|root| PathBuf::from(root).join("System32").join(name)).filter(|p| p.is_file()).unwrap_or_else(|| PathBuf::from(name))
     }
 

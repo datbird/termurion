@@ -824,11 +824,13 @@ fn finish_key_editor(ctx: &egui::Context, st: &mut KeysState, map: &mut toml::Ta
 
 /// Whether a global row takes input: the Python API's authentication popup only while the API
 /// is on (`GP:2055-2057`), the custom scripts folder only while its checkbox is on
-/// (`GP:2152-2154`); every other row always.
+/// (`GP:2152-2154`), the settings folder only while "Load settings from a custom folder or URL"
+/// is on (`GP:2210-2212`); every other row always.
 pub fn row_enabled(g: &Globals, key: &str) -> bool {
     match key {
         "API Authentication Method" => g.bool("EnableAPIServer"),
         "CustomScriptsFolder" => g.bool("UseCustomScriptsFolder"),
+        crate::remote_prefs::FOLDER_KEY => g.bool(crate::remote_prefs::LOAD_KEY),
         _ => true,
     }
 }
@@ -946,9 +948,11 @@ pub fn custom_scripts_folder_row(ui: &mut egui::Ui, g: &mut Globals, home: &std:
 }
 
 /// A pane that shows only the global settings the schema has for it so far, by section
-/// (General and Appearance).
-pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> bool {
+/// (General and Appearance). Returns whether a setting changed, and what the custom settings
+/// folder's rows asked for.
+pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> (bool, PrefsAction) {
     let mut changed = false;
+    let mut prefs = PrefsAction::None;
     let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_default();
     egui::ScrollArea::vertical().show(ui, |ui| {
         let mut sections: Vec<&str> = Vec::new();
@@ -966,6 +970,15 @@ pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> bool {
                     changed |= ended;
                     continue;
                 }
+                // The custom settings folder's rows draw its text field with the checkbox.
+                if s.key == crate::remote_prefs::LOAD_KEY {
+                    prefs = prefs_rows(ui, g, &home);
+                    changed |= prefs != PrefsAction::None;
+                    continue;
+                }
+                if s.key == crate::remote_prefs::FOLDER_KEY {
+                    continue;
+                }
                 let enabled = row_enabled(g, &s.key);
                 let was_on = g.bool(&s.key);
                 let c = global_control(ui, g, s, enabled);
@@ -981,7 +994,131 @@ pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> bool {
             ui.add_space(8.0);
         }
     });
-    changed
+    (changed, prefs)
+}
+
+/// What the custom settings folder's rows asked for: a setting changed; the folder was just
+/// picked with the checkbox turned on, so "Copy local settings to custom folder now?" asks
+/// (`GP:4262-4292`); or Save Now was pressed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrefsAction {
+    None,
+    Changed,
+    CopyNow,
+    SaveNow,
+}
+
+/// Where a window's egui memory keeps the last settings location checked and whether it was
+/// valid (the check writes a probe file, so it runs when the text changes, not every frame).
+fn prefs_valid_id() -> egui::Id {
+    egui::Id::new("tandem-prefs-folder-valid")
+}
+
+/// Whether the Save changes popup, its label and Save Now take input (`GP:4239-4244`): the
+/// setting is on and the location is a valid folder (never a URL).
+pub fn prefs_save_enabled(g: &Globals, home: &std::path::Path, writable: &dyn Fn(&std::path::Path) -> bool) -> bool {
+    use crate::remote_prefs as rp;
+    let text = g.string(rp::FOLDER_KEY);
+    g.bool(rp::LOAD_KEY) && !rp::is_url(&rp::expanded(&text, home)) && rp::location_valid(&text, home, writable)
+}
+
+/// `choosePrefsCustomFolder`: the folder picker; a picked folder becomes the location, which
+/// is returned.
+fn choose_prefs_folder(g: &mut Globals) -> Option<String> {
+    let dir = rfd::FileDialog::new().pick_folder()?;
+    let text = dir.display().to_string();
+    g.set(crate::remote_prefs::FOLDER_KEY, Value::String(text.clone()));
+    Some(text)
+}
+
+/// General > Settings' custom folder rows (`GP:2167-2218`, `GP:4221-4292`, `XIB:8360-8440`):
+/// the checkbox; the location field and Browse, both enabled with it, and the mark saying
+/// whether the location is usable; "Save changes:" with its popup and Save Now, enabled for an
+/// on, valid folder. Turning the checkbox on with no location opens the folder picker, and a
+/// usable pick offers to copy the local settings there.
+pub fn prefs_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path) -> PrefsAction {
+    use crate::remote_prefs::{self as rp, SaveMode};
+    let mut action = PrefsAction::None;
+    let was_on = g.bool(rp::LOAD_KEY);
+    if let Some(s) = schema::find_global(rp::LOAD_KEY) {
+        if global_control(ui, g, s, true) {
+            action = PrefsAction::Changed;
+        }
+    }
+    let on = g.bool(rp::LOAD_KEY);
+    if on && !was_on && g.string(rp::FOLDER_KEY).is_empty() && choose_prefs_folder(g).is_some() && rp::location_valid(&g.string(rp::FOLDER_KEY), home, &rp::writable) {
+        action = PrefsAction::CopyNow;
+    }
+    let mut text = g.string(rp::FOLDER_KEY);
+    let setting = schema::find_global(rp::FOLDER_KEY);
+    let mut valid = false;
+    ui.horizontal(|ui| {
+        ui.add_enabled_ui(on, |ui| {
+            let field = ui.add(egui::TextEdit::singleline(&mut text).hint_text(rp::FOLDER_HINT));
+            if field.changed() {
+                g.set(rp::FOLDER_KEY, Value::String(text.clone()));
+                action = action.max_changed();
+            }
+            if setting.is_some_and(|s| indicate_non_default() && !global_is_default(g, s)) {
+                non_default_bar(ui, field.rect, ui.is_enabled());
+            }
+            if ui.button(rp::BROWSE).clicked() {
+                if let Some(picked) = choose_prefs_folder(g) {
+                    text = picked;
+                    action = action.max_changed();
+                }
+            }
+        });
+        let cached = ui.ctx().data(|d| d.get_temp::<(String, bool)>(prefs_valid_id()));
+        valid = match cached {
+            Some((checked, valid)) if checked == text => valid,
+            _ => {
+                let valid = rp::location_valid(&text, home, &rp::writable);
+                ui.ctx().data_mut(|d| d.insert_temp(prefs_valid_id(), (text.clone(), valid)));
+                valid
+            }
+        };
+        if let (Some((glyph, alpha)), true) = (crate::scripts::folder_glyph(on, &text, valid), has_icon_font(ui.ctx())) {
+            let color = ui.visuals().text_color().gamma_multiply(alpha);
+            ui.label(egui::RichText::new(glyph.to_string()).family(icon_family()).color(color));
+        }
+    })
+    .response
+    .on_hover_text(setting.map_or("", |s| s.help.as_str()));
+    // The folder's probe answered above; a URL or a network path is never probed.
+    let enabled = prefs_save_enabled(g, home, &|_| valid);
+    ui.add_enabled_ui(enabled, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(rp::SAVE_CHANGES);
+            let mode = rp::save_mode(g.bool(rp::HAVE_SELECTION_KEY), g.int(rp::SELECTION_KEY));
+            let choices = [(rp::AUTOMATICALLY, SaveMode::Always), (rp::MANUALLY, SaveMode::Never), (rp::WHEN_QUITTING, SaveMode::OnQuit)];
+            let shown = choices.iter().find(|(_, m)| *m == mode).map_or("", |(label, _)| label);
+            let combo = egui::ComboBox::from_id_salt(rp::SELECTION_KEY).selected_text(shown).show_ui(ui, |ui| {
+                for (label, m) in choices {
+                    if ui.selectable_label(m == mode, label).clicked() {
+                        // A pick is the popup's "have selection" (`GP:2179-2187`).
+                        g.set(rp::HAVE_SELECTION_KEY, Value::Boolean(true));
+                        g.set(rp::SELECTION_KEY, Value::Integer(m.tag()));
+                        action = action.max_changed();
+                    }
+                }
+            });
+            if schema::find_global(rp::SELECTION_KEY).is_some_and(|s| indicate_non_default() && !global_is_default(g, s)) {
+                non_default_bar(ui, combo.response.rect, ui.is_enabled());
+            }
+            if ui.button(rp::SAVE_NOW).clicked() {
+                action = PrefsAction::SaveNow;
+            }
+        });
+    });
+    action
+}
+
+impl PrefsAction {
+    /// Changed, unless something more was asked for.
+    fn max_changed(self) -> PrefsAction {
+        if self == PrefsAction::None { PrefsAction::Changed } else { self }
+    }
 }
 
 /// iTerm2's Pointer pane.
@@ -1230,6 +1367,27 @@ mod tests {
         // The rows sit before "Save copy/paste and command history to disk" (Task 8's order).
         let general: Vec<&str> = schema::global().iter().filter(|s| s.tab == "General" && s.section == "Settings").map(|s| s.key.as_str()).collect();
         assert_eq!(&general[..3], ["LoadPrefsFromCustomFolder", "PrefsCustomFolder", "SavePasteHistory"]);
+    }
+
+    #[test]
+    fn prefs_row_enabling_follows_iterm2() {
+        use crate::remote_prefs::{FOLDER_KEY, LOAD_KEY};
+        let home = std::path::Path::new(r"C:\Users\u");
+        let mut g = Globals::empty(std::path::Path::new("prefs-rows-test.toml"));
+        assert!(!row_enabled(&g, FOLDER_KEY));
+        g.set(LOAD_KEY, Value::Boolean(true));
+        assert!(row_enabled(&g, FOLDER_KEY));
+        let writable = |p: &std::path::Path| p == std::path::Path::new(r"D:\s");
+        g.set(FOLDER_KEY, Value::String("https://h/p".into()));
+        assert!(!prefs_save_enabled(&g, home, &writable), "a URL is never saved to");
+        g.set(FOLDER_KEY, Value::String(r"D:\s".into()));
+        assert!(prefs_save_enabled(&g, home, &writable));
+        g.set(FOLDER_KEY, Value::String(r"D:\t".into()));
+        assert!(!prefs_save_enabled(&g, home, &writable), "a folder that cannot be written");
+        g.set(FOLDER_KEY, Value::String(r"D:\s".into()));
+        g.set(LOAD_KEY, Value::Boolean(false));
+        assert!(!prefs_save_enabled(&g, home, &writable), "off");
+        assert!(!row_enabled(&g, FOLDER_KEY));
     }
 
     #[test]

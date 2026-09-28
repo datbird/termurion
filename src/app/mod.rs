@@ -113,6 +113,7 @@ mod api_requests;
 mod script_ui;
 mod script_runtime_ui;
 mod scripts_alerts;
+mod prefs_ui;
 mod scripts_app;
 mod builtin_ui;
 
@@ -694,6 +695,19 @@ pub struct App {
     script_tmux: HashMap<(PaneId, crate::tmux_gateway::Tag), u64>,
     /// `move_tab_to_window` calls waiting for their tab's new window: (tab id, token).
     script_moved: Vec<(u64, u64)>,
+    /// "Load settings from a custom folder or URL" (app-wide): what the location held when it
+    /// was loaded or last written (iTerm2's `savedRemotePrefs`), when the automatic save is due,
+    /// a URL load running off the UI thread, whether Tandem ends once the quit question is
+    /// answered, the launch's questions waiting for the first window, whether Settings opens at
+    /// General on the next pass (Reveal in Settings), and the GPU the quit question opens with
+    /// after the last window has gone.
+    prefs_saved: Option<crate::remote_prefs::Snapshot>,
+    prefs_save_due: Option<Instant>,
+    prefs_fetch: Option<std::sync::mpsc::Receiver<Result<String, (i32, String)>>>,
+    prefs_exit_pending: bool,
+    prefs_startup: Vec<scripts_alerts::Ask>,
+    prefs_reveal: bool,
+    prefs_gpu: Option<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)>,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -750,7 +764,7 @@ pub fn run() {
     };
 
     let path = store::default_path();
-    let store = match Store::load(&path) {
+    let mut store = match Store::load(&path) {
         Ok(s) => s,
         Err(e) => {
             // Never overwrite a settings file we could not read: work in a side file instead,
@@ -762,7 +776,7 @@ pub fn run() {
         }
     };
     let gpath = globals::default_path();
-    let globals = match Globals::load(&gpath) {
+    let mut globals = match Globals::load(&gpath) {
         Ok(g) => g,
         Err(e) => {
             let side = gpath.with_extension("toml.recovered");
@@ -770,6 +784,17 @@ pub fn run() {
             Globals::load(&side).unwrap_or_else(|_| Globals::empty(&side))
         }
     };
+    // "Load settings from a custom folder or URL": the location's settings replace the local
+    // ones before anything reads them; its questions and failures show with the first window.
+    let (prefs_saved, prefs_startup) = prefs_ui::load_at_start(&mut globals, &mut store, &prefs_ui::curl_fetch);
+    if prefs_saved.is_some() {
+        if let Err(e) = globals.save() {
+            banners.set("globals", format!("Could not save settings: {e}"));
+        }
+        if let Err(e) = store.save() {
+            banners.set("save", format!("Could not save settings: {e}"));
+        }
+    }
     // The Script Console starts with the Automatic Profile Switching entry while its logging
     // is on (`SH:340-351`).
     let aps_logging = globals.bool(aps_ui::LOG_KEY);
@@ -1072,6 +1097,13 @@ pub fn run() {
         script_dialog: None,
         script_tmux: HashMap::new(),
         script_moved: Vec::new(),
+        prefs_saved,
+        prefs_save_due: None,
+        prefs_fetch: None,
+        prefs_exit_pending: false,
+        prefs_startup,
+        prefs_reveal: false,
+        prefs_gpu: None,
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
@@ -1398,6 +1430,11 @@ impl App {
             Edit::Error(e) => self.banners.set("import", e),
             Edit::SnippetsChanged => self.save_snippets(),
             Edit::GlobalsChanged => self.globals_changed(true),
+            Edit::PrefsCopyNow => {
+                self.globals_changed(true);
+                self.prefs_offer_copy();
+            }
+            Edit::PrefsSaveNow => self.prefs_save_now(true),
             Edit::Changed(_) | Edit::Imported(_) => {
                 // Rules may have changed: every session looks again (iTerm2's reloadAllProfiles).
                 for s in self.aps.values_mut() {
@@ -1519,6 +1556,7 @@ impl App {
             Ok(()) => self.banners.clear("save"),
             Err(e) => self.banners.set("save", format!("Could not save settings: {e}")),
         }
+        self.prefs_changed();
     }
 
     /// Takes the renderer's fonts from the default profile. A font that is not
@@ -1722,7 +1760,9 @@ impl App {
                 self.disinter_here();
                 return;
             }
-            // The window's last tab closed: the window goes; the last window ends Tandem.
+            // The window's last tab closed: the window goes; the last window ends Tandem. The
+            // settings folder's quit question may open after it has gone, with its GPU.
+            self.prefs_gpu = self.gpu.as_ref().map(|g| (g.instance.clone(), g.adapter.clone(), g.device.clone(), g.queue.clone()));
             if !self.drop_current_window() {
                 self.save_pending_settings();
                 self.save_empty_state();
@@ -1732,7 +1772,11 @@ impl App {
                 if self.save_due.is_some() {
                     self.save_now();
                 }
-                event_loop.exit();
+                if self.prefs_before_exit() {
+                    event_loop.exit();
+                }
+            } else {
+                self.prefs_gpu = None;
             }
             return;
         }
@@ -1965,6 +2009,7 @@ impl App {
             Err(e) => self.banners.set("globals", format!("Could not save settings: {e}")),
         }
         self.refresh_route();
+        self.prefs_changed();
     }
 
     /// Mouse reporting is allowed for a pane: its Toggle Mouse Reporting choice, else its
@@ -2745,6 +2790,10 @@ impl ApplicationHandler<UserEvent> for App {
                 self.gpu = Some(gpu);
                 self.windows.start(k);
                 self.registry.open(k);
+                // The settings folder's questions and failures from the launch.
+                for ask in std::mem::take(&mut self.prefs_startup) {
+                    self.ask_scripts(ask);
+                }
                 // The Python API starts with the first window when it is on.
                 self.api_launch();
                 self.scripts_scan_start();
@@ -2917,6 +2966,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.scripts_tick();
         self.script_picker_tick();
         self.scripts_scan_tick();
+        self.prefs_tick(event_loop);
         self.open_script_alerts(event_loop);
         self.open_scripts_alerts(event_loop);
         self.open_script_dialogs(event_loop);
@@ -2937,7 +2987,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.tmux_events(gw, events, event_loop);
         }
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -3065,6 +3115,11 @@ impl ApplicationHandler<UserEvent> for App {
                     slot.as_mut().unwrap().event(&other);
                 }
             }
+            return;
+        }
+        // Tandem is ending once the settings folder's quit question is answered: the terminal
+        // windows, whose sessions are gone, take nothing more.
+        if self.prefs_exit_pending {
             return;
         }
         // Every other window is a terminal window: make it current first.

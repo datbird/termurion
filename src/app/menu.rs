@@ -776,7 +776,8 @@ impl App {
     }
 
     fn quit(&mut self, event_loop: &ActiveEventLoop) {
-        if !self.confirm_close(close_ui::Closing::App) {
+        // Already ending, waiting for the settings folder's quit question.
+        if self.prefs_exit_pending || !self.confirm_close(close_ui::Closing::App) {
             return;
         }
         self.save_pending_settings();
@@ -795,7 +796,9 @@ impl App {
         self.leave_host(keep);
         self.panes.clear();
         self.focus_order.clear();
-        event_loop.exit();
+        if self.prefs_before_exit() {
+            event_loop.exit();
+        }
     }
 
     /// The rectangles the active tab shows (only the zoomed pane when one is zoomed).

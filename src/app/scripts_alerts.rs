@@ -49,13 +49,30 @@ pub(super) enum Then {
     OpenNewScript(std::path::PathBuf),
     /// "Invalid Folder": OK opens the save dialog again (the panel stays open in iTerm2).
     InvalidFolder(crate::script_new::Plan),
+    /// "Load settings from URL? ...": Keep Local Changes (0), Disable Loading from URL (1) or
+    /// Discard Local Changes (2), which loads the URL.
+    PrefsUrlPrompt(String),
+    /// "Failed to load settings from URL. ...": OK (0), Reveal in Settings (1), and after a
+    /// timeout Try Again Without Timeout (2).
+    PrefsFailedUrl { url: String, timed_out: bool },
+    /// "Error Loading Settings": Don't Load Remote Settings (0) turns the setting off; Cancel
+    /// (1) does nothing.
+    PrefsLocationNotSet,
+    /// "Settings at ... changed since Tandem started. Overwrite it?": Overwrite (0) or Discard
+    /// Local Changes (1).
+    PrefsOverwrite,
+    /// "Settings have changed. Copy them to ...?" at quit: Copy (0) or Lose Changes (1), which
+    /// is never remembered.
+    PrefsQuit,
+    /// "Copy local settings to custom folder now?": Copy (0) or Don't Copy (1).
+    PrefsCopyNow,
 }
 
 impl Then {
     /// Whether choosing button `index` may be remembered when the alert is silenced
     /// (`doNotRememberLabels`).
     fn remembers(&self, index: usize) -> bool {
-        !matches!(self, Then::OpenNewScript(_) if index == 1)
+        !matches!(self, Then::OpenNewScript(_) | Then::PrefsQuit if index == 1)
     }
 }
 
@@ -107,10 +124,13 @@ impl App {
         if self.scripts_alert.is_some() || self.scripts_alerts.is_empty() {
             return;
         }
-        let Some(g) = self.gpu.as_ref() else { return };
+        // After the last window has gone, the settings folder's quit question opens with the
+        // GPU that window used.
+        let gpu = self.gpu.as_ref().map(|g| (&g.instance, &g.adapter, &g.device, &g.queue)).or(self.prefs_gpu.as_ref().map(|(i, a, d, q)| (i, a, d, q)));
+        let Some((instance, adapter, device, queue)) = gpu else { return };
         let Some(ask) = self.scripts_alerts.pop_front() else { return };
         let labels: Vec<&str> = ask.buttons.iter().map(String::as_str).collect();
-        match ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &ask.heading, &ask.text, &labels, ask.silence.is_some()) {
+        match ConfirmWindow::actions(event_loop, instance, adapter, device, queue, &ask.heading, &ask.text, &labels, ask.silence.is_some()) {
             Ok(w) => self.scripts_alert = Some((w, ask)),
             Err(e) => {
                 self.banners.set("window", format!("Could not open the window: {e}"));
@@ -184,6 +204,7 @@ impl App {
                     self.reveal_path(&path);
                 }
             }
+            Then::PrefsUrlPrompt(_) | Then::PrefsFailedUrl { .. } | Then::PrefsLocationNotSet | Then::PrefsOverwrite | Then::PrefsQuit | Then::PrefsCopyNow => self.prefs_answered(then, index),
             Then::SlowScan => {
                 let go_on = index == 1;
                 if let Some(scanner) = &self.scripts_scan {
@@ -219,6 +240,9 @@ mod tests {
         assert!(open.remembers(0));
         assert!(!open.remembers(1));
         assert!(Then::Nothing.remembers(1));
+        // "Lose Changes" is never remembered (`RP:1688`).
+        assert!(Then::PrefsQuit.remembers(0));
+        assert!(!Then::PrefsQuit.remembers(1));
     }
 
     #[test]

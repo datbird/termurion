@@ -48,6 +48,11 @@ pub enum Edit {
     GlobalsChanged,
     /// The snippets changed (Settings > Shortcuts).
     SnippetsChanged,
+    /// A settings folder was just picked with "Load settings from a custom folder or URL"
+    /// turned on: the settings changed, and "Copy local settings to custom folder now?" asks.
+    PrefsCopyNow,
+    /// General > Settings' Save Now.
+    PrefsSaveNow,
 }
 
 /// The settings window's panes, as iTerm2's toolbar lists them.
@@ -322,9 +327,19 @@ impl SettingsWindow {
                                 }
                                 c
                             }
-                            Page::General => settings_keys::schema_page(ui, globals, "General"),
+                            Page::General => match settings_keys::schema_page(ui, globals, "General") {
+                                (_, settings_keys::PrefsAction::CopyNow) => {
+                                    edit = Edit::PrefsCopyNow;
+                                    false
+                                }
+                                (_, settings_keys::PrefsAction::SaveNow) => {
+                                    edit = Edit::PrefsSaveNow;
+                                    false
+                                }
+                                (c, _) => c,
+                            },
                             Page::Advanced => crate::settings_advanced_pane::page(ui, globals, advanced),
-                            Page::Appearance => settings_keys::schema_page(ui, globals, "Appearance"),
+                            Page::Appearance => settings_keys::schema_page(ui, globals, "Appearance").0,
                             Page::Arrangements => crate::settings_arrangements::page(ui, globals, &profile_tables, arr),
                             Page::Shortcuts => match crate::settings_shortcuts::page(ui, globals, snippets, shortcuts, &profiles) {
                                 crate::settings_shortcuts::Changed::None => false,
