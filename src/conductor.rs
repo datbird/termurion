@@ -626,9 +626,13 @@ impl Conductor {
 
     /// forceReturnToGroundState (`CD:3085-3093`): ground, the queue aborted (the in-flight
     /// command is dropped unheard), then the parent's. The queue is taken before its
-    /// handlers run, so a send from one of them is not dropped with it.
+    /// handlers run, so a send from one of them is not dropped with it. An unhooked
+    /// conductor stays unhooked (iTerm2 bug B17 fixed): iTerm2 grounds every parent, so a
+    /// failed nested setup makes the unhooked level 1 parent hold typing forever.
     pub fn force_ground(&mut self) {
-        self.state = State::Ground;
+        if !self.unhooked() {
+            self.state = State::Ground;
+        }
         let aborted = std::mem::take(&mut self.queue);
         for context in aborted {
             self.update(&context, Partial::Abort);
@@ -1168,6 +1172,28 @@ mod tests {
         let parent = c.parent.as_ref().unwrap();
         assert_eq!((parent.state(), parent.queue.is_empty()), (&State::Ground, true));
         assert_eq!(parent.updates, [(cd("/p2"), Partial::Abort, State::Ground)], "and the parent's");
+    }
+
+    #[test]
+    fn fail_keeps_an_unhooked_parent_unhooked() {
+        // iTerm2 bug B17 fixed: a nested it2ssh that fails must not make the outer
+        // conductor, unhooked at level 1, hold typing again.
+        let mut grandparent = root();
+        grandparent.send(cd("/g"), Handler::FailIfNonzero, false);
+        let mut parent = Conductor::new(setup("P"), Some(Box::new(grandparent)), "W");
+        parent.handle_unhook();
+        let mut c = Conductor::new(setup("C"), Some(Box::new(parent)), "V");
+        c.send(cd("/a"), Handler::FailIfNonzero, false);
+        c.take_effects();
+        assert!(!c.queue_writes(), "under an unhooked parent writes never queue");
+
+        c.fail("boom");
+        let parent = c.parent.as_ref().unwrap();
+        assert_eq!(parent.state(), &State::Unhooked, "an unhooked parent stays unhooked");
+        let grandparent = parent.parent.as_ref().unwrap();
+        assert_eq!(grandparent.state(), &State::Ground, "the force still reaches past it");
+        assert!(!c.queue_writes(), "so typing is still not held");
+        assert_eq!(c.state(), &State::Ground);
     }
 
     #[test]
