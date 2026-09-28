@@ -201,6 +201,14 @@ pub fn clear_start(marks: &[i32], prompt_line: Option<i32>, cursor: i32) -> i32 
     }
 }
 
+/// Whether a reported host is a host change that may reset modes: a previous host existed,
+/// the name differs (exactly, as iTerm2's `isEqualToString:`), and the two are not both this
+/// machine (`local`, compared ignoring case as Windows names are).
+pub fn host_changed(previous: Option<&str>, new: &str, local: &str) -> bool {
+    let is_local = |h: &str| !local.is_empty() && h.eq_ignore_ascii_case(local);
+    previous.is_some_and(|p| p != new && !(is_local(p) && is_local(new)))
+}
+
 impl Screen {
     /// Clears from grid line `line` to the end (iTerm2 clearFromAbsoluteLineToEnd). The
     /// cursor's row (the prompt) goes to the top of the screen, and the rows kept above move
@@ -711,6 +719,12 @@ impl Screen {
         self.apply_osc(osc);
         // Directory, host, and user changes are events for triggers.
         let after = (self.shell.cwd.clone(), self.shell.host.clone(), self.shell.user.clone());
+        // Modes a program on the previous host left on may be turned off (`PS:17929-17940`).
+        if let Some(new) = after.1.as_deref().filter(|_| before.1 != after.1) {
+            if host_changed(before.1.as_deref(), new, &std::env::var("COMPUTERNAME").unwrap_or_default()) {
+                self.requests.push(Request::HostChanged { fish: self.shell.shell.as_deref() == Some("fish") });
+            }
+        }
         for (kind, old, new) in [(EventKind::DirectoryChanged, before.0, after.0), (EventKind::HostChanged, before.1, after.1), (EventKind::UserChanged, before.2, after.2)] {
             if let Some(v) = new.filter(|n| Some(n) != old.as_ref()) {
                 self.fire_event(kind, &EventFacts { value: v.clone(), ..Default::default() }, &[v]);
@@ -1721,5 +1735,28 @@ mod tests {
         s.api_watch = false;
         s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07\x1b]133;D;0\x07\x1b]1337;Custom=id=me:hi\x07");
         assert!(s.api_events.is_empty());
+    }
+
+    /// Host change offers: only when a previous host existed, the name changed and the two
+    /// are not both this machine (`PS:17929-17940`); the fish flag rides along.
+    #[test]
+    fn host_change_follows_iterm2() {
+        assert!(!host_changed(None, "b", "PC"), "no previous host");
+        assert!(!host_changed(Some("a"), "a", "PC"));
+        assert!(host_changed(Some("a"), "A", "PC"), "iTerm2 compares names exactly (isEqualToString:)");
+        assert!(host_changed(Some("a"), "b", "PC"));
+        assert!(!host_changed(Some("pc"), "PC", "PC"), "both this machine");
+        assert!(host_changed(Some("PC"), "b", "PC"));
+        let changes = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::HostChanged { .. })).collect::<Vec<_>>();
+        let mut s = Screen::new(40, 10);
+        s.feed(b"\x1b]1337;RemoteHost=u@a\x07");
+        assert!(changes(&mut s).is_empty(), "the first host is not a change");
+        s.feed(b"\x1b]1337;RemoteHost=u@a\x07\x1b]1337;RemoteHost=v@a\x07");
+        assert!(changes(&mut s).is_empty(), "same host, another user");
+        s.feed(b"\x1b]1337;RemoteHost=u@b\x07");
+        assert_eq!(changes(&mut s), vec![Request::HostChanged { fish: false }]);
+        let mut f = Screen::new(40, 10);
+        f.feed(b"\x1b]1337;ShellIntegrationVersion=5;shell=fish\x07\x1b]1337;RemoteHost=u@a\x07\x1b]1337;RemoteHost=u@b\x07");
+        assert_eq!(changes(&mut f), vec![Request::HostChanged { fish: true }]);
     }
 }

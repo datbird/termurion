@@ -18,7 +18,7 @@ use crate::menus::{self, Chord, Item};
 
 /// iTerm2's Session > Terminal State toggles: label, escape to turn on, escape to turn
 /// off, and the mode that shows the check mark.
-const TOGGLES: [(&str, &str, &str, TermMode); 6] = [
+pub(super) const TOGGLES: [(&str, &str, &str, TermMode); 6] = [
     ("Alternate Screen", "\x1b[?1049h", "\x1b[?1049l", TermMode::ALT_SCREEN),
     ("Focus Reporting", "\x1b[?1004h", "\x1b[?1004l", TermMode::FOCUS_IN_OUT),
     ("Mouse Reporting", "\x1b[?1000h", "\x1b[?1000l\x1b[?1002l\x1b[?1003l", TermMode::MOUSE_MODE),

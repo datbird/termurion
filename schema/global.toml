@@ -1327,6 +1327,30 @@ default = false
 help = "Suppress warning about copying a session's settings over a Profile"
 
 [[setting]]
+key = "NoSyncTurnOffFocusReportingOnHostChange"
+tab = "Advanced"
+section = "Warnings"
+label = "Always turn off focus reporting when host changes?"
+type = "bool"
+help = "Always turn off focus reporting when host changes?"
+
+[[setting]]
+key = "NoSyncTurnOffMouseReportingOnHostChange"
+tab = "Advanced"
+section = "Warnings"
+label = "Always turn off mouse reporting when host changes?"
+type = "bool"
+help = "Always turn off mouse reporting when host changes?"
+
+[[setting]]
+key = "NoSyncTurnOffBracketedPasteOnHostChange"
+tab = "Advanced"
+section = "Warnings"
+label = "Always turn off paste bracketing when host changes?"
+type = "bool"
+help = "Always turn off paste bracketing when host changes?"
+
+[[setting]]
 key = "NoSyncSuppressDownloadConfirmation"
 tab = "Advanced"
 section = "General"

@@ -295,6 +295,9 @@ pub enum Request {
     SetBadge(String),
     /// SetBadgeFormat with a function call: refused.
     BadgeRefused,
+    /// Shell integration reported another host (`marks::host_changed`); `fish` when the
+    /// session's shell is fish, whose paste bracketing is left alone.
+    HostChanged { fish: bool },
 }
 
 /// Key reporting and emulation chosen in Session > Terminal State.

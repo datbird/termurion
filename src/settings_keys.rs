@@ -2188,4 +2188,21 @@ mod tests {
             assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
         }
     }
+
+    /// The host change offers' rows are optional bools (`ASM:775-777`).
+    #[test]
+    fn host_rows_follow_iterm2() {
+        let rows = [
+            ("NoSyncTurnOffFocusReportingOnHostChange", "Always turn off focus reporting when host changes?"),
+            ("NoSyncTurnOffMouseReportingOnHostChange", "Always turn off mouse reporting when host changes?"),
+            ("NoSyncTurnOffBracketedPasteOnHostChange", "Always turn off paste bracketing when host changes?"),
+        ];
+        for (key, text) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
+            assert_eq!(s.default, None, "{key}");
+            assert!(s.optional_bool(), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
+        }
+    }
 }

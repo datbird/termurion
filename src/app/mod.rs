@@ -115,6 +115,7 @@ mod script_runtime_ui;
 mod scripts_alerts;
 mod warnings_app;
 mod suppressed_app;
+mod host_offers_ui;
 mod prefs_ui;
 mod settings_export_ui;
 mod ai_app;
