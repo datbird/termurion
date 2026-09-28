@@ -3,7 +3,8 @@
 //! bytes. Nothing is installed (ruling "14a probe"): a missing piece is BLOCKED. Run by hand:
 //! `cargo test --lib ssh_probe_win::tests::ssh_transport_probe -- --ignored --nocapture`; it
 //! writes tests/fixtures/ssh/. `pipes_investigation` is the measured matrix of pipe kinds and
-//! console flags behind the named-pipes transport.
+//! console flags behind the named-pipes variant, measured here beside ruling 1's transports as
+//! the ruling's evidence (it is not a production transport: `Probed::NamedPipes`).
 
 #[cfg(test)]
 mod tests {
@@ -17,6 +18,31 @@ mod tests {
     use std::process::{Child, Command, Output, Stdio};
     use std::sync::mpsc::{self, Receiver};
     use std::time::{Duration, Instant};
+
+    /// What the probe measures: ruling 1's transports, then the pipes investigation's overlapped
+    /// named pipes (ssh.exe's arguments as for pipes, two `-t`).
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Probed {
+        Ruled(Transport),
+        NamedPipes,
+    }
+
+    impl Probed {
+        fn label(self) -> &'static str {
+            match self {
+                Probed::Ruled(t) => label(t),
+                Probed::NamedPipes => "named-pipes",
+            }
+        }
+
+        /// The transport whose ssh.exe arguments this one uses.
+        fn args_as(self) -> Transport {
+            match self {
+                Probed::Ruled(t) => t,
+                Probed::NamedPipes => Transport::Pipes,
+            }
+        }
+    }
 
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -86,13 +112,15 @@ mod tests {
     }
 
     impl Conn {
-        fn start(t: Transport, api: &Api, args: &[String]) -> Result<Conn, String> {
-            match (conpty_flags(t), t) {
-                (Some(flags), _) => spawn_flags(api, &cmdline("ssh.exe", args), flags, 120, 40).map(Conn::Pty),
-                // Anonymous pipes as std makes them, no console (the brief's pipes).
-                (None, Transport::Pipes) => pipes_start(args, DETACHED_PROCESS, StdinKind::Anon, StdinKind::Anon).map(Conn::Pipes),
+        fn start(p: Probed, api: &Api, args: &[String]) -> Result<Conn, String> {
+            match p {
+                Probed::Ruled(t) => match conpty_flags(t) {
+                    Some(flags) => spawn_flags(api, &cmdline("ssh.exe", args), flags, 120, 40).map(Conn::Pty),
+                    // Anonymous pipes as std makes them, no console (the brief's pipes).
+                    None => pipes_start(args, DETACHED_PROCESS, StdinKind::Anon, StdinKind::Anon).map(Conn::Pipes),
+                },
                 // Overlapped named pipes both ways and a console with no window (the pipes investigation).
-                (None, _) => pipes_start(args, CREATE_NO_WINDOW, StdinKind::NamedOverlapped, StdinKind::NamedOverlapped).map(Conn::Pipes),
+                Probed::NamedPipes => pipes_start(args, CREATE_NO_WINDOW, StdinKind::NamedOverlapped, StdinKind::NamedOverlapped).map(Conn::Pipes),
             }
         }
 
@@ -181,10 +209,10 @@ mod tests {
         notes: Vec<String>,
     }
 
-    fn measure(t: Transport, api: &Api, key: &str, user: &str) -> Measured {
+    fn measure(t: Probed, api: &Api, key: &str, user: &str) -> Measured {
         let remote = vec!["sh".to_string(), format!("{WSL_DIR}/remote.sh")];
         let mut m = Measured { raw: Vec::new(), argv: Vec::new(), create: "ok".into(), exit: None, notes: Vec::new() };
-        let mut conn = match Conn::start(t, api, &ssh_args(t, key, user, &remote)) {
+        let mut conn = match Conn::start(t, api, &ssh_args(t.args_as(), key, user, &remote)) {
             Ok(c) => c,
             Err(e) => {
                 m.create = e;
@@ -212,7 +240,7 @@ mod tests {
         drain(&conn, all);
         drop(conn);
 
-        match Conn::start(t, api, &ssh_args(t, key, user, &argv_args())) {
+        match Conn::start(t, api, &ssh_args(t.args_as(), key, user, &argv_args())) {
             Ok(conn) => {
                 if !read_until_count(&conn, &mut m.argv, ARGV_SEEN, 1, secs(20)) {
                     m.notes.push("argv: no marker within 20 s".into());
@@ -687,7 +715,7 @@ mod tests {
     fn resize_variant(name: &str, key: &str, user: &str, flags: u32, count: Option<(u32, u32)>, sizing: Sizing) {
         const START: (i16, i16) = (100, 30);
         const LIVE: [(i16, i16); 2] = [(120, 40), (90, 25)];
-        let args = ssh_args(Transport::NamedPipes, key, user, &["sh".to_string(), format!("{WSL_DIR}/resize.sh")]);
+        let args = ssh_args(Probed::NamedPipes.args_as(), key, user, &["sh".to_string(), format!("{WSL_DIR}/resize.sh")]);
         let mut lines = vec![format!("RESIZE {name}:")];
         if sizing == Sizing::Own {
             unsafe {
@@ -772,7 +800,7 @@ mod tests {
         let sa = SECURITY_ATTRIBUTES { nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: std::ptr::null_mut(), bInheritHandle: 1 };
         let con = unsafe { CreateFileW(name.as_ptr(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, std::ptr::null_mut()) };
         assert_ne!(con, INVALID_HANDLE_VALUE, "CONOUT$");
-        let args = ssh_args(Transport::NamedPipes, key, user, &[format!("stty size > {file}")]);
+        let args = ssh_args(Probed::NamedPipes.args_as(), key, user, &[format!("stty size > {file}")]);
         let result = if stderr_only { raw_spawn(&args, 0, None, true, None, Some(con)) } else { raw_spawn(&args, 0, None, true, Some(con), None) }.map(|ssh| ssh.exit(secs(15)));
         unsafe {
             windows_sys::Win32::Foundation::CloseHandle(con);
@@ -852,16 +880,18 @@ mod tests {
         let shipped = conpty::load(&Source::Shipped(dev_vendor_dir())).unwrap();
         std::fs::create_dir_all("tests/fixtures/ssh").unwrap();
         let mut results = Vec::new();
-        for t in ORDER {
+        for t in ORDER.map(Probed::Ruled).into_iter().chain([Probed::NamedPipes]) {
             let m = measure(t, &shipped, &key, &user);
-            std::fs::write(format!("tests/fixtures/ssh/{}.bin", label(t)), &m.raw).unwrap();
-            std::fs::write(format!("tests/fixtures/ssh/argv-{}.bin", label(t)), &m.argv).unwrap();
+            std::fs::write(format!("tests/fixtures/ssh/{}.bin", t.label()), &m.raw).unwrap();
+            std::fs::write(format!("tests/fixtures/ssh/argv-{}.bin", t.label()), &m.argv).unwrap();
             let v = check(&m.raw);
             for n in &m.notes {
-                println!("NOTE {}: {n}", label(t));
+                println!("NOTE {}: {n}", t.label());
             }
-            println!("MEASURED {}: {v:?} argv {} create {} exit {:?}", label(t), argv_ok(&m.argv), m.create, m.exit);
-            results.push((t, v));
+            println!("MEASURED {}: {v:?} argv {} create {} exit {:?}", t.label(), argv_ok(&m.argv), m.create, m.exit);
+            if let Probed::Ruled(t) = t {
+                results.push((t, v));
+            }
         }
         println!("CHOSEN {}", choose(&results).map_or("none", label));
         // (9) Cleanup's Drop stops sshd and removes both folders.

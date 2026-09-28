@@ -448,7 +448,6 @@ mod tests {
         .map(String::from)
         .to_vec();
         assert_eq!(ssh_args(Transport::Pipes, r"C:\T\k", "rob", &remote), want);
-        assert_eq!(ssh_args(Transport::NamedPipes, r"C:\T\k", "rob", &remote), want);
         for t in [Transport::Conpty, Transport::Passthrough] {
             let got = ssh_args(t, r"C:\T\k", "rob", &remote);
             assert_eq!(got.iter().filter(|a| *a == "-t").count(), 1, "{t:?}");
@@ -487,23 +486,17 @@ mod tests {
     /// 9.5p2, sshd in WSL Ubuntu-Personal). Both ConPTY modes carry every piece but the main
     /// payload, whose invalid UTF-8 comes back as U+FFFD; pipes ends at once ("GetConsoleMode on
     /// console input handle failed with 6") and never forwards a byte on anonymous pipes. The pipes
-    /// investigation's named-pipes (overlapped named pipes both ways, a console with no window)
-    /// carries everything byte for byte; the remote pty is 0x0 and never resized (no console).
+    /// investigation's named pipes (overlapped named pipes both ways, a console with no window;
+    /// test-only evidence, not a transport) carry everything byte for byte; the remote pty is 0x0
+    /// and never resized (no console).
     #[test]
     fn probe_fixtures_follow_the_ruling() {
         let conpty_like = Verdict { dcs: true, output: false, side: true, order: true, ctrl_c: true, size_before: Some((40, 120)), size_after: Some((30, 100)) };
         type Fixture = (Transport, &'static [u8], &'static [u8], Verdict, bool);
-        let fixtures: [Fixture; 4] = [
+        let fixtures: [Fixture; 3] = [
             (Transport::Passthrough, include_bytes!("../tests/fixtures/ssh/passthrough.bin"), include_bytes!("../tests/fixtures/ssh/argv-passthrough.bin"), conpty_like.clone(), true),
             (Transport::Conpty, include_bytes!("../tests/fixtures/ssh/conpty.bin"), include_bytes!("../tests/fixtures/ssh/argv-conpty.bin"), conpty_like.clone(), true),
             (Transport::Pipes, include_bytes!("../tests/fixtures/ssh/pipes.bin"), include_bytes!("../tests/fixtures/ssh/argv-pipes.bin"), Verdict::default(), false),
-            (
-                Transport::NamedPipes,
-                include_bytes!("../tests/fixtures/ssh/named-pipes.bin"),
-                include_bytes!("../tests/fixtures/ssh/argv-named-pipes.bin"),
-                Verdict { dcs: true, output: true, side: true, order: true, ctrl_c: true, size_before: Some((0, 0)), size_after: Some((0, 0)) },
-                true,
-            ),
         ];
         let mut results = Vec::new();
         for (t, raw, argv, want, argv_want) in fixtures.clone() {
@@ -511,15 +504,20 @@ mod tests {
             assert_eq!(argv_ok(argv), argv_want, "{t:?}");
             results.push((t, check(raw)));
         }
-        assert_eq!(choose(&results[..3]), None, "ruling 1's three as the brief measured them");
-        assert_eq!(choose(&results), Some(Transport::NamedPipes), "the only byte-exact transport");
+        assert_eq!(choose(&results), None, "ruling 1's three as the brief measured them");
         // Ruling 1 (Robert): passthrough, accepting U+FFFD for invalid UTF-8 (pinned below) over
         // named pipes' 0x0 remote pty with no resize.
         assert_eq!(crate::ssh_transport::CHOSEN, Transport::Passthrough);
         assert!(results[0].1.dcs && results[0].1.side && results[0].1.order && results[0].1.ctrl_c && !results[0].1.output);
-        // named-pipes: nothing but the remote's own bytes, from the first byte on.
-        assert!(fixtures[3].1.starts_with(DCS_LINE));
-        assert_eq!(fixtures[3].2, ARGV_SEEN);
+        // The named pipes (evidence only): every check passes, and nothing but the remote's own
+        // bytes arrives, from the first byte on.
+        let named: &[u8] = include_bytes!("../tests/fixtures/ssh/named-pipes.bin");
+        let named_argv: &[u8] = include_bytes!("../tests/fixtures/ssh/argv-named-pipes.bin");
+        let named_verdict = check(named);
+        assert_eq!(named_verdict, Verdict { dcs: true, output: true, side: true, order: true, ctrl_c: true, size_before: Some((0, 0)), size_after: Some((0, 0)) });
+        assert!(named_verdict.passes());
+        assert!(named.starts_with(DCS_LINE));
+        assert_eq!(named_argv, ARGV_SEEN);
         // What ConPTY changed: only the invalid UTF-8, each bad byte turned into U+FFFD.
         let bad = b"\xc3\x28\xff";
         let at = find(&main_payload(), bad);

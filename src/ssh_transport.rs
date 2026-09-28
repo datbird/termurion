@@ -1,7 +1,8 @@
 //! How ssh.exe is connected to a pane for SSH integration (milestone 14a, ruling 1): the shipped
-//! ConPTY in passthrough mode, then normal ConPTY, then plain pipes, in that order, then the pipes
-//! investigation's overlapped named pipes. Task 1's probe (`ssh_probe_win`) measured which one
-//! carries iTerm2's protocol intact; `CHOSEN` is the transport ruled on those measurements.
+//! ConPTY in passthrough mode, then normal ConPTY, then plain pipes, in that order. Task 1's probe
+//! (`ssh_probe_win`) measured which one carries iTerm2's protocol intact; `CHOSEN` is the
+//! transport ruled on those measurements. The pipes investigation's overlapped named pipes are
+//! test-only evidence for the ruling (`ssh_probe_win`), not a transport.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Transport {
@@ -11,13 +12,10 @@ pub enum Transport {
     Conpty,
     /// ssh.exe on anonymous pipes, with no console (no resize).
     Pipes,
-    /// ssh.exe on overlapped named pipes both ways, in a console with no window (no resize). The
-    /// pipes investigation: OpenSSH for Windows stalls on anonymous (synchronous) pipes.
-    NamedPipes,
 }
 
-/// Ruling 1's order, then the pipes investigation's variant: the first that passes is used.
-pub const ORDER: [Transport; 4] = [Transport::Passthrough, Transport::Conpty, Transport::Pipes, Transport::NamedPipes];
+/// Ruling 1's order: the first that passes is used.
+pub const ORDER: [Transport; 3] = [Transport::Passthrough, Transport::Conpty, Transport::Pipes];
 
 /// `PSEUDOCONSOLE_PASSTHROUGH_MODE` in Windows Terminal's conpty.h.
 pub const PASSTHROUGH_FLAG: u32 = 0x8;
@@ -27,7 +25,7 @@ pub fn conpty_flags(t: Transport) -> Option<u32> {
     match t {
         Transport::Passthrough => Some(PASSTHROUGH_FLAG),
         Transport::Conpty => Some(0),
-        Transport::Pipes | Transport::NamedPipes => None,
+        Transport::Pipes => None,
     }
 }
 
@@ -36,7 +34,6 @@ pub fn label(t: Transport) -> &'static str {
         Transport::Passthrough => "passthrough",
         Transport::Conpty => "conpty",
         Transport::Pipes => "pipes",
-        Transport::NamedPipes => "named-pipes",
     }
 }
 
@@ -52,9 +49,9 @@ mod tests {
 
     #[test]
     fn transports_follow_the_ruling() {
-        assert_eq!(ORDER, [Transport::Passthrough, Transport::Conpty, Transport::Pipes, Transport::NamedPipes]);
+        assert_eq!(ORDER, [Transport::Passthrough, Transport::Conpty, Transport::Pipes]);
         assert_eq!(PASSTHROUGH_FLAG, 8);
-        assert_eq!(ORDER.map(conpty_flags), [Some(8), Some(0), None, None]);
-        assert_eq!(ORDER.map(label), ["passthrough", "conpty", "pipes", "named-pipes"]);
+        assert_eq!(ORDER.map(conpty_flags), [Some(8), Some(0), None]);
+        assert_eq!(ORDER.map(label), ["passthrough", "conpty", "pipes"]);
     }
 }
