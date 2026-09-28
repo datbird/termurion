@@ -141,7 +141,7 @@ impl App {
                         if let Some(w) = self.last_window {
                             self.enter(w);
                         }
-                        self.tabs.push(Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title: None });
+                        self.tabs.push(Tab::new(self.next_tab_id, Layout::new(id), id));
                         self.next_tab_id += 1;
                         self.active = self.tabs.len() - 1;
                     }
@@ -180,11 +180,14 @@ fn keep_held(tabs: Vec<(Tab, usize)>, held: &[PaneId]) -> Vec<(Tab, usize)> {
     tabs.into_iter()
         .filter_map(|(t, i)| {
             let tree = t.layout.tree().retain(&mut |id| held.contains(id))?;
-            let layout = Layout::from_tree(tree);
-            let panes = layout.panes();
-            let focused = if panes.contains(&t.focused) { t.focused } else { panes[0] };
-            let zoomed = t.zoomed.filter(|z| panes.contains(z));
-            Some((Tab { layout, focused, zoomed, ..t }, i))
+            let mut t = t;
+            t.layout = Layout::from_tree(tree);
+            let panes = t.layout.panes();
+            if !panes.contains(&t.focused) {
+                t.focused = panes[0];
+            }
+            t.zoomed = t.zoomed.filter(|z| panes.contains(z));
+            Some((t, i))
         })
         .collect()
 }
@@ -199,8 +202,9 @@ mod tests {
         // without it, and a tab of recordings only does not come back.
         let mut layout = Layout::new(1);
         layout.split(1, Axis::Row, 2);
-        let mixed = Tab { id: 7, layout, focused: 2, zoomed: Some(2), title: None };
-        let only = Tab { id: 8, layout: Layout::new(3), focused: 3, zoomed: None, title: None };
+        let mut mixed = Tab::new(7, layout, 2);
+        mixed.zoomed = Some(2);
+        let only = Tab::new(8, Layout::new(3), 3);
         let kept = keep_held(vec![(mixed, 0), (only, 1)], &[1]);
         assert_eq!(kept.len(), 1);
         let (t, i) = &kept[0];

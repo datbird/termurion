@@ -77,13 +77,13 @@ impl App {
                 self.relayout();
             }
             Restore::NewTab(_) => {
-                self.tabs.push(Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title: None });
+                self.tabs.push(Tab::new(self.next_tab_id, Layout::new(id), id));
                 self.next_tab_id += 1;
                 self.active = self.tabs.len() - 1;
                 self.relayout();
             }
             Restore::NewWindow => {
-                let tab = Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title: None };
+                let tab = Tab::new(self.next_tab_id, Layout::new(id), id);
                 self.next_tab_id += 1;
                 self.pending_windows.push(windows_ui::NewWindow::Tabs(vec![tab]));
             }
@@ -96,7 +96,7 @@ impl App {
         self.buried.take(id);
         self.menus_dirty = true;
         self.refresh_buried_menu();
-        self.tabs.push(Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title: None });
+        self.tabs.push(Tab::new(self.next_tab_id, Layout::new(id), id));
         self.next_tab_id += 1;
         self.active = self.tabs.len() - 1;
         self.relayout();

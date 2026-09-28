@@ -457,7 +457,7 @@ impl App {
         if let Some(p) = self.panes.get_mut(&id) {
             p.dvr = dvr;
         }
-        self.tabs.insert(0, Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title: None });
+        self.tabs.insert(0, Tab::new(self.next_tab_id, Layout::new(id), id));
         self.next_tab_id += 1;
         self.active = 0;
         self.relayout();

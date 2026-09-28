@@ -150,6 +150,17 @@ struct Tab {
     zoomed: Option<PaneId>,
     /// Edit Tab Title's text, instead of the session title.
     title: Option<String>,
+    /// Pinned tabs stay at the front of the bar (`PTS:355-416`).
+    pinned: bool,
+    /// The tab's group; its definition rides every member (`TABH:99-115`).
+    group: Option<crate::tab_groups::TabGroup>,
+}
+
+impl Tab {
+    /// A tab with no title, not pinned and in no group.
+    pub(super) fn new(id: u64, layout: Layout, focused: PaneId) -> Tab {
+        Tab { id, layout, focused, zoomed: None, title: None, pinned: false, group: None }
+    }
 }
 
 /// A press whose pointer binding runs when the button comes up.
@@ -2185,7 +2196,7 @@ impl App {
         }
         let area = self.content_area();
         if let Some(id) = self.start_pane(area, guid) {
-            self.tabs.push(Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title: None });
+            self.tabs.push(Tab::new(self.next_tab_id, Layout::new(id), id));
             self.next_tab_id += 1;
             self.active = self.tabs.len() - 1;
             self.relayout();

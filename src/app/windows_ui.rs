@@ -768,7 +768,7 @@ impl App {
             t.focused = t.layout.panes()[0];
             t.zoomed = None;
         }
-        let tab = Tab { id: self.next_tab_id, layout: Layout::new(pane), focused: pane, zoomed: None, title: None };
+        let tab = Tab::new(self.next_tab_id, Layout::new(pane), pane);
         self.next_tab_id += 1;
         self.pending_windows.push(NewWindow::Tab(tab));
         self.relayout();
@@ -788,7 +788,7 @@ impl App {
         }
         t.focused = t.layout.panes()[0];
         t.zoomed = None;
-        let tab = Tab { id: self.next_tab_id, layout: Layout::new(pane), focused: pane, zoomed: None, title: None };
+        let tab = Tab::new(self.next_tab_id, Layout::new(pane), pane);
         self.next_tab_id += 1;
         self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
@@ -1228,7 +1228,7 @@ mod tests {
     use super::*;
 
     fn tab(id: u64, pane: PaneId) -> Tab {
-        Tab { id, layout: Layout::new(pane), focused: pane, zoomed: None, title: None }
+        Tab::new(id, Layout::new(pane), pane)
     }
 
     #[test]

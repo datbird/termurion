@@ -193,7 +193,7 @@ impl App {
                     if let Some(p) = self.panes.get_mut(&id) {
                         p.jiggle();
                     }
-                    self.tabs.push(Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title: None });
+                    self.tabs.push(Tab::new(self.next_tab_id, Layout::new(id), id));
                     self.next_tab_id += 1;
                 }
                 Err(e) => self.banners.set("reattach", format!("A running shell could not be taken back: {e}")),

@@ -101,7 +101,7 @@ impl App {
             .map(|(n, (_, t, tree))| {
                 let active = tree.leaves().iter().position(|p| **p == t.focused);
                 let tree = tree.clone().map(&mut |id| self.session_value(id, contents));
-                arrangement::tab(arrangement::node_with_active(&tree, area.w as f64, area.h as f64, active), n == selected, t.title.as_deref())
+                arrangement::tab(arrangement::node_with_active(&tree, area.w as f64, area.h as f64, active), n == selected, t.title.as_deref(), t.pinned, t.group.as_ref())
             })
             .collect();
         let (x, y, w, h) = self.gpu.as_ref().map_or((0.0, 0.0, 0.0, 0.0), |g| {
@@ -326,7 +326,9 @@ impl App {
         let layout = Layout::from_tree(ids);
         let panes = layout.panes();
         let focused = arrangement::active_leaf(root).and_then(|i| panes.get(i).copied()).unwrap_or(panes[0]);
-        let tab = Tab { id: self.next_tab_id, layout, focused, zoomed: None, title: t.get("Title Override").and_then(|v| v.as_str()).map(str::to_string) };
+        let mut tab = Tab::new(self.next_tab_id, layout, focused);
+        tab.title = t.get("Title Override").and_then(|v| v.as_str()).map(str::to_string);
+        (tab.pinned, tab.group) = arrangement::tab_pin_group(t);
         self.next_tab_id += 1;
         Ok(tab)
     }

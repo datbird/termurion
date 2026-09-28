@@ -776,7 +776,8 @@ impl App {
             return self.api_tmux_window_opened(gw, window_id, None);
         };
         let focused = ids.get(&panes.first().map_or(0, |p| p.pane)).copied().unwrap_or(0);
-        let tab = Tab { id: self.next_tab_id, layout, focused, zoomed: None, title: Some(self.tmux_title(&window.name)) };
+        let mut tab = Tab::new(self.next_tab_id, layout, focused);
+        tab.title = Some(self.tmux_title(&window.name));
         self.next_tab_id += 1;
         // What was saved about this window: the tab's title and colors, its place, and the
         // Tandem window's size and origin.
@@ -875,7 +876,7 @@ impl App {
                 // Tandem shows none of this window's panes any more: it opens as a new tab.
                 None => {
                     let focused = layout.panes()[0];
-                    let tab = Tab { id: self.next_tab_id, layout, focused, zoomed: None, title: None };
+                    let tab = Tab::new(self.next_tab_id, layout, focused);
                     self.next_tab_id += 1;
                     self.pending_windows.push(windows_ui::NewWindow::Tabs(vec![tab]));
                 }
