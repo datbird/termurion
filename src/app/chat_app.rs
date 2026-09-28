@@ -435,8 +435,11 @@ impl Engine {
             fx.extend(Self::end_turn(cx, chat));
             return fx;
         };
-        let log = cx.store.messages(chat).unwrap_or_default();
-        let before: Vec<Message> = log.into_iter().take_while(|m| m.unique_id != user.unique_id).collect();
+        // The whole stored log but this message and the ones still queued behind it: a reply
+        // and tool rows stored while this message waited are part of its history (iTerm2's
+        // `historyExcluding`, `ChatService.swift:517-525`).
+        let queued = cx.broker.queued_ids(chat);
+        let before: Vec<Message> = cx.store.messages(chat).unwrap_or_default().into_iter().filter(|m| m.unique_id != user.unique_id && !queued.contains(&m.unique_id)).collect();
         // `ChatProviderBinding`: a chat is bound to its first model's provider.
         match &row.model_name {
             None => {
@@ -598,12 +601,17 @@ impl Engine {
             Ok(tool) => tool,
             Err(e) => return Self::continue_turn(cx, chat, ToolResult::Failed(e)),
         };
-        let request = Message::new(
-            chat,
-            Participant::Agent,
-            Content::RemoteCommandRequest { payload: Payload::Classic(RemoteCommand { llm_message: chat_agent::call_json(&call, id.as_ref()), call: tool }), safe: None },
-            cx.now,
-        );
+        // Reasoning that came before the call belongs to the call's message, not the next reply.
+        let reasoning = cx.agents.get_mut(chat).and_then(|a| a.reasoning.take());
+        let request = Message {
+            agent_reasoning: reasoning,
+            ..Message::new(
+                chat,
+                Participant::Agent,
+                Content::RemoteCommandRequest { payload: Payload::Classic(RemoteCommand { llm_message: chat_agent::call_json(&call, id.as_ref()), call: tool }), safe: None },
+                cx.now,
+            )
+        };
         Self::route(cx, chat, request)
     }
 
@@ -685,6 +693,13 @@ impl Engine {
     /// The one dispatch: the tool runs on the chat's pane (`performRemoteCommand`,
     /// `CC:204-231`), with its status notice, or for a command the executing bubble.
     fn run(cx: &mut Ctx, chat: &str, request_id: &str, guid: String, pane: PaneId, rc: RemoteCommand, send: Option<String>) -> Fx {
+        // Every dispatch passes the turn's gate here, whichever way it got here (the permission
+        // gate, a button, a session picker's answer): nothing runs while it is closed.
+        let Some(model) = cx.agents.get(chat).and_then(|a| a.model.clone()) else { return Vec::new() };
+        let endpoint = endpoint_of(&model);
+        if !chat_gate::gate_open(cx.globals, &endpoint) {
+            return Self::refuse(cx, chat, endpoint);
+        }
         if let Some(a) = cx.agents.get_mut(chat) {
             a.running = Some((request_id.to_string(), guid));
         }
@@ -762,8 +777,9 @@ impl Engine {
     /// A button on a parked request (`CVC:1826-1896`). The park runs only in the session it
     /// was asked for (minor m5), and only while the turn's gate is open (R13x8ai item 2).
     pub(super) fn answer_request(cx: &mut Ctx, chat: &str, request_id: &str, c: Choice) -> Fx {
-        let Some(park) = cx.agents.get_mut(chat).and_then(|a| a.take_park(request_id)) else { return Vec::new() };
+        // The row is read before the park is taken, so a failed read leaves the park to answer.
         let Some(row) = cx.store.chat(chat).ok().flatten() else { return Vec::new() };
+        let Some(park) = cx.agents.get_mut(chat).and_then(|a| a.take_park(request_id)) else { return Vec::new() };
         let category = park.call.category();
         let current = if category.is_browser() { row.browser_session_guid } else { row.terminal_session_guid };
         let live = current.and_then(|g| (cx.pane_of)(&g).map(|p| (g, p)));
@@ -787,11 +803,6 @@ impl Engine {
         }
         match c {
             Choice::AllowOnce | Choice::AlwaysAllow => {
-                let Some(model) = cx.agents.get(chat).and_then(|a| a.model.clone()) else { return Vec::new() };
-                let endpoint = endpoint_of(&model);
-                if !chat_gate::gate_open(cx.globals, &endpoint) {
-                    return Self::refuse(cx, chat, endpoint);
-                }
                 let rc = cx.store.message(request_id).ok().flatten().and_then(|m| classic(&m).cloned());
                 let rc = RemoteCommand { call: park.call, ..rc.unwrap_or(RemoteCommand { llm_message: serde_json::json!({}), call: Call::IsAtPrompt }) };
                 Self::run(cx, chat, request_id, guid, pane, rc, park.send)
@@ -993,7 +1004,8 @@ impl Engine {
         let mut fx = Vec::new();
         let chats: Vec<String> = cx.agents.keys().cloned().collect();
         for chat in chats {
-            let outs = cx.agents.get_mut(&chat).and_then(|a| a.driver.as_mut()).map(|d| d.poll()).unwrap_or_default();
+            let (g, endpoint) = (cx.globals, cx.agents.get(&chat).and_then(|a| a.model.as_ref()).map(endpoint_of));
+            let outs = cx.agents.get_mut(&chat).and_then(|a| a.driver.as_mut()).map(|d| d.poll(&mut || endpoint.as_ref().and_then(|e| chat_gate::pass(g, e)))).unwrap_or_default();
             fx.extend(Self::outs(cx, &chat, outs));
             let Some(model) = cx.agents.get(&chat).filter(|a| a.files.is_some()).and_then(|a| a.model.clone()) else { continue };
             let endpoint = files_endpoint(&model);
@@ -1420,9 +1432,15 @@ impl App {
     }
 
     /// Polls every chat's turn and file job (`chat_tick` runs it with the gate first).
-    #[allow(dead_code)] // `chat_tick` does this with the gate first; kept for 12d.
+    #[allow(dead_code)] // `chat_tick` does this; kept for 12d.
     pub(crate) fn ai_files_tick(&mut self) {
-        let fx = self.engine(|cx| Engine::poll(cx)).unwrap_or_default();
+        // The gate first, as `chat_tick` does: a closed gate stops the chat before it is polled.
+        let fx = self.engine(|cx| {
+            let mut fx = Engine::gate_tick(cx);
+            fx.extend(Engine::poll(cx));
+            fx
+        });
+        let fx = fx.unwrap_or_default();
         self.chat_apply(fx);
     }
 
@@ -1467,8 +1485,8 @@ impl TurnDriver for LiveTurn {
         self.runner.insert(runner).start(key.as_ref())
     }
 
-    fn poll(&mut self) -> Vec<Out> {
-        self.runner.as_mut().map(Runner::poll).unwrap_or_default()
+    fn poll(&mut self, pass: &mut dyn FnMut() -> Option<Passed>) -> Vec<Out> {
+        self.runner.as_mut().map(|r| r.poll_with(pass)).unwrap_or_default()
     }
 
     fn key_given(&mut self, key: Option<Secret>) -> Vec<Out> {
@@ -1756,7 +1774,7 @@ mod tests {
                 l.inputs.push(Started { messages: input.messages, tools: input.tools.iter().map(|t| t.name.clone()).collect(), hosted: input.hosted, should_think: input.should_think, effort: input.effort });
                 l.on_start.pop_front().unwrap_or_default()
             }
-            fn poll(&mut self) -> Vec<Out> {
+            fn poll(&mut self, _: &mut dyn FnMut() -> Option<Passed>) -> Vec<Out> {
                 let mut l = self.0.borrow_mut();
                 l.events.push(Ev::Poll);
                 l.on_poll.pop_front().unwrap_or_default()
@@ -2176,6 +2194,96 @@ mod tests {
             h.run(|cx| Engine::poll(cx));
             assert_eq!(h.count(&Ev::Start), 2);
             assert_eq!(h.log.borrow().inputs[1].messages.last(), Some(&crate::ai_msg::Message::text(Role::User, "b")));
+        }
+
+        #[test]
+        fn queued_turn_sees_the_running_turns_reply() {
+            // Task 11 review Important 1 (`historyExcluding`, `ChatService.swift:517-525`): the
+            // reply and the tool rows stored after "b" was queued belong to b's history.
+            let mut h = H::new();
+            let chat = h.chat(Some("7"));
+            h.script(vec![screen("c1")]);
+            h.set(&chat, "7", Category::ViewContents, Permission::Always);
+            let fx = h.say(&chat, "a");
+            let rid = run_ids(&fx)[0].0.clone();
+            h.say(&chat, "b");
+            h.after_tool(vec![Out::Choice("A-reply".into())]);
+            h.run(|cx| Engine::tool_finished(cx, &chat, &rid, ran("the screen", None)));
+            assert_eq!(h.count(&Ev::Start), 2);
+            let started = h.log.borrow();
+            let messages = &started.inputs[1].messages;
+            let has = |m: crate::ai_msg::Message| messages.contains(&m);
+            assert!(has(crate::ai_msg::Message::text(Role::User, "a")), "{messages:?}");
+            assert!(has(crate::ai_msg::Message::text(Role::Assistant, "A-reply")), "the previous reply: {messages:?}");
+            assert_eq!(messages.last(), Some(&crate::ai_msg::Message::text(Role::User, "b")));
+            assert_eq!(messages.iter().filter(|m| **m == crate::ai_msg::Message::text(Role::User, "b")).count(), 1, "the message itself only once");
+            let pos = |m: crate::ai_msg::Message| messages.iter().position(|x| *x == m);
+            assert!(pos(crate::ai_msg::Message::text(Role::User, "a")) < pos(crate::ai_msg::Message::text(Role::Assistant, "A-reply")));
+        }
+
+        #[test]
+        fn a_still_queued_message_stays_out_of_the_history() {
+            let mut h = H::new();
+            let chat = h.chat(Some("7"));
+            h.say(&chat, "a");
+            h.say(&chat, "b");
+            h.say(&chat, "c");
+            h.log.borrow_mut().on_poll.push_back(vec![Out::Choice("A".into())]);
+            h.run(|cx| Engine::poll(cx));
+            let started = h.log.borrow();
+            let messages = &started.inputs[1].messages;
+            assert_eq!(messages.last(), Some(&crate::ai_msg::Message::text(Role::User, "b")));
+            assert!(!messages.contains(&crate::ai_msg::Message::text(Role::User, "c")), "c is still queued: {messages:?}");
+        }
+
+        #[test]
+        fn the_picker_answer_needs_the_gate() {
+            // Task 11 review Minor 1: Link, Republish, route and checked reach `run` with no
+            // other gate check, so `run` checks it (ruling R12cd-1).
+            let mut h = H::new();
+            let chat = h.chat(None);
+            h.set(&chat, "7", Category::ViewContents, Permission::Always);
+            h.script(vec![screen("c1")]);
+            h.say(&chat, "hi");
+            let rid = h.requests(&chat)[0].unique_id.clone();
+            h.run(|cx| Engine::session_selected(cx, &chat, &rid, Some(7)));
+            h.relink(&chat, Some("7"));
+            h.off();
+            let fx = h.run(|cx| Engine::republish(cx, &chat, &rid));
+            assert!(run_ids(&fx).is_empty(), "nothing runs while the gate is closed: {fx:?}");
+            assert!(silent_refusal(&fx));
+            assert!(!h.in_turn(&chat));
+        }
+
+        #[test]
+        fn a_failed_row_read_keeps_the_park() {
+            // Task 11 review Minor 3: the park is taken only once the chat row is read.
+            let mut h = H::new();
+            let chat = h.chat(Some("7"));
+            h.script(vec![screen("c1")]);
+            h.say(&chat, "hi");
+            let rid = h.park_ids(&chat)[0].clone();
+            h.store.delete_chat(&chat).unwrap();
+            assert_eq!(h.run(|cx| Engine::answer_request(cx, &chat, &rid, Choice::AllowOnce)), vec![]);
+            assert_eq!(h.park_ids(&chat), vec![rid], "the park is still there to answer");
+        }
+
+        #[test]
+        fn reasoning_before_a_tool_call_stays_with_that_call() {
+            // Task 11 review Minor 5.
+            let mut h = H::new();
+            let chat = h.chat(Some("7"));
+            h.script(vec![Out::Reasoning("think".into()), screen("c1")]);
+            h.say(&chat, "hi");
+            let rid = h.park_ids(&chat)[0].clone();
+            h.set(&chat, "7", Category::ViewContents, Permission::Always);
+            h.after_tool(vec![Out::Delta("text".into()), Out::StreamEnd]);
+            h.run(|cx| Engine::answer_request(cx, &chat, &rid, Choice::AllowOnce));
+            h.run(|cx| Engine::tool_finished(cx, &chat, &rid, ran("s", None)));
+            let request = h.requests(&chat).remove(0);
+            assert_eq!(request.agent_reasoning.as_deref(), Some("think"), "the call's own message");
+            let reply = h.messages(&chat).into_iter().find(|m| matches!(m.content, Content::Markdown(_))).unwrap();
+            assert_eq!(reply.agent_reasoning, None, "not the next text reply");
         }
 
         #[test]

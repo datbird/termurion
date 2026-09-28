@@ -351,6 +351,12 @@ impl Broker {
         self.busy.remove(chat);
     }
 
+    /// The ids of the chat's messages still waiting for their turn (iTerm2's `historyExcluding`
+    /// leaves them out of a turn's history, `ChatService.swift:517-525`).
+    pub fn queued_ids(&self, chat: &str) -> Vec<String> {
+        self.queues.get(chat).map(|q| q.iter().map(|m| m.unique_id.clone()).collect()).unwrap_or_default()
+    }
+
     /// Drops the chat's queued messages; the running turn is its own (Stop,
     /// `ChatService.swift:307-321`).
     pub fn clear_queue(&mut self, chat: &str) {

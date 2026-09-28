@@ -11,6 +11,7 @@ use crate::ai_policy;
 use crate::ai_settings::{Api, Vendor};
 use crate::ai_transport::{self, Call, HttpEvent, Notify, Options, Transport};
 use crate::ai_turn::{self, error_reason, Build, Hosted, Key, Wire, APPLE_UNAVAILABLE, REVIEW_KEY};
+use crate::chat_gate::Passed;
 use crate::pwm::Secret;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -124,7 +125,7 @@ impl Tester {
     /// Starts the test with the vendor's stored key (`CT:36-80`): the review key wins over the
     /// placeholder policy; a private host gets the placeholder without a prompt; else the stored
     /// key, or `needs_key`. None while it runs or waits for a key.
-    pub fn start(&mut self, stored: Option<&Secret>) -> Option<Outcome> {
+    pub fn start(&mut self, _: Passed, stored: Option<&Secret>) -> Option<Outcome> {
         if self.started() {
             return None;
         }
@@ -148,7 +149,7 @@ impl Tester {
     }
 
     /// The key prompt's answer: None (or a blank key) cancels silently (`CT:69-72`).
-    pub fn key_given(&mut self, key: Option<Secret>) -> Option<Outcome> {
+    pub fn key_given(&mut self, _: Passed, key: Option<Secret>) -> Option<Outcome> {
         if self.needs_key().is_none() {
             return None;
         }
@@ -275,7 +276,7 @@ mod tests {
     #[track_caller]
     fn outcome(p: Probe, stored: Option<&Secret>, reply: Reply) -> (Outcome, Vec<HttpRequest>) {
         let (mut t, rec) = tester(p, vec![reply]);
-        let o = t.start(stored).or_else(|| t.poll()).expect("an outcome");
+        let o = t.start(Passed::for_test(), stored).or_else(|| t.poll()).expect("an outcome");
         (o, rec.requests())
     }
 
@@ -333,20 +334,20 @@ mod tests {
         // A URL with no host gets the vendor key, so the key comes first (`CT:59-80`), then the
         // URL check.
         let (mut t, rec) = tester(probe("not a url"), vec![]);
-        assert_eq!(t.start(None), None);
-        assert_eq!(t.key_given(Some(Secret::new("sk-a".into()))), Some(Outcome::Failure(BAD_URL.into())));
+        assert_eq!(t.start(Passed::for_test(), None), None);
+        assert_eq!(t.key_given(Passed::for_test(), Some(Secret::new("sk-a".into()))), Some(Outcome::Failure(BAD_URL.into())));
         assert!(rec.requests().is_empty());
 
         // An OpenAI host with no stored key asks for one.
         let (mut t, rec) = tester(probe(OPENAI), vec![Reply::ok(&[ANSWER])]);
-        assert_eq!(t.start(None), None);
+        assert_eq!(t.start(Passed::for_test(), None), None);
         assert_eq!(t.needs_key(), Some(Vendor::OpenAI));
         assert_eq!(t.poll(), None);
-        assert_eq!(t.key_given(None), Some(Outcome::Canceled));
+        assert_eq!(t.key_given(Passed::for_test(), None), Some(Outcome::Canceled));
         assert!(rec.requests().is_empty());
         let (mut t, rec) = tester(probe(OPENAI), vec![Reply::ok(&[ANSWER])]);
-        assert_eq!(t.start(Some(&Secret::new(" ".into()))), None, "a blank stored key is no key");
-        assert_eq!(t.key_given(Some(Secret::new("sk-typed".into()))), None);
+        assert_eq!(t.start(Passed::for_test(), Some(&Secret::new(" ".into()))), None, "a blank stored key is no key");
+        assert_eq!(t.key_given(Passed::for_test(), Some(Secret::new("sk-typed".into()))), None);
         assert_eq!(t.needs_key(), None);
         assert_eq!(t.poll(), Some(Outcome::Success(SUCCEEDED.into())));
         assert!(header(&rec.requests()[0], "Authorization") == Some("Bearer sk-typed"), "the typed key is sent");
@@ -357,7 +358,7 @@ mod tests {
         // The App Review key succeeds without a request, even for a private host.
         for url in [OPENAI, LOCAL] {
             let (mut t, rec) = tester(probe(url), vec![]);
-            assert_eq!(t.start(Some(&Secret::new(REVIEW_KEY.into()))), Some(Outcome::Success(PLACEHOLDER_IN_USE.into())));
+            assert_eq!(t.start(Passed::for_test(), Some(&Secret::new(REVIEW_KEY.into()))), Some(Outcome::Success(PLACEHOLDER_IN_USE.into())));
             assert!(rec.requests().is_empty());
         }
 

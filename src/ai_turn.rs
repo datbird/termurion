@@ -916,8 +916,17 @@ impl Runner {
         self.turn.cancel()
     }
 
-    /// Feeds the live call's events to the turn; never returns `Send`.
+    /// `poll_with` where every send is allowed (tests over a fake transport).
+    #[cfg(test)]
     pub fn poll(&mut self) -> Vec<Out> {
+        self.poll_with(&mut || Some(crate::chat_gate::Passed::for_test()))
+    }
+
+    /// Feeds the live call's events to the turn; never returns `Send`. The turn can ask for
+    /// another request while it reads one (the unknown-function re-ask), and each such send
+    /// spends a proof that the gate for the request's own endpoint is open (ruling R12cd-1);
+    /// with none the call is cancelled and the turn is over (`Out::Canceled`).
+    pub fn poll_with(&mut self, pass: &mut dyn FnMut() -> Option<crate::chat_gate::Passed>) -> Vec<Out> {
         let mut out = Vec::new();
         while let Some(event) = self.call.as_mut().and_then(|c| c.try_event()) {
             let done = matches!(event, HttpEvent::Done { .. });
@@ -926,7 +935,26 @@ impl Runner {
                 self.call = None;
             }
             let outs = self.turn.http(event);
-            out.extend(self.route(outs));
+            let mut kept = Vec::new();
+            for o in outs {
+                match o {
+                    Out::Send(request) => match pass() {
+                        Some(_) => self.send(request),
+                        None => {
+                            if let Some(mut call) = self.call.take() {
+                                call.cancel();
+                            }
+                            // Nothing was sent, so nothing "will send" either.
+                            kept.retain(|o| *o != Out::WillSend);
+                            kept.push(Out::Canceled);
+                            out.extend(kept);
+                            return out;
+                        }
+                    },
+                    other => kept.push(other),
+                }
+            }
+            out.extend(kept);
             // A call the turn no longer reads (a tool runs, or it failed) stops.
             if !done && !self.turn.waiting_for_http() {
                 if let Some(mut call) = self.call.take() {
@@ -1803,6 +1831,15 @@ mod tests {
         assert_eq!((rec.cancels(), rec.requests().len()), (1, 2));
         assert_eq!(last(&seen).messages.last().and_then(Message::content).as_deref(), Some(UNKNOWN_FUNCTION));
         assert!(r.turn().is_idle());
+
+        // The same re-ask with the gate closed (ruling R12cd-1): no second request, the turn is
+        // over, and the first stream is cancelled.
+        let (t, _) = turn_of(input(openai(), true));
+        let (mut r, rec) = runner(t, vec![Reply::ok(&[first.as_bytes()]), Reply::ok(&[sse(&[&text("ok")]).as_bytes()])]);
+        assert_eq!(r.start(Some(&key("sk-a"))), [Out::WillSend]);
+        assert_eq!(r.poll_with(&mut || None), [Out::Canceled]);
+        assert_eq!(rec.requests().len(), 1, "the re-ask was never sent");
+        assert!(rec.cancels() >= 1);
     }
 
     #[test]

@@ -124,13 +124,14 @@ pub(super) fn start_run(model: Model, endpoint: Endpoint, msgs: Vec<WireMessage>
 
 /// One step of a running check: the gate is asked again first (a closed gate cancels the
 /// request and the check ends unsafe, ruling R12cd-1), then the transport is polled.
-pub(super) fn advance(state: CheckState, gate_open_now: impl FnOnce(&Endpoint) -> bool) -> CheckState {
+pub(super) fn advance(state: CheckState, mut pass: impl FnMut(&Endpoint) -> Option<crate::chat_gate::Passed>) -> CheckState {
     let CheckState::Running(mut runner, endpoint) = state else { return state };
-    if !gate_open_now(&endpoint) {
+    if pass(&endpoint).is_none() {
         runner.cancel();
         return CheckState::Done(Some(false));
     }
-    match verdict(None, reply_of(&runner.poll())) {
+    // Any send the turn makes while it reads spends a proof of its own.
+    match verdict(None, reply_of(&runner.poll_with(&mut || pass(&endpoint)))) {
         Some(v) => CheckState::Done(Some(v)),
         None => CheckState::Running(runner, endpoint),
     }
@@ -223,7 +224,7 @@ impl super::App {
         let mut ready = Vec::new();
         for id in ids {
             let Some(mut check) = self.ai_checks.remove(&id) else { continue };
-            check.state = advance(std::mem::replace(&mut check.state, CheckState::Nag), |e| gate_open(&self.globals, e));
+            check.state = advance(std::mem::replace(&mut check.state, CheckState::Nag), |e| crate::chat_gate::pass(&self.globals, e));
             match check.state {
                 CheckState::Done(safe) => ready.push((check.chat, check.request, check.send, safe)),
                 _ => {
@@ -364,7 +365,7 @@ mod tests {
         let msgs = messages(&[Entry::UserText("please list".into())], "rm x");
         let key = key.map(|k| Secret::new(k.to_string()));
         let started = start_run(m.clone(), endpoint_of(&m), msgs, wire, rec.clone(), Options { idle: std::time::Duration::ZERO, proxy: Proxy::Off }, Arc::new(|| {}), key.as_ref());
-        (advance(started, |_| gate), rec)
+        (advance(started, |_| gate.then(crate::chat_gate::Passed::for_test)), rec)
     }
 
     fn done(s: &CheckState) -> Option<Option<bool>> {

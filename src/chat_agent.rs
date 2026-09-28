@@ -284,7 +284,9 @@ pub struct Park {
 /// A chat turn's requests (ruling R12cd-4); the App's wraps 12b's `Runner`.
 pub trait TurnDriver {
     fn start(&mut self, input: TurnInput) -> Vec<Out>;
-    fn poll(&mut self) -> Vec<Out>;
+    /// Reads what arrived; a request the turn sends while reading (the unknown-function
+    /// re-ask) spends one proof from `pass`, and none ends the turn (ruling R12cd-1).
+    fn poll(&mut self, pass: &mut dyn FnMut() -> Option<crate::chat_gate::Passed>) -> Vec<Out>;
     fn key_given(&mut self, key: Option<Secret>) -> Vec<Out>;
     fn tool_done(&mut self, r: ToolResult) -> Vec<Out>;
     fn cancel(&mut self) -> Vec<Out>;

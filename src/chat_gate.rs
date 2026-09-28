@@ -32,6 +32,14 @@ pub fn gate_open(g: &Globals, e: &Endpoint) -> bool {
 #[derive(Debug)]
 pub struct Passed(());
 
+impl Passed {
+    /// A proof for a test that drives a transport with no gate in front of it.
+    #[cfg(test)]
+    pub fn for_test() -> Passed {
+        Passed(())
+    }
+}
+
 /// `gate_open` as a proof to spend on one send.
 pub fn pass(g: &Globals, e: &Endpoint) -> Option<Passed> {
     gate_open(g, e).then_some(Passed(()))

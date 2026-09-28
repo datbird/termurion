@@ -491,7 +491,7 @@ pub fn test_click(g: &Globals, form: &EditorForm, found: &Discovered) -> Result<
 /// stored key, asks the App for a key when one is needed, takes the prompt's answer, polls, and
 /// shows the outcome over the editor ("Connection Succeeded" or "Connection Failed"; nothing
 /// when the key prompt was refused). Closing the editor drops the test.
-fn drive_test(st: &mut State, now: u64) {
+fn drive_test(st: &mut State, g: &Globals, now: u64) {
     let Some(t) = st.tester.as_mut() else {
         // A key answered after its test ended is never used by a later one.
         st.test_key = None;
@@ -507,15 +507,28 @@ fn drive_test(st: &mut State, now: u64) {
         if st.pending.is_some() {
             return;
         }
-        let vendor = tc::endpoint(t.probe()).vendor;
-        let stored = keys().get(vendor, &mut *ai_keys::system_store());
-        let o = t.start(stored.as_ref());
+        let endpoint = tc::endpoint(t.probe());
+        // The gate was checked when the test was pressed; it is asked again just before the
+        // test's request is sent (12b final Minor 2), and a closed gate ends the test unsent.
+        let Some(proof) = crate::chat_gate::pass(g, &endpoint) else {
+            st.tester = None;
+            e.testing = false;
+            return;
+        };
+        let stored = keys().get(endpoint.vendor, &mut *ai_keys::system_store());
+        let o = t.start(proof, stored.as_ref());
         if let Some(v) = t.needs_key() {
             st.pending = Some(AiRequest::AskKey(v, tc::endpoint(t.probe())));
         }
         o
     } else if t.needs_key().is_some() {
-        st.test_key.take().and_then(|k| t.key_given(k))
+        let Some(proof) = crate::chat_gate::pass(g, &tc::endpoint(t.probe())) else {
+            st.tester = None;
+            st.test_key = None;
+            e.testing = false;
+            return;
+        };
+        st.test_key.take().and_then(|k| t.key_given(proof, k))
     } else {
         t.poll()
     };
@@ -772,7 +785,7 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
         }
         st.pending = Some(request);
     }
-    drive_test(st, now);
+    drive_test(st, g, now);
     if let Some(p) = &st.probing {
         let canceled = probe_modal(ui.ctx(), p.opened);
         let answer = if canceled { Some(Probe::Restore) } else { st.probe.take().map(|o| ad::probe_outcome(&o, false)) };
@@ -1685,7 +1698,7 @@ mod tests {
         let mut s = State::default();
         s.tester = Some(Tester::new(probe, wire, std::sync::Arc::new(Recorded::new(Vec::new())), options, std::sync::Arc::new(|| {})));
         assert!(s.busy(), "a built test draws until it answers");
-        assert_eq!(s.tester.as_mut().map(|t| t.start(None)), Some(None));
+        assert_eq!(s.tester.as_mut().map(|t| t.start(crate::chat_gate::Passed::for_test(), None)), Some(None));
         assert_eq!(s.tester.as_ref().and_then(Tester::needs_key), Some(Vendor::OpenAI));
         assert!(!s.busy(), "waiting for the key does not repaint");
         let mut e = Editor::new(manual("m", "https://api.openai.com/v1/responses", 0), None, bundled(), 0);
