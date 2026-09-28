@@ -493,7 +493,7 @@ mod tests {
         let config = &got[0].1[0];
         assert_eq!(config["api"].as_integer(), Some(7));
         assert_eq!(config["streaming"].as_bool(), Some(true));
-        for key in ["EnableAI", "AICompletions", "NoSyncAIRequestConsent"] {
+        for key in ["EnableAI", "AICompletions", "NoSyncAIRequestConsent", "NoSyncAutoProvideConsent"] {
             assert!(crate::ai_settings::guards_consent(key), "{key}");
         }
     }

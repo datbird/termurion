@@ -89,7 +89,11 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         let Some(alert) = self.ai_asks.pop_front() else { return };
         match ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &alert.heading, &alert.text, &alert.buttons, alert.silence.is_some().then_some(ConfirmWindow::SUPPRESS), &[], false, false) {
-            Ok(w) => self.ai_alert = Some((w, alert)),
+            Ok(mut w) => {
+                // An alert that names its refusing button makes a close and Escape answer it.
+                w.close_with(alert.close);
+                self.ai_alert = Some((w, alert));
+            }
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
     }
@@ -292,6 +296,13 @@ impl App {
             Then::Reveal => {
                 if index == 0 {
                     self.ai_reveal = Some(SubTab::General);
+                }
+            }
+            // Turn On writes Granted; Not Now (also a close or Escape) writes nothing.
+            Then::AutoProvide => {
+                if let Some(consent) = crate::ai_context::consent_answer(index) {
+                    self.globals.set(crate::ai_context::CONSENT_KEY, toml::Value::Integer(consent.raw()));
+                    self.save_globals();
                 }
             }
             Then::Grant(host) => {

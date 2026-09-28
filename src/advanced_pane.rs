@@ -342,6 +342,7 @@ mod tests {
             ("HotkeyMigratedFromSingleToMulti", "Hotkey", Kind::Bool, bool(false)),
             ("NoSyncSuppressedAlertsCatalog", "Warnings", Kind::Dict, Some(toml::Value::Table(toml::Table::new()))),
             ("NoSyncAppSupportMoved", "Warnings", Kind::Bool, bool(false)),
+            ("NoSyncAutoProvideConsent", "AI", Kind::Int, int(0)),
         ];
         for (key, section, kind, default) in &expect {
             let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));

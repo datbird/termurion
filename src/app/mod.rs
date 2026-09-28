@@ -828,6 +828,12 @@ pub struct App {
     /// R12cd-2), app-wide, the one accumulator 12f's orchestration typing shares.
     #[allow(dead_code)] // Read by the tool arms `ai_run_tool` (Task 11) reaches.
     ai_staged: HashMap<PaneId, crate::ai_actions::Staged>,
+    /// The "Share Terminal Contents Automatically?" question was asked this launch (once per
+    /// launch, `didAskAutoProvideConsentThisSession`), app-wide.
+    ai_consent_asked: bool,
+    /// Each chat's last screen a request really carried (`lastAutoProvidedScreen`), keyed by
+    /// chat id, app-wide.
+    ai_watermarks: HashMap<String, crate::ai_context::Watermark>,
     /// The command the model is running on each pane; `ai_exec_tick` finds its end.
     ai_execs: HashMap<PaneId, crate::ai_exec::Running>,
     /// (chat, request id) of commands a newer command replaced, answered by `ai_exec_tick`.
@@ -1403,6 +1409,8 @@ pub fn run() {
         chat_broker: crate::chat_broker::Broker::new(),
         ai_overrides: crate::ai_permissions::Overrides::default(),
         ai_staged: HashMap::new(),
+        ai_consent_asked: false,
+        ai_watermarks: HashMap::new(),
         ai_execs: HashMap::new(),
         ai_exec_canceled: Vec::new(),
         ai_helps: HashMap::new(),

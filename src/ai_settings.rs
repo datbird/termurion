@@ -187,7 +187,7 @@ pub fn allowed(g: &Globals) -> bool {
 /// Setting, SetPreference, Import from iTerm2 and every settings load (a custom folder or URL,
 /// Import All) refuse, so none of them can bypass consent.
 pub fn guards_consent(key: &str) -> bool {
-    [ADMIN, ENABLE_AI, AI_COMPLETIONS, CONSENT].contains(&key) || PERMISSIONS.iter().any(|(k, _)| *k == key)
+    [ADMIN, ENABLE_AI, AI_COMPLETIONS, CONSENT, crate::ai_context::CONSENT_KEY].contains(&key) || PERMISSIONS.iter().any(|(k, _)| *k == key)
 }
 
 /// Whether Toggle Setting may flip this key: the consent switches (`guards_consent`) are never
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn toggle_setting_never_reaches_ai_consent() {
-        for key in [ADMIN, ENABLE_AI, AI_COMPLETIONS, CONSENT] {
+        for key in [ADMIN, ENABLE_AI, AI_COMPLETIONS, CONSENT, crate::ai_context::CONSENT_KEY] {
             assert!(!toggle_allowed(key), "{key}");
         }
         for (key, _) in PERMISSIONS {

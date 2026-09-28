@@ -163,7 +163,7 @@ impl App {
                 }
                 Err(_) => {
                     self.chat_db_failed = true;
-                    self.ask_ai(Alert { heading: OPEN_FAILED_HEADING.to_string(), text: OPEN_FAILED.to_string(), buttons: vec!["OK"], silence: None, then: Then::Nothing, gate: false });
+                    self.ask_ai(Alert { heading: OPEN_FAILED_HEADING.to_string(), text: OPEN_FAILED.to_string(), buttons: vec!["OK"], silence: None, then: Then::Nothing, gate: false, close: None });
                 }
             }
         }
@@ -229,7 +229,7 @@ impl App {
         let Some(db) = self.chat_db.as_mut() else { return };
         let Some((row, saved)) = set_permission_in(db, &mut self.ai_overrides, Key { chat: chat.to_string(), guid: guid.to_string(), category: c }, p) else { return };
         if !saved {
-            self.ask_ai(Alert { heading: OPEN_FAILED_HEADING.to_string(), text: ai_permissions::NOT_SAVED.to_string(), buttons: vec!["OK"], silence: None, then: Then::Nothing, gate: false });
+            self.ask_ai(Alert { heading: OPEN_FAILED_HEADING.to_string(), text: ai_permissions::NOT_SAVED.to_string(), buttons: vec!["OK"], silence: None, then: Then::Nothing, gate: false, close: None });
         }
         let allowed = self.ai_allowed(&row);
         // `shouldShareTerminalStateAutomatically`: a live linked terminal at Always.
@@ -242,6 +242,39 @@ impl App {
         let set = ai_permissions::published_set(&allowed, check_state_always);
         // iTerm2 logs a failure here (`ChatViewController.swift:1195-1203`).
         let _ = self.chat_publish(chat, Message::new(chat, Participant::User, Content::SetPermissions(set), unix_now()), false);
+    }
+
+    /// The volatile context block for `chat`'s next request (`autoProvidedContext`,
+    /// `ChatAgent.swift:1051-1112`): its linked terminal's state and visible screen when the
+    /// chat's permissions are Always and the person consented. Only a session-bound chat whose
+    /// linked pane is alive gets one. Never stored or published. With `commit` false it is a
+    /// budgeting peek: the watermark stays and no question shows; with `commit` true a turn that
+    /// wanted the block without consent asks once per launch and goes without it.
+    #[allow(dead_code)] // Called by the agent (Task 11).
+    pub(crate) fn ai_volatile_context(&mut self, chat: &Chat, commit: bool) -> Option<String> {
+        let guid = chat.terminal_session_guid.as_deref()?;
+        // A guid that is not a live pane's id is no linked terminal (`ai_set_permission`).
+        let pane = guid.parse::<crate::layout::PaneId>().ok().filter(|id| id.to_string() == guid && self.panes.contains_key(id))?;
+        let global = |c: Category| self.ai_global_permission(c);
+        let wants = crate::ai_context::wants(self.ai_overrides.get(&chat.id, guid, Category::CheckTerminalState, &global), self.ai_overrides.get(&chat.id, guid, Category::ViewContents, &global), true);
+        let consent = crate::ai_context::Consent::from_global(self.globals.int(crate::ai_context::CONSENT_KEY));
+        if crate::ai_context::should_ask(wants, consent, self.ai_consent_asked) && commit {
+            self.ai_consent_asked = true;
+            self.ask_ai(crate::ai_gate::auto_provide_alert());
+        }
+        if !(wants.state || wants.screen) || consent != crate::ai_context::Consent::Granted {
+            return None;
+        }
+        let facts = self.ai_facts(pane, &crate::ai_tools::Call::GetTerminalSize);
+        let state = crate::ai_context::ai_state(&facts, facts.last_exit.flatten());
+        let screen = {
+            use alacritty_terminal::grid::Dimensions;
+            let s = self.panes.get(&pane)?.own();
+            let rows = s.term().grid().screen_lines() as i32;
+            s.marked_text(0, rows - 1, true)
+        };
+        let mark = self.ai_watermarks.entry(chat.id.clone()).or_default();
+        crate::ai_context::block(wants, consent, &state, &screen, mark, commit)
     }
 
     /// The chats' part of the loop; answers when it next needs to run. The agents, their

@@ -341,6 +341,7 @@ pub mod ai_gate;
 pub mod ai_prompts;
 pub mod ai_permissions;
 pub mod ai_tools;
+pub mod ai_context;
 pub mod ai_screen;
 pub mod ai_terminal;
 pub mod ai_shell;

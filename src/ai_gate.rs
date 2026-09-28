@@ -101,6 +101,8 @@ pub enum Then {
     Reveal,
     /// The first button allows requests to this host.
     Grant(String),
+    /// The first button turns on automatic sharing of terminal contents (Task 8).
+    AutoProvide,
 }
 
 /// One AI alert for `App::ask_ai`. `silence` is a permanent-silence key (the `scripts_alerts`
@@ -115,6 +117,11 @@ pub struct Alert {
     pub then: Then,
     /// Set only by `alert`: this is one of the gate's alerts (`is_gate`), whatever its words.
     pub gate: bool,
+    /// The label of the button a window close (X, Alt+F4) and Escape answer, when the alert
+    /// names one (`prompt_ui::escape_index`). None keeps the button labeled "Cancel", else the
+    /// first. A consent question with no "Cancel" button names its refusing button here, so
+    /// closing it can never grant.
+    pub close: Option<&'static str>,
 }
 
 pub const FEATURE_UNAVAILABLE: &str = "Feature Unavailable";
@@ -138,7 +145,7 @@ pub fn consent_text(provider: &str, host: &str) -> String {
 
 /// The alert the gate shows for a refusal (`GK:23-99`); None for Pass.
 pub fn alert(c: &Check) -> Option<Alert> {
-    let plain = |text: &str, buttons: Vec<&'static str>, then| Alert { heading: FEATURE_UNAVAILABLE.to_string(), text: text.to_string(), buttons, silence: None, then, gate: true };
+    let plain = |text: &str, buttons: Vec<&'static str>, then| Alert { heading: FEATURE_UNAVAILABLE.to_string(), text: text.to_string(), buttons, silence: None, then, gate: true, close: None };
     match c {
         Check::Pass => None,
         Check::AdminOff => Some(plain(ADMIN_OFF, vec![OK], Then::Nothing)),
@@ -151,8 +158,18 @@ pub fn alert(c: &Check) -> Option<Alert> {
             silence: None,
             then: Then::Grant(host.clone()),
             gate: true,
+            close: None,
         }),
     }
+}
+
+/// "Share Terminal Contents Automatically?" (`ChatAgent.swift:1125-1137`): Turn On, Not Now.
+/// Not a gate alert. A close (X, Alt+F4) and Escape answer Not Now, never Turn On (ruling: a
+/// consent question is refused by a close, as 13b's are); the alert names its refusing button
+/// itself because it has no button labeled "Cancel".
+pub fn auto_provide_alert() -> Alert {
+    use crate::ai_context::{CONSENT_HEADING, CONSENT_TEXT, NOT_NOW, TURN_ON};
+    Alert { heading: CONSENT_HEADING.to_string(), text: CONSENT_TEXT.to_string(), buttons: vec![TURN_ON, NOT_NOW], silence: None, then: Then::AutoProvide, gate: false, close: Some(NOT_NOW) }
 }
 
 /// Whether an alert is one of the gate's (so `App::ai_check` queues at most one at a time),
@@ -249,7 +266,8 @@ mod tests {
                 buttons: vec!["OK"],
                 silence: None,
                 then: Then::Nothing,
-                gate: true
+                gate: true,
+                close: None
             }
         );
         let a = alert(&Check::AiOff).expect("an alert");
@@ -261,7 +279,8 @@ mod tests {
                 buttons: vec!["Reveal", "Cancel"],
                 silence: None,
                 then: Then::Reveal,
-                gate: true
+                gate: true,
+                close: None
             }
         );
         let a = alert(&Check::NoEndpoint).expect("an alert");
@@ -273,7 +292,8 @@ mod tests {
                 buttons: vec!["Reveal", "Cancel"],
                 silence: None,
                 then: Then::Reveal,
-                gate: true
+                gate: true,
+                close: None
             }
         );
         let a = alert(&needs("OpenAI", "api.openai.com")).expect("an alert");
@@ -285,7 +305,8 @@ mod tests {
                 buttons: vec!["Allow", "Cancel"],
                 silence: None,
                 then: Then::Grant("api.openai.com".into()),
-                gate: true
+                gate: true,
+                close: None
             }
         );
         for c in [Check::AdminOff, Check::AiOff, Check::NoEndpoint, needs("Anthropic", "api.anthropic.com")] {
@@ -298,7 +319,7 @@ mod tests {
         for c in [Check::AdminOff, Check::AiOff, Check::NoEndpoint, needs("Anthropic", "api.anthropic.com")] {
             assert!(is_gate(&alert(&c).expect("an alert")), "{c:?}");
         }
-        let other = Alert { heading: "AI Error".into(), text: "x".into(), buttons: vec!["OK"], silence: None, then: Then::Nothing, gate: false };
+        let other = Alert { heading: "AI Error".into(), text: "x".into(), buttons: vec!["OK"], silence: None, then: Then::Nothing, gate: false, close: None };
         assert!(!is_gate(&other));
         let reveal_elsewhere = Alert { then: Then::Reveal, ..other.clone() };
         assert!(!is_gate(&reveal_elsewhere), "a later plan's alert may reveal Settings too");
@@ -309,6 +330,32 @@ mod tests {
         }
         let grant_elsewhere = Alert { then: Then::Grant("h".into()), ..other };
         assert!(!is_gate(&grant_elsewhere));
+    }
+
+    #[test]
+    fn auto_provide_alert_follows_iterm2() {
+        let a = auto_provide_alert();
+        assert_eq!(a.heading, crate::ai_context::CONSENT_HEADING);
+        assert_eq!(a.text, crate::ai_context::CONSENT_TEXT);
+        assert_eq!(a.buttons, vec!["Turn On", "Not Now"]);
+        assert_eq!((a.then.clone(), a.silence.clone(), a.gate), (Then::AutoProvide, None, false));
+        assert_eq!(a.close, Some("Not Now"));
+        assert!(a.buttons.contains(&a.close.expect("a close label")), "the close label is one of the buttons");
+    }
+
+    /// The consent's close answer is Not Now (never Turn On), by an explicit label, and the
+    /// gate's own alerts keep their Cancel.
+    #[cfg(windows)]
+    #[test]
+    fn closing_the_auto_provide_question_answers_not_now() {
+        let a = auto_provide_alert();
+        let i = crate::prompt_ui::close_index_with(&a.buttons, a.close);
+        assert_eq!(a.buttons[i], "Not Now");
+        assert_ne!(i, 0, "the first button turns sharing on");
+        assert_eq!(crate::prompt_ui::escape_index(&a.buttons, a.close), Some(i), "Escape answers the same");
+        let g = alert(&needs("OpenAI", "api.openai.com")).expect("the consent alert");
+        assert_eq!(g.close, None);
+        assert_eq!(g.buttons[crate::prompt_ui::close_index_with(&g.buttons, g.close)], CANCEL, "the gate's close answer is unchanged");
     }
 
     /// Milestone 13b's rule for consent questions: closing one with the title bar X or Alt+F4
