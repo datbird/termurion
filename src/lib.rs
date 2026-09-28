@@ -353,6 +353,7 @@ pub mod chat_message;
 pub mod chat_store;
 pub mod chat_broker;
 pub mod chat_gate;
+pub mod chat_agent;
 pub mod settings_ai;
 pub mod secret_field;
 #[cfg(windows)]

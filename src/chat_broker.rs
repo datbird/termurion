@@ -351,6 +351,12 @@ impl Broker {
         self.busy.remove(chat);
     }
 
+    /// Drops the chat's queued messages; the running turn is its own (Stop,
+    /// `ChatService.swift:307-321`).
+    pub fn clear_queue(&mut self, chat: &str) {
+        self.queues.remove(chat);
+    }
+
     /// Everything the broker holds for a deleted chat.
     pub fn forget(&mut self, chat: &str) {
         self.newest.remove(chat);
@@ -404,7 +410,7 @@ fn is_status(part: &Subpart) -> bool {
 /// `removeReasoningStatusSubparts` (`Message.swift:589-625`): a multipart body without its
 /// status updates; None for other bodies. The reasoning is not harvested into
 /// `agentReasoning` here: 12b's turn reports it whole as `Out::Reasoning`, which the agent
-/// stores (Task 11), so harvesting too would store it twice (Decision).
+/// stores (`Engine`), so harvesting too would store it twice (Decision).
 fn without_status(c: &Content) -> Option<Content> {
     match c {
         Content::Multipart { parts, vector_store_id } => {

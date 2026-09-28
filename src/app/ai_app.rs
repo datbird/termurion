@@ -16,14 +16,18 @@ use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 use crate::pwm::Secret;
 use crate::settings_ai::{AiRequest, SubTab};
 
-/// What a given or refused key continues (ruling 12e-1). 12c adds `Turn(String)`, 12e
-/// `Run(u64)`, `Codecierge(String)` and `Explain`, each with its arm in `App::ai_key_given`.
+/// What a given or refused key continues (ruling 12e-1). 12e adds `Run(u64)`,
+/// `Codecierge(String)` and `Explain`, each with its arm in `App::ai_key_given`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum KeyThen {
     #[allow(dead_code)] // Later callers that only store the key.
     Nothing,
     /// The settings window's model editor runs Test Connection.
     TestConnection,
+    /// A chat turn (the chat id) continues with the key (minor m4).
+    Turn(String),
+    /// A chat's vector-store job (the chat id) starts again with the key (minor m4).
+    Files(String),
 }
 
 impl App {
@@ -192,6 +196,8 @@ impl App {
                     s.request_redraw();
                 }
             }
+            KeyThen::Turn(chat) => self.ai_turn_key(&chat, key),
+            KeyThen::Files(chat) => self.ai_files_key(&chat, key),
         }
     }
 

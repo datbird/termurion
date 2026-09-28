@@ -609,6 +609,12 @@ impl Store {
         Ok(changed > 0)
     }
 
+    /// Appends to a message's `agentReasoning` (ruling I-3); false when no row has that id.
+    pub fn append_reasoning(&mut self, unique_id: &str, text: &str) -> Result<bool, String> {
+        let changed = self.conn.execute("update Message set agentReasoning = coalesce(agentReasoning, '') || ? where uniqueID = ?", params![text, unique_id]).map_err(err)?;
+        Ok(changed > 0)
+    }
+
     pub fn remove_messages(&mut self, chat: &str, ids: &[String]) -> Result<(), String> {
         let tx = self.conn.savepoint().map_err(err)?;
         for id in ids {

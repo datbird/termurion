@@ -27,6 +27,16 @@ pub fn gate_open(g: &Globals, e: &Endpoint) -> bool {
     check_endpoint(g, Some(e)) == Check::Pass
 }
 
+/// Proof that the gate for a request's own endpoint was open just before it is sent (12b final
+/// Minor 2): each of the chat engine's sends takes one, and only `pass` makes one.
+#[derive(Debug)]
+pub struct Passed(());
+
+/// `gate_open` as a proof to spend on one send.
+pub fn pass(g: &Globals, e: &Endpoint) -> Option<Passed> {
+    gate_open(g, e).then_some(Passed(()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

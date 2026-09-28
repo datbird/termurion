@@ -10,7 +10,7 @@ use crate::layout::PaneId;
 use crate::screen::Screen;
 use std::collections::HashMap;
 
-/// A command's finish, keyed the way Task 11 delivers it: (chat, request id, outcome).
+/// A command's finish, keyed the way `chat_tick` delivers it: (chat, request id, outcome).
 pub(super) type Finished = (String, String, Outcome);
 
 /// A Prompt-path command's state once the next prompt has arrived: None while it still runs,
@@ -68,7 +68,6 @@ impl App {
     /// Answers at once, typing nothing, when the command holds a refused control key
     /// (`ai_exec::refusal`, checked again here so no caller can skip it) or the pane is gone
     /// (`NO_SESSION`); None when it started.
-    #[allow(dead_code)] // Called by `ai_run_tool` (Task 11).
     pub(super) fn ai_exec_start(&mut self, pane: PaneId, chat: &str, request_id: &str, command: &str) -> Option<Outcome> {
         if let Some(refused) = ai_exec::refusal(command) {
             return Some(refused);
@@ -90,7 +89,6 @@ impl App {
     /// Cancels the command running on `pane`; its (chat, request id), answered
     /// `CANCELED_MODEL` with no notice by the caller. Nothing else answers it: the command is
     /// forgotten.
-    #[allow(dead_code)] // Called by `ai_run_tool` (Task 11).
     pub(super) fn ai_exec_cancel(&mut self, pane: PaneId) -> Option<(String, String)> {
         self.ai_execs.remove(&pane).map(|r| (r.chat, r.request_id))
     }

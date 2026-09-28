@@ -46,7 +46,6 @@ impl App {
     /// What the read-only tools read from `pane`'s own screen (never a Filter or Instant Replay
     /// view), with only what `call` needs: the history only for the two history tools, the
     /// output only for `get_command_output`, the screen JSON only for `get_screen_contents`.
-    #[allow(dead_code)] // Called by `ai_tool_start` and Task 8's context block.
     pub(super) fn ai_facts(&self, pane: PaneId, call: &Call) -> Facts {
         let mut f = Facts {
             ever_used: self.shell_history.as_ref().is_some_and(|h| h.ever_used()),
@@ -93,7 +92,6 @@ impl App {
     /// Starts a tool call on `pane` (the one dispatcher, `ai_run_tool`, calls this after the
     /// gate). The read-only tools answer at once from `ai_facts`; Tasks 6 and 7 add their
     /// arms. A call no arm handles answers `NOT_AVAILABLE` with no notice.
-    #[allow(dead_code)] // Called by `ai_run_tool` (Task 11).
     pub(super) fn ai_tool_start(&mut self, pane: PaneId, call: &Call) -> ToolStart {
         // A tool for a session that is gone answers its error, never invented facts.
         if !self.panes.contains_key(&pane) {
@@ -211,7 +209,7 @@ impl App {
     }
 
     /// Each finished Get-Help, polled from `ai_helps` with `try_recv`; the chat maps the pane
-    /// to its request (Task 11), as `ai_exec_tick` does for a command.
+    /// to its request (`ai_pending_tools`), as `ai_exec_tick` does for a command.
     pub(super) fn ai_help_tick(&mut self) -> Vec<(PaneId, Outcome)> {
         let mut finished = Vec::new();
         for pane in self.ai_helps.keys().copied().collect::<Vec<_>>() {

@@ -827,7 +827,6 @@ pub struct App {
     ai_overrides: crate::ai_permissions::Overrides,
     /// The text an AI typed onto each pane's prompt line without submitting it (ruling
     /// R12cd-2), app-wide, the one accumulator 12f's orchestration typing shares.
-    #[allow(dead_code)] // Read by the tool arms `ai_run_tool` (Task 11) reaches.
     ai_staged: HashMap<PaneId, crate::ai_actions::Staged>,
     /// The "Share Terminal Contents Automatically?" question was asked this launch (once per
     /// launch, `didAskAutoProvideConsentThisSession`), app-wide.
@@ -840,13 +839,20 @@ pub struct App {
     /// (chat, request id) of commands a newer command replaced, answered by `ai_exec_tick`.
     ai_exec_canceled: Vec<(String, String)>,
     /// Each pane's Get-Help running on a worker; `ai_help_tick` collects the answer.
-    #[allow(dead_code)] // Filled by `get_man_page`, which `ai_run_tool` (Task 11) reaches.
     ai_helps: HashMap<PaneId, std::sync::mpsc::Receiver<String>>,
     /// The commands' safety checks by id (Task 10); `ai_check_tick` hands the finished ones on.
     ai_checks: HashMap<u64, ai_safety_app::Check>,
     ai_next_check: u64,
     /// The commands held behind the one-time safety question (ruling R12cd-3).
     ai_nag: crate::ai_classifier::NagGate,
+    /// Each chat's agent by chat id (app-wide, never swapped): its turn, parks and vector-store
+    /// flow (12d reads it by name).
+    chat_agents: HashMap<String, crate::chat_agent::Agent>,
+    /// (chat, request id) of the Get-Help running on each pane (minor m1), app-wide.
+    ai_pending_tools: HashMap<PaneId, (String, String)>,
+    /// 12b's wire log file for the chat turns' requests (app-wide).
+    #[cfg(windows)]
+    ai_wire_log: Arc<Mutex<crate::ai_wire_log::WireLog>>,
     /// Launched scripts' processes by their Script Console entry's id (their key), the
     /// launches waiting for "Enable Python API?" to be answered, and the script whose
     /// failure notification was posted last (a click reveals its entry; a session's alert
@@ -1423,6 +1429,10 @@ pub fn run() {
         ai_checks: HashMap::new(),
         ai_next_check: 0,
         ai_nag: crate::ai_classifier::NagGate::default(),
+        chat_agents: HashMap::new(),
+        ai_pending_tools: HashMap::new(),
+        #[cfg(windows)]
+        ai_wire_log: Arc::new(Mutex::new(crate::ai_wire_log::WireLog::new())),
         script_procs: HashMap::new(),
         script_jobs_left: Vec::new(),
         script_after_enable: Vec::new(),

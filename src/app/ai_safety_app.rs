@@ -71,7 +71,6 @@ pub(super) fn refusal(b: &Backend) -> Option<Option<bool>> {
 }
 
 /// The line the shell will run: the prompt's text plus the command (ruling R12cd-2).
-#[allow(dead_code)] // Called by `ai_run_tool` (Task 11).
 pub(super) fn check_line(si_typed: Option<&str>, staged: &str, command: &str) -> String {
     crate::ai_actions::staged_line(si_typed, staged) + command
 }
@@ -149,7 +148,7 @@ impl super::App {
 
     /// Whether this call goes through the check (`needsSafetyCheck`): only `execute_command`,
     /// and only when AI is allowed and the check is on, or its one-time question is still due.
-    #[allow(dead_code)] // Called by `ai_run_tool` (Task 11).
+    #[allow(dead_code)] // `ai_start_check` asks the same; kept for 12d's toolbar.
     pub(super) fn ai_needs_check(&self, call: &crate::ai_tools::Call) -> bool {
         call.needs_safety_check() && self.ai_nag_step() != ai_classifier::NagStep::Skip
     }
@@ -158,7 +157,6 @@ impl super::App {
     /// result comes from `ai_check_tick`; while the one-time question is due it is raised here
     /// and holds this command, and any that arrive meanwhile (ruling R12cd-3). `line` is the
     /// whole prompt line (ruling R12cd-2), `send` the model's own command when it differs.
-    #[allow(dead_code)] // Called by `ai_run_tool` (Task 11).
     pub(super) fn ai_start_check(&mut self, chat: &str, pane: crate::layout::PaneId, line: &str, send: Option<String>, then: crate::chat_message::Message) -> Option<u64> {
         let step = self.ai_nag_step();
         if step == ai_classifier::NagStep::Skip {
@@ -218,7 +216,6 @@ impl super::App {
     /// Advances the running checks and hands on the finished: (chat, request message, `send`,
     /// safe), oldest first. Safe None only for a command whose nag was answered Cancel. A check
     /// whose gate closed is canceled and ends unsafe (ruling R12cd-1).
-    #[allow(dead_code)] // Called by `chat_tick` (Task 11).
     pub(super) fn ai_check_tick(&mut self) -> Vec<(String, crate::chat_message::Message, Option<String>, Option<bool>)> {
         let mut ids: Vec<u64> = self.ai_checks.keys().copied().collect();
         ids.sort_unstable();
@@ -237,7 +234,6 @@ impl super::App {
     }
 
     /// Drops a chat's checks and cancels their requests (Stop, and the gate closing).
-    #[allow(dead_code)] // Called by `chat_stop` and `gate_tick` (Task 11).
     pub(super) fn ai_cancel_checks(&mut self, chat: &str) {
         let ids: Vec<u64> = self.ai_checks.iter().filter(|(_, c)| c.chat == chat).map(|(id, _)| *id).collect();
         for id in ids {
