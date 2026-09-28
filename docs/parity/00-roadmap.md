@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 173 | 122 | 19 |
-| `02-global-settings.md` | 823 | 275 | 72 | 476 |
+| `01-profile-settings.md` | 314 | 174 | 121 | 19 |
+| `02-global-settings.md` | 823 | 298 | 74 | 451 |
 | `03-features-and-menus.md` | 643 | 514 | 44 | 85 |
-| Total | 1,780 | 962 | 238 | 580 |
+| Total | 1,780 | 986 | 239 | 555 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -237,6 +237,28 @@ focus report and drops it, so the script's check fails there (measured in WSL an
 the same ConPTY input, a kept ConPTY limitation; the native it2check restores the prefix). it2setcolor's presets wait for milestone 13 and it2ssh for milestone
 14; the Swift `it2` CLI is not ported. Every kept quirk is listed in
 `docs/acceptance/m11e-checklist.md` and ruled on in `docs/superpowers/rulings/m11e-rulings.txt`.
+Milestone 13c built iTerm2's tab bar (02: Appearance > Tabs and the Advanced tab rows; 01:
+Subtitle): 24 points tall (`defaultTabBarHeight`; Tandem's old 1.6 cells is gone) and hidden with
+one tab (`HideTab`); iTerm2's width rules (equal tabs stretched to fill in whole device pixels, 175
+points with stretching off, uneven widths only when every tab fits, a minimum of 75 points or 60
+with tab numbers hidden); a bar whose tabs do not fit scrolls at 120 points with Shift+wheel or a
+horizontal wheel and keeps the selected tab in view (`ScrollableSideTabBar`, which the horizontal
+bar reads too), else an overflow menu lists the hidden tabs. Inside a tab: a close button on the
+left shown on hover (or always), the title centered in Segoe UI at 11 points (or the custom size)
+and cut at its start or end by iTerm2's smart truncation, basic HTML (`<b>`, `<i>`, `<u>`), the
+profile's Subtitle on a second line at 28 points or more with the session status joined to it,
+the icon, the spinner of a background tab that is printing, and the tab's shortcut ("Win+1" to
+"Win+8", "Win+9" on the last tab). A plain press selects (or the release, with `selectsTabsOnMouseDown` off), the close
+button and a middle click close through Close Tab, a double click on a tab opens Edit Tab Title and
+on the empty bar opens a tab, "+" opens a tab (a tmux tab in a tmux window; the current profile
+with `addTabButtonUsesCurrentProfile`), and a tooltip shows the tab's name, profile and command.
+Each window keeps its own scroll offset, hover and press. The Tab Color picker (Default, swatches
+from `tabColorMenuOptions`, Choose Color... with Windows' color dialog) is built; it opens from
+milestone 13d's tab menu, so `tabColorMenuOptions` stays partial until then, and the side tab bar
+is 13d's. `drawBottomLineForHorizontalTabBar` is stored and inert (no iTerm2 style reads it). The
+eight number and text Advanced > Tabs rows have no editor until milestone 13a's controls land.
+Every kept quirk is listed in `docs/acceptance/m13c-checklist.md` and ruled on in
+`docs/superpowers/rulings/m13c-rulings.txt`.
 
 ## Order
 

@@ -1,0 +1,106 @@
+Plan: Ruling: the tab number reads "Win+1" (Windows words for iTerm2's Cmd glyph and number, from SwitchTabModifier: Win, Alt, Alt+Win, Ctrl, none) - cost if wrong: wider than iTerm2's glyph.
+Plan: Ruling: tab labels use the prose font (Segoe UI) at iTerm2's 11 points, measured with the renderer - cost if wrong: a label font different from the terminal's.
+Plan: Ruling: the close button's hover shows at once (iTerm2 animates highlightAmount) - cost if wrong: no fade.
+Plan: Ruling: the spinner is a rotating arc drawn at the activity tick - cost if wrong: a different look from AppKit's spinner.
+Plan: Ruling: the overflow menu lists plain titles (iTerm2's popup button shows the hidden tabs' labels) - cost if wrong: no icons in it.
+Plan: Ruling: the tooltip shows 500 ms after the pointer settles - cost if wrong: a different delay from macOS.
+Plan: Ruling: Tab Color is a popup of swatch items plus "Choose Color..." (Windows' color dialog) instead of iTerm2's in-menu color grid with recent colors, opened by 13d's menu entry for a tab or a group (ColorTarget) - cost if wrong: a different look, no recent colors.
+Plan: Ruling: choosing a tab color drops a program's tab color for that tab's panes - cost if wrong: none known.
+Plan: Ruling: the tab's right-click menu is 13d's (src/tab_menu.rs, 13d-f and 13a-c rulings); 13c builds only the color picker it opens - cost if wrong: 02:584 (tabColorMenuOptions) is partial until 13d.
+Plan: Ruling: HideTab is added here (13a-c rulings: 13c owns bar layout); 13d reads it - cost if wrong: none.
+Plan: Ruling: SwitchTabModifier value 6 is labeled "Win+Alt+Number" in schema/global.toml while the tab number reads "Alt+Win+" (iTerm2's glyph order, Option before Cmd, and R11's example "Alt+Win+1"); both are right, neither is changed to match the other - cost if wrong: none.
+Plan: Ruling: ScrollableSideTabBar is added here because the horizontal bar reads it (13d-f rulings) - cost if wrong: 13d must not add it again.
+Plan: Ruling: parity rows are cited by line - cost if wrong: none.
+Plan: Ruling (correction, source wins): ScrollableSideTabBar (default YES) makes the horizontal bar scroll too (PSM:1721-1723 never checks the orientation), so iTerm2's default for too many tabs is scrolling at 120 points; the overflow menu is the fallback with the setting off; 02:230 is partial (the side bar is 13d's) - cost if wrong: the default for too many tabs.
+Plan: Ruling (correction, source wins): drawBottomLineForHorizontalTabBar (02:576) is inert in iTerm2 (no style reads the option), so it is stored and shown and does nothing (R2) - cost if wrong: none.
+Plan: Ruling (correction, source wins): iTerm2 tab labels are centered, in the system font at 11 points, with the status text on the subtitle line (visible only on a bar of 28 points or more); Tandem's left-aligned, terminal-font label with a status prefix was the mismatch and is replaced (R3; the status on the subtitle line is ruled in the 13a-c rulings), recorded as a visible change (checklist check 27) - cost if wrong: people who read the status in the tab at the default height no longer see it there.
+Plan: Ruling (correction, source wins): minCompactTabWidth (02:546) is the minimum when tab numbers are hidden (RTV:572-577) and minTabWidth otherwise, for every width rule, not only uneven tabs - cost if wrong: none.
+Plan: Ruling: the default tab bar height is iTerm2's 24 points (defaultTabBarHeight) with a test; Tandem's old 1.6 cells is gone (R3) - cost if wrong: a bar height that no longer follows the terminal font.
+Plan: Ruling: 02:219's real key is HideTab (default YES, so one tab shows no bar), the inverted checkbox "Show tab bar even when there is only one tab"; the row's key name is fixed, and 02:224's key name is fixed to HideActivityIndicator (the row named its constant) - cost if wrong: none.
+
+Pre-flight: Ruling: Task 7 also edits src/app/windows_ui.rs: tab_tip is a per-window field and goes in swap_live (project invariant 1), the plan's own pitfall - cost if wrong: none.
+Pre-flight: Ruling: Task 2's bare "uneven whose clamped sum passes the room falls back to equal" bullet gets concrete numbers chosen by the implementer from iTerm2's width code, asserted like its siblings (a test must assert something) - cost if wrong: one test's values.
+Pre-flight: Ruling: plan line citations drifted (mod.rs +74..+121 after 11d/11e; menu.rs and windows_ui.rs +5..+11; the command store is in start_pane_as); implementers locate by symbol, preflight.md lists the current lines - cost if wrong: none.
+Pre-flight: Ruling: desired_width keeps no close-button parameter (it always reserves the room), as iTerm2 does (source wins) - cost if wrong: a few pixels.
+Pre-flight: Ruling: no 13a dependency found; 13c proceeds from main (2e9c7ee) in a worktree (~/gitrepos/tandem-13c, branch m13c) - cost if wrong: none.
+
+Task 1: Ruling (controller): the 8 number and text Advanced > Tabs rows (MinTabWidth, MinCompactTabWidth, OptimumTabWidth, ScrollableTabWidth, DefaultTabBarHeight, MinimumTabLabelWidth, CustomTabBarFontSize, TabColorMenuOptions) have no editor in this checkout; 13a Task 3 builds the int, float and string Advanced controls and 13a lands before 13c merges; until then they are set in settings.toml (checklist Setup, kept item 44) - cost if wrong: rows uneditable until 13a lands.
+Task 1: Ruling: the Appearance > Tabs rows' help texts are Tandem's own short sentences, except HTMLTabTitles, whose help is iTerm2's tooltip verbatim (PreferencePanel.xib:9157; fix round 1); no other of these rows has an iTerm2 tooltip - cost if wrong: tooltip wording.
+Task 1: Ruling: Appearance > Tabs order is Show tab bar, Show tab numbers, Tabs have close buttons, Show activity indicator, (existing) Show new-output indicator, Show session status, then Stretch, HTML titles, Scrolls; rows within a section follow file order - cost if wrong: row order on the page.
+Task 1: Ruling: the Advanced "Tabs" section sits last among Advanced sections (the rows are appended at the end of global.toml; section order follows file order) - cost if wrong: section position on the Advanced page (13a reorders by iTerm2's categories).
+
+Task 2: Ruling (controller): the uneven fallback test is desired [60, 150, 400] on a 500-point bar (available 476): the clamped sum 75 + 150 + 280 = 505 passes the room, so the equal rule gives [159.0, 158.5, 158.5] (952 device pixels / 3, the remainder to the first tab); traced to iTerm2 in review - cost if wrong: one test's values.
+Task 2: Ruling: wheel_scroll returns Some(offset) unchanged when the clamped offset equals the current one on a scrollable bar, because iTerm2 consumes that event; None only when the event goes on past the bar - cost if wrong: a no-op wheel over the bar is not passed to the terminal, which iTerm2 does not do either.
+Task 2: Ruling: scroll_into_view takes the tab's content (unscrolled) x; the leading margin is 0 - cost if wrong: callers would have to add the offset.
+Task 2: Ruling: a zero or negative min_width shows every tab rather than dividing by zero - cost if wrong: none (settings keep it positive).
+Task 2: Ruling: minor (deferred): equal_shares uses floor() where iTerm2 truncates and runs a correction loop (equivalent on the tested inputs), and the non-positive min_width guard is untested - cost if wrong: a one-pixel difference on an untested input.
+
+Task 3: Ruling (source over brief): the HTML check is case-sensitive: only lower-case <b>, <i>, <u> make a title HTML (NSA:62-70); inside an HTML title an upper-case tag is removed and toggles nothing (kept item 37) - cost if wrong: none; iTerm2 does the same.
+Task 3: Ruling (source over brief): TabColorMenuOptions reads only "#rgb", "#rrggbb", "#rrrrggggbbbb" and a "p3" prefix before those (CMV:485-487, colorFromHexString:); the "color(p3 1 0.5 0.25)" form its verbatim help promises is not parsed by iTerm2 either, and the help stays verbatim (kept item 38) - cost if wrong: a person following the help gets the default colors.
+Task 3: Ruling (source over brief): the icon threshold subtracts only the icon padding (4), not the icon's 16, because iTerm2 asks widthForLabelInCell: with iconRect still zero (YS:951-966) - cost if wrong: the icon drops at a slightly different width.
+Task 3: Ruling (source over brief): the brief's 110-point-title truncate case holds only for the default (hover-only) close button; with always-visible buttons the reserved room is 0, so the test uses the default tab - cost if wrong: none.
+Task 3: Ruling: cell rectangles use y 0 at the tab's top and the label is the tab's full height; the drawer places the text lines and subtitle offsets - cost if wrong: none (Task 4 does so).
+Task 3: Ruling: close_alpha is 0 or 1 only; the inactive-window halving is the drawer's (done in Task 4 fix round 2) - cost if wrong: one more input field.
+Task 3: Ruling: the close rect is Some whenever close buttons are on, even at alpha 0, so the hit test can find it for hover - cost if wrong: none known.
+Task 3: Ruling: counter_width takes the text width as given; iTerm2 rounds it up to device pixels first, which the caller may do since tab_layout works in points - cost if wrong: under one device pixel of counter width.
+Task 3: Ruling: decoration for smart prefixes is whitespace, or neither alphanumeric nor control nor private use (std has no Unicode general category); combining marks after a spinner count as decoration; private use (Nerd Font icons) is text - cost if wrong: a rare title flips head and tail truncation.
+Task 3: Ruling: lengths are counted in Unicode scalars, not UTF-16 units (5-character prefixes, the 255-character limit, the " (" position) - cost if wrong: titles with astral characters count one shorter than iTerm2.
+Task 3: Ruling: hex color words must be all hex digits; iTerm2's scanHexLongLong: accepts a partial scan ("#12345z" reads as "#012345") - cost if wrong: such a typo word is skipped instead of giving an odd color.
+Task 3: Ruling: truncate finds the longest fit by bisection (widths assumed to grow with characters) and returns "" when not even the ellipsis fits - cost if wrong: none known.
+Task 3: Ruling: html_runs merges adjacent runs of the same style and drops empty ones, as NSAttributedString does - cost if wrong: none.
+Task 3: Ruling: modifier_string maps only the five SwitchTabModifier choices (1, 4, 5, 6, 9); any other value gives no number text - cost if wrong: none (the enum offers no others).
+Task 3: Ruling: minor (deferred): is_decoration approximates iTerm2's whitespace, symbol and punctuation sets - cost if wrong: a rare title flips head and tail truncation.
+
+Task 4: Ruling: Bar gains texts (per cell: styled runs with widths, the subtitle's width, label box and truncate flag, the counter text and width) and font; measuring stays in build, once per frame through the renderer's cache - cost if wrong: 13d constructs or extends Bar with two more fields.
+Task 4: Ruling: scene::tab_bar takes the terminal font's line height and whether the window is key (fix round 2) - cost if wrong: a signature 13d and 13e must match.
+Task 4: Ruling (source over brief): the tab number is drawn centered in its box with iTerm2's floor (YS:985-992), not right-aligned - cost if wrong: none.
+Task 4: Ruling: build does not move the selected tab out of the overflow menu (iTerm2 only sets the cell state), so tabs keep their order (kept item 34) - cost if wrong: none; iTerm2 does the same.
+Task 4: Ruling: the spinner steps an eighth turn per 500 ms from the wall clock, and tick_activity redraws while any session is processing - cost if wrong: extra redraws during output bursts (bounded by the 500 ms tick).
+Task 4: Ruling: bold and italic runs are measured in the regular prose face (Renderer::text_width has no weight or style input) (kept item 43) - cost if wrong: a bold title centers a few pixels off and truncation may keep one character too many.
+Task 4: Ruling: the status color is dropped from the tab; the status joins the subtitle as plain text in the subtitle color, as iTerm2's subtitle has no status color (R3, kept item 27) - cost if wrong: a visible change from Tandem's colored status prefix.
+Task 4: Ruling: the add button is ADD_BUTTON wide and the bar's height tall (frameForAddTabButtonWithCellWidths:height:), 24 by 24 at the default height - cost if wrong: none.
+Task 4: Ruling: glyphs (close, dead, bell, new output, idle) draw at 12 points in the icon font centered in their 16-point boxes; the status dot is an 8-point square - cost if wrong: a different look from iTerm2's images (13e themes them).
+Task 4: Ruling: tab_height is rounded to whole pixels while the layout inside uses height * scale unrounded - cost if wrong: under a pixel at fractional scales.
+Task 4: Ruling: the underline sits at row.y + (line_h + 0.8 * font_px) / 2, near the baseline - cost if wrong: its exact depth.
+Task 4: Ruling: bar_height returns DefaultTabBarHeight clamped at 0 - cost if wrong: none known.
+Task 4: Ruling: a title with no room draws nothing, not a lone ellipsis (fix round 1) - cost if wrong: none.
+Task 4: Ruling: on a scrolling bar the tabs are cut at the pinned "+" (tab_area_width), and close buttons draw at half strength in an inactive window (YS drawInteriorWithTabCell:) (fix round 2) - cost if wrong: none.
+Task 4: Ruling: the "+" and the overflow button are drawn as icon-font glyphs (Segoe Fluent Icons Add; the overflow button two ChevronRight glyphs since Task 6 fix round 1) for iTerm2's images - cost if wrong: a different look (13e themes them).
+Task 4: Ruling: minor (deferred): the loop that drops cut quads is quadratic - cost if wrong: negligible at tab bar sizes.
+
+Task 5: Ruling: a fifth per-window field tab_seen (in swap_live and WinSlot) detects a selection change at layout, instead of a call at each of the 42 places that assign self.active; it also covers iTerm2's tab-count trigger - cost if wrong: one more field; 13d may call scroll_active_tab_into_view directly too, which is harmless.
+Task 5: Ruling: the stored bar is built with offset 0 (content coordinates) for hits; the drawn bar is a second build at the offset, only while scrolled - cost if wrong: one extra layout per frame while scrolled (text widths come from the renderer's cache).
+Task 5: Ruling (source over brief): the "+" moves with the offset only when it sits after the last tab; pinned on a scrolling bar it stays put (PSM:3337-3350) - cost if wrong: none seen.
+Task 5: Ruling (source over brief): overflow items carry " (n)" after the title when the tab number shows, and a check on the selected tab (PSM:3565-3580); still plain text, no icons - cost if wrong: a slightly different item text.
+Task 5: Ruling: a precise (pixel) wheel delta is converted to lines of one optimum width, so it scrolls by its own distance in points as iTerm2's precise deltas do - cost if wrong: trackpad scroll speed.
+Task 5: Ruling: hover is taken from the stored bar, so a close button becomes hittable after the redraw that follows entering its tab (one mouse move) - cost if wrong: a press arriving before that redraw selects instead of pressing close.
+
+Task 6: Ruling (source over brief): release takes close_always (TabCloseButtonsAlwaysVisible): with hover-only close buttons, a press on the close button that slides onto the tab body selects the tab; only with always-visible buttons does it do nothing (PSM:3918-3921, RTV:1984) - cost if wrong: one argument and one test line.
+Task 6: Ruling (source over brief): a double click on the bar opens a tab when released on the empty bar with two clicks, wherever the second press went down (iTerm2 checks only the release cell and the click count) - cost if wrong: none.
+Task 6: Ruling: the middle press is stored in tab_press with click count 0 (the tuple has no button); a release is taken only by the matching button - cost if wrong: a separate field would be one more in swap_live and WinSlot.
+Task 6: Ruling: a double click on the empty bar asks tmux first (tmux_new(false, true)), as iTerm2's newSession: does; Tandem's menu New Tab is not changed (kept item 40) - cost if wrong: in a tmux window a double click on the bar may ask the tmux question where the menu does not.
+Task 6: Ruling: the held close button shows as a shade behind its glyph (iTerm2 swaps in a darker "down" image) - cost if wrong: a different look.
+Task 6: Ruling: a press on the "+" counts one click and restarts the count, so "+" then the bar quickly is one click on the bar (fix round 1) - cost if wrong: none known.
+Task 6: Ruling: tab_clicks keys on the tab index (None off the tabs), app-wide, so a press on tab 0 of one window and then tab 0 of another within the double-click time counts two (kept item 42) - cost if wrong: an unlikely false double click.
+Task 6: Ruling: tab_press is cleared on focus loss and on any other press, so a release lost to another window leaves no stale press (fix round 1); read-checked only, App has no test harness - cost if wrong: a regression there is caught only by review.
+Task 6: Ruling: minor (deferred): the overflow press calls render() directly (it skips the font and layout checks; one stale frame is possible) - cost if wrong: one stale frame.
+
+Task 7: Ruling: tab_tip_wake is an App-wide field, not per window and not in swap_live: there is one pointer, about_to_wait ticks only the focused window, and redraw() asks every window to draw - cost if wrong: none known.
+Task 7: Ruling: the tooltip helpers and TIP_DELAY live in requests_ui.rs beside tab_look; the timer and drawing in mod.rs - cost if wrong: a move.
+Task 7: Ruling: tip_profile_names is tested against a real Store and divorce (saved, copy, orphan copy) - cost if wrong: none.
+Task 7: Ruling: while waiting, each move restarts the wait ("settles"); a shown tip follows the pointer on its tab (kept item 35) - cost if wrong: macOS tips stay put.
+Task 7: Ruling: after a press the tip returns once the pointer rests again on a tab, not only after it leaves the tab (kept item 35) - cost if wrong: a tip may reappear after a click without leaving the tab.
+Task 7: Ruling: the tip sits 20 points under the pointer and uses the terminal font with cell widths, like the other popups (kept item 35) - cost if wrong: not the system tooltip font; a wide (CJK) title may be clipped at the box's right edge.
+Task 7: Ruling: keys do not hide the tip (only the pointer leaving and a button press do) - cost if wrong: a tip stays up while typing.
+Task 7: Ruling (controller, source wins): the tooltip Name is iTerm2's tab label, the title and the subtitle line (blank when none; the status joined as on the tab), with HTML removed from the whole label (PTYTab.m:735-751), not the brief's three-line form (fix commit 77316ea) - cost if wrong: one extra line.
+
+Task 8: Ruling (source over brief): tab_color_values takes separate: bool and, when the profile uses separate light and dark colors, writes the base key and the "(Dark)" and "(Light)" variants, as PTYSession setTabColorByUI: does (PTYSession.m:17800, allTabColorKeysForBaseKey: :17688); otherwise the output is exactly the brief's - cost if wrong: one extra argument; 13d calls open_color_picker, not this.
+Task 8: Ruling: open_color_picker and ColorTarget carry #[allow(dead_code)] until 13d constructs a target, following the precedent on new_tab_button_rect - cost if wrong: 13d removes two attributes.
+Task 8: Ruling: the picker has no separators; a pick's index counts only the entries - cost if wrong: a cosmetic change.
+Task 8: Ruling: a Tab target is looked up in the window entered for the menu event (UserEvent::Menu enters last_window), the window the popup belonged to - cost if wrong: a pick after switching windows mid-menu does nothing.
+Task 8: Ruling: "Choose Color..." starts at the tab's current color (tab_look().color) and, for a group, at the dialog's default; the swatches are its custom colors - cost if wrong: the dialog's starting color.
+
+Task 9: Ruling: 02:230 (ScrollableSideTabBar) is partial: the key exists and the horizontal bar reads it, the side tab bar it names is 13d's - cost if wrong: one row counted partial instead of missing.
+Task 9: Ruling: the parity counts are computed from this checkout's files (01: 174 have, 121 partial, 19 missing; 02: 298, 74, 451); the merge with main (12a, 13a, 14a) recounts - cost if wrong: none.
+Task 9: Ruling: the checklist sets the eight editor-less rows in %APPDATA%\Tandem\settings.toml under [settings] with Tandem closed - cost if wrong: none (13a's editors replace this step).
+Task 9: Ruling: Tandem's title prompt is named "Edit Tab Title" (iTerm2's "Set Tab Title"); the docs use Tandem's name - cost if wrong: none.
