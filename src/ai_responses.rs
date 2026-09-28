@@ -284,6 +284,11 @@ impl Dialect for Responses {
         }
         body.insert("stream".into(), json!(b.stream));
         body.insert("tool_choice".into(), json!(if tools.is_empty() { "none" } else { "auto" }));
+        // Tandem runs only the first call of an answer, so the model must not ask for several
+        // (a second call left unanswered makes the continuation invalid; m12b ruling).
+        if !tools.is_empty() {
+            body.insert("parallel_tool_calls".into(), json!(false));
+        }
         body.insert("tools".into(), Value::Array(tools));
         let summary = |on: bool| on.then_some("auto");
         let reasoning = match (b.effort, b.should_think) {
@@ -471,6 +476,8 @@ mod tests {
         let tools = [tool()];
         let with_tool = body(&build(&m, &messages, &tools, &none, &w));
         assert!(with_tool.contains(r#""tool_choice":"auto","tools":[{"description":"d","name":"f","parameters":{"additionalProperties":false,"properties":{},"required":[],"type":"object"},"strict":true,"type":"function"}]"#), "{with_tool}");
+        assert!(with_tool.contains(r#""model":"gpt-test","parallel_tool_calls":false,"stream":true"#), "one call at a time: {with_tool}");
+        assert!(!body(&b).contains("parallel_tool_calls"), "no tools, no parallel_tool_calls");
 
         let four = vec![Message::text(Role::System, "S"), Message::text(Role::User, "a"), Message::text(Role::Assistant, "b"), Message::text(Role::User, "c")];
         let small = Wire { token_limit: 100, ..wire() };
@@ -635,6 +642,7 @@ mod tests {
         assert_eq!(v["tool_choice"], "auto");
         let web = Hosted { web_search: true, ..Hosted::default() };
         assert!(body(&build(&m, &messages, &[], &web, &w)).contains(r#""tool_choice":"auto""#), "hosted tools alone");
+        assert!(body(&build(&m, &messages, &[], &web, &w)).contains(r#""parallel_tool_calls":false"#), "hosted tools alone");
     }
 
     #[test]
