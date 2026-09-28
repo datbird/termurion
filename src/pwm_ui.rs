@@ -127,13 +127,6 @@ pub struct PwmWindow {
     chords: Vec<char>,
 }
 
-/// Sets the window's theme, then the egui visuals to match what it now reports.
-fn follow_theme(host: &EguiHost, forced: Option<bool>) {
-    host.follow_theme(forced);
-    let dark = host.window.theme().is_none_or(|t| t == winit::window::Theme::Dark);
-    host.ctx().set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
-}
-
 impl PwmWindow {
     /// A window over `owner` (the terminal window's HWND), centered on it under its title bar.
     pub fn open(
@@ -154,7 +147,7 @@ impl PwmWindow {
             .with_owner_window(owner)
             .with_visible(false);
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
-        follow_theme(&host, forced);
+        host.follow_theme(forced);
         if let Some(at) = sheet_origin(owner, host.window.outer_size()) {
             host.window.set_outer_position(at);
         }
@@ -178,7 +171,7 @@ impl PwmWindow {
 
     /// Follows a forced appearance (`tab_theme::forced_dark`), or Windows' when `None`.
     pub fn follow_theme(&self, forced: Option<bool>) {
-        follow_theme(&self.host, forced);
+        self.host.follow_theme(forced);
     }
 
     pub fn id(&self) -> WindowId {

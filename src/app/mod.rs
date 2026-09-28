@@ -154,6 +154,9 @@ pub enum UserEvent {
     JobsChanged,
     /// A system-wide hotkey was pressed (the ids of every hotkey it matched).
     Hotkey(Vec<u32>),
+    /// A system setting changed under a forced Theme: winit reset the title bars to the
+    /// system mode, so the windows take the forced mode again.
+    ThemeReset,
 }
 
 #[derive(Clone)]
@@ -347,6 +350,9 @@ pub struct App {
     window_menu_text: (String, String),
     /// The border color last given to the current window's DWM frame (`apply_border`).
     border_applied: Option<u32>,
+    /// The mode (dark or not) the current window last followed (`apply_theme`), so a change of
+    /// it is known without asking winit, which does not track a forced theme.
+    theme_applied: Option<bool>,
     /// The current window's menu bar is hidden (full screen, `HideMenuBarInFullscreen`).
     menu_hidden: bool,
     /// The current window's frame before a vertical Window > Zoom, which the next Zoom
@@ -1159,6 +1165,7 @@ pub fn run() {
         win_title: None,
         window_menu_text: Default::default(),
         border_applied: None,
+        theme_applied: None,
         menu_hidden: false,
         zoom_restore: None,
         belt: Default::default(),
@@ -4538,6 +4545,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::NotificationClicked => return self.reveal_notified(),
             UserEvent::JobsChanged => return self.jobs_changed(),
+            UserEvent::ThemeReset => return self.reapply_forced_theme(),
             UserEvent::Wake => {}
         }
         let mut changed = false;
@@ -4652,6 +4660,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
         match event {
             WindowEvent::ThemeChanged(_) => {
+                self.theme_applied = Some(self.dark());
                 self.refresh_panes();
                 // A light or dark window may gain or lose its border (`BordersOnlyInLightMode`).
                 self.apply_border();

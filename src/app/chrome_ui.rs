@@ -7,6 +7,33 @@ use windows_sys::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_EXTENDED_FRAME
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_SHIFT};
 use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
+const THEME_SUBCLASS_ID: usize = 0x7468_656D;
+
+thread_local! {
+    /// The way back to the app from `theme_guard`, which never touches `App`.
+    static WAKE: std::cell::RefCell<Option<EventLoopProxy<UserEvent>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The window's subclass proc: winit handles `WM_SETTINGCHANGE` (resetting the title bar to
+/// Windows' mode), then the app is asked to apply the Theme again.
+unsafe extern "system" fn theme_guard(hwnd: windows_sys::Win32::Foundation::HWND, msg: u32, wparam: windows_sys::Win32::Foundation::WPARAM, lparam: windows_sys::Win32::Foundation::LPARAM, _id: usize, _data: usize) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_NCDESTROY, WM_SETTINGCHANGE};
+    // SAFETY: forwarding the message the system delivered, unchanged.
+    let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
+    if msg == WM_SETTINGCHANGE {
+        WAKE.with(|w| {
+            if let Some(proxy) = w.borrow().as_ref() {
+                let _ = proxy.send_event(UserEvent::ThemeReset);
+            }
+        });
+    } else if msg == WM_NCDESTROY {
+        // SAFETY: removing this proc from the window being destroyed.
+        unsafe { RemoveWindowSubclass(hwnd, Some(theme_guard), THEME_SUBCLASS_ID) };
+    }
+    result
+}
+
 /// Gives the window's frame a border color (a COLORREF, or `chrome::COLOR_DEFAULT`). Only
 /// Windows 11 (build 22000 on) takes the attribute; Windows 10's refusal is ignored and the
 /// window keeps the system's border.
@@ -130,13 +157,20 @@ impl App {
     /// This window (and its menu bar, password manager and replay panel) follows a fixed Theme's
     /// mode, or Windows' again (`updateAppearance`, `iTermApplication.m:1276-1292`). muda's
     /// `MenuTheme::Auto` reads the system's mode, not the window's, so a forced window's menu
-    /// bar is told its mode. Returns whether the window's theme changed.
+    /// bar is told its mode. Returns whether the mode the window follows changed. winit's
+    /// `Window::set_theme` does not update `Window::theme` on Windows, so the mode is worked out
+    /// here (`dark`) and remembered per window (`theme_applied`), never read back from winit.
     pub(super) fn apply_theme(&mut self) -> bool {
         let forced = crate::tab_theme::forced_dark(self.tab_style());
         let Some(g) = self.gpu.as_ref() else { return false };
-        let before = g.window.theme();
         g.window.set_theme(crate::tab_theme::window_theme(forced));
-        let changed = g.window.theme() != before;
+        let dark = self.dark();
+        let first = self.theme_applied.is_none();
+        let changed = !first && self.theme_applied != Some(dark);
+        self.theme_applied = Some(dark);
+        if first {
+            self.guard_theme();
+        }
         if let (Some(hwnd), Some(bar)) = (self.hwnd(), &self.menu_bar) {
             let theme = match forced {
                 Some(true) => muda::MenuTheme::Dark,
@@ -155,6 +189,24 @@ impl App {
             w.follow_theme(forced);
         }
         changed
+    }
+
+    /// Keeps this window's forced title bar: winit resets a window with no preferred theme to
+    /// Windows' mode at every `WM_SETTINGCHANGE` and sends nothing unless the mode changed, so a
+    /// subclass asks the app to apply the Theme again after each one.
+    fn guard_theme(&self) {
+        let Some(hwnd) = self.hwnd() else { return };
+        WAKE.with(|w| *w.borrow_mut() = Some(self.proxy.lock().unwrap().clone()));
+        // SAFETY: the HWND is this window's; the proc only forwards and posts an event.
+        unsafe { windows_sys::Win32::UI::Shell::SetWindowSubclass(hwnd as _, Some(theme_guard), THEME_SUBCLASS_ID, 0) };
+    }
+
+    /// After a system setting changed (`UserEvent::ThemeReset`): a fixed Theme's windows take
+    /// its mode again. Nothing to do for Regular, Minimal and Compact, which follow Windows.
+    pub(super) fn reapply_forced_theme(&mut self) {
+        if crate::tab_theme::forced_dark(self.tab_style()).is_some() {
+            self.apply_theme_everywhere();
+        }
     }
 
     /// Every terminal window, the Settings window and the Profiles window follow the Theme, after

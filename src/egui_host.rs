@@ -82,9 +82,13 @@ impl EguiHost {
         self.window.request_redraw();
     }
 
-    /// Follows a forced appearance (`tab_theme::forced_dark`), or Windows' when `None`.
+    /// Follows a forced appearance (`tab_theme::forced_dark`), or Windows' when `None`: the
+    /// window's theme, and the egui visuals to match. winit does not track a forced theme
+    /// (`Window::theme` stays Windows' mode), so the mode is the forced one, else the window's.
     pub fn follow_theme(&self, forced: Option<bool>) {
         self.window.set_theme(crate::tab_theme::window_theme(forced));
+        let dark = forced.unwrap_or_else(|| self.window.theme().is_none_or(|t| t == winit::window::Theme::Dark));
+        self.ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
     }
 
     /// The window's Win32 handle.

@@ -69,6 +69,7 @@ pub(super) struct WinSlot {
     win_title: Option<String>,
     window_menu_text: (String, String),
     border_applied: Option<u32>,
+    theme_applied: Option<bool>,
     menu_hidden: bool,
     zoom_restore: Option<Rect>,
     mru: Mru,
@@ -140,6 +141,7 @@ impl WinSlot {
             win_title: None,
             window_menu_text: Default::default(),
             border_applied: None,
+            theme_applied: None,
             menu_hidden: false,
             zoom_restore: None,
             mru: Mru::default(),
@@ -226,6 +228,7 @@ impl App {
         swap(&mut self.win_title, &mut s.win_title);
         swap(&mut self.window_menu_text, &mut s.window_menu_text);
         swap(&mut self.border_applied, &mut s.border_applied);
+        swap(&mut self.theme_applied, &mut s.theme_applied);
         swap(&mut self.menu_hidden, &mut s.menu_hidden);
         swap(&mut self.zoom_restore, &mut s.zoom_restore);
         swap(&mut self.mru, &mut s.mru);
@@ -766,6 +769,7 @@ impl WinSlot {
             win_title: None,
             window_menu_text: Default::default(),
             border_applied: None,
+            theme_applied: None,
             menu_hidden: false,
             zoom_restore: None,
             mru: Mru::default(),

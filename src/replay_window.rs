@@ -53,13 +53,6 @@ pub struct ReplayWindow {
     shown: bool,
 }
 
-/// Sets the window's theme, then the egui visuals to match what it now reports.
-fn follow_theme(host: &EguiHost, forced: Option<bool>) {
-    host.follow_theme(forced);
-    let dark = host.window.theme().is_none_or(|t| t == winit::window::Theme::Dark);
-    host.ctx().set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
-}
-
 impl ReplayWindow {
     /// A hidden panel; `place` puts it where `replay_panel::origin` says and shows it. The
     /// origin needs the panel's frame size (its title bar included, as iTerm2's
@@ -87,7 +80,7 @@ impl ReplayWindow {
             .with_min_inner_size(winit::dpi::LogicalSize::new(replay_panel::MIN_WIDTH as f64, h as f64))
             .with_max_inner_size(winit::dpi::LogicalSize::new(100_000.0, h as f64));
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
-        follow_theme(&host, forced);
+        host.follow_theme(forced);
         if let Some(hwnd) = host.hwnd() {
             use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_NOACTIVATE};
             unsafe { SetWindowLongPtrW(hwnd as _, GWL_EXSTYLE, GetWindowLongPtrW(hwnd as _, GWL_EXSTYLE) | WS_EX_NOACTIVATE as isize) };
@@ -97,7 +90,7 @@ impl ReplayWindow {
 
     /// Follows a forced appearance (`tab_theme::forced_dark`), or Windows' when `None`.
     pub fn follow_theme(&self, forced: Option<bool>) {
-        follow_theme(&self.host, forced);
+        self.host.follow_theme(forced);
     }
 
     pub fn id(&self) -> WindowId {
