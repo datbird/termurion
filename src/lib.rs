@@ -100,6 +100,7 @@ pub mod trigger_eval;
 pub mod trigger_events;
 pub mod proctree;
 pub mod winmodel;
+pub mod wintitle;
 pub mod frames;
 pub mod placement;
 pub mod arrangement;

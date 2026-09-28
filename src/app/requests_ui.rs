@@ -62,6 +62,16 @@ fn tip_profile_names(store: &crate::store::Store, guid: &str) -> (String, Option
     (own, original)
 }
 
+/// The sessions that take a title a program set in `from` (`tabDidSetWindowTitle:to:`,
+/// `PT:15578-15584`): every other pane of its window when SeparateWindowTitlePerTab
+/// (`separate`) is off, else none.
+pub(super) fn share_targets(panes_in_window: &[PaneId], from: PaneId, separate: bool) -> Vec<PaneId> {
+    if !crate::wintitle::shares_title(separate) {
+        return Vec::new();
+    }
+    panes_in_window.iter().copied().filter(|&p| p != from).collect()
+}
+
 /// How long RequestAttention's pane flash and fireworks last.
 pub(super) const FLASH: Duration = Duration::from_millis(300);
 pub(super) const FIREWORKS: Duration = Duration::from_millis(1200);
@@ -72,6 +82,7 @@ impl App {
             Request::Trigger(t) => self.trigger_request(pane, t),
             Request::Bell => self.ring_bell(pane),
             Request::Notify { title, message } => self.terminal_alert(pane, title, message),
+            Request::WindowTitle(title) => self.share_window_title(pane, title),
             Request::SetBadge(t) => self.set_badge(pane, Some(t)),
             Request::BadgeRefused => self.set_badge(pane, None),
             Request::HostChanged(left_on) => self.host_changed(pane, left_on),
@@ -202,6 +213,23 @@ impl App {
         let pos = g.window.outer_position().ok()?;
         let size = g.window.outer_size();
         Some(osc1337::to_points(pos.x as f64, pos.y as f64, size.width as f64, size.height as f64, primary_height(), g.window.scale_factor()))
+    }
+
+    /// A program in `pane` set or reset its title: with SeparateWindowTitlePerTab off every
+    /// other session of the window (the current one, entered for the request) takes it.
+    /// `set_title` asks nothing back, so two panes never answer each other.
+    fn share_window_title(&mut self, pane: PaneId, title: Option<String>) {
+        let window: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
+        let targets = share_targets(&window, pane, self.globals.bool("SeparateWindowTitlePerTab"));
+        if targets.is_empty() {
+            return;
+        }
+        for id in targets {
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.own_mut().set_title(title.clone());
+            }
+        }
+        self.redraw();
     }
 
     fn set_window_frame(&mut self, pane: PaneId, x: f64, y: f64, w: f64, h: f64) {
@@ -339,6 +367,15 @@ pub(super) fn work_areas() -> Vec<(f64, f64, f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::tip_text;
+
+    /// With SeparateWindowTitlePerTab off every other session of the window takes a
+    /// program's title (`PT:15578-15584`).
+    #[test]
+    fn shared_window_title_follows_iterm2() {
+        use super::share_targets;
+        assert_eq!(share_targets(&[1, 2, 3], 2, false), vec![1, 3]);
+        assert_eq!(share_targets(&[1, 2, 3], 2, true), Vec::<u64>::new());
+    }
 
     #[test]
     fn tab_color_follows_iterm2() {

@@ -2370,4 +2370,19 @@ mod tests {
             assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
         }
     }
+
+    /// The window title rows: General's check box (`GPV:2321`, `XIB:8249`) and the advanced
+    /// setting (`AS:705`).
+    #[test]
+    fn title_rows_follow_iterm2() {
+        let s = schema::find_global("SeparateWindowTitlePerTab").expect("SeparateWindowTitlePerTab");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("General", "Window", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(true)));
+        assert_eq!(s.label, "Each tab may have its own window title");
+        let s = schema::find_global("ShowWindowTitleWhenTabBarInvisible").expect("ShowWindowTitleWhenTabBarInvisible");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Windows", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(true)));
+        assert_eq!(s.label, "Show window title when the tab bar is not visible?");
+        assert_eq!(s.help, "Show window title when the tab bar is not visible?\nWhen disabled, the tab's title will be shown where the window title would normally go.");
+    }
 }

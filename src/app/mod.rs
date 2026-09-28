@@ -1345,6 +1345,11 @@ impl App {
         tab_layout::bar_shown(self.tabs.len(), self.globals.bool("HideTab"))
     }
 
+    /// Whether the window shows its tab bar (13d's name; 13d replaces this body).
+    pub(super) fn tab_bar_visible(&self) -> bool {
+        self.tabs.len() > 1
+    }
+
     /// The tab bar's height in pixels: `DefaultTabBarHeight` points while the bar shows.
     fn tab_height(&self) -> f32 {
         if self.tab_bar_shown() {
@@ -3334,10 +3339,14 @@ impl App {
         // A status bar field whose bar went away gives the keyboard back before drawing.
         self.check_composer_fields();
         let frame = self.build_frame();
-        let title = match &self.win_title {
-            Some(t) => t.clone(),
-            None => self.tabs.get(self.active).map_or_else(|| "Tandem".to_string(), |t| self.window_title(t.focused)),
-        };
+        let focused = self.tabs.get(self.active).map(|t| t.focused);
+        let title = crate::wintitle::window_title(
+            self.win_title.as_deref(),
+            self.tab_bar_visible(),
+            self.globals.bool("ShowWindowTitleWhenTabBarInvisible"),
+            focused.map(|f| self.window_title(f)).as_deref(),
+            focused.map(|f| self.session_title(f)).as_deref(),
+        );
         let show_number = self.globals.bool("WindowNumber");
         let title = crate::winmodel::title(&title, self.window_number(), show_number);
         let client = self.tabs.get(self.active).and_then(|t| self.tmux_client_of(t.focused));
@@ -4115,9 +4124,11 @@ fn tab_click_count(last: (Instant, Option<usize>, u8), now: Instant, hit: tab_la
 
 /// What a session's screen takes from its profile, at start (`install_pane`) and after every
 /// profile edit (`refresh_panes`), as iTerm2 re-applies them (`PTYSession.m:7013-7016`): the
-/// prompt column, the profile's Unicode version, scrollback with the status bar, the triggers.
+/// prompt column, the profile's Unicode version, scrollback with the status bar, the triggers,
+/// whether programs may set the title (`PS:19364-19371`).
 fn screen_follows_profile(screen: &mut crate::screen::Screen, p: &Profile) {
     screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
+    screen.allow_title = p.bool("Allow Title Setting");
     screen.profile_unicode = crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer()));
     screen.set_scrollback_with_status_bar(p.bool("Scrollback With Status Bar"));
     let (list, prefs) = triggers_ui::triggers_of(p);

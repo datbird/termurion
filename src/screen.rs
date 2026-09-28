@@ -134,6 +134,8 @@ pub struct Screen {
     events: Receiver<Event>,
     pub palette: Palette,
     title: Option<String>,
+    /// The profile's Allow Title Setting: whether programs may set the title (OSC 0, 1, 2).
+    pub allow_title: bool,
     cell_px: (u16, u16),
     osc: crate::osc::Scanner,
     pub marks: crate::marks::Marks,
@@ -302,6 +304,9 @@ pub enum Request {
     Notify { title: Option<String>, message: String },
     /// OSC 9;4: a progress bar appeared (true) or went away.
     Progress(bool),
+    /// A program set (Some) or reset (None) the session's title: the window's other sessions
+    /// take it when SeparateWindowTitlePerTab is off.
+    WindowTitle(Option<String>),
     /// SetBadgeFormat: the session's badge text.
     SetBadge(String),
     /// SetBadgeFormat with a function call: refused.
@@ -383,6 +388,7 @@ impl Screen {
             events,
             palette,
             title: None,
+            allow_title: true,
             cell_px: (0, 0),
             osc: crate::osc::Scanner::default(),
             marks: crate::marks::Marks::default(),
@@ -556,7 +562,8 @@ impl Screen {
         self.cell_px = (w, h);
     }
 
-    /// Set Title (a trigger): the session's title.
+    /// Set Title (a trigger), or a title another session of the window set: the session's
+    /// title. It asks nothing of the window.
     pub fn set_title(&mut self, title: Option<String>) {
         self.title = title;
     }
@@ -1227,8 +1234,16 @@ impl Screen {
                     };
                     reply.extend_from_slice(answer(size).as_bytes());
                 }
-                Event::Title(title) => self.title = Some(title),
-                Event::ResetTitle => self.title = None,
+                // Allow Title Setting gates programs' titles (`PS:19364-19371`); an applied
+                // one may go to the window's other sessions.
+                Event::Title(title) if self.allow_title => {
+                    self.title = Some(title.clone());
+                    self.requests.push(Request::WindowTitle(Some(title)));
+                }
+                Event::ResetTitle if self.allow_title => {
+                    self.title = None;
+                    self.requests.push(Request::WindowTitle(None));
+                }
                 Event::Bell => {
                     self.bell_count += 1;
                     self.requests.push(Request::Bell);
@@ -1418,6 +1433,50 @@ mod tests {
         let mut s = Screen::new(80, 24);
         s.feed(b"\x1b]0;hello\x07");
         assert_eq!(s.title(), Some("hello"));
+    }
+
+    /// Allow Title Setting gates OSC 0 and 2 and the title stack's reset (`PS:19364-19371`);
+    /// an applied title asks the window to share it (`PT:15578-15584`). OSC 1 (the icon name)
+    /// is not reported by vte 0.15, so it sets nothing either way.
+    #[test]
+    fn title_setting_follows_iterm2() {
+        for allow in [true, false] {
+            let mut s = Screen::new(80, 24);
+            s.allow_title = allow;
+            s.feed(b"\x1b]1;hello\x07");
+            assert_eq!(s.title(), None, "{allow}");
+            assert_eq!(s.take_requests(), vec![], "{allow}");
+        }
+        for seq in [&b"\x1b]2;hello\x07"[..], b"\x1b]0;hello\x07"] {
+            let mut s = Screen::new(80, 24);
+            assert!(s.allow_title);
+            s.feed(seq);
+            assert_eq!(s.title(), Some("hello"), "{seq:?}");
+            assert_eq!(s.take_requests(), vec![Request::WindowTitle(Some("hello".into()))], "{seq:?}");
+            let mut s = Screen::new(80, 24);
+            s.allow_title = false;
+            s.feed(seq);
+            assert_eq!(s.title(), None, "{seq:?}");
+            assert_eq!(s.take_requests(), vec![], "{seq:?}");
+        }
+        // Push (no title yet), set, pop: the pop resets the title only when allowed.
+        let mut s = Screen::new(80, 24);
+        s.feed(b"\x1b[22;0t\x1b]2;hello\x07");
+        s.take_requests();
+        s.allow_title = false;
+        s.feed(b"\x1b[23;0t");
+        assert_eq!(s.title(), Some("hello"));
+        assert_eq!(s.take_requests(), vec![]);
+        let mut s = Screen::new(80, 24);
+        s.feed(b"\x1b[22;0t\x1b]2;hello\x07");
+        s.take_requests();
+        s.feed(b"\x1b[23;0t");
+        assert_eq!(s.title(), None);
+        assert_eq!(s.take_requests(), vec![Request::WindowTitle(None)]);
+        // A copied title does not ask again (no loop between two panes).
+        s.set_title(Some("copied".into()));
+        assert_eq!(s.title(), Some("copied"));
+        assert_eq!(s.take_requests(), vec![]);
     }
 
     #[test]

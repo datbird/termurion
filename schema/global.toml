@@ -599,6 +599,15 @@ default = true
 help = "Quitting asks first while a terminal window is open."
 
 [[setting]]
+key = "SeparateWindowTitlePerTab"
+tab = "General"
+section = "Window"
+label = "Each tab may have its own window title"
+type = "bool"
+default = true
+help = "The OSC 0 and OSC 2 control sequences set the window title. This setting controls whether such a control sequence changes the window title associated with all sessions in the window, or only with the one in which it was received. The window title is derived from the window title associated with the currently active session in that window."
+
+[[setting]]
 key = "PromptOnQuitEvenIfThereAreNoWindows"
 tab = "General"
 section = "Closing"
@@ -888,6 +897,15 @@ label = "When restoring a window arrangement, ensure windows are entirely within
 type = "bool"
 default = true
 help = "When restoring a window arrangement, ensure windows are entirely within the bounds of the current displays."
+
+[[setting]]
+key = "ShowWindowTitleWhenTabBarInvisible"
+tab = "Advanced"
+section = "Windows"
+label = "Show window title when the tab bar is not visible?"
+type = "bool"
+default = true
+help = "Show window title when the tab bar is not visible?\nWhen disabled, the tab's title will be shown where the window title would normally go."
 
 [[setting]]
 key = "Hotkey"
