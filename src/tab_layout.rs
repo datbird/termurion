@@ -674,7 +674,7 @@ impl CellText {
 }
 
 /// The laid-out bar, in points from the bar's left, the scroll offset applied.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Bar {
     /// The shown tabs: tab index, inside, and the tab's rectangle.
     pub cells: Vec<(usize, CellLayout, Rect)>,
@@ -920,6 +920,55 @@ pub fn build(
         bar.add = Some(Rect { x: ax, y: 0.0, w: ADD_BUTTON, h: s.height });
     }
     bar
+}
+
+/// What a point on the bar is over (`PSM mouseDown:`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hit {
+    Tab(usize),
+    /// A tab's close button while it is drawn.
+    Close(usize),
+    Add,
+    Overflow,
+    /// The bar with nothing on it.
+    Bar,
+}
+
+/// The "+" rect in points, `offset` applied: right after the last tab it moves with the tabs;
+/// pinned in the right margin of a bar that scrolls it stays (`PSM:3337-3350`).
+fn add_rect(bar: &Bar, offset: f32) -> Option<Rect> {
+    bar.add.map(|r| if bar.content > 0.0 { r } else { Rect { x: r.x - offset, ..r } })
+}
+
+/// What the point (`x`, `y`) is over, in points from the bar's top left, on a bar built with
+/// offset 0 and scrolled by `offset`. None off the bar.
+pub fn hit(bar: &Bar, offset: f32, x: f32, y: f32) -> Option<Hit> {
+    if x < 0.0 || y < 0.0 || y >= bar.height {
+        return None;
+    }
+    // The buttons sit over the tabs scrolled under them.
+    if bar.overflow.is_some_and(|r| r.contains(x, y)) {
+        return Some(Hit::Overflow);
+    }
+    if add_rect(bar, offset).is_some_and(|r| r.contains(x, y)) {
+        return Some(Hit::Add);
+    }
+    let cx = x + offset;
+    let Some((i, layout, _)) = bar.cells.iter().find(|(_, _, r)| r.contains(cx, y)) else {
+        return Some(Hit::Bar);
+    };
+    // `closeButtonVisible`: the button is one only while drawn.
+    let on_close = layout.close_alpha > 0.0 && layout.close.is_some_and(|r| r.contains(cx, y));
+    Some(if on_close { Hit::Close(*i) } else { Hit::Tab(*i) })
+}
+
+/// The "+" rect in pixels at the window position `origin` of the bar's top left, `offset`
+/// applied as `hit` does. None without the button.
+pub fn add_rect_px(bar: &Bar, offset: f32, origin: (f32, f32), scale: f32) -> Option<Rect> {
+    add_rect(bar, offset).map(|r| {
+        let px = to_px(r, scale);
+        Rect { x: px.x + origin.0, y: px.y + origin.1, ..px }
+    })
 }
 
 #[cfg(test)]
@@ -1359,5 +1408,65 @@ mod tests {
         assert_eq!(b.cells[1].1.close.unwrap().x, b.cells[1].2.x + 6.0);
 
         assert_eq!(to_px(Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0 }, 1.5), Rect { x: 1.5, y: 3.0, w: 4.5, h: 6.0 });
+    }
+
+    #[test]
+    fn hits_follow_iterm2() {
+        // Not stretched: three tabs of 175, the "+" at 525, room past it.
+        let s = Settings { prefs: Prefs { stretch: false, scrollable: false, ..defaults().prefs }, ..defaults() };
+        let tabs = [input("a", 1), input("b", 2), input("c", 3)];
+        let hovered = build(&tabs, 0, 600.0, 0.0, Some(1), &s, &six_per_char);
+        let close = hovered.cells[1].1.close.unwrap();
+        let (cx, cy) = (close.x + 2.0, close.y + 2.0);
+        assert_eq!(hit(&hovered, 0.0, cx, cy), Some(Hit::Close(1)));
+        assert_eq!(hit(&hovered, 0.0, 175.0 + 100.0, 12.0), Some(Hit::Tab(1)));
+        assert_eq!(hit(&hovered, 0.0, 530.0, 12.0), Some(Hit::Add));
+        assert_eq!(hit(&hovered, 0.0, 560.0, 12.0), Some(Hit::Bar));
+        assert_eq!(hit(&hovered, 0.0, 100.0, 24.0), None, "below the bar");
+        assert_eq!(hit(&hovered, 0.0, 100.0, -1.0), None);
+        // The close button is only a button while drawn (`closeButtonVisible`).
+        let idle = build(&tabs, 0, 600.0, 0.0, None, &s, &six_per_char);
+        assert_eq!(hit(&idle, 0.0, cx, cy), Some(Hit::Tab(1)));
+        let always = build(&tabs, 0, 600.0, 0.0, None, &Settings { close_always: true, ..s.clone() }, &six_per_char);
+        assert_eq!(hit(&always, 0.0, cx, cy), Some(Hit::Close(1)));
+        let none = build(&tabs, 0, 600.0, 0.0, Some(1), &Settings { close_buttons: false, ..s.clone() }, &six_per_char);
+        assert_eq!(hit(&none, 0.0, cx, cy), Some(Hit::Tab(1)));
+
+        // A scrolled bar: tabs of 120 from content x 0; at offset 200 the point x 10 is content
+        // x 210, in tab 1.
+        let scrolls = Settings { prefs: Prefs { scrollable: true, ..s.prefs }, ..s.clone() };
+        let ten: Vec<TabInput> = (1..=10).map(|i| input(&format!("t{i}"), i)).collect();
+        let bar = build(&ten, 0, 600.0, 0.0, None, &scrolls, &six_per_char);
+        assert_eq!(bar.content, 1200.0);
+        assert_eq!(hit(&bar, 200.0, 10.0, 12.0), Some(Hit::Tab(1)));
+        assert_eq!(hit(&bar, 0.0, 10.0, 12.0), Some(Hit::Tab(0)));
+        // The "+" stays pinned in the right margin, over the tabs scrolled under it.
+        assert_eq!(hit(&bar, 200.0, 580.0, 12.0), Some(Hit::Add));
+
+        // A bar that does not scroll and has too many tabs: the overflow button.
+        let many: Vec<TabInput> = (1..=20).map(|i| input(&format!("t{i}"), i)).collect();
+        let over = build(&many, 0, 600.0, 0.0, None, &s, &six_per_char);
+        let o = over.overflow.unwrap();
+        assert_eq!(hit(&over, 0.0, o.x + 5.0, 12.0), Some(Hit::Overflow));
+    }
+
+    #[test]
+    fn add_rect_follows_the_bar() {
+        let s = Settings { prefs: Prefs { stretch: false, scrollable: false, ..defaults().prefs }, ..defaults() };
+        let tabs = [input("a", 1), input("b", 2), input("c", 3)];
+        let bar = build(&tabs, 0, 600.0, 0.0, None, &s, &six_per_char);
+        let add = bar.add.unwrap();
+        let px = add_rect_px(&bar, 0.0, (0.0, 30.0), 2.0).unwrap();
+        assert_eq!(px, Rect { x: add.x * 2.0, y: add.y * 2.0 + 30.0, w: add.w * 2.0, h: add.h * 2.0 });
+        assert_eq!(add_rect_px(&bar, 100.0, (0.0, 30.0), 2.0).unwrap().x, px.x - 200.0);
+        assert_eq!(add_rect_px(&bar, 0.0, (10.0, 0.0), 2.0).unwrap().x, px.x + 10.0);
+        // Pinned in the right margin of a bar that scrolls (`PSM:3337-3350`): the offset leaves it.
+        let scrolls = Settings { prefs: Prefs { scrollable: true, ..s.prefs }, ..s.clone() };
+        let ten: Vec<TabInput> = (1..=10).map(|i| input(&format!("t{i}"), i)).collect();
+        let scrolled = build(&ten, 0, 600.0, 0.0, None, &scrolls, &six_per_char);
+        assert_eq!(add_rect_px(&scrolled, 300.0, (0.0, 0.0), 1.0), Some(Rect { x: 576.0, y: 0.0, w: 24.0, h: 24.0 }));
+        // `RemoveAddTabButton`.
+        let bare = Settings { prefs: Prefs { add_button: false, ..s.prefs }, ..s.clone() };
+        assert_eq!(add_rect_px(&build(&tabs, 0, 600.0, 0.0, None, &bare, &six_per_char), 0.0, (0.0, 30.0), 2.0), None);
     }
 }

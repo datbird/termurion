@@ -255,6 +255,41 @@ impl App {
         self.popup_menu = Some(menu);
     }
 
+    /// The tabs that do not fit the bar, as a popup from its overflow button: each tab's title
+    /// as plain text with its number, the selected tab checked (`PSM _setupCells:`). The picks
+    /// come back as `tab-overflow:<index>`.
+    pub(super) fn show_tab_overflow(&mut self) {
+        let Some(hwnd) = self.hwnd() else { return };
+        let html = self.globals.bool("HTMLTabTitles");
+        let menu = Menu::new();
+        let mut results = Vec::new();
+        for &i in &self.tab_bar.hidden {
+            let Some(t) = self.tabs.get(i) else { continue };
+            let look = self.tab_look(t);
+            let mut title = crate::tab_layout::plain_title(&crate::tab_layout::limit_title(&look.title), html);
+            // The number is 0 with `HideTabNumber` (`TAB:1303-1305`).
+            if look.number > 0 && !self.globals.bool("HideTabNumber") {
+                title.push_str(&format!(" ({})", look.number));
+            }
+            results.push(menu.append(&CheckMenuItem::with_id(format!("tab-overflow:{i}"), title.replace('&', "&&"), true, i == self.active, None)));
+        }
+        if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
+            self.banners.set("menu", format!("Tab menu: {e}"));
+        }
+        unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        self.popup_menu = Some(menu);
+    }
+
+    /// A tab picked from the overflow popup is selected.
+    fn tab_overflow_picked(&mut self, id: &str) -> bool {
+        let Some(i) = id.strip_prefix("tab-overflow:").and_then(|i| i.parse::<usize>().ok()) else { return false };
+        if i < self.tabs.len() {
+            self.active = i;
+            self.redraw();
+        }
+        true
+    }
+
     /// Whether the menu bar's check item for this label is checked (false when the item has
     /// no check mark).
     pub(super) fn menu_checked(&self, label: &str) -> bool {
@@ -356,7 +391,7 @@ impl App {
         if self.snippet_or_action_picked(id, event_loop) || self.toolbelt_picked(id, event_loop) {
             return;
         }
-        if self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) || self.porthole_language_picked(id) || self.status_bar_picked(id, event_loop) {
+        if self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) || self.porthole_language_picked(id) || self.tab_overflow_picked(id) || self.status_bar_picked(id, event_loop) {
             return;
         }
         if let Some(item) = menus::by_id(id) {

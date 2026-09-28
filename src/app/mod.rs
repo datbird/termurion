@@ -554,7 +554,16 @@ pub struct App {
     clicks: Clicks,
     wheel_acc: f32,
     focused: bool,
-    tab_rects: Vec<Rect>,
+    /// The tab bar as last laid out, in points, not scrolled (`build_frame`).
+    tab_bar: tab_layout::Bar,
+    /// The tab bar's scroll offset in points.
+    tab_scroll: f32,
+    /// The tab under the pointer, and whether the pointer is on its close button.
+    tab_hover: Option<(usize, bool)>,
+    /// Every layout brings the selected tab into view, until the bar is scrolled by hand.
+    tab_keep_selected: bool,
+    /// The selected tab's id and the tab count at the last layout: a change selects anew.
+    tab_seen: Option<(u64, usize)>,
     banners: Banners,
     /// The `utilities` folder beside tandem.exe, when `utilities::ensure` made it at start.
     utilities: Option<PathBuf>,
@@ -1060,7 +1069,11 @@ pub fn run() {
         clicks: Clicks::default(),
         wheel_acc: 0.0,
         focused: true,
-        tab_rects: Vec::new(),
+        tab_bar: tab_layout::Bar::default(),
+        tab_scroll: 0.0,
+        tab_hover: None,
+        tab_keep_selected: true,
+        tab_seen: None,
         banners,
         utilities,
         clipboard: arboard::Clipboard::new().ok(),
@@ -1176,14 +1189,15 @@ impl App {
         }
     }
 
-    /// Lays out the tab bar `width` pixels wide, measuring labels in the prose font.
-    fn layout_tab_bar(&mut self, looks: &[scene::TabLook], width: f32) -> tab_layout::Bar {
+    /// Lays out the tab bar `width` pixels wide, scrolled by `offset` points, measuring labels
+    /// in the prose font.
+    fn layout_tab_bar(&mut self, looks: &[scene::TabLook], width: f32, offset: f32) -> tab_layout::Bar {
         let s = tab_layout::Settings::from_globals(&self.globals);
         let inputs: Vec<tab_layout::TabInput> = looks
             .iter()
             .map(|l| tab_layout::TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: l.dot.is_some() || l.icon.is_some(), processing: l.processing, number: l.number })
             .collect();
-        let (scale, active) = (self.scale(), self.active);
+        let (scale, active, hovered) = (self.scale(), self.active, self.tab_hover.map(|(i, _)| i));
         let renderer = self.gpu.as_mut().map(|g| std::cell::RefCell::new(&mut g.renderer));
         // Points to pixels and back: a text of `pt` points is drawn at `pt * scale` pixels.
         let measure = |text: &str, pt: f32| match &renderer {
@@ -1194,7 +1208,100 @@ impl App {
             }
             None => text.chars().count() as f32 * pt * 0.5,
         };
-        tab_layout::build(&inputs, active, width / scale, 0.0, None, &s, &measure)
+        tab_layout::build(&inputs, active, width / scale, offset, hovered, &s, &measure)
+    }
+
+    /// The part of the tab bar the tabs scroll in, in points: left of the right margin, where
+    /// the "+" is pinned (`PSM scrollViewportLength`).
+    fn tab_viewport(&self) -> f32 {
+        let w = self.gpu.as_ref().map_or(800.0, |g| g.config.width as f32);
+        w / self.scale() - tab_layout::right_margin(false, !self.globals.bool("RemoveAddTabButton"))
+    }
+
+    /// What the window point (`x`, `y`) in pixels is over on the tab bar; None off the bar.
+    pub(super) fn tab_bar_hit(&self, x: f32, y: f32) -> Option<tab_layout::Hit> {
+        if !self.tab_bar_shown() {
+            return None;
+        }
+        let scale = self.scale();
+        live_tab_hit(tab_layout::hit(&self.tab_bar, self.tab_scroll, x / scale, y / scale), self.tabs.len())
+    }
+
+    /// Brings the selected tab fully into view on a bar that scrolls, and keeps it there at
+    /// every layout until the bar is scrolled by hand (`PSM scrollSelectedTabIntoView`).
+    pub(super) fn scroll_active_tab_into_view(&mut self) {
+        self.tab_keep_selected = true;
+        let Some((_, _, r)) = self.tab_bar.cells.iter().find(|(i, _, _)| *i == self.active) else { return };
+        self.tab_scroll = tab_layout::scroll_into_view(self.tab_scroll, r.x, r.w, self.tab_viewport(), self.tab_bar.content);
+    }
+
+    /// At each layout: a newly selected tab, or a tab added or closed, is brought into view
+    /// again (`PSM tabView:didSelectTabViewItem:`, `tabViewDidChangeNumberOfTabViewItems:`),
+    /// and the offset stays within the tabs.
+    fn follow_active_tab(&mut self) {
+        let seen = self.tabs.get(self.active).map(|t| (t.id, self.tabs.len()));
+        if seen != self.tab_seen {
+            self.tab_seen = seen;
+            self.tab_keep_selected = true;
+        }
+        if self.tab_keep_selected {
+            self.scroll_active_tab_into_view();
+        }
+        self.tab_scroll = tab_layout::clamp_scroll(self.tab_scroll, self.tab_bar.content, self.tab_viewport());
+    }
+
+    /// The "+" button in pixels, window coordinates; None while the bar hides or with
+    /// `RemoveAddTabButton`. 13d drags the window by it.
+    #[allow(dead_code)]
+    pub(super) fn new_tab_button_rect(&self) -> Option<Rect> {
+        if !self.tab_bar_shown() {
+            return None;
+        }
+        tab_layout::add_rect_px(&self.tab_bar, self.tab_scroll, (0.0, 0.0), self.scale())
+    }
+
+    /// The tab under the pointer follows it; a change redraws (the close button shows on hover).
+    fn update_tab_hover(&mut self) {
+        let (x, y) = self.cursor;
+        let hover = match self.tab_bar_hit(x, y) {
+            Some(tab_layout::Hit::Tab(i)) => Some((i, false)),
+            Some(tab_layout::Hit::Close(i)) => Some((i, true)),
+            _ => None,
+        };
+        if hover != self.tab_hover {
+            self.tab_hover = hover;
+            self.redraw();
+        }
+    }
+
+    /// The wheel over a tab bar that scrolls: a horizontal wheel, or Shift with the vertical
+    /// one, scrolls the tabs and stops keeping the selected tab in view (`PSM scrollWheel:`).
+    /// False when the wheel is not the bar's.
+    fn tab_bar_wheel(&mut self, delta: MouseScrollDelta) -> bool {
+        let (x, y) = self.cursor;
+        if self.tab_bar_hit(x, y).is_none() {
+            return false;
+        }
+        let optimum = tab_layout::Settings::from_globals(&self.globals).prefs.optimum;
+        // A notched wheel moves in lines; precise deltas are already a distance (pixels here).
+        let (dx, dy) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => (x, y),
+            MouseScrollDelta::PixelDelta(p) => {
+                let per_line = optimum * self.scale();
+                (p.x as f32 / per_line, p.y as f32 / per_line)
+            }
+        };
+        let Some(to) = tab_layout::wheel_scroll(self.tab_scroll, dx, dy, self.mods.shift, optimum, self.tab_bar.content, self.tab_viewport()) else {
+            return false;
+        };
+        if to != self.tab_scroll {
+            self.tab_scroll = to;
+            self.tab_keep_selected = false;
+            self.redraw();
+            // The tabs moved under a still pointer.
+            self.update_tab_hover();
+        }
+        true
     }
 
     /// The window's room below the tab bar and above any banner, the toolbelt's included.
@@ -2304,9 +2411,18 @@ impl App {
         if self.composer_press(button, x, y) {
             return;
         }
-        if let Some(i) = tab_hit(&self.tab_rects, self.tabs.len(), x, y) {
-            self.active = i;
-            return self.redraw();
+        match self.tab_bar_hit(x, y) {
+            Some(tab_layout::Hit::Tab(i) | tab_layout::Hit::Close(i)) => {
+                self.active = i;
+                return self.redraw();
+            }
+            Some(tab_layout::Hit::Overflow) => {
+                if button == MouseButton::Left {
+                    self.show_tab_overflow();
+                }
+                return;
+            }
+            _ => {}
         }
         if self.status_press(button, x, y, event_loop) {
             return;
@@ -2511,6 +2627,7 @@ impl App {
 
     fn mouse_move(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
+        self.update_tab_hover();
         self.toolbelt_move(x, y);
         self.composer_move(x, y);
         self.clip_move(x, y);
@@ -2583,7 +2700,7 @@ impl App {
             MouseScrollDelta::LineDelta(x, y) => (x * WHEEL_LINES, y * WHEEL_LINES),
             MouseScrollDelta::PixelDelta(p) => (p.x as f32 / cw, p.y as f32 / ch),
         };
-        if self.composer_wheel(dy) || self.toolbelt_wheel(dy) || self.clip_wheel(dy) || self.porthole_wheel(dx, dy) {
+        if self.tab_bar_wheel(delta) || self.composer_wheel(dy) || self.toolbelt_wheel(dy) || self.clip_wheel(dy) || self.porthole_wheel(dx, dy) {
             return;
         }
         self.wheel_acc += dy;
@@ -2640,16 +2757,20 @@ impl App {
         let palette_bg = self.panes.values().next().map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
         let mut frame = Frame { clear: rgba(palette_bg, 1.0), ..Default::default() };
         let (w, _) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
-        self.tab_rects.clear();
         if self.tab_bar_shown() {
             let looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
             let area = Rect { x: 0.0, y: 0.0, w, h: self.tab_height() };
-            let bar = self.layout_tab_bar(&looks, w);
+            // Kept unscrolled for hits; the scroll offset applies at each use.
+            self.tab_bar = self.layout_tab_bar(&looks, w, 0.0);
+            self.follow_active_tab();
+            let scrolled = (self.tab_scroll > 0.0).then(|| self.layout_tab_bar(&looks, w, self.tab_scroll));
             let scale = self.scale();
-            // The shown tabs are a prefix, so a rectangle's place is its tab's index.
-            self.tab_rects = bar.cells.iter().map(|(_, _, r)| tab_layout::to_px(*r, scale)).collect();
             let font_px = self.gpu.as_ref().map_or(cell.1, |g| g.renderer.font_px()).max(1.0);
-            scene::tab_bar(&mut frame, &looks, self.active, &bar, area, scale, scale / font_px, cell.1);
+            scene::tab_bar(&mut frame, &looks, self.active, scrolled.as_ref().unwrap_or(&self.tab_bar), area, scale, scale / font_px, cell.1);
+        } else {
+            self.tab_bar = tab_layout::Bar::default();
+            self.tab_scroll = 0.0;
+            self.tab_hover = None;
         }
         let area = self.content_area();
         let backgrounds = self.pane_backgrounds();
@@ -3324,7 +3445,9 @@ impl ApplicationHandler<UserEvent> for App {
             }
             // The pointer left the window: no Help tooltip stays up.
             WindowEvent::CursorLeft { .. } => {
-                if self.composer_hover.take().is_some() {
+                let composer = self.composer_hover.take().is_some();
+                let tab = self.tab_hover.take().is_some();
+                if composer || tab {
                     self.redraw();
                 }
             }
@@ -3409,9 +3532,10 @@ fn move_new_tab<T>(tabs: &mut Vec<T>, before: usize, active: usize) -> Option<us
     Some(at)
 }
 
-/// The tab under (x, y), if it still exists.
-fn tab_hit(rects: &[Rect], tabs: usize, x: f32, y: f32) -> Option<usize> {
-    rects.iter().position(|r| r.contains(x, y)).filter(|i| *i < tabs)
+/// A hit on the tab bar, unless it names a tab that no longer exists.
+fn live_tab_hit(hit: Option<tab_layout::Hit>, tabs: usize) -> Option<tab_layout::Hit> {
+    use tab_layout::Hit;
+    hit.filter(|h| !matches!(h, Hit::Tab(i) | Hit::Close(i) if *i >= tabs))
 }
 
 /// What a session's screen takes from its profile, at start (`install_pane`) and after every
@@ -3493,11 +3617,13 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_tab_rect_is_not_a_hit() {
-        let r = |x: f32| Rect { x, y: 0.0, w: 10.0, h: 10.0 };
-        let rects = [r(0.0), r(10.0), r(20.0)];
-        assert_eq!(tab_hit(&rects, 3, 25.0, 5.0), Some(2));
-        assert_eq!(tab_hit(&rects, 2, 25.0, 5.0), None);
+    fn a_stale_tab_is_not_a_hit() {
+        use tab_layout::Hit;
+        assert_eq!(live_tab_hit(Some(Hit::Tab(2)), 3), Some(Hit::Tab(2)));
+        assert_eq!(live_tab_hit(Some(Hit::Tab(2)), 2), None);
+        assert_eq!(live_tab_hit(Some(Hit::Close(2)), 2), None);
+        assert_eq!(live_tab_hit(Some(Hit::Add), 0), Some(Hit::Add));
+        assert_eq!(live_tab_hit(None, 3), None);
     }
 }
 

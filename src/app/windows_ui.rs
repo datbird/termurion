@@ -19,7 +19,16 @@ pub(super) struct WinSlot {
     hover: Option<(PaneId, crate::find::Match)>,
     find_bar_rect: Option<Rect>,
     find_mode_rect: Option<Rect>,
-    tab_rects: Vec<Rect>,
+    /// The tab bar as last laid out, in points, not scrolled (`build_frame`).
+    tab_bar: crate::tab_layout::Bar,
+    /// The tab bar's scroll offset in points.
+    tab_scroll: f32,
+    /// The tab under the pointer, and whether the pointer is on its close button.
+    tab_hover: Option<(usize, bool)>,
+    /// Every layout brings the selected tab into view, until the bar is scrolled by hand.
+    tab_keep_selected: bool,
+    /// The selected tab's id and the tab count at the last layout: a change selects anew.
+    tab_seen: Option<(u64, usize)>,
     block_buttons: Vec<blocks_ui::BlockButton>,
     block_hover: Option<(PaneId, u32, i32, i32)>,
     porthole_hits: Vec<porthole_ui::PortholeHit>,
@@ -64,7 +73,11 @@ impl WinSlot {
             hover: None,
             find_bar_rect: None,
             find_mode_rect: None,
-            tab_rects: Vec::new(),
+            tab_bar: crate::tab_layout::Bar::default(),
+            tab_scroll: 0.0,
+            tab_hover: None,
+            tab_keep_selected: true,
+            tab_seen: None,
             block_buttons: Vec::new(),
             block_hover: None,
             porthole_hits: Vec::new(),
@@ -129,7 +142,11 @@ impl App {
         swap(&mut self.hover, &mut s.hover);
         swap(&mut self.find_bar_rect, &mut s.find_bar_rect);
         swap(&mut self.find_mode_rect, &mut s.find_mode_rect);
-        swap(&mut self.tab_rects, &mut s.tab_rects);
+        swap(&mut self.tab_bar, &mut s.tab_bar);
+        swap(&mut self.tab_scroll, &mut s.tab_scroll);
+        swap(&mut self.tab_hover, &mut s.tab_hover);
+        swap(&mut self.tab_keep_selected, &mut s.tab_keep_selected);
+        swap(&mut self.tab_seen, &mut s.tab_seen);
         swap(&mut self.block_buttons, &mut s.block_buttons);
         swap(&mut self.block_hover, &mut s.block_hover);
         swap(&mut self.porthole_hits, &mut s.porthole_hits);
@@ -517,7 +534,11 @@ impl WinSlot {
             hover: None,
             find_bar_rect: None,
             find_mode_rect: None,
-            tab_rects: Vec::new(),
+            tab_bar: crate::tab_layout::Bar::default(),
+            tab_scroll: 0.0,
+            tab_hover: None,
+            tab_keep_selected: true,
+            tab_seen: None,
             block_buttons: Vec::new(),
             block_hover: None,
             porthole_hits: Vec::new(),
