@@ -123,6 +123,11 @@ mod api_requests;
 mod script_ui;
 mod script_runtime_ui;
 mod scripts_alerts;
+mod warnings_app;
+mod suppressed_app;
+mod host_offers_ui;
+mod frustration_ui;
+mod shell_version_ui;
 mod prefs_ui;
 mod settings_export_ui;
 mod ai_app;
@@ -182,7 +187,9 @@ enum Drag {
     None,
     Select { pane: PaneId },
     Divider { path: Vec<bool>, axis: Axis, parent: Rect },
-    App { pane: PaneId, button: Button },
+    /// A press the program took as a mouse report: its click count and when it came, for
+    /// the frustration detector's release.
+    App { pane: PaneId, button: Button, clicks: u8, at: Instant },
     /// Selecting text in a porthole (its frame when the drag began).
     Porthole { pane: PaneId, id: u32, frame: Rect },
     /// A Clippings panel's width or one of its rows.
@@ -298,6 +305,9 @@ pub struct App {
     /// A tmux close question's answer, waiting for the event loop: gateway, actions, and
     /// whether the whole window closes.
     tmux_pending_close: Vec<(PaneId, Vec<crate::tmux_controller::Action>, bool)>,
+    /// A Close Tabs answer (group close commands), waiting for the event loop: the window it
+    /// was asked from and the tabs to close.
+    pending_tab_closes: Vec<(WindowId, Vec<u64>)>,
     /// A divider drag in a tmux tab: window key, gateway, pane before the divider,
     /// horizontal, start.
     tmux_drag: Option<(u64, PaneId, u32, bool, f32)>,
@@ -526,10 +536,11 @@ pub struct App {
     jobs_tree_seen: u64,
     jobs_watch_at: Option<Instant>,
     /// Jobs' Inspect popover (and when it last closed), and the signal question with what it
-    /// will send (the window opens on the next loop turn).
+    /// will send (the window opens on the next loop turn) and, in the remembered mode, the
+    /// saved answer.
     jobs_popover: Option<crate::status_popover_ui::InfoPopover>,
     jobs_popover_closed: Option<Instant>,
-    jobs_confirm: Option<(Option<crate::prompt_ui::ConfirmWindow>, toolbelt_more_ui::SignalRequest)>,
+    jobs_confirm: Option<(Option<crate::prompt_ui::ConfirmWindow>, toolbelt_more_ui::SignalRequest, Option<String>)>,
     /// Send Signal's console events on their way from a local pane (app-wide): each result is
     /// collected when its thread ends, so a close in progress never holds the window up.
     signal_waits: Vec<std::thread::JoinHandle<Result<(), String>>>,
@@ -758,9 +769,10 @@ pub struct App {
     script_runs: BTreeMap<u64, script_ui::Run>,
     script_next: u64,
     script_tokens: HashMap<u64, u64>,
-    /// "Function Call Failed" alerts (and results) waiting to show, and the one showing.
+    /// "Function Call Failed" alerts (and results) waiting to show, and the one showing (true:
+    /// in the remembered mode).
     script_alerts: VecDeque<script_ui::Alert>,
-    script_alert: Option<(crate::prompt_ui::ConfirmWindow, script_ui::Alert)>,
+    script_alert: Option<(crate::prompt_ui::ConfirmWindow, script_ui::Alert, bool)>,
     /// The provisioning worker (started on first use), what each submitted job continues
     /// with, the install each job queued behind one needs (dependent id to install id), the
     /// installed-Python probes running off the UI thread, and whether Tandem's uv is installed
@@ -773,9 +785,21 @@ pub struct App {
     provision_waiting: Vec<script_runtime_ui::Waiting>,
     backend_probes: Vec<script_runtime_ui::Probe>,
     uv_installed: bool,
-    /// The Scripts features' alerts waiting to show, and the one showing.
+    /// The alerts (iTerm2's warnings shown as windows) waiting to show, and the one showing.
     scripts_alerts: VecDeque<scripts_alerts::Ask>,
     scripts_alert: Option<(crate::prompt_ui::ConfirmWindow, scripts_alerts::Ask)>,
+    /// iTerm2's suppressed alerts (app-wide): the catalog of warnings answered automatically,
+    /// "Always show alerts with remembered selections" (not saved, as iTerm2's process global),
+    /// and when the catalog's write is due.
+    suppressed: crate::warnings::Catalog,
+    show_remembered: bool,
+    catalog_due: Option<Instant>,
+    /// `take_inline_asks` is asking: a released pane's held output is taken by its loop.
+    inline_asking: bool,
+    /// The Suppressed Alerts window (one per app) and when the menu title's "ago" is next
+    /// refreshed (while something is suppressed).
+    suppressed_window: Option<crate::suppressed_alerts_ui::SuppressedWindow>,
+    suppressed_retitle_due: Option<Instant>,
     /// The AI alert queue (ruling 12c-7), the alert showing, and the Settings > General > AI
     /// sub-tab an answer asked to reveal.
     ai_asks: VecDeque<crate::ai_gate::Alert>,
@@ -784,6 +808,11 @@ pub struct App {
     /// The one-vendor key prompts waiting to show (ruling 12e-1), and the one showing.
     ai_key_asks: VecDeque<(crate::ai_settings::Vendor, ai_app::KeyThen)>,
     ai_key_window: Option<(crate::ai_key_ui::KeyWindow, crate::ai_settings::Vendor, ai_app::KeyThen)>,
+    /// The discovered Ollama models (app-wide, never swapped), the transport AI requests go
+    /// through, and the refresh the settings window waits on.
+    ai_discovery: crate::ai_discovery::Cache,
+    ai_transport: Arc<dyn crate::ai_transport::Transport>,
+    ai_probe: Option<crate::ai_discovery::Ticket>,
     /// Launched scripts' processes by their Script Console entry's id (their key), the
     /// launches waiting for "Enable Python API?" to be answered, and the script whose
     /// failure notification was posted last (a click reveals its entry; a session's alert
@@ -991,6 +1020,8 @@ pub fn run() {
     // ones before anything reads them; its questions and failures show with the first window.
     let (prefs_saved, prefs_startup) = prefs_ui::load_at_start(&mut globals, &mut store, &prefs_ui::curl_fetch);
     let prefs_launch_folder = Some(globals.string(crate::remote_prefs::FOLDER_KEY));
+    // The warnings answered automatically in earlier runs (iTerm2 reads its catalog at start).
+    let suppressed = crate::warnings::Catalog::from_value(globals.get(crate::warnings::CATALOG_KEY).as_ref());
     if prefs_saved.is_some() {
         if let Err(e) = globals.save() {
             banners.set("globals", format!("Could not save settings: {e}"));
@@ -1032,6 +1063,9 @@ pub fn run() {
         (None, None)
     };
     let git_worker = git_ui::GitWorker::new(Arc::new(crate::git_run_win::WinGitRun), notify.clone());
+    // Discovered Ollama models from the last run resolve at once while a refresh runs.
+    let ai_discovery = crate::ai_discovery::Cache::load(&crate::ai_discovery::default_path());
+    let ai_transport: Arc<dyn crate::ai_transport::Transport> = Arc::new(crate::ai_winhttp::WinHttp);
     let composer_worker = crate::composer_worker::Worker::new(notify.clone(), Arc::new(crate::composer_worker::RealFs));
     let mut app = App {
         host,
@@ -1088,6 +1122,7 @@ pub fn run() {
         co_prompt: None,
         tmux_drag: None,
         tmux_pending_close: Vec::new(),
+        pending_tab_closes: Vec::new(),
         tmux_held_events: Vec::new(),
         tmux_dash: None,
         tmux_dash_gw: None,
@@ -1327,11 +1362,20 @@ pub fn run() {
         uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
         scripts_alerts: VecDeque::new(),
         scripts_alert: None,
+        suppressed,
+        show_remembered: false,
+        catalog_due: None,
+        inline_asking: false,
+        suppressed_window: None,
+        suppressed_retitle_due: None,
         ai_asks: VecDeque::new(),
         ai_alert: None,
         ai_reveal: None,
         ai_key_asks: VecDeque::new(),
         ai_key_window: None,
+        ai_discovery,
+        ai_transport,
+        ai_probe: None,
         script_procs: HashMap::new(),
         script_jobs_left: Vec::new(),
         script_after_enable: Vec::new(),
@@ -2225,7 +2269,19 @@ impl App {
             // The old shell is gone for good; the new one gets its own cookie.
             self.forget_cookie(&old);
         }
+        // Its inline files went with its screen.
+        self.close_inline_questions_of(id);
         self.start_pane_as(id, rect, guid.as_deref());
+    }
+
+    /// "Restart session?" answered OK: the pane restarts in its own window (gone: nothing
+    /// happens).
+    pub(super) fn restart_answered(&mut self, id: PaneId) {
+        if !self.panes.contains_key(&id) {
+            return;
+        }
+        self.enter_pane_window(id);
+        self.restart_pane(id);
     }
 
     /// The session variables for pane `id`, about to start with profile `p` (`PS:3246-3350`),
@@ -2381,7 +2437,7 @@ impl App {
         let it2ssh = exe.as_deref();
         // A blank Command runs the shell, not ssh, so it gets no banner.
         let runs_ssh = profile::is_ssh(p) && !p.string("Command").trim().is_empty();
-        match profile_banner(runs_ssh, crate::ssh_config::from_profile(p).ssh_integration, CONDUCTOR_READY, present) {
+        match profile_banner(runs_ssh, crate::ssh_config::from_profile(p).ssh_integration, present) {
             Some(text) => self.banners.set("ssh", text),
             None => self.banners.clear("ssh"),
         }
@@ -2399,8 +2455,8 @@ impl App {
         pane.dvr = crate::dvr::Dvr::new(crate::pane::capacity_for(self.globals.int("IRMemory")));
         if let Some(pid) = pane.shell_pid() {
             self.jobs.watch(pid);
-            if pane.owns_console() {
-                self.jobs.watch_console(pid);
+            if let Some(paused) = pane.console_pause_flag() {
+                self.jobs.watch_console(pid, paused);
             }
         }
         self.panes.insert(id, pane);
@@ -2499,6 +2555,7 @@ impl App {
                 // Hotkeys that failed to register show in the sheet.
                 s.hotkeys.errors = self.hotkey_errors.clone();
                 s.title_providers = self.title_provider_items();
+                s.ai.found = self.ai_discovery.all();
                 match mode {
                     Mode::Settings => self.settings = Some(s),
                     Mode::Profiles => self.profiles_win = Some(s),
@@ -2617,8 +2674,8 @@ impl App {
             match event {
                 crate::scripts_scan::ScanEvent::Slow => {
                     let text = crate::scripts::slow_text(&folder);
-                    let buttons = vec![crate::scripts::STOP.to_string(), crate::scripts::CONTINUE.to_string()];
-                    self.ask_scripts(scripts_alerts::Ask { heading: crate::scripts::SLOW_HEADING.to_string(), text, buttons, silence: None, then: scripts_alerts::Then::SlowScan });
+                    let buttons = [crate::scripts::STOP, crate::scripts::CONTINUE];
+                    self.ask_scripts(scripts_alerts::ask(crate::scripts::SLOW_HEADING, &text, &buttons, None, crate::warnings::Kind::Persistent, scripts_alerts::Then::SlowScan));
                 }
                 // An unchanged tree is left alone, so nothing built from it is rebuilt.
                 crate::scripts_scan::ScanEvent::Done(result) if result.tree != self.scripts_tree => {
@@ -2879,6 +2936,7 @@ impl App {
                     self.save_now();
                 }
                 if self.prefs_before_exit() {
+                    self.catalog_flush();
                     event_loop.exit();
                 }
             } else {
@@ -3052,6 +3110,8 @@ impl App {
             Action::Copy => {
                 if let Some(id) = self.tabs.get(self.active).map(|t| t.focused) {
                     self.copy_selection(id);
+                    // Tandem's copy chord is iTerm2's Cmd-C to the frustration detector.
+                    self.frustration_copy(id);
                 }
             }
             Action::Paste => self.paste(),
@@ -3399,6 +3459,12 @@ impl App {
             self.pointer_down = Some(PointerDown { button: b, clicks, pane: id, cell: (col, row) });
             return self.redraw();
         }
+        // The frustration detector watches left presses; other buttons end its episode.
+        if b == 0 {
+            self.frustration(id, |d| d.mouse_down(clicks, reportable));
+        } else {
+            self.frustration(id, |d| d.other_mouse());
+        }
         // Win-click opens the file or URL under the pointer (Semantic History). Windows
         // would open the Start menu when Win comes up, so that is masked.
         if b == 0 && mods.cmd && !mods.ctrl && self.globals.bool("CommandSelection") {
@@ -3414,7 +3480,7 @@ impl App {
             if let Some(bytes) = mouse::encode(modes, ev) {
                 self.panes.get_mut(&id).unwrap().input(&bytes);
             }
-            self.drag = Drag::App { pane: id, button: mb };
+            self.drag = Drag::App { pane: id, button: mb, clicks, at: Instant::now() };
             return self.redraw();
         }
         match b {
@@ -3529,7 +3595,15 @@ impl App {
                     self.copy_selection(pane);
                 }
             }
-            Drag::App { pane, button } => {
+            Drag::App { pane, button, clicks, at } => {
+                // macOS counts a release as no click once the multi-click time has passed.
+                let reported = mouse::app_owns_mouse(self.modes(pane), self.mods);
+                if button == Button::Left {
+                    let clicks = if at.elapsed() > input::MULTI_CLICK { 0 } else { clicks };
+                    self.frustration(pane, |d| d.mouse_up(clicks, reported));
+                } else {
+                    self.frustration(pane, |d| d.other_mouse());
+                }
                 let (x, y) = self.cursor;
                 // Look the pane up by id: the button may come up outside it, and the app
                 // must still get the release (cell_at clamps to the pane's edge).
@@ -3597,8 +3671,16 @@ impl App {
                 self.tabs[self.active].layout.set_ratio(&path, ratio);
                 self.relayout();
             }
-            Drag::App { pane, button } => {
+            Drag::App { pane, button, .. } => {
                 let (pane, button) = (*pane, *button);
+                // A drag counts as reported where the program asked for any clicks (iTerm2's
+                // test for drag reports), even when only motion with a button is sent.
+                let reported = mouse::app_owns_mouse(self.modes(pane), self.mods);
+                if button == Button::Left {
+                    self.frustration(pane, |d| d.mouse_dragged(reported));
+                } else {
+                    self.frustration(pane, |d| d.other_mouse());
+                }
                 self.send_motion(pane, Some(button), x, y);
             }
             Drag::None => {
@@ -4026,14 +4108,23 @@ impl ApplicationHandler<UserEvent> for App {
         let mut hotkey_saved: Vec<(String, crate::arrangement::Value)> = hotkey_saved.into_iter().filter_map(|w| crate::arrangement::hotkey_guid(&w).filter(|g| hotkey_profiles.contains(g)).map(|g| (g, w))).collect();
         let saved = (system_policy && !regular_saved.is_empty()).then_some(regular_saved);
         let has_saved = saved.is_some() || !hotkey_saved.is_empty();
-        let default_arrangement = self.globals.bool("OpenArrangementAtStartup").then(|| self.arrangements().default_name().and_then(|n| self.arrangements().get(n).cloned())).flatten().filter(|w| !w.is_empty());
+        // The default arrangement is restored by name (window restoration has none).
+        let default_arrangement = self
+            .globals
+            .bool("OpenArrangementAtStartup")
+            .then(|| {
+                let store = self.arrangements();
+                store.default_name().and_then(|n| store.get(n).cloned().map(|w| (Some(n.to_string()), w)))
+            })
+            .flatten()
+            .filter(|(_, w)| !w.is_empty());
         let has_arrangement = default_arrangement.is_some();
-        let startup_arrangement = if startup_hotkey.is_some() { None } else { saved.or(default_arrangement) };
+        let startup_arrangement = if startup_hotkey.is_some() { None } else { saved.map(|w| (None, w)).or(default_arrangement) };
         let mut arranged = false;
         match startup_arrangement {
-            Some(mut windows) => {
+            Some((name, mut windows)) => {
                 let first = windows.remove(0);
-                match self.apply_arrangement_window(&first) {
+                match self.apply_arrangement_window(&first, name.as_deref()) {
                     Ok(()) => arranged = !self.tabs.is_empty(),
                     Err(e) => self.banners.set("arrangement", e),
                 }
@@ -4041,14 +4132,14 @@ impl ApplicationHandler<UserEvent> for App {
                     self.new_tab(None);
                 }
                 for w in windows {
-                    self.pending_windows.push(windows_ui::NewWindow::Arrangement(w));
+                    self.pending_windows.push(windows_ui::NewWindow::Arrangement(w, name.clone()));
                 }
             }
             None => match &startup_hotkey {
                 Some(guid) => {
                     if let Some(i) = hotkey_saved.iter().position(|(g, _)| g == guid) {
                         let (_, w) = hotkey_saved.remove(i);
-                        match self.apply_arrangement_window(&w) {
+                        match self.apply_arrangement_window(&w, None) {
                             Ok(()) => arranged = !self.tabs.is_empty(),
                             Err(e) => self.banners.set("arrangement", e),
                         }
@@ -4178,11 +4269,15 @@ impl ApplicationHandler<UserEvent> for App {
             self.relaunch(event_loop);
         }
         self.prefs_tick(event_loop);
+        self.catalog_tick();
+        self.suppressed_tick();
         self.open_script_alerts(event_loop);
         self.open_scripts_alerts(event_loop);
         self.open_ai_alert(event_loop);
         self.open_ai_key_window(event_loop);
         self.open_ai_reveal(event_loop);
+        self.ai_discovery_tick();
+        let ai_due = self.ai_discovery_due();
         self.open_script_dialogs(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
@@ -4192,10 +4287,14 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_tmux_command_prompt(event_loop);
         self.open_requested_advanced_paste(event_loop);
         self.feed_shell_history();
+        // The conductors' command timers, before tmux_send_input: a timed-out conductor in a
+        // tmux integration pane writes through the gateway.
+        let ssh_due = self.tick_ssh();
         // Writes that did not come through user_write (mouse reports, Buffer Input).
         self.tmux_send_input();
         self.tmux_focus_tick();
         self.tmux_finish_close(event_loop);
+        self.finish_tab_closes(event_loop);
         self.tmux_dashboard_tick();
         for (gw, events) in std::mem::take(&mut self.tmux_held_events) {
             self.tmux_events(gw, events, event_loop);
@@ -4203,7 +4302,7 @@ impl ApplicationHandler<UserEvent> for App {
         let tip_due = self.tick_tab_tip();
         let flash_due = self.tick_tab_flash();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, tip_due, flash_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -4261,6 +4360,7 @@ impl ApplicationHandler<UserEvent> for App {
         let mut outputs = Vec::new();
         let now = Instant::now();
         self.sync_output_policy();
+        self.sync_host_policy();
         // The prompt state machine follows View > Auto Composer before it reads output (the
         // Task 3 contract: every pane, new ones included).
         let auto_composer = self.globals.bool("AutoComposer");
@@ -4276,6 +4376,7 @@ impl ApplicationHandler<UserEvent> for App {
                 exited.push(*id);
             }
         }
+        changed |= self.ssh_pump();
         changed |= self.tmux_pump(event_loop);
         self.api_output(&outputs);
         self.api_session_events();
@@ -4308,7 +4409,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
             return;
         }
         for profiles in [false, true] {
@@ -4328,12 +4429,16 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
                 WindowEvent::RedrawRequested => {
-                    let edit = slot.as_mut().unwrap().redraw(&mut self.store, &mut self.globals, &mut self.snippets);
+                    let win = slot.as_mut().unwrap();
+                    win.show_remembered = self.show_remembered;
+                    let edit = win.redraw(&mut self.store, &mut self.globals, &mut self.snippets);
+                    let answered = std::mem::take(&mut win.answered);
                     // Profiles > Session's "Configure Status Bar" opens the setup window.
                     let setup = slot.as_mut().and_then(|s| s.configure_status_bar.take());
                     // Configure SSH's help button opens its page in the browser.
                     let url = slot.as_mut().and_then(|s| s.open_url.take());
                     self.apply_edit(edit);
+                    self.settings_warnings_answered(answered);
                     if let Some(guid) = setup {
                         self.open_status_setup(statusbar_ui::SetupTarget::Shared(guid), None, false, event_loop);
                     }
@@ -4342,6 +4447,8 @@ impl ApplicationHandler<UserEvent> for App {
                             self.banners.set("window", format!("Could not open {url}: {e}"));
                         }
                     }
+                    // Settings > General > AI's discovery requests (ruling R12ab-3).
+                    self.drain_ai_requests(event_loop);
                 }
                 other => {
                     slot.as_mut().unwrap().event(&other);
@@ -4467,8 +4574,14 @@ impl ApplicationHandler<UserEvent> for App {
                 // A key that ends find typing, a tool's focus, Copy Mode, the completion list
                 // or the labels gives the terminal the keyboard back (`notifyActive`).
                 let elsewhere = self.focused_keys_elsewhere();
+                let focused = self.focused_id();
                 self.key(&event, event_loop);
                 self.composer_take_back(elsewhere);
+                // Any key ends a drag-then-Copy episode; Copy itself has already looked at it
+                // (modifiers alone are no key press, as in iTerm2's keyDown:).
+                if let Some(id) = focused.filter(|_| event.state == ElementState::Pressed && !labels_ui::is_modifier_key(&event.logical_key)) {
+                    self.frustration(id, |d| d.key());
+                }
             }
             // The pointer left the window: no Help tooltip stays up.
             WindowEvent::CursorLeft { .. } => {

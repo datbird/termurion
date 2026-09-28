@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 
 use super::api_ui::{self, Alert};
 use super::script_runtime_ui::After;
-use super::scripts_alerts::{Ask, Then};
+use super::scripts_alerts::{ask, Then};
+use crate::warnings;
 use super::App;
 use crate::script_archive as sa;
 use crate::script_export_ui::{ExportEvent, ExportWindow};
@@ -199,9 +200,7 @@ impl App {
         let environment = match &kind {
             Kind::NotAScript(_) => return,
             Kind::Malformed(p) => {
-                let buttons = vec![crate::api_auth::OK.to_string(), sl::REVEAL.to_string()];
-                // Temporarily silenceable in iTerm2: no checkbox (Decision); Reveal is never remembered.
-                let ask = Ask { heading: sl::MALFORMED_HEADING.to_string(), text: sl::malformed(&sl::entry_name(&kind)), buttons, silence: None, then: Then::Malformed(p.clone()) };
+                let ask = malformed_ask(p.clone(), &sl::entry_name(&kind));
                 return self.ask_scripts(ask);
             }
             Kind::NeedsRebuild { .. } => {
@@ -209,10 +208,7 @@ impl App {
                 if !req.explicit {
                     return self.script_log_app(sl::env_missing_line(&name));
                 }
-                // `REBUILD_ID` is persistent in iTerm2: never silenced.
-                let buttons = vec![sl::REBUILD.to_string(), crate::api_auth::CANCEL.to_string()];
-                let ask = Ask { heading: sl::REBUILD_HEADING.to_string(), text: sl::rebuild_text(&name), buttons, silence: None, then: Then::Rebuild(req) };
-                return self.ask_scripts(ask);
+                return self.ask_scripts(rebuild_ask(req, &name));
             }
             Kind::Basic { version, .. } => {
                 let requested = version.clone().unwrap_or_else(|| rt::DEFAULT_PYTHON.to_string());
@@ -294,7 +290,7 @@ impl App {
                 self.script_history.add_log(&key, &sl::failed_to_launch(&e), &stamp);
                 self.script_history.stop(&key);
                 let text = sl::error_running(&main.display().to_string(), &e);
-                self.ask_scripts(Ask { heading: sl::ERROR_RUNNING_TITLE.to_string(), text, buttons: vec![crate::api_auth::OK.to_string()], silence: None, then: Then::ErrorRunning });
+                self.ask_scripts(ask(sl::ERROR_RUNNING_TITLE, &text, &[crate::api_auth::OK], None, warnings::Kind::Persistent, Then::ErrorRunning));
             }
         }
         self.refresh_scripts_menu();
@@ -644,16 +640,16 @@ impl App {
         }
         let Some(chosen) = dialog.save_file() else { return };
         plan.chosen = chosen;
-        let ok = vec![crate::api_auth::OK.to_string()];
+        let ok = [crate::api_auth::OK];
         if !sn::under_scripts(&plan.chosen, &scripts) {
             // Persistent in iTerm2 (`LOCATION_ID`): never silenced.
-            let ask = Ask { heading: sn::INVALID_FOLDER.to_string(), text: sn::location_restricted(&scripts), buttons: ok, silence: None, then: Then::InvalidFolder(plan) };
+            let ask = ask(sn::INVALID_FOLDER, &sn::location_restricted(&scripts), &ok, None, warnings::Kind::Persistent, Then::InvalidFolder(plan));
             return self.ask_scripts(ask);
         }
         let name = plan.chosen.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         if sn::spaceless(&name).is_some() {
-            let buttons = vec![sn::USE_UNDERSCORE.to_string(), sn::CHANGE_NAME.to_string()];
-            let ask = Ask { heading: sn::SPACES_HEADING.to_string(), text: sn::SPACES_TEXT.to_string(), buttons, silence: None, then: Then::Spaces(plan) };
+            let buttons = [sn::USE_UNDERSCORE, sn::CHANGE_NAME];
+            let ask = ask(sn::SPACES_HEADING, sn::SPACES_TEXT, &buttons, None, warnings::Kind::Persistent, Then::Spaces(plan));
             return self.ask_scripts(ask);
         }
         self.create_new_script(plan);
@@ -710,8 +706,8 @@ impl App {
         }
         match edit_app_name() {
             Some(app) => {
-                let buttons = vec![crate::api_auth::OK.to_string(), sn::SHOW_IN_EXPLORER.to_string()];
-                let ask = Ask { heading: sn::WARNING.to_string(), text: sn::open_in(&app), buttons, silence: Some(sn::OPEN_IN_ID), then: Then::OpenNewScript(dest) };
+                let buttons = [crate::api_auth::OK, sn::SHOW_IN_EXPLORER];
+                let ask = ask(sn::WARNING, &sn::open_in(&app), &buttons, Some(sn::OPEN_IN_ID), warnings::Kind::Permanent, Then::OpenNewScript(dest));
                 self.ask_scripts(ask);
             }
             None => self.reveal_path(&dest),
@@ -1006,7 +1002,7 @@ impl App {
         match crate::script_provision::newest_shared_python(&uv, &names, &|p: &Path| p.is_file()) {
             Some(python) => self.repl_ready(python),
             None => {
-                let ask = Ask { heading: rt::ENV_UNAVAILABLE_HEADING.to_string(), text: rt::repl_prepare_failed(e), buttons: vec![crate::api_auth::OK.to_string()], silence: None, then: Then::Nothing };
+                let ask = ask(rt::ENV_UNAVAILABLE_HEADING, &rt::repl_prepare_failed(e), &[crate::api_auth::OK], None, warnings::Kind::Persistent, Then::Nothing);
                 self.ask_scripts(ask);
             }
         }
@@ -1172,8 +1168,8 @@ impl App {
             return self.import_replace(&name);
         }
         if dest.exists() {
-            let buttons = vec![sa::REPLACE.to_string(), crate::api_auth::CANCEL.to_string()];
-            let ask = Ask { heading: sa::ALREADY_HEADING.to_string(), text: sa::already_installed(&name), buttons, silence: None, then: Then::AlreadyInstalled(name) };
+            let buttons = [sa::REPLACE, crate::api_auth::CANCEL];
+            let ask = ask(sa::ALREADY_HEADING, &sa::already_installed(&name), &buttons, None, warnings::Kind::Persistent, Then::AlreadyInstalled(name));
             return self.ask_scripts(ask);
         }
         self.import_install();
@@ -1282,7 +1278,7 @@ impl App {
         if let Some(scanner) = &self.scripts_scan {
             scanner.rescan();
         }
-        let ok = crate::api_auth::OK.to_string();
+        let ok = crate::api_auth::OK;
         match result {
             Err(message) if quiet.is_some() => self.script_log_app(crate::settings_export::script_import_failed(&source, &message)),
             _ if quiet.is_some() => {}
@@ -1291,11 +1287,11 @@ impl App {
                 if trash {
                     recycle(&source);
                 }
-                let ask = Ask { heading: sa::IMPORTED_TITLE.to_string(), text: String::new(), buttons: vec![ok, sa::LAUNCH.to_string()], silence: None, then: Then::ImportDone(location) };
+                let ask = ask(sa::IMPORTED_TITLE, "", &[ok, sa::LAUNCH], None, warnings::Kind::Persistent, Then::ImportDone(location));
                 self.ask_scripts(ask);
             }
             Err(message) => {
-                let ask = Ask { heading: sa::COULD_NOT_INSTALL_TITLE.to_string(), text: message, buttons: vec![ok, sa::TRY_AGAIN.to_string()], silence: None, then: Then::ImportFailed(source) };
+                let ask = ask(sa::COULD_NOT_INSTALL_TITLE, &message, &[ok, sa::TRY_AGAIN], None, warnings::Kind::Persistent, Then::ImportFailed(source));
                 self.ask_scripts(ask);
             }
         }
@@ -1308,16 +1304,13 @@ impl App {
     }
 
     /// `didFindScriptArchive:autolaunch:` (`M:547-607`): each archive the scan finds asks
-    /// "Install Script Archive?" once per run (temporarily silenceable: no checkbox).
+    /// "Install Script Archive?" once per run (temporarily silenceable; only OK is remembered).
     pub(super) fn archives_found(&mut self, archives: &[(PathBuf, bool)]) {
         for (path, _) in archives {
             if !self.archives_asked.insert(path.clone()) {
                 continue;
             }
-            let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let buttons = vec![crate::api_auth::OK.to_string(), crate::api_auth::CANCEL.to_string(), crate::scripts::MOVE_TO_TRASH.to_string()];
-            let ask = Ask { heading: crate::scripts::ARCHIVE_HEADING.to_string(), text: crate::scripts::archive_text(&file), buttons, silence: None, then: Then::Archive(path.clone()) };
-            self.ask_scripts(ask);
+            self.ask_scripts(archive_ask(path));
         }
     }
 
@@ -1388,7 +1381,7 @@ impl App {
                 Ok(zip) => self.reveal_path(&zip),
                 Err(message) => {
                     let text = if message.is_empty() { sa::FAILED_TO_CREATE.to_string() } else { message };
-                    let ask = Ask { heading: sa::EXPORT_FAILED.to_string(), text, buttons: vec![crate::api_auth::OK.to_string()], silence: None, then: Then::Nothing };
+                    let ask = ask(sa::EXPORT_FAILED, &text, &[crate::api_auth::OK], None, warnings::Kind::Persistent, Then::Nothing);
                     self.ask_scripts(ask);
                 }
             }
@@ -1411,6 +1404,28 @@ fn fill_scripts(sub: &muda::Submenu, entries: &[MenuEntry], errors: &mut Vec<Str
             errors.push(e.to_string());
         }
     }
+}
+
+/// "Cannot Run Script" for the malformed script `name` at `path`: OK or Reveal, temporarily
+/// silenceable; Reveal is never remembered.
+pub(super) fn malformed_ask(path: PathBuf, name: &str) -> super::scripts_alerts::Ask {
+    let buttons = [crate::api_auth::OK, sl::REVEAL];
+    ask(sl::MALFORMED_HEADING, &sl::malformed(name), &buttons, Some(sl::MALFORMED_ID), warnings::Kind::Temporary, Then::Malformed(path))
+}
+
+/// "Rebuild Python Environment?" for the lost environment `name` of the launch `req`:
+/// Rebuild or Cancel; `REBUILD_ID` is persistent in iTerm2: never silenced.
+pub(super) fn rebuild_ask(req: Request, name: &str) -> super::scripts_alerts::Ask {
+    let buttons = [sl::REBUILD, crate::api_auth::CANCEL];
+    ask(sl::REBUILD_HEADING, &sl::rebuild_text(name), &buttons, Some(sl::REBUILD_ID), warnings::Kind::Persistent, Then::Rebuild(req))
+}
+
+/// "Install Script Archive?" for the archive the scan found at `path`: OK, Cancel or Move to
+/// Trash, temporarily silenceable; only OK is remembered.
+pub(super) fn archive_ask(path: &Path) -> super::scripts_alerts::Ask {
+    let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let buttons = [crate::api_auth::OK, crate::api_auth::CANCEL, crate::scripts::MOVE_TO_TRASH];
+    ask(crate::scripts::ARCHIVE_HEADING, &crate::scripts::archive_text(&file), &buttons, Some(crate::scripts::ARCHIVE_ID), warnings::Kind::Temporary, Then::Archive(path.to_path_buf()))
 }
 
 #[cfg(test)]

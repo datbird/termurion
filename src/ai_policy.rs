@@ -12,26 +12,47 @@ fn normalized(host: &str) -> String {
     host.to_lowercase().trim_end_matches('.').to_string()
 }
 
-/// The host of a URL as Foundation's `URL.host` reads it, normalized; None when the text has no
-/// `scheme://` authority, the authority names no host, or it holds a backslash, whitespace, a
-/// control character or `%`, which Foundation's `URL(string:)` rejects and other parsers read
-/// differently (`http://evil.example\@localhost/` must never name localhost).
-pub fn host_of(url: &str) -> Option<String> {
-    let (_, rest) = url.split_once("://")?;
-    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+/// A URL's `scheme://` authority split as Foundation's `URL(string:)` reads it; one parse feeds
+/// both the consent gate (`host_of`) and the transport (`ai_transport::parse_url`), so a request
+/// connects to the host the person allowed.
+pub struct UrlParts<'a> {
+    pub scheme: &'a str,
+    /// The host, normalized; without brackets for IPv6.
+    pub host: String,
+    /// What follows the host inside the authority: "" or ":port" (anything else is not a port).
+    pub after_host: &'a str,
+    /// Everything after the authority: the path, query and fragment ("" when none).
+    pub rest: &'a str,
+}
+
+/// None when the text has no `scheme://` authority, the authority names no host, or it holds a
+/// backslash, whitespace, a control character or `%`, which Foundation's `URL(string:)` rejects
+/// and other parsers read differently (`http://evil.example\@localhost/` must never name
+/// localhost).
+pub fn url_parts(url: &str) -> Option<UrlParts<'_>> {
+    let (scheme, rest) = url.split_once("://")?;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, rest) = rest.split_at(end);
     if authority.chars().any(|c| c == '\\' || c == '%' || c.is_whitespace() || c.is_control()) {
         return None;
     }
     let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    let host = if let Some(inner) = hostport.strip_prefix('[') {
-        &inner[..inner.find(']')?]
+    let (host, after_host) = if let Some(inner) = hostport.strip_prefix('[') {
+        let close = inner.find(']')?;
+        (&inner[..close], &inner[close + 1..])
     } else {
-        hostport.split_once(':').map_or(hostport, |(h, _)| h)
+        let colon = hostport.find(':').unwrap_or(hostport.len());
+        hostport.split_at(colon)
     };
     if host.is_empty() {
         return None;
     }
-    Some(normalized(host))
+    Some(UrlParts { scheme, host: normalized(host), after_host, rest })
+}
+
+/// The host of a URL as Foundation's `URL.host` reads it, normalized (see `url_parts`).
+pub fn host_of(url: &str) -> Option<String> {
+    url_parts(url).map(|p| p.host)
 }
 
 fn normalized_host(url: &str) -> String {
@@ -59,21 +80,58 @@ pub fn host_is_anthropic(url: &str) -> bool {
 }
 
 /// localhost, `.local` (mDNS), 127/8, 10/8, 172.16/12, 192.168/16, 169.254/16, ::1, fe80::/10
-/// and fc00::/7 (`PrivateIPChecker.swift:37-113`).
+/// and fc00::/7 (`PrivateIPChecker.swift:37-113`). Beyond iTerm2 (final review Minor 3), the
+/// other IPv4 spellings Windows connects to ("127.1", "2130706433", "0x7f.0.0.1") and IPv4-mapped
+/// IPv6 ("::ffff:127.0.0.1") are read as the address they name.
 pub fn is_local_or_private(host: &str) -> bool {
     let host = normalized(host);
     if host == "localhost" || host.ends_with(".local") {
         return true;
     }
-    if let Ok(v4) = host.parse::<Ipv4Addr>() {
-        let [a, b, _, _] = v4.octets();
-        return a == 127 || a == 10 || (a == 172 && (16..=31).contains(&b)) || (a == 192 && b == 168) || (a == 169 && b == 254);
+    if let Some(v4) = host.parse::<Ipv4Addr>().ok().or_else(|| inet_aton(&host)) {
+        return private_v4(v4);
     }
     if let Ok(v6) = host.parse::<Ipv6Addr>() {
+        if let Some(v4) = v6.to_ipv4_mapped() {
+            return private_v4(v4);
+        }
         let o = v6.octets();
         return v6 == Ipv6Addr::LOCALHOST || (o[0] == 0xfe && (o[1] & 0xc0) == 0x80) || (o[0] & 0xfe) == 0xfc;
     }
     false
+}
+
+fn private_v4(v4: Ipv4Addr) -> bool {
+    let [a, b, _, _] = v4.octets();
+    a == 127 || a == 10 || (a == 172 && (16..=31).contains(&b)) || (a == 192 && b == 168) || (a == 169 && b == 254)
+}
+
+/// The classic `inet_aton` forms: one to four parts, each decimal, octal (a leading 0) or hex
+/// (0x), the last filling the bytes the others leave.
+fn inet_aton(host: &str) -> Option<Ipv4Addr> {
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() > 4 {
+        return None;
+    }
+    let mut values = Vec::with_capacity(parts.len());
+    for p in &parts {
+        let (digits, radix) = match p.strip_prefix("0x") {
+            Some(hex) => (hex, 16),
+            None if p.len() > 1 && p.starts_with('0') => (&p[1..], 8),
+            None => (*p, 10),
+        };
+        if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+            return None;
+        }
+        values.push(u32::from_str_radix(digits, radix).ok()?);
+    }
+    let (last, head) = values.split_last()?;
+    if head.iter().any(|v| *v > 255) || u64::from(*last) >= 1u64 << (8 * (4 - head.len())) {
+        return None;
+    }
+    let mut addr = head.iter().enumerate().fold(0u32, |a, (i, v)| a | (v << (24 - 8 * i)));
+    addr |= last;
+    Some(Ipv4Addr::from(addr))
 }
 
 /// Why a request carries the stored vendor key or the placeholder (`AITerm.swift:174-196`).
@@ -260,6 +318,15 @@ mod tests {
         for host in ["172.32.0.1", "172.15.0.1", "8.8.8.8", "api.openai.com", "2001:db8::1", "fec0::1", "local", ""] {
             assert!(!is_local_or_private(host), "{host} is public");
         }
+        // Other spellings of a private address that Windows connects to (final review Minor 3).
+        for host in ["127.1", "2130706433", "0x7f000001", "0x7f.0.0.1", "0177.0.0.1", "10.1", "192.168.257", "::ffff:127.0.0.1", "::ffff:192.168.0.2", "::FFFF:7F00:1"] {
+            assert!(is_local_or_private(host), "{host} is private");
+        }
+        for host in ["134744072", "8.8.2056", "::ffff:8.8.8.8", "1.2.3.4.5", "256.1", "0x", "09.0.0.1", "1e2", "127.0.0.1.evil.test"] {
+            assert!(!is_local_or_private(host), "{host} is public");
+        }
+        assert_eq!(key_policy("http://2130706433:11434/api/chat", Api::Llama), KeyPolicy::LocalEndpoint);
+        assert_eq!(key_policy("http://[::ffff:127.0.0.1]:8080/v1/chat/completions", Api::ChatCompletions), KeyPolicy::LocalEndpoint);
     }
 
     #[test]

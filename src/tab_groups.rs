@@ -300,6 +300,11 @@ pub enum CloseTabs {
 /// The heading of the one question those commands ask (`PT:9906`).
 pub const CLOSE_TABS_HEADING: &str = "Close Tabs";
 
+/// That question's buttons (`PT:9902`) and identifier, a persistent warning, never remembered
+/// (`PT:9904-9905`).
+pub const CLOSE_TABS_BUTTONS: [&str; 2] = ["Close", "Cancel"];
+pub const CLOSE_TABS_ID: &str = "NoSyncCloseTabGroup";
+
 /// The question the group close commands ask once for `count` tabs (`PT closeTabs:`,
 /// `PT:9890-9917`): "<question> (N tabs)".
 pub fn close_question(what: CloseTabs, vertical: bool, count: usize) -> String {
@@ -536,6 +541,7 @@ mod tests {
         assert_eq!(close_question(CloseTabs::Right, false, 2), "Close all tabs to the right of this group? (2 tabs)");
         assert_eq!(close_question(CloseTabs::Right, true, 2), "Close all tabs below this group? (2 tabs)");
         assert_eq!(CLOSE_TABS_HEADING, "Close Tabs");
+        assert_eq!((CLOSE_TABS_BUTTONS, CLOSE_TABS_ID), (["Close", "Cancel"], "NoSyncCloseTabGroup"));
         assert_eq!(copy_name("Build"), "Build copy");
     }
 

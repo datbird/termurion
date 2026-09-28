@@ -54,6 +54,20 @@ pub enum Effort {
     Xhigh,
 }
 
+impl Effort {
+    /// The wire string (`AIReasoningEffort`'s raw value).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Effort::None => "none",
+            Effort::Minimal => "minimal",
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::Xhigh => "xhigh",
+        }
+    }
+}
+
 /// A Responses API service tier (`AITerm/AIReasoningTypes.swift:28-33`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServiceTier {
@@ -61,6 +75,18 @@ pub enum ServiceTier {
     Default,
     Flex,
     Priority,
+}
+
+impl ServiceTier {
+    /// The wire string (`AIServiceTier`'s raw value).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ServiceTier::Auto => "auto",
+            ServiceTier::Default => "default",
+            ServiceTier::Flex => "flex",
+            ServiceTier::Priority => "priority",
+        }
+    }
 }
 
 /// One catalog model (`AIMetadata.Model`).
@@ -82,6 +108,12 @@ pub struct Model {
     pub thinking_on_effort: Effort,
     pub reasoning_efforts: Vec<Effort>,
     pub service_tiers: Vec<ServiceTier>,
+    /// The model id sent on the wire when it differs from `name` (a disambiguated dynamic
+    /// Ollama tag, `AM:210-218`); None for every catalog entry.
+    pub wire_model_name: Option<String>,
+    /// Headers merged into every request to this model (`AM:220-225`), in order; empty for
+    /// every catalog entry.
+    pub custom_headers: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -171,6 +203,8 @@ impl ModelDto {
             thinking_on_effort: self.thinking_on_effort.as_deref().and_then(effort_case).unwrap_or(Effort::Medium),
             reasoning_efforts: self.reasoning_efforts.iter().flatten().filter_map(|e| effort_case(e)).collect(),
             service_tiers: self.service_tiers.iter().flatten().filter_map(|t| tier_case(t)).collect(),
+            wire_model_name: None,
+            custom_headers: Vec::new(),
         })
     }
 }
@@ -461,6 +495,14 @@ mod tests {
     }
 
     #[test]
+    fn catalog_models_have_no_wire_extras() {
+        for m in &bundled().models {
+            assert_eq!(m.wire_model_name, None, "{}", m.name);
+            assert!(m.custom_headers.is_empty(), "{}", m.name);
+        }
+    }
+
+    #[test]
     fn fail_safe_decoding_follows_iterm2() {
         let valid = entry("valid", "anthropic");
         let mut future_api = entry("future", "anthropic");
@@ -526,5 +568,16 @@ mod tests {
         assert_eq!(validate(&catalog(vec![entry("m", "mistral"), entry("a", "anthropic")])), Some(7));
         assert_eq!(validate(&catalog(vec![entry("m", "mistral")])), None);
         assert_eq!(validate("x"), None);
+    }
+
+    #[test]
+    fn wire_strings_round_trip() {
+        for e in [Effort::None, Effort::Minimal, Effort::Low, Effort::Medium, Effort::High, Effort::Xhigh] {
+            assert_eq!(effort_case(e.as_str()), Some(e));
+        }
+        for t in [ServiceTier::Auto, ServiceTier::Default, ServiceTier::Flex, ServiceTier::Priority] {
+            assert_eq!(tier_case(t.as_str()), Some(t));
+        }
+        assert_eq!((Effort::Xhigh.as_str(), ServiceTier::Priority.as_str()), ("xhigh", "priority"));
     }
 }

@@ -5,7 +5,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use super::scripts_alerts::{Ask, Then};
+use super::scripts_alerts::{ask, Then};
+use crate::warnings::Kind;
 use super::App;
 use crate::script_provision::{self, Gate, Job, Outcome, Provisioner, RealRunner, Runner, Step, Target};
 use crate::script_runtime::{self as rt, Arch, Backend};
@@ -155,12 +156,12 @@ impl App {
     }
 
     fn runtime_alert(&mut self, heading: &str, text: String) {
-        self.ask_scripts(Ask { heading: heading.to_string(), text, buttons: vec![crate::api_auth::OK.to_string()], silence: None, then: Then::Nothing });
+        self.ask_scripts(ask(heading, &text, &[crate::api_auth::OK], None, Kind::Persistent, Then::Nothing));
     }
 
     pub(super) fn consent(&mut self, (heading, text): (&str, String), jobs: Vec<(Job, After)>) {
-        let buttons = vec![crate::api_auth::OK.to_string(), "Cancel".to_string()];
-        self.ask_scripts(Ask { heading: heading.to_string(), text, buttons, silence: None, then: Then::Consent(jobs) });
+        let buttons = [crate::api_auth::OK, "Cancel"];
+        self.ask_scripts(ask(heading, &text, &buttons, None, Kind::Persistent, Then::Consent(jobs)));
     }
 
     /// Makes sure `target` is ready, then continues with `after`. Ready now: at once. Else a

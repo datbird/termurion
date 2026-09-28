@@ -310,6 +310,11 @@ impl App {
         id.is_some_and(|id| self.enter(id))
     }
 
+    /// Every window's menu bar: the current window's and each parked window's.
+    pub(super) fn menu_bars(&self) -> impl Iterator<Item = &menu::MenuBar> {
+        self.menu_bar.iter().chain(self.windows.parked().filter_map(|(_, s)| s.menu_bar.as_ref()))
+    }
+
     /// The current window's id.
     pub(super) fn current_window(&self) -> Option<WindowId> {
         self.gpu.as_ref().map(|g| g.window.id())
@@ -369,7 +374,7 @@ impl App {
                 match first {
                     NewWindow::Tab(tab) | NewWindow::TornOff(tab, _) => self.tabs.push(tab),
                     NewWindow::Tabs(tabs) => self.tabs.extend(tabs),
-                    NewWindow::Profile(_) | NewWindow::Arrangement(_) | NewWindow::Orphans(_) | NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..) => {}
+                    NewWindow::Profile(_) | NewWindow::Arrangement(..) | NewWindow::Orphans(_) | NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..) => {}
                 }
                 // Pinned or grouped tabs coming back keep the order's rules, and tmux hears
                 // a changed order.
@@ -397,7 +402,7 @@ impl App {
             NewWindow::Profile(g) => g.clone(),
             NewWindow::Tab(t) | NewWindow::TornOff(t, _) => self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile)),
             NewWindow::Tabs(ts) => ts.first().and_then(|t| self.panes.get(&t.focused)).map(|p| self.store.shared_guid(&p.profile)),
-            NewWindow::Arrangement(w) => self.first_arrangement_guid(w),
+            NewWindow::Arrangement(w, _) => self.first_arrangement_guid(w),
             NewWindow::Orphans(_) => None,
             NewWindow::Hotkey(g, _) | NewWindow::HotkeyRestored(g, _) => Some(g.clone()),
         };
@@ -407,7 +412,7 @@ impl App {
         // A git command's single-use window is never full screen (`iTermController.m`
         // `openSingleUseWindowWithCommand:` uses the default window type instead).
         let style = if self.start_command_override.is_some() && style == crate::frames::FULL_SCREEN { crate::frames::NORMAL } else { style };
-        let arranged = matches!(first, NewWindow::Arrangement(_) | NewWindow::HotkeyRestored(..));
+        let arranged = matches!(first, NewWindow::Arrangement(..) | NewWindow::HotkeyRestored(..));
         let torn_at = match &first {
             NewWindow::TornOff(_, at) => Some(*at),
             _ => None,
@@ -425,8 +430,8 @@ impl App {
                 self.settle_tabs();
                 self.relayout();
             }
-            NewWindow::Arrangement(w) => {
-                if let Err(e) = self.apply_arrangement_window(&w) {
+            NewWindow::Arrangement(w, name) => {
+                if let Err(e) = self.apply_arrangement_window(&w, name.as_deref()) {
                     self.banners.set("arrangement", e);
                 }
             }
@@ -438,7 +443,7 @@ impl App {
                 self.hotkey = Some(h);
             }
             NewWindow::HotkeyRestored(guid, w) => {
-                if let Err(e) = self.apply_arrangement_window(&w) {
+                if let Err(e) = self.apply_arrangement_window(&w, None) {
                     self.banners.set("arrangement", e);
                 }
                 self.hotkey = Some(super::hotkey_ui::HotkeyWin::new(guid));
@@ -744,8 +749,9 @@ pub(super) enum NewWindow {
     TornOff(Tab, (i32, i32)),
     /// Tabs brought back by Undo Close.
     Tabs(Vec<Tab>),
-    /// A window table from an arrangement.
-    Arrangement(crate::arrangement::Value),
+    /// A window table from an arrangement, and the saved arrangement's name (None for
+    /// window restoration, a file, or Duplicate Window).
+    Arrangement(crate::arrangement::Value, Option<String>),
     /// Host sessions nobody claimed at launch: (host session id, pid), a tab each.
     Orphans(Vec<(u64, u32)>),
     /// A profile's hotkey window, made on its first press (and the window that was in
@@ -954,7 +960,7 @@ impl App {
         }
         // A window of loaded recordings only has nothing to duplicate.
         let Some(snap) = self.snapshot_window(super::arrange_ui::Contents::None) else { return };
-        self.pending_windows.push(NewWindow::Arrangement(snap));
+        self.pending_windows.push(NewWindow::Arrangement(snap, None));
         self.redraw();
     }
 }

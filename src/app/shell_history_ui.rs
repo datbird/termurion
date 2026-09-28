@@ -13,6 +13,8 @@ pub(super) enum PopupFor {
     /// Commands starting with what was typed.
     Commands(String),
     Dirs,
+    /// A saved profile for a session of a saved arrangement (the values are Guids).
+    AssignProfile { arrangement: String, session: String },
 }
 
 /// What each pane has fed already: command records, the codes seen, the directory.
@@ -180,9 +182,15 @@ impl App {
     }
 
     fn open_list_popup(&mut self, event_loop: &ActiveEventLoop, pane: PaneId, title: &str, headers: [&str; 2], rows: Vec<(String, String)>, what: PopupFor) {
+        let values = rows.iter().map(|(v, _)| v.clone()).collect();
+        self.open_list_popup_for(event_loop, pane, title, headers, rows, values, what);
+    }
+
+    /// A list popup whose rows pick `values` (one a row).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn open_list_popup_for(&mut self, event_loop: &ActiveEventLoop, pane: PaneId, title: &str, headers: [&str; 2], rows: Vec<(String, String)>, values: Vec<String>, what: PopupFor) {
         self.list_popup = None;
         let Some(g) = self.gpu.as_ref() else { return };
-        let values = rows.iter().map(|(v, _)| v.clone()).collect();
         match ListPopup::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, title, headers, rows, None) {
             Ok(w) => self.list_popup = Some((w, pane, what, values)),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
@@ -238,6 +246,7 @@ impl App {
                     self.user_write(pane, text.as_bytes(), Write::SendText);
                 }
             }
+            PopupFor::AssignProfile { arrangement, session } => self.assign_arrangement_profile(arrangement, session, value),
         }
     }
 

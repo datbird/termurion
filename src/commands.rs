@@ -57,7 +57,7 @@ pub const DONE: &[&str] = &[
     "toggleSizeLocked:", "toggleLayoutLocked:", "decreaseHeight:", "increaseHeight:", "decreaseWidth:", "increaseWidth:",
     "editWindowTitle:", "editTabTitle:", "arrangeHorizontally:", "undoCloseSession:",
     "saveWindowArrangement:", "saveCurrentWindowAsArrangement:", "importWindowArrangement:", "changeProfileInArrangement:",
-    "showBookmarkWindow:", "installShellIntegration:", "installPythonRuntime:", "revealScriptsInFinder:", "newPythonScript:", "openREPL:", "importScript:", "exportScript:", "openDependencyEditor:", "openScriptConsole:", "saveScrollPosition:", "addNamedMark:", "jumpToSavedScrollPosition:", "nextMark:",
+    "showBookmarkWindow:", "installShellIntegration:", "installPythonRuntime:", "revealScriptsInFinder:", "newPythonScript:", "openREPL:", "importScript:", "exportScript:", "openDependencyEditor:", "openScriptConsole:", "showSuppressedAlerts:", "saveScrollPosition:", "addNamedMark:", "jumpToSavedScrollPosition:", "nextMark:",
     "previousMark:", "clearToLastMark:", "selectOutputOfLastCommand:", "selectCurrentCommand:",
     "toggleAlertOnNextMark:", "toggleAlertOnMarksInOffscreenSessions:", "enableMarkAlertShowsModalAlert:",
     "enableMarkAlertPostsNotification:", "enableMarkAlertRingsBell:", "performMiniaturize:", "performZoom:", "nextTab:", "previousTab:", "moveTabLeft:",
@@ -282,6 +282,7 @@ mod tests {
         assert_eq!(status(find("importScript:", "Import...")), Status::Done, "11d");
         assert_eq!(status(find("exportScript:", "Export...")), Status::Done, "11d");
         assert_eq!(status(find("openDependencyEditor:", "Manage Dependencies...")), Status::Done, "11d");
+        assert_eq!(status(find("showSuppressedAlerts:", "Suppressed Alerts...")), Status::Done, "13b");
         assert_eq!(status(find("sshDisconnect:", "Disconnect")), Status::Later(14), "14c");
         assert_eq!(status(find("downloadFiles:", "Download Files...")), Status::Later(14), "14d");
         assert_eq!(

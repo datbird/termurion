@@ -491,7 +491,7 @@ impl App {
         let opened = match d {
             Dialog::Alert { title, subtitle, buttons, .. } => {
                 let labels: Vec<&str> = buttons.iter().map(String::as_str).collect();
-                ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &title, &subtitle, &labels, false).map(|window| Open::Alert { window, token, buttons: buttons.clone() })
+                ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &title, &subtitle, &labels, None, &[], false, false).map(|window| Open::Alert { window, token, buttons: buttons.clone() })
             }
             Dialog::Text { title, subtitle, placeholder, default, .. } => {
                 PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &title, &subtitle, &default).map(|w| Open::Text { window: w.with_hint(&placeholder).ok_only(), token })

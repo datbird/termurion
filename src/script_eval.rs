@@ -597,19 +597,6 @@ pub fn console_text(invocation: &str, reason: &str, traceback: &str) -> String {
 
 /// The function call error alert's identifier (`H:580`).
 pub const ERROR_ID: &str = "NoSyncFunctionCallError";
-/// Where the alert's temporary silence ends (`iTermWarning.m:581-584`,
-/// `<identifier>_SilenceUntil`), in Unix seconds, and the selection it remembers
-/// (`<identifier>_selection`, OK).
-pub const SILENCE_UNTIL_KEY: &str = "NoSyncFunctionCallError_SilenceUntil";
-pub const SELECTION_KEY: &str = "NoSyncFunctionCallError_selection";
-/// `kTemporarySilenceTime` (`iTermWarning.m:13`): ten minutes.
-pub const TEMPORARY_SILENCE_SECS: f64 = 600.0;
-
-/// Whether a temporary silence ending at `until` holds at `now` (`identifierIsSilenced:`,
-/// `iTermWarning.m:632-636`).
-pub fn silenced(until: Option<f64>, now: f64) -> bool {
-    until.is_some_and(|u| u > now)
-}
 /// The error alert's second button when there is a traceback (`H:570`); 11d.
 pub const REVEAL_IN_CONSOLE: &str = "Reveal in Script Console";
 /// The error alert's buttons (`H:568-571`): OK, and "Reveal in Script Console" when the

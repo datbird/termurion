@@ -4,7 +4,6 @@ use std::collections::HashMap;
 
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
-use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{CharsetIndex, Handler, StandardCharset};
 use muda::{CheckMenuItem, ContextMenu, Icon, IconMenuItem, IsMenuItem, Menu, MenuItem, MenuTheme, PredefinedMenuItem, Submenu};
 use winit::event_loop::ActiveEventLoop;
@@ -14,18 +13,8 @@ use winit::window::Fullscreen;
 use super::*;
 use crate::commands::{self, Status};
 use crate::layout::{Dir, visible_rects};
+use crate::marks::TOGGLES;
 use crate::menus::{self, Chord, Item};
-
-/// iTerm2's Session > Terminal State toggles: label, escape to turn on, escape to turn
-/// off, and the mode that shows the check mark.
-const TOGGLES: [(&str, &str, &str, TermMode); 6] = [
-    ("Alternate Screen", "\x1b[?1049h", "\x1b[?1049l", TermMode::ALT_SCREEN),
-    ("Focus Reporting", "\x1b[?1004h", "\x1b[?1004l", TermMode::FOCUS_IN_OUT),
-    ("Mouse Reporting", "\x1b[?1000h", "\x1b[?1000l\x1b[?1002l\x1b[?1003l", TermMode::MOUSE_MODE),
-    ("Paste Bracketing", "\x1b[?2004h", "\x1b[?2004l", TermMode::BRACKETED_PASTE),
-    ("Application Cursor", "\x1b[?1h", "\x1b[?1l", TermMode::APP_CURSOR),
-    ("Application Keypad", "\x1b=", "\x1b>", TermMode::APP_KEYPAD),
-];
 
 /// Session > Terminal State's key reporting radio group.
 const KEY_MODES: [(&str, crate::keyproto::KeyMode); 5] = [
@@ -91,6 +80,8 @@ pub(super) struct MenuBar {
     /// Scripts > Manage > Install Python Runtime, retitled "Check for Updated Runtime" once uv
     /// is installed.
     pub(super) install_runtime: Option<MenuItem>,
+    /// iTerm2 > Suppressed Alerts, retitled with the count and time (`retitle_suppressed_menu`).
+    pub(super) suppressed: Option<MenuItem>,
     /// The Scripts menu and its fixed items (Manage and the line), then the scripts after them.
     pub(super) scripts: Option<(Submenu, usize)>,
     pub(super) script_entries: Vec<super::scripts_app::MenuEntry>,
@@ -120,6 +111,7 @@ impl App {
         let mut subs: HashMap<Vec<String>, Submenu> = HashMap::new();
         let mut checks = HashMap::new();
         let mut install_runtime = None;
+        let mut suppressed = None;
         for item in menus::items() {
             let (parent, entry): (&[String], Box<dyn IsMenuItem>) = if item.separator {
                 (&item.path[..], Box::new(PredefinedMenuItem::separator()))
@@ -140,6 +132,9 @@ impl App {
                     let m = MenuItem::with_id(item.id(), menu_text(item), enabled, None);
                     if item.selector == "installPythonRuntime:" {
                         install_runtime = Some(m.clone());
+                    }
+                    if item.selector == "showSuppressedAlerts:" {
+                        suppressed = Some(m.clone());
                     }
                     (parent, Box::new(m))
                 }
@@ -202,8 +197,9 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, scripts, script_entries: Vec::new() });
+        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, suppressed, scripts, script_entries: Vec::new() });
         self.runtime_menu_title();
+        self.retitle_suppressed_menu();
         self.sync_checks();
     }
 
@@ -557,6 +553,7 @@ impl App {
             "exportScript:" => self.export_scripts(event_loop),
             "openDependencyEditor:" => self.open_dependency_editor(event_loop),
             "openScriptConsole:" => self.open_script_console(event_loop),
+            "showSuppressedAlerts:" => self.show_suppressed_alerts(event_loop),
             "editCurrentSession:" => self.edit_session(self.focused_id(), event_loop),
             "showBookmarkWindow:" | "openSplitHorizontallySheet:" | "openSplitVerticallySheet:" => {
                 self.open_settings(event_loop, Mode::Profiles)
@@ -691,9 +688,19 @@ impl App {
             "saveCurrentWindowAsArrangement:" => self.open_save_arrangement(event_loop, false),
             "importWindowArrangement:" => self.load_arrangement_file(),
             "changeProfileInArrangement:" => self.open_settings_page(event_loop, crate::settings_ui::Page::Arrangements),
+            // A session whose shell has exited restarts at once; a running one asks first
+            // (`restartSessionWithConfirmation:`), once: iTerm2's question is modal, so a
+            // second pick while the pane's question waits does nothing. The API's
+            // RestartSession never asks.
             "restartSession:" => {
                 if let Some(id) = self.focused_id() {
-                    self.restart_pane(id);
+                    if restart_asks(self.panes.get(&id).is_some_and(|p| p.exited.is_some())) {
+                        if !self.alert_waits(|then| *then == super::scripts_alerts::Then::Restart(id)) {
+                            self.ask_scripts(super::scripts_alerts::Ask::new(restart_spec(), super::scripts_alerts::Then::Restart(id)));
+                        }
+                    } else {
+                        self.restart_pane(id);
+                    }
                 }
             }
             "copy:" => {
@@ -702,6 +709,8 @@ impl App {
                 }
                 if let Some(id) = self.focused_id() {
                     self.copy_selection(id);
+                    // Copy after a drag a program took as mouse reports (iTerm2's Cmd-C).
+                    self.frustration_copy(id);
                 }
             }
             "print:" => {
@@ -954,6 +963,7 @@ impl App {
         self.panes.clear();
         self.focus_order.clear();
         if self.prefs_before_exit() {
+            self.catalog_flush();
             event_loop.exit();
         }
     }
@@ -1250,7 +1260,14 @@ fn ask(text: &str) -> bool {
 impl App {
     /// iTerm2 > Install Shell Integration, for the focused pane's shell.
     pub(super) fn install_shell_integration(&mut self) {
-        let Some(guid) = self.focused_guid() else { return };
+        if let Some(pane) = self.focused_id() {
+            self.install_shell_integration_in(pane);
+        }
+    }
+
+    /// Install Shell Integration for `pane`: types the installer for its profile's shell.
+    pub(super) fn install_shell_integration_in(&mut self, pane: PaneId) {
+        let Some(guid) = self.panes.get(&pane).map(|p| self.store.shared_guid(&p.profile)) else { return };
         let cmdline = crate::profile::command_line(&self.profile(Some(&guid)), &self.shell, None);
         let typed = match install_plan(&cmdline) {
             Plan::Unsupported => {
@@ -1275,9 +1292,9 @@ impl App {
                 pwsh_install_command(&path)
             }
         };
-        if let Some(pane) = self.focused_pane() {
-            pane.scroll(Scroll::Bottom);
-            pane.input(typed.as_bytes());
+        if let Some(p) = self.panes.get_mut(&pane) {
+            p.scroll(Scroll::Bottom);
+            p.input(typed.as_bytes());
         }
     }
 }
@@ -1292,4 +1309,45 @@ pub(super) fn info_box(text: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK, MessageBoxW};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Tandem").as_ptr(), MB_OK | MB_ICONINFORMATION) };
+}
+
+/// Whether Restart Session asks first: only while the session's shell runs (`PT:2851`).
+pub(super) fn restart_asks(exited: bool) -> bool {
+    !exited
+}
+
+/// "Restart session?" (`PT:2855-2866`): the object API with no cancel label, so Cancel may be
+/// remembered, as in iTerm2.
+pub(super) fn restart_spec() -> crate::warnings::Spec {
+    use crate::api_auth::{CANCEL, OK};
+    crate::warnings::Spec {
+        id: Some("NoSyncSuppressRestartSessionConfirmationAlert".to_string()),
+        kind: crate::warnings::Kind::Permanent,
+        heading: "Restart session?".to_string(),
+        text: "Running jobs will be killed.".to_string(),
+        labels: vec![OK.to_string(), CANCEL.to_string()],
+        cancel: None,
+        never_remember: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::warnings::{Kind, checkbox_label};
+
+    /// `restartSessionWithConfirmation:` (`PT:2848-2870`): built with the object API, which
+    /// sets no cancel label, so Cancel may be remembered and two buttons count (Review Focus 2).
+    #[test]
+    fn restart_confirmation_follows_iterm2() {
+        let s = super::restart_spec();
+        assert_eq!((s.heading.as_str(), s.text.as_str()), ("Restart session?", "Running jobs will be killed."));
+        assert_eq!(s.labels, ["OK", "Cancel"]);
+        assert_eq!(s.id.as_deref(), Some("NoSyncSuppressRestartSessionConfirmationAlert"));
+        assert_eq!((s.kind, s.cancel), (Kind::Permanent, None));
+        assert!(s.never_remember.is_empty());
+        assert!(s.rememberable(1), "Cancel may be remembered");
+        assert_eq!(checkbox_label(&s), Some("Remember my choice"));
+        assert!(!super::restart_asks(true), "an exited session restarts at once");
+        assert!(super::restart_asks(false));
+    }
 }

@@ -254,6 +254,17 @@ pub struct KeysState {
     pub leader: Option<Keystroke>,
     /// The recorder has seen the Leader and waits for the key after it.
     leader_seen: bool,
+    /// A warning an editor raised, for the settings window to show (`SettingsWindow::sheet`).
+    pub ask: Option<SheetWarning>,
+    /// A binding whose save waits for the override warning's OK.
+    held: Option<HeldKey>,
+}
+
+/// A saved binding held for a warning: the editor and the profile Guid it belongs to (None for
+/// the global map).
+struct HeldKey {
+    editor: KeyEditor,
+    profile: Option<String>,
 }
 
 impl KeysState {
@@ -718,7 +729,8 @@ fn globals_in(section: &str) -> Vec<&'static Setting> {
 }
 
 /// iTerm2's Keys pane.
-pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profiles: &[(String, String)]) -> bool {
+/// `key_maps` are every profile's Key Mappings, for the possible override warning.
+pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profiles: &[(String, String)], key_maps: &[toml::Table]) -> bool {
     let mut changed = false;
     if let Some(k) = st.leader_recorded.take() {
         g.set("Leader", Value::String(k.serialized()));
@@ -786,7 +798,7 @@ pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profile
     });
     if st.key_editor.as_ref().is_some_and(|e| e.target == Target::Global) {
         let mut map = g.table("GlobalKeyMap");
-        if finish_key_editor(ui.ctx(), st, &mut map, profiles) {
+        if finish_key_editor(ui.ctx(), st, &mut map, None, &|stroke| any_profile_maps(&key_maps.iter().collect::<Vec<_>>(), stroke), profiles) {
             g.set("GlobalKeyMap", Value::Table(map));
             changed = true;
         }
@@ -800,7 +812,11 @@ fn editor_for(map: &toml::Table, key: &str, target: Target) -> Option<KeyEditor>
 }
 
 /// Shows the key editor; on OK writes the binding into `map`. True when `map` changed.
-fn finish_key_editor(ctx: &egui::Context, st: &mut KeysState, map: &mut toml::Table, profiles: &[(String, String)]) -> bool {
+/// `overrides` tells whether the new key would override, or be overridden by, another map's
+/// binding: then the save is held for iTerm2's warning (`PK:639-643`, `KP:763-766`), and the
+/// settings window saves it with `held_answered`. `profile` is the Guid of the profile `map`
+/// belongs to, None for the global map.
+fn finish_key_editor(ctx: &egui::Context, st: &mut KeysState, map: &mut toml::Table, profile: Option<String>, overrides: &dyn Fn(&Keystroke) -> bool, profiles: &[(String, String)]) -> bool {
     let Some(e) = st.key_editor.as_mut() else { return false };
     match key_editor(ctx, e, profiles) {
         Outcome::Open => false,
@@ -810,25 +826,227 @@ fn finish_key_editor(ctx: &egui::Context, st: &mut KeysState, map: &mut toml::Ta
         }
         Outcome::Save => {
             let e = st.key_editor.take().unwrap();
-            if let Some(old) = &e.old_key {
-                map.remove(old);
+            if e.stroke.as_ref().is_some_and(overrides) {
+                let spec = if e.target == Target::Global { possible_override_spec() } else { override_spec() };
+                st.ask = Some(SheetWarning::new(spec, SheetThen::SaveKey));
+                st.held = Some(HeldKey { editor: e, profile });
+                ctx.request_repaint();
+                return false;
             }
-            let Some(stroke) = e.stroke else { return false };
-            // Replace any binding for the same key stored in another form.
-            let same: Vec<String> = map.keys().filter(|k| keystroke::parse(k).is_some_and(|s| s.same_key(&stroke))).cloned().collect();
-            for k in same {
-                map.remove(&k);
-            }
-            let key = stroke.serialized();
-            map.insert(key.clone(), e.binding.to_value());
-            if e.target == Target::Global {
-                st.selected = Some(key);
-            } else {
-                st.profile_selected = Some(key);
-            }
-            true
+            save_binding(st, map, e)
         }
     }
+}
+
+/// Writes an edited binding into `map`, replacing the row edited and any binding for the same
+/// key stored in another form. True when `map` changed.
+fn save_binding(st: &mut KeysState, map: &mut toml::Table, e: KeyEditor) -> bool {
+    if let Some(old) = &e.old_key {
+        map.remove(old);
+    }
+    let Some(stroke) = e.stroke else { return false };
+    // Replace any binding for the same key stored in another form.
+    let same: Vec<String> = map.keys().filter(|k| keystroke::parse(k).is_some_and(|s| s.same_key(&stroke))).cloned().collect();
+    for k in same {
+        map.remove(&k);
+    }
+    let key = stroke.serialized();
+    map.insert(key.clone(), e.binding.to_value());
+    if e.target == Target::Global {
+        st.selected = Some(key);
+    } else {
+        st.profile_selected = Some(key);
+    }
+    true
+}
+
+/// What a held binding's save changed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Saved {
+    Nothing,
+    Global,
+    /// The profile with this Guid.
+    Profile(String),
+}
+
+/// The override warning answered with button `index`: OK saves the held binding, Cancel drops
+/// it without saving (iTerm2 returns before writing).
+pub fn held_answered(st: &mut KeysState, index: usize, g: &mut Globals, store: &mut crate::store::Store) -> Saved {
+    let Some(held) = st.held.take() else { return Saved::Nothing };
+    if index != 0 {
+        return Saved::Nothing;
+    }
+    match held.profile {
+        None => {
+            let mut map = g.table("GlobalKeyMap");
+            if !save_binding(st, &mut map, held.editor) {
+                return Saved::Nothing;
+            }
+            g.set("GlobalKeyMap", Value::Table(map));
+            Saved::Global
+        }
+        Some(guid) => {
+            let Some(p) = store.get_mut(&guid) else { return Saved::Nothing };
+            let mut map = p.get("Keyboard Map").and_then(|v| v.as_table().cloned()).unwrap_or_default();
+            if !save_binding(st, &mut map, held.editor) {
+                return Saved::Nothing;
+            }
+            p.set("Keyboard Map", Value::Table(map));
+            Saved::Profile(guid)
+        }
+    }
+}
+
+/// `haveGlobalKeyMappingForKeystroke:`: the global map `map` has a binding for this key.
+pub fn profile_overrides(map: &toml::Table, stroke: &Keystroke) -> bool {
+    map.keys().any(|k| keystroke::parse(k).is_some_and(|s| s.same_key(stroke)))
+}
+
+/// `anyProfileHasMappingForKeystroke:`: some profile's Key Mappings bind this key.
+pub fn any_profile_maps(profiles: &[&toml::Table], stroke: &Keystroke) -> bool {
+    profiles.iter().any(|m| profile_overrides(m, stroke))
+}
+
+/// A settings warning (`iTermWarning` on the settings window, 13b Task 6): no heading, so
+/// iTerm2's "Warning" shows; OK, and Cancel when given, the cancel button.
+fn settings_spec(id: &str, text: String, labels: &[&str]) -> crate::warnings::Spec {
+    crate::warnings::Spec {
+        id: Some(id.to_string()),
+        kind: crate::warnings::Kind::Permanent,
+        heading: String::new(),
+        text,
+        labels: labels.iter().map(|l| l.to_string()).collect(),
+        cancel: labels.iter().position(|l| *l == crate::api_auth::CANCEL),
+        never_remember: Vec::new(),
+    }
+}
+
+/// Choosing Meta for an Option key (`PK:727-736`).
+pub fn meta_spec() -> crate::warnings::Spec {
+    let text = "You have chosen to have an option key act as Meta. This option is useful for backward compatibility with older systems. The \"Esc+\" option is recommended for most users.";
+    settings_spec("NeverWarnAboutMeta", text.into(), &[crate::api_auth::OK])
+}
+
+/// A profile binding for a key the global map binds (`PK:712-725`).
+pub fn override_spec() -> crate::warnings::Spec {
+    let text = "The keyboard shortcut you have set for this profile will take precedence over an existing shortcut for the same key combination in a global shortcut.";
+    settings_spec("NeverWarnAboutOverrides", text.into(), &[crate::api_auth::OK, crate::api_auth::CANCEL])
+}
+
+/// A global binding for a key some profile binds (`KP:704-719`).
+pub fn possible_override_spec() -> crate::warnings::Spec {
+    let text = "The global keyboard shortcut you have set is overridden by at least one profile. Check your profiles\u{2019} keyboard settings if it doesn't work as expected.";
+    settings_spec("NeverWarnAboutPossibleOverrides", text.into(), &[crate::api_auth::OK, crate::api_auth::CANCEL])
+}
+
+/// Copy to Profile's question (`PP:780-791`); 13t's Copy to Profile asks it.
+pub fn replace_profile_spec(name: &str) -> crate::warnings::Spec {
+    let text = format!("Replace profile \u{201c}{name}\u{201d} with the current session's settings?");
+    settings_spec("NoSyncReplaceProfileWarning", text, &["Replace", crate::api_auth::CANCEL])
+}
+
+/// What a settings warning's answer does.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SheetThen {
+    Nothing,
+    /// Saves the held binding on OK (`held_answered`).
+    SaveKey,
+    /// Create a Dedicated Hotkey Window's question, with the hotkey profiles as (Guid, name).
+    CreateHotkey(Vec<(String, String)>),
+}
+
+/// A warning shown over the settings window, with its checkbox's state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SheetWarning {
+    pub spec: crate::warnings::Spec,
+    pub then: SheetThen,
+    suppress: bool,
+}
+
+impl SheetWarning {
+    pub fn new(spec: crate::warnings::Spec, then: SheetThen) -> SheetWarning {
+        SheetWarning { spec, then, suppress: false }
+    }
+}
+
+/// A settings warning's answer: button `index` (the spec's labels' length is "Permanently
+/// Forget Saved Selection", after which the warning shows again), `automatic` when it was
+/// answered from a remembered choice without showing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SheetAnswer {
+    pub spec: crate::warnings::Spec,
+    pub index: usize,
+    pub automatic: bool,
+}
+
+/// The no-drawing half of `sheet_warning`: a remembered answer, when `preempt:` gives one.
+pub fn sheet_preempt(g: &Globals, w: &SheetWarning, show_remembered: bool, now: f64) -> Option<SheetAnswer> {
+    match crate::warnings::preempt(&w.spec, g, now, show_remembered) {
+        crate::warnings::Preempt::Answer(index) => Some(SheetAnswer { spec: w.spec.clone(), index, automatic: true }),
+        _ => None,
+    }
+}
+
+/// Shows a warning over the settings window, as iTerm2's sheet: modal, the heading, the text
+/// (with the remembered explanation and "Permanently Forget Saved Selection" when "Always show
+/// alerts with remembered selections" shows a remembered one), iTerm2's checkbox and the
+/// buttons; Enter is the first button, Escape the Cancel button and Alt plus a button's letter
+/// that button. A remembered answer returns at once without drawing. A clicked button's
+/// answer is remembered per the checkbox; Forget clears it.
+pub fn sheet_warning(ctx: &egui::Context, g: &mut Globals, w: &mut SheetWarning, show_remembered: bool) -> Option<SheetAnswer> {
+    use crate::warnings;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    if let Some(answer) = sheet_preempt(g, w, show_remembered, now) {
+        return Some(answer);
+    }
+    let remembered = match warnings::preempt(&w.spec, g, now, show_remembered) {
+        warnings::Preempt::ShowRemembered { saved_label } => Some(saved_label),
+        _ => None,
+    };
+    let text = remembered.as_deref().map_or_else(|| w.spec.text.clone(), |saved| warnings::remembered_text(&w.spec.text, saved));
+    let mut chosen = None;
+    egui::Modal::new(egui::Id::new("settings-warning")).show(ctx, |ui| {
+        ui.set_max_width(420.0);
+        ui.strong(w.spec.shown_heading());
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(text.as_str()).wrap());
+        if let Some(label) = warnings::checkbox_label(&w.spec) {
+            ui.add_space(6.0);
+            ui.checkbox(&mut w.suppress, label);
+        }
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            for (i, label) in w.spec.labels.iter().enumerate() {
+                if ui.button(label.as_str()).clicked() {
+                    chosen = Some(i);
+                }
+            }
+            if remembered.is_some() && ui.button(warnings::FORGET).clicked() {
+                chosen = Some(w.spec.labels.len());
+            }
+        });
+    });
+    let keys = ctx.input_mut(|i| {
+        if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+            return Some(0);
+        }
+        if let Some(c) = w.spec.cancel.filter(|_| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            return Some(c);
+        }
+        warnings::shortcuts(&w.spec.labels).iter().enumerate().find_map(|(n, s)| {
+            let key = egui::Key::from_name(&s.as_ref()?.1.to_ascii_uppercase().to_string())?;
+            i.consume_key(egui::Modifiers::ALT, key).then_some(n)
+        })
+    });
+    let index = chosen.or(keys)?;
+    if index == w.spec.labels.len() {
+        if let Some(id) = w.spec.id.as_deref() {
+            warnings::clear_saved(g, id);
+        }
+    } else {
+        warnings::remember(&w.spec, g, index, w.suppress, now);
+    }
+    Some(SheetAnswer { spec: w.spec.clone(), index, automatic: false })
 }
 
 /// Whether a global row takes input: the Python API's authentication popup only while the API
@@ -1252,7 +1470,8 @@ pub fn pointer_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, prof
 }
 
 /// The profile Keys tab's Key Mappings block: the table, presets, and Delete sends ^H.
-pub fn profile_key_mappings(ui: &mut egui::Ui, p: &mut Profile, st: &mut KeysState, profiles: &[(String, String)]) -> bool {
+/// `global` is the global key map, for the override warning.
+pub fn profile_key_mappings(ui: &mut egui::Ui, p: &mut Profile, st: &mut KeysState, profiles: &[(String, String)], global: &toml::Table) -> bool {
     let mut changed = false;
     let mut map = p.get("Keyboard Map").and_then(|v| v.as_table().cloned()).unwrap_or_default();
     ui.add_space(8.0);
@@ -1294,7 +1513,7 @@ pub fn profile_key_mappings(ui: &mut egui::Ui, p: &mut Profile, st: &mut KeysSta
     if indicate_non_default() && ctrl_h {
         non_default_bar(ui, check.rect, ui.is_enabled());
     }
-    if st.key_editor.as_ref().is_some_and(|e| e.target == Target::Profile) && finish_key_editor(ui.ctx(), st, &mut map, profiles) {
+    if st.key_editor.as_ref().is_some_and(|e| e.target == Target::Profile) && finish_key_editor(ui.ctx(), st, &mut map, Some(p.guid()), &|stroke| profile_overrides(global, stroke), profiles) {
         changed = true;
     }
     if changed {
@@ -1462,6 +1681,52 @@ mod tests {
         assert_eq!(s.default, Some(Value::Boolean(true)));
         let text = "Reveal file created by \u{201c}Export All Settings and Data\u{201d} in Explorer upon completion";
         assert_eq!((s.label.as_str(), s.help.as_str()), (text, text));
+    }
+
+    #[test]
+    fn warning_rows_follow_iterm2() {
+        let s = schema::find_global("AlertsIndicateShortcuts").expect("row");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        let label = "Buttons in modal alerts indicate keyboard shortcuts.";
+        assert_eq!(s.label, label);
+        assert_eq!(s.help, format!("{label}\nDo you miss Windows 95? I do."));
+        let c = schema::find_global(crate::warnings::CATALOG_KEY).expect("row");
+        assert_eq!((c.tab.as_str(), c.section.as_str(), c.kind), ("Stored", "Warnings", Kind::Dict));
+        assert_eq!(c.default, Some(Value::Table(toml::Table::new())));
+    }
+
+    /// The confirmations' rows (`ASM:504,668,785,787`).
+    #[test]
+    fn confirmation_rows_follow_iterm2() {
+        let rows = [
+            ("NoSyncSuppressRestartSessionConfirmationAlert", "Session", Some(false), "Suppress restart session confirmation alert.", "Suppress restart session confirmation alert.\nDon't ask for a confirmation when manually restarting a session."),
+            ("NoSyncSuppressDownloadConfirmation", "General", Some(false), "Suppress confirmation of terminal-initiated downloads?", "Suppress confirmation of terminal-initiated downloads?"),
+            ("NoSyncClearAllBroadcast", "Warnings", None, "Send Clear Session to all broadcasted-to sessions?", "Send Clear Session to all broadcasted-to sessions?"),
+            ("NoSyncConfirmRemoveAnnotation", "Warnings", Some(false), "Suppress confirmation to remove annotation?", "Suppress confirmation to remove annotation?"),
+        ];
+        for (key, section, default, label, help) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", section, Kind::Bool), "{key}");
+            assert_eq!(s.default, default.map(Value::Boolean), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (label, help), "{key}");
+        }
+        assert!(schema::find_global("NoSyncClearAllBroadcast").unwrap().optional_bool());
+    }
+
+    /// The arrangement announcements' rows (`ASM:779-781`).
+    #[test]
+    fn arrangement_rows_follow_iterm2() {
+        let rows = [
+            ("NoSyncSuppressMissingProfileInArrangementWarning", "Suppress the notification that a restored session\u{2019}s profile no longer exists?"),
+            ("NoSyncSuppressBadPWDInArrangementWarning", "Suppress the notification that a saved arrangement has a bad initial working directory."),
+        ];
+        for (key, text) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(false)), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
+        }
     }
 
     #[test]
@@ -1674,6 +1939,16 @@ mod tests {
             assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
             assert!(Globals::empty(std::path::Path::new("utilities-row-test.toml")).bool(key), "{key} on until turned off");
         }
+    }
+
+    #[test]
+    fn software_update_row_follows_iterm2() {
+        let key = "NotifyOnlyForCriticalShellIntegrationUpdates";
+        let row = schema::find_global(key).expect("row");
+        assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("General", "Software Update", Kind::Bool));
+        assert_eq!(row.default, Some(Value::Boolean(true)));
+        assert_eq!(row.label, "Ignore non-critical shell integration updates");
+        assert!(Globals::empty(std::path::Path::new("software-update-row-test.toml")).bool(key), "on until turned off");
     }
 
     #[test]
@@ -2048,7 +2323,7 @@ mod tests {
                 "Debugging",
                 Kind::Bool,
                 Value::Boolean(false),
-                "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Tandem\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. API keys in Authorization, x-api-key, api-key and x-goog-api-key headers, and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished.".into(),
+                "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Tandem\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. Every header value except known non-secret ones (such as Content-Type, Accept, User-Agent and anthropic-version), and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished.".into(),
             ),
             (
                 "unameCommand",
@@ -2120,5 +2395,114 @@ mod tests {
         // Schema order is kept.
         let order: Vec<&str> = schema::global().iter().filter(|s| s.tab == "Advanced" && !row_hidden(&s.key)).map(|s| s.key.as_str()).collect();
         assert_eq!(advanced.iter().map(|s| s.key.as_str()).collect::<Vec<_>>(), order);
+    }
+
+    /// The settings warnings' specs (`PK:712-736`, `KP:704-719`, `PP:780-791`): texts, buttons,
+    /// identifiers and kinds; none has a heading, so each shows iTerm2's "Warning".
+    #[test]
+    fn key_warnings_follow_iterm2() {
+        use crate::warnings::{Kind::Permanent, checkbox_label};
+        let meta = meta_spec();
+        assert_eq!(meta.text, "You have chosen to have an option key act as Meta. This option is useful for backward compatibility with older systems. The \"Esc+\" option is recommended for most users.");
+        assert_eq!((meta.labels.clone(), meta.cancel, meta.id.as_deref(), meta.kind), (vec!["OK".to_string()], None, Some("NeverWarnAboutMeta"), Permanent));
+        assert_eq!(checkbox_label(&meta), Some("Suppress this message permanently"));
+        let o = override_spec();
+        assert_eq!(o.text, "The keyboard shortcut you have set for this profile will take precedence over an existing shortcut for the same key combination in a global shortcut.");
+        assert_eq!((o.labels.clone(), o.cancel, o.id.as_deref(), o.kind), (vec!["OK".to_string(), "Cancel".into()], Some(1), Some("NeverWarnAboutOverrides"), Permanent));
+        assert_eq!(checkbox_label(&o), Some("Suppress this message permanently"));
+        let p = possible_override_spec();
+        assert_eq!(p.text, "The global keyboard shortcut you have set is overridden by at least one profile. Check your profiles\u{2019} keyboard settings if it doesn't work as expected.");
+        assert_eq!((p.labels.clone(), p.cancel, p.id.as_deref(), p.kind), (vec!["OK".to_string(), "Cancel".into()], Some(1), Some("NeverWarnAboutPossibleOverrides"), Permanent));
+        let r = replace_profile_spec("Work");
+        assert_eq!(r.text, "Replace profile \u{201c}Work\u{201d} with the current session's settings?");
+        assert_eq!((r.labels.clone(), r.cancel, r.id.as_deref(), r.kind), (vec!["Replace".to_string(), "Cancel".into()], Some(1), Some("NoSyncReplaceProfileWarning"), Permanent));
+        for spec in [&meta, &o, &p, &r] {
+            assert_eq!(spec.shown_heading(), crate::warnings::DEFAULT_HEADING, "{:?}", spec.id);
+            assert!(spec.never_remember.is_empty());
+        }
+    }
+
+    /// `haveGlobalKeyMappingForKeystroke:` and `anyProfileHasMappingForKeystroke:`: a binding
+    /// for the same key, in whatever form it is stored.
+    #[test]
+    fn override_detection_follows_iterm2() {
+        let ctrl_a = Keystroke::new(0x61, keystroke::CONTROL, Some(0x0), 0x1);
+        let ctrl_b = Keystroke::new(0x62, keystroke::CONTROL, Some(0xb), 0x2);
+        let global: toml::Table = toml::from_str("\"0x61-0x40000-0x0\" = { Action = 13 }").unwrap();
+        assert!(profile_overrides(&global, &ctrl_a));
+        assert!(!profile_overrides(&global, &ctrl_b));
+        // The legacy form without a keycode is the same key.
+        let legacy: toml::Table = toml::from_str("\"0x61-0x40000\" = { Action = 13 }").unwrap();
+        assert!(profile_overrides(&legacy, &ctrl_a));
+        assert!(any_profile_maps(&[&toml::Table::new(), &global], &ctrl_a));
+        assert!(!any_profile_maps(&[&global], &ctrl_b));
+        assert!(!any_profile_maps(&[], &ctrl_a));
+    }
+
+    /// `preempt:` for a warning in the settings window: a remembered answer comes back at once,
+    /// marked automatic (the app lists it in Suppressed Alerts); anything else draws the sheet.
+    #[test]
+    fn sheet_answers_are_recorded() {
+        let mut g = Globals::empty(std::path::Path::new("sheet-test.toml"));
+        let w = SheetWarning::new(override_spec(), SheetThen::SaveKey);
+        assert_eq!(sheet_preempt(&g, &w, false, 1000.0), None);
+        g.set("NeverWarnAboutOverrides", Value::Boolean(true));
+        g.set("NeverWarnAboutOverrides_selection", Value::Integer(0));
+        assert_eq!(sheet_preempt(&g, &w, false, 1000.0), Some(SheetAnswer { spec: override_spec(), index: 0, automatic: true }));
+        // "Always show alerts with remembered selections": the sheet draws.
+        assert_eq!(sheet_preempt(&g, &w, true, 1000.0), None);
+        // A remembered Cancel is never replayed.
+        g.set("NeverWarnAboutOverrides_selection", Value::Integer(1));
+        assert_eq!(sheet_preempt(&g, &w, false, 1000.0), None);
+    }
+
+    /// The settings warnings' Advanced rows (`ASM:752-755,774`).
+    #[test]
+    fn key_warning_rows_follow_iterm2() {
+        let meta = "Suppress a warning when Alt Key Acts as Meta is enabled in Settings > Profiles > Keys.";
+        let rows = [
+            ("NeverWarnAboutMeta", meta),
+            ("NeverWarnAboutOverrides", "Suppress a warning about a change to a Profile key setting that overrides a global setting."),
+            ("NeverWarnAboutPossibleOverrides", "Suppress a warning about a change to a global key that's overridden by a Profile."),
+            ("NoSyncReplaceProfileWarning", "Suppress warning about copying a session's settings over a Profile"),
+        ];
+        for (key, text) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(false)), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
+        }
+    }
+
+    /// The host change offers' rows are optional bools (`ASM:775-777`).
+    #[test]
+    fn host_rows_follow_iterm2() {
+        let rows = [
+            ("NoSyncTurnOffFocusReportingOnHostChange", "Always turn off focus reporting when host changes?"),
+            ("NoSyncTurnOffMouseReportingOnHostChange", "Always turn off mouse reporting when host changes?"),
+            ("NoSyncTurnOffBracketedPasteOnHostChange", "Always turn off paste bracketing when host changes?"),
+        ];
+        for (key, text) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
+            assert_eq!(s.default, None, "{key}");
+            assert!(s.optional_bool(), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
+        }
+    }
+
+    /// The frustration offers' rows (`ASM:782-783`), Cmd-C read as Win+C.
+    #[test]
+    fn frustration_rows_follow_iterm2() {
+        let rows = [
+            ("NoSyncNeverAskAboutMouseReportingFrustration", "Suppress the notification asking if you want to disable mouse reporting that is shown after a drag followed by Win+C when mouse reporting is on?"),
+            ("NoSyncNeverAskAboutDEC2048Frustration", "Suppress the notification asking if you want to disable resize reporting"),
+        ];
+        for (key, text) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(false)), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
+        }
     }
 }

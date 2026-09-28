@@ -77,6 +77,11 @@ impl<T> Stack<T> {
         self.entries.is_empty()
     }
 
+    /// Every waiting entry, oldest first.
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.entries.iter().map(|(_, t)| t)
+    }
+
     pub fn next_deadline(&self) -> Option<Instant> {
         self.entries.iter().map(|(d, _)| *d).min()
     }
@@ -122,6 +127,17 @@ mod tests {
         assert_eq!(timeout(5.0), Some(Duration::from_secs(5)));
         assert_eq!(timeout(0.0), None, "0 turns Undo Close off");
         assert_eq!(timeout(f64::NAN), None);
+    }
+
+    #[test]
+    fn waiting_entries_can_be_looked_at() {
+        let t0 = Instant::now();
+        let mut s = Stack::default();
+        s.push("a", t0 + Duration::from_secs(5));
+        s.push("b", t0 + Duration::from_secs(1));
+        assert_eq!(s.iter().copied().collect::<Vec<_>>(), vec!["a", "b"], "every waiting entry, oldest first");
+        s.expire(t0 + Duration::from_secs(2));
+        assert_eq!(s.iter().copied().collect::<Vec<_>>(), vec!["a"]);
     }
 
     #[test]

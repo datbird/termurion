@@ -19,6 +19,7 @@ use crate::api_proto::pb;
 use crate::api_server::{Event, Pending, Server};
 use crate::api_vars::{self, Objects};
 use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
+use crate::warnings::Preempt;
 
 /// The settings this module follows.
 pub(super) const ENABLE_KEY: &str = "EnableAPIServer";
@@ -64,32 +65,47 @@ pub(super) enum Alert {
     StartFailed(String),
 }
 
-/// What an alert shows: heading, text, buttons left to right, and whether "Suppress this
-/// message permanently" shows.
+/// What an alert shows: heading, text, buttons left to right, and for a silenceable one its
+/// warning (the checkbox, the remembered answer and the preempt).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Form {
     pub heading: &'static str,
     pub text: String,
     pub labels: Vec<&'static str>,
-    pub silenceable: bool,
+    pub spec: Option<crate::warnings::Spec>,
+}
+
+/// "Python API Permissions Reset" (`iTermAPIHelper.m:449-458`): OK and Reveal Preference,
+/// permanently silenceable; Reveal Preference is never remembered.
+pub(super) fn reset_spec() -> crate::warnings::Spec {
+    use api_auth::*;
+    crate::warnings::Spec {
+        id: Some(RESET_ID.to_string()),
+        kind: crate::warnings::Kind::Permanent,
+        heading: RESET_HEADING.to_string(),
+        text: RESET_TEXT.to_string(),
+        labels: vec![OK.to_string(), REVEAL_PREFERENCE.to_string()],
+        cancel: None,
+        never_remember: vec![1],
+    }
 }
 
 /// The alert's form; the Allow alert's text and buttons follow `setCookie` as the alert opens.
 pub(super) fn form(alert: &Alert, set_cookie: bool) -> Form {
     use api_auth::*;
-    let f = |heading, text: String, labels: &[&'static str], silenceable| Form { heading, text, labels: labels.to_vec(), silenceable };
+    let f = |heading, text: String, labels: &[&'static str]| Form { heading, text, labels: labels.to_vec(), spec: None };
     match alert {
-        Alert::Enable => f(ENABLE_HEADING, ENABLE_TEXT.into(), &[OK, CANCEL], false),
+        Alert::Enable => f(ENABLE_HEADING, ENABLE_TEXT.into(), &[OK, CANCEL]),
         Alert::Allow { .. } => match decide(false, false, false, set_cookie) {
-            Verdict::Ask { text, buttons } => f(ALLOW_HEADING, text, &buttons, false),
+            Verdict::Ask { text, buttons } => f(ALLOW_HEADING, text, &buttons),
             _ => unreachable!("an undecided connection is always asked"),
         },
-        Alert::ConfirmAlways { .. } | Alert::ConfirmCookie { .. } => f(CONFIRM_HEADING, CONFIRM_ALWAYS.into(), &[OK, CANCEL], false),
-        Alert::AllowAll => f(ALLOW_ALL_HEADING, ALLOW_ALL_TEXT.into(), &[OK, CANCEL, MORE_INFO], false),
-        Alert::Reset => f(RESET_HEADING, RESET_TEXT.into(), &[OK, REVEAL_PREFERENCE], true),
-        Alert::RemoveFailed(text) => f(CHANGE_FAILED_HEADING, text.clone(), &[OK, SHOW_IN_EXPLORER], false),
-        Alert::MakeChangeFailed(e) => f(MAKE_CHANGE_FAILED_HEADING, change_failed_text(e), &[OK], false),
-        Alert::StartFailed(text) => f(START_FAILED_HEADING, text.clone(), &[OK], false),
+        Alert::ConfirmAlways { .. } | Alert::ConfirmCookie { .. } => f(CONFIRM_HEADING, CONFIRM_ALWAYS.into(), &[OK, CANCEL]),
+        Alert::AllowAll => f(ALLOW_ALL_HEADING, ALLOW_ALL_TEXT.into(), &[OK, CANCEL, MORE_INFO]),
+        Alert::Reset => Form { spec: Some(reset_spec()), ..f(RESET_HEADING, RESET_TEXT.into(), &[OK, REVEAL_PREFERENCE]) },
+        Alert::RemoveFailed(text) => f(CHANGE_FAILED_HEADING, text.clone(), &[OK, SHOW_IN_EXPLORER]),
+        Alert::MakeChangeFailed(e) => f(MAKE_CHANGE_FAILED_HEADING, change_failed_text(e), &[OK]),
+        Alert::StartFailed(text) => f(START_FAILED_HEADING, text.clone(), &[OK]),
     }
 }
 
@@ -175,8 +191,6 @@ pub(super) enum Effect {
     WriteAllowAll,
     /// The popup shows the file again.
     Mirror,
-    /// "Suppress this message permanently" for the reset warning.
-    SilenceReset,
     /// Settings > General.
     RevealPreference,
     /// The allow-all file selected in Explorer.
@@ -184,7 +198,7 @@ pub(super) enum Effect {
 }
 
 /// The effects of button `index` (a closed window answers `close_index`'s button).
-pub(super) fn effects(alert: &Alert, index: usize, suppress: bool) -> Vec<Effect> {
+pub(super) fn effects(alert: &Alert, index: usize) -> Vec<Effect> {
     use Effect::*;
     let verdict = |conn, allow, reason| Verdict { conn, allow, reason };
     match alert {
@@ -207,13 +221,8 @@ pub(super) fn effects(alert: &Alert, index: usize, suppress: bool) -> Vec<Effect
             2 => vec![OpenUrl(api_auth::AUTH_URL), Mirror],
             _ => vec![Mirror],
         },
-        // The checkbox is remembered only for OK: "Reveal Preference" is a one-time navigation
-        // (`H:449-451`).
-        Alert::Reset => match index {
-            0 if suppress => vec![SilenceReset],
-            1 => vec![RevealPreference],
-            _ => vec![],
-        },
+        // The checkbox is remembered through the warning (`reset_spec`).
+        Alert::Reset => if index == 1 { vec![RevealPreference] } else { vec![] },
         Alert::RemoveFailed(_) => if index == 1 { vec![RevealFile] } else { vec![] },
         Alert::MakeChangeFailed(_) | Alert::StartFailed(_) => vec![],
     }
@@ -532,16 +541,15 @@ impl App {
     }
 
     /// `allow_all_state`, queueing the reset warning for a corrupt file once per distinct
-    /// contents, unless it was silenced (`H:432-464`).
+    /// contents (`H:432-464`).
     fn allow_all_checked(&mut self) -> AllowAll {
         let (state, file) = noauth_now();
         if state == AllowAll::Corrupt {
             let seen = file.map(|f| f.contents.unwrap_or_else(|| format!("({} bytes, unreadable)", f.size))).unwrap_or_default();
             if self.api_reset_seen.as_deref() != Some(seen.as_str()) {
                 self.api_reset_seen = Some(seen);
-                if !self.globals.bool(api_auth::RESET_ID) {
-                    self.queue_api_alert(Alert::Reset);
-                }
+                // A silenced one is answered as it would show (`open_api_alerts`).
+                self.queue_api_alert(Alert::Reset);
             }
         }
         state
@@ -1116,9 +1124,27 @@ impl App {
             _ => true,
         });
         let Some((_, alert)) = self.api_alerts.first() else { return };
-        let Some(g) = self.gpu.as_ref() else { return };
+        if self.gpu.is_none() {
+            return;
+        }
         let f = form(alert, self.globals.bool(SET_COOKIE_KEY));
-        match ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, f.heading, &f.text, &f.labels, f.silenceable) {
+        let opened = match &f.spec {
+            // A silenced warning answers its saved button without showing (`preempt:`).
+            Some(spec) => match self.warning_preempt(spec) {
+                Preempt::Answer(index) => {
+                    let (_, alert) = self.api_alerts.remove(0);
+                    self.api_alert_answered(alert, index, event_loop);
+                    return self.open_api_alerts(event_loop);
+                }
+                Preempt::Show => self.open_warning_window(event_loop, spec, None),
+                Preempt::ShowRemembered { saved_label } => self.open_warning_window(event_loop, spec, Some(&saved_label)),
+            },
+            None => {
+                let Some(g) = self.gpu.as_ref() else { return };
+                ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, f.heading, &f.text, &f.labels, None, &[], false, false)
+            }
+        };
+        match opened {
             Ok(w) => self.api_alerts[0].0 = Some(w),
             Err(e) => {
                 let (_, alert) = self.api_alerts.remove(0);
@@ -1153,13 +1179,21 @@ impl App {
             ConfirmResult::Cancel | ConfirmResult::Ok { .. } => (usize::MAX, false),
         };
         let (_, alert) = self.api_alerts.remove(i);
-        self.api_alert_answered(alert, index, suppress, event_loop);
+        if let Some(spec) = form(&alert, false).spec {
+            // Only the remembered mode has a button after the labels: Forget, which shows the
+            // warning again, next, without it.
+            if self.warning_window_answered(&spec, true, index, suppress) {
+                self.api_alerts.insert(0, (None, alert));
+                return true;
+            }
+        }
+        self.api_alert_answered(alert, index, event_loop);
         true
     }
 
-    fn api_alert_answered(&mut self, alert: Alert, index: usize, suppress: bool, event_loop: &ActiveEventLoop) {
+    fn api_alert_answered(&mut self, alert: Alert, index: usize, event_loop: &ActiveEventLoop) {
         let enable = alert == Alert::Enable;
-        for effect in effects(&alert, index, suppress) {
+        for effect in effects(&alert, index) {
             match effect {
                 Effect::Enable => {
                     // The consent is what lets the server start, now and at later launches.
@@ -1183,10 +1217,6 @@ impl App {
                     }
                 }
                 Effect::Mirror => self.api_mirror_auth(),
-                Effect::SilenceReset => {
-                    self.globals.set(api_auth::RESET_ID, toml::Value::Boolean(true));
-                    self.save_globals();
-                }
                 Effect::RevealPreference => self.open_settings_page(event_loop, crate::settings_ui::Page::General),
                 Effect::RevealFile => self.reveal_allow_all_file(),
             }
@@ -1251,19 +1281,23 @@ mod tests {
     #[test]
     fn alerts_follow_iterm2() {
         let enable = form(&Alert::Enable, false);
-        assert_eq!((enable.heading, enable.text.as_str(), enable.labels.as_slice(), enable.silenceable), (ENABLE_HEADING, ENABLE_TEXT, &[OK, CANCEL][..], false));
+        assert_eq!((enable.heading, enable.text.as_str(), enable.labels.as_slice(), enable.spec.is_some()), (ENABLE_HEADING, ENABLE_TEXT, &[OK, CANCEL][..], false));
         let allow = form(&Alert::Allow { conn: 1 }, false);
-        assert_eq!((allow.heading, allow.text.as_str(), allow.labels.as_slice(), allow.silenceable), (ALLOW_HEADING, ALLOW_TEXT, &[OK, CANCEL, MORE_INFO, ALWAYS][..], false));
+        assert_eq!((allow.heading, allow.text.as_str(), allow.labels.as_slice(), allow.spec.is_some()), (ALLOW_HEADING, ALLOW_TEXT, &[OK, CANCEL, MORE_INFO, ALWAYS][..], false));
         let allow = form(&Alert::Allow { conn: 1 }, true);
         assert_eq!((allow.text.as_str(), allow.labels.as_slice()), (format!("{ALLOW_TEXT}{NO_COOKIE_SUFFIX}").as_str(), &[OK, CANCEL, MORE_INFO][..]));
         let confirm = form(&Alert::ConfirmAlways { conn: 1 }, false);
-        assert_eq!((confirm.heading, confirm.text.as_str(), confirm.labels.as_slice(), confirm.silenceable), (CONFIRM_HEADING, CONFIRM_ALWAYS, &[OK, CANCEL][..], false));
+        assert_eq!((confirm.heading, confirm.text.as_str(), confirm.labels.as_slice(), confirm.spec.is_some()), (CONFIRM_HEADING, CONFIRM_ALWAYS, &[OK, CANCEL][..], false));
         let all = form(&Alert::AllowAll, false);
-        assert_eq!((all.heading, all.text.as_str(), all.labels.as_slice(), all.silenceable), (ALLOW_ALL_HEADING, ALLOW_ALL_TEXT, &[OK, CANCEL, MORE_INFO][..], false));
+        assert_eq!((all.heading, all.text.as_str(), all.labels.as_slice(), all.spec.is_some()), (ALLOW_ALL_HEADING, ALLOW_ALL_TEXT, &[OK, CANCEL, MORE_INFO][..], false));
         let reset = form(&Alert::Reset, false);
-        assert_eq!((reset.heading, reset.text.as_str(), reset.labels.as_slice(), reset.silenceable), (RESET_HEADING, RESET_TEXT, &[OK, REVEAL_PREFERENCE][..], true));
+        assert_eq!((reset.heading, reset.text.as_str(), reset.labels.as_slice(), reset.spec.is_some()), (RESET_HEADING, RESET_TEXT, &[OK, REVEAL_PREFERENCE][..], true));
+        let spec = reset.spec.unwrap();
+        assert_eq!(spec, reset_spec());
+        assert_eq!((spec.id.as_deref(), spec.kind, spec.cancel, spec.never_remember.as_slice()), (Some("NoSyncAppSupportMoved"), crate::warnings::Kind::Permanent, None, &[1][..]));
+        assert_eq!((spec.heading.as_str(), spec.text.as_str(), spec.labels.as_slice()), (RESET_HEADING, RESET_TEXT, &[OK.to_string(), REVEAL_PREFERENCE.to_string()][..]));
         let removed = form(&Alert::RemoveFailed("t".into()), false);
-        assert_eq!((removed.heading, removed.text.as_str(), removed.labels.as_slice(), removed.silenceable), (CHANGE_FAILED_HEADING, "t", &[OK, SHOW_IN_EXPLORER][..], false));
+        assert_eq!((removed.heading, removed.text.as_str(), removed.labels.as_slice(), removed.spec.is_some()), (CHANGE_FAILED_HEADING, "t", &[OK, SHOW_IN_EXPLORER][..], false));
         let made = form(&Alert::MakeChangeFailed("denied".into()), false);
         assert_eq!((made.heading, made.text.as_str(), made.labels.as_slice()), (MAKE_CHANGE_FAILED_HEADING, "The setting could not be changed: denied", &[OK][..]));
         let start = form(&Alert::StartFailed(start_failed_text("[::1] port 1912: in use", Some("python.exe (pid 9)"))), false);
@@ -1353,38 +1387,38 @@ mod tests {
     #[test]
     fn alert_answers_follow_iterm2() {
         use Effect::*;
-        let closed = |a: &Alert| effects(a, crate::prompt_ui::close_index(&form(a, false).labels), false);
+        let closed = |a: &Alert| effects(a, crate::prompt_ui::close_index(&form(a, false).labels));
         let deny = |conn| Verdict { conn, allow: false, reason: REASON_DENIED };
         // Enable: OK turns the API on; Cancel or closing leaves it off.
-        assert_eq!(effects(&Alert::Enable, 0, false), [Enable]);
+        assert_eq!(effects(&Alert::Enable, 0), [Enable]);
         assert_eq!(closed(&Alert::Enable), []);
         // Allow: OK, Cancel, More Info, Always; closing denies.
         let allow = Alert::Allow { conn: 4 };
-        assert_eq!(effects(&allow, 0, false), [Verdict { conn: 4, allow: true, reason: REASON_ALLOWED }]);
-        assert_eq!(effects(&allow, 1, false), [deny(4)]);
-        assert_eq!(effects(&allow, 2, false), [OpenUrl(SECURITY_URL), deny(4)]);
-        assert_eq!(effects(&allow, 3, false), [ConfirmAlways { conn: 4 }]);
+        assert_eq!(effects(&allow, 0), [Verdict { conn: 4, allow: true, reason: REASON_ALLOWED }]);
+        assert_eq!(effects(&allow, 1), [deny(4)]);
+        assert_eq!(effects(&allow, 2), [OpenUrl(SECURITY_URL), deny(4)]);
+        assert_eq!(effects(&allow, 3), [ConfirmAlways { conn: 4 }]);
         assert_eq!(closed(&allow), [deny(4)]);
         // Confirm: OK turns setCookie on and allows; Cancel or closing denies.
         let confirm = Alert::ConfirmAlways { conn: 4 };
-        assert_eq!(effects(&confirm, 0, false), [SetCookie, Verdict { conn: 4, allow: true, reason: REASON_ALLOWED }]);
+        assert_eq!(effects(&confirm, 0), [SetCookie, Verdict { conn: 4, allow: true, reason: REASON_ALLOWED }]);
         assert_eq!(closed(&confirm), [deny(4)]);
         // A script's SetPreference of setCookie: the same Confirm text; only OK turns it on.
         assert_eq!(form(&Alert::ConfirmCookie { conn: 5 }, false), form(&confirm, false));
-        assert_eq!(effects(&Alert::ConfirmCookie { conn: 5 }, 0, false), [SetCookie]);
-        assert_eq!(effects(&Alert::ConfirmCookie { conn: 5 }, 1, false), []);
+        assert_eq!(effects(&Alert::ConfirmCookie { conn: 5 }, 0), [SetCookie]);
+        assert_eq!(effects(&Alert::ConfirmCookie { conn: 5 }, 1), []);
         assert_eq!(closed(&Alert::ConfirmCookie { conn: 5 }), []);
         // Allow all: OK writes the file, More Info opens the page; the popup mirrors after.
-        assert_eq!(effects(&Alert::AllowAll, 0, false), [WriteAllowAll, Mirror]);
-        assert_eq!(effects(&Alert::AllowAll, 2, false), [OpenUrl(AUTH_URL), Mirror]);
+        assert_eq!(effects(&Alert::AllowAll, 0), [WriteAllowAll, Mirror]);
+        assert_eq!(effects(&Alert::AllowAll, 2), [OpenUrl(AUTH_URL), Mirror]);
         assert_eq!(closed(&Alert::AllowAll), [Mirror]);
-        // Reset: the checkbox counts only with OK; closing does nothing.
-        assert_eq!(effects(&Alert::Reset, 0, true), [SilenceReset]);
-        assert_eq!(effects(&Alert::Reset, 0, false), []);
-        assert_eq!(effects(&Alert::Reset, 1, true), [RevealPreference]);
+        // Reset: Reveal Preference reveals; OK and closing do nothing (the checkbox is the
+        // warning's, `reset_spec`).
+        assert_eq!(effects(&Alert::Reset, 0), []);
+        assert_eq!(effects(&Alert::Reset, 1), [RevealPreference]);
         assert_eq!(closed(&Alert::Reset), []);
         // Remove failed: Show in Explorer reveals; closing does nothing.
-        assert_eq!(effects(&Alert::RemoveFailed("t".into()), 1, false), [RevealFile]);
+        assert_eq!(effects(&Alert::RemoveFailed("t".into()), 1), [RevealFile]);
         assert_eq!(closed(&Alert::RemoveFailed("t".into())), []);
         assert_eq!(closed(&Alert::MakeChangeFailed("e".into())), []);
         assert_eq!(closed(&Alert::StartFailed("e".into())), []);

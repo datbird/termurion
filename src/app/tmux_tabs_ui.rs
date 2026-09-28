@@ -153,13 +153,12 @@ impl App {
                     let (title, vars) = (p.own().title().map(str::to_string), p.own().shell.vars.clone());
                     let osc4 = self.tmux.get(&gw).is_some_and(|t| t.ctl.answers_osc4());
                     let Some(p) = self.panes.get_mut(&id) else { continue };
-                    if let Some(io) = p.tmux_io() {
-                        io.answers_osc4.set(osc4);
-                        io.push_output(&data);
-                    }
-                    // Read now: nothing else wakes the loop for it.
-                    p.pump();
+                    let ssh = p.tmux_output(&data, osc4);
                     self.api_output(&[id]);
+                    // `ssh_pump` ran before this pass pumped the pane; its conductor waits.
+                    if ssh {
+                        self.ssh_pump_pane(id);
+                    }
                     let Some(p) = self.panes.get_mut(&id) else { continue };
                     let title_changed = p.own().title().map(str::to_string) != title;
                     let now_vars = (p.own().shell.vars != vars).then(|| p.own().shell.vars.iter().map(|(k, v)| (format!("user.{k}"), v.clone())).collect());
@@ -399,12 +398,7 @@ impl App {
         let Some((gw, _, window)) = self.tmux_of(focused) else { return false };
         let same = self.tabs.iter().filter(|t| self.tmux_of(t.focused).is_some_and(|(g, _, _)| g == gw)).count();
         if same > 1 {
-            if self.globals.bool("ClosingTmuxTabKillsTmuxWindows") {
-                self.tmux_close_answer(&[(gw, vec![window])], "Hide", false);
-                return true;
-            }
-            let (text, buttons) = crate::tmux_persist::close_tab_question();
-            self.ask(focused, &format!("{CLOSE_TAB}{gw}:{window}"), text, &buttons, true);
+            self.ask_tmux_close(tmux_close_tab_ask(focused, gw, window));
             return true;
         }
         self.tmux_close_window_question(focused, Some(gw), false)
@@ -413,15 +407,41 @@ impl App {
     /// iTerm2's four-way question for the tmux tabs of `gw` (every session when None) in
     /// this window; `whole`: the window closes after the answer.
     fn tmux_close_window_question(&mut self, anchor: PaneId, gw: Option<PaneId>, whole: bool) -> bool {
-        let scope = self.tmux_scope(gw);
-        let n: usize = scope.iter().map(|(_, ws)| ws.len()).sum();
-        let Some((text, buttons)) = crate::tmux_persist::close_window_question(n) else { return false };
-        if self.globals.bool("ClosingTmuxWindowKillsTmuxWindows") {
-            self.tmux_close_answer(&scope, "Hide", whole);
-            return true;
-        }
-        self.ask(anchor, &crate::tmux_persist::close_win_id(gw.unwrap_or(0), whole), text, &buttons, true);
+        let n: usize = self.tmux_scope(gw).iter().map(|(_, ws)| ws.len()).sum();
+        let Some(ask) = tmux_close_window_ask(anchor, gw.unwrap_or(0), whole, n) else { return false };
+        self.ask_tmux_close(ask);
         true
+    }
+
+    /// Asks a tmux close question once: iTerm2's is modal, so another click on the same tab's
+    /// close button (or Close Tab again) while it waits does nothing.
+    fn ask_tmux_close(&mut self, ask: super::scripts_alerts::Ask) {
+        if !self.alert_waits(|then| *then == ask.then) {
+            self.ask_scripts(ask);
+        }
+    }
+
+    /// A tmux close question answered with button `index` (`Then::TmuxClose`), in the window of
+    /// `anchor` (gone with it: nothing happens). Its tmux work finishes on the loop's next pass.
+    pub(super) fn tmux_close_answered(&mut self, anchor: PaneId, id: &str, index: usize) {
+        if !self.enter_pane_window(anchor) {
+            return;
+        }
+        if let Some(rest) = id.strip_prefix(CLOSE_TAB) {
+            let mut it = rest.split(':').map(|s| s.parse::<u64>().ok());
+            if let (Some(Some(gw)), Some(Some(w))) = (it.next(), it.next()) {
+                let (_, buttons) = crate::tmux_persist::close_tab_question();
+                if let Some(b) = buttons.get(index) {
+                    self.tmux_close_answer(&[(gw, vec![w as u32])], b, false);
+                }
+            }
+        } else if let Some((gw, whole)) = crate::tmux_persist::parse_close_win(id) {
+            let scope = self.tmux_scope((gw != 0).then_some(gw));
+            let n: usize = scope.iter().map(|(_, ws)| ws.len()).sum();
+            if let Some(b) = crate::tmux_persist::close_window_question(n.max(1)).and_then(|(_, buttons)| buttons.get(index).copied()) {
+                self.tmux_close_answer(&scope, b, whole);
+            }
+        }
     }
 
     /// Close Window with tmux tabs, after Tandem's own confirmation: the question first.
@@ -637,7 +657,7 @@ impl App {
         false
     }
 
-    /// The close questions' answers. True when the bar was one of these.
+    /// The "Cannot Attach" bars' answers. True when the bar was one of these.
     pub(super) fn tmux_close_bar(&mut self, id: &str, button: Option<&str>) -> bool {
         if let Some(rest) = id.strip_prefix(DOUBLE) {
             let mut it = rest.split(':').map(|s| s.parse::<u64>().ok());
@@ -671,22 +691,6 @@ impl App {
                         self.tmux_disconnected(gw, true);
                     }
                 }
-            }
-            return true;
-        }
-        if let Some(rest) = id.strip_prefix(CLOSE_TAB) {
-            let mut it = rest.split(':').map(|s| s.parse::<u64>().ok());
-            if let (Some(Some(gw)), Some(Some(w))) = (it.next(), it.next()) {
-                if let Some(b) = button {
-                    self.tmux_close_answer(&[(gw, vec![w as u32])], b, false);
-                }
-            }
-            return true;
-        }
-        if let Some((gw, whole)) = crate::tmux_persist::parse_close_win(id) {
-            if let Some(b) = button {
-                let scope = self.tmux_scope((gw != 0).then_some(gw));
-                self.tmux_close_answer(&scope, b, whole);
             }
             return true;
         }
@@ -1102,26 +1106,54 @@ impl App {
         }
     }
 
-    /// New Tab or New Window while a tmux pane is current: None when it is not one (or the
-    /// person chose the default profile); Some(()) when tmux makes it or it was cancelled.
+    /// New Tab or New Window while a tmux pane is current: None when it is not one; Some(())
+    /// when tmux makes it or, with `ask`, the question is asked (its answer, or the remembered
+    /// one, makes the tmux one, a tab or window with the default profile, or nothing:
+    /// `tmux_new_answered`).
     pub(super) fn tmux_new(&mut self, window: bool, ask: bool) -> Option<()> {
+        self.tmux_new_beside(window, ask, None)
+    }
+
+    /// `tmux_new` for New Tab to the Right of the tab `beside` (its id): Use Default Profile
+    /// opens the tab after it.
+    pub(super) fn tmux_new_beside(&mut self, window: bool, ask: bool, beside: Option<u64>) -> Option<()> {
         let pane = self.focused_id()?;
-        let (gw, _, tmux_window) = self.tmux_of(pane)?;
+        self.tmux_of(pane)?;
         if ask {
-            let legacy = self.globals.bool("NoSyncNewWindowOrTabFromTmuxOpensTmux");
-            let specific = self.globals.bool(crate::tmux_edits::new_kind_key(window, false));
-            let answer = if crate::tmux_edits::skip_new_kind_question(legacy, specific) {
-                Some(true)
-            } else {
-                let (heading, text, b) = crate::tmux_edits::new_kind_question(window);
-                super::broadcast_ui::yes_no_cancel(self.hwnd(), heading, &format!("{text}\n\nYes: {}. No: {}.", b[0], b[1]))
-            };
-            match answer {
-                None => return Some(()),
-                Some(false) => return None,
-                Some(true) => {}
-            }
+            let legacy = crate::warnings::is_silenced(&self.globals, crate::tmux_edits::new_kind_key(window, true), super::warnings_app::unix_now());
+            self.ask_scripts(tmux_new_ask(pane, window, legacy, beside));
+            return Some(());
         }
+        self.tmux_new_at(pane, window)
+    }
+
+    /// The question answered for the tmux pane `anchor`: a new tmux window or tab (0), or a
+    /// window or tab with the default profile (1), in the window it was asked from (after the
+    /// tab `beside` for New Tab to the Right, at the end when it has closed since); Cancel
+    /// does nothing.
+    pub(super) fn tmux_new_answered(&mut self, anchor: PaneId, window: bool, beside: Option<u64>, index: usize) {
+        if index > 1 || !self.enter_pane_window(anchor) {
+            return;
+        }
+        match (index, window) {
+            (0, _) => {
+                self.tmux_new_at(anchor, window);
+            }
+            (_, true) => {
+                self.pending_windows.push(super::windows_ui::NewWindow::Profile(None));
+                self.redraw();
+            }
+            (_, false) => match beside.and_then(|id| self.tabs.iter().position(|t| t.id == id)) {
+                Some(at) => self.tab_beside(at),
+                None => self.new_tab(None),
+            },
+        }
+    }
+
+    /// A new tmux window (`window`) or tab next to the tmux window of `pane`. None when the
+    /// pane is not a tmux pane.
+    fn tmux_new_at(&mut self, pane: PaneId, window: bool) -> Option<()> {
+        let (gw, _, tmux_window) = self.tmux_of(pane)?;
         let dir = self.tmux_dir(pane);
         let size = self.profile_of(pane).map(|p| (p.int("Columns").max(1) as u32, p.int("Rows").max(1) as u32));
         let affinity = (!window).then_some(tmux_window);
@@ -1305,6 +1337,33 @@ impl App {
     }
 }
 
+/// "Kill tmux window, terminating its jobs, or hide it?" for tmux window `window` of gateway
+/// `gw`, shown as the tab of `anchor` closes (`killOrHideTmuxTab:`, `PT:2475-2485`: no heading,
+/// permanently silenceable).
+pub(super) fn tmux_close_tab_ask(anchor: PaneId, gw: PaneId, window: u32) -> super::scripts_alerts::Ask {
+    let (text, buttons) = crate::tmux_persist::close_tab_question();
+    let id = format!("{CLOSE_TAB}{gw}:{window}");
+    super::scripts_alerts::ask("", text, &buttons, Some("ClosingTmuxTabKillsTmuxWindows"), crate::warnings::Kind::Permanent, super::scripts_alerts::Then::TmuxClose(anchor, id))
+}
+
+/// The four-way question for `n` tmux tabs of gateway `gw` (0: every session) in the window
+/// of `anchor`; `whole`: the window closes after the answer (`killOrHideTmuxWindowForController:`,
+/// `PT:4820-4824`). None for no tabs.
+pub(super) fn tmux_close_window_ask(anchor: PaneId, gw: PaneId, whole: bool, n: usize) -> Option<super::scripts_alerts::Ask> {
+    let (text, buttons) = crate::tmux_persist::close_window_question(n)?;
+    let id = crate::tmux_persist::close_win_id(gw, whole);
+    Some(super::scripts_alerts::ask("", text, &buttons, Some("ClosingTmuxWindowKillsTmuxWindows"), crate::warnings::Kind::Permanent, super::scripts_alerts::Then::TmuxClose(anchor, id)))
+}
+
+/// "What kind of tab (or window) do you want to open?" from the tmux pane `anchor`, under the
+/// legacy key while it is silenced (`legacy`), else the window's or the tab's key; permanently
+/// silenceable (`possiblyTmuxValueForWindow:cancel:`, `AD:3788-3825`).
+pub(super) fn tmux_new_ask(anchor: PaneId, window: bool, legacy: bool, beside: Option<u64>) -> super::scripts_alerts::Ask {
+    let (heading, text, buttons) = crate::tmux_edits::new_kind_question(window);
+    let id = crate::tmux_edits::new_kind_key(window, legacy);
+    super::scripts_alerts::ask(heading, text, &buttons, Some(id), crate::warnings::Kind::Permanent, super::scripts_alerts::Then::TmuxNew { anchor, window, beside })
+}
+
 /// A window's outer origin (screen pixels) and its size for `@per_window_settings`: the
 /// outer size in logical pixels, or full screen.
 /// None while the window is minimized (Windows parks it off screen at a caption's size).
@@ -1328,5 +1387,46 @@ pub(super) fn tmux_dir_of(p: Option<&Profile>) -> crate::tmux_edits::Dir {
         "Yes" => Dir::Custom(p.string("Working Directory")),
         "Recycle" => Dir::Recycle,
         _ => Dir::Home,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::warnings::Kind;
+
+    /// 13c's tab close buttons: another click on a tab whose close question waits (queued or
+    /// showing) asks nothing more; another tab or the window question still asks.
+    #[test]
+    fn a_waiting_tmux_close_question_is_not_asked_again() {
+        use super::super::scripts_alerts::{waits, Ask, Then};
+        fn same(ask: &Ask) -> impl Fn(&Then) -> bool + '_ {
+            move |t| *t == ask.then
+        }
+        let mut queued = std::collections::VecDeque::new();
+        queued.push_back(tmux_close_tab_ask(5, 2, 3));
+        assert!(waits(None, &queued, same(&tmux_close_tab_ask(5, 2, 3))));
+        assert!(!waits(None, &queued, same(&tmux_close_tab_ask(6, 2, 4))), "another tab asks");
+        let window = tmux_close_window_ask(5, 2, false, 1).unwrap();
+        assert!(!waits(None, &queued, same(&window)));
+        assert!(waits(Some(&window), &std::collections::VecDeque::new(), same(&tmux_close_window_ask(5, 2, false, 1).unwrap())), "a showing question counts");
+    }
+
+    /// `possiblyTmuxValueForWindow:cancel:` (`AD:3788-3825`): the legacy key while it is
+    /// silenced, else the window's or the tab's; permanently silenceable, Cancel last.
+    #[test]
+    fn tmux_new_question_follows_iterm2() {
+        let a = tmux_new_ask(5, false, false, None);
+        let (heading, text, buttons) = crate::tmux_edits::new_kind_question(false);
+        assert_eq!((a.spec.heading.as_str(), a.spec.text.as_str(), a.spec.labels.clone()), (heading, text, buttons.map(String::from).to_vec()));
+        assert_eq!(a.spec.id.as_deref(), Some("NoSyncNewTabFromTmuxOpensTmux"));
+        assert_eq!((a.spec.kind, a.spec.cancel), (Kind::Permanent, Some(2)));
+        assert_eq!(a.then, super::super::scripts_alerts::Then::TmuxNew { anchor: 5, window: false, beside: None });
+        assert_eq!(tmux_new_ask(5, true, false, None).spec.id.as_deref(), Some("NoSyncNewWindowFromTmuxOpensTmux"));
+        assert_eq!(tmux_new_ask(5, true, true, None).spec.id.as_deref(), Some("NoSyncNewWindowOrTabFromTmuxOpensTmux"));
+        assert_eq!(tmux_new_ask(5, false, true, None).spec.id.as_deref(), Some("NoSyncNewWindowOrTabFromTmuxOpensTmux"));
+        // New Tab to the Right asks the same question, carrying its tab for the answer.
+        let right = tmux_new_ask(5, false, false, Some(9));
+        assert_eq!((right.spec.id, right.then), (a.spec.id, super::super::scripts_alerts::Then::TmuxNew { anchor: 5, window: false, beside: Some(9) }));
     }
 }

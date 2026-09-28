@@ -281,13 +281,10 @@ pub fn shows_progress(len: usize, s: Speed, commands: bool) -> bool {
     commands || s.delay * len as f64 / s.units.max(1) as f64 + (len / 10_000) as f64 > 3.0
 }
 
-/// The settings the warnings read.
+/// The settings the warnings read. Whether a warning is silenced is not among them: a
+/// silenced warning still comes, and its remembered answer answers it (`warnings::preempt`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WarnPrefs {
-    /// NoSyncDoNotWarnBeforeMultilinePaste.
-    pub multiline_off: bool,
-    /// NoSyncDoNotWarnBeforePastingOneLineEndingInNewlineAtShellPrompt.
-    pub one_line_off: bool,
     /// PromptForPasteWhenNotAtPrompt.
     pub when_not_at_prompt: bool,
     /// SuppressMultilinePasteWarningWhenPastingOneLineWithTerminalNewline.
@@ -296,8 +293,6 @@ pub struct WarnPrefs {
     pub skip_not_at_prompt: bool,
     /// AlwaysWarnBeforePastingOverSize (-1: off).
     pub size_limit: i64,
-    /// AboutToPasteTabsWithCancel.
-    pub tabs_off: bool,
 }
 
 /// A question before a paste.
@@ -339,13 +334,26 @@ impl Warning {
         }
     }
 
-    /// The key "Remember my choice" sets (None: it cannot be silenced).
-    pub fn silence_key(&self) -> Option<&'static str> {
-        match self {
-            Warning::Tabs => Some("AboutToPasteTabsWithCancel"),
-            Warning::Size(_) => None,
-            Warning::OneLine { at_prompt: true } => Some("NoSyncDoNotWarnBeforePastingOneLineEndingInNewlineAtShellPrompt"),
-            Warning::Lines { .. } | Warning::OneLine { .. } => Some("NoSyncDoNotWarnBeforeMultilinePaste"),
+    /// The warning with `heading` and `text`: its identifier and kind (the size question is
+    /// persistent, `iTermPasteHelper.m:758-759`; the rest permanently silenceable, `:865-867`,
+    /// `:910-911`) and its Cancel button, never remembered.
+    pub fn spec(&self, heading: &str, text: &str) -> crate::warnings::Spec {
+        use crate::warnings::Kind;
+        let (id, kind) = match self {
+            Warning::Tabs => ("AboutToPasteTabsWithCancel", Kind::Permanent),
+            Warning::Size(_) => ("NoSyncPasteOverCharacterLimitWarning", Kind::Persistent),
+            Warning::OneLine { at_prompt: true } => ("NoSyncDoNotWarnBeforePastingOneLineEndingInNewlineAtShellPrompt", Kind::Permanent),
+            Warning::Lines { .. } | Warning::OneLine { .. } => ("NoSyncDoNotWarnBeforeMultilinePaste", Kind::Permanent),
+        };
+        let labels = self.buttons();
+        crate::warnings::Spec {
+            id: Some(id.to_string()),
+            kind,
+            heading: heading.to_string(),
+            text: text.to_string(),
+            labels: labels.iter().map(|l| l.to_string()).collect(),
+            cancel: labels.iter().position(|l| *l == "Cancel"),
+            never_remember: Vec::new(),
         }
     }
 }
@@ -357,7 +365,7 @@ pub fn check(text: &str, at_prompt: Option<bool>, bracketed: bool, flags: u32, p
     if text.is_empty() || flags & (COMMANDS | NO_WARNINGS) != 0 {
         return out;
     }
-    if flags & PLAIN != 0 && !bracketed && text.contains('\t') && !p.tabs_off {
+    if flags & PLAIN != 0 && !bracketed && text.contains('\t') {
         out.push(Warning::Tabs);
     }
     let n = text.encode_utf16().count();
@@ -378,11 +386,8 @@ pub fn check(text: &str, at_prompt: Option<bool>, bracketed: bool, flags: u32, p
         lines.pop();
     }
     let w = if lines.len() > 1 { Warning::Lines { n: lines.len(), at_prompt: at } } else { Warning::OneLine { at_prompt: at } };
-    let off = match w {
-        Warning::OneLine { at_prompt: true } => p.one_line_off,
-        _ => p.multiline_off || (!at && !p.when_not_at_prompt),
-    };
-    if !off {
+    // Not at the prompt, only with PromptForPasteWhenNotAtPrompt.
+    if at || p.when_not_at_prompt {
         out.push(w);
     }
     out
@@ -718,7 +723,6 @@ mod tests {
         assert!(check("a\nb", Some(true), true, NO_WARNINGS, &p).is_empty());
         assert!(check("a\nb", Some(true), true, COMMANDS, &p).is_empty());
         assert!(check("a\nb", Some(true), true, REMOVE_NEWLINES, &p).is_empty());
-        assert!(check("a\nb", Some(true), true, 0, &WarnPrefs { multiline_off: true, ..p }).is_empty());
         assert!(check("ab\n", Some(true), true, 0, &WarnPrefs { skip_one_line_newline: true, ..p }).is_empty());
         assert_eq!(check("a\tb", Some(false), false, PLAIN, &p), vec![Warning::Tabs], "tabs with bracketing off");
         assert!(check("a\tb", Some(false), true, PLAIN, &p).is_empty(), "bracketing on: tabs go as they are");
@@ -726,8 +730,26 @@ mod tests {
         assert_eq!(Warning::Tabs.text(), "You're about to paste a string with tabs.");
         assert_eq!(check("abcdef", None, true, 0, &WarnPrefs { size_limit: 3, ..p }), vec![Warning::Size(6)]);
         assert_eq!(Warning::Size(6).text(), "OK to paste 6 characters?");
-        assert_eq!(Warning::Size(6).silence_key(), None);
-        assert_eq!(Warning::Lines { n: 2, at_prompt: true }.silence_key(), Some("NoSyncDoNotWarnBeforeMultilinePaste"));
+    }
+
+    #[test]
+    fn paste_specs_follow_iterm2() {
+        use crate::warnings::Kind;
+        let spec = |w: Warning| w.spec(w.heading(), &w.text());
+        let tabs = spec(Warning::Tabs);
+        assert_eq!((tabs.id.as_deref(), tabs.kind, tabs.cancel), (Some("AboutToPasteTabsWithCancel"), Kind::Permanent, Some(1)));
+        assert_eq!((tabs.heading.as_str(), tabs.text.as_str()), ("Paste Tabs", "You're about to paste a string with tabs."));
+        assert_eq!(tabs.labels, ["OK", "Cancel", "Convert tabs to spaces", "Advanced..."]);
+        let size = spec(Warning::Size(6));
+        assert_eq!((size.id.as_deref(), size.kind), (Some("NoSyncPasteOverCharacterLimitWarning"), Kind::Persistent), "never silenced");
+        let lines = spec(Warning::Lines { n: 2, at_prompt: true });
+        assert_eq!((lines.id.as_deref(), lines.kind, lines.cancel, lines.never_remember.as_slice()), (Some("NoSyncDoNotWarnBeforeMultilinePaste"), Kind::Permanent, Some(1), &[][..]));
+        let one = spec(Warning::OneLine { at_prompt: true });
+        assert_eq!((one.id.as_deref(), one.kind, one.cancel), (Some("NoSyncDoNotWarnBeforePastingOneLineEndingInNewlineAtShellPrompt"), Kind::Permanent, Some(2)));
+        assert_eq!(spec(Warning::OneLine { at_prompt: false }).id.as_deref(), Some("NoSyncDoNotWarnBeforeMultilinePaste"));
+        // A silenced warning still comes: its remembered answer is the preempt's.
+        let p = WarnPrefs { size_limit: -1, ..Default::default() };
+        assert_eq!(check("a\nb", Some(true), true, 0, &p), vec![Warning::Lines { n: 2, at_prompt: true }]);
     }
 
     #[test]

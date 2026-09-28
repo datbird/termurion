@@ -117,11 +117,14 @@ pub struct Limits {
     pub transfer: usize,
     /// Bytes `CopyToClipboard` captures before it stops.
     pub copy: usize,
+    /// Bytes of output held unread behind an inline file that waits for the person (a tmux
+    /// pane cannot pause); past it the file is dropped, as a No.
+    pub held: usize,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { images: 768 << 20, transfer: 512 << 20, copy: 100 << 20 }
+        Limits { images: 768 << 20, transfer: 512 << 20, copy: 100 << 20, held: 16 << 20 }
     }
 }
 
@@ -148,6 +151,13 @@ pub struct Screen {
     pub downloads: Vec<crate::inline_file::Download>,
     /// A MultipartFile in progress.
     pub multipart: Option<crate::inline_file::Multipart>,
+    /// An inline file waiting for the person to allow its display; while it waits, the output
+    /// after it is held unread in `held_output` (iTerm2 pauses its parser for the question).
+    pub(crate) inline_hold: Option<crate::inline_file::InlineHold>,
+    pub(crate) held_output: Vec<u8>,
+    /// How many inline files have waited: each one's number, so a late answer to a dropped
+    /// one never answers the next.
+    pub(crate) inline_holds: u64,
     /// Kitty graphics images and transfers.
     pub kitty: crate::kitty::Kitty,
     /// Answers the terminal owes the program (kitty graphics), sent with `feed`'s reply.
@@ -216,6 +226,8 @@ pub struct Screen {
     pub(crate) color_sets: Vec<(String, crate::osc1337::Color)>,
     /// Whether programs may write the clipboard (for the Capabilities report).
     pub clipboard_allowed: bool,
+    /// What a host change does with modes left on (the app's settings for this pane).
+    pub host_policy: crate::marks::HostPolicy,
     /// Mode 2031 (color scheme reports) and the scheme last reported.
     color_reports: bool,
     last_dark: bool,
@@ -294,6 +306,14 @@ pub enum Request {
     SetBadge(String),
     /// SetBadgeFormat with a function call: refused.
     BadgeRefused,
+    /// Shell integration reported another account (user or host, the first report included):
+    /// a waiting outdated scripts notice goes, and at a host change (`marks::host_changed`)
+    /// these modes, left on by the previous host, are offered for turning off (empty when
+    /// nothing is offered).
+    HostChanged(crate::marks::LeftOn),
+    /// ShellIntegrationVersion: the version and the shell this report names (None when it
+    /// names none), for the outdated scripts notice.
+    ShellIntegrationReported { version: Option<u32>, shell: Option<String> },
     /// `it2ssh=`: the pane starts connecting (`screenWillBeginSSHIntegration`).
     SshWillBegin,
     /// A version 3 `SendConductor=`: type the conductor bootstrap.
@@ -373,6 +393,9 @@ impl Screen {
             images: crate::images::Store::default(),
             downloads: Vec::new(),
             multipart: None,
+            inline_hold: None,
+            held_output: Vec::new(),
+            inline_holds: 0,
             kitty: crate::kitty::Kitty::default(),
             replies: Vec::new(),
             limits: Limits::default(),
@@ -403,6 +426,7 @@ impl Screen {
             key_labels: crate::osc1337::KeyLabels::default(),
             color_sets: Vec::new(),
             clipboard_allowed: false,
+            host_policy: Default::default(),
             requests: Vec::new(),
             copy: crate::clipboard_osc::Copy::default(),
             capture: None,
@@ -571,6 +595,18 @@ impl Screen {
     }
 
     fn feed_chunk(&mut self, bytes: &[u8]) -> Vec<u8> {
+        // An inline file waits for the person: nothing after it is read until they answer.
+        if self.inline_hold.is_some() {
+            if self.held_output.len() + bytes.len() <= self.limits.held {
+                self.held_output.extend_from_slice(bytes);
+                return Vec::new();
+            }
+            // Too much waits on the person: the file is dropped, as a No, and all of it is read.
+            self.inline_hold = None;
+            let mut held = std::mem::take(&mut self.held_output);
+            held.extend_from_slice(bytes);
+            return self.feed(&held);
+        }
         if self.keys.literal {
             let reply = self.feed_raw(&literal(bytes));
             self.run_triggers_after_feed();
@@ -579,9 +615,11 @@ impl Screen {
         // Shell-integration OSCs act where they appear in the stream, so the output is fed in
         // pieces that end at each one.
         let events = self.osc.scan_spans(bytes);
-        let pending = self.osc.pending;
+        let mut pending = self.osc.pending;
         let mut reply = Vec::new();
         let mut at = 0;
+        // Where this chunk's reading stops: its end, or just after an inline file that waits.
+        let mut stop = bytes.len();
         let mut still_held = false;
         if self.capture.is_some() && !self.capture_hold.is_empty() {
             if events.first().is_some_and(|e| e.0 == 0) {
@@ -620,6 +658,15 @@ impl Screen {
                 }
             }
             reply.append(&mut self.replies);
+            if self.inline_hold.is_some() {
+                // The rest of the chunk is read again when the person answers, by a scanner
+                // back where this sequence left it (between sequences).
+                self.held_output.extend_from_slice(&bytes[at..]);
+                self.osc = Default::default();
+                pending = None;
+                stop = at;
+                break;
+            }
         }
         if !still_held {
             match pending.filter(|p| *p >= at) {
@@ -627,10 +674,10 @@ impl Screen {
                     self.capture_bytes(&bytes[at..p]);
                     self.capture_hold = bytes[p..].to_vec();
                 }
-                _ => self.capture_bytes(&bytes[at..]),
+                _ => self.capture_bytes(&bytes[at..stop]),
             }
         }
-        reply.extend(self.feed_raw(&bytes[at..]));
+        reply.extend(self.feed_raw(&bytes[at..stop]));
         reply.extend(self.color_scheme_change());
         self.composer_accrue();
         self.run_triggers_after_feed();
@@ -1294,6 +1341,19 @@ impl Screen {
         self.keys = KeyState { literal: self.keys.literal, ..KeyState::new(self.keys.profile_csi_u) };
     }
 
+    /// What an SSH conductor restores when it unhooks (iTerm2's savedState, Decision: the
+    /// remote host and the working directory).
+    pub fn ssh_saved(&self) -> crate::conductor::SavedState {
+        crate::conductor::SavedState { cwd: self.shell.cwd.clone(), host: self.shell.host.clone(), user: self.shell.user.clone() }
+    }
+
+    /// restoreSavedState (`PS:20183-20185`) for what `ssh_saved` kept.
+    pub fn restore_ssh_saved(&mut self, s: &crate::conductor::SavedState) {
+        self.shell.cwd = s.cwd.clone();
+        self.shell.host = s.host.clone();
+        self.shell.user = s.user.clone();
+    }
+
     pub fn mouse_modes(&self) -> Modes {
         let mode = self.term.mode();
         let tracking = if mode.contains(TermMode::MOUSE_MOTION) {
@@ -1489,6 +1549,21 @@ mod tests {
         assert_eq!(s.all_text(), "prompt>\n");
         let cursor = s.term().grid().cursor.point;
         assert_eq!((cursor.line.0, cursor.column.0), (0, 8));
+    }
+
+    #[test]
+    fn ssh_saved_follows_iterm2() {
+        let mut s = Screen::new(80, 24);
+        s.shell.cwd = Some("/home/me".into());
+        s.shell.host = Some("laptop".into());
+        s.shell.user = Some("me".into());
+        let saved = s.ssh_saved();
+        assert_eq!(saved, crate::conductor::SavedState { cwd: Some("/home/me".into()), host: Some("laptop".into()), user: Some("me".into()) });
+        s.shell.cwd = Some("/srv".into());
+        s.shell.host = Some("far".into());
+        s.shell.user = None;
+        s.restore_ssh_saved(&saved);
+        assert_eq!((s.shell.cwd.as_deref(), s.shell.host.as_deref(), s.shell.user.as_deref()), (Some("/home/me"), Some("laptop"), Some("me")));
     }
 
     #[test]

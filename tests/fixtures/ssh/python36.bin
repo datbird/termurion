@@ -1,0 +1,13 @@
+P2000pnone 12345 NDZBYUNmR2dLa01ObnFzVHRWdlh4WXk= - ZXhhbXBsZS5jb20g
+]135;:begin 0.31024408113659947909\]135;:/bin/bash
+/home/user
+GNU bash, version 5.2.21(1)-release (x86_64-pc-linux-gnu)
+Copyright (C) 2022 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+
+This is free software; you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+\]135;:end 0.31024408113659947909 0 r\]135;:begin 0.6124759695680124257\]135;:Python 3.6.9
+\]135;:end 0.6124759695680124257 0 r\]135;:begin 0.4909167766225137383\]135;:end 0.4909167766225137383 0 r\]135;:unhook\-bash: groups: command not found
+[?2004huser@host:~$ exit
+[?2004llogout

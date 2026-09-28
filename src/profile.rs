@@ -232,10 +232,28 @@ pub fn local_path(reported: &str) -> Option<std::path::PathBuf> {
     (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':').then(|| std::path::PathBuf::from(s.replace('/', "\\")))
 }
 
+/// A saved folder as the Windows path a shell starts in: `local_path`'s, or "~" or a path
+/// under it in the home folder (iTerm2 standardizes the path, expanding the tilde, before it
+/// checks it, `iTermSessionFactory.m:346-354`). None for any other path ("~user", WSL, MSYS,
+/// relative).
+pub fn local_folder(saved: &str) -> Option<std::path::PathBuf> {
+    let Some(rest) = saved.strip_prefix('~') else { return local_path(saved) };
+    if !rest.is_empty() && !rest.starts_with(['/', '\\']) {
+        return None;
+    }
+    let rest = rest.trim_start_matches(['/', '\\']);
+    Some(if rest.is_empty() { home() } else { home().join(rest.replace('/', "\\")) })
+}
+
+/// The home folder a session starts in: %USERPROFILE%.
+pub fn home() -> std::path::PathBuf {
+    std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir)
+}
+
 /// `start_dir`, with the directory of the session a new one comes from ("Reuse previous
 /// session's directory"). A missing or unusable directory falls back to home.
 pub fn start_dir_with(p: &Profile, previous: Option<&std::path::Path>) -> (std::path::PathBuf, Option<String>) {
-    let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let home = home();
     if p.string("Custom Directory") == "Recycle" {
         return (previous.filter(|d| d.is_dir()).map(|d| d.to_path_buf()).unwrap_or(home), None);
     }
@@ -281,6 +299,13 @@ mod tests {
         assert_eq!(local_path("/C:/Users/rob"), Some(std::path::PathBuf::from("C:\\Users\\rob")));
         assert_eq!(local_path("C:\\Users\\rob"), Some(std::path::PathBuf::from("C:\\Users\\rob")));
         assert_eq!(local_path("/home/rob"), None);
+        assert_eq!(local_folder("/D:/x"), Some(std::path::PathBuf::from("D:\\x")));
+        assert_eq!(local_folder("~/www/a"), Some(home().join("www\\a")));
+        assert_eq!(local_folder("~\\www"), Some(home().join("www")));
+        assert_eq!(local_folder("~"), Some(home()));
+        assert_eq!(local_folder("~rob/www"), None);
+        assert_eq!(local_folder("/home/rob"), None);
+        assert_eq!(local_folder("src"), None);
     }
 
     #[test]

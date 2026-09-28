@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 176 | 119 | 19 |
-| `02-global-settings.md` | 823 | 375 | 83 | 365 |
-| `03-features-and-menus.md` | 646 | 525 | 47 | 74 |
-| Total | 1,783 | 1,076 | 249 | 458 |
+| `02-global-settings.md` | 823 | 398 | 77 | 348 |
+| `03-features-and-menus.md` | 647 | 527 | 48 | 72 |
+| Total | 1,784 | 1,101 | 244 | 439 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -250,6 +250,22 @@ Enable, then a one-time consent per host that replaces iTerm2's plugin), wired i
 and Codecierge, whose AI answers still wait for 12b to 12f. Apple Intelligence and AI tab titles
 are n/a on Windows. Every kept quirk is listed in `docs/acceptance/m12a-checklist.md` and ruled on in
 `docs/superpowers/rulings/m12a-rulings.txt`.
+Milestone 12b brought the AI providers (03: Multi-provider support, Streaming responses, the wire
+half of Custom API headers and the request-time half of Withheld-key advice; 02: the model, URL, API,
+token, timeout and zero data retention settings as request inputs, and the Advanced `aiProxy`,
+`ollamaNumCtx`, `ollamaKeepAlive` and AI logging rows): OpenAI Responses and Chat Completions (with
+Early O1 and legacy Completions), Anthropic, Gemini, DeepSeek and Ollama's native API, each built as
+iTerm2 builds its request, sent over WinHTTP with the system proxy and TLS (no curl, no new crate),
+and streamed as the bytes arrive, with iTerm2's error texts and token arithmetic. A localhost or
+private host never gets the vendor key, the placeholder key "placeholder" contacts nothing, redirects
+are followed only to the host consent was given for, every answer is capped at 64 MiB, and the raw
+wire log replaces every key and every header value but known non-secret ones with a fingerprint.
+Ollama discovery fills the Regular and Budget pickers and expands auto-discover entries in the AI
+Model popup; Manage AI Models… gains Fetch Models, Refresh Models and Test Connection. OpenAI file
+uploads and vector stores are built for 12c, only for models at api.openai.com. The chat itself,
+which is the first to send a conversation, comes with 12c, so Streaming responses and the two AI
+logging rows read partial until then. Every kept quirk is listed in
+`docs/acceptance/m12b-checklist.md` and ruled on in `docs/superpowers/rulings/m12b-rulings.txt`.
 Milestone 13a built Settings > Advanced as iTerm2's pane (02): the rows under iTerm2's 19
 categories in Finder order with bold, pinned headers; a search that matches every typed word in a
 row's description or category; "Show only non-default values", which keeps the row being edited
@@ -280,8 +296,8 @@ per-user pipe); Configure… holds iTerm2's four settings (SSH Integration, vari
 copy, Path to SSH), partial until milestone 14b makes them act; OSC 1337 `Env` (report=all), `it2ssh`, `SendConductor` and `EndSSH` are read
 as iTerm2 reads them, with its version and end banners, the hop chain, and `\x03\n` releasing
 it2ssh's local read loop; the session host speaks protocol 4 so an SSH session can be hosted.
-Until milestone 14b's conductor hook exists (`CONDUCTOR_READY` false), it2ssh and SSH profiles
-run plain ssh with a one-line notice and no typing is ever held. The Shell > ssh menu items and
+Until milestone 14b's conductor hook existed (`CONDUCTOR_READY` false), it2ssh and SSH profiles
+ran plain ssh with a one-line notice and no typing was ever held. The Shell > ssh menu items and
 seven SSH settings in 02 (sshSchemePath, alternateSSHIntegrationScript, unameCommand,
 validCharactersInSSHUserNames, sshURLsSupportPath, restoreKeyModeAutomaticallyOnHostChange,
 channelsEnabled) belong to milestone 14 (ruling 6). Every kept quirk is listed in
@@ -309,6 +325,29 @@ eight number and text Advanced > Tabs rows are edited in Settings > Advanced > T
 13a's controls.
 Every kept quirk is listed in `docs/acceptance/m13c-checklist.md` and ruled on in
 `docs/superpowers/rulings/m13c-rulings.txt`.
+Milestone 13b put every question Tandem remembers an answer to on iTerm2's warning model (02:
+the Warnings rows, 03: Suppressed Alerts): one checkbox rule ("Suppress this message
+permanently" for one button that may be remembered, "Remember my choice" for several, with the
+ten-minute and 30-day forms), Cancel and the do-not-remember buttons never remembered, a
+persistent warning never silenced, and each button answering to Alt plus its letter (underlined
+with "Buttons in modal alerts indicate keyboard shortcuts"). Every answer given automatically is
+listed in Tandem > Suppressed Alerts, whose menu title counts them with the newest one's age;
+Un-suppress asks again, and "Always show alerts with remembered selections" shows them with the
+saved answer and "Permanently Forget Saved Selection". The paste and tmux close questions moved
+from pane bars to alert windows, the broadcast input warning got its checkbox, and Clear and
+Reset with broadcast ask iTerm2's three-button warning (a stored No no longer answers "current
+only"). New: iTerm2's Restart Session, download and inline display (with the 1 GiB follow-up),
+annotation removal, Meta and key override confirmations; the offers to turn focus reporting,
+mouse reporting and paste bracketing off after a host change (Always and Never write the
+Advanced pane's Unspecified/No/Yes rows); the offer to disable mouse reporting after a drag then
+Copy; the arrangement announcements (a missing profile restores from the arrangement's own copy
+with no banner, a broken copy offers Assign Profile, a missing folder starts in home with iTerm2's
+banner or, for an SSH profile, offers Repair); and the out-of-date shell integration notice, read
+from iTerm2's version tables (Tandem's PowerShell script is in none).
+noSyncSuppressMissingProfileInArrangementWarning and noSyncNeverAskAboutDEC2048Frustration are
+stored and shown with nothing reading them; the Replace Profile warning waits for 13t's Copy to
+Profile and DEC mode 2048 (a new 03 row) for 13o. Every kept quirk is listed in
+`docs/acceptance/m13b-checklist.md` and ruled on in `docs/superpowers/rulings/m13b-rulings.txt`.
 Milestone 13d built tab dragging, pinned tabs, tab groups and tab icons (01: 2 rows to have;
 02: 16 rows to have; 03: 5 rows to have, 2 rows added as have, and the Duplicate Tab row
 corrected). A tab drags to reorder in its bar (inside the pinned or unpinned zone), into another
@@ -332,6 +371,22 @@ job or its ancestors (merged with the user's `graphic_icons.json`, `graphic_colo
 image. Duplicate Tab copies every pane next to the original. Nothing of 13d was checked on
 screen during the build. Every kept quirk is listed in `docs/acceptance/m13d-checklist.md` and
 ruled on in `docs/superpowers/rulings/m13d-rulings.txt`.
+Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
+Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
+milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's
+unmodified conductor.sh sets up, and Tandem writes it the bytes iTerm2 writes, pinned against
+recordings of the real script: getshell, the environment variables to copy, Files to Copy and
+iTerm2's shell integration files as gzip tarballs, the injection for zsh, fish and xonsh (bash only
+at level 2, as iTerm2), the profile's remote directory, the Python check and the login shell.
+Typing, pastes, terminal reports and coprocess output made during setup reach the remote once, in
+order, after it; the conductor's own writes are never held. Python 3.7 or later also gets level 1
+until milestone 14c. Every setup step has a 30-second limit (a Files to Copy write gets more with
+its size, since conductor.sh reads it in time that grows with the square of its size), and a failure
+shows iTerm2's error text, lets output show again and never leaves typing held (typing made during a
+failed or ended setup is dropped, as in iTerm2); EndSSH pops the conductor chain and restores each
+hop's saved state. The iTerm2 bugs met (B1 to B17) are kept or fixed one by one. Every kept quirk is
+listed in `docs/acceptance/m14b-checklist.md` and ruled on in
+`docs/superpowers/rulings/m14b-rulings.txt`.
 
 ## Order
 

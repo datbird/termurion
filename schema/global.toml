@@ -1385,6 +1385,137 @@ default = false
 help = "Suppress warning about broadcasting input."
 
 [[setting]]
+key = "NoSyncClearAllBroadcast"
+tab = "Advanced"
+section = "Warnings"
+label = "Send Clear Session to all broadcasted-to sessions?"
+type = "bool"
+help = "Send Clear Session to all broadcasted-to sessions?"
+
+[[setting]]
+key = "NoSyncConfirmRemoveAnnotation"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress confirmation to remove annotation?"
+type = "bool"
+default = false
+help = "Suppress confirmation to remove annotation?"
+
+[[setting]]
+key = "NeverWarnAboutMeta"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress a warning when Alt Key Acts as Meta is enabled in Settings > Profiles > Keys."
+type = "bool"
+default = false
+help = "Suppress a warning when Alt Key Acts as Meta is enabled in Settings > Profiles > Keys."
+
+[[setting]]
+key = "NeverWarnAboutOverrides"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress a warning about a change to a Profile key setting that overrides a global setting."
+type = "bool"
+default = false
+help = "Suppress a warning about a change to a Profile key setting that overrides a global setting."
+
+[[setting]]
+key = "NeverWarnAboutPossibleOverrides"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress a warning about a change to a global key that's overridden by a Profile."
+type = "bool"
+default = false
+help = "Suppress a warning about a change to a global key that's overridden by a Profile."
+
+[[setting]]
+key = "NoSyncReplaceProfileWarning"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress warning about copying a session's settings over a Profile"
+type = "bool"
+default = false
+help = "Suppress warning about copying a session's settings over a Profile"
+
+[[setting]]
+key = "NoSyncTurnOffFocusReportingOnHostChange"
+tab = "Advanced"
+section = "Warnings"
+label = "Always turn off focus reporting when host changes?"
+type = "bool"
+help = "Always turn off focus reporting when host changes?"
+
+[[setting]]
+key = "NoSyncTurnOffMouseReportingOnHostChange"
+tab = "Advanced"
+section = "Warnings"
+label = "Always turn off mouse reporting when host changes?"
+type = "bool"
+help = "Always turn off mouse reporting when host changes?"
+
+[[setting]]
+key = "NoSyncTurnOffBracketedPasteOnHostChange"
+tab = "Advanced"
+section = "Warnings"
+label = "Always turn off paste bracketing when host changes?"
+type = "bool"
+help = "Always turn off paste bracketing when host changes?"
+
+[[setting]]
+key = "NoSyncSuppressMissingProfileInArrangementWarning"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress the notification that a restored session\u2019s profile no longer exists?"
+type = "bool"
+default = false
+help = "Suppress the notification that a restored session\u2019s profile no longer exists?"
+
+[[setting]]
+key = "NoSyncSuppressBadPWDInArrangementWarning"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress the notification that a saved arrangement has a bad initial working directory."
+type = "bool"
+default = false
+help = "Suppress the notification that a saved arrangement has a bad initial working directory."
+
+[[setting]]
+key = "NoSyncNeverAskAboutMouseReportingFrustration"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress the notification asking if you want to disable mouse reporting that is shown after a drag followed by Win+C when mouse reporting is on?"
+type = "bool"
+default = false
+help = "Suppress the notification asking if you want to disable mouse reporting that is shown after a drag followed by Win+C when mouse reporting is on?"
+
+[[setting]]
+key = "NoSyncNeverAskAboutDEC2048Frustration"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress the notification asking if you want to disable resize reporting"
+type = "bool"
+default = false
+help = "Suppress the notification asking if you want to disable resize reporting"
+
+[[setting]]
+key = "NoSyncSuppressDownloadConfirmation"
+tab = "Advanced"
+section = "General"
+label = "Suppress confirmation of terminal-initiated downloads?"
+type = "bool"
+default = false
+help = "Suppress confirmation of terminal-initiated downloads?"
+
+[[setting]]
+key = "NoSyncSuppressRestartSessionConfirmationAlert"
+tab = "Advanced"
+section = "Session"
+label = "Suppress restart session confirmation alert."
+type = "bool"
+default = false
+help = "Suppress restart session confirmation alert.\nDon't ask for a confirmation when manually restarting a session."
+
+[[setting]]
 key = "NoSyncTmuxHung"
 tab = "Stored"
 section = "Warnings"
@@ -2093,7 +2224,7 @@ section = "Debugging"
 label = "Log raw AI API requests and responses to disk."
 type = "bool"
 default = false
-help = "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Tandem\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. API keys in Authorization, x-api-key, api-key and x-goog-api-key headers, and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished."
+help = "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Tandem\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. Every header value except known non-secret ones (such as Content-Type, Accept, User-Agent and anthropic-version), and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished."
 
 [[setting]]
 key = "unameCommand"
@@ -2492,6 +2623,15 @@ default = false
 help = "Set once the single hotkey window of an older iTerm2 settings file has moved to its profile, so the move happens only once."
 
 [[setting]]
+key = "NotifyOnlyForCriticalShellIntegrationUpdates"
+tab = "General"
+section = "Software Update"
+label = "Ignore non-critical shell integration updates"
+type = "bool"
+default = true
+help = "Sessions whose shell integration scripts are out of date show \"This account\u2019s Shell Integration scripts are out of date.\" When on, only critically old scripts (bash, zsh or fish before version 5, tcsh before 2) and scripts that name no shell are announced; when off, any script older than the latest for its shell is."
+
+[[setting]]
 key = "Bidi"
 tab = "General"
 section = "Experimental"
@@ -2508,6 +2648,33 @@ label = "Use SSH integration for ssh: URLs"
 type = "bool"
 default = false
 help = "Use SSH integration for ssh: URLs"
+
+[[setting]]
+key = "AlertsIndicateShortcuts"
+tab = "Advanced"
+section = "General"
+label = "Buttons in modal alerts indicate keyboard shortcuts."
+type = "bool"
+default = false
+help = "Buttons in modal alerts indicate keyboard shortcuts.\nDo you miss Windows 95? I do."
+
+[[setting]]
+key = "NoSyncSuppressedAlertsCatalog"
+tab = "Stored"
+section = "Warnings"
+label = "Suppressed alerts"
+type = "dict"
+default = {}
+help = "The warnings answered automatically with a remembered choice, listed in Tandem > Suppressed Alerts."
+
+[[setting]]
+key = "NoSyncAppSupportMoved"
+tab = "Stored"
+section = "Warnings"
+label = "Suppress the Python API permissions reset warning"
+type = "bool"
+default = false
+help = "Suppress the \"Python API Permissions Reset\" warning shown when the allow-all file's contents change unexpectedly."
 
 [[setting]]
 key = "UseUnevenTabs"

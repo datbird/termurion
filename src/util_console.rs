@@ -554,7 +554,9 @@ mod tests {
             let mut back = Vec::new();
             match pty.try_read() {
                 Read::Data(d) => {
-                    let reply = screen.feed(&d);
+                    let mut reply = screen.feed(&d);
+                    // Every inline file is allowed, as a remembered Yes.
+                    reply.extend(screen.allow_inline());
                     all.extend_from_slice(&d);
                     if replies {
                         back.extend(reply);

@@ -129,7 +129,7 @@ or fail.
 | 60 | The flashing bar's text fades by blending toward the background; while it is more than half shown the session lines under it are hidden whole, so a line cut by the bar's lower edge blanks. Closing a background tab in full screen also flashes the bar. | |
 | 61 | Unpinning the first of two pinned tabs puts it after the first unpinned tab, not at the start of the unpinned tabs (iTerm2's remove-then-insert). | |
 | 62 | Under Lock Layout, Pin Tab beeps and does nothing (iTerm2 pins without moving). A pinned tab's title shows its first character, not its first composed character (a combining or emoji sequence shows only its first part). | |
-| 63 | The group questions (Close Group, and the chip menu's Close Other Tabs and Close Tabs to the Right) read "(1 tabs)" for one tab, as iTerm2's, with OK and Cancel where iTerm2 shows Close and Cancel. | |
+| 63 | The group questions (Close Group, and the chip menu's Close Other Tabs and Close Tabs to the Right) read "(1 tabs)" for one tab, as iTerm2's, in an alert window with Close and Cancel (since the merge with 13b; closing the alert is Cancel). | |
 | 64 | Duplicate Tab and Duplicate Group beep under Lock Layout (iTerm2 disables the menu items). | |
 | 65 | The collapsed chip's chevron is the Segoe Fluent Icons chevron, not a stroked path; the group name is bold at 13 points. | |
 | 66 | The Select submenu shows each tab's title on one line, with no subtitle. | |

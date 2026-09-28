@@ -355,41 +355,62 @@ impl App {
     }
 
     /// Close Group (`PT closeTabGroup:`, `PT:9845-9851`): every member, pinned ones too.
-    pub(super) fn close_group(&mut self, group: &str, event_loop: &ActiveEventLoop) {
+    pub(super) fn close_group(&mut self, group: &str) {
         let ids = self.tab_ids(&self.members(group));
-        self.close_tabs(ids, CloseTabs::Group, event_loop);
+        self.close_tabs(ids, CloseTabs::Group);
     }
 
     /// The group menu's Close Other Tabs (`PT closeTabsOutsideGroup:`, `PT:9853-9862`): every
     /// tab outside the group but the pinned ones.
-    pub(super) fn close_tabs_outside_group(&mut self, group: &str, event_loop: &ActiveEventLoop) {
+    pub(super) fn close_tabs_outside_group(&mut self, group: &str) {
         let outside: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].group.as_ref().is_none_or(|g| g.id != group) && !self.tabs[i].pinned).collect();
         let ids = self.tab_ids(&outside);
-        self.close_tabs(ids, CloseTabs::Outside, event_loop);
+        self.close_tabs(ids, CloseTabs::Outside);
     }
 
     /// The group menu's Close Tabs to the Right, Close Tabs Below on a side bar
     /// (`PT closeTabsRightOfGroup:`, `PT:9864-9880`): every tab after the group's last member
     /// but the pinned ones.
-    pub(super) fn close_tabs_right_of_group(&mut self, group: &str, event_loop: &ActiveEventLoop) {
+    pub(super) fn close_tabs_right_of_group(&mut self, group: &str) {
         let Some(&last) = self.members(group).last() else { return };
         let right: Vec<usize> = (last + 1..self.tabs.len()).filter(|&i| !self.tabs[i].pinned).collect();
         let ids = self.tab_ids(&right);
-        self.close_tabs(ids, CloseTabs::Right, event_loop);
+        self.close_tabs(ids, CloseTabs::Right);
     }
 
     /// Closes the tabs `ids` after one question (`PT closeTabs:confirmWith:skippingPinned:`,
-    /// `PT:9890-9917`); each then closes as `closeTab:` does, a tmux tab asking tmux. Lock
-    /// Layout refuses.
-    fn close_tabs(&mut self, ids: Vec<u64>, what: CloseTabs, event_loop: &ActiveEventLoop) {
+    /// `PT:9890-9917`): iTerm2's persistent warning, in the alert queue, asked once while the
+    /// same question waits; each tab then closes as `closeTab:` does, a tmux tab asking tmux.
+    /// Lock Layout refuses.
+    fn close_tabs(&mut self, ids: Vec<u64>, what: CloseTabs) {
         if ids.is_empty() || !self.layout_allowed(LayoutOp::CloseTab) {
             return;
         }
+        let Some(window) = self.current_window() else { return };
         let vertical = tab_position::vertical(self.tab_position());
-        if !close_ui::confirm(self.hwnd(), tab_groups::CLOSE_TABS_HEADING, &tab_groups::close_question(what, vertical, ids.len())) {
-            return;
+        let ask = close_tabs_ask(window, what, vertical, ids);
+        if !self.alert_waits(|then| *then == ask.then) {
+            self.ask_scripts(ask);
         }
-        self.close_each(ids, event_loop);
+    }
+
+    /// The Close Tabs question answered (`Then::CloseTabs`): Close (0) closes the tabs of
+    /// `ids` still in `window` on the loop's next pass (a close needs the event loop); Cancel,
+    /// or closing the alert, closes nothing.
+    pub(super) fn close_tabs_answered(&mut self, window: WindowId, ids: Vec<u64>, index: usize) {
+        if index == 0 {
+            self.pending_tab_closes.push((window, ids));
+        }
+    }
+
+    /// Runs the closes Close Tabs answers left, each in the window it was asked from (gone
+    /// with it: nothing); Lock Layout, turned on meanwhile, refuses.
+    pub(super) fn finish_tab_closes(&mut self, event_loop: &ActiveEventLoop) {
+        for (window, ids) in std::mem::take(&mut self.pending_tab_closes) {
+            if self.enter(window) && self.layout_allowed(LayoutOp::CloseTab) {
+                self.close_each(ids, event_loop);
+            }
+        }
     }
 
     /// Closes the tabs `ids` as `closeTab:` does, asking nothing (a tmux tab asks tmux).
@@ -466,7 +487,7 @@ impl App {
         let guid = self.focused_guid();
         if self.new_tab_opens_window(guid.as_deref()) {
             let Some(value) = self.snapshot_tab(at) else { return };
-            match self.build_tab(&value) {
+            match self.build_tab(&value, None) {
                 Ok(mut tab) => {
                     tab.group = None;
                     self.pending_windows.push(windows_ui::NewWindow::Tab(tab));
@@ -515,7 +536,7 @@ impl App {
         let value = self.snapshot_tab(at)?;
         let tmux = self.tmux_of(self.tabs[at].focused).is_some();
         let (place, group) = duplicate_placement(at, self.tabs.len(), self.globals.bool("DuplicatedTabsOpenAdjacentToOriginal"), tmux, true, self.tabs[at].group.as_ref());
-        let tab = match self.build_tab(&value) {
+        let tab = match self.build_tab(&value, None) {
             Ok(t) => t,
             Err(e) => {
                 self.banners.set("arrangement", format!("Could not duplicate the tab: {e}"));
@@ -644,9 +665,9 @@ impl App {
             "move-window" => self.move_group_to_new_window(group),
             "save" => self.save_group_arrangement(event_loop, group),
             "ungroup" => self.ungroup(group),
-            "close" => self.close_group(group, event_loop),
-            "close-others" => self.close_tabs_outside_group(group, event_loop),
-            "close-right" => self.close_tabs_right_of_group(group, event_loop),
+            "close" => self.close_group(group),
+            "close-others" => self.close_tabs_outside_group(group),
+            "close-right" => self.close_tabs_right_of_group(group),
             _ => {}
         }
     }
@@ -654,12 +675,20 @@ impl App {
     /// New Tab to the Right (Below on a side bar) for the tab at `at`
     /// (`PT newTabToTheRight:`, `PT:14329-14343`): a tab of the default profile just after
     /// it, joining its group; the order then settles. In a tmux session it first asks what
-    /// kind of tab (`AD newTabAtIndex:didMakeSession:`, `possiblyTmuxValueForWindow:`): a new
-    /// tmux tab opens where tmux places it, and Cancel opens nothing.
+    /// kind of tab (`AD newTabAtIndex:didMakeSession:`, `possiblyTmuxValueForWindow:`), in
+    /// the alert queue: a new tmux tab opens where tmux places it, Use Default Profile opens
+    /// this tab beside it (`tab_beside`), and Cancel opens nothing.
     fn new_tab_beside(&mut self, at: usize) {
-        if self.tmux_new(false, true).is_some() {
+        let Some(beside) = self.tabs.get(at).map(|t| t.id) else { return };
+        if self.tmux_new_beside(false, true, Some(beside)).is_some() {
             return;
         }
+        self.tab_beside(at);
+    }
+
+    /// New Tab to the Right's local tab: the default profile's tab just after the tab at
+    /// `at`, joining its group, and selected; the order then settles.
+    pub(super) fn tab_beside(&mut self, at: usize) {
         let group = self.tabs.get(at).and_then(|t| t.group.as_ref()).map(|g| g.id.clone()).filter(|g| !g.is_empty());
         let before = self.tabs.len();
         self.new_tab(None);
@@ -670,6 +699,14 @@ impl App {
         }
         self.group_changed();
     }
+}
+
+/// The group close commands' question for the tabs `ids` of `window` (`PT:9899-9907`): "<question>
+/// (N tabs)" under "Close Tabs", Close or Cancel, the persistent `NoSyncCloseTabGroup`. Closing
+/// the alert presses Cancel.
+pub(super) fn close_tabs_ask(window: WindowId, what: CloseTabs, vertical: bool, ids: Vec<u64>) -> super::scripts_alerts::Ask {
+    let text = tab_groups::close_question(what, vertical, ids.len());
+    super::scripts_alerts::ask(tab_groups::CLOSE_TABS_HEADING, &text, &tab_groups::CLOSE_TABS_BUTTONS, Some(tab_groups::CLOSE_TABS_ID), crate::warnings::Kind::Persistent, super::scripts_alerts::Then::CloseTabs { window, ids })
 }
 
 /// Collapse Group's plan (`PT collapseTabGroup:animated:`, `PT:9538-9580`) for `group` over
@@ -927,6 +964,25 @@ mod tests {
 
     const A: Option<&str> = Some("a");
     const B: Option<&str> = Some("b");
+
+    /// Close Tabs goes through the alert queue (13b): iTerm2's text and buttons, persistent;
+    /// closing the alert presses Cancel; a second pick while it waits asks nothing more, and
+    /// the question for other tabs still asks.
+    #[test]
+    fn close_tabs_question_is_an_alert() {
+        use super::super::scripts_alerts::{on_close, waits, Answer, Then};
+        let window = WindowId::from(4);
+        let ask = close_tabs_ask(window, CloseTabs::Right, true, vec![7, 8]);
+        assert_eq!((ask.spec.heading.as_str(), ask.spec.text.as_str()), ("Close Tabs", "Close all tabs below this group? (2 tabs)"));
+        assert_eq!((ask.spec.labels.clone(), ask.spec.cancel), (vec!["Close".to_string(), "Cancel".to_string()], Some(1)));
+        assert_eq!((ask.spec.id.as_deref(), ask.spec.kind), (Some("NoSyncCloseTabGroup"), crate::warnings::Kind::Persistent));
+        let close = crate::prompt_ui::close_index(&["Close", "Cancel"]);
+        assert_eq!(on_close(&ask.then, close), Answer::Button(1), "a close is Cancel, never Close");
+        let mut queued = std::collections::VecDeque::new();
+        queued.push_back(close_tabs_ask(window, CloseTabs::Right, true, vec![7, 8]));
+        assert!(waits(None, &queued, |t| *t == ask.then));
+        assert!(!waits(None, &queued, |t| *t == Then::CloseTabs { window, ids: vec![9] }));
+    }
 
     #[test]
     fn collapse_follows_iterm2() {

@@ -74,6 +74,8 @@ impl App {
             Request::Notify { title, message } => self.terminal_alert(pane, title, message),
             Request::SetBadge(t) => self.set_badge(pane, Some(t)),
             Request::BadgeRefused => self.set_badge(pane, None),
+            Request::HostChanged(left_on) => self.host_changed(pane, left_on),
+            Request::ShellIntegrationReported { version, shell } => self.shell_integration_reported(pane, version, shell),
             // Progress Bar Changed event triggers arrive in task 5 of milestone 6b.
             Request::Progress(_) => {}
             Request::CursorGuide(on) => {

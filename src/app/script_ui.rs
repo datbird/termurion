@@ -20,6 +20,7 @@ use crate::api_vars::{self, Objects, Scope, Values};
 use crate::expr::{self, Call, FailKind, Failure, Value};
 use crate::layout::PaneId;
 use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
+use crate::warnings::Preempt;
 use crate::script_eval::{self, Host, HostOutcome, Invocation, Layered, Step, Timeout};
 use crate::script_fn;
 use crate::script_statusbar;
@@ -390,6 +391,21 @@ impl Alert {
             Alert::Component { buttons, .. } => buttons.clone(),
         }
     }
+
+    /// A failure's warning (`H:581-587`): temporarily silenceable under `NoSyncFunctionCallError`,
+    /// with no Cancel. The other alerts are never silenced.
+    pub(super) fn spec(&self) -> Option<crate::warnings::Spec> {
+        let Alert::Failed { heading, text, .. } = self else { return None };
+        Some(crate::warnings::Spec {
+            id: Some(script_eval::ERROR_ID.to_string()),
+            kind: crate::warnings::Kind::Temporary,
+            heading: heading.clone(),
+            text: text.clone(),
+            labels: self.buttons().iter().map(|l| l.to_string()).collect(),
+            cancel: None,
+            never_remember: Vec::new(),
+        })
+    }
 }
 
 /// The most script alerts, or script dialogs, that wait in their queue (the one showing is
@@ -402,15 +418,12 @@ pub(super) fn push_capped<T>(queue: &mut VecDeque<T>, item: T) -> Option<T> {
     if queue.len() > MAX_QUEUED { queue.pop_front() } else { None }
 }
 
-/// Queues a failure's alert (`reportFunctionCallError`, `H:566-591`): none while the
-/// temporary silence holds (`iTermWarning.m` `preempt:`); a failure of the same origin and
+/// Queues a failure's alert (`reportFunctionCallError`, `H:566-591`; the caller answers a
+/// silenced one at once, `iTermWarning.m` `preempt:`): a failure of the same origin and
 /// invocation as one showing is dropped, as one queued replaces that one's text (so a burst
 /// of one failure, a trigger matching many times, shows once with the newest reason); other
 /// alerts merge only when identical. At most `MAX_QUEUED` wait.
-fn queue_alert(queue: &mut VecDeque<Alert>, showing: Option<&Alert>, alert: Alert, silenced: bool) {
-    if silenced {
-        return;
-    }
+fn queue_alert(queue: &mut VecDeque<Alert>, showing: Option<&Alert>, alert: Alert) {
     if let Alert::Failed { heading, invocation, text, reveal } = &alert {
         let same = |a: &Alert| matches!(a, Alert::Failed { heading: h, invocation: i, .. } if h == heading && i == invocation);
         if showing.is_some_and(same) {
@@ -425,11 +438,6 @@ fn queue_alert(queue: &mut VecDeque<Alert>, showing: Option<&Alert>, alert: Aler
         return;
     }
     push_capped(queue, alert);
-}
-
-/// Unix seconds now, the clock of the alert's silence.
-fn unix_now() -> f64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
 /// What a script call answers before any script is asked (`SFC:527-545`): a synchronous
@@ -934,8 +942,8 @@ impl App {
         };
         let (text, buttons) = script_statusbar::recovery(text, path.is_some(), running, could_launch);
         let path = path.filter(|_| buttons.len() > 1);
-        let showing = self.script_alert.as_ref().map(|(_, a)| a);
-        queue_alert(&mut self.script_alerts, showing, Alert::Component { text, buttons, path }, false);
+        let showing = self.script_alert.as_ref().map(|(_, a, _)| a);
+        queue_alert(&mut self.script_alerts, showing, Alert::Component { text, buttons, path });
     }
 
     /// A status bar component registration (`didRegisterStatusBarComponent:`, `RPC:456-462`):
@@ -1108,15 +1116,12 @@ impl App {
         let key = f.conn.and_then(|c| self.api_keys.get(&c)).map(|(k, _)| k.clone()).filter(|k| self.script_history.find(k).is_some());
         let reveal = f.detail.as_ref().map(|_| key.unwrap_or_default());
         let alert = Alert::Failed { heading: script_eval::report_heading(origin), invocation: invocation.to_string(), text: script_eval::report_text(invocation, &f.reason), reveal };
-        let silenced = self.function_errors_silenced();
-        let showing = self.script_alert.as_ref().map(|(_, a)| a);
-        queue_alert(&mut self.script_alerts, showing, alert, silenced);
-    }
-
-    /// Whether the person silenced the function call error alert for ten minutes.
-    fn function_errors_silenced(&self) -> bool {
-        let until = self.globals.get(script_eval::SILENCE_UNTIL_KEY).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
-        script_eval::silenced(until, unix_now())
+        // While silenced, the saved button answers at once (`preempt:`).
+        if let Some(Preempt::Answer(index)) = alert.spec().map(|spec| self.warning_preempt(&spec)) {
+            return self.script_alert_acted(alert, Some(index));
+        }
+        let showing = self.script_alert.as_ref().map(|(_, a, _)| a);
+        queue_alert(&mut self.script_alerts, showing, alert);
     }
 
     /// A message for a connection's Script Console entry, else the app-wide entry, ending
@@ -1128,37 +1133,36 @@ impl App {
         self.script_history.add_log(&key, &format!("{text}\n"), &stamp);
     }
 
-    /// Opens the next queued alert when none shows.
+    /// Opens the next queued alert when none shows. A failure checks the silence as it would
+    /// show (`preempt:`): one queued before the person silenced the alert answers at once.
     pub(super) fn open_script_alerts(&mut self, event_loop: &ActiveEventLoop) {
-        if self.script_alert.is_some() {
-            return;
-        }
-        // Failures queued before the person silenced the alert are not shown either (each
-        // warning checks the silence when it would show, `preempt:`).
-        if self.function_errors_silenced() {
-            self.script_alerts.retain(|a| !matches!(a, Alert::Failed { .. }));
-        }
-        let Some(alert) = self.script_alerts.front() else { return };
-        let Some(g) = self.gpu.as_ref() else { return };
-        let (heading, text) = alert.form();
-        let failed = matches!(alert, Alert::Failed { .. });
-        let buttons = alert.buttons();
-        let opened = ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, heading, text, &buttons, false).map(|mut w| {
-            if failed {
-                w.set_checkbox_label(ConfirmWindow::SUPPRESS_TEN_MINUTES);
+        while self.script_alert.is_none() && self.gpu.is_some() {
+            let Some(alert) = self.script_alerts.pop_front() else { return };
+            let opened = match alert.spec() {
+                Some(spec) => match self.warning_preempt(&spec) {
+                    Preempt::Answer(index) => {
+                        self.script_alert_acted(alert, Some(index));
+                        continue;
+                    }
+                    Preempt::Show => self.open_warning_window(event_loop, &spec, None).map(|w| (w, false)),
+                    Preempt::ShowRemembered { saved_label } => self.open_warning_window(event_loop, &spec, Some(&saved_label)).map(|w| (w, true)),
+                },
+                None => {
+                    let Some(g) = self.gpu.as_ref() else { return };
+                    let (heading, text) = alert.form();
+                    ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, heading, text, &alert.buttons(), None, &[], false, false).map(|w| (w, false))
+                }
+            };
+            match opened {
+                Ok((w, remembered)) => self.script_alert = Some((w, alert, remembered)),
+                Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
             }
-            w
-        });
-        let Some(alert) = self.script_alerts.pop_front() else { return };
-        match opened {
-            Ok(w) => self.script_alert = Some((w, alert)),
-            Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
     }
 
     /// Events for the showing alert; OK (or closing it) dismisses it. False for other windows.
     pub(super) fn script_alert_event(&mut self, window: WindowId, event: &WindowEvent) -> bool {
-        let Some((w, _)) = self.script_alert.as_mut().filter(|(w, _)| w.id() == window) else { return false };
+        let Some((w, ..)) = self.script_alert.as_mut().filter(|(w, ..)| w.id() == window) else { return false };
         let answer = match event {
             WindowEvent::CloseRequested => w.close_answer(),
             WindowEvent::RedrawRequested => w.redraw(),
@@ -1170,20 +1174,27 @@ impl App {
         if let ConfirmResult::Open = answer {
             return true;
         }
-        let Some((_, alert)) = self.script_alert.take() else { return true };
+        let Some((_, alert, remembered)) = self.script_alert.take() else { return true };
         let index = match answer {
             ConfirmResult::Action { index, suppress } => {
-                // "Suppress this message for ten minutes" checked on a failure's button
-                // (`iTermWarning.m:577-593`): the silence and the remembered selection.
-                if suppress && matches!(alert, Alert::Failed { .. }) {
-                    self.globals.set(script_eval::SILENCE_UNTIL_KEY, toml::Value::Float(unix_now() + script_eval::TEMPORARY_SILENCE_SECS));
-                    self.globals.set(script_eval::SELECTION_KEY, toml::Value::Integer(index as i64));
-                    self.save_globals();
+                // A failure's checkbox (`iTermWarning.m:571-593`), or Forget, which shows the
+                // same alert again, next, without the remembered mode.
+                if let Some(spec) = alert.spec() {
+                    if self.warning_window_answered(&spec, remembered, index, suppress) {
+                        self.script_alerts.push_front(alert);
+                        return true;
+                    }
                 }
                 Some(index)
             }
             _ => None,
         };
+        self.script_alert_acted(alert, index);
+        true
+    }
+
+    /// What an alert's button `index` does (None: dismissed).
+    fn script_alert_acted(&mut self, alert: Alert, index: Option<usize>) {
         match (alert, index) {
             // "Reveal in Script Console" (`H:588-590`).
             (Alert::Failed { reveal: Some(id), .. }, Some(1)) => self.reveal_script_entry(&id),
@@ -1192,7 +1203,6 @@ impl App {
             (Alert::Component { path: Some(path), .. }, Some(2)) => self.reveal_path(&path),
             _ => {}
         }
-        true
     }
 }
 
@@ -1496,53 +1506,58 @@ mod tests {
     }
 
     /// Review finding 1: an Invoke Script Function trigger whose function is not registered
-    /// fails on every match; 1000 matches queue one alert, none while silenced, none while
-    /// the same one shows; another failure still queues.
+    /// fails on every match; 1000 matches queue one alert, none while the same one shows;
+    /// another failure still queues.
     #[test]
     fn trigger_alerts_are_bounded() {
         let failure = |sig: &str| Alert::Failed { heading: script_eval::report_heading(TRIGGER), invocation: sig.to_string(), text: script_eval::report_text(sig, &script_fn::unregistered_text(sig, None)), reveal: None };
         let mut queue = VecDeque::new();
         for _ in 0..1000 {
-            queue_alert(&mut queue, None, failure("f()"), false);
+            queue_alert(&mut queue, None, failure("f()"));
         }
         assert_eq!(queue.len(), 1);
-        queue_alert(&mut queue, None, failure("g()"), false);
+        queue_alert(&mut queue, None, failure("g()"));
         assert_eq!(queue.len(), 2, "a different failure");
         let showing = queue.pop_front();
-        queue_alert(&mut queue, showing.as_ref(), failure("f()"), false);
+        queue_alert(&mut queue, showing.as_ref(), failure("f()"));
         assert_eq!(queue.len(), 1, "the one showing");
-        let mut quiet = VecDeque::new();
-        queue_alert(&mut quiet, None, failure("f()"), true);
-        assert!(quiet.is_empty(), "silenced");
         // Final review: a failure whose text varies per match (the reason echoes the match)
         // merges by origin and invocation, keeping the newest text; different invocations
         // stop at MAX_QUEUED, the oldest going first.
         let varying = |inv: &str, reason: &str| Alert::Failed { heading: script_eval::report_heading(TRIGGER), invocation: inv.to_string(), text: script_eval::report_text(inv, reason), reveal: None };
         let mut queue = VecDeque::new();
         for i in 0..1000 {
-            queue_alert(&mut queue, None, varying("f(x: matches[1])", &format!("bad {i}")), false);
+            queue_alert(&mut queue, None, varying("f(x: matches[1])", &format!("bad {i}")));
         }
         assert_eq!(queue.len(), 1);
         assert_eq!(queue[0].form().1, script_eval::report_text("f(x: matches[1])", "bad 999"));
         let mut queue = VecDeque::new();
         for i in 0..1000 {
-            queue_alert(&mut queue, None, varying(&format!("f(x: \"{i}\")"), &format!("bad {i}")), false);
+            queue_alert(&mut queue, None, varying(&format!("f(x: \"{i}\")"), &format!("bad {i}")));
         }
         assert_eq!(queue.len(), MAX_QUEUED);
         assert_eq!(queue[0].form().1, script_eval::report_text("f(x: \"984\")", "bad 984"), "the oldest went");
         let showing = varying("g()", "one");
         let mut queue = VecDeque::new();
-        queue_alert(&mut queue, Some(&showing), varying("g()", "two"), false);
+        queue_alert(&mut queue, Some(&showing), varying("g()", "two"));
         assert!(queue.is_empty(), "the same failure as the one showing");
         let mut dialogs: VecDeque<u64> = VecDeque::new();
         let dropped: Vec<u64> = (0..1000).filter_map(|i| push_capped(&mut dialogs, i)).collect();
         assert_eq!((dialogs.len(), dropped.len(), dropped[0], dialogs[0]), (MAX_QUEUED, 1000 - MAX_QUEUED, 0, 984));
-        // The silence: ten minutes from the OK (`iTermWarning.m:13`, `:632-636`).
-        assert_eq!((script_eval::SILENCE_UNTIL_KEY, script_eval::TEMPORARY_SILENCE_SECS), ("NoSyncFunctionCallError_SilenceUntil", 600.0));
-        assert!(script_eval::silenced(Some(100.0), 99.0));
-        assert!(!script_eval::silenced(Some(100.0), 100.0));
-        assert!(!script_eval::silenced(None, 0.0));
-        assert_eq!(crate::prompt_ui::ConfirmWindow::SUPPRESS_TEN_MINUTES, "Suppress this message for ten minutes");
+        // The silence: ten minutes from the OK (`iTermWarning.m:13`, `:632-636`), on the shared
+        // warning model under the same key, in Unix seconds.
+        let spec = failure("f()").spec().unwrap();
+        assert_eq!((spec.id.as_deref(), spec.kind, spec.cancel), (Some("NoSyncFunctionCallError"), crate::warnings::Kind::Temporary, None));
+        assert_eq!(crate::warnings::checkbox_label(&spec), Some("Suppress this message for ten minutes"));
+        // `<identifier>_SilenceUntil` (`iTermWarning.m:581-584`) and `kTemporarySilenceTime`.
+        let until = crate::warnings::until_key(script_eval::ERROR_ID);
+        assert_eq!((until.as_str(), crate::warnings::TEMPORARY_SECS), ("NoSyncFunctionCallError_SilenceUntil", 600.0));
+        let mut g = crate::globals::Globals::empty(std::path::Path::new("settings.toml"));
+        g.set(&until, toml::Value::Float(100.0));
+        assert!(crate::warnings::is_silenced(&g, script_eval::ERROR_ID, 99.0));
+        assert!(!crate::warnings::is_silenced(&g, script_eval::ERROR_ID, 100.0));
+        assert_eq!(crate::warnings::preempt(&spec, &g, 99.0, false), crate::warnings::Preempt::Answer(0), "OK remembered by default");
+        assert_eq!(Alert::Result("r".into()).spec(), None, "a result is never silenced");
     }
 
     #[test]
@@ -1554,7 +1569,7 @@ mod tests {
         let traced = Alert::Failed { heading: script_eval::report_heading("Trigger"), invocation: "f()".into(), text: script_eval::report_text("f()", "boom"), reveal: Some("k".into()) };
         assert_eq!(traced.buttons(), ["OK", "Reveal in Script Console"]);
         let mut queue = VecDeque::from([failed.clone()]);
-        queue_alert(&mut queue, None, traced.clone(), false);
+        queue_alert(&mut queue, None, traced.clone());
         assert_eq!(queue, VecDeque::from([traced]));
         assert_eq!(Alert::Result("f() returned:\n3".into()).form(), ("Function Call Result", "f() returned:\n3"));
     }

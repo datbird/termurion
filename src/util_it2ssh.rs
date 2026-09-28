@@ -3,7 +3,6 @@
 //! ssh's options and the host, sends the three handshake OSCs (Env, it2ssh, SendConductor)
 //! from the remote side through ssh's remote command, which then reads the conductor Tandem
 //! types, and after ssh ends prints EndSSH and waits for the blank line that answers it.
-//! Until 14b's conductor hook exists (`ssh_session::CONDUCTOR_READY`) it runs plain ssh.
 
 use std::io::Write;
 
@@ -21,8 +20,6 @@ pub const NO_TOKEN: &str = "none";
 
 /// The environment variable naming the transport a pane was started with.
 pub const TRANSPORT_VAR: &str = "TANDEM_SSH_TRANSPORT";
-
-pub const NOT_READY: &str = "it2ssh: SSH integration arrives in a later Tandem build; running plain ssh.";
 
 pub const NEEDS_PROFILE: &str =
     "it2ssh: SSH integration needs a session from a Tandem SSH profile (Settings > Profiles > General > Command type: SSH); running plain ssh.";
@@ -215,9 +212,9 @@ pub fn line_ends_wait(line: &[u8]) -> bool {
     word.is_empty() || word == [0x03]
 }
 
-/// it2ssh: plain ssh with `NOT_READY` until the conductor hook exists.
+/// it2ssh (`IS`) over `io`: its exit code.
 pub fn run(args: &[String], io: &mut Io) -> i32 {
-    run_with(args, io, crate::ssh_session::CONDUCTOR_READY)
+    run_with(args, io)
 }
 
 fn say(w: &mut dyn Write, text: &str) {
@@ -244,13 +241,9 @@ fn ssh_usage(ssh: &str, io: &mut Io) -> Result<(i32, String), String> {
     (io.run)(&c).map(|o| (o.code, String::from_utf8_lossy(&o.stdout).into_owned()))
 }
 
-fn run_with(args: &[String], io: &mut Io, ready: bool) -> i32 {
+fn run_with(args: &[String], io: &mut Io) -> i32 {
     let env_ssh = (io.env)("SSH").filter(|s| !s.is_empty());
     let ssh = env_ssh.as_deref().unwrap_or(DEFAULT_SSH).to_string();
-    if !ready {
-        say(io.err, NOT_READY);
-        return plain_ssh(&ssh, args, io);
-    }
     // `IS:6-9`: plain `ssh`, not `$SSH`; under pipefail ssh's own failure is the code.
     if args.is_empty() {
         return match ssh_usage(DEFAULT_SSH, io) {
@@ -478,7 +471,7 @@ mod tests {
         assert_eq!(b64(env_listing(&pairs(&base)).as_bytes()), "U1NIPUM6XHNzaFxzc2guZXhlClRFUk09eHRlcm0tMjU2Y29sb3IK");
 
         let mut h = ready_harness(&[base[0], base[1], (TRANSPORT_VAR, chosen)]);
-        assert_eq!(h.with_io(&mut |io| run_with(&args, io, true)), 0);
+        assert_eq!(h.with_io(&mut |io| run_with(&args, io)), 0);
         assert_eq!(h.runs.len(), 2);
         assert_eq!(h.runs[0], cmd(r"C:\ssh\ssh.exe", vec![], false, true));
         assert_eq!(h.runs[1], cmd(r"C:\ssh\ssh.exe", argv_for(&h, &["-p", "2222", "user@host"], "none", false), true, false));
@@ -492,7 +485,7 @@ mod tests {
         let secret = "0123456789abcdef0123456789abcdef".to_string();
         let mut h = ready_harness(&[base[0], base[1], (TRANSPORT_VAR, chosen)]);
         h.secrets = [Some(secret.clone())].into();
-        assert_eq!(h.with_io(&mut |io| run_with(&args, io, true)), 0);
+        assert_eq!(h.with_io(&mut |io| run_with(&args, io)), 0);
         assert!(h.runs[1].args.iter().any(|a| a.contains(&format!("it2ssh={secret} "))));
         assert!(h.runs[1] == cmd(r"C:\ssh\ssh.exe", argv_for(&h, &["-p", "2222", "user@host"], &secret, false), true, false));
 
@@ -503,7 +496,7 @@ mod tests {
                 env.push(("SSH", s));
             }
             let mut h = ready_harness(&env);
-            assert_eq!(h.with_io(&mut |io| run_with(&args, io, true)), 0);
+            assert_eq!(h.with_io(&mut |io| run_with(&args, io)), 0);
             assert_eq!(h.runs[0].program, "ssh");
             assert_eq!(h.runs[1].program, "ssh");
         }
@@ -514,17 +507,17 @@ mod tests {
         h.tty.console = false;
         h.tty.replies.clear();
         h.input = b"x\n\nleft".to_vec();
-        assert_eq!(h.with_io(&mut |io| run_with(&args, io, true)), 0);
+        assert_eq!(h.with_io(&mut |io| run_with(&args, io)), 0);
         assert_eq!(h.runs[1].args, argv_for(&h, &["-p", "2222", "user@host"], "none", true));
         assert_eq!(&h.runs[1].args[..4], strings(&["-p", "2222", "-t", "-t"]).as_slice());
         assert!(h.tty.modes.is_empty());
 
         // The EndSSH wrap follows TERM=screen* only.
         let mut h = ready_harness(&[base[0], ("TERM", "screen"), (TRANSPORT_VAR, chosen)]);
-        assert_eq!(h.with_io(&mut |io| run_with(&args, io, true)), 0);
+        assert_eq!(h.with_io(&mut |io| run_with(&args, io)), 0);
         assert_eq!(h.out, b"\x1bPtmux;\x1b\x1b]1337;EndSSH=1234512345\x07\x1b\\");
         let mut h = ready_harness(&[base[0], ("TERM", "tmux-256color"), (TRANSPORT_VAR, chosen)]);
-        assert_eq!(h.with_io(&mut |io| run_with(&args, io, true)), 0);
+        assert_eq!(h.with_io(&mut |io| run_with(&args, io)), 0);
         assert_eq!(h.out, b"\x1b]1337;EndSSH=1234512345\x07");
 
         // Not a session of a Tandem SSH profile (no transport, or another one): plain ssh.
@@ -535,7 +528,7 @@ mod tests {
             }
             let mut h = ready_harness(&env);
             h.answers = [Ok(Output { code: 3, stdout: vec![] })].into();
-            assert_eq!(h.with_io(&mut |io| run_with(&args, io, true)), 3);
+            assert_eq!(h.with_io(&mut |io| run_with(&args, io)), 3);
             assert_eq!(String::from_utf8_lossy(&h.err), format!("{NEEDS_PROFILE}\n"));
             assert_eq!(h.runs, [cmd(r"C:\ssh\ssh.exe", args.clone(), true, false)]);
             assert!(h.out.is_empty());
@@ -548,28 +541,28 @@ mod tests {
         let chosen = label(CHOSEN);
         // No arguments: plain ssh's usage, renamed, on standard error; ssh's code.
         let mut h = ready_harness(&[("SSH", r"C:\ssh\ssh.exe"), (TRANSPORT_VAR, chosen)]);
-        assert_eq!(h.with_io(&mut |io| run_with(&[], io, true)), 255);
+        assert_eq!(h.with_io(&mut |io| run_with(&[], io)), 255);
         assert_eq!(h.runs, [cmd("ssh", vec![], false, true)]);
         assert_eq!(String::from_utf8_lossy(&h.err), usage_text(WIN_USAGE));
         assert!(String::from_utf8_lossy(&h.err).starts_with("usage: it2ssh [-46"));
         let mut h = ready_harness(&[]);
         h.answers = [Ok(Output { code: 0, stdout: b"usage: ssh x\n".to_vec() })].into();
-        assert_eq!(h.with_io(&mut |io| run_with(&[], io, true)), 1);
+        assert_eq!(h.with_io(&mut |io| run_with(&[], io)), 1);
         let mut h = ready_harness(&[]);
         h.answers = [Err("not found".into())].into();
-        assert_eq!(h.with_io(&mut |io| run_with(&[], io, true)), 127);
+        assert_eq!(h.with_io(&mut |io| run_with(&[], io)), 127);
         assert_eq!(String::from_utf8_lossy(&h.err), "it2ssh: ssh: not found\n");
 
         // A non-interactive option: the message on standard output, 1, only the usage probe.
         let mut h = ready_harness(&[(TRANSPORT_VAR, chosen)]);
-        assert_eq!(h.with_io(&mut |io| run_with(&strings(&["-N", "h"]), io, true)), 1);
+        assert_eq!(h.with_io(&mut |io| run_with(&strings(&["-N", "h"]), io)), 1);
         assert_eq!(String::from_utf8_lossy(&h.out), format!("{}\n", not_interactive("-N")));
         assert_eq!(h.runs, [cmd("ssh", vec![], false, true)]);
 
         // ssh cannot start: the error, then EndSSH and the wait as always.
         let mut h = ready_harness(&[(TRANSPORT_VAR, chosen)]);
         h.answers = [Ok(Output { code: 255, stdout: WIN_USAGE.as_bytes().to_vec() }), Err("not found".into())].into();
-        assert_eq!(h.with_io(&mut |io| run_with(&strings(&["h"]), io, true)), 0);
+        assert_eq!(h.with_io(&mut |io| run_with(&strings(&["h"]), io)), 0);
         assert_eq!(String::from_utf8_lossy(&h.err), "it2ssh: not found\n");
         assert_eq!(h.out, b"\x1b]1337;EndSSH=1234512345\x07");
         assert!(h.tty.replies.is_empty(), "the wait read to its end");
@@ -578,28 +571,7 @@ mod tests {
         // The usage probe fails: no options without a value, every option takes one.
         let mut h = ready_harness(&[(TRANSPORT_VAR, chosen)]);
         h.answers = [Err("x".into()), Ok(Output { code: 0, stdout: vec![] })].into();
-        assert_eq!(h.with_io(&mut |io| run_with(&strings(&["-v", "h"]), io, true)), 0);
+        assert_eq!(h.with_io(&mut |io| run_with(&strings(&["-v", "h"]), io)), 0);
         assert_eq!(&h.runs[1].args[..3], strings(&["-v", "h", "-t"]).as_slice());
-    }
-
-    #[test]
-    fn it2ssh_waits_for_the_conductor() {
-        let mut h = Harness::default();
-        h.env.insert("SSH".into(), r"C:\ssh\ssh.exe".into());
-        h.env.insert(TRANSPORT_VAR.into(), label(CHOSEN).into());
-        h.answers = [Ok(Output { code: 7, stdout: vec![] })].into();
-        h.secrets = [None].into();
-        assert_eq!(h.run("it2ssh", &["-p", "2222", "h"]), 7);
-        assert_eq!(String::from_utf8_lossy(&h.err), format!("{NOT_READY}\n"));
-        assert_eq!(h.runs, [cmd(r"C:\ssh\ssh.exe", strings(&["-p", "2222", "h"]), true, false)]);
-        assert!(h.out.is_empty(), "no OSC");
-        assert!(h.tty.modes.is_empty());
-        assert_eq!(h.secrets.len(), 1, "no secret fetched");
-
-        let mut h = Harness::default();
-        h.answers = [Err("not found".into())].into();
-        assert_eq!(h.run("it2ssh", &["h"]), 127);
-        assert_eq!(String::from_utf8_lossy(&h.err), format!("{NOT_READY}\nit2ssh: not found\n"));
-        assert_eq!(h.runs[0].program, "ssh");
     }
 }

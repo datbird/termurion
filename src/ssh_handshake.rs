@@ -122,11 +122,12 @@ pub fn bootstrap(conductor: &str, h: &Handshake) -> Vec<u8> {
 }
 
 /// The banner after EndSSH ended `count` hops (`SM:7473-7484`), naming where the session now
-/// is. More than one hop with no location ends in two periods, as iTerm2's.
+/// is. More than one hop with no location ends in two periods, as iTerm2's. The location comes
+/// from the remote's ssh args, so it is cut to `conductor::MAX_SHOWN` (`conductor::shown`).
 pub fn end_banner(count: usize, location: Option<&str>) -> String {
     let preamble = if count == 1 { "ssh exited".to_string() } else { format!("{count} ssh sessions ended.") };
     match location {
-        Some(at) => format!("{preamble} \u{2014} now at {at}."),
+        Some(at) => format!("{preamble} \u{2014} now at {}.", crate::conductor::shown(at)),
         None => format!("{preamble}."),
     }
 }
@@ -218,5 +219,17 @@ mod tests {
         assert_eq!(end_banner(1, Some("rob@web")), "ssh exited \u{2014} now at rob@web.");
         assert_eq!(end_banner(2, None), "2 ssh sessions ended..");
         assert_eq!(end_banner(3, Some("h")), "3 ssh sessions ended. \u{2014} now at h.");
+    }
+
+    /// The location comes from the remote's ssh args (up to the conductor parser's 1 MiB):
+    /// it is cut to `conductor::MAX_SHOWN` characters like the other remote-sized texts.
+    #[test]
+    fn end_banner_cuts_a_remote_sized_location() {
+        let long = "h".repeat(crate::conductor::MAX_SHOWN + 500);
+        let cut = format!("{}\u{2026}", "h".repeat(crate::conductor::MAX_SHOWN));
+        assert_eq!(end_banner(1, Some(&long)), format!("ssh exited \u{2014} now at {cut}."));
+        assert_eq!(end_banner(2, Some(&long)), format!("2 ssh sessions ended. \u{2014} now at {cut}."));
+        let fits = "h".repeat(crate::conductor::MAX_SHOWN);
+        assert_eq!(end_banner(1, Some(&fits)), format!("ssh exited \u{2014} now at {fits}."));
     }
 }

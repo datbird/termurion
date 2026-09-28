@@ -1,13 +1,13 @@
 //! One pane's SSH integration state: the connecting queue (`PS:20277-20281`, `PS:4411-4430`),
-//! the hop chain EndSSH ends (`PS:20253-20275`) and the gate that keeps the conductor out of
-//! sessions until 14b's conductor hook exists (ruling 14a-1).
+//! the hop chain EndSSH ends (`PS:20253-20275`) and the gate that kept the conductor out of
+//! sessions until 14b's conductor hook existed (ruling 14a-1).
 
 use crate::ssh_handshake::{bootstrap, end_banner, Handshake, CONDUCTOR_SH};
 use std::path::{Path, PathBuf};
 
-/// Whether the conductor hook exists. False in 14a: no pane enters the connecting state and
-/// no conductor is typed (14b Task 7 sets it true).
-pub const CONDUCTOR_READY: bool = false;
+/// Whether the conductor hook exists: true since 14b (it was false in 14a, when no pane
+/// entered the connecting state and no conductor was typed).
+pub const CONDUCTOR_READY: bool = true;
 /// The most bytes the connecting queue keeps (iTerm2's is unbounded); later bytes are dropped.
 pub const QUEUE_LIMIT: usize = 1 << 20;
 
@@ -43,6 +43,21 @@ impl Chain {
             Some(i) => self.hops.drain(i..).count(),
             None => 0,
         }
+    }
+
+    /// A conductor hooked: its hop becomes the innermost.
+    pub fn push(&mut self, hop: Hop) {
+        self.hops.push(hop);
+    }
+
+    /// A conductor went away: its hop, the innermost, goes too.
+    pub fn pop(&mut self) -> Option<Hop> {
+        self.hops.pop()
+    }
+
+    /// How many hops `end` would remove for `unique_id`, removing none; 0 when no hop has it.
+    pub fn count_to(&self, unique_id: &str) -> usize {
+        self.hops.iter().rposition(|h| h.unique_id == unique_id).map_or(0, |i| self.hops.len() - i)
     }
 
     /// Where the innermost remaining hop runs (`screenSSHLocation`); None with no hops.
@@ -94,7 +109,10 @@ impl PaneSsh {
     /// EndSSH (`PS:20253-20275`): connecting ends and its queue is dropped; when hops ended,
     /// the banner to show, and the caller writes `END_WRITE` first.
     pub fn end_ssh(&mut self, unique_id: &str) -> Option<String> {
-        // 14a drops the queue even when no hop matches; iTerm2 keeps it for a later conductor.
+        // iTerm2 ends connecting even when no hop matches and never sends the queue: it drops
+        // it when a hop ends (`PS:20270-20273`) and otherwise the next
+        // screenWillBeginSSHIntegration replaces it (`PS:20277-20281`), so dropping it here is
+        // the same.
         self.connecting = None;
         match self.chain.end(unique_id) {
             0 => None,
@@ -103,22 +121,13 @@ impl PaneSsh {
     }
 }
 
-/// The pane banner of an SSH profile with SSH Integration on while the conductor hook does not
-/// exist (ruling 14a-1; 14b Task 7 deletes it).
-pub const PROFILE_NOT_READY: &str = "SSH integration arrives in a later Tandem build; this SSH profile runs plain ssh.";
 /// The pane banner of an SSH profile with SSH Integration on when `it2ssh.exe` is missing.
 pub const NO_IT2SSH: &str = "The utilities folder has no it2ssh.exe, so this SSH profile runs plain ssh.";
 
-/// Why an SSH profile with SSH Integration on runs plain ssh: the conductor hook does not exist
-/// yet (`PROFILE_NOT_READY`), or it does and `it2ssh.exe` is missing (`NO_IT2SSH`); None
-/// otherwise.
-pub fn profile_banner(ssh: bool, integration_on: bool, ready: bool, it2ssh_present: bool) -> Option<&'static str> {
-    match (ssh && integration_on, ready, it2ssh_present) {
-        (false, _, _) => None,
-        (true, false, _) => Some(PROFILE_NOT_READY),
-        (true, true, false) => Some(NO_IT2SSH),
-        (true, true, true) => None,
-    }
+/// Why an SSH profile with SSH Integration on runs plain ssh: `it2ssh.exe` is missing
+/// (`NO_IT2SSH`); None otherwise.
+pub fn profile_banner(ssh: bool, integration_on: bool, it2ssh_present: bool) -> Option<&'static str> {
+    (ssh && integration_on && !it2ssh_present).then_some(NO_IT2SSH)
 }
 
 /// The `it2ssh.exe` an SSH profile runs: in the utilities folder `utilities::ensure` made
@@ -142,12 +151,10 @@ mod tests {
 
     #[test]
     fn profile_banner_follows_the_gate() {
-        assert_eq!(profile_banner(true, true, false, true), Some(PROFILE_NOT_READY));
-        assert_eq!(profile_banner(true, true, true, false), Some(NO_IT2SSH));
-        assert_eq!(profile_banner(true, true, true, true), None);
-        assert_eq!(profile_banner(true, false, false, true), None);
-        assert_eq!(profile_banner(false, true, false, true), None);
-        assert_eq!(PROFILE_NOT_READY, "SSH integration arrives in a later Tandem build; this SSH profile runs plain ssh.");
+        assert_eq!(profile_banner(true, true, false), Some(NO_IT2SSH));
+        assert_eq!(profile_banner(true, true, true), None);
+        assert_eq!(profile_banner(true, false, false), None);
+        assert_eq!(profile_banner(false, true, false), None);
         assert_eq!(NO_IT2SSH, "The utilities folder has no it2ssh.exe, so this SSH profile runs plain ssh.");
     }
 
@@ -182,9 +189,6 @@ mod tests {
         assert_eq!(s.stop_queueing(), b"ls\r".to_vec());
         assert_eq!(s.connecting, None);
         assert_eq!(conductor_bytes(&h, true), Some(bootstrap(CONDUCTOR_SH, &h)));
-        // Removed by 14b Task 7.
-        let ready = CONDUCTOR_READY;
-        assert!(!ready);
         s.begin(true);
         assert!(s.queue(&vec![b'x'; QUEUE_LIMIT + 10]));
         assert!(s.queue(b"more"));
@@ -212,6 +216,23 @@ mod tests {
         assert_eq!(chain.location(), None);
         assert!(chain.hops.is_empty());
         assert_eq!(chain.end("u1"), 0);
+    }
+
+    #[test]
+    fn chain_mirrors_the_conductors() {
+        let (a, b) = (hop("u1", "A"), hop("u2", "B"));
+        let mut chain = Chain::default();
+        chain.push(a.clone());
+        chain.push(b.clone());
+        assert_eq!(chain.count_to("u1"), 2);
+        assert_eq!(chain.count_to("u2"), 1);
+        let before = chain.clone();
+        assert_eq!(chain.count_to("zz"), 0);
+        assert_eq!(chain, before, "counting removes nothing");
+        assert_eq!(chain.pop(), Some(b));
+        assert_eq!(chain.hops, vec![a]);
+        let ready = CONDUCTOR_READY;
+        assert!(ready);
     }
 
     #[test]
