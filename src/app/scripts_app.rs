@@ -42,6 +42,28 @@ pub(super) fn first_line(p: &Path) -> Option<String> {
     (!line.is_empty()).then(|| String::from_utf8_lossy(&line).into_owned())
 }
 
+/// What the output pump does with a pane whose program ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OnExit {
+    /// Closed (every pane but those held open).
+    Close,
+    /// Held open with its output (the REPL's window, iTerm2's Default end action): its end is
+    /// reported once and it stays until the person closes it.
+    Keep,
+    /// Held open and already reported: nothing more.
+    Handled,
+}
+
+/// A pane's end by whether it is held open (`held`: None when it is not; else whether its
+/// end was already reported).
+pub(super) fn on_exit(held: Option<bool>) -> OnExit {
+    match held {
+        None => OnExit::Close,
+        Some(false) => OnExit::Keep,
+        Some(true) => OnExit::Handled,
+    }
+}
+
 /// Menu ids of the Scripts menu's scripts: the prefix, then the script's full path (iTerm2's
 /// item identifier, `M:1559-1566`).
 pub(super) const SCRIPT_ID: &str = "script:";
@@ -736,6 +758,9 @@ pub(super) struct Import {
     name: String,
     dest: PathBuf,
     backup: Option<PathBuf>,
+    /// Replace Script right after a Terminate: the backup path and until when moving the old
+    /// script aside is tried again (its files may be held for a moment), from `import_tick`.
+    moving: Option<(PathBuf, std::time::Instant)>,
 }
 
 /// A file or folder removed, a link without touching what it names; errors ignored (iTerm2
@@ -751,22 +776,9 @@ fn remove_path(p: &Path) {
     }
 }
 
-/// Moves `from` aside to `to`; right after a Terminate the script's files may still be held
-/// for a moment, so then it is tried for up to a second.
-fn move_aside(from: &Path, to: &Path, just_terminated: bool) -> std::io::Result<()> {
-    let tries = if just_terminated { 20 } else { 1 };
-    let mut last = Ok(());
-    for i in 0..tries {
-        last = std::fs::rename(from, to);
-        if last.is_ok() {
-            break;
-        }
-        if i + 1 < tries {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-    }
-    last
-}
+/// How long moving a just-terminated script aside is tried, and how often.
+const MOVE_ASIDE_FOR: std::time::Duration = std::time::Duration::from_secs(1);
+const MOVE_ASIDE_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// The Recycle Bin (`trashItemAtURL:`): `SHFileOperationW` with undo allowed, no questions
 /// and no error window; a failure is ignored, as iTerm2 ignores it.
@@ -787,17 +799,78 @@ pub(super) fn recycle(path: &Path) {
 fn run_tar(args: Vec<String>) -> Result<(), String> {
     let mut runner = RealRunner::new(std::sync::mpsc::channel().0);
     use crate::script_provision::Runner;
-    runner.run(&crate::script_provision::Step { program: RealRunner::system_tool("tar.exe"), args, env: Vec::new() }).map(|_| ())
+    runner.run(&crate::script_provision::Step { program: RealRunner::system_tool("tar.exe")?, args, env: Vec::new() }).map(|_| ())
 }
 
-/// Extracts `zip` into `to` (`unzipURL:`) and reads its layout (off the UI thread).
+/// A file's number of hard links, read without following a link; `u32::MAX` when it cannot
+/// be read (refused, as a file with other names would be).
+fn hard_links(p: &Path) -> u32 {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES};
+    let Ok(file) = std::fs::OpenOptions::new().access_mode(FILE_READ_ATTRIBUTES).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).open(p) else { return u32::MAX };
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return u32::MAX;
+    }
+    info.nNumberOfLinks
+}
+
+/// A staging folder's entries for `sa::unsafe_entry`, never following a link: a reparse
+/// point (`FILE_ATTRIBUTE_REPARSE_POINT`: a symbolic link, a junction or any other kind), a
+/// folder, or a file with its hard link count. A folder that cannot be read reads as a
+/// reparse point, so the archive is refused.
+fn stage_entries(dir: &Path) -> Vec<(String, sa::Stat)> {
+    use std::os::windows::fs::MetadataExt;
+    const REPARSE: u32 = 0x400;
+    let Ok(rd) = std::fs::read_dir(dir) else { return vec![(String::new(), sa::Stat::Reparse)] };
+    rd.flatten()
+        .map(|e| {
+            let path = e.path();
+            let stat = match path.symlink_metadata() {
+                Err(_) => sa::Stat::Reparse,
+                Ok(m) if m.file_attributes() & REPARSE != 0 => sa::Stat::Reparse,
+                Ok(m) if m.is_dir() => sa::Stat::Dir,
+                Ok(_) => sa::Stat::File { links: hard_links(&path) },
+            };
+            (e.file_name().to_string_lossy().into_owned(), stat)
+        })
+        .collect()
+}
+
+/// Extracts `zip` into `to` (`unzipURL:`) and reads its layout (off the UI thread). Nothing
+/// that could reach outside `to` gets through: the file must be a zip whose every entry is a
+/// plain file or folder with a safe name (`zip_check`) before tar.exe sees it; after, the
+/// extracted tree must hold no link, junction or other reparse point and no file with
+/// another hard link; the script's name must be safe; and a full environment's hidden
+/// entries (`.venv`, its build and swap folders) are removed, so provisioning starts clean.
 fn extract_archive(zip: &Path, to: &Path) -> Result<sa::Layout, String> {
+    let bytes = std::fs::read(zip).map_err(|e| sa::unzip_failed(&e.to_string()))?;
+    crate::zip_check::check(&bytes).map_err(|e| sa::unzip_failed(&e))?;
     std::fs::create_dir_all(to).map_err(|e| sa::unzip_failed(&e.to_string()))?;
     run_tar(sa::extract_tar_args(zip, to)).map_err(|e| sa::unzip_failed(&e))?;
-    sa::layout(to, &crate::scripts::RealFs, &|p: &Path| std::fs::read_to_string(p).ok()).map_err(|e| match e {
+    if let Some(entry) = sa::unsafe_entry(to, &stage_entries) {
+        return Err(sa::unzip_failed(&sa::unsafe_entry_text(entry.strip_prefix(to).unwrap_or(&entry))));
+    }
+    let layout = sa::layout(to, &crate::scripts::RealFs, &|p: &Path| std::fs::read_to_string(p).ok()).map_err(|e| match e {
         sa::LayoutError::Legacy => sa::LEGACY_ARCHIVE.to_string(),
         sa::LayoutError::NoValidScript => sa::NO_VALID_SCRIPT.to_string(),
-    })
+    })?;
+    let name = match &layout {
+        sa::Layout::Basic { file } => file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        sa::Layout::Full { name, .. } => name.clone(),
+    };
+    if !sa::safe_script_name(&name) {
+        return Err(sa::NO_VALID_SCRIPT.to_string());
+    }
+    if let sa::Layout::Full { folder, .. } = &layout {
+        for e in std::fs::read_dir(folder).map_err(|e| sa::unzip_failed(&e.to_string()))?.flatten() {
+            if e.file_name().to_string_lossy().starts_with('.') {
+                remove_path(&e.path());
+            }
+        }
+    }
+    Ok(layout)
 }
 
 /// `urlContainsScript:fullEnvironment:` (`EX:207-240`): a `.py` file (basic), or a folder
@@ -931,6 +1004,11 @@ impl App {
         self.start_command_override = None;
         self.start_env_override = None;
         let pane = made.ok().and_then(|_| self.tabs.get(self.active).map(|t| t.focused));
+        if let Some(p) = pane {
+            // Held open when the interpreter ends (no CloseOnTermination,
+            // `iTermController.m:2189-2191`).
+            self.held_on_exit.insert(p, false);
+        }
         match pane.and_then(|p| self.panes.get_mut(&p)) {
             Some(p) => p.feed_output(sa::repl_banner().as_bytes()),
             None => {
@@ -979,17 +1057,21 @@ impl App {
                     let _ = tx.send(extract_archive(&zip, &to));
                     notify();
                 });
-                self.importing = Some(Import { source: path, trash, staging, extracting: Some(rx), layout: None, name: String::new(), dest: PathBuf::new(), backup: None });
+                self.importing = Some(Import { source: path, trash, staging, extracting: Some(rx), layout: None, name: String::new(), dest: PathBuf::new(), backup: None, moving: None });
             }
         }
     }
 
-    /// The extraction finished: its layout goes on, or its error ends the import.
-    pub(super) fn import_tick(&mut self) {
-        let Some(rx) = self.importing.as_ref().and_then(|i| i.extracting.as_ref()) else { return };
+    /// The extraction finished: its layout goes on, or its error ends the import. A Replace
+    /// waiting for a terminated script's files is tried again; when to come back for it.
+    pub(super) fn import_tick(&mut self) -> Option<std::time::Instant> {
+        if let Some((backup, until)) = self.importing.as_ref().and_then(|i| i.moving.clone()) {
+            return self.move_aside_again(backup, until);
+        }
+        let rx = self.importing.as_ref().and_then(|i| i.extracting.as_ref())?;
         let result = match rx.try_recv() {
             Ok(r) => r,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(sa::unzip_failed("the extraction stopped")),
         };
         if let Some(i) = self.importing.as_mut() {
@@ -999,6 +1081,30 @@ impl App {
             Err(e) => self.import_finish(Err(e)),
             Ok(layout) => self.import_layout(layout),
         }
+        None
+    }
+
+    /// Moves the replaced script aside again (never sleeping on the UI thread); past the
+    /// deadline it is left as it was and the import ends.
+    fn move_aside_again(&mut self, backup: PathBuf, until: std::time::Instant) -> Option<std::time::Instant> {
+        let (dest, name) = self.importing.as_ref().map(|i| (i.dest.clone(), i.name.clone()))?;
+        if std::fs::rename(&dest, &backup).is_ok() {
+            if let Some(i) = self.importing.as_mut() {
+                i.moving = None;
+                i.backup = Some(backup);
+            }
+            self.import_install();
+            return None;
+        }
+        let now = std::time::Instant::now();
+        if now >= until {
+            if let Some(i) = self.importing.as_mut() {
+                i.moving = None;
+            }
+            self.import_finish(Err(sa::replace_failed(&name)));
+            return None;
+        }
+        Some(now + MOVE_ASIDE_EVERY)
     }
 
     /// `didUnzipSuccessfullyTo:` (`IM:326-380`): a script of that name asks "Script Already
@@ -1032,7 +1138,14 @@ impl App {
             self.terminate_script(id);
         }
         let backup = dest.with_file_name(sa::backup_name(name, &crate::api_auth::fresh_key()));
-        if move_aside(&dest, &backup, running.is_some()).is_err() {
+        if std::fs::rename(&dest, &backup).is_err() {
+            // Right after a Terminate the files may still be held: `import_tick` tries again.
+            if running.is_some() {
+                if let Some(i) = self.importing.as_mut() {
+                    i.moving = Some((backup, std::time::Instant::now() + MOVE_ASIDE_FOR));
+                }
+                return;
+            }
             return self.import_finish(Err(sa::replace_failed(name)));
         }
         if let Some(i) = self.importing.as_mut() {
@@ -1153,11 +1266,11 @@ impl App {
         }
     }
 
-    /// At start, before the first scan: what an earlier run's import left is put right (off
-    /// the UI thread; the scan sees the result).
+    /// At start, before the first scan and AutoLaunch: what an earlier run's import left is
+    /// put right (iTerm2 runs `recoverStaleReplaceBackups` at launch, `IM:476-527`); one
+    /// listing and a few renames.
     pub(super) fn recover_imports(&mut self) {
-        let folder = self.scripts_folder();
-        std::thread::spawn(move || recover_in(&folder));
+        recover_in(&self.scripts_folder());
     }
 
     /// Scripts > Manage > Export (`chooseAndExportScript`, `M:683-714`): the chooser.
@@ -1166,8 +1279,7 @@ impl App {
             return w.focus();
         }
         let Some(g) = self.gpu.as_ref() else { return };
-        let autolaunch = crate::scripts::autolaunch_folder(&self.scripts_folder());
-        match ExportWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &self.scripts_tree, &autolaunch) {
+        match ExportWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &self.scripts_tree) {
             Ok(w) => self.script_export = Some(w),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
@@ -1250,6 +1362,92 @@ fn fill_scripts(sub: &muda::Submenu, entries: &[MenuEntry], errors: &mut Vec<Str
 mod tests {
     use super::*;
     use crate::scripts::Node;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("tandem-{tag}-{}", crate::api_auth::fresh_key()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn import_refuses_unsafe_archives() {
+        use crate::zip_check::tests::{file, valid, zip, Entry};
+        let root = temp_dir("zipcheck");
+        let run = |entries: &[Entry]| {
+            let archive = root.join("a.zip");
+            std::fs::write(&archive, zip(entries)).unwrap();
+            let staging = root.join(format!(".installing-{}", crate::api_auth::fresh_key()));
+            let r = extract_archive(&archive, &staging);
+            (r, staging)
+        };
+        // A valid export extracts; its hidden entries at the top of the full folder go.
+        let mut entries = valid();
+        entries.push(file("tool/.venv/Scripts/python.exe", "x"));
+        let (r, staging) = run(&entries[..4]);
+        assert!(matches!(r, Ok(sa::Layout::Full { ref name, .. }) if name == "tool"), "{r:?}");
+        let _ = std::fs::remove_dir_all(&staging);
+        let (r, staging) = run(&entries[..5]);
+        assert!(r.is_ok(), "{r:?}");
+        assert_eq!(names(&staging.join("tool")), ["setup.cfg", "tool"]);
+        let _ = std::fs::remove_dir_all(&staging);
+
+        // Hostile names and links are refused before tar.exe runs: nothing is extracted and
+        // nothing lands beside the staging folder.
+        for bad in ["../x.py", "C:/x.py", "/x.py", "tool/tool/a:b", "tool/CON"] {
+            let mut entries = valid();
+            entries.push(file(bad, "evil"));
+            let (r, staging) = run(&entries);
+            assert!(r.as_ref().is_err_and(|e| e.contains("not safe to extract")), "{bad}: {r:?}");
+            assert!(!staging.exists(), "{bad}");
+            assert_eq!(names(&root), ["a.zip"], "{bad}");
+        }
+        let mut entries = valid();
+        entries.push(Entry { external: (0o120_777) << 16, ..file("tool/.venv.building", "C:/Windows") });
+        assert!(run(&entries).0.is_err());
+        // Not a zip at all (a tar stream).
+        std::fs::write(root.join("a.zip"), b"x.py\0\0\0ustar").unwrap();
+        assert!(extract_archive(&root.join("a.zip"), &root.join("s")).is_err());
+        assert!(!root.join("s").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn staging_walk_refuses_links() {
+        let root = temp_dir("walk");
+        let staging = root.join("s");
+        std::fs::create_dir_all(staging.join(r"tool\tool")).unwrap();
+        std::fs::write(staging.join(r"tool\setup.cfg"), "x").unwrap();
+        std::fs::write(staging.join(r"tool\tool\tool.py"), "x").unwrap();
+        assert_eq!(sa::unsafe_entry(&staging, &stage_entries), None);
+        // A junction made in staging (no rights needed), pointing outside it.
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let junction = staging.join(r"tool\.venv");
+        let made = std::process::Command::new("cmd.exe").args(["/d", "/c", "mklink", "/J"]).arg(&junction).arg(&outside).output().unwrap();
+        assert!(made.status.success(), "{made:?}");
+        assert_eq!(sa::unsafe_entry(&staging, &stage_entries), Some(junction.clone()));
+        std::fs::remove_dir(&junction).unwrap();
+        assert!(outside.exists(), "removing the junction leaves its target");
+        // A file with a second hard link.
+        std::fs::hard_link(staging.join(r"tool\tool\tool.py"), outside.join("other.py")).unwrap();
+        assert_eq!(sa::unsafe_entry(&staging, &stage_entries), Some(staging.join(r"tool\tool\tool.py")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn repl_window_stays_open() {
+        // `iTermController.m:2189-2191`: the REPL has no CloseOnTermination, so its session
+        // stays with its output; every other pane closes as before.
+        assert_eq!(on_exit(None), OnExit::Close);
+        assert_eq!(on_exit(Some(false)), OnExit::Keep);
+        assert_eq!(on_exit(Some(true)), OnExit::Handled);
+    }
 
     fn script(path: &str, full: bool) -> Node {
         let path = PathBuf::from(path);

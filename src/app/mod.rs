@@ -666,6 +666,9 @@ pub struct App {
     /// window opens on the next loop pass (which has the event loop).
     repl_after_enable: Option<PathBuf>,
     repl_pending: Option<PathBuf>,
+    /// Panes that stay open with their output when their program ends (the REPL's), each
+    /// with whether its end was already reported (`scripts_app::on_exit`).
+    held_on_exit: HashMap<PaneId, bool>,
     /// The import under way (one at a time, iTerm2's `sInstallingScript`) and the files
     /// waiting behind it (iTerm2's serial install queue), each with whether it is an archive
     /// found in the Scripts folder (recycled once installed).
@@ -1086,6 +1089,7 @@ pub fn run() {
         script_after_enable: Vec::new(),
         repl_after_enable: None,
         repl_pending: None,
+        held_on_exit: HashMap::new(),
         importing: None,
         import_queue: VecDeque::new(),
         archives_asked: std::collections::HashSet::new(),
@@ -1239,6 +1243,7 @@ impl App {
     /// Every drop path calls this, so an app-wide map keyed by pane cannot leak.
     pub(super) fn pane_gone(&mut self, id: PaneId) {
         self.api_session_subs.forget_session(id);
+        self.held_on_exit.remove(&id);
         self.unread_session_counts.retain(|(p, _), _| *p != id);
         self.script_templates.retain(|(p, _), _| *p != id);
         self.script_components.retain(|(p, _), _| *p != id);
@@ -2963,7 +2968,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.script_picker_tick();
         let console_due = self.script_console_tick(event_loop);
         self.open_pending_repl(event_loop);
-        self.import_tick();
+        let import_due = self.import_tick();
         self.script_export_tick();
         self.scripts_scan_tick();
         self.open_script_alerts(event_loop);
@@ -2986,7 +2991,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.tmux_events(gw, events, event_loop);
         }
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -3054,7 +3059,8 @@ impl ApplicationHandler<UserEvent> for App {
                 outputs.push(*id);
             }
             changed |= got;
-            if p.exited.is_some() {
+            // A held pane's end is reported once.
+            if p.exited.is_some() && self.held_on_exit.get(id) != Some(&true) {
                 exited.push(*id);
             }
         }
@@ -3073,7 +3079,14 @@ impl ApplicationHandler<UserEvent> for App {
                 p.own_mut().fire_event(crate::trigger_events::EventKind::SessionEnded, &Default::default(), &[]);
             }
             self.take_requests();
-            self.close_pane(id, event_loop);
+            match scripts_app::on_exit(self.held_on_exit.get(&id).copied()) {
+                scripts_app::OnExit::Close => self.close_pane(id, event_loop),
+                scripts_app::OnExit::Keep => {
+                    self.held_on_exit.insert(id, true);
+                    changed = true;
+                }
+                scripts_app::OnExit::Handled => {}
+            }
         }
         self.check_coprocesses();
         if changed {

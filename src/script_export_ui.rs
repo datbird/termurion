@@ -1,10 +1,12 @@
 //! Scripts > Manage > Export's chooser (iTerm2's `iTermScriptChooser`, an open panel in the
 //! Scripts folder with its accessory view): the Scripts folder's tree with a checkbox for
-//! each script and for the AutoLaunch folder (the panel's validator allows both,
-//! `M:683-690`), "Offer to launch automatically during installation", OK and Cancel.
+//! each script, every folder (the AutoLaunch folder too) a heading ("Offer to launch
+//! automatically during installation", OK and Cancel). iTerm2's validator allows the
+//! AutoLaunch folder only so the panel can enter it (`API/iTermScriptChooser.m:189-191`,
+//! `M:683-690`); the tree already shows what is in it.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
@@ -22,8 +24,8 @@ pub enum ExportEvent {
     Cancel,
 }
 
-/// One line of the tree: its depth, its title, and its path when it can be chosen (a script,
-/// or the AutoLaunch folder).
+/// One line of the tree: its depth, its title, and its path when it can be chosen (a
+/// script).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub depth: usize,
@@ -32,20 +34,20 @@ pub struct Row {
 }
 
 /// The tree's lines in the scan's order: folders then their contents, indented.
-pub fn rows(tree: &[Node], autolaunch: &Path) -> Vec<Row> {
-    fn walk(nodes: &[Node], depth: usize, autolaunch: &Path, out: &mut Vec<Row>) {
+pub fn rows(tree: &[Node]) -> Vec<Row> {
+    fn walk(nodes: &[Node], depth: usize, out: &mut Vec<Row>) {
         for n in nodes {
             match n {
                 Node::Script { name, path, .. } => out.push(Row { depth, label: name.clone(), choosable: Some(path.clone()) }),
-                Node::Folder { name, path, children } => {
-                    out.push(Row { depth, label: name.clone(), choosable: (path == autolaunch).then(|| path.clone()) });
-                    walk(children, depth + 1, autolaunch, out);
+                Node::Folder { name, children, .. } => {
+                    out.push(Row { depth, label: name.clone(), choosable: None });
+                    walk(children, depth + 1, out);
                 }
             }
         }
     }
     let mut out = Vec::new();
-    walk(tree, 0, autolaunch, &mut out);
+    walk(tree, 0, &mut out);
     out
 }
 
@@ -60,9 +62,9 @@ pub struct ExportWindow {
 
 impl ExportWindow {
     #[allow(clippy::too_many_arguments)]
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, tree: &[Node], autolaunch_folder: &Path) -> Result<ExportWindow, String> {
+    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, tree: &[Node]) -> Result<ExportWindow, String> {
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, sa::EXPORT_TITLE, 480.0, 420.0)?;
-        Ok(ExportWindow { host, rows: rows(tree, autolaunch_folder), chosen: BTreeSet::new(), autolaunch: false })
+        Ok(ExportWindow { host, rows: rows(tree), chosen: BTreeSet::new(), autolaunch: false })
     }
 
     pub fn id(&self) -> WindowId {
@@ -135,6 +137,7 @@ impl ExportWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn export_rows_follow_the_chooser() {
@@ -143,9 +146,10 @@ mod tests {
         let tree = vec![folder(r"C:\S\AutoLaunch", vec![script(r"C:\S\AutoLaunch\run.py", false)]), folder(r"C:\S\zeta", vec![script(r"C:\S\zeta\z.py", false)]), script(r"C:\S\Full", true)];
         let row = |depth, label: &str, p: Option<&str>| Row { depth, label: label.into(), choosable: p.map(PathBuf::from) };
         assert_eq!(
-            rows(&tree, Path::new(r"C:\S\AutoLaunch")),
+            rows(&tree),
             vec![
-                row(0, "AutoLaunch", Some(r"C:\S\AutoLaunch")),
+                // Folders, the AutoLaunch folder too, are headings.
+                row(0, "AutoLaunch", None),
                 row(1, "run.py", Some(r"C:\S\AutoLaunch\run.py")),
                 // A plain folder is only a heading.
                 row(0, "zeta", None),

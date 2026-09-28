@@ -46,6 +46,12 @@ pub struct Row {
 
 /// The table's rows (`SC:185-206`): every entry, or the running ones; a stopped entry's name
 /// in parentheses; the start time as `started` writes it.
+/// What the console's laid out text is kept by: the text's revision, the theme, and the
+/// scale (a new scale rebuilds egui's fonts, so text laid out before would draw garbled).
+pub fn layout_key(text_rev: u64, dark: bool, pixels_per_point: f32) -> (u64, bool, u32) {
+    (text_rev, dark, pixels_per_point.to_bits())
+}
+
 pub fn rows(h: &History, running_only: bool, started: &dyn Fn(u64) -> String) -> Vec<Row> {
     h.filtered(running_only).into_iter().map(|e| Row { id: e.id.clone(), name: e.shown_name(), started: started(e.started) }).collect()
 }
@@ -176,7 +182,7 @@ pub struct ConsoleWindow {
     /// The text's revision (moved on with each new text) and its laid out form for it and
     /// the theme, so a paint does not copy and lay out megabytes again.
     text_rev: u64,
-    galley: Option<((u64, bool), Arc<egui::Galley>)>,
+    galley: Option<((u64, bool, u32), Arc<egui::Galley>)>,
 }
 
 impl ConsoleWindow {
@@ -331,9 +337,9 @@ impl ConsoleWindow {
                 }
                 area.show(ui, |ui| {
                     // Lines are never wrapped: the text scrolls sideways (`SC:79-85`). The laid
-                    // out text is kept until the text or the theme changes.
+                    // out text is kept until the text, the theme or the scale changes.
                     let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
-                        let key = (text_rev, ui.visuals().dark_mode);
+                        let key = layout_key(text_rev, ui.visuals().dark_mode, ui.ctx().pixels_per_point());
                         if let Some((k, g)) = galley.as_ref() {
                             if *k == key {
                                 return g.clone();
@@ -368,6 +374,15 @@ mod tests {
     use super::*;
     use crate::script_history::Relaunch;
     use std::path::PathBuf;
+
+    #[test]
+    fn layout_cache_follows_the_scale() {
+        assert_eq!(layout_key(3, true, 1.0), layout_key(3, true, 1.0));
+        // A new scale rebuilds egui's fonts: the laid out text is made again.
+        assert_ne!(layout_key(3, true, 1.0), layout_key(3, true, 1.5));
+        assert_ne!(layout_key(3, true, 1.0), layout_key(3, false, 1.0));
+        assert_ne!(layout_key(3, true, 1.0), layout_key(4, true, 1.0));
+    }
 
     fn v(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()

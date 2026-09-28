@@ -390,6 +390,14 @@ pub fn is_py_launcher(program: &str) -> bool {
     Path::new(program).file_name().is_some_and(|n| n.eq_ignore_ascii_case("py.exe"))
 }
 
+/// A Windows tool (curl.exe, tar.exe) in the System32 folder `system`: never a program of
+/// the same name from PATH. An error naming it when System32 is unknown or lacks it.
+pub fn system_tool_in(system: Option<&Path>, name: &str, is_file: &dyn Fn(&Path) -> bool) -> Result<PathBuf, String> {
+    let system = system.ok_or_else(|| format!("{name} was not found: the System32 folder is unknown."))?;
+    let tool = system.join(name);
+    if is_file(&tool) { Ok(tool) } else { Err(format!("{name} was not found in {}.", system.display())) }
+}
+
 /// How long a probe of an installed Python (`py -0p`, `python --version`) may take.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -521,10 +529,15 @@ impl RealRunner {
         RealRunner { lines, timeout: BUILD_TIMEOUT }
     }
 
-    /// A Windows tool from System32 (curl.exe, tar.exe), so a program of the same name on PATH
-    /// is never run instead; the bare name when System32 is not found.
-    pub(crate) fn system_tool(name: &str) -> PathBuf {
-        std::env::var_os("SystemRoot").map(|root| PathBuf::from(root).join("System32").join(name)).filter(|p| p.is_file()).unwrap_or_else(|| PathBuf::from(name))
+    /// A Windows tool from System32 (curl.exe, tar.exe), found with `GetSystemDirectoryW`
+    /// (not Tandem's environment), so a program of the same name on PATH is never run
+    /// instead; an error naming it when System32 lacks it (`system_tool_in`).
+    pub(crate) fn system_tool(name: &str) -> Result<PathBuf, String> {
+        use std::os::windows::ffi::OsStringExt;
+        let mut buf = [0u16; 520];
+        let n = unsafe { windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+        let system = (n > 0 && n < buf.len()).then(|| PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])));
+        system_tool_in(system.as_deref(), name, &|p: &Path| p.is_file())
     }
 
     /// How a failure names the run: the program's name and the arguments up to the first that
@@ -635,7 +648,7 @@ impl Runner for RealRunner {
             std::fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
         }
         let args = ["--fail", "--location", "--silent", "--show-error", "--proto", "=https", "--output"].iter().map(|a| a.to_string()).chain([to.to_string_lossy().into_owned(), url.to_string()]).collect();
-        self.run(&Step { program: Self::system_tool("curl.exe"), args, env: Vec::new() }).map(|_| ())
+        self.run(&Step { program: Self::system_tool("curl.exe")?, args, env: Vec::new() }).map(|_| ())
     }
 
     fn sha256(&mut self, file: &Path) -> Result<String, String> {
@@ -657,7 +670,7 @@ impl Runner for RealRunner {
         std::fs::create_dir_all(to).map_err(|e| format!("Could not create {}: {e}", to.display()))?;
         // bsdtar refuses absolute paths and ".." in an archive unless -P is passed; it is not.
         let args = vec!["-xf".to_string(), zip.to_string_lossy().into_owned(), "-C".to_string(), to.to_string_lossy().into_owned()];
-        self.run(&Step { program: Self::system_tool("tar.exe"), args, env: Vec::new() }).map(|_| ())
+        self.run(&Step { program: Self::system_tool("tar.exe")?, args, env: Vec::new() }).map(|_| ())
     }
 
     fn exists(&self, p: &Path) -> bool {
@@ -776,6 +789,18 @@ mod tests {
     use crate::script_runtime::*;
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn system_tools_never_come_from_path() {
+        let system = Path::new(r"C:\Windows\System32");
+        let there = |p: &Path| p == Path::new(r"C:\Windows\System32\tar.exe");
+        assert_eq!(system_tool_in(Some(system), "tar.exe", &there), Ok(PathBuf::from(r"C:\Windows\System32\tar.exe")));
+        // Missing from System32, or System32 unknown: an error naming the tool, never the bare
+        // name (which would search PATH).
+        let missing = system_tool_in(Some(system), "curl.exe", &there).unwrap_err();
+        assert!(missing.contains("curl.exe") && missing.contains(r"C:\Windows\System32"), "{missing}");
+        assert!(system_tool_in(None, "tar.exe", &there).unwrap_err().contains("tar.exe"));
+    }
 
     /// One thing a `FakeRunner` was asked to do (queries such as `exists` are not recorded).
     #[derive(Clone, Debug, PartialEq, Eq)]

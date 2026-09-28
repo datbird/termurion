@@ -202,6 +202,47 @@ pub const OFFER_AUTOLAUNCH: &str = "Offer to launch automatically during install
 /// The chooser window's title (Tandem's; iTerm2's open panel has none).
 pub const EXPORT_TITLE: &str = "Export Script";
 
+/// Whether a script name taken from an archive (a basic script's file name or a full
+/// environment's folder) may be installed under the Scripts folder: not a device name, no
+/// ":" and no trailing dot or space (`zip_check::bad_part`), so Windows cannot read it as
+/// another item.
+pub fn safe_script_name(name: &str) -> bool {
+    crate::zip_check::bad_part(name).is_none()
+}
+
+/// One extracted entry as the staging walk sees it, never following a link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stat {
+    Dir,
+    /// A file and its number of hard links.
+    File { links: u32 },
+    /// A reparse point: a symbolic link, a junction or any other kind.
+    Reparse,
+}
+
+/// The first entry under the extraction folder `dir` that is a reparse point or a file with
+/// another hard link (a name elsewhere), walked without following anything; `list` gives a
+/// folder's entries. None when every entry is a plain file or folder.
+pub fn unsafe_entry(dir: &Path, list: &dyn Fn(&Path) -> Vec<(String, Stat)>) -> Option<PathBuf> {
+    let mut folders = vec![dir.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for (name, stat) in list(&folder) {
+            let path = folder.join(&name);
+            match stat {
+                Stat::Dir => folders.push(path),
+                Stat::File { links } if links <= 1 => {}
+                _ => return Some(path),
+            }
+        }
+    }
+    None
+}
+
+/// Why an extracted archive was refused by the walk.
+pub fn unsafe_entry_text(entry: &Path) -> String {
+    crate::zip_check::refused(&format!("\u{201c}{}\u{201d} is a link or has another name", entry.display()))
+}
+
 /// A signed archive cannot be checked, so it is refused (Tandem's; Decision).
 pub fn its_refused() -> String {
     "Tandem cannot check the signature of a signed script archive (.its), so it cannot be installed. Ask its author for an unsigned .zip export.".to_string()
@@ -211,6 +252,34 @@ pub fn its_refused() -> String {
 mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn archive_entries_are_checked() {
+        for ok in ["tool", "tool.py", "my_tool", "console.py", "COM10.py"] {
+            assert!(safe_script_name(ok), "{ok}");
+        }
+        for bad in ["CON", "aux.py", "Nul", "LPT1.py", "COM\u{b9}", "tool.", "tool ", "a:b", "x.py:stream", ""] {
+            assert!(!safe_script_name(bad), "{bad}");
+        }
+        let staging = Path::new(r"C:\S\.installing-X");
+        let tree = |extra: Option<(&str, Stat)>| {
+            let mut t: BTreeMap<PathBuf, Vec<(String, Stat)>> = BTreeMap::new();
+            t.insert(staging.to_path_buf(), vec![("tool".into(), Stat::Dir)]);
+            t.insert(staging.join("tool"), vec![("setup.cfg".into(), Stat::File { links: 1 }), ("tool".into(), Stat::Dir)]);
+            let mut inner = vec![("tool.py".into(), Stat::File { links: 1 })];
+            if let Some((n, s)) = extra {
+                inner.push((n.to_string(), s));
+            }
+            t.insert(staging.join(r"tool\tool"), inner);
+            t
+        };
+        let walk = |t: &BTreeMap<PathBuf, Vec<(String, Stat)>>| unsafe_entry(staging, &|d: &Path| t.get(d).cloned().unwrap_or_default());
+        assert_eq!(walk(&tree(None)), None);
+        assert_eq!(walk(&tree(Some(("link", Stat::Reparse)))), Some(staging.join(r"tool\tool\link")));
+        assert_eq!(walk(&tree(Some(("hard.py", Stat::File { links: 2 })))), Some(staging.join(r"tool\tool\hard.py")));
+        // A hidden entry is checked too.
+        assert_eq!(walk(&tree(Some((".venv", Stat::Reparse)))), Some(staging.join(r"tool\tool\.venv")));
+    }
 
     #[derive(Default)]
     struct FakeFs {
