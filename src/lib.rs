@@ -262,3 +262,4 @@ pub mod session_env;
 pub mod api_server;
 pub mod ai_settings;
 pub mod ai_catalog;
+pub mod ai_policy;
