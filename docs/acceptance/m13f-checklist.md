@@ -36,7 +36,7 @@ line pass or fail.
 
 | # | Check | Result |
 |---|---|---|
-| 9 | With Advanced "Allow title setting" off in the profile, run `printf '\033]2;hi\a'`: the window title does not change. Turn it on and repeat: the title reads "hi". `printf '\033]1;icon\a'` never changes the title. | |
+| 9 | With "Allow title setting" off in the profile (General tab), run `printf '\033]2;hi\a'`: the window title does not change. Turn it on and repeat: the title reads "hi". `printf '\033]1;icon\a'` never changes the title. | |
 | 10 | Open two tabs with "Each tab may have its own window title" off (General > Window), and run `printf '\033]2;hi\a'` in tab 1: both tabs' sessions take the title, so tab 2's caption reads "hi". Turn it on: only the tab that set it changes. | |
 | 11 | With one tab (no tab bar) turn Advanced "ShowWindowTitleWhenTabBarInvisible" off: the caption shows the session's own title (name, job) rather than the window title. To tell them apart, use a profile with Title components including Job, then `printf '\033]2;hi\a'`: with the key off the session title reads "hi (<job>)"; with it on the caption reads "hi". Add a second tab: the window title returns. | |
 | 12 | In a profile turn on "Use custom window title" and set `\(currentTab.currentSession.path)`: a new window from that profile shows the current directory; `cd` elsewhere and the caption follows. Set a custom tab title in the same profile: a new tab shows it. Edit Window Title and Edit Tab Title also take `\(...)` text. A function call such as `\(uuid())` shows as written. | |
@@ -59,13 +59,13 @@ line pass or fail.
 | 19 | The first window after a launch snaps too (it did not get the resize hook before this milestone). Maximized, full-screen and Lock Window Size windows never snap. | |
 | 20 | Drag the window so it ends within one cell of the work area's edge: it fills the screen exactly, with no gap. | |
 | 21 | Turn off Advanced `AllowLiveResize`: the window's edges no longer resize it (also a hotkey window and a restored arrangement's window). Turn it on. | |
-| 22 | In a profile turn off "Terminal may resize window when not focused" (Session tab) and, from an unfocused pane, run `printf '\033]1337;SetWindowFrame=100;100;900;600\a'`: nothing changes (the numbers are AppKit points, y from the primary screen's bottom, not trust-gated). Focus the pane and repeat: the window moves and resizes. | |
+| 22 | In a profile turn off "Terminal may resize window when not focused" (Terminal tab, Terminal Emulation section) and, from an unfocused pane, run `printf '\033]1337;SetWindowFrame=100;100;900;600\a'`: nothing changes (the numbers are AppKit points, y from the primary screen's bottom, not trust-gated). Focus the pane and repeat: the window moves and resizes. | |
 
 ## Font size and zoom
 
 | # | Check | Result |
 |---|---|---|
-| 23 | With Appearance "Adjust window when changing font size" on (the default), use View > Make Text Bigger (Win+=): the Normal window grows so the columns and rows stay the same, its top-left corner fixed. Make Text Smaller and Make Text Normal Size shrink and restore it. Turn it off: the window keeps its size and the panes refit. | |
+| 23 | With General > Window "Adjust window when changing font size" on (the default), use View > Make Text Bigger (Win+=): the Normal window grows so the columns and rows stay the same, its top-left corner fixed. Make Text Smaller and Make Text Normal Size shrink and restore it. Turn it off: the window keeps its size and the panes refit. | |
 | 24 | A maximized or full-screen window keeps its frame when the font changes and the panes refit. In a split tab the whole tab's grid is kept, not one pane's. Other windows do not follow the font until milestone 13n. | |
 | 25 | With General "Zoom maximizes vertically only" on, Window > Zoom (Shift+Win+0): the window stretches to the work area's height and keeps its x and width; Zoom again restores it. Off: Zoom maximizes and Zoom again restores. The maximize caption button always maximizes. | |
 | 26 | With "Zoom maximizes vertically only" on, click Window > Zoom with Shift held: it maximizes fully (Shift inverts a click); Shift+Win+0 with the key on still zooms vertically (the chord does not invert). | |
@@ -88,6 +88,6 @@ line pass or fail.
 | 33 | The Compact and Minimal caption label (right-aligned) waits for milestone 13e; a transparent pane forcing the border waits for 13g. | |
 | 34 | Size Changes Update Profile does not exist yet (milestone 13n, 02:260 stays missing); a font change only fits the window. | |
 | 35 | An unclosed `\(` in a custom title shows as literal text; a title with a function call shows the format as written. A tmux window keeps tmux's name and a profile's custom tab title is never sent to tmux. | |
-| 36 | Dragging the edge of a Windows-Snap-arranged window snaps to the grid and can leave a gap beside its neighbor; the minimum size is the current tab's, not every tab's; after a DPI change mid-drag one step snaps to the old grid. | |
+| 36 | Dragging the edge of a Windows-Snap-arranged window snaps to the grid, as in iTerm2 (the OS's own tiling moves never pass through the snap, so they are not affected); the minimum size is the current tab's, not every tab's; after a DPI change mid-drag one step snaps to the old grid. | |
 | 37 | The Window menu's "Zoom" from the keyboard menu path (Alt, arrows, Enter) counts as a click: Shift held inverts. Zoom after a manual move or resize restores the pre-zoom frame rather than zooming again. | |
 | 38 | A tiny percent size (1 to 2 percent) makes a near one-cell window; there is no floor as the cells form has. | |
