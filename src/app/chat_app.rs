@@ -106,28 +106,67 @@ fn removal_needs_stop(broker: &Broker, agent: Option<&Agent>, chat: &str) -> boo
     broker.turn_in_progress(chat) || agent.is_some_and(|a| a.in_turn || a.driver.is_some() || !a.parks.is_empty() || a.running.is_some())
 }
 
+/// The chat rows the cleanup reads and writes (the store, or a test's failing stand-in).
+trait ChatRows {
+    fn all(&self) -> Result<Vec<Chat>, String>;
+    fn one(&self, id: &str) -> Result<Option<Chat>, String>;
+    fn put(&mut self, chat: &Chat) -> Result<(), String>;
+}
+
+impl ChatRows for Store {
+    fn all(&self) -> Result<Vec<Chat>, String> {
+        self.chats()
+    }
+    fn one(&self, id: &str) -> Result<Option<Chat>, String> {
+        self.chat(id)
+    }
+    fn put(&mut self, chat: &Chat) -> Result<(), String> {
+        self.update_chat(chat)
+    }
+}
+
 /// The first open of a run (ruling F1): pane ids restart at 1 every launch, so a chat linked to
-/// a pane id, and any grant stored under one, names a session of an earlier run and would
-/// control an unrelated new pane. Each such chat is unlinked, and its stored entries keyed by a
-/// pane id are dropped (a fork or the overrides cannot carry them). Imported UUID guids stay.
-/// A row that cannot be written stays as it was; `load_overrides` skips its entries anyway.
-fn unlink_stale_panes(store: &mut Store) {
-    for chat in store.chats().unwrap_or_default() {
-        let linked = chat.terminal_session_guid.as_deref().is_some_and(ai_permissions::is_pane_guid);
+/// a pane id (a terminal or a browser session), and any grant stored under one, names a session
+/// of an earlier run. Each such chat is unlinked, and its stored entries keyed by a pane id are
+/// dropped (a fork or the overrides cannot carry them). Imported UUID guids stay. False when
+/// the chat list could not be read or a row could not be written: the caller then binds no
+/// chat to a pane this run (`chat_links_off`), so a stale link can never take hold.
+fn unlink_stale_panes(store: &mut Store) -> bool {
+    unlink_stale_in(store)
+}
+
+fn unlink_stale_in(store: &mut impl ChatRows) -> bool {
+    let Ok(chats) = store.all() else { return false };
+    let stale = |g: &Option<String>| g.as_deref().is_some_and(ai_permissions::is_pane_guid);
+    let mut clean = true;
+    for chat in chats {
         let scrubbed = ai_permissions::without_pane_guids(&chat.permissions);
-        if !linked && scrubbed.is_none() {
+        if !stale(&chat.terminal_session_guid) && !stale(&chat.browser_session_guid) && scrubbed.is_none() {
             continue;
         }
         // Re-read, so only this row's own fields change (ruling F6).
-        let Ok(Some(mut row)) = store.chat(&chat.id) else { continue };
-        if row.terminal_session_guid.as_deref().is_some_and(ai_permissions::is_pane_guid) {
+        let mut row = match store.one(&chat.id) {
+            Ok(Some(row)) => row,
+            Ok(None) => continue,
+            Err(_) => {
+                clean = false;
+                continue;
+            }
+        };
+        if stale(&row.terminal_session_guid) {
             row.terminal_session_guid = None;
+        }
+        if stale(&row.browser_session_guid) {
+            row.browser_session_guid = None;
         }
         if let Some(text) = ai_permissions::without_pane_guids(&row.permissions) {
             row.permissions = text;
         }
-        let _ = store.update_chat(&row);
+        if store.put(&row).is_err() {
+            clean = false;
+        }
     }
+    clean
 }
 
 /// The live pane a session reference names: the pane whose own `session_guid` it is, exactly.
@@ -213,7 +252,11 @@ impl App {
             let path = chat_store::default_path();
             match Store::open(&path, &path.with_file_name(chat_store::LOCK_NAME)) {
                 Ok(mut store) => {
-                    unlink_stale_panes(&mut store);
+                    if !unlink_stale_panes(&mut store) {
+                        // Fail closed: nothing binds to a pane until the next launch.
+                        self.chat_links_off = true;
+                        crate::ai_wire_log::console(true, "chat links are off for this run: an earlier run's links could not all be cleared");
+                    }
                     load_overrides(&store, &mut self.ai_overrides);
                     self.chat_db = Some(store);
                 }
@@ -229,12 +272,13 @@ impl App {
     /// A pane's reference in a chat (its own `session_guid`, unique across panes and launches),
     /// and the live pane a reference names. The only conversions: a reference read from a
     /// stored row or message is trusted only when it names a live pane exactly.
+    /// Both answer None while `chat_links_off` (the cleanup of an earlier run's links failed).
     pub(crate) fn session_ref(&self, pane: PaneId) -> Option<String> {
-        self.panes.get(&pane).map(|p| p.session_guid.clone())
+        self.panes.get(&pane).filter(|_| !self.chat_links_off).map(|p| p.session_guid.clone())
     }
 
     pub(crate) fn ref_pane(&self, guid: &str) -> Option<PaneId> {
-        pane_for_ref(&self.panes, guid)
+        pane_for_ref(&self.panes, guid).filter(|_| !self.chat_links_off)
     }
 
     /// `ChatBroker.publish` with the list model behind it, and the hand-off to the chat's
@@ -426,7 +470,8 @@ impl App {
         let globals = &self.globals;
         let panes = &self.panes;
         let model_for = |c: &Chat| c.model_name.as_deref().and_then(|n| crate::ai_model::named(n, globals, catalog, &found)).or_else(|| crate::ai_model::configured(globals, catalog, &found));
-        let pane_of = |g: &str| pane_for_ref(panes, g);
+        let links_off = self.chat_links_off;
+        let pane_of = |g: &str| pane_for_ref(panes, g).filter(|_| !links_off);
         let (t, o, n) = (transport.clone(), options.clone(), notify.clone());
         let mut new_turn = move |_: &Model| -> Box<dyn TurnDriver> {
             Box::new(LiveTurn {
@@ -949,6 +994,57 @@ mod tests {
         assert_eq!(pane_for_ref(&panes, "3"), None, "a decimal id of an earlier run names nothing");
         assert_eq!(pane_for_ref(&panes, &rb), None, "another launch's reference names nothing");
         assert_eq!(pane_for_ref(&panes, ""), None);
+    }
+
+    /// A store whose reads or writes fail, as the cleanup must survive.
+    struct Flaky {
+        store: Store,
+        fail_read: bool,
+        fail_write: bool,
+    }
+
+    impl ChatRows for Flaky {
+        fn all(&self) -> Result<Vec<Chat>, String> {
+            if self.fail_read { Err("read".into()) } else { self.store.chats() }
+        }
+        fn one(&self, id: &str) -> Result<Option<Chat>, String> {
+            self.store.chat(id)
+        }
+        fn put(&mut self, chat: &Chat) -> Result<(), String> {
+            if self.fail_write { Err("write".into()) } else { self.store.update_chat(chat) }
+        }
+    }
+
+    #[test]
+    fn a_failed_cleanup_binds_nothing() {
+        let mut stale = Chat::new("old", 1.0);
+        stale.terminal_session_guid = Some("3".into());
+        let flaky = |fail_read, fail_write| {
+            let mut f = Flaky { store: Store::open_in_memory().unwrap(), fail_read: false, fail_write };
+            f.store.add_chat(&stale).unwrap();
+            f.fail_read = fail_read;
+            f
+        };
+        assert!(!unlink_stale_in(&mut flaky(true, false)), "the list cannot be read");
+        let mut unwritable = flaky(false, true);
+        assert!(!unlink_stale_in(&mut unwritable), "a row cannot be written");
+        assert_eq!(unwritable.store.chat(&stale.id).unwrap().unwrap().terminal_session_guid.as_deref(), Some("3"));
+        let mut fine = flaky(false, false);
+        assert!(unlink_stale_in(&mut fine));
+        assert_eq!(fine.store.chat(&stale.id).unwrap().unwrap().terminal_session_guid, None);
+    }
+
+    #[test]
+    fn a_decimal_browser_guid_is_unlinked_too() {
+        let mut store = Store::open_in_memory().unwrap();
+        let (mut old, mut imported) = (Chat::new("old", 1.0), Chat::new("imported", 2.0));
+        old.browser_session_guid = Some("4".into());
+        imported.browser_session_guid = Some("6F1C2A3B-0000-4000-8000-000000000002".into());
+        store.add_chat(&old).unwrap();
+        store.add_chat(&imported).unwrap();
+        assert!(unlink_stale_panes(&mut store));
+        assert_eq!(store.chat(&old.id).unwrap().unwrap().browser_session_guid, None);
+        assert_eq!(store.chat(&imported.id).unwrap().unwrap().browser_session_guid, imported.browser_session_guid);
     }
 
     #[test]

@@ -160,7 +160,7 @@ impl App {
 
     /// Rebuilds what the window shows and hands it over when it changed. The toolbar's model
     /// list and key state are computed only when marked dirty (ruling F17), never per chunk.
-    fn chat_window_refresh(&mut self) {
+    pub(super) fn chat_window_refresh(&mut self) {
         if self.chat_window.is_none() {
             return;
         }

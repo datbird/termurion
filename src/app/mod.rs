@@ -865,6 +865,8 @@ pub struct App {
     /// opening it failed (then it is not tried again), and the broker.
     chat_db: Option<crate::chat_store::Store>,
     chat_db_failed: bool,
+    /// The cleanup of an earlier run's chat links failed: no chat binds to a pane this run.
+    chat_links_off: bool,
     chat_broker: crate::chat_broker::Broker,
     /// The AI Chat window (app-wide, never swapped: one per app), the broker subscription it
     /// reads every chat through, the chat it shows, and its toolbar as last computed (rebuilt
@@ -1496,6 +1498,7 @@ pub fn run() {
         ai_probe: None,
         chat_db: None,
         chat_db_failed: false,
+        chat_links_off: false,
         chat_broker: crate::chat_broker::Broker::new(),
         chat_window: None,
         chat_sub: None,

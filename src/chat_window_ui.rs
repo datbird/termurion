@@ -153,6 +153,10 @@ impl ChatWindow {
         let list = &mut self.list;
         self.host.paint(|ui| {
             let icons = crate::settings_keys::has_icon_font(ui.ctx());
+            // Ctrl+W closes, as every other egui window of Tandem does.
+            if ui.input(|i| i.key_pressed(egui::Key::W) && i.modifiers.command) {
+                out.push(ChatEvent::Close);
+            }
             egui::Panel::top("chat_toolbar").show(ui, |ui| {
                 ui.add_space(4.0);
                 toolbar(ui, &d.toolbar, icons, list_visible, &mut out);

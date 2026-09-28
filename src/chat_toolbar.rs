@@ -29,11 +29,38 @@ pub const THINKING_GLYPH: char = '\u{EA80}';
 pub const WEB_GLYPH: char = '\u{E774}';
 pub const INFO_GLYPH: char = '\u{E946}';
 
+/// What can change the toolbar's model list, key state or picks (ruling F17).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rebuild {
+    Open,
+    Show,
+    Pick,
+    /// A whole message or a removal in the shown chat.
+    Message,
+    /// The window regained focus (a key or model changed in Settings).
+    Focus,
+    /// Ollama discovery finished and found something new.
+    Discovery,
+    /// A streamed chunk: never (no server poll or credential read per chunk).
+    Chunk,
+}
+
+/// Whether `e` rebuilds the toolbar.
+pub fn rebuilds(e: Rebuild) -> bool {
+    !matches!(e, Rebuild::Chunk)
+}
+
 /// The title of a chat opened from a session (`CWC:646-662`). A pane's title is set by any
 /// program, so control characters and line breaks are dropped (ruling F20).
 pub fn chat_about_title(name: &str) -> String {
-    let clean: String = name.chars().filter(|c| !c.is_control()).collect();
+    let clean: String = name.chars().filter(|c| !c.is_control() && !title_unsafe(*c)).collect();
     format!("Chat about {}", clean.trim())
+}
+
+/// Line and paragraph separators and the bidi controls: they split a title or reorder the text
+/// around it.
+fn title_unsafe(c: char) -> bool {
+    matches!(c, '\u{2028}' | '\u{2029}' | '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 /// The provider popup's title of a vendor (`TB:57-72`).
@@ -256,6 +283,16 @@ mod tests {
         assert_eq!(chat_about_title("zsh"), "Chat about zsh");
         // A title any program can set: no control characters or line breaks.
         assert_eq!(chat_about_title("a\r\nb\u{1b}[31mc"), "Chat about ab[31mc");
+        // Line and paragraph separators and the bidi controls can reorder or split a title.
+        assert_eq!(chat_about_title("a\u{2028}b\u{2029}c\u{202e}d\u{2066}e\u{2069}f\u{200f}g"), "Chat about abcdefg");
+    }
+
+    #[test]
+    fn the_toolbar_rebuilds_where_the_ruling_says() {
+        for e in [Rebuild::Open, Rebuild::Show, Rebuild::Pick, Rebuild::Message, Rebuild::Focus, Rebuild::Discovery] {
+            assert!(rebuilds(e), "{e:?}");
+        }
+        assert!(!rebuilds(Rebuild::Chunk), "a streamed chunk never rebuilds it");
     }
 
     fn msg(content: Content) -> Message {

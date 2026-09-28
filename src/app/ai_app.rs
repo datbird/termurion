@@ -223,6 +223,9 @@ impl App {
         if changed {
             self.ai_discovery.save();
             self.redraw_all();
+            // The chat window's model list follows the newly found models (ruling F17).
+            self.chat_toolbar_dirty |= crate::chat_toolbar::rebuilds(crate::chat_toolbar::Rebuild::Discovery);
+            self.chat_window_refresh();
             if let Some(s) = self.settings.as_mut() {
                 s.ai.found = self.ai_discovery.all();
                 s.request_redraw();
