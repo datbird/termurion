@@ -400,7 +400,8 @@ impl Pane {
                             Io::Tmux(_) => Vec::new(),
                             _ => reply,
                         };
-                        if !reply.is_empty() && !self.ssh.queue(&reply) {
+                        // A report passes the connecting queue (`PS:16212-16220`).
+                        if !reply.is_empty() {
                             if let Err(e) = pty.write(&reply) {
                                 self.error = Some(e);
                             }
@@ -532,7 +533,7 @@ impl Pane {
             self.last_newline = Some(std::time::Instant::now());
         }
         if let Some(now) = self.buffer.send(bytes) {
-            self.reply(&now);
+            self.send_typed(&now);
         }
     }
 
@@ -543,7 +544,7 @@ impl Pane {
         } else {
             let waited = self.buffer.release();
             if !waited.is_empty() {
-                self.reply(&waited);
+                self.send_typed(&waited);
             }
         }
     }
@@ -642,12 +643,10 @@ impl Pane {
         self.pty.as_ref().and_then(|p| p.pid())
     }
 
-    /// What the terminal answers the program (reports): never held by Buffer Input, but
-    /// queued while SSH integration connects.
+    /// What the terminal answers the program (reports), and Tandem's own writes that iTerm2
+    /// makes with `broadcastAllowed:NO` (the idle code, upload answers, tmux commands):
+    /// never held by Buffer Input nor the connecting queue (`PS:4364-4376`, `PS:4276-4294`).
     pub fn reply(&mut self, bytes: &[u8]) {
-        if self.ssh.queue(bytes) {
-            return;
-        }
         self.composer.probe = None;
         if let Some(pty) = &self.pty {
             if let Err(e) = pty.write(bytes) {
@@ -656,9 +655,16 @@ impl Pane {
         }
     }
 
+    /// Typed bytes Buffer Input let go: queued while SSH integration connects (`PS:4411-4430`).
+    fn send_typed(&mut self, bytes: &[u8]) {
+        if !self.ssh.queue(bytes) {
+            self.reply(bytes);
+        }
+    }
+
     /// iTerm2's `writeTaskNoBroadcast:`: straight to the pty, past the connecting queue and
-    /// Buffer Input. Only the conductor's own bytes (its bootstrap, the `^C` line that ends
-    /// it) go this way.
+    /// Buffer Input. The conductor's own bytes (its bootstrap, the `^C` line that ends it) go
+    /// this way.
     pub fn write_no_broadcast(&mut self, bytes: &[u8]) {
         self.composer.probe = None;
         if let Some(pty) = &self.pty {
@@ -1012,18 +1018,24 @@ mod tests {
         let mut p = Pane::with(1, None, 80, 24);
         p.ssh.begin(true);
         p.live_input(b"ls\r");
+        assert_eq!(p.ssh.connecting, Some(b"ls\r".to_vec()));
+        // Reports pass the queue, as iTerm2's `writeTaskNoBroadcast:` (`PS:16212-16220`).
         p.reply(b"\x1b[0n");
-        assert_eq!(p.ssh.connecting, Some(b"ls\r\x1b[0n".to_vec()));
-        p.write_no_broadcast(b"x");
-        assert_eq!(p.ssh.connecting, Some(b"ls\r\x1b[0n".to_vec()), "the conductor's bytes pass the queue");
-        // A report the screen makes waits too.
+        p.focus_report(true);
         p.feed_output(b"\x1b[5n");
-        assert_eq!(p.ssh.connecting, Some(b"ls\r\x1b[0n\x1b[0n".to_vec()));
+        assert_eq!(p.ssh.connecting, Some(b"ls\r".to_vec()), "reports are not queued");
+        p.write_no_broadcast(b"x");
+        assert_eq!(p.ssh.connecting, Some(b"ls\r".to_vec()), "the conductor's bytes pass the queue");
         // Buffer Input does not hold what connecting queues.
         p.buffer.on = true;
         p.live_input(b"z");
-        assert_eq!(p.ssh.connecting.as_ref().map(|q| q.ends_with(b"z")), Some(true));
-        p.buffer.on = false;
+        assert_eq!(p.ssh.connecting, Some(b"ls\rz".to_vec()));
+        // What Buffer Input held is typing: released while connecting, it is queued.
+        p.ssh.connecting = None;
+        p.live_input(b"w");
+        p.ssh.begin(true);
+        p.set_buffering(false);
+        assert_eq!(p.ssh.connecting, Some(b"w".to_vec()));
         p.ssh.stop_queueing();
         p.live_input(b"y");
         assert_eq!(p.ssh.connecting, None);

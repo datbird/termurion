@@ -103,6 +103,9 @@ pub struct TriggerState {
     /// Events nested inside an action's own event (see `fire_event`).
     pub(crate) event_depth: u8,
     pub lines_checked: u64,
+    /// Rows a banner wrote (`append_banner`), which triggers never check: iTerm2 writes its
+    /// banners with triggers off (`SM:6721`).
+    skip: Vec<std::ops::Range<i64>>,
 }
 
 /// A logical line's text and, for each character, its byte offset and cell.
@@ -275,6 +278,8 @@ impl Screen {
     /// Rows moved (a resize, a fold, a porthole): checking goes on from the cursor.
     pub(crate) fn triggers_from_cursor(&mut self) {
         self.triggers.next = self.cursor_row();
+        // Row numbers moved, so banner rows are no longer where they were.
+        self.triggers.skip.clear();
     }
 
     fn triggers_active(&self) -> bool {
@@ -329,21 +334,19 @@ impl Screen {
     /// `appendBannerMessage:`, `SM:6720-6757`), ending with SGR reset (m8a precedent) where
     /// iTerm2 restores the saved rendition. It may run inside OSC dispatch, where `feed` has
     /// already scanned the read, so it goes through `feed_raw`: the text is inert and no
-    /// sequence in it needs the scan. Triggers skip its lines when nothing before them
-    /// waits to be checked.
+    /// sequence in it needs the scan. Triggers never check the banner's rows (iTerm2's
+    /// `performBlockWithoutTriggers`, `SM:6721`); the rows before it are checked as usual.
     pub fn append_banner(&mut self, text: &str) {
-        let mut b = String::new();
-        let mid_line = self.term.grid().cursor.point.column.0 != 0;
-        if mid_line {
-            b.push_str("\r\n");
+        if self.term.grid().cursor.point.column.0 != 0 {
+            let _ = self.feed_raw(b"\r\n");
         }
-        let checked = self.triggers.next >= self.cursor_row() + mid_line as i64;
+        let first = self.cursor_row();
         let (bg, fg) = crate::restore_state::banner_grays(self.palette.bg);
-        b += &format!("\x1b[48;2;{bg};{bg};{bg}m\x1b[38;2;{fg};{fg};{fg}m\x1b[2K{}\x1b[0m\r\n", crate::arrangement::inert_text(text).replace(['\r', '\n'], " "));
+        let b = format!("\x1b[48;2;{bg};{bg};{bg}m\x1b[38;2;{fg};{fg};{fg}m\x1b[2K{}\x1b[0m\r\n", crate::arrangement::inert_text(text).replace(['\r', '\n'], " "));
         let _ = self.feed_raw(b.as_bytes());
-        if checked {
-            self.triggers.next = self.triggers.next.max(self.cursor_row());
-        }
+        let next = self.triggers.next;
+        self.triggers.skip.retain(|r| r.end > next);
+        self.triggers.skip.push(first..self.cursor_row());
     }
 
     /// Output that is not the program's: no triggers see it, no request it makes is kept,
@@ -391,7 +394,7 @@ impl Screen {
                 continue;
             }
             let wraps = self.term.grid()[Line(line)][Column(cols - 1)].flags.contains(Flags::WRAPLINE);
-            if !wraps {
+            if !wraps && !self.triggers.skip.iter().any(|r| r.contains(&row)) {
                 self.evaluate_line(line, false);
             }
         }
@@ -792,6 +795,23 @@ mod tests {
         let mut s = Screen::new(40, 5);
         s.set_triggers(vec![trig("gone", "AlertTrigger", "x", false)], TriggerPrefs::default());
         s.feed(b"it is gone\r\n\x1b]1337;it2ssh=a b c d\x07\x1b]1337;SendConductor=v=2\x07");
+        assert_eq!(alerts(&mut s), 1);
+        // it2ssh's remote prints a space before its OSCs (`IS:154`): mid-line, in dispatch,
+        // the banner (which names it2ssh) is still not checked.
+        let mut s = Screen::new(40, 5);
+        s.set_triggers(vec![trig("it2ssh", "AlertTrigger", "x", false)], TriggerPrefs::default());
+        s.feed(b" \x1b]1337;it2ssh=a b c d\x07\x1b]1337;SendConductor=v=2\x07");
+        s.feed(b"next\r\n");
+        assert_eq!(alerts(&mut s), 0, "the in-dispatch banner is not checked");
+        // A mid-line banner: the program's partial line before it is checked, the banner not.
+        let mut s = Screen::new(80, 5);
+        s.set_triggers(vec![trig("exited", "AlertTrigger", "x", false)], TriggerPrefs::default());
+        s.feed(b"it exited");
+        s.append_banner("ssh exited \u{2014} now at A.");
+        s.feed(b"$ \r\n");
+        assert_eq!(alerts(&mut s), 1, "only the program's line matched");
+        // Rows keep their numbers as the screen scrolls; a later line that matches is checked.
+        s.feed(b"1\r\n2\r\n3\r\n4\r\n5\r\nexited\r\n");
         assert_eq!(alerts(&mut s), 1);
     }
 

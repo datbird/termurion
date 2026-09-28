@@ -20,13 +20,24 @@ pub const FUTURE: &str = "Future version of it2ssh detected. Please upgrade Tand
 pub const NO_TOKEN: &str = "bm9uZQ==";
 
 /// The four `it2ssh=` flags a version 3 `SendConductor` hands to the bootstrap. The token is
-/// a secret: never log or show this value.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// a secret: never log or show it (`Debug` gives only its length).
+#[derive(Clone, PartialEq, Eq)]
 pub struct Handshake {
     pub token: String,
     pub unique_id: String,
     pub encoded_ba: String,
     pub ssh_args: String,
+}
+
+impl std::fmt::Debug for Handshake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Handshake")
+            .field("token_len", &self.token.len())
+            .field("unique_id", &self.unique_id)
+            .field("encoded_ba", &self.encoded_ba)
+            .field("ssh_args", &self.ssh_args)
+            .finish()
+    }
 }
 
 /// What a `SendConductor=` sequence does.
@@ -192,6 +203,13 @@ mod tests {
             assert_eq!(line.len(), 80);
         }
         assert!(!lines[lines.len() - 1].is_empty() && lines[lines.len() - 1].len() <= 80);
+    }
+
+    #[test]
+    fn handshake_debug_hides_the_token() {
+        let text = format!("{:?}", h("s3cr3t-token", "1", "QQ==", "aA=="));
+        assert!(!text.contains("s3cr3t"));
+        assert!(text.contains("token_len: 12"));
     }
 
     #[test]
