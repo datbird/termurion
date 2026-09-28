@@ -51,7 +51,7 @@ pub(super) struct WinSlot {
     tab_drop_marker: Option<usize>,
     /// The tab bar and each tab's rect as last drawn (pixels, window coordinates): where a
     /// tab dragged from another window drops (`window_bar_hit`).
-    pub(super) tab_bar_drawn: Option<(Rect, Vec<Rect>)>,
+    pub(super) tab_bar_drawn: Option<(Rect, Vec<Rect>, Vec<crate::tab_drag::Pill>)>,
     /// The pointer is on a side bar's drag handle (the resize pointer shows).
     side_handle_hover: bool,
     /// The tab whose tooltip the pointer is waiting on or showing, and when it settled there.
@@ -371,8 +371,11 @@ impl App {
                     NewWindow::Tabs(tabs) => self.tabs.extend(tabs),
                     NewWindow::Profile(_) | NewWindow::Arrangement(_) | NewWindow::Orphans(_) | NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..) => {}
                 }
-                // Pinned or grouped tabs coming back keep the order's rules.
-                self.settle_tabs();
+                // Pinned or grouped tabs coming back keep the order's rules, and tmux hears
+                // a changed order.
+                if self.settle_tabs() {
+                    self.tmux_reorder();
+                }
                 self.relayout();
                 return Err(e);
             }

@@ -131,23 +131,23 @@ impl App {
     }
 
     /// Each tab's group id, in tab order (None when ungrouped).
-    fn group_order(&self) -> Vec<Option<&str>> {
+    pub(super) fn group_order(&self) -> Vec<Option<&str>> {
         self.tabs.iter().map(|t| t.group.as_ref().map(|g| g.id.as_str()).filter(|g| !g.is_empty())).collect()
     }
 
     /// The indices of the group's members, in tab order (`PT tabsInGroup:`).
-    fn members(&self, group: &str) -> Vec<usize> {
+    pub(super) fn members(&self, group: &str) -> Vec<usize> {
         (0..self.tabs.len()).filter(|&i| self.tabs[i].group.as_ref().is_some_and(|g| g.id == group)).collect()
     }
 
     /// The ids of the tabs at `indices`.
-    fn tab_ids(&self, indices: &[usize]) -> Vec<u64> {
+    pub(super) fn tab_ids(&self, indices: &[usize]) -> Vec<u64> {
         indices.iter().filter_map(|&i| self.tabs.get(i)).map(|t| t.id).collect()
     }
 
     /// After a membership change: the order settles, tmux hears a changed order, and the
     /// window lays out again (`PT finalizeTabGroupMembershipChangeForTab:`).
-    fn group_changed(&mut self) {
+    pub(super) fn group_changed(&mut self) {
         if self.settle_tabs() {
             self.tmux_reorder();
         }
@@ -655,8 +655,13 @@ impl App {
 
     /// New Tab to the Right (Below on a side bar) for the tab at `at`
     /// (`PT newTabToTheRight:`, `PT:14329-14343`): a tab of the default profile just after
-    /// it, joining its group; the order then settles.
+    /// it, joining its group; the order then settles. In a tmux session it first asks what
+    /// kind of tab (`AD newTabAtIndex:didMakeSession:`, `possiblyTmuxValueForWindow:`): a new
+    /// tmux tab opens where tmux places it, and Cancel opens nothing.
     fn new_tab_beside(&mut self, at: usize) {
+        if self.tmux_new(false, true).is_some() {
+            return;
+        }
         let group = self.tabs.get(at).and_then(|t| t.group.as_ref()).map(|g| g.id.clone()).filter(|g| !g.is_empty());
         let before = self.tabs.len();
         self.new_tab(None);

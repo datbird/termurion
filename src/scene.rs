@@ -844,6 +844,10 @@ pub const GROUP_CHEVRON: f32 = 14.0;
 pub const GROUP_NAME_PT: f32 = 13.0;
 /// How far the run's outline sits outside the tabs (`kPSMSquaredGroupOutset`).
 const GROUP_OUTSET: f32 = 1.0;
+/// A collapsed group a dragged tab would join is framed this many points thick, this far
+/// outside its block, in the accent color (`YS:1497-1504`, `controlAccentColor`).
+const JOIN_FRAME: f32 = 2.0;
+const JOIN_FRAME_OUTSET: f32 = 1.0;
 /// Segoe Fluent Icons "ChevronDown": the collapsed chip's chevron, drawn at this size.
 const GROUP_CHEVRON_GLYPH: char = '\u{E70D}';
 const GROUP_CHEVRON_PT: f32 = 8.0;
@@ -1167,7 +1171,7 @@ fn group_runs(frame: &mut Frame, tabs: &[TabLook], bar: &crate::tab_layout::Bar,
     let stroke = scale.round().max(1.0);
     let name_scale = GROUP_NAME_PT * font_scale;
     let name_h = line * name_scale;
-    for ((_, chip), t) in bar.chips.iter().zip(&bar.chip_texts) {
+    for ((id, chip), t) in bar.chips.iter().zip(&bar.chip_texts) {
         let color = tabs.get(t.run.start).and_then(|l| l.group.as_ref()).map_or(GROUP_DEFAULT, |g| g.1);
         let text = contrasting(color);
         // The run's tabs shown, in order.
@@ -1218,13 +1222,12 @@ fn group_runs(frame: &mut Frame, tabs: &[TabLook], bar: &crate::tab_layout::Bar,
             frame.rows.push(TextRow { x, y, spans: vec![span], clip: clip_rect(b, tabs_area), scale: s });
         }
         // The squared outline.
-        for edge in [
-            Rect { h: stroke, ..b },
-            Rect { y: b.y + b.h - stroke, h: stroke, ..b },
-            Rect { w: stroke, ..b },
-            Rect { x: b.x + b.w - stroke, w: stroke, ..b },
-        ] {
-            frame.quads.push(Quad { rect: edge, color: rgba(color, 1.0) });
+        frame_edges(frame, b, stroke, color);
+        // A collapsed group a dragged tab would join: the accent frame around its block.
+        if t.collapsed && union.is_none() && bar.join.as_deref() == Some(id.as_str()) {
+            let out = JOIN_FRAME_OUTSET * scale;
+            let framed = Rect { x: b.x - out, y: b.y - out, w: b.w + 2.0 * out, h: b.h + 2.0 * out };
+            frame_edges(frame, framed, (JOIN_FRAME * scale).round().max(1.0), LIST_SELECTED);
         }
     }
 }
@@ -1261,6 +1264,18 @@ fn tab_graphic(frame: &mut Frame, image: &TabImage, g: Rect, alpha: f32, back: R
             let span = Span { text: letter.clone(), color: back, bold: true, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false };
             frame.rows.push(TextRow { x, y, spans: vec![span], clip, scale: s });
         }
+    }
+}
+
+/// A frame `stroke` pixels thick inside `r`.
+fn frame_edges(frame: &mut Frame, r: Rect, stroke: f32, color: Rgb) {
+    for edge in [
+        Rect { h: stroke, ..r },
+        Rect { y: r.y + r.h - stroke, h: stroke, ..r },
+        Rect { w: stroke, ..r },
+        Rect { x: r.x + r.w - stroke, w: stroke, ..r },
+    ] {
+        frame.quads.push(Quad { rect: edge, color: rgba(color, 1.0) });
     }
 }
 
@@ -2886,7 +2901,7 @@ mod tests {
             TabLook { title: "a title far too long for the side bar".into(), number: 3, ..TabLook::default() },
         ];
         let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() }).collect();
-        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
         let area = Rect { x: 0.0, y: 0.0, w: 150.0, h: 100.0 };
         let bar = tab_layout::build_vertical(&inputs, 150.0, 100.0, 0.0, None, &s, &six);
         let mut f = Frame::default();
@@ -2943,7 +2958,7 @@ mod tests {
         assert_eq!(contrasting(rgb(255, 149, 0)), rgb(0, 0, 0), "luma 0.64");
 
         let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
-        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
         let orange = rgb(255, 149, 0);
         let looks = |collapsed: bool| -> Vec<TabLook> {
             ["a", "b", "c"]
@@ -3007,6 +3022,26 @@ mod tests {
         let chevron = f.rows.iter().find(|r| r.spans.iter().any(|s| s.icon && s.text == GROUP_CHEVRON_GLYPH.to_string())).expect("the chevron");
         assert!(chevron.x > chip.x + chip.w - GROUP_NAME_PAD - GROUP_CHEVRON && chevron.x < chip.x + chip.w - GROUP_NAME_PAD);
         assert!(!f.rows.iter().any(|r| r.spans.iter().any(|s| s.text == "a" || s.text == "b")), "the members are not drawn");
+        // No drag over it: no accent frame. A dragged tab poised to join it: a 2-point frame 1
+        // point outside the block, in the accent color, cut to the bar (`YS:1497-1504`).
+        let accent = |f: &Frame| f.quads.iter().filter(|q| q.color == rgba(LIST_SELECTED, 1.0)).map(|q| q.rect).collect::<Vec<_>>();
+        assert!(accent(&f).is_empty());
+        let joining = tab_layout::Bar { join: Some("g".into()), ..bar.clone() };
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks(true), 2, &joining, area, 1.0, 0.1, 20.0, true, false);
+        let frame = accent(&f);
+        assert_eq!(frame.len(), 4, "{frame:?}");
+        assert!(frame.contains(&Rect { x: chip.x + chip.w - 1.0, y: 0.0, w: 2.0, h: 24.0 }), "the right edge: {frame:?}");
+        assert!(frame.contains(&Rect { x: 0.0, y: 22.0, w: chip.w + 1.0, h: 2.0 }), "the bottom edge: {frame:?}");
+        // Another group's id frames nothing; an expanded group is never a join target.
+        let other = tab_layout::Bar { join: Some("h".into()), ..bar.clone() };
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks(true), 2, &other, area, 1.0, 0.1, 20.0, true, false);
+        assert!(accent(&f).is_empty());
+        let expanded = tab_layout::Bar { join: Some("g".into()), ..tab_layout::build(&inputs(false), 2, 600.0, 0.0, None, &s, &six) };
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks(false), 2, &expanded, area, 1.0, 0.1, 20.0, true, false);
+        assert!(accent(&f).is_empty());
         let vbar = tab_layout::build_vertical(&inputs(true), 150.0, 200.0, 0.0, None, &s, &six);
         let (rects, chips) = tab_bar_vertical(&mut Frame::default(), &looks(true), 2, &vbar, side, 1.0, 0.1, 20.0, true, false);
         let zero = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
@@ -3035,7 +3070,7 @@ mod tests {
             .map(|l| TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: l.dot.is_some() || l.icon.is_some(), processing: l.processing, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
             .collect();
         let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
-        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
         // Tab 0 hovered, tab 1 active; 2 pixels a point, the bar 10 pixels down.
         let bar = tab_layout::build(&inputs, 1, 400.0, 0.0, Some(0), &s, &six);
         let area = Rect { x: 0.0, y: 10.0, w: 800.0, h: 48.0 };
@@ -3110,7 +3145,7 @@ mod tests {
         let s = tab_layout::Settings { prefs: tab_layout::Prefs { stretch: false, scrollable: true, ..base.prefs }, ..base };
         let looks: Vec<TabLook> = (1..=10).map(|i| TabLook { title: format!("tab{i}"), number: i, ..TabLook::default() }).collect();
         let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() }).collect();
-        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
         // 120-point tabs scrolled by 100: tab 5 runs from 500 to 620, past the "+" at 576.
         let bar = tab_layout::build(&inputs, 5, 600.0, 100.0, None, &s, &six);
         assert_eq!(bar.cells[5].2.x, 500.0);
@@ -3137,7 +3172,7 @@ mod tests {
         let s = tab_layout::Settings { prefs: tab_layout::Prefs { scrollable: false, ..base.prefs }, ..base };
         let looks: Vec<TabLook> = (1..=10).map(|i| TabLook { title: format!("tab{i}"), number: i, ..TabLook::default() }).collect();
         let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() }).collect();
-        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
         let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, None, &s, &six);
         let overflow = bar.overflow.expect("tabs overflow");
         let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 24.0 };
@@ -3162,7 +3197,7 @@ mod tests {
         let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
         let looks = vec![TabLook { title: "a".into(), number: 1, ..TabLook::default() }, TabLook { title: "b".into(), number: 2, ..TabLook::default() }];
         let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() }).collect();
-        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
         // Tab 1 hovered and not active: its close button over the bar's color.
         let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, Some(1), &s, &six);
         let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 24.0 };
@@ -3192,7 +3227,7 @@ mod tests {
         let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
         let looks = vec![TabLook { title: "vim".into(), number: 1, pinned: true, ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
         let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: l.pinned, group: None, hidden: false, graphic: false, letter: String::new() }).collect();
-        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
         // Hovered, the pinned tab still has no close button.
         let bar = tab_layout::build(&inputs, 1, 400.0, 0.0, Some(0), &s, &six);
         let cell = bar.cells[0].2;
@@ -3262,7 +3297,7 @@ mod tests {
     fn tab_icon_draws() {
         use crate::tab_layout;
         let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
-        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
         let c = rgb(0xf7, 0x7b, 0x87);
         let pixels = std::sync::Arc::new(vec![9u8; 16]);
         let picture = TabImage::Picture { key: 42, pixels: pixels.clone(), size: (2, 2) };
@@ -3337,7 +3372,7 @@ mod tests {
         let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
         let looks = vec![TabLook { title: "a".into(), number: 1, ..TabLook::default() }, TabLook { title: "b".into(), number: 2, ..TabLook::default() }];
         let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() }).collect();
-        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
         let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, None, &s, &six);
         let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 24.0 };
         let cell = bar.cells[1].2;

@@ -94,6 +94,136 @@ pub fn after_drag(began: bool, r: Release) -> Release {
     }
 }
 
+/// A collapsed group's chip as drawn in a bar (a "pill"), for a tab dropped on it: its rect,
+/// its group, the run of its hidden tabs, and whether another pill is right beside it on
+/// each side (`PSMTabDragAssistant collapsedGroupChipAtIndex:adjacentPillChipIndexInCells:`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pill {
+    pub rect: Rect,
+    pub group: String,
+    pub run: std::ops::Range<usize>,
+    pub left_pill: bool,
+    pub right_pill: bool,
+}
+
+/// The pills among a bar's drawn chips (`chips`: rect, group, run of tabs, collapsed). The
+/// neighbor on a side is a pill when the tab just outside the run there is hidden in a
+/// collapsed group (`hidden`, each tab's flag).
+pub fn pills(chips: &[(Rect, String, std::ops::Range<usize>, bool)], hidden: &[bool]) -> Vec<Pill> {
+    chips
+        .iter()
+        .filter(|c| c.3)
+        .map(|(rect, group, run, _)| Pill {
+            rect: *rect,
+            group: group.clone(),
+            run: run.clone(),
+            left_pill: run.start > 0 && hidden.get(run.start - 1).copied().unwrap_or(false),
+            right_pill: hidden.get(run.end).copied().unwrap_or(false),
+        })
+        .collect()
+}
+
+/// Where a tab dropped on a pill goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OnPill {
+    /// Into the group (`collapsedGroupJoinTargetIdentifier`).
+    Join,
+    /// Between this pill and the one before it: at the start of this run.
+    Before,
+    /// Between this pill and the one after it: at the end of this run.
+    After,
+}
+
+/// The pill's thirds (`PSMTabDragAssistant` chip hover, `:2036-2080`): the middle third joins;
+/// an edge third drops between when another pill is on that side, and otherwise joins too.
+pub fn on_pill(p: &Pill, x: f32, y: f32, vertical: bool) -> OnPill {
+    let (lo, len, along) = if vertical { (p.rect.y, p.rect.h, y) } else { (p.rect.x, p.rect.w, x) };
+    if along < lo + len / 3.0 && p.left_pill {
+        OnPill::Before
+    } else if along >= lo + 2.0 * len / 3.0 && p.right_pill {
+        OnPill::After
+    } else {
+        OnPill::Join
+    }
+}
+
+/// Where a dragged tab drops in a bar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Drop {
+    /// At this slot (`drop_index`'s count).
+    Slot(usize),
+    /// Into this collapsed group.
+    Join(String),
+}
+
+/// A dragged tab over a bar whose tabs are `rects` and whose pills are `pills`: over a pill
+/// it joins that group or drops at the run's edge (`on_pill`); elsewhere it drops at
+/// `drop_index`'s slot.
+pub fn tab_drop(rects: &[Rect], pills: &[Pill], x: f32, y: f32, vertical: bool) -> Drop {
+    match pills.iter().find(|p| p.rect.contains(x, y)) {
+        Some(p) => match on_pill(p, x, y, vertical) {
+            OnPill::Join => Drop::Join(p.group.clone()),
+            OnPill::Before => Drop::Slot(p.run.start),
+            OnPill::After => Drop::Slot(p.run.end),
+        },
+        None => Drop::Slot(drop_index(rects, x, y, vertical)),
+    }
+}
+
+/// `PSMTabDragAssistant groupDropTargetAvoidingOtherGroups:` (`:2951-2990`): a whole group
+/// dragged by its chip never drops inside another group's run. `slot` (`drop_index`'s, over
+/// every tab) strictly inside another group's run moves to that run's start when the pointer
+/// is before the middle of its tabs shown, else past its end. `groups` is each tab's group id,
+/// `dragged` the dragged group, whose own tabs are skipped.
+pub fn group_drop_slot(groups: &[Option<&str>], dragged: &str, rects: &[Rect], slot: usize, x: f32, y: f32, vertical: bool) -> usize {
+    let other = |i: usize| groups.get(i).copied().flatten().filter(|g| *g != dragged);
+    let before = (0..slot.min(groups.len())).rev().find(|&i| groups[i] != Some(dragged));
+    let after = (slot..groups.len()).find(|&i| groups[i] != Some(dragged));
+    let (Some(b), Some(a)) = (before, after) else { return slot };
+    let Some(h) = other(b).filter(|h| other(a) == Some(*h)) else { return slot };
+    let start = (0..=b).rev().take_while(|&i| groups[i] == Some(h) || groups[i] == Some(dragged)).last().unwrap_or(b);
+    let start = (start..=b).find(|&i| groups[i] == Some(h)).unwrap_or(b);
+    let end = (a..groups.len()).take_while(|&i| groups[i] == Some(h) || groups[i] == Some(dragged)).last().unwrap_or(a);
+    let end = (a..=end).rev().find(|&i| groups[i] == Some(h)).unwrap_or(a) + 1;
+    let shown: Vec<&Rect> = (start..end).filter(|&i| groups[i] == Some(h)).filter_map(|i| rects.get(i)).filter(|r| r.w > 0.0 && r.h > 0.0).collect();
+    let (Some(first), Some(last)) = (shown.first(), shown.last()) else { return slot };
+    let (mid, along) = if vertical { ((first.y + last.y + last.h) / 2.0, y) } else { ((first.x + last.x + last.w) / 2.0, x) };
+    if along < mid { start } else { end }
+}
+
+/// `PT reorderGroupTabs:beforeTabViewItem:` (`PT:7725-7760`): the order (old indices) with
+/// the group's tabs taken out and put back together, in their order, just before the first
+/// other tab at or after `slot`, or at the end.
+pub fn group_order(groups: &[Option<&str>], dragged: &str, slot: usize) -> Vec<usize> {
+    let members: Vec<usize> = (0..groups.len()).filter(|&i| groups[i] == Some(dragged)).collect();
+    let anchor = (slot..groups.len()).find(|&i| groups[i] != Some(dragged));
+    let mut order = Vec::with_capacity(groups.len());
+    for i in (0..groups.len()).filter(|&i| groups[i] != Some(dragged)) {
+        if Some(i) == anchor {
+            order.extend(&members);
+        }
+        order.push(i);
+    }
+    if anchor.is_none() {
+        order.extend(&members);
+    }
+    order
+}
+
+/// Where a group dragged by its chip drops (`PSMTabDragAssistant performGroupDropOntoBar`,
+/// `draggedImageEndedAt:operation:`): in its own bar or another window's at the slot;
+/// outside every bar a new window opens only with `allow_new_window`
+/// (`shouldCreateNewWindowOnDrop:`), never for a pinned first member, and only when the
+/// window has another tab (`it_moveTabToNewWindow:` refuses a window's last tab).
+pub fn group_target(own_bar_hit: Option<usize>, other: Option<(u64, usize)>, tabs_in_window: usize, first_pinned: bool, allow_new_window: bool) -> Target {
+    match (own_bar_hit, other) {
+        (Some(slot), _) => Target::OwnBar(slot),
+        (None, Some((window, slot))) => Target::OtherWindow(window, slot),
+        (None, None) if allow_new_window && !first_pinned && tabs_in_window >= 2 => Target::NewWindow,
+        (None, None) => Target::Nowhere,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +289,68 @@ mod tests {
         let column = [r(0.0, 0.0, 150.0, 24.0), r(0.0, 24.0, 150.0, 24.0)];
         assert_eq!(marker(&column, 1, side, true), Some(r(0.0, 23.0, 150.0, 2.0)));
         assert_eq!(marker(&[], 0, bar, false), None);
+    }
+
+    #[test]
+    fn collapsed_drop_joins_like_iterm2() {
+        const N: bool = false;
+        const H: bool = true;
+        // Tabs: a | g1 g2 (collapsed g) | h1 (collapsed h) | b. Chips drawn: g at 100..190,
+        // h at 190..280.
+        let hidden = [N, H, H, H, N];
+        let chips = vec![(r(100.0, 0.0, 90.0, 24.0), "g".to_string(), 1..3, true), (r(190.0, 0.0, 90.0, 24.0), "h".to_string(), 3..4, true), (r(0.0, 0.0, 10.0, 24.0), "x".to_string(), 0..0, false)];
+        let p = pills(&chips, &hidden);
+        assert_eq!(p.len(), 2, "an expanded chip is no pill");
+        assert_eq!((p[0].left_pill, p[0].right_pill), (false, true));
+        assert_eq!((p[1].left_pill, p[1].right_pill), (true, false));
+        // g: its left third joins (a tab is on that side), its right third drops between g
+        // and h, at the end of g's run.
+        assert_eq!(on_pill(&p[0], 105.0, 5.0, false), OnPill::Join);
+        assert_eq!(on_pill(&p[0], 145.0, 5.0, false), OnPill::Join);
+        assert_eq!(on_pill(&p[0], 185.0, 5.0, false), OnPill::After);
+        // h: its left third is between g and h, at the start of h's run.
+        assert_eq!(on_pill(&p[1], 195.0, 5.0, false), OnPill::Before);
+        assert_eq!(on_pill(&p[1], 275.0, 5.0, false), OnPill::Join);
+        let rects = [r(0.0, 0.0, 100.0, 24.0), r(0.0, 0.0, 0.0, 0.0), r(0.0, 0.0, 0.0, 0.0), r(0.0, 0.0, 0.0, 0.0), r(280.0, 0.0, 100.0, 24.0)];
+        assert_eq!(tab_drop(&rects, &p, 145.0, 5.0, false), Drop::Join("g".into()));
+        assert_eq!(tab_drop(&rects, &p, 185.0, 5.0, false), Drop::Slot(3));
+        assert_eq!(tab_drop(&rects, &p, 195.0, 5.0, false), Drop::Slot(3));
+        assert_eq!(tab_drop(&rects, &p, 300.0, 5.0, false), Drop::Slot(4), "off the pills, drop_index");
+        // A side bar splits the pill's height.
+        let side = Pill { rect: r(0.0, 24.0, 150.0, 24.0), group: "g".into(), run: 0..2, left_pill: true, right_pill: true };
+        assert_eq!(on_pill(&side, 5.0, 26.0, true), OnPill::Before);
+        assert_eq!(on_pill(&side, 5.0, 36.0, true), OnPill::Join);
+        assert_eq!(on_pill(&side, 5.0, 47.0, true), OnPill::After);
+    }
+
+    #[test]
+    fn group_drag_reorders_like_iterm2() {
+        let (g, h) = (Some("g"), Some("h"));
+        // a g g b: dragged to the end, to the front, or back where it was.
+        let groups = [None, g, g, None];
+        assert_eq!(group_order(&groups, "g", 4), vec![0, 3, 1, 2]);
+        assert_eq!(group_order(&groups, "g", 0), vec![1, 2, 0, 3]);
+        assert_eq!(group_order(&groups, "g", 1), vec![0, 1, 2, 3], "a slot inside its own run");
+        assert_eq!(group_order(&groups, "g", 3), vec![0, 1, 2, 3]);
+        // Never inside another group: a slot inside h's run goes to the near edge by the
+        // middle of h's tabs (100..300, middle 200).
+        let groups = [g, h, h, None];
+        let rects = [r(0.0, 0.0, 100.0, 24.0), r(100.0, 0.0, 100.0, 24.0), r(200.0, 0.0, 100.0, 24.0), r(300.0, 0.0, 100.0, 24.0)];
+        assert_eq!(group_drop_slot(&groups, "g", &rects, 2, 190.0, 5.0, false), 1);
+        assert_eq!(group_drop_slot(&groups, "g", &rects, 2, 210.0, 5.0, false), 3);
+        assert_eq!(group_drop_slot(&groups, "g", &rects, 3, 310.0, 5.0, false), 3, "after h's run is outside it");
+        assert_eq!(group_drop_slot(&groups, "g", &rects, 1, 90.0, 5.0, false), 1, "before h's run is outside it");
+        assert_eq!(group_order(&groups, "g", 3), vec![1, 2, 0, 3]);
+        // A collapsed run shows no tabs: nothing to split, the slot stays.
+        let none = [r(0.0, 0.0, 100.0, 24.0), r(0.0, 0.0, 0.0, 0.0), r(0.0, 0.0, 0.0, 0.0), r(100.0, 0.0, 100.0, 24.0)];
+        assert_eq!(group_drop_slot(&groups, "g", &none, 2, 90.0, 5.0, false), 2);
+        // Targets: its own bar always, a new window only when allowed, for an unpinned first
+        // member of a window with another tab.
+        assert_eq!(group_target(Some(2), None, 2, false, true), Target::OwnBar(2));
+        assert_eq!(group_target(None, Some((7, 1)), 2, false, true), Target::OtherWindow(7, 1));
+        assert_eq!(group_target(None, None, 3, false, true), Target::NewWindow);
+        assert_eq!(group_target(None, None, 3, true, true), Target::Nowhere, "a pinned group");
+        assert_eq!(group_target(None, None, 3, false, false), Target::Nowhere);
+        assert_eq!(group_target(None, None, 1, false, true), Target::Nowhere, "a window's last tab");
     }
 }

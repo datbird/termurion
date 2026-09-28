@@ -197,6 +197,10 @@ enum Drag {
     /// A left press on a tab (`tab_drag_ui`): the tab's index, where the press was (pixels),
     /// and whether the pointer has moved far enough to drag it.
     Tab { from: usize, start: (f32, f32), began: bool },
+    /// A left press on a group chip (`tab_drag_ui`): the group, where the press was (pixels),
+    /// and whether the pointer has moved far enough to drag the whole group
+    /// (`PSM:3763-3786`).
+    Chip { group: String, start: (f32, f32), began: bool },
     /// A left press on the "+" button, where it was (pixels): moving far enough drags the
     /// window.
     AddButton { start: (f32, f32) },
@@ -615,9 +619,14 @@ pub struct App {
     /// The slot a dragged tab would drop at in this window's bar, while a tab drag is under
     /// way over it (the drop marker).
     tab_drop_marker: Option<usize>,
-    /// The tab bar and each tab's rect as last drawn, pixels, window coordinates (None
-    /// without a bar): where a tab dragged from another window drops (`window_bar_hit`).
-    tab_bar_drawn: Option<(Rect, Vec<Rect>)>,
+    /// The tab bar, each tab's rect and each collapsed group's chip as last drawn, pixels,
+    /// window coordinates (None without a bar): where a tab dragged from another window drops
+    /// (`window_bar_hit`, `window_bar_drop`).
+    tab_bar_drawn: Option<(Rect, Vec<Rect>, Vec<crate::tab_drag::Pill>)>,
+    /// The collapsed group a dragged tab would join if dropped now, and its window: that
+    /// window's bar frames it in the accent color (`PSM collapsedTabGroupDropTargetIdentifier`).
+    /// App-wide: one pointer drags.
+    tab_join: Option<(WindowId, String)>,
     /// A side tab bar's preferred width in points: `LeftTabBarWidth` when the window opened,
     /// then the width its drag handle sets.
     side_bar_preferred: f32,
@@ -1244,6 +1253,7 @@ pub fn run() {
         min_tab_drag,
         tab_drop_marker: None,
         tab_bar_drawn: None,
+        tab_join: None,
         side_bar_preferred,
         side_bar_scroll: 0.0,
         tab_flash: crate::tab_flash::Flash::new(),
@@ -1677,6 +1687,18 @@ impl App {
         tab_position::rects_from_cells(&cells, n, (bar.x, bar.y), self.bar_offset(), self.scale(), self.tab_bar.vertical)
     }
 
+    /// Each collapsed group's chip as drawn, pixels, window coordinates, for a tab dropped on
+    /// it (`tab_drag::pills`): the laid-out chips scrolled and placed as the tabs are.
+    pub(super) fn bar_pills(&self) -> Vec<crate::tab_drag::Pill> {
+        let Some(bar) = self.tab_bar_rect() else { return Vec::new() };
+        let cells: Vec<(usize, Rect)> = self.tab_bar.chips.iter().enumerate().map(|(k, (_, r))| (k, *r)).collect();
+        let rects = tab_position::rects_from_cells(&cells, cells.len(), (bar.x, bar.y), self.bar_offset(), self.scale(), self.tab_bar.vertical);
+        let chips: Vec<(Rect, String, std::ops::Range<usize>, bool)> =
+            self.tab_bar.chips.iter().zip(&self.tab_bar.chip_texts).zip(rects).map(|(((id, _), t), r)| (r, id.clone(), t.run.clone(), t.collapsed)).collect();
+        let hidden: Vec<bool> = self.tabs.iter().map(|t| t.group.as_ref().is_some_and(|g| g.collapsed)).collect();
+        crate::tab_drag::pills(&chips, &hidden)
+    }
+
     /// The group whose chip is under the window point (`x`, `y`) in pixels: on a horizontal
     /// bar the chip `tab_layout::hit` finds, on a side bar a chip as last drawn.
     pub(super) fn bar_chip_at(&self, x: f32, y: f32) -> Option<String> {
@@ -1741,11 +1763,11 @@ impl App {
         let (scale, active, hovered) = (self.scale(), self.active, self.tab_hover.map(|(i, _)| i));
         let renderer = self.gpu.as_mut().map(|g| std::cell::RefCell::new(&mut g.renderer));
         // Points to pixels and back: a text of `pt` points is drawn at `pt * scale` pixels.
-        let measure = |text: &str, pt: f32| match &renderer {
+        let measure = |text: &str, pt: f32, bold: bool| match &renderer {
             Some(r) => {
                 let mut r = r.borrow_mut();
                 let row_scale = pt * scale / r.font_px().max(1.0);
-                r.text_width(text, true, row_scale) / scale
+                r.prose_width(text, bold, row_scale) / scale
             }
             None => text.chars().count() as f32 * pt * 0.5,
         };
@@ -1986,8 +2008,9 @@ impl App {
         if down == Hit::Add && up == Some(Hit::Add) {
             self.add_tab_button();
         }
-        // A plain click on a group chip toggles its collapse (`PSM mouseUp:`, `PT:9731-9734`).
-        if let (Hit::Chip(k), Some(Hit::Chip(j)), 1) = (down, up, clicks) {
+        // A plain click on a group chip toggles its collapse (`PSM mouseUp:`, `PT:9731-9734`);
+        // a chip dragged is no click.
+        if let (Hit::Chip(k), Some(Hit::Chip(j)), 1, false) = (down, up, clicks, began) {
             let group = self.bar_chip_at(x, y);
             if k == j {
                 if let Some(g) = group {
@@ -3494,7 +3517,7 @@ impl App {
                 self.update_side_handle_hover();
             }
             // Its press went (the tab moved away under it): the drag ends with nothing dropped.
-            Drag::Tab { .. } | Drag::AddButton { .. } => self.tab_drop_marker = None,
+            Drag::Tab { .. } | Drag::Chip { .. } | Drag::AddButton { .. } => self.end_tab_drag(),
             Drag::Select { pane } => {
                 let empty = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string()).map_or(true, |s| s.is_empty());
                 if empty {
@@ -3558,7 +3581,7 @@ impl App {
                 let (start_x, start_width) = (*start_x, *start_width);
                 self.side_bar_drag(start_x, start_width, x);
             }
-            Drag::Tab { .. } => self.tab_drag_move(x, y),
+            Drag::Tab { .. } | Drag::Chip { .. } => self.tab_drag_move(x, y),
             Drag::AddButton { start } => {
                 let start = *start;
                 self.add_button_drag(start, x, y);
@@ -3705,6 +3728,10 @@ impl App {
             // A dragged tab follows the pointer along the bar, drawn over the others.
             let dragged = self.dragged_bar(scrolled.as_ref().unwrap_or(&self.tab_bar), &mut looks, area);
             let drawn = dragged.as_ref().or(scrolled.as_ref()).unwrap_or(&self.tab_bar);
+            // A dragged tab poised to join a collapsed group of this window frames it.
+            let join = self.tab_join.as_ref().filter(|(w, _)| Some(*w) == self.current_window()).map(|(_, g)| g.clone());
+            let joining = join.map(|join| tab_layout::Bar { join: Some(join), ..drawn.clone() });
+            let drawn = joining.as_ref().unwrap_or(drawn);
             let (key, overflow_down) = (self.focused && self.app_active, matches!(self.tab_press, Some((tab_layout::Hit::Overflow, _, _, _))));
             if vertical {
                 let (_, chips) = scene::tab_bar_vertical(bar_frame, &looks, self.active, drawn, area, scale, scale / font_px, cell.1, key, overflow_down);
@@ -3720,7 +3747,7 @@ impl App {
             self.tab_hover = None;
             self.tab_tip = None;
         }
-        self.tab_bar_drawn = self.tab_bar_rect().map(|bar| (bar, self.bar_tab_rects()));
+        self.tab_bar_drawn = self.tab_bar_rect().map(|bar| (bar, self.bar_tab_rects(), self.bar_pills()));
         self.draw_drop_marker(bar_frame);
         let area = self.content_area();
         let backgrounds = self.pane_backgrounds();

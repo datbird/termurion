@@ -279,7 +279,7 @@ pub struct Renderer {
     /// The toolbelt font's size in points (`toolbeltFontSize`, 0 meaning 11).
     toolbelt_pt: f32,
     /// Widths of prose words already measured: (text, scale bits) to pixels.
-    widths: std::collections::HashMap<(String, u32), f32>,
+    widths: std::collections::HashMap<(String, u32, bool), f32>,
     /// Widths of runs already measured in the toolbelt font: (text, pixel size bits) to pixels.
     toolbelt_widths: WidthCache,
     family: String,
@@ -383,14 +383,20 @@ impl Renderer {
         if !prose {
             return text.width() as f32 * self.cell.0 * scale;
         }
-        let key = (text.to_string(), scale.to_bits());
+        self.prose_width(text, false, scale)
+    }
+
+    /// A text's shaped width in the prose font, bold or not (remembered per text).
+    pub fn prose_width(&mut self, text: &str, bold: bool, scale: f32) -> f32 {
+        let key = (text.to_string(), scale.to_bits(), bold);
         if let Some(w) = self.widths.get(&key) {
             return *w;
         }
         let mut b = Buffer::new(&mut self.font_system, Metrics::new(self.font_px * scale, self.cell.1 * scale));
         b.set_size(None, None);
         b.set_wrap(Wrap::None);
-        b.set_text(text, &Attrs::new().family(Family::Name(&self.prose_family)), Shaping::Advanced, None);
+        let weight = if bold { Weight::BOLD } else { Weight::NORMAL };
+        b.set_text(text, &Attrs::new().family(Family::Name(&self.prose_family)).weight(weight), Shaping::Advanced, None);
         b.shape_until_scroll(&mut self.font_system, false);
         let w = b.layout_runs().map(|r| r.line_w).fold(0.0, f32::max);
         if self.widths.len() > 200_000 {
