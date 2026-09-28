@@ -330,7 +330,8 @@ pub struct CellInput {
     pub pinned: bool,
     /// The session's icon picture shows (`cachedTitle.inputs.graphic`, `YS:932-941`).
     pub graphic: bool,
-    /// A side bar's row: the icon moves the label instead of reserving room.
+    /// A side bar's row: the close button and the icon move the label instead of reserving
+    /// room, and the label is left-aligned.
     pub vertical: bool,
 }
 
@@ -347,7 +348,8 @@ pub struct CellLayout {
     /// The label's box, the tab's full height: the drawer places the text line(s) in it.
     pub label: Rect,
     /// The label is too long to center: it is drawn left-aligned and truncated. `build` also
-    /// sets it for a pinned tab's single character, which iTerm2 draws left-aligned.
+    /// sets it for a pinned tab's single character, which iTerm2 draws left-aligned, and
+    /// `cell` for every side bar row, whose labels iTerm2 aligns left (`PSMCachedTitle.m:213-217`).
     pub truncate: bool,
     /// Room on the left kept for a close button that shows only on hover, or for the icon
     /// picture.
@@ -369,14 +371,15 @@ pub fn cell(input: &CellInput) -> CellLayout {
         label_x += CLOSE_SIZE + CELL_PADDING;
     } else if input.close_buttons {
         close = Some(Rect { x: x + CELL_MARGIN, y: centered(CLOSE_SIZE), w: CLOSE_SIZE, h: CLOSE_SIZE });
-        if input.close_always {
+        close_alpha = if input.close_always || input.hovered { 1.0 } else { 0.0 };
+        if input.close_always || input.vertical {
+            // `YS:889-891`: the label starts after the button's room, on a side bar even when
+            // the button shows only on hover.
             label_x += CLOSE_SIZE + CELL_PADDING;
-            close_alpha = 1.0;
         } else {
-            // Suppressed: the label is centered as though this room were free, unless it would
-            // run into it.
+            // `YS:880-888`, suppressed on a horizontal bar: the label is centered as though
+            // this room were free, unless it would run into it.
             reserved = CLOSE_SIZE + CELL_PADDING;
-            close_alpha = if input.hovered { 1.0 } else { 0.0 };
         }
     }
     // `YS:932-941`: the icon picture 6 points in, centered, 16 square; a horizontal label keeps
@@ -413,10 +416,12 @@ pub fn cell(input: &CellInput) -> CellLayout {
         if let Some(cw) = input.counter {
             lw -= cw + CELL_PADDING;
         }
-        if (lw - input.title_width) / 2.0 < reserved {
+        // `YS:1146-1152`: only a horizontal label gives way to the reserved room. A side
+        // bar's label is always drawn left-aligned (`PSMCachedTitle.m:213-217`).
+        if !input.vertical && (lw - input.title_width) / 2.0 < reserved {
             (lw - reserved, true)
         } else {
-            (lw, false)
+            (lw, input.vertical)
         }
     };
     // `YS:951-979`: iTerm2 asks with the icon's rect still zero, so only its padding counts.
@@ -1001,7 +1006,7 @@ fn place(bar: &mut Bar, i: usize, rect: Rect, t: &TabInput, hovered: bool, s: &S
     // `YS:1044`: no subtitle on a pinned tab.
     let (subtitle, sub_w, sub_label, sub_truncate) = if !t.pinned && shows_subtitle(rect.h, &t.subtitle) {
         let whole = measure(&t.subtitle, sub_font, false);
-        let cut = (full_w - whole) / 2.0 < layout.reserved;
+        let cut = bar.vertical || (full_w - whole) / 2.0 < layout.reserved;
         let label = if cut {
             Rect { x: full_x + layout.reserved, y: 0.0, w: (full_w - layout.reserved).max(0.0), h: rect.h }
         } else {
@@ -1654,6 +1659,19 @@ mod tests {
         let long = cell(&CellInput { title_width: 110.0, ..tab() });
         assert!(long.truncate);
         assert_eq!(long.label, Rect { x: 26.0, y: 0.0, w: 103.0, h: 24.0 });
+
+        // A side bar row (`YS:889-891`, `:1146-1152`): the hover-only close button moves the
+        // label past its room instead of reserving it, the label is left-aligned, and a long
+        // title never shifts or narrows further: 175 - 26 - 4 - 42 = 103.
+        for title_width in [40.0, 110.0, 300.0] {
+            let side = cell(&CellInput { vertical: true, title_width, ..tab() });
+            assert_eq!((side.reserved, side.truncate, side.close_alpha), (0.0, true, 0.0), "{title_width}");
+            assert_eq!(side.label, Rect { x: 26.0, y: 0.0, w: 103.0, h: 24.0 }, "{title_width}");
+        }
+        // With the icon picture the label still starts at 26, not 46.
+        let side = cell(&CellInput { vertical: true, graphic: true, title_width: 300.0, ..tab() });
+        assert_eq!(side.label.x, 26.0);
+        assert_eq!(cell(&CellInput { vertical: true, hovered: true, ..tab() }).close_alpha, 1.0);
 
         // The icon sits 4 left of the counter, one point above center; the label loses it.
         let icon = cell(&CellInput { icon: true, ..tab() });

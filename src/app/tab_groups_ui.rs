@@ -754,9 +754,23 @@ fn icon_dir() -> PathBuf {
     std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem")
 }
 
-/// A user file's bytes; None when it is absent, unreadable or on the network (never probed).
+/// A user file's bytes; None when it is absent, unreadable, larger than
+/// `tab_icons::MAX_FILE_BYTES`, or on the network or reached through a link to it (never
+/// probed, `tab_icons::readable_path`).
 fn read_user_file(path: &Path) -> Option<Vec<u8>> {
-    crate::tab_icons::readable_path(path).then(|| std::fs::read(path).ok()).flatten()
+    use std::io::Read;
+    use crate::tab_icons::MAX_FILE_BYTES;
+    if !crate::tab_icons::readable_path(path, &crate::scripts::read_link) {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() > MAX_FILE_BYTES {
+        return None;
+    }
+    // The file may grow after the size was read: never read past the cap.
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= MAX_FILE_BYTES).then_some(bytes)
 }
 
 /// The icon maps with the user's `graphic_icons.json` and `graphic_colors.json` merged over
@@ -780,11 +794,12 @@ fn picture(id: &ImageId, pixels: Vec<u8>, size: (u32, u32)) -> scene::TabImage {
     scene::TabImage::Picture { key, pixels: std::sync::Arc::new(pixels), size }
 }
 
-/// An image file decoded to RGBA, shrunk to `ICON_FILE_PX` square when larger; None when it
-/// cannot be read or is on the network.
+/// An image file decoded to RGBA within `tab_icons::decode_limited`'s bounds, shrunk to
+/// `ICON_FILE_PX` square when larger; None when it cannot be read (`read_user_file`) or
+/// decoded.
 fn decode_icon_file(path: &Path) -> Option<(Vec<u8>, (u32, u32))> {
     let bytes = read_user_file(path)?;
-    let mut img = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    let mut img = crate::tab_icons::decode_limited(&bytes)?;
     if img.width() > ICON_FILE_PX || img.height() > ICON_FILE_PX {
         img = image::imageops::resize(&img, ICON_FILE_PX, ICON_FILE_PX, image::imageops::FilterType::Triangle);
     }
@@ -956,6 +971,17 @@ mod tests {
         assert_eq!(decode_icon_file(&dir.join("text.png")), None);
         assert_eq!(decode_icon_file(Path::new(r"\\server\share\i.png")), None);
         assert_eq!(read_user_file(Path::new(r"\\?\UNC\server\share\graphic_icons.json")), None);
+        assert_eq!(read_user_file(Path::new(r"\/server/share/graphic_icons.json")), None);
+        // A file past the size cap is not read; one at the cap is.
+        let at_cap = dir.join("cap.bin");
+        std::fs::write(&at_cap, vec![0u8; crate::tab_icons::MAX_FILE_BYTES as usize]).unwrap();
+        assert_eq!(read_user_file(&at_cap).map(|b| b.len() as u64), Some(crate::tab_icons::MAX_FILE_BYTES));
+        std::fs::write(&at_cap, vec![0u8; crate::tab_icons::MAX_FILE_BYTES as usize + 1]).unwrap();
+        assert_eq!(read_user_file(&at_cap), None);
+        // A picture wider than the decode limit draws nothing.
+        let wide = dir.join("wide.png");
+        image::RgbaImage::new(crate::tab_icons::MAX_DECODE_SIDE + 1, 1).save(&wide).unwrap();
+        assert_eq!(decode_icon_file(&wide), None);
         // Tinted and file pictures are keyed apart from inline and background images.
         let key = |id: &ImageId| match picture(id, vec![0; 4], (1, 1)) {
             scene::TabImage::Picture { key, .. } => key,

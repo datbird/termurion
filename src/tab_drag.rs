@@ -72,14 +72,15 @@ pub enum Target {
 /// pointer is on the tab's own bar, `other` another window's bar and slot there. The only tab
 /// of a window never drops into its own bar (its window would disappear); another window's
 /// bar always accepts; outside every bar a new window opens only with
-/// `AllowDragOfTabIntoNewWindow` (`allow_new_window`). A solitary tab torn off opens a new
-/// window too (13e moves the window instead under Minimal and Compact).
-pub fn target(own_bar_hit: Option<usize>, other: Option<(u64, usize)>, tabs_in_window: usize, allow_new_window: bool) -> Target {
+/// `AllowDragOfTabIntoNewWindow` (`allow_new_window`) and never for a pinned tab
+/// (`PSMTabDragAssistant shouldCreateNewWindowOnDrop:`, `:1153-1156`). A solitary tab torn
+/// off opens a new window too (13e moves the window instead under Minimal and Compact).
+pub fn target(own_bar_hit: Option<usize>, other: Option<(u64, usize)>, tabs_in_window: usize, pinned: bool, allow_new_window: bool) -> Target {
     match (own_bar_hit, other) {
         (Some(_), _) if tabs_in_window < 2 => Target::Nowhere,
         (Some(slot), _) => Target::OwnBar(slot),
         (None, Some((window, slot))) => Target::OtherWindow(window, slot),
-        (None, None) if allow_new_window => Target::NewWindow,
+        (None, None) if allow_new_window && !pinned => Target::NewWindow,
         (None, None) => Target::Nowhere,
     }
 }
@@ -108,8 +109,13 @@ pub struct Pill {
 
 /// The pills among a bar's drawn chips (`chips`: rect, group, run of tabs, collapsed). The
 /// neighbor on a side is a pill when the tab just outside the run there is hidden in a
-/// collapsed group (`hidden`, each tab's flag).
-pub fn pills(chips: &[(Rect, String, std::ops::Range<usize>, bool)], hidden: &[bool]) -> Vec<Pill> {
+/// collapsed group (`hidden`, each tab's flag). The tab being dragged (`dragged`) is a gap,
+/// not a neighbor: the look goes past it (`collapsedGroupChipAtIndex:adjacentPillChipIndexInCells:`
+/// skips placeholder cells, `PSMTabDragAssistant:2872-2876`).
+pub fn pills(chips: &[(Rect, String, std::ops::Range<usize>, bool)], hidden: &[bool], dragged: Option<usize>) -> Vec<Pill> {
+    let is_hidden = |i: usize| hidden.get(i).copied().unwrap_or(false);
+    let before = |start: usize| start.checked_sub(1).and_then(|i| if Some(i) == dragged { i.checked_sub(1) } else { Some(i) });
+    let after = |end: usize| if Some(end) == dragged { end + 1 } else { end };
     chips
         .iter()
         .filter(|c| c.3)
@@ -117,10 +123,25 @@ pub fn pills(chips: &[(Rect, String, std::ops::Range<usize>, bool)], hidden: &[b
             rect: *rect,
             group: group.clone(),
             run: run.clone(),
-            left_pill: run.start > 0 && hidden.get(run.start - 1).copied().unwrap_or(false),
-            right_pill: hidden.get(run.end).copied().unwrap_or(false),
+            left_pill: before(run.start).is_some_and(is_hidden),
+            right_pill: is_hidden(after(run.end)),
         })
         .collect()
+}
+
+/// `PSM keepCollapsedAfterInBarDropOf:` (`PSMTabBarControl.m:1177-1210`): after a tab
+/// (`dropped`) lands in a group, the tab to select instead of it so a collapsed group stays
+/// collapsed, or None to select the dropped tab. Only a tab that lands hidden
+/// (`dropped_hidden`) and was not its window's selected tab before the press (`before_press`,
+/// recorded at the press before the press selects, `PSMTabBarControl.m:3683-3703`) keeps it
+/// collapsed; `restore` is the tab to select then (in its own window the one selected before
+/// the press, in another window that window's own selection), and it must still be there and
+/// shown (`shown`).
+pub fn keep_collapsed(dropped: u64, dropped_hidden: bool, before_press: Option<u64>, restore: Option<u64>, shown: &dyn Fn(u64) -> bool) -> Option<u64> {
+    if !dropped_hidden || before_press.is_none_or(|b| b == dropped) {
+        return None;
+    }
+    restore.filter(|&r| r != dropped && shown(r))
 }
 
 /// Where a tab dropped on a pill goes.
@@ -241,14 +262,18 @@ mod tests {
 
     #[test]
     fn drop_target_follows_iterm2() {
-        assert_eq!(target(Some(2), None, 3, true), Target::OwnBar(2));
+        assert_eq!(target(Some(2), None, 3, false, true), Target::OwnBar(2));
         // The only tab never drops into its own bar (`PT:7665-7668`).
-        assert_eq!(target(Some(0), None, 1, true), Target::Nowhere);
-        assert_eq!(target(None, Some((7, 1)), 3, true), Target::OtherWindow(7, 1));
-        assert_eq!(target(None, None, 3, true), Target::NewWindow);
-        assert_eq!(target(None, None, 3, false), Target::Nowhere);
+        assert_eq!(target(Some(0), None, 1, false, true), Target::Nowhere);
+        assert_eq!(target(None, Some((7, 1)), 3, false, true), Target::OtherWindow(7, 1));
+        assert_eq!(target(None, None, 3, false, true), Target::NewWindow);
+        assert_eq!(target(None, None, 3, false, false), Target::Nowhere);
         // A solitary tab torn off moves to a new window.
-        assert_eq!(target(None, None, 1, true), Target::NewWindow);
+        assert_eq!(target(None, None, 1, false, true), Target::NewWindow);
+        // A pinned tab never tears off (`shouldCreateNewWindowOnDrop:`), but moves between bars.
+        assert_eq!(target(None, None, 3, true, true), Target::Nowhere);
+        assert_eq!(target(None, Some((7, 0)), 3, true, true), Target::OtherWindow(7, 0));
+        assert_eq!(target(Some(1), None, 3, true, true), Target::OwnBar(1));
     }
 
     #[test]
@@ -299,7 +324,7 @@ mod tests {
         // h at 190..280.
         let hidden = [N, H, H, H, N];
         let chips = vec![(r(100.0, 0.0, 90.0, 24.0), "g".to_string(), 1..3, true), (r(190.0, 0.0, 90.0, 24.0), "h".to_string(), 3..4, true), (r(0.0, 0.0, 10.0, 24.0), "x".to_string(), 0..0, false)];
-        let p = pills(&chips, &hidden);
+        let p = pills(&chips, &hidden, None);
         assert_eq!(p.len(), 2, "an expanded chip is no pill");
         assert_eq!((p[0].left_pill, p[0].right_pill), (false, true));
         assert_eq!((p[1].left_pill, p[1].right_pill), (true, false));
@@ -321,6 +346,41 @@ mod tests {
         assert_eq!(on_pill(&side, 5.0, 26.0, true), OnPill::Before);
         assert_eq!(on_pill(&side, 5.0, 36.0, true), OnPill::Join);
         assert_eq!(on_pill(&side, 5.0, 47.0, true), OnPill::After);
+        // The dragged tab between two pills is a gap: g's right and h's left neighbor are
+        // still pills (a | g1 g2 | dragged | h1 | b).
+        let hidden = [N, H, H, N, H, N];
+        let chips = vec![(r(100.0, 0.0, 90.0, 24.0), "g".to_string(), 1..3, true), (r(290.0, 0.0, 90.0, 24.0), "h".to_string(), 4..5, true)];
+        let p = pills(&chips, &hidden, Some(3));
+        assert_eq!((p[0].right_pill, p[1].left_pill), (true, true));
+        let p = pills(&chips, &hidden, None);
+        assert_eq!((p[0].right_pill, p[1].left_pill), (false, false), "a tab shown between");
+        // The dragged tab first in the bar leaves nothing before a pill after it.
+        let p = pills(&[(r(0.0, 0.0, 90.0, 24.0), "g".to_string(), 1..2, true)], &[N, H], Some(0));
+        assert!(!p[0].left_pill);
+    }
+
+    #[test]
+    fn background_drop_keeps_group_collapsed() {
+        // The press path: the selected tab is recorded, then the press selects the dragged
+        // tab (with SelectsTabsOnMouseDown on, the default), then the drop asks.
+        let (selected, dragged) = (10u64, 20u64);
+        let before_press = Some(selected);
+        let selected_now = if crate::tab_layout::press_selects(true, false, 1) { dragged } else { selected };
+        assert_eq!(selected_now, dragged, "the press selected the dragged tab");
+        let shown = |id: u64| id != 30;
+        // A background tab that lands hidden: the tab selected before the press comes back,
+        // so the group stays collapsed.
+        assert_eq!(keep_collapsed(dragged, true, before_press, before_press, &shown), Some(selected));
+        // The dragged tab was the selected one: select it (the group expands).
+        assert_eq!(keep_collapsed(dragged, true, Some(dragged), Some(dragged), &shown), None);
+        // It did not land hidden (an expanded group): select it.
+        assert_eq!(keep_collapsed(dragged, false, before_press, before_press, &shown), None);
+        // Nothing valid to restore: select the dropped tab.
+        assert_eq!(keep_collapsed(dragged, true, before_press, Some(30), &shown), None, "hidden");
+        assert_eq!(keep_collapsed(dragged, true, before_press, None, &shown), None, "gone");
+        assert_eq!(keep_collapsed(dragged, true, None, Some(selected), &shown), None, "no press recorded");
+        // Another window: its own selection before the drop is restored.
+        assert_eq!(keep_collapsed(dragged, true, before_press, Some(40), &shown), Some(40));
     }
 
     #[test]

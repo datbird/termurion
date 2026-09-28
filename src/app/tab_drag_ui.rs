@@ -25,7 +25,9 @@ impl App {
         self.tab_drop_marker = None;
         match hit {
             tab_layout::Hit::Tab(from) if self.layout_allowed_quiet(LayoutOp::ReorderTab) => {
-                self.drag = Drag::Tab { from, start, began: false };
+                // Called before the press selects the tab: this is the selection before it.
+                let before = self.tabs.get(self.active).map(|t| t.id);
+                self.drag = Drag::Tab { from, start, began: false, before };
             }
             tab_layout::Hit::Chip(_) => {
                 if let Some(group) = self.bar_chip_at(start.0, start.1) {
@@ -72,7 +74,7 @@ impl App {
                 self.tab_drop_marker = self.own_bar_group_slot(&group, x, y);
                 None
             }
-            _ => match self.own_bar_drop(x, y) {
+            Drag::Tab { from, .. } => match self.own_bar_drop(x, y, *from) {
                 Some(Drop::Slot(slot)) => {
                     self.tab_drop_marker = Some(slot);
                     None
@@ -89,6 +91,7 @@ impl App {
                     }
                 }
             },
+            _ => None,
         };
         self.set_tab_join(join);
         self.redraw();
@@ -101,7 +104,7 @@ impl App {
         let drag = std::mem::replace(&mut self.drag, Drag::None);
         self.end_tab_drag();
         match drag {
-            Drag::Tab { from, began: true, .. } => self.drop_tab(from, event_loop),
+            Drag::Tab { from, began: true, before, .. } => self.drop_tab(from, before, event_loop),
             Drag::Chip { group, began: true, .. } => self.drop_group(&group, event_loop),
             _ => {}
         }
@@ -110,13 +113,14 @@ impl App {
 
     /// A dragged tab's release: in its own bar it moves, or joins the collapsed group whose
     /// chip is under it; in another window's bar it moves there (joining a collapsed group
-    /// there the same way); outside every bar it tears off.
-    fn drop_tab(&mut self, from: usize, event_loop: &ActiveEventLoop) {
+    /// there the same way); outside every bar it tears off, unless it is pinned. `before` is
+    /// this window's selected tab before the press.
+    fn drop_tab(&mut self, from: usize, before: Option<u64>, event_loop: &ActiveEventLoop) {
         if from >= self.tabs.len() {
             return;
         }
         let (x, y) = self.cursor;
-        let own = self.own_bar_drop(x, y);
+        let own = self.own_bar_drop(x, y, from);
         let screen = cursor_screen();
         let other = if own.is_none() { screen.and_then(|p| self.window_bar_drop(p)) } else { None };
         // A join has no slot of its own; the target rules only need where the pointer is.
@@ -126,9 +130,9 @@ impl App {
         };
         let own_slot = own.as_ref().map(slot_of);
         let other_slot = other.as_ref().map(|(k, d)| (*k, slot_of(d)));
-        match tab_drag::target(own_slot, other_slot, self.tabs.len(), self.globals.bool("AllowDragOfTabIntoNewWindow")) {
+        match tab_drag::target(own_slot, other_slot, self.tabs.len(), self.tabs[from].pinned, self.globals.bool("AllowDragOfTabIntoNewWindow")) {
             Target::OwnBar(slot) => match own {
-                Some(Drop::Join(group)) => self.join_in_own_bar(from, group),
+                Some(Drop::Join(group)) => self.join_in_own_bar(from, group, before),
                 _ => self.drop_in_own_bar(from, slot),
             },
             Target::OtherWindow(window, slot) => {
@@ -136,7 +140,7 @@ impl App {
                     Some((_, Drop::Join(group))) => Some(group),
                     _ => None,
                 };
-                self.drop_in_window(from, window, slot, join);
+                self.drop_in_window(from, window, slot, join, before);
             }
             Target::NewWindow => {
                 if let Some(p) = screen {
@@ -239,11 +243,12 @@ impl App {
         self.redraw();
     }
 
-    /// Where a tab dropped at the window point (`x`, `y`) goes in this window's tab bar: a
-    /// slot, or the collapsed group whose chip is under it; None off the bar.
-    fn own_bar_drop(&self, x: f32, y: f32) -> Option<Drop> {
+    /// Where the tab at `from`, dropped at the window point (`x`, `y`), goes in this window's
+    /// tab bar: a slot, or the collapsed group whose chip is under it (the dragged tab is a
+    /// gap between pills); None off the bar.
+    fn own_bar_drop(&self, x: f32, y: f32, from: usize) -> Option<Drop> {
         self.tab_bar_rect().filter(|b| b.contains(x, y))?;
-        Some(tab_drag::tab_drop(&self.bar_tab_rects(), &self.bar_pills(), x, y, tab_position::vertical(self.tab_position())))
+        Some(tab_drag::tab_drop(&self.bar_tab_rects(), &self.bar_pills(Some(from)), x, y, tab_position::vertical(self.tab_position())))
     }
 
     /// The slot the group `group` dragged by its chip drops at under the window point
@@ -258,15 +263,27 @@ impl App {
 
     /// A tab dropped on a collapsed group's chip in its own bar joins that group where the tab
     /// is (the drop gap stays at the dragged tab's origin, `PSMTabDragAssistant:2045-2050`);
-    /// the order then settles, which brings it next to the group's other tabs. The selected
-    /// tab stays selected, so a background tab leaves the group collapsed and the selected
-    /// tab expands it (`PSM keepCollapsedAfterInBarDropOf:`).
-    fn join_in_own_bar(&mut self, from: usize, group: String) {
-        if self.tabs.get(from).is_none_or(|t| t.group.as_ref().is_some_and(|g| g.id == group)) {
-            return;
-        }
+    /// the order then settles, which brings it next to the group's other tabs. A tab that
+    /// was not selected before the press (`before`, the press itself selected it) gives the
+    /// selection back to that tab, so the group stays collapsed; the tab that was selected
+    /// stays selected and expands it (`tab_drag::keep_collapsed`).
+    fn join_in_own_bar(&mut self, from: usize, group: String, before: Option<u64>) {
+        let Some(dropped) = self.tabs.get(from).filter(|t| t.group.as_ref().is_none_or(|g| g.id != group)).map(|t| t.id) else { return };
         self.set_tab_group(from, Some(group));
+        if let Some(i) = self.kept_collapsed(dropped, before, before) {
+            self.select_tab(i);
+        }
         self.group_changed();
+    }
+
+    /// `tab_drag::keep_collapsed` for the tab `dropped` just joined to a group in this
+    /// window: the index of the tab to select instead of it, if any.
+    fn kept_collapsed(&self, dropped: u64, before: Option<u64>, restore: Option<u64>) -> Option<usize> {
+        let hidden_at = |i: usize| self.tabs[i].group.as_ref().is_some_and(|g| g.collapsed);
+        let index = |id: u64| self.tabs.iter().position(|t| t.id == id);
+        let dropped_hidden = index(dropped).is_some_and(hidden_at);
+        let shown = |id: u64| index(id).is_some_and(|i| !hidden_at(i));
+        tab_drag::keep_collapsed(dropped, dropped_hidden, before, restore, &shown).and_then(index)
     }
 
     /// A drop in the tab's own bar at `slot`: it moves there (`slot` counts the tab itself),
@@ -322,12 +339,13 @@ impl App {
     /// this window (which closes when it was its last tab), goes into that one kept in its
     /// zone, takes its group there, and is selected in the window, which comes to the front
     /// (`PT didDonateTab:`). Dropped on a collapsed group's chip (`join`) it joins that group
-    /// as its first tab; a tab that was not its window's selected tab then leaves the group
-    /// collapsed and the window's selection as it was (`PSM keepCollapsedAfterInBarDropOf:`).
+    /// as its first tab; a tab that was not its window's selected tab before the press
+    /// (`before`) then leaves the group collapsed and the window's selection as it was
+    /// (`tab_drag::keep_collapsed`).
     /// A tab holding a loaded recording never moves, and a window under Lock Layout takes no
     /// tab. A tmux tab moves whole; its session hears which tmux windows share each Tandem
     /// window (`saveAffinities`), as the API's ReorderTabs does.
-    fn drop_in_window(&mut self, from: usize, window: u64, slot: usize, join: Option<String>) {
+    fn drop_in_window(&mut self, from: usize, window: u64, slot: usize, join: Option<String>, before: Option<u64>) {
         if self.tabs.get(from).is_none_or(|t| self.holds_recording(t)) {
             return;
         }
@@ -335,7 +353,6 @@ impl App {
         if self.windows.parked().any(|(k, s)| *k == window && s.locks().forbids(LayoutOp::AddTab)) {
             return;
         }
-        let was_selected = from == self.active;
         let moving = self.take_tab(from);
         let gateway = self.tmux_of(moving.focused).map(|(gw, _, _)| gw);
         if self.tabs.is_empty() {
@@ -348,20 +365,23 @@ impl App {
         }
         // `dest` is a terminal window, so the tab always lands there.
         self.enter(dest);
+        let dest_selected = self.tabs.get(self.active).map(|t| t.id);
         let join = join.and_then(|g| self.members(&g).first().map(|&at| (g, at)));
         let slot = join.as_ref().map_or(slot, |(_, at)| *at);
         self.tabs.push(moving);
         let id = self.place_dropped_tab(self.tabs.len() - 1, slot);
-        let mut keep_selection = false;
+        let mut kept = None;
         if let Some((group, _)) = join {
             if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
                 self.set_tab_group(i, Some(group));
-                self.settle_tabs();
             }
-            let hidden = self.tabs.iter().find(|t| t.id == id).and_then(|t| t.group.as_ref()).is_some_and(|g| g.collapsed);
-            keep_selection = hidden && !was_selected;
+            kept = self.kept_collapsed(id, before, dest_selected);
+            if let Some(i) = kept {
+                self.active = i;
+            }
+            self.settle_tabs();
         }
-        if let (false, Some(i)) = (keep_selection, self.tabs.iter().position(|t| t.id == id)) {
+        if let (None, Some(i)) = (kept, self.tabs.iter().position(|t| t.id == id)) {
             self.select_tab(i);
         }
         self.tmux_reorder();
@@ -529,7 +549,8 @@ impl App {
 
     /// A group dropped outside every tab bar (`PT tearOffTabGroup:atScreenPoint:`,
     /// `PT:7882-7926`): its tabs open together in a new window whose top-left corner is the
-    /// drop point `screen`, keeping the group; this window closes when it has no tab left. A
+    /// drop point `screen`, keeping the group, with its last tab selected (each tab inserted
+    /// is selected in turn, `PT:7898-7909`); this window closes when it has no tab left. A
     /// failed open puts the tabs back.
     fn tear_off_group(&mut self, group: &str, screen: (i32, i32), event_loop: &ActiveEventLoop) {
         let Some(source) = self.current_window() else { return };
@@ -548,8 +569,9 @@ impl App {
             self.relayout();
             return;
         };
+        let last = moving.last().map(|t| t.id);
         self.tabs.extend(moving);
-        self.active = 0;
+        self.active = last.and_then(|id| self.tabs.iter().position(|t| t.id == id)).unwrap_or(0);
         self.settle_tabs();
         self.relayout();
         self.redraw();
@@ -568,7 +590,7 @@ impl App {
     /// None while no drag is under way. The move stays inside the tabs' area.
     pub(super) fn dragged_bar(&self, bar: &tab_layout::Bar, looks: &mut [scene::TabLook], area: Rect) -> Option<tab_layout::Bar> {
         let (moving, start, chip): (Vec<usize>, (f32, f32), Option<usize>) = match &self.drag {
-            Drag::Tab { from, start, began: true } => (vec![*from], *start, None),
+            Drag::Tab { from, start, began: true, .. } => (vec![*from], *start, None),
             Drag::Chip { group, start, began: true } => {
                 let k = bar.chips.iter().position(|(id, _)| id == group)?;
                 (bar.chip_texts.get(k)?.run.clone().collect(), *start, Some(k))

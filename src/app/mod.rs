@@ -195,8 +195,10 @@ enum Drag {
     /// (points).
     SideBar { start_x: f32, start_width: f32 },
     /// A left press on a tab (`tab_drag_ui`): the tab's index, where the press was (pixels),
-    /// and whether the pointer has moved far enough to drag it.
-    Tab { from: usize, start: (f32, f32), began: bool },
+    /// whether the pointer has moved far enough to drag it, and the window's selected tab
+    /// before the press selected this one (`preDragSelectedTabViewItem`, recorded in
+    /// `PSMTabBarControl mouseDown:` before `tabClick:`, `PSMTabBarControl.m:3683-3703`).
+    Tab { from: usize, start: (f32, f32), began: bool, before: Option<u64> },
     /// A left press on a group chip (`tab_drag_ui`): the group, where the press was (pixels),
     /// and whether the pointer has moved far enough to drag the whole group
     /// (`PSM:3763-3786`).
@@ -1689,14 +1691,14 @@ impl App {
 
     /// Each collapsed group's chip as drawn, pixels, window coordinates, for a tab dropped on
     /// it (`tab_drag::pills`): the laid-out chips scrolled and placed as the tabs are.
-    pub(super) fn bar_pills(&self) -> Vec<crate::tab_drag::Pill> {
+    pub(super) fn bar_pills(&self, dragged: Option<usize>) -> Vec<crate::tab_drag::Pill> {
         let Some(bar) = self.tab_bar_rect() else { return Vec::new() };
         let cells: Vec<(usize, Rect)> = self.tab_bar.chips.iter().enumerate().map(|(k, (_, r))| (k, *r)).collect();
         let rects = tab_position::rects_from_cells(&cells, cells.len(), (bar.x, bar.y), self.bar_offset(), self.scale(), self.tab_bar.vertical);
         let chips: Vec<(Rect, String, std::ops::Range<usize>, bool)> =
             self.tab_bar.chips.iter().zip(&self.tab_bar.chip_texts).zip(rects).map(|(((id, _), t), r)| (r, id.clone(), t.run.clone(), t.collapsed)).collect();
         let hidden: Vec<bool> = self.tabs.iter().map(|t| t.group.as_ref().is_some_and(|g| g.collapsed)).collect();
-        crate::tab_drag::pills(&chips, &hidden)
+        crate::tab_drag::pills(&chips, &hidden, dragged)
     }
 
     /// The group whose chip is under the window point (`x`, `y`) in pixels: on a horizontal
@@ -3747,7 +3749,7 @@ impl App {
             self.tab_hover = None;
             self.tab_tip = None;
         }
-        self.tab_bar_drawn = self.tab_bar_rect().map(|bar| (bar, self.bar_tab_rects(), self.bar_pills()));
+        self.tab_bar_drawn = self.tab_bar_rect().map(|bar| (bar, self.bar_tab_rects(), self.bar_pills(None)));
         self.draw_drop_marker(bar_frame);
         let area = self.content_area();
         let backgrounds = self.pane_backgrounds();

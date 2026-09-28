@@ -421,9 +421,34 @@ pub fn resolve(maps: &Maps, setting: i64, custom_path: &str, chain: &[Vec<String
     }
 }
 
-/// Whether a path is read for an icon: never a network path (`\\host`, `//host`, `\\?\UNC`).
-pub fn readable_path(path: &Path) -> bool {
-    !crate::scripts::is_network_path(&path.to_string_lossy())
+/// Whether a path is read for an icon or a map: never a network path, however spelled
+/// (`scripts::is_network_path`), and never one reached through a symbolic link or junction to
+/// one, at the file or any folder above it (`scripts::ancestors_stay_local`, reading each link
+/// with `read_link`).
+pub fn readable_path(path: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> bool {
+    crate::scripts::ancestors_stay_local(path, read_link)
+}
+
+/// The largest user icon or map file read, in bytes; a larger one is not read at all.
+pub const MAX_FILE_BYTES: u64 = 8 << 20;
+
+/// The largest picture decoded for an icon, per side in pixels.
+pub const MAX_DECODE_SIDE: u32 = 4096;
+
+/// What decoding one icon picture may allocate, in bytes (a `MAX_DECODE_SIDE` square of RGBA).
+const MAX_DECODE_ALLOC: u64 = 80 << 20;
+
+/// An icon file's bytes decoded to RGBA, within `MAX_DECODE_SIDE` a side and
+/// `MAX_DECODE_ALLOC`: a picture whose header claims more fails at the header, before any
+/// pixel buffer is made. None when it is not a picture or goes past the limits.
+pub fn decode_limited(bytes: &[u8]) -> Option<image::RgbaImage> {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DECODE_SIDE);
+    limits.max_image_height = Some(MAX_DECODE_SIDE);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    reader.limits(limits);
+    Some(reader.decode().ok()?.into_rgba8())
 }
 
 /// Whether a logical name may name a user PNG: a plain file name part, no separators.
@@ -478,9 +503,18 @@ mod tests {
         assert_eq!(ancestor_chain(&ancestors), vec![vec!["awk".to_string()], vec!["claude".to_string()]]);
         let deep: Vec<String> = (0..60).map(|i| format!("p{i}")).collect();
         assert_eq!(ancestor_chain(&deep).len(), 50);
-        assert!(!readable_path(Path::new(r"\\server\share\i.png")));
-        assert!(!readable_path(Path::new(r"\\?\UNC\server\share\i.png")));
-        assert!(readable_path(Path::new(r"C:\i.png")));
+        // Never a network path however spelled, nor a link or junction to one (`C:\x` to a
+        // share, at the file or a folder above it); a link to a local folder is read.
+        let links = |p: &Path| match p.to_str() {
+            Some(r"C:\x") => Some(PathBuf::from(r"\\server\share")),
+            Some(r"C:\ok") => Some(PathBuf::from(r"D:\icons")),
+            _ => None,
+        };
+        for p in [r"\\server\share\i.png", r"\\?\UNC\server\share\i.png", r"\/server/share/i.png", r"/\server\share\i.png", r"\??\UNC\server\share\i.png", r"C:\x\i.png", r"C:\x"] {
+            assert!(!readable_path(Path::new(p), &links), "{p}");
+        }
+        assert!(readable_path(Path::new(r"C:\i.png"), &links));
+        assert!(readable_path(Path::new(r"C:\ok\i.png"), &links));
         assert!(!plain_logical(r"..\x") && !plain_logical("a/b") && plain_logical("mytool"));
     }
 
@@ -508,6 +542,25 @@ mod tests {
         assert_eq!(user_png_path(Path::new("C:\\T"), "foo"), Path::new("C:\\T").join("graphic_foo.png"));
         // The lenient parse only drops a comma before a closing bracket, outside strings.
         assert_eq!(lenient(r#"{"a": ["b", ], "c,]": 1,}"#), r#"{"a": ["b" ], "c,]": 1}"#);
+    }
+
+    #[test]
+    fn icon_decode_is_bounded() {
+        let png = |w: u32, h: u32| {
+            let mut bytes = Vec::new();
+            image::RgbaImage::new(w, h).write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png).unwrap();
+            bytes
+        };
+        assert_eq!(decode_limited(&png(MAX_DECODE_SIDE, 1)).map(|i| i.dimensions()), Some((MAX_DECODE_SIDE, 1)));
+        // A header past the limit fails before any pixels are made (a PNG bomb draws nothing).
+        assert_eq!(decode_limited(&png(MAX_DECODE_SIDE + 1, 1)).map(|i| i.dimensions()), None);
+        assert_eq!(decode_limited(&png(1, MAX_DECODE_SIDE + 1)).map(|i| i.dimensions()), None);
+        let mut huge = png(1, 1);
+        // IHDR's width and height (bytes 16..24) claiming 100000 by 100000.
+        huge[16..20].copy_from_slice(&100_000u32.to_be_bytes());
+        huge[20..24].copy_from_slice(&100_000u32.to_be_bytes());
+        assert!(decode_limited(&huge).is_none());
+        assert!(decode_limited(b"not a picture").is_none());
     }
 
     #[test]
