@@ -1,0 +1,106 @@
+Plan: Ruling (R11, ruled in the 13d-f rulings): the titlebar accessory's equivalent is the shortcut label at the end of the caption text after four spaces ("vim    Alt+Win+1") for a titled window, the "N. " prefix for a window without a title bar (or in full screen) or with the accessory key off, and a right-aligned label in 13e's caption for Compact and Minimal windows - cost if wrong: a caption text some users read as part of the title.
+Plan: Ruling: R3 fix of 02:131: Make Text Bigger, Make Text Smaller and Make Text Normal Size resize the window so the tab keeps its grid at the new font (AdjustWindowForFontSizeChange, default on, iTerm2's reallyChangeSessionFontSize:adjustWindow:), top-left kept and capped to the work area; full screen, maximized, snapped, size-locked and hotkey windows keep their frame and the panes refit - cost if wrong: none (iTerm2's behavior).
+Plan: Ruling: R3 fix of 02:904: Tandem windows snap to the cell grid of the tab while the user drags an edge (iTerm2's default), on BOTH axes (a drag of one edge re-snaps the other axis too, except a percentage-sized window's unchanged axis), not while Ctrl alone is held, not for maximized, full-screen or size-locked windows, with the half-cell dead zone and the fill-the-screen rule; DisableWindowSizeSnap resizes smoothly - cost if wrong: none (iTerm2's behavior).
+Plan: Ruling: 02:203 (HideMenuBarInFullscreen) defaults on, as iTerm2's default YES: Tandem hides the window's own menu bar in full screen (it showed it before) - cost if wrong: a menu bar people expect in full screen is hidden until they leave it.
+Plan: Ruling: 02:210 (EnableDivisionView) defaults on: a one-point line shows under the title bar when no tab bar is at the top; Tandem drew none before - cost if wrong: a line some windows did not have.
+Plan: Ruling: DWM draws the border opaque: the color's alpha is ignored, and all four edges get it (iTerm2 drops an edge beside a tab bar) - cost if wrong: a stronger border than iTerm2's 75%.
+Plan: Ruling: the border is set only on Windows 11; Windows 10 shows none - cost if wrong: a setting that does nothing on Windows 10 (parity note).
+Plan: Ruling: titles with function calls show the format literally (the caption is rebuilt every frame; async calls are 11c's status-bar path) - cost if wrong: a title with \(fn()) reads raw.
+Plan: Ruling: Tandem's tmux tabs keep tmux's window name; a profile's custom tab title is not sent to tmux as a rename - cost if wrong: a new tmux window keeps tmux's name.
+Plan: Ruling: Size Changes Update Profile (the key, its row and the menu toggle, 02:260 and 03:177) moved to 13n Task 8 in the integration pass (13n owns change_font_size and removes font_offset); 13f keeps only the window fit, so 02:260 stays missing here - cost if wrong: none.
+Plan: Ruling: Window > Zoom is the only zoom; the maximize caption button stays Windows' maximize (MaxVertically does not change it) - cost if wrong: users expecting the button to follow MaxVertically.
+Plan: Ruling: the Accessory type (14) is a topmost window without a taskbar button, not a non-activating panel - cost if wrong: it takes focus when clicked.
+Plan: Ruling (correction, source wins): 02:207's control reads "Heavy border around windows in light mode" in the xib, although the advanced help quotes "Show border around windows"; the real key is UseBorder - cost if wrong: none.
+Plan: Ruling (correction, source wins): 01:31 to 01:34 and 01:175 to 01:178: the custom window and tab titles are interpolated strings, and so are Edit Window Title and Edit Tab Title, which showed literally before - cost if wrong: none.
+Plan: Ruling (correction, source wins): 01:151: iTerm2 lets Normal, No Title Bar and Centered windows be sized in percent of the screen too, and the profile popup has one entry per edge (ten entries), not Tandem's fourteen - cost if wrong: none.
+
+Pre-flight: Ruling: Task 4's border reads App::any_pane_is_transparent (Task 4 Step 3 wins over the stale Global Constraints line); 13g is not built, so Task 4 adds the function itself with iTerm2's meaning (PT:9215-9225, any pane in the window transparent) and 13g reuses it and never re-adds it - cost if wrong: 13g adjusts one function.
+Pre-flight: Ruling: Task 8 also fixes the schema rows Width Percentage and Height Percentage (schema/profile.toml) so -1.0 is a legal stored value as iTerm2 stores it (-1 means cells) - cost if wrong: none.
+Pre-flight: Ruling: the compact_window stub comes from 13e Task 6's list (Task 3 created it, since window_titled needed it first); cosmetic - cost if wrong: none.
+Pre-flight: Ruling: drifted mod.rs, windows_ui.rs and menu.rs line citations in the plan are located by symbol (preflight.md lists current lines) - cost if wrong: none.
+Pre-flight: Ruling: 13d built first (d95ddc3), so main was merged into m13f right after Task 2 and 13f's tab_bar_visible stub was deleted for 13d's real one; TabPosition, tab_bar_rect and window_can_fit were never stubbed in 13f - cost if wrong: none.
+
+Task 1: Ruling (source over brief): OSC 1 never sets a title: vte 0.15 dispatches only OSC 0 and 2 to the title handler and Tandem has no icon-name handling, so Allow Title Setting does not need to gate OSC 1 - cost if wrong: a program's icon name is ignored either way.
+Task 1: Ruling: a window with no active tab reads "Untitled" (iTerm2's fallback) instead of "Tandem" - cost if wrong: a transient empty-window caption text.
+Task 1: Ruling: share_window_title also shares a reset (None), since Event::ResetTitle pushes WindowTitle(None); the sender is excluded from the targets - cost if wrong: a pop in one session clears the others' titles with Each tab may have its own window title off.
+Task 1: Ruling: SeparateWindowTitlePerTab starts a new General "Window" section, placed after the Closing rows - cost if wrong: section order in the General tab.
+Task 1: Ruling: Task 1's tab_bar_visible stub ignored HideTab (one-tab bar with HideTab off); replaced by 13d's real rule in the merge after Task 2 - cost if wrong: none now.
+Task 1: Ruling: minor (deferred): title_setting_follows_iterm2 bundles OSC 0, 1, 2, push and pop and the no-loop copy check into one test - cost if wrong: a future failure takes longer to isolate.
+
+Task 2: Ruling (source over brief): an unclosed \( stays literal text (EP:343-407), so no bug prefix - cost if wrong: none (iTerm2's behavior).
+Task 2: Ruling (source over brief): the cheap path skips title evaluation when the format has no backslash at all; \n and \t still expand, as in iTerm2 (EP:403-404) - cost if wrong: none.
+Task 2: Ruling: the launch window (built in resumed, not open_window_with) also takes its profile's custom window title, and an arrangement's window keeps the arrangement's saved title instead of the profile's (PT:4194) - cost if wrong: a restored window would show the profile's title.
+Task 2: Ruling: the window's profile is the first tab's session profile, falling back to the guid open_window_with sized with, then the default; a divorced session's own copy is read - cost if wrong: a divorced copy's custom window title is read rather than the saved profile's.
+Task 2: Ruling: a tmux tab's Tab.title (tmux's window name) is never evaluated - cost if wrong: none (iTerm2 keeps tmux names out of the override).
+Task 2: Ruling: an evaluated title that is empty shows the automatic title (window through wintitle::window_title, tab through tab_look) - cost if wrong: a format that evaluates to "" would show an empty caption.
+Task 2: Ruling: tabs made by Unbury, Undo Close, arrangements and replay keep their own titles; only add_tab reads the profile's custom tab title - cost if wrong: an unburied session's tab has no profile title.
+Task 2: Ruling: minor (deferred): for a tmux tab, tab.titleOverrideFormat holds the evaluated text (the same text as tab.titleOverride), so it is not a format there; a one-line comment is owed - cost if wrong: a reader assumes it is a format.
+
+Task 3: Ruling (source over brief): the shortcut label shows for every titled window (WSL stringForOrdinal:deemphasized:, :88-100): from window 10 on, or with no switch modifier, it is the bare number in light gray; shortcut_label returns a String - cost if wrong: none (iTerm2's behavior).
+Task 3: Ruling (source over brief): a Window menu entry carries two texts (PT titleForWindowMenu, :3069-3084): the chord case (1 to 9) uses the title without the number, the "from 10" and no-modifier cases use the window's title, which keeps the "N. " prefix when it has one - cost if wrong: none.
+Task 3: Ruling (source over brief): window numbers can have gaps (a closed window frees its number), so the window_list entries carry the number instead of using the list position - cost if wrong: none.
+Task 3: Ruling: the tmux client suffix sits before the label: "vim [c]    Alt+Win+1" - cost if wrong: the label and the suffix swap places.
+Task 3: Ruling: the Window menu leaves out "[Leader] ", Tandem's stand-in for the cursor sparkles - cost if wrong: none visible.
+Task 3: Ruling: App::compact_window (body false) is created in Task 3; Task 4 reuses it and 13e replaces the body - cost if wrong: none.
+Task 3: Ruling: window_titled treats full screen as untitled, so a full-screen window shows the "N. " prefix (Tandem's full screen is borderless, like iTerm2's non-native full screen) - cost if wrong: the label instead of the prefix in full screen.
+Task 3: Ruling: the focused window is the checked one in the Window menu list (last_window); each Tandem window has its own menu bar - cost if wrong: none.
+Task 3: Ruling: hotkey windows are listed like any other window (iTerm2 never excludes them) and compact_caption has no caller until 13e - cost if wrong: none.
+Task 3: Ruling: the schema gains UseShortcutAccessoryViewController and IncludeShortcutInWindowsMenu (Advanced, Windows, both default true, help the DEFINE text, AS:710-711) - cost if wrong: none.
+Task 3: Ruling: the WindowNumber help now describes the label (a titled window) and the "N. " prefix (no title bar or full screen) instead of only the prefix - cost if wrong: help wording.
+
+Task 4: Ruling (source over brief): the border color needs a leading "#" (also "#rgb" and the 16-bit "#rrrrggggbbbb"); a bare "12ab34" is None as in iTerm2 (NSColor+iTerm.m:1000) - cost if wrong: a typo gives the default color instead of a wrong one.
+Task 4: Ruling: any_pane_is_transparent returns false until 13g (Tandem has no per-pane transparency yet); 13g replaces the body in place (chrome_ui.rs) - cost if wrong: 13g edits one body.
+Task 4: Ruling: hex parsing is strict: a partial scan NSScanner would accept ("#12ab3z") is rejected - cost if wrong: a typo gives the grey default.
+Task 4: Ruling: the border refreshes on Focused, ThemeChanged, Resized and at every set_fullscreen site (fix 7eb13e0, since a toggle with no size change sends no Resized), and globals_changed reapplies it in every window - cost if wrong: an extra DWM call.
+Task 4: Ruling: the help texts of SquareWindowCorners, WindowBorderColor and BordersOnlyInLightMode are rewritten for Windows (Windows 11 rounds corners, the checkbox label is quoted, the color is opaque) - cost if wrong: help wording.
+Task 4: Ruling: apply_border runs once in open_window_with before the Focused event, so the first call may send the default color; tab_theme's test omits 13e's compact_theme lines (13e adds them) - cost if wrong: one extra DWM call.
+Task 4: Ruling: the launch window gets square corners: resumed calls apply_corners right after install_sizing (it was only called in open_window_with, so with SquareWindowCorners on the first window stayed rounded) - cost if wrong: none.
+Task 4: Ruling: minor (deferred, not in the fix): apply_border recomputes the show and color on every focus, theme and resize event even when nothing relevant changed - cost if wrong: a few reads per event.
+
+Task 5: Ruling: the division line is one POINT scaled by the window's DPI and rounded to whole pixels (fix e19d646; iTerm2's kDivisionViewHeight is 1 point): 1 px at 100% and 125%, 2 px at 150% and 200% - cost if wrong: a line up to half a pixel off at fractional scales.
+Task 5: Ruling: "not toggling full screen" and "titlebar appears transparent" (PT:1176-1178) map to full_screen() and compact_window() or not decorated - cost if wrong: none seen.
+Task 5: Ruling: the top-bar check uses 13d's tab_bar_visible(), which includes a flashing bar - cost if wrong: none (flashing happens only in full screen, where the line is off).
+Task 5: Ruling: the help texts of HideMenuBarInFullscreen and EnableDivisionView are Tandem's own (iTerm2's tooltip speaks of native full screen and states the effect inverted) - cost if wrong: wording only.
+Task 5: Ruling: a failed menu hide or show still records the new state (no per-frame retry); the "menu" banner reports it - cost if wrong: a refused hide is not retried until the next change.
+Task 5: Ruling: size_window adds the line to the requested inner height, so a default window opens with its profile's Rows - cost if wrong: a window one row short.
+
+Task 6: Ruling (source over brief): the fill-the-screen rule (PT:5937-5955): a snapped size less than a cell short of the screen's visible frame, when the pointer asked for no more than half the gap, fills the screen; it compares the visible frame (DWM's invisible borders added to the work area) - cost if wrong: none.
+Task 6: Ruling (source over brief): the minimum size applies whether or not the axis snaps, so a window with DisableWindowSizeSnap still keeps it; only maximized, full-screen and locked windows publish no grid - cost if wrong: none.
+Task 6: Ruling (source over brief): hotkey windows snap too (iTerm2's windowWillResize has no hotkey exception); their slide animation sends no WM_SIZING - cost if wrong: none.
+Task 6: Ruling (source over brief): the snap measures the whole tab's pane area (decoration is the outer size less content_area()), with the current pane's cell; with one pane it equals the brief's rule - cost if wrong: none.
+Task 6: Ruling (fix df231de, source wins): both axes re-snap on a drag, as iTerm2's NSSize hook does (PT:5826-5835, :5913-5918); the percentage-window rule (no snap on an unchanged axis, PT:5837-5850) and Ctrl alone are live in every WM_SIZING - cost if wrong: none.
+Task 6: Ruling (fix df231de): AllowLiveResize reaches every window through App::install_sizing (hotkey windows included), and the first window at launch now gets the sizing subclass (it never had it) - cost if wrong: none.
+Task 6: Ruling: apply_arrangement_window also follows AllowLiveResize (the third set_resizable site) - cost if wrong: none.
+Task 6: Ruling: the grid is published from render once per frame; a drag uses the last frame's grid - cost if wrong: the first drag step after a font or tab change snaps to the old cell until the next frame.
+Task 6: Ruling: the minimum is 2 columns and 1 row plus the margins for every tab, as grid_size floors it, not the sum for a split tab - cost if wrong: a split tab can be dragged smaller than its panes' floors, as before.
+Task 6: Ruling: COMPACT_MAXIMIZED = 16 (13e stub) is created here and unthemed uses it - cost if wrong: none.
+Task 6: Ruling: minor (deferred to the final review): an arranged (Windows Snap) window is not exempted from the edge snap (iTerm2's it_resizingForTiling); IsWindowArranged would pass the proposal through - cost if wrong: a gap next to a snapped neighbor after an edge drag.
+Task 6: Ruling: minor (deferred to the final review): the grid is not re-published on ScaleFactorChanged, so WM_SIZING between the change and the next frame snaps to the old DPI's grid - cost if wrong: one wrong step after a DPI change mid-drag.
+Task 6: Ruling: minor (deferred to the final review): the minimum is the current tab's floor, not the largest of every tab's minSize - cost if wrong: a window can be dragged smaller than another tab's panes need.
+
+Task 7: Ruling (source over brief): the window fits the TAB's grid as the edge snap measures it (fitWindowToTab:, PT:10541-10544, :11770-11825), not the focused pane's - cost if wrong: in a split tab the window would shrink to one pane.
+Task 7: Ruling (source over brief): Make Text Normal Size also fits the window (it routes through changeFontSizeDirection:0, AFS:43-61) - cost if wrong: none.
+Task 7: Ruling: fit_window_to_grid has no return value; the caller's relayout runs either way - cost if wrong: one extra layout and tmux size report at the old size.
+Task 7: Ruling: no fit when the font did not change (Smaller at the floor, Normal at offset 0) - cost if wrong: none.
+Task 7: Ruling: font_offset is still shared by all windows until 13n removes it, so only the current window is fitted; the others keep their size and refit their panes - cost if wrong: other windows do not follow the font size until 13n.
+Task 7: Ruling: x and y are clamped only with min (never pushed onto the work area), and the frame is capped to the screen (mustResizeTabs) with the panes refit - cost if wrong: a window already partly off the left or top edge stays there.
+Task 7: Ruling: minor (deferred): the doc comment on set_font_offset describes window_can_fit too loosely (it also excludes minimized and hotkey windows and admits only Normal and No Title Bar styles) - cost if wrong: a reader underestimates the gate.
+
+Task 8: Ruling (source over brief): the columns and rows labels also show for Maximized, Compact Maximized and both full screen types (PWV:674-691), with the fields disabled - cost if wrong: none.
+Task 8: Ruling (source over brief): percent sizing is in whole cells (measurementToCells, WSH:223-260): the window is cells x cell + margins + decoration, not an exact pixel share - cost if wrong: none.
+Task 8: Ruling (source over brief): an unset percentage means cells, except the attached edge of the percentage edge styles (100); a Top of Screen profile with no Height Percentage gets Rows rows, not the full height - cost if wrong: a profile that relied on the old default 100 sizes by rows.
+Task 8: Ruling (source over brief): units_rows for a stored cells id (8 to 11) shows both cells fields, which matches iTerm2 whenever the cells form was saved by iTerm2 or Tandem (both store -1) - cost if wrong: none.
+Task 8: Ruling (fix 649d2f3, source and plan win over a cited ruling that does not exist): Zoom follows the input source (PT:7065-7078): Shift+Win+0 is a key Zoom (MaxVertically alone decides), and a click on Window > Zoom, a pointer action or the API is a mouse Zoom where Shift inverts MaxVertically; a menu item chosen with the keyboard through the menu bar counts as a mouse Zoom - cost if wrong: Shift held while pressing Enter on Window > Zoom inverts.
+Task 8: Ruling (fix 649d2f3): arrangements save -1 for a cells-sized axis (frames::saved_percents) instead of the schema default 100 - cost if wrong: none (an arrangement's own percent is never read back on restore).
+Task 8: Ruling: a vertically zoomed window keeps zoom_restore until the next Zoom even if the person moves or resizes it - cost if wrong: a Zoom after a manual resize restores the pre-zoom frame instead of zooming again.
+Task 8: Ruling: the vertical zoom's outer frame is widened by DWM's invisible top and bottom borders so the visible frame spans the work area; a target equal to the whole work area maximizes - cost if wrong: none visible.
+Task 8: Ruling: stored Window Types 4 and 14 show an empty Window Style popup (neither is one of the ten entries, as in iTerm2) and are set by hand in profiles.toml - cost if wrong: a blank popup for imported profiles.
+Task 8: Ruling: the percent fields take whole numbers 0 to 100 (iTerm2 reads integerValue); the stored value is a float - cost if wrong: none.
+Task 8: Ruling: Accessory's topmost level and taskbar button are left alone for hotkey windows (the hotkey code owns both) - cost if wrong: none.
+Task 8: Ruling: frames::themed is created with its test but not called until 13e Task 6 wires it - cost if wrong: none now.
+Task 8: Ruling: minor (deferred): size_window's percent-eligible branch has no minimum-cells floor (the cells branch has one), so a very small explicit percentage gives a near one-cell window - cost if wrong: a tiny window from a 1 percent profile.
+
+Task 9: Ruling: 02:260 (SizeChangesAffectProfile) stays missing: the brief's Step 1 lists it, but the plan's ownership note gives the key, row and toggle to 13n Task 8 - cost if wrong: none.
+Task 9: Ruling: 01:215 ("Terminal may resize window") stays partial: it is not in the brief's list, although SetWindowFrame already refuses with it off - cost if wrong: one row's status understated.
+Task 9: Ruling: the 02:132 note says Shift+Win+0 is a key Zoom and a click on Window > Zoom with Shift held inverts it (as iTerm2's green button), after the Task 8 fix - cost if wrong: none.
+Task 9: Ruling: the parity counts are recounted from the files: 01 314/189/108/17, 02 823/413/77/333, 03 647/527/48/72, total 1,784/1,129/233/422 - cost if wrong: none.
