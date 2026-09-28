@@ -529,6 +529,18 @@ impl Pane {
         self.tmux_hook.unhook();
     }
 
+    /// A tmux integration pane's `%output` (`tmux_pump`'s Output arm): pushed and read at
+    /// once, since nothing else wakes the loop for it. True when the SSH hook found something
+    /// the app must run now (`App::ssh_pump_pane`): the conductor waits on Tandem.
+    pub fn tmux_output(&mut self, data: &[u8], answers_osc4: bool) -> bool {
+        if let Some(io) = self.tmux_io() {
+            io.answers_osc4.set(answers_osc4);
+            io.push_output(data);
+        }
+        self.pump();
+        self.has_ssh()
+    }
+
     /// What the SSH hook found since the last call.
     pub fn take_ssh(&mut self) -> Vec<crate::ssh_hook::Out> {
         std::mem::take(&mut self.ssh_q)
@@ -1232,6 +1244,21 @@ mod tests {
         p.pump();
         assert!(matches!(&p.take_ssh()[..], [Out::Ssh(Token::Init(_), 0)]));
         assert!(!p.screen.all_text().contains("afterx"));
+    }
+
+    #[test]
+    fn tmux_output_hands_the_hook_over_at_once() {
+        use crate::conductor_parser::Token;
+        use crate::ssh_hook::Out;
+        let mut p = Pane::tmux(5, 1, 3, 20, 4);
+        assert!(!p.tmux_output(b"plain", true));
+        assert!(p.tmux_io().unwrap().answers_osc4.get());
+        assert!(p.tmux_output(b"x\x1bP2000pnone 1 YQ== - Yg==\n", false), "the app must run the hook now");
+        assert!(!p.tmux_io().unwrap().answers_osc4.get());
+        assert!(matches!(&p.take_ssh()[..], [Out::Ssh(Token::Init(_), 0)]));
+        assert!(p.screen.all_text().contains("plainx"));
+        assert!(p.tmux_output(b"\x1b]135;:unhook\x1b\\", false), "every later token too");
+        assert_eq!(p.take_ssh(), [Out::Ssh(Token::Unhook, 0)]);
     }
 
     #[test]

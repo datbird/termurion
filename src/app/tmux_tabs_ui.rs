@@ -153,13 +153,12 @@ impl App {
                     let (title, vars) = (p.own().title().map(str::to_string), p.own().shell.vars.clone());
                     let osc4 = self.tmux.get(&gw).is_some_and(|t| t.ctl.answers_osc4());
                     let Some(p) = self.panes.get_mut(&id) else { continue };
-                    if let Some(io) = p.tmux_io() {
-                        io.answers_osc4.set(osc4);
-                        io.push_output(&data);
-                    }
-                    // Read now: nothing else wakes the loop for it.
-                    p.pump();
+                    let ssh = p.tmux_output(&data, osc4);
                     self.api_output(&[id]);
+                    // `ssh_pump` ran before this pass pumped the pane; its conductor waits.
+                    if ssh {
+                        self.ssh_pump_pane(id);
+                    }
                     let Some(p) = self.panes.get_mut(&id) else { continue };
                     let title_changed = p.own().title().map(str::to_string) != title;
                     let now_vars = (p.own().shell.vars != vars).then(|| p.own().shell.vars.iter().map(|(k, v)| (format!("user.{k}"), v.clone())).collect());

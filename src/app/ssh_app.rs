@@ -94,38 +94,45 @@ impl App {
     pub(super) fn ssh_pump(&mut self) -> bool {
         let ids: Vec<PaneId> = self.panes.iter().filter(|(_, p)| p.has_ssh()).map(|(id, _)| *id).collect();
         for id in &ids {
-            let outs = self.panes.get_mut(id).map(|p| p.take_ssh()).unwrap_or_default();
-            for out in outs {
-                match out {
-                    Out::Screen(bytes) => {
-                        if let Some(p) = self.panes.get_mut(id) {
-                            p.feed_after_ssh(&bytes);
-                        }
-                        self.api_output(&[*id]);
-                    }
-                    Out::Ssh(Token::Init(init), _) => self.ssh_hooked(*id, init),
-                    Out::Ssh(token, depth) => {
-                        // A token with no conductor (its setup was refused) is dropped.
-                        let Some(p) = self.panes.get_mut(id) else { continue };
-                        let Some(c) = p.conductor.as_mut() else { continue };
-                        match token {
-                            Token::Begin(cmd) => c.handle_begin(&cmd, depth),
-                            Token::Line(line) => c.handle_line(&line, depth),
-                            Token::End { id: cmd, status, kind } => c.handle_end(&cmd, &kind, status, depth),
-                            // `PS:20172-20177`: the held writes go out raw.
-                            Token::Unhook => {
-                                c.handle_unhook();
-                                let held = p.take_ssh_held();
-                                p.write_no_broadcast(&held);
-                            }
-                            Token::Init(_) => {}
-                        }
-                    }
-                }
-                self.ssh_apply(*id);
-            }
+            self.ssh_pump_pane(*id);
         }
         !ids.is_empty()
+    }
+
+    /// Runs what one pane's SSH hook found, in order. A tmux integration pane is pumped inside
+    /// `tmux_pump`, after `ssh_pump`, so its Output arm calls this at once: nothing else wakes
+    /// the loop for a conductor waiting on Tandem's next command.
+    pub(super) fn ssh_pump_pane(&mut self, pane: PaneId) {
+        let outs = self.panes.get_mut(&pane).map(|p| p.take_ssh()).unwrap_or_default();
+        for out in outs {
+            match out {
+                Out::Screen(bytes) => {
+                    if let Some(p) = self.panes.get_mut(&pane) {
+                        p.feed_after_ssh(&bytes);
+                    }
+                    self.api_output(&[pane]);
+                }
+                Out::Ssh(Token::Init(init), _) => self.ssh_hooked(pane, init),
+                Out::Ssh(token, depth) => {
+                    // A token with no conductor (its setup was refused) is dropped.
+                    let Some(p) = self.panes.get_mut(&pane) else { continue };
+                    let Some(c) = p.conductor.as_mut() else { continue };
+                    match token {
+                        Token::Begin(cmd) => c.handle_begin(&cmd, depth),
+                        Token::Line(line) => c.handle_line(&line, depth),
+                        Token::End { id: cmd, status, kind } => c.handle_end(&cmd, &kind, status, depth),
+                        // `PS:20172-20177`: the held writes go out raw.
+                        Token::Unhook => {
+                            c.handle_unhook();
+                            let held = p.take_ssh_held();
+                            p.write_no_broadcast(&held);
+                        }
+                        Token::Init(_) => {}
+                    }
+                }
+            }
+            self.ssh_apply(pane);
+        }
     }
 
     /// A conductor hooked (`TD:3852-3870`, then `PS:20118-20170` without jumps): the banner,
