@@ -62,7 +62,7 @@ switch windows. Mark each line pass or fail.
 | 23 | The window switch label ("Alt+Win+1") sits right-aligned before the caption buttons in Minimal and Compact windows. With Advanced "Show window number in titlebar accessory?" off the label goes and the caption title reads "1. <title>". | |
 | 24 | The menu bar is not shown in a Minimal or Compact window. A menu button (three lines) at the left of the strip opens the whole menu under it. Alt pressed and released alone opens it, and so does F10. Alt with another key (Alt+Tab) or with Shift does not. AltGr on a non-US layout types its characters and opens nothing. | |
 | 25 | Right-click on the empty space of the tab strip: the whole menu opens at the pointer. Right-click on a tab (also within its top 12 points): the tab menu. Right-click on a group's chip: the group menu. Right-click on a tab's close button: the tab menu. | |
-| 26 | Not run live before: a Minimal window dragged from a 100% monitor to a 150% or 200% monitor and back keeps its client (Columns x Rows) and the tab strip does not grow or shrink. Repeat with a Compact window and with a maximized one (it stays maximized). | |
+| 26 | Not run live before: a Minimal window dragged from a 100% monitor to a 150% or 200% monitor and back keeps its client (Columns x Rows) and the tab strip does not grow or shrink. Repeat with a Compact window and with a maximized one: it stays maximized and fills the new monitor exactly (the bottom row is on screen and the tab strip starts at the monitor's top). | |
 | 27 | Switch the Theme between Regular and Minimal several times with a window open: the window keeps its client size each time and the menu bar hides and returns. Full screen (Ctrl+Win+F) in a Minimal window shows a plain full-screen window and leaving restores the strip. | |
 | 28 | Advanced CompactTabBarStoplightButtonsWidth: 75 reserves exactly the three buttons; a larger value leaves more room at the right of the tabs, a smaller value lets the tabs run under the buttons. ExtraSpaceBeforeCompactTopTabBar adds a gap between the last tab (and the "+") and the buttons. Neither applies with a bottom or side bar. | |
 | 29 | A Compact window with a top bar shows no top lines on the tabs (the bar is not attached to a title bar). | |
@@ -71,12 +71,12 @@ switch windows. Mark each line pass or fail.
 
 | # | Check | Result |
 |---|---|---|
-| 30 | In a Minimal or Compact window with two or more tabs, press and drag in the top 12 points (Minimal) or 10 points (Compact, Advanced MinimalEdgeDragSize and CompactEdgeDragSize) of a tab: the window moves (and snaps to screen edges). Lower on the tab, a drag reorders the tabs. | |
+| 30 | In a Minimal or Compact window with two or more tabs, press and drag in the top 12 points (Minimal) or 10 points (Compact, Advanced MinimalEdgeDragSize and CompactEdgeDragSize) of a tab: the window moves (and snaps to screen edges). Press lower on a tab and drag sideways: the tabs reorder. Press lower on a tab and drag up into that strip: the window moves once the pointer is in the strip. | |
 | 31 | Drag from empty bar space: the window moves. Double click empty bar space: the window maximizes (and again restores); it does not open a tab. | |
 | 32 | With one tab in a Minimal or Compact window, drag the tab: the window moves. Turn off Advanced ConvertTabDragToWindowDragForSolitaryTabInCompactOrMinimalTheme: dragging the only tab behaves as in Regular (it tears off into a new window at the drop point). A No Title Bar window (profile Window style) with one tab behaves the same in Regular. | |
 | 33 | With one tab in a Minimal window and the key on, drag the tab a long way: the window follows the pointer and no second window is made. | |
-| 34 | Alt+drag from a tab, from empty bar space, from the "+" button and from a group chip, in Regular, Minimal and Compact: the window moves each time. Alt+click on a tab selects it (or closes it on its close button); Alt held only after the drag has started also moves the window. Not run live before. | |
-| 35 | A Compact Centered window (profile Window style Centered under Compact) has no top edge strip; Alt+drag still moves it (a kept cost). | |
+| 34 | Alt+drag from a tab and from empty bar space, in Regular, Minimal and Compact: the window moves each time. Alt+drag from a group chip drags the group, never the window. Dragging the "+" button moves the window with or without Alt while Advanced AllowDragOnAddTabButton is on; with it off, nothing moves. Alt+click on a tab selects it (or closes it on its close button); Alt held only after the drag has started also moves the window. Not run live before. | |
+| 35 | A Compact Centered window (profile Window style Centered under Compact) has no top edge strip, and an Alt+drag on its bar (or a drag of the "+") moves nothing and drags no tab, as in iTerm2. The same in a Centered window under Regular and in a window docked to a screen edge. Dragging the empty strip of a Compact Centered window still moves it (Windows' caption). | |
 | 36 | A Left or Right tab bar never has an edge strip: a drag on a side tab reorders, never moves the window. | |
 
 ## The window name
@@ -85,14 +85,14 @@ switch windows. Mark each line pass or fail.
 |---|---|---|
 | 37 | Edit Window Title (Session menu) and type a name: in a Minimal or Compact window with two tabs the name shows beside the tabs, dimmed. With Advanced ShowWindowNameBesideTabs "Never" it goes; "When a custom name is set" (default) shows it only with a custom name; "Always" shows the window title when there is no custom name. | |
 | 38 | A long name is cut with an ellipsis and shrinks as tabs are added; with too many tabs for it (under 44 points) it hides. With a scrolling tab bar it keeps its room. | |
-| 39 | Double click the name: Edit Window Title opens (the window does not maximize). Press and drag on the name: the window moves. A single click does nothing. Not run live before. | |
+| 39 | Double click the name, also within its top 12 points: Edit Window Title opens (the window does not maximize). Press and drag on the name: the window moves. A single click does nothing. Not run live before. | |
 | 40 | A Regular window, a full-screen window and a window with a Left, Right or Bottom bar never show the name. | |
 
 ## Dividers
 
 | # | Check | Result |
 |---|---|---|
-| 41 | Split a tab: the divider is light grey in Regular light, Light and Light (High Contrast), and dark grey in Regular dark, Dark and Dark (High Contrast). | |
+| 41 | Split a tab: the divider is light grey in Regular and Compact with Windows in light mode, Light and Light (High Contrast), and dark grey in Regular and Compact with Windows in dark mode, Dark and Dark (High Contrast). | |
 | 42 | Minimal with a split: the divider is the session background nudged toward white (dark) or black (light) by MinimalSplitPaneDividerProminence (0.15). Set it to 0 with Dim background windows on: the divider is invisible when the other panes share one background. Set it to 1: a strong line. | |
 
 ## Kept bugs and rulings a person can see
@@ -105,10 +105,21 @@ switch windows. Mark each line pass or fail.
 | 46 | The window may show a brief system-colored title bar when a forced-theme window opens. | |
 | 47 | The caption buttons are Tandem's own, at the right: no menu bar in Minimal and Compact windows (the menu button, Alt and F10 replace it); Alt+Space still opens the Windows system menu. | |
 | 48 | Shift+Alt alone does not open the menu; F10 opens it on the key press, not the release. | |
-| 49 | A double click in the edge strip over a tab maximizes the window (Windows' title bar double click) rather than editing the tab. | |
-| 50 | Alt+drag moves a Compact Centered window although it has no edge strip. | |
-| 51 | An Alt drag starts after the pointer passes MinimumTabDragDistance, so a very small Alt jitter is still a click. | |
-| 52 | The window name has no letter tracking, and a Minimal window's menu button has no hover highlight. | |
-| 53 | With many tabs the window name hides even when the tabs would overflow anyway (all tabs count toward its room), and pinned tabs' and chips' real minimum widths are not counted. | |
-| 54 | The Dark theme's one-point bottom edge is a solid black line, not iTerm2's gradient; DrawBottomLineForHorizontalTabBar does nothing. | |
-| 55 | A compact window's taskbar title keeps the "N. " prefix while its caption shows the label at the right. | |
+| 49 | A double click in the edge strip over a tab does nothing: it neither maximizes the window nor edits the tab (iTerm2 runs the title bar's double click only off a tab). Over a group chip or the "+" in the strip it maximizes. | |
+| 50 | An Alt drag starts after the pointer passes MinimumTabDragDistance, so a very small Alt jitter is still a click. | |
+| 51 | The window name has no letter tracking, and a Minimal window's menu button has no hover highlight. | |
+| 52 | With many tabs the window name hides even when the tabs would overflow anyway (all tabs count toward its room), and pinned tabs' and chips' real minimum widths are not counted. | |
+| 53 | The Dark theme's one-point bottom edge is a solid black line, not iTerm2's gradient; DrawBottomLineForHorizontalTabBar does nothing. | |
+| 54 | A compact window's taskbar title keeps the "N. " prefix while its caption shows the label at the right. | |
+
+## Not run live: the caption frame's Win32 paths
+
+| # | Check | Result |
+|---|---|---|
+| 55 | Size requests keep the asked grid in a Minimal window (note Columns x Rows before and after each): show and hide the toolbelt; move the tab bar to the Bottom, then Left, and show it with a second tab and hide it by closing that tab; Window > Zoom and Zoom again; a program's resize (`printf '\e[8;30;100t'`) and an API resize; restore a saved arrangement into a Minimal window. Each keeps exactly the asked Columns x Rows, never one caption short. | |
+| 56 | tmux integration (`tmux -CC`) in a Minimal and in a Compact window: `tmux list-clients -F '#{client_width}x#{client_height}'` equals the visible Columns x Rows. Open a second tab (the bar shows) and close it (the bar hides): it still matches each time. | |
+| 57 | Drag an edge of a Minimal window: the size snaps to whole cells (the grid under the strip), as in a Regular window. | |
+| 58 | Lock Size on (Window menu) or Advanced AllowLiveResize off, in a Minimal window: a press on the window's very top edge and a drag moves the window; it never resizes it. | |
+| 59 | Maximize a Minimal window: nothing is cut at the top (the tab strip's full height shows). With the taskbar docked at the top and set to auto-hide, pushing the pointer to the top edge still reveals it. On Windows 10 a thin top border line may show over the strip (kept). | |
+| 60 | Minimize a Minimal window, switch the Theme to Regular (and another time to Minimal from Regular) while it is minimized, then restore it: note the rows. Kept: it may come back one caption and menu bar taller or shorter (the size is not kept for a minimized window). | |
+| 61 | Hover the maximize button, move onto a tab, then back onto the same button: it lights again each time. Press a caption button, drag off to a tab and release: nothing happens and no button stays lit. Double click the maximize button quickly: the window maximizes and restores (two clicks). | |
