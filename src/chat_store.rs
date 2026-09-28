@@ -424,6 +424,23 @@ impl Store {
             .unwrap();
     }
 
+    /// Runs `f` as one unit: every write it makes lands, or none does (a savepoint, so the
+    /// store's own multi-row writes nest inside it).
+    pub fn atomically<T>(&mut self, f: impl FnOnce(&mut Store) -> Result<T, String>) -> Result<T, String> {
+        self.conn.execute_batch("savepoint atomically").map_err(err)?;
+        let result = f(self).and_then(|v| self.conn.execute_batch("release atomically").map(|()| v).map_err(err));
+        if result.is_err() {
+            let _ = self.conn.execute_batch("rollback to atomically; release atomically");
+        }
+        result
+    }
+
+    /// Makes every later Chat update fail (tests only).
+    #[cfg(test)]
+    pub(crate) fn refuse_chat_updates(&self) {
+        self.conn.execute_batch("create temp trigger refuse_chat_update before update on Chat begin select raise(abort, 'refused'); end;").unwrap();
+    }
+
     /// Every chat, most recently modified first.
     pub fn chats(&self) -> Result<Vec<Chat>, String> {
         rows(
@@ -521,7 +538,7 @@ impl Store {
 
     /// Deletes the chat's messages, then its blobs, then the chat, in one transaction.
     pub fn delete_chat(&mut self, id: &str) -> Result<(), String> {
-        let tx = self.conn.transaction().map_err(err)?;
+        let tx = self.conn.savepoint().map_err(err)?;
         tx.execute("delete from Message where chatID = ?", [id]).map_err(err)?;
         tx.execute("delete from ChatBlob where chatID = ?", [id]).map_err(err)?;
         tx.execute("delete from Chat where uuid = ?", [id]).map_err(err)?;
@@ -577,7 +594,7 @@ impl Store {
     }
 
     pub fn remove_messages(&mut self, chat: &str, ids: &[String]) -> Result<(), String> {
-        let tx = self.conn.transaction().map_err(err)?;
+        let tx = self.conn.savepoint().map_err(err)?;
         for id in ids {
             tx.execute("delete from Message where chatID = ? and uniqueID = ?", params![chat, id]).map_err(err)?;
         }
@@ -608,7 +625,7 @@ impl Store {
     /// caller points the forked messages at their copies (`set_first_blob_ref`). The fork's
     /// chat row must exist first, as iTerm2 creates the chat before copying; an error otherwise.
     pub fn copy_blobs(&mut self, from: &str, to: &str, retained_refs: &[String]) -> Result<HashMap<String, String>, String> {
-        let tx = self.conn.transaction().map_err(err)?;
+        let tx = self.conn.savepoint().map_err(err)?;
         let fork_exists: bool = tx.query_row("select exists (select 1 from Chat where uuid = ?)", params![to], |r| r.get(0)).map_err(err)?;
         if !fork_exists {
             return Err("the fork's chat does not exist".to_string());

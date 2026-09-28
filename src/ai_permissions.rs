@@ -159,15 +159,12 @@ impl Permission {
         }
     }
 
-    /// A global setting as a lookup reads it; an unknown value is Ask (`RCE:51-62`).
+    /// A global setting as a lookup and a new chat's defaults read it; an unknown value is Ask
+    /// (`RCE:51-62`). Seeding (`RCE:150-153`) reads the same: its `?? .never` never applies,
+    /// as `iTermAIPermission(rawValue:)` of an Objective-C enum never fails, and `.init(setting)`
+    /// answers Ask for an unknown value (ruling).
     pub fn from_global(v: i64) -> Permission {
         crate::ai_settings::Permission::from_raw(v).map_or(Permission::Ask, Permission::of)
-    }
-
-    /// A global setting as a new chat's defaults read it; an unknown value is Never
-    /// (`RCE:150-153`).
-    pub fn from_global_seeding(v: i64) -> Permission {
-        crate::ai_settings::Permission::from_raw(v).map_or(Permission::Never, Permission::of)
     }
 
     /// Whether a request parks for the person's answer, given the safety check's verdict
@@ -222,12 +219,14 @@ impl Overrides {
         encode(self.map.iter().filter(|(k, _)| k.chat == chat))
     }
 
-    /// Merges a stored text, later entries winning; nothing when any entry fails, as the
-    /// whole blob fails to decode (`load(encodedPermissions:)`, `RCE:171-180`).
-    pub fn merge_encoded(&mut self, text: &str) -> bool {
+    /// Merges a chat's stored text, later entries winning; nothing when any entry fails, as
+    /// the whole blob fails to decode (`load(encodedPermissions:)`, `RCE:171-180`). Only the
+    /// entries of `chat` itself are taken: a row never grants anything to another chat
+    /// (ruling; iTerm2 merges every entry of the text).
+    pub fn merge_encoded(&mut self, chat: &str, text: &str) -> bool {
         match decode(text) {
             Some(map) => {
-                self.map.extend(map);
+                self.map.extend(map.into_iter().filter(|(k, _)| k.chat == chat));
                 true
             }
             None => false,
@@ -283,9 +282,16 @@ pub fn defaults(chat: &str, terminal: Option<&str>, browser: Option<&str>, globa
         .into_iter()
         .filter_map(|c| {
             let guid = if c.is_browser() { browser } else { terminal }?;
-            Some((Key { chat: chat.to_string(), guid: guid.to_string(), category: c }, Permission::from_global_seeding(global(c))))
+            Some((Key { chat: chat.to_string(), guid: guid.to_string(), category: c }, Permission::from_global(global(c))))
         })
         .collect()
+}
+
+/// A stored text with every entry moved to `chat`, so a fork holds the source's grants as its
+/// own from fork time on (ruling); None when the text does not decode.
+pub fn rekey(text: &str, chat: &str) -> Option<String> {
+    let moved: BTreeMap<Key, Permission> = decode(text)?.into_iter().map(|(k, p)| (Key { chat: chat.to_string(), ..k }, p)).collect();
+    Some(encode(moved.iter()))
 }
 
 /// A new chat's permissions: the given text when it decodes, else the defaults
@@ -442,28 +448,43 @@ mod tests {
         assert_eq!(Overrides::default().encoded("C"), "[]");
 
         let mut back = Overrides::default();
-        assert!(back.merge_encoded(&text));
+        assert!(back.merge_encoded("C", &text));
         assert_eq!(back.get("C", "7", RunCommands, &g), Permission::Always);
         assert_eq!(back.get("C", "7", ViewContents, &g), Permission::Never);
         assert_eq!(back.get("D", "7", RunCommands, &g), Permission::Ask);
 
         // The legacy name, and a later merge winning over an earlier one.
-        assert!(back.merge_encoded(r#"[{"chatID":"C","guid":"7","category":"View History"},"ask"]"#));
+        assert!(back.merge_encoded("C", r#"[{"chatID":"C","guid":"7","category":"View History"},"ask"]"#));
         assert_eq!(back.get("C", "7", ViewContents, &g), Permission::Ask);
-        assert!(back.merge_encoded(r#"[{"chatID":"C","guid":"7","category":"Type for You"},"always"]"#));
+        assert!(back.merge_encoded("C", r#"[{"chatID":"C","guid":"7","category":"Type for You"},"always"]"#));
         assert_eq!(back.get("C", "7", ControlTerminal, &g), Permission::Always);
+
+        // A row grants nothing to another chat: its entries for "C" are ignored when merged as "D".
+        let mut other = Overrides::default();
+        assert!(other.merge_encoded("D", &text));
+        assert_eq!(other.get("C", "7", RunCommands, &g), Permission::Ask);
+        assert_eq!(other.encoded("C"), "[]");
+        assert_eq!(other.encoded("D"), "[]");
+        // A fork takes the source's entries as its own.
+        let forked = rekey(&text, "F").unwrap();
+        assert_eq!(forked, r#"[{"chatID":"F","guid":"7","category":"Run Commands"},"always",{"chatID":"F","guid":"7","category":"View Contents"},"never"]"#);
+        assert!(other.merge_encoded("F", &forked));
+        assert_eq!(other.get("F", "7", RunCommands, &g), Permission::Always);
+        assert_eq!(other.get("C", "7", RunCommands, &g), Permission::Ask);
+        assert_eq!(rekey("", "F"), None);
+        assert_eq!(rekey("[]", "F").as_deref(), Some("[]"));
 
         // One bad entry spoils the whole blob.
         let mut none = Overrides::default();
-        assert!(!none.merge_encoded(r#"[{"chatID":"C","guid":"7","category":"Run Commands"},"always",{"chatID":"C","guid":"7","category":"Fly"},"ask"]"#));
-        assert!(!none.merge_encoded(r#"[{"chatID":"C","guid":"7","category":"Run Commands"},"sometimes"]"#));
-        assert!(!none.merge_encoded(r#"[{"chatID":"C","guid":"7","category":"Run Commands"}]"#));
-        assert!(!none.merge_encoded(r#"[{"guid":"7","category":"Run Commands"},"ask"]"#));
-        assert!(!none.merge_encoded(r#"{"a":"ask"}"#));
-        assert!(!none.merge_encoded(""));
-        assert!(!none.merge_encoded("x"));
+        assert!(!none.merge_encoded("C", r#"[{"chatID":"C","guid":"7","category":"Run Commands"},"always",{"chatID":"C","guid":"7","category":"Fly"},"ask"]"#));
+        assert!(!none.merge_encoded("C", r#"[{"chatID":"C","guid":"7","category":"Run Commands"},"sometimes"]"#));
+        assert!(!none.merge_encoded("C", r#"[{"chatID":"C","guid":"7","category":"Run Commands"}]"#));
+        assert!(!none.merge_encoded("C", r#"[{"guid":"7","category":"Run Commands"},"ask"]"#));
+        assert!(!none.merge_encoded("C", r#"{"a":"ask"}"#));
+        assert!(!none.merge_encoded("C", ""));
+        assert!(!none.merge_encoded("C", "x"));
         assert_eq!(none.encoded("C"), "[]");
-        assert!(none.merge_encoded("[]"));
+        assert!(none.merge_encoded("C", "[]"));
 
         // The global behind a key never set: 0 Ask, 1 Always, 2 Never, unknown Ask.
         let empty = Overrides::default();
@@ -500,13 +521,11 @@ mod tests {
         let d = defaults("C", Some("7"), None, &per);
         assert_eq!(d[&key("C", "7", RunCommands)], Permission::Always);
         assert_eq!(d[&key("C", "7", ViewContents)], Permission::Never);
-        assert_eq!(d[&key("C", "7", ControlTerminal)], Permission::Never);
+        assert_eq!(d[&key("C", "7", ControlTerminal)], Permission::Ask, "an unknown global seeds Ask, as iTerm2 as built");
         assert_eq!(d[&key("C", "7", WriteToClipboard)], Permission::Ask);
         assert_eq!(Permission::from_global(7), Permission::Ask);
-        assert_eq!(Permission::from_global_seeding(7), Permission::Never);
         for (v, p) in [(0, Permission::Ask), (1, Permission::Always), (2, Permission::Never)] {
             assert_eq!(Permission::from_global(v), p);
-            assert_eq!(Permission::from_global_seeding(v), p);
         }
         assert!(defaults("C", None, None, &every(0)).is_empty());
         let browser = defaults("C", None, Some("9"), &every(1));

@@ -162,9 +162,25 @@ impl Broker {
                 None => return Ok(Vec::new()),
             }
         }
+        // A chunk that restarts the stream records its rewrite first; a failed write takes the
+        // record back, so later chunks do not follow a message that was never stored.
+        let upstream = match &processed.content {
+            Content::Append { uuid, .. } | Content::AppendAttachment { uuid, .. } => Some(uuid.clone()),
+            _ => None,
+        };
+        let before = upstream.as_ref().map(|u| self.rewrite.get(chat).and_then(|t| t.get(u)).cloned());
         let decided = self.append(chat, processed, target);
         for e in &decided.writes {
-            write(e)?;
+            if let Err(error) = write(e) {
+                if let (Some(u), Some(before)) = (upstream, before) {
+                    let table = self.rewrite.entry(chat.to_string()).or_default();
+                    match before {
+                        Some(id) => table.insert(u, id),
+                        None => table.remove(&u),
+                    };
+                }
+                return Err(error);
+            }
         }
         let mut after = Vec::new();
         if decided.stored {
@@ -248,10 +264,15 @@ impl Broker {
     }
 
     /// A message stored through the list model alone, without processors, fan-out or the
-    /// service: a new chat's preloaded messages (`ChatBroker.swift:102-110`).
-    pub fn preload(&mut self, chat: &str, m: Message) -> Vec<Effect> {
-        self.newest.insert(chat.to_string(), Some(m.unique_id.clone()));
-        stored(chat, m).writes
+    /// service: a new chat's preloaded messages (`ChatBroker.swift:102-110`). The chat's newest
+    /// id moves only once every write succeeded.
+    pub fn preload(&mut self, chat: &str, m: Message, write: &mut dyn FnMut(&Effect) -> Result<(), String>) -> Result<(), String> {
+        let id = m.unique_id.clone();
+        for e in &stored(chat, m).writes {
+            write(e)?;
+        }
+        self.newest.insert(chat.to_string(), Some(id));
+        Ok(())
     }
 
     /// `publish(typingStatus:of:toChatID:)` (`ChatBroker.swift:135-140`).
@@ -686,6 +707,24 @@ mod tests {
         assert_eq!(after, Ok(vec![Effect::ToService(q.clone())]));
         assert_eq!(b.drain(s), vec![("C".to_string(), Update::Delivery { message: q.clone(), partial: false })]);
         assert_eq!(b.next_turn("C"), Some(q));
+
+        // A chunk that would restart the stream but cannot be written leaves no rewrite behind.
+        assert!(b.publish_with("C", append("d", &a.unique_id), true, Some(&a), &mut refuse).is_err());
+        assert_eq!(b.append_target("C", &a.unique_id), a.unique_id);
+        let effects = b.publish("C", append("d", &a.unique_id), true, Some(&a));
+        let n = stored(&effects)[0].unique_id.clone();
+        assert_eq!(b.append_target("C", &a.unique_id), n);
+        // Once restarted, a failed chunk keeps the rewrite it found.
+        let target_n = Message { unique_id: n.clone(), ..agent_md("d") };
+        assert!(b.publish_with("C", append("e", &a.unique_id), true, Some(&target_n), &mut refuse).is_err());
+        assert_eq!(b.append_target("C", &a.unique_id), n);
+
+        // A preload moves the newest id only once written.
+        let p = agent_md("p");
+        assert!(b.preload("P", p.clone(), &mut refuse).is_err());
+        assert!(!b.knows("P"));
+        assert_eq!(b.preload("P", p.clone(), &mut |_: &Effect| Ok(())), Ok(()));
+        assert_eq!(b.newest.get("P"), Some(&Some(p.unique_id)));
     }
 
     #[test]
