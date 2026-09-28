@@ -158,17 +158,9 @@ fn split_total(panel_h: f32, tools: usize, scale: f32) -> f32 {
 }
 
 impl App {
-    /// The window's room split into the terminal part and the toolbelt's (pixels).
-    pub(super) fn belt_split(&self) -> (Rect, Option<Rect>) {
-        let room = self.window_room();
-        let scale = self.scale();
-        let w = toolbelt::clamp_width(self.belt.width, room.w / scale) * scale;
-        tbl::split_window(room, self.belt.visible, w)
-    }
-
     /// The toolbelt's rectangle, while it shows.
     pub(super) fn toolbelt_panel(&self) -> Option<Rect> {
-        self.belt_split().1
+        self.window_layout().2
     }
 
     /// `ToolbeltTools` as stored (names of tools 9j does not show included).

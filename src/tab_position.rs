@@ -64,6 +64,21 @@ pub fn split(room: Rect, p: TabPosition, thickness: f32) -> (Rect, Rect) {
     }
 }
 
+/// A window's room (above any banner) shared out as iTerm2 does (`iTermLayoutCalculator.m:305-330`,
+/// `:412-436`): the toolbelt, `belt` wide, takes the far right at the room's full height first;
+/// the tab bar, when it shows, takes its `(edge, thickness)` from what is left; the sessions get
+/// the rest. Answers the bar's rect, the sessions' rect and the toolbelt's rect.
+pub fn window_split(room: Rect, belt: Option<f32>, bar: Option<(TabPosition, f32)>) -> (Option<Rect>, Rect, Option<Rect>) {
+    let (rest, belt) = crate::toolbelt_layout::split_window(room, belt.is_some(), belt.unwrap_or(0.0));
+    match bar {
+        Some((p, thickness)) => {
+            let (bar, sessions) = split(rest, p, thickness);
+            (Some(bar), sessions, belt)
+        }
+        None => (None, rest, belt),
+    }
+}
+
 /// The tab bar shows (`RTV:1534-1556`): a flashing bar always; in full screen only with
 /// Show tab bar in fullscreen (`ShowFullScreenTabBar`); then always when configured to be
 /// always visible; else with more than one tab.
@@ -155,5 +170,20 @@ mod tests {
         // The minimum wins over a maximum below it (`MAX(MIN(max, pref), min)`).
         assert_eq!(side_width(150.0, 30.0, 5.0, 50.0), 50.0);
         assert_eq!(side_width(150.0, 0.0, 5.0, 50.0), 50.0);
+    }
+
+    #[test]
+    fn toolbelt_takes_the_far_right_first() {
+        let room = r(0.0, 0.0, 800.0, 600.0);
+        let belt = Some(r(600.0, 0.0, 200.0, 600.0));
+        // The toolbelt is full height beside every edge's bar; the bar lays out in the rest.
+        assert_eq!(window_split(room, Some(200.0), Some((Top, 26.0))), (Some(r(0.0, 0.0, 600.0, 26.0)), r(0.0, 26.0, 600.0, 574.0), belt));
+        assert_eq!(window_split(room, Some(200.0), Some((Bottom, 26.0))), (Some(r(0.0, 574.0, 600.0, 26.0)), r(0.0, 0.0, 600.0, 574.0), belt));
+        assert_eq!(window_split(room, Some(200.0), Some((Left, 150.0))), (Some(r(0.0, 0.0, 150.0, 600.0)), r(150.0, 0.0, 450.0, 600.0), belt));
+        // A right bar sits left of the toolbelt (`tabBarMaxX = contentViewWidth - toolbeltWidth`).
+        assert_eq!(window_split(room, Some(200.0), Some((Right, 150.0))), (Some(r(450.0, 0.0, 150.0, 600.0)), r(0.0, 0.0, 450.0, 600.0), belt));
+        // No toolbelt, no bar.
+        assert_eq!(window_split(room, None, Some((Right, 150.0))), (Some(r(650.0, 0.0, 150.0, 600.0)), r(0.0, 0.0, 650.0, 600.0), None));
+        assert_eq!(window_split(room, Some(200.0), None), (None, r(0.0, 0.0, 600.0, 600.0), belt));
     }
 }

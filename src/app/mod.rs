@@ -1353,25 +1353,25 @@ impl App {
         (tab_position::side_width(self.side_bar_preferred, w / scale, PAD, self.side_bar_minimum()) * scale).round()
     }
 
-    /// The tab bar's rect in pixels, window coordinates, and the window's room left for tabs:
-    /// the bar takes its thickness (`tab_height` on the top or bottom, `side_bar_width` on a
-    /// side) from its edge of the room above any banner. No rect while the bar hides.
-    fn tab_bar_split(&self) -> (Option<Rect>, Rect) {
-        let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
-        let bottom = if self.banners.text().is_some() { self.cell().1 + 8.0 } else { 0.0 };
-        let room = Rect { x: 0.0, y: 0.0, w, h: (h - bottom).max(1.0) };
-        if !self.tab_bar_visible() {
-            return (None, room);
-        }
-        let position = self.tab_position();
-        let thickness = if tab_position::vertical(position) { self.side_bar_width() } else { self.tab_height() };
-        let (bar, rest) = tab_position::split(room, position, thickness);
-        (Some(bar), rest)
+    /// The window shared out (`tab_position::window_split`): the tab bar's rect, the sessions'
+    /// room and the toolbelt's rect, in pixels, window coordinates. The toolbelt takes the far
+    /// right of the room above any banner first; the bar then takes its thickness
+    /// (`tab_height` on the top or bottom, `side_bar_width` on a side) from its edge of the
+    /// rest. No bar rect while the bar hides, no toolbelt rect while it hides.
+    pub(super) fn window_layout(&self) -> (Option<Rect>, Rect, Option<Rect>) {
+        let room = self.window_room();
+        let scale = self.scale();
+        let belt = self.belt.visible.then(|| crate::toolbelt::clamp_width(self.belt.width, room.w / scale) * scale);
+        let bar = self.tab_bar_visible().then(|| {
+            let position = self.tab_position();
+            (position, if tab_position::vertical(position) { self.side_bar_width() } else { self.tab_height() })
+        });
+        tab_position::window_split(room, belt, bar)
     }
 
     /// The tab bar's rect in pixels, window coordinates; None while it hides.
     pub(super) fn tab_bar_rect(&self) -> Option<Rect> {
-        self.tab_bar_split().0
+        self.window_layout().0
     }
 
     /// The horizontal tab bar's rect: the bar's, on the top or bottom edge. The side bar's
@@ -1405,7 +1405,8 @@ impl App {
     /// The part of the tab bar the tabs scroll in, in points: left of the right margin, where
     /// the "+" is pinned (`PSM scrollViewportLength`).
     fn tab_viewport(&self) -> f32 {
-        let w = self.gpu.as_ref().map_or(800.0, |g| g.config.width as f32);
+        // The bar stops at the toolbelt.
+        let w = self.horizontal_bar_rect().map_or(0.0, |r| r.w);
         w / self.scale() - tab_layout::right_margin(false, !self.globals.bool("RemoveAddTabButton"))
     }
 
@@ -1668,17 +1669,19 @@ impl App {
         true
     }
 
-    /// The window's room beside the tab bar (on whichever edge) and above any banner, the
-    /// toolbelt's included.
+    /// The window's room above any banner, which the toolbelt, the tab bar and the sessions
+    /// share (`window_layout`).
     fn window_room(&self) -> Rect {
-        self.tab_bar_split().1
+        let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
+        let bottom = if self.banners.text().is_some() { self.cell().1 + 8.0 } else { 0.0 };
+        Rect { x: 0.0, y: 0.0, w, h: (h - bottom).max(1.0) }
     }
 
     /// The window's room for tabs: beside the tab bar, above any banner, left of the toolbelt.
     /// Every pane rectangle and tmux's size report come from here, so tmux is told the size
-    /// without the toolbelt.
+    /// without the toolbelt and the bar.
     fn window_area(&self) -> Rect {
-        self.belt_split().0
+        self.window_layout().1
     }
 
     /// The area the active tab's panes share (less the window's status bar, when it shows).
