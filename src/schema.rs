@@ -72,6 +72,12 @@ impl Setting {
     pub fn max_f64(&self) -> Option<f64> {
         self.max.as_ref().and_then(number)
     }
+
+    /// iTerm2's DEFINE_OPTIONAL_BOOL: a bool with no default, so a key never set reads as
+    /// "unspecified" and the Advanced pane offers Unspecified, No and Yes.
+    pub fn optional_bool(&self) -> bool {
+        self.kind == Kind::Bool && self.default.is_none()
+    }
 }
 
 #[derive(Deserialize)]

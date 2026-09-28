@@ -871,7 +871,15 @@ impl App {
     }
 
     fn quit(&mut self, event_loop: &ActiveEventLoop) {
-        if !self.confirm_close(close_ui::Closing::App) {
+        if !self.prefs_exit_pending && self.confirm_close(close_ui::Closing::App) {
+            self.quit_confirmed(event_loop);
+        }
+    }
+
+    /// Quit once confirmed (the restart after Import All asks nothing).
+    pub(super) fn quit_confirmed(&mut self, event_loop: &ActiveEventLoop) {
+        // Already ending, waiting for the settings folder's quit question.
+        if self.prefs_exit_pending {
             return;
         }
         self.save_pending_settings();
@@ -890,7 +898,9 @@ impl App {
         self.leave_host(keep);
         self.panes.clear();
         self.focus_order.clear();
-        event_loop.exit();
+        if self.prefs_before_exit() {
+            event_loop.exit();
+        }
     }
 
     /// The rectangles the active tab shows (only the zoomed pane when one is zoomed).
@@ -1168,7 +1178,7 @@ impl App {
     /// iTerm2 > Install Shell Integration, for the focused pane's shell.
     pub(super) fn install_shell_integration(&mut self) {
         let Some(guid) = self.focused_guid() else { return };
-        let cmdline = crate::profile::command_line(&self.profile(Some(&guid)), &self.shell);
+        let cmdline = crate::profile::command_line(&self.profile(Some(&guid)), &self.shell, None);
         let typed = match install_plan(&cmdline) {
             Plan::Unsupported => {
                 return info_box("This shell has no prompt hooks, so it cannot have shell integration. Use PowerShell (pwsh), or bash, zsh, or fish in WSL.");

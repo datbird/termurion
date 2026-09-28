@@ -655,7 +655,7 @@ pub fn job_terminated_text(jobs: &[(String, u32)]) -> (&'static str, String) {
 // Codecierge (`CC` = `ToolCodecierge.swift`, min 130).
 // ---------------------------------------------------------------------------------------------
 
-/// Codecierge's three states (`CC:646-709`, Decisions: `EnableAI` is off until milestone 12).
+/// Codecierge's three states (`CC:646-709`): the admin switch, then `EnableAI`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CodeciergeState {
     /// `GenerativeAIAllowed` false: Get Started is disabled.

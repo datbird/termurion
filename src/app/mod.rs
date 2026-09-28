@@ -116,10 +116,14 @@ mod api_requests;
 mod script_ui;
 mod script_runtime_ui;
 mod scripts_alerts;
+mod prefs_ui;
+mod settings_export_ui;
+mod ai_app;
 mod scripts_app;
 mod script_console_app;
 mod script_deps_app;
 mod builtin_ui;
+mod ssh_app;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -607,6 +611,11 @@ pub struct App {
     api_server: Option<crate::api_server::Server>,
     /// The cookies handed to sessions, shared with the server's cookie check.
     api_jar: Arc<Mutex<crate::api_auth::Jar>>,
+    /// The origin secrets handed to it2ssh (app-wide, not in `swap_live`), shared with the
+    /// secret pipe's thread; 14b's conductor hook checks them.
+    pub(super) ssh_secrets: std::sync::Arc<std::sync::Mutex<crate::ssh_secret::Secrets>>,
+    /// The secret pipe's server, started with the first window; None when it could not start.
+    ssh_secret_server: Option<crate::ssh_secret_win::Server>,
     /// The Script Console's entries: scripts, connections and the app-wide logs.
     script_history: crate::script_history::History,
     /// The API's alerts, shown one at a time in order; each window opens on a pass (it needs
@@ -688,6 +697,14 @@ pub struct App {
     /// The Scripts features' alerts waiting to show, and the one showing.
     scripts_alerts: VecDeque<scripts_alerts::Ask>,
     scripts_alert: Option<(crate::prompt_ui::ConfirmWindow, scripts_alerts::Ask)>,
+    /// The AI alert queue (ruling 12c-7), the alert showing, and the Settings > General > AI
+    /// sub-tab an answer asked to reveal.
+    ai_asks: VecDeque<crate::ai_gate::Alert>,
+    ai_alert: Option<(crate::prompt_ui::ConfirmWindow, crate::ai_gate::Alert)>,
+    ai_reveal: Option<crate::settings_ai::SubTab>,
+    /// The one-vendor key prompts waiting to show (ruling 12e-1), and the one showing.
+    ai_key_asks: VecDeque<(crate::ai_settings::Vendor, ai_app::KeyThen)>,
+    ai_key_window: Option<(crate::ai_key_ui::KeyWindow, crate::ai_settings::Vendor, ai_app::KeyThen)>,
     /// Launched scripts' processes by their Script Console entry's id (their key), the
     /// launches waiting for "Enable Python API?" to be answered, and the script whose
     /// failure notification was posted last (a click reveals its entry; a session's alert
@@ -706,9 +723,10 @@ pub struct App {
     held_on_exit: HashMap<PaneId, bool>,
     /// The import under way (one at a time, iTerm2's `sInstallingScript`) and the files
     /// waiting behind it (iTerm2's serial install queue), each with whether it is an archive
-    /// found in the Scripts folder (recycled once installed).
+    /// found in the Scripts folder (recycled once installed) and whether it is imported with
+    /// no UI (Some: into AutoLaunch or not; `import_quietly`).
     importing: Option<scripts_app::Import>,
-    import_queue: VecDeque<(PathBuf, bool)>,
+    import_queue: VecDeque<(PathBuf, bool, Option<bool>)>,
     /// Archives the scan found that were already asked about (`didFindScriptArchive:`'s
     /// `alreadyFound`).
     archives_asked: std::collections::HashSet<PathBuf>,
@@ -763,6 +781,29 @@ pub struct App {
     script_tmux: HashMap<(PaneId, crate::tmux_gateway::Tag), u64>,
     /// `move_tab_to_window` calls waiting for their tab's new window: (tab id, token).
     script_moved: Vec<(u64, u64)>,
+    /// "Load settings from a custom folder or URL" (app-wide): what the location held when it
+    /// was loaded or last written (iTerm2's `savedRemotePrefs`), when the automatic save is due,
+    /// a URL load running off the UI thread, whether Tandem ends once the quit question is
+    /// answered, the launch's questions waiting for the first window, whether Settings opens at
+    /// General on the next pass (Reveal in Settings), and the GPU the quit question opens with
+    /// after the last window has gone.
+    prefs_saved: Option<crate::remote_prefs::Snapshot>,
+    prefs_save_due: Option<Instant>,
+    prefs_fetch: Option<std::sync::mpsc::Receiver<Result<String, (i32, String)>>>,
+    prefs_exit_pending: bool,
+    prefs_startup: Vec<scripts_alerts::Ask>,
+    prefs_reveal: bool,
+    prefs_gpu: Option<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)>,
+    /// The custom folder's location as typed at launch; None once it was edited this session,
+    /// which skips the quit step (`customFolderChanged`).
+    prefs_launch_folder: Option<String>,
+    /// Import All Settings and Data (app-wide): Tandem starts again once the event loop ends
+    /// (`run()`), the quit that restart needs is due on the next loop pass, the script zips an
+    /// import left for this run to install, and their folder, removed once they are done.
+    relaunch_on_exit: bool,
+    relaunch_due: bool,
+    restored_scripts: Vec<PathBuf>,
+    restored_dir: Option<PathBuf>,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -786,6 +827,13 @@ pub fn run() {
         // SAFETY: the first thing Tandem does, before any thread (the event loop, tandem-host,
         // the API server) exists, so nothing reads the environment meanwhile.
         unsafe { std::env::remove_var(name) };
+    }
+    // Started again after Import All Settings and Data: the old Tandem ends first (`IE:898-911`).
+    let wait_pid = std::env::var(settings_export_ui::WAIT_PID_VAR).ok().and_then(|v| v.parse::<u32>().ok());
+    // SAFETY: as above, before any thread exists; no session or child inherits the variable.
+    unsafe { std::env::remove_var(settings_export_ui::WAIT_PID_VAR) };
+    if let Some(pid) = wait_pid {
+        settings_export_ui::wait_for_pid(pid);
     }
     let event_loop = match EventLoop::<UserEvent>::with_user_event().build() {
         Ok(l) => l,
@@ -834,8 +882,13 @@ pub fn run() {
         }
     };
 
+    // An import staged by the last run is applied to the files before anything reads them.
+    let restored_scripts = {
+        let settings = globals::default_path();
+        settings_export_ui::finish_import(settings.parent().unwrap_or(&settings))
+    };
     let path = store::default_path();
-    let store = match Store::load(&path) {
+    let mut store = match Store::load(&path) {
         Ok(s) => s,
         Err(e) => {
             // Never overwrite a settings file we could not read: work in a side file instead,
@@ -847,7 +900,7 @@ pub fn run() {
         }
     };
     let gpath = globals::default_path();
-    let globals = match Globals::load(&gpath) {
+    let mut globals = match Globals::load(&gpath) {
         Ok(g) => g,
         Err(e) => {
             let side = gpath.with_extension("toml.recovered");
@@ -855,6 +908,25 @@ pub fn run() {
             Globals::load(&side).unwrap_or_else(|_| Globals::empty(&side))
         }
     };
+    // "Load settings from a custom folder or URL": the location's settings replace the local
+    // ones before anything reads them; its questions and failures show with the first window.
+    let (prefs_saved, prefs_startup) = prefs_ui::load_at_start(&mut globals, &mut store, &prefs_ui::curl_fetch);
+    let prefs_launch_folder = Some(globals.string(crate::remote_prefs::FOLDER_KEY));
+    if prefs_saved.is_some() {
+        if let Err(e) = globals.save() {
+            banners.set("globals", format!("Could not save settings: {e}"));
+        }
+        if let Err(e) = store.save() {
+            banners.set("save", format!("Could not save settings: {e}"));
+        }
+    }
+    // The legacy global AI headers move into each manual model once (`iTermMigrationHelper.m:458`).
+    // After the custom settings folder or URL load, so headers arriving from there move too.
+    if crate::ai_models::migrate_legacy_headers(&mut globals) {
+        if let Err(e) = globals.save() {
+            banners.set("globals", format!("Could not save settings: {e}"));
+        }
+    }
     // The Script Console starts with the Automatic Profile Switching entry while its logging
     // is on (`SH:340-351`).
     let aps_logging = globals.bool(aps_ui::LOG_KEY);
@@ -1116,6 +1188,8 @@ pub fn run() {
         last_blink: Instant::now(),
         api_server: None,
         api_jar: Default::default(),
+        ssh_secrets: Default::default(),
+        ssh_secret_server: None,
         script_history: crate::script_history::History::new(aps_logging, api_ui::unix_secs()),
         api_alerts: Vec::new(),
         api_on: false,
@@ -1156,6 +1230,11 @@ pub fn run() {
         uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
         scripts_alerts: VecDeque::new(),
         scripts_alert: None,
+        ai_asks: VecDeque::new(),
+        ai_alert: None,
+        ai_reveal: None,
+        ai_key_asks: VecDeque::new(),
+        ai_key_window: None,
         script_procs: HashMap::new(),
         script_jobs_left: Vec::new(),
         script_after_enable: Vec::new(),
@@ -1187,9 +1266,28 @@ pub fn run() {
         script_dialog: None,
         script_tmux: HashMap::new(),
         script_moved: Vec::new(),
+        prefs_saved,
+        prefs_save_due: None,
+        prefs_fetch: None,
+        prefs_exit_pending: false,
+        prefs_startup,
+        prefs_reveal: false,
+        prefs_gpu: None,
+        prefs_launch_folder,
+        relaunch_on_exit: false,
+        relaunch_due: false,
+        restored_scripts,
+        restored_dir: None,
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
+    }
+    // The restart after Import All Settings and Data: the new Tandem finishes the import.
+    if app.relaunch_on_exit {
+        drop(app);
+        if let Err(e) = settings_export_ui::start_relaunched() {
+            message_box(&format!("Could not start Tandem again: {e}. Start it to finish the import."));
+        }
     }
 }
 
@@ -1589,8 +1687,9 @@ impl App {
     /// API" and `setCookie` are both on and the server runs. The numbers are those at launch:
     /// the window's number, the tab it goes into, and iTerm2's pane number (the tab's session
     /// count less one once it is in the tab, `TAB:7435-7443`). The result holds a secret:
-    /// never log it.
-    fn session_env(&mut self, id: PaneId, p: &Profile) -> (Vec<String>, Option<String>) {
+    /// never log it. A pane started on SSH transport `t` other than ConPTY is told which
+    /// (`TANDEM_SSH_TRANSPORT`, for it2ssh).
+    fn session_env(&mut self, id: PaneId, p: &Profile, t: crate::ssh_transport::Transport) -> (Vec<String>, Option<String>) {
         let window = self.window_number();
         let counts: Vec<usize> = self.tabs.iter().map(|t| t.layout.panes().len()).collect();
         let holding = self.tabs.iter().position(|t| t.layout.panes().contains(&id));
@@ -1615,6 +1714,9 @@ impl App {
             .filter(|_| self.globals.bool("addUtilitiesToPATH"))
             .and_then(|folder| crate::utilities::path_entry(&folder.to_string_lossy()))
             .and_then(|entry| crate::utilities::session_path(std::env::var_os("PATH").as_deref(), &system_root, &entry));
+        // Every profile's Path to SSH is passed (`PS:3247-3252`, `PS:3548`).
+        let ssh_path = crate::ssh_config::from_profile(p).path_to_ssh;
+        let transport = (t != crate::ssh_transport::Transport::Conpty).then(|| crate::ssh_transport::label(t));
         let facts = crate::session_env::Facts {
             window,
             tab,
@@ -1625,6 +1727,8 @@ impl App {
             term_features: &term_features,
             lc_terminal: self.globals.bool("shouldSetLCTerminal"),
             path: path.as_deref(),
+            ssh_path: ssh_path.as_deref(),
+            ssh_transport: transport,
         };
         (crate::session_env::overlay(crate::session_env::vars(&facts), &extra), cookie)
     }
@@ -1660,7 +1764,11 @@ impl App {
     fn start_pane_as(&mut self, id: PaneId, rect: Rect, guid: Option<&str>) -> bool {
         let (cols, rows) = self.grid_size(rect);
         let p = self.profile(guid);
-        let cmd = self.start_command_override.clone().unwrap_or_else(|| profile::command_line(&p, &self.shell));
+        let (cmd, transport) = match self.start_command_override.clone() {
+            // The API's create command never takes the SSH path.
+            Some(cmd) => (cmd, crate::ssh_transport::Transport::Conpty),
+            None => self.profile_command(&p),
+        };
         // A restored arrangement names each session's folder.
         let (cwd, warning) = match &self.start_dir_override {
             Some(crate::arrangement::Folder::Forced(d)) if std::path::Path::new(d).is_dir() => (PathBuf::from(d), None),
@@ -1684,15 +1792,27 @@ impl App {
             self.host = None;
             self.banners.set("host", "The session host stopped. New shells run inside Tandem, so they end with it.");
         }
-        let (env, cookie) = self.session_env(id, &p);
+        let (env, cookie) = self.session_env(id, &p, transport);
         let started = match &self.host {
-            Some(h) => Pane::start_hosted(id, h, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone()),
-            None => Pane::start(id, &self.api, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone()),
+            Some(h) => match Pane::start_hosted_transport(id, h, transport, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone()) {
+                // A host below protocol 4 cannot run this transport: the session runs inside
+                // Tandem instead.
+                Err(e) if e == crate::host_client::HOST_TOO_OLD => {
+                    self.banners.set("host", "The session host is too old for this SSH session, so it runs inside Tandem.");
+                    Pane::start_transport(id, &self.api, transport, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone())
+                }
+                other => other,
+            },
+            None => Pane::start_transport(id, &self.api, transport, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone()),
         };
         match started {
             Ok(mut pane) => {
                 pane.cookie = cookie;
                 pane.command = cmd;
+                if self.start_command_override.is_none() {
+                    pane.ssh.profile_ssh = profile::is_ssh(&p);
+                    pane.ssh.initial_directory = profile::ssh_initial_directory(&p);
+                }
                 self.install_pane(id, pane, &p);
                 true
             }
@@ -1702,6 +1822,25 @@ impl App {
                 false
             }
         }
+    }
+
+    /// The command profile `p` starts and its transport. An SSH profile runs `it2ssh.exe` from
+    /// the utilities folder `utilities::ensure` made, on the chosen SSH transport, only with SSH
+    /// Integration on, the conductor hook in place and the file there; otherwise plain ssh on
+    /// ConPTY, with the `ssh` banner saying why when SSH Integration is on.
+    fn profile_command(&mut self, p: &Profile) -> (String, crate::ssh_transport::Transport) {
+        use crate::ssh_session::{profile_banner, profile_it2ssh, CONDUCTOR_READY};
+        let exe = profile_it2ssh(self.utilities.as_deref(), CONDUCTOR_READY, std::path::Path::is_file);
+        let present = exe.is_some();
+        let it2ssh = exe.as_deref();
+        // A blank Command runs the shell, not ssh, so it gets no banner.
+        let runs_ssh = profile::is_ssh(p) && !p.string("Command").trim().is_empty();
+        match profile_banner(runs_ssh, crate::ssh_config::from_profile(p).ssh_integration, CONDUCTOR_READY, present) {
+            Some(text) => self.banners.set("ssh", text),
+            None => self.banners.clear("ssh"),
+        }
+        let transport = if profile::ssh_integrated(p, it2ssh) { crate::ssh_transport::CHOSEN } else { crate::ssh_transport::Transport::Conpty };
+        (profile::command_line(p, &self.shell, it2ssh), transport)
     }
 
     /// A started pane takes its profile's look, triggers, and input settings.
@@ -1840,6 +1979,14 @@ impl App {
             Edit::Error(e) => self.banners.set("import", e),
             Edit::SnippetsChanged => self.save_snippets(),
             Edit::GlobalsChanged => self.globals_changed(true),
+            Edit::PrefsCopyNow => {
+                self.globals_changed(true);
+                self.prefs_offer_copy();
+            }
+            Edit::PrefsSaveNow => self.prefs_save_now(true),
+            Edit::ExportAll => self.export_all(),
+            Edit::ImportAll => self.import_all(),
+            Edit::EraseAll => self.erase_all(),
             Edit::Changed(_) | Edit::Imported(_) => {
                 // Rules may have changed: every session looks again (iTerm2's reloadAllProfiles).
                 for s in self.aps.values_mut() {
@@ -1965,6 +2112,7 @@ impl App {
             Ok(()) => self.banners.clear("save"),
             Err(e) => self.banners.set("save", format!("Could not save settings: {e}")),
         }
+        self.prefs_changed();
     }
 
     /// Takes the renderer's fonts from the default profile. A font that is not
@@ -2170,7 +2318,9 @@ impl App {
                 self.disinter_here();
                 return;
             }
-            // The window's last tab closed: the window goes; the last window ends Tandem.
+            // The window's last tab closed: the window goes; the last window ends Tandem. The
+            // settings folder's quit question may open after it has gone, with its GPU.
+            self.prefs_gpu = self.gpu.as_ref().map(|g| (g.instance.clone(), g.adapter.clone(), g.device.clone(), g.queue.clone()));
             if !self.drop_current_window() {
                 self.save_pending_settings();
                 self.save_empty_state();
@@ -2180,7 +2330,11 @@ impl App {
                 if self.save_due.is_some() {
                     self.save_now();
                 }
-                event_loop.exit();
+                if self.prefs_before_exit() {
+                    event_loop.exit();
+                }
+            } else {
+                self.prefs_gpu = None;
             }
             return;
         }
@@ -2413,6 +2567,7 @@ impl App {
             Err(e) => self.banners.set("globals", format!("Could not save settings: {e}")),
         }
         self.refresh_route();
+        self.prefs_changed();
     }
 
     /// Mouse reporting is allowed for a pane: its Toggle Mouse Reporting choice, else its
@@ -3221,6 +3376,10 @@ impl ApplicationHandler<UserEvent> for App {
                 self.gpu = Some(gpu);
                 self.windows.start(k);
                 self.registry.open(k);
+                // The settings folder's questions and failures from the launch.
+                for ask in std::mem::take(&mut self.prefs_startup) {
+                    self.ask_scripts(ask);
+                }
                 // The Python API starts with the first window when it is on.
                 self.api_launch();
                 // Replaced scripts and installs an earlier run left are put right first.
@@ -3228,6 +3387,10 @@ impl ApplicationHandler<UserEvent> for App {
                 self.scripts_scan_start();
                 // With the API up (or not) and the Scripts folder made: AutoLaunch, once.
                 self.run_autolaunch();
+                // Scripts from an Import All Settings and Data (installed for the next run's
+                // AutoLaunch, as iTerm2 relaunches after installing them).
+                self.import_restored_scripts();
+                self.ssh_secrets_start();
             }
             Err(e) => {
                 message_box(&format!("Could not start the GPU renderer: {e}"));
@@ -3401,8 +3564,16 @@ impl ApplicationHandler<UserEvent> for App {
         let import_due = self.import_tick();
         self.script_export_tick();
         self.scripts_scan_tick();
+        // OK in "Importing Settings and Data": Tandem quits and starts again.
+        if std::mem::take(&mut self.relaunch_due) {
+            self.relaunch(event_loop);
+        }
+        self.prefs_tick(event_loop);
         self.open_script_alerts(event_loop);
         self.open_scripts_alerts(event_loop);
+        self.open_ai_alert(event_loop);
+        self.open_ai_key_window(event_loop);
+        self.open_ai_reveal(event_loop);
         self.open_script_dialogs(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
@@ -3422,7 +3593,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
         let tip_due = self.tick_tab_tip();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, tip_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, tip_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -3527,7 +3698,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
             return;
         }
         for profiles in [false, true] {
@@ -3550,15 +3721,27 @@ impl ApplicationHandler<UserEvent> for App {
                     let edit = slot.as_mut().unwrap().redraw(&mut self.store, &mut self.globals, &mut self.snippets);
                     // Profiles > Session's "Configure Status Bar" opens the setup window.
                     let setup = slot.as_mut().and_then(|s| s.configure_status_bar.take());
+                    // Configure SSH's help button opens its page in the browser.
+                    let url = slot.as_mut().and_then(|s| s.open_url.take());
                     self.apply_edit(edit);
                     if let Some(guid) = setup {
                         self.open_status_setup(statusbar_ui::SetupTarget::Shared(guid), None, false, event_loop);
+                    }
+                    if let Some(url) = url {
+                        if let Err(e) = semantic_ui::shell_open(&url, None, false) {
+                            self.banners.set("window", format!("Could not open {url}: {e}"));
+                        }
                     }
                 }
                 other => {
                     slot.as_mut().unwrap().event(&other);
                 }
             }
+            return;
+        }
+        // Tandem is ending once the settings folder's quit question is answered: the terminal
+        // windows, whose sessions are gone, take nothing more.
+        if self.prefs_exit_pending {
             return;
         }
         // Every other window is a terminal window: make it current first.

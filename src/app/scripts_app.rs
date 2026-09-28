@@ -747,6 +747,10 @@ pub(super) struct Import {
     source: PathBuf,
     /// An archive the scan found: moved to the Recycle Bin once installed.
     trash: bool,
+    /// Imported with no questions and no result alert, into AutoLaunch when true (iTerm2's
+    /// `avoidUI` with `offerAutoLaunch`, Import All Settings and Data); None for a person's
+    /// import.
+    quiet: Option<bool>,
     /// `<Scripts>\.installing-<UUID>`: the archive is extracted here, on the Scripts folder's
     /// volume, so the install is a rename; removed at the end, and at the next start if Tandem
     /// ended first.
@@ -765,7 +769,7 @@ pub(super) struct Import {
 
 /// A file or folder removed, a link without touching what it names; errors ignored (iTerm2
 /// passes `error:nil`).
-fn remove_path(p: &Path) {
+pub(super) fn remove_path(p: &Path) {
     let Ok(m) = p.symlink_metadata() else { return };
     if m.file_type().is_symlink() {
         let _ = std::fs::remove_file(p).or_else(|_| std::fs::remove_dir(p));
@@ -796,7 +800,7 @@ pub(super) fn recycle(path: &Path) {
 }
 
 /// Runs tar.exe from System32 with `args` (never one from PATH).
-fn run_tar(args: Vec<String>) -> Result<(), String> {
+pub(super) fn run_tar(args: Vec<String>) -> Result<(), String> {
     let mut runner = RealRunner::new(std::sync::mpsc::channel().0);
     use crate::script_provision::Runner;
     runner.run(&crate::script_provision::Step { program: RealRunner::system_tool("tar.exe")?, args, env: Vec::new() }).map(|_| ())
@@ -820,7 +824,7 @@ fn hard_links(p: &Path) -> u32 {
 /// point (`FILE_ATTRIBUTE_REPARSE_POINT`: a symbolic link, a junction or any other kind), a
 /// folder, or a file with its hard link count. A folder that cannot be read reads as a
 /// reparse point, so the archive is refused.
-fn stage_entries(dir: &Path) -> Vec<(String, sa::Stat)> {
+pub(super) fn stage_entries(dir: &Path) -> Vec<(String, sa::Stat)> {
     use std::os::windows::fs::MetadataExt;
     const REPARSE: u32 = 0x400;
     let Ok(rd) = std::fs::read_dir(dir) else { return vec![(String::new(), sa::Stat::Reparse)] };
@@ -885,37 +889,50 @@ fn export_kind(path: &Path) -> Option<bool> {
     (path.is_dir() && path.join(sa::SETUP_CFG).exists() && runtime && path.join(&name).join(format!("{name}.py")).exists()).then_some(true)
 }
 
-/// Writes the zip of `<parent>\<name>`'s `setup.cfg` and inner folder on the Desktop
-/// (`EX:102-150`).
-fn export_zip(desktop: &Path, parent: &Path, name: &str) -> Result<PathBuf, String> {
-    let out = sa::export_name(desktop, name, &|p: &Path| p.exists());
-    run_tar(sa::export_tar_args(&out, parent, name)).map_err(|_| {
-        remove_path(&out);
+/// Writes `zip` from `<parent>\<name>`'s `setup.cfg` and inner folder (`EX:102-150`); a
+/// partial zip is removed.
+fn zip_to(zip: &Path, parent: &Path, name: &str) -> Result<(), String> {
+    run_tar(sa::export_tar_args(zip, parent, name)).map_err(|_| {
+        remove_path(zip);
         sa::ZIP_FAILED.to_string()
-    })?;
+    })
+}
+
+/// The name a script's zip takes: a full environment's folder name, a basic script's stem.
+fn export_zip_name(path: &Path, full: bool) -> String {
+    let name = if full { path.file_name() } else { path.file_stem() };
+    name.map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// Exports a script on the Desktop, as `<name>.zip` or the first free `<name> (n).zip`. The
+/// zip's path, or the error's text.
+fn export_one(path: &Path, autolaunch: bool, desktop: &Path) -> Result<PathBuf, String> {
+    let full = export_kind(path).ok_or_else(|| sa::NO_SCRIPT_FOUND.to_string())?;
+    let out = sa::export_name(desktop, &export_zip_name(path, full), &|p: &Path| p.exists());
+    export_script_to(path, &out, autolaunch)?;
     Ok(out)
 }
 
-/// `exportScriptAtURL:` (`EX:37-90`), unsigned: a basic script is staged as a full
-/// environment in a temporary folder (`setup.cfg` with the default version, the script in
-/// `<name>\<name>`, `metadata.json`); a full one gets `metadata.json` written into its own
-/// folder; then the zip. The zip's path, or the error's text.
-fn export_one(path: &Path, autolaunch: bool, desktop: &Path) -> Result<PathBuf, String> {
+/// `exportScriptAtURL:` (`EX:37-90`), unsigned, into `zip`: a basic script is staged as a
+/// full environment in a temporary folder (`setup.cfg` with the default version, the script
+/// in `<name>\<name>`, `metadata.json`); a full one gets `metadata.json` written into its own
+/// folder; then the zip. The error's text when it fails. Scripts > Manage > Export and Export
+/// All Settings and Data both export through it.
+pub(super) fn export_script_to(path: &Path, zip: &Path, autolaunch: bool) -> Result<(), String> {
     let full = export_kind(path).ok_or_else(|| sa::NO_SCRIPT_FOUND.to_string())?;
+    let name = export_zip_name(path, full);
     if full {
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         // iTerm2 ignores a failure to write it.
         let _ = std::fs::write(path.join(sa::METADATA), sa::metadata_json(autolaunch));
         let parent = path.parent().unwrap_or(path);
-        return export_zip(desktop, parent, &name);
+        return zip_to(zip, parent, &name);
     }
-    let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let temp = std::env::temp_dir().join(format!("tandem-export-{}", crate::api_auth::fresh_key()));
-    let staged = temp.join(&stem);
+    let staged = temp.join(&name);
     // The one helper for a full environment's files: its `setup.cfg`, then the script copied
     // over the main it names (`<name>\<name>\<name>.py`, the script's own file name) byte for
     // byte.
-    let files = sn::full_environment_files(&staged, &stem, &[], rt::DEFAULT_PYTHON, "", None);
+    let files = sn::full_environment_files(&staged, &name, &[], rt::DEFAULT_PYTHON, "", None);
     let result = sn::write_files(&files)
         .and_then(|_| {
             let main = &files[1].0;
@@ -923,10 +940,15 @@ fn export_one(path: &Path, autolaunch: bool, desktop: &Path) -> Result<PathBuf, 
         })
         .and_then(|_| {
             let _ = std::fs::write(staged.join(sa::METADATA), sa::metadata_json(autolaunch));
-            export_zip(desktop, &temp, &stem)
+            zip_to(zip, &temp, &name)
         });
     remove_path(&temp);
     result
+}
+
+/// `urlIsScript:` (`EX:245-247`): what Export All Settings and Data exports.
+pub(super) fn is_exportable_script(path: &Path) -> bool {
+    export_kind(path).is_some()
 }
 
 /// Puts right what an import that did not finish left in the Scripts folder
@@ -1036,8 +1058,21 @@ impl App {
     /// way (iTerm2's serial install queue). A `.py` is copied into the Scripts folder; a
     /// signed `.its` is refused; anything else is extracted off the UI thread.
     pub(super) fn import_path(&mut self, path: PathBuf, trash: bool) {
+        self.import_start(path, trash, None);
+    }
+
+    /// An import with no UI (`avoidUI`, `IE:1069-1080`): no "Script Already Exists" (the old
+    /// script is replaced), no result alert (a failure is logged in the app-wide console
+    /// entry), and with `autolaunch` the script goes into the AutoLaunch folder
+    /// (`shouldAutoLaunchWhenTrusted`, `iTermScriptArchive.m:216-230`). A download is still
+    /// asked for.
+    pub(super) fn import_quietly(&mut self, path: PathBuf, autolaunch: bool) {
+        self.import_start(path, false, Some(autolaunch));
+    }
+
+    fn import_start(&mut self, path: PathBuf, trash: bool, quiet: Option<bool>) {
         if self.importing.is_some() {
-            return self.import_queue.push_back((path, trash));
+            return self.import_queue.push_back((path, trash, quiet));
         }
         let scripts = self.scripts_folder();
         let _ = std::fs::create_dir_all(&scripts);
@@ -1049,9 +1084,9 @@ impl App {
                     let mut out = std::fs::OpenOptions::new().write(true).create_new(true).open(&to)?;
                     std::io::copy(&mut from, &mut out).map(|_| ())
                 });
-                self.import_result(path, trash, copied.map(|_| Some(to)).map_err(|e| e.to_string()));
+                self.import_result(path, trash, quiet, copied.map(|_| Some(to)).map_err(|e| e.to_string()));
             }
-            Some("its") => self.import_result(path, trash, Err(sa::its_refused())),
+            Some("its") => self.import_result(path, trash, quiet, Err(sa::its_refused())),
             _ => {
                 let staging = scripts.join(format!("{}{}", sa::STAGING_PREFIX, crate::api_auth::fresh_key()));
                 let (tx, rx) = std::sync::mpsc::channel();
@@ -1061,7 +1096,7 @@ impl App {
                     let _ = tx.send(extract_archive(&zip, &to));
                     notify();
                 });
-                self.importing = Some(Import { source: path, trash, staging, extracting: Some(rx), layout: None, name: String::new(), dest: PathBuf::new(), backup: None, moving: None });
+                self.importing = Some(Import { source: path, trash, quiet, staging, extracting: Some(rx), layout: None, name: String::new(), dest: PathBuf::new(), backup: None, moving: None });
             }
         }
     }
@@ -1118,11 +1153,24 @@ impl App {
             sa::Layout::Basic { file } => file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
             sa::Layout::Full { name, .. } => name.clone(),
         };
-        let dest = self.scripts_folder().join(&name);
+        let quiet = self.importing.as_ref().and_then(|i| i.quiet);
+        let folder = match quiet {
+            Some(true) => crate::scripts::autolaunch_folder(&self.scripts_folder()),
+            _ => self.scripts_folder(),
+        };
+        // An AutoLaunch folder reached through a link to a network path is never probed.
+        if quiet == Some(true) && !crate::scripts::ancestors_stay_local(&folder, &crate::scripts::read_link) {
+            return self.import_finish(Err(crate::scripts::autolaunch_not_local(&folder).trim_end().to_string()));
+        }
+        let _ = std::fs::create_dir_all(&folder);
+        let dest = folder.join(&name);
         let Some(i) = self.importing.as_mut() else { return };
         i.layout = Some(layout);
         i.name = name.clone();
         i.dest = dest.clone();
+        if dest.exists() && quiet.is_some() {
+            return self.import_replace(&name);
+        }
         if dest.exists() {
             let buttons = vec![sa::REPLACE.to_string(), crate::api_auth::CANCEL.to_string()];
             let ask = Ask { heading: sa::ALREADY_HEADING.to_string(), text: sa::already_installed(&name), buttons, silence: None, then: Then::AlreadyInstalled(name) };
@@ -1223,19 +1271,21 @@ impl App {
         let Some(i) = self.importing.take() else { return };
         let staging = i.staging;
         std::thread::spawn(move || remove_path(&staging));
-        self.import_result(i.source, i.trash, result);
+        self.import_result(i.source, i.trash, i.quiet, result);
     }
 
     /// `importDidFinishWithErrorMessage:` (`M:761-789`): the Scripts folder is scanned again;
     /// a failure asks "Could Not Install Script" (OK, Try Again), a success recycles a found
     /// archive and asks "Script Imported Successfully" (OK, Launch); a quiet end shows
     /// nothing. Then the next waiting import starts.
-    fn import_result(&mut self, source: PathBuf, trash: bool, result: Result<Option<PathBuf>, String>) {
+    fn import_result(&mut self, source: PathBuf, trash: bool, quiet: Option<bool>, result: Result<Option<PathBuf>, String>) {
         if let Some(scanner) = &self.scripts_scan {
             scanner.rescan();
         }
         let ok = crate::api_auth::OK.to_string();
         match result {
+            Err(message) if quiet.is_some() => self.script_log_app(crate::settings_export::script_import_failed(&source, &message)),
+            _ if quiet.is_some() => {}
             Ok(None) => {}
             Ok(Some(location)) => {
                 if trash {
@@ -1250,8 +1300,9 @@ impl App {
             }
         }
         if self.importing.is_none() {
-            if let Some((path, trash)) = self.import_queue.pop_front() {
-                self.import_path(path, trash);
+            match self.import_queue.pop_front() {
+                Some((path, trash, quiet)) => self.import_start(path, trash, quiet),
+                None => self.restored_scripts_done(),
             }
         }
     }

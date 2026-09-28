@@ -1274,6 +1274,8 @@ mod tests {
             random: &mut random,
             run: &mut run,
             have: &have,
+            secret: &mut || None,
+            env_all: &Vec::new,
         };
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
         let code = imgls(&args, &mut io, fs, NOW, &utc);

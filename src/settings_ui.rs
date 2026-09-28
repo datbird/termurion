@@ -48,6 +48,17 @@ pub enum Edit {
     GlobalsChanged,
     /// The snippets changed (Settings > Shortcuts).
     SnippetsChanged,
+    /// A settings folder was just picked with "Load settings from a custom folder or URL"
+    /// turned on: the settings changed, and "Copy local settings to custom folder now?" asks.
+    PrefsCopyNow,
+    /// General > Settings' Save Now.
+    PrefsSaveNow,
+    /// General > Settings' Export All Settings and Data button.
+    ExportAll,
+    /// General > Settings' Import All Settings and Data button.
+    ImportAll,
+    /// General > Settings' Erase All Settings and Data button.
+    EraseAll,
 }
 
 /// The settings window's panes, as iTerm2's toolbar lists them.
@@ -62,6 +73,13 @@ pub enum Page {
     Appearance,
     Arrangements,
 }
+
+/// The page bar's options menu item (`PP:1096-1107`), bound to `NoSyncHideDefaultValuedSettings`.
+pub const SHOW_INDICATORS: &str = "Show indicators for non-default values";
+/// The options menu's name (iTerm2's search field menu, `PP:1096`), shown on hover.
+pub const SEARCH_OPTIONS: &str = "Search Options";
+/// The options menu button's glyph: Segoe Fluent Icons' Search.
+const SEARCH_GLYPH: char = '\u{E721}';
 
 /// Panes that arrive with later milestones.
 const LATER_PAGES: [(&str, u8); 0] = [];
@@ -98,6 +116,11 @@ pub struct SettingsWindow {
     /// Profiles > Session's "Configure Status Bar" was pressed for this profile Guid: the
     /// status bar setup window opens for it (the app takes it after each frame).
     pub configure_status_bar: Option<String>,
+    /// Profiles > General's Configure SSH sheet.
+    ssh_sheet: Option<crate::settings_ssh::Sheet>,
+    /// A page to open in the browser (the Configure SSH help button); the app takes it after
+    /// each frame.
+    pub open_url: Option<String>,
     /// The window was opened from a tmux session (iTerm2's `_tmuxSession`, set by how the
     /// panel opened, `PreferencePanel.m:725-766`): its status bar controls are disabled.
     tmux_session: bool,
@@ -106,6 +129,10 @@ pub struct SettingsWindow {
     /// The registered session title providers as (display name, unique id), for the Title
     /// Function popup; the app sets them when the window opens and when they change.
     pub title_providers: Vec<(String, String)>,
+    /// Settings > Advanced: the search, the non-default filter and the field being edited.
+    advanced: crate::settings_advanced_pane::AdvancedState,
+    /// Settings > General > AI: its sub-tab and whether it was just revealed.
+    pub ai: crate::settings_ai::State,
 }
 
 /// Turning from page `from` to `to` applies a custom scripts folder typed and not yet applied
@@ -122,6 +149,19 @@ impl SettingsWindow {
     pub fn show_page(&mut self, page: Page) -> bool {
         let apply = page_turn_applies(self.host.ctx(), self.page, page);
         self.page = page;
+        apply
+    }
+
+    /// Shows Settings > General > AI on one of its sub-tabs (the gate's Reveal, Codecierge's
+    /// Reveal Setting; iTerm2 opens Settings at `Enable AI`, `GK:61-63`, `CC:741-743`). It turns
+    /// the page through `show_page`, so its answer is the same: true when a typed custom scripts
+    /// folder is to be applied.
+    #[must_use]
+    pub fn show_ai(&mut self, sub: crate::settings_ai::SubTab) -> bool {
+        let apply = self.show_page(Page::General);
+        self.ai.sub = sub;
+        self.ai.reveal = true;
+        self.host.window.request_redraw();
         apply
     }
 
@@ -192,9 +232,13 @@ impl SettingsWindow {
             shortcuts: Default::default(),
             hotkeys: Default::default(),
             configure_status_bar: None,
+            ssh_sheet: None,
+            open_url: None,
             tmux_session: false,
             open_editor: None,
             title_providers: Vec::new(),
+            advanced: Default::default(),
+            ai: Default::default(),
         })
     }
 
@@ -272,10 +316,16 @@ impl SettingsWindow {
         let arr = &mut self.arr;
         let shortcuts = &mut self.shortcuts;
         settings_keys::set_snippets(&snippets.snippets);
+        settings_keys::set_indicate_non_default(globals.bool("NoSyncHideDefaultValuedSettings"));
         let hk = &mut self.hotkeys;
         let configure_status_bar = &mut self.configure_status_bar;
+        let ssh_sheet = &mut self.ssh_sheet;
+        let open_url = &mut self.open_url;
+        let home = std::env::var("USERPROFILE").unwrap_or_default();
         let tmux_session = self.tmux_session;
         let title_providers = &self.title_providers;
+        let advanced = &mut self.advanced;
+        let ai = &mut self.ai;
         let hotkey_prefs: Vec<(String, crate::hotkey::Prefs)> = store.profiles.iter().map(|p| (p.guid(), crate::hotkey::Prefs::from_profile(p))).collect();
         let rule_owners: Vec<crate::aps::Candidate> = store
             .profiles
@@ -294,6 +344,19 @@ impl SettingsWindow {
                         for (name, m) in LATER_PAGES {
                             ui.add_enabled(false, egui::Button::new(name)).on_disabled_hover_text(format!("Comes in milestone {m}."));
                         }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let title = settings_keys::icon_text(ui.ctx(), SEARCH_GLYPH).unwrap_or_else(|| egui::RichText::new(SEARCH_OPTIONS));
+                            ui.menu_button(title, |ui| {
+                                let mut on = globals.bool("NoSyncHideDefaultValuedSettings");
+                                if ui.checkbox(&mut on, SHOW_INDICATORS).changed() {
+                                    globals.set("NoSyncHideDefaultValuedSettings", Value::Boolean(on));
+                                    settings_keys::set_indicate_non_default(on);
+                                    edit = Edit::GlobalsChanged;
+                                }
+                            })
+                            .response
+                            .on_hover_text(SEARCH_OPTIONS);
+                        });
                     });
                 });
                 if page != Page::Profiles {
@@ -308,9 +371,31 @@ impl SettingsWindow {
                                 }
                                 c
                             }
-                            Page::General => settings_keys::schema_page(ui, globals, "General"),
-                            Page::Advanced => settings_keys::schema_page(ui, globals, "Advanced"),
-                            Page::Appearance => settings_keys::schema_page(ui, globals, "Appearance"),
+                            Page::General => match settings_keys::schema_page_with(ui, globals, "General", &mut |ui, g| crate::settings_ai::section(ui, g, ai)) {
+                                (_, settings_keys::PrefsAction::CopyNow) => {
+                                    edit = Edit::PrefsCopyNow;
+                                    false
+                                }
+                                (_, settings_keys::PrefsAction::SaveNow) => {
+                                    edit = Edit::PrefsSaveNow;
+                                    false
+                                }
+                                (_, settings_keys::PrefsAction::ExportAll) => {
+                                    edit = Edit::ExportAll;
+                                    false
+                                }
+                                (_, settings_keys::PrefsAction::ImportAll) => {
+                                    edit = Edit::ImportAll;
+                                    false
+                                }
+                                (_, settings_keys::PrefsAction::EraseAll) => {
+                                    edit = Edit::EraseAll;
+                                    false
+                                }
+                                (c, _) => c,
+                            },
+                            Page::Advanced => crate::settings_advanced_pane::page(ui, globals, advanced),
+                            Page::Appearance => settings_keys::schema_page(ui, globals, "Appearance").0,
                             Page::Arrangements => crate::settings_arrangements::page(ui, globals, &profile_tables, arr),
                             Page::Shortcuts => match crate::settings_shortcuts::page(ui, globals, snippets, shortcuts, &profiles) {
                                 crate::settings_shortcuts::Changed::None => false,
@@ -386,20 +471,28 @@ impl SettingsWindow {
                 if ui.button("Import from iTerm2...").clicked() {
                     if let Some(path) = rfd::FileDialog::new().add_filter("iTerm2 settings or Dynamic Profiles", &["plist", "json"]).pick_file() {
                         edit = match crate::import::from_file(&path) {
-                            Ok(list) => {
+                            Ok(mut list) => {
                                 let n = list.len();
+                                // A full settings plist also carries the global key and pointer
+                                // settings, and maybe iTerm2's legacy keys, which are migrated into
+                                // the imported values and profiles before they are stored.
+                                let is_plist = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("plist"));
+                                let globals_read = is_plist.then(|| {
+                                    let mut values = crate::import::globals_from_file(&path)?;
+                                    crate::import::migrate_legacy(&mut values, &crate::import::legacy_from_file(&path)?, &mut list);
+                                    Ok::<_, String>(values)
+                                });
                                 for p in list {
                                     store.profiles.retain(|q| q.guid() != p.guid());
                                     store.add(p);
                                 }
-                                // A full settings plist also carries the global key and pointer settings.
-                                let is_plist = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("plist"));
-                                match is_plist.then(|| crate::import::globals_from_file(&path)) {
+                                match globals_read {
                                     Some(Err(e)) => Edit::Error(e),
                                     Some(Ok(values)) => {
                                         for (k, v) in values {
                                             globals.set(&k, v);
                                         }
+                                        crate::ai_models::migrate_after_import(globals);
                                         Edit::Imported(n)
                                     }
                                     None => Edit::Imported(n),
@@ -468,6 +561,12 @@ impl SettingsWindow {
                                 }
                                 continue;
                             }
+                            if s.key == crate::ssh_config::KEY {
+                                if crate::settings_ssh::row(ui, &selected, profile, ssh_sheet, open_url, &home) {
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
                             if s.key == "Title Function" {
                                 if title_function_row(ui, profile, s, title_providers) {
                                     edit = Edit::Changed(selected.clone());
@@ -505,6 +604,9 @@ impl SettingsWindow {
                 });
             });
         });
+        if let Some(e) = self.ai.take_error() {
+            edit = Edit::Error(e);
+        }
         self.tab = tab;
         // Leaving a page applies a custom scripts folder typed there (iTerm2's
         // `willDeselectTab`, `GP:3432-3434`); the field is no longer drawn to lose the focus.
@@ -553,9 +655,10 @@ fn title_function_row(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, pro
     let current = function.as_ref().map(|(_, id)| id.clone());
     let (text, items) = title_choice(components, function, providers);
     let mut picked = None;
+    let mut popup_rect = None;
     ui.horizontal(|ui| {
         ui.label(&s.label);
-        egui::ComboBox::from_id_salt(&s.key).selected_text(text).show_ui(ui, |ui| {
+        let r = egui::ComboBox::from_id_salt(&s.key).selected_text(text).show_ui(ui, |ui| {
             for (i, (label, id)) in items.iter().enumerate() {
                 let (on, enabled) = if i == 0 { (!custom, true) } else { (custom && current.as_deref() == Some(id.as_str()), providers.iter().any(|(_, p)| p == id)) };
                 if ui.add_enabled(enabled, egui::Button::selectable(on, label.as_str())).clicked() {
@@ -566,9 +669,13 @@ fn title_function_row(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, pro
                 }
             }
         });
+        popup_rect = Some(r.response.rect);
     })
     .response
     .on_hover_text(&s.help);
+    if let Some(rect) = popup_rect.filter(|_| settings_keys::indicate_non_default() && !profile_is_default(profile, s, &s.key)) {
+        settings_keys::non_default_bar(ui, rect, ui.is_enabled());
+    }
     match picked {
         None => false,
         Some(0) => {
@@ -601,6 +708,53 @@ pub fn edit_key(profile: &Profile, s: &Setting, dark: bool) -> String {
     }
 }
 
+/// Whether a profile control shows its default (`iTermProfilePreferencesBaseViewController.m:253-265`):
+/// the value of `key` (`edit_key`: the setting or its Light or Dark variant) nullably equals
+/// DefaultBookmark.plist's (the schema's seed) or else iTerm2's default, within 0.001. The
+/// fonts compare with Tandem's new-profile font, which stands in for Monaco 12; the Guid has no
+/// control and is never marked.
+///
+/// The controls iTerm2 gives a `hasDefaultValue` of their own follow it: the working directory
+/// (`working_directory_is_default`), Unicode version 9 (`ProfilesTextPreferencesViewController.m:296-299`,
+/// a missing value reading 9 as `iTermProfilePreferences.m:1553-1564`), and the Title Function
+/// popup, which is iTerm2's title popup keyed by Title Components
+/// (`ProfilesGeneralPreferencesViewController.m:397-398`). Has Hotkey's override (default while
+/// off, `ProfilesKeysPreferencesViewController.m:196-198`) is the ordinary rule.
+pub fn profile_is_default(profile: &Profile, s: &Setting, key: &str) -> bool {
+    match key {
+        profile::GUID => return true,
+        "Working Directory" => {
+            let home = std::env::var("USERPROFILE").unwrap_or_default();
+            return working_directory_is_default(profile.values.get(key), &home);
+        }
+        "Unicode Version" => return profile.values.get(key).map_or(9, |v| v.as_integer().unwrap_or(0)) == 9,
+        "Title Function" => {
+            if let Some(components) = schema::find("Title Components") {
+                return profile_is_default(profile, components, "Title Components");
+            }
+        }
+        _ => {}
+    }
+    let (value, preset) = if let Some(variant) = key.strip_prefix(s.key.as_str()).filter(|v| !v.is_empty()) {
+        let (seed, default) = if variant == " (Dark)" { (&s.seed_dark, &s.default_dark) } else { (&s.seed_light, &s.default_light) };
+        let preset = seed.clone().or_else(|| default.clone());
+        (profile.values.get(key).cloned().or_else(|| default.clone()).or_else(|| profile.get(&s.key)), preset)
+    } else if FONT_KEYS[..2].contains(&key) {
+        (profile.get(key), Some(Value::String(profile::WINDOWS_FONT.into())))
+    } else {
+        (profile.get(key), s.seed.clone().or_else(|| s.default.clone()))
+    };
+    settings_keys::nullably_equal(value.as_ref(), preset.as_ref())
+}
+
+/// The working directory field's rule (`ProfilesGeneralPreferencesViewController.m:356-359`,
+/// "Because new profiles are initialized with NSHomeDirectory here"): default when the text is
+/// the home folder. Tandem's new profiles store an empty path, which is default too.
+pub fn working_directory_is_default(value: Option<&Value>, home: &str) -> bool {
+    let text = value.and_then(Value::as_str).unwrap_or("");
+    text.is_empty() || text == home
+}
+
 /// Font settings follow the default profile until each pane can have its own renderer.
 pub const FONT_KEYS: [&str; 5] = ["Normal Font", "Non Ascii Font", "Use Non-ASCII Font", "Horizontal Spacing", "Vertical Spacing"];
 
@@ -618,15 +772,20 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
     };
     let mut changed = None;
     let mut commit = false;
+    // The widget that takes the value, and whether it is enabled, for the non-default bar.
+    let mut widget: Option<(egui::Rect, bool)> = None;
     ui.horizontal(|ui| {
         ui.add_enabled_ui(!s.macos_only && !font_locked, |ui| {
+            let enabled = ui.is_enabled();
             match s.kind {
                 Kind::Bool => {
                     let mut b = current.as_ref().and_then(|v| v.as_bool()).unwrap_or(false);
-                    if ui.checkbox(&mut b, &s.label).changed() {
+                    let r = ui.checkbox(&mut b, &s.label);
+                    if r.changed() {
                         changed = Some(Value::Boolean(b));
                         commit = true;
                     }
+                    widget = Some((r.rect, enabled));
                 }
                 Kind::Int => {
                     ui.label(&s.label);
@@ -639,6 +798,7 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                     if r.changed() {
                         changed = Some(Value::Integer(i));
                     }
+                    widget = Some((r.rect, enabled));
                     commit = r.drag_stopped() || (r.changed() && !r.dragged());
                 }
                 Kind::Float => {
@@ -651,6 +811,7 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                     if r.changed() {
                         changed = Some(Value::Float(f));
                     }
+                    widget = Some((r.rect, enabled));
                     commit = r.drag_stopped() || (r.changed() && !r.dragged());
                 }
                 Kind::String | Kind::Font => {
@@ -660,21 +821,24 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                     if r.changed() {
                         changed = Some(Value::String(text));
                     }
+                    widget = Some((r.rect, enabled));
                     commit = r.lost_focus();
                 }
                 Kind::Color => {
                     ui.label(&s.label);
                     let mut c = current.as_ref().map(rgb_of).unwrap_or([0, 0, 0]);
-                    if ui.color_edit_button_srgb(&mut c).changed() {
+                    let r = ui.color_edit_button_srgb(&mut c);
+                    if r.changed() {
                         changed = Some(value_of_rgb(c));
                         commit = true;
                     }
+                    widget = Some((r.rect, enabled));
                 }
                 Kind::Enum => {
                     ui.label(&s.label);
                     let now = current.clone();
                     let shown = s.choices.iter().find(|c| Some(&c.value) == now.as_ref()).map_or("".to_string(), |c| c.label.clone());
-                    egui::ComboBox::from_id_salt(&s.key).selected_text(shown).show_ui(ui, |ui| {
+                    let r = egui::ComboBox::from_id_salt(&s.key).selected_text(shown).show_ui(ui, |ui| {
                         for c in &s.choices {
                             if ui.selectable_label(Some(&c.value) == now.as_ref(), &c.label).clicked() {
                                 changed = Some(c.value.clone());
@@ -682,6 +846,7 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                             }
                         }
                     });
+                    widget = Some((r.response.rect, enabled));
                 }
                 Kind::List | Kind::Dict | Kind::Data => {
                     let n = match &current {
@@ -689,7 +854,8 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                         Some(Value::Table(t)) => t.len(),
                         _ => 0,
                     };
-                    ui.label(format!("{}: {n} item(s)", s.label)).on_hover_text("This editor arrives with its feature's milestone.");
+                    let r = ui.label(format!("{}: {n} item(s)", s.label)).on_hover_text("This editor arrives with its feature's milestone.");
+                    widget = Some((r.rect, enabled));
                 }
             }
         })
@@ -704,6 +870,9 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
     });
     if let Some(v) = changed {
         profile.set(&key, v);
+    }
+    if let Some((rect, enabled)) = widget.filter(|_| settings_keys::indicate_non_default() && !profile_is_default(profile, s, &key)) {
+        settings_keys::non_default_bar(ui, rect, enabled);
     }
     commit
 }
@@ -735,6 +904,18 @@ mod tests {
             sorted.retain(|k| keys.contains(k));
             assert_eq!(keys.len(), schema.len(), "{tab} lost settings");
         }
+    }
+
+    #[test]
+    fn stored_rows_are_in_no_pane() {
+        use crate::advanced_pane::STORED_TAB;
+        // `sections` reads the profile schema, which has no Stored tab, so this first assertion
+        // holds trivially; the global checks below are the real guard.
+        assert!(sections(STORED_TAB).is_empty());
+        // The only tabs a Page draws from the global schema: General and Appearance with
+        // settings_keys::schema_page, Advanced with settings_advanced_pane::page.
+        assert!(!["General", "Appearance", "Advanced"].contains(&STORED_TAB));
+        assert!(crate::schema::global().iter().any(|s| s.tab == STORED_TAB));
     }
 
     #[test]
@@ -772,6 +953,98 @@ mod tests {
         assert_eq!(title_choice(16, None, &providers).0, "Built-in components");
     }
 
+    /// `iTermProfilePreferencesBaseViewController.m:253-265`: a profile control is default when
+    /// its value equals DefaultBookmark.plist's (the schema's seed) or else iTerm2's default,
+    /// within 0.001.
+    #[test]
+    fn profile_indicators_follow_iterm2() {
+        assert_eq!(SHOW_INDICATORS, "Show indicators for non-default values");
+        assert_eq!(SEARCH_OPTIONS, "Search Options");
+        let mut p = Profile::new("Default");
+        let cols = crate::schema::find("Columns").unwrap();
+        assert!(profile_is_default(&p, cols, "Columns"));
+        p.set("Columns", Value::Integer(132));
+        assert!(!profile_is_default(&p, cols, "Columns"));
+        p.set("Columns", Value::Integer(80));
+        assert!(profile_is_default(&p, cols, "Columns"));
+        // The name compares with DefaultBookmark.plist's "Default" (the source; see the report).
+        let name = crate::schema::find("Name").unwrap();
+        assert!(profile_is_default(&p, name, "Name"));
+        assert!(!profile_is_default(&Profile::new("New Profile"), name, "Name"));
+        // The Guid has no control and is never marked.
+        assert!(profile_is_default(&Profile::new("x"), name, "Guid"));
+        // A color's variant key compares with the variant's seed or, without one, its default.
+        let fg = crate::schema::find("Foreground Color").unwrap();
+        let fresh = Profile::new("Default");
+        assert!(profile_is_default(&fresh, fg, "Foreground Color (Dark)"));
+        assert!(profile_is_default(&fresh, fg, "Foreground Color (Light)"));
+        let mut q = Profile::default();
+        assert!(!profile_is_default(&q, fg, "Foreground Color (Dark)"), "a missing variant reads iTerm2's default, not the seed");
+        q.set("Foreground Color (Dark)", fg.seed_dark.clone().unwrap());
+        assert!(profile_is_default(&q, fg, "Foreground Color (Dark)"));
+        q.set("Foreground Color (Dark)", fg.default_dark.clone().unwrap());
+        assert!(!profile_is_default(&q, fg, "Foreground Color (Dark)"), "the seed wins over the default");
+        q.set("Foreground Color (Light)", value_of_rgb([255, 0, 0]));
+        assert!(!profile_is_default(&q, fg, "Foreground Color (Light)"));
+        // Within 0.001 of the seed is default.
+        let near = |v: &Value| Value::Table(v.as_table().unwrap().iter().map(|(k, x)| (k.clone(), Value::Float(x.as_float().unwrap() + 0.0005))).collect());
+        q.set("Foreground Color (Dark)", near(fg.seed_dark.as_ref().unwrap()));
+        assert!(profile_is_default(&q, fg, "Foreground Color (Dark)"));
+        // Tandem's new-profile font stands in for Monaco 12.
+        let font = crate::schema::find("Normal Font").unwrap();
+        let mut f = Profile::new("Default");
+        assert!(profile_is_default(&f, font, "Normal Font"));
+        f.set("Normal Font", Value::String("Monaco 12".into()));
+        assert!(!profile_is_default(&f, font, "Normal Font"));
+    }
+
+    /// iTerm2's `hasDefaultValue` overrides for the profile controls that have one.
+    #[test]
+    fn profile_custom_indicators_follow_iterm2() {
+        // `ProfilesGeneralPreferencesViewController.m:356-359`: the working directory is default
+        // when it is the home folder (iTerm2 seeds new profiles with it); Tandem seeds new
+        // profiles with an empty path, so that is default too.
+        let home = "C:\\Users\\rob";
+        let wd = |s: &str| Some(Value::String(s.into()));
+        assert!(working_directory_is_default(wd(home).as_ref(), home));
+        assert!(working_directory_is_default(wd("").as_ref(), home));
+        assert!(working_directory_is_default(None, home));
+        assert!(!working_directory_is_default(wd("C:\\src").as_ref(), home));
+        assert!(!working_directory_is_default(wd("~").as_ref(), home), "iTerm2 compares the text");
+        let dir = crate::schema::find("Working Directory").unwrap();
+        let mut p = Profile::new("Default");
+        assert!(profile_is_default(&p, dir, "Working Directory"));
+        let user = std::env::var("USERPROFILE").unwrap_or_default();
+        p.set("Working Directory", Value::String(user));
+        assert!(profile_is_default(&p, dir, "Working Directory"));
+        p.set("Working Directory", Value::String("C:\\definitely-not-home".into()));
+        assert!(!profile_is_default(&p, dir, "Working Directory"));
+        // `ProfilesTextPreferencesViewController.m:296-299`: Unicode version 9 is default, and a
+        // missing value reads 9 (`iTermProfilePreferences.m:1553-1564`).
+        let uv = crate::schema::find("Unicode Version").unwrap();
+        let mut p = Profile::default();
+        assert!(profile_is_default(&p, uv, "Unicode Version"));
+        p.set("Unicode Version", Value::Integer(8));
+        assert!(!profile_is_default(&p, uv, "Unicode Version"));
+        p.set("Unicode Version", Value::Integer(9));
+        assert!(profile_is_default(&p, uv, "Unicode Version"));
+        // `ProfilesKeysPreferencesViewController.m:196-198`: Has Hotkey is default while off.
+        let hk = crate::schema::find("Has Hotkey").unwrap();
+        let mut p = Profile::new("Default");
+        assert!(profile_is_default(&p, hk, "Has Hotkey"));
+        p.set("Has Hotkey", Value::Boolean(true));
+        assert!(!profile_is_default(&p, hk, "Has Hotkey"));
+        // `ProfilesGeneralPreferencesViewController.m:397-398`: the title popup's key is Title
+        // Components, so the Title Function popup is marked by it.
+        let tf = crate::schema::find("Title Function").unwrap();
+        let mut p = Profile::new("Default");
+        assert!(profile_is_default(&p, tf, "Title Function"));
+        p.set("Title Function", crate::jobtitle::title_function_value("Hello", "com.ex.t"));
+        assert!(profile_is_default(&p, tf, "Title Function"), "the function alone is not the popup's key");
+        p.set("Title Components", Value::Integer(i64::from(crate::jobtitle::CUSTOM)));
+        assert!(!profile_is_default(&p, tf, "Title Function"));
+    }
+
     /// `PSV:569-573`: opened from a tmux session, both status bar controls are disabled.
     #[test]
     fn status_bar_settings_follow_psv() {
@@ -779,5 +1052,15 @@ mod tests {
         assert_eq!(status_bar_controls(false, false), (true, false), "Configure needs the bar on");
         assert_eq!(status_bar_controls(true, true), (false, false));
         assert_eq!(status_bar_controls(true, false), (false, false));
+    }
+
+    /// `PG:860-870`, `SC:10-55`: the `SSH` row is General's Configure SSH sheet.
+    #[test]
+    fn ssh_row_follows_iterm2() {
+        let s = crate::schema::find("SSH").unwrap();
+        assert_eq!(s.tab, "General");
+        assert_eq!(s.kind, Kind::Dict);
+        assert_eq!(s.label, "Configure SSH");
+        assert_eq!(s.help, "SSH Integration, the environment variables and files to copy to the remote host, and the path to ssh, for the SSH command type.");
     }
 }

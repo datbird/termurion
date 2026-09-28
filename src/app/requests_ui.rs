@@ -134,6 +134,7 @@ impl App {
             Request::OpenUrl(value) => self.open_url_request(pane, value),
             Request::ReportVariable(value) => self.report_variable_request(pane, value),
             Request::RequestUpload(value) => self.upload_request(pane, value),
+            Request::SshWillBegin | Request::SshSendConductor(_) | Request::SshEnd(_) => self.ssh_request(pane, r),
             Request::ClipboardWrite(_) | Request::ClipboardRead(_) => {}
         }
     }
