@@ -327,7 +327,7 @@ help = "1Password account name.\nThis is used if you\u2019ve enabled the 1Passwo
 [[setting]]
 key = "defaultWideMode"
 tab = "Advanced"
-section = "General"
+section = "Terminal"
 label = "Rendered documents start in Wide mode"
 type = "bool"
 default = false
@@ -336,7 +336,7 @@ help = "Documents shown rendered in place (Render Selection Natively, OSC 1337 B
 [[setting]]
 key = "nativeRenderingCSSDark"
 tab = "Advanced"
-section = "General"
+section = "Drawing"
 label = "Rendered code theme (dark background)"
 type = "string"
 default = ""
@@ -345,7 +345,7 @@ help = "A CSS file of highlight.js class colors for documents shown rendered in 
 [[setting]]
 key = "nativeRenderingCSSLight"
 tab = "Advanced"
-section = "General"
+section = "Drawing"
 label = "Rendered code theme (light background)"
 type = "string"
 default = ""
@@ -372,7 +372,7 @@ help = "A tab whose session printed something you have not looked at shows the n
 [[setting]]
 key = "silentUserNotifications"
 tab = "Advanced"
-section = "Notifications"
+section = "General"
 label = "Notifications make no sound"
 type = "bool"
 default = false
@@ -381,7 +381,7 @@ help = "Notifications from Tandem show without the Windows notification sound."
 [[setting]]
 key = "simpleNotifications"
 tab = "Advanced"
-section = "Notifications"
+section = "General"
 label = "Escape-sequence notifications show only their message"
 type = "bool"
 default = false
@@ -390,7 +390,7 @@ help = "An OSC 9 or OSC 1337 notification without a title shows only its message
 [[setting]]
 key = "sessionEndMessageText"
 tab = "Advanced"
-section = "Notifications"
+section = "Session"
 label = "Session Ended notification title"
 type = "string"
 default = ""
@@ -426,7 +426,7 @@ help = "Shell > Print leaves out text and background colors."
 [[setting]]
 key = "fileDropCoprocess"
 tab = "Advanced"
-section = "General"
+section = "Terminal"
 label = "Coprocess for dropped files"
 type = "string"
 default = ""
@@ -435,7 +435,7 @@ help = "A command run as a silent coprocess when files are dropped on a session;
 [[setting]]
 key = "disableTopRightIndicators"
 tab = "Advanced"
-section = "General"
+section = "Drawing"
 label = "Hide the indicators at the top right of a session"
 type = "bool"
 default = false
@@ -444,7 +444,7 @@ help = "Hides the icons in a session's top-right corner, such as the one that sh
 [[setting]]
 key = "showAutomaticProfileSwitchingBanner"
 tab = "Advanced"
-section = "General"
+section = "Session"
 label = "Say when Automatic Profile Switching changes the profile"
 type = "bool"
 default = true
@@ -453,7 +453,7 @@ help = "Shows \"Switched to profile\" when a session's profile changes because o
 [[setting]]
 key = "preserveFontSizeOnAutomaticProfileSwitch"
 tab = "Advanced"
-section = "General"
+section = "Session"
 label = "Keep the text size when Automatic Profile Switching changes the profile"
 type = "bool"
 default = true
@@ -461,8 +461,8 @@ help = "A session that was made bigger or smaller keeps that change when its pro
 
 [[setting]]
 key = "NoSyncEnableAutomaticProfileSwitchingLogging"
-tab = "Advanced"
-section = "General"
+tab = "Stored"
+section = "Script Console"
 label = "Write Automatic Profile Switching debug logs"
 type = "bool"
 default = false
@@ -480,7 +480,7 @@ help = "Window titles start with the window's number (1, 2, ...), which Alt+Win+
 [[setting]]
 key = "openProfilesInNewWindow"
 tab = "Advanced"
-section = "General"
+section = "Tabs"
 label = "Profiles menu opens new windows"
 type = "bool"
 default = false
@@ -517,7 +517,7 @@ help = "Closing a tab or window with more than one running session asks first."
 [[setting]]
 key = "moveLeftAfterClosingTab"
 tab = "Advanced"
-section = "General"
+section = "Tabs"
 label = "Select the tab to the left after closing a tab"
 type = "bool"
 default = false
@@ -771,7 +771,7 @@ help = "How long (seconds) terminal echo must remain disabled before Tandem trea
 
 [[setting]]
 key = "RequireAuthenticationToOpenPasswordManager"
-tab = "Advanced"
+tab = "Stored"
 section = "Password Manager"
 label = "Require authentication to open the password manager"
 type = "bool"
@@ -780,7 +780,7 @@ help = "Asks for Windows Hello (or your Windows password) before the password ma
 
 [[setting]]
 key = "RequireAuthenticationAfterScreenLocks"
-tab = "Advanced"
+tab = "Stored"
 section = "Password Manager"
 label = "Require authentication after the screen locks"
 type = "bool"
@@ -789,7 +789,7 @@ help = "Locking the screen ends the password manager's authentication, and close
 
 [[setting]]
 key = "RequireAuthenticationOnEveryPasswordManagerOpen"
-tab = "Advanced"
+tab = "Stored"
 section = "Password Manager"
 label = "Require authentication on every open"
 type = "bool"
@@ -988,7 +988,7 @@ help = "When pasting more than this many characters, require confirmation.\nSet 
 [[setting]]
 key = "EscapeWithQuotes"
 tab = "Advanced"
-section = "Pasteboard"
+section = "Experimental Features"
 label = "Escape file names with single quotes instead of backslashes."
 type = "bool"
 default = false
@@ -997,7 +997,7 @@ help = "Escape file names with single quotes instead of backslashes.\nThis is in
 [[setting]]
 key = "StripZeroWidthFormatCharactersOnPaste"
 tab = "Advanced"
-section = "Pasteboard"
+section = "Terminal"
 label = "Strip zero-width bidi/format characters when pasting?"
 type = "bool"
 default = false
@@ -1005,8 +1005,8 @@ help = "Strip zero-width bidi/format characters when pasting?\nCharacters like t
 
 [[setting]]
 key = "PasteTabToStringTabStopSize"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Paste"
 label = "The number of spaces for each tab when a paste converts tabs to spaces."
 type = "int"
 default = 4
@@ -1095,8 +1095,8 @@ help = "Should Advanced Paste automatically enable \"Wait for shell prompt befor
 
 [[setting]]
 key = "PasteSpecialChunkSize"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: chunk size"
 type = "int"
 default = 1024
@@ -1104,8 +1104,8 @@ help = "Advanced Paste's chunk size, remembered."
 
 [[setting]]
 key = "PasteSpecialChunkDelay"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: chunk delay"
 type = "float"
 default = 0.01
@@ -1113,8 +1113,8 @@ help = "Advanced Paste's delay between chunks, remembered."
 
 [[setting]]
 key = "NumberOfSpacesPerTab"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: spaces per tab"
 type = "int"
 default = 4
@@ -1122,8 +1122,8 @@ help = "Advanced Paste's spaces for each tab, remembered."
 
 [[setting]]
 key = "TabTransform"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: tab transform"
 type = "int"
 default = 0
@@ -1131,8 +1131,8 @@ help = "Advanced Paste's tab choice (0 keep, 1 spaces, 2 escape with ^V), rememb
 
 [[setting]]
 key = "EscapeShellCharsWithBackslash"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: escape shell characters with backslash"
 type = "bool"
 default = false
@@ -1140,8 +1140,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "ConvertUnicodePunctuation"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: convert Unicode punctuation"
 type = "bool"
 default = false
@@ -1149,8 +1149,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "ConvertDosNewlines"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: convert DOS newlines"
 type = "bool"
 default = true
@@ -1158,8 +1158,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "RemoveControlCodes"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: remove control codes"
 type = "bool"
 default = true
@@ -1167,8 +1167,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "BracketedPasteMode"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: use bracketed paste mode"
 type = "bool"
 default = true
@@ -1176,8 +1176,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "PasteSpecialUseRegexSubstitution"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: use regex substitution"
 type = "bool"
 default = false
@@ -1185,8 +1185,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "PasteSpecialRegex"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: regex"
 type = "string"
 default = ""
@@ -1194,8 +1194,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "PasteSpecialSubstitution"
-tab = "Advanced"
-section = "Pasteboard"
+tab = "Stored"
+section = "Advanced Paste"
 label = "Paste Special: substitution"
 type = "string"
 default = ""
@@ -1204,7 +1204,7 @@ help = "Remembered by Advanced Paste."
 [[setting]]
 key = "CommandHistoryUsePower"
 tab = "Advanced"
-section = "Session"
+section = "General"
 label = "Command history's use count weight (the power of log10(10 + uses)) in its ranking."
 type = "float"
 default = 3.0
@@ -1213,7 +1213,7 @@ help = "Command history's use count weight (the power of log10(10 + uses)) in it
 [[setting]]
 key = "CommandHistoryAgePower"
 tab = "Advanced"
-section = "Session"
+section = "General"
 label = "Command history's age weight (the power of log10(10 + age in seconds)) in its ranking."
 type = "float"
 default = 1.0
@@ -1231,7 +1231,7 @@ help = "Shows the commands from the shell history that start with what is typed 
 [[setting]]
 key = "AutocompleteMaxOptions"
 tab = "Advanced"
-section = "Session"
+section = "General"
 label = "Number of autocomplete options to present."
 type = "int"
 default = 20
@@ -1240,7 +1240,7 @@ help = "Number of autocomplete options to present.\nA value less than 100 is rec
 [[setting]]
 key = "clippingSeparator"
 tab = "Advanced"
-section = "Session"
+section = "Pasteboard"
 label = "Separator inserted between multiple clippings when sending or copying them."
 type = "string"
 default = "\\n--\\n"
@@ -1257,7 +1257,7 @@ help = "Suppress warning about broadcasting input."
 
 [[setting]]
 key = "NoSyncTmuxHung"
-tab = "Advanced"
+tab = "Stored"
 section = "Warnings"
 label = "Suppress warning about a slow tmux response"
 type = "bool"
@@ -1275,7 +1275,7 @@ help = "If disabled, an unknown command from tmux (such as output from ssh or wa
 
 [[setting]]
 key = "Use background pattern indicator"
-tab = "Advanced"
+tab = "Stored"
 section = "Broadcast"
 label = "Show Background Pattern Indicator"
 type = "bool"
@@ -1494,7 +1494,7 @@ help = "Suppress the confirmation before the Jobs tool sends a signal.\nSet by t
 [[setting]]
 key = "GenerativeAIAllowed"
 tab = "Advanced"
-section = "AI"
+section = "General"
 label = "Allow the use of large language model APIs?"
 type = "bool"
 default = true
@@ -1538,7 +1538,7 @@ help = "Buried sessions appear under Session > Buried Sessions. When this settin
 
 [[setting]]
 key = "NoSyncAutoBurialReveal"
-tab = "Advanced"
+tab = "Stored"
 section = "Warnings"
 label = "The \"Session Buried\" notification was shown"
 type = "bool"
@@ -1639,7 +1639,7 @@ help = "Width in points of the toolbelt in new windows. View > Toolbelt > Set De
 [[setting]]
 key = "toolbeltFont"
 tab = "Advanced"
-section = "Toolbelt"
+section = "Windows"
 label = "Toolbelt font family name"
 type = "string"
 default = "Menlo"
@@ -1648,7 +1648,7 @@ help = "Menlo is not on Windows: a missing font draws in Consolas."
 [[setting]]
 key = "toolbeltFontSize"
 tab = "Advanced"
-section = "Toolbelt"
+section = "Windows"
 label = "Toolbelt font size in points"
 type = "float"
 default = 0.0

@@ -171,6 +171,7 @@ pub mod replay_window;
 
 pub mod settings_keys;
 pub mod settings_advanced;
+pub mod advanced_pane;
 pub mod settings_triggers;
 pub mod settings_lists;
 pub mod settings_arrangements;

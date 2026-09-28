@@ -715,6 +715,15 @@ mod tests {
     }
 
     #[test]
+    fn stored_rows_are_in_no_pane() {
+        use crate::advanced_pane::STORED_TAB;
+        assert!(sections(STORED_TAB).is_empty());
+        // The only tabs a Page draws with settings_keys::schema_page.
+        assert!(!["General", "Appearance", "Advanced"].contains(&STORED_TAB));
+        assert!(crate::schema::global().iter().any(|s| s.tab == STORED_TAB));
+    }
+
+    #[test]
     fn color_edits_target_the_current_mode_variant() {
         let fg = crate::schema::find("Foreground Color").unwrap();
         let mut p = Profile::stock();
