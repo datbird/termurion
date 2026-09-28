@@ -132,12 +132,40 @@ fn keyword(line: &str) -> Option<(String, &str)> {
     Some((line[..end].to_ascii_lowercase(), rest))
 }
 
-/// ssh's `*` and `?` pattern match.
+/// ssh's `*` and `?` pattern match, iterative: on a mismatch only the last `*` takes one
+/// more character, so the work stays within pattern length times host length (the host
+/// comes from the remote and may be long).
 fn glob(pattern: &[char], s: &[char]) -> bool {
-    match pattern.split_first() {
-        None => s.is_empty(),
-        Some(('*', rest)) => (0..=s.len()).any(|i| glob(rest, &s[i..])),
-        Some((&p, rest)) => s.split_first().is_some_and(|(&c, tail)| (p == '?' || p == c) && glob(rest, tail)),
+    let (mut p, mut i) = (0, 0);
+    // The last `*` seen and the host position it has consumed up to.
+    let mut star: Option<(usize, usize)> = None;
+    while i < s.len() {
+        if p < pattern.len() && (pattern[p] == '?' || (pattern[p] != '*' && pattern[p] == s[i])) {
+            p += 1;
+            i += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some((p, i));
+            p += 1;
+        } else if let Some((sp, si)) = star {
+            star = Some((sp, si + 1));
+            p = sp + 1;
+            i = si + 1;
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|&c| c == '*')
+}
+
+/// A HostName value as ssh reads its argument (argv_split in readconf.c): the first word,
+/// with a surrounding pair of double or single quotes removed, and a `#` word starting a
+/// comment. None: no word, or an unclosed quote (ssh rejects the line).
+fn first_arg(value: &str) -> Option<&str> {
+    let value = value.trim_start();
+    match value.chars().next()? {
+        '#' => None,
+        q @ ('"' | '\'') => value[1..].find(q).map(|end| &value[1..1 + end]),
+        _ => value.split_whitespace().next(),
     }
 }
 
@@ -168,8 +196,10 @@ fn config_hostname(text: &str, host: &str) -> Option<String> {
         match key.as_str() {
             "host" => applies = host_matches(value, host),
             "match" => applies = false,
-            "hostname" if applies && !value.is_empty() => {
-                return Some(value.replace("%%", "\u{0}").replace("%h", host).replace('\u{0}', "%"));
+            "hostname" if applies => {
+                if let Some(value) = first_arg(value).filter(|v| !v.is_empty()) {
+                    return Some(value.replace("%%", "\u{0}").replace("%h", host).replace('\u{0}', "%"));
+                }
             }
             _ => {}
         }
@@ -460,6 +490,25 @@ mod tests {
     }
 
     #[test]
+    fn glob_is_linear_on_a_hostile_host() {
+        let g = |p: &str, s: &str| glob(&p.chars().collect::<Vec<_>>(), &s.chars().collect::<Vec<_>>());
+        assert!(g("*", ""));
+        assert!(g("a*b?d", "aXXbcd"));
+        assert!(g("*.corp", "a.b.corp"));
+        assert!(!g("*.corp", "a.corpx"));
+        assert!(g("*a*a*", "xaya"));
+        assert!(!g("a?", "a"));
+        assert!(g("**", "x"));
+        // Recursive backtracking takes exponential time here; the iterative match does not.
+        let host = "a".repeat(1 << 20);
+        let started = std::time::Instant::now();
+        assert!(!g("*a*a*a*a*a*a*a*a*b", &host));
+        let c = SshConfigs::from_texts(vec!["Host *.*.*.*.*.*.*.*.*.*.x\n HostName no\n".to_string()]);
+        assert_eq!(c.hostname(&".".repeat(100_000)), ".".repeat(100_000));
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "took {:?}", started.elapsed());
+    }
+
+    #[test]
     fn ssh_config_follows_ssh() {
         let text = "Host web\n  HostName web.internal\nHost *.corp !bad.corp\n  HostName %h.example\n";
         let c = SshConfigs::from_texts(vec![text.to_string()]);
@@ -476,6 +525,16 @@ mod tests {
         // A block that matches but sets no HostName does not stop the search.
         let c = SshConfigs::from_texts(vec!["Host a\n  User bob\nHost *\n  HostName fallback\n".to_string()]);
         assert_eq!(c.hostname("a"), "fallback");
+        // Quotes around the value go, as do a comment and extra words after it; an unclosed
+        // quote or an empty value is no HostName.
+        let c = SshConfigs::from_texts(vec![
+            "Host q\n HostName \"web.internal\"\nHost s\n HostName 's.internal' # note\nHost c\n HostName c.internal # note\nHost u\n HostName \"open\nHost e\n HostName \"\"\nHost *\n HostName any\n".to_string(),
+        ]);
+        assert_eq!(c.hostname("q"), "web.internal");
+        assert_eq!(c.hostname("s"), "s.internal");
+        assert_eq!(c.hostname("c"), "c.internal");
+        assert_eq!(c.hostname("u"), "any");
+        assert_eq!(c.hostname("e"), "any");
         // A Match block is not read.
         let c = SshConfigs::from_texts(vec!["Match host a\n  HostName m\n".to_string()]);
         assert_eq!(c.hostname("a"), "a");
