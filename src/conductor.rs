@@ -166,11 +166,17 @@ pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 pub const WRITE_COST_SECS: f64 = 300.0;
 
 /// The timeout of a command `encoded_len` bytes long on the wire: `COMMAND_TIMEOUT` plus
-/// `WRITE_COST_SECS` per square MiB, whole seconds rounded down. Only Files to Copy's writes
-/// grow past a few KiB.
+/// `WRITE_COST_SECS` per square MiB, whole seconds rounded down, saturating (the cast and the
+/// sum) rather than overflowing. Only Files to Copy's writes grow past a few KiB.
 pub fn command_timeout(encoded_len: usize) -> Duration {
     let mib = encoded_len as f64 / (1024.0 * 1024.0);
-    COMMAND_TIMEOUT + Duration::from_secs((WRITE_COST_SECS * mib * mib) as u64)
+    COMMAND_TIMEOUT.saturating_add(Duration::from_secs((WRITE_COST_SECS * mib * mib) as u64))
+}
+
+/// When a command timed from `t` for `timeout` is due: never (None) when that is past what an
+/// `Instant` holds, rather than a panic.
+fn due_at(t: Instant, timeout: Duration) -> Option<Instant> {
+    t.checked_add(timeout)
 }
 
 /// The first line of the abort text (`PS:25594`).
@@ -1013,7 +1019,7 @@ impl Conductor {
             State::Ground => (!self.framing()).then_some(COMMAND_TIMEOUT),
             State::Unhooked => None,
         };
-        self.last_activity.zip(timeout).map(|(t, timeout)| t + timeout)
+        self.last_activity.zip(timeout).and_then(|(t, timeout)| due_at(t, timeout))
     }
 
     /// The command timer: at or past the deadline, setup fails with the timeout text of the
@@ -2550,6 +2556,10 @@ mod tests {
         assert_eq!(command_timeout(16 << 10), COMMAND_TIMEOUT, "every command but a large write: 30 s");
         assert_eq!(command_timeout(1 << 20), SECS(330));
         assert_eq!(command_timeout(4 << 20), SECS(30 + 4800));
+        // Past any real write (Files to Copy is capped far below this), the sum saturates
+        // rather than overflowing, and a deadline past what an Instant holds is never due.
+        assert_eq!(command_timeout(usize::MAX), Duration::MAX);
+        assert_eq!(due_at(Instant::now(), Duration::MAX), None);
 
         // Files to Copy of 4 MiB of incompressible data (its gzip tarball is as large): about
         // 7.5 MB on the wire, over four hours, where 30 s failed it (conductor.sh takes about
