@@ -82,6 +82,12 @@ pub struct Model {
     pub thinking_on_effort: Effort,
     pub reasoning_efforts: Vec<Effort>,
     pub service_tiers: Vec<ServiceTier>,
+    /// The model id sent on the wire when it differs from `name` (a disambiguated dynamic
+    /// Ollama tag, `AM:210-218`); None for every catalog entry.
+    pub wire_model_name: Option<String>,
+    /// Headers merged into every request to this model (`AM:220-225`), in order; empty for
+    /// every catalog entry.
+    pub custom_headers: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -171,6 +177,8 @@ impl ModelDto {
             thinking_on_effort: self.thinking_on_effort.as_deref().and_then(effort_case).unwrap_or(Effort::Medium),
             reasoning_efforts: self.reasoning_efforts.iter().flatten().filter_map(|e| effort_case(e)).collect(),
             service_tiers: self.service_tiers.iter().flatten().filter_map(|t| tier_case(t)).collect(),
+            wire_model_name: None,
+            custom_headers: Vec::new(),
         })
     }
 }
@@ -458,6 +466,14 @@ mod tests {
         // A pointer to a missing model gives none.
         manual.economy_model = Some("gone".to_string());
         assert_eq!(c.economy_for(&manual), None);
+    }
+
+    #[test]
+    fn catalog_models_have_no_wire_extras() {
+        for m in &bundled().models {
+            assert_eq!(m.wire_model_name, None, "{}", m.name);
+            assert!(m.custom_headers.is_empty(), "{}", m.name);
+        }
     }
 
     #[test]

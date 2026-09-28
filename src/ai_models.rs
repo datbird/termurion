@@ -381,8 +381,18 @@ fn request_manual_models(g: &Globals) -> Vec<Endpoint> {
     }
     let name = g.string(ai::MODEL);
     let api = Api::from_raw(g.int(ai::API)).unwrap_or(Api::ChatCompletions);
-    let custom_headers = if g.bool(ai::CUSTOM_HEADERS_ENABLED) { headers_of(g.get(ai::CUSTOM_HEADERS).as_ref()) } else { Vec::new() };
+    let custom_headers = legacy_headers(g);
     vec![Endpoint { vendor: manual_vendor(api, &url, &name), model: name, url, api, custom_headers }]
+}
+
+/// The legacy global custom headers the legacy manual model inherits (`LM:528-534`): the
+/// stored list while `AICustomHeadersEnabled` is on, else none.
+pub fn legacy_headers(g: &Globals) -> Vec<(String, String)> {
+    if g.bool(ai::CUSTOM_HEADERS_ENABLED) {
+        headers_of(g.get(ai::CUSTOM_HEADERS).as_ref())
+    } else {
+        Vec::new()
+    }
 }
 
 /// The recommended model of a vendor (`LM:126-161`). Ollama's models are discovered (12b); until
