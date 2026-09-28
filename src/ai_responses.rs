@@ -8,7 +8,6 @@ use crate::ai_catalog::Feature;
 use crate::ai_json::{sorted, splice_at_key};
 use crate::ai_model::{has, mime_is_textual};
 use crate::ai_msg::{Attachment, Body, CallId, FunctionCall, Message, ReasoningItem, Role, Status};
-use crate::ai_settings::Vendor;
 use crate::ai_turn::{max_tokens_for, Build, Dialect, Hosted, Parsed, ToolDecl};
 use base64::Engine;
 use serde_json::{json, Map, Value};
@@ -287,8 +286,9 @@ impl Dialect for Responses {
         body.insert("tool_choice".into(), json!(if tools.is_empty() { "none" } else { "auto" }));
         // Tandem runs only the first call of an answer, so the model must not ask for several
         // (a second call left unanswered makes the continuation invalid; m12b ruling). The
-        // field is OpenAI's: every other server gets iTerm2's bytes.
-        if !tools.is_empty() && b.model.vendor == Vendor::OpenAI {
+        // field is OpenAI's: every other host gets iTerm2's bytes, decided by the host the
+        // request goes to (12a files an unknown host's manual model under the OpenAI vendor).
+        if !tools.is_empty() && crate::ai_policy::host_is_openai(&b.model.url) {
             body.insert("parallel_tool_calls".into(), json!(false));
         }
         body.insert("tools".into(), Value::Array(tools));
@@ -385,7 +385,7 @@ mod tests {
     use crate::ai_catalog::{Effort, Feature, Model, ServiceTier};
     use crate::ai_model::fixture;
     use crate::ai_msg::{Attachment, Body, CallId, FunctionCall, Message, ReasoningItem, Role, Status};
-    use crate::ai_settings::Api;
+    use crate::ai_settings::{Api, Vendor};
     use crate::ai_transport::{Options, Proxy, Recorded, Reply};
     use crate::ai_turn::{headers, same_outcome, Build, Dialect, Hosted, Out, ToolDecl, ToolResult, Turn, TurnInput, Wire};
     use crate::pwm::Secret;
@@ -465,16 +465,16 @@ mod tests {
     }
 
     #[test]
-    fn parallel_tool_calls_only_for_openai() {
+    fn parallel_tool_calls_only_to_the_openai_host() {
         let (w, none, tools) = (wire(), Hosted::default(), [tool()]);
         let messages = sh();
-        let openai = model();
-        assert_eq!(openai.vendor, Vendor::OpenAI);
-        assert!(body(&build(&openai, &messages, &tools, &none, &w)).contains(r#""parallel_tool_calls":false"#), "OpenAI runs one call at a time");
-        // Every other server gets iTerm2's bytes (the field is OpenAI's; m12b ruling).
-        for (name, url) in [("llama3.3", "http://localhost:8080/v1/responses"), ("chat", "https://api.deepseek.com/v1/responses")] {
-            let other = fixture(name, url, Api::Responses);
-            assert_ne!(other.vendor, Vendor::OpenAI, "{name}");
+        assert!(body(&build(&model(), &messages, &tools, &none, &w)).contains(r#""parallel_tool_calls":false"#), "api.openai.com runs one call at a time");
+        // Every other host gets iTerm2's bytes, even one 12a files under the OpenAI vendor (the
+        // field is OpenAI's; m12b ruling).
+        let mut local = fixture("llama3.3", "http://localhost:8080/v1/responses", Api::Responses);
+        local.vendor = Vendor::OpenAI;
+        for other in [local, fixture("chat", "https://api.deepseek.com/v1/responses", Api::Responses), fixture("mine", "https://llm.example.com/v1/responses", Api::Responses)] {
+            let name = other.name.clone();
             let with_tool = body(&build(&other, &messages, &tools, &none, &w));
             assert!(!with_tool.contains("parallel_tool_calls"), "{name}: {with_tool}");
             assert!(with_tool.contains(r#""tool_choice":"auto""#), "{name}: {with_tool}");
