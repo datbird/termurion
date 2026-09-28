@@ -466,7 +466,7 @@ section = "General"
 label = "Write Automatic Profile Switching debug logs"
 type = "bool"
 default = false
-help = "Each Automatic Profile Switching decision goes to automatic-profile-switching.log beside Tandem's settings (iTerm2 writes them to its Script Console)."
+help = "Each Automatic Profile Switching decision goes to the Script Console's \"Automatic Profile Switching\" entry (Scripts > Manage > Console), as in iTerm2."
 
 [[setting]]
 key = "WindowNumber"
