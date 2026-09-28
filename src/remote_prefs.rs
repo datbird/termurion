@@ -447,6 +447,9 @@ mod tests {
         let mut profile = base.clone();
         profile.profiles[0].insert("Columns".into(), Value::Integer(80));
         assert!(differs(&base, &profile));
+        let mut default = base.clone();
+        default.default = "g2".into();
+        assert!(differs(&base, &default));
         // Nothing was saved at launch: iTerm2 reports no difference (`RP:1573`).
         assert!(!differs(&Snapshot::default(), &added));
     }
@@ -501,6 +504,78 @@ mod tests {
         assert_eq!(remote_changed(r"D:\s"), "Settings at D:\\s changed since Tandem started. Overwrite it?");
         assert_eq!(tried_to_copy("a", "b"), "Tried to copy a to b");
         assert_eq!(settings_changed(r"D:\s"), "Settings have changed. Copy them to D:\\s?");
+        assert_eq!(
+            [
+                FAILED_URL,
+                UNKNOWN_ERROR,
+                REVEAL_IN_SETTINGS,
+                TRY_AGAIN,
+                URL_PROMPT,
+                KEEP_LOCAL,
+                DISABLE_URL,
+                DISCARD_LOCAL,
+                ERROR_LOADING,
+                LOCATION_NOT_SET,
+                DONT_LOAD,
+                FAILED_FOLDER,
+                OVERWRITE,
+                CANNOT_COPY_URL,
+                CANNOT_COPY_URL_DETAIL,
+                FAILED_COPY,
+                COPY,
+                LOSE_CHANGES,
+                COPY_NOW,
+                DONT_COPY,
+                FOLDER_HINT,
+                BROWSE,
+                SAVE_CHANGES,
+                AUTOMATICALLY,
+                MANUALLY,
+                WHEN_QUITTING,
+                SAVE_NOW,
+                EXTERNAL_SETTINGS,
+                BACKUP_RESTORE,
+                RESET,
+                EXPORT_ALL,
+                IMPORT_ALL,
+                ERASE_ALL,
+            ],
+            [
+                "Failed to load settings from URL. Falling back to local copy.",
+                "unknown error",
+                "Reveal in Settings",
+                "Try Again Without Timeout",
+                "Load settings from URL? Some changes were made to the local copy that will be lost.",
+                "Keep Local Changes",
+                "Disable Loading from URL",
+                "Discard Local Changes",
+                "Error Loading Settings",
+                "You have enabled \u{201c}Load settings from a custom folder or URL\u{201d} in settings but the location is not set.",
+                "Don\u{2019}t Load Remote Settings",
+                "Failed to load settings from custom directory. Falling back to local copy.",
+                "Overwrite",
+                "Settings cannot be copied to a URL.",
+                "To make it available, save the settings to a folder with Save Now and then manually copy tandem-settings.toml to your hosting provider.",
+                "Failed to copy settings to custom directory.",
+                "Copy",
+                "Lose Changes",
+                "Copy local settings to custom folder now?",
+                "Don\u{2019}t Copy",
+                "Enter path to folder with settings",
+                "Browse",
+                "Save changes:",
+                "Automatically",
+                "Manually",
+                "When Quitting",
+                "Save Now",
+                "External settings:",
+                "Backup & restore:",
+                "Reset:",
+                "Export All Settings and Data\u{2026}",
+                "Import All Settings and Data\u{2026}",
+                "Erase All Settings and Data\u{2026}",
+            ]
+        );
         assert_eq!(
             (PREFS_FILE, LOAD_KEY, FOLDER_KEY, HAVE_SELECTION_KEY, SELECTION_KEY, PROMPT_URL_KEY, TIMEOUT_KEY),
             (
