@@ -486,6 +486,27 @@ pub fn level(c: Option<&Conductor>) -> u8 {
     }
 }
 
+/// Where a write to the session goes while `c` is the pane's current conductor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    /// To the pty.
+    Direct,
+    /// Held until the conductor unhooks (`_sshWriteQueue`).
+    Held,
+    /// Through the conductor's `send_keys` (framed from milestone 14c).
+    Conductor,
+}
+
+/// handlesKeystrokes gives Conductor (`PS:4278-4293`, `PS:4411-4432`), queueWrites gives
+/// Held (`PS:4191-4197`), else Direct.
+pub fn route(c: Option<&Conductor>) -> Route {
+    match c {
+        Some(c) if c.handles_keystrokes() => Route::Conductor,
+        Some(c) if c.queue_writes() => Route::Held,
+        _ => Route::Direct,
+    }
+}
+
 /// One conductor.sh (or framer.py) on the other side of an ssh (`CD`).
 pub struct Conductor {
     pub setup: Setup,
@@ -677,6 +698,11 @@ impl Conductor {
         let mut out = self.parent.as_mut().map(|p| p.take_effects()).unwrap_or_default();
         out.append(&mut self.effects);
         out
+    }
+
+    /// Whether `take_effects` would give anything.
+    pub fn has_effects(&self) -> bool {
+        !self.effects.is_empty() || self.parent.as_ref().is_some_and(|p| p.has_effects())
     }
 
     /// sendKeys (`CD:1854-1862`), unframed: the bytes go to the session, which holds them
@@ -1426,6 +1452,21 @@ mod tests {
         g.handle_end("7", "r", 1, 0);
         assert_eq!(g.state(), &State::Unhooked);
         assert!(g.take_effects().is_empty() && g.updates.is_empty());
+    }
+
+    #[test]
+    fn routes_follow_iterm2() {
+        assert_eq!(route(None), Route::Direct);
+        let mut c = root();
+        assert_eq!(route(Some(&c)), Route::Held, "setting up");
+        c.framed_pid = Some(1);
+        assert_eq!(route(Some(&c)), Route::Conductor, "framing with writes queued");
+        c.handle_unhook();
+        assert_eq!(route(Some(&c)), Route::Direct, "unhooked");
+        let mut parent = root();
+        parent.handle_unhook();
+        let child = Conductor::new(setup("B"), Some(Box::new(parent)), "V");
+        assert_eq!(route(Some(&child)), Route::Direct, "a child setting up under an unhooked parent");
     }
 
     #[test]

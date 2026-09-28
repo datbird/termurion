@@ -394,32 +394,34 @@ impl Pane {
                 }
             }
         }
-        let Some(pty) = &self.pty else { return changed };
-        if let Some(c) = self.coprocess.as_mut() {
+        if self.coprocess.is_some() {
             // Its output goes to the shell as typed, while the shell keeps up.
             loop {
+                let Some(pty) = &self.pty else { break };
                 let budget = crate::coprocess::budget(pty.pending());
                 if budget == 0 {
                     break;
                 }
                 if self.co_out.is_empty() {
-                    match c.try_output() {
+                    match self.coprocess.as_mut().and_then(|c| c.try_output()) {
                         Some(o) => self.co_out.push(o),
                         None => break,
                     }
                 }
                 let bytes = self.co_out.take(budget);
-                if let Err(e) = pty.write(&bytes) {
-                    self.error = Some(e);
+                if !self.coprocess_output(&bytes) {
                     break;
                 }
             }
-            if self.co_out.is_empty() && c.finished() {
-                self.co_end = Some((c.command.clone(), c.stderr()));
-                self.coprocess = None;
-                changed = true;
+            if let Some(c) = self.coprocess.as_mut() {
+                if self.co_out.is_empty() && c.finished() {
+                    self.co_end = Some((c.command.clone(), c.stderr()));
+                    self.coprocess = None;
+                    changed = true;
+                }
             }
         }
+        let Some(pty) = &self.pty else { return changed };
         if self.exited.is_none() {
             if let Some(code) = pty.exit_code() {
                 self.exited = Some(code);
@@ -455,19 +457,17 @@ impl Pane {
                     if !reply.is_empty() {
                         self.composer.probe = None;
                     }
-                    let Some(pty) = &self.pty else { continue };
                     // tmux answers queries for its panes itself, but OSC 4 when this
                     // client is the elected one.
-                    let reply = match pty {
-                        Io::Tmux(t) if t.answers_osc4.get() => crate::tmux_clients::osc4_answers(&reply),
-                        Io::Tmux(_) => Vec::new(),
+                    let reply = match &self.pty {
+                        Some(Io::Tmux(t)) if t.answers_osc4.get() => crate::tmux_clients::osc4_answers(&reply),
+                        Some(Io::Tmux(_)) => Vec::new(),
                         _ => reply,
                     };
-                    // A report passes the connecting queue (`PS:16212-16220`).
+                    // A report passes the connecting queue (`PS:16212-16220`) but is held
+                    // while the conductor sets up (`PS:4191-4197`).
                     if !reply.is_empty() {
-                        if let Err(e) = pty.write(&reply) {
-                            self.error = Some(e);
-                        }
+                        self.reply(&reply);
                     }
                 }
                 other => self.tmux_q.push(other),
@@ -538,7 +538,7 @@ impl Pane {
             io.push_output(data);
         }
         self.pump();
-        self.has_ssh()
+        self.has_ssh() || self.ssh_effects_pending()
     }
 
     /// What the SSH hook found since the last call.
@@ -550,28 +550,62 @@ impl Pane {
         !self.ssh_q.is_empty()
     }
 
+    /// Whether the pane's conductors asked for something not yet applied (keys a coprocess
+    /// or a write handed to `send_keys`).
+    pub fn ssh_effects_pending(&self) -> bool {
+        self.conductor.as_ref().is_some_and(|c| c.has_effects())
+    }
+
     /// Output that waited behind a conductor token.
     pub fn feed_after_ssh(&mut self, bytes: &[u8]) {
         self.route_output(bytes.to_vec());
     }
 
-    /// A write to the session in iTerm2's order (`PS:4411-4432`, `PS:4191-4197`): the
-    /// connecting queue first, then held while the conductor sets up, else to the pty.
+    /// Where a write to the session goes now (`conductor::route`).
+    pub fn ssh_route(&self) -> crate::conductor::Route {
+        crate::conductor::route(self.conductor.as_deref())
+    }
+
+    /// A typed write to the session in iTerm2's order (`PS:4411-4432`, then `PS:4191-4197`):
+    /// the conductor's `send_keys` when it handles keystrokes (the app applies its effects in
+    /// `ssh_pump`), else the connecting queue, else held while the conductor sets up, else
+    /// the pty.
     pub fn write_session(&mut self, bytes: &[u8]) {
-        if !self.ssh.queue(bytes) {
+        if self.ssh_route() == crate::conductor::Route::Conductor {
+            if let Some(c) = self.conductor.as_mut() {
+                c.send_keys(bytes);
+            }
+        } else if !self.ssh.queue(bytes) {
             self.write_unless_held(bytes);
         }
     }
 
     /// Held while the conductor sets up, else to the pty, past the connecting queue (iTerm2's
-    /// `conductorWrite` outside the conductor's own `write()`).
+    /// `writeTaskImpl`, `PS:4191-4197`).
     pub fn write_unless_held(&mut self, bytes: &[u8]) {
-        if self.conductor.as_ref().is_some_and(|c| c.queue_writes()) {
+        if self.ssh_route() != crate::conductor::Route::Direct {
             self.composer.probe = None;
             self.ssh_held.extend_from_slice(bytes);
         } else {
             self.write_no_broadcast(bytes);
         }
+    }
+
+    /// A coprocess's output: to the conductor's `send_keys` while the pane has one (`PK:354-361`,
+    /// `PS:4639-4642`: held during setup, framed from 14c), else to the pty as typed. False when
+    /// the pty refused it.
+    pub fn coprocess_output(&mut self, bytes: &[u8]) -> bool {
+        if let Some(c) = self.conductor.as_mut() {
+            c.send_keys(bytes);
+            return true;
+        }
+        if let Some(pty) = &self.pty {
+            if let Err(e) = pty.write(bytes) {
+                self.error = Some(e);
+                return false;
+            }
+        }
+        true
     }
 
     /// The writes held while the conductor set up, in order.
@@ -673,7 +707,14 @@ impl Pane {
                 match effect {
                     Effect::Write(bytes) => self.write_no_broadcast(&bytes),
                     Effect::SessionWrite(bytes) => self.write_unless_held(&bytes),
-                    Effect::Keys(bytes) => self.write_session(&bytes),
+                    // Unframed sendKeys is the session's conductorWrite, which is
+                    // writeTaskNoBroadcast (`CD:1854-1862`, `PS:25519-25522`): held while setup
+                    // runs, never the connecting queue. A conductor that handles keystrokes
+                    // sends them framed (14c); unframed, `reply` would hand them straight back.
+                    Effect::Keys(bytes) => {
+                        debug_assert!(self.ssh_route() != crate::conductor::Route::Conductor, "unframed keys from a conductor that handles keystrokes");
+                        self.reply(&bytes)
+                    }
                     // `PS:25614-25617`: what was typed while connecting goes through sendKeys,
                     // ahead of later typing; its effects are applied by the next pass.
                     Effect::StopQueueingInput => {
@@ -868,21 +909,23 @@ impl Pane {
 
     /// What the terminal answers the program (reports), and Tandem's own writes that iTerm2
     /// makes with `broadcastAllowed:NO` (the idle code, upload answers, tmux commands):
-    /// never held by Buffer Input nor the connecting queue (`PS:4364-4376`, `PS:4276-4294`).
+    /// never held by Buffer Input nor the connecting queue (`PS:4364-4376`, `PS:4276-4294`),
+    /// but routed as `writeTaskNoBroadcast` routes them: through the conductor's `send_keys`
+    /// when it handles keystrokes, else held while it sets up (`PS:4191-4197`), else the pty.
     pub fn reply(&mut self, bytes: &[u8]) {
         self.composer.probe = None;
-        if let Some(pty) = &self.pty {
-            if let Err(e) = pty.write(bytes) {
-                self.error = Some(e);
+        if self.ssh_route() == crate::conductor::Route::Conductor {
+            if let Some(c) = self.conductor.as_mut() {
+                c.send_keys(bytes);
             }
+        } else {
+            self.write_unless_held(bytes);
         }
     }
 
-    /// Typed bytes Buffer Input let go: queued while SSH integration connects (`PS:4411-4430`).
+    /// Typed bytes Buffer Input let go: the session's typed route (`write_session`).
     fn send_typed(&mut self, bytes: &[u8]) {
-        if !self.ssh.queue(bytes) {
-            self.reply(bytes);
-        }
+        self.write_session(bytes);
     }
 
     /// iTerm2's `writeTaskNoBroadcast:`: straight to the pty, past the connecting queue and
@@ -1540,6 +1583,65 @@ mod tests {
         assert_eq!(p.tmux_io().unwrap().take_input(), b"\x03\n", "only END_WRITE");
         assert_eq!(p.ssh.connecting, None);
         assert_eq!(p.ssh_held, b"earlyheld");
+    }
+
+    #[test]
+    fn reports_and_keys_are_held_during_setup() {
+        // Not the tmux fake: a tmux pane drops screen replies (`feed_output`).
+        let mut p = Pane::with(5, None, 80, 24);
+        let da = Pane::with(6, None, 80, 24).own_mut().feed(b"\x1b[c");
+        assert!(!da.is_empty());
+        p.conductor = setting_up();
+        p.input(b"k");
+        p.reply(b"\x1b[?1;2c");
+        p.feed_after_ssh(b"\x1b[c");
+        let mut want = b"k\x1b[?1;2c".to_vec();
+        want.extend_from_slice(&da);
+        assert_eq!(p.take_ssh_held(), want, "a key, a report, then the screen's report, in order");
+        p.conductor.as_mut().unwrap().handle_unhook();
+        p.input(b"z");
+        assert!(p.take_ssh_held().is_empty(), "not held once unhooked");
+    }
+
+    #[test]
+    fn coprocess_output_goes_to_the_conductor() {
+        use crate::conductor::Effect;
+        let mut p = Pane::tmux(5, 1, 3, 20, 4);
+        p.conductor = setting_up();
+        assert!(p.coprocess_output(b"co"));
+        assert_eq!(p.conductor.as_mut().unwrap().take_effects(), [Effect::Keys(b"co".to_vec())], "sendKeys (PS:4639-4642)");
+        assert!(p.tmux_io().unwrap().take_input().is_empty());
+        assert!(p.ssh_held.is_empty());
+        p.conductor.as_mut().unwrap().send_keys(b"co");
+        assert!(!p.apply_ssh_effects());
+        assert_eq!(p.take_ssh_held(), b"co", "held while setup runs");
+        assert!(p.tmux_io().unwrap().take_input().is_empty());
+
+        // Level 1 while a nested it2ssh connects: sendKeys writes through
+        // writeTaskNoBroadcast (`CD:1854-1862`, `PS:25519-25522`), past the connecting queue.
+        p.conductor.as_mut().unwrap().handle_unhook();
+        p.ssh.begin(true);
+        assert!(p.coprocess_output(b"lvl1"));
+        assert!(!p.apply_ssh_effects());
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"lvl1");
+        assert_eq!(p.ssh.connecting.as_deref(), Some(&b""[..]), "not queued behind the nested setup");
+        p.ssh.stop_queueing();
+
+        p.conductor = None;
+        assert!(p.coprocess_output(b"out"));
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"out", "no conductor: to the pty as before");
+    }
+
+    #[test]
+    fn conductor_route_reaches_send_keys() {
+        use crate::conductor::Effect;
+        let mut p = Pane::tmux(5, 1, 3, 20, 4);
+        p.conductor = setting_up();
+        p.conductor.as_mut().unwrap().framed_pid = Some(1);
+        p.write_session(b"q");
+        assert_eq!(p.conductor.as_mut().unwrap().take_effects(), [Effect::Keys(b"q".to_vec())]);
+        assert!(p.tmux_io().unwrap().take_input().is_empty(), "nothing written");
+        assert!(p.ssh_held.is_empty(), "nothing held");
     }
 
     #[test]

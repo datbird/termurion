@@ -67,7 +67,7 @@ impl App {
     /// Runs what each pane's SSH hook found, in order. Before `tmux_pump`: output released
     /// here can start tmux control mode. True when anything happened.
     pub(super) fn ssh_pump(&mut self) -> bool {
-        let ids: Vec<PaneId> = self.panes.iter().filter(|(_, p)| p.has_ssh()).map(|(id, _)| *id).collect();
+        let ids: Vec<PaneId> = self.panes.iter().filter(|(_, p)| p.has_ssh() || p.ssh_effects_pending()).map(|(id, _)| *id).collect();
         for id in &ids {
             self.ssh_pump_pane(*id);
         }
@@ -108,6 +108,8 @@ impl App {
             }
             self.ssh_apply(pane);
         }
+        // Keys handed to a conductor outside its tokens (a coprocess, a write routed to it).
+        self.ssh_apply(pane);
     }
 
     /// A conductor hooked (`TD:3852-3870`, then `PS:20118-20170` without jumps): the banner,
