@@ -617,7 +617,7 @@ impl App {
             g.window.set_outer_position(winit::dpi::PhysicalPosition::new(frame.x.round() as i32, frame.y.round() as i32));
             let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
             let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
-            let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new((frame.w as u32).saturating_sub(dw).max(1), (frame.h as u32).saturating_sub(dh).max(1)));
+            let _ = super::caption_ui::request_inner_size(&g.window, winit::dpi::PhysicalSize::new((frame.w as u32).saturating_sub(dw).max(1), (frame.h as u32).saturating_sub(dh).max(1)));
         }
         self.apply_resizable();
         if f.style != crate::frames::NORMAL {

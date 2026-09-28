@@ -10,11 +10,11 @@ use crate::caption::{self, Button, Event, Hit, Layout};
 use std::cell::RefCell;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
-use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
+use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, GetSystemMetricsForDpi};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetWindowRect, HTCAPTION, HTCLIENT, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HTTOP, IsIconic, IsZoomed, NCCALCSIZE_PARAMS, SM_CXPADDEDBORDER, SM_CYSIZEFRAME, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+    GWL_EXSTYLE, GWL_STYLE, GetClientRect, GetWindowLongPtrW, GetWindowRect, HTCAPTION, WM_NCRBUTTONUP, WM_SYSCOMMAND, WS_CAPTION, HTCLIENT, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HTTOP, IsIconic, IsZoomed, NCCALCSIZE_PARAMS, SM_CXPADDEDBORDER, SM_CYSIZEFRAME, SWP_FRAMECHANGED, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE,
     WM_NCMOUSEMOVE,
 };
@@ -60,21 +60,65 @@ fn sizes(hwnd: isize) -> Option<(i32, (i32, i32))> {
     got.then_some((client.bottom - client.top, (outer.right - outer.left, outer.bottom - outer.top)))
 }
 
-/// Measures the frame again (the title bar comes or goes) and keeps the client area the size it
-/// was, so the sessions do not gain or lose the title bar's rows: the window's outer height moves
-/// instead. A maximized or minimized window keeps its size.
-fn frame_changed(hwnd: isize) {
+/// Runs `change` (which alters the frame: the subclass, the menu bar), measures the frame again,
+/// and keeps the client area the size it was, in either direction, so the sessions never gain or
+/// lose the caption's or the menu bar's rows: the window's outer height moves instead. A maximized
+/// or minimized window keeps its size.
+pub(super) fn keep_client(hwnd: isize, change: impl FnOnce()) {
     let before = sizes(hwnd);
+    change();
     // SAFETY: the HWND is a live window of this thread; nothing moves, only the frame is measured again.
     unsafe { SetWindowPos(hwnd as HWND, std::ptr::null_mut(), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED) };
     let (Some((client, (w, h))), Some((now, _))) = (before, sizes(hwnd)) else { return };
     // SAFETY: state queries of a live window.
     let fixed = unsafe { IsZoomed(hwnd as HWND) != 0 || IsIconic(hwnd as HWND) != 0 };
-    if fixed || now == client {
+    let target = caption::kept_outer_height(h, client, now);
+    if fixed || target == h {
         return;
     }
     // SAFETY: as above; only the window's height changes.
-    unsafe { SetWindowPos(hwnd as HWND, std::ptr::null_mut(), 0, 0, w, h - (now - client), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) };
+    unsafe { SetWindowPos(hwnd as HWND, std::ptr::null_mut(), 0, 0, w, target, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) };
+}
+
+/// The height in pixels the caption subclass takes off the window: what `AdjustWindowRectExForDpi`
+/// (which winit sizes the outer frame with) adds for the title bar and top border. 0 without the
+/// subclass or while the window has no title bar (full screen).
+fn removed_by_subclass(hwnd: isize) -> i32 {
+    // SAFETY: plain queries of a live window and a RECT of ours.
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd as HWND, GWL_STYLE) as u32;
+        if !installed(hwnd) || style & WS_CAPTION != WS_CAPTION {
+            return 0;
+        }
+        let ex = GetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE) as u32;
+        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        if AdjustWindowRectExForDpi(&mut r, style, 0, ex, GetDpiForWindow(hwnd as HWND)) == 0 {
+            return 0;
+        }
+        -r.top
+    }
+}
+
+/// `Window::request_inner_size` for a terminal window: winit sizes the outer frame for a style that
+/// still has its title bar and the caption subclass removes it, so the height asked for is
+/// reduced by that (`caption::corrected_inner`). Every size request of a terminal window goes here.
+pub(super) fn request_inner_size(window: &winit::window::Window, size: impl Into<winit::dpi::Size>) -> Option<winit::dpi::PhysicalSize<u32>> {
+    let size: winit::dpi::PhysicalSize<u32> = size.into().to_physical(window.scale_factor());
+    let removed = super::menu::hwnd_of(window).map_or(0, removed_by_subclass);
+    window.request_inner_size(winit::dpi::PhysicalSize::new(size.width, caption::corrected_inner(size.height, removed)))
+}
+
+/// The window moved to a monitor of another DPI: winit sized it for a title bar the subclass then
+/// removed, so the client came out one title bar taller; asks for what it was.
+pub(super) fn dpi_changed(window: &winit::window::Window) {
+    let Some(hwnd) = super::menu::hwnd_of(window) else { return };
+    let removed = removed_by_subclass(hwnd);
+    // SAFETY: state queries of a live window.
+    if removed == 0 || unsafe { IsZoomed(hwnd as HWND) != 0 || IsIconic(hwnd as HWND) != 0 } {
+        return;
+    }
+    let inner = window.inner_size();
+    request_inner_size(window, winit::dpi::PhysicalSize::new(inner.width, inner.height.saturating_sub(removed as u32)));
 }
 
 /// The frame's thickness along the top in pixels at the window's DPI (`SM_CYSIZEFRAME` plus
@@ -87,22 +131,20 @@ fn frame_thickness(hwnd: isize) -> f32 {
     }
 }
 
-/// Takes the title bar away from the window and answers its strip: subclass, then measure the
-/// frame again.
+/// Takes the title bar away from the window: subclass it. The caller keeps the client size
+/// (`keep_client`) around this and the menu bar's change.
 pub(super) fn install(hwnd: isize, wake: EventLoopProxy<UserEvent>) {
     WAKE.with(|w| *w.borrow_mut() = Some(wake));
     STATES.with(|s| s.borrow_mut().insert(hwnd, State::default()));
     // SAFETY: the HWND is this window's; the proc only answers frame messages.
     unsafe { SetWindowSubclass(hwnd as HWND, Some(subclass), SUBCLASS_ID, 0) };
-    frame_changed(hwnd);
 }
 
-/// The window leaves Compact: the subclass goes and the frame is measured again.
+/// The window leaves Compact: the subclass goes.
 pub(super) fn remove(hwnd: isize) {
     STATES.with(|s| s.borrow_mut().remove(&hwnd));
     // SAFETY: removing this proc from the window it was set on.
     unsafe { RemoveWindowSubclass(hwnd as HWND, Some(subclass), SUBCLASS_ID) };
-    frame_changed(hwnd);
 }
 
 /// The strip for the window's next hit tests: its layout in window pixels, and the rects of what
@@ -151,6 +193,8 @@ fn hover_to(hwnd: HWND, now: Option<Button>) {
 
 unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
     match msg {
+        // Without a title bar (full screen) there is nothing to take away.
+        WM_NCCALCSIZE if unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) } as u32 & WS_CAPTION != WS_CAPTION => unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) },
         WM_NCCALCSIZE => {
             // The top of the window as proposed, before the default takes the title bar off it.
             let top = if wparam != 0 {
@@ -209,6 +253,17 @@ unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             0
         }
+        // Alt pressed and released alone, and F10: the native menu bar cannot sit under the strip, so
+        // the caption's menu button's popup opens instead (Alt+Space stays the system menu).
+        WM_SYSCOMMAND if caption::is_key_menu(wparam, lparam) && STATES.with(|s| s.borrow().get(&(hwnd as isize)).is_some_and(|st| st.layout.as_ref().is_some_and(|l| l.menu.is_some()))) => {
+            tell(hwnd as isize, Event::Menu(false));
+            0
+        }
+        // A right click on the empty strip gives the menu, not Windows' system menu (`PSM:3978-3982`).
+        WM_NCRBUTTONUP if wparam as u32 == HTCAPTION => {
+            tell(hwnd as isize, Event::Menu(true));
+            0
+        }
         WM_NCLBUTTONUP => {
             // Let go elsewhere: a held button is let go.
             tell(hwnd as isize, Event::Hover(None));
@@ -234,19 +289,23 @@ impl App {
         let number = |key: &str, default: f32| self.globals.number(key).map_or(default, |v| v as f32);
         // The two Windows keys apply while a top bar shows (their help says so).
         let (setting, extra) = if top_bar { (number("CompactTabBarStoplightButtonsWidth", 75.0), number("ExtraSpaceBeforeCompactTopTabBar", 0.0)) } else { (75.0, 0.0) };
-        let resize_top = self.hwnd().map_or((8.0 * scale).round(), frame_thickness);
+        let thickness = self.hwnd().map_or((8.0 * scale).round(), frame_thickness);
         let maximized = g.window.is_maximized();
-        let mut l = caption::layout(g.config.width as f32, bar_h, scale, setting, extra, 0.0, self.caption_label_w, if maximized { 0.0 } else { resize_top }, maximized);
+        let resize_top = caption::resize_top(thickness, maximized, g.window.is_resizable());
+        let mut l = caption::layout(g.config.width as f32, bar_h, scale, setting, extra, 0.0, self.caption_label_w, resize_top, maximized);
+        // The native menu bar cannot sit under the strip: its button opens the menu instead.
+        l = caption::with_menu_button(l, scale);
         // The edge strip drags the window (Task 7, F10): filled in here so `layout` keeps its arguments.
+        // The bar's rect comes from `window_layout` and this strip, never `tab_bar_rect` (which asks
+        // for this layout).
         l.drag_edge = self.edge_strip_px();
-        if let Some(bar) = self.tab_bar_rect() {
+        if let Some(bar) = self.window_layout().0 {
             let position = self.tab_position();
+            let bar = if position == TabPosition::Top { Rect { x: l.tabs.x, w: l.tabs.w, ..bar } } else { bar };
             let strip = l.drag_edge.min(bar.h);
-            if strip > 0.0 {
+            if strip > 0.0 && matches!(position, TabPosition::Top | TabPosition::Bottom) {
                 let y = if position == TabPosition::Bottom { bar.y + bar.h - strip } else { bar.y };
-                if matches!(position, TabPosition::Top | TabPosition::Bottom) {
-                    l.drag_regions.push(Rect { x: bar.x, y, w: bar.w, h: strip });
-                }
+                l.drag_regions.push(Rect { x: bar.x, y, w: bar.w, h: strip });
             }
         }
         Some(l)
@@ -298,16 +357,22 @@ impl App {
     /// its style, full screen and the Theme.
     pub(super) fn refresh_caption_frame(&mut self) {
         let Some(hwnd) = self.hwnd() else { return };
-        let want = self.compact_window();
+        // Keyed on the themed type alone, not `compact_window()`: in full screen winit's style has no
+        // title bar and the subclass leaves the frame alone, so a round trip changes nothing.
+        let want = self.compact_type();
         if want == installed(hwnd) {
             return;
         }
-        if want {
-            let proxy = self.proxy.lock().unwrap().clone();
-            install(hwnd, proxy);
-        } else {
-            remove(hwnd);
-        }
+        let proxy = self.proxy.lock().unwrap().clone();
+        // The menu bar goes or comes back inside the same measure, so the client keeps its size.
+        keep_client(hwnd, || {
+            if want {
+                install(hwnd, proxy);
+            } else {
+                remove(hwnd);
+            }
+            self.sync_menu_hidden();
+        });
         self.caption_hover = None;
         self.caption_pressed = None;
         if !self.tabs.is_empty() {
@@ -342,6 +407,9 @@ impl App {
             let width = self.gpu.as_mut().map_or(0.0, |g| g.renderer.prose_width(&title, false, row_scale));
             scene::caption_title(frame, &title, l.tabs, width, &pal, scale, font_scale, cell.1);
         }
+        if let Some(m) = l.menu {
+            scene::caption_menu_button(frame, m, &pal, scale, font_scale, cell.1);
+        }
         scene::caption_buttons(frame, &l.buttons, self.caption_hover, self.caption_pressed, l.maximized, &pal, scale, font_scale, cell.1);
     }
 
@@ -353,6 +421,7 @@ impl App {
             return;
         }
         match e {
+            Event::Menu(at_cursor) => return self.show_caption_menu(at_cursor),
             Event::Hover(h) => {
                 self.caption_hover = h;
                 // A button held while the pointer left it is let go.
@@ -373,5 +442,16 @@ impl App {
             }
         }
         self.redraw();
+    }
+
+    /// Pops the whole menu: under the caption's menu button (Alt, F10, a click on it) or at the
+    /// pointer (a right click on the strip, `PSM:3978-3982`). The window's menu is already
+    /// initialized for this window, so its picks reach the usual handler.
+    pub(super) fn show_caption_menu(&mut self, at_cursor: bool) {
+        use muda::ContextMenu;
+        let (Some(hwnd), Some(bar)) = (self.hwnd(), self.menu_bar.as_ref()) else { return };
+        let at = if at_cursor { None } else { self.caption_layout().and_then(|l| l.menu).map(|m| muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(m.x as i32, (m.y + m.h) as i32))) };
+        // SAFETY: the window's own menu and HWND.
+        unsafe { bar.menu.show_context_menu_for_hwnd(hwnd, at) };
     }
 }

@@ -50,16 +50,18 @@ impl App {
         if self.compact_window() { strip.max(0.0) * self.scale() } else { 0.0 }
     }
 
-    /// Whether a press that starts a drag at the window point `start` drags the window instead
-    /// (`caption::drag_to_window`): the window's theme, its No Title Bar type, its visible tabs and
-    /// the press's place in the edge strip decide it.
-    pub(super) fn drags_window(&self, alt: bool, start: (f32, f32)) -> bool {
+    /// Whether the drag of a tab that just began at the window point `start` moves the window
+    /// instead (`caption::window_drag`, judged on the move only): Alt held now, the window's theme,
+    /// its No Title Bar type, its tabs (collapsed group members count; only the overflow menu
+    /// stops the count, `numberOfVisibleTabs`) and the press's place in the edge strip decide it.
+    /// A group chip's drag is never asked (`PSM:3766-3795`).
+    pub(super) fn tab_drag_moves_window(&self, start: (f32, f32)) -> bool {
         use crate::frames;
         let no_title_bar = matches!(frames::unthemed(self.win_style), frames::NO_TITLE_BAR | frames::CENTERED_NO_TITLE_BAR);
-        let visible = self.tabs.iter().filter(|t| !t.group.as_ref().is_some_and(|g| g.collapsed)).count();
+        let visible = crate::caption::visible_tab_count(self.tabs.len(), self.tab_bar.hidden.iter().copied().min());
         let in_strip = self.tab_bar_rect().is_some_and(|b| crate::caption::in_edge_strip(b, self.tab_position(), self.edge_strip_px(), start.0, start.1));
         let convert = self.globals.bool("ConvertTabDragToWindowDragForSolitaryTabInCompactOrMinimalTheme");
-        crate::caption::drag_to_window(alt, self.compact_window(), no_title_bar, visible, in_strip, convert)
+        crate::caption::window_drag(crate::caption::DragPhase::Move, false, self.mods.alt, self.compact_window(), no_title_bar, visible, in_strip, convert)
     }
 
     /// Hands the pointer to the OS to move the window; the press that led here is forgotten (it
@@ -97,7 +99,7 @@ impl App {
                 return;
             }
             // Minimal and Compact windows (and No Title Bar ones) move instead of tearing off.
-            if self.drags_window(false, start) {
+            if matches!(self.drag, Drag::Tab { .. }) && self.tab_drag_moves_window(start) {
                 self.hide_tab_tip();
                 return self.begin_window_drag();
             }

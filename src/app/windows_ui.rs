@@ -677,8 +677,15 @@ impl App {
     /// out here, never stored: `win_style` stays the unthemed type (arrangements, hotkey slides
     /// and snapping read it), so a Theme change needs no new type.
     pub(super) fn compact_window(&self) -> bool {
+        !self.full_screen() && self.compact_type()
+    }
+
+    /// Whether the window's themed type is a compact form, full screen or not: the caption
+    /// subclass follows this, not `compact_window` (in full screen winit's style has no title bar
+    /// and the subclass leaves the frame alone, so a full screen round trip changes nothing).
+    pub(super) fn compact_type(&self) -> bool {
         use crate::frames;
-        !self.full_screen() && frames::is_compact(frames::themed(self.win_style, crate::tab_theme::compact_theme(self.tab_style())))
+        frames::is_compact(frames::themed(self.win_style, crate::tab_theme::compact_theme(self.tab_style())))
     }
 
     /// The current window's OS caption (`PT setWindowTitle:subtitle:`): `caption_base` with the
@@ -1157,7 +1164,7 @@ impl App {
                 // The frame is the outer frame; the inner size leaves the borders out.
                 let (dw, dh) = if f.decorations { (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height)) } else { (0, 0) };
                 w.set_outer_position(PhysicalPosition::new(f.rect.x.round() as i32, f.rect.y.round() as i32));
-                let _ = w.request_inner_size(PhysicalSize::new((f.rect.w as u32).saturating_sub(dw).max(1), (f.rect.h as u32).saturating_sub(dh).max(1)));
+                let _ = super::caption_ui::request_inner_size(&w, PhysicalSize::new((f.rect.w as u32).saturating_sub(dw).max(1), (f.rect.h as u32).saturating_sub(dh).max(1)));
             }
         }
         // Accessory (iTerm2's floating panel) stays above other windows without a taskbar
@@ -1230,7 +1237,7 @@ impl App {
         if (r.w, r.h) != (current.w, current.h) {
             let (outer, inner) = (w.outer_size(), w.inner_size());
             let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
-            let _ = w.request_inner_size(PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
+            let _ = super::caption_ui::request_inner_size(&w, PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
         }
     }
 
@@ -1314,7 +1321,7 @@ impl App {
         let Some(g) = &self.gpu else { return };
         let inner = g.window.inner_size();
         let (w, h) = crate::winmodel::step_size((inner.width, inner.height), cell, r);
-        let _ = g.window.request_inner_size(PhysicalSize::new(w, h));
+        let _ = super::caption_ui::request_inner_size(&g.window, PhysicalSize::new(w, h));
     }
 
     /// Edit Window Title and Edit Tab Title: a one-line window; an empty title clears it.
@@ -1413,7 +1420,7 @@ impl App {
                     let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
                     let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
                     g.window.set_outer_position(PhysicalPosition::new(r.x as i32, r.y as i32));
-                    let _ = g.window.request_inner_size(PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
+                    let _ = super::caption_ui::request_inner_size(&g.window, PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
                 }
             }
         }

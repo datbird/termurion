@@ -3035,7 +3035,7 @@ section = "Tabs"
 label = "In the Minimal and Compact themes when there is a single tab and the tab bar is visible, should dragging the tab bar move the window?"
 type = "bool"
 default = true
-help = "In the Minimal and Compact themes when there is a single tab and the tab bar is visible, should dragging the tab bar move the window?\nWith this on, dragging the only tab moves the window instead of tearing the tab off into a new window."
+help = "In the Minimal and Compact themes when there is a single tab and the tab bar is visible, should dragging the tab bar move the window?\nWith this on, dragging the only tab moves the window instead of tearing the tab off into a new window.\nThis also affects windows without titlebars in any theme."
 
 [[setting]]
 key = "MinimalTextLegibilityAdjustment"

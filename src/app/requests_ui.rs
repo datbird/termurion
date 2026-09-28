@@ -249,7 +249,7 @@ impl App {
         let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
         let (dw, dh) = (outer.width.saturating_sub(inner.width) as f64, outer.height.saturating_sub(inner.height) as f64);
         g.window.set_outer_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
-        let _ = g.window.request_inner_size(PhysicalSize::new((w - dw).max(1.0).round() as u32, (h - dh).max(1.0).round() as u32));
+        let _ = super::caption_ui::request_inner_size(&g.window, PhysicalSize::new((w - dw).max(1.0).round() as u32, (h - dh).max(1.0).round() as u32));
     }
 
     /// A tab's title, subtitle (the status joined in), colors, icon, spinner, number, pin,

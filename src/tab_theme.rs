@@ -71,6 +71,12 @@ pub fn forced_dark(style: TabStyle) -> Option<bool> {
     }
 }
 
+/// Whether the tab bar is attached to the title bar (`PT:10142-10165`): every theme and position
+/// but Compact with a Top bar.
+pub fn attached(style: TabStyle, top: bool) -> bool {
+    !(style == TabStyle::Compact && top)
+}
+
 /// The winit theme a window is given for a forced appearance; `None` follows Windows.
 pub fn window_theme(forced: Option<bool>) -> Option<winit::window::Theme> {
     forced.map(|dark| if dark { winit::window::Theme::Dark } else { winit::window::Theme::Light })
@@ -219,6 +225,9 @@ pub struct TabPalette {
     /// The Dark styles draw the content-side line as a solid black one (iTerm2's one-point
     /// gradient from black to black at 0.75, Decision).
     pub dark_edge_gradient: bool,
+    /// The bar is attached to the title bar (`AttachedToTitleBar`, `PT:10142`): false for Compact
+    /// with a Top bar, which draws no top lines and a fainter bottom line. The app sets it.
+    pub attached: bool,
     /// The label size in points.
     pub font_pt: f32,
     /// Light glyphs (the bar is dark).
@@ -342,6 +351,7 @@ pub fn palette(style: TabStyle, i: &Inputs) -> TabPalette {
                 top_selected: fill(WHITE, if focused { 0.20 } else { 0.16 }),
                 line_inset: (1.0, 1.0),
                 dark_edge_gradient: true,
+                attached: true,
                 font_pt: REGULAR_FONT_PT,
                 dark_controls: true,
                 minimal: None,
@@ -366,6 +376,7 @@ pub fn palette(style: TabStyle, i: &Inputs) -> TabPalette {
                 top_selected: fill(BLACK, 0.0),
                 line_inset: (0.5, 2.0),
                 dark_edge_gradient: false,
+                attached: true,
                 font_pt: REGULAR_FONT_PT,
                 dark_controls: false,
                 minimal: None,

@@ -1225,12 +1225,14 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
             // The top line: a top bar (attached to the title bar) leaves it off the selected tab;
             // the other positions draw it on every tab (a side bar once per kind).
             let top = bar.position == crate::tab_position::TabPosition::Top;
-            if !(top && selected) && !(bar.vertical && std::mem::replace(&mut top_done[usize::from(selected)], true)) {
+            // (`shouldDrawTopLineSelected:attached:position:`, `YOS:1628-1646`): an unattached top
+            // bar draws none.
+            if (pal.attached || !top) && !(top && selected) && !(bar.vertical && std::mem::replace(&mut top_done[usize::from(selected)], true)) {
                 line_quad(frame, Rect { y: area.y, h: 1.0, ..cell }, if selected { pal.top_selected } else { pal.top });
             }
         }
         // Past the "+" button the top line runs to the bar's end.
-        if let (Some(add), crate::tab_position::TabPosition::Top) = (bar.add, bar.position) {
+        if let (Some(add), crate::tab_position::TabPosition::Top, true) = (bar.add, bar.position, pal.attached) {
             let x = px(add).x;
             line_quad(frame, Rect { x, y: area.y, w: area.x + area.w - x, h: 1.0 }, pal.top);
         }
@@ -1245,7 +1247,9 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
             TabPosition::Right => Rect { w: 1.0, ..area },
         };
         let solid = crate::tab_theme::Fill { color: rgb(0, 0, 0), alpha: 1.0 };
-        fill_quad(frame, edge, if pal.dark_edge_gradient { solid } else { pal.edge });
+        // Unattached, the Dark style's bottom line is its top line's color at 0.3 (`DRK:52-56`).
+        let dark_line = if pal.attached || bar.position != TabPosition::Top { solid } else { crate::tab_theme::Fill { color: pal.top.color, alpha: 0.3 } };
+        fill_quad(frame, edge, if pal.dark_edge_gradient { dark_line } else { pal.edge });
     }
     // What is drawn over the selected tab and the lines (`drawPostHocDecorationsOnSelectedCell:`),
     // only in a window with a colored tab: Minimal's underline (`MIN:278-325`) or the Regular
@@ -1460,6 +1464,17 @@ pub fn caption_buttons(frame: &mut Frame, buttons: &[(crate::caption::Button, Re
         let y = rect.y + ((rect.h - line * s) / 2.0).floor();
         frame.rows.push(TextRow { x, y, spans: vec![span], clip: *rect, scale: s });
     }
+}
+
+/// The caption's menu button: the hamburger glyph in the selected text color, centered in `rect`.
+pub fn caption_menu_button(frame: &mut Frame, rect: Rect, pal: &crate::tab_theme::TabPalette, scale: f32, font_scale: f32, line: f32) {
+    let ink = crate::tab_theme::over(pal.bar, pal.text_selected);
+    let s = CAPTION_GLYPH_PT * font_scale;
+    let em = CAPTION_GLYPH_PT * scale;
+    let span = Span { text: crate::caption::MENU_GLYPH.to_string(), color: ink, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
+    let x = rect.x + ((rect.w - em) / 2.0).floor();
+    let y = rect.y + ((rect.h - line * s) / 2.0).floor();
+    frame.rows.push(TextRow { x, y, spans: vec![span], clip: rect, scale: s });
 }
 
 /// A caption text row in the bar's prose font, `width` pixels wide, at `x`.
@@ -2756,6 +2771,7 @@ mod tests {
             top_selected: clear,
             line_inset: (1.0, 2.0),
             dark_edge_gradient: false,
+            attached: true,
             font_pt: 11.0,
             dark_controls: true,
             minimal: None,
@@ -2911,6 +2927,47 @@ mod tests {
         assert!(bar.add.is_some_and(|a| f.quads.iter().any(|q| q.rect.x == area.x + a.x && q.rect.y == area.y && q.rect.h == 1.0 && q.color == black)), "past the add button");
         let f = draw(TabStyle::Light);
         assert!(!f.quads.iter().any(|q| q.rect.y == area.y && q.rect.h == 1.0 && q.rect.w < 400.0), "Light has no top line");
+    }
+
+    /// Compact with a Top bar is not attached to the title bar (`PT:10142`): no top line on any
+    /// tab, none past the "+", and Dark's bottom line is the top-line color at 0.3
+    /// (`YOS:1628-1646`, `YOS:1326`, `DRK:52-56`); Minimal and the others stay attached.
+    #[test]
+    fn unattached_top_bar_follows_iterm2() {
+        use crate::tab_layout::{self, TabInput};
+        use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
+        let inputs = Inputs { system_dark: true, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 2 };
+        let looks = vec![TabLook { title: "one".into(), number: 1, ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
+        let tabs: Vec<TabInput> = looks
+            .iter()
+            .map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
+            .collect();
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::build(&tabs, 1, 400.0, 0.0, None, &s, &six);
+        let area = Rect { x: 0.0, y: 10.0, w: 400.0, h: 24.0 };
+        let draw = |attached: bool| {
+            let mut f = Frame::default();
+            let mut pal = palette(TabStyle::Dark, &inputs);
+            pal.attached = attached;
+            tab_bar(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false, &pal);
+            f
+        };
+        let top_lines = |f: &Frame| f.quads.iter().filter(|q| q.rect.y == area.y && q.rect.h == 1.0 && q.rect.w < 400.0).count();
+        assert!(top_lines(&draw(true)) >= 2, "attached: the unselected tab's line and the run past the add button");
+        assert_eq!(top_lines(&draw(false)), 0, "unattached: no top lines at all");
+        // The bottom line: the top-line color at 0.3.
+        let f = draw(false);
+        let bottom = f.quads.iter().find(|q| q.rect.y == area.y + area.h - 1.0 && q.rect.w == 400.0).unwrap();
+        assert_eq!(bottom.color, rgba(rgb(0, 0, 0), 0.3));
+        // A bar on the bottom draws its lines whatever `attached` says.
+        let mut low = bar.clone();
+        low.position = crate::tab_position::TabPosition::Bottom;
+        let mut f = Frame::default();
+        let mut pal = palette(TabStyle::Dark, &inputs);
+        pal.attached = false;
+        tab_bar(&mut f, &looks, 1, &low, area, 1.0, 0.1, 20.0, true, false, &pal);
+        assert!(top_lines(&f) >= 2, "a bottom bar always draws top lines (YOS:1628)");
     }
 
     fn caption_palette(style: crate::tab_theme::TabStyle, dark: bool) -> crate::tab_theme::TabPalette {

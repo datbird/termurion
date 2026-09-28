@@ -15,6 +15,12 @@ const REFERENCE_SETTING: f32 = 75.0;
 const NAME_LEFT: f32 = 6.0;
 const NAME_RIGHT: f32 = 14.0;
 
+/// The caption's menu button in points: the native menu bar cannot sit under the strip, so the
+/// button pops the whole menu instead.
+pub const MENU_W: f32 = 40.0;
+/// Segoe Fluent Icons' "GlobalNavigationButton" (the hamburger).
+pub const MENU_GLYPH: char = '\u{E700}';
+
 /// Segoe Fluent Icons glyphs.
 pub const MINIMIZE_GLYPH: char = '\u{E921}';
 pub const MAXIMIZE_GLYPH: char = '\u{E922}';
@@ -40,6 +46,8 @@ pub struct Layout {
     /// The window switch label (R11), right-aligned directly left of the reserved button room;
     /// None when its width is 0.
     pub shortcut: Option<Rect>,
+    /// The menu button at the strip's left; the tabs start after it (None until `with_menu_button`).
+    pub menu: Option<Rect>,
     /// The top strip that drags the window (Task 7 fills it in).
     pub drag_edge: f32,
     pub drag_regions: Vec<Rect>,
@@ -63,6 +71,9 @@ pub enum Event {
     Hover(Option<Button>),
     Down(Button),
     Up(Button),
+    /// The caption menu asked for: Alt or F10 (the button's corner), a right click on the strip
+    /// (`true`: at the pointer).
+    Menu(bool),
 }
 
 /// The button a release clicks: the one pressed and let go over the same button.
@@ -78,6 +89,60 @@ pub fn button_of(hit: Hit) -> Option<Button> {
         Hit::Close => Some(Button::Close),
         _ => None,
     }
+}
+
+/// The strip with the menu button at its left: the name and the tabs move right of it.
+pub fn with_menu_button(mut l: Layout, scale: f32) -> Layout {
+    let w = MENU_W * scale;
+    l.menu = Some(Rect { x: 0.0, y: 0.0, w, h: l.bar.h });
+    if let Some(n) = &mut l.name {
+        n.x += w;
+    }
+    l.tabs = Rect { x: l.tabs.x + w, w: (l.tabs.w - w).max(0.0), ..l.tabs };
+    l
+}
+
+/// Whether a `WM_SYSCOMMAND` is the keyboard menu (Alt pressed and released alone, F10):
+/// `SC_KEYMENU` with `lparam` 0. Alt+Space and mnemonics carry a character and are not.
+pub fn is_key_menu(wparam: usize, lparam: isize) -> bool {
+    wparam & 0xFFF0 == 0xF100 && lparam == 0
+}
+
+/// The height a caption subclass takes off a window winit sized for a style with its title bar:
+/// a request for `height` client pixels asks winit for that less `removed`.
+pub fn corrected_inner(height: u32, removed: i32) -> u32 {
+    height.saturating_sub(removed.max(0) as u32).max(1)
+}
+
+/// The outer height that keeps the client height `before` after a frame change left it `after`.
+pub fn kept_outer_height(outer: i32, before: i32, after: i32) -> i32 {
+    outer - (after - before)
+}
+
+/// The top resize border in pixels: the frame thickness, 0 when maximized or when the window's
+/// size is locked (Lock Size, or `AllowLiveResize` off), as the other edges.
+pub fn resize_top(thickness: f32, maximized: bool, resizable: bool) -> f32 {
+    if maximized || !resizable { 0.0 } else { thickness }
+}
+
+/// The tabs `numberOfVisibleTabs` counts (`PSM:4716-4731`): every tab up to the first in the
+/// overflow menu, collapsed group members included (chips are not tabs).
+pub fn visible_tab_count(total: usize, first_overflow: Option<usize>) -> usize {
+    first_overflow.map_or(total, |i| i.min(total))
+}
+
+/// When the pointer's drag is judged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DragPhase {
+    Press,
+    Move,
+}
+
+/// Whether a drag on the tab bar moves the window: never at the press (Alt+click still selects),
+/// never for a group chip (`PSM:3766-3795`), else `drag_to_window`.
+#[allow(clippy::too_many_arguments)]
+pub fn window_drag(phase: DragPhase, chip: bool, alt: bool, compact_theme: bool, no_title_bar: bool, visible_tabs: usize, in_strip: bool, convert_solitary: bool) -> bool {
+    phase == DragPhase::Move && !chip && drag_to_window(alt, compact_theme, no_title_bar, visible_tabs, in_strip, convert_solitary)
 }
 
 /// The strip of a `client_w` wide window, `bar_h` tall, at `scale`. `setting` and `extra_space` are
@@ -102,6 +167,7 @@ pub fn layout(client_w: f32, bar_h: f32, scale: f32, setting: f32, extra_space: 
         tabs: Rect { x: start, y: 0.0, w: (end - start).max(0.0), h: bar_h },
         name,
         shortcut,
+        menu: None,
         drag_edge: 0.0,
         drag_regions: Vec::new(),
         resize_top,
@@ -136,6 +202,9 @@ pub fn hit(l: &Layout, x: f32, y: f32, over_tab: bool) -> Hit {
     }
     if !l.maximized && y < l.resize_top {
         return Hit::Top;
+    }
+    if l.menu.is_some_and(|m| m.contains(x, y)) {
+        return Hit::Client;
     }
     if let Some((b, _)) = l.buttons.iter().find(|(_, r)| r.contains(x, y)) {
         return match b {
@@ -279,6 +348,96 @@ mod tests {
         l.drag_regions = vec![r(0.0, 588.0, 800.0, 12.0)];
         assert_eq!(hit(&l, 100.0, 590.0, true), Hit::Caption);
         assert_eq!(hit(&l, 100.0, 570.0, true), Hit::Client);
+    }
+
+    /// winit sizes a window's outer frame for a style that still has its title bar, which the
+    /// caption subclass then removes: every request is short by that height.
+    #[test]
+    fn caption_size_correction_follows_frame() {
+        assert_eq!(corrected_inner(600, 38), 562);
+        assert_eq!(corrected_inner(600, 0), 600, "a window without the subclass (or in full screen)");
+        assert_eq!(corrected_inner(10, 38), 1, "never below 1");
+        assert_eq!(corrected_inner(600, -5), 600);
+    }
+
+    /// A window's client height under a frame change: Regular (caption, menu bar) to Minimal
+    /// (neither) and back, and full screen, never loses a caption or menu bar height.
+    #[test]
+    fn caption_round_trips_keep_the_client() {
+        struct Win {
+            outer: i32,
+            caption: bool,
+            menu: bool,
+        }
+        impl Win {
+            fn client(&self) -> i32 {
+                self.outer - 8 - if self.caption { 31 } else { 0 } - if self.menu { 20 } else { 0 }
+            }
+            // The frame changes; the outer height follows `kept_outer_height`.
+            fn change(&mut self, f: impl FnOnce(&mut Win)) {
+                let before = self.client();
+                f(self);
+                self.outer = kept_outer_height(self.outer, before, self.client());
+            }
+        }
+        let mut w = Win { outer: 600, caption: true, menu: true };
+        let c = w.client();
+        for _ in 0..3 {
+            w.change(|w| {
+                w.menu = false;
+                w.caption = false;
+            });
+            assert_eq!(w.client(), c, "Regular to Minimal");
+            assert_eq!(w.outer, 600 - 31 - 20);
+            w.change(|w| {
+                w.caption = true;
+                w.menu = true;
+            });
+            assert_eq!(w.client(), c, "and back");
+            assert_eq!(w.outer, 600);
+        }
+    }
+
+    #[test]
+    fn caption_top_edge_follows_lock_size() {
+        assert_eq!(resize_top(8.0, false, true), 8.0);
+        assert_eq!(resize_top(8.0, false, false), 0.0, "Lock Size or AllowLiveResize off: no top resize");
+        assert_eq!(resize_top(8.0, true, true), 0.0, "maximized");
+        let mut l = layout(1000.0, 38.0, 1.0, 75.0, 0.0, 0.0, 0.0, resize_top(8.0, false, false), false);
+        assert_eq!(hit(&l, 500.0, 3.0, false), Hit::Caption, "never HTTOP when locked");
+        l.resize_top = resize_top(8.0, false, true);
+        assert_eq!(hit(&l, 500.0, 3.0, false), Hit::Top);
+    }
+
+    #[test]
+    fn caption_menu_button_follows_ruling() {
+        let base = layout(1000.0, 38.0, 1.0, 75.0, 0.0, 0.0, 0.0, 8.0, false);
+        assert_eq!(base.menu, None);
+        let l = with_menu_button(base.clone(), 1.0);
+        assert_eq!(l.menu, Some(r(0.0, 0.0, MENU_W, 38.0)));
+        assert_eq!(l.tabs, r(MENU_W, 0.0, 862.0 - MENU_W, 38.0), "the tabs start after the button");
+        assert_eq!(hit(&l, 10.0, 20.0, false), Hit::Client, "the button is a client point");
+        assert_eq!(hit(&l, 500.0, 20.0, false), Hit::Caption);
+        assert_eq!(with_menu_button(base, 1.5).menu, Some(r(0.0, 0.0, MENU_W * 1.5, 38.0)));
+        // The Alt/F10 key menu is a keyboard SC_KEYMENU (lparam 0), not Alt+Space or a mnemonic.
+        assert!(is_key_menu(0xF100, 0));
+        assert!(!is_key_menu(0xF100, i32::from(b' ') as isize), "Alt+Space is the system menu");
+        assert!(!is_key_menu(0xF010, 0));
+    }
+
+    #[test]
+    fn tab_drag_to_window_follows_iterm2() {
+        // Alt converts on DRAG only (PSM:3790): a press never does, so Alt+click still selects.
+        assert!(!window_drag(DragPhase::Press, false, true, false, false, 3, false, true));
+        assert!(window_drag(DragPhase::Move, false, true, false, false, 3, false, true));
+        // A group chip's drag never converts, in the strip or with Alt.
+        assert!(!window_drag(DragPhase::Move, true, true, true, false, 1, true, true));
+        // Collapsed group members are tabs (numberOfVisibleTabs, PSM:4716-4731); only overflow stops it.
+        assert_eq!(visible_tab_count(3, None), 3);
+        assert_eq!(visible_tab_count(5, Some(3)), 3);
+        assert_eq!(visible_tab_count(0, None), 0);
+        // One open tab and a collapsed group of two is three tabs, not solitary.
+        assert!(!window_drag(DragPhase::Move, false, false, true, false, visible_tab_count(3, None), false, true));
     }
 
     #[test]

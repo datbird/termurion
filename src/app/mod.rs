@@ -1549,7 +1549,7 @@ impl App {
                 if size == inner {
                     return false;
                 }
-                let _ = g.window.request_inner_size(size);
+                let _ = caption_ui::request_inner_size(&g.window, size);
                 // Windows resizes at once; what it granted is what a hide takes back.
                 let now = g.window.inner_size();
                 if showing {
@@ -2030,9 +2030,6 @@ impl App {
                 self.tab_press = None;
                 self.redraw();
             }
-            // Option (Alt) drags the window from anywhere on the bar, in every theme
-            // (`tabViewShouldDragWindow:event:`): the press is forgotten first.
-            MouseButton::Left if alt && self.drags_window(true, self.cursor) => self.begin_window_drag(),
             MouseButton::Left => {
                 let clicks = self.count_tab_click(hit);
                 self.tab_press = Some((hit, clicks, alt, id));
@@ -2392,7 +2389,9 @@ impl App {
             colored_text_prominence: g.number("ColoredUnselectedTabTextProminence").map_or(0.5, |v| v as f32),
             tabs: self.tabs.len(),
         };
-        crate::tab_theme::palette(self.tab_style(), &inputs)
+        let mut pal = crate::tab_theme::palette(self.tab_style(), &inputs);
+        pal.attached = crate::tab_theme::attached(self.tab_style(), self.tab_position() == TabPosition::Top);
+        pal
     }
 
     /// The split pane divider color (`tab_theme::divider_color`). Minimal starts from the focused
@@ -3006,7 +3005,7 @@ impl App {
         let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
         let size = winit::dpi::PhysicalSize::new((r.w.round() as u32).saturating_sub(dw).max(1), (r.h.round() as u32).saturating_sub(dh).max(1));
         if size != inner {
-            let _ = g.window.request_inner_size(size);
+            let _ = caption_ui::request_inner_size(&g.window, size);
         }
     }
 
@@ -3040,7 +3039,7 @@ impl App {
             w = w.min(work.w - outer.width.saturating_sub(inner.width) as f32);
             h = h.min(work.h - outer.height.saturating_sub(inner.height) as f32);
         }
-        let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new(w.max(1.0).ceil() as u32, h.max(1.0).ceil() as u32));
+        let _ = caption_ui::request_inner_size(&g.window, winit::dpi::PhysicalSize::new(w.max(1.0).ceil() as u32, h.max(1.0).ceil() as u32));
     }
 
     /// "Always open in a new window, never in a tab": a new tab of `guid` opens as a window
@@ -3685,6 +3684,10 @@ impl App {
         // A press on a shown composer is its own; anywhere else takes the keyboard from it.
         if self.composer_press(button, x, y) {
             return;
+        }
+        // The caption's menu button pops the whole menu (the native bar cannot sit under the strip).
+        if button == MouseButton::Left && self.caption_layout().and_then(|l| l.menu).is_some_and(|m| m.contains(x, y)) {
+            return self.show_caption_menu(false);
         }
         // The side bar's drag handle, on its inner edge, before its rows (`RTV:1860-1895`).
         if button == MouseButton::Left && self.side_handle().is_some_and(|h| h.contains(x, y)) {
@@ -4823,6 +4826,10 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let _ = scale_factor;
+                // winit sized the window for a title bar the caption subclass removes.
+                if let Some(g) = &self.gpu {
+                    caption_ui::dpi_changed(&g.window);
+                }
                 self.apply_fonts();
                 self.relayout();
             }
