@@ -233,7 +233,7 @@ fn block<'a>(raw: &'a [u8], begin: &[u8], end: &[u8]) -> Option<(usize, &'a [u8]
 }
 
 /// The texts of every `ESC ] 134 ; : <name> <text> ESC \` report, in order.
-fn reports(raw: &[u8], name: &str) -> Vec<String> {
+pub(crate) fn reports(raw: &[u8], name: &str) -> Vec<String> {
     let head = format!("\x1b]134;:{name} ");
     let mut out = Vec::new();
     let mut from = 0;

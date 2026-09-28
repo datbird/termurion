@@ -499,6 +499,350 @@ mod tests {
         drop(cleanup);
     }
 
+    // ---- Resize probe (Robert: can Tandem size the remote pty through ssh.exe's hidden console?)
+
+    /// The remote for the resize probe: reports its starting size, then for 8 s reports every
+    /// SIGWINCH with the new size, then runs remote.sh (the byte-exact checks).
+    fn resize_script() -> String {
+        [
+            "stty -echo -isig",
+            "stty -onlcr -opost",
+            "trap 'printf \"\\033]134;:winch %s\\033\\\\\" \"$(stty size)\"' WINCH",
+            "printf '\\033]134;:start %s\\033\\\\' \"$(stty size)\"",
+            "i=0; while [ $i -lt 80 ]; do sleep 0.1 & wait $!; i=$((i+1)); done",
+            "trap - WINCH",
+            "exec sh /tmp/tandem-ssh-probe/remote.sh",
+        ]
+        .join("\n")
+            + "\n"
+    }
+
+    /// `raw` with every `ESC ] 134 ; : <name> ... ESC \` report of these names removed.
+    fn strip_reports(raw: &[u8], names: &[&str]) -> Vec<u8> {
+        let mut out = raw.to_vec();
+        for name in names {
+            let head = format!("\x1b]134;:{name} ");
+            while let Some(at) = out.windows(head.len()).position(|w| w == head.as_bytes()) {
+                let Some(len) = out[at..].windows(2).position(|w| w == b"\x1b\\") else { break };
+                out.drain(at..at + len + 2);
+            }
+        }
+        out
+    }
+
+    /// What remote.sh prints apart from its reports: the DCS line, the main block, the side block.
+    fn exact_body() -> Vec<u8> {
+        let mut v = DCS_LINE.to_vec();
+        v.extend(OUT_BEGIN);
+        v.extend(main_payload());
+        v.extend(OUT_END);
+        v.extend(SIDE_BEGIN);
+        v.extend(side_payload());
+        v.extend(SIDE_END);
+        v
+    }
+
+    /// Sets the console's buffer and window to `cols` x `rows` (the console this process is
+    /// attached to), and reads the size back.
+    fn set_console_size(cols: i16, rows: i16) -> Result<String, String> {
+        use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
+        use windows_sys::Win32::System::Console::{CONSOLE_SCREEN_BUFFER_INFO, COORD, GetConsoleScreenBufferInfo, SMALL_RECT, SetConsoleScreenBufferSize, SetConsoleWindowInfo};
+        let name: Vec<u16> = "CONOUT$".encode_utf16().chain(Some(0)).collect();
+        unsafe {
+            let h = CreateFileW(name.as_ptr(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, std::ptr::null(), OPEN_EXISTING, 0, std::ptr::null_mut());
+            if h == INVALID_HANDLE_VALUE {
+                return Err(format!("CONOUT$: {}", std::io::Error::last_os_error()));
+            }
+            let mut notes = Vec::new();
+            let tiny = SMALL_RECT { Left: 0, Top: 0, Right: 0, Bottom: 0 };
+            if SetConsoleWindowInfo(h, 1, &tiny) == 0 {
+                notes.push(format!("window 1x1: {}", std::io::Error::last_os_error()));
+            }
+            if SetConsoleScreenBufferSize(h, COORD { X: cols, Y: rows }) == 0 {
+                notes.push(format!("buffer: {}", std::io::Error::last_os_error()));
+            }
+            let full = SMALL_RECT { Left: 0, Top: 0, Right: cols - 1, Bottom: rows - 1 };
+            if SetConsoleWindowInfo(h, 1, &full) == 0 {
+                notes.push(format!("window: {}", std::io::Error::last_os_error()));
+            }
+            let mut info: CONSOLE_SCREEN_BUFFER_INFO = std::mem::zeroed();
+            let read = GetConsoleScreenBufferInfo(h, &mut info) != 0;
+            CloseHandle(h);
+            let w = info.srWindow;
+            let back = if read { format!("buffer {}x{} window {}x{}", info.dwSize.X, info.dwSize.Y, w.Right - w.Left + 1, w.Bottom - w.Top + 1) } else { "unreadable".into() };
+            if notes.is_empty() { Ok(back) } else { Err(format!("{} ({back})", notes.join("; "))) }
+        }
+    }
+
+    /// `set_console_size` on the console `pid` runs on.
+    fn resize_attached(pid: u32, cols: i16, rows: i16) -> Result<String, String> {
+        crate::pty::attached_unless(pid, &std::sync::atomic::AtomicBool::new(false), || set_console_size(cols, rows))
+    }
+
+    /// ssh.exe started with CreateProcessW directly (for STARTF_USECOUNTCHARS and a hidden
+    /// window), stdin and stdout+stderr on overlapped named pipes.
+    struct RawSsh {
+        process: std::os::windows::io::OwnedHandle,
+        pid: u32,
+        stdin: std::fs::File,
+        output: Receiver<Vec<u8>>,
+    }
+
+    impl Drop for RawSsh {
+        fn drop(&mut self) {
+            use std::os::windows::io::AsRawHandle;
+            unsafe { windows_sys::Win32::System::Threading::TerminateProcess(self.process.as_raw_handle(), 1) };
+        }
+    }
+
+    fn raw_spawn(args: &[String], flags: u32, count: Option<(u32, u32)>, hide: bool, stdout_override: Option<windows_sys::Win32::Foundation::HANDLE>, stderr_override: Option<windows_sys::Win32::Foundation::HANDLE>) -> Result<RawSsh, String> {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+        use windows_sys::Win32::System::Threading::{CreateProcessW, PROCESS_INFORMATION, STARTF_USECOUNTCHARS, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOW};
+        let (stdin, in_client) = named_pipe(true, false);
+        let (mut out_server, out_client) = named_pipe(true, true);
+        unsafe {
+            for h in [&in_client, &out_client] {
+                SetHandleInformation(h.as_raw_handle(), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+            }
+            let mut si: STARTUPINFOW = std::mem::zeroed();
+            si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+            si.dwFlags = STARTF_USESTDHANDLES;
+            if let Some((x, y)) = count {
+                si.dwFlags |= STARTF_USECOUNTCHARS;
+                si.dwXCountChars = x;
+                si.dwYCountChars = y;
+            }
+            if hide {
+                si.dwFlags |= STARTF_USESHOWWINDOW;
+                si.wShowWindow = 0; // SW_HIDE
+            }
+            si.hStdInput = in_client.as_raw_handle();
+            si.hStdOutput = stdout_override.unwrap_or(out_client.as_raw_handle());
+            si.hStdError = stderr_override.or(stdout_override).unwrap_or(out_client.as_raw_handle());
+            let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
+            let mut cmd: Vec<u16> = cmdline("ssh.exe", args).encode_utf16().chain(Some(0)).collect();
+            if CreateProcessW(std::ptr::null(), cmd.as_mut_ptr(), std::ptr::null(), std::ptr::null(), 1, flags, std::ptr::null(), std::ptr::null(), &si, &mut pi) == 0 {
+                return Err(format!("CreateProcessW: {}", std::io::Error::last_os_error()));
+            }
+            windows_sys::Win32::Foundation::CloseHandle(pi.hThread);
+            drop(in_client);
+            drop(out_client);
+            let (tx, output) = mpsc::channel();
+            std::thread::spawn(move || {
+                let mut buf = vec![0u8; 65536];
+                while let Ok(n) = out_server.read(&mut buf) {
+                    if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            });
+            Ok(RawSsh { process: OwnedHandle::from_raw_handle(pi.hProcess), pid: pi.dwProcessId, stdin, output })
+        }
+    }
+
+    impl RawSsh {
+        /// Reads into `all` until `done(all)`, at most `wait`; true on success.
+        fn read_until(&self, all: &mut Vec<u8>, wait: Duration, done: impl Fn(&[u8]) -> bool) -> bool {
+            let end = Instant::now() + wait;
+            while !done(all) {
+                let left = end.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return false;
+                }
+                if let Ok(b) = self.output.recv_timeout(left.min(Duration::from_millis(20))) {
+                    all.extend(b);
+                }
+            }
+            true
+        }
+
+        fn exit(&self, wait: Duration) -> Option<u32> {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+            unsafe {
+                if WaitForSingleObject(self.process.as_raw_handle(), wait.as_millis() as u32) != 0 {
+                    return None;
+                }
+                let mut code = 0u32;
+                (GetExitCodeProcess(self.process.as_raw_handle(), &mut code) != 0).then_some(code)
+            }
+        }
+    }
+
+    /// How a resize variant sizes the console: at start, and live.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Sizing {
+        /// Nothing done (the baseline).
+        None,
+        /// AttachConsole(ssh) and resize, right after the launch and for each live size.
+        Attach,
+        /// This process's own console (AllocConsole, hidden), sized before ssh starts and
+        /// inherited by it; live sizes resize it.
+        Own,
+    }
+
+    /// One resize variant, run in the detached child (it can attach to ssh's console).
+    fn resize_variant(name: &str, key: &str, user: &str, flags: u32, count: Option<(u32, u32)>, sizing: Sizing) {
+        const START: (i16, i16) = (100, 30);
+        const LIVE: [(i16, i16); 2] = [(120, 40), (90, 25)];
+        let args = ssh_args(Transport::NamedPipes, key, user, &["sh".to_string(), format!("{WSL_DIR}/resize.sh")]);
+        let mut lines = vec![format!("RESIZE {name}:")];
+        if sizing == Sizing::Own {
+            unsafe {
+                windows_sys::Win32::System::Console::AllocConsole();
+                let w = windows_sys::Win32::System::Console::GetConsoleWindow();
+                if !w.is_null() {
+                    windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(w, 0);
+                }
+            }
+            lines.push(format!("  own console start size: {:?}", set_console_size(START.0, START.1)));
+        }
+        let ssh = match raw_spawn(&args, flags, count, true, None, None) {
+            Ok(s) => s,
+            Err(e) => {
+                println!("RESIZE {name}: create {e}");
+                return;
+            }
+        };
+        if sizing == Sizing::Attach {
+            // ssh.exe's console exists a moment after the launch: retry the attach for up to 3 s.
+            let t = Instant::now();
+            let mut r = resize_attached(ssh.pid, START.0, START.1);
+            while r.is_err() && t.elapsed() < secs(3) {
+                std::thread::sleep(Duration::from_millis(10));
+                r = resize_attached(ssh.pid, START.0, START.1);
+            }
+            lines.push(format!("  start resize after launch: {r:?} after {:?}", t.elapsed()));
+        }
+        let mut all = Vec::new();
+        let got_start = ssh.read_until(&mut all, secs(15), |a| !reports(a, "start").is_empty());
+        lines.push(format!("  remote start size: {:?} (seen {got_start})", reports(&all, "start").first()));
+        for (i, (c, r)) in LIVE.into_iter().enumerate() {
+            std::thread::sleep(Duration::from_millis(1000));
+            let did = match sizing {
+                Sizing::None => Ok("not resized".to_string()),
+                Sizing::Attach => resize_attached(ssh.pid, c, r),
+                Sizing::Own => set_console_size(c, r),
+            };
+            let t = Instant::now();
+            let seen = ssh.read_until(&mut all, secs(3), |a| reports(a, "winch").len() > i);
+            lines.push(format!("  live {c}x{r}: set {did:?}; winch {:?} after {:?} (seen {seen})", reports(&all, "winch").get(i), t.elapsed()));
+        }
+        // remote.sh: sizes, the size line, the bootstrap.
+        let s1 = ssh.read_until(&mut all, secs(20), |a| !reports(a, "size").is_empty());
+        let mut stdin = &ssh.stdin;
+        let _ = stdin.write_all(b"size\n");
+        let s2 = ssh.read_until(&mut all, secs(20), |a| reports(a, "size").len() >= 2);
+        let _ = stdin.write_all(BOOTSTRAP);
+        let g = ssh.read_until(&mut all, secs(20), |a| !reports(a, "got").is_empty());
+        let exit = ssh.exit(secs(10));
+        let _ = ssh.read_until(&mut all, Duration::from_millis(500), |_| false);
+        let v = check(&all);
+        let body = strip_reports(&all, &["start", "winch", "size", "pre", "got"]);
+        lines.push(format!("  remote.sh sizes {:?} (seen {s1} {s2} {g}); verdict {v:?}; passes {}; exit {exit:?}", reports(&all, "size"), v.passes()));
+        lines.push(format!("  stream is only the remote's bytes: {}{}", body == exact_body(), if body == exact_body() { String::new() } else { format!(" extra {:?}", String::from_utf8_lossy(&body)) }));
+        drop(ssh);
+        if sizing == Sizing::Own {
+            unsafe { windows_sys::Win32::System::Console::FreeConsole() };
+        }
+        for l in lines {
+            println!("{l}");
+        }
+    }
+
+    /// Where does ssh.exe read the size? Its own console (sized 100x30) as stdout and stderr,
+    /// stdin still an overlapped pipe; the remote writes `stty size` to a file in WSL.
+    fn size_source_variant(key: &str, user: &str, stderr_only: bool) {
+        use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+        use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
+        let file = format!("{WSL_DIR}/size.txt");
+        let _ = wsl(&["-e", "rm", "-f", &file]);
+        unsafe {
+            windows_sys::Win32::System::Console::AllocConsole();
+            let w = windows_sys::Win32::System::Console::GetConsoleWindow();
+            if !w.is_null() {
+                windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(w, 0);
+            }
+        }
+        let sized = set_console_size(100, 30);
+        let name: Vec<u16> = "CONOUT$".encode_utf16().chain(Some(0)).collect();
+        let sa = SECURITY_ATTRIBUTES { nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: std::ptr::null_mut(), bInheritHandle: 1 };
+        let con = unsafe { CreateFileW(name.as_ptr(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, std::ptr::null_mut()) };
+        assert_ne!(con, INVALID_HANDLE_VALUE, "CONOUT$");
+        let args = ssh_args(Transport::NamedPipes, key, user, &[format!("stty size > {file}")]);
+        let result = if stderr_only { raw_spawn(&args, 0, None, true, None, Some(con)) } else { raw_spawn(&args, 0, None, true, Some(con), None) }.map(|ssh| ssh.exit(secs(15)));
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(con);
+            windows_sys::Win32::System::Console::FreeConsole();
+        }
+        let size = stdout(&wsl(&["-e", "cat", &file]));
+        println!("RESIZE {} (size source):", if stderr_only { "stderr-is-console" } else { "stdout-is-console" });
+        println!("  console {sized:?}; ssh exit {result:?}; remote stty size {:?}", size.trim());
+    }
+
+    /// The child half of `resize_probe`: started detached (no console of its own), so it can
+    /// attach to ssh.exe's console or make its own.
+    #[test]
+    #[ignore]
+    fn resize_probe_child() {
+        let (Ok(key), Ok(user)) = (std::env::var("TANDEM_RESIZE_KEY"), std::env::var("TANDEM_RESIZE_USER")) else { return };
+        const CREATE_NEW_CONSOLE: u32 = 0x10;
+        resize_variant("no-window-baseline", &key, &user, CREATE_NO_WINDOW, None, Sizing::None);
+        resize_variant("new-console-countchars-attach", &key, &user, CREATE_NEW_CONSOLE, Some((100, 30)), Sizing::Attach);
+        resize_variant("new-console-countchars-only", &key, &user, CREATE_NEW_CONSOLE, Some((100, 30)), Sizing::None);
+        resize_variant("no-window-attach", &key, &user, CREATE_NO_WINDOW, None, Sizing::Attach);
+        resize_variant("own-console-inherited", &key, &user, 0, None, Sizing::Own);
+        size_source_variant(&key, &user, false);
+        size_source_variant(&key, &user, true);
+    }
+
+    /// Resize probe: can the remote pty's size follow ssh.exe's hidden console (named-pipes)?
+    /// Run by hand: `cargo test --lib ssh_probe_win::tests::resize_probe -- --ignored --exact --nocapture`.
+    #[test]
+    #[ignore]
+    fn resize_probe() {
+        let (cleanup, key, user) = setup();
+        let wrote = wsl_fed(&["sh", "-c", &format!("cat > {WSL_DIR}/resize.sh")], resize_script().as_bytes());
+        assert!(ok(&wrote), "resize.sh was not written");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "ssh_probe_win::tests::resize_probe_child", "--ignored", "--nocapture", "--test-threads=1"])
+            .env("TANDEM_RESIZE_KEY", &key)
+            .env("TANDEM_RESIZE_USER", &user)
+            .creation_flags(DETACHED_PROCESS)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut out = child.stdout.take().unwrap();
+        let reading = std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = out.read_to_string(&mut s);
+            s
+        });
+        let end = Instant::now() + secs(400);
+        let status = loop {
+            if let Some(st) = child.try_wait().unwrap() {
+                break Some(st);
+            }
+            if Instant::now() >= end {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        drop(cleanup);
+        let got = reading.join().unwrap();
+        for line in got.lines().filter(|l| l.starts_with("RESIZE") || l.starts_with("  ")) {
+            println!("{line}");
+        }
+        assert!(status.is_some_and(|s| s.success()), "the resize child failed or hung: {status:?}\n{got}");
+    }
+
     #[test]
     #[ignore]
     fn ssh_transport_probe() {
