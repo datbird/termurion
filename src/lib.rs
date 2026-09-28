@@ -284,6 +284,7 @@ pub mod session_env;
 pub mod api_server;
 pub mod ai_settings;
 pub mod ai_catalog;
+pub mod ai_chat;
 pub mod ai_policy;
 pub mod ai_models;
 pub mod ai_model;

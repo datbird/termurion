@@ -160,7 +160,10 @@ pub trait Dialect: Send + Sync {
 pub fn dialect_for(api: Api) -> Option<Box<dyn Dialect>> {
     match api {
         Api::Responses => Some(Box::new(crate::ai_responses::Responses)),
-        Api::Completions | Api::ChatCompletions | Api::Gemini | Api::EarlyO1 | Api::Llama | Api::DeepSeek | Api::Anthropic | Api::AppleIntelligence => None,
+        Api::ChatCompletions => Some(Box::new(crate::ai_chat::ChatCompletions)),
+        Api::EarlyO1 => Some(Box::new(crate::ai_chat::EarlyO1)),
+        Api::Completions => Some(Box::new(crate::ai_chat::Completions)),
+        Api::Gemini | Api::Llama | Api::DeepSeek | Api::Anthropic | Api::AppleIntelligence => None,
     }
 }
 
