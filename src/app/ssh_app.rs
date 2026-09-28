@@ -83,6 +83,13 @@ impl App {
                     }
                     self.api_output(&[pane]);
                 }
+                // Only for the coprocess tee, which `Pane::hook_output` did at once.
+                Out::Raw(_) => {}
+                Out::Side { text, pid, channel, depth } => {
+                    if let Some(c) = self.panes.get_mut(&pane).and_then(|p| p.conductor.as_mut()) {
+                        c.handle_side(&text, pid, channel, depth);
+                    }
+                }
                 Out::Ssh(Token::Init(init), _) => self.ssh_hooked(pane, init),
                 Out::Ssh(token, depth) => {
                     // A token with no conductor (its setup was refused) is dropped.
@@ -100,8 +107,10 @@ impl App {
                         }
                         // The parser already let go; the setup fails with the reason now.
                         Token::Error(reason) => c.fail(&reason),
-                        // The framer's tokens are Task 3 and 5's.
-                        Token::Init(_) | Token::Output { .. } | Token::Terminate { .. } | Token::It2(_) => {}
+                        Token::Terminate { pid, rc } => c.handle_terminate(pid, rc, depth),
+                        Token::It2(text) => c.handle_it2(&text, depth),
+                        // The hook turns output into `Out::Side` and `Out::Raw`.
+                        Token::Init(_) | Token::Output { .. } => {}
                     }
                 }
             }

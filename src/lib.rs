@@ -244,6 +244,7 @@ pub mod ssh_inject;
 pub mod conductor;
 pub mod framer_script;
 pub mod conductor_framer;
+pub mod side_channel;
 #[cfg(test)]
 pub mod ssh_fixtures;
 pub mod tmux_proto;

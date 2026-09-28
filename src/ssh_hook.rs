@@ -2,7 +2,9 @@
 //! (across reads) and hands everything after it to the conductor parser until it unhooks.
 //! Bytes before the start and after the unhook go to the screen.
 
-use crate::conductor_parser::{Parser, Token};
+use crate::conductor_parser::{Parser, Token, AUTOPOLL_PID, NOTIF_PID};
+use crate::side_channel::Reducer;
+use std::collections::HashMap;
 
 pub const START: &[u8] = b"\x1bP2000p";
 
@@ -15,7 +17,19 @@ pub enum Out {
     Screen(Vec<u8>),
     /// A conductor token and its depth (0 before the framer).
     Ssh(Token, i32),
+    /// One piece of a background process's output (`SSH_SIDE_CHANNEL`): never for the screen.
+    /// `depth` is the depth of the hook that read the block.
+    Side { text: String, pid: i32, channel: i32, depth: i32 },
+    /// The raw bytes of a depth 0, channel -1 block, for the coprocess (`VP:405`).
+    Raw(Vec<u8>),
 }
+
+/// How many remote processes one hook follows at once (F13). A remote can name any pid; past
+/// this the hook lets go rather than keep a parser for each.
+pub const MAX_CHILDREN: usize = 256;
+
+/// Why the hook let go past `MAX_CHILDREN` (Tandem's).
+pub const TOO_MANY_PROCESSES: &str = "SSH integration stopped: the remote host started too many processes";
 
 /// Why the conductor ends when its parser lets go without saying so (Tandem's): a cap, an
 /// unknown word, output that is not a reply. Without it the pane would go on framing keys
@@ -27,8 +41,22 @@ pub fn new_dcs_id() -> String {
     uuid::Uuid::new_v4().hyphenated().to_string().to_uppercase()
 }
 
+/// The parser of one remote process (`VP:181-275`), and its side channel's reducer.
+#[derive(Default)]
+struct Child {
+    hook: Hook,
+    reducer: Reducer,
+}
+
 #[derive(Default)]
 pub struct Hook {
+    /// 0 for a pane's own hook, one more for each nested hook (a remote ssh inside a framed
+    /// session).
+    depth: i32,
+    /// One parser per remote pid, at depth + 1.
+    children: HashMap<i32, Box<Child>>,
+    /// The first pid that wrote to the screen with no other process known (`VP:181-275`).
+    main_pid: Option<i32>,
     /// The end of the last read that may begin `ESC P 2000 p`.
     held: Vec<u8>,
     parser: Option<Parser>,
@@ -42,6 +70,18 @@ impl Hook {
         Hook { ids: Some(next), ..Default::default() }
     }
 
+    /// A hook at `depth`: what a child of a hook at `depth - 1` is.
+    pub fn with_depth(depth: i32) -> Hook {
+        Hook { depth, ..Default::default() }
+    }
+
+    /// The pids that have a child parser now, sorted.
+    pub fn child_pids(&self) -> Vec<i32> {
+        let mut pids: Vec<i32> = self.children.keys().copied().collect();
+        pids.sort_unstable();
+        pids
+    }
+
     pub fn active(&self) -> bool {
         self.parser.is_some()
     }
@@ -50,12 +90,57 @@ impl Hook {
     /// output again. The parser's unparsed bytes (a partial init line or OSC) go with it.
     pub fn unhook(&mut self) {
         self.parser = None;
+        self.drop_children();
+    }
+
+    fn drop_children(&mut self) {
+        self.children.clear();
+        self.main_pid = None;
     }
 
     /// The tail of the last read kept because it may begin `ESC P 2000 p`, handed back for
     /// output that no longer goes through the hook (tmux control mode began before it).
     pub fn take_held(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.held)
+    }
+
+    /// A `%output` block (`VP:181-275`): its data goes to the child parser of its pid (made
+    /// on first use, at depth + 1), and what the child finds goes up. False past the cap.
+    fn output(&mut self, pid: i32, channel: i32, data: Vec<u8>, out: &mut Vec<Out>) -> bool {
+        if !self.children.contains_key(&pid) {
+            if self.children.len() >= MAX_CHILDREN {
+                return false;
+            }
+            if self.children.is_empty() && channel == -1 {
+                self.main_pid = Some(pid);
+            }
+            let hook = Hook { depth: self.depth + 1, ids: self.ids, ..Default::default() };
+            self.children.insert(pid, Box::new(Child { hook, reducer: Reducer::default() }));
+        }
+        let Some(child) = self.children.get_mut(&pid) else { return true };
+        let mut pieces = Vec::new();
+        for o in child.hook.feed(&data) {
+            match o {
+                Out::Screen(bytes) if channel == -1 => screen(out, &bytes),
+                Out::Screen(bytes) => pieces.extend(child.reducer.feed(&bytes)),
+                // A side channel keeps only text (`T:1776-1805`).
+                Out::Ssh(..) if channel != -1 => {}
+                other => {
+                    flush_side(&mut pieces, pid, channel, self.depth, out);
+                    out.push(other);
+                }
+            }
+        }
+        flush_side(&mut pieces, pid, channel, self.depth, out);
+        // Autopoll and notification parsers keep nothing between blocks.
+        if pid == AUTOPOLL_PID || pid == NOTIF_PID {
+            self.children.remove(&pid);
+        }
+        // Only depth 0 keeps the block for the coprocess.
+        if self.depth == 0 && channel == -1 {
+            out.push(Out::Raw(data));
+        }
+        true
     }
 
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Out> {
@@ -67,9 +152,40 @@ impl Hook {
                 let fed = parser.feed(&data);
                 // A parser that unhooks with no word of its own gets one here (F28).
                 let silent = fed.rest.is_some() && !matches!(fed.tokens.last(), Some(Token::Unhook | Token::Error(_)));
-                out.extend(fed.tokens.into_iter().map(|t| Out::Ssh(t, 0)));
+                let mut capped = false;
+                for token in fed.tokens {
+                    match token {
+                        Token::Output { pid, channel, data } => {
+                            if !self.output(pid, channel, data, &mut out) {
+                                capped = true;
+                                break;
+                            }
+                        }
+                        Token::Terminate { pid, rc } => {
+                            self.children.remove(&pid);
+                            if self.main_pid == Some(pid) {
+                                self.main_pid = None;
+                            }
+                            out.push(Out::Ssh(Token::Terminate { pid, rc }, self.depth));
+                        }
+                        Token::Unhook => {
+                            self.drop_children();
+                            out.push(Out::Ssh(Token::Unhook, self.depth));
+                        }
+                        token => out.push(Out::Ssh(token, self.depth)),
+                    }
+                }
+                if capped {
+                    // The rest of the read is lost with the parser; the pane's screen gets
+                    // nothing of it (it is a remote's flood).
+                    out.push(Out::Ssh(Token::Error(TOO_MANY_PROCESSES.into()), self.depth));
+                    self.parser = None;
+                    self.drop_children();
+                    break;
+                }
                 if silent {
-                    out.push(Out::Ssh(Token::Error(LOST_OUTPUT.into()), 0));
+                    self.drop_children();
+                    out.push(Out::Ssh(Token::Error(LOST_OUTPUT.into()), self.depth));
                 }
                 match fed.rest {
                     None => break,
@@ -98,6 +214,10 @@ impl Hook {
         }
         out
     }
+}
+
+fn flush_side(pieces: &mut Vec<String>, pid: i32, channel: i32, depth: i32, out: &mut Vec<Out>) {
+    out.extend(pieces.drain(..).map(|text| Out::Side { text, pid, channel, depth }));
 }
 
 /// Adds screen bytes, joined to screen bytes just before them.
@@ -491,5 +611,114 @@ mod tests {
 
     fn osc135(p: &str) -> Vec<u8> {
         crate::ssh_fixtures::osc135(p)
+    }
+
+    fn side(text: &str, pid: i32, channel: i32, depth: i32) -> Out {
+        Out::Side { text: text.into(), pid, channel, depth }
+    }
+
+    fn raw(b: &[u8]) -> Out {
+        Out::Raw(b.to_vec())
+    }
+
+    #[test]
+    fn nested_reparse_follows_iterm2() {
+        use crate::ssh_fixtures::{autopoll, dcs_hook, notif, output, pre_reply, terminate};
+        let mut h = hooked();
+        // Depth 0 channel -1: the screen, and the same bytes for the coprocess.
+        assert_eq!(h.feed(&output("1", 4242, -1, 0, b"hi\r\n")), vec![s(b"hi\r\n"), raw(b"hi\r\n")]);
+        // A side channel never reaches the screen or the coprocess.
+        assert_eq!(h.feed(&output("2", 4242, 1, 0, b"x\n")), vec![side("x", 4242, 1, 0), side("\n", 4242, 1, 0)]);
+        // A second ssh inside: the child's meta tokens carry the child's depth.
+        let mut h = hooked();
+        let inner = [dcs_hook("", "u", "YQ==", "Yg=="), pre_reply("1.1", &["zsh"])].concat();
+        let got = h.feed(&output("3", 4242, -1, 0, &inner));
+        let up = |t: Token| Out::Ssh(t, 1);
+        assert_eq!(
+            got,
+            vec![
+                up(Token::Init(Init { token: "none".into(), unique_id: "u".into(), bool_args: "a".into(), sshargs: "b".into(), dcs_id: "D".into() })),
+                up(Token::Begin("1.1".into())),
+                up(Token::Line("zsh".into())),
+                up(Token::End { id: "1.1".into(), status: 0, kind: "r".into() }),
+                raw(&inner),
+            ]
+        );
+        assert_eq!(h.child_pids(), [4242]);
+        // %terminate drops that pid's parser: what follows starts clean.
+        assert_eq!(h.feed(&terminate(4242, 0)), vec![ssh(Token::Terminate { pid: 4242, rc: 0 })]);
+        assert_eq!(h.child_pids(), Vec::<i32>::new());
+        assert_eq!(h.feed(&output("4", 4242, -1, 0, b"z")), vec![s(b"z"), raw(b"z")], "a fresh child, not the hooked one");
+        // A side channel reduces per pid, with state across reads.
+        let mut h = hooked();
+        assert_eq!(h.feed(&output("5", 7, 1, 0, b"a\x1b[")), vec![side("a", 7, 1, 0)]);
+        assert_eq!(h.feed(&output("6", 7, 1, 0, b"1mb")), vec![side("b", 7, 1, 0)]);
+        // A child's screen bytes of a side channel are reduced, its tokens dropped.
+        assert_eq!(h.feed(&output("7", 7, 1, 0, &pre_reply("9", &["q"]))), vec![]);
+        // Autopoll and notif leave no child and keep no state.
+        let mut h = hooked();
+        let got = h.feed(&autopoll("8", "r\n"));
+        let text: String = got.iter().map(|o| if let Out::Side { text, pid, channel, depth } = o { assert_eq!((*pid, *channel, *depth), (crate::conductor_parser::AUTOPOLL_PID, 1, 0)); text.as_str() } else { panic!("{o:?}") }).collect();
+        assert_eq!(text, "r\n\nEOF\n");
+        assert_eq!(got.iter().filter(|o| matches!(o, Out::Side { text, .. } if text == "EOF")).count(), 1, "EOF is a piece of its own");
+        assert_eq!(h.child_pids(), Vec::<i32>::new());
+        let got = h.feed(&notif("%notif tty -echo"));
+        assert!(got.iter().all(|o| matches!(o, Out::Side { pid, channel: 1, depth: 0, .. } if *pid == crate::conductor_parser::NOTIF_PID)), "{got:?}");
+        assert_eq!(h.child_pids(), Vec::<i32>::new());
+        // The unhook at depth 0 drops every child.
+        let mut h = hooked();
+        h.feed(&output("9", 1, -1, 0, b"a"));
+        h.feed(&output("10", 2, 1, 0, b"b"));
+        assert_eq!(h.child_pids(), [1, 2]);
+        assert_eq!(h.feed(&osc135("unhook")), vec![ssh(Token::Unhook)]);
+        assert_eq!(h.child_pids(), Vec::<i32>::new());
+        let mut h = hooked();
+        h.feed(&output("11", 3, -1, 0, b"a"));
+        h.unhook();
+        assert_eq!(h.child_pids(), Vec::<i32>::new(), "a forced unhook too");
+    }
+
+    #[test]
+    fn a_child_can_nest_again() {
+        use crate::ssh_fixtures::{dcs_hook, output, pre_reply};
+        let mut h = hooked();
+        let innermost = [dcs_hook("", "v", "YQ==", "Yg=="), pre_reply("2.1", &["sh"])].concat();
+        let middle = [dcs_hook("", "u", "YQ==", "Yg=="), output("3", 9, -1, 1, &innermost)].concat();
+        let got = h.feed(&output("4", 8, -1, 0, &middle));
+        let depths: Vec<i32> = got.iter().filter_map(|o| if let Out::Ssh(_, d) = o { Some(*d) } else { None }).collect();
+        assert_eq!(depths, [1, 2, 2, 2, 2], "each level's meta tokens carry its own depth");
+    }
+
+    #[test]
+    fn children_are_capped() {
+        use crate::ssh_fixtures::output;
+        let mut h = hooked();
+        let mut errors = 0;
+        for pid in 1..=300 {
+            for o in h.feed(&output(&pid.to_string(), pid, -1, 0, b"x")) {
+                if o == ssh(Token::Error(TOO_MANY_PROCESSES.into())) {
+                    errors += 1;
+                    assert_eq!(pid, MAX_CHILDREN as i32 + 1, "the first pid past the cap");
+                }
+            }
+            if !h.active() {
+                break;
+            }
+        }
+        assert_eq!(errors, 1);
+        assert!(!h.active(), "past the cap the parser lets go");
+        assert_eq!(h.child_pids(), Vec::<i32>::new());
+        // Pids that come and go never reach it.
+        let mut h = hooked();
+        for pid in 1..=1000 {
+            h.feed(&output("1", pid, -1, 0, b"x"));
+            h.feed(&crate::ssh_fixtures::terminate(pid, 0));
+        }
+        assert!(h.active());
+        // Autopoll blocks make no children either.
+        for _ in 0..1000 {
+            h.feed(&crate::ssh_fixtures::autopoll("2", "r\n"));
+        }
+        assert_eq!(h.child_pids(), Vec::<i32>::new());
     }
 }

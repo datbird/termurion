@@ -563,6 +563,12 @@ pub struct Conductor {
     pub python_ok: bool,
     /// Set by `exec_framer` (14c, `conductor_framer.rs`).
     pub(crate) framer_version: Option<u8>,
+    /// The `%it2` frames this conductor owns, the newest 16, each cut at `IT2_ENTRY_MAX`.
+    /// Nothing reads them: the it2 proxy is n/a (ruling 3) and Tandem never sends `it2listen`.
+    pub it2_inbox: Vec<String>,
+    /// What `handle_terminate` and `handle_side` heard, until Task 4 gives them bodies.
+    #[cfg(test)]
+    pub(crate) heard: Vec<String>,
     line_prefix: String,
     depth: i32,
     effects: Vec<Effect>,
@@ -605,6 +611,9 @@ impl Conductor {
             saved: None,
             python_ok: false,
             framer_version: None,
+            it2_inbox: Vec::new(),
+            #[cfg(test)]
+            heard: Vec::new(),
             line_prefix: format!("\u{3}{prefix_uuid}"),
             depth,
             effects: Vec::new(),
@@ -763,7 +772,7 @@ impl Conductor {
 
     /// Runs `f` on the parent, if any, and moves what the parent queues meanwhile into this
     /// conductor's queue after its own, so the effects keep the order they were made in.
-    fn via_parent(&mut self, f: impl FnOnce(&mut Conductor)) {
+    pub(crate) fn via_parent(&mut self, f: impl FnOnce(&mut Conductor)) {
         if let Some(parent) = self.parent.as_deref_mut() {
             let before = parent.effects.len();
             f(parent);
@@ -2216,7 +2225,7 @@ mod tests {
         let mut effects = Vec::new();
         for out in outs {
             match out {
-                Out::Screen(_) => {}
+                Out::Screen(_) | Out::Side { .. } | Out::Raw(_) => {}
                 Out::Ssh(Token::Init(init), _) => {
                     let mut c = hook(&init, current.take());
                     c.start();

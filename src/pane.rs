@@ -391,10 +391,6 @@ impl Pane {
         while let Read::Data(chunk) = pty.try_read() {
             self.got_output = true;
             self.throughput.add(Instant::now(), chunk.len());
-            // The coprocess gets every byte, before parsing (iTerm2 tees the raw read).
-            if let Some(c) = self.coprocess.as_mut() {
-                c.write(&chunk);
-            }
             chunks.push(chunk);
         }
         let mut changed = !chunks.is_empty();
@@ -458,17 +454,45 @@ impl Pane {
         let (head, rest) = chunk.split_at(cut);
         for part in [head, rest].into_iter().filter(|part| !part.is_empty()) {
             if self.tmux_hook.active() && !self.ssh_hook.active() && self.ssh_q.is_empty() {
+                self.tee_raw(part);
                 let mut bytes = self.ssh_hook.take_held();
                 bytes.extend_from_slice(part);
                 self.route_output(bytes);
             } else {
-                for out in self.ssh_hook.feed(part) {
+                let outs = self.ssh_hook.feed(part);
+                // The coprocess gets the raw read while SSH integration plays no part in it
+                // (iTerm2 tees the raw read, `PK:900`); with a conductor only its depth 0
+                // output (`Out::Raw`) goes, and a level 1 session's coprocess gets nothing.
+                if outs.iter().all(|o| matches!(o, crate::ssh_hook::Out::Screen(_))) {
+                    self.tee_raw(part);
+                }
+                for out in outs {
                     match out {
+                        // At once, not behind `ssh_q`: it is the coprocess's own copy.
+                        crate::ssh_hook::Out::Raw(bytes) => self.tee_coprocess(&bytes),
                         crate::ssh_hook::Out::Screen(bytes) if self.ssh_q.is_empty() => self.route_output(bytes),
                         other => self.ssh_q.push(other),
                     }
                 }
             }
+        }
+    }
+
+    /// Whether the raw read may go to the coprocess: no conductor, no hook, nothing waiting.
+    fn coprocess_gets_raw(&self) -> bool {
+        self.conductor.is_none() && !self.ssh_hook.active() && self.ssh_q.is_empty()
+    }
+
+    fn tee_raw(&mut self, bytes: &[u8]) {
+        if self.coprocess_gets_raw() {
+            self.tee_coprocess(bytes);
+        }
+    }
+
+    /// Depth 0 output of a conductor's session reaches the coprocess only while it has one.
+    fn tee_coprocess(&mut self, bytes: &[u8]) {
+        if let Some(c) = self.coprocess.as_mut() {
+            c.write(bytes);
         }
     }
 
@@ -1744,6 +1768,23 @@ mod tests {
         p.conductor = None;
         assert!(p.coprocess_output(b"out"));
         assert_eq!(p.tmux_io().unwrap().take_input(), b"out", "no conductor: to the pty as before");
+    }
+
+    #[test]
+    fn coprocess_raw_tee_follows_iterm2() {
+        // PK:900: with SSH integration in play the raw read never feeds the coprocess.
+        let mut p = Pane::tmux(5, 1, 3, 20, 4);
+        assert!(p.coprocess_gets_raw(), "plain output");
+        p.hook_output(b"hello");
+        assert!(p.coprocess_gets_raw());
+        p.hook_output(b"\x1bP2000pnone 1 YQ== - Yg==\n");
+        assert!(!p.coprocess_gets_raw(), "a hook is active");
+        p.take_ssh();
+        assert!(!p.coprocess_gets_raw(), "still hooked");
+        p.ssh_hook.unhook();
+        assert!(p.coprocess_gets_raw());
+        p.conductor = setting_up();
+        assert!(!p.coprocess_gets_raw(), "a conductor (level 1 included) has no raw tee");
     }
 
     #[test]
