@@ -246,6 +246,9 @@ pub struct App {
     shortcuts: Option<labels_ui::Shortcuts>,
     /// The last pop-up menu, kept until its pick arrives.
     popup_menu: Option<muda::Menu>,
+    /// The open Tab Color picker: what it colors and the swatches it was built from, kept
+    /// until its pick arrives. App-wide: the popup is modal, one at a time.
+    color_pick: Option<(menu::ColorTarget, Vec<crate::palette::Rgb>)>,
     /// What the right-click menu's own items act on.
     ctx_pending: Option<semantic_ui::CtxPending>,
     /// The Find Globally window.
@@ -912,6 +915,7 @@ pub fn run() {
         find_mode_rect: None,
         hover: None,
         popup_menu: None,
+        color_pick: None,
         shortcuts: None,
         copy_modes: HashMap::new(),
         show_stamps: HashMap::new(),

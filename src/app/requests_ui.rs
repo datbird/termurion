@@ -11,6 +11,29 @@ use crate::screen::Request;
 /// How long the pointer rests on a tab before its tooltip shows.
 pub(super) const TIP_DELAY: Duration = Duration::from_millis(500);
 
+/// The Tab Color picker's no-color entry (iTerm2's "Default" swatch, index 0 of
+/// `ColorsMenuItemView`).
+pub(super) const NO_COLOR: &str = "Default";
+
+/// The Tab Color picker's entry that opens Windows' color dialog.
+pub(super) const CHOOSE_COLOR: &str = "Choose Color\u{2026}";
+
+/// The session values a picked tab color writes (`PTYSession setTabColorByUI:`): "Use Tab
+/// Color" and "Tab Color", or "Use Tab Color" off for none. With `separate` (the profile's
+/// "Use Separate Colors for Light and Dark Mode") the Dark and Light variants are written
+/// too, so the pick shows in both modes (`allTabColorKeysForBaseKey:`).
+pub(super) fn tab_color_values(color: Option<crate::palette::Rgb>, separate: bool) -> Vec<(String, Option<toml::Value>)> {
+    let keys = |base: &str| -> Vec<String> {
+        if separate { vec![base.to_string(), format!("{base} (Dark)"), format!("{base} (Light)")] } else { vec![base.to_string()] }
+    };
+    let mut values: Vec<(String, Option<toml::Value>)> = keys("Use Tab Color").into_iter().map(|k| (k, Some(toml::Value::Boolean(color.is_some())))).collect();
+    if let Some(c) = color {
+        let v = crate::settings_ui::value_of_rgb([c.r, c.g, c.b]);
+        values.extend(keys("Tab Color").into_iter().map(|k| (k, Some(v.clone()))));
+    }
+    values
+}
+
 /// The tooltip of a tab (`PT:8701-8723`): "Name", "Profile" and "Command" lines, the name
 /// without HTML when `html`, the profile the saved original's name for a session copy
 /// (`original_name`) else the profile's own, and "None" for no command. None when `disabled`.
@@ -217,6 +240,18 @@ impl App {
         scene::TabLook { title, subtitle, dot, color, icon, processing, number: index.map_or(0, |i| i + 1), close_pressed: false }
     }
 
+    /// Colors every pane of the tab (None: no color), as iTerm2's Tab Color does for each
+    /// session of the tab (`PT:14655-14674`). The pick replaces a program's tab color for
+    /// those panes, which would otherwise win over the profile's.
+    pub(super) fn set_tab_color_for(&mut self, tab: usize, color: Option<crate::palette::Rgb>) {
+        let Some(t) = self.tabs.get(tab) else { return };
+        for pane in t.layout.panes() {
+            self.tab_colors.remove(&pane);
+            let separate = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).is_some_and(|p| p.bool("Use Separate Colors for Light and Dark Mode"));
+            self.set_session_values(pane, &tab_color_values(color, separate));
+        }
+    }
+
     /// A tab's tooltip text (`PT tabView:toolTipForTabViewItem:`): its title without HTML, its
     /// focused session's profile and the command it started with. None with
     /// `DisableTabBarTooltips` or no such tab.
@@ -294,6 +329,25 @@ pub(super) fn work_areas() -> Vec<(f64, f64, f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::tip_text;
+
+    #[test]
+    fn tab_color_follows_iterm2() {
+        use super::{CHOOSE_COLOR, NO_COLOR, tab_color_values};
+        use crate::settings_ui::value_of_rgb;
+        let c = crate::palette::rgb(0x5f, 0xa3, 0xf8);
+        let v = value_of_rgb([0x5f, 0xa3, 0xf8]);
+        assert_eq!(tab_color_values(Some(c), false), vec![("Use Tab Color".to_string(), Some(toml::Value::Boolean(true))), ("Tab Color".to_string(), Some(v.clone()))]);
+        assert_eq!(tab_color_values(None, false), vec![("Use Tab Color".to_string(), Some(toml::Value::Boolean(false)))]);
+        // With separate light and dark colors the pick goes to both modes too
+        // (`PTYSession setTabColorByUI:`, `allTabColorKeysForBaseKey:`).
+        let t = |k: &str| (k.to_string(), Some(toml::Value::Boolean(true)));
+        let col = |k: &str| (k.to_string(), Some(v.clone()));
+        assert_eq!(tab_color_values(Some(c), true), vec![t("Use Tab Color"), t("Use Tab Color (Dark)"), t("Use Tab Color (Light)"), col("Tab Color"), col("Tab Color (Dark)"), col("Tab Color (Light)")]);
+        let f = |k: &str| (k.to_string(), Some(toml::Value::Boolean(false)));
+        assert_eq!(tab_color_values(None, true), vec![f("Use Tab Color"), f("Use Tab Color (Dark)"), f("Use Tab Color (Light)")]);
+        assert_eq!(NO_COLOR, "Default");
+        assert_eq!(CHOOSE_COLOR, "Choose Color\u{2026}");
+    }
 
     #[test]
     fn tooltips_follow_iterm2() {

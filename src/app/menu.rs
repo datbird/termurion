@@ -6,7 +6,7 @@ use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{CharsetIndex, Handler, StandardCharset};
-use muda::{CheckMenuItem, ContextMenu, IsMenuItem, Menu, MenuItem, MenuTheme, PredefinedMenuItem, Submenu};
+use muda::{CheckMenuItem, ContextMenu, Icon, IconMenuItem, IsMenuItem, Menu, MenuItem, MenuTheme, PredefinedMenuItem, Submenu};
 use winit::event_loop::ActiveEventLoop;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Fullscreen;
@@ -280,6 +280,66 @@ impl App {
         self.popup_menu = Some(menu);
     }
 
+    /// The Tab Color picker as a popup at the pointer: for a tab "Default" (no color) first,
+    /// then a 16 by 16 swatch per color labeled "#rrggbb", then "Choose Color\u{2026}"; a group
+    /// always has a color, so it has no "Default". The picks come back as `color-pick:<n>`.
+    /// 13d's tab and tab group menus open it.
+    #[allow(dead_code)]
+    pub(super) fn open_color_picker(&mut self, target: ColorTarget, swatches: Vec<crate::palette::Rgb>) {
+        let Some(hwnd) = self.hwnd() else { return };
+        let menu = Menu::new();
+        let mut results = Vec::new();
+        for (n, (label, color, _)) in picker_items(&swatches, matches!(target, ColorTarget::Tab(_))).into_iter().enumerate() {
+            let id = format!("color-pick:{n}");
+            results.push(match color {
+                Some(c) => menu.append(&IconMenuItem::with_id(id, label, true, swatch_icon(c), None)),
+                None => menu.append(&MenuItem::with_id(id, label, true, None)),
+            });
+        }
+        if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
+            self.banners.set("menu", format!("Tab Color menu: {e}"));
+        }
+        self.color_pick = Some((target, swatches));
+        unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        self.popup_menu = Some(menu);
+    }
+
+    /// A pick from the Tab Color picker: "Default" clears the color, a swatch sets it, and
+    /// "Choose Color\u{2026}" asks Windows' color dialog (the swatches as its custom colors;
+    /// Cancel changes nothing).
+    fn color_picked(&mut self, id: &str) -> bool {
+        let Some(n) = id.strip_prefix("color-pick:").and_then(|n| n.parse::<usize>().ok()) else { return false };
+        let Some((target, swatches)) = self.color_pick.take() else { return true };
+        let Some((_, color, kind)) = picker_items(&swatches, matches!(target, ColorTarget::Tab(_))).into_iter().nth(n) else { return true };
+        match kind {
+            PickKind::Default | PickKind::Swatch => self.apply_picked_color(target, color),
+            PickKind::Choose => {
+                let current = match &target {
+                    ColorTarget::Tab(id) => self.tabs.iter().find(|t| t.id == *id).and_then(|t| self.tab_look(t).color),
+                    ColorTarget::Group(_) => None,
+                };
+                if let Some(c) = self.hwnd().and_then(|h| choose_color(h, current, &swatches)) {
+                    self.apply_picked_color(target, Some(c));
+                }
+            }
+        }
+        true
+    }
+
+    /// Colors what the picker was opened for: a tab (nothing when it has closed since), or a
+    /// tab group.
+    pub(super) fn apply_picked_color(&mut self, target: ColorTarget, color: Option<crate::palette::Rgb>) {
+        match target {
+            ColorTarget::Tab(id) => {
+                if let Some(tab) = self.tabs.iter().position(|t| t.id == id) {
+                    self.set_tab_color_for(tab, color);
+                }
+            }
+            // Tab groups arrive in 13d, whose Task 9 calls its `set_group_color` here.
+            ColorTarget::Group(_) => {}
+        }
+    }
+
     /// A tab picked from the overflow popup is selected.
     fn tab_overflow_picked(&mut self, id: &str) -> bool {
         let Some(i) = id.strip_prefix("tab-overflow:").and_then(|i| i.parse::<usize>().ok()) else { return false };
@@ -391,7 +451,7 @@ impl App {
         if self.snippet_or_action_picked(id, event_loop) || self.toolbelt_picked(id, event_loop) {
             return;
         }
-        if self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) || self.porthole_language_picked(id) || self.tab_overflow_picked(id) || self.status_bar_picked(id, event_loop) {
+        if self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) || self.porthole_language_picked(id) || self.tab_overflow_picked(id) || self.color_picked(id) || self.status_bar_picked(id, event_loop) {
             return;
         }
         if let Some(item) = menus::by_id(id) {
@@ -874,6 +934,68 @@ pub(super) fn context_layout(extra: usize, providers: usize) -> Vec<Slot> {
     slots
 }
 
+/// What the Tab Color picker colors: a tab by its stable `Tab.id`, or a tab group by its id.
+/// 13d's menus build them.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ColorTarget {
+    Tab(u64),
+    Group(String),
+}
+
+/// What a Tab Color picker entry does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PickKind {
+    /// No color.
+    Default,
+    /// Its color.
+    Swatch,
+    /// Windows' color dialog.
+    Choose,
+}
+
+/// The Tab Color picker's entries in order, as (label, color, kind): "Default" first when
+/// `with_default`, a "#rrggbb" entry per swatch, then "Choose Color\u{2026}".
+pub(super) fn picker_items(swatches: &[crate::palette::Rgb], with_default: bool) -> Vec<(String, Option<crate::palette::Rgb>, PickKind)> {
+    let mut items = Vec::new();
+    if with_default {
+        items.push((requests_ui::NO_COLOR.to_string(), None, PickKind::Default));
+    }
+    items.extend(swatches.iter().map(|c| (format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b), Some(*c), PickKind::Swatch)));
+    items.push((requests_ui::CHOOSE_COLOR.to_string(), None, PickKind::Choose));
+    items
+}
+
+/// A 16 by 16 square of the color, for a picker entry.
+fn swatch_icon(c: crate::palette::Rgb) -> Option<Icon> {
+    Icon::from_rgba([c.r, c.g, c.b, 0xff].repeat(16 * 16), 16, 16).ok()
+}
+
+/// Windows' color dialog, fully open, starting at `initial` with `swatches` (the first 16)
+/// as its custom colors. None on Cancel.
+fn choose_color(hwnd: isize, initial: Option<crate::palette::Rgb>, swatches: &[crate::palette::Rgb]) -> Option<crate::palette::Rgb> {
+    use windows_sys::Win32::UI::Controls::Dialogs::{CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW, ChooseColorW};
+    let colorref = |c: &crate::palette::Rgb| c.r as u32 | (c.g as u32) << 8 | (c.b as u32) << 16;
+    let mut custom = [0x00ff_ffffu32; 16];
+    for (slot, c) in custom.iter_mut().zip(swatches) {
+        *slot = colorref(c);
+    }
+    let mut cc: CHOOSECOLORW = unsafe { std::mem::zeroed() };
+    cc.lStructSize = std::mem::size_of::<CHOOSECOLORW>() as u32;
+    cc.hwndOwner = hwnd as _;
+    cc.lpCustColors = custom.as_mut_ptr();
+    cc.Flags = CC_FULLOPEN;
+    if let Some(c) = initial {
+        cc.rgbResult = colorref(&c);
+        cc.Flags |= CC_RGBINIT;
+    }
+    if unsafe { ChooseColorW(&mut cc) } == 0 {
+        return None;
+    }
+    let v = cc.rgbResult;
+    Some(crate::palette::rgb(v as u8, (v >> 8) as u8, (v >> 16) as u8))
+}
+
 #[cfg(test)]
 mod context_tests {
     use super::*;
@@ -892,6 +1014,36 @@ mod context_tests {
         want.extend(today[3..].iter().cloned());
         assert_eq!(want[8], Command("Shell > Split Vertically with Current Profile"));
         assert_eq!(context_layout(1, 2), want);
+    }
+}
+
+#[cfg(test)]
+mod color_picker_tests {
+    use super::*;
+    use crate::palette::rgb;
+    use crate::tab_layout::DEFAULT_COLORS;
+
+    #[test]
+    fn picker_follows_iterm2() {
+        let swatches = [
+            ("#fb6b62", rgb(0xfb, 0x6b, 0x62)),
+            ("#f6ac47", rgb(0xf6, 0xac, 0x47)),
+            ("#f0dc4f", rgb(0xf0, 0xdc, 0x4f)),
+            ("#b5d749", rgb(0xb5, 0xd7, 0x49)),
+            ("#5fa3f8", rgb(0x5f, 0xa3, 0xf8)),
+            ("#c18ed9", rgb(0xc1, 0x8e, 0xd9)),
+            ("#787878", rgb(0x78, 0x78, 0x78)),
+        ];
+        let rows: Vec<(String, Option<crate::palette::Rgb>, PickKind)> = swatches.iter().map(|(l, c)| (l.to_string(), Some(*c), PickKind::Swatch)).collect();
+        // A tab: "Default" (no color) first, the swatches, then "Choose Color...".
+        let mut want = vec![("Default".to_string(), None, PickKind::Default)];
+        want.extend(rows.iter().cloned());
+        want.push(("Choose Color\u{2026}".to_string(), None, PickKind::Choose));
+        assert_eq!(picker_items(&DEFAULT_COLORS, true), want);
+        // A group always has a color: no "Default".
+        let mut want = rows.clone();
+        want.push(("Choose Color\u{2026}".to_string(), None, PickKind::Choose));
+        assert_eq!(picker_items(&DEFAULT_COLORS, false), want);
     }
 }
 
