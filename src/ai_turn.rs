@@ -159,7 +159,8 @@ pub trait Dialect: Send + Sync {
 /// (ruling 7).
 pub fn dialect_for(api: Api) -> Option<Box<dyn Dialect>> {
     match api {
-        Api::Completions | Api::ChatCompletions | Api::Responses | Api::Gemini | Api::EarlyO1 | Api::Llama | Api::DeepSeek | Api::Anthropic | Api::AppleIntelligence => None,
+        Api::Responses => Some(Box::new(crate::ai_responses::Responses)),
+        Api::Completions | Api::ChatCompletions | Api::Gemini | Api::EarlyO1 | Api::Llama | Api::DeepSeek | Api::Anthropic | Api::AppleIntelligence => None,
     }
 }
 
@@ -169,6 +170,20 @@ pub fn headers(b: &Build) -> Vec<(String, String)> {
     let mut base = ai_policy::auth_headers(&b.model.url, b.model.api, b.key);
     base.push(("Content-Type".to_string(), "application/json".to_string()));
     ai_policy::merged_headers(&base, &b.model.custom_headers)
+}
+
+/// The response token budget for this request (`P:303-317`): the query is every message's
+/// content joined with "\n"; the functions count as their declarations' JSON only when the
+/// model has function calling (Swift escapes "/", so a length can differ by those bytes).
+pub fn max_tokens_for(b: &Build) -> i64 {
+    let query = b.messages.iter().filter_map(Message::content).collect::<Vec<_>>().join("\n");
+    let functions = if b.tools.is_empty() || !has(b.model, Feature::FunctionCalling) {
+        String::new()
+    } else {
+        let decls: Vec<serde_json::Value> = b.tools.iter().map(|t| serde_json::json!({"name": t.name, "description": t.description, "parameters": t.parameters})).collect();
+        serde_json::Value::Array(decls).to_string()
+    };
+    crate::ai_model::max_tokens(b.model, b.wire.token_limit, &query, &functions)
 }
 
 pub fn request(b: &Build, d: &dyn Dialect) -> Result<HttpRequest, String> {

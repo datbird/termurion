@@ -54,6 +54,20 @@ pub enum Effort {
     Xhigh,
 }
 
+impl Effort {
+    /// The wire string (`AIReasoningEffort`'s raw value).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Effort::None => "none",
+            Effort::Minimal => "minimal",
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::Xhigh => "xhigh",
+        }
+    }
+}
+
 /// A Responses API service tier (`AITerm/AIReasoningTypes.swift:28-33`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServiceTier {
@@ -61,6 +75,18 @@ pub enum ServiceTier {
     Default,
     Flex,
     Priority,
+}
+
+impl ServiceTier {
+    /// The wire string (`AIServiceTier`'s raw value).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ServiceTier::Auto => "auto",
+            ServiceTier::Default => "default",
+            ServiceTier::Flex => "flex",
+            ServiceTier::Priority => "priority",
+        }
+    }
 }
 
 /// One catalog model (`AIMetadata.Model`).
@@ -542,5 +568,16 @@ mod tests {
         assert_eq!(validate(&catalog(vec![entry("m", "mistral"), entry("a", "anthropic")])), Some(7));
         assert_eq!(validate(&catalog(vec![entry("m", "mistral")])), None);
         assert_eq!(validate("x"), None);
+    }
+
+    #[test]
+    fn wire_strings_round_trip() {
+        for e in [Effort::None, Effort::Minimal, Effort::Low, Effort::Medium, Effort::High, Effort::Xhigh] {
+            assert_eq!(effort_case(e.as_str()), Some(e));
+        }
+        for t in [ServiceTier::Auto, ServiceTier::Default, ServiceTier::Flex, ServiceTier::Priority] {
+            assert_eq!(tier_case(t.as_str()), Some(t));
+        }
+        assert_eq!((Effort::Xhigh.as_str(), ServiceTier::Priority.as_str()), ("xhigh", "priority"));
     }
 }

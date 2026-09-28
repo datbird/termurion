@@ -54,6 +54,24 @@ pub fn splice(array_json: &[u8], after: usize, elements: &[u8]) -> Vec<u8> {
     }
 }
 
+/// `ChatBlobAssembler.spliceFrozenHistory` (`ChatBlobAssembler.swift:221-231`): `elements`
+/// inserted after the first `after` elements of the array under `key` in `body`, found as
+/// iTerm2 finds it, at the first `"key":` in the bytes (the builders write the key before
+/// anything that could hold it). None or empty `elements` returns the body unchanged.
+pub fn splice_at_key(body: &[u8], key: &str, after: usize, elements: Option<&[u8]>) -> Result<Vec<u8>, String> {
+    let Some(elements) = elements.filter(|e| !e.is_empty()) else {
+        return Ok(body.to_vec());
+    };
+    let failed = || format!("Failed to splice frozen chat history into the {key} request body");
+    let pattern = format!("\"{key}\":");
+    let start = body.windows(pattern.len()).position(|w| w == pattern.as_bytes()).ok_or_else(failed)?;
+    let open = start + pattern.len();
+    if body.get(open) != Some(&b'[') {
+        return Err(failed());
+    }
+    insert_at(body, open, after, elements).ok_or_else(failed)
+}
+
 /// Inserts `elements` into the array whose "[" is at `open` (`JSONArraySplice.insert`); None
 /// when the array does not close.
 pub(crate) fn insert_at(bytes: &[u8], open: usize, after: usize, elements: &[u8]) -> Option<Vec<u8>> {
@@ -149,5 +167,19 @@ mod tests {
         assert_eq!(splice(br#"[{"a":[1,2]},"x,]",3]"#, 2, b"9"), br#"[{"a":[1,2]},"x,]",9,3]"#, "nesting and strings");
         assert_eq!(splice(b"[1,2", 5, b"3"), b"[1,2", "no closing bracket: unchanged");
         assert_eq!(splice(b"{}", 0, b"3"), b"{}", "not an array: unchanged");
+    }
+
+    #[test]
+    fn splice_at_key_follows_iterm2() {
+        let body = br#"{"input":[{"a":1},{"b":2}],"model":"m"}"#;
+        assert_eq!(splice_at_key(body, "input", 1, Some(b"9")).unwrap(), br#"{"input":[{"a":1},9,{"b":2}],"model":"m"}"#);
+        assert_eq!(splice_at_key(body, "input", 0, Some(b"9")).unwrap(), br#"{"input":[9,{"a":1},{"b":2}],"model":"m"}"#);
+        assert_eq!(splice_at_key(br#"{"input":[]}"#, "input", 3, Some(b"9")).unwrap(), br#"{"input":[9]}"#);
+        assert_eq!(splice_at_key(body, "input", 1, None).unwrap(), body, "no history: unchanged");
+        assert_eq!(splice_at_key(body, "missing", 1, None).unwrap(), body);
+        assert_eq!(splice_at_key(body, "input", 1, Some(b"")).unwrap(), body);
+        assert_eq!(splice_at_key(body, "messages", 0, Some(b"9")), Err("Failed to splice frozen chat history into the messages request body".to_string()));
+        assert!(splice_at_key(body, "model", 0, Some(b"9")).is_err(), "not an array");
+        assert!(splice_at_key(br#"{"input":[1"#, "input", 5, Some(b"9")).is_err(), "no closing bracket");
     }
 }

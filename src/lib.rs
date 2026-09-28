@@ -292,6 +292,7 @@ pub mod ai_msg;
 pub mod ai_json;
 pub mod ai_sse;
 pub mod ai_turn;
+pub mod ai_responses;
 #[cfg(windows)]
 pub mod ai_winhttp;
 pub mod ai_wire_log;
