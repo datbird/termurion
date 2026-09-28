@@ -4,7 +4,6 @@
 
 use std::collections::VecDeque;
 use std::io::Write;
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::util_cli::{self, Cmd, Io, Mode, SWALLOWED_REPLY, Tty};
@@ -301,7 +300,7 @@ pub fn read_stanza(next: &mut dyn FnMut() -> Option<u8>) -> String {
 pub fn it2ul(args: &[String], io: &mut Io) -> i32 {
     let location = args.first().cloned().unwrap_or_else(|| io.cwd.to_string_lossy().into_owned());
     // Tandem never lets a program open a network path for it (implementer rule).
-    if !util_cli::may_open(&io.cwd.join(Path::new(&location))) {
+    if !util_cli::may_open(&util_cli::join_local(&io.cwd, &location)) {
         put(io.err, &format!("Fatal error: {location}: network paths are not supported\n"));
         return 1;
     }
@@ -311,7 +310,7 @@ pub fn it2ul(args: &[String], io: &mut Io) -> i32 {
     if console {
         io.tty.set_mode(Mode::Cbreak);
     }
-    let version = (io.run)(&Cmd { program: "tar".into(), args: vec!["--version".into()], cwd: Some(io.cwd.clone()), stdin: None, inherit: false, quiet: false });
+    let version = (io.run)(&Cmd { program: "tar".into(), args: vec!["--version".into()], cwd: Some(io.cwd.clone()), stdin: None, inherit: false, quiet: false, env: Vec::new() });
     let version = version.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
     let term = util_cli::term(io);
     put(io.out, &upload_request(term.as_deref(), &version));
@@ -340,7 +339,7 @@ pub fn it2ul(args: &[String], io: &mut Io) -> i32 {
         ("ok", Some(data)) => {
             let mut tar_args: Vec<String> = ["-x", "-z", "-C", &location, "-f", "-"].iter().map(|a| a.to_string()).collect();
             tar_args.extend(flags);
-            let tar = Cmd { program: "tar".into(), args: tar_args, cwd: Some(io.cwd.clone()), stdin: Some(unb64(&data)), inherit: false, quiet: false };
+            let tar = Cmd { program: "tar".into(), args: tar_args, cwd: Some(io.cwd.clone()), stdin: Some(unb64(&data)), inherit: false, quiet: false, env: Vec::new() };
             match (io.run)(&tar) {
                 Ok(out) => {
                     let _ = io.err.write_all(&out.stdout);

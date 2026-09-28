@@ -208,18 +208,25 @@ pub(crate) enum Found {
 /// A network path, or one reached through a link to one, is never probed (it counts as
 /// missing).
 pub(crate) fn find(cwd: &Path, arg: &str) -> Found {
-    if arg.is_empty() || crate::prompted::network_path(arg) {
-        return Found::Missing;
+    match locate(cwd, arg) {
+        Some((p, true)) => Found::Dir(p),
+        Some((p, false)) => std::fs::read(&p).map_or(Found::Missing, Found::File),
+        None => Found::Missing,
     }
-    let p = cwd.join(arg);
+}
+
+/// The path an argument names and whether it is a folder; None when it is missing or may
+/// not be probed (a network path, or one reached through a link to one; a verbatim local
+/// path is read in its plain form).
+pub(crate) fn locate(cwd: &Path, arg: &str) -> Option<(PathBuf, bool)> {
+    if arg.is_empty() || crate::prompted::network_path(util_cli::local_form(arg)) {
+        return None;
+    }
+    let p = util_cli::join_local(cwd, arg);
     if !util_cli::may_open(&p) {
-        return Found::Missing;
+        return None;
     }
-    match std::fs::metadata(&p) {
-        Ok(m) if m.is_dir() => Found::Dir(p),
-        Ok(_) => std::fs::read(&p).map_or(Found::Missing, Found::File),
-        Err(_) => Found::Missing,
-    }
+    std::fs::metadata(&p).ok().map(|m| (p, m.is_dir()))
 }
 
 /// `basename -- "$1"`: the last component, trailing separators ignored.
@@ -320,7 +327,7 @@ fn view(tool: Viewer, args: &[String], io: &mut Io) -> i32 {
             _ => {
                 let data = if is_url {
                     // `curl -fs "$1" | b64_encode` under pipefail: curl's code decides.
-                    let cmd = Cmd { program: "curl".into(), args: vec!["-fs".into(), a.to_string()], cwd: Some(io.cwd.clone()), stdin: None, inherit: false, quiet: false };
+                    let cmd = Cmd { program: "curl".into(), args: vec!["-fs".into(), a.to_string()], cwd: Some(io.cwd.clone()), stdin: None, inherit: false, quiet: false, env: Vec::new() };
                     match (io.run)(&cmd) {
                         Ok(o) if o.code == 0 => o.stdout,
                         other => {
@@ -500,7 +507,7 @@ mod tests {
         assert_eq!(h.run("imgcat", &["-u", "http://h/x.png"]), 0);
         assert_eq!(
             h.runs,
-            vec![Cmd { program: "curl".into(), args: vec!["-fs".into(), "http://h/x.png".into()], cwd: Some(dir.clone()), stdin: None, inherit: false, quiet: false }]
+            vec![Cmd { program: "curl".into(), args: vec!["-fs".into(), "http://h/x.png".into()], cwd: Some(dir.clone()), stdin: None, inherit: false, quiet: false, env: Vec::new() }]
         );
         assert_eq!(
             text(&h.out),

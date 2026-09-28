@@ -459,7 +459,7 @@ impl Ls<'_, '_> {
 
     /// `f` of `_lstat`, cached; a network path is never probed.
     fn with_stat<R>(&self, path: &str, f: impl FnOnce(Option<&Entry>) -> R) -> R {
-        if network_path(path) {
+        if network_path(crate::util_cli::local_form(path)) {
             return f(None);
         }
         let mut cache = self.cache.borrow_mut();
@@ -529,24 +529,30 @@ impl Ls<'_, '_> {
         let head = |name: &str, size: u64| {
             format!("\x1b]1337;File=inline=1;height={};width={};preserveAspectRatio={};name={name};size={size}:", o.height, o.width, o.preserve)
         };
-        // Reads until `buf` is full or the file ends (a read error ends it too).
-        let fill = |r: &mut dyn std::io::Read, buf: &mut [u8]| {
+        // Reads until `buf` is full or the file ends; Err when a read failed (an interrupted
+        // read is tried again).
+        let fill = |r: &mut dyn std::io::Read, buf: &mut [u8]| -> Result<usize, ()> {
             let mut n = 0;
             while n < buf.len() {
                 match r.read(&mut buf[n..]) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => break,
                     Ok(k) => n += k,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => return Err(()),
                 }
             }
-            n
+            Ok(n)
         };
         let encode = |bytes: &[u8]| -> String { bytes.chunks(57).map(|c| format!("{}\n", b64(c))).collect() };
         if let Some((f, size)) = file
             && let Some(mut r) = self.fs.open(f)
         {
             let mut buf = vec![0u8; BLOCK];
-            let mut n = fill(&mut *r, &mut buf);
-            if n > 0 {
+            // A read failing in the first block is a failed read (the black pixel, as the
+            // script's); once bytes are out, a later failure ends the sequence there.
+            if let Ok(mut n) = fill(&mut *r, &mut buf)
+                && n > 0
+            {
                 let mut s = head(&b64(f.as_bytes()), size);
                 loop {
                     s.push_str(&encode(&buf[..n]));
@@ -555,9 +561,9 @@ impl Ls<'_, '_> {
                     if n < BLOCK {
                         break;
                     }
-                    n = fill(&mut *r, &mut buf);
-                    if n == 0 {
-                        break;
+                    match fill(&mut *r, &mut buf) {
+                        Ok(k) if k > 0 => n = k,
+                        _ => break,
                     }
                 }
                 let _ = self.io.out.write_all(b"\x07");
@@ -748,10 +754,10 @@ impl WinFs {
     /// no link on the way to its folder leading to one (each folder checked once), and with
     /// `follow` (the open follows `path` itself) not a link to one either.
     fn full(&self, path: &str, follow: bool) -> Option<PathBuf> {
-        if network_path(path) {
+        if network_path(crate::util_cli::local_form(path)) {
             return None;
         }
-        let p = self.cwd.join(path);
+        let p = crate::util_cli::join_local(&self.cwd, path);
         if network_path(&p.to_string_lossy()) {
             return None;
         }
@@ -1162,6 +1168,29 @@ mod tests {
         probed: RefCell<Vec<String>>,
         /// `owners` calls, with whether names were asked for.
         owner_calls: RefCell<Vec<(String, bool)>>,
+        /// Files whose reads follow a script (taken by the first `open`).
+        scripted: RefCell<BTreeMap<String, Scripted>>,
+    }
+
+    /// A reader answering each `read` from its list: bytes, or an error of that kind.
+    #[derive(Default)]
+    struct Scripted(std::collections::VecDeque<Result<Vec<u8>, std::io::ErrorKind>>);
+
+    impl std::io::Read for Scripted {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.0.pop_front() {
+                None => Ok(0),
+                Some(Err(kind)) => Err(kind.into()),
+                Some(Ok(mut bytes)) => {
+                    let n = bytes.len().min(buf.len());
+                    buf[..n].copy_from_slice(&bytes[..n]);
+                    if n < bytes.len() {
+                        self.0.push_front(Ok(bytes.split_off(n)));
+                    }
+                    Ok(n)
+                }
+            }
+        }
     }
 
     impl Fs for FakeFs {
@@ -1189,6 +1218,9 @@ mod tests {
             self.dirs.get(dir).cloned().ok_or_else(|| "Not a directory".to_string())
         }
         fn open(&self, path: &str) -> Option<Box<dyn std::io::Read + '_>> {
+            if let Some(r) = self.scripted.borrow_mut().remove(path) {
+                return Some(Box::new(r));
+            }
             let b = self.bytes.get(path)?;
             Some(Box::new(&b[..]))
         }
@@ -1275,6 +1307,26 @@ mod tests {
 
     fn plain() -> String {
         format!("{} a.png\n{} b.txt\n{} sub\n", a_img(), black(), black())
+    }
+
+    #[test]
+    fn preview_reads_retry_and_fail_whole() {
+        use std::io::ErrorKind::{Interrupted, Other};
+        let listing = |reads: Vec<Result<Vec<u8>, std::io::ErrorKind>>| {
+            let fs = fake();
+            fs.scripted.borrow_mut().insert("./a.png".into(), Scripted(reads.into()));
+            run(&fs, &[]).1
+        };
+        let bytes = |b: &[u8]| Ok(b.to_vec());
+        assert_eq!(listing(vec![Err(Interrupted), bytes(b"PNG"), Err(Interrupted), bytes(b"DATA")]), plain(), "an interrupted read is tried again");
+        let all_black = format!("{} a.png\n{} b.txt\n{} sub\n", black(), black(), black());
+        assert_eq!(listing(vec![Err(Other)]), all_black, "a failed read is the black pixel");
+        assert_eq!(listing(vec![bytes(b"PNG"), Err(Other)]), all_black, "a failure in the first block sends nothing of the file");
+        // Past the first block, bytes are out: the sequence ends where the reads stopped.
+        let block = vec![7u8; 57 * 1024];
+        let encoded: String = block.chunks(57).map(|c| format!("{}\n", b64(c))).collect();
+        let want = format!("{} a.png\n{} b.txt\n{} sub\n", img(PARAMS, "Li9hLnBuZw==", 7, &encoded), black(), black());
+        assert_eq!(listing(vec![Ok(block), Err(Other)]), want);
     }
 
     #[test]

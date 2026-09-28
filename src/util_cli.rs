@@ -109,6 +109,8 @@ pub struct Cmd {
     pub inherit: bool,
     /// Standard error discarded (the scripts' `2>/dev/null`).
     pub quiet: bool,
+    /// Environment changes for the program: a value sets the variable, None removes it.
+    pub env: Vec<(String, Option<String>)>,
 }
 
 /// A finished program: its exit code and captured standard output.
@@ -141,7 +143,22 @@ pub struct Io<'a> {
 /// leading to one (`git_state::program_links_local`, which reads link targets without
 /// opening them). Nothing else is ever probed.
 pub fn may_open(path: &std::path::Path) -> bool {
-    !crate::prompted::network_path(&path.to_string_lossy()) && crate::git_state::program_links_local(path)
+    let text = path.to_string_lossy();
+    let local = local_form(&text);
+    !crate::prompted::network_path(local) && crate::git_state::program_links_local(std::path::Path::new(local))
+}
+
+/// A verbatim local path (`\\?\` and a drive path) in its plain form, `git_state`'s link
+/// rule; anything else as it is, so `\\?\UNC\`, `\\?\GLOBALROOT\`, `\\?\Volume{...}\`,
+/// `\\.\` and `\??\` still read as network or device paths.
+pub fn local_form(path: &str) -> &str {
+    path.strip_prefix(r"\\?\").filter(|rest| crate::prompted::local_path_ok(rest)).unwrap_or(path)
+}
+
+/// `cwd` joined with `arg`, both in `local_form`.
+pub fn join_local(cwd: &std::path::Path, arg: &str) -> PathBuf {
+    let cwd = cwd.to_string_lossy();
+    std::path::Path::new(local_form(&cwd)).join(local_form(arg))
 }
 
 /// `$TERM`.
@@ -246,6 +263,35 @@ impl KeyText {
         if self.high.take().is_some() {
             out.extend_from_slice("\u{FFFD}".as_bytes());
         }
+    }
+}
+
+/// A fresh folder under the temp folder for one test, removed when dropped.
+#[cfg(test)]
+pub(crate) struct TempDir(pub PathBuf);
+
+#[cfg(test)]
+impl TempDir {
+    pub fn new(name: &str) -> TempDir {
+        let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        TempDir(dir)
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Deref for TempDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -416,6 +462,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         assert!(may_open(&dir.join("a.txt")), "a local path that is not there yet");
+        // A verbatim local path is read in its plain form (git_state's link rule); every
+        // other verbatim or device form stays refused.
+        let verbatim = format!("\\\\?\\{}", dir.join("a.txt").display());
+        assert!(may_open(std::path::Path::new(&verbatim)), "{verbatim}");
+        assert_eq!(local_form(&verbatim), dir.join("a.txt").to_str().unwrap());
+        for p in ["\\\\?\\UNC\\h\\s", "\\\\?\\GLOBALROOT\\Device\\Mup\\h\\s", "\\\\?\\Volume{0}\\x", "\\\\.\\C:\\x", "\\??\\C:\\x", "//?/C:/x"] {
+            assert_eq!(local_form(p), p);
+            assert!(!may_open(Path::new(p)), "{p}");
+        }
+        assert_eq!(join_local(Path::new(&verbatim).parent().unwrap(), "b.txt"), dir.join("b.txt"));
+        assert_eq!(join_local(Path::new("C:\\w"), &verbatim), dir.join("a.txt"));
         #[cfg(windows)]
         match std::os::windows::fs::symlink_dir("\\\\nohost.invalid\\share", dir.join("net")) {
             Ok(()) => {

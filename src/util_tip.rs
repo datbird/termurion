@@ -119,7 +119,7 @@ fn local(p: &Path) -> bool {
 
 /// `it2tip [-w]`: the next tip, and its index saved.
 pub fn it2tip(args: &[String], io: &mut Io) -> i32 {
-    let path = io.cwd.join(rc_path(io.env));
+    let path = util_cli::join_local(&io.cwd, &rc_path(io.env).to_string_lossy());
     let saved = if local(&path) { std::fs::read(&path).ok().and_then(|b| String::from_utf8(b).ok()) } else { None };
     let tips = tips();
     let wrap = args.first().is_some_and(|a| a == "-w");
@@ -186,9 +186,8 @@ mod tests {
         assert_eq!(rc_path(&env(&[("XDG_DATA_HOME", "~\\x"), ("USERPROFILE", "C:\\U")])), PathBuf::from("C:\\U\\x\\.it2totd"));
 
         // The utility: tip 0, then tip 1, the index saved with no newline.
-        let dir = std::env::temp_dir().join(format!("tandem-util-tip-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = crate::util_cli::TempDir::new("tandem-util-tip");
+        let dir = tmp.to_path_buf();
         let mut h = Harness { cwd: dir.clone(), ..Default::default() };
         h.env.insert("XDG_DATA_HOME".into(), dir.display().to_string());
         assert_eq!(h.run("it2tip", &[]), 0);

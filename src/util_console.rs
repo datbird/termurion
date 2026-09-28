@@ -249,13 +249,21 @@ impl Drop for Console {
 }
 
 /// Runs `c` and waits for it: its output captured (standard error shared) unless it
-/// inherits the utility's streams; with no `stdin` bytes it reads nothing.
+/// inherits the utility's streams; with no `stdin` bytes it reads nothing; `env` applied
+/// to the utility's own environment.
 pub fn run_command(c: &Cmd) -> Result<Output, String> {
     use std::process::{Command, Stdio};
     let mut cmd = Command::new(&c.program);
     cmd.args(&c.args);
     if let Some(dir) = &c.cwd {
         cmd.current_dir(dir);
+    }
+    for (name, value) in &c.env {
+        match value {
+            Some(v) => cmd.env(name, v),
+            // Windows names match without case, as `Command` compares them.
+            None => cmd.env_remove(name),
+        };
     }
     if c.inherit {
         let status = cmd.status().map_err(|e| e.to_string())?;

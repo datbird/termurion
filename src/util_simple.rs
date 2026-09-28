@@ -2,11 +2,11 @@
 //! iTerm2's one-sequence utilities (`OtherResources/Utilities/`), byte for byte. Pure: files
 //! through `Io.cwd`, `$RANDOM` through `Io.random`.
 
-use std::io::Write;
+use std::io::{Read, Write};
 
 use crate::util_cli::{self, Io};
-use crate::util_files::{Found, find};
-use crate::util_osc::{b64_line, fold, osc, seq, st};
+use crate::util_files::locate;
+use crate::util_osc::{b64, fold, osc, seq, st};
 
 fn put(w: &mut dyn Write, s: &str) {
     let _ = w.write_all(s.as_bytes());
@@ -33,9 +33,9 @@ fn copy_help(name: &str) -> String {
 
 /// Arms (or clears) the ST the Ctrl+C handler writes while an OSC is open: the script's
 /// `inosc` and `trap clean_up INT`.
-fn arm_st(io: &mut Io, pending: Option<&'static str>) {
+fn arm_st(out: &mut dyn Write, pending: Option<&'static str>) {
     // The handler writes to the console handle directly: what is buffered goes first.
-    let _ = io.out.flush();
+    let _ = out.flush();
     #[cfg(windows)]
     crate::util_console::set_pending_st(pending);
     #[cfg(not(windows))]
@@ -43,42 +43,94 @@ fn arm_st(io: &mut Io, pending: Option<&'static str>) {
 }
 
 /// `print_osc; inosc=1; printf <body>; print_st; inosc=0`, one sequence at a time.
-fn send_one(io: &mut Io, term: Option<&str>, body: &str) {
-    put(io.out, osc(term));
-    arm_st(io, Some(st(term)));
-    put(io.out, body);
-    put(io.out, st(term));
-    arm_st(io, None);
+fn send_one(out: &mut dyn Write, term: Option<&str>, body: &str) {
+    put(out, osc(term));
+    arm_st(out, Some(st(term)));
+    put(out, body);
+    put(out, st(term));
+    arm_st(out, None);
 }
 
-/// `base64 [< file] | send`: the OSC head is printed before the data is read, as the
-/// script's pipeline does; `read` yields the bytes (None: the read failed, which sends
-/// nothing, as base64 then writes nothing).
-fn send(io: &mut Io, term: Option<&str>, read: &mut dyn FnMut(&mut Io) -> Option<Vec<u8>>) {
-    // macOS `base64` writes one line and its newline; empty input writes nothing.
-    let encode = |data: Option<Vec<u8>>| data.filter(|d| !d.is_empty()).map_or(String::new(), |d| b64_line(&d));
-    if term.is_some_and(|t| t.starts_with("tmux")) {
-        // `send_tmux`: the uid, then one `fold` line (80 columns) per piece.
-        let uid = copy_uid((io.random)(), (io.random)());
-        send_one(io, term, &format!("1337;Copy=2;{uid}"));
-        let data = encode(read(io));
-        for line in fold(&data, 80) {
-            send_one(io, term, &format!("1337;Copy=3;{uid}:{line}"));
+/// Where it2copy's data comes from.
+enum Source {
+    File(std::fs::File),
+    Stdin,
+    /// `[ -r dir ]` holds; `base64 < dir` then fails to read and writes nothing.
+    Dir,
+}
+
+/// Bytes read per piece: a multiple of 3 whose base64 is whole 80-column lines, so the
+/// pieces encode and `fold` exactly as the whole input would.
+const PIECE: usize = 60 * 1024;
+
+/// Reads until `buf` is full or the input ends; the count, and whether a read failed.
+fn fill(r: &mut dyn Read, buf: &mut [u8]) -> (usize, bool) {
+    let mut n = 0;
+    while n < buf.len() {
+        match r.read(&mut buf[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return (n, true),
         }
-        send_one(io, term, &format!("1337;Copy=4;{uid}"));
+    }
+    (n, false)
+}
+
+/// `base64 < source` as macOS's writes it, streamed: `each` gets the text piece by piece,
+/// then the newline; empty input writes nothing. A read error ends the data there.
+fn stream_b64(r: &mut dyn Read, each: &mut dyn FnMut(&str)) {
+    let mut buf = vec![0u8; PIECE];
+    let mut any = false;
+    loop {
+        let (n, failed) = fill(r, &mut buf);
+        if n > 0 {
+            any = true;
+            each(&b64(&buf[..n]));
+        }
+        if n < PIECE || failed {
+            break;
+        }
+    }
+    if any {
+        each("\n");
+    }
+}
+
+/// `base64 [< file] | send`, the input streamed: the OSC head is printed before the data is
+/// read, as the script's pipeline does.
+fn send(io: &mut Io, term: Option<&str>, source: Source) {
+    let uid = term.is_some_and(|t| t.starts_with("tmux")).then(|| copy_uid((io.random)(), (io.random)()));
+    let Io { out, err, input, .. } = io;
+    let out: &mut dyn Write = &mut **out;
+    let read = |each: &mut dyn FnMut(&str)| match source {
+        Source::File(mut f) => stream_b64(&mut f, each),
+        Source::Stdin => stream_b64(&mut **input, each),
+        Source::Dir => put(&mut **err, "base64: read error: Is a directory\n"),
+    };
+    if let Some(uid) = uid {
+        // `send_tmux`: the uid, then one `fold` line (80 columns) per piece.
+        send_one(out, term, &format!("1337;Copy=2;{uid}"));
+        read(&mut |text| {
+            for line in fold(text, 80) {
+                send_one(out, term, &format!("1337;Copy=3;{uid}:{line}"));
+            }
+        });
+        send_one(out, term, &format!("1337;Copy=4;{uid}"));
         return;
     }
     // `send_regular`: the piped base64 through `cat`, its newline kept before the ST.
-    put(io.out, osc(term));
-    put(io.out, "1337;Copy=:");
-    arm_st(io, Some(st(term)));
-    let data = encode(read(io));
-    put(io.out, &data);
-    put(io.out, st(term));
-    arm_st(io, None);
+    put(out, osc(term));
+    put(out, "1337;Copy=:");
+    arm_st(out, Some(st(term)));
+    read(&mut |text| put(out, text));
+    put(out, st(term));
+    arm_st(out, None);
 }
 
-/// `it2copy`: standard input, or the first argument's file, to the clipboard.
+/// `it2copy`: standard input, or the first argument's file, to the clipboard. The file is
+/// opened by name as given (the script's unquoted `base64 < $1` would refuse a name with
+/// spaces as an ambiguous redirect).
 pub fn it2copy(args: &[String], io: &mut Io) -> i32 {
     let term = util_cli::term(io);
     let term = term.as_deref();
@@ -95,30 +147,19 @@ pub fn it2copy(args: &[String], io: &mut Io) -> i32 {
             }
             _ => {}
         }
-        return match find(&io.cwd, a) {
-            Found::File(bytes) => {
-                let mut bytes = Some(bytes);
-                send(io, term, &mut |_| bytes.take());
-                0
-            }
-            // `[ -r dir ]` holds; `base64 < dir` then fails to read and writes nothing.
-            Found::Dir(_) => {
-                send(io, term, &mut |io| {
-                    put(io.err, "base64: read error: Is a directory\n");
-                    None
-                });
-                0
-            }
-            Found::Missing => {
-                put(io.err, &format!("ERROR: it2copy: {a}: No such file or directory\n"));
-                2
-            }
+        let source = match locate(&io.cwd, a) {
+            Some((_, true)) => Some(Source::Dir),
+            Some((p, false)) => std::fs::File::open(p).ok().map(Source::File),
+            None => None,
         };
+        let Some(source) = source else {
+            put(io.err, &format!("ERROR: it2copy: {a}: No such file or directory\n"));
+            return 2;
+        };
+        send(io, term, source);
+        return 0;
     }
-    send(io, term, &mut |io| {
-        let mut data = Vec::new();
-        io.input.read_to_end(&mut data).ok().map(|_| data)
-    });
+    send(io, term, Source::Stdin);
     0
 }
 
@@ -385,14 +426,12 @@ mod tests {
     use super::*;
     use crate::osc1337::Attention;
     use crate::screen::{Request, Screen};
-    use crate::util_cli::Harness;
+    use crate::util_cli::{Harness, TempDir};
     use crate::util_osc::{TMUX_OSC, TMUX_ST};
-    use std::path::PathBuf;
 
     /// A fresh folder for one test: `notes.txt` holds "hello\n", `big.bin` 100 bytes.
-    fn fixture(test: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("tandem-util-simple-{test}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn fixture(test: &str) -> TempDir {
+        let dir = TempDir::new(&format!("tandem-util-simple-{test}"));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("notes.txt"), b"hello\n").unwrap();
         std::fs::write(dir.join("big.bin"), [b'x'; 100]).unwrap();
@@ -422,6 +461,29 @@ mod tests {
         assert_eq!(h.run("it2copy", &["notes.txt"]), 0);
         assert_eq!(text(&h.out), "\x1b]1337;Copy=:aGVsbG8K\n\x07");
         assert!(h.err.is_empty());
+        // A verbatim local path, and a name with a space (the script's unquoted redirect would
+        // refuse it; the port copies it).
+        std::fs::write(dir.join("my notes.txt"), b"hello\n").unwrap();
+        let verbatim = format!("\\\\?\\{}", dir.join("notes.txt").display());
+        for arg in [verbatim.as_str(), "my notes.txt"] {
+            let mut h = harness(&dir, None);
+            assert_eq!(h.run("it2copy", &[arg]), 0, "{arg}");
+            assert_eq!(text(&h.out), "\x1b]1337;Copy=:aGVsbG8K\n\x07", "{arg}");
+        }
+        let mut h = harness(&dir, None);
+        assert_eq!(h.run("it2copy", &["\\\\?\\UNC\\host\\s\\f"]), 2);
+        // Streamed in 60 KiB pieces: the output is the whole input's, plain and under tmux.
+        let big: Vec<u8> = (0..200_000u32).map(|i| (i * 31 % 256) as u8).collect();
+        std::fs::write(dir.join("huge.bin"), &big).unwrap();
+        let mut h = harness(&dir, None);
+        assert_eq!(h.run("it2copy", &["huge.bin"]), 0);
+        assert_eq!(text(&h.out), format!("\x1b]1337;Copy=:{}\n\x07", crate::util_osc::b64(&big)));
+        let mut h = harness(&dir, Some("tmux"));
+        h.randoms = [1, 2].into();
+        h.input = big.clone();
+        assert_eq!(h.run("it2copy", &[]), 0);
+        let whole: String = crate::util_osc::fold(&crate::util_osc::b64_line(&big), 80).iter().map(|l| wrap(&format!("1337;Copy=3;12:{l}"))).collect();
+        assert_eq!(text(&h.out), format!("{}{whole}{}", wrap("1337;Copy=2;12"), wrap("1337;Copy=4;12")));
 
         let mut h = harness(&dir, None);
         h.input = b"hi".to_vec();
