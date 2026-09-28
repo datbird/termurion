@@ -370,6 +370,11 @@ impl TarJob {
         let mut all_parents = parents;
         all_parents.push(parent(local));
         let source_prefix = all_parents[0][..common_len(&all_parents)].to_vec();
+        // Sources that share only the root are on different drives: iTerm2 would group them
+        // under "/" and unpack them in folders named for the drives (bug B16, fixed).
+        if source_prefix.len() <= 1 {
+            return None;
+        }
         let base = components(&self.destination);
         let mut destinations = Vec::with_capacity(self.sources.len() + 1);
         for s in &self.sources {
@@ -692,12 +697,18 @@ mod tests {
         assert_eq!((jobs[0].0.destination.as_str(), jobs[1].0.destination.as_str()), ("/$HOME", "/opt"));
         assert_eq!((jobs[0].0.entries(), jobs[1].0.entries()), (s(&["bin"]), s(&["y.txt"])));
 
-        // iTerm2's "/" counts 2 (TJ:79): files at the roots of two drives share a job whose
-        // local base is "/", so they unpack under a folder named for the drive (bug B16, kept).
+        // iTerm2's "/" counts 2 (TJ:79), so files at the roots of two drives would share a job
+        // whose local base is "/" and unpack under a folder named for the drive (bug B16):
+        // Tandem gives each drive its own job. Two files at one drive's root still share one.
         let jobs = group(&[disk(r"C:\x", "/$HOME"), disk(r"D:\y", "/$HOME")]);
+        assert_eq!(jobs.len(), 2);
+        assert_eq!((jobs[0].0.local_base.clone(), jobs[0].0.destination.as_str()), (s(&["/", "C:"]), "/$HOME"));
+        assert_eq!((jobs[1].0.local_base.clone(), jobs[1].0.destination.as_str()), (s(&["/", "D:"]), "/$HOME"));
+        assert_eq!((jobs[0].0.entries(), jobs[1].0.entries()), (s(&["x"]), s(&["y"])));
+        let jobs = group(&[disk(r"C:\x", "/$HOME"), disk(r"C:\y", "/$HOME")]);
         assert_eq!(jobs.len(), 1);
-        assert_eq!((jobs[0].0.local_base.clone(), jobs[0].0.destination.as_str()), (s(&["/"]), "/$HOME"));
-        assert_eq!(jobs[0].0.entries(), s(&["C:/x", "D:/y"]));
+        assert_eq!(jobs[0].0.local_base, s(&["/", "C:"]));
+        assert_eq!(jobs[0].0.entries(), s(&["x", "y"]));
     }
 
     /// (name, mode, bytes) for each entry, in archive order.
