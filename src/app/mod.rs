@@ -610,6 +610,9 @@ pub struct App {
     /// The tab bar took room from the sessions at the last layout, full screen aside: a
     /// change fits the window to the bar (`fit_window_to_bar`).
     bar_was_visible: bool,
+    /// How much the window grew (pixels, width and height) when the tab bar last showed:
+    /// the bar hiding shrinks it by exactly that (`tab_position::bar_growth`).
+    bar_grown: (f32, f32),
     /// A side tab bar's rows as last drawn (`scene::tab_bar_vertical`), one per tab in pixels,
     /// window coordinates; a row outside the bar is zero-size.
     side_rects: Vec<Rect>,
@@ -1212,6 +1215,7 @@ pub fn run() {
         tab_flash: crate::tab_flash::Flash::new(),
         excursion_prevented: false,
         bar_was_visible: false,
+        bar_grown: (0.0, 0.0),
         side_rects: Vec::new(),
         side_handle_hover: false,
         tab_tip: None,
@@ -1363,32 +1367,37 @@ impl App {
     }
 
     /// Whether the window may change size to fit what it shows (the toolbelt, the tab bar):
-    /// a Normal or No Title Bar window that is not maximized, full screen, minimized or
-    /// size-locked. A hotkey window never changes.
+    /// a Normal or No Title Bar window that is not maximized, snapped, full screen, minimized
+    /// or size-locked. A hotkey window never changes (`winmodel::can_fit`).
     pub(super) fn window_can_fit(&self) -> bool {
         let Some(g) = self.gpu.as_ref() else { return false };
-        if self.hotkey.is_some() {
-            return false;
-        }
         let style = crate::frames::unthemed(self.win_style);
-        (style == crate::frames::NORMAL || style == crate::frames::NO_TITLE_BAR) && !g.window.is_maximized() && g.window.fullscreen().is_none() && g.window.is_minimized() != Some(true) && !self.win_locks.size
+        crate::winmodel::can_fit(crate::winmodel::FitState {
+            normal_style: style == crate::frames::NORMAL || style == crate::frames::NO_TITLE_BAR,
+            maximized: g.window.is_maximized(),
+            full_screen: g.window.fullscreen().is_some(),
+            minimized: g.window.is_minimized() == Some(true),
+            snapped: self.hwnd().is_some_and(window_arranged),
+            size_locked: self.win_locks.size,
+            hotkey: self.hotkey.is_some(),
+        })
     }
 
-    /// The tab bar showed (`showing`) or hid: the window grows or shrinks by the bar's
-    /// thickness `delta` (points, width and height), or keeps its size, as
-    /// `tab_position::bar_change_fit` rules (R3, `PT:8070-8145`). The new size is requested
-    /// for the inner area (the fit is of the outer frame, less the borders) and its Resized
-    /// event lays the window out, so tmux hears the final size once. True when the size
-    /// changed (a size Windows refuses, or the same size, sends no Resized event).
+    /// The tab bar showed (`showing`) or hid: the window grows by the bar's thickness `delta`
+    /// (pixels, width and height) or shrinks by `delta` (what it grew when the bar showed), or
+    /// keeps its size, as `tab_position::bar_change_fit` rules (R3, `PT:8070-8145`). What a
+    /// show grew is kept in `bar_grown`. The new size is requested for the inner area (the fit
+    /// is of the outer frame, less the borders) and its Resized event lays the window out, so
+    /// tmux hears the final size once. True when the size changed (a size Windows refuses, or
+    /// the same size, sends no Resized event).
     fn fit_window_to_bar(&mut self, showing: bool, delta: (f32, f32)) -> bool {
+        self.bar_grown = (0.0, 0.0);
         if !self.window_can_fit() {
             return false;
         }
         let Some((work, _)) = self.monitor_rects() else { return false };
         let Some(g) = self.gpu.as_ref() else { return false };
         let outer = Self::outer_rect(g);
-        let scale = self.scale();
-        let delta = ((delta.0 * scale).round(), (delta.1 * scale).round());
         let preserve = self.globals.bool("PreserveWindowSizeWhenTabBarVisibilityChanges");
         let only_if_off_screen = self.globals.bool("PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges");
         match tab_position::bar_change_fit(outer, work, delta, showing, preserve, only_if_off_screen, self.excursion_prevented) {
@@ -1404,15 +1413,21 @@ impl App {
                     return false;
                 }
                 let _ = g.window.request_inner_size(size);
-                g.window.inner_size() != inner
+                // Windows resizes at once; what it granted is what a hide takes back.
+                let now = g.window.inner_size();
+                if showing {
+                    self.bar_grown = tab_position::bar_growth((inner.width as f32, inner.height as f32), (now.width as f32, now.height as f32));
+                }
+                now != inner
             }
         }
     }
 
     /// When the tab bar starts or stops taking room (a tab opened or closed, `HideTab`
-    /// changed), the window fits it (`fit_window_to_bar`, with the bar's thickness then).
-    /// Full screen is left aside, so leaving it never refits, and a flashing bar takes no
-    /// room. A window's first layout only notes the bar. True when the window resized.
+    /// changed), the window fits it (`fit_window_to_bar`): showing, by the bar's thickness
+    /// then; hiding, by what the show grew. Full screen is left aside, so leaving it never
+    /// refits, and a flashing bar takes no room. A window's first layout only notes the bar.
+    /// True when the window resized.
     fn fit_bar_change(&mut self) -> bool {
         let visible = self.bar_visible_ignoring_full_screen();
         let first = self.laid_out.is_none() || self.gpu.is_none();
@@ -1421,8 +1436,11 @@ impl App {
             return false;
         }
         self.bar_was_visible = visible;
-        let scale = self.scale();
-        let delta = if tab_position::vertical(self.tab_position()) { (self.side_bar_width() / scale, 0.0) } else { (0.0, self.tab_height() / scale) };
+        let delta = match (visible, tab_position::vertical(self.tab_position())) {
+            (false, _) => self.bar_grown,
+            (true, true) => (self.side_bar_width().round(), 0.0),
+            (true, false) => (0.0, self.tab_height().round()),
+        };
         self.fit_window_to_bar(visible, delta)
     }
 
@@ -4441,6 +4459,20 @@ fn add_tab_choice(tmux_client: bool, use_current: bool) -> AddTab {
     } else {
         AddTab::Default
     }
+}
+
+/// The window is snapped to a half or a quarter of the screen (`IsWindowArranged`, user32 on
+/// Windows 10 and later; looked up at run time, so an older Windows says no).
+fn window_arranged(hwnd: isize) -> bool {
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+    type Arranged = unsafe extern "system" fn(windows_sys::Win32::Foundation::HWND) -> i32;
+    static ARRANGED: std::sync::OnceLock<Option<Arranged>> = std::sync::OnceLock::new();
+    let f = ARRANGED.get_or_init(|| {
+        let user32: Vec<u16> = "user32.dll".encode_utf16().chain(Some(0)).collect();
+        let p = unsafe { GetProcAddress(GetModuleHandleW(user32.as_ptr()), c"IsWindowArranged".as_ptr().cast())? };
+        Some(unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, Arranged>(p) })
+    });
+    f.is_some_and(|f| unsafe { f(hwnd as windows_sys::Win32::Foundation::HWND) } != 0)
 }
 
 /// A hit on the tab bar, unless it names a tab that no longer exists.

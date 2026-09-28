@@ -198,6 +198,14 @@ pub fn bar_change_fit(outer: Rect, work: Rect, delta: (f32, f32), showing: bool,
     }
 }
 
+/// How much a window grew (width, height) when the tab bar showed: the new size less the
+/// old, never negative. A hide shrinks by exactly this, not by the bar's thickness, so a grow
+/// that the work area clamped or that never happened (maximized, snapped, the first layout)
+/// is never taken back as a shrink, and show and hide cycles never drift.
+pub fn bar_growth(before: (f32, f32), after: (f32, f32)) -> (f32, f32) {
+    ((after.0 - before.0).max(0.0), (after.1 - before.1).max(0.0))
+}
+
 /// `inner` lies wholly inside `outer` (`NSContainsRect`).
 fn contains(outer: Rect, inner: Rect) -> bool {
     inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.w <= outer.x + outer.w && inner.y + inner.h <= outer.y + outer.h
@@ -333,5 +341,38 @@ mod tests {
         // A window that started off the work area is no excursion: it grows.
         let off = r(100.0, 1000.0, 800.0, 600.0);
         assert!(matches!(bar_change_fit(off, work, top, true, true, true, false), Fit::Resize(_)));
+    }
+
+    #[test]
+    fn bar_cycle_never_drifts() {
+        let work = r(0.0, 0.0, 1920.0, 1040.0);
+        let top = (0.0, 26.0);
+        // One show then hide: the growth recorded at the show is what the hide takes back.
+        let cycle = |outer: Rect, can_fit: bool| {
+            let shown = match bar_change_fit(outer, work, top, true, false, false, false) {
+                Fit::Resize(g) if can_fit => g,
+                _ => outer,
+            };
+            let grown = bar_growth((outer.w, outer.h), (shown.w, shown.h));
+            match bar_change_fit(shown, work, grown, false, false, false, false) {
+                Fit::Resize(h) => h,
+                Fit::Keep { .. } => shown,
+            }
+        };
+        // Room to grow: grows 26, shrinks 26.
+        let free = r(100.0, 100.0, 800.0, 600.0);
+        assert_eq!(bar_growth((800.0, 600.0), (800.0, 626.0)), (0.0, 26.0));
+        assert_eq!(cycle(free, true), free);
+        // Near the work area's bottom: grew 10, the hide shrinks 10, not 26.
+        let low = r(100.0, 500.0, 800.0, 530.0);
+        assert_eq!(bar_growth((800.0, 530.0), (800.0, 540.0)), (0.0, 10.0));
+        assert_eq!(cycle(low, true), low);
+        // On the bottom edge: grew nothing, shrinks nothing, cycle after cycle.
+        let flush = r(100.0, 440.0, 800.0, 600.0);
+        assert_eq!(cycle(cycle(cycle(flush, true), true), true), flush);
+        // Maximized or first layout (no fit at the show): the hide takes nothing back.
+        assert_eq!(cycle(free, false), free);
+        // Never negative (a window made smaller by hand while the bar showed).
+        assert_eq!(bar_growth((800.0, 600.0), (790.0, 580.0)), (0.0, 0.0));
     }
 }

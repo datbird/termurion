@@ -43,6 +43,8 @@ pub(super) struct WinSlot {
     excursion_prevented: bool,
     /// The tab bar took room from the sessions at the last layout, full screen aside.
     bar_was_visible: bool,
+    /// How much the window grew for the tab bar when it last showed (pixels).
+    bar_grown: (f32, f32),
     /// A side tab bar's rows as last drawn, one per tab (pixels, window coordinates).
     side_rects: Vec<Rect>,
     /// The pointer is on a side bar's drag handle (the resize pointer shows).
@@ -105,6 +107,7 @@ impl WinSlot {
             tab_flash: crate::tab_flash::Flash::new(),
             excursion_prevented: false,
             bar_was_visible: false,
+            bar_grown: (0.0, 0.0),
             side_rects: Vec::new(),
             side_handle_hover: false,
             tab_tip: None,
@@ -184,6 +187,7 @@ impl App {
         swap(&mut self.tab_flash, &mut s.tab_flash);
         swap(&mut self.excursion_prevented, &mut s.excursion_prevented);
         swap(&mut self.bar_was_visible, &mut s.bar_was_visible);
+        swap(&mut self.bar_grown, &mut s.bar_grown);
         swap(&mut self.side_rects, &mut s.side_rects);
         swap(&mut self.side_handle_hover, &mut s.side_handle_hover);
         swap(&mut self.tab_tip, &mut s.tab_tip);
@@ -601,6 +605,7 @@ impl WinSlot {
             tab_flash: crate::tab_flash::Flash::new(),
             excursion_prevented: false,
             bar_was_visible: false,
+            bar_grown: (0.0, 0.0),
             side_rects: Vec::new(),
             side_handle_hover: false,
             tab_tip: None,

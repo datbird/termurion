@@ -277,9 +277,43 @@ pub fn open_steps(from_arrangement: bool) -> OpenSteps {
     OpenSteps { place: own, profile_style: own, profile_window: own }
 }
 
+/// A window's state as far as fitting it to what it shows (the toolbelt, the tab bar) goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FitState {
+    /// A Normal or No Title Bar window (other styles have their own frames).
+    pub normal_style: bool,
+    pub maximized: bool,
+    pub full_screen: bool,
+    pub minimized: bool,
+    /// Snapped to a half or a quarter of the screen (`IsWindowArranged`).
+    pub snapped: bool,
+    pub size_locked: bool,
+    pub hotkey: bool,
+}
+
+/// The window may change size to fit what it shows: a Normal or No Title Bar window that is
+/// not maximized, snapped, full screen, minimized, size-locked or a hotkey window. A snapped
+/// window resized by hand would grow over its neighbor and lose its snap.
+pub fn can_fit(s: FitState) -> bool {
+    s.normal_style && !s.maximized && !s.snapped && !s.full_screen && !s.minimized && !s.size_locked && !s.hotkey
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapped_window_never_fits() {
+        let normal = FitState { normal_style: true, ..Default::default() };
+        assert!(can_fit(normal));
+        assert!(!can_fit(FitState { snapped: true, ..normal }), "a snapped window keeps its snap");
+        assert!(!can_fit(FitState { maximized: true, ..normal }));
+        assert!(!can_fit(FitState { full_screen: true, ..normal }));
+        assert!(!can_fit(FitState { minimized: true, ..normal }));
+        assert!(!can_fit(FitState { size_locked: true, ..normal }));
+        assert!(!can_fit(FitState { hotkey: true, ..normal }));
+        assert!(!can_fit(FitState { normal_style: false, ..normal }));
+    }
 
     #[test]
     fn arranged_windows_keep_their_frame() {
