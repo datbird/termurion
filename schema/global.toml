@@ -1716,3 +1716,47 @@ label = "Set IT2_APP_PATH environment variable on new sessions, pointing at this
 type = "bool"
 default = false
 help = "Set IT2_APP_PATH environment variable on new sessions, pointing at this Tandem build\u2019s app bundle?\nThis disambiguates the AppleScript target when multiple Tandem builds with the same bundle identifier are running, so that the \u201cit2\u201d CLI requests its cookie from this Tandem instance. Intended for Tandem developers. Only affects sessions created after changing this setting."
+
+[[setting]]
+key = "NoSyncVariablesToReport"
+tab = "Advanced"
+section = "Terminal"
+label = "Variables to report via control sequence"
+type = "string"
+default = ""
+help = "Variables to report via control sequence\nThis is a comma-delimited list of variables that can be reported with the OSC 1337 ReportVariable=name control sequence. Each variable name must be prefixed with \u201callow:\u201d or \u201cdeny:\u201d."
+
+[[setting]]
+key = "PreventEscapeSequenceFromChangingProfile"
+tab = "Advanced"
+section = "Terminal"
+label = "Prevent control sequences from changing the current profile?"
+type = "bool"
+help = "Prevent control sequences from changing the current profile?"
+
+[[setting]]
+key = "NoSyncSuppressClipboardAccessDeniedWarning"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress the notification that the terminal attempted to access the clipboard but it was denied?"
+type = "bool"
+default = false
+help = "Suppress the notification that the terminal attempted to access the clipboard but it was denied?"
+
+[[setting]]
+key = "NoSyncDisableOpenURL"
+tab = "Advanced"
+section = "Warnings"
+label = "Disable control sequence to open URLs?"
+type = "bool"
+default = false
+help = "Disable control sequence to open URLs?"
+
+[[setting]]
+key = "PreferredBaseDir"
+tab = "Advanced"
+section = "General"
+label = "Folder for config files. There must not be a space in the path."
+type = "string"
+default = ""
+help = "Folder for config files. There must not be a space in the path.\nIf empty, then %APPDATA%\\Tandem will be the default location."

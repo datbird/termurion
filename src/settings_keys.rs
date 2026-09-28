@@ -1143,6 +1143,39 @@ mod tests {
     }
 
     #[test]
+    fn plumbed_rows_follow_iterm2() {
+        let row = |key: &str| schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+        let vars = row("NoSyncVariablesToReport");
+        assert_eq!((vars.tab.as_str(), vars.section.as_str(), vars.kind), ("Advanced", "Terminal", Kind::String));
+        assert_eq!(vars.default, Some(Value::String(String::new())));
+        assert_eq!(vars.label, "Variables to report via control sequence");
+        assert_eq!(
+            vars.help,
+            "Variables to report via control sequence\nThis is a comma-delimited list of variables that can be reported with the OSC 1337 ReportVariable=name control sequence. Each variable name must be prefixed with \u{201c}allow:\u{201d} or \u{201c}deny:\u{201d}."
+        );
+        let prevent = row("PreventEscapeSequenceFromChangingProfile");
+        assert_eq!((prevent.tab.as_str(), prevent.section.as_str(), prevent.kind), ("Advanced", "Terminal", Kind::Bool));
+        assert_eq!(prevent.default, None);
+        let text = "Prevent control sequences from changing the current profile?";
+        assert_eq!((prevent.label.as_str(), prevent.help.as_str()), (text, text));
+        for (key, text) in [
+            ("NoSyncSuppressClipboardAccessDeniedWarning", "Suppress the notification that the terminal attempted to access the clipboard but it was denied?"),
+            ("NoSyncDisableOpenURL", "Disable control sequence to open URLs?"),
+        ] {
+            let r = row(key);
+            assert_eq!((r.tab.as_str(), r.section.as_str(), r.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
+            assert_eq!(r.default, Some(Value::Boolean(false)), "{key}");
+            assert_eq!((r.label.as_str(), r.help.as_str()), (text, text), "{key}");
+        }
+        let base = row("PreferredBaseDir");
+        assert_eq!((base.tab.as_str(), base.section.as_str(), base.kind), ("Advanced", "General", Kind::String));
+        assert_eq!(base.default, Some(Value::String(String::new())));
+        let label = "Folder for config files. There must not be a space in the path.";
+        assert_eq!(base.label, label);
+        assert_eq!(base.help, format!("{label}\nIf empty, then %APPDATA%\\Tandem will be the default location."));
+    }
+
+    #[test]
     fn pointer_rows_show_labels() {
         let rows = pointer_rows(crate::globals::keymaps::factory_pointer());
         assert!(rows.contains(&("Button,1,1,,".to_string(), "Right button, single click".to_string(), "Open Context Menu".to_string())));

@@ -131,14 +131,29 @@ pub fn from_dynamic_json(text: &str) -> Result<Vec<Profile>, String> {
     .map(unique)
 }
 
+/// The user-defaults key iTerm2 stores an Advanced setting under: its name with the first
+/// letter capitalized (`stringByCapitalizingFirstLetter`), "tmuxTitlePrefix" as "TmuxTitlePrefix".
+pub fn defaults_key(key: &str) -> String {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 /// The global settings (iTerm2 user defaults) in a com.googlecode.iterm2.plist, for the
-/// keys Tandem's global schema knows. Other keys are left out.
+/// keys Tandem's global schema knows. Other keys are left out. A schema key spelled with a
+/// lower-case first letter is also found under iTerm2's capitalized defaults key; the exact
+/// spelling wins when a file holds both.
 pub fn globals_from_file(path: &Path) -> Result<Vec<(String, Value)>, String> {
     let root = plist::Value::from_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let dict = root.as_dictionary().ok_or_else(|| format!("{}: not a settings plist", path.display()))?;
     Ok(crate::schema::global()
         .iter()
-        .filter_map(|s| Some((s.key.clone(), from_plist(dict.get(&s.key)?)?)))
+        .filter_map(|s| {
+            let v = dict.get(&s.key).or_else(|| dict.get(&defaults_key(&s.key)))?;
+            Some((s.key.clone(), from_plist(v)?))
+        })
         .collect())
 }
 
@@ -169,6 +184,34 @@ mod tests {
         assert_eq!(got.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["GlobalKeyMap", "LeftCommand"]);
         assert_eq!(got[1].1.as_integer(), Some(11));
         assert_eq!(got[0].1["0x61-0x100000"]["Action"].as_integer(), Some(13));
+    }
+
+    #[test]
+    fn import_matches_iterm2_defaults_keys() {
+        assert_eq!(defaults_key("tmuxTitlePrefix"), "TmuxTitlePrefix");
+        assert_eq!(defaults_key("NoSyncDisableOpenURL"), "NoSyncDisableOpenURL");
+        assert_eq!(defaults_key(""), "");
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("tandem-import-defaults-keys-{}.plist", std::process::id()));
+        std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>TmuxTitlePrefix</key><string>x </string>
+  <key>NoSyncDisableOpenURL</key><true/>
+</dict></plist>"#).unwrap();
+        let got = globals_from_file(&path).unwrap();
+        assert!(got.contains(&("tmuxTitlePrefix".to_string(), Value::String("x ".into()))), "{got:?}");
+        assert!(got.contains(&("NoSyncDisableOpenURL".to_string(), Value::Boolean(true))), "{got:?}");
+        // Both spellings present: the exact one wins.
+        let both = dir.join(format!("tandem-import-defaults-keys-both-{}.plist", std::process::id()));
+        std::fs::write(&both, r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>tmuxTitlePrefix</key><string>exact</string>
+  <key>TmuxTitlePrefix</key><string>capitalized</string>
+</dict></plist>"#).unwrap();
+        let got = globals_from_file(&both).unwrap();
+        assert_eq!(got, [("tmuxTitlePrefix".to_string(), Value::String("exact".into()))]);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&both);
     }
 
     const PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>

@@ -47,7 +47,7 @@ impl App {
 
     /// SetProfile: the named saved profile (exact; empty is the default) replaces the pane's.
     pub(super) fn set_profile_request(&mut self, pane: PaneId, name: String) {
-        let prevent = self.globals.values.get("PreventEscapeSequenceFromChangingProfile").and_then(|v| v.as_bool());
+        let prevent = self.globals.optional_bool("PreventEscapeSequenceFromChangingProfile");
         match prompted::set_profile_decision(prevent) {
             Decision::Deny => {}
             Decision::Ask => {
