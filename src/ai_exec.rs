@@ -41,9 +41,12 @@ pub fn marker_suffix(kind: ShellKind, uuid: &str) -> String {
 /// so a multi-line command is checked whole; Ctrl+R, Ctrl+P, Ctrl+Y, Esc-prefixed keys and C1
 /// controls would make the shell run a history line the check never saw. Called before the
 /// check and again before any write (`App::ai_exec_start`).
+pub const REFUSED_MODEL: &str = "Error: execute_command cannot run a command that holds a control character other than Tab and newlines. Send the command as plain text.";
+pub const REFUSED_NOTICE: &str = "AI tried to run a command holding a control character, so nothing was run.";
+
 pub fn refusal(command: &str) -> Option<Outcome> {
     crate::ai_actions::has_refused_control(command, true)
-        .then(|| Outcome { model: crate::ai_actions::LINE_END_REFUSED.to_string(), notice: Some(crate::ai_actions::LINE_END_NOTICE.to_string()) })
+        .then(|| Outcome { model: REFUSED_MODEL.to_string(), notice: Some(REFUSED_NOTICE.to_string()) })
 }
 
 /// The bytes to type: the prompt path when shell integration was ever used and the session is
@@ -157,11 +160,13 @@ mod tests {
 
     #[test]
     fn exec_refuses_control_keys() {
-        for bad in ["echo\u{12}", "\u{10}", "\u{19}", "a\u{1b}.", "\u{1b}b", "x\u{9b}A", "\u{f}", "a\u{0}", "a\u{18}\u{5}"] {
+        for bad in ["echo\u{12}", "\u{3}", "\u{7f}", "echo \u{7f}\u{7f}\u{7f}\u{7f}\u{7f}rm -rf ~", "\u{10}", "\u{19}", "a\u{1b}.", "\u{1b}b", "x\u{9b}A", "\u{f}", "a\u{0}", "a\u{18}\u{5}"] {
             let o = refusal(bad).unwrap_or_else(|| panic!("{bad:?} must be refused"));
-            assert_eq!((o.model.as_str(), o.notice.as_deref()), (crate::ai_actions::LINE_END_REFUSED, Some(crate::ai_actions::LINE_END_NOTICE)), "{bad:?}");
+            assert_eq!((o.model.as_str(), o.notice.as_deref()), (REFUSED_MODEL, Some(REFUSED_NOTICE)), "{bad:?}");
+            assert!(!o.model.contains("insert_text_at_cursor") && !o.model.contains("line break") && !o.model.contains("use execute_command"), "own text: {}", o.model);
+            assert!(!REFUSED_NOTICE.contains("type"), "{REFUSED_NOTICE}");
         }
-        for ok in ["dir", "echo a\necho b", "echo a\r\necho b", "a\tb", "\u{3}", "echo \u{e9}\u{4e16}"] {
+        for ok in ["dir", "echo a\necho b", "echo a\r\necho b", "a\tb", "echo \u{e9}\u{4e16}"] {
             assert_eq!(refusal(ok), None, "{ok:?}");
         }
     }

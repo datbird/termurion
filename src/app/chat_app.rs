@@ -252,6 +252,10 @@ impl App {
     /// wanted the block without consent asks once per launch and goes without it.
     #[allow(dead_code)] // Called by the agent (Task 11).
     pub(crate) fn ai_volatile_context(&mut self, chat: &Chat, commit: bool) -> Option<String> {
+        // Only a session-bound chat that is not orchestrating (`ChatAgent.swift:1058-1060`).
+        if !crate::ai_context::shares_context(chat.orchestration_enabled, chat.terminal_session_guid.as_deref()) {
+            return None;
+        }
         let guid = chat.terminal_session_guid.as_deref()?;
         // A guid that is not a live pane's id is no linked terminal (`ai_set_permission`).
         let pane = guid.parse::<crate::layout::PaneId>().ok().filter(|id| id.to_string() == guid && self.panes.contains_key(id))?;

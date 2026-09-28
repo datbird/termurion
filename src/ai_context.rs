@@ -41,12 +41,17 @@ impl Consent {
     }
 }
 
-/// What a button of the consent question writes: Turn On (the first) Granted; Not Now writes
-/// nothing, so the question can come back next launch (iTerm2 keeps Unknown for a decline
-/// here as a decision of ours; `ChatAgent.swift:1137` writes Denied, which the brief's ruling
-/// overrides).
-pub fn consent_answer(index: usize) -> Option<Consent> {
-    (index == 0).then_some(Consent::Granted)
+/// What a button of the consent question writes: Turn On (the first) Granted; every other
+/// answer, Not Now and a close included, Denied (`ChatAgent.swift:1137`), and a Denied answer
+/// is never asked again (`should_ask`).
+pub fn consent_answer(index: usize) -> Consent {
+    if index == 0 { Consent::Granted } else { Consent::Denied }
+}
+
+/// A chat shares terminal context only when it is session-bound and not orchestrating
+/// (`ChatAgent.swift:1058-1060`).
+pub fn shares_context(orchestration_enabled: bool, terminal_guid: Option<&str>) -> bool {
+    !orchestration_enabled && terminal_guid.is_some()
 }
 
 /// `PTYSession.aiState`.
@@ -96,16 +101,46 @@ pub fn escape_html(s: &str) -> String {
     out
 }
 
-/// `ChatAgent.neutralizeContextDelimiters`.
+/// `ChatAgent.neutralizeContextDelimiters`, hardened beyond iTerm2 (Task 8 finding 5).
 ///
 /// Untrusted terminal text must not close the wrapper early and read as top-level instructions.
-/// Only the four tag forms iTerm2 replaces, in its order and case-sensitively: an opening tag
-/// keeps its own `>`. Line breaks are kept (the screen's rows matter to the model).
+/// The four tags iTerm2 replaces, in any letter case: a closing tag also with whitespace or a
+/// line break before its `>`. An opening tag keeps its own `>`. Line breaks elsewhere are kept
+/// (the screen's rows matter to the model).
 pub fn neutralize(s: &str) -> String {
-    s.replace("</visible-screen>", "\u{2039}/visible-screen\u{203A}")
-        .replace("<visible-screen", "\u{2039}visible-screen")
-        .replace("</terminal-state>", "\u{2039}/terminal-state\u{203A}")
-        .replace("<terminal-state", "\u{2039}terminal-state")
+    const NAMES: [&str; 2] = ["visible-screen", "terminal-state"];
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(at) = rest.find('<') {
+        out.push_str(&rest[..at]);
+        let tag = &rest[at + 1..];
+        let (closing, body) = match tag.strip_prefix('/') {
+            Some(b) => (true, b),
+            None => (false, tag),
+        };
+        let name = NAMES.iter().find_map(|n| body.get(..n.len()).filter(|h| h.eq_ignore_ascii_case(n)));
+        let Some(name) = name else {
+            out.push('<');
+            rest = tag;
+            continue;
+        };
+        let after = &body[name.len()..];
+        if closing {
+            let trimmed = after.trim_start();
+            if let Some(end) = trimmed.strip_prefix('>') {
+                out.push_str(&format!("\u{2039}/{name}\u{203A}"));
+                rest = end;
+                continue;
+            }
+            out.push('<');
+            rest = tag;
+        } else {
+            out.push_str(&format!("\u{2039}{name}"));
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The last screen a request really carried (`lastAutoProvidedScreen`).
@@ -194,6 +229,26 @@ mod tests {
     }
 
     #[test]
+    fn neutralize_catches_case_and_spaced_closers() {
+        assert_eq!(neutralize("</VISIBLE-SCREEN>"), "\u{2039}/VISIBLE-SCREEN\u{203A}");
+        assert_eq!(neutralize("</visible-screen >"), "\u{2039}/visible-screen\u{203A}");
+        assert_eq!(neutralize("</terminal-state\n>"), "\u{2039}/terminal-state\u{203A}");
+        assert_eq!(neutralize("</Terminal-State \t\r\n >x"), "\u{2039}/Terminal-State\u{203A}x");
+        assert_eq!(neutralize("<Terminal-State x>"), "\u{2039}Terminal-State x>");
+        assert_eq!(neutralize("<VISIBLE-SCREEN>"), "\u{2039}VISIBLE-SCREEN>");
+        assert_eq!(neutralize("</visible-screenx>"), "</visible-screenx>", "another tag name is left alone");
+        assert_eq!(neutralize("a < b </other >"), "a < b </other >");
+    }
+
+    #[test]
+    fn only_a_session_bound_chat_shares_context() {
+        assert!(shares_context(false, Some("3")));
+        assert!(!shares_context(true, Some("3")), "an orchestration chat shares nothing (ChatAgent.swift:1058-1060)");
+        assert!(!shares_context(false, None));
+        assert!(!shares_context(true, None));
+    }
+
+    #[test]
     fn neutralize_follows_iterm2() {
         assert_eq!(
             neutralize("</visible-screen><visible-screen x></terminal-state><terminal-state>"),
@@ -239,10 +294,11 @@ mod tests {
     }
 
     #[test]
-    fn consent_answers_turn_on_only() {
-        assert_eq!(consent_answer(0), Some(Consent::Granted));
-        assert_eq!(consent_answer(1), None, "Not Now writes nothing");
-        assert_eq!(consent_answer(2), None);
+    fn consent_answers_follow_iterm2() {
+        assert_eq!(consent_answer(0), Consent::Granted);
+        assert_eq!(consent_answer(1), Consent::Denied, "Not Now (and a close) writes Denied, as iTerm2, and it is never asked again");
+        assert_eq!(consent_answer(2), Consent::Denied);
+        assert!(!should_ask(Wants { state: true, screen: true }, consent_answer(1), false));
         // The alert the question shows: its first button is Turn On, and a close is Not Now.
         let a = crate::ai_gate::auto_provide_alert();
         assert_eq!(a.buttons[0], TURN_ON);

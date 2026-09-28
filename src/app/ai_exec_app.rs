@@ -13,16 +13,19 @@ use std::collections::HashMap;
 /// A command's finish, keyed the way Task 11 delivers it: (chat, request id, outcome).
 pub(super) type Finished = (String, String, Outcome);
 
-/// The text a Prompt-path command produced, once the next prompt has arrived: None while it
-/// still runs; Some(None) when the start line was dropped from the scrollback; Some(Some(text))
-/// the lines from the submit line to the line before the new prompt, trailing whitespace
-/// trimmed and uncapped (`contentAfter`).
-fn prompt_capture(screen: &Screen, running: &Running) -> Option<Option<String>> {
+/// A Prompt-path command's state once the next prompt has arrived: None while it still runs,
+/// else the outcome: the lines from the submit line to the line before the new prompt, trailing
+/// whitespace trimmed and uncapped (`contentAfter`). A start line that left the scrollback does
+/// not end the wait or answer "unavailable": the text is read from the oldest line kept and
+/// answers the lost-output notice, as the marker path does.
+fn prompt_capture(screen: &Screen, running: &Running) -> Option<Outcome> {
     if screen.prompts_seen() <= running.prompts_before {
         return None;
     }
     let end = screen.current_prompt_line().map_or_else(|| screen.abs_cursor_line(), |l| screen.abs_line(l));
-    Some(screen.abs_text(running.start_line, end).map(|t| t.trim_end().to_string()))
+    let from = running.start_line.max(screen.oldest_abs_line());
+    let Some(text) = screen.abs_text(from, end).map(|t| t.trim_end().to_string()) else { return Some(ai_exec::unavailable_outcome(&running.command)) };
+    Some(if running.start_line < from { ai_exec::lost_outcome(&running.command, text) } else { ai_exec::output_outcome(&running.command, text) })
 }
 
 /// A Marker-path command's state: None while it waits, else the outcome. A start line that
@@ -44,10 +47,7 @@ fn marker_capture(screen: &Screen, running: &Running, uuid: &str) -> Option<Outc
 fn capture(screen: Option<&Screen>, running: &Running) -> Option<Outcome> {
     let Some(screen) = screen else { return Some(ai_exec::canceled_outcome()) };
     match &running.path {
-        Path::Prompt => prompt_capture(screen, running).map(|c| match c {
-            Some(text) => ai_exec::output_outcome(&running.command, text),
-            None => ai_exec::unavailable_outcome(&running.command),
-        }),
+        Path::Prompt => prompt_capture(screen, running),
         Path::Marker { uuid } => marker_capture(screen, running, uuid),
     }
 }
@@ -131,14 +131,17 @@ mod tests {
         s.feed(b"dir\r\na\r\nb\r\n");
         assert_eq!(prompt_capture(&s, &r), None, "before the new prompt");
         s.feed(b"\x1b]133;D;0\x07\x1b]133;A\x07\x1b]133;B\x07");
-        assert_eq!(prompt_capture(&s, &r), Some(Some("dir\na\nb".to_string())));
+        assert_eq!(prompt_capture(&s, &r), Some(ai_exec::output_outcome("dir", "dir\na\nb".to_string())));
         // A start line that fell off the scrollback gives Some(None).
         let mut small = Screen::new(40, 3);
         small.feed(b"\x1b]133;A\x07\x1b]133;B\x07");
         let mut lost = running(Path::Prompt, &small);
         lost.start_line -= 100_000;
         small.feed(b"x\r\n\x1b]133;D;0\x07\x1b]133;A\x07");
-        assert_eq!(prompt_capture(&small, &lost), Some(None));
+        let o = capture(Some(&small), &lost).expect("the new prompt ended the command");
+        assert_eq!(o.notice.as_deref(), Some(ai_exec::lost_notice("dir").as_str()), "lost-output notice, as the marker path");
+        assert_ne!(o.model, ai_exec::UNAVAILABLE_MODEL);
+        assert!(o.model.contains('x'), "the text from the oldest line kept: {:?}", o.model);
     }
 
     #[test]

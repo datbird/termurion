@@ -298,12 +298,11 @@ impl App {
                     self.ai_reveal = Some(SubTab::General);
                 }
             }
-            // Turn On writes Granted; Not Now (also a close or Escape) writes nothing.
+            // Turn On writes Granted; Not Now (also a close or Escape) writes Denied, as iTerm2.
             Then::AutoProvide => {
-                if let Some(consent) = crate::ai_context::consent_answer(index) {
-                    self.globals.set(crate::ai_context::CONSENT_KEY, toml::Value::Integer(consent.raw()));
-                    self.save_globals();
-                }
+                let consent = crate::ai_context::consent_answer(index);
+                self.globals.set(crate::ai_context::CONSENT_KEY, toml::Value::Integer(consent.raw()));
+                self.save_globals();
             }
             Then::Grant(host) => {
                 if index == 0 {
