@@ -56,6 +56,8 @@ struct KeyDialog {
     now: Vec<Secret>,
     /// The first field takes the focus on the dialog's first frame.
     focus: bool,
+    /// The frame it opened in, where Return and Escape do nothing.
+    opened: u64,
 }
 
 /// The Manual AI Models sheet (`G:282-560`): the rows it edits, the selected row, and whether
@@ -64,6 +66,8 @@ struct Sheet {
     models: Vec<ManualModel>,
     selected: Option<usize>,
     notice: bool,
+    /// The frame it opened in, where Return and Escape do nothing.
+    opened: u64,
 }
 
 /// The model editor (`G:645-1640`): the form, the model it started from, the row it edits
@@ -77,11 +81,13 @@ struct Editor {
     /// The Model field takes the focus on the first frame; a new header row's name on the next.
     focus_name: bool,
     focus_header: Option<usize>,
+    /// The frame it opened in, where Return and Escape do nothing.
+    opened: u64,
 }
 
 impl Editor {
-    fn new(base: ManualModel, editing: Option<usize>, catalog: &Catalog) -> Editor {
-        Editor { form: EditorForm::from_model(&base, catalog), base, editing, header: None, failure: None, focus_name: true, focus_header: None }
+    fn new(base: ManualModel, editing: Option<usize>, catalog: &Catalog, opened: u64) -> Editor {
+        Editor { form: EditorForm::from_model(&base, catalog), base, editing, header: None, failure: None, focus_name: true, focus_header: None, opened }
     }
 }
 
@@ -276,12 +282,12 @@ fn keys() -> std::sync::MutexGuard<'static, Keys> {
 
 /// Opens the key dialog: each vendor's key is read once (a read that fails prefills blank).
 /// Credential Manager calls run on the UI thread; they never prompt (Decision).
-fn open_key_dialog() -> KeyDialog {
+fn open_key_dialog(opened: u64) -> KeyDialog {
     let mut store = ai_keys::system_store();
     let mut cache = keys();
     let initial: Vec<Secret> = Vendor::KEY_ORDER.iter().map(|v| cache.get(*v, &mut *store).unwrap_or_else(|| Secret::new(String::new()))).collect();
     let now = initial.iter().map(Secret::duplicate).collect();
-    KeyDialog { initial, now, focus: true }
+    KeyDialog { initial, now, focus: true, opened }
 }
 
 /// OK: writes the changed fields. A failed write keeps the key for the session (`Keys::set`)
@@ -322,7 +328,9 @@ fn key_dialog(ctx: &egui::Context, d: &mut KeyDialog, error: &mut Option<String>
             ui.add_space(6.0);
         }
         ui.add_space(8.0);
-        let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter) && i.modifiers.is_none(), i.key_pressed(egui::Key::Escape)));
+        // A key field keeps the focus on Return, which is still OK there.
+        let fields: Vec<egui::Id> = (0..Vendor::KEY_ORDER.len()).map(|i| egui::Id::new(("ai-key", i))).collect();
+        let (enter, escape) = modal_keys(ui, d.opened, &fields);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let ok = ui.add(egui::Button::new("OK").min_size(egui::vec2(76.0, 24.0))).clicked();
             let cancel = ui.add(egui::Button::new("Cancel").min_size(egui::vec2(76.0, 24.0))).clicked();
@@ -392,7 +400,7 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
         ui.horizontal(|ui| {
             if ui.add_enabled(on.rest, egui::Button::new(SET_API_KEY)).clicked() {
                 st.key_failure = None;
-                st.keys = Some(open_key_dialog());
+                st.keys = Some(open_key_dialog(ui.ctx().cumulative_frame_nr()));
             }
             if let Some(f) = &st.key_failure {
                 failure_mark(ui, f);
@@ -425,7 +433,7 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
                     });
                 });
                 if ui.add_enabled(on.rest, egui::Button::new(MANAGE_MODELS)).clicked() {
-                    let (sheet, noted) = open_sheet(g);
+                    let (sheet, noted) = open_sheet(g, ui.ctx().cumulative_frame_nr());
                     st.sheet = Some(sheet);
                     st.editor = None;
                     changed |= noted;
@@ -487,19 +495,37 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
 /// "Manage AI Models\u{2026}" (`G:4032-4046`): the sheet over the configurations (else the
 /// legacy model), the first row selected; the legacy headers notice first when it is due, which
 /// sets its flag. True when the flag was set.
-fn open_sheet(g: &mut Globals) -> (Sheet, bool) {
+fn open_sheet(g: &mut Globals, opened: u64) -> (Sheet, bool) {
     let notice = am::legacy_notice_due(g);
     if notice {
         g.set(am::LEGACY_NOTICE_FLAG, Value::Boolean(true));
     }
     let models = am::sheet_models(g);
     let selected = (!models.is_empty()).then_some(0);
-    (Sheet { models, selected, notice }, notice)
+    (Sheet { models, selected, notice, opened }, notice)
 }
 
 /// Return pressed without modifiers, and Escape pressed.
 fn enter_escape(ui: &egui::Ui) -> (bool, bool) {
     ui.input(|i| (i.key_pressed(egui::Key::Enter) && i.modifiers.is_none(), i.key_pressed(egui::Key::Escape)))
+}
+
+/// Whether Return and Escape act as a modal's default buttons. Neither acts in the frame the
+/// modal opened, where the key that opened it is still down (egui turns Return or Space on a
+/// focused button into a click). Return does not act while a button, checkbox or menu has
+/// the focus, since egui clicks that widget with it instead.
+pub fn default_keys(opening: bool, enter: bool, escape: bool, focus_takes_return: bool) -> (bool, bool) {
+    (enter && !opening && !focus_takes_return, escape && !opening)
+}
+
+/// `default_keys` for a modal drawn in `ui` that opened in frame `opened`. `keeps` names the
+/// fields that keep the focus on Return (the key fields) and still let it act; egui's text
+/// fields give the focus up on Return, so they need no entry.
+fn modal_keys(ui: &egui::Ui, opened: u64, keeps: &[egui::Id]) -> (bool, bool) {
+    let (enter, escape) = enter_escape(ui);
+    let ctx = ui.ctx();
+    let focus_takes_return = ctx.memory(|m| m.focused()).filter(|id| !keeps.contains(id)).and_then(|id| ctx.read_response(id)).is_some_and(|r| r.enabled() && r.sense.senses_click());
+    default_keys(ctx.cumulative_frame_nr() == opened, enter, escape, focus_takes_return)
 }
 
 /// An alert over the settings window: the heading, the text and OK (Return or Escape). True
@@ -545,7 +571,7 @@ const COLUMNS: [f32; 3] = [260.0, 130.0, 150.0];
 /// The Manual AI Models sheet and, over it, the model editor. Answers (closed, changed).
 fn sheet_modal(ctx: &egui::Context, g: &mut Globals, sh: &mut Sheet, editor: &mut Option<Editor>, catalog: &Catalog) -> (bool, bool) {
     if sh.notice {
-        if notice_modal(ctx, "ai-legacy-headers", am::LEGACY_HEADING, am::LEGACY_TEXT, true) {
+        if notice_modal(ctx, "ai-legacy-headers", am::LEGACY_HEADING, am::LEGACY_TEXT, ctx.cumulative_frame_nr() != sh.opened) {
             sh.notice = false;
         }
         return (false, false);
@@ -593,7 +619,7 @@ fn sheet_modal(ctx: &egui::Context, g: &mut Globals, sh: &mut Sheet, editor: &mu
             }
         });
         ui.add_space(8.0);
-        let (enter, _) = enter_escape(ui);
+        let (enter, _) = modal_keys(ui, sh.opened, &[]);
         ui.horizontal(|ui| {
             let icons = crate::settings_keys::has_icon_font(ui.ctx());
             let row = sh.selected.unwrap_or(0);
@@ -618,17 +644,18 @@ fn sheet_modal(ctx: &egui::Context, g: &mut Globals, sh: &mut Sheet, editor: &mu
                 act = Some(SheetAct::Economy(row));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(egui::Button::new("OK").min_size(egui::vec2(90.0, 30.0))).clicked() || (enter && !editing) {
+                if ui.add(egui::Button::new("OK").min_size(egui::vec2(90.0, 30.0))).clicked() || (enter && !editing && act.is_none()) {
                     done = true;
                 }
             });
         });
     });
     let mut changed = false;
+    let now = ctx.cumulative_frame_nr();
     match act {
-        Some(SheetAct::Add) => *editor = Some(Editor::new(am::default_base(g), None, catalog)),
-        Some(SheetAct::Edit(i)) if i < sh.models.len() => *editor = Some(Editor::new(sh.models[i].clone(), Some(i), catalog)),
-        Some(SheetAct::Duplicate(i)) if i < sh.models.len() => *editor = Some(Editor::new(am::duplicate_base(&sh.models[i]), None, catalog)),
+        Some(SheetAct::Add) => *editor = Some(Editor::new(am::default_base(g), None, catalog, now)),
+        Some(SheetAct::Edit(i)) if i < sh.models.len() => *editor = Some(Editor::new(sh.models[i].clone(), Some(i), catalog, now)),
+        Some(SheetAct::Duplicate(i)) if i < sh.models.len() => *editor = Some(Editor::new(am::duplicate_base(&sh.models[i]), None, catalog, now)),
         Some(SheetAct::Delete(i)) => {
             sh.selected = am::delete_row(g, &mut sh.models, i, catalog);
             changed = true;
@@ -809,7 +836,7 @@ fn editor_modal(ctx: &egui::Context, e: &mut Editor, models: &[ManualModel], cat
             ui.end_row();
         });
         ui.add_space(12.0);
-        let (enter, escape) = enter_escape(ui);
+        let (enter, escape) = modal_keys(ui, e.opened, &[]);
         ui.horizontal(|ui| {
             ui.add_enabled(false, egui::Button::new(am::TEST_CONNECTION).min_size(egui::vec2(150.0, 30.0))).on_disabled_hover_text(LATER);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -996,7 +1023,7 @@ mod tests {
 
     #[test]
     fn failed_key_writes_are_all_reported() {
-        let d = KeyDialog { initial: secrets(&["", "", "", ""]), now: secrets(&["sk-1", "", "sk-ant-1", ""]), focus: false };
+        let d = KeyDialog { initial: secrets(&["", "", "", ""]), now: secrets(&["sk-1", "", "sk-ant-1", ""]), focus: false, opened: 0 };
         let mut cache = Keys::default();
         assert_eq!(
             save_keys(&d, &mut cache, &mut FailingStore).as_deref(),
@@ -1004,7 +1031,7 @@ mod tests {
             "every failed vendor is reported, not only the last"
         );
         assert!(cache.is_set(Vendor::OpenAI, &mut FailingStore), "the key stays for the session");
-        let unchanged = KeyDialog { initial: secrets(&["a"]), now: secrets(&["a"]), focus: false };
+        let unchanged = KeyDialog { initial: secrets(&["a"]), now: secrets(&["a"]), focus: false, opened: 0 };
         assert_eq!(save_keys(&unchanged, &mut cache, &mut FailingStore), None);
     }
 
@@ -1038,18 +1065,27 @@ mod tests {
         let mut g = with_models(&[]);
         g.set(crate::ai_settings::CUSTOM_HEADERS_ENABLED, Value::Boolean(true));
         g.set(crate::ai_settings::CUSTOM_HEADERS, Value::Array(vec![Value::Table(toml::toml! { name = "X-Key" value = "1" })]));
-        let (sheet, noted) = open_sheet(&mut g);
+        let (sheet, noted) = open_sheet(&mut g, 7);
         assert!(noted && sheet.notice, "the legacy headers notice comes first");
+        assert_eq!(sheet.opened, 7, "Return and Escape wait for the next frame");
         assert!(g.bool(crate::ai_models::LEGACY_NOTICE_FLAG));
         assert_eq!((sheet.models.len(), sheet.selected), (0, None));
-        let (sheet, noted) = open_sheet(&mut g);
+        let (sheet, noted) = open_sheet(&mut g, 7);
         assert!(!noted && !sheet.notice, "once");
 
         let mut g = with_models(&[manual("llama3", LLAMA3_URL, 5), manual("b", B_URL, 2)]);
-        let (sheet, noted) = open_sheet(&mut g);
+        let (sheet, noted) = open_sheet(&mut g, 7);
         assert!(!noted && !sheet.notice);
         assert_eq!(sheet.models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["llama3", "b"]);
         assert_eq!(sheet.selected, Some(0));
+    }
+
+    #[test]
+    fn modal_keys_wait_for_the_next_frame() {
+        assert_eq!(default_keys(true, true, true, false), (false, false), "the key that opened a modal does not act in it");
+        assert_eq!(default_keys(false, true, true, false), (true, true));
+        assert_eq!(default_keys(false, true, false, true), (false, false), "Return clicks the focused button, not the default one");
+        assert_eq!(default_keys(false, false, true, true), (false, true), "Escape still cancels");
     }
 
     #[test]

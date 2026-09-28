@@ -573,6 +573,8 @@ pub const ECONOMY: &str = "Economy";
 pub const TOGGLE_ECONOMY: &str = "Toggle Economy Model. A cheaper model used for frequent background jobs like command-safety checks and screen-idle detection.";
 /// Marks the economy row, where iTerm2 draws a leaf described as "Economy model".
 pub const ECONOMY_MARK: &str = "Economy model";
+/// iTerm2's names for a model whose name is not a string (`G:398-400`, `G:3833`); Tandem's
+/// reader drops such an entry, so neither is shown. An empty name stays empty, as in iTerm2.
 pub const UNTITLED: &str = "Untitled model";
 pub const MANUAL_MODEL: &str = "Manual model";
 pub const LEGACY_HEADING: &str = "Custom Headers Are Now Set Per Model";
@@ -634,7 +636,7 @@ pub fn sheet_rows(models: &[ManualModel], default_name: Option<&str>, economy_na
     models
         .iter()
         .map(|m| {
-            let shown = if m.name.is_empty() { UNTITLED } else { m.name.as_str() };
+            let shown = m.name.as_str();
             let name = if default_name == Some(m.name.as_str()) {
                 format!("\u{2605} {shown}")
             } else if !economy_name.is_empty() && m.name == economy_name {
@@ -721,8 +723,7 @@ pub fn toggle_economy(g: &mut Globals, models: &[ManualModel], row: usize) {
 /// Duplicate's editor starts from a copy with a new id and the name "<name> copy"
 /// (`G:3826-3836`).
 pub fn duplicate_base(m: &ManualModel) -> ManualModel {
-    let name = if m.name.is_empty() { MANUAL_MODEL } else { m.name.as_str() };
-    ManualModel { id: new_id(), name: format!("{name} copy"), ..m.clone() }
+    ManualModel { id: new_id(), name: format!("{} copy", m.name), ..m.clone() }
 }
 
 /// Add's editor starts from the stored model settings (`G:3673-3698`): the current model name
@@ -1437,7 +1438,7 @@ mod tests {
         let rows = sheet_rows(&models, None, "");
         assert!(rows.iter().all(|r| !r[0].contains('\u{2605}')));
         assert_eq!(rows[0][0], "llama3");
-        assert_eq!(sheet_rows(&[model("", "u", 1)], None, "")[0][0], "Untitled model");
+        assert_eq!(sheet_rows(&[model("", "u", 1)], None, "")[0][0], "", "an empty name shows empty (G:398-400)");
 
         let mut g = empty();
         assert_eq!(default_manual_name(&g), None, "the recommended model is in use");
@@ -1707,7 +1708,7 @@ mod tests {
         assert_eq!(copy.name, "b copy");
         assert!(!copy.id.is_empty() && copy.id != b.id);
         assert_eq!((copy.url.as_str(), copy.api), (EXAMPLE, 2));
-        assert_eq!(duplicate_base(&model("", "u", 1)).name, "Manual model copy");
+        assert_eq!(duplicate_base(&model("", "u", 1)).name, " copy", "an empty name is a string (G:3833)");
     }
 
     #[test]
