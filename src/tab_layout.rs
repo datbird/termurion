@@ -757,6 +757,10 @@ pub fn to_px(r: Rect, scale: f32) -> Rect {
 /// The styled runs of `truncated`, a cut of the runs' text by `truncate`: each kept character
 /// keeps its style, the ellipsis takes its neighbor's.
 fn cut_runs(runs: &[Run], truncated: &str, how: Truncation) -> Vec<Run> {
+    // Nothing fits, not even the ellipsis: nothing is drawn.
+    if truncated.is_empty() {
+        return Vec::new();
+    }
     let styled: Vec<(char, [bool; 3])> =
         runs.iter().flat_map(|r| r.text.chars().map(move |c| (c, [r.bold, r.italic, r.underline]))).collect();
     let plain: String = styled.iter().map(|(c, _)| c).collect();
@@ -1328,6 +1332,8 @@ mod tests {
             cut_runs(&[run("ab", true, false, false), run("cd", false, false, true)], "abc\u{2026}", Truncation::Tail),
             vec![run("ab", true, false, false), run("c\u{2026}", false, false, true)]
         );
+        assert_eq!(cut_runs(&[run("abcd", false, false, false)], "", Truncation::Tail), Vec::new());
+        assert_eq!(cut_runs(&[run("abcd", false, false, false)], "", Truncation::Head), Vec::new());
 
         // `RemoveAddTabButton`: no button and no right margin.
         let bare = Settings { prefs: Prefs { add_button: false, ..s.prefs }, ..s.clone() };
