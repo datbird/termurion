@@ -133,6 +133,7 @@ mod settings_export_ui;
 mod ai_app;
 mod chat_app;
 mod ai_tools_app;
+mod ai_exec_app;
 mod scripts_app;
 mod script_console_app;
 mod script_deps_app;
@@ -827,6 +828,10 @@ pub struct App {
     /// R12cd-2), app-wide, the one accumulator 12f's orchestration typing shares.
     #[allow(dead_code)] // Read by the tool arms `ai_run_tool` (Task 11) reaches.
     ai_staged: HashMap<PaneId, crate::ai_actions::Staged>,
+    /// The command the model is running on each pane; `ai_exec_tick` finds its end.
+    ai_execs: HashMap<PaneId, crate::ai_exec::Running>,
+    /// (chat, request id) of commands a newer command replaced, answered by `ai_exec_tick`.
+    ai_exec_canceled: Vec<(String, String)>,
     /// Each pane's Get-Help running on a worker; `ai_help_tick` collects the answer.
     #[allow(dead_code)] // Filled by `get_man_page`, which `ai_run_tool` (Task 11) reaches.
     ai_helps: HashMap<PaneId, std::sync::mpsc::Receiver<String>>,
@@ -1398,6 +1403,8 @@ pub fn run() {
         chat_broker: crate::chat_broker::Broker::new(),
         ai_overrides: crate::ai_permissions::Overrides::default(),
         ai_staged: HashMap::new(),
+        ai_execs: HashMap::new(),
+        ai_exec_canceled: Vec::new(),
         ai_helps: HashMap::new(),
         script_procs: HashMap::new(),
         script_jobs_left: Vec::new(),

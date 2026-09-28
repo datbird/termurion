@@ -111,7 +111,7 @@ impl App {
 
     /// The session's shell kind, whether it is this machine's, and its cwd: the one detector's
     /// answer (the `shell` variable, `ai_terminal::detected_shell`), classified.
-    fn ai_shell_of(&self, pane: PaneId) -> (ShellKind, bool, Option<String>) {
+    pub(super) fn ai_shell_of(&self, pane: PaneId) -> (ShellKind, bool, Option<String>) {
         let vars = self.variables_with(pane, false);
         let local = super::statusbar_content::is_localhost(vars.session.get("hostname").map(String::as_str));
         (ai_shell::shell_kind(vars.session.get("shell").map(String::as_str), local), local, vars.session.get("path").cloned())

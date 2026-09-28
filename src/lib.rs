@@ -344,6 +344,7 @@ pub mod ai_tools;
 pub mod ai_screen;
 pub mod ai_terminal;
 pub mod ai_shell;
+pub mod ai_exec;
 pub mod ai_actions;
 pub mod chat_message;
 pub mod chat_store;

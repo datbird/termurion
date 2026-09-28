@@ -123,6 +123,11 @@ impl Screen {
         crate::api_buffer::above(self.term.primary_grid()) + self.term.grid().cursor.point.line.0 as i64
     }
 
+    /// The absolute line of grid line `grid` (a mark's line).
+    pub fn abs_line(&self, grid: i32) -> i64 {
+        crate::api_buffer::above(self.term.primary_grid()) + grid as i64
+    }
+
     /// The text of absolute lines `from` to `to_exclusive`, as `contentAfter` extracts it:
     /// trailing whitespace trimmed per line, lines joined with "\n", a soft-wrapped row joined
     /// to the next with nothing. None when `from` was dropped from the scrollback.

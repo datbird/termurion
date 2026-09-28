@@ -250,6 +250,8 @@ impl App {
         // Task 11 hands each finished Get-Help to its chat's request; nothing starts one
         // before `ai_run_tool` exists, so no answer is dropped here.
         let _finished = self.ai_help_tick();
+        // Task 11 delivers each finished command to its chat's request.
+        let _ran = self.ai_exec_tick();
         None
     }
 }
