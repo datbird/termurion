@@ -285,10 +285,11 @@ pub fn upload_archive(paths: &[std::path::PathBuf]) -> Result<Vec<u8>, String> {
     gz.finish().map_err(|e| e.to_string())
 }
 
-/// How much of an upload goes out every 10 ms: 40960 bytes with `accelerateUploads`
-/// (`PasteContext.m:52-56`), else the quick-paste default of 768 (`iTermPasteHelper.m:34`).
-pub fn upload_chunk(accelerate: bool) -> usize {
-    if accelerate { 40960 } else { 768 }
+/// How fast an upload goes out (`PasteContext.m:52-62`): 40960 bytes every 10 ms with
+/// `accelerateUploads`, else the quick-paste settings (`quick`, `App::paste_speed(false)`),
+/// since an upload is pasted quickly (`PTYSession.m:17129-17132`, `iTermPasteHelper.m:376-390`).
+pub fn upload_pace(accelerate: bool, quick: crate::paste::Speed) -> crate::paste::Speed {
+    if accelerate { crate::paste::Speed { units: 40960, delay: 0.01 } } else { quick }
 }
 
 /// The archive as sent: base64 in 76-column lines each ending CR, then CR CR.
@@ -465,8 +466,14 @@ mod tests {
 
     #[test]
     fn upload_pace_follows_iterm2() {
-        assert_eq!(upload_chunk(true), 40960);
-        assert_eq!(upload_chunk(false), 768);
+        use crate::paste::{QUICK, Speed};
+        let fast = Speed { units: 40960, delay: 0.01 };
+        assert_eq!(upload_pace(true, QUICK), fast);
+        assert_eq!(upload_pace(false, QUICK), Speed { units: 768, delay: 0.01 });
+        // Without acceleration the quick-paste settings decide (`PasteContext.m:57-62`).
+        let slowed = Speed { units: 100, delay: 0.5 };
+        assert_eq!(upload_pace(false, slowed), slowed);
+        assert_eq!(upload_pace(true, slowed), fast);
     }
 
     /// The entry names of an upload archive, sorted, with `/` separators and no trailing one

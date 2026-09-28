@@ -99,7 +99,7 @@ pub fn git_values(git: &mut dyn FnMut(&[&str]) -> Option<(i32, String)>) -> Vec<
     };
     let adds = newlines(&git(&["ls-files", "--others", "--exclude-standard"]));
     let deletes = newlines(&git(&["ls-files", "--deleted", "--exclude-standard"]));
-    let numstat = git(&["diff", "--numstat", "--diff-filter=MRT", "HEAD"]).map(|(_, s)| s).unwrap_or_default();
+    let numstat = git(&["diff", "--numstat", "--diff-filter=MRT", "--ignore-submodules=dirty", "HEAD"]).map(|(_, s)| s).unwrap_or_default();
     let (ins, del) = line_counts(&numstat);
     let (fa, fm, fd) = ok(git(&status)).map_or((0, 0, 0), |p| file_counts(&p));
     let values = [
@@ -139,7 +139,8 @@ pub fn it2git(_args: &[String], io: &mut Io) -> i32 {
     use crate::git_state::{NO_LAZY_FETCH_VERSION, find_git, guarded_args, parse_git_version, vet_repo};
     let path = (io.env)("PATH").unwrap_or_default();
     let program = find_git(&path, &|p| p.is_file());
-    let cwd = io.cwd.clone();
+    // A verbatim local folder (`\\?\C:\...`) is vetted and used in its plain form.
+    let cwd = std::path::PathBuf::from(crate::util_cli::local_form(&io.cwd.to_string_lossy()));
     let vet = program.as_ref().and_then(|_| vet_repo(&cwd));
     let run = &mut *io.run;
     let env = git_env();
@@ -185,7 +186,7 @@ mod tests {
                 "symbolic-ref -q --short HEAD" => s(0, "main\n"),
                 "ls-files --others --exclude-standard" => s(0, "b\n"),
                 "ls-files --deleted --exclude-standard" => s(0, ""),
-                "diff --numstat --diff-filter=MRT HEAD" => s(0, "3\t4\ta\n-\t-\tbin\n"),
+                "diff --numstat --diff-filter=MRT --ignore-submodules=dirty HEAD" => s(0, "3\t4\ta\n-\t-\tbin\n"),
                 other => panic!("unexpected git {other}"),
             }
         }
@@ -258,7 +259,7 @@ mod tests {
             &["symbolic-ref", "-q", "--short", "HEAD"],
             &["ls-files", "--others", "--exclude-standard"],
             &["ls-files", "--deleted", "--exclude-standard"],
-            &["diff", "--numstat", "--diff-filter=MRT", "HEAD"],
+            &["diff", "--numstat", "--diff-filter=MRT", "--ignore-submodules=dirty", "HEAD"],
             &["status", "--porcelain", "--ignore-submodules", "-unormal"],
         ];
         for (c, args) in h.runs.iter().zip(script) {
@@ -268,6 +269,26 @@ mod tests {
             assert_eq!(c.env, git_env());
             assert!(c.env.contains(&("GIT_NO_LAZY_FETCH".to_string(), Some("1".to_string()))) && c.env.contains(&("GIT_DIR".to_string(), None)));
         }
+
+        // A verbatim local working folder is the same folder: git runs there, in the plain form.
+        let verbatim = std::path::PathBuf::from(format!("\\\\?\\{}", dir.display()));
+        let mut h = Harness { cwd: verbatim, ..Default::default() };
+        h.env.insert("PATH".into(), dir.display().to_string());
+        h.answers = [
+            answer(0, ".git\n"),
+            answer(0, " M a\n?? b\nD  c\n"),
+            answer(0, "1\t2\n"),
+            answer(0, "main\n"),
+            answer(0, "b\n"),
+            answer(0, ""),
+            answer(0, "3\t4\ta\n-\t-\tbin\n"),
+            answer(0, " M a\n?? b\nD  c\n"),
+        ]
+        .into();
+        assert_eq!(h.run("it2git", &[]), 0);
+        assert_eq!(String::from_utf8(h.out.clone()).unwrap(), expected);
+        assert_eq!(h.runs.len(), 8, "the verbatim folder is vetted as the plain one");
+        assert!(h.runs.iter().all(|c| c.cwd.as_deref() == Some(dir.as_path())), "git runs in the plain form");
 
         // A partial clone on a git before 2.44 (no GIT_NO_LAZY_FETCH) is no repository; on a
         // newer git it is read.
@@ -364,5 +385,73 @@ mod tests {
 
         let _ = Command::new(&git).args(["status", "--porcelain"]).current_dir(&dir).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
         println!("MEASURED plain git status ran the hook: {}, the filter: {}", dir.join("hook-ran.txt").exists(), dir.join("filter-ran.txt").exists());
+    }
+
+    /// A populated submodule whose own config (`.git/modules/sub/config`, which `vet_repo`
+    /// never reads) defines a clean filter: it2git's diff line must not start a status inside
+    /// it (plain `git diff` afterwards measures whether the setup would have).
+    #[cfg(windows)]
+    #[test]
+    fn submodule_programs_never_run() {
+        use std::process::{Command, Stdio};
+        let path = std::env::var("PATH").unwrap_or_default();
+        let Some(git) = crate::git_state::find_git(&path, &|p| p.is_file()) else {
+            eprintln!("MEASURED: no git on PATH; it2git_follows_the_script pins the diff line");
+            return;
+        };
+        let tmp = TempDir::new("tandem-util-git-submodule");
+        let root = tmp.to_path_buf();
+        let (dir, lib) = (root.join("main"), root.join("lib"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&lib).unwrap();
+        let plain = |at: &std::path::Path, args: &[&str]| {
+            let ok = Command::new(&git).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "protocol.file.allow=always"]).args(args).current_dir(at).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap().success();
+            assert!(ok, "git {args:?}");
+        };
+        plain(&lib, &["init", "-q"]);
+        std::fs::write(lib.join("b.txt"), b"beta\n").unwrap();
+        std::fs::write(lib.join(".gitattributes"), b"*.txt filter=sub\n").unwrap();
+        plain(&lib, &["add", "."]);
+        plain(&lib, &["commit", "-q", "-m", "x"]);
+        plain(&dir, &["init", "-q"]);
+        std::fs::write(dir.join("a.txt"), b"alpha\n").unwrap();
+        plain(&dir, &["add", "."]);
+        plain(&dir, &["commit", "-q", "-m", "x"]);
+        plain(&dir, &["submodule", "add", "-q", &lib.display().to_string().replace('\\', "/"), "sub"]);
+        plain(&dir, &["commit", "-q", "-m", "sub"]);
+        let sub = dir.join("sub");
+        plain(&sub, &["config", "filter.sub.clean", "echo ran >> ../sub-ran.txt; cat"]);
+        assert!(dir.join(".git").join("modules").join("sub").join("config").is_file(), "the submodule's config lives under .git/modules");
+        let f = std::fs::File::options().write(true).open(sub.join("b.txt")).unwrap();
+        f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(10)).unwrap();
+        drop(f);
+
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut input: &[u8] = b"";
+        let mut tty = crate::util_cli::FakeTty::default();
+        let env = |k: &str| std::env::var(k).ok();
+        let mut random = || 0u32;
+        let mut run = crate::util_console::run_command;
+        let have = |_: &str| true;
+        let mut io = Io {
+            out: &mut out,
+            err: &mut err,
+            input: &mut input,
+            stdin_tty: false,
+            stdout_tty: false,
+            tty: &mut tty,
+            env: &env,
+            cwd: dir.clone(),
+            random: &mut random,
+            run: &mut run,
+            have: &have,
+        };
+        assert_eq!(it2git(&[], &mut io), 0);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("\x1b]1337;SetUserVar=gitBranch=") && !text.starts_with("\x1b]1337;SetUserVar=gitBranch=\x07"), "a branch: {text:?}");
+        assert!(!dir.join("sub-ran.txt").exists(), "the submodule's clean filter ran");
+
+        let _ = Command::new(&git).args(["diff", "--numstat", "--diff-filter=MRT", "HEAD"]).current_dir(&dir).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        println!("MEASURED plain git diff ran the submodule's filter: {}", dir.join("sub-ran.txt").exists());
     }
 }

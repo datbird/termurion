@@ -744,7 +744,22 @@ mod tests {
         h.answers = [ok(version), ok("")].into();
         assert_eq!(h.run("it2ul", &["\\\\host\\share"]), 1);
         assert!(h.out.is_empty() && h.runs.is_empty());
+        assert!(h.tty.modes.is_empty() && !h.tty.restored, "no console mode is set before the refusal");
         assert_eq!(text(&h.err), "Fatal error: \\\\host\\share: network paths are not supported\n");
+        // A verbatim local destination is local; verbatim UNC and GLOBALROOT forms are not.
+        let verbatim = format!("\\\\?\\{loc}");
+        let mut h = console(b"ok\nQUJD\r\r");
+        h.answers = [ok(version), ok("")].into();
+        assert_eq!(h.run("it2ul", &[verbatim.as_str()]), 0);
+        assert_eq!(h.runs.len(), 2, "tar runs");
+        assert_eq!(h.runs[1].args, ["-x", "-z", "-C", verbatim.as_str(), "-f", "-"]);
+        for refused in ["\\\\?\\UNC\\host\\share", "\\\\?\\GLOBALROOT\\Device\\Mup\\host\\share"] {
+            let mut h = console(b"ok\nQUJD\r\r");
+            h.answers = [ok(version), ok("")].into();
+            assert_eq!(h.run("it2ul", &[refused]), 1, "{refused}");
+            assert!(h.out.is_empty() && h.runs.is_empty() && h.tty.modes.is_empty(), "{refused}");
+            assert_eq!(text(&h.err), format!("Fatal error: {refused}: network paths are not supported\n"));
+        }
 
         let mut bytes = b"ok\r\n".iter().copied();
         assert_eq!(read_line(&mut || bytes.next()), Some("ok".to_string()));

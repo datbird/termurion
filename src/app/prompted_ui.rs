@@ -16,8 +16,6 @@ pub(super) const ASK_ABORT_UPLOAD: &str = "AbortUploadOnKeyPressAnnouncement";
 /// Windows cannot choose files and folders in one dialog, so RequestUpload asks which first.
 pub(super) const UPLOAD_KIND: &str = "UploadChooseFilesOrFolders";
 
-/// RequestUpload sends `prompted::upload_chunk` bytes every tick.
-const UPLOAD_TICK: std::time::Duration = std::time::Duration::from_millis(10);
 
 /// An upload being sent to a pane.
 pub(super) struct Upload {
@@ -477,7 +475,8 @@ impl App {
         if self.upload_due.is_some_and(|t| now < t) {
             return self.upload_due;
         }
-        let chunk = prompted::upload_chunk(self.globals.bool("accelerateUploads"));
+        let pace = prompted::upload_pace(self.globals.bool("accelerateUploads"), self.paste_speed(false));
+        let chunk = pace.units;
         let mut done = Vec::new();
         let mut progress = None;
         for (id, up) in self.uploads.iter_mut() {
@@ -503,7 +502,7 @@ impl App {
         if let Some(text) = progress {
             self.show_toast(&text);
         }
-        self.upload_due = (!self.uploads.is_empty()).then(|| now + UPLOAD_TICK);
+        self.upload_due = (!self.uploads.is_empty()).then(|| now + std::time::Duration::from_secs_f64(pace.delay));
         self.upload_due
     }
 
