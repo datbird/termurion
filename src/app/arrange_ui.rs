@@ -21,6 +21,14 @@ pub(super) enum Contents {
     KeysOnly,
 }
 
+impl Contents {
+    /// Session restoration (not a saved arrangement, a file or a duplicate): the only snapshots
+    /// that carry a pane's chat reference.
+    pub(super) fn restoring(self) -> bool {
+        matches!(self, Contents::Styled(_) | Contents::KeysOnly)
+    }
+}
+
 /// What a Save Window Arrangement window saves.
 #[derive(Clone, Debug)]
 pub(super) enum SaveWhat {
@@ -76,6 +84,11 @@ impl App {
         }
         if let Some(t) = v.as_table_mut() {
             t.extend(self.clippings_table(id));
+            // Session restoration keeps the pane's chat reference, so a chat's link survives a
+            // relaunch; a saved arrangement, a file or a duplicate never carries it.
+            if contents.restoring() {
+                arrangement::save_reference(t, &p.session_guid);
+            }
         }
         // Session restoration: the host session, so a later launch can take the shell back.
         if let (Contents::Styled(_) | Contents::KeysOnly, Some((host_id, offset)), Some(pid), Some(t)) = (contents, p.host_session(), p.shell_pid(), v.as_table_mut()) {
@@ -463,6 +476,12 @@ impl App {
             self.start_dir_override = None;
             match id {
                 Some(id) => {
+                    // Launch-time restoration: the pane takes the reference it saved, unless a
+                    // live pane already holds it (PTYSession.m:2403-2420).
+                    let saved = arrangement::restore_reference(arrangement::adoptable_reference(&session), &|g| self.panes.values().any(|p| p.session_guid == g));
+                    if let (Some(guid), Some(p)) = (saved, self.panes.get_mut(&id)) {
+                        p.keep_reference(&guid);
+                    }
                     if let Some(p) = self.panes.get_mut(&id) {
                         if let Some(text) = arrangement::styled_contents(&session) {
                             // Session restoration: styled text, then the banner when no job came back.
@@ -819,5 +838,13 @@ mod tests {
         };
         assert_eq!(folder_notice(local(true), "/D:/gone", &record), Unavailable, "the OSC 7 form of a Windows path");
         assert_eq!(seen.borrow().as_deref(), Some(std::path::Path::new(r"D:\gone")), "probed as a Windows path");
+    }
+
+    #[test]
+    fn only_session_restoration_saves_the_chat_reference() {
+        assert!(Contents::Styled(100).restoring());
+        assert!(Contents::KeysOnly.restoring());
+        assert!(!Contents::None.restoring(), "a saved arrangement, a file or a duplicate mints fresh references");
+        assert!(!Contents::Plain.restoring());
     }
 }

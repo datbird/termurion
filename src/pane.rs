@@ -287,6 +287,12 @@ pub fn new_session_guid() -> String {
 }
 
 impl Pane {
+    /// Takes `guid` as the pane's reference: a restored pane keeps the one it saved, and a
+    /// restarted session keeps its own (iTerm2 keeps a session's guid, `PTYSession.m:2403-2420`).
+    pub fn keep_reference(&mut self, guid: &str) {
+        self.session_guid = guid.to_string();
+    }
+
     pub fn start(id: PaneId, api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
         Pane::start_transport(id, api, Transport::Conpty, cmdline, cwd, env, cols, rows, notify)
     }
@@ -1246,6 +1252,7 @@ mod tests {
     }
 
     use super::*;
+
     use crate::conpty::{self, Source, dev_vendor_dir};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -2162,5 +2169,16 @@ mod tests {
         let after = drain(&p);
         assert_eq!(while_paused, 0, "nothing read while paused");
         assert!(after > 0, "reading resumes");
+    }
+
+    #[test]
+    fn a_kept_reference_replaces_the_fresh_one() {
+        let old = Pane::recording(1, 80, 24);
+        let mut restarted = Pane::recording(1, 80, 24);
+        assert_ne!(old.session_guid, restarted.session_guid, "every pane starts with a fresh reference");
+        restarted.keep_reference(&old.session_guid);
+        assert_eq!(old.session_guid, restarted.session_guid);
+        let split = Pane::recording(2, 80, 24);
+        assert_ne!(old.session_guid, split.session_guid, "a split or duplicate is a new session");
     }
 }

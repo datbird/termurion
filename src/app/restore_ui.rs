@@ -119,6 +119,8 @@ impl App {
         if state.windows.is_empty() {
             return None;
         }
+        // Only this launch-time read makes a saved chat reference adoptable.
+        mark_adoptable(&mut state.windows);
         if self.globals.bool("showSessionRestoredBanner") {
             let line = restore_state::banner_text(&restore_date());
             for w in &mut state.windows {
@@ -207,6 +209,17 @@ impl App {
     }
 }
 
+/// Every saved session's chat reference becomes adoptable (launch-time restoration only).
+fn mark_adoptable(windows: &mut [Value]) {
+    let mut sessions = Vec::new();
+    for w in windows.iter_mut() {
+        sessions_mut(w, &mut sessions);
+    }
+    for s in sessions {
+        crate::arrangement::mark_adoptable(s);
+    }
+}
+
 /// The session tables of a window table, in reading order.
 fn sessions_mut<'a>(v: &'a mut Value, out: &mut Vec<&'a mut toml::Table>) {
     match v {
@@ -290,4 +303,32 @@ fn restore_date() -> String {
     };
     let text = |buf: &[u16], n: i32| String::from_utf16_lossy(&buf[..(n.max(1) as usize - 1)]);
     format!("{} at {}", text(&date, d), text(&time, t))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arrangement::{ADOPT_REF_KEY, SESSION_REF_KEY};
+
+    #[test]
+    fn a_launch_read_makes_saved_references_adoptable() {
+        let session = |guid: &str| {
+            let mut s = toml::Table::new();
+            s.insert(SESSION_REF_KEY.into(), Value::String(guid.into()));
+            let mut v = toml::Table::new();
+            v.insert("View Type".into(), Value::String("SessionView".into()));
+            v.insert("Session".into(), Value::Table(s));
+            Value::Table(v)
+        };
+        let mut window = toml::Table::new();
+        window.insert("Tabs".into(), Value::Array(vec![session("6F1C2A3B-0000-4000-8000-000000000001"), session("6F1C2A3B-0000-4000-8000-000000000002")]));
+        let mut windows = [Value::Table(window)];
+        mark_adoptable(&mut windows);
+        let mut sessions = Vec::new();
+        sessions_mut(&mut windows[0], &mut sessions);
+        assert_eq!(sessions.len(), 2);
+        for s in sessions {
+            assert!(s.get(SESSION_REF_KEY).is_none() && s.get(ADOPT_REF_KEY).is_some());
+        }
+    }
 }

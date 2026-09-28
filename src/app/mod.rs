@@ -2581,6 +2581,8 @@ impl App {
         // Instant Replay closes first; the new shell starts live.
         self.end_replays(&[id]);
         let guid = self.panes.get(&id).map(|p| p.profile.clone());
+        // The session keeps its chat reference across a restart (`PTYSession.m:2403-2420`).
+        let reference = self.panes.get(&id).map(|p| p.session_guid.clone());
         if let Some(old) = self.panes.remove(&id) {
             if let Some(pid) = old.shell_pid() {
                 self.jobs.forget(pid);
@@ -2590,7 +2592,11 @@ impl App {
         }
         // Its inline files went with its screen.
         self.close_inline_questions_of(id);
-        self.start_pane_as(id, rect, guid.as_deref());
+        if self.start_pane_as(id, rect, guid.as_deref()) {
+            if let (Some(reference), Some(p)) = (reference, self.panes.get_mut(&id)) {
+                p.keep_reference(&reference);
+            }
+        }
     }
 
     /// "Restart session?" answered OK: the pane restarts in its own window (gone: nothing
