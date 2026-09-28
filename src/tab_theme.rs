@@ -105,7 +105,10 @@ pub fn system_high_contrast() -> bool {
     use std::sync::atomic::Ordering;
     match HIGH_CONTRAST.load(Ordering::Relaxed) {
         0 => {
+            #[cfg(windows)]
             let on = read_high_contrast();
+            #[cfg(not(windows))]
+            let on = false;
             HIGH_CONTRAST.store(if on { 2 } else { 1 }, Ordering::Relaxed);
             on
         }
@@ -326,7 +329,7 @@ pub fn palette(style: TabStyle, i: &Inputs) -> TabPalette {
                 edge: fill(rgb(230, 230, 230), 1.0),
                 top: fill(BLACK, 0.0),
                 top_selected: fill(BLACK, 0.0),
-                line_inset: (1.0, 2.0),
+                line_inset: (0.5, 2.0),
                 dark_edge_gradient: false,
                 font_pt: REGULAR_FONT_PT,
                 dark_controls: false,
@@ -526,11 +529,11 @@ pub struct Outline {
 }
 
 /// `YOS:805-839`: alpha `clamp(strength, 0, 1)` (times 0.6 when the window is not key), width
-/// `clamp(strength, 1, 3)`; over a bright fill the outer stroke is white and the inner black,
+/// `clamp(strength, 1, 3)`; over a tab whose `brightness` (`YOS:776-797`) is above 0.5 the outer stroke is white and the inner black,
 /// else the reverse.
-pub fn selected_outline(fill: Rgb, strength: f32, focused: bool) -> Outline {
+pub fn selected_outline(brightness: f32, strength: f32, focused: bool) -> Outline {
     let alpha = strength.clamp(0.0, 1.0) * if focused { 1.0 } else { 0.6 };
-    let (outer, inner) = if hsp(fill) > 0.5 { (WHITE, BLACK) } else { (BLACK, WHITE) };
+    let (outer, inner) = if brightness > 0.5 { (WHITE, BLACK) } else { (BLACK, WHITE) };
     Outline { width: strength.clamp(1.0, 3.0), outer: Fill { color: outer, alpha }, inner: Fill { color: inner, alpha } }
 }
 
@@ -616,6 +619,7 @@ mod tests {
     #[test]
     fn light_palette_follows_iterm2() {
         let p = palette(TabStyle::Light, &inputs(true));
+        assert_eq!(p.line_inset, (0.5, 2.0), "`insetsForTabBarDividers`, `YOS:761`");
         assert_eq!(p.bar, LIGHT_MATERIAL);
         assert_eq!(LIGHT_MATERIAL, rgb(225, 225, 225));
         assert_eq!(p.selected.alpha, 0.0);
@@ -696,9 +700,12 @@ mod tests {
         assert_eq!(colored_text(rgb(20, 20, 20), true, 0.5), white(1.0));
         assert_eq!(colored_text(rgb(240, 240, 240), false, 0.5), black(0.5));
         assert_eq!(colored_text(rgb(20, 20, 20), false, 0.3), white(0.3));
-        assert_eq!(selected_outline(rgb(240, 240, 240), 0.5, true), Outline { width: 1.0, outer: white(0.5), inner: black(0.5) });
-        assert_eq!(selected_outline(rgb(20, 20, 20), 2.0, false), Outline { width: 2.0, outer: black(0.6), inner: white(0.6) });
-        assert_eq!(selected_outline(rgb(20, 20, 20), 0.0, true).outer.alpha, 0.0);
+        assert_eq!(selected_outline(hsp(rgb(240, 240, 240)), 0.5, true), Outline { width: 1.0, outer: white(0.5), inner: black(0.5) });
+        assert_eq!(selected_outline(hsp(rgb(20, 20, 20)), 2.0, false), Outline { width: 2.0, outer: black(0.6), inner: white(0.6) });
+        assert_eq!(selected_outline(hsp(rgb(20, 20, 20)), 0.0, true).outer.alpha, 0.0);
+        // The brightness is passed in (a clear selected tab's is the back's, `YOS:776-797`), and 0.5 is not above 0.5.
+        assert_eq!(selected_outline(0.6, 1.0, true).outer, white(1.0));
+        assert_eq!(selected_outline(0.5, 1.0, true).outer, black(1.0));
     }
 
     #[test]

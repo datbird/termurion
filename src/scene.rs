@@ -1029,7 +1029,9 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
     let (title_h, sub_h) = (line * title_scale, line * sub_scale);
     let turn = spinner_turn();
     let any_colored = tabs.iter().any(|t| t.color.is_some());
-    let mut selected_back = None;
+    // The selected tab's cell, effective fill and brightness (`tabColorBrightness`, `YOS:776-797`),
+    // for what is drawn over the lines.
+    let mut selected_deco: Option<(usize, Rect, Rgb, f32)> = None;
     let span = |text: String, color: Rgb, bold: bool, italic: bool, icon: bool| Span { text, color, bold, italic, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false };
     for (k, (i, c, r)) in bar.cells.iter().enumerate() {
         let Some(tab) = tabs.get(*i) else { continue };
@@ -1061,7 +1063,8 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
             };
         }
         if selected {
-            selected_back = Some(back);
+            let brightness = if colored.is_some() { crate::tab_theme::hsp(back) } else { crate::tab_theme::fill_brightness(tab_fill, pal.dark_controls) };
+            selected_deco = Some((k, cell, back, brightness));
         }
         // A dragged tab covers the tabs it passes, so it is opaque; so is an opaque color.
         if tab.dragged || colored.is_some_and(|f| f.alpha >= 1.0) {
@@ -1070,32 +1073,6 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
             fill_quad(frame, cell, tab_fill);
             if let Some(fill) = colored {
                 fill_quad(frame, cell, fill);
-            }
-        }
-        if selected && any_colored {
-            if let Some(m) = &pal.minimal {
-                // `MIN:278-325`: two 2-point strokes along the cell's bottom, from the bar's start
-                // when the first tab takes the left inset. The tab's darkness is `brightness < 0`
-                // in iTerm2 (never true), so the outer stroke is white over a dark bar.
-                let from = if k == 0 && m.left_inset_is_first_tab && !bar.vertical { area.x } else { cell.x };
-                let u = crate::tab_theme::minimal_underline(crate::tab_theme::hsp(back) < 0.0, pal.dark_controls, m.underline, key);
-                let t = (2.0 * scale).round().max(1.0);
-                for (rise, f) in [(t, u.outer), (2.0 * t, u.inner)] {
-                    fill_quad(frame, Rect { x: from, y: cell.y + cell.h - rise, w: cell.x + cell.w - from, h: t }, f);
-                }
-            } else {
-                // The selected tab's two strokes (`YOS:805-839`).
-                let o = crate::tab_theme::selected_outline(back, pal.colored_outline, key);
-                let width = (o.width * scale).round().max(1.0);
-                let stroke = scale.round().max(1.0);
-                for (inset, f) in [(width - stroke, o.outer), (width, o.inner)] {
-                    let r = Rect { x: cell.x + inset, y: cell.y + inset, w: cell.w - 2.0 * inset, h: cell.h - 2.0 * inset };
-                    if r.w > 2.0 * stroke && r.h > 2.0 * stroke {
-                        for e in [Rect { h: stroke, ..r }, Rect { y: r.y + r.h - stroke, h: stroke, ..r }, Rect { w: stroke, ..r }, Rect { x: r.x + r.w - stroke, w: stroke, ..r }] {
-                            fill_quad(frame, e, f);
-                        }
-                    }
-                }
             }
         }
         let color = over(back, text_fill);
@@ -1190,8 +1167,8 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
         if let Some((i, _, r)) = first {
             let gap = if bar.vertical { Rect { h: (px(*r).y - area.y).max(0.0), ..area } } else { Rect { w: (px(*r).x - area.x).max(0.0), ..area } };
             if gap.w > 0.0 && gap.h > 0.0 {
-                let color = match selected_back {
-                    Some(back) if *i == active && m.left_inset_is_first_tab => back,
+                let color = match selected_deco {
+                    Some((_, _, back, _)) if *i == active && m.left_inset_is_first_tab => back,
                     _ => pal.margin.color,
                 };
                 frame.quads.push(Quad { rect: gap, color: rgba(color, 1.0) });
@@ -1224,7 +1201,9 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
         };
         let last = bar.cells.len().saturating_sub(1);
         let mut top_done = [false; 2];
-        for (k, (i, _, r)) in bar.cells.iter().enumerate() {
+        // The selected tab's lines first, then the unselected tabs' over them (`YOS:1290-1300`).
+        let passes = [true, false].into_iter().flat_map(|pass| bar.cells.iter().enumerate().filter(move |(_, (i, _, _))| (*i == active) == pass));
+        for (k, (i, _, r)) in passes {
             let cell = px(*r);
             let selected = *i == active;
             if bar.vertical {
@@ -1264,6 +1243,55 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
         };
         let solid = crate::tab_theme::Fill { color: rgb(0, 0, 0), alpha: 1.0 };
         fill_quad(frame, edge, if pal.dark_edge_gradient { solid } else { pal.edge });
+    }
+    // What is drawn over the selected tab and the lines (`drawPostHocDecorationsOnSelectedCell:`),
+    // only in a window with a colored tab: Minimal's underline (`MIN:278-325`) or the Regular
+    // styles' outline (`YOS:805-839`).
+    if let (true, Some((k, cell, _, brightness))) = (any_colored, selected_deco) {
+        if let Some(m) = &pal.minimal {
+            // Two 2-point strokes along the cell's bottom, from the bar's start when the first tab
+            // takes the left inset. The tab's darkness is `brightness < 0` in iTerm2 (never true),
+            // so the outer stroke is white over a dark bar.
+            let from = if k == 0 && m.left_inset_is_first_tab && !bar.vertical { area.x } else { cell.x };
+            let u = crate::tab_theme::minimal_underline(brightness < 0.0, pal.dark_controls, m.underline, key);
+            let t = (2.0 * scale).round().max(1.0);
+            for (rise, f) in [(t, u.outer), (2.0 * t, u.inner)] {
+                fill_quad(frame, Rect { x: from, y: cell.y + cell.h - rise, w: cell.x + cell.w - from, h: t }, f);
+            }
+        } else {
+            // The cell outset half a point sideways and inset half a point down, then each stroke
+            // (centered on its rectangle's edge) `width` in from the last: the outer ring's outside
+            // is `width / 2 - 1.5` in sideways and `width / 2 - 0.5` down, its inside and the inner
+            // ring's outside `1.5 x width` less 1.5 and less 0.5, the inner ring's inside `2.5 x
+            // width` less 1.5 and less 0.5. Each edge rounds to a pixel.
+            let o = crate::tab_theme::selected_outline(brightness, pal.colored_outline, key);
+            let w = o.width;
+            let edge = |dx: f32, dy: f32| {
+                let (x0, x1) = ((cell.x + dx * scale).round(), (cell.x + cell.w - dx * scale).round());
+                let (y0, y1) = ((cell.y + dy * scale).round(), (cell.y + cell.h - dy * scale).round());
+                Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+            };
+            let bounds = [edge(w / 2.0 - 1.5, w / 2.0 - 0.5), edge(1.5 * w - 1.5, 1.5 * w - 0.5), edge(2.5 * w - 1.5, 2.5 * w - 0.5)];
+            for (ring, f) in [(0, o.outer), (1, o.inner)] {
+                let (out, inn) = (bounds[ring], bounds[ring + 1]);
+                let bands = if inn.w <= 0.0 || inn.h <= 0.0 {
+                    vec![out]
+                } else {
+                    // Each pixel once: the top and bottom in full, the sides between them.
+                    vec![
+                        Rect { h: inn.y - out.y, ..out },
+                        Rect { y: inn.y + inn.h, h: out.y + out.h - inn.y - inn.h, ..out },
+                        Rect { y: inn.y, w: inn.x - out.x, h: inn.h, ..out },
+                        Rect { x: inn.x + inn.w, y: inn.y, w: out.x + out.w - inn.x - inn.w, h: inn.h },
+                    ]
+                };
+                for band in bands {
+                    if let Some(band) = cut(band, area) {
+                        fill_quad(frame, band, f);
+                    }
+                }
+            }
+        }
     }
     // Minimal: the outline notch around the selected tab replaces the edge line (`MIN:600-875`).
     if let Some(m) = &pal.minimal {
@@ -2651,20 +2679,95 @@ mod tests {
         let fill = colored_fill(red, true, true);
         assert!(f.quads.iter().any(|q| q.rect == first && q.color == rgba(fill, 1.0)), "the fill over the whole cell");
         assert!(!f.quads.iter().any(|q| q.rect.h == 3.0 && q.rect.y == first.y + first.h - 3.0), "no bottom strip");
-        // Light bar, red fill: HSP 0.49 is not above 0.5, so the outline is black outside, white inside.
-        let ring = |inset: f32, color: Rgb| {
-            let r = Rect { x: first.x + inset, y: first.y + inset, w: first.w - 2.0 * inset, h: first.h - 2.0 * inset };
-            let c = rgba(color, 0.5);
-            [Rect { h: 1.0, ..r }, Rect { y: r.y + r.h - 1.0, h: 1.0, ..r }, Rect { w: 1.0, ..r }, Rect { x: r.x + r.w - 1.0, w: 1.0, ..r }].into_iter().all(|e| f.quads.iter().any(|q| q.rect == e && q.color == c))
-        };
-        assert!(ring(0.0, rgb(0, 0, 0)), "the outer stroke");
-        assert!(ring(1.0, rgb(255, 255, 255)), "the inner stroke");
         let text_color = |t: &str| f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == t)).map(|r| r.spans[0].color);
         assert_eq!(text_color("one"), Some(over(fill, colored_text(fill, true, 0.5))), "the colored tab's text");
         let back = over(pal.bar, pal.unselected);
         let expect = over(back, Fill { color: rgb(0, 0, 0), alpha: 0.5 });
         assert_eq!(text_color("two"), Some(expect), "an uncolored tab's text at the unselected prominence");
         assert!(!f.quads.iter().any(|q| q.rect == second && q.color == rgba(fill, 1.0)));
+    }
+
+    /// The selected tab's outline (`YOS:805-839`): two strokes of the width `clamp(strength, 1, 3)`,
+    /// the first outset half a point sideways, drawn after the lines and the edge so none covers
+    /// it, each ring's corners drawn once; only with a colored tab, only on the selected tab.
+    #[test]
+    fn selected_outline_follows_iterm2() {
+        use crate::tab_layout::{self, TabInput};
+        use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
+        let inputs = |outline: f32| Inputs { system_dark: false, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: outline, colored_text_prominence: 0.5, tabs: 2 };
+        let mut looks = vec![TabLook { title: "one".into(), number: 1, color: Some(rgb(255, 0, 0)), ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
+        let items: Vec<TabInput> = looks
+            .iter()
+            .map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
+            .collect();
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::build(&items, 1, 400.0, 0.0, None, &s, &six);
+        let area = Rect { x: 0.0, y: 10.0, w: 400.0, h: 24.0 };
+        let px = |r: Rect| Rect { x: area.x + r.x, y: area.y + r.y, w: r.w, h: r.h };
+        let c = px(bar.cells[1].2);
+        let draw = |looks: &[TabLook], outline: f32| {
+            let mut f = Frame::default();
+            tab_bar(&mut f, looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false, &palette(TabStyle::Light, &inputs(outline)));
+            f
+        };
+        // A ring's four bands, each pixel once: the top and bottom in full, the sides between.
+        let ring = |o: Rect, i: Rect| {
+            [
+                Rect { x: o.x, y: o.y, w: o.w, h: i.y - o.y },
+                Rect { x: o.x, y: i.y + i.h, w: o.w, h: o.y + o.h - i.y - i.h },
+                Rect { x: o.x, y: i.y, w: i.x - o.x, h: i.h },
+                Rect { x: i.x + i.w, y: i.y, w: o.x + o.w - i.x - i.w, h: i.h },
+            ]
+        };
+        let inset = |r: Rect, dx: f32, dy: f32| Rect { x: r.x + dx, y: r.y + dy, w: r.w - 2.0 * dx, h: r.h - 2.0 * dy };
+        let (white, black) = (|a: f32| rgba(rgb(255, 255, 255), a), |a: f32| rgba(rgb(0, 0, 0), a));
+        // Width 1: the outer ring one pixel outside the cell sideways and level with its top and
+        // bottom rows, the inner one just inside it. A bright selected tab: white outside, black inside.
+        let f = draw(&looks, 0.5);
+        for (band, color) in ring(inset(c, -1.0, 0.0), inset(c, 0.0, 1.0)).into_iter().map(|b| (b, white(0.5))).chain(ring(inset(c, 0.0, 1.0), inset(c, 1.0, 2.0)).into_iter().map(|b| (b, black(0.5)))) {
+            assert!(f.quads.iter().any(|q| q.rect == band && q.color == color), "{band:?} {color:?}");
+        }
+        assert_eq!(f.quads.iter().filter(|q| q.color == white(0.5)).count(), 4, "the outer ring is four bands");
+        assert_eq!(f.quads.iter().filter(|q| q.color == black(0.5)).count(), 4, "so is the inner one, and no tab but the selected has one");
+        // Drawn after the edge line, whose row it shares.
+        let at = |f: &Frame, rect: Rect| f.quads.iter().position(|q| q.rect == rect);
+        let edge = f.quads.iter().position(|q| q.color == rgba(rgb(230, 230, 230), 1.0)).unwrap();
+        assert!(edge < at(&f, Rect { x: c.x - 1.0, y: c.y + c.h - 1.0, w: c.w + 2.0, h: 1.0 }).unwrap(), "the outline covers the edge line");
+        // Width 3: strokes three pixels thick (`YOS:829`).
+        let f = draw(&looks, 3.0);
+        for (band, color) in ring(inset(c, 0.0, 1.0), inset(c, 3.0, 4.0)).into_iter().map(|b| (b, white(1.0))).chain(ring(inset(c, 3.0, 4.0), inset(c, 6.0, 7.0)).into_iter().map(|b| (b, black(1.0)))) {
+            assert!(f.quads.iter().any(|q| q.rect == band && q.color == color), "{band:?} {color:?}");
+        }
+        // Only with a colored tab: none without one.
+        looks[0].color = None;
+        let f = draw(&looks, 0.5);
+        assert!(!f.quads.iter().any(|q| q.color == white(0.5) || q.color == black(0.5)), "no outline without a colored tab");
+    }
+
+    /// A side bar's lines: the selected tab's are drawn first, so the unselected tabs' (which
+    /// share the top line's place) end on top (`YOS:1290-1300`).
+    #[test]
+    fn selected_lines_are_drawn_before_the_unselected() {
+        use crate::tab_layout::{self, TabInput};
+        use crate::tab_position::TabPosition;
+        use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
+        let inputs = Inputs { system_dark: true, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 3 };
+        let looks: Vec<TabLook> = (1..=3).map(|n| TabLook { title: format!("t{n}"), number: n, ..TabLook::default() }).collect();
+        let items: Vec<TabInput> = looks
+            .iter()
+            .map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
+            .collect();
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::Bar { position: TabPosition::Left, ..tab_layout::build_vertical(&items, 150.0, 200.0, 0.0, None, &s, &six) };
+        let area = Rect { x: 0.0, y: 0.0, w: 150.0, h: 200.0 };
+        let mut f = Frame::default();
+        tab_bar_vertical(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false, &palette(TabStyle::Dark, &inputs));
+        let top = |color: [f32; 4]| f.quads.iter().position(|q| q.rect.y == 0.0 && q.rect.h == 1.0 && q.color == color);
+        let (selected, unselected) = (top(rgba(rgb(255, 255, 255), 0.20)), top(rgba(rgb(0, 0, 0), 1.0)));
+        assert!(selected.is_some() && unselected.is_some(), "both top lines are drawn");
+        assert!(selected < unselected, "the unselected line covers the selected one");
     }
 
     /// A top bar draws the Dark style's black top line on the unselected tabs only, and past the
