@@ -127,6 +127,55 @@ impl App {
         self.border_applied = Some(color);
     }
 
+    /// This window (and its menu bar, password manager and replay panel) follows a fixed Theme's
+    /// mode, or Windows' again (`updateAppearance`, `iTermApplication.m:1276-1292`). muda's
+    /// `MenuTheme::Auto` reads the system's mode, not the window's, so a forced window's menu
+    /// bar is told its mode. Returns whether the window's theme changed.
+    pub(super) fn apply_theme(&mut self) -> bool {
+        let forced = crate::tab_theme::forced_dark(self.tab_style());
+        let Some(g) = self.gpu.as_ref() else { return false };
+        let before = g.window.theme();
+        g.window.set_theme(crate::tab_theme::window_theme(forced));
+        let changed = g.window.theme() != before;
+        if let (Some(hwnd), Some(bar)) = (self.hwnd(), &self.menu_bar) {
+            let theme = match forced {
+                Some(true) => muda::MenuTheme::Dark,
+                Some(false) => muda::MenuTheme::Light,
+                None => muda::MenuTheme::Auto,
+            };
+            // SAFETY: the HWND is this window's, and the bar was attached to it.
+            if let Err(e) = unsafe { bar.menu.set_theme_for_hwnd(hwnd, theme) } {
+                self.banners.set("menu", format!("Could not set the menu bar's theme: {e}"));
+            }
+        }
+        if let Some(w) = &self.pwm_window {
+            w.follow_theme(forced);
+        }
+        if let Some(w) = &self.replay_window {
+            w.follow_theme(forced);
+        }
+        changed
+    }
+
+    /// Every terminal window, the Settings window and the Profiles window follow the Theme, after
+    /// it changed. A window whose mode changed rebuilds its panes' colors.
+    pub(super) fn apply_theme_everywhere(&mut self) {
+        let forced = crate::tab_theme::forced_dark(self.tab_style());
+        for w in [&self.settings, &self.profiles_win].into_iter().flatten() {
+            w.follow_theme(forced);
+        }
+        let back = self.current_window();
+        let ids: Vec<WindowId> = self.registry.order().into_iter().filter_map(|k| self.window_id_of_key(k)).collect();
+        for id in ids {
+            if self.enter(id) && self.apply_theme() {
+                self.refresh_panes();
+            }
+        }
+        if let Some(b) = back {
+            self.enter(b);
+        }
+    }
+
     /// Every window's border, after a setting changed.
     pub(super) fn apply_border_everywhere(&mut self) {
         let back = self.current_window();

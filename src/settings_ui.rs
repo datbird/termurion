@@ -221,6 +221,11 @@ impl SettingsWindow {
         self.open_editor.is_some_and(|(t, _)| t == crate::settings_shortcuts::Tab::Actions) || self.shortcuts.editing_action()
     }
 
+    /// Follows a forced appearance (`tab_theme::forced_dark`), or Windows' when `None`.
+    pub fn follow_theme(&self, forced: Option<bool>) {
+        self.host.follow_theme(forced);
+    }
+
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, mode: Mode) -> Result<Self, String> {
         let (title, w, h) = match mode {
             Mode::Settings => ("Tandem Settings", 980.0, 720.0),
@@ -317,7 +322,9 @@ impl SettingsWindow {
         let selected = self.selected.get_or_insert_with(|| store.default_guid.clone()).clone();
         let mut tab = self.tab;
         let mut pick = None;
-        let dark = self.host.window.theme().is_none_or(|t| t == winit::window::Theme::Dark);
+        // A fixed Theme forces its mode here too (`tab_theme::forced_dark`).
+        let style = crate::tab_theme::from_value(globals.int(crate::tab_theme::KEY));
+        let dark = crate::tab_theme::forced_dark(style).unwrap_or_else(|| self.host.window.theme().is_none_or(|t| t == winit::window::Theme::Dark));
         let mode = self.mode;
         let mut page = self.page;
         let keys = &mut self.keys;
@@ -558,8 +565,13 @@ impl SettingsWindow {
                 ui.separator();
                 let is_default = selected == store.default_guid;
                 let Some(profile) = store.get_mut(&selected) else { return };
-                if profile.bool("Use Separate Colors for Light and Dark Mode") && schema::TABS[tab] == "Colors" {
+                let separate = profile.bool("Use Separate Colors for Light and Dark Mode");
+                if separate && schema::TABS[tab] == "Colors" {
                     ui.label(format!("Editing the {} mode colors (Windows is in {} mode).", if dark { "Dark" } else { "Light" }, if dark { "dark" } else { "light" }));
+                    // iTerm2 shows a warning button whose click shows this text; Tandem shows the text.
+                    if crate::tab_theme::mode_warning(style, separate) {
+                        ui.colored_label(ui.visuals().warn_fg_color, crate::tab_theme::MODE_WARNING);
+                    }
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for (section, list) in sections(schema::TABS[tab]) {

@@ -47,6 +47,13 @@ const AUTH_FAILED_TITLE: &str = "Authentication Failed";
 const PROMPT_USER: &str = "user";
 const PROMPT_PASSWORD: &str = "password";
 
+impl PwmWin {
+    /// Follows a forced appearance (`tab_theme::forced_dark`), or Windows' when `None`.
+    pub(super) fn follow_theme(&self, forced: Option<bool>) {
+        self.window.follow_theme(forced);
+    }
+}
+
 /// A password manager window and what it shows.
 pub(super) struct PwmWin {
     window: PwmWindow,
@@ -276,7 +283,7 @@ impl App {
             self.pwm.auth.open_unprompted();
         }
         let opened = match (self.gpu.as_ref(), self.hwnd()) {
-            (Some(g), Some(h)) => PwmWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, h).map(|w| (w, h)),
+            (Some(g), Some(h)) => PwmWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, h, crate::tab_theme::forced_dark(self.tab_style())).map(|w| (w, h)),
             _ => Err("no terminal window".to_string()),
         };
         let (window, owner_hwnd) = match opened {

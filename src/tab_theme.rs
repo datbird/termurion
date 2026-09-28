@@ -58,6 +58,47 @@ pub fn resolved(style: TabStyle, system_dark: bool, system_high_contrast: bool) 
     }
 }
 
+/// The appearance a fixed style forces on the whole app (`updateAppearance`,
+/// `iTermApplication.m:1276-1292`): `Some(dark)` for Light, Dark and the High Contrast styles;
+/// Regular (Automatic), Minimal and Compact leave it to the system.
+pub fn forced_dark(style: TabStyle) -> Option<bool> {
+    match style {
+        TabStyle::Light | TabStyle::LightHighContrast => Some(false),
+        TabStyle::Dark | TabStyle::DarkHighContrast => Some(true),
+        TabStyle::Automatic | TabStyle::Minimal | TabStyle::Compact => None,
+    }
+}
+
+/// The winit theme a window is given for a forced appearance; `None` follows Windows.
+pub fn window_theme(forced: Option<bool>) -> Option<winit::window::Theme> {
+    forced.map(|dark| if dark { winit::window::Theme::Dark } else { winit::window::Theme::Light })
+}
+
+/// Whether the tab bar goes in the caption area with the window buttons (Minimal and Compact).
+pub fn compact_theme(style: TabStyle) -> bool {
+    matches!(style, TabStyle::Minimal | TabStyle::Compact)
+}
+
+/// The text of the warning on Profiles > Colors (`ProfilesColorsPreferencesViewController.m:1036-1038`).
+pub const MODE_WARNING: &str = "Your current theme overrides the system light and dark mode setting, so color switching will not occur. You can change it in Settings > Appearance > General > Theme.";
+
+/// Whether the Colors tab warns: a fixed theme, while the profile keeps separate light and dark
+/// colors (`:384-397`, `:373-380`).
+pub fn mode_warning(style: TabStyle, separate_colors: bool) -> bool {
+    separate_colors && forced_dark(style).is_some()
+}
+
+/// Whether Windows is in a high contrast theme (`SPI_GETHIGHCONTRAST`, flag `HCF_HIGHCONTRASTON`).
+#[cfg(windows)]
+pub fn system_high_contrast() -> bool {
+    use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SPI_GETHIGHCONTRAST, SystemParametersInfoW};
+    let mut hc = HIGHCONTRASTW { cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32, dwFlags: 0, lpszDefaultScheme: std::ptr::null_mut() };
+    // SAFETY: `hc` is a valid HIGHCONTRASTW with its size set, as the call requires.
+    let ok = unsafe { SystemParametersInfoW(SPI_GETHIGHCONTRAST, hc.cbSize, &mut hc as *mut _ as *mut _, 0) };
+    ok != 0 && hc.dwFlags & HCF_HIGHCONTRASTON != 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +123,37 @@ mod tests {
         }
         assert_eq!(resolved(Light, true, true), Light);
         assert_eq!(resolved(DarkHighContrast, false, false), DarkHighContrast);
+    }
+
+    #[test]
+    fn forced_appearance_follows_iterm2() {
+        use TabStyle::*;
+        assert_eq!(forced_dark(Light), Some(false));
+        assert_eq!(forced_dark(LightHighContrast), Some(false));
+        assert_eq!(forced_dark(Dark), Some(true));
+        assert_eq!(forced_dark(DarkHighContrast), Some(true));
+        for style in [Automatic, Minimal, Compact] {
+            assert_eq!(forced_dark(style), None);
+        }
+        assert_eq!(window_theme(Some(true)), Some(winit::window::Theme::Dark));
+        assert_eq!(window_theme(Some(false)), Some(winit::window::Theme::Light));
+        assert_eq!(window_theme(None), None);
+    }
+
+    #[test]
+    fn mode_warning_follows_iterm2() {
+        use TabStyle::*;
+        assert!(mode_warning(Light, true));
+        assert!(mode_warning(Dark, true));
+        assert!(mode_warning(LightHighContrast, true));
+        assert!(!mode_warning(Automatic, true));
+        assert!(!mode_warning(Minimal, true));
+        assert!(!mode_warning(Compact, true));
+        assert!(!mode_warning(Light, false));
+        assert_eq!(MODE_WARNING, "Your current theme overrides the system light and dark mode setting, so color switching will not occur. You can change it in Settings > Appearance > General > Theme.");
+        assert!(compact_theme(Minimal) && compact_theme(Compact));
+        for style in [Light, Dark, LightHighContrast, DarkHighContrast, Automatic] {
+            assert!(!compact_theme(style));
+        }
     }
 }

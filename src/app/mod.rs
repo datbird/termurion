@@ -2272,7 +2272,13 @@ impl App {
         guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).clone()
     }
 
+    /// The appearance everything follows: a fixed Theme's own mode, else Windows' for this window.
     fn dark(&self) -> bool {
+        crate::tab_theme::forced_dark(self.tab_style()).unwrap_or_else(|| self.system_dark())
+    }
+
+    /// The window's own winit theme (Windows' mode when nothing is forced), dark when unknown.
+    pub(super) fn system_dark(&self) -> bool {
         self.gpu.as_ref().and_then(|g| g.window.theme()).is_none_or(|t| t == winit::window::Theme::Dark)
     }
 
@@ -2284,7 +2290,7 @@ impl App {
 
     /// The fixed style the current window draws (`crate::tab_theme::resolved`).
     pub(super) fn resolved_style(&self) -> crate::tab_theme::TabStyle {
-        crate::tab_theme::resolved(self.tab_style(), self.dark(), false)
+        crate::tab_theme::resolved(self.tab_style(), self.system_dark(), crate::tab_theme::system_high_contrast())
     }
 
     fn start_pane(&mut self, rect: Rect, guid: Option<&str>) -> Option<PaneId> {
@@ -2600,6 +2606,7 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         match SettingsWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, mode) {
             Ok(mut s) => {
+                s.follow_theme(crate::tab_theme::forced_dark(self.tab_style()));
                 // Hotkeys that failed to register show in the sheet.
                 s.hotkeys.errors = self.hotkey_errors.clone();
                 s.title_providers = self.title_provider_items();
@@ -2676,6 +2683,8 @@ impl App {
         self.sync_checks();
         self.register_hotkeys();
         self.scripts_folder_changed();
+        // The Theme may have changed: every window follows the forced mode (or Windows' again).
+        self.apply_theme_everywhere();
         // The border settings, or the Theme, may have changed.
         self.apply_border_everywhere();
         // AllowLiveResize may have changed.

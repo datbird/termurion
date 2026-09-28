@@ -82,6 +82,11 @@ impl EguiHost {
         self.window.request_redraw();
     }
 
+    /// Follows a forced appearance (`tab_theme::forced_dark`), or Windows' when `None`.
+    pub fn follow_theme(&self, forced: Option<bool>) {
+        self.window.set_theme(crate::tab_theme::window_theme(forced));
+    }
+
     /// The window's Win32 handle.
     pub fn hwnd(&self) -> Option<isize> {
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};

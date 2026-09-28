@@ -1993,6 +1993,33 @@ mod tests {
     }
 
     #[test]
+    fn theme_row_follows_iterm2() {
+        let row = schema::find_global("TabStyleWithAutomaticOption").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "General"));
+        assert_eq!(row.kind, Kind::Enum);
+        assert_eq!(row.default, Some(Value::Integer(4)));
+        assert_eq!(row.label, "Theme:");
+        let choices: Vec<(Value, &str)> = row.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
+        assert_eq!(
+            choices,
+            [
+                (Value::Integer(4), "Regular"),
+                (Value::Integer(5), "Minimal"),
+                (Value::Integer(6), "Compact"),
+                (Value::Integer(0), "Light"),
+                (Value::Integer(1), "Dark"),
+                (Value::Integer(2), "Light (High Contrast)"),
+                (Value::Integer(3), "Dark (High Contrast)"),
+            ]
+        );
+        // The first row of Appearance > General, before the tab bar location and the status bar.
+        let general: Vec<&str> = schema::global().iter().filter(|s| s.tab == "Appearance" && s.section == "General").map(|s| s.key.as_str()).collect();
+        assert_eq!(general.first(), Some(&"TabStyleWithAutomaticOption"));
+        let pos = |k: &str| general.iter().position(|g| *g == k).unwrap();
+        assert!(pos("TabStyleWithAutomaticOption") < pos("TabViewType") && pos("TabViewType") < pos("StatusBarPosition"));
+    }
+
+    #[test]
     fn tab_position_rows_follow_iterm2() {
         let row = schema::find_global("TabViewType").unwrap();
         assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "General"));

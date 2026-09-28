@@ -210,6 +210,8 @@ impl App {
         self.runtime_menu_title();
         self.retitle_suppressed_menu();
         self.sync_checks();
+        // A fixed Theme forces the window's mode; the bar was attached with `Auto`.
+        self.apply_theme();
     }
 
     /// iTerm2's right-click menu, after `extra` items (label, what it does) and a separator,

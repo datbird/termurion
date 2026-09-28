@@ -2451,6 +2451,16 @@ default = false
 help = "Set after the first automatic burial of a tmux gateway; the notification shows once."
 
 [[setting]]
+key = "TabStyleWithAutomaticOption"
+tab = "Appearance"
+section = "General"
+label = "Theme:"
+type = "enum"
+default = 4
+choices = [ { value = 4, label = "Regular" }, { value = 5, label = "Minimal" }, { value = 6, label = "Compact" }, { value = 0, label = "Light" }, { value = 1, label = "Dark" }, { value = 2, label = "Light (High Contrast)" }, { value = 3, label = "Dark (High Contrast)" } ]
+help = "Regular follows Windows' light, dark and high contrast modes. Minimal and Compact put the tab bar in the caption area with the window buttons; Minimal also blends it into the session's background. Light, Dark and the High Contrast themes force that look, and the profile's light or dark colors with it."
+
+[[setting]]
 key = "TabViewType"
 tab = "Appearance"
 section = "General"
