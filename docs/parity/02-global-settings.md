@@ -42,60 +42,60 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Enable generative AI features | EnableAI | Master switch for all AI features (chat, command suggestions, safety checks). | missing |  |
-| Selected AI vendor | AIVendor | Chooses which AI provider (OpenAI, Anthropic, Gemini, DeepSeek, Llama, Apple, etc) backs the built-in AI features. | missing |  |
-| Use recommended AI model | UseRecommendedAIModel | Lets iTerm2 auto-pick a good default model for the chosen vendor instead of a manual model list. | missing |  |
-| Manual AI model configurations | AIManualModelConfigurations | User-entered list of custom model id/endpoint/limit entries when not using the recommended model. | missing |  |
-| AI economy model name | AIEconomyModelName | Names a cheaper model to use for frequent low-stakes background judgements (command safety, idle detection). | missing |  |
-| Ollama regular / economy model | AIOllamaRegularModel / AIOllamaEconomyModel | Explicit model tag picks when the local Ollama vendor is active and models are discovered from the local server. | missing |  |
-| AI API key | AIAPIKey | API key/credential used to authenticate to the selected AI provider. | missing |  |
-| AI model | AIModel | The model identifier sent with each AI request (default gpt-4o-mini). | missing |  |
-| AI token limit | AITokenLimit | Maximum context tokens iTerm2 will send to the model in a request. | missing |  |
-| AI response token limit | AIResponseTokenLimit | Maximum tokens iTerm2 will request back in a model response. | missing |  |
-| AI request timeout | AITimeout | Seconds to wait for an AI API response before giving up (default 1200). | missing |  |
-| AI vector store | AIVectorStore | Selects a hosted vector store id used for retrieval-augmented AI features. | missing |  |
-| Zero data retention | AIZeroDataRetention | Marks the configured provider org as zero-data-retention, changing how conversation state is sent (no server-side stored state). | missing |  |
-| Custom AI headers enabled / Custom AI headers | AICustomHeadersEnabled / AICustomHeaders | Adds user-defined HTTP headers (name/value pairs) to every AI API request. | missing |  |
-| Automatically update available AI models from live online database | AIModelUpdatesEnabled | Periodically downloads an updated AI model catalog from iterm2.com. | missing |  |
-| Use AI to check safety of commands before running them | AISafetyCheck | Runs an AI judgement pass on commands before executing them, to flag risky ones. | missing |  |
-| Offer AI command suggestion in Composer & Auto Composer | AICompletion | Shows AI-generated command completions while typing in the Composer. | missing | Milestone 9l: not stored yet; the composer's Win+Y, its AI button, and any AI-sourced suggestion path all answer "AI features come in milestone 12." regardless of this setting. |
-| AI permission: check terminal state | AIPermissionCheckTerminalState | Ask/Allow/Never policy for whether the AI agent may read the current terminal screen contents. | missing |  |
-| AI permission: run commands | AIPermissionRunCommands | Ask/Allow/Never policy for whether the AI agent may run shell commands on your behalf. | missing |  |
-| AI permission: view history | AIPermissionViewHistory | Ask/Allow/Never policy for whether the AI agent may read scrollback history. | missing |  |
-| AI permission: write to clipboard | AIPermissionWriteToClipboard | Ask/Allow/Never policy for whether the AI agent may write to the system clipboard. | missing |  |
-| AI permission: control terminal | AIPermissionControlTerminal | Ask/Allow/Never policy for whether the AI agent may send keystrokes/input to the terminal. | missing |  |
-| AI permission: view man pages | AIPermissionViewManpages | Ask/Allow/Never policy for whether the AI agent may read local man pages for context. | missing |  |
-| AI permission: write to filesystem | AIPermissionWriteToFilesystem | Ask/Allow/Never policy for whether the AI agent may write files. | missing |  |
-| AI permission: act in web browser | AIPermissionActInWebBrowser | Ask/Allow/Never policy for whether the AI agent may act inside iTerm2's built-in web browser feature. | missing |  |
-| AITerm URL / legacy API / API kind | AITermURL / AITermUseLegacyAPI / AITermAPI | Custom endpoint URL and API-shape selection (Completions/Chat/Responses/Gemini/etc) for a self-hosted or alternate AI backend. | missing |  |
-| Install AI plugin | kPhonyPreferenceKeyInstallAIPlugin (synthetic) | Button that downloads/reveals a helper plugin used for some AI integrations; not a stored preference. | missing |  |
+| Enable generative AI features | EnableAI | Master switch for all AI features (chat, command suggestions, safety checks). | have | Milestone 12a: Settings > General > AI > General, stored as `EnableAI` (iTerm2's secure-default key); an ordinary setting, not an administrator-protected file (ruling 2); never imported from iTerm2; disabled while Advanced > "Allow the use of large language model APIs?" is off. |
+| Selected AI vendor | AIVendor | Chooses which AI provider (OpenAI, Anthropic, Gemini, DeepSeek, Llama, Apple, etc) backs the built-in AI features. | have | Milestone 12a: written by the AI Model popup and the model editor, as iTerm2; the popup offers OpenAI, Anthropic, Gemini, DeepSeek and Ollama; Apple Intelligence is n/a on Windows and never offered (ruling 7). |
+| Use recommended AI model | UseRecommendedAIModel | Lets iTerm2 auto-pick a good default model for the chosen vendor instead of a manual model list. | have | Milestone 12a: written by the AI Model popup and the model editor, as iTerm2 (a provider item sets it, a manual model clears it). |
+| Manual AI model configurations | AIManualModelConfigurations | User-entered list of custom model id/endpoint/limit entries when not using the recommended model. | have | Milestone 12a: Manage AI Models…: the sheet (Add, Delete, Edit, Duplicate, Toggle Default, Economy) and the editor with iTerm2's presets and per-model custom headers; Ollama discovery, Fetch Models and Test Connection come with 12b, shown disabled with "Comes in milestone 12." (ruling 12a-4). |
+| AI economy model name | AIEconomyModelName | Names a cheaper model to use for frequent low-stakes background judgements (command safety, idle detection). | have | Milestone 12a: set by Economy in Manage AI Models…, as iTerm2. |
+| Ollama regular / economy model | AIOllamaRegularModel / AIOllamaEconomyModel | Explicit model tag picks when the local Ollama vendor is active and models are discovered from the local server. | partial | Milestone 12a: stored; choosing Ollama in the AI Model popup writes the vendor without probing; the Regular and Budget pickers come with 12b's discovery (ruling 12a-4). |
+| AI API key | AIAPIKey | API key/credential used to authenticate to the selected AI provider. | have | Milestone 12a: Set API Key… stores one key per vendor in Windows Credential Manager under `TandemAI/<provider>` (ruling 3), never `Tandem/`, so the password manager never lists them; the dialog writes only the fields changed, and an emptied field deletes the key. |
+| AI model | AIModel | The model identifier sent with each AI request (default gpt-4o-mini). | have | Milestone 12a: stored as `AiModel` (iTerm2's persisted key); written by the AI Model popup and the model editor, as iTerm2. |
+| AI token limit | AITokenLimit | Maximum context tokens iTerm2 will send to the model in a request. | have | Milestone 12a: stored as `AiMaxTokens` (iTerm2's persisted key); written by the AI Model popup and the model editor, as iTerm2. |
+| AI response token limit | AIResponseTokenLimit | Maximum tokens iTerm2 will request back in a model response. | have | Milestone 12a: stored as `AiResponseMaxTokens` (iTerm2's persisted key); written by the AI Model popup and the model editor, as iTerm2. |
+| AI request timeout | AITimeout | Seconds to wait for an AI API response before giving up (default 1200). | have | Milestone 12a: the Timeout field in seconds, stored as `AI Timeout` (iTerm2's persisted key); an integer with no range, as iTerm2's; 12b applies it to requests. |
+| AI vector store | AIVectorStore | Selects a hosted vector store id used for retrieval-augmented AI features. | have | Milestone 12a: the model editor's Vector store popup (Disabled or OpenAI), copied into settings when the model becomes the default; an enum, not a store id. |
+| Zero data retention | AIZeroDataRetention | Marks the configured provider org as zero-data-retention, changing how conversation state is sent (no server-side stored state). | have | Milestone 12a: the checkbox in General, stored; 12b sends it. |
+| Custom AI headers enabled / Custom AI headers | AICustomHeadersEnabled / AICustomHeaders | Adds user-defined HTTP headers (name/value pairs) to every AI API request. | have | Milestone 12a: headers are set per manual model in the editor; the legacy global pair is migrated once into each model that has none (also after Import from iTerm2), as iTerm2's migration. |
+| Automatically update available AI models from live online database | AIModelUpdatesEnabled | Periodically downloads an updated AI model catalog from iterm2.com. | partial | Milestone 12a: stored; Tandem ships the bundled catalog only, so the checkbox and Update Now are shown disabled with "Tandem ships its AI model list with each release; online updates are not available." (ruling 6, a documented gap). |
+| Use AI to check safety of commands before running them | AISafetyCheck | Runs an AI judgement pass on commands before executing them, to flag risky ones. | have | Milestone 12a: the checkbox in General, stored as `AI Safety Check` (iTerm2's persisted key); 12c uses it. |
+| Offer AI command suggestion in Composer & Auto Composer | AICompletion | Shows AI-generated command completions while typing in the Composer. | have | Milestone 12a: Settings > General > AI > Features, stored as `AICompletions` (iTerm2's secure-default key, ruling 2), never imported; 12e uses it, and until then the Composer answers "AI features come in milestone 12." once the gate passes. |
+| AI permission: check terminal state | AIPermissionCheckTerminalState | Ask/Allow/Never policy for whether the AI agent may read the current terminal screen contents. | have | Milestone 12a: Settings > General > AI > Features, a popup. |
+| AI permission: run commands | AIPermissionRunCommands | Ask/Allow/Never policy for whether the AI agent may run shell commands on your behalf. | have | Milestone 12a: Settings > General > AI > Features, a popup. |
+| AI permission: view history | AIPermissionViewHistory | Ask/Allow/Never policy for whether the AI agent may read scrollback history. | have | Milestone 12a: Settings > General > AI > Features, the View Contents popup. |
+| AI permission: write to clipboard | AIPermissionWriteToClipboard | Ask/Allow/Never policy for whether the AI agent may write to the system clipboard. | have | Milestone 12a: Settings > General > AI > Features, a popup. |
+| AI permission: control terminal | AIPermissionControlTerminal | Ask/Allow/Never policy for whether the AI agent may send keystrokes/input to the terminal. | have | Milestone 12a: Settings > General > AI > Features, a popup, stored as `AIPermissionTypeForYou` (iTerm2's persisted key). |
+| AI permission: view man pages | AIPermissionViewManpages | Ask/Allow/Never policy for whether the AI agent may read local man pages for context. | have | Milestone 12a: Settings > General > AI > Features, a popup. |
+| AI permission: write to filesystem | AIPermissionWriteToFilesystem | Ask/Allow/Never policy for whether the AI agent may write files. | have | Milestone 12a: Settings > General > AI > Features, a popup. |
+| AI permission: act in web browser | AIPermissionActInWebBrowser | Ask/Allow/Never policy for whether the AI agent may act inside iTerm2's built-in web browser feature. | have | Milestone 12a: Settings > General > AI > Features, a popup; stored only until the milestone 13 web browser (ruling 8). |
+| AITerm URL / legacy API / API kind | AITermURL / AITermUseLegacyAPI / AITermAPI | Custom endpoint URL and API-shape selection (Completions/Chat/Responses/Gemini/etc) for a self-hosted or alternate AI backend. | have | Milestone 12a: stored as `AitermURL`, `AitermUseLegacyAPI`, `AITermAPI` (iTerm2's persisted keys); written by the AI Model popup and the model editor, as iTerm2; the deprecated legacy API flag is set by nothing, as in iTerm2. |
+| Install AI plugin | kPhonyPreferenceKeyInstallAIPlugin (synthetic) | Button that downloads/reveals a helper plugin used for some AI integrations; not a stored preference. | partial | Milestone 12a: replaced by a one-time consent per host that names the provider and host the requests go to (ruling 1), with "Forget Allowed Hosts" in Settings; no helper parity. |
 
 ### AI > Prompts
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Engage AI prompt template | AIPrompt | Template text sent to the model for the "Engage AI" inline command-generation feature. | missing |  |
-| AI Chat prompt template | AIPromptAIChat | Base template for a general AI Chat session. | missing |  |
-| AI Chat (read-only terminal) prompt | AIPromptAIChatReadOnlyTerminal | Template variant used when AI Chat has read-only access to the terminal. | missing |  |
-| AI Chat (read-write terminal) prompt | AIPromptAIChatReadWriteTerminal | Template variant used when AI Chat has read-write access to the terminal. | missing |  |
-| AI Chat (browser) prompt | AIPromptAIChatBrowser | Template variant used when AI Chat can act in the built-in web browser. | missing |  |
-| AI Chat (read-only terminal + browser) prompt | AIPromptAIChatReadOnlyTerminalBrowser | Template variant combining read-only terminal access with browser access. | missing |  |
-| AI Chat (read-write terminal + browser) prompt | AIPromptAIChatReadWriteTerminalBrowser | Template variant combining read-write terminal access with browser access. | missing |  |
-| AI Chat orchestration prompt | AIPromptAIChatOrchestration | Template used when the AI is coordinating multiple sub-tasks/tools. | missing |  |
-| Code review prompt / system prompt | AIPromptCodeReview / AIPromptCodeReviewSystem | User and system prompt templates for the AI code-review feature. | missing |  |
-| Chat list icon prompt | AIPromptChatIcon | Template used to generate a short icon/title label for a chat entry. | missing |  |
+| Engage AI prompt template | AIPrompt | Template text sent to the model for the "Engage AI" inline command-generation feature. | have | Milestone 12a: Settings > General > AI > Prompts: iTerm2's default text, Reset, the missing `\(ai.prompt)` warning and the help. |
+| AI Chat prompt template | AIPromptAIChat | Base template for a general AI Chat session. | have | Milestone 12a: Settings > General > AI > Prompts: iTerm2's default text, Reset and the help. |
+| AI Chat (read-only terminal) prompt | AIPromptAIChatReadOnlyTerminal | Template variant used when AI Chat has read-only access to the terminal. | have | Milestone 12a: Settings > General > AI > Prompts: iTerm2's default text, Reset and the help. |
+| AI Chat (read-write terminal) prompt | AIPromptAIChatReadWriteTerminal | Template variant used when AI Chat has read-write access to the terminal. | have | Milestone 12a: Settings > General > AI > Prompts: iTerm2's default text, Reset and the help. |
+| AI Chat (browser) prompt | AIPromptAIChatBrowser | Template variant used when AI Chat can act in the built-in web browser. | have | Milestone 12a: Settings > General > AI > Prompts: iTerm2's default text, Reset and the help. |
+| AI Chat (read-only terminal + browser) prompt | AIPromptAIChatReadOnlyTerminalBrowser | Template variant combining read-only terminal access with browser access. | have | Milestone 12a: Settings > General > AI > Prompts: iTerm2's default text, Reset and the help. |
+| AI Chat (read-write terminal + browser) prompt | AIPromptAIChatReadWriteTerminalBrowser | Template variant combining read-write terminal access with browser access. | have | Milestone 12a: Settings > General > AI > Prompts: iTerm2's default text, Reset and the help. |
+| AI Chat orchestration prompt | AIPromptAIChatOrchestration | Template used when the AI is coordinating multiple sub-tasks/tools. | have | Milestone 12a: Settings > General > AI > Prompts: iTerm2's default text with "iTerm2" named "Tandem" (ruling 12a-3), Reset and the help. |
+| Code review prompt / system prompt | AIPromptCodeReview / AIPromptCodeReviewSystem | User and system prompt templates for the AI code-review feature. | have | Milestone 12a: the system prompt is edited in Settings > General > AI > Prompts (iTerm2's bundled text with "iTerm2" named "Tandem", ruling 12a-3); the user prompt is stored with its default for Workgroups (milestone 13), not shown, as iTerm2's selector. |
+| Chat list icon prompt | AIPromptChatIcon | Template used to generate a short icon/title label for a chat entry. | have | Milestone 12a: Settings > General > AI > Prompts: iTerm2's default text, Reset and the help. |
 
 
 ### AI > Features
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Hosted Code Interpreter | AIFeatureHostedCodeInterpreter | Per-model toggle enabling the provider's hosted code-execution tool. | missing |  |
-| Hosted File Search | AIFeatureHostedFileSearch | Per-model toggle enabling the provider's hosted file-search/retrieval tool. | missing |  |
-| Hosted Web Search | AIFeatureHostedWebSearch | Per-model toggle enabling the provider's hosted web-search tool. | missing |  |
-| Function Calling | AIFeatureFunctionCalling | Per-model toggle enabling tool/function calling for that model. | missing |  |
-| Streaming Responses | AIFeatureStreamingResponses | Per-model toggle enabling incremental streamed responses instead of waiting for the full reply. | missing |  |
-| Vector store | AIVectorStore | Per-model selection of a hosted vector store id for retrieval. | missing |  |
+| Hosted Code Interpreter | AIFeatureHostedCodeInterpreter | Per-model toggle enabling the provider's hosted code-execution tool. | have | Milestone 12a: a per-model editor capability, copied into settings (as `AIFeatureHostedCodeInterpeter`, iTerm2's misspelled key) when the model becomes the default. |
+| Hosted File Search | AIFeatureHostedFileSearch | Per-model toggle enabling the provider's hosted file-search/retrieval tool. | have | Milestone 12a: a per-model editor capability, copied into settings when the model becomes the default. |
+| Hosted Web Search | AIFeatureHostedWebSearch | Per-model toggle enabling the provider's hosted web-search tool. | have | Milestone 12a: a per-model editor capability, copied into settings when the model becomes the default. |
+| Function Calling | AIFeatureFunctionCalling | Per-model toggle enabling tool/function calling for that model. | have | Milestone 12a: a per-model editor capability, copied into settings when the model becomes the default. |
+| Streaming Responses | AIFeatureStreamingResponses | Per-model toggle enabling incremental streamed responses instead of waiting for the full reply. | have | Milestone 12a: a per-model editor capability, copied into settings when the model becomes the default. |
+| Vector store | AIVectorStore | Per-model selection of a hosted vector store id for retrieval. | have | Milestone 12a: a per-model editor popup (Disabled or OpenAI), copied into settings when the model becomes the default; an enum, not a store id. |
 
 
 ### Software Update
@@ -773,12 +773,12 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | menuTipDelay | menuTipDelay (float, default 1.0) | Time to wait before showing tips in the main menu. | missing |  |
 | revealExportedSettingsAndData | revealExportedSettingsAndData (bool, default YES) | Reveal file created by “Export All Settings and Data” in finder upon completion. | missing |  |
 | dryRunEraseAllSettingsAndData | dryRunEraseAllSettingsAndData (bool, default NO) | Dry-run “Erase All Settings and Data”. | missing |  |
-| generativeAIAllowed | generativeAIAllowed (bool, default YES) | Allow the use of large language model APIs? The purpose of this setting is to make it easy for managed environments to disable the use of LLMs. | missing |  |
+| generativeAIAllowed | generativeAIAllowed (bool, default YES) | Allow the use of large language model APIs? The purpose of this setting is to make it easy for managed environments to disable the use of LLMs. | have | Milestone 12a: Settings > Advanced > General (iTerm2's section); off disables Settings > General > AI and every AI entry point refuses with iTerm2's text. |
 | companionPairingAllowed | companionPairingAllowed (bool, default YES) | Allow pairing a companion iOS device? Off by default while this feature is in development. | missing |  |
 | companionRelayOrigin | companionRelayOrigin (string, default @"https://relay.iterm2.com") | Relay origin for companion iOS device pairing. | missing |  |
 | companionResolverURL | companionResolverURL (string, default @"https://resolver.iterm2.com/shardmap.json") | Shard-map URL for companion iOS device pairing. | missing |  |
-| llmPlatform | llmPlatform (string, default @"OpenAI") | LLM Platform. | missing |  |
-| aiModelCatalogURL | aiModelCatalogURL (string, default @"https://iterm2.com/downloads/ai/manifest.json") | URL to check for updates to the AI model catalog. | missing |  |
+| llmPlatform | llmPlatform (string, default @"OpenAI") | LLM Platform. | partial | Milestone 12a: stored, not editable until the milestone 13 Advanced pane; nothing reads it, in iTerm2 too. |
+| aiModelCatalogURL | aiModelCatalogURL (string, default @"https://iterm2.com/downloads/ai/manifest.json") | URL to check for updates to the AI model catalog. | partial | Milestone 12a: stored and never used: Tandem ships the bundled catalog only (ruling 6); the help says so. |
 
 ### Drawing
 
@@ -859,9 +859,9 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | logForegroundJobAncestryDiagnostics | logForegroundJobAncestryDiagnostics (bool, default NO) | Log a detailed trace when a session’s foreground-job ancestor list unexpectedly shrinks. | missing |  |
 | fakeFullyQualifiedDomainName | fakeFullyQualifiedDomainName (string, default @"") | Override the local hostname used for localhost detection. | missing |  |
 | fakeBootSessionUUID | fakeBootSessionUUID (string, default @"") | Override this machine’s identity used for OSC 7 machineID localhost detection. | missing |  |
-| aiChatVerboseConsoleLogging | aiChatVerboseConsoleLogging (bool, default NO) | Log AI chat traffic to the system console. | missing |  |
-| aiChatRawWireLogging | aiChatRawWireLogging (bool, default NO) | Log raw AI API requests and responses to disk. | missing |  |
-| logAITabTitleCorpus | logAITabTitleCorpus (bool, default NO) | Log AI tab-title generations to a corpus file. | missing |  |
+| aiChatVerboseConsoleLogging | aiChatVerboseConsoleLogging (bool, default NO) | Log AI chat traffic to the system console. | partial | Milestone 12a: stored; the AI chat (12c) uses it. |
+| aiChatRawWireLogging | aiChatRawWireLogging (bool, default NO) | Log raw AI API requests and responses to disk. | partial | Milestone 12a: stored; 12b writes the log, and the help says what the code does, keys replaced by fingerprints (ruling 10). |
+| logAITabTitleCorpus | logAITabTitleCorpus (bool, default NO) | Log AI tab-title generations to a corpus file. | missing | n/a: AI tab titles need Apple Intelligence, which Windows lacks (ruling 7); left out of Tandem's settings (rulings R12ab-1, 12e-4). |
 | alternateSSHIntegrationScript | alternateSSHIntegrationScript (string, default @"") | Alternate SSH integration python script. | missing |  |
 
 ### Session
@@ -881,7 +881,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | showAutomaticProfileSwitchingBanner | showAutomaticProfileSwitchingBanner (bool, default YES) | Show a “Switched to profile” message when Automatic Profile Switching activates. | have | Milestone 6c. |
 | preserveFontSizeOnAutomaticProfileSwitch | preserveFontSizeOnAutomaticProfileSwitch (bool, default YES) | Preserve font zoom level when Automatic Profile Switching changes profiles. | partial | Milestone 6c: saved; every pane shares one font size until per-pane fonts arrive, so a switch never changes it. |
 | autoLockSessionNameOnEdit | autoLockSessionNameOnEdit (bool, default YES) | Auto-lock session name after editing it. | missing |  |
-| aiGeneratedTabTitles | aiGeneratedTabTitles (bool, default NO) | Name tabs after the work on screen, using on-device AI? When enabled, the session variable “aiTitle” holds a short name for the task visible in the session, which you can show by adding the “AI-generated name” title component or using \\(session.aiTitle) in a custom title format. | missing |  |
+| aiGeneratedTabTitles | aiGeneratedTabTitles (bool, default NO) | Name tabs after the work on screen, using on-device AI? When enabled, the session variable “aiTitle” holds a short name for the task visible in the session, which you can show by adding the “AI-generated name” title component or using \\(session.aiTitle) in a custom title format. | missing | n/a: AI tab titles need Apple Intelligence, which Windows lacks (ruling 7); left out of Tandem's settings (rulings R12ab-1, 12e-4). |
 | timeoutForDaemonAttachment | timeoutForDaemonAttachment (float, default 10) | How long to wait when trying to attach to an iTerm daemon at startup when restoring windows (in seconds)? | have | Milestone 7d: how long Tandem waits for tandem-host at launch. |
 | logTimestampsWithPlainText | logTimestampsWithPlainText (bool, default YES) | When logging plain text, include timestamps for each line? | missing |  |
 | composerClearSequence | composerClearSequence (string, default @"0x15 0x0b") | Hex codes to send to clear the command line when entering the composer. | have | Milestone 9l: hex codes sent before revealing the captured prompt text; each byte becomes an optional caret-notation group in the probe regex, matched only within 100 ms of the write, and any write to the pane cancels the probe. |
@@ -956,7 +956,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| unameCommand | unameCommand (string, default @"uname -s") | Command used to set the `uname` variable. | missing |  |
+| unameCommand | unameCommand (string, default @"uname -s") | Command used to set the `uname` variable. | partial | Milestone 12a: stored, not editable until the milestone 13 Advanced pane; 12e's Engage AI sets `uname` from it (ruling 12a-2), and a local session reports "Windows_NT" (ruling 9). |
 | validCharactersInSSHUserNames | validCharactersInSSHUserNames (string, default @"_-+.") | Valid characters in SSH user names Alphanumerics are always valid. | missing |  |
 
 ### Warnings
@@ -1104,10 +1104,10 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | asyncPreconvertMinStringLength | asyncPreconvertMinStringLength (int, default 128) | Minimum string length (in UTF-16 code units) to dispatch for async pre-conversion. | missing |  |
 | asyncPreconvertMaxOutstandingBytes | asyncPreconvertMaxOutstandingBytes (int, default 1048576) | Maximum bytes of outstanding async pre-conversions. | missing |  |
 | logNonASCIIStringLengthHistogram | logNonASCIIStringLengthHistogram (bool, default NO) | Log a histogram of non-ASCII string lengths periodically. | missing |  |
-| aiModernModelPrefixes | aiModernModelPrefixes (string, default @"gpt-") | AI model name substrings that use the modern 'completions' API. | missing |  |
-| aiProxy | aiProxy (string, default @"") | Host and port for proxy for AI requests. | missing |  |
-| ollamaNumCtx | ollamaNumCtx (int, default 0) | Ollama context window size (num_ctx) for native /api/chat requests. | missing |  |
-| ollamaKeepAlive | ollamaKeepAlive (string, default @"30m") | Ollama keep_alive for native /api/chat requests. | missing |  |
+| aiModernModelPrefixes | aiModernModelPrefixes (string, default @"gpt-") | AI model name substrings that use the modern 'completions' API. | partial | Milestone 12a: stored, not editable until the milestone 13 Advanced pane; nothing reads it, in iTerm2 too. |
+| aiProxy | aiProxy (string, default @"") | Host and port for proxy for AI requests. | partial | Milestone 12a: stored, not editable until the milestone 13 Advanced pane; 12b's transport uses it. |
+| ollamaNumCtx | ollamaNumCtx (int, default 0) | Ollama context window size (num_ctx) for native /api/chat requests. | partial | Milestone 12a: stored, not editable until the milestone 13 Advanced pane; 12b's Ollama requests use it. |
+| ollamaKeepAlive | ollamaKeepAlive (string, default @"30m") | Ollama keep_alive for native /api/chat requests. | partial | Milestone 12a: stored, not editable until the milestone 13 Advanced pane; 12b's Ollama requests use it. |
 | addUtilitiesToPATH | addUtilitiesToPATH (bool, default YES) | Add path to iTerm2 utilities to $PATH for new sessions? | missing |  |
 | autoSearch | autoSearch (bool, default NO) | Automatically search for selected text after making a selection? | missing |  |
 | smartLoggingWithAutoComposer | smartLoggingWithAutoComposer (bool, default NO) | Enable more compact logging when using auto composer? This will avoid logging raw data in your prompt and your interactions with it. | partial | Milestone 9l: the setting is stored with its own help text and toggleable in Advanced settings, but has no effect: Tandem has no session logging yet for it to change. |

@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 173 | 122 | 19 |
-| `02-global-settings.md` | 823 | 266 | 72 | 485 |
-| `03-features-and-menus.md` | 643 | 475 | 44 | 124 |
-| Total | 1,780 | 914 | 238 | 628 |
+| `02-global-settings.md` | 823 | 307 | 84 | 432 |
+| `03-features-and-menus.md` | 644 | 477 | 44 | 123 |
+| Total | 1,781 | 957 | 250 | 574 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -201,6 +201,19 @@ milestone 13, which hosts WebView2, flagged to Robert). A per-pane title bar men
 provider items, the Title Function popup's title preview, and a tmux Custom title's prefix are
 documented gaps for milestone 13. Every kept quirk is listed in
 `docs/acceptance/m11c-checklist.md` and ruled on in `docs/superpowers/rulings/m11c-rulings.txt`.
+Milestone 12a opened milestone 12 (AI features) with its settings (02: AI, AI > Prompts, AI >
+Features, and the Advanced AI rows): Settings > General > AI with iTerm2's General, Prompts and
+Features sub-tabs; "Enable generative AI features" and "Offer AI command suggestion" as ordinary
+settings that Import from iTerm2 never brings across; one API key per vendor in Windows Credential
+Manager under `TandemAI/`, which the password manager never lists; the AI Model popup over iTerm2's
+bundled model catalog (never updated online, a documented gap) and Manage AI Models… with iTerm2's
+presets, per-model custom headers and the one-time migration of the legacy global headers; every
+prompt with iTerm2's default text, Reset, the missing-variable warning and the help; the eight
+default chat permissions; and the gate every AI entry point asks first (the administrator's switch,
+Enable, then a one-time consent per host that replaces iTerm2's plugin), wired into the Composer
+and Codecierge, whose AI answers still wait for 12b to 12f. Apple Intelligence and AI tab titles
+are n/a on Windows. Every kept quirk is listed in `docs/acceptance/m12a-checklist.md` and ruled on in
+`docs/superpowers/rulings/m12a-rulings.txt`.
 
 ## Order
 
