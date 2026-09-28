@@ -7,6 +7,10 @@ use base64::Engine;
 
 const ESC: u8 = 0x1b;
 
+/// The most unparsed input a parser keeps (iTerm2's kMaxDataLength, `DP:32`); past it the
+/// parser unhooks and the input is output.
+pub const MAX_HELD: usize = 1024 * 1024;
+
 /// The init line, checked (iTerm2's parseHookSSHConductorParameter plus the base64 decode of
 /// terminalDidHookSSHConductorWithParams).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,45 +92,80 @@ pub enum Osc {
 /// else is NotOsc. The count is the bytes consumed: through the terminator for an OSC, the
 /// garbage already dropped when blocked, 0 for NotOsc.
 pub fn next_osc(bytes: &[u8], skip_garbage: bool) -> (Osc, usize) {
-    enum S {
-        Ground,
-        Esc,
-        Code(Vec<u8>),
-        Payload(u32, Vec<u8>),
-        PayloadEsc(u32, Vec<u8>),
+    let (osc, n, _) = scan_osc(bytes, skip_garbage, Scan::default());
+    (osc, n)
+}
+
+/// Where an OSC reader stopped. Positions count from the start of the bytes it read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ScanState {
+    #[default]
+    Ground,
+    Esc,
+    /// The code's digits start here.
+    Code(usize),
+    /// The code, and where the payload starts.
+    Payload(u32, usize),
+    PayloadEsc(u32, usize),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Scan {
+    state: ScanState,
+    /// The next byte to read.
+    at: usize,
+    /// Where the OSC being read began: blocked input is kept from here.
+    checkpoint: usize,
+}
+
+impl Scan {
+    /// The same point, counted from `k` bytes later (`k` is at most every position in it).
+    fn shifted(self, k: usize) -> Scan {
+        let state = match self.state {
+            ScanState::Code(start) => ScanState::Code(start - k),
+            ScanState::Payload(code, start) => ScanState::Payload(code, start - k),
+            ScanState::PayloadEsc(code, start) => ScanState::PayloadEsc(code, start - k),
+            s => s,
+        };
+        Scan { state, at: self.at - k, checkpoint: self.checkpoint - k }
     }
-    let mut state = S::Ground;
-    // Where the OSC being read began: blocked input is kept from here.
-    let mut checkpoint = 0;
-    let mut i = 0;
+}
+
+/// next_osc continued from `from` (the point a blocked read stopped at, over the same bytes
+/// with more after them), so a long OSC arriving in pieces is read once. Blocked also gives
+/// the point to continue from.
+fn scan_osc(bytes: &[u8], skip_garbage: bool, from: Scan) -> (Osc, usize, Scan) {
+    use ScanState as S;
+    let Scan { mut state, at: mut i, mut checkpoint } = from;
     while i < bytes.len() {
         let c = bytes[i];
         i += 1;
         state = match state {
             S::Ground if c == ESC => S::Esc,
-            S::Esc if c == b']' => S::Code(Vec::new()),
-            S::Code(mut code) if c.is_ascii_digit() => {
-                code.push(c);
-                S::Code(code)
+            S::Esc if c == b']' => S::Code(i),
+            S::Code(start) if c.is_ascii_digit() => S::Code(start),
+            S::Code(start) if c == b';' && number(&bytes[start..i - 1]).is_some() => {
+                S::Payload(number(&bytes[start..i - 1]).unwrap_or_default(), i)
             }
-            S::Code(code) if c == b';' && number(&code).is_some() => S::Payload(number(&code).unwrap_or_default(), Vec::new()),
-            S::Payload(code, payload) if c == ESC => S::PayloadEsc(code, payload),
-            S::Payload(code, mut payload) => {
-                payload.push(c);
-                S::Payload(code, payload)
+            S::Payload(code, start) if c == ESC => S::PayloadEsc(code, start),
+            S::Payload(code, start) => {
+                // Nothing but ESC matters inside a payload.
+                i += bytes[i..].iter().position(|b| *b == ESC).unwrap_or(bytes.len() - i);
+                S::Payload(code, start)
             }
-            S::PayloadEsc(code, payload) if c == b'\\' => {
+            S::PayloadEsc(code, start) if c == b'\\' => {
                 // Unrecognized parameters before the first colon are ignored, and the colon.
+                let payload = &bytes[start..i - 2];
                 let text = match payload.iter().position(|b| *b == b':') {
                     Some(k) => String::from_utf8_lossy(&payload[k + 1..]).into_owned(),
                     None => String::new(),
                 };
-                return (Osc::Osc(code, text), i);
+                return (Osc::Osc(code, text), i, Scan::default());
             }
             S::PayloadEsc(..) => {
                 // ESC then anything but a backslash: another OSC began inside this one.
                 if !skip_garbage {
-                    return (Osc::NotOsc, checkpoint);
+                    return (Osc::NotOsc, checkpoint, Scan::default());
                 }
                 if c == ESC {
                     checkpoint = i - 1;
@@ -140,14 +179,22 @@ pub fn next_osc(bytes: &[u8], skip_garbage: bool) -> (Osc, usize) {
             }
             _ => {
                 if !skip_garbage {
-                    return (Osc::NotOsc, checkpoint);
+                    return (Osc::NotOsc, checkpoint, Scan::default());
                 }
                 checkpoint = i;
                 S::Ground
             }
         };
     }
-    (Osc::Blocked, checkpoint)
+    (Osc::Blocked, checkpoint, Scan { state, at: i, checkpoint })
+}
+
+/// A blocked OSC's point to continue from; anything else starts over.
+fn osc_resume(resume: Resume) -> Scan {
+    match resume {
+        Resume::Osc(scan) => scan,
+        _ => Scan::default(),
+    }
 }
 
 /// An OSC's code: digits only, none is not a code (Swift's Int of the text).
@@ -176,8 +223,20 @@ enum State {
 pub struct Parser {
     dcs_id: String,
     state: State,
-    /// Input not parsed yet: an unfinished init line or OSC.
+    /// Input not parsed yet: an unfinished init line or OSC, at most MAX_HELD bytes.
     held: Vec<u8>,
+    /// How far into `held` the last read already looked, so the next one goes on from there.
+    resume: Resume,
+}
+
+/// Where the scan of `held` stopped.
+#[derive(Clone, Copy, Debug, Default)]
+enum Resume {
+    #[default]
+    Start,
+    /// The init line: this many bytes hold no newline.
+    Line(usize),
+    Osc(Scan),
 }
 
 enum Step {
@@ -187,7 +246,7 @@ enum Step {
 
 impl Parser {
     pub fn new(dcs_id: &str) -> Parser {
-        Parser { dcs_id: dcs_id.to_string(), state: State::Initial, held: Vec::new() }
+        Parser { dcs_id: dcs_id.to_string(), state: State::Initial, held: Vec::new(), resume: Resume::Start }
     }
 
     /// A parser whose init line was already read.
@@ -200,15 +259,23 @@ impl Parser {
     }
 
     pub fn feed(&mut self, bytes: &[u8]) -> Fed {
+        // Grown in place: held input is neither copied nor read again on each read.
         let mut data = std::mem::take(&mut self.held);
         data.extend_from_slice(bytes);
+        // The resume point counts from the start of `data`, so only the first scan uses it.
+        let mut resume = std::mem::take(&mut self.resume);
         let mut fed = Fed::default();
         let mut i = 0;
         loop {
             let rest = &data[i..];
             match self.state.clone() {
                 State::Initial => {
-                    let Some(k) = rest.iter().position(|b| *b == b'\n') else {
+                    let from = match std::mem::take(&mut resume) {
+                        Resume::Line(n) => n,
+                        _ => 0,
+                    };
+                    let Some(k) = rest[from..].iter().position(|b| *b == b'\n').map(|k| from + k) else {
+                        self.resume = Resume::Line(rest.len());
                         break;
                     };
                     // The newline is left for ground, which drops it.
@@ -227,7 +294,7 @@ impl Parser {
                     if rest.is_empty() {
                         break;
                     }
-                    let (osc, n) = next_osc(rest, true);
+                    let (osc, n, scan) = scan_osc(rest, true, osc_resume(std::mem::take(&mut resume)));
                     i += n;
                     let step = match osc {
                         Osc::Osc(134, payload) => self.framer_payload(&payload, &mut fed),
@@ -235,7 +302,10 @@ impl Parser {
                         // Other OSCs are ignored.
                         Osc::Osc(..) => Step::Continue,
                         // Garbage skipping never gives NotOsc.
-                        Osc::Blocked | Osc::NotOsc => break,
+                        Osc::Blocked | Osc::NotOsc => {
+                            self.resume = Resume::Osc(scan.shifted(n));
+                            break;
+                        }
                     };
                     if let Step::Unhook = step {
                         return self.unhook(fed, &data[i..]);
@@ -245,8 +315,8 @@ impl Parser {
                     if rest.is_empty() {
                         break;
                     }
-                    match next_osc(rest, false) {
-                        (Osc::Osc(134 | 135, payload), n) => {
+                    match scan_osc(rest, false, osc_resume(std::mem::take(&mut resume))) {
+                        (Osc::Osc(134 | 135, payload), n, _) => {
                             i += n;
                             match payload.strip_prefix(&format!("end {id} ")) {
                                 Some(tail) => {
@@ -258,14 +328,23 @@ impl Parser {
                                 None => fed.tokens.push(Token::Line(payload)),
                             }
                         }
-                        (Osc::Blocked, _) => break,
+                        (Osc::Blocked, n, scan) => {
+                            self.resume = Resume::Osc(scan.shifted(n));
+                            break;
+                        }
                         // Anything else is output: the bytes from here on.
                         _ => return self.unhook(fed, rest),
                     }
                 }
             }
         }
-        self.held = data[i..].to_vec();
+        data.drain(..i);
+        if data.len() > MAX_HELD {
+            // An init line or OSC that never ends: Tandem gives up on it and shows it, where
+            // iTerm2's DCS parser stops at kMaxDataLength (`DP:441-448`).
+            return self.unhook(fed, &data);
+        }
+        self.held = data;
         fed
     }
 

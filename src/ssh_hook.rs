@@ -42,7 +42,7 @@ impl Hook {
     }
 
     /// Leaves the conductor without an `unhook` (iTerm2's forced unhook): what follows is
-    /// output again.
+    /// output again. The parser's unparsed bytes (a partial init line or OSC) go with it.
     pub fn unhook(&mut self) {
         self.parser = None;
     }
@@ -286,6 +286,77 @@ mod tests {
         let mut h = in_body();
         assert_eq!(h.feed(b"\x1b]135;:caf\xc3"), vec![]);
         assert_eq!(h.feed(b"\xa9\x1b\\"), vec![line("caf\u{e9}")]);
+    }
+
+    /// Feeds `bytes` in chunks of `size` and returns what came out, screen output joined.
+    fn trickle(h: &mut Hook, bytes: &[u8], size: usize) -> Vec<Out> {
+        let mut out = Vec::new();
+        for chunk in bytes.chunks(size) {
+            for o in h.feed(chunk) {
+                match o {
+                    Out::Screen(b) => screen(&mut out, &b),
+                    o => out.push(o),
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn held_input_is_capped() {
+        use crate::conductor_parser::MAX_HELD;
+        let flood = vec![b'a'; MAX_HELD];
+        // An init line that never ends: everything after the start comes back as output.
+        let mut h = hook();
+        assert_eq!(h.feed(START), vec![]);
+        assert_eq!(trickle(&mut h, &flood, 4096), vec![], "up to the cap it waits");
+        assert!(h.active());
+        assert_eq!(h.feed(b"a"), vec![s(&vec![b'a'; MAX_HELD + 1])]);
+        assert!(!h.active());
+        let mut h = hook();
+        assert_eq!(h.feed(b"\x1bP2000p"), vec![]);
+        let out = trickle(&mut h, &[&flood[..], b"a"].concat(), 4095);
+        assert_eq!(out, vec![s(&[&flood[..], b"a"].concat())]);
+        assert!(!h.active());
+        assert_eq!(h.feed(b"\nls"), vec![s(b"\nls")], "the newline after it is output too");
+        // A line that ends inside the read that passes the cap is a line (here a rejected one).
+        let mut h = hook();
+        assert_eq!(h.feed(START), vec![]);
+        assert_eq!(trickle(&mut h, &[&flood[..], b"a\nls"].concat(), MAX_HELD), vec![s(b"\nls")]);
+        // An OSC that never ends, in ground and in a reply.
+        for mut h in [hooked(), in_body()] {
+            let osc = [&b"\x1b]135;:"[..], &flood[..]].concat();
+            let out = trickle(&mut h, &osc, 4096);
+            assert_eq!(out, vec![s(&osc)]);
+            assert!(!h.active());
+            assert_eq!(h.feed(b"$ "), vec![s(b"$ ")]);
+        }
+        // A whole stream bigger than the cap in one read is parsed, not cut.
+        let big = [&b"\x1b]135;:"[..], &flood[..], b"b\x1b\\"].concat();
+        let mut h = in_body();
+        assert_eq!(h.feed(&big), vec![line(&format!("{}b", "a".repeat(MAX_HELD)))]);
+        assert!(h.active());
+    }
+
+    #[test]
+    fn scans_resume_at_every_split() {
+        let stream: &[u8] = b"x\x1bP2000pnone 1 YQ== - Yg==\n\x1b[1mj\x1b]7;:q\x1b\\\x1b]135;:beg\x1b]135;:begin 1\x1b\\\x1b]135;:a\x1b\\\x1b]135;:caf\xc3\xa9\nz\x1b\\\x1b]134;:end 1 0 r\x1b\\zz\x1b[0m\x1b]135;:unhook\x1b\\$ ";
+        let whole = trickle(&mut hook(), stream, stream.len());
+        for k in 0..=stream.len() {
+            let mut h = hook();
+            let mut out = trickle(&mut h, &stream[..k], stream.len().max(1));
+            for o in trickle(&mut h, &stream[k..], stream.len().max(1)) {
+                match o {
+                    Out::Screen(b) => screen(&mut out, &b),
+                    o => out.push(o),
+                }
+            }
+            assert_eq!(out, whole, "split at {k}");
+        }
+        for size in 1..8 {
+            assert_eq!(trickle(&mut hook(), stream, size), whole, "chunks of {size}");
+        }
+        assert_eq!(tokens(&whole).last(), Some(&&Token::Unhook));
     }
 
     /// Feeds a recording in chunks, joining screen output across reads.
