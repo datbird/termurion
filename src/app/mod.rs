@@ -131,6 +131,7 @@ mod shell_version_ui;
 mod prefs_ui;
 mod settings_export_ui;
 mod ai_app;
+mod chat_app;
 mod scripts_app;
 mod script_console_app;
 mod script_deps_app;
@@ -813,6 +814,11 @@ pub struct App {
     ai_discovery: crate::ai_discovery::Cache,
     ai_transport: Arc<dyn crate::ai_transport::Transport>,
     ai_probe: Option<crate::ai_discovery::Ticket>,
+    /// The AI chats (app-wide, never swapped): the chat database, opened on first use, whether
+    /// opening it failed (then it is not tried again), and the broker.
+    chat_db: Option<crate::chat_store::Store>,
+    chat_db_failed: bool,
+    chat_broker: crate::chat_broker::Broker,
     /// Launched scripts' processes by their Script Console entry's id (their key), the
     /// launches waiting for "Enable Python API?" to be answered, and the script whose
     /// failure notification was posted last (a click reveals its entry; a session's alert
@@ -1376,6 +1382,9 @@ pub fn run() {
         ai_discovery,
         ai_transport,
         ai_probe: None,
+        chat_db: None,
+        chat_db_failed: false,
+        chat_broker: crate::chat_broker::Broker::new(),
         script_procs: HashMap::new(),
         script_jobs_left: Vec::new(),
         script_after_enable: Vec::new(),
@@ -4278,6 +4287,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_ai_reveal(event_loop);
         self.ai_discovery_tick();
         let ai_due = self.ai_discovery_due();
+        let chat_due = self.chat_tick();
         self.open_script_dialogs(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
@@ -4302,7 +4312,7 @@ impl ApplicationHandler<UserEvent> for App {
         let tip_due = self.tick_tab_tip();
         let flash_due = self.tick_tab_flash();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)

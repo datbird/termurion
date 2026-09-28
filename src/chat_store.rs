@@ -573,6 +573,12 @@ impl Store {
         tx.commit().map_err(err)
     }
 
+    /// Drops the chat's blobs: a deletion breaks the append-only rounds they describe, so the
+    /// next capture starts again (`ChatListModel.swift:245-264`).
+    pub fn clear_blobs(&mut self, chat: &str) -> Result<(), String> {
+        self.conn.execute("delete from ChatBlob where chatID = ?", [chat]).map(|_| ()).map_err(err)
+    }
+
     /// Stores a blob and answers its seq.
     pub fn add_blob(&mut self, b: &BlobRow) -> Result<i64, String> {
         insert_blob(&self.conn, b).map_err(err)
@@ -857,6 +863,9 @@ mod tests {
         assert_eq!(token, "42");
 
         assert_eq!(store.blobs("a").unwrap().len(), 3);
+        store.clear_blobs("a").unwrap();
+        assert!(store.blobs("a").unwrap().is_empty());
+        assert_eq!(store.blobs("z").unwrap().len(), 1, "another chat's blobs stay");
     }
 
     #[test]
