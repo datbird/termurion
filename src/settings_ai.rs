@@ -9,6 +9,7 @@ use crate::ai_gate;
 use crate::ai_keys::{self, KeyStore, Keys};
 use crate::ai_models::{self as am, default_endpoint, manual_vendor, EditorForm, ManualModel};
 use crate::ai_policy::{self, KeyPolicy};
+use crate::ai_prompts::{self as ap, Prompt};
 use crate::ai_settings::{self as ai, Api, Vendor};
 use crate::globals::Globals;
 use crate::pwm::Secret;
@@ -40,6 +41,10 @@ pub struct State {
     sheet: Option<Sheet>,
     /// The model editor, over the sheet, while it is open.
     editor: Option<Editor>,
+    /// The prompt the Prompts sub-tab edits.
+    prompt: Prompt,
+    /// The prompt help, while it is open: the frame it opened in.
+    help: Option<u64>,
 }
 
 impl State {
@@ -116,6 +121,7 @@ pub const KEYS_TEXT: &str = "Keys are stored securely in the Windows Credential 
 pub const NO_KEY_USED: &str = "No API key is used.";
 pub const SELF_HOSTED: &str = "No API key is sent to a local endpoint. If it requires authentication, use a custom header.";
 const LATER: &str = "Comes in milestone 12.";
+pub const RESET: &str = "Reset";
 
 pub fn key_placeholder(provider: &str) -> String {
     format!("{provider} API key")
@@ -864,6 +870,132 @@ fn editor_modal(ctx: &egui::Context, e: &mut Editor, models: &[ManualModel], cat
     out
 }
 
+/// The Prompts sub-tab (`X:7471-7580`): the cost note, the prompt selector with the
+/// required-variable warning, Reset and "?", and the selected prompt's text, editable while AI
+/// is allowed (`G:3285-3297`). True when a setting changed.
+fn prompts(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
+    let allowed = ai::allowed(g);
+    let mut changed = false;
+    ui.label(ap::COST_NOTE);
+    ui.add_space(4.0);
+    let key = st.prompt.key();
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt("ai-prompt-selector").selected_text(st.prompt.title()).width(300.0).show_ui(ui, |ui| {
+            for (i, group) in ap::SELECTOR.iter().enumerate() {
+                if i > 0 {
+                    ui.separator();
+                }
+                for p in group.iter() {
+                    if ui.selectable_label(st.prompt == *p, p.title()).clicked() {
+                        st.prompt = *p;
+                    }
+                }
+            }
+        });
+        if let Some(w) = ap::warning(st.prompt, &g.string(st.prompt.key())) {
+            let color = ui.visuals().warn_fg_color;
+            let mark = if crate::settings_keys::has_icon_font(ui.ctx()) {
+                egui::RichText::new(crate::scripts::WARNING_GLYPH.to_string()).family(crate::settings_keys::icon_family())
+            } else {
+                egui::RichText::new("!").strong()
+            };
+            ui.label(mark.color(color)).on_hover_text(w);
+        }
+        if ui.add_enabled(allowed, egui::Button::new(RESET)).clicked() {
+            g.set(key, Value::String(ap::default_text(key).unwrap_or_default().to_string()));
+            changed = true;
+        }
+        if ui.button("?").clicked() {
+            st.help = Some(ui.ctx().cumulative_frame_nr());
+        }
+    });
+    // The selector may have changed the prompt this frame.
+    let key = st.prompt.key();
+    let mut text = g.string(key);
+    egui::ScrollArea::vertical().id_salt("ai-prompt-text").max_height(320.0).show(ui, |ui| {
+        let mut edit = |buffer: &mut dyn egui::TextBuffer| egui::TextEdit::multiline(buffer).desired_width(f32::INFINITY).desired_rows(14).show(ui).response.changed();
+        if allowed {
+            if edit(&mut text) {
+                g.set(key, Value::String(text.clone()));
+                changed = true;
+            }
+        } else {
+            edit(&mut text.as_str());
+        }
+    });
+    if let Some(opened) = st.help {
+        if help_modal(ui.ctx(), opened) {
+            st.help = None;
+        }
+    }
+    changed
+}
+
+/// The "?" button's help (`G:4173-4181`): the Markdown as plain text in a scrollable modal
+/// with OK (Return or Escape). True when it closed.
+fn help_modal(ctx: &egui::Context, opened: u64) -> bool {
+    let mut done = false;
+    egui::Modal::new(egui::Id::new("ai-prompt-help")).show(ctx, |ui| {
+        ui.set_width(480.0);
+        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+            ui.add(egui::Label::new(crate::clippings::plain(ap::HELP_MD)).wrap());
+        });
+        ui.add_space(10.0);
+        let (enter, escape) = modal_keys(ui, opened, &[]);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add(egui::Button::new("OK").min_size(egui::vec2(76.0, 24.0))).clicked() || enter || escape {
+                done = true;
+            }
+        });
+    });
+    done
+}
+
+/// One row of the Features sub-tab (`X:7583-7866`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum FeatureRow {
+    Heading(&'static str),
+    Note(&'static str),
+    /// A default chat permission's popup.
+    Permission { key: &'static str, label: &'static str },
+    /// The AI completion checkbox.
+    Completion { key: &'static str, label: &'static str },
+}
+
+/// The Features sub-tab, top to bottom (iTerm2's "Permissons" typo kept).
+pub fn features_layout() -> Vec<FeatureRow> {
+    let mut rows = vec![FeatureRow::Heading("Chat Permissons:"), FeatureRow::Note("These settings define the default permissions for new chats.")];
+    rows.extend(ai::PERMISSIONS.iter().map(|&(key, label)| FeatureRow::Permission { key, label }));
+    rows.push(FeatureRow::Heading("AI Completion:"));
+    rows.push(FeatureRow::Completion { key: ai::AI_COMPLETIONS, label: "Offer AI command suggestion in Composer & Auto Composer" });
+    rows.push(FeatureRow::Note("When enabled, everything you type in the Composer will be shared with your AI provider."));
+    rows
+}
+
+/// The Features sub-tab: every row always enabled, as iTerm2's popups and checkbox have no
+/// enabling rule. True when a setting changed.
+fn features(ui: &mut egui::Ui, g: &mut Globals) -> bool {
+    let mut changed = false;
+    for row in features_layout() {
+        match row {
+            FeatureRow::Heading(text) => {
+                ui.add_space(4.0);
+                ui.strong(text);
+            }
+            FeatureRow::Note(text) => {
+                ui.weak(text);
+            }
+            FeatureRow::Permission { key, .. } => {
+                if let Some(s) = crate::schema::find_global(key) {
+                    changed |= crate::settings_keys::global_control(ui, g, s, true);
+                }
+            }
+            FeatureRow::Completion { key, label } => changed |= bool_box(ui, g, key, label, true),
+        }
+    }
+    changed
+}
+
 /// Settings > General > AI: the heading, the sub-tabs, and the chosen sub-tab. True when a
 /// setting changed.
 pub fn section(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
@@ -881,10 +1013,8 @@ pub fn section(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
     ui.add_space(6.0);
     let changed = match st.sub {
         SubTab::General => general(ui, g, st),
-        SubTab::Prompts | SubTab::Features => {
-            ui.weak(LATER);
-            false
-        }
+        SubTab::Prompts => prompts(ui, g, st),
+        SubTab::Features => features(ui, g),
     };
     ui.add_space(8.0);
     changed
@@ -1126,6 +1256,30 @@ mod tests {
         assert_eq!(requests_text(&g, cat), "Requests go to api.openai.com (OpenAI). You allowed them.");
         g.set(VENDOR, Value::Integer(5));
         assert_eq!(requests_text(&g, cat), crate::ai_gate::NO_ENDPOINT);
+    }
+
+    #[test]
+    fn features_rows_follow_iterm2() {
+        use FeatureRow::*;
+        assert_eq!(
+            features_layout(),
+            [
+                Heading("Chat Permissons:"),
+                Note("These settings define the default permissions for new chats."),
+                Permission { key: "AIPermissionCheckTerminalState", label: "Check Terminal State" },
+                Permission { key: "AIPermissionRunCommands", label: "Run Commands" },
+                Permission { key: "AIPermissionViewHistory", label: "View Contents" },
+                Permission { key: "AIPermissionWriteToClipboard", label: "Write to Clipboard" },
+                Permission { key: "AIPermissionTypeForYou", label: "Control Terminal" },
+                Permission { key: "AIPermissionViewManpages", label: "View Manpages" },
+                Permission { key: "AIPermissionWriteToFilesystem", label: "Write to Filesystem" },
+                Permission { key: "AIPermissionActInWebBrowser", label: "Act in Web Browser" },
+                Heading("AI Completion:"),
+                Completion { key: "AICompletions", label: "Offer AI command suggestion in Composer & Auto Composer" },
+                Note("When enabled, everything you type in the Composer will be shared with your AI provider."),
+            ]
+        );
+        assert_eq!(RESET, "Reset");
     }
 
     #[test]

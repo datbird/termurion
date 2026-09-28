@@ -1816,6 +1816,94 @@ choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow 
 help = "Act in Web Browser\nSet by Settings > General > AI."
 
 [[setting]]
+key = "AI Prompt"
+tab = "General"
+section = "AI"
+label = "Edit > Engage Artifical Intelligence"
+type = "string"
+help = "Edit > Engage Artifical Intelligence\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for AI Chat with no function calling"
+tab = "General"
+section = "AI"
+label = "AI Chat (no function calling)"
+type = "string"
+help = "AI Chat (no function calling)\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for AI Chat with ReadOnlyTerminal"
+tab = "General"
+section = "AI"
+label = "AI Chat + Read-Only Terminal Access"
+type = "string"
+help = "AI Chat + Read-Only Terminal Access\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for AI Chat with ReadWriteTerminal"
+tab = "General"
+section = "AI"
+label = "AI Chat + Full Terminal Access"
+type = "string"
+help = "AI Chat + Full Terminal Access\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for AI Chat with Browser"
+tab = "General"
+section = "AI"
+label = "AI Chat + Browser Access"
+type = "string"
+help = "AI Chat + Browser Access\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for AI Chat with ReadOnlyTerminalBrowser"
+tab = "General"
+section = "AI"
+label = "AI Chat + Read-Only Terminal + Browser Access"
+type = "string"
+help = "AI Chat + Read-Only Terminal + Browser Access\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for AI Chat with ReadWriteTerminalBrowser"
+tab = "General"
+section = "AI"
+label = "AI Chat + Full Terminal + Browser Access"
+type = "string"
+help = "AI Chat + Full Terminal + Browser Access\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for AI Chat Orchestration"
+tab = "General"
+section = "AI"
+label = "AI Chat + Orchestration"
+type = "string"
+help = "AI Chat + Orchestration\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for Code Review"
+tab = "General"
+section = "AI"
+label = "Code Review Prompt"
+type = "string"
+help = "Code Review Prompt\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for Code Review System"
+tab = "General"
+section = "AI"
+label = "Code Review System Prompt"
+type = "string"
+help = "Code Review System Prompt\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
+key = "AI Prompt for Chat Icon"
+tab = "General"
+section = "AI"
+label = "Chat List Icon"
+type = "string"
+help = "Chat List Icon\nEdited in Settings > General > AI > Prompts."
+
+[[setting]]
 key = "llmPlatform"
 tab = "Advanced"
 section = "General"

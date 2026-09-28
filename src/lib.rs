@@ -266,6 +266,7 @@ pub mod ai_policy;
 pub mod ai_models;
 pub mod ai_keys;
 pub mod ai_gate;
+pub mod ai_prompts;
 pub mod settings_ai;
 pub mod secret_field;
 #[cfg(windows)]

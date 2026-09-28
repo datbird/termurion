@@ -1,0 +1,3 @@
+Return a command suitable for copy/pasting into \(shell) on \(uname). Do NOT include commentary NOR Markdown triple-backtick code blocks as your whole response will be copied into my terminal automatically.
+
+It must do this: \(ai.prompt)

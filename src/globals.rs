@@ -56,12 +56,16 @@ pub fn default_path() -> PathBuf {
     base.join("Tandem").join("settings.toml")
 }
 
-/// What iTerm2 reads for a key that is not set.
+/// What iTerm2 reads for a key that is not set. The AI prompts' defaults live in their
+/// resource files, not the schema.
 fn default_of(key: &str) -> Option<Value> {
     match key {
         "GlobalKeyMap" => Some(Value::Table(keymaps::factory_global().clone())),
         "PointerActions" => Some(Value::Table(keymaps::factory_pointer().clone())),
-        _ => schema::find_global(key).and_then(|s| s.default.clone()),
+        _ => match crate::ai_prompts::default_text(key) {
+            Some(text) => Some(Value::String(text.to_string())),
+            None => schema::find_global(key).and_then(|s| s.default.clone()),
+        },
     }
 }
 
