@@ -645,10 +645,13 @@ pub struct App {
     /// The provisioning worker (started on first use), what each submitted job continues
     /// with, the install each job queued behind one needs (dependent id to install id), the
     /// installed-Python probes running off the UI thread, and whether Tandem's uv is installed
-    /// (the runtime menu item's title).
+    /// (the runtime menu item's title). Also the environment each submitted job makes, and the
+    /// requests waiting for an environment already being asked about or built.
     provisioner: Option<crate::script_provision::Provisioner>,
     provision_after: HashMap<u64, script_runtime_ui::After>,
     provision_needs: HashMap<u64, u64>,
+    provision_targets: HashMap<u64, crate::script_provision::Target>,
+    provision_waiting: Vec<script_runtime_ui::Waiting>,
     backend_probes: Vec<script_runtime_ui::Probe>,
     uv_installed: bool,
     /// The Scripts features' alerts waiting to show, and the one showing.
@@ -1087,6 +1090,8 @@ pub fn run() {
         provisioner: None,
         provision_after: HashMap::new(),
         provision_needs: HashMap::new(),
+        provision_targets: HashMap::new(),
+        provision_waiting: Vec::new(),
         backend_probes: Vec::new(),
         uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
         scripts_alerts: VecDeque::new(),
@@ -1393,8 +1398,8 @@ impl App {
     /// The Settings window on one page.
     pub(super) fn open_settings_page(&mut self, event_loop: &ActiveEventLoop, page: crate::settings_ui::Page) {
         self.open_settings(event_loop, Mode::Settings);
-        if let Some(s) = self.settings.as_mut() {
-            s.show_page(page);
+        if self.settings.as_mut().is_some_and(|s| s.show_page(page)) {
+            self.apply_edit(Edit::GlobalsChanged);
         }
     }
 
@@ -1499,6 +1504,11 @@ impl App {
     fn scripts_scan_start(&mut self) {
         let keys = (self.globals.bool("UseCustomScriptsFolder"), self.globals.string("CustomScriptsFolder"));
         let folder = self.scripts_folder();
+        // Reached through a link to a network path: the scanner refuses it (an empty tree,
+        // nothing made, watched or polled), and the app-wide entry says why once.
+        if !crate::scripts::ancestors_stay_local(&folder, &crate::scripts::read_link) {
+            self.script_log_app(crate::scripts::scripts_folder_not_local(&folder));
+        }
         // The old scanner's thread ends on its own; a scan it is in finishes first.
         let mut scanner = crate::scripts_scan::Scanner::start(folder, self.notify.clone());
         // A build under way keeps holding scans (its file events), as with the old scanner.

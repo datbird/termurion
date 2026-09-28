@@ -50,6 +50,27 @@ fn busy_banner<'a>(mut pending: impl Iterator<Item = &'a After>) -> &'static str
     if pending.any(|a| matches!(a, After::Rebuild(_) | After::DepsVersion(_))) { crate::script_launch::REBUILDING } else { rt::SETTING_UP }
 }
 
+/// The environment a consented job makes: a build's target; installing uv (for anything but
+/// Install Python Runtime itself) builds the default shared environment.
+fn job_target(job: &Job, after: &After) -> Option<Target> {
+    match job {
+        Job::Provision { target, .. } => Some(target.clone()),
+        Job::InstallUv { .. } if *after != After::InstallRuntime => Some(Target::Shared(rt::DEFAULT_PYTHON.to_string())),
+        _ => None,
+    }
+}
+
+/// Whether `after` repeats a launch already waiting (`pending`) for the same environment:
+/// the same script launched or rebuilt again before its environment is ready, as
+/// `script_after_enable` drops a repeat by path.
+fn repeats(pending: &[&After], after: &After) -> bool {
+    let path = |a: &After| match a {
+        After::Launch(r) | After::Rebuild(r) => Some(r.path.clone()),
+        _ => None,
+    };
+    path(after).is_some_and(|p| pending.iter().any(|a| path(a).as_ref() == Some(&p)))
+}
+
 /// Tandem's uv folder, `%APPDATA%\Tandem\uv`.
 pub(super) fn uv_dir() -> PathBuf {
     let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
@@ -107,6 +128,15 @@ pub(super) fn find_backend() -> Option<Backend> {
     crate::util_api::python_candidates(&path, &|p: &Path| p.is_file()).iter().find_map(|argv| python_backend(argv))
 }
 
+/// A launch, rebuild or REPL for an environment already being asked about or built: it runs
+/// again once that is built, and goes quietly when it fails or is declined.
+pub(super) struct Waiting {
+    target: Target,
+    requested: String,
+    dependencies: Vec<String>,
+    after: After,
+}
+
 /// An `ensure_environment` waiting for its backend probe: the answer, then what it was asked.
 pub(super) struct Probe {
     answer: std::sync::mpsc::Receiver<Option<Backend>>,
@@ -145,6 +175,17 @@ impl App {
             let line = rt::env_missing_line(&env_name(&target, &after));
             return self.script_log_app(line);
         }
+        // One question and one build per environment (iTerm2's modal alert allows no second
+        // ask): a launch, rebuild or REPL for one already probed, asked about or building
+        // waits for it, and the same script's launch again is dropped. The rest (imports, new
+        // scripts, upgrades) build a folder of their own.
+        let folds = matches!(after, After::Launch(_) | After::Rebuild(_) | After::Repl);
+        if let Some(pending) = self.pending_for(&target).filter(|_| folds) {
+            if !repeats(&pending, &after) {
+                self.provision_waiting.push(Waiting { target, requested: requested.to_string(), dependencies: dependencies.to_vec(), after });
+            }
+            return;
+        }
         // Tandem's uv answers at once; an installed Python is probed off the UI thread.
         let uv = rt::uv_exe(&dir);
         if uv.is_file() {
@@ -157,6 +198,41 @@ impl App {
             notify();
         });
         self.backend_probes.push(Probe { answer, target, requested: requested.to_string(), dependencies: dependencies.to_vec(), after });
+    }
+
+    /// What waits on `target` when it is being probed for, asked about or built (and what
+    /// already waits behind that); None when it is not.
+    fn pending_for(&self, target: &Target) -> Option<Vec<&After>> {
+        let mut pending: Vec<&After> = self.backend_probes.iter().filter(|p| p.target == *target).map(|p| &p.after).collect();
+        let asks = self.scripts_alerts.iter().chain(self.scripts_alert.as_ref().map(|(_, a)| a));
+        for ask in asks {
+            if let Then::Consent(jobs) = &ask.then {
+                pending.extend(jobs.iter().filter(|(j, a)| job_target(j, a).as_ref() == Some(target)).map(|(_, a)| a));
+            }
+        }
+        pending.extend(self.provision_targets.iter().filter(|(_, t)| *t == target).filter_map(|(id, _)| self.provision_after.get(id)));
+        if pending.is_empty() {
+            return None;
+        }
+        pending.extend(self.provision_waiting.iter().filter(|w| w.target == *target).map(|w| &w.after));
+        Some(pending)
+    }
+
+    /// The build of `target` ended, was declined or dropped: what waited on it asks again
+    /// when it is built (finding it ready), else it goes (the build's own alert, or the
+    /// declined question, said why) unless another build of it is still under way.
+    fn release_waiting(&mut self, target: &Target, built: bool) {
+        // Another question or build for it still under way keeps them waiting for that.
+        if !built && self.pending_for(target).is_some() {
+            return;
+        }
+        let (now, rest): (Vec<Waiting>, Vec<Waiting>) = std::mem::take(&mut self.provision_waiting).into_iter().partition(|w| w.target == *target);
+        self.provision_waiting = rest;
+        if built {
+            for w in now {
+                self.ensure_environment(w.target, &w.requested, &w.dependencies, true, w.after);
+            }
+        }
     }
 
     /// Asks before building `target` with `backend` (None: no Python at all).
@@ -205,7 +281,11 @@ impl App {
         let mut install = None;
         for (job, after) in jobs {
             let is_install = matches!(job, Job::InstallUv { .. });
+            let target = job_target(&job, &after);
             let id = provisioner.submit(job);
+            if let Some(t) = target {
+                self.provision_targets.insert(id, t);
+            }
             if is_install {
                 install = Some(id);
             } else if let Some(i) = install {
@@ -245,8 +325,13 @@ impl App {
         }
         for (id, result) in done {
             self.provision_needs.remove(&id);
+            let target = self.provision_targets.remove(&id);
+            let built = result.is_ok();
             if let Some(after) = self.provision_after.remove(&id) {
                 self.provision_done(id, after, result);
+            }
+            if let Some(t) = target {
+                self.release_waiting(&t, built);
             }
         }
         self.provision_busy(busy);
@@ -284,6 +369,9 @@ impl App {
                             for k in needing {
                                 self.provision_needs.remove(&k);
                                 dropped.extend(self.provision_after.remove(&k));
+                                if let Some(t) = self.provision_targets.remove(&k) {
+                                    self.release_waiting(&t, false);
+                                }
                             }
                         }
                         self.runtime_alert(rt::INSTALL_FAILED_HEADING, rt::install_failed(&e));
@@ -341,6 +429,9 @@ impl App {
     /// on it ends, restoring what it replaced (`IM:387-406`). The REPL stays silent
     /// (`AD:3558-3561`).
     pub(super) fn consent_declined(&mut self, jobs: Vec<(Job, After)>) {
+        for t in jobs.iter().filter_map(|(j, a)| job_target(j, a)) {
+            self.release_waiting(&t, false);
+        }
         if jobs.iter().any(|(_, a)| matches!(a, After::Import(_))) {
             self.import_install_done(Err(super::scripts_app::Failure::Canceled));
         }
@@ -369,5 +460,29 @@ mod tests {
         // A Python version change from Manage Dependencies rebuilds too (`DE:713`).
         assert_eq!(busy_banner([After::DepsVersion(PathBuf::from(r"C:\S\t"))].iter()), crate::script_launch::REBUILDING);
         assert_eq!(busy_banner([After::DepsUpgrade { script: PathBuf::from(r"C:\S\t.py"), folder: PathBuf::from(r"C:\S\t") }].iter()), rt::SETTING_UP);
+    }
+
+    #[test]
+    fn one_build_per_environment() {
+        let shared = Target::Shared("3.12".into());
+        let build = Job::Provision { backend: Backend::Uv(PathBuf::from(r"C:\u\bin\uv.exe")), target: shared.clone(), requested: "3.12".into(), dependencies: Vec::new(), name: None };
+        assert_eq!(job_target(&build, &After::Repl), Some(shared));
+        let install = Job::InstallUv { arch: Arch::X64 };
+        assert_eq!(job_target(&install, &After::Repl), Some(Target::Shared(rt::DEFAULT_PYTHON.to_string())));
+        // Install Python Runtime is not a request for an environment.
+        assert_eq!(job_target(&install, &After::InstallRuntime), None);
+        assert_eq!(job_target(&Job::CheckForUpdate { arch: Arch::X64 }, &After::CheckRuntime), None);
+
+        let req = |p: &str| crate::script_launch::Request { path: PathBuf::from(p), args: Vec::new(), explicit: true };
+        let a = After::Launch(req(r"C:\S\a.py"));
+        let rebuild = After::Rebuild(req(r"C:\S\a.py"));
+        // The same script again: a repeat, whether it waits to launch or to rebuild.
+        assert!(repeats(&[&a], &After::Launch(req(r"C:\S\a.py"))));
+        assert!(repeats(&[&After::Repl, &rebuild], &After::Launch(req(r"C:\S\a.py"))));
+        assert!(repeats(&[&a], &After::Rebuild(req(r"C:\S\a.py"))));
+        // Another script on the same shared environment, or the REPL, waits its turn.
+        assert!(!repeats(&[&a], &After::Launch(req(r"C:\S\b.py"))));
+        assert!(!repeats(&[&a], &After::Repl));
+        assert!(!repeats(&[], &a));
     }
 }

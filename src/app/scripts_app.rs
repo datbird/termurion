@@ -933,7 +933,11 @@ fn export_one(path: &Path, autolaunch: bool, desktop: &Path) -> Result<PathBuf, 
 /// (`recoverStaleReplaceBackupsInDirectory:`, `IM:476-525`): a staging folder is removed; a
 /// replaced script's backup is removed when its script is back as a real item (not a link),
 /// else it is restored.
-fn recover_in(folder: &Path) {
+fn recover_in(folder: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>) {
+    // A folder reached through a link to a network path is not touched.
+    if !crate::scripts::ancestors_stay_local(folder, read_link) {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(folder) else { return };
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
@@ -1270,7 +1274,7 @@ impl App {
     /// put right (iTerm2 runs `recoverStaleReplaceBackups` at launch, `IM:476-527`); one
     /// listing and a few renames.
     pub(super) fn recover_imports(&mut self) {
-        recover_in(&self.scripts_folder());
+        recover_in(&self.scripts_folder(), &crate::scripts::read_link);
     }
 
     /// Scripts > Manage > Export (`chooseAndExportScript`, `M:683-714`): the chooser.
@@ -1601,7 +1605,11 @@ mod tests {
         std::fs::write(root.join(sa::backup_name("lost", &uuid)).join("x"), "kept").unwrap();
         // A user's file that only looks like one is left alone.
         std::fs::write(root.join(".replacing-mine"), "mine").unwrap();
-        recover_in(&root);
+        // Reached through a link to a network path: nothing is listed, removed or renamed.
+        let above = root.parent().unwrap().to_path_buf();
+        recover_in(&root, &|p: &Path| (p == above).then(|| PathBuf::from(r"\\h\share")));
+        assert!(root.join(".installing-X").exists() && root.join(sa::backup_name("lost", &uuid)).exists());
+        recover_in(&root, &|_: &Path| None);
         let mut names: Vec<String> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         names.sort();
         assert_eq!(names, [".replacing-mine", "done.py", "lost"]);

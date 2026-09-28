@@ -120,6 +120,14 @@ fn edit_setup_cfg(container: &Path, f: impl FnOnce(Vec<String>) -> Vec<String>) 
     std::fs::write(&path, out).map_err(|e| format!("Could not write {}: {e}", path.display()))
 }
 
+/// The variables the pip command's window gets: Tandem's own with the command's over them
+/// (`open_pending_deps_run`; the session's own variables name no index).
+fn window_env(env: &[(String, String)]) -> Vec<(String, String)> {
+    let inherited = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect();
+    let extra: Vec<String> = env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    crate::session_env::merge(inherited, &extra)
+}
+
 impl App {
     fn deps_alert(&mut self, heading: &str, text: String) {
         self.ask_scripts(Ask { heading: heading.to_string(), text, buttons: vec![crate::api_auth::OK.to_string()], silence: None, then: Then::Nothing });
@@ -183,7 +191,8 @@ impl App {
     }
 
     /// `fetchVersionOfPackage:` for each dependency, by its bare name (`DE:94-117`), on a
-    /// thread of its own.
+    /// thread of its own. A dependency naming no package is never passed to pip: its row
+    /// reads "[Error]".
     fn deps_pip_show(&mut self, container: &Path, deps: Vec<String>, purpose: Purpose) {
         let (tx, notify, container) = (self.script_deps_state.tx.clone(), self.notify.clone(), container.to_path_buf());
         let Some(backend) = pip_backend(&container) else {
@@ -195,9 +204,13 @@ impl App {
         std::thread::spawn(move || {
             let venv = container.join(rt::VENV_DIR);
             for dep in deps {
-                let bare = rt::python_package(&dep).unwrap_or_else(|| dep.clone());
-                let (program, args, env) = sd::pip_command(&backend, &venv, &["show".to_string(), bare]);
-                let result = probe_runner().run(&Step { program, args, env }).map(|out| sd::version_in_pip_show(&out));
+                let result = match sd::package_args("show", &dep) {
+                    Some(show) => {
+                        let (program, args, env) = sd::pip_command(&backend, &venv, &show);
+                        probe_runner().run(&Step { program, args, env }).map(|out| sd::version_in_pip_show(&out))
+                    }
+                    None => Err(rt::refused_dependency_line(&dep)),
+                };
                 let _ = tx.send(Msg::Version { container: container.clone(), dep, purpose, result });
                 notify();
             }
@@ -332,7 +345,12 @@ impl App {
                 let Some((container, true)) = current else { return };
                 let Some(dep) = self.script_deps_state.packages.get(row).map(|r| r.0.clone()) else { return };
                 if remove {
-                    self.deps_run(&container, vec!["uninstall".to_string(), dep.clone()], Pending::Uninstall { container: container.clone(), dep });
+                    // By its package name only (iTerm2 passes the whole dependency,
+                    // `DE:623-638`); a dependency naming none is refused, never passed to pip.
+                    match sd::package_args("uninstall", &dep) {
+                        Some(args) => self.deps_run(&container, args, Pending::Uninstall { container: container.clone(), dep }),
+                        None => self.script_log_app(rt::refused_dependency_line(&dep)),
+                    }
                 } else if self.deps_plain(&dep) {
                     self.deps_run(&container, vec!["install".to_string(), dep.clone(), "--upgrade".to_string()], Pending::Upgrade { container: container.clone(), dep });
                 }
@@ -385,11 +403,15 @@ impl App {
     }
 
     /// `runPip3WithArguments:` (`DE:369-411`): "Run this Command?" with the command (and the
-    /// download's source); OK runs it.
+    /// download's source: pypi.org, or the index the window's variables or pip's
+    /// configuration name); OK runs it.
     fn deps_run(&mut self, container: &Path, pip_args: Vec<String>, pending: Pending) {
         let Some(backend) = pip_backend(container) else { return };
-        let (program, args, env) = sd::pip_command(&backend, &container.join(rt::VENV_DIR), &pip_args);
-        let text = sd::confirm_text(&program, &args);
+        let venv = container.join(rt::VENV_DIR);
+        let (program, args, env) = sd::pip_command(&backend, &venv, &pip_args);
+        let exists = |p: &Path| !crate::scripts::ancestors_stay_local(p, &crate::scripts::read_link) || p.is_file();
+        let index = sd::configured_index(&backend, &venv, &window_env(&env), &exists);
+        let text = sd::confirm_text(&program, &args, index.as_deref());
         let buttons = vec![crate::api_auth::OK.to_string(), crate::api_auth::CANCEL.to_string()];
         // `RUN_ID` is persistent in iTerm2: never silenced.
         let then = Then::RunPip(Box::new(RunPip { program, args, env, pending }));

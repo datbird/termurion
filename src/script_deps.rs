@@ -28,8 +28,12 @@ pub const ADD_TEXT: &str = "What dependency would you like to add?";
 pub const RUN_HEADING: &str = "Run this Command?";
 pub const RUN_ID: &str = "DependencyEditorPip3Confirmation";
 /// What the question adds for a command that downloads (Tandem's: every download names its
-/// source).
-pub const PYPI_NOTE: &str = "\n\nPackages come from pypi.org.";
+/// source): pypi.org, or the index the command's environment names (`configured_index`).
+pub fn source_note(index: Option<&str>) -> String {
+    format!("\n\nPackages come from {}.", index.unwrap_or("pypi.org"))
+}
+/// The source named when a pip configuration file may set the index (its text is not read).
+pub const PIP_CONFIG_INDEX: &str = "the index your pip configuration names";
 /// After a failed install (`DE:440-452`), headed "Installation Failed".
 pub const INSTALL_CHECK_PIP: &str = "Check the pip output for errors.";
 pub const INSTALLATION_FAILED: &str = rt::INSTALL_FAILED_HEADING;
@@ -105,11 +109,67 @@ pub fn command_text(program: &Path, args: &[String]) -> String {
     crate::git_wrapper::program_line(program, args)
 }
 
-/// "Run this Command?"'s text: the command, and for an install where the packages come from.
-pub fn confirm_text(program: &Path, args: &[String]) -> String {
+/// "Run this Command?"'s text: the command, and for an install where the packages come from
+/// (`index`, from `configured_index`; None is pypi.org).
+pub fn confirm_text(program: &Path, args: &[String], index: Option<&str>) -> String {
     let command = command_text(program, args);
     let subcommand = args.iter().position(|a| a == "pip").and_then(|i| args.get(i + 1));
-    if subcommand.map(String::as_str) == Some("install") { format!("{command}{PYPI_NOTE}") } else { command }
+    if subcommand.map(String::as_str) == Some("install") { format!("{command}{}", source_note(index)) } else { command }
+}
+
+/// Where an install through `backend` gets its packages when not from pypi.org alone: the
+/// variables of the window it runs in (`env`) name another index, or for an installed
+/// Python's pip a configuration file may (`exists` looks for one; a network path counts as
+/// one without being probed). The index replacing pypi.org comes first, then any searched
+/// besides it, joined with " or "; None for pypi.org alone. uv reads no configuration file
+/// (`UV_NO_CONFIG`).
+pub fn configured_index(backend: &Backend, venv: &Path, env: &[(String, String)], exists: &dyn Fn(&Path) -> bool) -> Option<String> {
+    let var = |name: &str| env_var(env, name);
+    let (replacing, besides): (&[&str], &[&str]) = match backend {
+        Backend::Uv(_) => (&["UV_DEFAULT_INDEX", "UV_INDEX_URL"], &["UV_INDEX", "UV_EXTRA_INDEX_URL"]),
+        Backend::Python { .. } => (&["PIP_INDEX_URL"], &["PIP_EXTRA_INDEX_URL"]),
+    };
+    let mut first = replacing.iter().find_map(|n| var(n)).map(str::to_string);
+    if first.is_none() && matches!(backend, Backend::Python { .. }) && pip_config_file(venv, env, exists) {
+        first = Some(PIP_CONFIG_INDEX.to_string());
+    }
+    let extra: Vec<&str> = besides.iter().filter_map(|n| var(n)).collect();
+    if first.is_none() && extra.is_empty() {
+        return None;
+    }
+    let mut sources = vec![first.unwrap_or_else(|| "pypi.org".to_string())];
+    sources.extend(extra.into_iter().map(str::to_string));
+    Some(sources.join(" or "))
+}
+
+/// A variable's value in `env`, its name compared ignoring case as Windows does; the last of
+/// a name given twice, and None when empty.
+fn env_var<'a>(env: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    env.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.trim()).filter(|v| !v.is_empty())
+}
+
+/// Whether pip may read a configuration file (pip's `_iter_config_files`):
+/// `PIP_CONFIG_FILE`, `%ProgramData%\pip\pip.ini`, `%APPDATA%\pip\pip.ini` or the
+/// environment's `pip.ini`; `PIP_CONFIG_FILE=nul` (`os.devnull`) turns them all off. A file
+/// on a network path counts without being probed.
+fn pip_config_file(venv: &Path, env: &[(String, String)], exists: &dyn Fn(&Path) -> bool) -> bool {
+    let var = |name: &str| env_var(env, name);
+    let named = var("PIP_CONFIG_FILE");
+    if named.is_some_and(|f| f.eq_ignore_ascii_case("nul")) {
+        return false;
+    }
+    let mut files: Vec<PathBuf> = named.map(PathBuf::from).into_iter().collect();
+    files.extend(["ProgramData", "APPDATA"].iter().filter_map(|d| var(d)).map(|d| Path::new(d).join("pip").join("pip.ini")));
+    files.push(venv.join("pip.ini"));
+    files.iter().any(|f| crate::scripts::is_network_path(&f.to_string_lossy()) || exists(f))
+}
+
+/// The arguments of a pip command about one installed dependency (`show`, `uninstall`): the
+/// subcommand and the dependency's package name. None when it names no package
+/// (`rt::python_package`): `setup.cfg` is document text, and one such as
+/// `--log=\\host\share\x` must never reach pip as an option.
+pub fn package_args(subcommand: &str, dep: &str) -> Option<Vec<String>> {
+    Some(vec![subcommand.to_string(), rt::python_package(dep)?])
 }
 
 /// The dependency re-pinned to the version an upgrade installed, by its bare name
@@ -254,18 +314,87 @@ mod tests {
         assert_eq!(args, s(&["-m", "pip", "install", "x", "--only-binary", ":all:"]));
         assert!(env.is_empty());
 
-        let install = confirm_text(&program, &args);
+        let install = confirm_text(&program, &args, None);
         assert!(install.ends_with("\n\nPackages come from pypi.org."), "{install}");
         assert!(install.starts_with(&command_text(&program, &args)));
         let (program, args, _) = pip_command(&uv, venv, &s(&["uninstall", "x"]));
-        let uninstall = confirm_text(&program, &args);
+        let uninstall = confirm_text(&program, &args, None);
         assert!(!uninstall.contains("pypi.org"), "{uninstall}");
         assert_eq!(uninstall, command_text(&program, &args));
         let (program, args, _) = pip_command(&py, venv, &s(&["show", "x"]));
-        assert!(!confirm_text(&program, &args).contains("pypi.org"));
+        assert!(!confirm_text(&program, &args, None).contains("pypi.org"));
+        assert!(!confirm_text(&program, &args, Some("https://a/simple")).contains("https://a"));
 
         assert_eq!(command_text(Path::new(r"C:\u\bin\uv.exe"), &s(&["pip", "install", "x"])), r"C:\u\bin\uv.exe pip install x");
         assert_eq!(command_text(Path::new(r"C:\My Tools\uv.exe"), &s(&["--python", r"C:\a b\python.exe"])), r#""C:\My Tools\uv.exe" --python "C:\a b\python.exe""#);
+    }
+
+    #[test]
+    fn only_package_names_reach_pip() {
+        assert_eq!(package_args("show", "aiohttp>=3.1"), Some(s(&["show", "aiohttp"])));
+        assert_eq!(package_args("uninstall", "requests"), Some(s(&["uninstall", "requests"])));
+        // Options, direct references and paths from a document's setup.cfg never reach pip.
+        for bad in [r"--log=\\h\s\x", "--cert=x", "-r x", "pkg @ https://h/x.whl", r"\\h\s\x", "", "a  b"] {
+            assert_eq!(package_args("show", bad), None, "{bad}");
+            assert_eq!(package_args("uninstall", bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn confirmation_names_the_configured_index() {
+        let venv = Path::new(r"C:\S\t\.venv");
+        let uv = Backend::Uv(PathBuf::from(r"C:\u\bin\uv.exe"));
+        let py = Backend::Python { argv: s(&["py.exe", "-3.12"]), minor: "3.12".into() };
+        let env = |v: &[(&str, &str)]| -> Vec<(String, String)> { v.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() };
+        let none = |p: &Path| {
+            assert!(!crate::scripts::is_network_path(&p.to_string_lossy()), "probed {}", p.display());
+            false
+        };
+        // Nothing set: pypi.org.
+        assert_eq!(configured_index(&uv, venv, &env(&[("PATH", "x")]), &none), None);
+        assert_eq!(configured_index(&py, venv, &env(&[("APPDATA", r"C:\A"), ("ProgramData", r"C:\P")]), &none), None);
+        // uv's variables, names compared ignoring case; the default index replaces pypi.org.
+        assert_eq!(configured_index(&uv, venv, &env(&[("UV_DEFAULT_INDEX", "https://a/simple")]), &none).as_deref(), Some("https://a/simple"));
+        assert_eq!(configured_index(&uv, venv, &env(&[("uv_index_url", "https://b")]), &none).as_deref(), Some("https://b"));
+        assert_eq!(configured_index(&uv, venv, &env(&[("UV_INDEX_URL", "https://b"), ("UV_DEFAULT_INDEX", "https://a")]), &none).as_deref(), Some("https://a"));
+        assert_eq!(configured_index(&uv, venv, &env(&[("UV_INDEX", "https://c")]), &none).as_deref(), Some("pypi.org or https://c"));
+        assert_eq!(configured_index(&uv, venv, &env(&[("UV_EXTRA_INDEX_URL", "https://d"), ("UV_DEFAULT_INDEX", "https://a")]), &none).as_deref(), Some("https://a or https://d"));
+        // uv reads neither pip's variables nor its files.
+        assert_eq!(configured_index(&uv, venv, &env(&[("PIP_INDEX_URL", "https://p"), ("APPDATA", r"C:\A")]), &|_| true), None);
+        // pip's variables.
+        assert_eq!(configured_index(&py, venv, &env(&[("PIP_INDEX_URL", "https://p")]), &none).as_deref(), Some("https://p"));
+        assert_eq!(configured_index(&py, venv, &env(&[("PIP_EXTRA_INDEX_URL", "https://e")]), &none).as_deref(), Some("pypi.org or https://e"));
+        assert_eq!(configured_index(&py, venv, &env(&[("UV_DEFAULT_INDEX", "https://a")]), &none), None);
+        // pip's configuration files: the user's, the machine's, the environment's, and
+        // PIP_CONFIG_FILE's.
+        let only = |want: &'static str| move |p: &Path| p == Path::new(want);
+        let dirs = env(&[("APPDATA", r"C:\A"), ("ProgramData", r"C:\P")]);
+        for file in [r"C:\A\pip\pip.ini", r"C:\P\pip\pip.ini", r"C:\S\t\.venv\pip.ini"] {
+            assert_eq!(configured_index(&py, venv, &dirs, &only(file)).as_deref(), Some(PIP_CONFIG_INDEX), "{file}");
+        }
+        assert_eq!(configured_index(&py, venv, &env(&[("PIP_CONFIG_FILE", r"C:\c.ini")]), &only(r"C:\c.ini")).as_deref(), Some(PIP_CONFIG_INDEX));
+        assert_eq!(configured_index(&py, venv, &env(&[("PIP_CONFIG_FILE", r"C:\c.ini")]), &none), None);
+        // PIP_CONFIG_FILE=nul (os.devnull) turns every file off.
+        let mut off = dirs.clone();
+        off.push(("PIP_CONFIG_FILE".into(), "nul".into()));
+        assert_eq!(configured_index(&py, venv, &off, &|_| true), None);
+        // A variable wins over the files, as in pip; extras follow.
+        let mut both = dirs.clone();
+        both.push(("PIP_INDEX_URL".into(), "https://p".into()));
+        assert_eq!(configured_index(&py, venv, &both, &|_| true).as_deref(), Some("https://p"));
+        let mut extra = dirs.clone();
+        extra.push(("PIP_EXTRA_INDEX_URL".into(), "https://e".into()));
+        assert_eq!(configured_index(&py, venv, &extra, &only(r"C:\A\pip\pip.ini")).as_deref(), Some("the index your pip configuration names or https://e"));
+        // A file on a network path counts, never probed.
+        assert_eq!(configured_index(&py, venv, &env(&[("PIP_CONFIG_FILE", r"\\h\s\pip.ini")]), &none).as_deref(), Some(PIP_CONFIG_INDEX));
+        assert_eq!(configured_index(&py, venv, &env(&[("APPDATA", r"\\h\home")]), &none).as_deref(), Some(PIP_CONFIG_INDEX));
+
+        // The confirmation names it.
+        let (program, args, _) = pip_command(&py, venv, &s(&["install", "x"]));
+        let text = confirm_text(&program, &args, Some("https://a/simple"));
+        assert!(text.ends_with("\n\nPackages come from https://a/simple."), "{text}");
+        assert!(!text.contains("pypi.org"), "{text}");
+        assert!(confirm_text(&program, &args, None).ends_with("\n\nPackages come from pypi.org."));
     }
 
     #[test]

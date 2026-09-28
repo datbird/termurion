@@ -462,14 +462,15 @@ impl KillJob {
         unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0, code) };
     }
 
-    /// How many processes in the job are still running (0 when that cannot be read).
+    /// How many processes in the job are still running; `u32::MAX` when that cannot be read,
+    /// so a job is never let go (ending what it holds) on a failed query.
     pub(crate) fn active_processes(&self) -> u32 {
         use windows_sys::Win32::System::JobObjects::{JobObjectBasicAccountingInformation, QueryInformationJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION};
         unsafe {
             let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = std::mem::zeroed();
             let size = std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32;
             if QueryInformationJobObject(self.0, JobObjectBasicAccountingInformation, (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(), size, std::ptr::null_mut()) == 0 {
-                return 0;
+                return u32::MAX;
             }
             info.ActiveProcesses
         }
@@ -513,6 +514,24 @@ fn resume_threads(pid: u32) -> u32 {
         }
         CloseHandle(snap);
         resumed
+    }
+}
+
+/// How long a timed-out run is waited for once it is stopped.
+const STOP_WAIT: Duration = Duration::from_secs(5);
+
+/// `poll` until it gives a value or `limit` passes (None then), so a process that does not
+/// end when stopped never holds the worker for ever.
+fn wait_limited<T>(mut poll: impl FnMut() -> Option<T>, limit: Duration) -> Option<T> {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        if let Some(v) = poll() {
+            return Some(v);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -614,8 +633,14 @@ impl Runner for RealRunner {
                 Ok(Some(status)) => break Ok(status),
                 Ok(None) if std::time::Instant::now() >= deadline => {
                     job.terminate();
-                    let _ = child.wait();
-                    break Err(format!("{label} did not finish within {} and was stopped.", duration_text(self.timeout)));
+                    let _ = child.kill();
+                    let within = duration_text(self.timeout);
+                    // Waited for a while only: a process that will not end must not hold the
+                    // worker (and the Scripts folder's scans) for ever.
+                    break match wait_limited(|| child.try_wait().ok().flatten(), STOP_WAIT) {
+                        Some(_) => Err(format!("{label} did not finish within {within} and was stopped.")),
+                        None => Err(format!("{label} did not finish within {within} and could not be stopped.")),
+                    };
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(50)),
                 Err(e) => {
@@ -789,6 +814,29 @@ mod tests {
     use crate::script_runtime::*;
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn stopped_runs_are_waited_for_a_while_only() {
+        // A run that ends soon after it is stopped is waited for.
+        let mut polls = 0;
+        assert_eq!(wait_limited(|| { polls += 1; (polls >= 3).then_some(7) }, Duration::from_secs(5)), Some(7));
+        // One that never ends is given up on once the limit passes.
+        let start = std::time::Instant::now();
+        assert_eq!(wait_limited(|| None::<u32>, Duration::from_millis(200)), None);
+        let took = start.elapsed();
+        assert!(took >= Duration::from_millis(200) && took < Duration::from_secs(2), "{took:?}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unreadable_job_counts_as_active() {
+        // A job whose count cannot be read is kept (dropping it would end what still runs):
+        // here the handle is an event's, not a job's.
+        let event = unsafe { windows_sys::Win32::System::Threading::CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
+        assert!(!event.is_null());
+        let job = KillJob(event);
+        assert_eq!(job.active_processes(), u32::MAX);
+    }
 
     #[test]
     fn system_tools_never_come_from_path() {
