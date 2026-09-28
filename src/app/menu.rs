@@ -344,7 +344,7 @@ impl App {
     fn tab_overflow_picked(&mut self, id: &str) -> bool {
         let Some(i) = id.strip_prefix("tab-overflow:").and_then(|i| i.parse::<usize>().ok()) else { return false };
         if i < self.tabs.len() {
-            self.active = i;
+            self.select_tab(i);
             self.redraw();
         }
         true
@@ -566,7 +566,15 @@ impl App {
                     w.set_maximized(!w.is_maximized());
                 }
             }
-            "toggleFullScreenMode:" => toggle_fullscreen(window.as_deref()),
+            "toggleFullScreenMode:" => {
+                let entering = window.as_ref().is_some_and(|w| w.fullscreen().is_none());
+                toggle_fullscreen(window.as_deref());
+                // Entering full screen flashes the tab bar (`PseudoTerminal+WindowStyle.m:857`).
+                if entering {
+                    self.flash_tab_bar();
+                }
+            }
+            "toggleFullScreenTabBar:" => self.toggle_full_screen_tab_bar(),
             "setWindowStyle:" => {
                 if let Some((id, _)) = crate::frames::MENU.iter().find(|(_, n)| *n == label) {
                     self.apply_window_style(*id, true);
@@ -782,7 +790,7 @@ impl App {
             "nextTab:" | "previousTab:" => {
                 let n = self.tabs.len();
                 if n > 0 {
-                    self.active = if item.selector == "nextTab:" { (self.active + 1) % n } else { (self.active + n - 1) % n };
+                    self.select_tab(if item.selector == "nextTab:" { (self.active + 1) % n } else { (self.active + n - 1) % n });
                 }
             }
             "moveTabLeft:" | "moveTabRight:" if !self.layout_allowed(crate::winmodel::LayoutOp::ReorderTab) => {}

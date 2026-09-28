@@ -1292,6 +1292,29 @@ pub fn cut_out(frame: &mut Frame, r: Rect, line_h: f32) {
     frame.rows.extend(extra);
 }
 
+/// Lays `layer` (a flashing tab bar drawn apart) over what the frame has, at opacity
+/// `alpha`: its boxes go in `popups` (over the sessions' backgrounds and images) with their
+/// alpha scaled, its boxes' own popups and overlay likewise, and its text is blended from
+/// `under` (the sessions' background) toward its color by `alpha`. The sessions' text behind
+/// `area` is cut out while the bar is at least half opaque.
+pub fn lay_over(frame: &mut Frame, layer: Frame, area: Rect, alpha: f32, under: Rgb, line_h: f32) {
+    let alpha = alpha.clamp(0.0, 1.0);
+    if alpha >= 0.5 {
+        cut_out(frame, area, line_h);
+    }
+    let faded = |q: Quad| Quad { color: [q.color[0], q.color[1], q.color[2], q.color[3] * alpha], ..q };
+    frame.popups.extend(layer.quads.into_iter().chain(layer.popups).map(faded));
+    frame.overlay.extend(layer.overlay.into_iter().map(faded));
+    // Pictures keep their full opacity and draw before popups (none in the bar yet).
+    frame.images.extend(layer.images);
+    frame.rows.extend(layer.rows.into_iter().map(|mut row| {
+        for s in &mut row.spans {
+            s.color = blend(under, s.color, alpha);
+        }
+        row
+    }));
+}
+
 /// The completion list at the cursor (Autocomplete, Auto Command Completion): rows with
 /// the chosen one marked, and a footer. `at`: the cell below the cursor's top-left corner.
 pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, footer: Option<&str>, at: (f32, f32), bounds: Rect, cell: (f32, f32)) {
@@ -2176,6 +2199,43 @@ mod broadcast_tests {
 
 #[cfg(test)]
 mod tests {
+
+    /// A flashing bar over the sessions: its boxes over theirs at the bar's alpha, its text
+    /// blended from the sessions' background, their text behind it cut out only while the
+    /// bar is at least half opaque.
+    #[test]
+    fn lay_over_fades_the_bar() {
+        use super::*;
+        let pane = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        let bar = Rect { x: 0.0, y: 0.0, w: 100.0, h: 20.0 };
+        let span = |color: Rgb| Span { text: "a".into(), color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
+        let base = || {
+            let mut f = Frame::default();
+            f.quads.push(Quad { rect: pane, color: rgba(rgb(0, 0, 0), 1.0) });
+            f.rows.push(TextRow { x: 0.0, y: 0.0, spans: vec![span(rgb(9, 9, 9))], clip: pane, scale: 1.0 });
+            f
+        };
+        let layer = || {
+            let mut l = Frame::default();
+            l.quads.push(Quad { rect: bar, color: rgba(rgb(50, 50, 50), 1.0) });
+            l.rows.push(TextRow { x: 4.0, y: 2.0, spans: vec![span(rgb(200, 100, 0))], clip: bar, scale: 1.0 });
+            l
+        };
+        let mut f = base();
+        lay_over(&mut f, layer(), bar, 1.0, rgb(0, 0, 0), 16.0);
+        assert_eq!(f.quads.len(), 1, "the sessions' boxes stay put");
+        assert_eq!(f.popups, vec![Quad { rect: bar, color: rgba(rgb(50, 50, 50), 1.0) }]);
+        assert_eq!(f.rows.len(), 2);
+        assert_eq!(f.rows[0].clip.h, 100.0);
+        assert_eq!(f.rows[0].clip.w, 0.0, "the session text behind the bar is cut out");
+        assert_eq!(f.rows[1].spans[0].color, rgb(200, 100, 0));
+
+        let mut f = base();
+        lay_over(&mut f, layer(), bar, 0.25, rgb(0, 0, 0), 16.0);
+        assert_eq!(f.popups[0].color, rgba(rgb(50, 50, 50), 0.25));
+        assert_eq!(f.rows[0].clip, pane, "a mostly clear bar leaves the text behind it");
+        assert_eq!(f.rows[1].spans[0].color, rgb(50, 25, 0));
+    }
 
     /// The toolbelt: its background by theme, the dividers at alpha 0.25, a close glyph per
     /// wrapper, the titles, the hamburger; the empty label only without tools.

@@ -37,6 +37,8 @@ pub(super) struct WinSlot {
     side_bar_preferred: f32,
     /// A side tab bar's scroll offset in points.
     side_bar_scroll: f32,
+    /// The tab bar's flash in full screen.
+    pub(super) tab_flash: crate::tab_flash::Flash,
     /// A side tab bar's rows as last drawn, one per tab (pixels, window coordinates).
     side_rects: Vec<Rect>,
     /// The pointer is on a side bar's drag handle (the resize pointer shows).
@@ -96,6 +98,7 @@ impl WinSlot {
             tab_selects_on_down: true,
             side_bar_preferred: crate::tab_position::DEFAULT_SIDE_WIDTH,
             side_bar_scroll: 0.0,
+            tab_flash: crate::tab_flash::Flash::new(),
             side_rects: Vec::new(),
             side_handle_hover: false,
             tab_tip: None,
@@ -172,6 +175,7 @@ impl App {
         swap(&mut self.tab_selects_on_down, &mut s.tab_selects_on_down);
         swap(&mut self.side_bar_preferred, &mut s.side_bar_preferred);
         swap(&mut self.side_bar_scroll, &mut s.side_bar_scroll);
+        swap(&mut self.tab_flash, &mut s.tab_flash);
         swap(&mut self.side_rects, &mut s.side_rects);
         swap(&mut self.side_handle_hover, &mut s.side_handle_hover);
         swap(&mut self.tab_tip, &mut s.tab_tip);
@@ -586,6 +590,7 @@ impl WinSlot {
             tab_selects_on_down: true,
             side_bar_preferred: crate::tab_position::DEFAULT_SIDE_WIDTH,
             side_bar_scroll: 0.0,
+            tab_flash: crate::tab_flash::Flash::new(),
             side_rects: Vec::new(),
             side_handle_hover: false,
             tab_tip: None,

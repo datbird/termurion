@@ -74,7 +74,7 @@ impl App {
             self.last_window = Some(w);
         }
         if let Some(i) = self.tabs.iter().position(|t| t.layout.panes().contains(&pane)) {
-            self.active = i;
+            self.select_tab(i);
             self.tabs[i].focused = pane;
         }
         // A minimized window takes no focus until it is restored; a hidden hotkey window shows.

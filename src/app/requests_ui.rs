@@ -181,7 +181,7 @@ impl App {
     /// to the front (Windows may only flash its taskbar button instead).
     fn reveal(&mut self, pane: PaneId) {
         if let Some(t) = self.tabs.iter().position(|t| t.layout.panes().contains(&pane)) {
-            self.active = t;
+            self.select_tab(t);
             self.tabs[t].focused = pane;
         }
         self.bring_forward();

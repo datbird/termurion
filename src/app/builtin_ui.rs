@@ -294,7 +294,7 @@ impl App {
             return;
         }
         if let Some(i) = self.tabs.iter().position(|t| t.layout.panes().contains(&pane)) {
-            self.active = i;
+            self.select_tab(i);
             let t = &mut self.tabs[i];
             // A maximized tab stays maximized, on this session.
             if t.zoomed.is_some() {

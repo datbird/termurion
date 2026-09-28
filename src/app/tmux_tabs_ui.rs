@@ -251,7 +251,7 @@ impl App {
                     if let Some(first) = self.tmux_window_panes(gw, window).first().copied() {
                         if self.enter_pane_window(first) {
                             if let Some(i) = self.tabs.iter().position(|t| t.layout.panes().contains(&first)) {
-                                self.active = i;
+                                self.select_tab(i);
                             }
                         }
                     }

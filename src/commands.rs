@@ -28,7 +28,7 @@ pub const DONE: &[&str] = &[
     "openSplitHorizontallySheet:", "openSplitVerticallySheet:", "saveContents:", "saveDocumentAs:",
     "closeCurrentSession:", "closeTerminalWindow:", "closeCurrentTab:", "copy:", "paste:|Paste",
     "detachTmux:", "forceDetachTmux:", "newTmuxWindow:", "newTmuxTab:", "toggleTmuxPausePane:", "openDashboard:", "bury:",
-    "pasteSelection:", "selectAll:", "clearBuffer:", "clearScrollbackBuffer:", "toggleFullScreenMode:",
+    "pasteSelection:", "selectAll:", "clearBuffer:", "clearScrollbackBuffer:", "toggleFullScreenMode:", "toggleFullScreenTabBar:",
     "biggerFont:", "smallerFont:", "returnToDefaultSize:|Make Text Normal Size",
     "returnToDefaultSize:|Restore Text and Session Size", "maximizePane:",
     "editCurrentSession:", "reset:", "resetCharset:", "terminalStateReset:",
@@ -293,5 +293,11 @@ mod tests {
         for sel in DISABLED_UNDER_UV {
             assert!(items().iter().any(|i| i.selector == *sel), "{sel} is not in the menu");
         }
+    }
+
+    #[test]
+    fn show_tabs_in_fullscreen_works() {
+        let item = items().iter().find(|i| i.selector == "toggleFullScreenTabBar:" && i.label() == "Show Tabs in Fullscreen").unwrap();
+        assert_eq!(status(item), Status::Done);
     }
 }

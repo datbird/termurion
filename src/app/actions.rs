@@ -129,7 +129,7 @@ impl App {
     fn step_tab(&mut self, forward: bool) {
         let n = self.tabs.len();
         if n > 0 {
-            self.active = if forward { (self.active + 1) % n } else { (self.active + n - 1) % n };
+            self.select_tab(if forward { (self.active + 1) % n } else { (self.active + n - 1) % n });
         }
     }
 
@@ -341,7 +341,7 @@ impl App {
             32 | 39 => {
                 if let Some(id) = self.mru.step(b.action == 32) {
                     if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
-                        self.active = i;
+                        self.select_tab(i);
                     }
                     self.mru_mods = Some(self.mods);
                 }

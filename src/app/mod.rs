@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Point, Side};
@@ -23,6 +23,7 @@ use crate::input::{self, Clicks, Wheel};
 use crate::keyroute::{self, Route};
 use crate::keys::{self, Action, AltSide, Key, KeyOptions};
 use crate::keystroke;
+use crate::tab_flash;
 use crate::tab_layout;
 use crate::tab_position::{self, TabPosition};
 use crate::mru::Mru;
@@ -45,6 +46,8 @@ const FONT_PX: f32 = 16.0;
 /// Space between a pane's edge and its text, and the divider width, in pixels at 100%.
 const PAD: f32 = 4.0;
 const GAP: f32 = 1.0;
+/// How often a fading tab bar draws while it fades (60 frames a second).
+const FLASH_FRAME: Duration = Duration::from_millis(16);
 /// How far below the pointer a tab tooltip starts, in points (the arrow pointer's height).
 const TIP_POINTER_PT: f32 = 20.0;
 /// Lines scrolled per wheel notch.
@@ -599,6 +602,8 @@ pub struct App {
     side_bar_preferred: f32,
     /// A side tab bar's scroll offset in points (`PSM _scrollOffset` on the y axis).
     side_bar_scroll: f32,
+    /// The tab bar's flash in full screen (`tab_flash`).
+    tab_flash: crate::tab_flash::Flash,
     /// A side tab bar's rows as last drawn (`scene::tab_bar_vertical`), one per tab in pixels,
     /// window coordinates; a row outside the bar is zero-size.
     side_rects: Vec<Rect>,
@@ -1198,6 +1203,7 @@ pub fn run() {
         tab_selects_on_down,
         side_bar_preferred,
         side_bar_scroll: 0.0,
+        tab_flash: crate::tab_flash::Flash::new(),
         side_rects: Vec::new(),
         side_handle_hover: false,
         tab_tip: None,
@@ -1335,15 +1341,108 @@ impl App {
         tab_position::from_value(self.globals.int("TabViewType"))
     }
 
-    /// The tab bar shows (`tab_position::bar_visible`): in full screen only with Show tab bar
-    /// in fullscreen, then always with `HideTab` off, else with more than one tab. The one
-    /// place that decides it.
+    /// The tab bar shows (`tab_position::bar_visible`): while it flashes; in full screen only
+    /// with Show tab bar in fullscreen; then always with `HideTab` off, else with more than
+    /// one tab. The one place that decides it.
     pub(super) fn tab_bar_visible(&self) -> bool {
-        let full_screen = self.gpu.as_ref().is_some_and(|g| g.window.fullscreen().is_some());
-        // Task 4 adds `ShowFullScreenTabBar` (default on) and the flash.
-        let (show_in_full_screen, flashing) = (true, false);
+        self.bar_visible_with(self.tab_flash.flashing())
+    }
+
+    /// The tab bar takes room from the sessions: it shows, not only by flashing (a flashing
+    /// bar lies over the sessions, `PT windowDecorationSize`, `PT:13214-13215`).
+    fn tab_bar_takes_room(&self) -> bool {
+        self.bar_visible_with(false)
+    }
+
+    fn bar_visible_with(&self, flashing: bool) -> bool {
         let always = tab_position::always_visible(self.globals.bool("HideTab"));
-        tab_position::bar_visible(full_screen, show_in_full_screen, flashing, always, self.tabs.len())
+        tab_position::bar_visible(self.full_screen(), self.globals.bool("ShowFullScreenTabBar"), flashing, always, self.tabs.len())
+    }
+
+    /// The window is full screen (Toggle Full Screen: borderless).
+    fn full_screen(&self) -> bool {
+        self.gpu.as_ref().is_some_and(|g| g.window.fullscreen().is_some())
+    }
+
+    /// A flash may start in this window (`tab_flash::eligible`).
+    fn tab_flash_eligible(&self) -> bool {
+        tab_flash::eligible(self.full_screen(), self.globals.bool("ShowFullScreenTabBar"), self.globals.bool("FlashTabBarInFullscreen"), self.find_cursor_until.is_some())
+    }
+
+    /// `TabAutoShowHoldTime` and `TabFlashAnimationDuration`, each 0 to 60 seconds.
+    fn tab_flash_times(&self) -> (Duration, Duration) {
+        let secs = |key: &str, default: f64| Duration::from_secs_f64(self.globals.number(key).unwrap_or(default).clamp(0.0, 60.0));
+        (secs("TabAutoShowHoldTime", 1.0), secs("TabFlashAnimationDuration", 0.25))
+    }
+
+    /// Flashes the tab bar (`PT` `[tabBarControl setFlashing:YES]`): a tab switch, a change in
+    /// the number of tabs, entering full screen. Nothing happens unless the window may flash.
+    pub(super) fn flash_tab_bar(&mut self) {
+        let (hold, fade) = self.tab_flash_times();
+        let eligible = self.tab_flash_eligible();
+        let was = self.tab_flash.state();
+        self.tab_flash.set_flashing(true, eligible, Instant::now(), hold, fade);
+        if was != self.tab_flash.state() || self.tab_flash.flashing() {
+            self.redraw();
+        }
+    }
+
+    /// Stops the flash (`setFlashing:NO`): a hold fades out, a fade ends at once.
+    fn stop_tab_flash(&mut self) {
+        let (hold, fade) = self.tab_flash_times();
+        let was = self.tab_flash.state();
+        self.tab_flash.set_flashing(false, true, Instant::now(), hold, fade);
+        if was != self.tab_flash.state() {
+            self.redraw();
+        }
+    }
+
+    /// Moves every window's flash along: in this window a flash it may no longer show fades
+    /// out (`TBV updateFlashing`); a window whose flash changed, or is fading, draws. Answers
+    /// when to look again.
+    fn tick_tab_flash(&mut self) -> Option<Instant> {
+        if matches!(self.tab_flash.state(), tab_flash::State::Holding | tab_flash::State::Extending) && !self.tab_flash_eligible() {
+            self.stop_tab_flash();
+        }
+        let now = Instant::now();
+        if tick_flash(&mut self.tab_flash, now) {
+            self.redraw();
+        }
+        let mut wake = flash_wake(&self.tab_flash, now);
+        for (_, s) in self.windows.parked_mut() {
+            if tick_flash(&mut s.tab_flash, now) {
+                if let Some(g) = &s.gpu {
+                    g.window.request_redraw();
+                }
+            }
+            wake = wake.into_iter().chain(flash_wake(&s.tab_flash, now)).min();
+        }
+        wake
+    }
+
+    /// Makes tab `i` the selected tab, as a click, a key or a command does: the bar flashes in
+    /// full screen and brings the tab into view (`PT tabView:didSelectTabViewItem:`).
+    pub(super) fn select_tab(&mut self, i: usize) {
+        if i >= self.tabs.len() {
+            return;
+        }
+        let changed = i != self.active;
+        self.active = i;
+        if changed {
+            self.flash_tab_bar();
+        }
+        self.scroll_active_tab_into_view();
+    }
+
+    /// View > Show Tabs in Fullscreen (`AD toggleFullScreenTabBar:`): flips
+    /// `ShowFullScreenTabBar`, saves it, and every window lays out again.
+    pub(super) fn toggle_full_screen_tab_bar(&mut self) {
+        let on = !self.globals.bool("ShowFullScreenTabBar");
+        self.globals.set("ShowFullScreenTabBar", toml::Value::Boolean(on));
+        self.save_globals();
+        self.relayout_changed_windows();
+        self.redraw_all();
+        self.sync_checks();
     }
 
     /// A horizontal tab bar's height in pixels (`DefaultTabBarHeight` points), whether or not
@@ -1379,7 +1478,12 @@ impl App {
             let position = self.tab_position();
             (position, if tab_position::vertical(position) { self.side_bar_width() } else { self.tab_height() })
         });
-        tab_position::window_split(room, belt, bar)
+        let (rect, sessions, belt_rect) = tab_position::window_split(room, belt, bar);
+        if bar.is_some() && !self.tab_bar_takes_room() {
+            // A flashing bar lies over the sessions: they keep the room they had.
+            return (rect, tab_position::window_split(room, belt, None).1, belt_rect);
+        }
+        (rect, sessions, belt_rect)
     }
 
     /// The tab bar's rect in pixels, window coordinates; None while it hides.
@@ -1512,15 +1616,27 @@ impl App {
         self.tab_scroll = tab_layout::scroll_into_view(self.tab_scroll, r.x, r.w, self.tab_viewport(), self.tab_bar.content);
     }
 
-    /// At each layout: a newly selected tab, or a tab added or closed, is brought into view
-    /// again (`PSM tabView:didSelectTabViewItem:`, `tabViewDidChangeNumberOfTabViewItems:`),
-    /// and the offset stays within the tabs.
-    fn follow_active_tab(&mut self) {
+    /// Every frame, shown bar or not: a newly selected tab, or a tab added or closed, is to be
+    /// brought into view (`PSM tabView:didSelectTabViewItem:`,
+    /// `tabViewDidChangeNumberOfTabViewItems:`), and a tab added or closed flashes the bar in
+    /// full screen (`TabAutoShowHoldTime`'s help: "when the number of tabs changes or you
+    /// switch tabs"; a switch flashes in `select_tab`). A window's first frame is no change.
+    fn note_tab_changes(&mut self) {
         let seen = self.tabs.get(self.active).map(|t| (t.id, self.tabs.len()));
-        if seen != self.tab_seen {
-            self.tab_seen = seen;
-            self.tab_keep_selected = true;
+        if seen == self.tab_seen {
+            return;
         }
+        let count_changed = self.tab_seen.zip(seen).is_some_and(|((_, was), (_, now))| was != now);
+        self.tab_seen = seen;
+        self.tab_keep_selected = true;
+        if count_changed {
+            self.flash_tab_bar();
+        }
+    }
+
+    /// At each layout: the selected tab is brought into view again while it is kept there
+    /// (`note_tab_changes`), and the offset stays within the tabs.
+    fn follow_active_tab(&mut self) {
         // A tab closed or moved under a held press: the press goes, so its release (or the
         // held close button drawn) never lands on another tab.
         if self.tab_press_moved() {
@@ -1636,7 +1752,7 @@ impl App {
                 self.tab_press = Some((hit, clicks, alt, id));
                 if let Hit::Tab(i) = hit {
                     if tab_layout::press_selects(self.tab_selects_on_down, alt, clicks) {
-                        self.active = i;
+                        self.select_tab(i);
                     }
                 }
                 self.redraw();
@@ -1693,9 +1809,9 @@ impl App {
         let n = self.tabs.len();
         match tab_layout::release(Some(down), up, clicks, self.globals.bool("DoubleClickTabToEdit"), self.globals.bool("TabCloseButtonsAlwaysVisible")) {
             Release::Close(i) => self.close_tab_at(i, event_loop),
-            Release::Select(i) if live(i, n) => self.active = i,
+            Release::Select(i) if live(i, n) => self.select_tab(i),
             Release::EditTitle(i) if live(i, n) => {
-                self.active = i;
+                self.select_tab(i);
                 self.open_title_prompt(event_loop, true);
             }
             // iTerm2's New Tab (`PT tabViewDoubleClickTabBar:`), a tmux tab when tmux makes it.
@@ -2711,9 +2827,9 @@ impl App {
                     }
                 }
             }
-            Action::NextTab if n > 0 => self.active = (self.active + 1) % n,
-            Action::PrevTab if n > 0 => self.active = (self.active + n - 1) % n,
-            Action::SelectTab(i) if i < n => self.active = i,
+            Action::NextTab if n > 0 => self.select_tab((self.active + 1) % n),
+            Action::PrevTab if n > 0 => self.select_tab((self.active + n - 1) % n),
+            Action::SelectTab(i) if i < n => self.select_tab(i),
             Action::Copy => {
                 if let Some(id) = self.tabs.get(self.active).map(|t| t.focused) {
                     self.copy_selection(id);
@@ -2914,7 +3030,7 @@ impl App {
             Route::SelectTab(d) => {
                 let i = if d == 9 { self.tabs.len().saturating_sub(1) } else { d as usize - 1 };
                 if i < self.tabs.len() {
-                    self.active = i;
+                    self.select_tab(i);
                 }
             }
             Route::Binding(b) => self.run_key_action(&b, fallback, chord, event_loop),
@@ -3347,6 +3463,11 @@ impl App {
         let cell = self.cell();
         let palette_bg = self.panes.values().next().map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
         let mut frame = Frame { clear: rgba(palette_bg, 1.0), ..Default::default() };
+        self.note_tab_changes();
+        // A flashing bar is drawn apart, then laid over the sessions at its alpha.
+        let flash_over = self.tab_flash.flashing() && !self.tab_bar_takes_room();
+        let mut bar_layer = Frame::default();
+        let bar_frame = if flash_over { &mut bar_layer } else { &mut frame };
         if let Some(area) = self.horizontal_bar_rect() {
             let w = area.w;
             let mut looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
@@ -3361,7 +3482,7 @@ impl App {
             let scrolled = (self.tab_scroll > 0.0).then(|| self.layout_tab_bar(&looks, w, self.tab_scroll));
             let scale = self.scale();
             let font_px = self.gpu.as_ref().map_or(cell.1, |g| g.renderer.font_px()).max(1.0);
-            scene::tab_bar(&mut frame, &looks, self.active, scrolled.as_ref().unwrap_or(&self.tab_bar), area, scale, scale / font_px, cell.1, self.focused && self.app_active, matches!(self.tab_press, Some((tab_layout::Hit::Overflow, _, _, _))));
+            scene::tab_bar(bar_frame, &looks, self.active, scrolled.as_ref().unwrap_or(&self.tab_bar), area, scale, scale / font_px, cell.1, self.focused && self.app_active, matches!(self.tab_press, Some((tab_layout::Hit::Overflow, _, _, _))));
             self.side_rects.clear();
         } else if let Some((area, row)) = self.side_rows() {
             let looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
@@ -3369,7 +3490,7 @@ impl App {
             self.tab_scroll = 0.0;
             self.follow_active_tab();
             let scroll = self.side_bar_scroll * self.scale();
-            self.side_rects = scene::tab_bar_vertical(&mut frame, &looks, self.active, area, cell, row, scroll);
+            self.side_rects = scene::tab_bar_vertical(bar_frame, &looks, self.active, area, cell, row, scroll);
         } else {
             self.tab_bar = tab_layout::Bar::default();
             self.tab_scroll = 0.0;
@@ -3469,6 +3590,9 @@ impl App {
                 self.find_bar_rect = frame.quads.last().map(|q| q.rect);
                 self.find_mode_rect = Some(mode_rect);
             }
+        }
+        if let Some(r) = self.tab_bar_rect().filter(|_| flash_over) {
+            scene::lay_over(&mut frame, bar_layer, r, self.tab_flash.alpha(Instant::now()), palette_bg, cell.1);
         }
         self.draw_toolbelt(&mut frame, cell);
         self.draw_status_bars(&mut frame, cell);
@@ -3834,8 +3958,9 @@ impl ApplicationHandler<UserEvent> for App {
             self.tmux_events(gw, events, event_loop);
         }
         let tip_due = self.tick_tab_tip();
+        let flash_due = self.tick_tab_flash();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, tip_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, tip_due, flash_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -4028,6 +4153,13 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     // And the tab tooltip goes, as a macOS tooltip does when the app deactivates.
                     self.hide_tab_tip();
+                    // And the tab bar's flash stops (`PT windowDidResignKey:`, `PT:5470-5471`):
+                    // it fades, and in full screen a second stop ends it at once (`PT:5484`).
+                    self.stop_tab_flash();
+                    self.tab_flash.set_win_held(false, Instant::now());
+                    if self.full_screen() {
+                        self.stop_tab_flash();
+                    }
                     self.belt_keys.clear();
                     self.replay_keys.clear();
                     self.composer_keys.clear();
@@ -4070,6 +4202,12 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::ModifiersChanged(m) => {
                 let s = m.state();
                 self.mods = Mods { shift: s.shift_key(), alt: s.alt_key(), ctrl: s.control_key(), cmd: s.super_key() };
+                // A held Win key keeps a flashing tab bar up (`PT flagsChanged:`, `PT:13278`).
+                let was = self.tab_flash.state();
+                self.tab_flash.set_win_held(s.super_key(), Instant::now());
+                if was != self.tab_flash.state() {
+                    self.redraw();
+                }
                 self.update_hover();
                 if s.alt_key() {
                     self.alt_side = if m.ralt_state() == ModifiersKeyState::Pressed { AltSide::Right } else { AltSide::Left };
@@ -4193,6 +4331,23 @@ enum AddTab {
     Default,
     /// A tab with the current session's profile (`AddTabButtonUsesCurrentProfile`).
     CurrentProfile,
+}
+
+/// Moves a window's flash along to `now`; true when the window should draw (its flash
+/// changed state or is fading).
+fn tick_flash(flash: &mut tab_flash::Flash, now: Instant) -> bool {
+    let was = flash.state();
+    flash.tick(now);
+    flash.state() != was || flash.state() == tab_flash::State::FadingOut
+}
+
+/// When a window's flash next needs a look: its next change, and the next frame while it fades.
+fn flash_wake(flash: &tab_flash::Flash, now: Instant) -> Option<Instant> {
+    let next = flash.next_change();
+    if flash.state() == tab_flash::State::FadingOut {
+        return next.map(|t| t.min(now + FLASH_FRAME));
+    }
+    next
 }
 
 fn add_tab_choice(tmux_client: bool, use_current: bool) -> AddTab {

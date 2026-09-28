@@ -23,6 +23,7 @@ pub mod semantic;
 pub mod synthetic;
 pub mod tabstatus;
 pub mod tab_layout;
+pub mod tab_flash;
 pub mod tab_groups;
 pub mod tab_position;
 pub mod status_tool;

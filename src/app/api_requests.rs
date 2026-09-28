@@ -319,7 +319,7 @@ impl App {
             if let Some(tab) = plan.tab {
                 if window.is_some_and(|w| self.enter(w)) {
                     if let Some(i) = self.tabs.iter().position(|t| t.id == tab) {
-                        self.active = i;
+                        self.select_tab(i);
                         self.relayout();
                     }
                 }
@@ -782,6 +782,10 @@ impl App {
                         let Some(on) = api_props::as_bool(&value) else { return Status::InvalidValue };
                         if g.window.fullscreen().is_some() != on {
                             super::menu::toggle_fullscreen(Some(&*g.window));
+                            // Entering full screen flashes the tab bar (`windowDidEnterFullScreen`).
+                            if on {
+                                self.flash_tab_bar();
+                            }
                         }
                         Status::Ok
                     }
