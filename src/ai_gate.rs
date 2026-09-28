@@ -310,4 +310,17 @@ mod tests {
         let grant_elsewhere = Alert { then: Then::Grant("h".into()), ..other };
         assert!(!is_gate(&grant_elsewhere));
     }
+
+    /// Milestone 13b's rule for consent questions: closing one with the title bar X or Alt+F4
+    /// refuses it. The AI alert window answers a close with `close_index`, which must land on
+    /// Cancel, never on Allow (the first button, which grants).
+    #[cfg(windows)]
+    #[test]
+    fn closing_the_consent_refuses_it() {
+        let a = alert(&needs("OpenAI", "api.openai.com")).expect("the consent alert");
+        assert!(matches!(a.then, Then::Grant(_)));
+        let i = crate::prompt_ui::close_index(&a.buttons);
+        assert_ne!(i, 0, "the first button grants");
+        assert_eq!(a.buttons[i], CANCEL);
+    }
 }
