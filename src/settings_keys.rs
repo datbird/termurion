@@ -844,7 +844,7 @@ pub fn custom_scripts_folder_row(ui: &mut egui::Ui, g: &mut Globals, home: &std:
 }
 
 /// A pane that shows only the global settings the schema has for it so far, by section
-/// (General and Advanced; the rest of each comes in milestone 13).
+/// (General and Appearance).
 pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> bool {
     let mut changed = false;
     let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_default();
@@ -875,7 +875,6 @@ pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> bool {
             }
             ui.add_space(8.0);
         }
-        ui.weak("The rest of this pane comes in milestone 13.");
     });
     changed
 }

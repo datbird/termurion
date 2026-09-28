@@ -106,6 +106,8 @@ pub struct SettingsWindow {
     /// The registered session title providers as (display name, unique id), for the Title
     /// Function popup; the app sets them when the window opens and when they change.
     pub title_providers: Vec<(String, String)>,
+    /// Settings > Advanced: the search, the non-default filter and the field being edited.
+    advanced: crate::settings_advanced_pane::AdvancedState,
 }
 
 impl SettingsWindow {
@@ -184,6 +186,7 @@ impl SettingsWindow {
             tmux_session: false,
             open_editor: None,
             title_providers: Vec::new(),
+            advanced: Default::default(),
         })
     }
 
@@ -265,6 +268,7 @@ impl SettingsWindow {
         let configure_status_bar = &mut self.configure_status_bar;
         let tmux_session = self.tmux_session;
         let title_providers = &self.title_providers;
+        let advanced = &mut self.advanced;
         let hotkey_prefs: Vec<(String, crate::hotkey::Prefs)> = store.profiles.iter().map(|p| (p.guid(), crate::hotkey::Prefs::from_profile(p))).collect();
         let rule_owners: Vec<crate::aps::Candidate> = store
             .profiles
@@ -298,7 +302,7 @@ impl SettingsWindow {
                                 c
                             }
                             Page::General => settings_keys::schema_page(ui, globals, "General"),
-                            Page::Advanced => settings_keys::schema_page(ui, globals, "Advanced"),
+                            Page::Advanced => crate::settings_advanced_pane::page(ui, globals, advanced),
                             Page::Appearance => settings_keys::schema_page(ui, globals, "Appearance"),
                             Page::Arrangements => crate::settings_arrangements::page(ui, globals, &profile_tables, arr),
                             Page::Shortcuts => match crate::settings_shortcuts::page(ui, globals, snippets, shortcuts, &profiles) {
