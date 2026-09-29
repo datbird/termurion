@@ -811,8 +811,8 @@ impl App {
         self.chat_window_refresh();
     }
 
-    /// A terminal selection offered to the shown chat's input (`offerSelectedText`): only an
-    /// empty input nobody typed in takes it.
+    /// A terminal selection offered to the shown chat's input (`offerSelectedText`): it replaces
+    /// the input's text for as long as nobody has typed in it.
     pub(super) fn offer_text(&mut self, chat: &str, text: &str) {
         if self.chat_shown.as_deref() == Some(chat) && self.chat_input.offer(text) {
             self.chat_window_refresh();
@@ -1108,22 +1108,23 @@ impl App {
         }
         let model = self.chat_input_model(&chat);
         let accepts = |name: &str| model.as_ref().is_some_and(|m| crate::ai_model::accepts(m, crate::ai_files::upload_mime(name)));
-        let total = std::cell::Cell::new(0u64);
-        let read = |p: &std::path::Path| {
-            let bytes = chat_input::read_capped(p)?;
-            total.set(total.get() + bytes.len() as u64);
-            (total.get() <= chat_input::TOTAL_BYTES_MAX).then_some(bytes)
-        };
+        let budget = std::cell::RefCell::new(chat_input::Budget::default());
+        let read = |p: &std::path::Path| chat_input::read_capped(p, chat_input::FILE_BYTES_MAX, &mut |n| budget.borrow_mut().take(n, chat_input::TOTAL_BYTES_MAX));
         let list = |p: &std::path::Path| chat_input::list_folder(p, &accepts, chat_input::FOLDER_FILES_MAX);
         let mime = |n: &str| crate::ai_files::upload_mime(n).to_string();
         let draft = self.chat_input.draft.clone();
-        let parts = chat_input::attachments(&draft.pending, &read, &list, &mime);
+        let (parts, skipped) = chat_input::attachments(&draft.pending, &read, &list, &mime);
         let vector_store = self.chat_db.as_ref().and_then(|db| db.chat(&chat).ok().flatten()).and_then(|c| c.vector_store);
         let Some(content) = chat_input::message_content(&draft.text, parts, vector_store) else { return };
         let m = Message::new(&chat, Participant::User, content, super::warnings_app::unix_now());
         // The store and the window are not held across the publish: it may deliver at once.
         match self.chat_publish(&chat, m, false) {
-            Ok(()) => self.chat_input.sent(),
+            Ok(()) => {
+                self.chat_input.sent();
+                if !skipped.is_empty() {
+                    self.notice(&chat, &chat_input::skipped_notice(&skipped));
+                }
+            }
             Err(e) => crate::ai_wire_log::console(self.globals.bool("aiChatVerboseConsoleLogging"), &format!("send: {e}")),
         }
         self.chat_window_refresh();
