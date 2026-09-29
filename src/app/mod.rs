@@ -726,6 +726,9 @@ pub struct App {
     /// The origin secrets handed to it2ssh (app-wide, not in `swap_live`), shared with the
     /// secret pipe's thread; 14b's conductor hook checks them.
     pub(super) ssh_secrets: std::sync::Arc<std::sync::Mutex<crate::ssh_secret::Secrets>>,
+    /// The framed conductors of every window, by identity (app-wide, not in `swap_live`):
+    /// 14d's Download Files reads it. Only `ssh_apply` and the pane drop paths change it.
+    ssh_registry: crate::ssh_registry::Registry,
     /// The secret pipe's server, started with the first window; None when it could not start.
     ssh_secret_server: Option<crate::ssh_secret_win::Server>,
     /// The Script Console's entries: scripts, connections and the app-wide logs.
@@ -1384,6 +1387,7 @@ pub fn run() {
         api_server: None,
         api_jar: Default::default(),
         ssh_secrets: Default::default(),
+        ssh_registry: Default::default(),
         ssh_secret_server: None,
         script_history: crate::script_history::History::new(aps_logging, api_ui::unix_secs()),
         api_alerts: Vec::new(),
@@ -2372,6 +2376,7 @@ impl App {
             if let Some(pid) = old.shell_pid() {
                 self.jobs.forget(pid);
             }
+            self.ssh_pane_dropped(&old);
             // The old shell is gone for good; the new one gets its own cookie.
             self.forget_cookie(&old);
         }
@@ -3046,6 +3051,7 @@ impl App {
                     c.panes.push(p);
                 }
                 _ => {
+                    self.ssh_pane_dropped(&p);
                     self.forget_cookie(&p);
                     self.forget_session_profile(&p.profile);
                     // Gone for good (a pane kept for Undo Close keeps its state).

@@ -15,6 +15,16 @@ pub(crate) const IT2_ENTRY_MAX: usize = 64 * 1024;
 const MAX_JOBS: usize = 256;
 /// The most output one job keeps (1 MiB, the parser's own cap on a block); the rest is dropped.
 const JOB_OUTPUT_MAX: usize = 1024 * 1024;
+/// The most a login reply or a getenv value keeps (F13): a pid or a short failure text, a
+/// PATH. More fails the login and drops the value.
+pub const REPLY_MAX: usize = 16 * 1024;
+/// The command whose output is the remote's host name (`CD:244`).
+pub const DISCOVER_HOSTNAME: &str = "hostname -f";
+/// The message when the remote's login answer is not a pid (this plan's; 14b has no such text).
+pub fn invalid_pid(text: &str) -> String {
+    format!("Invalid process ID from remote: {text}")
+}
+
 /// The longest uname, home directory or host name kept (a path's limit); a longer value is
 /// treated as unusable.
 const VALUE_MAX: usize = 4096;
@@ -141,9 +151,65 @@ impl Conductor {
         }
     }
 
-    /// The framer path after python is found (`CD:2130-2161`). Task 5 completes it.
+    /// doFraming (`CD:1901-1930`), the framer path after python is found (`CD:2130-2161`).
+    /// Every command is queued now and goes out after the previous one's reply. The it2
+    /// socket listen is n/a (ruling 3, Tandem never sends `it2listen`). The `save` pairs go in
+    /// a fixed order (iTerm2's dictionary order is arbitrary).
     pub fn frame(&mut self) {
         self.exec_framer();
+        let pairs = [
+            ("dcsID", self.setup.dcs_id.clone()),
+            ("sshargs", self.setup.sshargs.clone()),
+            ("boolArgs", self.setup.bool_args.clone()),
+            ("clientUniqueID", self.setup.client_unique_id.clone()),
+        ];
+        self.send(Command::FramerSave(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()), Handler::FireAndForget, false);
+        let uname = self.uname_command.clone();
+        self.run_remote_command(&uname, Purpose::Uname);
+        // exfiltrateUsefulFramerInfo (`CD:1932-1940`).
+        self.run_remote_command("echo $HOME", Purpose::Home);
+        self.send(Command::FramerGetenv("PATH".into()), Handler::Getenv("PATH".into(), Vec::new()), false);
+        // Task 10 adds the jump branch here and in the login handler.
+        let cwd = self.setup.initial_directory.clone().unwrap_or_else(|| "$HOME".to_string());
+        let args = self.modified_command_args.clone().unwrap_or_else(|| self.setup.parsed.command_args.clone());
+        self.send(Command::FramerLogin { cwd, args }, Handler::FramerLogin(Vec::new()), false);
+        if self.autopoll_enabled {
+            self.send(Command::FramerAutopoll, Handler::FireAndForget, false);
+        }
+        // handleGetHostname: its pid line adds a Hostname job (`CD:2198-2214`).
+        self.send(Command::FramerRun(DISCOVER_HOSTNAME.into()), Handler::RunRemote(Purpose::Hostname), false);
+        self.effects.push(Effect::StateChanged);
+    }
+
+    /// finalizeFraming (`CD:2398-2411`): the login's answer is the shell's pid, or why there is
+    /// none. The pieces join with nothing (StringArray).
+    pub(crate) fn finalize_framing(&mut self, status: u8, lines: &[String]) {
+        let text = lines.concat();
+        if status != 0 {
+            self.fail(&text);
+            return;
+        }
+        let Ok(pid) = text.parse::<i32>() else {
+            self.fail(&invalid_pid(&text));
+            return;
+        };
+        self.set_framed_pid(Some(pid));
+        self.effects.push(Effect::SendInitialText);
+        self.effects.push(Effect::StateChanged);
+        self.effects.push(Effect::StopQueueingInput);
+    }
+
+    /// The framedPID setter (`CD:293-302`): a pid joins the connected hosts.
+    pub(crate) fn set_framed_pid(&mut self, pid: Option<i32>) {
+        self.framed_pid = pid;
+        if pid.is_some() {
+            self.effects.push(Effect::Registered { guid: self.guid.clone(), identity: self.identity() });
+        }
+    }
+
+    /// What `getenv` learned about a remote variable.
+    pub fn environment_variable(&self, name: &str) -> Option<&str> {
+        self.environment_variables.get(name).map(String::as_str)
     }
 
     /// execFramer (`CD:2044-2063`): `runpython` with the framer as its program, written on
@@ -228,10 +294,12 @@ impl Conductor {
 
 #[cfg(test)]
 mod tests {
-    use super::{Job, Purpose, TtyState, IT2_ENTRY_MAX};
+    use super::{invalid_pid, Job, Purpose, TtyState, DISCOVER_HOSTNAME, IT2_ENTRY_MAX};
     use crate::conductor_parser::{AUTOPOLL_PID, NOTIF_PID};
     use crate::ssh_fixtures::{framer_cmd, pre_cmd};
     use crate::conductor::{python_status, Command, Conductor, Effect, Handler, Setup, State};
+    use crate::ssh_args::ParsedArgs;
+    use std::time::{Duration, Instant};
     use crate::conductor_parser::Token;
     use crate::framer_script::framer_code;
 
@@ -430,14 +498,216 @@ mod tests {
         assert_eq!(c.take_effects(), []);
     }
 
+    /// A conductor driven through getshell, any cd, and pythonversion to a launched framer
+    /// (`tweak` runs first, as 14b's injection would set `modified_command_args`); the
+    /// effects the runpython reply causes come back with it.
+    fn launched(setup: Setup, tweak: impl FnOnce(&mut Conductor)) -> (Conductor, Vec<Effect>) {
+        let mut c = Conductor::new(setup, None, "P");
+        tweak(&mut c);
+        c.start();
+        feed(&mut c, &[Token::Begin("1.1".into()), Token::Line("/bin/sh".into()), Token::Line("\n/home/u".into()), end("1.1", 0, "r")]);
+        for _ in 0..4 {
+            if c.in_flight() == Some(&Command::PythonVersion) {
+                break;
+            }
+            feed(&mut c, &[Token::Begin("1.2".into()), end("1.2", 0, "r")]);
+        }
+        assert_eq!(c.in_flight(), Some(&Command::PythonVersion));
+        c.take_effects();
+        feed(&mut c, &[Token::Begin("2.1".into()), Token::Line("Python 3.11.4".into()), end("2.1", 0, "r")]);
+        assert_eq!(c.take_effects(), [Effect::StateChanged, Effect::Write(b"\x03PcnVucHl0aG9u\n\n".to_vec())], "frame ends with a state change");
+        feed(&mut c, &[Token::Begin("3.1".into()), Token::Line("31337".into()), end("3.1", 0, "0")]);
+        let fx = c.take_effects();
+        (c, fx)
+    }
+
+    /// The framer's reply to the command in flight; what that causes comes back.
+    fn answer(c: &mut Conductor, lines: &[&str], status: u8, kind: &str) -> Vec<Effect> {
+        let mut tokens = vec![Token::Begin("a".into())];
+        tokens.extend(lines.iter().map(|l| Token::Line(l.to_string())));
+        tokens.push(end("a", status, kind));
+        feed(c, &tokens);
+        c.take_effects()
+    }
+
+    fn sequence_setup() -> Setup {
+        Setup { dcs_id: "D0".into(), sshargs: "-p 22 h".into(), bool_args: "46".into(), client_unique_id: "99".into(), ..Setup::default() }
+    }
+
+    #[test]
+    fn framing_sequence_follows_iterm2() {
+        let (mut c, fx) = launched(sequence_setup(), |_| {});
+        assert_eq!(c.uname_command, "uname -s");
+        assert!(c.autopoll_enabled);
+        assert_eq!(fx, [Effect::Write((framer_code(0) + "\nEOF\n\n").into_bytes()), Effect::Write(framer_cmd(&["save", "dcsID=D0", "sshargs=-p 22 h", "boolArgs=46", "clientUniqueID=99"]))]);
+        // Each command goes out only after the previous one's reply (none pipelines).
+        assert_eq!(answer(&mut c, &[], 0, "r"), [Effect::Write(framer_cmd(&["run", "uname -s"]))]);
+        assert_eq!(answer(&mut c, &["501"], 0, "r"), [Effect::Write(framer_cmd(&["run", "echo $HOME"]))]);
+        assert_eq!(answer(&mut c, &["502"], 0, "r"), [Effect::Write(framer_cmd(&["getenv", "PATH"]))]);
+        assert_eq!(c.background_pids(), [501, 502]);
+        assert_eq!(answer(&mut c, &["/usr/bin:/bin"], 0, "r"), [Effect::Write(framer_cmd(&["login", "$HOME"]))]);
+        assert_eq!(c.environment_variable("PATH"), Some("/usr/bin:/bin"));
+        assert!(!c.framing());
+        let fx = answer(&mut c, &["4242"], 0, "f");
+        assert!(c.framing());
+        assert_eq!(c.framed_pid, Some(4242));
+        assert_eq!(fx.len(), 5, "{fx:?}");
+        assert!(matches!(&fx[0], Effect::Registered { guid, identity } if *guid == c.guid && *identity == c.identity()), "{fx:?}");
+        assert_eq!(fx[1..], [Effect::SendInitialText, Effect::StateChanged, Effect::StopQueueingInput, Effect::Write(framer_cmd(&["autopoll"]))]);
+        assert_eq!(answer(&mut c, &[], 0, "f"), [Effect::Write(framer_cmd(&["run", "hostname -f"]))]);
+        assert_eq!(DISCOVER_HOSTNAME, "hostname -f");
+        assert_eq!(answer(&mut c, &["503"], 0, "f"), []);
+        c.handle_side("h.example.com\n", 503, 1, 0);
+        c.handle_terminate(503, 0, 0);
+        assert_eq!(c.discovered_hostname.as_deref(), Some("h.example.com"));
+        // The uname and home jobs finish as the remote's shell answers.
+        c.handle_side("Linux\n", 501, 1, 0);
+        c.handle_terminate(501, 0, 0);
+        c.handle_side("/home/u\n", 502, 1, 0);
+        c.handle_terminate(502, 0, 0);
+        assert_eq!((c.uname.as_deref(), c.home_directory.as_deref()), (Some("Linux"), Some("/home/u")));
+
+        // A configured uname command is the one that runs.
+        let (mut c, _) = launched(sequence_setup(), |c| c.uname_command = "uname -a".into());
+        assert_eq!(answer(&mut c, &[], 0, "r"), [Effect::Write(framer_cmd(&["run", "uname -a"]))]);
+    }
+
+    /// The login command a conductor writes for `setup` (and 14b's modified arguments).
+    fn login_written(setup: Setup, modified: Option<Vec<String>>) -> Vec<u8> {
+        let (mut c, _) = launched(setup, |c| c.modified_command_args = modified);
+        answer(&mut c, &[], 0, "r");
+        answer(&mut c, &["1"], 0, "r");
+        answer(&mut c, &["2"], 0, "r");
+        let mut fx = answer(&mut c, &[""], 0, "r");
+        assert_eq!(fx.len(), 1, "{fx:?}");
+        match fx.remove(0) {
+            Effect::Write(bytes) => bytes,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_login_names_its_directory_and_arguments() {
+        let parsed = ParsedArgs { command_args: vec!["top".into(), "-d".into(), "1".into()], ..ParsedArgs::default() };
+        let with = |dir: Option<&str>| Setup { initial_directory: dir.map(String::from), parsed: parsed.clone(), ..sequence_setup() };
+        assert_eq!(login_written(with(Some("/srv")), None), framer_cmd(&["login", "/srv", "top", "-d", "1"]));
+        assert_eq!(login_written(with(None), None), framer_cmd(&["login", "$HOME", "top", "-d", "1"]));
+        // 14b's modified arguments replace the parsed ones (`CD:1924-1925`).
+        let modified = Some(vec!["-l".to_string()]);
+        assert_eq!(login_written(with(Some("/srv")), modified), framer_cmd(&["login", "/srv", "-l"]));
+        assert_eq!(login_written(sequence_setup(), Some(Vec::new())), framer_cmd(&["login", "$HOME"]));
+    }
+
+    #[test]
+    fn login_failure_follows_iterm2() {
+        let at_login = || {
+            let (mut c, _) = launched(sequence_setup(), |_| {});
+            for lines in [&[][..], &["1"], &["2"], &["/bin"]] {
+                answer(&mut c, lines, 0, "r");
+            }
+            assert_eq!(c.in_flight(), Some(&Command::FramerLogin { cwd: "$HOME".into(), args: Vec::new() }));
+            c
+        };
+        let text = "Command failed: [Errno 2] No such file or directory: '/bin/nosh'";
+        let mut c = at_login();
+        let fx = answer(&mut c, &[text], 1, "r");
+        assert_eq!(fx, [Effect::SessionWrite(b"exec_login_shell\n".to_vec()), Effect::Abort(text.into())]);
+        assert!(!c.framing());
+        // Pieces of the message join with nothing (StringArray.string).
+        let mut c = at_login();
+        let fx = answer(&mut c, &["Command failed: ", "boom"], 1, "r");
+        assert_eq!(fx.last(), Some(&Effect::Abort("Command failed: boom".into())));
+
+        let mut c = at_login();
+        let fx = answer(&mut c, &["abc"], 0, "f");
+        assert_eq!(fx, [Effect::SessionWrite(b"exec_login_shell\n".to_vec()), Effect::Abort("Invalid process ID from remote: abc".into())]);
+        assert_eq!(invalid_pid("abc"), "Invalid process ID from remote: abc");
+        assert!(!c.framing() && c.framed_pid.is_none());
+        // Nothing registered, and no pid line at all is not a pid either.
+        let mut c = at_login();
+        let fx = answer(&mut c, &[], 0, "f");
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Registered { .. })) && c.framed_pid.is_none(), "{fx:?}");
+    }
+
+    #[test]
+    fn remote_replies_are_bounded() {
+        // A hostile login reply cannot grow the message without end.
+        let (mut c, _) = launched(sequence_setup(), |_| {});
+        for lines in [&[][..], &["1"], &["2"], &["/bin"]] {
+            answer(&mut c, lines, 0, "r");
+        }
+        let piece = "x".repeat(64 * 1024);
+        let many: Vec<&str> = (0..40).map(|_| piece.as_str()).collect();
+        let fx = answer(&mut c, &many, 1, "r");
+        let Some(Effect::Abort(reason)) = fx.last() else { panic!("{fx:?}") };
+        assert!(reason.len() <= super::REPLY_MAX, "{}", reason.len());
+        // A getenv value is kept only when it is a sane size.
+        let (mut c, _) = launched(sequence_setup(), |_| {});
+        for lines in [&[][..], &["1"], &["2"]] {
+            answer(&mut c, lines, 0, "r");
+        }
+        answer(&mut c, &[piece.as_str(), piece.as_str()], 0, "r");
+        assert_eq!(c.environment_variable("PATH"), None);
+    }
+
+    #[test]
+    fn deregistration_follows_iterm2() {
+        let mut c = framing();
+        c.fail("x");
+        let fx = c.take_effects();
+        assert!(matches!(&fx[0], Effect::Deregistered { guid } if *guid == c.guid), "{fx:?}");
+        assert_eq!(fx[1..], [Effect::SessionWrite(b"exec_login_shell\n".to_vec()), Effect::Abort("x".into())]);
+        // A conductor that never framed was never registered.
+        let mut c = Conductor::new(Setup::default(), None, "P");
+        c.fail("x");
+        assert_eq!(c.take_effects(), [Effect::SessionWrite(b"exec_login_shell\n".to_vec()), Effect::Abort("x".into())]);
+        // Each conductor has its own guid.
+        assert_ne!(Conductor::new(Setup::default(), None, "P").guid, Conductor::new(Setup::default(), None, "P").guid);
+    }
+
+    #[test]
+    fn framed_timeout_follows_the_rulings() {
+        // Ruling M14-I2, with F19: commands written after the framed pid is set are untimed.
+        let t0 = Instant::now();
+        let mut c = framing();
+        c.fake_now = Some(t0);
+        c.send(Command::FramerGetenv("PATH".into()), Handler::Getenv("PATH".into(), Vec::new()), false);
+        c.take_effects();
+        assert_eq!(c.deadline(), None);
+        c.tick(t0 + Duration::from_secs(31));
+        assert!(c.take_effects().is_empty() && c.framing());
+        // The framed shell's output changes nothing about the clock.
+        c.handle_side("out", 100, 1, 0);
+        assert_eq!(c.deadline(), None);
+        feed(&mut c, &[Token::Begin("a".into()), Token::Line("/usr/bin".into()), end("a", 0, "r")]);
+        assert_eq!(c.environment_variable("PATH"), Some("/usr/bin"));
+        // The same for a run; its reply still completes it.
+        c.fake_now = Some(t0 + Duration::from_secs(40));
+        c.run_remote_command("uname -s", Purpose::Uname);
+        c.take_effects();
+        assert_eq!(c.deadline(), None);
+        c.tick(t0 + Duration::from_secs(80));
+        assert!(c.take_effects().is_empty() && c.framing());
+        feed(&mut c, &[Token::Begin("b".into()), Token::Line("601".into()), end("b", 0, "r")]);
+        assert_eq!(c.background_pids(), [601]);
+        // Only a command that says so is timed once framed: none of 14c's does.
+        for cmd in [Command::FramerRun("x".into()), Command::FramerGetenv("x".into()), Command::FramerAutopoll, Command::FramerSave(Vec::new())] {
+            assert!(!cmd.timed_when_framed(), "{cmd:?}");
+        }
+    }
+
     #[test]
     fn exec_framer_follows_iterm2() {
         let mut c = at_runpython();
-        assert_eq!(c.take_effects(), [Effect::Write(b"\x03PcnVucHl0aG9u\n\n".to_vec())]);
+        assert_eq!(c.take_effects(), [Effect::StateChanged, Effect::Write(b"\x03PcnVucHl0aG9u\n\n".to_vec())]);
         assert_eq!(c.framer_version(), Some(2));
         assert_eq!(c.in_flight(), Some(&Command::RunPython(framer_code(0))));
         feed(&mut c, &[Token::Begin("3.1".into()), Token::Line("31337".into()), end("3.1", 0, "0")]);
-        assert_eq!(c.take_effects(), [Effect::Write((framer_code(0) + "\nEOF\n\n").into_bytes())]);
+        // The framer's code, then the first command of the framing sequence.
+        assert_eq!(
+            c.take_effects(),
+            [Effect::Write((framer_code(0) + "\nEOF\n\n").into_bytes()), Effect::Write(framer_cmd(&["save", "dcsID=", "sshargs=", "boolArgs=", "clientUniqueID=A"]))]
+        );
     }
 
     #[test]

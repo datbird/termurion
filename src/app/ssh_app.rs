@@ -55,6 +55,7 @@ impl App {
                     p.own_mut().append_banner(&banner);
                     self.redraw();
                 }
+                self.ssh_registry_drain(pane);
             }
             _ => {}
         }
@@ -149,6 +150,7 @@ impl App {
         let prefix = uuid::Uuid::new_v4().hyphenated().to_string().to_uppercase();
         let mut c = Conductor::new(setup, p.conductor.take(), &prefix);
         c.saved = Some(saved);
+        c.uname_command = self.globals.string("unameCommand");
         if local {
             let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_default();
             for (path, destination) in &cfg.files_to_copy {
@@ -169,7 +171,30 @@ impl App {
         if self.panes.get_mut(&pane).is_some_and(|p| p.apply_ssh_effects()) {
             self.redraw();
         }
+        self.ssh_registry_drain(pane);
     }
+
+    /// Applies the pane's changes to the connected hosts (`Registered` and `Deregistered` from
+    /// its conductors, and every conductor that left the pane), then tells the hook once.
+    pub(super) fn ssh_registry_drain(&mut self, pane: PaneId) {
+        let changes = self.panes.get_mut(&pane).map(|p| p.take_ssh_registry()).unwrap_or_default();
+        if self.ssh_registry.apply(changes) {
+            self.ssh_hosts_changed();
+        }
+    }
+
+    /// A pane that is dropped for good takes each of its conductors out of the connected hosts
+    /// (removing an unknown guid is harmless). A pane kept for Undo Close keeps its entries
+    /// until its Undo Close expires.
+    pub(super) fn ssh_pane_dropped(&mut self, pane: &Pane) {
+        let changes = pane.ssh_guids().into_iter().map(crate::ssh_registry::Change::Remove).collect::<Vec<_>>();
+        if self.ssh_registry.apply(changes) {
+            self.ssh_hosts_changed();
+        }
+    }
+
+    /// The connected hosts changed; 14d refreshes Download Files and its panel here.
+    pub(super) fn ssh_hosts_changed(&mut self) {}
 
     /// The conductors' command timers: every pane's current conductor is ticked and its
     /// effects applied. Returns the earliest deadline left.
@@ -177,9 +202,14 @@ impl App {
         let now = Instant::now();
         let mut redraw = false;
         let mut next: Option<Instant> = None;
+        let mut changes = Vec::new();
         for p in self.panes.values_mut().filter(|p| p.conductor.is_some()) {
             redraw |= p.tick_ssh(now);
+            changes.append(&mut p.take_ssh_registry());
             next = [next, p.ssh_deadline()].into_iter().flatten().min();
+        }
+        if self.ssh_registry.apply(changes) {
+            self.ssh_hosts_changed();
         }
         if redraw {
             self.redraw();

@@ -3,7 +3,7 @@
 //! Pure: it talks to the app only through the `Effect`s it queues (the tmux gateway's
 //! `take_writes` pattern).
 
-use crate::conductor_framer::{Job, Purpose, TtyState};
+use crate::conductor_framer::{Job, Purpose, TtyState, REPLY_MAX};
 use crate::conductor_parser::Init;
 use crate::ssh_args::{HostnameFinder, Identity, ParsedArgs};
 use crate::ssh_inject::{expand_local_tilde, injection_payloads, last_component, modify_remote, shell_supports_injection, tarballs, tweak_destination, Payload, Source, INTEGRATION_SUBDIR};
@@ -297,6 +297,11 @@ pub enum Effect {
     /// A message for the pane (a Files to Copy job that was skipped).
     Notice(String),
     Abort(String),
+    /// The conductor framed and joins the connected hosts (`CD:293-302`). The effect carries
+    /// its guid and identity because a parent's effects surface through its child's queue.
+    Registered { guid: String, identity: Identity },
+    /// A framed conductor failed and leaves the connected hosts (`CD:3095-3103`).
+    Deregistered { guid: String },
 }
 
 /// What an unhook restores (Decision: the remote host and the working directory).
@@ -334,6 +339,11 @@ pub enum Handler {
     /// A framer `run`: its reply line is the child's pid, which becomes a background job
     /// (`CD:2259-2271`); the end, an abort and a cancel do nothing.
     RunRemote(Purpose),
+    /// The framer's `login` reply: its lines are the shell's pid, or the failure text
+    /// (`CD:2216-2225`); the end finishes framing.
+    FramerLogin(Vec<String>),
+    /// A framer `getenv`: the first line is the value of the named variable (`CD:2236-2246`).
+    Getenv(String, Vec<String>),
 }
 
 /// A command with its handler (ExecutionContext, `CD:1159-1164`).
@@ -439,6 +449,8 @@ pub fn python_version(output: &str) -> Option<(u32, u32)> {
 /// either limit the step fails.
 pub const GETSHELL_LIMIT: (usize, usize) = (64 * 1024, 256);
 pub const PYTHON_LIMIT: (usize, usize) = (4 * 1024, 64);
+/// The login reply is a pid, or a short failure text (Tandem's).
+pub const LOGIN_LIMIT: (usize, usize) = (REPLY_MAX, 64);
 
 /// The failure text for a reply past its limit (Tandem's).
 pub fn reply_too_long(cmd: &Command) -> String {
@@ -579,6 +591,14 @@ pub struct Conductor {
     pub background_jobs: BTreeMap<i32, Job>,
     /// The remote tty's echo and icanon, from `%notif tty` (`CD:672-679`).
     pub tty: TtyState,
+    /// This conductor's own id in the connected hosts (iTerm2's `guid`).
+    pub guid: String,
+    /// What `getenv` learned about the remote's environment (`CD:2236-2246`).
+    pub(crate) environment_variables: BTreeMap<String, String>,
+    /// Whether framing starts the remote process list (`CD:381`, always true).
+    pub autopoll_enabled: bool,
+    /// The command whose output is the remote's `uname` (the `unameCommand` setting).
+    pub uname_command: String,
     /// Every background job completion, for the tests.
     #[cfg(test)]
     pub(crate) completed: Vec<(Purpose, Vec<u8>, i32)>,
@@ -629,6 +649,10 @@ impl Conductor {
             discovered_hostname: None,
             background_jobs: BTreeMap::new(),
             tty: TtyState::default(),
+            guid: uuid::Uuid::new_v4().hyphenated().to_string(),
+            environment_variables: BTreeMap::new(),
+            autopoll_enabled: true,
+            uname_command: "uname -s".to_string(),
             #[cfg(test)]
             completed: Vec::new(),
             line_prefix: format!("\u{3}{prefix_uuid}"),
@@ -1030,6 +1054,10 @@ impl Conductor {
         self.force_ground();
         // Nothing more is expected of a failed conductor: no deadline, one abort.
         self.last_activity = None;
+        // A framed one leaves the connected hosts first (`CD:3095-3103`).
+        if self.framing() {
+            self.effects.push(Effect::Deregistered { guid: self.guid.clone() });
+        }
         let line = Command::ExecLoginShell(Vec::new()).string_value() + "\n";
         self.effects.push(Effect::SessionWrite(line.into_bytes()));
         self.effects.push(Effect::Abort(reason.to_string()));
@@ -1081,6 +1109,14 @@ impl Conductor {
         let (lines, (max_bytes, max_lines)) = match &mut context.handler {
             Handler::GetShell(lines) => (lines, GETSHELL_LIMIT),
             Handler::CheckForPython(lines) => (lines, PYTHON_LIMIT),
+            Handler::FramerLogin(lines) => (lines, LOGIN_LIMIT),
+            // Only the first line is the value; a value past the limit is not kept (F13).
+            Handler::Getenv(_, lines) => {
+                if lines.is_empty() && line.len() <= REPLY_MAX {
+                    lines.push(line.to_string());
+                }
+                return;
+            }
             _ => return,
         };
         let kept: usize = lines.iter().map(String::len).sum();
@@ -1137,6 +1173,12 @@ impl Conductor {
             }
             Handler::CheckForPython(lines) => self.did_check_for_python(lines, status),
             Handler::RunRemote(_) => {}
+            Handler::FramerLogin(lines) => self.finalize_framing(status, lines),
+            Handler::Getenv(name, lines) => {
+                if let Some(line) = lines.first() {
+                    self.environment_variables.insert(name.clone(), line.clone());
+                }
+            }
         }
     }
 }

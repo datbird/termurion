@@ -498,6 +498,7 @@ impl App {
                     if let Some(pid) = p.shell_pid() {
                         self.jobs.forget(pid);
                     }
+                    self.ssh_pane_dropped(&p);
                     self.forget_cookie(&p);
                     self.forget_session_profile(&p.profile);
                     self.pane_gone(id);

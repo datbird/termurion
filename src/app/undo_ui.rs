@@ -94,6 +94,7 @@ impl App {
         };
         for mut p in panes {
             let guid = p.profile.clone();
+            self.ssh_pane_dropped(&p);
             self.forget_cookie(&p);
             self.pane_gone(p.id);
             // A paused reader would hold up the pty's shutdown: let it drain first.
