@@ -2056,6 +2056,36 @@ pub fn clippings_panel(frame: &mut Frame, d: &ClipDraw, cell: (f32, f32), scale:
     }
 }
 
+/// What the inline chat panel shows (Task 9: the toolbar and an empty band). The app fits the
+/// title to its rectangle (`inline_chat::truncate_tail`); a hovered button's tip takes the
+/// title's place.
+pub struct InlineDraw<'a> {
+    pub panel: Rect,
+    pub layout: &'a crate::inline_chat::ToolbarLayout,
+    pub title: &'a str,
+    pub hover: Option<crate::inline_chat::Button>,
+}
+
+/// The inline chat panel at the right of a session: its toolbar band, the four glyph buttons,
+/// the centered title, a separator under the toolbar and a leading hairline.
+pub fn inline_chat_panel(frame: &mut Frame, d: &InlineDraw, cell: (f32, f32), scale: f32) {
+    use crate::inline_chat::Button;
+    let l = d.layout;
+    frame.quads.push(Quad { rect: d.panel, color: rgba(CLIP_BG, 1.0) });
+    frame.quads.push(Quad { rect: Rect { w: 1.0, ..d.panel }, color: rgba(DIVIDER, 1.0) });
+    let band_h = crate::inline_chat::TOOLBAR_H * scale;
+    frame.quads.push(Quad { rect: Rect { x: d.panel.x, y: d.panel.y + band_h - 1.0, w: d.panel.w, h: 1.0 }, color: rgba(DIVIDER, 1.0) });
+    for (b, r) in [(Button::New, l.new), (Button::Switch, l.switch), (Button::Info, l.info), (Button::Hide, l.hide)] {
+        if d.hover == Some(b) {
+            frame.quads.push(Quad { rect: r, color: rgba(TAB_ACTIVE, 1.0) });
+        }
+        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(b.glyph().to_string(), TAB_TEXT, false, true)], clip: r, scale: 1.0 });
+    }
+    let text_w = d.title.chars().count() as f32 * cell.0;
+    let t = l.title;
+    frame.rows.push(TextRow { x: t.x + ((t.w - text_w) / 2.0).max(0.0), y: t.y + (t.h - cell.1) / 2.0, spans: vec![clip_span(d.title.to_string(), TAB_TEXT, true, false)], clip: t, scale: 1.0 });
+}
+
 /// A clipping's preview over the terminal: its title and all of its detail that fits.
 pub fn clip_preview(frame: &mut Frame, area: Rect, title: &str, lines: &[String], cell: (f32, f32), scale: f32) {
     let w = (700.0 * scale).min(area.w - 2.0 * cell.0).max(cell.0 * 10.0);

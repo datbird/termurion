@@ -41,16 +41,19 @@ impl App {
         clippings::clamp_width(v.map_or(clippings::DEFAULT_WIDTH, |f| f as f32))
     }
 
-    /// A pane's terminal rectangle and its panel's, when the panel shows.
-    pub(super) fn clip_split(&self, id: PaneId, rect: Rect) -> (Rect, Option<Rect>) {
-        let visible = self.clips.get(&id).is_some_and(|c| c.model.visible);
-        clippings::split_rect(rect, visible, self.clip_width() * self.scale())
+    /// A pane's terminal rectangle, then its Clippings panel's and its inline chat's when they
+    /// show (Clippings on the left). The one place that takes room from a pane: `rect` is the
+    /// pane less its own status bar, and every size, tmux's report included, follows from the
+    /// terminal rectangle this answers.
+    pub(super) fn gutter_split(&self, id: PaneId, rect: Rect) -> (Rect, Option<Rect>, Option<Rect>) {
+        let clip = if self.clips.get(&id).is_some_and(|c| c.model.visible) { self.clip_width() * self.scale() } else { 0.0 };
+        crate::inline_chat::split_gutter(rect, clip, self.inline_width(id) * self.scale())
     }
 
     /// The panels of the current tab: (pane, panel rectangle).
     fn clip_panels(&self) -> Vec<(PaneId, Rect)> {
         let Some(tab) = self.tabs.get(self.active) else { return Vec::new() };
-        visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), GAP).into_iter().filter_map(|(id, r)| self.clip_split(id, self.pane_bar_split(tab, id, r).0).1.map(|p| (id, p))).collect()
+        visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), GAP).into_iter().filter_map(|(id, r)| self.gutter_split(id, self.pane_bar_split(tab, id, r).0).1.map(|p| (id, p))).collect()
     }
 
     /// Characters per detail line in a panel.

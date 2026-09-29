@@ -397,9 +397,13 @@ impl App {
         }
     }
 
-    /// Put Chat in Linked Terminal Session: the panel of the linked pane shows this chat
-    /// (filled by Task 9's `bind_inline`; until then nothing).
-    pub(super) fn put_chat_in_session(&mut self, _chat: &str) {}
+    /// Put Chat in Linked Terminal Session (`CVC:1379-1401`): the panel of the linked pane
+    /// shows this chat. Nothing when the chat is not linked to a live session.
+    pub(super) fn put_chat_in_session(&mut self, chat: &str) {
+        if let Some((_, pane)) = self.chat_live_link(chat) {
+            self.bind_inline(pane, chat, true);
+        }
+    }
 
     /// Send Commands & Output to AI Automatically (`toggleStream`, `CVC:1335-1357`): only for a
     /// linked live terminal. Turning it on asks the Privacy Warning first; turning it off is

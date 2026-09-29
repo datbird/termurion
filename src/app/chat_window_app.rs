@@ -590,6 +590,7 @@ impl App {
     /// the ages' minute, and soon again while a title run is going.
     pub(super) fn chat_window_tick(&mut self) -> Option<Instant> {
         let mut changed = false;
+        self.inline_sweep();
         let dropped = self.chat_drops_flush();
         self.pick_tick();
         if let Some(sub) = self.chat_mint_sub {

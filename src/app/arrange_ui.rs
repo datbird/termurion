@@ -84,6 +84,7 @@ impl App {
         }
         if let Some(t) = v.as_table_mut() {
             t.extend(self.clippings_table(id));
+            t.extend(self.inline_table(id));
             // Session restoration keeps the pane's chat reference, so a chat's link survives a
             // relaunch; a saved arrangement, a file or a duplicate never carries it.
             if contents.restoring() {
@@ -495,6 +496,7 @@ impl App {
                         }
                     }
                     self.restore_clippings(id, &session);
+                    self.restore_inline(id, &session);
                     let notice = if launched { notice } else { FolderNotice::Nothing };
                     self.arrangement_announcements(id, &session, &choice, name, notice, &folder);
                     started.push(id);
@@ -512,6 +514,7 @@ impl App {
         if let Some(e) = failed {
             for id in started {
                 self.clips.remove(&id);
+                self.inline.remove(&id);
                 self.focus_order.remove(&id);
                 self.bars.remove(&id);
                 if let Some(p) = self.panes.remove(&id) {

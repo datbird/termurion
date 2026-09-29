@@ -64,6 +64,7 @@ mod history_ui;
 mod shell_history_ui;
 mod snippets_ui;
 mod clippings_ui;
+mod inline_chat_ui;
 mod completion_ui;
 mod composer_ui;
 mod annotations_ui;
@@ -213,6 +214,8 @@ enum Drag {
     Porthole { pane: PaneId, id: u32, frame: Rect },
     /// A Clippings panel's width or one of its rows.
     Clip { pane: PaneId, kind: clippings_ui::ClipDrag },
+    /// An inline chat panel's width: where the drag began (pixels) and the width then (logical).
+    Inline { pane: PaneId, start_x: f32, start_w: f32 },
     /// The toolbelt's width, a divider between its tools, or a tool's row.
     Belt(toolbelt_ui::BeltDrag),
     /// A composer's text selection, drag handle, or border.
@@ -633,6 +636,8 @@ pub struct App {
     /// Each session's clippings and panel, the New Clipping sheet (for its pane), and the
     /// panel button under the pointer.
     clips: HashMap<PaneId, clippings_ui::ClipState>,
+    /// Each pane's inline chat (its binding and panel state), app-wide as `clips` is.
+    inline: HashMap<PaneId, inline_chat_ui::InlineState>,
     add_clip_win: Option<(crate::clip_add_ui::AddClipWindow, PaneId)>,
     clip_hover: Option<(PaneId, crate::clippings::Button)>,
     shell_fed: HashMap<PaneId, shell_history_ui::Fed>,
@@ -905,6 +910,8 @@ pub struct App {
     chat_picker: Option<chat_session_app::Pick>,
     /// The picker buttons this window drew, per pane (this window's, in `WinSlot`).
     picker_hits: Vec<(PaneId, Rect)>,
+    /// The inline chat panels' rectangles this window drew, for a press on them.
+    inline_hits: Vec<inline_chat_ui::PanelHit>,
     /// The AI indicators this window drew (this window's, in `WinSlot`).
     chat_indicator_hits: Vec<(PaneId, Rect, scene::IndicatorKind)>,
     /// Chats streaming their linked session's finished commands (app-wide, keyed by chat).
@@ -1400,6 +1407,7 @@ pub fn run() {
         paste_history: None,
         snippets: snippets_ui::load_snippets(),
         clips: HashMap::new(),
+        inline: HashMap::new(),
         add_clip_win: None,
         clip_hover: None,
         paste_history_win: None,
@@ -1550,6 +1558,7 @@ pub fn run() {
         chat_convo_dirty: true,
         chat_picker: None,
         picker_hits: Vec::new(),
+        inline_hits: Vec::new(),
         chat_indicator_hits: Vec::new(),
         streaming_chats: std::collections::HashSet::new(),
         chat_indicator_menu: None,
@@ -3346,6 +3355,7 @@ impl App {
             self.note_win = None;
         }
         self.clips.remove(&id);
+        self.inline.remove(&id);
         if self.add_clip_win.as_ref().is_some_and(|(_, p)| *p == id) {
             self.add_clip_win = None;
         }
@@ -3879,8 +3889,11 @@ impl App {
         if button == MouseButton::Left && self.clip_press(x, y, event_loop) {
             return;
         }
+        if self.inline_press(button, x, y, event_loop) {
+            return;
+        }
         // Other buttons in a panel do nothing (the terminal is not under it).
-        if self.clip_split_hit(x, y) {
+        if self.clip_split_hit(x, y) || self.inline_split_hit(x, y) {
             return;
         }
         if button == MouseButton::Left && (self.info_bar_press(x, y, event_loop) || self.porthole_press(x, y) || self.block_press(x, y)) {
@@ -4039,6 +4052,7 @@ impl App {
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::Porthole { pane, id, .. } => self.porthole_release(pane, id),
             Drag::Clip { pane, kind } => self.clip_release(pane, kind),
+            Drag::Inline { .. } => self.inline_release(),
             Drag::Belt(d) => self.toolbelt_release(d),
             Drag::Composer { pane, kind } => self.composer_release(pane, kind),
             Drag::Divider { .. } => self.tmux_drag_end(event_loop),
@@ -4104,6 +4118,7 @@ impl App {
         self.toolbelt_move(x, y);
         self.composer_move(x, y);
         self.clip_move(x, y);
+        self.inline_move(x, y);
         self.update_hover();
         self.update_block_hover();
         // Hover timestamps show while the pointer is at a pane's right edge.
@@ -4117,7 +4132,7 @@ impl App {
                 let (pane, id, frame) = (*pane, *id, *frame);
                 self.porthole_drag(pane, id, frame, x, y);
             }
-            Drag::Clip { .. } | Drag::Belt(_) | Drag::Composer { .. } => {}
+            Drag::Clip { .. } | Drag::Inline { .. } | Drag::Belt(_) | Drag::Composer { .. } => {}
             Drag::SideBar { start_x, start_width } => {
                 let (start_x, start_width) = (*start_x, *start_width);
                 self.side_bar_drag(start_x, start_width, x);
@@ -4310,6 +4325,7 @@ impl App {
         let mut block_buttons = Vec::new();
         let mut picker_hits = Vec::new();
         let mut indicator_hits = Vec::new();
+        let mut inline_hits = Vec::new();
         self.prepare_portholes();
         self.prepare_badges();
         let mut porthole_hits = Vec::new();
@@ -4385,6 +4401,7 @@ impl App {
                 self.draw_completion(&mut frame, id, self.inner(rect), cell);
             }
             self.draw_clippings(&mut frame, cell);
+            inline_hits = self.draw_inline_chats(&mut frame, cell);
             if tab.zoomed.is_none() {
                 scene::dividers(&mut frame, &tab.layout.dividers(area, GAP), self.divider_color());
             }
@@ -4425,6 +4442,7 @@ impl App {
         self.block_buttons = block_buttons;
         self.porthole_hits = porthole_hits;
         self.picker_hits = picker_hits;
+        self.inline_hits = inline_hits;
         self.chat_indicator_hits = indicator_hits;
         let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
         if let Some(text) = error {
