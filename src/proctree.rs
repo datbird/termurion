@@ -2,7 +2,7 @@
 //! console program under the pane's shell (iTerm2 takes the deepest foreground process).
 
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// How deep the walk goes below the shell (iTerm2's cap).
 const MAX_DEPTH: usize = 50;
@@ -65,6 +65,11 @@ fn is_host(p: &Proc) -> bool {
 /// than its parent is a reused pid and not a child; a cycle is walked once.
 fn walk(procs: &[Proc], root: u32) -> Vec<(&Proc, usize)> {
     let Some(r) = procs.iter().find(|p| p.pid == root) else { return Vec::new() };
+    // Each process's children, found once: a remote's list can hold 20000 rows.
+    let mut children: HashMap<u32, Vec<&Proc>> = HashMap::new();
+    for q in procs {
+        children.entry(q.ppid).or_default().push(q);
+    }
     let mut seen = HashSet::from([root]);
     let mut out = vec![(r, 0)];
     let mut i = 0;
@@ -75,7 +80,7 @@ fn walk(procs: &[Proc], root: u32) -> Vec<(&Proc, usize)> {
         if depth >= MAX_DEPTH || parent.gui {
             continue;
         }
-        let mut kids: Vec<&Proc> = procs.iter().filter(|q| q.ppid == parent.pid && q.created >= parent.created && !seen.contains(&q.pid)).collect();
+        let mut kids: Vec<&Proc> = children.get(&parent.pid).into_iter().flatten().copied().filter(|q| q.created >= parent.created && !seen.contains(&q.pid)).collect();
         kids.sort_by_key(|q| q.created);
         for k in kids {
             seen.insert(k.pid);

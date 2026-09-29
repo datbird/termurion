@@ -31,7 +31,14 @@ pub struct Row {
 /// Whether a character may not reach a title, a prompt or a graph: controls, the bidi
 /// controls and isolates, the zero width and line and paragraph separators.
 fn hostile(c: char) -> bool {
-    c.is_control() || matches!(c, '\u{61c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
+    c.is_control()
+        || matches!(
+            c,
+            // Format characters (general category Cf): invisible, they pad or spoof a name.
+            '\u{ad}' | '\u{600}'..='\u{605}' | '\u{61c}' | '\u{6dd}' | '\u{70f}' | '\u{890}'..='\u{891}' | '\u{8e2}' | '\u{180e}'
+                | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{fff9}'..='\u{fffb}'
+                | '\u{110bd}' | '\u{110cd}' | '\u{13430}'..='\u{1343f}' | '\u{1bca0}'..='\u{1bca3}' | '\u{1d173}'..='\u{1d17a}' | '\u{e0001}'..='\u{e007f}'
+        )
 }
 
 /// A remote's text made safe: hostile characters become spaces, the ends are trimmed and
@@ -256,9 +263,10 @@ impl Provider {
 
     /// Every program under the shell `pid` (not the shell), as the remote spells it: what the
     /// close prompt names (iTerm2's `descendants`).
+    /// A row with no usable name (an empty or all-invisible command) is no program.
     pub fn descendant_names(&self, pid: i32) -> Vec<String> {
         let Ok(root) = u32::try_from(pid) else { return Vec::new() };
-        crate::proctree::descendants(&self.procs_of(true), root).into_iter().map(|p| p.name.clone()).collect()
+        crate::proctree::descendants(&self.procs_of(true), root).into_iter().filter(|p| !p.name.is_empty()).map(|p| p.name.clone()).collect()
     }
 
     pub fn cpu(&self) -> Option<f64> {
@@ -380,6 +388,45 @@ mod tests {
         assert_eq!(p.descendant_names(100), ["sleep", "vim"]);
         assert_eq!(p.job(100).0.unwrap().name, "vim");
         assert_eq!(p.job(999), (None, Vec::new()));
+    }
+
+    #[test]
+    fn a_huge_remote_list_closes_quickly_and_briefly() {
+        // A hostile remote lists 20000 distinct programs under the shell: reading them for the
+        // close prompt stays fast and the question stays short.
+        use crate::close_rules::{body, counted, Subject};
+        let mut p = Provider::new(1);
+        let mut text = format!("$begin ps\n+1 0 Ss {T0} -zsh\n");
+        for i in 2..=MAX_ROWS {
+            text.push_str(&format!("+{i} 1 S {T0} /bin/p{i}{}\n", "x".repeat(58)));
+        }
+        p.handle(&text);
+        assert_eq!(p.rows().len(), MAX_ROWS);
+        let t = std::time::Instant::now();
+        let names = p.descendant_names(1);
+        let question = body(Subject::Tab, &counted(&names));
+        let took = t.elapsed();
+        assert_eq!(names.len(), MAX_ROWS - 1);
+        assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+        assert!(question.len() < 4096, "{} bytes", question.len());
+        assert!(question.ends_with(&format!("plus {} others.", MAX_ROWS - 1 - crate::close_rules::NAMES_SHOWN)), "{}", &question[question.len() - 40..]);
+    }
+
+    #[test]
+    fn invisible_and_blank_names_never_count() {
+        // Format characters (soft hyphen, Mongolian vowel separator, interlinear annotation,
+        // tags, Arabic number signs) never pad or spoof a name.
+        for c in ['\u{ad}', '\u{180e}', '\u{fff9}', '\u{fffb}', '\u{e0001}', '\u{e0041}', '\u{e007f}', '\u{600}', '\u{605}', '\u{6dd}', '\u{70f}', '\u{8e2}', '\u{110bd}', '\u{1d173}', '\u{13430}', '\u{1bca0}'] {
+            let r = Row::parse(&format!("4 1 S {T0} vi{c}m")).unwrap();
+            // The character becomes a space, which ends the program's word.
+            assert_eq!(r.name().as_deref(), Some("vi"), "{:?}", c);
+            assert_eq!(r.command, "vi m");
+        }
+        // A row with no command is kept, but a blank name is no program for the close prompt.
+        let mut p = Provider::new(1);
+        p.handle(&format!("$begin ps\n+1 0 Ss {T0} -zsh\n+2 1 Z {T0} \n+3 1 S {T0} \u{200b}\n+4 1 S {T0} vim\n"));
+        assert_eq!(p.rows().len(), 4);
+        assert_eq!(p.descendant_names(1), ["vim"]);
     }
 
     #[test]

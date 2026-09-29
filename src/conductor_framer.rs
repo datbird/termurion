@@ -5,10 +5,9 @@ use crate::conductor::{Command, Conductor, Effect, Handler};
 use crate::conductor_parser::{AUTOPOLL_PID, NOTIF_PID};
 use crate::framer_script::framer_code;
 
-/// How many `%it2` frames a conductor keeps.
 /// The most autopoll text kept between EOF pieces (the parser's own cap for one block).
 const AUTOPOLL_TEXT_MAX: usize = crate::conductor_parser::MAX_AUTOPOLL;
-
+/// How many `%it2` frames a conductor keeps.
 const IT2_INBOX_MAX: usize = 16;
 /// The most of one `%it2` frame it keeps (F30).
 pub(crate) const IT2_ENTRY_MAX: usize = 64 * 1024;
@@ -261,11 +260,15 @@ impl Conductor {
         }
         if pid == AUTOPOLL_PID {
             // "EOF" hands the text to the process list and re-arms the poll; any other piece
-            // joins the text (`CD:2600-2611`), up to the cap.
+            // joins the text (`CD:2600-2611`), up to the cap. Tandem-side guard: the poll is
+            // re-armed only when none is queued or in flight (iTerm2 adds one per EOF, so a
+            // remote that never ends the command grows the queue until the timeout).
             if text == "EOF" {
                 let polled = std::mem::take(&mut self.autopoll);
                 let changed = self.processes().is_some_and(|p| p.handle(&polled));
-                self.send(Command::FramerAutopoll, Handler::FireAndForget, false);
+                if !self.has_command(&|c| *c == Command::FramerAutopoll) {
+                    self.send(Command::FramerAutopoll, Handler::FireAndForget, false);
+                }
                 if changed {
                     self.effects.push(Effect::ProcessesChanged);
                 }
@@ -694,11 +697,32 @@ mod tests {
     }
 
     #[test]
+    fn autopoll_rearms_only_once() {
+        // A hostile remote sends EOF pieces and never ends the poll command: one autopoll
+        // waits at most, never one per EOF.
+        let count = |c: &Conductor| c.pending().into_iter().filter(|x| **x == Command::FramerAutopoll).count();
+        let mut c = Conductor::new(Setup { client_unique_id: "A".into(), ..Setup::default() }, None, "P");
+        c.framed_pid = Some(4242);
+        for _ in 0..1000 {
+            c.handle_side("EOF", AUTOPOLL_PID, 1, 0);
+        }
+        assert_eq!(count(&c), 1);
+        // Once it ended, the next EOF arms it again (normal operation is unchanged).
+        c.cancel_enqueued(&|x| *x == Command::FramerAutopoll);
+        while c.in_flight().is_some() {
+            feed(&mut c, &[Token::Begin("a".into()), end("a", 0, "f")]);
+        }
+        assert_eq!(count(&c), 0);
+        c.handle_side("EOF", AUTOPOLL_PID, 1, 0);
+        assert_eq!(count(&c), 1);
+    }
+
+    #[test]
     fn transitive_names_join_the_parents() {
         let row = |pid: i32, ppid: i32, name: &str| format!("+{pid} {ppid} S+ Mon Sep 27 10:00:00 2026 {name}\n");
         let mut parent = Conductor::new(Setup { client_unique_id: "A".into(), ..Setup::default() }, None, "P");
         parent.framed_pid = Some(10);
-        parent.processes().unwrap().handle(&format!("$begin ps\n+10 1 Ss Mon Sep 27 10:00:00 2026 -bash\n+11 10 S+ Mon Sep 27 10:00:00 2026 ssh\n"));
+        parent.processes().unwrap().handle("$begin ps\n+10 1 Ss Mon Sep 27 10:00:00 2026 -bash\n+11 10 S+ Mon Sep 27 10:00:00 2026 ssh\n");
         let mut child = Conductor::new(Setup { client_unique_id: "B".into(), ..Setup::default() }, Some(Box::new(parent)), "Q");
         assert!(child.transitive_process_names().is_empty(), "a conductor that does not frame has none (`CD:685`)");
         child.framed_pid = Some(20);

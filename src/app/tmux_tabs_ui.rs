@@ -158,6 +158,7 @@ impl App {
                     // `ssh_pump` ran before this pass pumped the pane; its conductor waits.
                     if ssh {
                         self.ssh_pump_pane(id);
+                        self.ssh_jobs_changed(&[id]);
                     }
                     let Some(p) = self.panes.get_mut(&id) else { continue };
                     let title_changed = p.own().title().map(str::to_string) != title;

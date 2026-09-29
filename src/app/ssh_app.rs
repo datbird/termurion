@@ -64,7 +64,18 @@ impl App {
         for id in &ids {
             self.ssh_pump_pane(*id);
         }
+        // The remote jobs are read once however many panes and process blocks this pass held
+        // (F22).
+        self.ssh_jobs_changed(&ids);
         !ids.is_empty()
+    }
+
+    /// `jobs_changed` once when any of `panes` has a remote process list that changed.
+    pub(super) fn ssh_jobs_changed(&mut self, panes: &[PaneId]) {
+        let dirty = panes.iter().fold(false, |d, id| self.panes.get_mut(id).is_some_and(|p| p.take_jobs_dirty()) | d);
+        if dirty {
+            self.jobs_changed();
+        }
     }
 
     /// Runs what one pane's SSH hook found, in order. A tmux integration pane is pumped inside
@@ -130,11 +141,8 @@ impl App {
             self.ssh_apply(pane);
         }
         // Keys handed to a conductor outside its tokens (a coprocess, a write routed to it).
+        // The remote job is read by the caller (`ssh_jobs_changed`).
         self.ssh_apply(pane);
-        // The remote job is read once however many process blocks this pass held (F22).
-        if self.panes.get_mut(&pane).is_some_and(|p| p.take_jobs_dirty()) {
-            self.jobs_changed();
-        }
     }
 
     /// A conductor hooked (`TD:3852-3870`, then `PS:20118-20170` without jumps): the banner,

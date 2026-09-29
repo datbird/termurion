@@ -41,21 +41,20 @@ pub fn must_ask(kind: Kind, running: usize, has_reason: bool, confirm_multiple: 
     }
 }
 
+/// The most job names the question lists (Tandem-side guard: iTerm2 lists them all).
+pub const NAMES_SHOWN: usize = 32;
+
 /// Job names sorted without case; a repeated name reads `N instances of "name"`.
 pub fn counted(names: &[String]) -> Vec<String> {
-    let mut keys: Vec<&String> = Vec::new();
-    for n in names {
-        if !keys.contains(&n) {
-            keys.push(n);
-        }
+    // Each name with its first place and its count, in one pass (a remote can name 20000).
+    let mut seen: std::collections::HashMap<&String, (usize, usize)> = std::collections::HashMap::new();
+    for (i, n) in names.iter().enumerate() {
+        seen.entry(n).or_insert((i, 0)).1 += 1;
     }
-    keys.sort_by_key(|k| k.to_lowercase());
-    keys.into_iter()
-        .map(|k| {
-            let c = names.iter().filter(|n| *n == k).count();
-            if c > 1 { format!("{c} instances of \"{k}\"") } else { k.clone() }
-        })
-        .collect()
+    let mut keys: Vec<(&String, usize, usize)> = seen.into_iter().map(|(k, (first, c))| (k, first, c)).collect();
+    // Sorted without case; names equal without case keep the order they came in.
+    keys.sort_by_cached_key(|(k, first, _)| (k.to_lowercase(), *first));
+    keys.into_iter().map(|(k, _, c)| if c > 1 { format!("{c} instances of \"{k}\"") } else { k.clone() }).collect()
 }
 
 /// The question's body for the subject and its sorted job names.
@@ -70,7 +69,9 @@ pub fn body(subject: Subject, names: &[String]) -> String {
         0 => format!("{what} will be closed."),
         1 => format!("{what} is running {}.", names[0]),
         2..=10 => format!("{what} is running the following jobs: {}.", oxford(names)),
-        n => format!("{what} is running the following jobs: {}, plus {} others.", oxford(names), n - 10),
+        n if n <= NAMES_SHOWN => format!("{what} is running the following jobs: {}, plus {} others.", oxford(names), n - 10),
+        // Tandem-side guard: the first NAMES_SHOWN, then the true count of the rest.
+        n => format!("{what} is running the following jobs: {}, plus {} others.", names[..NAMES_SHOWN].join(", "), n - NAMES_SHOWN),
     }
 }
 
