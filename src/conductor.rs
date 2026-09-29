@@ -343,7 +343,9 @@ pub enum Handler {
     /// (`CD:2216-2225`); the end finishes framing.
     FramerLogin(Vec<String>),
     /// A framer `getenv`: the first line is the value of the named variable (`CD:2236-2246`).
-    Getenv(String, Vec<String>),
+    /// The variable's name and the first reply line: `None` before one arrived, `Some(None)`
+    /// when it was too long to keep.
+    Getenv(String, Option<Option<String>>),
 }
 
 /// A command with its handler (ExecutionContext, `CD:1159-1164`).
@@ -1127,9 +1129,9 @@ impl Conductor {
             Handler::CheckForPython(lines) => (lines, PYTHON_LIMIT),
             Handler::FramerLogin(lines) => (lines, LOGIN_LIMIT),
             // Only the first line is the value; a value past the limit is not kept (F13).
-            Handler::Getenv(_, lines) => {
-                if lines.is_empty() && line.len() <= REPLY_MAX {
-                    lines.push(line.to_string());
+            Handler::Getenv(_, first) => {
+                if first.is_none() {
+                    *first = Some((line.len() <= REPLY_MAX).then(|| line.to_string()));
                 }
                 return;
             }
@@ -1190,8 +1192,8 @@ impl Conductor {
             Handler::CheckForPython(lines) => self.did_check_for_python(lines, status),
             Handler::RunRemote(_) => {}
             Handler::FramerLogin(lines) => self.finalize_framing(status, lines),
-            Handler::Getenv(name, lines) => {
-                if let Some(line) = lines.first() {
+            Handler::Getenv(name, first) => {
+                if let Some(Some(line)) = first {
                     self.environment_variables.insert(name.clone(), line.clone());
                 }
             }

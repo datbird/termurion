@@ -877,7 +877,8 @@ impl Pane {
             if effects.is_empty() {
                 break;
             }
-            'batch: for effect in effects {
+            let mut effects = effects.into_iter();
+            while let Some(effect) = effects.next() {
                 match effect {
                     Effect::Write(bytes) => self.write_no_broadcast(&bytes),
                     Effect::SessionWrite(bytes) => self.write_unless_held(&bytes),
@@ -908,12 +909,21 @@ impl Pane {
                     }
                     // The rest of the batch came from the failed setup (keys for its remote,
                     // its writes) and goes with it: after the pop the route is Direct, so
-                    // applying it would send those bytes to whatever runs now. A remaining
-                    // parent's own later effects come in the next pass.
+                    // applying it would send those bytes to whatever runs now. Only the
+                    // registry changes survive: a conductor that is still here registers, and
+                    // a deregistration always applies (the parents' effects are drained ahead
+                    // of the child's, so nothing of a live conductor may be lost here).
                     Effect::Abort(reason) => {
                         self.abort_ssh(&reason);
                         redraw = true;
-                        break 'batch;
+                        let live = self.ssh_guids();
+                        for rest in effects.by_ref() {
+                            match rest {
+                                Effect::Registered { guid, identity } if live.contains(&guid) => self.ssh_registry_out.push(crate::ssh_registry::Change::Add(guid, identity)),
+                                Effect::Deregistered { guid } => self.ssh_registry_out.push(crate::ssh_registry::Change::Remove(guid)),
+                                _ => {}
+                            }
+                        }
                     }
                 }
             }
@@ -1694,6 +1704,41 @@ mod tests {
         r.apply(p.take_ssh_registry());
         assert!(!r.any());
         assert!(p.take_ssh_registry().is_empty());
+    }
+
+    #[test]
+    fn an_abort_keeps_the_registry_changes_of_the_same_pass() {
+        // Every conductor framed in one pass and the innermost fails in that pass: the
+        // parents' Registered is applied, the failed one's is undone.
+        let mut p = three_hops();
+        let mut c = p.conductor.as_deref_mut();
+        while let Some(x) = c {
+            x.setup.parsed.hostname = format!("{}.example", x.setup.client_unique_id);
+            x.set_framed_pid(Some(10));
+            c = x.parent.as_deref_mut();
+        }
+        p.conductor.as_mut().unwrap().fail("boom");
+        p.apply_ssh_effects();
+        let mut r = crate::ssh_registry::Registry::default();
+        r.apply(p.take_ssh_registry());
+        assert_eq!(r.identities().iter().map(|i| i.hostname.as_str()).collect::<Vec<_>>(), ["a.example", "b.example"]);
+        // The outermost failing takes the whole chain: nothing stays registered.
+        let mut p = three_hops();
+        let mut c = p.conductor.as_deref_mut();
+        while let Some(x) = c {
+            x.setup.parsed.hostname = format!("{}.example", x.setup.client_unique_id);
+            x.set_framed_pid(Some(10));
+            c = x.parent.as_deref_mut();
+        }
+        let mut outer = p.conductor.as_deref_mut().unwrap();
+        while outer.parent.is_some() {
+            outer = outer.parent.as_deref_mut().unwrap();
+        }
+        outer.fail("boom");
+        p.apply_ssh_effects();
+        let mut r = crate::ssh_registry::Registry::default();
+        r.apply(p.take_ssh_registry());
+        assert!(!r.any(), "{:?}", r.identities());
     }
 
     #[test]

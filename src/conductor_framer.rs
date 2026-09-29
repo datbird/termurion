@@ -173,7 +173,7 @@ impl Conductor {
         self.run_remote_command(&uname, Purpose::Uname);
         // exfiltrateUsefulFramerInfo (`CD:1932-1940`).
         self.run_remote_command("echo $HOME", Purpose::Home);
-        self.send(Command::FramerGetenv("PATH".into()), Handler::Getenv("PATH".into(), Vec::new()), false);
+        self.send(Command::FramerGetenv("PATH".into()), Handler::Getenv("PATH".into(), None), false);
         // Task 10 adds the jump branch here and in the login handler.
         let cwd = self.setup.initial_directory.clone().unwrap_or_else(|| "$HOME".to_string());
         let args = self.modified_command_args.clone().unwrap_or_else(|| self.setup.parsed.command_args.clone());
@@ -676,6 +676,35 @@ mod tests {
         }
         answer(&mut c, &[piece.as_str(), piece.as_str()], 0, "r");
         assert_eq!(c.environment_variable("PATH"), None);
+        // Only the first line is the value: an oversize first line gives nothing, never the
+        // next line (`F:744-750` answers one line).
+        let (mut c, _) = launched(sequence_setup(), |_| {});
+        for lines in [&[][..], &["1"], &["2"]] {
+            answer(&mut c, lines, 0, "r");
+        }
+        answer(&mut c, &[piece.as_str(), "/bin"], 0, "r");
+        assert_eq!(c.environment_variable("PATH"), None);
+    }
+
+    #[test]
+    fn the_login_reply_is_capped_at_64_lines() {
+        let (mut c, _) = launched(sequence_setup(), |_| {});
+        for lines in [&[][..], &["1"], &["2"], &["/bin"]] {
+            answer(&mut c, lines, 0, "r");
+        }
+        // 64 short lines still fit; the 65th fails the step.
+        let lines: Vec<&str> = vec!["y"; 64];
+        let fx = answer(&mut c, &lines, 1, "r");
+        let Some(Effect::Abort(reason)) = fx.last() else { panic!("{fx:?}") };
+        assert!(!reason.contains("too long"), "{reason}");
+        let (mut c, _) = launched(sequence_setup(), |_| {});
+        for lines in [&[][..], &["1"], &["2"], &["/bin"]] {
+            answer(&mut c, lines, 0, "r");
+        }
+        let lines: Vec<&str> = vec!["y"; 65];
+        let fx = answer(&mut c, &lines, 1, "r");
+        let Some(Effect::Abort(reason)) = fx.last() else { panic!("{fx:?}") };
+        assert!(reason.contains("too long"), "{reason}");
     }
 
     #[test]
@@ -699,7 +728,7 @@ mod tests {
         let t0 = Instant::now();
         let mut c = framing();
         c.fake_now = Some(t0);
-        c.send(Command::FramerGetenv("PATH".into()), Handler::Getenv("PATH".into(), Vec::new()), false);
+        c.send(Command::FramerGetenv("PATH".into()), Handler::Getenv("PATH".into(), None), false);
         c.take_effects();
         assert_eq!(c.deadline(), None);
         c.tick(t0 + Duration::from_secs(31));

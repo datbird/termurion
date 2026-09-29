@@ -60,11 +60,18 @@ impl App {
         let c = Capture { tabs: keep_held(c.tabs, &held), ..c };
         let entry = match c.kind {
             Kind::Session => {
-                let Some(pane) = c.panes.into_iter().next() else { return };
+                let mut panes = c.panes.into_iter();
+                let Some(pane) = panes.next() else { return };
+                // Nothing can follow the one pane; whatever did is dropped for good.
+                self.end_undone(Undone::Window { tabs: Vec::new(), panes: panes.collect() });
                 Undone::Session { pane, tab: c.tab_id, window: c.window }
             }
             Kind::Tab => {
-                let Some((tab, index)) = c.tabs.into_iter().next() else { return };
+                let Some((tab, index)) = c.tabs.into_iter().next() else {
+                    // No tab to come back to: the panes are gone for good.
+                    self.end_undone(Undone::Window { tabs: Vec::new(), panes: c.panes });
+                    return;
+                };
                 Undone::Tab { tab, panes: c.panes, index, window: c.window }
             }
             Kind::Window => Undone::Window { tabs: c.tabs.into_iter().map(|(t, _)| t).collect(), panes: c.panes },
