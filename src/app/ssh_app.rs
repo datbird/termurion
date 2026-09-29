@@ -8,7 +8,7 @@ use crate::conductor::{hook_banner, setup_for_hook, Conductor};
 use crate::conductor_parser::{Init, Token};
 use crate::screen::Request;
 use crate::ssh_hook::Out;
-use crate::ssh_session::{conductor_bytes, Hop, CONDUCTOR_READY};
+use crate::ssh_session::{Hop, CONDUCTOR_READY};
 
 /// iTerm2's ssh_config search order in this user's folders (`ssh_args::config_paths`), from
 /// the environment only; a path that is relative, a network path, or reached through a link
@@ -41,11 +41,7 @@ impl App {
         let Some(p) = self.panes.get_mut(&pane) else { return };
         match r {
             Request::SshWillBegin => p.ssh.begin(CONDUCTOR_READY),
-            Request::SshSendConductor(h) => {
-                if let Some(bytes) = conductor_bytes(&h, CONDUCTOR_READY) {
-                    p.write_no_broadcast(&bytes);
-                }
-            }
+            Request::SshSendConductor(h) => p.ssh_send_conductor(&h),
             // `PS:20253-20275` (`Pane::end_ssh`, which writes END_WRITE); the banner after
             // the write, as `PS:20269` then `TD:4043-4046`.
             Request::SshEnd(id) => {

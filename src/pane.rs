@@ -12,10 +12,10 @@ use crate::layout::PaneId;
 use crate::pty::{self, Notify, Pty, Read};
 use crate::ssh_transport::Transport;
 use crate::replay;
+use crate::screen::Screen;
 
 /// The most keystroke bytes a framed conductor may hold queued before the coprocess waits (F20).
 const COPROCESS_BACKLOG: usize = crate::conductor::PIPELINE_BYTES * 64;
-use crate::screen::Screen;
 
 /// The bytes to send for a paste. Newlines become carriage returns, as a typed
 /// Enter would. Bracketed paste wraps the text so the app knows it was pasted,
@@ -679,51 +679,74 @@ impl Pane {
     }
 
     /// A typed write to the session in iTerm2's order (`PS:4411-4432`, then `PS:4191-4197`):
-    /// the conductor's `send_keys` when it handles keystrokes (the app applies its effects in
-    /// `ssh_pump`), else the connecting queue, else held while the conductor sets up, else
-    /// the pty.
+    /// a conductor's `send_keys` when one sends for the session (the app applies its effects
+    /// in `ssh_pump`), else the connecting queue, else `send_routed`.
     pub fn write_session(&mut self, bytes: &[u8]) {
-        if self.ssh_route() == crate::conductor::Route::Conductor {
-            if let Some(c) = self.conductor.as_mut() {
-                c.send_keys(bytes);
-            }
-        } else if !self.ssh.queue(bytes) {
-            self.write_unless_held(bytes);
+        if matches!(self.ssh_route(), crate::conductor::Route::Conductor(_)) || !self.ssh.queue(bytes) {
+            self.send_routed(bytes);
         }
     }
 
-    /// Held while the conductor sets up, else to the pty, past the connecting queue (iTerm2's
-    /// `writeTaskImpl`, `PS:4191-4197`).
-    pub fn write_unless_held(&mut self, bytes: &[u8]) {
-        if self.ssh_route() != crate::conductor::Route::Direct {
-            self.composer.probe = None;
-            self.ssh_held.extend_from_slice(bytes);
-        } else {
-            self.write_no_broadcast(bytes);
-        }
-    }
-
-    /// Whether the conductor's queue of keystrokes is too long for the coprocess to add to
-    /// (F20): the pump stops draining it until replies come back.
-    pub fn coprocess_backlogged(&self) -> bool {
-        self.conductor.as_ref().is_some_and(|c| c.framing() && c.queued_bytes() > COPROCESS_BACKLOG)
-    }
-
-    /// A coprocess's output: to the conductor's `send_keys` while the pane has one (`PK:354-361`,
-    /// `PS:4639-4642`: held during setup, framed from 14c), else to the pty as typed. False when
+    /// THE route of every byte for the session's transport but the conductors' own
+    /// (`Effect::Write`, `write_no_broadcast`): `conductor::route` picks it. Framed by the
+    /// conductor that sends for the session (the current one when it handles keystrokes, else
+    /// the nearest ancestor whose framer runs), held while the current one sets up, else to
+    /// the pty (iTerm2's `writeTaskNoBroadcast`, `PS:4276-4294`, `PS:4191-4197`). False when
     /// the pty refused it.
-    pub fn coprocess_output(&mut self, bytes: &[u8]) -> bool {
-        if let Some(c) = self.conductor.as_mut() {
-            c.send_keys(bytes);
+    pub fn send_routed(&mut self, bytes: &[u8]) -> bool {
+        use crate::conductor::Route;
+        if bytes.is_empty() {
             return true;
         }
-        if let Some(pty) = &self.pty {
-            if let Err(e) = pty.write(bytes) {
-                self.error = Some(e);
-                return false;
+        self.composer.probe = None;
+        match self.ssh_route() {
+            Route::Conductor(hops) => {
+                if let Some(c) = self.conductor.as_deref_mut().and_then(|c| c.ancestor_mut(hops)) {
+                    c.send_keys(bytes);
+                }
+                true
             }
+            Route::Held => {
+                self.ssh_held.extend_from_slice(bytes);
+                true
+            }
+            Route::Direct => self.write_pty(bytes),
         }
-        true
+    }
+
+    /// iTerm2's `conductorWrite` outside `write()` (a failed setup's `exec_login_shell` line):
+    /// held while any conductor would take the session's bytes, else the pty; never framed.
+    /// The abort that follows it drops what was held.
+    fn write_unless_held(&mut self, bytes: &[u8]) {
+        if self.ssh_route() == crate::conductor::Route::Direct {
+            self.write_pty(bytes);
+        } else {
+            self.composer.probe = None;
+            self.ssh_held.extend_from_slice(bytes);
+        }
+    }
+
+    /// Whether the queue of keystrokes of the conductor that sends for the session is too
+    /// long for the coprocess to add to (F20): the pump stops draining it until replies come
+    /// back.
+    pub fn coprocess_backlogged(&self) -> bool {
+        let crate::conductor::Route::Conductor(hops) = self.ssh_route() else { return false };
+        self.conductor.as_deref().and_then(|c| c.ancestor(hops)).is_some_and(|c| c.queued_bytes() > COPROCESS_BACKLOG)
+    }
+
+    /// A coprocess's output (`PK:354-361`, `PS:4639-4642`): `send_routed`, held during setup,
+    /// framed while a conductor sends for the session. False when the pty refused it.
+    pub fn coprocess_output(&mut self, bytes: &[u8]) -> bool {
+        self.send_routed(bytes)
+    }
+
+    /// The conductor bootstrap for it2ssh's `SendConductor` (`PS:20290-20300`), when the hook
+    /// exists: `writeTaskNoBroadcast`, so framed when it2ssh runs in a framed shell (`PS:4280-4285`),
+    /// never typed into framer.py's stdin.
+    pub fn ssh_send_conductor(&mut self, h: &crate::ssh_handshake::Handshake) {
+        if let Some(bytes) = crate::ssh_session::conductor_bytes(h, crate::ssh_session::CONDUCTOR_READY) {
+            self.reply(&bytes);
+        }
     }
 
     /// The writes held while the conductor set up, in order.
@@ -822,8 +845,10 @@ impl Pane {
         }
         let Some(c) = self.conductor.as_mut().filter(|c| c.depth() == depth) else { return };
         c.handle_unhook();
+        // Then routed as any write: to a framer above when one runs (Tandem-side guard: iTerm2's
+        // `writeData:` types them raw, `PS:20176-20180`).
         let held = self.take_ssh_held();
-        self.write_no_broadcast(&held);
+        self.send_routed(&held);
     }
 
     /// Drops the pane's innermost conductor and its hop, keeping the two chains in step:
@@ -922,16 +947,15 @@ impl Pane {
                     // runs, never the connecting queue. A conductor that handles keystrokes
                     // sends them framed (14c); unframed, `reply` would hand them straight back.
                     Effect::Keys(bytes) => {
-                        debug_assert!(self.ssh_route() != crate::conductor::Route::Conductor, "unframed keys from a conductor that handles keystrokes");
+                        debug_assert!(self.ssh_route() != crate::conductor::Route::Conductor(0), "unframed keys from a conductor that handles keystrokes");
                         self.reply(&bytes)
                     }
                     // `PS:25614-25617`: what was typed while connecting goes through sendKeys,
-                    // ahead of later typing; its effects are applied by the next pass.
+                    // ahead of later typing (routed: the conductor that sends for the session, or
+                    // held while the current one sets up); its effects are applied by the next pass.
                     Effect::StopQueueingInput => {
                         let queued = self.ssh.stop_queueing();
-                        if let Some(c) = self.conductor.as_mut() {
-                            c.send_keys(&queued);
-                        }
+                        self.send_routed(&queued);
                     }
                     // Decision: Tandem sends no Initial Text anywhere yet; it goes here.
                     Effect::SendInitialText => {}
@@ -1058,7 +1082,8 @@ impl Pane {
         // Input and before `writeTaskImpl`'s effects (`PS:4411-4430`) but after a conductor
         // that handles keystrokes: a nested hop's password reaches the outer framer (F9,
         // `PS:4418-4426`).
-        if self.ssh_route() != crate::conductor::Route::Conductor && self.ssh.queue(bytes) {
+        let routed = matches!(self.ssh_route(), crate::conductor::Route::Conductor(_));
+        if !routed && self.ssh.queue(bytes) {
             return;
         }
         // Any write cancels the composer's clear probe (`PS:4154-4158`), held by Buffer
@@ -1069,7 +1094,11 @@ impl Pane {
         if bytes.iter().any(|&b| b == b'\r' || b == b'\n') {
             self.last_newline = Some(std::time::Instant::now());
         }
-        if let Some(now) = self.buffer.send(bytes) {
+        // A conductor's keys go before any buffering (`PS:4417-4431`): Buffer Input never
+        // holds them.
+        if routed {
+            self.send_routed(bytes);
+        } else if let Some(now) = self.buffer.send(bytes) {
             self.send_typed(&now);
         }
     }
@@ -1190,19 +1219,13 @@ impl Pane {
     }
 
     /// What the terminal answers the program (reports), and Tandem's own writes that iTerm2
-    /// makes with `broadcastAllowed:NO` (the idle code, upload answers, tmux commands):
-    /// never held by Buffer Input nor the connecting queue (`PS:4364-4376`, `PS:4276-4294`),
-    /// but routed as `writeTaskNoBroadcast` routes them: through the conductor's `send_keys`
-    /// when it handles keystrokes, else held while it sets up (`PS:4191-4197`), else the pty.
+    /// makes with `broadcastAllowed:NO` (the idle code, upload answers, tmux commands, the
+    /// conductor bootstrap): never held by Buffer Input nor the connecting queue
+    /// (`PS:4364-4376`, `PS:4276-4294`), and routed as `writeTaskNoBroadcast` routes them
+    /// (`send_routed`).
     pub fn reply(&mut self, bytes: &[u8]) {
         self.composer.probe = None;
-        if self.ssh_route() == crate::conductor::Route::Conductor {
-            if let Some(c) = self.conductor.as_mut() {
-                c.send_keys(bytes);
-            }
-        } else {
-            self.write_unless_held(bytes);
-        }
+        self.send_routed(bytes);
     }
 
     /// Typed bytes Buffer Input let go: the session's typed route (`write_session`).
@@ -1210,16 +1233,23 @@ impl Pane {
         self.write_session(bytes);
     }
 
-    /// iTerm2's `writeTaskNoBroadcast:`: straight to the pty, past the connecting queue and
-    /// Buffer Input. The conductor's own bytes (its bootstrap, the `^C` line that ends it) go
-    /// this way.
-    pub fn write_no_broadcast(&mut self, bytes: &[u8]) {
+    /// The conductors' own bytes (`Effect::Write`: conductor.sh command lines and framer
+    /// commands, already framed by every framer they pass through): straight to the pty, past
+    /// the connecting queue, Buffer Input and `send_routed`. Nothing else writes this way.
+    fn write_no_broadcast(&mut self, bytes: &[u8]) {
         self.composer.probe = None;
+        self.write_pty(bytes);
+    }
+
+    /// The pty write itself. False when the pty refused it.
+    fn write_pty(&mut self, bytes: &[u8]) -> bool {
         if let Some(pty) = &self.pty {
             if let Err(e) = pty.write(bytes) {
                 self.error = Some(e);
+                return false;
             }
         }
+        true
     }
 
     pub fn paste(&mut self, text: &str) {
@@ -2164,10 +2194,12 @@ mod tests {
         let mut p = Pane::tmux(5, 1, 3, 20, 4);
         p.conductor = setting_up();
         assert!(p.coprocess_output(b"co"));
-        assert_eq!(p.conductor.as_mut().unwrap().take_effects(), [Effect::Keys(b"co".to_vec())], "sendKeys (PS:4639-4642)");
+        assert!(p.conductor.as_mut().unwrap().take_effects().is_empty());
         assert!(p.tmux_io().unwrap().take_input().is_empty());
-        assert!(p.ssh_held.is_empty());
+        assert_eq!(p.take_ssh_held(), b"co", "sendKeys (PS:4639-4642) of a conductor setting up: held");
+        // The conductor's own unframed sendKeys lands the same way.
         p.conductor.as_mut().unwrap().send_keys(b"co");
+        assert_eq!(p.conductor.as_ref().unwrap().effects, [Effect::Keys(b"co".to_vec())]);
         assert!(!p.apply_ssh_effects());
         assert_eq!(p.take_ssh_held(), b"co", "held while setup runs");
         assert!(p.tmux_io().unwrap().take_input().is_empty());
@@ -2679,34 +2711,54 @@ mod tests {
         p.conductor = Some(Box::new(c));
         p.live_input(b"a");
         p.reply(b"r");
+        assert!(p.coprocess_output(b"co"));
+        p.apply_ssh_effects();
         assert!(sends(&p).is_empty());
+        assert!(p.take_ssh_held().is_empty(), "straight to the pty: no conductor above frames");
     }
 
     #[test]
     fn connecting_input_goes_through_send() {
-        use crate::conductor::Effect;
         let mut p = Pane::with(7, None, 80, 24);
         p.conductor = setting_up();
         p.ssh.begin(true);
         p.live_input(b"ls\r");
         p.live_input(b"x");
+        // The framer's login command in flight: still queued, nothing sent before its reply.
+        login(&mut p);
+        p.live_input(b"y");
         assert!(sends(&p).is_empty(), "queued while connecting, not sent before the login");
-        // The login's reply frames the conductor and stops the queueing.
-        let c = p.conductor.as_mut().unwrap();
-        c.framed_pid = Some(4242);
-        c.effects.push(Effect::StopQueueingInput);
-        p.apply_ssh_effects();
-        assert_eq!(sends(&p), [b"ls\rx".to_vec()], "one send for everything typed while connecting");
+        assert_eq!(p.ssh.connecting.as_deref(), Some(&b"ls\rxy"[..]));
+        // The login's reply (the shell's pid) frames the conductor and stops the queueing.
+        login_reply(&mut p);
+        assert_eq!(sends(&p), [b"ls\rxy".to_vec()], "one send for everything typed while connecting");
         assert!(p.ssh.connecting.is_none());
         // Nothing typed: nothing sent (F18).
         let mut p = Pane::with(7, None, 80, 24);
         p.conductor = setting_up();
         p.ssh.begin(true);
-        let c = p.conductor.as_mut().unwrap();
-        c.framed_pid = Some(4242);
-        c.effects.push(Effect::StopQueueingInput);
-        p.apply_ssh_effects();
+        login(&mut p);
+        login_reply(&mut p);
         assert!(sends(&p).is_empty());
+        assert!(p.ssh.connecting.is_none());
+    }
+
+    /// The framer's `login` command written (`CD:1926-1929`).
+    fn login(p: &mut Pane) {
+        use crate::conductor::{Command, Handler};
+        let c = p.conductor.as_mut().unwrap();
+        c.send(Command::FramerLogin { cwd: "$HOME".into(), args: Vec::new() }, Handler::FramerLogin(Vec::new()), false);
+        c.take_effects();
+    }
+
+    /// framer.py's reply to `login`: the login shell's pid, 4242 (`CD:2398-2411`).
+    fn login_reply(p: &mut Pane) {
+        let c = p.conductor.as_mut().unwrap();
+        c.handle_begin("l", 0);
+        c.handle_line("4242", 0);
+        c.handle_end("l", "f", 0, 0);
+        assert_eq!(c.framed_pid, Some(4242));
+        p.apply_ssh_effects();
     }
 
     #[test]
@@ -2742,5 +2794,181 @@ mod tests {
             assert!(i < 199);
         }
         assert!(!p.coprocess_backlogged());
+    }
+
+    // Routing under nested conductors (task 6 fix round, ruling: input never goes to the pty
+    // while any ancestor conductor frames; the nearest framing ancestor sends it).
+
+    /// A pane in a framing session: the root hook hooked, conductor "o" at depth 0 framing
+    /// pid 100 in ground, with its hop.
+    fn framing_root() -> Pane {
+        let mut p = framed_nested();
+        p.ssh_unhook_conductor();
+        assert_eq!(p.conductor.as_ref().map(|c| (c.depth(), c.framing())), Some((0, true)));
+        p
+    }
+
+    /// `nested_framing` once connecting ended (the login's StopQueueingInput).
+    fn framed_nested() -> Pane {
+        let mut p = nested_framing();
+        p.ssh.stop_queueing();
+        p
+    }
+
+    /// What the pty got once the conductors' effects are applied.
+    fn wire(p: &mut Pane) -> Vec<u8> {
+        p.apply_ssh_effects();
+        p.tmux_io().unwrap().take_input()
+    }
+
+    /// `data` framed for pid `pid` at depth 0: a `send` framer command.
+    fn sent_to(pid: i32, data: &[u8]) -> Vec<u8> {
+        use base64::Engine;
+        crate::ssh_fixtures::framer_cmd(&["send", &pid.to_string(), &base64::engine::general_purpose::STANDARD.encode(data)])
+    }
+
+    /// A conductor for `init` chained onto the pane's current one, as `App::ssh_hooked` does.
+    fn hook_child(p: &mut Pane, init: &crate::conductor_parser::Init, depth: i32) {
+        use crate::conductor::{setup_for_hook, Conductor};
+        assert!(p.ssh_init_fits(depth), "a conductor fits at depth {depth}");
+        let setup = setup_for_hook(init, false, &[], &[], None, false, &crate::ssh_args::NoConfig);
+        let mut c = Conductor::new(setup, p.conductor.take(), "E");
+        c.start();
+        p.ssh.chain.push(crate::ssh_session::Hop { unique_id: c.setup.client_unique_id.clone(), location: "x".into() });
+        p.conductor = Some(Box::new(c));
+    }
+
+    /// Feeds `bytes` as output and runs the hook's Init and Unhook tokens as `App::ssh_pump_pane`
+    /// does.
+    fn run_hook(p: &mut Pane, bytes: &[u8]) {
+        use crate::conductor_parser::Token;
+        use crate::ssh_hook::Out;
+        p.tmux_io().unwrap().push_output(bytes);
+        p.pump();
+        for out in p.take_ssh() {
+            match out {
+                Out::Ssh(Token::Init(init), d) => hook_child(p, &init, d),
+                Out::Ssh(Token::Unhook, d) => p.unhook_conductor_at(d),
+                _ => {}
+            }
+        }
+    }
+
+    /// Every way into the session, each asserted framed for `pid` with nothing raw.
+    fn every_path_is_framed(p: &mut Pane, pid: i32) {
+        wire(p);
+        p.live_input(b"k");
+        assert_eq!(wire(p), sent_to(pid, b"k"), "typing");
+        p.input(b"\r");
+        assert_eq!(wire(p), sent_to(pid, b"\r"), "Enter");
+        p.paste("a\nb");
+        assert_eq!(wire(p), sent_to(pid, b"a\rb"), "a paste");
+        p.own_mut().feed(b"\x1b[?2004h");
+        p.paste("c");
+        assert_eq!(wire(p), sent_to(pid, b"\x1b[200~c\x1b[201~"), "a bracketed paste");
+        p.own_mut().feed(b"\x1b[?2004l");
+        p.reply(b"\x1b[?1;2c");
+        assert_eq!(wire(p), sent_to(pid, b"\x1b[?1;2c"), "a report");
+        p.focus_report(true);
+        assert_eq!(wire(p), sent_to(pid, b"\x1b[I"), "a focus report");
+        assert!(p.coprocess_output(b"co"));
+        assert_eq!(wire(p), sent_to(pid, b"co"), "coprocess output");
+        p.write_session(b"w");
+        assert_eq!(wire(p), sent_to(pid, b"w"), "a session write");
+        p.set_buffering(true);
+        p.live_input(b"b");
+        assert_eq!(wire(p), sent_to(pid, b"b"), "Buffer Input never holds a conductor's keys (PS:4417-4431)");
+        p.set_buffering(false);
+        assert!(p.take_ssh_held().is_empty(), "nothing held");
+    }
+
+    #[test]
+    fn a_nested_bootstrap_is_framed() {
+        // it2ssh typed in a framed shell: its bootstrap goes through the framer as
+        // writeTaskNoBroadcast does (`PS:20298-20300`, `PS:4280-4285`), never into its stdin.
+        let mut p = framing_root();
+        wire(&mut p);
+        let h = crate::ssh_handshake::Handshake { token: "a".into(), unique_id: "b".into(), encoded_ba: "c".into(), ssh_args: "d".into() };
+        p.ssh_send_conductor(&h);
+        let bytes = crate::ssh_session::conductor_bytes(&h, true).unwrap();
+        assert_eq!(wire(&mut p), sent_to(100, &bytes));
+        // With no conductor it is typed as before.
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        p.ssh_send_conductor(&h);
+        assert_eq!(p.tmux_io().unwrap().take_input(), bytes);
+    }
+
+    #[test]
+    fn a_level_1_hop_under_a_framer_is_framed_by_it() {
+        use crate::ssh_fixtures::{dcs_hook, output, pre_reply};
+        // A nested it2ssh to a host without Python 3.7: a depth 1 conductor that sets up, then
+        // unhooks for good. Its ssh runs in the framed shell of pid 100.
+        let mut p = framing_root();
+        run_hook(&mut p, &output("n", 100, -1, 0, &dcs_hook("", "u", "YQ==", "Yg==")));
+        assert_eq!(p.conductor.as_ref().map(|c| c.depth()), Some(1));
+        let setup = wire(&mut p);
+        assert!(setup.starts_with(&sent_to(100, b"\x03E\n")), "the child's setup is framed (F5)");
+        // Typed while it sets up: held for its unhook.
+        p.live_input(b"early");
+        assert_eq!(wire(&mut p), b"");
+        // conductor.sh answers and then unhooks (the login shell ran without the framer).
+        run_hook(&mut p, &output("n", 100, -1, 0, &[pre_reply("1.1", &["sh"]), crate::ssh_fixtures::osc135("unhook")].concat()));
+        assert!(p.conductor.as_ref().unwrap().unhooked() && p.conductor.as_ref().unwrap().depth() == 1);
+        assert_eq!(wire(&mut p), sent_to(100, b"early"), "the unhook's held bytes are framed");
+        every_path_is_framed(&mut p, 100);
+    }
+
+    #[test]
+    fn a_nested_exit_before_endssh_is_framed_by_the_parent() {
+        // The depth 1 framer ends (its unhook) and EndSSH has not come yet: whatever is typed
+        // meanwhile is for the depth 0 framed shell that ran that ssh.
+        let mut p = framed_nested();
+        wire(&mut p);
+        p.unhook_conductor_at(1);
+        assert_eq!(p.conductor.as_ref().map(|c| (c.depth(), c.unhooked())), Some((1, true)));
+        every_path_is_framed(&mut p, 100);
+        // EndSSH pops it; the end line goes to the same framed shell.
+        p.end_ssh("a");
+        assert_eq!(wire(&mut p), sent_to(100, crate::ssh_session::END_WRITE));
+    }
+
+    #[test]
+    fn a_catd_conductor_under_a_framer_is_framed_by_it() {
+        use crate::ssh_fixtures::{dcs_hook, osc135, output};
+        // `cat evil` in the framed shell: DCS 2000p, an init line and an unhook at depth 1.
+        let mut p = framing_root();
+        run_hook(&mut p, &output("n", 100, -1, 0, &[dcs_hook("", "evil", "YQ==", "Yg=="), osc135("unhook")].concat()));
+        assert_eq!(p.conductor.as_ref().map(|c| (c.depth(), c.unhooked())), Some((1, true)));
+        every_path_is_framed(&mut p, 100);
+    }
+
+    #[test]
+    fn a_depth_2_hop_is_framed_at_depth_1() {
+        use crate::ssh_fixtures::{dcs_hook, osc135, output};
+        // The same at depth 2: the nearest framing ancestor (depth 1, pid 200) sends, and its
+        // send is itself framed by depth 0.
+        let mut p = framed_nested();
+        assert_eq!(ssh_depths(&mut p, &nested_init()), [1, 1, 1, 1], "the depth 1 hook");
+        wire(&mut p);
+        let evil = output("k", 200, -1, 1, &[dcs_hook("", "evil", "YQ==", "Yg=="), osc135("unhook")].concat());
+        // Through the process whose output holds the depth 1 hook (`nested_init`'s).
+        run_hook(&mut p, &output("n", 200, -1, 0, &evil));
+        assert_eq!(p.conductor.as_ref().map(|c| (c.depth(), c.unhooked())), Some((2, true)));
+        wire(&mut p);
+        p.live_input(b"k");
+        let inner = sent_to(200, b"k");
+        assert_eq!(wire(&mut p), sent_to(100, &inner));
+    }
+
+    #[test]
+    fn a_failing_level_1_hop_writes_nothing_raw() {
+        // An error at depth 1 fails the level 1 conductor: its `exec_login_shell` line is never
+        // typed into the depth 0 framer.
+        let mut p = framed_nested();
+        wire(&mut p);
+        p.unhook_conductor_at(1);
+        p.ssh_error(1, "lost");
+        assert_eq!(wire(&mut p), b"");
+        assert_eq!(p.conductor.as_ref().map(|c| c.depth()), Some(0));
     }
 }

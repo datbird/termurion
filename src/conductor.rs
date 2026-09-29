@@ -585,18 +585,34 @@ pub enum Route {
     Direct,
     /// Held until the conductor unhooks (`_sshWriteQueue`).
     Held,
-    /// Through the conductor's `send_keys` (framed from milestone 14c).
-    Conductor,
+    /// Through the `send_keys` of the conductor this many parents out from the current one
+    /// (0: the current one), framed.
+    Conductor(usize),
 }
 
 /// handlesKeystrokes gives Conductor (`PS:4278-4293`, `PS:4411-4432`), queueWrites gives
-/// Held (`PS:4191-4197`), else Direct.
+/// Held (`PS:4191-4197`). Where iTerm2 then writes to the pty, Tandem first looks outward:
+/// while an ancestor's framer reads the pty (a level 1 hop inside a framed session, a nested
+/// exit before its EndSSH, a cat'd hook that unhooked), the nearest one sends the bytes
+/// (Tandem-side guard: iTerm2 types them into framer.py's stdin). Direct only with none.
 pub fn route(c: Option<&Conductor>) -> Route {
-    match c {
-        Some(c) if c.handles_keystrokes() => Route::Conductor,
-        Some(c) if c.queue_writes() => Route::Held,
-        _ => Route::Direct,
+    let Some(c) = c else { return Route::Direct };
+    if c.handles_keystrokes() {
+        return Route::Conductor(0);
     }
+    if c.queue_writes() {
+        return Route::Held;
+    }
+    let mut hops = 1;
+    let mut up = c.parent.as_deref();
+    while let Some(p) = up {
+        if p.frames_keys() {
+            return Route::Conductor(hops);
+        }
+        hops += 1;
+        up = p.parent.as_deref();
+    }
+    Route::Direct
 }
 
 /// One conductor.sh (or framer.py) on the other side of an ssh (`CD`).
@@ -859,13 +875,39 @@ impl Conductor {
     }
 
     /// The conductor's own bytes as a parent carries them for a child's `write()`
-    /// (`CD:3039-3058`: the parent's `sendKeys`): a framing parent sends them to its framed
-    /// shell; an unframed one writes them raw (`_queueWrites` cleared, never held).
+    /// (`CD:3039-3058`: the parent's `sendKeys`): a parent whose framer runs sends them to its
+    /// framed shell; any other hands them to its own parent, and the outermost writes them raw
+    /// (`_queueWrites` cleared, never held). iTerm2 writes them raw at the first unframed
+    /// parent, into the framer of any framing one above it (Tandem-side guard, see `route`).
     fn write_through(&mut self, bytes: Vec<u8>) {
-        if self.framing() {
+        if self.frames_keys() {
             self.send_keys(&bytes);
+        } else if self.parent.is_some() {
+            self.via_parent(|parent| parent.write_through(bytes));
         } else {
             self.effects.push(Effect::Write(bytes));
+        }
+    }
+
+    /// Whether this conductor's framer is running to read what it sends: framing and not
+    /// unhooked (the framer's end is its unhook).
+    pub fn frames_keys(&self) -> bool {
+        self.framing() && !self.unhooked()
+    }
+
+    /// The conductor `hops` parents out (0: this one).
+    pub fn ancestor(&self, hops: usize) -> Option<&Conductor> {
+        match hops {
+            0 => Some(self),
+            n => self.parent.as_deref()?.ancestor(n - 1),
+        }
+    }
+
+    /// The conductor `hops` parents out (0: this one); its effects surface through this one's.
+    pub fn ancestor_mut(&mut self, hops: usize) -> Option<&mut Conductor> {
+        match hops {
+            0 => Some(self),
+            n => self.parent.as_deref_mut()?.ancestor_mut(n - 1),
         }
     }
 
@@ -982,20 +1024,9 @@ impl Conductor {
         if self.transition {
             return;
         }
-        match self.state.clone() {
+        match self.state {
             State::Ground => self.dequeue(),
-            State::WillExecute(written) => self.extend(written, |c, contexts| c.state = State::WillExecute(contexts)),
-            // The first has had its begin, so it stays the executing one and the new
-            // commands join those behind it.
-            State::Executing(first, rest) => {
-                let written = std::iter::once(first).chain(rest).collect();
-                self.extend(written, |c, contexts| {
-                    let mut contexts = contexts.into_iter();
-                    if let Some(first) = contexts.next() {
-                        c.state = State::Executing(first, contexts.collect());
-                    }
-                });
-            }
+            State::WillExecute(_) | State::Executing(..) => self.extend(),
             State::Unhooked => {}
         }
     }
@@ -1011,23 +1042,33 @@ impl Conductor {
     /// dequeue from ground (`CD:2860-2869`): a pipeline of what is queued.
     fn dequeue(&mut self) {
         debug_assert_eq!(self.state, State::Ground);
-        self.extend(Vec::new(), |c, contexts| c.state = State::WillExecute(contexts));
+        self.extend();
+    }
+
+    /// The contexts written and not yet ended, first to last.
+    fn written(&self) -> impl Iterator<Item = &Context> {
+        let (first, rest): (Option<&Context>, &[Context]) = match &self.state {
+            State::WillExecute(contexts) => (None, contexts),
+            State::Executing(first, rest) => (Some(first), rest),
+            State::Ground | State::Unhooked => (None, &[]),
+        };
+        first.into_iter().chain(rest)
     }
 
     /// extendPipeline (`CD:2888-2960`) and takeNextContextPipeline (`CD:2986-3010`): takes
-    /// what can ride along behind the `written` pipeline (nothing when a written command does
-    /// not pipeline; from ground, the first command whatever it is), while the total size is
-    /// under `PIPELINE_BYTES` and each next command pipelines. `set` puts the whole pipeline
-    /// in the state before anything is written, inside the transition guard; canceled contexts
-    /// are dropped and their handlers told last, once the state is consistent.
-    fn extend(&mut self, written: Vec<Context>, set: impl FnOnce(&mut Conductor, Vec<Context>)) {
-        if !written.iter().all(|c| c.command.supports_pipelining()) {
+    /// what can ride along behind the state's written pipeline (nothing when a written command
+    /// does not pipeline; from ground, the first command whatever it is), while the total size
+    /// is under `PIPELINE_BYTES` and each next command pipelines. The taken ones join the
+    /// state's pipeline (behind an executing first, which stays executing) before anything is
+    /// written, inside the transition guard; canceled contexts are dropped and their handlers
+    /// told last, once the state is consistent.
+    fn extend(&mut self) {
+        if !self.written().all(|c| c.command.supports_pipelining()) {
             return;
         }
-        let from_ground = written.is_empty();
-        let mut size: usize = written.iter().map(|c| c.command.size()).sum();
-        let mut pipeline = written;
-        let already = pipeline.len();
+        let from_ground = self.written().next().is_none();
+        let mut size: usize = self.written().map(|c| c.command.size()).sum();
+        let mut pipeline = Vec::new();
         let mut dropped = Vec::new();
         let mut texts = Vec::new();
         while size < PIPELINE_BYTES {
@@ -1035,7 +1076,7 @@ impl Conductor {
                 dropped.push((self.queue.remove(0), Partial::Canceled));
             }
             let Some(next) = self.queue.first() else { break };
-            if !pipeline.is_empty() && !next.command.supports_pipelining() {
+            if !(from_ground && pipeline.is_empty()) && !next.command.supports_pipelining() {
                 break;
             }
             let mut context = self.queue.remove(0);
@@ -1054,12 +1095,15 @@ impl Conductor {
                 break;
             }
         }
-        if pipeline.len() > already {
+        if !pipeline.is_empty() {
             if from_ground {
                 self.last_activity = Some(self.now());
             }
             self.in_transition(|c| {
-                set(c, pipeline);
+                match &mut c.state {
+                    State::WillExecute(contexts) | State::Executing(_, contexts) => contexts.append(&mut pipeline),
+                    State::Ground | State::Unhooked => c.state = State::WillExecute(pipeline),
+                }
                 for text in &texts {
                     c.write(text);
                 }
@@ -1137,8 +1181,8 @@ impl Conductor {
             self.dequeue();
         } else {
             // amendPipeline: what was behind is still written; more may ride along.
-            self.state = State::WillExecute(pending.clone());
-            self.extend(pending, |c, contexts| c.state = State::WillExecute(contexts));
+            self.state = State::WillExecute(pending);
+            self.extend();
         }
     }
 
@@ -1718,13 +1762,60 @@ mod tests {
         let mut c = root();
         assert_eq!(route(Some(&c)), Route::Held, "setting up");
         c.framed_pid = Some(1);
-        assert_eq!(route(Some(&c)), Route::Conductor, "framing with writes queued");
+        assert_eq!(route(Some(&c)), Route::Conductor(0), "framing with writes queued");
         c.handle_unhook();
         assert_eq!(route(Some(&c)), Route::Direct, "unhooked");
         let mut parent = root();
         parent.handle_unhook();
         let child = Conductor::new(setup("B"), Some(Box::new(parent)), "V");
         assert_eq!(route(Some(&child)), Route::Direct, "a child setting up under an unhooked parent");
+    }
+
+    #[test]
+    fn routes_never_bypass_a_framing_ancestor() {
+        // Tandem-side guard: while an ancestor's framer runs, the nearest one sends.
+        let framing = || {
+            let mut c = root();
+            c.framed_pid = Some(1);
+            c
+        };
+        let mut level1 = Conductor::new(setup("B"), Some(Box::new(framing())), "V");
+        assert_eq!(route(Some(&level1)), Route::Held, "a child setting up is held for its unhook");
+        level1.handle_unhook();
+        assert_eq!(route(Some(&level1)), Route::Conductor(1), "a level 1 child under a framer");
+        // Under it, an unframed child of the unhooked level 1 hop: two out.
+        let mut deeper = Conductor::new(setup("C"), Some(Box::new(level1)), "W");
+        // Setting up under an unhooked parent is not held (iTerm2's queueWrites), so it goes
+        // where the unhooked parent's writes go: the framer two out.
+        assert_eq!(route(Some(&deeper)), Route::Conductor(2));
+        deeper.handle_unhook();
+        assert_eq!(route(Some(&deeper)), Route::Conductor(2));
+        // A framer that ended (unhooked) is skipped; with none left, Direct.
+        let mut ended = framing();
+        ended.handle_unhook();
+        let mut child = Conductor::new(setup("B"), Some(Box::new(ended)), "V");
+        child.handle_unhook();
+        assert_eq!(route(Some(&child)), Route::Direct);
+        // A framing child whose framer ended, before its EndSSH.
+        let mut exited = Conductor::new(setup("B"), Some(Box::new(framing())), "V");
+        exited.framed_pid = Some(2);
+        assert_eq!(route(Some(&exited)), Route::Conductor(0));
+        exited.handle_unhook();
+        assert_eq!(route(Some(&exited)), Route::Conductor(1));
+    }
+
+    #[test]
+    fn writes_through_an_unframed_parent_reach_the_framer_above() {
+        // A child set up under an unhooked level 1 hop inside a framed session: its setup
+        // lines are the framer's sends, never raw into framer.py's stdin.
+        let mut outer = root();
+        outer.framed_pid = Some(7);
+        let mut level1 = Conductor::new(setup("B"), Some(Box::new(outer)), "V");
+        level1.handle_unhook();
+        let mut child = Conductor::new(setup("C"), Some(Box::new(level1)), "W");
+        child.write("x");
+        let fx = child.take_effects();
+        assert_eq!(fx, [Effect::Write(crate::ssh_fixtures::framer_cmd(&["send", "7", &b64(b"x\n")]))]);
     }
 
     #[test]
