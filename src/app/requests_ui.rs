@@ -90,6 +90,7 @@ impl App {
             Request::ShellIntegrationReported { version, shell } => self.shell_integration_reported(pane, version, shell),
             // Progress Bar Changed event triggers arrive in task 5 of milestone 6b.
             Request::Progress(_) => {}
+            Request::CommandEnded { code, mark } => self.stream_command(pane, code, mark),
             Request::CursorGuide(on) => {
                 self.show_guide.insert(pane, on);
                 self.redraw();

@@ -896,6 +896,14 @@ pub struct App {
     chat_picker: Option<chat_session_app::Pick>,
     /// The picker buttons this window drew, per pane (this window's, in `WinSlot`).
     picker_hits: Vec<(PaneId, Rect)>,
+    /// The AI indicators this window drew (this window's, in `WinSlot`).
+    chat_indicator_hits: Vec<(PaneId, Rect, scene::IndicatorKind)>,
+    /// Chats streaming their linked session's finished commands (app-wide, keyed by chat).
+    streaming_chats: std::collections::HashSet<String>,
+    /// The indicator menu on screen: the pane and the routes its items run (`chat_session_app`).
+    chat_indicator_menu: Option<(PaneId, Vec<crate::chat_routes::Route>)>,
+    /// Every chat's linked session, read for the indicators at most once a second.
+    chat_links: std::cell::RefCell<Option<(Instant, Vec<(String, String)>)>>,
     /// The subscription that hears every chat for as long as the store is open, so a minted
     /// title needs no window (ruling F14).
     chat_mint_sub: Option<crate::chat_broker::SubId>,
@@ -1528,6 +1536,10 @@ pub fn run() {
         chat_convo_dirty: true,
         chat_picker: None,
         picker_hits: Vec::new(),
+        chat_indicator_hits: Vec::new(),
+        streaming_chats: std::collections::HashSet::new(),
+        chat_indicator_menu: None,
+        chat_links: std::cell::RefCell::new(None),
         chat_mint_sub: None,
         chat_prompt: None,
         title_runs: HashMap::new(),
@@ -3242,6 +3254,8 @@ impl App {
 
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        // Every chat linked to this session unlinks while its reference still names the pane.
+        self.chat_pane_gone(id);
         // A git command's window closed any way ends its command, as does Manage
         // Dependencies' pip command.
         self.single_use_ended(id);
@@ -3838,6 +3852,10 @@ impl App {
         if button == MouseButton::Left && self.picker_press(x, y) {
             return;
         }
+        // A pane's AI indicator (linked or streaming) opens its menu.
+        if button == MouseButton::Left && self.chat_indicator_press(x, y) {
+            return;
+        }
         if button == MouseButton::Left && self.clip_press(x, y, event_loop) {
             return;
         }
@@ -4029,6 +4047,7 @@ impl App {
                 } else {
                     // iTerm2 copies a selection as soon as it is made.
                     self.copy_selection(pane);
+                    self.chat_offer_selection(pane);
                 }
             }
             Drag::App { pane, button, clicks, at } => {
@@ -4270,6 +4289,7 @@ impl App {
         let backgrounds = self.pane_backgrounds();
         let mut block_buttons = Vec::new();
         let mut picker_hits = Vec::new();
+        let mut indicator_hits = Vec::new();
         self.prepare_portholes();
         self.prepare_badges();
         let mut porthole_hits = Vec::new();
@@ -4316,7 +4336,7 @@ impl App {
                 if self.panes.get(&id).is_some_and(|p| p.buffer.on) {
                     scene::buffering_sign(&mut frame, self.inner(rect), cell);
                 }
-                self.draw_coprocess_indicator(&mut frame, id, self.inner(rect), cell, (sends, receives));
+                indicator_hits.extend(self.draw_coprocess_indicator(&mut frame, id, self.inner(rect), cell, (sends, receives)));
                 picker_hits.extend(self.draw_session_picker(&mut frame, id, self.inner(rect), cell));
                 self.draw_info_bar(&mut frame, id, rect, cell);
                 if let Some(t) = self.draw_attention(&mut frame, id, self.inner(rect), cell) {
@@ -4385,6 +4405,7 @@ impl App {
         self.block_buttons = block_buttons;
         self.porthole_hits = porthole_hits;
         self.picker_hits = picker_hits;
+        self.chat_indicator_hits = indicator_hits;
         let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
         if let Some(text) = error {
             let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));

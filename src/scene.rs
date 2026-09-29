@@ -911,18 +911,42 @@ pub const RECEIVE_ONLY_GLYPH: char = '\u{E701}';
 
 /// The top-right glyphs in iTerm2's order (right to left): broadcast or receive-only,
 /// then the coprocess.
-pub fn indicator_glyphs(sends: bool, receives: bool, coprocess: bool) -> Vec<char> {
+pub fn indicator_glyphs(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool) -> Vec<char> {
+    indicators(sends, receives, coprocess, linked, streaming).into_iter().map(|(g, _)| g).collect()
+}
+
+/// What a press on an indicator glyph does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndicatorKind {
+    Other,
+    AiLinked,
+    AiStreaming,
+}
+
+/// The glyphs with their kinds, in the same order.
+pub fn indicators(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool) -> Vec<(char, IndicatorKind)> {
     let mut out = Vec::new();
     if sends {
-        out.push(BROADCAST_GLYPH);
+        out.push((BROADCAST_GLYPH, IndicatorKind::Other));
     } else if receives {
-        out.push(RECEIVE_ONLY_GLYPH);
+        out.push((RECEIVE_ONLY_GLYPH, IndicatorKind::Other));
     }
     if coprocess {
-        out.push(COPROCESS_GLYPH);
+        out.push((COPROCESS_GLYPH, IndicatorKind::Other));
+    }
+    if linked {
+        out.push((AI_LINKED_GLYPH, IndicatorKind::AiLinked));
+    }
+    if streaming {
+        out.push((AI_STREAMING_GLYPH, IndicatorKind::AiStreaming));
     }
     out
 }
+
+/// The AI chat indicators: a session linked to a chat, and one whose finished commands stream to
+/// a chat (`IH:96-117`; iTerm2 gives the streaming one the receive-only symbol).
+pub const AI_LINKED_GLYPH: char = '\u{E8BD}';
+pub const AI_STREAMING_GLYPH: char = RECEIVE_ONLY_GLYPH;
 
 /// iTerm2's broadcast stripes as a tile to repeat: red at alpha 64 in "/" bands at 45
 /// degrees, 40 px on and 40 px off along each row (80 px tile), scaled by `scale`.
@@ -942,13 +966,17 @@ pub fn stripe_tile(scale: f32) -> (u32, Vec<u8>) {
 }
 
 /// A pane's top-right indicators, right to left from the corner.
-pub fn top_right_indicators(frame: &mut Frame, pane: Rect, glyphs: &[char], color: Rgb, cell: (f32, f32)) {
+/// Answers each glyph's rectangle, for the ones a press acts on.
+pub fn top_right_indicators(frame: &mut Frame, pane: Rect, glyphs: &[char], color: Rgb, cell: (f32, f32)) -> Vec<Rect> {
     let step = cell.0 * 2.5;
+    let mut hits = Vec::new();
     for (i, g) in glyphs.iter().enumerate() {
         let x = pane.x + pane.w - (i as f32 + 1.0) * step;
         let span = Span { text: g.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
         frame.rows.push(TextRow { x, y: pane.y + 4.0, spans: vec![span], clip: pane, scale: 1.0 });
+        hits.push(Rect { x, y: pane.y + 4.0, w: cell.0 * 2.0, h: cell.1 });
     }
+    hits
 }
 
 /// Segoe Fluent Icons glyphs for the indicators.
@@ -2772,10 +2800,26 @@ mod broadcast_tests {
 
     #[test]
     fn indicators_keep_iterm2_order() {
-        assert_eq!(indicator_glyphs(true, true, true), vec![BROADCAST_GLYPH, COPROCESS_GLYPH]);
-        assert_eq!(indicator_glyphs(false, true, false), vec![RECEIVE_ONLY_GLYPH]);
-        assert_eq!(indicator_glyphs(false, false, true), vec![COPROCESS_GLYPH]);
-        assert!(indicator_glyphs(false, false, false).is_empty());
+        assert_eq!(indicator_glyphs(true, true, true, false, false), vec![BROADCAST_GLYPH, COPROCESS_GLYPH]);
+        assert_eq!(indicator_glyphs(false, true, false, false, false), vec![RECEIVE_ONLY_GLYPH]);
+        assert_eq!(indicator_glyphs(false, false, true, false, false), vec![COPROCESS_GLYPH]);
+        assert!(indicator_glyphs(false, false, false, false, false).is_empty());
+    }
+
+    #[test]
+    fn indicator_glyphs_follow_iterm2() {
+        assert_eq!(indicator_glyphs(true, true, true, true, true), vec![BROADCAST_GLYPH, COPROCESS_GLYPH, AI_LINKED_GLYPH, AI_STREAMING_GLYPH]);
+        assert_eq!(indicator_glyphs(false, false, false, true, false), vec![AI_LINKED_GLYPH]);
+        assert_eq!(AI_STREAMING_GLYPH, RECEIVE_ONLY_GLYPH, "iTerm2 uses one symbol for both");
+        assert_eq!(AI_LINKED_GLYPH, '\u{E8BD}');
+        // Each glyph knows what a press on it means; the streaming glyph is told apart from
+        // receive-only by its kind, not its character.
+        let kinds: Vec<IndicatorKind> = indicators(false, true, true, true, true).into_iter().map(|(_, k)| k).collect();
+        assert_eq!(kinds, vec![IndicatorKind::Other, IndicatorKind::Other, IndicatorKind::AiLinked, IndicatorKind::AiStreaming]);
+        let hits = top_right_indicators(&mut Frame::default(), Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, &[BROADCAST_GLYPH, AI_LINKED_GLYPH], rgb(1, 2, 3), (8.0, 16.0));
+        assert_eq!(hits.len(), 2);
+        assert!(hits[0].x > hits[1].x, "right to left from the corner");
+        assert!(hits[0].x + hits[0].w <= 400.0);
     }
 }
 

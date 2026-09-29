@@ -8,10 +8,13 @@ use super::*;
 use crate::ai_permissions::{Category, Permission};
 use crate::chat_agent::Agent;
 use crate::chat_buttons::{self, Answer, Button, EnableFacts, Press};
-use crate::chat_message::{ClientLocal, Content, Message};
+use crate::chat_menu::{self, Entry, MenuFacts, Tri};
+use crate::chat_message::{ClientLocal, Content, Message, Streaming, TerminalCommand};
+use crate::chat_routes::{self, Route};
 use crate::chat_store::Chat;
 use crate::chat_view;
 use super::chat_engine::Choice;
+use crate::scene::IndicatorKind;
 
 /// A pick in progress: which chat asked, for which kind of session, and what follows it.
 #[derive(Clone, Debug, PartialEq)]
@@ -24,7 +27,6 @@ pub(super) struct Pick {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum PickThen {
     /// Link the chosen session (the Chat Info menu's "Link Terminal Session").
-    #[allow(dead_code)] // Made by Task 6's "Link Terminal Session".
     Link,
     /// Answer a parked select-session request (its original request id).
     Request(String),
@@ -183,10 +185,9 @@ impl App {
         self.chat_agents.get(chat).is_some_and(|a| a.running.is_some()) || pane.and_then(|p| self.ai_pending_tools.get(&p)).is_some_and(|(c, _)| c == chat)
     }
 
-    /// Whether the chat is streaming finished commands (Task 6 keeps the state).
-    fn chat_streaming(&self, _chat: &str) -> bool {
-        // Filled by Task 6.
-        false
+    /// Whether the chat is streaming finished commands (`streaming`, per chat and app-wide).
+    fn chat_streaming(&self, chat: &str) -> bool {
+        self.streaming_chats.contains(chat)
     }
 
     /// The live facts for one message's rules (`CVC:1962-2050`).
@@ -292,9 +293,388 @@ impl App {
         self.chat_state_changed();
     }
 
-    /// A permissions button: the category cycles for the linked session and Confirm Change asks
-    /// where iTerm2 asks (filled by Task 6, ruling F24).
-    pub(super) fn toggle_permission(&mut self, _chat: &str, _category: Category) {}
+    /// The chat's stored row now (never a copy read earlier).
+    fn chat_row(&self, chat: &str) -> Option<Chat> {
+        self.chat_db.as_ref()?.chat(chat).ok().flatten()
+    }
+
+    /// The chat's linked terminal, as its reference and its live pane: None when it is not linked
+    /// or the session is not open.
+    fn chat_live_link(&self, chat: &str) -> Option<(String, PaneId)> {
+        let guid = self.chat_row(chat)?.terminal_session_guid?;
+        let pane = self.ref_pane(&guid)?;
+        Some((guid, pane))
+    }
+
+    /// A permissions button or menu item (`toggle(permissionCategory:)`, `CVC:1150-1204`): the
+    /// category cycles Always, Never, Ask for the linked live session, and the two autopopulated
+    /// categories ask Confirm Change before Always. Nothing happens for a chat with no live link.
+    pub(super) fn toggle_permission(&mut self, chat: &str, category: Category) {
+        if category.is_browser() {
+            return; // No browser pane exists before milestone 13.
+        }
+        let Some((guid, _)) = self.chat_live_link(chat) else { return };
+        let global = |c: Category| self.ai_global_permission(c);
+        let current = self.ai_overrides.get(chat, &guid, category, &global);
+        match chat_menu::toggle(category, current) {
+            chat_menu::Toggle::Set(p) => self.ai_set_permission(chat, &guid, category, p),
+            chat_menu::Toggle::Confirm(warning) => self.ask_ai(chat_menu::confirm_alert(chat, &guid, category, warning)),
+        }
+        self.chat_state_changed();
+    }
+
+    /// Confirm Change's answer. It applies only while the chat is still linked to the live
+    /// session the question named (a stale answer changes and grants nothing). Send Automatically
+    /// is the informed consent, recorded globally, and it clears the queued one-time question
+    /// that asked the same (ruling F31).
+    pub(super) fn confirm_change_answered(&mut self, chat: &str, guid: &str, category: Category, index: usize) {
+        let linked = self.chat_row(chat).and_then(|r| r.terminal_session_guid);
+        let live = self.ref_pane(guid).is_some();
+        let Some((permission, grants)) = chat_menu::confirm_outcome(index, linked.as_deref(), guid, live) else { return };
+        if let Some(consent) = chat_menu::consent_write(grants) {
+            self.globals.set(crate::ai_context::CONSENT_KEY, toml::Value::Integer(consent.raw()));
+            self.save_globals();
+            chat_menu::drop_queued_consent(&mut self.ai_asks);
+        }
+        self.ai_set_permission(chat, guid, category, permission);
+        self.chat_state_changed();
+    }
+
+    /// Unlinks the chat's terminal (or browser) session (`unlinkTerminalSession`, `CVC:1403-1435`):
+    /// streaming ends, the notice shows and the allowed set is published again. Watchers are
+    /// 12f's.
+    pub(super) fn unlink_chat(&mut self, chat: &str, terminal: bool) {
+        if terminal {
+            self.stop_streaming(chat);
+        }
+        let changed = self.chat_update(chat, |c| {
+            if terminal {
+                c.terminal_session_guid = None;
+            } else {
+                c.browser_session_guid = None;
+            }
+        });
+        if !changed {
+            return;
+        }
+        // The next link starts from no watermark (ruling F34).
+        self.ai_watermarks.remove(chat);
+        self.notice(chat, if terminal { chat_menu::UNLINKED_TERMINAL } else { chat_menu::UNLINKED_BROWSER });
+        self.ai_publish_permissions(chat);
+        self.chat_state_changed();
+    }
+
+    /// Reveal Linked Terminal Session.
+    fn reveal_chat_session(&mut self, chat: &str) {
+        if let Some((_, pane)) = self.chat_live_link(chat) {
+            self.reveal_pane(pane);
+        }
+    }
+
+    /// Put Chat in Linked Terminal Session: the panel of the linked pane shows this chat
+    /// (filled by Task 9's `bind_inline`; until then nothing).
+    pub(super) fn put_chat_in_session(&mut self, _chat: &str) {}
+
+    /// Send Commands & Output to AI Automatically (`toggleStream`, `CVC:1335-1357`): only for a
+    /// linked live terminal. Turning it on asks the Privacy Warning first; turning it off is
+    /// `stop_streaming`.
+    pub(super) fn toggle_stream(&mut self, chat: &str) {
+        if self.chat_live_link(chat).is_none() {
+            return;
+        }
+        if self.streaming_chats.contains(chat) {
+            self.stop_streaming(chat);
+        } else {
+            self.ask_ai(chat_menu::privacy_alert(chat));
+        }
+    }
+
+    /// The Privacy Warning's OK: streaming starts for the chat's linked pane, if it is still
+    /// linked and open.
+    pub(super) fn start_streaming(&mut self, chat: &str) {
+        if self.chat_live_link(chat).is_none() || !self.streaming_chats.insert(chat.to_string()) {
+            return;
+        }
+        self.sync_chat_watch();
+        self.client_local(chat, ClientLocal::StreamingChanged(Streaming::Active));
+        self.chat_state_changed();
+    }
+
+    /// Ends the chat's streaming (`stopStreaming`, `CVC:1320-1330`): the stop is published when
+    /// it was on, and the pane stops queueing command ends unless another chat streams it.
+    pub(super) fn stop_streaming(&mut self, chat: &str) {
+        if !self.streaming_chats.remove(chat) {
+            return;
+        }
+        self.sync_chat_watch();
+        self.client_local(chat, ClientLocal::StreamingChanged(Streaming::Stopped));
+        self.chat_window_refresh();
+        self.redraw_all();
+    }
+
+    /// Every pane's `chat_watch` follows the streaming chats' links.
+    pub(super) fn sync_chat_watch(&mut self) {
+        let mut wanted = std::collections::HashSet::new();
+        for chat in &self.streaming_chats {
+            if let Some((_, pane)) = self.chat_live_link(chat) {
+                wanted.insert(pane);
+            }
+        }
+        for (id, p) in self.panes.iter_mut() {
+            let on = wanted.contains(id);
+            if p.own().chat_watch != on {
+                p.own_mut().chat_watch = on;
+            }
+        }
+    }
+
+    /// A finished command of a streamed session goes to every chat streaming it
+    /// (`streamLastCommand`, `CVC:2401-2455`): its command, directory, host and user, the code,
+    /// its own output while it is still in the buffer (else a sentence saying so, ruling F32), and
+    /// a reveal-mark link. A command with no text sends nothing.
+    pub(super) fn stream_command(&mut self, pane: PaneId, code: i32, mark: Option<u32>) {
+        if self.streaming_chats.is_empty() {
+            return;
+        }
+        let Some(reference) = self.session_ref(pane) else { return };
+        let links: Vec<(String, String)> = self.streaming_chats.iter().filter_map(|c| Some((c.clone(), self.chat_row(c)?.terminal_session_guid?))).collect();
+        let targets = chat_menu::stream_targets(links.iter().map(|(c, g)| (c.as_str(), Some(g.as_str()))), &reference);
+        if targets.is_empty() {
+            return;
+        }
+        let Some(f) = self.panes.get(&pane).and_then(|p| p.own().finished_command(mark)) else { return };
+        let command = TerminalCommand {
+            username: f.user,
+            hostname: f.host,
+            directory: f.directory,
+            command: f.command,
+            output: f.output.unwrap_or_else(|| chat_menu::OUTPUT_GONE.to_string()),
+            exit_code: code,
+            url: chat_routes::mark_url(&reference, f.mark),
+        };
+        for chat in targets {
+            self.ai_send_terminal_command(&chat, command.clone());
+        }
+    }
+
+    /// A pane is closing (`sessionWillTerminate`, `CVC:241-256`): every chat linked to it unlinks
+    /// with the notice and stops streaming, and a picker button on it is dropped. Called before
+    /// the pane leaves, while its reference still names it.
+    pub(super) fn chat_pane_gone(&mut self, pane: PaneId) {
+        let Some(reference) = self.session_ref(pane) else { return };
+        self.picker_hits.retain(|(p, _)| *p != pane);
+        let linked = self.chat_db.as_ref().and_then(|db| db.linked_sessions().ok()).unwrap_or_default();
+        for (chat, guid) in linked {
+            if guid == reference {
+                self.unlink_chat(&chat, true);
+            }
+        }
+        self.chat_links_stale();
+    }
+
+    /// The links the indicators read, refreshed at most once a second unless something changed
+    /// them (a draw asks every pane every frame).
+    fn chat_links(&self) -> Vec<(String, String)> {
+        let mut cache = self.chat_links.borrow_mut();
+        if let Some((at, links)) = cache.as_ref() {
+            if at.elapsed() < Duration::from_secs(1) {
+                return links.clone();
+            }
+        }
+        let links = self.chat_db.as_ref().and_then(|db| db.linked_sessions().ok()).unwrap_or_default();
+        *cache = Some((Instant::now(), links.clone()));
+        links
+    }
+
+    /// The indicators read the links again on the next frame.
+    pub(super) fn chat_links_stale(&self) {
+        *self.chat_links.borrow_mut() = None;
+    }
+
+    /// Whether a chat links the pane, and whether a chat streaming it does.
+    pub(super) fn chat_pane_state(&self, pane: PaneId) -> (bool, bool) {
+        let Some(reference) = self.session_ref(pane) else { return (false, false) };
+        let links = self.chat_links();
+        let linked = links.iter().any(|(_, g)| *g == reference);
+        let streaming = links.iter().any(|(c, g)| *g == reference && self.streaming_chats.contains(c));
+        (linked, streaming)
+    }
+
+    /// The Chat Info menu at `at` (screen pixels) for the chat, on the chat window or, for a
+    /// panel (`inline` names its pane), the terminal window. Ids are `aichat:menu:<verb>:<chat>`;
+    /// the menu lives until its pick arrives (`popup_menu`).
+    pub(super) fn show_session_menu(&mut self, chat: &str, inline: Option<PaneId>, at: (f32, f32)) {
+        use muda::ContextMenu;
+        let hwnd = match inline {
+            Some(pane) => {
+                self.enter_pane_window(pane);
+                self.hwnd()
+            }
+            None => self.chat_window.as_ref().and_then(|w| w.hwnd()),
+        };
+        let Some(hwnd) = hwnd else { return };
+        let Some(row) = self.chat_row(chat) else { return };
+        let live = row.terminal_session_guid.as_deref().and_then(|g| self.ref_pane(g).map(|_| g.to_string()));
+        let facts = MenuFacts { orchestrating: row.orchestration_enabled, terminal_live: live.is_some(), browser_live: false, inline: inline.is_some(), streaming: self.streaming_chats.contains(chat) };
+        let global = |c: Category| self.ai_global_permission(c);
+        let perm = |c: Category| match &live {
+            Some(g) => self.ai_overrides.get(chat, g, c, &global),
+            None => Permission::Ask,
+        };
+        let entries = chat_menu::session_menu(&facts, &perm);
+        let menu = muda::Menu::new();
+        let mut results = Vec::new();
+        for e in &entries {
+            results.push(match e {
+                Entry::Separator => menu.append(&muda::PredefinedMenuItem::separator()),
+                Entry::Item { title, action, state, enabled } => {
+                    let id = chat_menu::menu_id(action, chat);
+                    let text = title.replace('&', "&&");
+                    match state {
+                        None => menu.append(&muda::MenuItem::with_id(id, text, *enabled, None)),
+                        Some(Tri::On) => menu.append(&muda::CheckMenuItem::with_id(id, text, *enabled, true, None)),
+                        Some(Tri::Off) => menu.append(&muda::CheckMenuItem::with_id(id, text, *enabled, false, None)),
+                        Some(Tri::Mixed) => menu.append(&muda::IconMenuItem::with_id(id, text, *enabled, dash_icon(), None)),
+                    }
+                }
+            });
+        }
+        if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
+            self.banners.set("menu", format!("Chat menu: {e}"));
+            return;
+        }
+        let at = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.0 as i32, at.1 as i32));
+        unsafe { menu.show_context_menu_for_hwnd(hwnd, Some(at)) };
+        self.popup_menu = Some(menu);
+    }
+
+    /// A pick from the Chat Info menu or the indicator menu. False for other ids.
+    pub(super) fn chat_menu_picked(&mut self, id: &str, event_loop: &ActiveEventLoop) -> bool {
+        if let Some(n) = id.strip_prefix(INDICATOR_ID) {
+            if let (Some((_, routes)), Ok(n)) = (self.chat_indicator_menu.take(), n.parse::<usize>()) {
+                if let Some(route) = routes.get(n) {
+                    self.run_chat_route(route, event_loop);
+                }
+            }
+            return true;
+        }
+        if !id.starts_with(chat_menu::MENU_PREFIX) {
+            return false;
+        }
+        let Some((action, chat)) = chat_menu::parse_menu_id(id) else { return true };
+        match action {
+            chat_menu::Action::Reveal => self.reveal_chat_session(&chat),
+            chat_menu::Action::Unlink => self.unlink_chat(&chat, true),
+            chat_menu::Action::Put => self.put_chat_in_session(&chat),
+            chat_menu::Action::Toggle(c) => self.toggle_permission(&chat, c),
+            chat_menu::Action::Stream => self.toggle_stream(&chat),
+            chat_menu::Action::Link => self.start_pick(&chat, true, PickThen::Link),
+            chat_menu::Action::Help => self.ask_ai(chat_menu::help_alert()),
+            // Disabled until 12f and milestone 13; never a pick.
+            chat_menu::Action::Orchestration | chat_menu::Action::LinkBrowser => {}
+        }
+        true
+    }
+
+    /// A press on an AI glyph among a pane's indicators: a click menu of the popover's links
+    /// (Decision). False for a press anywhere else. The hits are this window's last frame's.
+    pub(super) fn chat_indicator_press(&mut self, x: f32, y: f32) -> bool {
+        use muda::ContextMenu;
+        let Some(&(pane, _, kind)) = self.chat_indicator_hits.iter().find(|(_, r, _)| r.contains(x, y)) else { return false };
+        let Some(reference) = self.session_ref(pane) else { return true };
+        let routes = match kind {
+            IndicatorKind::AiLinked => chat_routes::indicator_routes(true, false, &reference),
+            IndicatorKind::AiStreaming => chat_routes::indicator_routes(false, true, &reference),
+            IndicatorKind::Other => return false,
+        };
+        let Some(hwnd) = self.hwnd() else { return true };
+        let menu = muda::Menu::new();
+        for (i, (label, _)) in routes.iter().enumerate() {
+            if let Err(e) = menu.append(&muda::MenuItem::with_id(format!("{INDICATOR_ID}{i}"), label.replace('&', "&&"), true, None)) {
+                self.banners.set("menu", format!("Chat menu: {e}"));
+                return true;
+            }
+        }
+        self.chat_indicator_menu = Some((pane, routes.into_iter().map(|(_, r)| r).collect()));
+        unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        self.popup_menu = Some(menu);
+        true
+    }
+
+    /// Runs a route (minor m10). Only two inputs reach it: the indicator menu's items and a
+    /// terminal command cell's reveal-mark link (`from_command_cell` refuses every other route
+    /// there); a markdown link is never parsed into one. A session that is not a live pane
+    /// exactly, by its reference, is nothing.
+    pub(super) fn run_chat_route(&mut self, r: &Route, event_loop: &ActiveEventLoop) {
+        match r {
+            Route::UnlinkSessionChat(session) => {
+                for (chat, guid) in self.chat_db.as_ref().and_then(|db| db.linked_sessions().ok()).unwrap_or_default() {
+                    if guid == *session {
+                        self.unlink_chat(&chat, true);
+                    }
+                }
+            }
+            Route::RevealChatForSession(session) => {
+                // The most recent chat linked to it, in the chat window.
+                let chat = self.chat_db.as_ref().and_then(|db| db.chats().ok()).and_then(|chats| chats.into_iter().find(|c| c.terminal_session_guid.as_deref() == Some(session.as_str())));
+                if let Some(c) = chat {
+                    if self.chat_window_enter(event_loop) {
+                        self.show_chat(Some(c.id));
+                    }
+                }
+            }
+            Route::DisableStreaming(session) => {
+                let streaming: Vec<String> = self.streaming_chats.iter().filter(|c| self.chat_row(c).and_then(|r| r.terminal_session_guid).as_deref() == Some(session.as_str())).cloned().collect();
+                for chat in streaming {
+                    self.stop_streaming(&chat);
+                }
+            }
+            Route::RevealMark { session, mark } => {
+                let (Some(pane), Ok(mark)) = (self.ref_pane(session), mark.parse::<u32>()) else { return };
+                self.reveal_pane(pane);
+                let line = self.panes.get_mut(&pane).and_then(|p| p.own_mut().marks_in_order().into_iter().find(|(_, m)| m.id == mark).map(|(l, _)| l));
+                if let Some(line) = line {
+                    self.show_line(pane, line, false);
+                }
+                self.redraw();
+            }
+        }
+    }
+
+    /// A terminal selection ended (`textViewLiveSelectionDidEnd`, `PTYSession.m:14912-14916`): a
+    /// short one in the pane the shown chat links goes to the chat's input when it is still
+    /// eligible (`CVC:1060-1067`, Task 7's `offer_text`).
+    pub(super) fn chat_offer_selection(&mut self, pane: PaneId) {
+        let Some(chat) = self.chat_shown.clone() else { return };
+        let Some(reference) = self.session_ref(pane) else { return };
+        if self.chat_row(&chat).and_then(|r| r.terminal_session_guid).as_deref() != Some(reference.as_str()) {
+            return;
+        }
+        let Some(p) = self.panes.get(&pane) else { return };
+        let Some(text) = p.own().term().selection_to_string().filter(|t| !t.is_empty()) else { return };
+        if chat_menu::short_selection(text.chars().count(), p.own().term().grid().columns()) {
+            self.offer_text(&chat, &text);
+        }
+    }
+
+    /// Puts terminal text in the chat's input while nothing was typed since the last send (filled
+    /// by Task 7's input; until then nothing).
+    fn offer_text(&mut self, _chat: &str, _text: &str) {}
+}
+
+/// The indicator menu's ids are `aichat:ind:<index>` into the routes it was built with.
+const INDICATOR_ID: &str = "aichat:ind:";
+
+/// The mixed state's dash (muda has no third check state): a 16 by 16 bar in the menu's ink.
+fn dash_icon() -> Option<muda::Icon> {
+    let mut px = vec![0u8; 16 * 16 * 4];
+    for y in 7..9 {
+        for x in 3..13 {
+            let i = (y * 16 + x) * 4;
+            px[i..i + 4].copy_from_slice(&[0x60, 0x60, 0x60, 0xff]);
+        }
+    }
+    muda::Icon::from_rgba(px, 16, 16).ok()
 }
 
 #[cfg(test)]

@@ -179,17 +179,22 @@ impl App {
         }
     }
 
-    /// The top-right coprocess indicator.
-    /// The pane's top-right indicators: broadcast (sends, or receive only) and coprocess.
-    pub(super) fn draw_coprocess_indicator(&self, frame: &mut Frame, id: PaneId, rect: Rect, cell: (f32, f32), broadcast: (bool, bool)) {
+    /// The pane's top-right indicators: broadcast (sends, or receive only), the coprocess, and
+    /// the AI chat's linked and streaming glyphs. Answers each AI glyph's rectangle, which the
+    /// frame keeps for a press (the draw loop holds a borrow of the tab).
+    pub(super) fn draw_coprocess_indicator(&self, frame: &mut Frame, id: PaneId, rect: Rect, cell: (f32, f32), broadcast: (bool, bool)) -> Vec<(PaneId, Rect, scene::IndicatorKind)> {
         if self.globals.bool("disableTopRightIndicators") {
-            return;
+            return Vec::new();
         }
-        let Some(p) = self.panes.get(&id) else { return };
-        let glyphs = scene::indicator_glyphs(broadcast.0, broadcast.1, p.coprocess_command().is_some());
-        if !glyphs.is_empty() {
-            scene::top_right_indicators(frame, rect, &glyphs, p.own().palette.fg, cell);
+        let Some(p) = self.panes.get(&id) else { return Vec::new() };
+        let (linked, streaming) = self.chat_pane_state(id);
+        let shown = scene::indicators(broadcast.0, broadcast.1, p.coprocess_command().is_some(), linked, streaming);
+        if shown.is_empty() {
+            return Vec::new();
         }
+        let glyphs: Vec<char> = shown.iter().map(|(g, _)| *g).collect();
+        let rects = scene::top_right_indicators(frame, rect, &glyphs, p.own().palette.fg, cell);
+        shown.iter().zip(rects).filter(|((_, k), _)| *k != scene::IndicatorKind::Other).map(|((_, k), r)| (id, r, *k)).collect()
     }
 
     /// Copy Interpolated String (key action 72): the text with the session's variables.

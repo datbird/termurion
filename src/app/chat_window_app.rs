@@ -129,7 +129,7 @@ impl App {
 
     /// The gate, the database and the window, in iTerm2's order (`showChatWindow`,
     /// `CWC:250-258`). After a failed open nothing more happens (checklist row 42, ruling F38).
-    fn chat_window_enter(&mut self, event_loop: &ActiveEventLoop) -> bool {
+    pub(super) fn chat_window_enter(&mut self, event_loop: &ActiveEventLoop) -> bool {
         if self.chat_db_failed || !self.ai_check(false) || self.chat_db().is_none() {
             return false;
         }
@@ -207,8 +207,19 @@ impl App {
     /// Shows `chat` and leaves the search as it is (a chosen result keeps search mode,
     /// `CL:522-527`): the title, the toolbar and the data follow.
     fn show_chat_in_search(&mut self, chat: Option<String>) {
+        // Showing another chat ends the streaming of the one this view showed (`CVC:843-847`).
+        if let Some(old) = self.chat_shown.clone().filter(|old| Some(old) != chat.as_ref()) {
+            self.stop_streaming(&old);
+        }
         self.chat_shown = chat;
         self.chat_load_messages();
+        // A chat whose last state is Active with nothing streaming it was left on by an earlier
+        // run: it says so (`CVC:1006-1011`).
+        if let Some(shown) = self.chat_shown.clone() {
+            if crate::chat_menu::stale_streaming(crate::chat_menu::last_streaming(&self.chat_msgs), self.streaming_chats.contains(&shown)) {
+                self.client_local(&shown, ClientLocal::StreamingChanged(crate::chat_message::Streaming::StoppedAutomatically));
+            }
+        }
         self.chat_toolbar_dirty = true;
         self.chat_rows_dirty = true;
         self.chat_window_refresh();
@@ -700,9 +711,13 @@ impl App {
         }
     }
 
-    /// A terminal command row was clicked (filled by Task 6, which accepts only a reveal-mark
-    /// route from it).
-    fn chat_reveal_command(&mut self, _url: &str) {}
+    /// A terminal command row was clicked: only its reveal-mark route runs; any other route in
+    /// the URL is ignored (minor m10).
+    fn chat_reveal_command(&mut self, url: &str, event_loop: &ActiveEventLoop) {
+        if let Some(route) = crate::chat_routes::from_command_cell(url) {
+            self.run_chat_route(&route, event_loop);
+        }
+    }
 
     /// The file a file item names: written under the chat's temp folder through
     /// `chat_view::materialize` only (ruling R12cd-6), from the bytes in the message itself.
@@ -744,9 +759,6 @@ impl App {
             }
         }
     }
-
-    /// Stops the chat's streaming bubble (filled by Task 6; ruling F24).
-    pub(super) fn stop_streaming(&mut self, _chat: &str) {}
 
     /// Closing, or Close (Win+W): streaming stops, the subscription ends, the window goes
     /// (`CWC:481-501`). Nothing restores it at relaunch.
@@ -823,8 +835,11 @@ impl App {
             ChatEvent::Provider(id) => self.chat_pick_provider(&id),
             ChatEvent::Model(name) => self.chat_pick_model(&name),
             ChatEvent::Effort(_) | ChatEvent::Tier(_) | ChatEvent::ToggleThinking | ChatEvent::ToggleWebSearch => self.chat_toolbar_pick(&e),
-            // The Chat Info menu: Task 6.
-            ChatEvent::SessionMenu(_) => {}
+            ChatEvent::SessionMenu(at) => {
+                if let Some(chat) = self.chat_shown.clone() {
+                    self.show_session_menu(&chat, None, at);
+                }
+            }
             ChatEvent::Select(id) => self.show_chat(Some(id)),
             ChatEvent::NewChat => self.create_window_chat(None),
             ChatEvent::Search(q) => self.chat_search_query(&q),
@@ -840,7 +855,7 @@ impl App {
             ChatEvent::OpenUrl(url) => self.chat_open_url(&url),
             ChatEvent::OpenFile(r) => self.chat_file(&r, true),
             ChatEvent::RevealFile(r) => self.chat_file(&r, false),
-            ChatEvent::RevealCommand(url) => self.chat_reveal_command(&url),
+            ChatEvent::RevealCommand(url) => self.chat_reveal_command(&url, event_loop),
             ChatEvent::Button { message, button } => {
                 if let Some(chat) = self.chat_shown.clone() {
                     self.chat_button_pressed(&chat, &message, &button, event_loop);
@@ -961,10 +976,12 @@ impl App {
             let _ = runner.cancel();
         });
         for id in &ids {
+            self.streaming_chats.remove(id);
             self.chat_delete(id);
             self.ai_watermarks.remove(id);
             self.chat_snippets.remove(id);
         }
+        self.sync_chat_watch();
         let first = self.chat_db.as_ref().and_then(|db| db.chats().ok()).and_then(|chats| chats.first().map(|c| c.id.clone()));
         self.chat_rows_dirty = true;
         match chat_list::after_delete(self.chat_shown.as_deref(), &ids, first.as_deref()) {

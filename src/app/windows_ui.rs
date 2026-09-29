@@ -61,6 +61,8 @@ pub(super) struct WinSlot {
     porthole_hits: Vec<porthole_ui::PortholeHit>,
     /// The session picker's buttons this window drew (`chat_session_app`).
     picker_hits: Vec<(PaneId, Rect)>,
+    /// The AI indicators' rectangles this window drew, for a press on them (`chat_session_app`).
+    chat_indicator_hits: Vec<(PaneId, Rect, crate::scene::IndicatorKind)>,
     focused: bool,
     wheel_acc: f32,
     wheel_acc_x: f32,
@@ -138,6 +140,7 @@ impl WinSlot {
             block_hover: None,
             porthole_hits: Vec::new(),
             picker_hits: Vec::new(),
+            chat_indicator_hits: Vec::new(),
             focused: false,
             wheel_acc: 0.0,
             wheel_acc_x: 0.0,
@@ -230,6 +233,7 @@ impl App {
         swap(&mut self.block_hover, &mut s.block_hover);
         swap(&mut self.porthole_hits, &mut s.porthole_hits);
         swap(&mut self.picker_hits, &mut s.picker_hits);
+        swap(&mut self.chat_indicator_hits, &mut s.chat_indicator_hits);
         swap(&mut self.focused, &mut s.focused);
         swap(&mut self.wheel_acc, &mut s.wheel_acc);
         swap(&mut self.wheel_acc_x, &mut s.wheel_acc_x);
@@ -792,6 +796,7 @@ impl WinSlot {
             block_hover: None,
             porthole_hits: Vec::new(),
             picker_hits: Vec::new(),
+            chat_indicator_hits: Vec::new(),
             focused: false,
             wheel_acc: 0.0,
             wheel_acc_x: 0.0,

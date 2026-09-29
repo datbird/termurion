@@ -109,6 +109,12 @@ pub enum Then {
     /// The second button deletes these chats (the list's Delete, `CWC:844-872`); the first is
     /// Cancel, which a close and Escape press.
     DeleteChats(Vec<String>),
+    /// Confirm Change (`CVC:1150-1204`): the answer sets the chat's permission for the category
+    /// in that session, only while the chat is still linked to it. The first button also grants
+    /// consent to automatic sending; a close answers "Ask Each Time" (ruling F2).
+    ConfirmChange { chat: String, guid: String, category: crate::ai_permissions::Category },
+    /// The Privacy Warning before streaming (`CVC:1335-1357`): only OK starts it.
+    PrivacyWarning(String),
 }
 
 /// One AI alert for `App::ask_ai`. `silence` is a permanent-silence key (the `scripts_alerts`

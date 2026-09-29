@@ -308,10 +308,13 @@ impl App {
                 }
             }
             // Turn On writes Granted; Not Now (also a close or Escape) writes Denied, as iTerm2.
+            // A question overtaken by Confirm Change's grant writes nothing (ruling F31).
             Then::AutoProvide => {
-                let consent = crate::ai_context::consent_answer(index);
-                self.globals.set(crate::ai_context::CONSENT_KEY, toml::Value::Integer(consent.raw()));
-                self.save_globals();
+                let current = crate::ai_context::Consent::from_global(self.globals.int(crate::ai_context::CONSENT_KEY));
+                if let Some(consent) = crate::chat_menu::queued_consent_write(current, index) {
+                    self.globals.set(crate::ai_context::CONSENT_KEY, toml::Value::Integer(consent.raw()));
+                    self.save_globals();
+                }
             }
             // OK turns the check on; either answer ends the question for good.
             Then::SafetyNag => self.ai_nag_answered(index),
@@ -319,6 +322,14 @@ impl App {
             Then::DeleteChats(ids) => {
                 if index == 1 {
                     self.delete_chats(ids);
+                }
+            }
+            // The alert names the chat, session and category; a stale answer does nothing.
+            Then::ConfirmChange { chat, guid, category } => self.confirm_change_answered(&chat, &guid, category, index),
+            // Only OK starts streaming; Cancel, a close and Escape never do.
+            Then::PrivacyWarning(chat) => {
+                if index == 0 {
+                    self.start_streaming(&chat);
                 }
             }
             Then::Grant(host) => {
