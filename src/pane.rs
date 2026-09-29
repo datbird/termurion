@@ -237,6 +237,11 @@ pub struct Pane {
     /// Changes to the app-wide connected hosts, for the app to apply in order after it pumps
     /// the pane's SSH (`App::ssh_apply`): every conductor that frames or leaves the pane.
     ssh_registry_out: Vec<crate::ssh_registry::Change>,
+    /// Answers to script calls (`get_time_offset`) the conductors finished, for the app to
+    /// deliver by token.
+    ssh_answers: Vec<(u64, Result<crate::ssh_clock::Offset, String>)>,
+    /// The Clock's view of the remote's time (`CLK`): what the bar shows for this session.
+    pub ssh_clock: crate::ssh_clock::Clock,
     /// Session writes held while the conductor sets up (`_sshWriteQueue`, `PS:4191-4197`),
     /// sent when it unhooks.
     ssh_held: Vec<u8>,
@@ -387,7 +392,7 @@ impl Pane {
     fn with(id: PaneId, pty: Option<Io>, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = pty.is_some();
-        Pane { id, screen, pty, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() }
+        Pane { id, screen, pty, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -794,6 +799,10 @@ impl Pane {
         // The next job comes from the parent's remote or the local shell again.
         self.ssh.jobs_dirty = true;
         self.ssh_registry_out.push(crate::ssh_registry::Change::Remove(c.guid.clone()));
+        // Script calls it still owed an answer get one: nothing reads its effects again.
+        for token in c.abandoned_time_tokens() {
+            self.ssh_answers.push((token, Err("Failed to fetch time: the connection ended".to_string())));
+        }
         if let Some(saved) = &c.saved {
             self.own_mut().restore_ssh_saved(saved);
         }
@@ -963,6 +972,7 @@ impl Pane {
                     Effect::ProcessesChanged => self.ssh.jobs_dirty = true,
                     Effect::Registered { guid, identity } => self.ssh_registry_out.push(crate::ssh_registry::Change::Add(guid, identity)),
                     Effect::Deregistered { guid } => self.ssh_registry_out.push(crate::ssh_registry::Change::Remove(guid)),
+                    Effect::TimeOffset { token, result } => redraw |= self.time_offset(token, result),
                     Effect::Notice(text) => {
                         self.own_mut().append_banner(&text);
                         redraw = true;
@@ -981,6 +991,8 @@ impl Pane {
                             match rest {
                                 Effect::Registered { guid, identity } if live.contains(&guid) => self.ssh_registry_out.push(crate::ssh_registry::Change::Add(guid, identity)),
                                 Effect::Deregistered { guid } => self.ssh_registry_out.push(crate::ssh_registry::Change::Remove(guid)),
+                                // A script call is answered even when its batch is dropped.
+                                Effect::TimeOffset { token: Some(t), result } => self.ssh_answers.push((t, result)),
                                 _ => {}
                             }
                         }
@@ -989,6 +1001,59 @@ impl Pane {
             }
         }
         redraw
+    }
+
+    /// A clock reply: a script call's is kept for the app to deliver, the Clock's own sets the
+    /// pane's Clock. True when the bar's text may change.
+    fn time_offset(&mut self, token: Option<u64>, result: Result<crate::ssh_clock::Offset, String>) -> bool {
+        match token {
+            Some(t) => {
+                self.ssh_answers.push((t, result));
+                false
+            }
+            None => {
+                self.ssh_clock.set(result);
+                true
+            }
+        }
+    }
+
+    /// The script calls this pane's conductors still owe an answer (fetching, or finished
+    /// with the effect not yet taken). A pane that is dropped answers them with an error.
+    pub fn owed_answers(&self) -> Vec<u64> {
+        let mut tokens = Vec::new();
+        let mut c = self.conductor.as_deref();
+        while let Some(conductor) = c {
+            tokens.extend(conductor.abandoned_time_tokens());
+            c = conductor.parent.as_deref();
+        }
+        tokens
+    }
+
+    /// The answers to script calls the conductors finished, taken.
+    pub fn take_ssh_answers(&mut self) -> Vec<(u64, Result<crate::ssh_clock::Offset, String>)> {
+        std::mem::take(&mut self.ssh_answers)
+    }
+
+    /// Asks the pane's Clock what to do at `now` for its SSH level and host name (`CLK:52-99`)
+    /// and does it: at level 2 the current conductor fetches the remote's time. Returns what
+    /// it decided.
+    pub fn ssh_clock_tick(&mut self, now: std::time::Instant, host: Option<&str>) -> crate::ssh_clock::Refresh {
+        use crate::ssh_clock::Refresh;
+        let refresh = self.ssh_clock.due(i32::from(self.ssh_level()), host, now);
+        if refresh == Refresh::Fetch {
+            let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+            if let Some(c) = self.conductor.as_mut() {
+                c.fetch_time_offset(wall, crate::ssh_clock::monotonic(std::time::Instant::now()), None);
+            }
+            self.apply_ssh_effects();
+        }
+        refresh
+    }
+
+    /// When the Clock next fetches (level 2 only).
+    pub fn clock_due(&self) -> Option<std::time::Instant> {
+        self.ssh_clock.next_due()
     }
 
     /// The command timer of the pane's current conductor at `now`, then its effects. True
@@ -2402,7 +2467,7 @@ mod tests {
 
     #[test]
     fn gateway_panes_take_no_input() {
-        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
+        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
         p.buffer.on = true;
         p.input(b"a");
         p.gateway = true;
@@ -2415,7 +2480,7 @@ mod tests {
         // During a replay iTerm2's tab shows the task-less synthetic session, so nothing
         // the user sends reaches the live shell; the live session's own writes (a
         // trigger's Send Text) still do.
-        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
+        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
         p.buffer.on = true;
         p.input(b"a");
         p.replay = Some(replay::Replay { decoder: None, read_only: false });
@@ -2430,7 +2495,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
+        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);
@@ -2970,5 +3035,73 @@ mod tests {
         p.ssh_error(1, "lost");
         assert_eq!(wire(&mut p), b"");
         assert_eq!(p.conductor.as_ref().map(|c| c.depth()), Some(0));
+    }
+
+    /// A framing conductor's clock effects: a tokenless reply is the pane's Clock, a script
+    /// call's reply is an answer for the app, and both are read only while the pane is at
+    /// level 2.
+    #[test]
+    fn time_offsets_reach_the_clock_and_the_script_tokens() {
+        use crate::conductor::{Conductor, Effect, Setup};
+        use crate::ssh_clock::{Offset, Refresh};
+        let mut p = Pane::with(1, None, 20, 6);
+        let t0 = std::time::Instant::now();
+        // No conductor: local time, once.
+        assert_eq!(p.ssh_clock_tick(t0, Some("h")), Refresh::Local);
+        assert_eq!(p.ssh_clock_tick(t0, Some("h")), Refresh::Nothing);
+        let mut c = Conductor::new(Setup { client_unique_id: "A".into(), ..Setup::default() }, None, "P");
+        c.framed_pid = Some(10);
+        p.conductor = Some(Box::new(c));
+        // Level 2: a fetch is sent (through the framer, as a runpy command), once.
+        assert_eq!(p.ssh_clock_tick(t0, Some("h")), Refresh::Fetch);
+        assert!(matches!(p.conductor.as_ref().unwrap().in_flight(), Some(crate::conductor::Command::FramerExecPythonStatements(_))));
+        assert_eq!(p.ssh_clock_tick(t0, Some("h")), Refresh::Nothing);
+        assert_eq!(p.clock_due(), Some(t0 + crate::ssh_clock::REFRESH));
+        let good = Offset { offset: 11.5, tz: "CDT".into(), zone: Some(-18000) };
+        p.conductor.as_mut().unwrap().effects.push(Effect::TimeOffset { token: None, result: Ok(good.clone()) });
+        p.conductor.as_mut().unwrap().effects.push(Effect::TimeOffset { token: Some(7), result: Ok(good.clone()) });
+        p.conductor.as_mut().unwrap().effects.push(Effect::TimeOffset { token: Some(8), result: Err("Failed to fetch time: x".into()) });
+        assert!(p.apply_ssh_effects(), "the bar shows a new time");
+        assert_eq!((p.ssh_clock.offset, p.ssh_clock.tz.as_deref(), p.ssh_clock.zone), (11.5, Some("CDT"), Some(-18000)));
+        assert_eq!(p.take_ssh_answers(), [(7, Ok(good)), (8, Err("Failed to fetch time: x".to_string()))]);
+        assert!(p.take_ssh_answers().is_empty());
+        // The conductor leaves: level 0 is local time again.
+        assert!(p.pop_conductor());
+        assert_eq!(p.ssh_clock_tick(t0, Some("h")), Refresh::Local);
+        assert_eq!((p.ssh_clock.offset, p.ssh_clock.tz.clone()), (0.0, None));
+    }
+
+    /// A script call whose conductor is dropped, or fails, is still answered.
+    #[test]
+    fn a_dropped_conductor_answers_its_time_offset_tokens() {
+        use crate::conductor::{Conductor, Setup};
+        let framing = |id: &str| {
+            let mut c = Conductor::new(Setup { client_unique_id: id.into(), ..Setup::default() }, None, "P");
+            c.framed_pid = Some(10);
+            c
+        };
+        // Popped with the fetch in flight.
+        let mut p = Pane::with(1, None, 20, 6);
+        p.conductor = Some(Box::new(framing("A")));
+        p.conductor.as_mut().unwrap().fetch_time_offset(1.0, 0.0, Some(5));
+        assert!(p.pop_conductor());
+        let answers = p.take_ssh_answers();
+        assert!(matches!(&answers[..], [(5, Err(_))]), "{answers:?}");
+        // The connection ends (unhook) and the batch is applied.
+        let mut p = Pane::with(1, None, 20, 6);
+        p.conductor = Some(Box::new(framing("A")));
+        p.conductor.as_mut().unwrap().fetch_time_offset(1.0, 0.0, Some(6));
+        p.unhook_conductor_at(0);
+        p.apply_ssh_effects();
+        let answers = p.take_ssh_answers();
+        assert!(matches!(&answers[..], [(6, Err(_))]), "{answers:?}");
+        // A failure's dropped batch still answers the token.
+        let mut p = Pane::with(1, None, 20, 6);
+        p.conductor = Some(Box::new(framing("A")));
+        p.conductor.as_mut().unwrap().fetch_time_offset(1.0, 0.0, Some(7));
+        p.conductor.as_mut().unwrap().fail("boom");
+        p.apply_ssh_effects();
+        let answers = p.take_ssh_answers();
+        assert!(matches!(&answers[..], [(7, Err(_))]), "{answers:?}");
     }
 }

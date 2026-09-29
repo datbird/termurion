@@ -319,6 +319,9 @@ pub enum Effect {
     Registered { guid: String, identity: Identity },
     /// A framed conductor failed and leaves the connected hosts (`CD:3095-3103`).
     Deregistered { guid: String },
+    /// The remote's clock answered (or the fetch failed). Without a token it is the pane's
+    /// Clock; with one it is the answer to a script's `get_time_offset`.
+    TimeOffset { token: Option<u64>, result: Result<crate::ssh_clock::Offset, String> },
 }
 
 /// What an unhook restores (Decision: the remote host and the working directory).
@@ -363,6 +366,11 @@ pub enum Handler {
     /// The variable's name and the first reply line: `None` before one arrived, `Some(None)`
     /// when it was too long to keep.
     Getenv(String, Option<Option<String>>),
+    /// A framer command whose whole reply is text for the purpose (`Ephemeral`, `CD:2247`
+    /// and the time offset's `framerExecPythonStatements`): the lines are kept up to
+    /// `LOGIN_LIMIT` (more are dropped, and the reply is then invalid) and the end hands
+    /// them over; an abort or a cancel answers with an error.
+    Ephemeral(Purpose, Vec<String>),
 }
 
 /// The most a pipeline holds before it stops taking commands (`CD:2986-3010`).
@@ -1055,6 +1063,11 @@ impl Conductor {
         first.into_iter().chain(rest)
     }
 
+    /// The contexts written and not yet ended, then the queued ones.
+    pub(crate) fn written_and_queued(&self) -> impl Iterator<Item = &Context> {
+        self.written().chain(self.queue.iter())
+    }
+
     /// extendPipeline (`CD:2888-2960`) and takeNextContextPipeline (`CD:2986-3010`): takes
     /// what can ride along behind the state's written pipeline (nothing when a written command
     /// does not pipeline; from ground, the first command whatever it is), while the total size
@@ -1208,10 +1221,13 @@ impl Conductor {
     /// stays unhooked (iTerm2 bug B17 fixed): iTerm2 grounds every parent, so a failed
     /// nested setup makes the unhooked level 1 parent hold typing forever.
     pub fn force_ground(&mut self) {
+        // A clock fetch that was written is still owed its answer: it is told, though the
+        // other written commands are dropped unheard.
+        let mut aborted: Vec<Context> = self.written().filter(|c| matches!(c.handler, Handler::Ephemeral(..))).cloned().collect();
         if !self.unhooked() {
             self.state = State::Ground;
         }
-        let aborted = self.queue.clone();
+        aborted.extend(self.queue.iter().cloned());
         self.in_transition(|c| {
             for context in aborted {
                 c.update(&context, Partial::Abort);
@@ -1238,7 +1254,7 @@ impl Conductor {
         self.effects.push(Effect::Abort(reason.to_string()));
     }
 
-    fn now(&self) -> Instant {
+    pub(crate) fn now(&self) -> Instant {
         self.fake_now.unwrap_or_else(Instant::now)
     }
 
@@ -1285,6 +1301,15 @@ impl Conductor {
             Handler::GetShell(lines) => (lines, GETSHELL_LIMIT),
             Handler::CheckForPython(lines) => (lines, PYTHON_LIMIT),
             Handler::FramerLogin(lines) => (lines, LOGIN_LIMIT),
+            // A reply past the limit is dropped, not a reason to fail the connection: what
+            // was kept then reads as an invalid reply.
+            Handler::Ephemeral(_, lines) => {
+                let kept: usize = lines.iter().map(String::len).sum();
+                if lines.len() < LOGIN_LIMIT.1 && kept + line.len() <= LOGIN_LIMIT.0 {
+                    lines.push(line.to_string());
+                }
+                return;
+            }
             // Only the first line is the value; a value past the limit is not kept (F13).
             Handler::Getenv(_, first) => {
                 if first.is_none() {
@@ -1315,6 +1340,7 @@ impl Conductor {
                 if matches!(context.handler, Handler::CheckForPython(_)) {
                     self.exec_login_shell();
                 }
+                self.time_offset_lost(&context.handler);
                 return;
             }
         };
@@ -1354,6 +1380,7 @@ impl Conductor {
                     self.environment_variables.insert(name.clone(), line.clone());
                 }
             }
+            Handler::Ephemeral(purpose, lines) => self.finish_ephemeral(purpose, lines, status),
         }
     }
 }

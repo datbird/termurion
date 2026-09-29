@@ -68,8 +68,8 @@ pub const PROGRESS_CLASS: &str = "iTermStatusBarProgressComponent";
 // Own knob keys (Resume notes; `BASE`'s shared keys are `statusbar`'s).
 const FORMAT_KEY: &str = "format";
 const LOCALIZE_KEY: &str = "localize";
-const SSH_OFFSET_KEY: &str = "ssh_offset";
-const SSH_TZ_KEY: &str = "ssh_tz";
+pub(crate) const SSH_OFFSET_KEY: &str = "ssh_offset";
+pub(crate) const SSH_TZ_KEY: &str = "ssh_tz";
 const ABBREVIATE_LOCALHOST_KEY: &str = "abbreviate-localhost";
 const ACTION_KEY: &str = "action";
 const EXPRESSION_KEY: &str = "expression";

@@ -1110,6 +1110,12 @@ impl App {
         true
     }
 
+    /// The session's bar has a Clock in it (which is when its server time is worth asking for).
+    pub(super) fn bar_has_clock(&self, pane: PaneId) -> bool {
+        let clock = Kind::Clock.class();
+        self.shows_status_bar(pane) && self.bar_layout(pane).0.components.iter().any(|c| c.class == clock)
+    }
+
     /// A bar on screen shows a Clock: a bar of the tab in front of the current window or of
     /// any other window on screen.
     pub(super) fn any_clock_shown(&self) -> bool {

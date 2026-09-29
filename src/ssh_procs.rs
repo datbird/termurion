@@ -30,7 +30,7 @@ pub struct Row {
 
 /// Whether a character may not reach a title, a prompt or a graph: controls, the bidi
 /// controls and isolates, the zero width and line and paragraph separators.
-fn hostile(c: char) -> bool {
+pub(crate) fn hostile(c: char) -> bool {
     c.is_control()
         || matches!(
             c,
@@ -43,7 +43,7 @@ fn hostile(c: char) -> bool {
 
 /// A remote's text made safe: hostile characters become spaces, the ends are trimmed and
 /// the length is capped.
-fn clean(text: &str, cap: usize) -> String {
+pub(crate) fn clean(text: &str, cap: usize) -> String {
     let spaced: String = text.chars().take(cap).map(|c| if hostile(c) { ' ' } else { c }).collect();
     spaced.trim().to_string()
 }

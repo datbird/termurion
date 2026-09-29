@@ -34,14 +34,19 @@ pub fn invalid_pid(text: &str) -> String {
 /// treated as unusable.
 const VALUE_MAX: usize = 4096;
 
-/// What a background command's result is for (`CR` completion closures). 14c Task 8 adds
-/// the clock's time offset.
+/// The error a clock fetch gets when its connection goes before the reply.
+const LOST: &str = "Failed to fetch time: the connection ended";
+
+/// What a background command's result is for (`CR` completion closures), and the clock's
+/// time offset: when its fetch began on the monotonic clock (`ssh_clock::monotonic`) and the
+/// script call that asked, if any.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Purpose {
     Uname,
     Home,
     Hostname,
     Ignore,
+    TimeOffset { started: f64, token: Option<u64> },
 }
 
 /// A running background command (`handleBackgroundJob`): its output, channel 1 only. iTerm2
@@ -377,10 +382,74 @@ impl Conductor {
         if self.framing() { Some(self) } else { self.parent.as_deref().and_then(Conductor::innermost_framing) }
     }
 
+    /// fetchTimeOffset (`CD:619-649`): the clock script through the framer's `runpy`. Its
+    /// answer is an `Effect::TimeOffset` carrying `token`, when a script call asked.
+    /// `started` is the fetch's time on the monotonic clock, `local_now` the wall clock the
+    /// script subtracts.
+    pub fn fetch_time_offset(&mut self, local_now: f64, started: f64, token: Option<u64>) {
+        let script = crate::ssh_clock::script(local_now);
+        self.send(Command::FramerExecPythonStatements(script), Handler::Ephemeral(Purpose::TimeOffset { started, token }, Vec::new()), false);
+    }
+
+    /// The reply of an ephemeral command: the time offset's is parsed with its round trip.
+    pub(crate) fn finish_ephemeral(&mut self, purpose: &Purpose, lines: &[String], status: u8) {
+        if let Purpose::TimeOffset { started, token } = purpose {
+            let latency = crate::ssh_clock::monotonic(self.now()) - started;
+            let result = crate::ssh_clock::parse_reply(status == 0, &lines.concat(), latency);
+            self.effects.push(Effect::TimeOffset { token: *token, result });
+        }
+    }
+
+    /// An ephemeral command that will never be answered (an abort, a cancel): the time offset
+    /// says so, which resets the Clock and unblocks a script.
+    pub(crate) fn time_offset_lost(&mut self, handler: &Handler) {
+        if let Handler::Ephemeral(Purpose::TimeOffset { token, .. }, _) = handler {
+            self.effects.push(Effect::TimeOffset { token: *token, result: Err(LOST.to_string()) });
+        }
+    }
+
+    /// The tokens of the script calls this conductor still owes an answer: fetches written or
+    /// queued, and answers not yet taken as effects. A pane that drops the conductor answers
+    /// them (the conductor's effects are never read again).
+    pub fn abandoned_time_tokens(&self) -> Vec<u64> {
+        let effects = self.effects.iter().filter_map(|e| match e {
+            Effect::TimeOffset { token: Some(t), .. } => Some(*t),
+            _ => None,
+        });
+        let asked = self.written_and_queued().filter_map(|c| match &c.handler {
+            Handler::Ephemeral(Purpose::TimeOffset { token: Some(t), .. }, _) => Some(*t),
+            _ => None,
+        });
+        asked.chain(effects).collect()
+    }
+
     /// The framer protocol version, None until the framer is launched.
     pub fn framer_version(&self) -> Option<u8> {
         self.framer_version
     }
+}
+
+/// The most a remote's home directory, shell or uname shows in a variable.
+const VARIABLE_MAX: usize = 1024;
+
+/// The session's SSH variables (`PS:25624-25660`) for its current conductor: the level, and
+/// the home directory, shell and uname. With no conductor the local ones stand in (a uname of
+/// `Windows_NT`); at level 1 they are cleared; at level 2 the conductor's are used, each only
+/// when it has one. The remote's values are hostile text and are made safe.
+pub fn session_values(c: Option<&Conductor>, local_home: &str, local_shell: &str) -> Vec<(&'static str, String)> {
+    let level = crate::conductor::level(c);
+    let mut out = vec![("sshIntegrationLevel", level.to_string())];
+    let (home, shell, uname) = match (level, c) {
+        (0, _) => (Some(local_home.to_string()), Some(local_shell.to_string()), Some(crate::ai_prompts::WINDOWS_UNAME.to_string())),
+        (2, Some(c)) => (c.home_directory.clone(), c.shell.clone(), c.uname.clone()),
+        _ => (None, None, None),
+    };
+    for (name, value) in [("homeDirectory", home), ("shell", shell), ("uname", uname)] {
+        if let Some(text) = value.map(|v| crate::ssh_procs::clean(&v, VARIABLE_MAX)).filter(|v| !v.is_empty()) {
+            out.push((name, text));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1164,4 +1233,133 @@ mod tests {
         assert_eq!(child.take_effects(), [Effect::Write(want.into_bytes())]);
     }
 
+    fn b64(text: &str) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(text.as_bytes())
+    }
+
+    /// A framing conductor whose clock reads `secs` after the monotonic epoch.
+    fn at(c: &mut Conductor, secs: u64) -> f64 {
+        let now = crate::ssh_clock::epoch() + Duration::from_secs(secs);
+        c.fake_now = Some(now);
+        crate::ssh_clock::monotonic(now)
+    }
+
+    fn offset(secs: f64, tz: &str, zone: Option<i32>) -> crate::ssh_clock::Offset {
+        crate::ssh_clock::Offset { offset: secs, tz: tz.into(), zone }
+    }
+
+    #[test]
+    fn fetch_time_offset_follows_iterm2() {
+        let mut c = framing();
+        let started = at(&mut c, 100);
+        c.fetch_time_offset(1790000000.5, started, None);
+        let script = crate::ssh_clock::script(1790000000.5);
+        assert_eq!(c.take_effects(), [Effect::Write(framer_cmd(&["runpy", &b64(&script)]))]);
+        assert_eq!(c.in_flight(), Some(&Command::FramerExecPythonStatements(script)));
+        // The reply arrives two seconds later: the offset is the difference less half of it.
+        at(&mut c, 102);
+        feed(&mut c, &[Token::Begin("t".into()), Token::Line("12.5\nCDT\n-18000".into()), end("t", 0, "f")]);
+        assert_eq!(c.take_effects(), [Effect::TimeOffset { token: None, result: Ok(offset(11.5, "CDT", Some(-18000))) }]);
+        // A script call carries its token to the answer.
+        let started = at(&mut c, 200);
+        c.fetch_time_offset(1.0, started, Some(7));
+        c.take_effects();
+        at(&mut c, 200);
+        feed(&mut c, &[Token::Begin("t".into()), Token::Line("Traceback".into()), end("t", 1, "f")]);
+        assert_eq!(c.take_effects(), [Effect::TimeOffset { token: Some(7), result: Err("Failed to fetch time: Traceback".into()) }]);
+        // The reply's pieces join with nothing; a reply that is not the script's is invalid.
+        c.fetch_time_offset(1.0, started, None);
+        c.take_effects();
+        feed(&mut c, &[Token::Begin("t".into()), Token::Line("5\nU".into()), Token::Line("TC".into()), end("t", 0, "f")]);
+        assert!(matches!(&c.take_effects()[..], [Effect::TimeOffset { token: None, result: Ok(o) }] if o.tz == "UTC" && o.zone.is_none()));
+        c.fetch_time_offset(1.0, started, None);
+        c.take_effects();
+        feed(&mut c, &[Token::Begin("t".into()), Token::Line("x".into()), end("t", 0, "f")]);
+        assert_eq!(c.take_effects(), [Effect::TimeOffset { token: None, result: Err("Invalid output: x".into()) }]);
+    }
+
+    #[test]
+    fn a_time_offset_that_never_arrives_answers_its_token() {
+        // The connection ends with the fetch in flight: the token still gets an answer.
+        let mut c = framing();
+        let started = at(&mut c, 1);
+        c.fetch_time_offset(1.0, started, Some(9));
+        c.take_effects();
+        c.fetch_time_offset(1.0, started, Some(10));
+        assert_eq!(c.abandoned_time_tokens(), [9, 10], "in flight and queued");
+        c.handle_unhook();
+        let fx = c.take_effects();
+        assert_eq!(fx.len(), 2, "{fx:?}");
+        assert!(fx.iter().all(|e| matches!(e, Effect::TimeOffset { token: Some(_), result: Err(_) })), "{fx:?}");
+        // Once their effects are taken nothing is left to answer.
+        assert!(c.abandoned_time_tokens().is_empty());
+        // A canceled fetch is answered too.
+        let mut c = framing();
+        c.send(Command::FramerRun("x".into()), Handler::FireAndForget, false);
+        c.fetch_time_offset(1.0, 0.0, Some(11));
+        c.cancel_enqueued(&|cmd| matches!(cmd, Command::FramerExecPythonStatements(_)));
+        feed(&mut c, &[Token::Begin("a".into()), end("a", 0, "f")]);
+        assert!(matches!(&c.take_effects()[..], [.., Effect::TimeOffset { token: Some(11), result: Err(_) }]));
+    }
+
+    #[test]
+    fn a_time_offset_reply_is_bounded() {
+        // A hostile remote streams lines: only the first 16 KiB are kept, and the reply is
+        // invalid rather than the conductor failed.
+        let mut c = framing();
+        c.fetch_time_offset(1.0, 0.0, None);
+        c.take_effects();
+        let piece = "y".repeat(1024);
+        let mut tokens = vec![Token::Begin("t".into())];
+        tokens.extend((0..5000).map(|_| Token::Line(piece.clone())));
+        tokens.push(end("t", 0, "f"));
+        feed(&mut c, &tokens);
+        let fx = c.take_effects();
+        assert!(!c.failed(), "{fx:?}");
+        let [Effect::TimeOffset { token: None, result: Err(text) }] = &fx[..] else { panic!("{fx:?}") };
+        assert!(text.chars().count() < 300, "{}", text.len());
+    }
+
+    #[test]
+    fn ssh_variables_follow_iterm2() {
+        use super::session_values;
+        let v = |pairs: &[(&'static str, &str)]| pairs.iter().map(|(k, x)| (*k, x.to_string())).collect::<Vec<_>>();
+        assert_eq!(
+            session_values(None, r"C:\Users\u", "pwsh"),
+            v(&[("sshIntegrationLevel", "0"), ("homeDirectory", r"C:\Users\u"), ("shell", "pwsh"), ("uname", "Windows_NT")])
+        );
+        // Nothing known locally: only what is known.
+        assert_eq!(session_values(None, "", ""), v(&[("sshIntegrationLevel", "0"), ("uname", "Windows_NT")]));
+        // Level 1: the three are cleared (`PS:25638-25642`).
+        let mut plain = Conductor::new(Setup::default(), None, "P");
+        plain.handle_unhook();
+        assert_eq!(session_values(Some(&plain), "/h", "zsh"), v(&[("sshIntegrationLevel", "1")]));
+        // Level 2 copies them from the conductor.
+        let mut c = framing();
+        c.home_directory = Some("/home/u".into());
+        c.shell = Some("zsh".into());
+        c.uname = Some("Linux".into());
+        assert_eq!(session_values(Some(&c), "/h", "pwsh"), v(&[("sshIntegrationLevel", "2"), ("homeDirectory", "/home/u"), ("shell", "zsh"), ("uname", "Linux")]));
+        let bare = framing();
+        assert_eq!(session_values(Some(&bare), "/h", "pwsh"), v(&[("sshIntegrationLevel", "2")]));
+    }
+
+    #[test]
+    fn remote_variable_values_are_made_safe() {
+        use super::session_values;
+        let mut c = framing();
+        c.home_directory = Some(format!("/home/\u{1b}]0;x\u{7}{}", "a".repeat(9000)));
+        c.shell = Some("\u{202e}zsh\n".into());
+        c.uname = Some("Li\u{200b}nux".into());
+        let values = session_values(Some(&c), "", "");
+        let get = |k: &str| values.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone());
+        let home = get("homeDirectory").unwrap();
+        assert!(home.chars().count() <= 1024 && !home.chars().any(char::is_control), "{}", home.len());
+        assert_eq!(get("shell").as_deref(), Some("zsh"));
+        assert_eq!(get("uname").as_deref(), Some("Li nux"));
+        // A value that is only invisible is left out.
+        c.shell = Some("\u{200b}\u{202e}".into());
+        assert!(session_values(Some(&c), "", "").iter().all(|(n, _)| *n != "shell"));
+    }
 }

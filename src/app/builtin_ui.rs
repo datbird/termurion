@@ -118,7 +118,7 @@ impl App {
                 return HostOutcome::Done(json!(p));
             }
         }
-        let waits = matches!((b.on, b.name), (On::Function, "alert" | "get_string" | "move_tab_to_window") | (On::Session, "run_tmux_command"));
+        let waits = matches!((b.on, b.name), (On::Function, "alert" | "get_string" | "move_tab_to_window") | (On::Session, "run_tmux_command" | "get_time_offset"));
         if sync && waits {
             return HostOutcome::Done(Value::Null);
         }
@@ -407,6 +407,22 @@ impl App {
                 self.redraw_all();
                 self.redraw();
                 HostOutcome::Done(Value::Null)
+            }
+            // `PS:23618-23636`: with no framing conductor the offset is 0 and the zone is this
+            // computer's (its Windows name, Decision); with one the answer waits for the
+            // remote's clock (`Effect::TimeOffset`, delivered by `ssh_answers_drain`).
+            "get_time_offset" => {
+                let framing = self.panes.get(&pane).is_some_and(|p| p.ssh_level() >= 2);
+                if !framing {
+                    return HostOutcome::Done(json!({ "offset": 0, "tz": crate::ssh_clock::local_zone_name() }));
+                }
+                let token = self.builtin_token();
+                let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+                if let Some(c) = self.panes.get_mut(&pane).and_then(|p| p.conductor.as_mut()) {
+                    c.fetch_time_offset(wall, crate::ssh_clock::monotonic(std::time::Instant::now()), Some(token));
+                }
+                self.ssh_apply(pane);
+                HostOutcome::Started(token)
             }
             "stop_coprocess" => {
                 let running = self.panes.get(&pane).is_some_and(|p| p.coprocess_command().is_some());

@@ -195,6 +195,20 @@ impl App {
             self.redraw();
         }
         self.ssh_registry_drain(pane);
+        self.ssh_answers_drain(pane);
+    }
+
+    /// Delivers what the pane's conductors answered to script calls (`get_time_offset`).
+    pub(super) fn ssh_answers_drain(&mut self, pane: PaneId) {
+        let answers = self.panes.get_mut(&pane).map(|p| p.take_ssh_answers()).unwrap_or_default();
+        self.ssh_answers_deliver(answers);
+    }
+
+    fn ssh_answers_deliver(&mut self, answers: Vec<(u64, Result<crate::ssh_clock::Offset, String>)>) {
+        for (token, result) in answers {
+            let answer = result.map(|o| serde_json::json!({ "offset": o.offset, "tz": o.tz })).map_err(crate::expr::Failure::plain);
+            self.api_rpc_done.push_back((token, answer));
+        }
     }
 
     /// Applies the pane's changes to the connected hosts (`Registered` and `Deregistered` from
@@ -214,6 +228,9 @@ impl App {
         if self.ssh_registry.apply(changes) {
             self.ssh_hosts_changed();
         }
+        // A script call whose pane goes is answered with an error, not left waiting.
+        let owed = pane.owed_answers().into_iter().map(|t| (t, Err("Failed to fetch time: the session ended".to_string()))).collect();
+        self.ssh_answers_deliver(owed);
     }
 
     /// The connected hosts changed; 14d refreshes Download Files and its panel here.
@@ -227,6 +244,7 @@ impl App {
         let mut next: Option<Instant> = None;
         let mut changes = Vec::new();
         let mut published = Vec::new();
+        let mut answers = Vec::new();
         for (id, p) in self.panes.iter_mut().filter(|(_, p)| p.conductor.is_some()) {
             redraw |= p.tick_ssh(now);
             // The remote CPU values, once a second (F8: folded into this tick).
@@ -234,11 +252,26 @@ impl App {
                 published.push(*id);
             }
             changes.append(&mut p.take_ssh_registry());
+            answers.append(&mut p.take_ssh_answers());
             next = [next, p.ssh_deadline(), p.procs_due()].into_iter().flatten().min();
         }
         if self.ssh_registry.apply(changes) {
             self.ssh_hosts_changed();
         }
+        // The Clocks' server time: each session with a Clock in its bar asks when due (F8: this
+        // is the one ssh tick, no timer of its own).
+        let clocked: Vec<PaneId> = self.panes.iter().filter(|(_, p)| p.conductor.is_some() || p.ssh_clock.is_remote()).map(|(id, _)| *id).collect();
+        for id in clocked {
+            if !self.bar_has_clock(id) {
+                continue;
+            }
+            let Some(p) = self.panes.get_mut(&id) else { continue };
+            let host = p.own().shell.host.clone();
+            p.ssh_clock_tick(now, host.as_deref());
+            next = [next, p.clock_due()].into_iter().flatten().min();
+            answers.extend(p.take_ssh_answers());
+        }
+        self.ssh_answers_deliver(answers);
         // A new remote CPU value redraws only a window whose bar shows it.
         redraw |= published.into_iter().any(|id| self.shows_status_bar(id));
         // A process list that changed or a conductor that left (the pane's job is read again).
