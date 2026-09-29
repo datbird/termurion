@@ -145,6 +145,7 @@ mod script_console_app;
 mod script_deps_app;
 mod builtin_ui;
 mod ssh_app;
+mod ssh_framer_app;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -573,6 +574,8 @@ pub struct App {
     replay_seen: Option<(u64, PaneId)>,
     /// This window's password manager (per window: `swap_live`).
     pwm_window: Option<pwm_app::PwmWin>,
+    /// What Shell > ssh > Disconnect last showed in this window (per window: `swap_live`).
+    ssh_menu_shown: Option<Option<String>>,
     /// The password manager's app-wide state: authentication, the source worker, the echo
     /// probes' passwords, broadcast rounds and questions.
     pwm: pwm_app::PwmState,
@@ -1256,6 +1259,7 @@ pub fn run() {
         replay_window: None,
         replay_seen: None,
         pwm_window: None,
+        ssh_menu_shown: None,
         pwm: Default::default(),
         replay_keys: Default::default(),
         recording_warnings: Vec::new(),

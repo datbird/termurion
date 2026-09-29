@@ -322,6 +322,9 @@ pub enum Effect {
     /// The remote's clock answered (or the fetch failed). Without a token it is the pane's
     /// Clock; with one it is the answer to a script's `get_time_offset`.
     TimeOffset { token: Option<u64>, result: Result<crate::ssh_clock::Offset, String> },
+    /// The conductor quit (Shell > ssh > Disconnect, `CD:1837-1842`): the pane says so,
+    /// unhooks it and clears what it held (`PS:25603-25612`).
+    Quit,
 }
 
 /// What an unhook restores (Decision: the remote host and the working directory).
@@ -668,7 +671,7 @@ pub struct Conductor {
     /// Every background job completion, for the tests.
     #[cfg(test)]
     pub(crate) completed: Vec<(Purpose, Vec<u8>, i32)>,
-    line_prefix: String,
+    pub(crate) line_prefix: String,
     depth: i32,
     /// Set by `fail`: the pane's abort takes this conductor, and every one inside it, out.
     failed: bool,
@@ -687,7 +690,7 @@ pub struct Conductor {
     pub(crate) fake_now: Option<Instant>,
     /// Every handler call with the state at that moment, for the tests.
     #[cfg(test)]
-    updates: Vec<(Command, Partial, State)>,
+    pub(crate) updates: Vec<(Command, Partial, State)>,
 }
 
 impl Conductor {
@@ -1040,6 +1043,21 @@ impl Conductor {
             State::WillExecute(_) | State::Executing(..) => self.extend(),
             State::Unhooked => {}
         }
+    }
+
+    /// The cancels of `quit` (`CD:1822-1836`): every queued context and every context of the
+    /// pipeline in flight is canceled, the state is ground, and each handler hears
+    /// `Canceled` once it is (so a stale reply fires nothing). Written commands are not
+    /// recalled; whatever the remote answers to them meets the ground state.
+    pub fn cancel_all(&mut self) {
+        let mut canceled: Vec<Context> = self.written().cloned().collect();
+        canceled.append(&mut self.queue);
+        self.state = State::Ground;
+        self.in_transition(|c| {
+            for context in canceled {
+                c.update(&context, Partial::Canceled);
+            }
+        });
     }
 
     /// cancelEnqueuedRequests (`CD:2848-2858`): matching queued commands are dropped with

@@ -874,6 +874,16 @@ impl Pane {
         self.send_routed(&held);
     }
 
+    /// conductorQuit (`PS:25603-25612`): "Disconnected from <identity>" on the screen, then the
+    /// innermost conductor and its hop leave (`unhookSSHConductor`, which pops the hop too, so
+    /// the EndSSH that follows finds none and writes nothing), and the held writes are cleared.
+    fn ssh_quit(&mut self) {
+        let Some(identity) = self.conductor.as_ref().map(|c| c.identity().description()) else { return };
+        self.own_mut().append_banner(&crate::conductor_framer::disconnected_banner(&identity));
+        self.ssh_unhook_conductor();
+        self.take_ssh_held();
+    }
+
     /// Drops the pane's innermost conductor and its hop, keeping the two chains in step:
     /// every path that drops a conductor but EndSSH comes here (`PS:20179-20204`).
     pub fn ssh_unhook_conductor(&mut self) {
@@ -983,6 +993,12 @@ impl Pane {
                     // Decision: Tandem sends no Initial Text anywhere yet; it goes here.
                     Effect::SendInitialText => {}
                     Effect::StateChanged => redraw = true,
+                    // conductorQuit (`PS:25603-25612`): the banner, the conductor and its hop
+                    // go, and the writes it held are dropped. Its own quit was written first.
+                    Effect::Quit => {
+                        self.ssh_quit();
+                        redraw = true;
+                    }
                     Effect::ProcessesChanged => self.ssh.jobs_dirty = true,
                     Effect::Registered { guid, identity } => self.ssh_registry_out.push(crate::ssh_registry::Change::Add(guid, identity)),
                     Effect::Deregistered { guid } => self.ssh_registry_out.push(crate::ssh_registry::Change::Remove(guid)),
@@ -3250,5 +3266,71 @@ mod tests {
         p.conductor.as_mut().unwrap().handle_unhook();
         p.take_ssh_held();
         assert!(!p.coprocess_backlogged());
+    }
+
+    /// A pane whose root hook is hooked, with one framing conductor "o" (pid 100) and its hop,
+    /// connecting over.
+    fn framed_root() -> Pane {
+        use crate::conductor::{Conductor, Setup};
+        use crate::ssh_session::Hop;
+        let at = Setup { client_unique_id: "o".into(), parsed: crate::ssh_args::ParsedArgs { hostname: "o.example".into(), port: 22, ..Default::default() }, ..Setup::default() };
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        p.ssh.begin(true);
+        p.tmux_io().unwrap().push_output(b"\x1bP2000pnone o YQ== - Yg==\n");
+        p.pump();
+        p.take_ssh();
+        let mut c = Conductor::new(at, None, "O");
+        c.framed_pid = Some(100);
+        p.ssh.chain.push(Hop { unique_id: "o".into(), location: "o.example".into() });
+        p.conductor = Some(Box::new(c));
+        p.ssh.stop_queueing();
+        p
+    }
+
+    #[test]
+    fn disconnect_follows_iterm2() {
+        use crate::ssh_fixtures::pre_cmd;
+        // `PS:25603-25612`: the banner names the identity, the conductor and its hop go, what
+        // was held is dropped, and the write is iTerm2's pre-framer quit with the prefix.
+        let mut p = framed_root();
+        let identity = p.conductor.as_ref().unwrap().identity().description();
+        let guid = p.conductor.as_ref().unwrap().guid.clone();
+        p.ssh_held.extend_from_slice(b"held");
+        p.conductor.as_mut().unwrap().quit();
+        assert_eq!(wire(&mut p), pre_cmd("\u{3}O", &["quit"]));
+        assert_eq!(p.screen.all_text().matches(&format!("Disconnected from {identity}")).count(), 1, "{}", p.screen.all_text());
+        assert!(p.conductor.is_none() && p.ssh.chain.hops.is_empty() && p.ssh_chain_in_step());
+        assert!(p.ssh_held.is_empty(), "the write queue is cleared");
+        assert_eq!(p.take_ssh_registry(), [crate::ssh_registry::Change::Remove(guid.clone()), crate::ssh_registry::Change::Remove(guid)]);
+        // Typing after it goes straight to the pty.
+        p.write_session(b"k");
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"k");
+    }
+
+    #[test]
+    fn late_unhook_is_harmless() {
+        use crate::ssh_fixtures::{osc135, reply};
+        // `C:266-271`: the framer answers the quit and prints `unhook` after its conductor
+        // has left. The unhook finds no conductor: no second banner and no write.
+        let mut p = framed_root();
+        p.conductor.as_mut().unwrap().quit();
+        wire(&mut p);
+        let text = p.screen.all_text();
+        run_hook(&mut p, &[reply("q", &[], 0, 'r'), osc135("unhook")].concat());
+        assert!(p.conductor.is_none());
+        assert_eq!(wire(&mut p), b"");
+        assert_eq!(p.screen.all_text(), text, "no second banner");
+        assert!(!p.ssh_hook.active());
+        // A parent survives its child's late unhook: a depth 1 unhook does not touch depth 0.
+        let mut p = framed_nested();
+        p.conductor.as_mut().unwrap().quit();
+        assert_eq!(wire(&mut p), sent_to(100, &crate::ssh_fixtures::pre_cmd("\u{3}U", &["quit"])));
+        assert_eq!(p.conductor.as_ref().map(|c| c.setup.client_unique_id.as_str()), Some("o"));
+        let text = p.screen.all_text();
+        p.unhook_conductor_at(1);
+        assert_eq!(p.conductor.as_ref().map(|c| c.setup.client_unique_id.as_str()), Some("o"));
+        assert_eq!(wire(&mut p), b"");
+        assert_eq!(p.screen.all_text(), text);
+        assert!(still_parses(&mut p), "the parent's hook goes on");
     }
 }

@@ -84,6 +84,9 @@ pub(super) struct WinSlot {
     replay_seen: Option<(u64, PaneId)>,
     /// The password manager open over this window.
     pwm_window: Option<super::pwm_app::PwmWin>,
+    /// What Shell > ssh > Disconnect last showed: the focused session's identity, None for none
+    /// (the outer None: not shown yet). Per window, since each window has its own menu bar.
+    ssh_menu_shown: Option<Option<String>>,
 }
 
 impl WinSlot {
@@ -152,6 +155,7 @@ impl WinSlot {
             replay_window: None,
             replay_seen: None,
             pwm_window: None,
+            ssh_menu_shown: None,
         }
     }
 }
@@ -238,6 +242,7 @@ impl App {
         swap(&mut self.replay_window, &mut s.replay_window);
         swap(&mut self.replay_seen, &mut s.replay_seen);
         swap(&mut self.pwm_window, &mut s.pwm_window);
+        swap(&mut self.ssh_menu_shown, &mut s.ssh_menu_shown);
     }
 
     /// The terminal window whose password manager is `id`, when it is parked.
@@ -778,6 +783,7 @@ impl WinSlot {
             replay_window: None,
             replay_seen: None,
             pwm_window: None,
+            ssh_menu_shown: None,
         }
     }
 }

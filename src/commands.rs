@@ -75,7 +75,7 @@ pub const DONE: &[&str] = &[
     "setWindowStyle:|Full-Height Left of Screen", "setWindowStyle:|Full-Height Right of Screen",
     "setWindowStyle:|Bottom of Screen", "setWindowStyle:|Top of Screen", "setWindowStyle:|Left of Screen",
     "setWindowStyle:|Right of Screen", "toggleToolbeltVisibility:", "setDefaultToolbeltWidth:",
-    "irPrev:", "clearInstantReplay:", "exportRecording:", "loadRecording:", "openPasswordManager:",
+    "irPrev:", "clearInstantReplay:", "exportRecording:", "loadRecording:", "openPasswordManager:", "sshDisconnect:",
 ];
 
 /// Commands that work with a known difference for now.
@@ -283,7 +283,7 @@ mod tests {
         assert_eq!(status(find("exportScript:", "Export...")), Status::Done, "11d");
         assert_eq!(status(find("openDependencyEditor:", "Manage Dependencies...")), Status::Done, "11d");
         assert_eq!(status(find("showSuppressedAlerts:", "Suppressed Alerts...")), Status::Done, "13b");
-        assert_eq!(status(find("sshDisconnect:", "Disconnect")), Status::Later(14), "14c");
+        assert_eq!(status(find("sshDisconnect:", "Disconnect")), Status::Done, "14c");
         assert_eq!(status(find("downloadFiles:", "Download Files...")), Status::Later(14), "14d");
         assert_eq!(
             status(find("toggleRemoteHostCanControlIterm2:", "Remote host can control iTerm2")),

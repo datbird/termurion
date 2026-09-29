@@ -23,6 +23,12 @@ pub(crate) const JOBS_OUTPUT_MAX: usize = 16 * 1024 * 1024;
 /// The most a login reply or a getenv value keeps (F13): a pid or a short failure text, a
 /// PATH. More fails the login and drops the value.
 pub const REPLY_MAX: usize = 16 * 1024;
+/// The banner conductorQuit posts (`PS:25603-25612`); `identity` is the identity's
+/// `description`. It lives here, with the effect that asks for it, because the pane applies it.
+pub fn disconnected_banner(identity: &str) -> String {
+    format!("Disconnected from {identity}")
+}
+
 /// The command whose output is the remote's host name (`CD:244`).
 pub const DISCOVER_HOSTNAME: &str = "hostname -f";
 /// The message when the remote's login answer is not a pid (this plan's; 14b has no such text).
@@ -235,6 +241,18 @@ impl Conductor {
         let code = framer_code(self.depth());
         self.send(Command::RunPython(code.clone()), Handler::WriteOnSuccess(code), false);
         self.framer_version = Some(2);
+    }
+
+    /// quit (`CD:1822-1843`), Shell > ssh > Disconnect: queued and in-flight work is canceled,
+    /// the state is ground, and the PRE-framer `quit` is sent, so it carries the line prefix
+    /// (`CD:1837`, `CD:2871-2879`; a restored conductor has none). Then the conductor leaves
+    /// the connected hosts and tells the pane (which posts the banner and unhooks it).
+    pub fn quit(&mut self) {
+        self.cancel_all();
+        self.send(Command::Quit, Handler::FireAndForget, false);
+        self.effects.push(Effect::Deregistered { guid: self.guid.clone() });
+        self.effects.push(Effect::Quit);
+        self.effects.push(Effect::StateChanged);
     }
 
     /// handleTerminate (`CD:2544-2575`): a process of a deeper conductor is the parent's. The
@@ -659,6 +677,52 @@ mod tests {
         assert!(c.background_pids().is_empty());
         start_job(&mut c, "x", Purpose::Ignore, "101");
         assert_eq!(c.background_pids(), [101]);
+    }
+
+    #[test]
+    fn quit_follows_iterm2() {
+        // `CD:1822-1843`: queued and in-flight work is canceled without a stale handler, the
+        // state is ground, and the PRE-framer `quit` goes out behind the line prefix.
+        let mut c = framing();
+        c.send_keys(b"x");
+        c.take_effects();
+        c.run_remote_command("uname -s", Purpose::Uname);
+        assert!(c.written_and_queued().count() >= 2, "one in flight, one behind it");
+        c.quit();
+        assert_eq!(
+            c.take_effects(),
+            [
+                Effect::Write(pre_cmd("\u{3}P", &["quit"])),
+                Effect::Deregistered { guid: c.guid.clone() },
+                Effect::Quit,
+                Effect::StateChanged,
+            ]
+        );
+        assert_eq!(c.written_and_queued().map(|x| x.command.clone()).collect::<Vec<_>>(), [Command::Quit], "only the quit is left");
+        assert!(c.completed.is_empty(), "the Uname handler is not fired");
+        assert_eq!(c.take_effects(), []);
+        // A restored conductor has no line prefix.
+        let mut c = framing();
+        c.line_prefix = String::new();
+        c.quit();
+        assert_eq!(c.take_effects()[0], Effect::Write(pre_cmd("", &["quit"])));
+        assert_eq!(pre_cmd("", &["quit"]), b"cXVpdA==\n\n");
+    }
+
+    #[test]
+    fn cancel_all_tells_every_context_canceled() {
+        use crate::conductor::Partial;
+        let mut c = framing();
+        c.send_keys(b"x");
+        c.send_keys(b"y");
+        c.run_remote_command("uname -s", Purpose::Uname);
+        c.take_effects();
+        c.cancel_all();
+        assert_eq!(c.written_and_queued().count(), 0);
+        assert_eq!(c.state(), &State::Ground);
+        let canceled = c.updates.iter().filter(|(_, r, _)| *r == Partial::Canceled).count();
+        assert_eq!(canceled, 3, "{:?}", c.updates);
+        assert!(c.completed.is_empty());
     }
 
     #[test]

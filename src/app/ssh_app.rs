@@ -282,6 +282,8 @@ impl App {
         if redraw {
             self.redraw();
         }
+        // Shell > ssh > Disconnect follows the focused session (F8: folded into this tick).
+        self.refresh_ssh_menu();
         next
     }
 }
