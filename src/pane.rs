@@ -801,26 +801,54 @@ impl Pane {
     }
 
     /// conductorAbort (`PS:25587-25601`): the error, the reason and the end banner, then the
-    /// conductor and its hop go. Then Tandem's part: the DCS hook lets go, so later output
-    /// shows (ruling 14b-3, iTerm2 bugs B4 and B13); the held writes (the raw
-    /// `exec_login_shell` line among them) are dropped (iTerm2 strands them); connecting ends
-    /// and what was typed meanwhile is dropped (controller ruling: those keys were for the
-    /// remote shell, and conductor.sh may still be reading command lines). Typing after this
-    /// goes straight to the pty.
+    /// conductor and its hop go. The conductor that aborted is the outermost one `fail` marked
+    /// (a parent's abort reaches the pane through its child's effects), else the innermost;
+    /// every conductor inside it goes first, innermost first, so its saved state is what
+    /// remains. Then Tandem's part: the DCS hook that owns its depth lets go, and every hook
+    /// under it, so later output shows (ruling 14b-3, iTerm2 bugs B4 and B13), while the hooks
+    /// above keep parsing for their conductors (iTerm2 never force-unhooks the parser); the
+    /// held writes (the raw `exec_login_shell` line among them) are dropped (iTerm2 strands
+    /// them); connecting ends and what was typed meanwhile is dropped (controller ruling:
+    /// those keys were for the remote shell, and conductor.sh may still be reading command
+    /// lines). Typing after this goes straight to the pty.
     pub fn abort_ssh(&mut self, reason: &str) {
-        let location = self.conductor.as_ref().and_then(|c| c.parent.as_ref()).map(|p| p.identity().compact(&crate::ssh_args::local_user()));
+        let mut chain = Vec::new();
+        let mut c = self.conductor.as_deref();
+        while let Some(conductor) = c {
+            chain.push(conductor);
+            c = conductor.parent.as_deref();
+        }
+        let at = chain.iter().rposition(|c| c.failed()).unwrap_or(0);
+        let depth = chain.get(at).map_or(0, |c| c.depth());
+        let location = chain.get(at).and_then(|c| c.parent.as_ref()).map(|p| p.identity().compact(&crate::ssh_args::local_user()));
         let screen = self.own_mut();
         screen.print_message(crate::conductor::SETUP_ERROR);
         screen.print_message(&crate::conductor::shown(reason));
         screen.append_banner(&crate::ssh_handshake::end_banner(1, location.as_deref()));
-        // Only the failed conductor's depth and below let go: a nested failure leaves its
-        // framing parent hooked (iTerm2 never force-unhooks the parser).
-        let depth = self.conductor.as_ref().map_or(0, |c| c.depth());
-        self.ssh_unhook_conductor();
-        self.ssh_hook.unhook_depth(depth);
+        for _ in 0..=at {
+            self.ssh_unhook_conductor();
+        }
+        if depth == 0 {
+            self.ssh_hook.unhook();
+        } else {
+            self.ssh_hook.let_go_owner(depth);
+        }
         self.ssh_held.clear();
         // Connecting ends so later typing is not queued behind a dead conductor; its queue goes.
         self.ssh.stop_queueing();
+    }
+
+    /// Whether a conductor hooked at `depth` sits at that depth in the pane's chain
+    /// (`conductor::child_depth`). When not (a hook deeper or shallower than the conductors
+    /// allow, or a second one at a framed conductor's own depth), the hook that read the init
+    /// line lets go and no conductor is made (Tandem's: iTerm2 chains it at the depth its
+    /// parent gives, and routing by depth then reaches the wrong conductor).
+    pub fn ssh_init_fits(&mut self, depth: i32) -> bool {
+        if crate::conductor::child_depth(self.conductor.as_deref()) == depth {
+            return true;
+        }
+        self.ssh_hook.let_go_owner(depth);
+        false
     }
 
     /// A parser at `depth` lost the remote's output or was refused more of it: every conductor
@@ -1745,6 +1773,79 @@ mod tests {
         // The outermost conductor failing lets the whole hook go, as before.
         p.abort_ssh("boom");
         assert!(p.conductor.is_none() && !p.ssh_hook.active());
+    }
+
+    #[test]
+    fn an_abort_fails_the_conductor_that_aborted() {
+        // The parent fails (a reply routed to it through the child): the parent and the child
+        // go, and the depth 0 hook lets go with them.
+        let mut p = nested_framing();
+        p.conductor.as_mut().unwrap().via_parent(|outer| outer.fail("boom"));
+        p.apply_ssh_effects();
+        assert!(p.conductor.is_none(), "the failed parent is gone, and its child with it");
+        assert!(p.ssh.chain.hops.is_empty());
+        assert!(!p.ssh_hook.active(), "depth 0 let go");
+        assert!(p.screen.all_text().contains("boom"));
+        // The child fails: only the child goes, depth 0 still parses.
+        let mut p = nested_framing();
+        p.conductor.as_mut().unwrap().fail("boom");
+        p.apply_ssh_effects();
+        assert_eq!(p.conductor.as_ref().map(|c| c.setup.client_unique_id.as_str()), Some("o"));
+        assert!(still_parses(&mut p));
+    }
+
+    /// Feeds `bytes` as the pane's output and returns the depths of the conductor tokens the
+    /// hook found.
+    fn ssh_depths(p: &mut Pane, bytes: &[u8]) -> Vec<i32> {
+        p.tmux_io().unwrap().push_output(bytes);
+        p.pump();
+        p.take_ssh().iter().filter_map(|o| if let crate::ssh_hook::Out::Ssh(_, d) = o { Some(*d) } else { None }).collect()
+    }
+
+    fn nested_init() -> Vec<u8> {
+        use crate::ssh_fixtures::{dcs_hook, output, pre_reply};
+        output("n", 200, -1, 0, &[dcs_hook("", "u", "YQ==", "Yg=="), pre_reply("1.1", &["sh"])].concat())
+    }
+
+    #[test]
+    fn a_conductor_takes_its_hooks_depth() {
+        use crate::ssh_fixtures::{output, pre_reply};
+        // Under the framing depth 0 conductor alone, a conductor fits at depth 1 only.
+        let mut p = nested_framing();
+        p.ssh_unhook_conductor();
+        assert_eq!(ssh_depths(&mut p, &nested_init()), [1, 1, 1, 1]);
+        assert!(!p.ssh_init_fits(2));
+        assert!(p.ssh_hook.owned(1), "a refusal at a depth nobody owns lets nothing go");
+        assert!(p.ssh_init_fits(1));
+        // Depth 0 again (the root hooked anew): it is the whole hook that lets go.
+        assert!(!p.ssh_init_fits(0));
+        assert!(!p.ssh_hook.active() && !p.ssh_hook.owned(1));
+        // Under the framing depth 1 conductor, a second depth 1 hook does not fit: it lets go,
+        // and its process's replies are plain output after it; depth 0 still parses.
+        let mut p = nested_framing();
+        assert_eq!(ssh_depths(&mut p, &nested_init()), [1, 1, 1, 1]);
+        assert!(!p.ssh_init_fits(1));
+        assert!(!p.ssh_hook.owned(1) && p.ssh_hook.owned(0));
+        assert_eq!(ssh_depths(&mut p, &output("m", 200, -1, 0, &pre_reply("1.2", &["x"]))), Vec::<i32>::new());
+        assert!(still_parses(&mut p));
+    }
+
+    #[test]
+    fn a_nested_abort_lets_its_own_hook_go() {
+        // The depth 1 conductor fails: the depth 1 hook lets go, the depth 0 one parses on.
+        let mut p = nested_framing();
+        assert_eq!(ssh_depths(&mut p, &nested_init()), [1, 1, 1, 1]);
+        p.conductor.as_mut().unwrap().fail("boom");
+        p.apply_ssh_effects();
+        assert_eq!(p.conductor.as_ref().map(|c| c.depth()), Some(0));
+        assert!(!p.ssh_hook.owned(1) && p.ssh_hook.owned(0));
+        assert!(still_parses(&mut p));
+        // The depth 0 conductor fails through its child: every hook lets go.
+        let mut p = nested_framing();
+        assert_eq!(ssh_depths(&mut p, &nested_init()), [1, 1, 1, 1]);
+        p.conductor.as_mut().unwrap().via_parent(|outer| outer.fail("boom"));
+        p.apply_ssh_effects();
+        assert!(p.conductor.is_none() && !p.ssh_hook.owned(1) && !p.ssh_hook.active());
     }
 
     #[test]

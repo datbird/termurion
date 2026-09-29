@@ -39,12 +39,15 @@ pub enum Purpose {
     Ignore,
 }
 
-/// A running background command (`handleBackgroundJob`): its output pieces, channel 1 only.
+/// A running background command (`handleBackgroundJob`): its output, channel 1 only. iTerm2
+/// keeps the pieces and joins them with nothing at the end; Tandem appends each piece as it
+/// comes, so the kept length is known at once (a remote streaming lone newlines sends a
+/// piece per byte).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Job {
     pub command: Command,
     pub purpose: Purpose,
-    pub output: Vec<String>,
+    pub output: String,
 }
 
 /// The remote tty (`CD:672-679`).
@@ -89,16 +92,18 @@ impl Conductor {
     }
 
     /// addBackgroundJob (`CR:51-55`) for a `run` reply line (`CD:2259-2271`): only an integer
-    /// is a pid. The framer's own pseudo pids are never a job, and at most `MAX_JOBS` run.
+    /// is a pid. The framer's own pseudo pids are never a job, nor the framed shell's pid (its
+    /// terminate is the shell's `quit`, so the job would never complete), and at most
+    /// `MAX_JOBS` run.
     pub(crate) fn add_background_job(&mut self, line: &str, command: Command, purpose: Purpose) {
         let Ok(pid) = line.parse::<i32>() else { return };
-        if pid == AUTOPOLL_PID || pid == NOTIF_PID {
+        if pid == AUTOPOLL_PID || pid == NOTIF_PID || Some(pid) == self.framed_pid {
             return;
         }
         if self.background_jobs.len() >= MAX_JOBS && !self.background_jobs.contains_key(&pid) {
             return;
         }
-        self.background_jobs.insert(pid, Job { command, purpose, output: Vec::new() });
+        self.background_jobs.insert(pid, Job { command, purpose, output: String::new() });
     }
 
     /// The completion closures of `exfiltrateUsefulFramerInfo`, the uname command and
@@ -233,7 +238,7 @@ impl Conductor {
                 self.send(Command::Quit, Handler::FireAndForget, false);
             }
         } else if let Some(job) = self.background_jobs.remove(&pid) {
-            self.complete(&job.purpose, job.output.concat().as_bytes(), rc);
+            self.complete(&job.purpose, job.output.as_bytes(), rc);
         }
     }
 
@@ -253,15 +258,12 @@ impl Conductor {
         }
         let Some(job) = self.background_jobs.get_mut(&pid) else { return };
         if channel == 1 {
-            let kept: usize = job.output.iter().map(String::len).sum();
-            let room = JOB_OUTPUT_MAX.saturating_sub(kept);
+            let room = JOB_OUTPUT_MAX.saturating_sub(job.output.len());
             let mut end = text.len().min(room);
             while !text.is_char_boundary(end) {
                 end -= 1;
             }
-            if end > 0 {
-                job.output.push(text[..end].to_string());
-            }
+            job.output.push_str(&text[..end]);
         } else {
             let purpose = job.purpose.clone();
             self.complete(&purpose, b"", -2);
@@ -331,7 +333,7 @@ mod tests {
     }
 
     fn job(purpose: Purpose) -> Job {
-        Job { command: Command::FramerRun("x".into()), purpose, output: Vec::new() }
+        Job { command: Command::FramerRun("x".into()), purpose, output: String::new() }
     }
 
     /// A framing conductor (framed pid 100, depth 0, line prefix "\u{3}P").
@@ -448,6 +450,32 @@ mod tests {
         c.handle_terminate(7, 0, 0);
         assert_eq!(c.completed.len(), 1);
         assert_eq!(c.completed[0].1.len(), 1024 * 1024);
+    }
+
+    #[test]
+    fn job_output_is_counted_as_it_comes() {
+        // A remote that streams lone newlines on a job: each is a piece of its own.
+        let mut c = framing();
+        start_job(&mut c, "x", Purpose::Ignore, "7");
+        let n = (1 << 20) + 4096;
+        let t0 = Instant::now();
+        for _ in 0..n {
+            c.handle_side("\n", 7, 1, 0);
+        }
+        assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+        c.handle_terminate(7, 0, 0);
+        assert_eq!(c.completed[0].1, vec![b'\n'; 1024 * 1024], "1 MiB kept, the rest dropped");
+    }
+
+    #[test]
+    fn the_framed_pid_is_never_a_job() {
+        // A `run` answered with the framed shell's pid would be a job that never completes
+        // (its terminate is the shell's `quit`).
+        let mut c = framing();
+        start_job(&mut c, "x", Purpose::Ignore, "100");
+        assert!(c.background_pids().is_empty());
+        start_job(&mut c, "x", Purpose::Ignore, "101");
+        assert_eq!(c.background_pids(), [101]);
     }
 
     #[test]
@@ -787,10 +815,10 @@ mod tests {
         c.parent.as_mut().unwrap().background_jobs.insert(7, job(Purpose::Ignore));
         c.background_jobs.insert(8, job(Purpose::Ignore));
         c.handle_side("x", 7, 1, 0);
-        assert_eq!(parent_of(&c).background_jobs[&7].output, ["x"]);
+        assert_eq!(parent_of(&c).background_jobs[&7].output, "x");
         assert!(c.background_jobs[&8].output.is_empty());
         c.handle_side("y", 8, 1, 1);
-        assert_eq!(c.background_jobs[&8].output, ["y"]);
+        assert_eq!(c.background_jobs[&8].output, "y");
         c.handle_terminate(7, 0, 0);
         assert!(parent_of(&c).background_jobs.is_empty() && c.background_pids() == [8]);
         assert_eq!(parent_of(&c).completed, [(Purpose::Ignore, b"x".to_vec(), 0)]);

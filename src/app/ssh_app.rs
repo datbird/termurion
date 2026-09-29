@@ -76,7 +76,11 @@ impl App {
     /// the loop for a conductor waiting on Tandem's next command.
     pub(super) fn ssh_pump_pane(&mut self, pane: PaneId) {
         let outs = self.panes.get_mut(&pane).map(|p| p.take_ssh()).unwrap_or_default();
+        let mut batch = crate::ssh_hook::Batch::default();
         for out in outs {
+            if batch.drops(&out) {
+                continue;
+            }
             match out {
                 Out::Screen(bytes) => {
                     if let Some(p) = self.panes.get_mut(&pane) {
@@ -91,7 +95,10 @@ impl App {
                         c.handle_side(&text, pid, channel, depth);
                     }
                 }
-                Out::Ssh(Token::Init(init), _) => self.ssh_hooked(pane, init),
+                Out::Ssh(Token::Init(init), depth) => {
+                    let made = self.ssh_hooked(pane, init, depth);
+                    batch.hooked(depth, made);
+                }
                 // By the depth of the parser that lost its output (a conductor that is gone
                 // leaves it dropped), not always the innermost conductor.
                 Out::Ssh(Token::Error(reason), depth) => {
@@ -130,12 +137,16 @@ impl App {
 
     /// A conductor hooked (`TD:3852-3870`, then `PS:20118-20170` without jumps): the banner,
     /// the saved state, the reset, then a new conductor chained onto the pane's current one.
-    fn ssh_hooked(&mut self, pane: PaneId, init: Init) {
+    /// Only when it takes its hook's depth there (`Pane::ssh_init_fits`); false when refused.
+    fn ssh_hooked(&mut self, pane: PaneId, init: Init, depth: i32) -> bool {
+        if !self.panes.get_mut(&pane).is_some_and(|p| p.ssh_init_fits(depth)) {
+            return false;
+        }
         let (cfg, inject) = match self.profile_of(pane) {
             Some(p) => (crate::ssh_config::from_profile(p), p.bool("Load Shell Integration Automatically")),
             None => (Default::default(), false),
         };
-        let Some(p) = self.panes.get_mut(&pane) else { return };
+        let Some(p) = self.panes.get_mut(&pane) else { return false };
         p.own_mut().append_banner(&hook_banner(&init.sshargs));
         let saved = p.own().ssh_saved();
         // resetForSSH: before the conductor starts, so its replies are not held behind setup.
@@ -162,7 +173,9 @@ impl App {
         p.conductor = Some(Box::new(c));
         p.ssh.chain.push(hop);
         debug_assert!(p.ssh_chain_in_step(), "the hops follow the conductors");
+        debug_assert_eq!(p.conductor.as_ref().map(|c| c.depth()), Some(depth), "a conductor at its hook's depth");
         self.redraw();
+        true
     }
 
     /// Applies what the pane's conductors asked for (`Pane::apply_ssh_effects`, which runs

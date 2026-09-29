@@ -5,7 +5,7 @@
 use crate::conductor_parser::{Parser, Token, AUTOPOLL_PID, NOTIF_PID};
 use crate::side_channel::Reducer;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 pub const START: &[u8] = b"\x1bP2000p";
@@ -26,8 +26,9 @@ pub enum Out {
     Raw(Vec<u8>),
 }
 
-/// How many remote processes a whole hook tree follows at once (F13). A remote can name any
-/// pid, at every level; past this the hook lets go rather than keep a parser for each.
+/// How many remote processes the hooks at one depth follow at once (F13). A remote can name
+/// any pid, at every level; past this the hook that asks lets go rather than keep a parser for
+/// each.
 pub const MAX_CHILDREN: usize = 256;
 
 /// The deepest a hook nests (Tandem's guard, iTerm2 has none): a remote's cat'd nested DCS
@@ -35,8 +36,11 @@ pub const MAX_CHILDREN: usize = 256;
 /// the stack. A hook deeper than this never hooks: what it is given is plain output.
 pub const MAX_DEPTH: i32 = 8;
 
-/// The most bytes the parsers of one hook tree hold unfinished at once (an unfinished init
-/// line, OSC or `%output` block), all levels together.
+/// The depths that can hook, each with its own budget.
+const LEVELS: usize = MAX_DEPTH as usize + 1;
+
+/// The most bytes the parsers at one depth hold unfinished at once (an unfinished init line,
+/// OSC or `%output` block), all hooks at that depth together.
 pub const MAX_PENDING: usize = 16 * 1024 * 1024;
 
 /// Why the hook let go past `MAX_PENDING` (Tandem's).
@@ -55,48 +59,94 @@ pub fn new_dcs_id() -> String {
     uuid::Uuid::new_v4().hyphenated().to_string().to_uppercase()
 }
 
-/// What a whole hook tree holds, shared by every hook in it (F13): child hooks and unfinished
-/// parser bytes.
+/// What the hooks at one depth hold (F13): the child hooks they made, the unfinished bytes
+/// their parsers hold, and which of them owns a conductor (0: none).
 #[derive(Default)]
-struct Budget {
+struct Level {
     children: AtomicUsize,
     pending: AtomicUsize,
+    owner: AtomicU64,
 }
 
-/// One child hook's place in the tree's budget, given back when the child is dropped, however
-/// that happens.
-struct Slot(Arc<Budget>);
+/// What a whole hook tree shares. Each depth has its own budget, so hooks at one depth never
+/// refuse a shallower one: a cat'd file deep in a nested session cannot end the session
+/// around it. The root is the only hook at depth 0, so its budget is its own.
+#[derive(Default)]
+struct Tree {
+    levels: [Level; LEVELS],
+    /// The last hook serial given out (the root is 1).
+    serial: AtomicU64,
+}
 
-impl Drop for Slot {
-    fn drop(&mut self) {
-        self.0.children.fetch_sub(1, Ordering::Relaxed);
+impl Tree {
+    fn level(&self, depth: i32) -> Option<&Level> {
+        usize::try_from(depth).ok().and_then(|d| self.levels.get(d))
+    }
+
+    fn next_serial(&self) -> u64 {
+        self.serial.fetch_add(1, Ordering::Relaxed) + 2
     }
 }
 
-/// The unfinished bytes one hook's parser holds, counted in the tree's budget and given back
+/// One child hook's place in its maker's depth budget, given back when the child is dropped,
+/// however that happens.
+struct Slot {
+    tree: Arc<Tree>,
+    depth: i32,
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        if let Some(level) = self.tree.level(self.depth) {
+            level.children.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// The unfinished bytes one hook's parser holds, counted in its depth's budget and given back
 /// when the hook is dropped.
 #[derive(Default)]
 struct Charge {
-    budget: Arc<Budget>,
+    tree: Arc<Tree>,
+    depth: i32,
     bytes: usize,
 }
 
 impl Charge {
-    /// Sets what this hook holds; false when the tree now holds more than `MAX_PENDING`.
+    /// Sets what this hook holds; false when it asked for more and its depth now holds more
+    /// than `MAX_PENDING` (then it is the one refused, whoever else holds the rest).
     fn set(&mut self, bytes: usize) -> bool {
-        if bytes >= self.bytes {
-            self.budget.pending.fetch_add(bytes - self.bytes, Ordering::Relaxed);
+        let Some(level) = self.tree.level(self.depth) else { return bytes == 0 };
+        let grew = bytes > self.bytes;
+        if grew {
+            level.pending.fetch_add(bytes - self.bytes, Ordering::Relaxed);
         } else {
-            self.budget.pending.fetch_sub(self.bytes - bytes, Ordering::Relaxed);
+            level.pending.fetch_sub(self.bytes - bytes, Ordering::Relaxed);
         }
         self.bytes = bytes;
-        self.budget.pending.load(Ordering::Relaxed) <= MAX_PENDING
+        !grew || level.pending.load(Ordering::Relaxed) <= MAX_PENDING
     }
 }
 
 impl Drop for Charge {
     fn drop(&mut self) {
-        self.budget.pending.fetch_sub(self.bytes, Ordering::Relaxed);
+        self.set(0);
+    }
+}
+
+/// A hook's claim to own the conductor of its depth, given back when its parser ends or the
+/// hook is dropped.
+struct Owner {
+    tree: Arc<Tree>,
+    depth: i32,
+    serial: u64,
+}
+
+impl Drop for Owner {
+    fn drop(&mut self) {
+        if let Some(level) = self.tree.level(self.depth) {
+            let _ = level.owner.compare_exchange(self.serial, 0, Ordering::Relaxed, Ordering::Relaxed);
+        }
     }
 }
 
@@ -107,11 +157,30 @@ struct Child {
     _slot: Slot,
 }
 
-#[derive(Default)]
+/// The hook tree's rules (Tandem's guards around `VP:181-275`):
+/// - A hook at depth d reads the output of one remote process of the hook at d - 1; hooks
+///   past `MAX_DEPTH` never hook.
+/// - At most one hook per depth owns a conductor: the one whose parser read an init line, on
+///   a path of main (channel -1) outputs from the root. Another one's init line at that depth
+///   hooks nothing and says nothing (the rest of that read is lost), and a side channel's
+///   hook never owns (its conductor tokens are dropped, `T:1776-1805`). So the owners form one
+///   chain from the root, and the app gives each its conductor at the same depth.
+/// - A hook's children belong to its current parser: when the parser ends, however it ends,
+///   they go, and with them every deeper hook under it.
+/// - Each depth has its own budget (`MAX_CHILDREN` hooks made, `MAX_PENDING` bytes held); the
+///   hook that asks past it is the one that lets go, with an error at its own depth only when
+///   it owns a conductor. The root, alone at depth 0, answers only to its own caps.
 pub struct Hook {
     /// 0 for a pane's own hook, one more for each nested hook (a remote ssh inside a framed
     /// session).
     depth: i32,
+    /// Whether this hook may own its depth's conductor: the root, and a main output's child
+    /// of one that may.
+    may_own: bool,
+    /// This hook's id in the tree (the root is 1).
+    serial: u64,
+    /// Held while this hook's parser owns its depth's conductor.
+    owner: Option<Owner>,
     /// One parser per remote pid, at depth + 1.
     children: HashMap<i32, Box<Child>>,
     /// The first pid that wrote to the screen with no other process known (`VP:181-275`).
@@ -119,10 +188,16 @@ pub struct Hook {
     /// The end of the last read that may begin `ESC P 2000 p`.
     held: Vec<u8>,
     parser: Option<Parser>,
-    /// What the parser holds unfinished, in the tree's budget.
+    /// What the parser holds unfinished, in its depth's budget.
     charge: Charge,
     /// Where parser ids come from (None: `new_dcs_id`).
     ids: Option<fn() -> String>,
+}
+
+impl Default for Hook {
+    fn default() -> Hook {
+        Hook { depth: 0, may_own: true, serial: 1, owner: None, children: HashMap::new(), main_pid: None, held: Vec::new(), parser: None, charge: Charge::default(), ids: None }
+    }
 }
 
 impl Hook {
@@ -133,7 +208,10 @@ impl Hook {
 
     /// A hook at `depth`: what a child of a hook at `depth - 1` is.
     pub fn with_depth(depth: i32) -> Hook {
-        Hook { depth, ..Default::default() }
+        let mut hook = Hook::default();
+        hook.depth = depth;
+        hook.charge.depth = depth;
+        hook
     }
 
     /// The pids that have a child parser now, sorted.
@@ -150,39 +228,74 @@ impl Hook {
     /// Leaves the conductor without an `unhook` (iTerm2's forced unhook): what follows is
     /// output again. The parser's unparsed bytes (a partial init line or OSC) go with it.
     pub fn unhook(&mut self) {
+        self.end_parser();
+    }
+
+    /// The parser ends: its unfinished bytes, its claim on the depth's conductor and its
+    /// children go with it.
+    fn end_parser(&mut self) {
         self.parser = None;
         self.charge.set(0);
+        self.owner = None;
         self.drop_children();
     }
 
-    /// Lets go of the hooks at `depth` and every deeper one, leaving the ones above hooked: a
-    /// failed nested conductor must not end its parent's session (iTerm2 never force-unhooks
-    /// its parser). Depth 0 is the hook itself.
-    pub fn unhook_depth(&mut self, depth: i32) {
-        if depth <= self.depth {
-            self.unhook();
-        } else if depth == self.depth + 1 {
-            self.drop_children();
-        } else {
-            for child in self.children.values_mut() {
-                child.hook.unhook_depth(depth);
+    /// Lets go of the hook that owns the conductor at `depth`, and so of every hook under it
+    /// (a failed or refused conductor: iTerm2 never force-unhooks its parser). The hooks above
+    /// it and the other processes of its parent stay. False when no hook owns that depth.
+    pub fn let_go_owner(&mut self, depth: i32) -> bool {
+        if depth == self.depth {
+            if self.owner.is_none() {
+                return false;
             }
+            self.end_parser();
+            return true;
         }
+        depth > self.depth && self.children.values_mut().any(|child| child.hook.let_go_owner(depth))
     }
 
-    /// How many child hooks the whole tree holds (the F13 budget in use).
+    /// Whether a hook owns the conductor at `depth`.
+    pub fn owned(&self, depth: i32) -> bool {
+        self.charge.tree.level(depth).is_some_and(|l| l.owner.load(Ordering::Relaxed) != 0)
+    }
+
+    /// How many child hooks the whole tree holds.
     pub fn tree_children(&self) -> usize {
-        self.charge.budget.children.load(Ordering::Relaxed)
+        self.charge.tree.levels.iter().map(|l| l.children.load(Ordering::Relaxed)).sum()
+    }
+
+    /// The child hooks the hooks at `depth` made (that depth's budget in use).
+    pub fn children_at(&self, depth: i32) -> usize {
+        self.charge.tree.level(depth).map_or(0, |l| l.children.load(Ordering::Relaxed))
     }
 
     /// The unfinished parser bytes the whole tree holds.
     pub fn tree_pending(&self) -> usize {
-        self.charge.budget.pending.load(Ordering::Relaxed)
+        self.charge.tree.levels.iter().map(|l| l.pending.load(Ordering::Relaxed)).sum()
+    }
+
+    /// The unfinished parser bytes the hooks at `depth` hold.
+    pub fn pending_at(&self, depth: i32) -> usize {
+        self.charge.tree.level(depth).map_or(0, |l| l.pending.load(Ordering::Relaxed))
     }
 
     fn drop_children(&mut self) {
         self.children.clear();
         self.main_pid = None;
+    }
+
+    /// Claims this depth's conductor for the parser that just read its init line. False when
+    /// another hook at this depth owns it. A hook that may not own claims nothing.
+    fn claim(&mut self) -> bool {
+        if !self.may_own {
+            return true;
+        }
+        let Some(level) = self.charge.tree.level(self.depth) else { return false };
+        if level.owner.compare_exchange(0, self.serial, Ordering::Relaxed, Ordering::Relaxed).is_err() {
+            return false;
+        }
+        self.owner = Some(Owner { tree: self.charge.tree.clone(), depth: self.depth, serial: self.serial });
+        true
     }
 
     /// The tail of the last read kept because it may begin `ESC P 2000 p`, handed back for
@@ -192,19 +305,29 @@ impl Hook {
     }
 
     /// A `%output` block (`VP:181-275`): its data goes to the child parser of its pid (made
-    /// on first use, at depth + 1), and what the child finds goes up. False past the cap.
+    /// on first use, at depth + 1), and what the child finds goes up. False when this depth
+    /// may make no more children.
     fn output(&mut self, pid: i32, channel: i32, data: Vec<u8>, out: &mut Vec<Out>) -> bool {
         if !self.children.contains_key(&pid) {
-            let budget = &self.charge.budget;
-            if budget.children.load(Ordering::Relaxed) >= MAX_CHILDREN {
+            let tree = self.charge.tree.clone();
+            let Some(level) = tree.level(self.depth) else { return false };
+            if level.children.load(Ordering::Relaxed) >= MAX_CHILDREN {
                 return false;
             }
             if self.children.is_empty() && channel == -1 {
                 self.main_pid = Some(pid);
             }
-            budget.children.fetch_add(1, Ordering::Relaxed);
-            let slot = Slot(budget.clone());
-            let hook = Hook { depth: self.depth + 1, ids: self.ids, charge: Charge { budget: budget.clone(), bytes: 0 }, ..Default::default() };
+            level.children.fetch_add(1, Ordering::Relaxed);
+            let slot = Slot { tree: tree.clone(), depth: self.depth };
+            let depth = self.depth + 1;
+            let hook = Hook {
+                depth,
+                may_own: self.may_own && channel == -1,
+                serial: tree.next_serial(),
+                ids: self.ids,
+                charge: Charge { tree: tree.clone(), depth, bytes: 0 },
+                ..Default::default()
+            };
             self.children.insert(pid, Box::new(Child { hook, reducer: Reducer::default(), _slot: slot }));
         }
         let Some(child) = self.children.get_mut(&pid) else { return true };
@@ -241,12 +364,25 @@ impl Hook {
             if let Some(parser) = &mut self.parser {
                 let past_init = parser.past_init();
                 let fed = parser.feed(&data);
+                let pending = if fed.rest.is_some() { 0 } else { parser.pending_bytes() };
+                let hooked_now = !past_init && fed.tokens.iter().any(|t| matches!(t, Token::Init(_)));
+                if hooked_now && !self.claim() {
+                    // Another hook at this depth owns its conductor: this one hooks nothing,
+                    // and what its parser read is lost with it.
+                    self.end_parser();
+                    match fed.rest {
+                        None => break,
+                        Some(rest) => {
+                            data = rest;
+                            continue;
+                        }
+                    }
+                }
                 // A parser that unhooks with no word of its own gets one here (F28), unless it
                 // never read its init line: it has no conductor, and the error would fail the
                 // pane's existing one (a cat'd file can hold a broken DCS 2000p).
-                let owned = past_init || fed.tokens.iter().any(|t| matches!(t, Token::Init(_)));
+                let owned = past_init || hooked_now;
                 let silent = owned && fed.rest.is_some() && !matches!(fed.tokens.last(), Some(Token::Unhook | Token::Error(_)));
-                let pending = if fed.rest.is_some() { 0 } else { parser.pending_bytes() };
                 let mut capped = false;
                 for token in fed.tokens {
                     match token {
@@ -274,28 +410,25 @@ impl Hook {
                     // The rest of the read is lost with the parser; the pane's screen gets
                     // nothing of it (it is a remote's flood).
                     out.push(Out::Ssh(Token::Error(TOO_MANY_PROCESSES.into()), self.depth));
-                    self.parser = None;
-                    self.charge.set(0);
-                    self.drop_children();
+                    self.end_parser();
                     break;
                 }
                 if silent {
-                    self.drop_children();
                     out.push(Out::Ssh(Token::Error(LOST_OUTPUT.into()), self.depth));
                 }
                 if !self.charge.set(pending) {
-                    // The tree holds too much unfinished output: this parser lets go.
-                    self.parser = None;
-                    self.charge.set(0);
-                    self.drop_children();
-                    out.push(Out::Ssh(Token::Error(TOO_MUCH_PENDING.into()), self.depth));
+                    // This depth holds too much unfinished output and this parser asked for
+                    // more: it lets go, with what it held.
+                    if owned {
+                        out.push(Out::Ssh(Token::Error(TOO_MUCH_PENDING.into()), self.depth));
+                    }
+                    self.end_parser();
                     break;
                 }
                 match fed.rest {
                     None => break,
                     Some(rest) => {
-                        self.parser = None;
-                        self.charge.set(0);
+                        self.end_parser();
                         data = rest;
                     }
                 }
@@ -320,6 +453,38 @@ impl Hook {
             }
         }
         out
+    }
+}
+
+/// What the app keeps while it runs one batch of a pane's hook output: after it refused a
+/// conductor at some depth (its depth did not follow the pane's conductors), everything left
+/// in the batch from that depth or deeper came from the refused hook, so it is dropped.
+#[derive(Default)]
+pub struct Batch {
+    refused: Option<i32>,
+}
+
+impl Batch {
+    /// Whether `out` is dropped: a conductor token or side channel piece from a refused depth.
+    pub fn drops(&self, out: &Out) -> bool {
+        let depth = match out {
+            Out::Ssh(_, depth) | Out::Side { depth, .. } => *depth,
+            Out::Screen(_) | Out::Raw(_) => return false,
+        };
+        self.refused.is_some_and(|r| depth >= r)
+    }
+
+    /// The conductor an init line at `depth` asked for was made (`true`) or refused.
+    pub fn hooked(&mut self, depth: i32, made: bool) {
+        if made {
+            // A shallower hook's new conductor: the refused hooks were under a parser that
+            // ended before it, so nothing of theirs follows.
+            if self.refused.is_some_and(|r| depth < r) {
+                self.refused = None;
+            }
+        } else {
+            self.refused = Some(self.refused.map_or(depth, |r| r.min(depth)));
+        }
     }
 }
 
@@ -892,23 +1057,18 @@ mod tests {
     }
 
     #[test]
-    fn children_are_capped_across_the_tree() {
+    fn children_are_capped_per_depth() {
         use crate::ssh_fixtures::{dcs_hook, output};
-        // Twenty children at the root, each with twenty of its own: 420 in all.
+        // Pid 5's parser (depth 1) is sent 300 processes of its own.
         let mut h = hooked();
-        let mut errors = 0;
-        for r in 1..=20 {
-            let mut block = dcs_hook("", "v", "YQ==", "Yg==");
-            for q in 1..=20 {
-                block.extend(output("q", q, -1, 1, b"x"));
-            }
-            for o in h.feed(&output("r", r, -1, 0, &block)) {
-                errors += usize::from(matches!(&o, Out::Ssh(Token::Error(e), _) if e == TOO_MANY_PROCESSES));
-            }
-            assert!(h.tree_children() <= MAX_CHILDREN, "{}", h.tree_children());
+        let mut errors = error_depths(&h.feed(&output("r", 5, -1, 0, &dcs_hook("", "v", "YQ==", "Yg=="))));
+        for q in 1..=300 {
+            errors.extend(error_depths(&h.feed(&output("r", 5, -1, 0, &output("q", q, -1, 1, b"x")))));
+            assert!(h.children_at(1) <= MAX_CHILDREN, "{}", h.children_at(1));
         }
-        assert!(errors >= 1, "the tree budget refused a child");
+        assert_eq!(errors, [1], "the depth 1 parser, at its 257th process");
         assert!(h.active(), "the depth 0 parser is not the one that failed");
+        assert_eq!((h.children_at(0), h.children_at(1)), (1, 0), "its children went with it");
         // Children given back leave room again.
         let mut h = hooked();
         for pid in 1..=200 {
@@ -920,49 +1080,170 @@ mod tests {
     }
 
     #[test]
-    fn pending_bytes_are_capped_across_the_tree() {
+    fn pending_bytes_are_capped_per_depth() {
         use crate::ssh_fixtures::{dcs_hook, osc134, output};
-        // Twenty children each hold most of a 1 MiB %output block unfinished.
+        // Twenty children of pid 5's parser each hold 900,000 bytes of an unfinished init line.
         let mut h = hooked();
-        let mut errors = 0;
-        for r in 1..=20 {
-            let mut block = dcs_hook("", "v", "YQ==", "Yg==");
-            block.extend(osc134("%output x 9 1 1"));
-            block.extend(vec![b'a'; 900_000]);
-            for o in h.feed(&output("r", r, -1, 0, &block)) {
-                errors += usize::from(matches!(&o, Out::Ssh(Token::Error(e), _) if e == TOO_MUCH_PENDING));
-            }
-            assert!(h.tree_pending() <= MAX_PENDING, "{}", h.tree_pending());
+        let mut errors = error_depths(&h.feed(&output("r", 5, -1, 0, &dcs_hook("", "v", "YQ==", "Yg=="))));
+        let long = [&START[..], &vec![b'a'; 900_000][..]].concat();
+        for q in 1..=20 {
+            errors.extend(error_depths(&h.feed(&output("r", 5, -1, 0, &output("q", q, -1, 1, &long)))));
+            assert!(h.pending_at(2) <= MAX_PENDING, "{}", h.pending_at(2));
         }
-        assert_eq!(errors, 2, "the 19th and the 20th were refused");
-        assert!(h.active());
+        assert_eq!(errors, Vec::<i32>::new(), "they own no conductor: refused without a word");
+        assert_eq!(h.pending_at(2), 18 * 900_000, "the 19th and the 20th were refused");
+        // The depth's owner asking past it is refused with an error at its depth.
+        let mut inner = dcs_hook("", "w", "YQ==", "Yg==");
+        inner.extend(osc134("%output x 9 1 2"));
+        inner.extend(vec![b'b'; 900_000]);
+        let got = h.feed(&output("r", 5, -1, 0, &output("q", 30, -1, 1, &inner)));
+        assert_eq!(error_depths(&got), [2]);
+        assert!(!h.owned(2) && h.owned(1) && h.active());
         h.unhook();
         assert_eq!(h.tree_pending(), 0, "given back");
     }
 
     #[test]
-    fn unhook_depth_leaves_the_parents_hooked() {
+    fn let_go_owner_leaves_the_parents_hooked() {
         use crate::ssh_fixtures::{dcs_hook, output};
         let build = || {
             let mut h = hooked();
             let middle = [dcs_hook("", "u", "YQ==", "Yg=="), output("3", 9, -1, 1, &init_and_reply())].concat();
-            h.feed(&output("4", 8, -1, 0, &middle));
+            assert_eq!(depths(&h.feed(&output("4", 8, -1, 0, &middle))), [1, 2, 2, 2, 2]);
             h
         };
-        // Depth 2 goes: the depth 1 parser still reads its %output, into a fresh child.
+        // Depth 2 goes: the depth 1 parser still reads its %output, into a fresh child that
+        // may hook again.
         let mut h = build();
         assert_eq!(h.tree_children(), 2);
-        h.unhook_depth(2);
-        assert_eq!((h.tree_children(), h.child_pids(), h.active()), (1, vec![8], true));
+        assert!(!h.let_go_owner(3), "nothing owns depth 3");
+        assert!(h.let_go_owner(2));
+        assert_eq!((h.tree_children(), h.child_pids(), h.active(), h.owned(2)), (2, vec![8], true, false));
         let got = h.feed(&output("5", 8, -1, 0, &output("6", 9, -1, 1, b"zz")));
-        assert_eq!(got, vec![s(b"zz"), raw(&output("6", 9, -1, 1, b"zz"))], "depth 1 still parses, its new child shows plain output");
-        // Depth 1 goes: the depth 0 parser reads on.
+        assert_eq!(got, vec![s(b"zz"), raw(&output("6", 9, -1, 1, b"zz"))], "depth 1 still parses, its child shows plain output");
+        assert_eq!(depths(&h.feed(&output("7", 8, -1, 0, &output("8", 9, -1, 1, &init_and_reply())))), [2, 2, 2, 2]);
+        // Depth 1 goes: the depth 0 parser reads on, and the other processes stay.
         let mut h = build();
-        h.unhook_depth(1);
-        assert_eq!((h.tree_children(), h.child_pids(), h.active()), (0, vec![], true));
+        h.feed(&output("9", 12, 1, 0, b"side"));
+        assert!(h.let_go_owner(1));
+        assert_eq!((h.tree_children(), h.child_pids(), h.active(), h.owned(1), h.owned(2)), (2, vec![8, 12], true, false, false));
         // Depth 0 is the whole hook.
         let mut h = build();
-        h.unhook_depth(0);
+        assert!(h.let_go_owner(0));
         assert_eq!((h.tree_children(), h.active()), (0, false));
+    }
+
+    #[test]
+    fn a_refused_depth_drops_the_rest_of_its_batch() {
+        let mut b = Batch::default();
+        let side = |depth| Out::Side { text: "x".into(), pid: 1, channel: 1, depth };
+        assert!(!b.drops(&Out::Ssh(Token::Unhook, 3)));
+        b.hooked(1, true);
+        assert!(!b.drops(&Out::Ssh(Token::Unhook, 3)));
+        b.hooked(2, false);
+        assert!(b.drops(&Out::Ssh(Token::Line("l".into()), 2)) && b.drops(&Out::Ssh(Token::Unhook, 3)) && b.drops(&side(2)));
+        assert!(!b.drops(&Out::Ssh(Token::Line("l".into()), 1)) && !b.drops(&side(1)), "shallower ones go on");
+        assert!(!b.drops(&s(b"x")) && !b.drops(&raw(b"x")), "output is output");
+        b.hooked(1, false);
+        assert!(b.drops(&Out::Ssh(Token::Unhook, 1)), "the shallowest refusal counts");
+        b.hooked(0, true);
+        assert!(!b.drops(&Out::Ssh(Token::Unhook, 1)), "a new conductor above: nothing of the refused follows");
+    }
+
+    /// The depth of every error in `outs`, in order.
+    fn error_depths(outs: &[Out]) -> Vec<i32> {
+        outs.iter().filter_map(|o| if let Out::Ssh(Token::Error(_), d) = o { Some(*d) } else { None }).collect()
+    }
+
+    #[test]
+    fn deep_children_never_starve_a_shallower_hook() {
+        use crate::ssh_fixtures::{autopoll, dcs_hook, output};
+        // Pid 5's parser (depth 1) follows 255 processes of its own: with the root's child for
+        // pid 5, 256 hooks below the root.
+        let mut h = hooked();
+        let mut block = dcs_hook("", "v", "YQ==", "Yg==");
+        for q in 1..=255 {
+            block.extend(output("q", q, -1, 1, b"x"));
+        }
+        assert_eq!(error_depths(&h.feed(&output("r", 5, -1, 0, &block))), Vec::<i32>::new());
+        // The root still makes its autopoll child each second, and a child for a new pid.
+        for i in 0..3 {
+            assert_eq!(error_depths(&h.feed(&autopoll("a", "r\n"))), Vec::<i32>::new(), "autopoll {i}");
+            assert_eq!(error_depths(&h.feed(&output("n", 1000 + i, -1, 0, b"z"))), Vec::<i32>::new(), "pid {i}");
+        }
+        assert!(h.active(), "depth 0 keeps framing");
+        // Pid 5's parser asks for more than its depth holds: it alone is refused, once.
+        let mut errors = Vec::new();
+        for q in 256..=300 {
+            errors.extend(error_depths(&h.feed(&output("r", 5, -1, 0, &output("q", q, -1, 1, b"x")))));
+        }
+        assert_eq!(errors, [1], "the depth 1 hook that asked");
+        assert!(h.active());
+        assert_eq!(error_depths(&h.feed(&autopoll("a", "r\n"))), Vec::<i32>::new());
+        assert_eq!(h.feed(&output("z", 4242, -1, 0, b"ok")), vec![s(b"ok"), raw(b"ok")], "the root still parses");
+    }
+
+    #[test]
+    fn deep_pending_never_starves_a_shallower_hook() {
+        use crate::ssh_fixtures::{dcs_hook, osc134, output};
+        // Pid 5's parser (depth 1) has 16 children, each holding 1,000,000 bytes of an
+        // unfinished init line (under the parser's own 1 MiB cap): 16,000,000 at depth 2.
+        let mut h = hooked();
+        let mut errors = error_depths(&h.feed(&output("r", 5, -1, 0, &dcs_hook("", "v", "YQ==", "Yg=="))));
+        let long = [&START[..], &vec![b'a'; 1_000_000][..]].concat();
+        for q in 1..=16 {
+            errors.extend(error_depths(&h.feed(&output("r", 5, -1, 0, &output("q", q, -1, 1, &long)))));
+        }
+        assert_eq!(errors, Vec::<i32>::new());
+        // The root holds a block of its own unfinished: it is not refused, and finishes it.
+        let mut open = osc134("%output x 9 -1 0");
+        open.extend(vec![b'b'; 900_000]);
+        assert_eq!(error_depths(&h.feed(&open)), Vec::<i32>::new(), "depth 0 is not refused");
+        assert!(h.active(), "depth 0 keeps framing");
+        let got = h.feed(&osc134("%end x"));
+        assert_eq!(got.first(), Some(&s(&vec![b'b'; 900_000])));
+        // Pid 5's parser holds a block unfinished too: depth 2 being full does not refuse it.
+        let mut inner = osc134("%output w 8 1 1");
+        inner.extend(vec![b'c'; 500_000]);
+        assert_eq!(error_depths(&h.feed(&output("y", 5, -1, 0, &inner))), Vec::<i32>::new(), "depth 1 is not refused");
+        assert_eq!(error_depths(&h.feed(&output("y", 5, -1, 0, &osc134("%end w")))), Vec::<i32>::new());
+        // A 17th unfinished init line at depth 2 is refused; it owns no conductor, so no error.
+        let got = h.feed(&output("r", 5, -1, 0, &output("q", 17, -1, 1, &long)));
+        assert_eq!(error_depths(&got), Vec::<i32>::new());
+        assert!(h.tree_pending() <= 2 * MAX_PENDING, "{}", h.tree_pending());
+        assert!(h.active());
+    }
+
+    #[test]
+    fn one_hook_per_depth_owns_a_conductor() {
+        use crate::ssh_fixtures::output;
+        let mut h = hooked();
+        assert_eq!(depths(&h.feed(&output("a", 5, -1, 0, &init_and_reply()))), [1, 1, 1, 1]);
+        // Another process's DCS 2000p at the same depth hooks nothing and says nothing.
+        let got = h.feed(&output("b", 6, -1, 0, &init_and_reply()));
+        assert_eq!(got, vec![raw(&init_and_reply())], "only the coprocess copy");
+        // Nor when it tries again.
+        assert_eq!(depths(&h.feed(&output("c", 6, -1, 0, &init_and_reply()))), Vec::<i32>::new());
+        // Once pid 5 unhooks, the depth is free.
+        assert_eq!(h.feed(&output("d", 5, -1, 0, &osc135("unhook"))), vec![Out::Ssh(Token::Unhook, 1), raw(&osc135("unhook"))]);
+        assert_eq!(depths(&h.feed(&output("e", 6, -1, 0, &init_and_reply()))), [1, 1, 1, 1]);
+        // A side channel's hook never takes a depth from the one that frames.
+        let mut h = hooked();
+        assert_eq!(h.feed(&output("f", 7, 1, 0, &init_and_reply())), vec![]);
+        assert_eq!(depths(&h.feed(&output("g", 5, -1, 0, &init_and_reply()))), [1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn a_parser_that_ends_takes_its_children() {
+        use crate::ssh_fixtures::{osc134, output};
+        let mut h = hooked();
+        h.feed(&output("a", 5, -1, 0, &init_and_reply()));
+        assert_eq!(h.child_pids(), [5]);
+        // The root's parser ends with an error of its own: pid 5's hook goes with it.
+        let long = "7".repeat(crate::conductor_parser::MAX_ID + 1);
+        assert_eq!(error_depths(&h.feed(&osc134(&format!("begin {long}")))), [0]);
+        assert!(!h.active());
+        assert_eq!(h.child_pids(), Vec::<i32>::new());
+        assert_eq!(h.tree_children(), 0);
     }
 }

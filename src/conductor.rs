@@ -528,6 +528,17 @@ pub fn shown(text: &str) -> String {
     }
 }
 
+/// The depth of a conductor hooked while `parent` is the pane's current one (`CD:512-518`):
+/// the parent's, one more when the parent frames (an unframed parent does not wrap input
+/// for it); 0 with none.
+pub fn child_depth(parent: Option<&Conductor>) -> i32 {
+    match parent {
+        Some(p) if p.framing() => p.depth + 1,
+        Some(p) => p.depth,
+        None => 0,
+    }
+}
+
 /// Takes the pane's innermost conductor; its parent becomes current (`PS:20199`).
 pub fn pop(chain: &mut Option<Box<Conductor>>) -> Option<Box<Conductor>> {
     let mut innermost = chain.take()?;
@@ -604,6 +615,8 @@ pub struct Conductor {
     pub(crate) completed: Vec<(Purpose, Vec<u8>, i32)>,
     line_prefix: String,
     depth: i32,
+    /// Set by `fail`: the pane's abort takes this conductor, and every one inside it, out.
+    failed: bool,
     pub(crate) effects: Vec<Effect>,
     state: State,
     queue: Vec<Context>,
@@ -627,11 +640,7 @@ impl Conductor {
     /// pre-framer line; the depth is the parent's, one more when the parent frames (an
     /// unframed parent does not wrap input for it).
     pub fn new(setup: Setup, parent: Option<Box<Conductor>>, prefix_uuid: &str) -> Conductor {
-        let depth = match &parent {
-            Some(p) if p.framing() => p.depth + 1,
-            Some(p) => p.depth,
-            None => 0,
-        };
+        let depth = child_depth(parent.as_deref());
         Conductor {
             setup,
             parent,
@@ -657,6 +666,7 @@ impl Conductor {
             completed: Vec::new(),
             line_prefix: format!("\u{3}{prefix_uuid}"),
             depth,
+            failed: false,
             effects: Vec::new(),
             state: State::Ground,
             queue: Vec::new(),
@@ -771,6 +781,11 @@ impl Conductor {
 
     pub fn depth(&self) -> i32 {
         self.depth
+    }
+
+    /// Whether this conductor failed (`fail`) and waits for the pane's abort.
+    pub fn failed(&self) -> bool {
+        self.failed
     }
 
     pub fn framing(&self) -> bool {
@@ -1051,6 +1066,7 @@ impl Conductor {
     /// the session (outside `write()`, so it is held like typing; without the line prefix,
     /// base64 or the blank line conductor.sh needs: iTerm2 bug B3, kept), then the abort.
     pub fn fail(&mut self, reason: &str) {
+        self.failed = true;
         self.force_ground();
         // Nothing more is expected of a failed conductor: no deadline, one abort.
         self.last_activity = None;
