@@ -1337,7 +1337,7 @@ impl App {
             self.ai_watermarks.remove(id);
             self.chat_snippets.remove(id);
         }
-        self.chat_refresh(crate::chat_menu::StateChange::ChatDeleted);
+        self.chat_refresh();
         let first = self.chat_db.as_ref().and_then(|db| db.chats().ok()).and_then(|chats| chats.first().map(|c| c.id.clone()));
         self.chat_rows_dirty = true;
         match chat_list::after_delete(self.chat_shown.as_deref(), &ids, first.as_deref()) {

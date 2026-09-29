@@ -170,6 +170,34 @@ pub fn streaming_allowed(linked: Option<&str>, guid: &str, live: bool) -> bool {
     live && linked == Some(guid)
 }
 
+/// What the Privacy Warning's OK does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartStreaming {
+    Start,
+    /// The chat was relinked, unlinked or its session closed since the question: nothing starts,
+    /// and the chat says so.
+    Stale,
+    /// Already streaming: nothing to do, nothing to say.
+    Already,
+}
+
+pub const STREAM_STALE_NOTICE: &str = "Sending commands automatically was not started: this chat is no longer linked to the session the question was about.";
+
+pub fn start_streaming_decision(linked: Option<&str>, guid: &str, live: bool, already: bool) -> StartStreaming {
+    if !streaming_allowed(linked, guid, live) {
+        StartStreaming::Stale
+    } else if already {
+        StartStreaming::Already
+    } else {
+        StartStreaming::Start
+    }
+}
+
+/// The chats linked to the session `reference` (from `linked_sessions`' (chat, guid) pairs).
+pub fn chats_linked_to(linked: &[(String, String)], reference: &str) -> Vec<String> {
+    linked.iter().filter(|(_, guid)| guid == reference).map(|(chat, _)| chat.clone()).collect()
+}
+
 /// Help (the warning bubble on the button in iTerm2): OK only, nothing follows.
 pub fn help_alert() -> Alert {
     Alert { heading: String::new(), text: HELP_TEXT.to_string(), buttons: vec!["OK"], silence: None, then: Then::Nothing, gate: false, close: None }
@@ -278,37 +306,6 @@ pub fn stream_targets<'a>(chats: impl IntoIterator<Item = (&'a str, Option<&'a s
 /// is Active but nothing streams it (`CVC:1006-1011`).
 pub fn stale_streaming(last_state: Option<crate::chat_message::Streaming>, streaming_now: bool) -> bool {
     last_state == Some(crate::chat_message::Streaming::Active) && !streaming_now
-}
-
-/// A change of what chats and panes are linked or streaming. Each one must bring the panes'
-/// watch flags and the indicators' link cache up to date (findings 1 and 2 of Task 6's review).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StateChange {
-    Linked,
-    Unlinked,
-    StreamStarted,
-    StreamStopped,
-    /// The linked session was restarted: a new Screen (its watch flag is off) with the same reference.
-    PaneRestarted,
-    PaneClosed,
-    ChatDeleted,
-}
-
-impl StateChange {
-    pub const ALL: [StateChange; 7] = [StateChange::Linked, StateChange::Unlinked, StateChange::StreamStarted, StateChange::StreamStopped, StateChange::PaneRestarted, StateChange::PaneClosed, StateChange::ChatDeleted];
-}
-
-/// What a change refreshes: the panes' `chat_watch` flags, the indicators' link cache.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Refresh {
-    pub watch: bool,
-    pub links: bool,
-}
-
-/// Every change refreshes both: the streamed pane follows the chat's current link (a restart or
-/// a relink moves it, `CVC:144-165`), and the glyph never lies for a second.
-pub fn refresh_for(_change: StateChange) -> Refresh {
-    Refresh { watch: true, links: true }
 }
 
 /// The panes that must queue their finished commands: the panes the streaming chats link to.
@@ -522,10 +519,48 @@ mod tests {
     }
 
     #[test]
-    fn every_state_change_refreshes_the_watch_and_the_links() {
-        for c in StateChange::ALL {
-            assert_eq!(refresh_for(c), Refresh { watch: true, links: true }, "{c:?}");
-        }
+    fn the_watch_follows_every_change_of_link_stream_and_pane() {
+        use std::collections::{HashMap, HashSet};
+        // The chats' live links and the streaming set as the app keeps them; after each change
+        // the watch is what `watched_panes` says of them.
+        let mut links: HashMap<&str, Option<crate::layout::PaneId>> = HashMap::from([("a", Some(1)), ("b", Some(2))]);
+        let mut streaming: HashSet<String> = HashSet::new();
+        let watch = |links: &HashMap<&str, Option<crate::layout::PaneId>>, streaming: &HashSet<String>| watched_panes(links.iter().map(|(c, p)| (*c, *p)), streaming);
+        assert!(watch(&links, &streaming).is_empty(), "nothing streams");
+        streaming.insert("a".into());
+        assert_eq!(watch(&links, &streaming), HashSet::from([1]), "started");
+        // Restart: the pane keeps its number, so the same pane is watched again.
+        assert_eq!(watch(&links, &streaming), HashSet::from([1]), "restarted");
+        links.insert("a", Some(2));
+        assert_eq!(watch(&links, &streaming), HashSet::from([2]), "relinked: the watch moves");
+        streaming.insert("b".into());
+        assert_eq!(watch(&links, &streaming), HashSet::from([2]), "two chats, one pane");
+        links.insert("a", None);
+        assert_eq!(watch(&links, &streaming), HashSet::from([2]), "one unlinked: the other still watches");
+        links.insert("b", None);
+        assert!(watch(&links, &streaming).is_empty(), "pane closed, both unlinked");
+        links.insert("a", Some(1));
+        streaming.remove("a");
+        assert!(watch(&links, &streaming).is_empty(), "stopped or deleted");
+    }
+
+    #[test]
+    fn a_stale_privacy_warning_answer_says_so() {
+        use StartStreaming::*;
+        assert_eq!(start_streaming_decision(Some("g1"), "g1", true, false), Start);
+        assert_eq!(start_streaming_decision(Some("g2"), "g1", true, false), Stale, "relinked elsewhere");
+        assert_eq!(start_streaming_decision(None, "g1", true, false), Stale, "unlinked");
+        assert_eq!(start_streaming_decision(Some("g1"), "g1", false, false), Stale, "session closed");
+        assert_eq!(start_streaming_decision(Some("g1"), "g1", true, true), Already);
+        assert_eq!(start_streaming_decision(Some("g2"), "g1", true, true), Stale, "stale wins over already");
+        assert!(STREAM_STALE_NOTICE.contains("no longer linked"));
+    }
+
+    #[test]
+    fn a_session_that_is_gone_unlinks_every_chat_of_it() {
+        let linked = vec![("c1".to_string(), "r1".to_string()), ("c2".to_string(), "r2".to_string()), ("c3".to_string(), "r1".to_string())];
+        assert_eq!(chats_linked_to(&linked, "r1"), ["c1", "c3"]);
+        assert!(chats_linked_to(&linked, "r9").is_empty());
     }
 
     #[test]

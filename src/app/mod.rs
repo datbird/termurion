@@ -2634,11 +2634,15 @@ impl App {
         // Its inline files went with its screen.
         self.close_inline_questions_of(id);
         if self.start_pane_as(id, rect, guid.as_deref()) {
-            if let (Some(reference), Some(p)) = (reference, self.panes.get_mut(&id)) {
+            if let (Some(reference), Some(p)) = (reference.clone(), self.panes.get_mut(&id)) {
                 p.keep_reference(&reference);
             }
             // The new Screen has no chat watch: a chat streaming this session goes on (`CVC:144-165`).
-            self.chat_refresh(crate::chat_menu::StateChange::PaneRestarted);
+            self.chat_refresh();
+        } else if let Some(reference) = reference {
+            // The old pane is gone and no new one started: its chats unlink with the notice and
+            // stop streaming, as if the pane had closed.
+            self.chat_reference_gone(id, &reference);
         }
     }
 

@@ -95,7 +95,7 @@ impl App {
         self.notice(chat, &chat_buttons::linked_notice(true, Some(name.as_str()).filter(|n| !n.trim().is_empty())));
         self.client_local(chat, ClientLocal::Permissions { terminal: true, guid: reference });
         self.ai_publish_permissions(chat);
-        self.chat_refresh(chat_menu::StateChange::Linked);
+        self.chat_refresh();
         self.chat_state_changed();
         Ok(())
     }
@@ -386,7 +386,7 @@ impl App {
         self.ai_watermarks.remove(chat);
         self.notice(chat, if terminal { chat_menu::UNLINKED_TERMINAL } else { chat_menu::UNLINKED_BROWSER });
         self.ai_publish_permissions(chat);
-        self.chat_refresh(chat_menu::StateChange::Unlinked);
+        self.chat_refresh();
         self.chat_state_changed();
     }
 
@@ -417,10 +417,14 @@ impl App {
     /// linked to the session the question named and that session is open.
     pub(super) fn start_streaming(&mut self, chat: &str, guid: &str) {
         let link = self.chat_live_link(chat);
-        if !chat_menu::streaming_allowed(link.as_ref().map(|(g, _)| g.as_str()), guid, link.is_some()) || !self.streaming_chats.insert(chat.to_string()) {
-            return;
+        match chat_menu::start_streaming_decision(link.as_ref().map(|(g, _)| g.as_str()), guid, link.is_some(), self.streaming_chats.contains(chat)) {
+            chat_menu::StartStreaming::Already => return,
+            // The answer belongs to a link that is gone: nothing starts, and the chat says so.
+            chat_menu::StartStreaming::Stale => return self.notice(chat, chat_menu::STREAM_STALE_NOTICE),
+            chat_menu::StartStreaming::Start => {}
         }
-        self.chat_refresh(chat_menu::StateChange::StreamStarted);
+        self.streaming_chats.insert(chat.to_string());
+        self.chat_refresh();
         self.client_local(chat, ClientLocal::StreamingChanged(Streaming::Active));
         self.chat_state_changed();
     }
@@ -431,22 +435,18 @@ impl App {
         if !self.streaming_chats.remove(chat) {
             return;
         }
-        self.chat_refresh(chat_menu::StateChange::StreamStopped);
+        self.chat_refresh();
         self.client_local(chat, ClientLocal::StreamingChanged(Streaming::Stopped));
         self.chat_window_refresh();
         self.redraw_all();
     }
 
-    /// What a change of links, streams or panes refreshes (`chat_menu::refresh_for`): the panes'
-    /// watch flags and the indicators' link cache. Every such site calls this.
-    pub(super) fn chat_refresh(&mut self, change: chat_menu::StateChange) {
-        let r = chat_menu::refresh_for(change);
-        if r.watch {
-            self.sync_chat_watch();
-        }
-        if r.links {
-            self.chat_links_stale();
-        }
+    /// What a change of links, streams or panes refreshes: the panes' watch flags and the
+    /// indicators' link cache. Every such site calls this (a restart or a relink moves the watch,
+    /// `CVC:144-165`, and the glyph never lies for a second).
+    pub(super) fn chat_refresh(&mut self) {
+        self.sync_chat_watch();
+        self.chat_links_stale();
     }
 
     /// Every pane's `chat_watch` follows the streaming chats' current links.
@@ -495,14 +495,18 @@ impl App {
     /// the pane leaves, while its reference still names it.
     pub(super) fn chat_pane_gone(&mut self, pane: PaneId) {
         let Some(reference) = self.session_ref(pane) else { return };
+        self.chat_reference_gone(pane, &reference);
+    }
+
+    /// The session `reference` (pane `pane`) is gone, for a close or for a restart that could not
+    /// start its shell: its chats unlink with the notice and stop streaming.
+    pub(super) fn chat_reference_gone(&mut self, pane: PaneId, reference: &str) {
         self.picker_hits.retain(|(p, _)| *p != pane);
         let linked = self.chat_db.as_ref().and_then(|db| db.linked_sessions().ok()).unwrap_or_default();
-        for (chat, guid) in linked {
-            if guid == reference {
-                self.unlink_chat(&chat, true);
-            }
+        for chat in chat_menu::chats_linked_to(&linked, reference) {
+            self.unlink_chat(&chat, true);
         }
-        self.chat_refresh(chat_menu::StateChange::PaneClosed);
+        self.chat_refresh();
     }
 
     /// The links the indicators read, refreshed at most once a second unless something changed

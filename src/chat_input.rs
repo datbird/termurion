@@ -279,8 +279,8 @@ pub fn drop_result(action: DropAction, supported: &[PathBuf], all: &[PathBuf]) -
     }
 }
 
-/// (accepted, rejected) among paths: a folder is accepted (its files are filtered as it is
-/// read), a network path never (it is not probed as a file; a drop of one inserts its text),
+/// (accepted, rejected) among paths: a folder when the model takes an upload of no known type
+/// (its files are filtered as it is read), a network path never (it is not probed as a file; a drop of one inserts its text),
 /// a file when the model accepts its MIME type.
 pub fn split_by_model(paths: &[PathBuf], is_dir: &dyn Fn(&Path) -> bool, accepts: &dyn Fn(&str) -> bool) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let (mut ok, mut no) = (Vec::new(), Vec::new());
@@ -288,7 +288,15 @@ pub fn split_by_model(paths: &[PathBuf], is_dir: &dyn Fn(&Path) -> bool, accepts
         let text = p.to_string_lossy();
         if crate::remote_prefs::is_unc(&text) {
             no.push(p.clone());
-        } else if is_dir(p) || accepts(&file_name(p)) {
+        } else if is_dir(p) {
+            // A folder has no extension, and iTerm2 asks the vendor about "" (a type only an
+            // upload-capable one takes, `LLMProvider.swift:165-212`).
+            if accepts("") {
+                ok.push(p.clone());
+            } else {
+                no.push(p.clone());
+            }
+        } else if accepts(&file_name(p)) {
             ok.push(p.clone());
         } else {
             no.push(p.clone());
@@ -782,8 +790,12 @@ mod tests {
         let accepts = |name: &str| name.ends_with(".txt");
         let paths = [p("C:\\a.txt"), p("C:\\b.exe"), p("C:\\folder"), p("\\\\host\\share\\c.txt"), p("\\\\?\\UNC\\host\\share\\d.txt")];
         let (ok, no) = split_by_model(&paths, &is_dir, &accepts);
-        assert_eq!(ok, vec![p("C:\\a.txt"), p("C:\\folder")]);
-        assert_eq!(no, vec![p("C:\\b.exe"), p("\\\\host\\share\\c.txt"), p("\\\\?\\UNC\\host\\share\\d.txt")]);
+        // A folder has no extension, and iTerm2 asks about "": only a model that takes any
+        // upload takes a folder (LLMProvider.swift:165-212), so this text-only one does not.
+        assert_eq!(ok, vec![p("C:\\a.txt")]);
+        assert_eq!(no, vec![p("C:\\b.exe"), p("C:\\folder"), p("\\\\host\\share\\c.txt"), p("\\\\?\\UNC\\host\\share\\d.txt")]);
+        let (ok, no) = split_by_model(&[p("C:\\folder"), p("C:\\b.exe")], &is_dir, &|_| true);
+        assert_eq!((ok, no), (vec![p("C:\\folder"), p("C:\\b.exe")], vec![]), "a model that takes any upload takes the folder");
         // A network path is never asked whether it is a directory.
         let probing = |q: &Path| -> bool { assert!(!crate::remote_prefs::is_unc(&q.to_string_lossy()), "probed {q:?}"); false };
         split_by_model(&paths, &probing, &accepts);
