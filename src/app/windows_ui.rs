@@ -430,7 +430,7 @@ impl App {
                 match first {
                     NewWindow::Tab(tab) | NewWindow::TornOff(tab, _) => self.tabs.push(tab),
                     NewWindow::Tabs(tabs) => self.tabs.extend(tabs),
-                    NewWindow::Profile(_) | NewWindow::Arrangement(..) | NewWindow::Orphans(_) | NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..) => {}
+                    NewWindow::Profile(_) | NewWindow::Arrangement(..) | NewWindow::Restored(_) | NewWindow::Orphans(_) | NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..) => {}
                 }
                 // Pinned or grouped tabs coming back keep the order's rules, and tmux hears
                 // a changed order.
@@ -462,7 +462,7 @@ impl App {
             NewWindow::Profile(g) => g.clone(),
             NewWindow::Tab(t) | NewWindow::TornOff(t, _) => self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile)),
             NewWindow::Tabs(ts) => ts.first().and_then(|t| self.panes.get(&t.focused)).map(|p| self.store.shared_guid(&p.profile)),
-            NewWindow::Arrangement(w, _) => self.first_arrangement_guid(w),
+            NewWindow::Arrangement(w, _) | NewWindow::Restored(w) => self.first_arrangement_guid(w),
             NewWindow::Orphans(_) => None,
             NewWindow::Hotkey(g, _) | NewWindow::HotkeyRestored(g, _) => Some(g.clone()),
         };
@@ -472,7 +472,7 @@ impl App {
         // A git command's single-use window is never full screen (`iTermController.m`
         // `openSingleUseWindowWithCommand:` uses the default window type instead).
         let style = if self.start_command_override.is_some() && matches!(style, crate::frames::FULL_SCREEN | crate::frames::LION_FULL_SCREEN) { crate::frames::NORMAL } else { style };
-        let arranged = matches!(first, NewWindow::Arrangement(..) | NewWindow::HotkeyRestored(..));
+        let arranged = matches!(first, NewWindow::Arrangement(..) | NewWindow::Restored(_) | NewWindow::HotkeyRestored(..));
         let torn_at = match &first {
             NewWindow::TornOff(_, at) => Some(*at),
             _ => None,
@@ -491,7 +491,12 @@ impl App {
                 self.relayout();
             }
             NewWindow::Arrangement(w, name) => {
-                if let Err(e) = self.apply_arrangement_window(&w, name.as_deref()) {
+                if let Err(e) = self.apply_arrangement_window(&w, name.as_deref(), false) {
+                    self.banners.set("arrangement", e);
+                }
+            }
+            NewWindow::Restored(w) => {
+                if let Err(e) = self.apply_arrangement_window(&w, None, true) {
                     self.banners.set("arrangement", e);
                 }
             }
@@ -503,7 +508,7 @@ impl App {
                 self.hotkey = Some(h);
             }
             NewWindow::HotkeyRestored(guid, w) => {
-                if let Err(e) = self.apply_arrangement_window(&w, None) {
+                if let Err(e) = self.apply_arrangement_window(&w, None, true) {
                     self.banners.set("arrangement", e);
                 }
                 self.hotkey = Some(super::hotkey_ui::HotkeyWin::new(guid));
@@ -894,6 +899,9 @@ pub(super) enum NewWindow {
     /// A window table from an arrangement, and the saved arrangement's name (None for
     /// window restoration, a file, or Duplicate Window).
     Arrangement(crate::arrangement::Value, Option<String>),
+    /// A window table of the saved state, restored at launch: the only window whose panes may
+    /// adopt the chat references they saved (`arrangement::reference_for`).
+    Restored(crate::arrangement::Value),
     /// Host sessions nobody claimed at launch: (host session id, pid), a tab each.
     Orphans(Vec<(u64, u32)>),
     /// A profile's hotkey window, made on its first press (and the window that was in

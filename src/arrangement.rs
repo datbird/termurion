@@ -411,6 +411,17 @@ pub fn restore_reference(saved: Option<String>, held: &dyn Fn(&str) -> bool) -> 
     saved.filter(|g| !held(g))
 }
 
+/// The reference a session table lets its pane take, by where the table came from: only the
+/// launch's own restoration of the saved state (`launch`) adopts one; a saved arrangement, a
+/// file, Duplicate Window or Duplicate Tab never does, whatever the table holds. A well-formed
+/// reference that no live pane (`held`) has; None keeps the pane's fresh one.
+pub fn reference_for(session: &Value, launch: bool, held: &dyn Fn(&str) -> bool) -> Option<String> {
+    if !launch {
+        return None;
+    }
+    restore_reference(adoptable_reference(session), held)
+}
+
 /// A session's own id in the arrangement ("Session GUID").
 pub fn session_guid(session: &Value) -> Option<String> {
     session.get("Session GUID").and_then(|v| v.as_str()).map(str::to_string)
@@ -496,8 +507,10 @@ pub const CONTENTS_KEY: &str = "Tandem Contents";
 /// of its own. Never "Session GUID": Repair and Assign Profile match sessions by that.
 pub const SESSION_REF_KEY: &str = "Tandem Session Reference";
 /// Set on a session while the launch restores it: the saved reference it may adopt. The
-/// persisted `SESSION_REF_KEY` becomes this only when the saved windows are read at launch, so
-/// an arrangement, a file or a duplicate can never hand a pane someone else's reference.
+/// persisted `SESSION_REF_KEY` becomes this only when the saved windows are read at launch, but
+/// the marker is data and a file can hold it: what keeps an arrangement, a file or a duplicate
+/// from handing a pane someone else's reference is `reference_for`, which reads it only when the
+/// caller says the table is the launch's own restoration.
 pub const ADOPT_REF_KEY: &str = "Tandem Adopt Reference";
 /// Session restoration's contents: styled text (SGR sequences only).
 pub const STYLED_KEY: &str = "Tandem Styled Contents";
@@ -965,5 +978,29 @@ mod tests {
         let want = TabGroup { id: "G-2".into(), name: String::new(), color: PALETTE[0], collapsed: false };
         assert_eq!(tab_pin_group(&Value::Table(bare)), (false, Some(want)));
         assert_eq!(color_of_dict(&color_dict(crate::palette::rgb(0x50, 0xaf, 0xbc))), Some(crate::palette::rgb(0x50, 0xaf, 0xbc)));
+    }
+
+    #[test]
+    fn only_the_launch_restoration_adopts_a_reference() {
+        // Whatever an arrangement file, a saved arrangement or a duplicate holds (the marker
+        // itself included), the pane keeps its fresh reference; the launch adopts a valid one.
+        let mut launch = Table::new();
+        launch.insert("Session GUID".into(), Value::String("7".into()));
+        save_reference(&mut launch, UUID_A);
+        mark_adoptable(&mut launch);
+        let session = Value::Table(launch);
+        assert_eq!(reference_for(&session, true, &|_| false).as_deref(), Some(UUID_A));
+        assert_eq!(reference_for(&session, true, &|g| g == UUID_A), None, "held by a live pane");
+        assert_eq!(reference_for(&session, false, &|_| false), None, "an arrangement path with the marker in the file");
+        // The persisted key, which a file can hold too, is never adopted from either path.
+        let mut persisted = Table::new();
+        save_reference(&mut persisted, UUID_A);
+        for launch in [true, false] {
+            assert_eq!(reference_for(&Value::Table(persisted.clone()), launch, &|_| false), None);
+        }
+        // The launch still refuses a malformed marker.
+        let mut junk = Table::new();
+        junk.insert(ADOPT_REF_KEY.into(), Value::String("4".into()));
+        assert_eq!(reference_for(&Value::Table(junk), true, &|_| false), None);
     }
 }

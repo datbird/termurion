@@ -4563,12 +4563,14 @@ impl ApplicationHandler<UserEvent> for App {
             .flatten()
             .filter(|(_, w)| !w.is_empty());
         let has_arrangement = default_arrangement.is_some();
-        let startup_arrangement = if startup_hotkey.is_some() { None } else { saved.map(|w| (None, w)).or(default_arrangement) };
+        // The saved state's windows are the launch's own restoration (`launch` true); a default
+        // arrangement is an arrangement like any other.
+        let startup_arrangement = if startup_hotkey.is_some() { None } else { saved.map(|w| (None, w, true)).or(default_arrangement.map(|(n, w)| (n, w, false))) };
         let mut arranged = false;
         match startup_arrangement {
-            Some((name, mut windows)) => {
+            Some((name, mut windows, launch)) => {
                 let first = windows.remove(0);
-                match self.apply_arrangement_window(&first, name.as_deref()) {
+                match self.apply_arrangement_window(&first, name.as_deref(), launch) {
                     Ok(()) => arranged = !self.tabs.is_empty(),
                     Err(e) => self.banners.set("arrangement", e),
                 }
@@ -4576,14 +4578,14 @@ impl ApplicationHandler<UserEvent> for App {
                     self.new_tab(None);
                 }
                 for w in windows {
-                    self.pending_windows.push(windows_ui::NewWindow::Arrangement(w, name.clone()));
+                    self.pending_windows.push(if launch { windows_ui::NewWindow::Restored(w) } else { windows_ui::NewWindow::Arrangement(w, name.clone()) });
                 }
             }
             None => match &startup_hotkey {
                 Some(guid) => {
                     if let Some(i) = hotkey_saved.iter().position(|(g, _)| g == guid) {
                         let (_, w) = hotkey_saved.remove(i);
-                        match self.apply_arrangement_window(&w, None) {
+                        match self.apply_arrangement_window(&w, None, true) {
                             Ok(()) => arranged = !self.tabs.is_empty(),
                             Err(e) => self.banners.set("arrangement", e),
                         }

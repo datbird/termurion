@@ -429,8 +429,9 @@ impl App {
 
     /// Builds one tab of an arrangement in the current window: a pane per session. `name`
     /// is the saved arrangement's (None for window restoration, a file, Duplicate Window or
-    /// Duplicate Tab).
-    pub(super) fn build_tab(&mut self, t: &Value, name: Option<&str>) -> Result<Tab, String> {
+    /// Duplicate Tab). `launch` is true only for the launch's own restoration of the saved
+    /// state: only then may a pane adopt the chat reference its table holds.
+    pub(super) fn build_tab(&mut self, t: &Value, name: Option<&str>, launch: bool) -> Result<Tab, String> {
         let root = t.get("Root").ok_or("a tab in the arrangement has no panes")?;
         let tree = arrangement::tree_of(root)?;
         let profiles = self.profile_list();
@@ -478,7 +479,7 @@ impl App {
                 Some(id) => {
                     // Launch-time restoration: the pane takes the reference it saved, unless a
                     // live pane already holds it (PTYSession.m:2403-2420).
-                    let saved = arrangement::restore_reference(arrangement::adoptable_reference(&session), &|g| self.panes.values().any(|p| p.session_guid == g));
+                    let saved = arrangement::reference_for(&session, launch, &|g| self.panes.values().any(|p| p.session_guid == g));
                     if let (Some(guid), Some(p)) = (saved, self.panes.get_mut(&id)) {
                         p.keep_reference(&guid);
                     }
@@ -614,10 +615,10 @@ impl App {
 
     /// Fills the current (new) window from an arrangement window table: its tabs, selected
     /// tab, title, locks, style, and frame.
-    pub(super) fn apply_arrangement_window(&mut self, w: &Value, name: Option<&str>) -> Result<(), String> {
+    pub(super) fn apply_arrangement_window(&mut self, w: &Value, name: Option<&str>, launch: bool) -> Result<(), String> {
         let tabs = w.get("Tabs").and_then(|t| t.as_array()).cloned().unwrap_or_default();
         for t in &tabs {
-            let tab = self.build_tab(t, name)?;
+            let tab = self.build_tab(t, name, launch)?;
             self.tabs.push(tab);
         }
         let f = arrangement::window_facts(w);
@@ -657,7 +658,7 @@ impl App {
         if as_tabs {
             for w in &windows {
                 for t in w.get("Tabs").and_then(|t| t.as_array()).cloned().unwrap_or_default() {
-                    match self.build_tab(&t, Some(name)) {
+                    match self.build_tab(&t, Some(name), false) {
                         Ok(tab) => {
                             self.tabs.push(tab);
                             self.active = self.tabs.len() - 1;
