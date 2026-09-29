@@ -332,9 +332,9 @@ impl App {
             // The alert names the chat, session and category; a stale answer does nothing.
             Then::ConfirmChange { chat, guid, category } => self.confirm_change_answered(&chat, &guid, category, index),
             // Only OK starts streaming; Cancel, a close and Escape never do.
-            Then::PrivacyWarning(chat) => {
+            Then::PrivacyWarning { chat, guid } => {
                 if index == 0 {
-                    self.start_streaming(&chat);
+                    self.start_streaming(&chat, &guid);
                 }
             }
             // Only Attach attaches; Insert Path, a close and a stale index insert the paths.

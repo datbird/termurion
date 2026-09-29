@@ -405,20 +405,19 @@ impl App {
     /// linked live terminal. Turning it on asks the Privacy Warning first; turning it off is
     /// `stop_streaming`.
     pub(super) fn toggle_stream(&mut self, chat: &str) {
-        if self.chat_live_link(chat).is_none() {
-            return;
-        }
+        let Some((guid, _)) = self.chat_live_link(chat) else { return };
         if self.streaming_chats.contains(chat) {
             self.stop_streaming(chat);
         } else {
-            self.ask_ai(chat_menu::privacy_alert(chat));
+            self.ask_ai(chat_menu::privacy_alert(chat, &guid));
         }
     }
 
     /// The Privacy Warning's OK: streaming starts for the chat's linked pane, if it is still
-    /// linked and open.
-    pub(super) fn start_streaming(&mut self, chat: &str) {
-        if self.chat_live_link(chat).is_none() || !self.streaming_chats.insert(chat.to_string()) {
+    /// linked to the session the question named and that session is open.
+    pub(super) fn start_streaming(&mut self, chat: &str, guid: &str) {
+        let link = self.chat_live_link(chat);
+        if !chat_menu::streaming_allowed(link.as_ref().map(|(g, _)| g.as_str()), guid, link.is_some()) || !self.streaming_chats.insert(chat.to_string()) {
             return;
         }
         self.chat_refresh(chat_menu::StateChange::StreamStarted);
@@ -733,7 +732,6 @@ mod tests {
         assert_eq!(pick_outcome(&link, None), Outcome::Nothing);
         assert_eq!(pick_outcome(&request, Some(3)), Outcome::Answer { chat: "a".into(), request: "R".into(), pane: Some(3) });
         assert_eq!(pick_outcome(&link, Some(3)), Outcome::Link { chat: "b".into(), pane: 3 });
-        assert_eq!(pick_outcome(&link, None), Outcome::Nothing);
     }
 
     #[test]

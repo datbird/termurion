@@ -22,19 +22,23 @@ pub fn refused_on_listing(name: &str) -> bool {
     name == "desktop.ini" || is_device_name(&name) || Path::new(&name).extension().and_then(|e| e.to_str()).is_some_and(|e| PARSED_ON_LISTING.contains(&e))
 }
 
-/// `refused_on_listing` for a whole path a tool was given: its final component, and a `:` anywhere
-/// after an optional drive letter (an alternate stream of a folder is as bad).
+/// `refused_on_listing` for a whole path a tool was given: its final component, a device name as
+/// any folder (Windows cannot make one), and a `:` anywhere after an optional drive letter (an
+/// alternate stream of a folder is as bad).
 pub fn refused_path(path: &str) -> bool {
     let b = path.as_bytes();
     let rest = if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' { &path[2..] } else { path };
-    rest.contains(':') || refused_on_listing(path.rsplit(['\\', '/']).next().unwrap_or(path))
+    let mut parts = path.split(['\\', '/']).rev();
+    let last = parts.next().unwrap_or(path);
+    rest.contains(':') || refused_on_listing(last) || parts.any(is_device_name)
 }
 
 /// Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM1` to `COM9`, `LPT1`
 /// to `LPT9`), which no file may be called, with or without an extension, in any case.
 pub fn is_device_name(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or("").trim_end_matches([' ', '.']).to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+    // COM and LPT take the superscript digits too (Microsoft's "Naming Files").
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || (stem.chars().count() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && matches!(stem.chars().nth(3), Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}')))
 }
 
 /// The mark Windows puts on a download (`ZoneId=3`, the Internet zone).
@@ -89,6 +93,16 @@ mod tests {
             assert!(!is_device_name(fine), "{fine:?}");
         }
         assert!(is_device_name("con.txt") && is_device_name("LPT3"));
+        // The superscript digits are devices too, and a device name as a folder is refused.
+        for bad in ["COM\u{b9}", "com\u{b2}.txt", "COM\u{b3}", "LPT\u{b9}", "lpt\u{b2}", "LPT\u{b3}.log"] {
+            assert!(is_device_name(bad) && refused_on_listing(bad), "{bad:?}");
+        }
+        for bad in [r"sub\con\x.txt", "aux/x.txt", r"D:\a\COM1\b.txt", r"C:\Users\Nul.d\a.txt", "C:\\x\\LPT\u{b9}\\a"] {
+            assert!(refused_path(bad), "{bad:?}");
+        }
+        for fine in [r"C:\console\x.txt", r"C:\Users\nulls\a.txt", r"C:\a\com10\b.txt", "a.txt"] {
+            assert!(!refused_path(fine), "{fine:?}");
+        }
         assert!(!refused_on_listing("a.ini") && refused_on_listing("desktop.ini") && refused_on_listing("Desktop.INI."), "only desktop.ini among the ini files");
     }
 

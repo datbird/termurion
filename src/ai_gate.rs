@@ -114,7 +114,7 @@ pub enum Then {
     /// consent to automatic sending; a close answers "Ask Each Time" (ruling F2).
     ConfirmChange { chat: String, guid: String, category: crate::ai_permissions::Category },
     /// The Privacy Warning before streaming (`CVC:1335-1357`): only OK starts it.
-    PrivacyWarning(String),
+    PrivacyWarning { chat: String, guid: String },
     /// The drop question (`IN:507-528`): only the first button (Attach) attaches `supported`;
     /// it also inserts the paths of the others in `all`. Any other answer, a close included
     /// (ruling F2), inserts every path in `all` as text. Applies only while `chat` is shown.

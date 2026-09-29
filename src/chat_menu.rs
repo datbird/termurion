@@ -159,8 +159,15 @@ pub fn confirm_alert(chat: &str, guid: &str, category: Category, warning: &str) 
 }
 
 /// The Privacy Warning before streaming starts; its Cancel is what a close answers.
-pub fn privacy_alert(chat: &str) -> Alert {
-    Alert { heading: PRIVACY_HEADING.to_string(), text: PRIVACY_TEXT.to_string(), buttons: vec!["OK", "Cancel"], silence: None, then: Then::PrivacyWarning(chat.to_string()), gate: false, close: None }
+pub fn privacy_alert(chat: &str, guid: &str) -> Alert {
+    Alert { heading: PRIVACY_HEADING.to_string(), text: PRIVACY_TEXT.to_string(), buttons: vec!["OK", "Cancel"], silence: None, then: Then::PrivacyWarning { chat: chat.to_string(), guid: guid.to_string() }, gate: false, close: None }
+}
+
+/// Whether the Privacy Warning's OK may start streaming: the chat must still be linked to the
+/// session the question named, and it must be open. A chat unlinked and relinked elsewhere
+/// since the question was asked starts nothing.
+pub fn streaming_allowed(linked: Option<&str>, guid: &str, live: bool) -> bool {
+    live && linked == Some(guid)
 }
 
 /// Help (the warning bubble on the button in iTerm2): OK only, nothing follows.
@@ -178,8 +185,9 @@ pub fn confirm_outcome(index: usize, linked: Option<&str>, guid: &str, live: boo
     Some(confirm_answer(index))
 }
 
-/// Whether Send Automatically's grant should be written: never over an existing Granted, and the
-/// grant only when the answer grants (ruling F31, `ChatViewController.swift:1187`).
+/// The consent an answer writes: Granted only when the answer grants (ruling F31,
+/// `ChatViewController.swift:1187`); the guard against writing over an existing Granted is
+/// `queued_consent_write`, for the one-time question.
 pub fn consent_write(grants: bool) -> Option<Consent> {
     grants.then_some(Consent::Granted)
 }
@@ -423,7 +431,7 @@ mod tests {
         assert_eq!(confirm_answer(closed), (Permission::Ask, false), "a close asks each time and grants no consent");
         let escaped = crate::prompt_ui::escape_index(&confirm.buttons, confirm.close);
         assert_eq!(escaped, Some(1));
-        let privacy = privacy_alert("c");
+        let privacy = privacy_alert("c", "g");
         assert!(!privacy.gate);
         let closed = crate::prompt_ui::close_index_with(&privacy.buttons, privacy.close);
         assert_eq!(privacy.buttons[closed], "Cancel", "a close never starts streaming");
@@ -503,6 +511,14 @@ mod tests {
         assert!(!stale_streaming(Some(Streaming::Active), true));
         assert!(!stale_streaming(Some(Streaming::Stopped), false));
         assert!(!stale_streaming(None, false));
+    }
+
+    #[test]
+    fn streaming_starts_only_for_the_session_the_warning_named() {
+        assert!(streaming_allowed(Some("g1"), "g1", true));
+        assert!(!streaming_allowed(Some("g2"), "g1", true), "relinked elsewhere since the question");
+        assert!(!streaming_allowed(None, "g1", true), "unlinked since");
+        assert!(!streaming_allowed(Some("g1"), "g1", false), "the session closed");
     }
 
     #[test]
