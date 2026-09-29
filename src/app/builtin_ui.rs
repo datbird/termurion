@@ -412,7 +412,7 @@ impl App {
             // computer's (its Windows name, Decision); with one the answer waits for the
             // remote's clock (`Effect::TimeOffset`, delivered by `ssh_answers_drain`).
             "get_time_offset" => {
-                let framing = self.panes.get(&pane).is_some_and(|p| p.ssh_level() >= 2);
+                let framing = self.panes.get(&pane).is_some_and(|p| p.ssh_frames());
                 if !framing {
                     return HostOutcome::Done(json!({ "offset": 0, "tz": crate::ssh_clock::local_zone_name() }));
                 }

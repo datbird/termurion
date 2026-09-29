@@ -935,6 +935,22 @@ impl Conductor {
         }
     }
 
+    /// How many parents out the nearest conductor with a running framer is (`frames_keys`),
+    /// not counting this one: where a failing setup's own write is sent from, so the bytes
+    /// stay queued on a conductor that outlives the abort.
+    pub(crate) fn framing_ancestor(&self) -> Option<usize> {
+        let mut hops = 1;
+        let mut c = self.parent.as_deref();
+        while let Some(p) = c {
+            if p.frames_keys() {
+                return Some(hops);
+            }
+            hops += 1;
+            c = p.parent.as_deref();
+        }
+        None
+    }
+
     /// write (`CD:3039-3058`): `text` plus `\n`, through the parent when there is one.
     /// `_queueWrites` is not toggled: an `Effect::Write` is never held.
     pub(crate) fn write(&mut self, text: &str) {

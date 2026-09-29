@@ -727,7 +727,17 @@ impl Pane {
     fn write_unless_held(&mut self, bytes: &[u8]) {
         use crate::conductor::Route;
         let setting_up = self.conductor.as_deref().is_some_and(|c| !c.framing() && !c.unhooked());
+        let above = self.conductor.as_deref().and_then(|c| c.framing_ancestor());
         match self.ssh_route() {
+            // Setting up under a framer that runs: the route holds typing for the setup, but
+            // this line is for the setup's own conductor.sh, which reads the tty of that
+            // framer's child: framed through it (and every framer above).
+            Route::Held if setting_up && above.is_some() => {
+                // Sent from that framer itself, which the abort that follows does not pop.
+                if let Some(c) = above.and_then(|h| self.conductor.as_deref_mut().and_then(|c| c.ancestor_mut(h))) {
+                    c.send_keys(bytes);
+                }
+            }
             Route::Direct => {
                 self.write_pty(bytes);
             }
@@ -803,6 +813,13 @@ impl Pane {
     /// The pane's SSH integration level (`conductor::level`).
     pub fn ssh_level(&self) -> u8 {
         crate::conductor::level(self.conductor.as_deref())
+    }
+
+    /// Whether the current conductor's framer is running to answer a request. Not the level
+    /// (`ssh_level` stays 2 after the framer unhooks, as iTerm2's `sshIntegrationLevel` does):
+    /// a request queued on an unhooked conductor would wait for EndSSH.
+    pub fn ssh_frames(&self) -> bool {
+        self.conductor.as_deref().is_some_and(|c| c.frames_keys())
     }
 
     /// unhookSSHConductor (`PS:20179-20204`) for the screen: the innermost conductor goes,
@@ -1070,7 +1087,9 @@ impl Pane {
     /// it decided.
     pub fn ssh_clock_tick(&mut self, now: std::time::Instant, host: Option<&str>) -> crate::ssh_clock::Refresh {
         use crate::ssh_clock::Refresh;
-        let refresh = self.ssh_clock.due(i32::from(self.ssh_level()), host, now);
+        // A framer that has unhooked answers nothing: the Clock is local, as below level 2.
+        let level = if self.ssh_frames() { i32::from(self.ssh_level()) } else { i32::from(self.ssh_level().min(1)) };
+        let refresh = self.ssh_clock.due(level, host, now);
         if refresh == Refresh::Fetch {
             let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
             if let Some(c) = self.conductor.as_mut() {
@@ -3332,5 +3351,42 @@ mod tests {
         assert_eq!(wire(&mut p), b"");
         assert_eq!(p.screen.all_text(), text);
         assert!(still_parses(&mut p), "the parent's hook goes on");
+    }
+
+    #[test]
+    fn a_failed_setup_under_a_hooked_framer_is_framed() {
+        // Task 8 findings item 2: the new hop's ssh runs in the framer's shell, so its
+        // conductor.sh is waiting on that tty and `exec_login_shell` must reach it, framed
+        // (held and dropped it would leave the nested ssh sitting in conductor.sh).
+        let mut p = framed_root();
+        chain(&mut p, "x", 1, None);
+        wire(&mut p);
+        p.conductor.as_mut().unwrap().fail("boom");
+        assert_eq!(wire(&mut p), sent_to(100, b"exec_login_shell\n"));
+        assert!(p.ssh_held.is_empty());
+        assert_eq!(p.conductor.as_ref().map(|c| c.setup.client_unique_id.as_str()), Some("o"), "the abort popped the hop");
+        // Two hooked framers: the nearest one frames it, and the outer one frames that.
+        let mut p = framed_nested();
+        chain(&mut p, "y", 2, None);
+        wire(&mut p);
+        p.conductor.as_mut().unwrap().fail("boom");
+        assert_eq!(wire(&mut p), sent_to(100, &sent_to(200, b"exec_login_shell\n")));
+    }
+
+    #[test]
+    fn an_unhooked_framer_answers_the_clock_at_once() {
+        // Task 8 findings item 1: the level stays 2 after the framer unhooks, but nothing reads
+        // a fetch any more, so the Clock is local and no command waits for EndSSH.
+        let mut p = framed_root();
+        p.conductor.as_mut().unwrap().handle_unhook();
+        assert_eq!(p.ssh_level(), 2);
+        assert!(!p.ssh_frames());
+        let now = Instant::now();
+        assert_eq!(p.ssh_clock_tick(now, Some("h")), crate::ssh_clock::Refresh::Local);
+        assert_eq!(p.conductor.as_ref().unwrap().written_and_queued().count(), 0, "nothing queued");
+        // A framing conductor still fetches.
+        let mut p = framed_root();
+        assert!(p.ssh_frames());
+        assert_eq!(p.ssh_clock_tick(now, Some("h")), crate::ssh_clock::Refresh::Fetch);
     }
 }
