@@ -381,12 +381,21 @@ impl App {
             return;
         }
         let Some(db) = self.chat_db.as_mut() else { return };
-        let Some((row, saved)) = set_permission_in(db, &mut self.ai_overrides, Key { chat: chat.to_string(), guid: guid.to_string(), category: c }, p) else { return };
+        let Some((_, saved)) = set_permission_in(db, &mut self.ai_overrides, Key { chat: chat.to_string(), guid: guid.to_string(), category: c }, p) else { return };
         if !saved {
             self.ai_permission_not_saved();
         }
+        self.ai_publish_permissions(chat);
+    }
+
+    /// `publishUpdatedPermissions` (`ChatViewController.swift:1204-1220`): the chat's allowed
+    /// set as a user message, Check Terminal State left out while its state is sent
+    /// automatically (a live linked terminal at Always, `shouldShareTerminalStateAutomatically`).
+    /// The one copy of that rule: a permission change, a link and an unlink all call it (ruling
+    /// F11). It reads the row again, so it never publishes a stale set.
+    pub(crate) fn ai_publish_permissions(&mut self, chat: &str) {
+        let Some(row) = self.chat_db().and_then(|db| db.chat(chat).ok().flatten()) else { return };
         let allowed = self.ai_allowed(&row);
-        // `shouldShareTerminalStateAutomatically`: a live linked terminal at Always.
         let global = |c: Category| self.ai_global_permission(c);
         let check_state_always = row
             .terminal_session_guid
@@ -543,13 +552,11 @@ impl App {
                     self.ai_check_endpoint(Some(&endpoint), silent);
                 }
                 EngineEffect::AskKey { vendor, endpoint, then } => self.ask_ai_key(vendor, Some(&endpoint), then),
-                // 12d Task 5 makes this its `link_chat` (minor m14).
+                // The one link path (12d Task 5, minor m14). A failed link is shown; the request that
+                // follows still meets the gate as it stands.
                 EngineEffect::Link { chat, pane } => {
-                    let reference = self.session_ref(pane);
-                    if let (Some(db), Some(reference)) = (self.chat_db.as_mut(), reference) {
-                        if let Ok(Some(row)) = db.chat(&chat) {
-                            let _ = db.update_chat(&Chat { terminal_session_guid: Some(reference), ..row });
-                        }
+                    if let Err(e) = self.link_chat(&chat, pane) {
+                        self.banners.set("chat_link", e);
                     }
                 }
                 EngineEffect::Republish { chat, request_id } => {

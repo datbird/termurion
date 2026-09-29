@@ -1914,6 +1914,23 @@ pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, foot
     }
 }
 
+/// The session picker's button (`SessionView.m:1203-1235`): a labelled box centered in the
+/// pane, as wide as the label plus padding and never wider than the pane. The box goes in
+/// `popups` (text over it stays text), the label in `rows`. Answers the box, which is the
+/// button's hit rectangle.
+pub fn session_picker_button(frame: &mut Frame, pane: Rect, label: &str, fg: Rgb, bg: Rgb, cell: (f32, f32), scale: f32) -> Rect {
+    let (pad, height) = (2.0 * cell.0, cell.1 + 16.0 * scale);
+    let w = (label.chars().count() as f32 * cell.0 + 2.0 * pad).min(pane.w);
+    let h = height.min(pane.h);
+    let r = Rect { x: pane.x + (pane.w - w) / 2.0, y: pane.y + (pane.h - h) / 2.0, w, h };
+    cut_out(frame, r, cell.1);
+    frame.popups.push(Quad { rect: r, color: rgba(blend(bg, fg, 0.18), 1.0) });
+    frame_lines(&mut frame.popups, r, rgba(blend(bg, fg, 0.6), 1.0));
+    let span = Span { text: label.to_string(), color: fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
+    frame.rows.push(TextRow { x: r.x + pad.min(r.w / 2.0), y: r.y + (h - cell.1) / 2.0, spans: vec![span], clip: r, scale: 1.0 });
+    r
+}
+
 /// A tab's tooltip (`PT tabView:toolTipForTabViewItem:`): a framed box at `at` (under the
 /// pointer) with one text row per line of `text`, moved left and up as far as it must to stay
 /// inside `area` (the window).
@@ -4582,5 +4599,31 @@ mod tests {
         pane_with(&mut plain, &s, RECT, CELL, true, true, Some(&hl(false)));
         assert!(key_row(&plain).is_none());
         assert!(plain.quads.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0)), "the cursor otherwise");
+    }
+    #[test]
+    fn picker_hits_follow_iterm2() {
+        let cell = (10.0, 20.0);
+        let (fg, bg) = (rgb(0xee, 0xee, 0xee), rgb(0x10, 0x10, 0x10));
+        let pane = Rect { x: 10.0, y: 20.0, w: 400.0, h: 300.0 };
+        let mut f = Frame::default();
+        let r = session_picker_button(&mut f, pane, "Link this session to AI chat?", fg, bg, cell, 1.0);
+        assert!(((r.x + r.w / 2.0) - (pane.x + pane.w / 2.0)).abs() < 1.0, "centered across");
+        assert!(((r.y + r.h / 2.0) - (pane.y + pane.h / 2.0)).abs() < 1.0, "centered down");
+        let label_w = "Link this session to AI chat?".chars().count() as f32 * cell.0;
+        assert!(r.w > label_w, "wider than the label: {} vs {label_w}", r.w);
+        assert!(r.w < pane.w, "and narrower than this pane");
+        assert!(r.h >= cell.1, "tall enough for a row");
+        assert!(f.popups.iter().any(|q| q.rect == r), "the box is a popup, drawn under the text");
+        assert!(f.overlay.is_empty(), "nothing goes in the overlay, which draws over text");
+        assert_eq!(f.rows.len(), 1, "one label");
+        let row = &f.rows[0];
+        assert_eq!(row.spans.iter().map(|s| s.text.as_str()).collect::<String>(), "Link this session to AI chat?");
+        assert!(row.x >= r.x && row.x + label_w <= r.x + r.w, "the label sits inside its box");
+        // A pane narrower than the label: the box never spills over.
+        let narrow = Rect { x: 0.0, y: 0.0, w: 120.0, h: 60.0 };
+        let mut g = Frame::default();
+        let r = session_picker_button(&mut g, narrow, "Link this session to AI chat?", fg, bg, cell, 1.0);
+        assert!(r.w <= narrow.w && r.x >= narrow.x && r.x + r.w <= narrow.x + narrow.w, "kept inside the pane");
+        assert!(r.h <= narrow.h);
     }
 }

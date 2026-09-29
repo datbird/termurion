@@ -235,6 +235,7 @@ impl App {
         if self.chat_convo_dirty {
             self.chat_convo_build();
         }
+        self.chat_buttons_refresh();
         let title = self.chat_window_title();
         self.chat_toolbar.title = title.clone();
         let data = ChatData {
@@ -448,6 +449,7 @@ impl App {
     /// the ages' minute, and soon again while a title run is going.
     pub(super) fn chat_window_tick(&mut self) -> Option<Instant> {
         let mut changed = false;
+        self.pick_tick();
         if let Some(sub) = self.chat_mint_sub {
             let updates = self.chat_broker.drain(sub);
             self.chat_note_updates(&updates);
@@ -548,7 +550,10 @@ impl App {
         };
         let label = |t: f64| chat_view::date_text(&local(t), &now);
         let time = |t: f64| crate::stamps::short_time(&local(t));
-        self.chat_convo = std::sync::Arc::new(convo_rows(&self.chat_msgs, typing, &day, &label, &time));
+        let chat = self.chat_shown.clone().unwrap_or_default();
+        let row = self.chat_db.as_ref().and_then(|db| db.chat(&chat).ok().flatten());
+        let for_message = |m: &Message, last: bool| self.chat_row_buttons(&chat, row.as_ref(), &self.chat_msgs, m, last);
+        self.chat_convo = std::sync::Arc::new(convo_rows(&self.chat_msgs, typing, &day, &label, &time, &for_message));
     }
 
     /// What the broker delivered for the shown chat, kept in `chat_msgs`. A chunk, an attached
@@ -741,11 +746,12 @@ impl App {
     }
 
     /// Stops the chat's streaming bubble (filled by Task 6; ruling F24).
-    fn stop_streaming(&mut self, _chat: &str) {}
+    pub(super) fn stop_streaming(&mut self, _chat: &str) {}
 
     /// Closing, or Close (Win+W): streaming stops, the subscription ends, the window goes
     /// (`CWC:481-501`). Nothing restores it at relaunch.
     pub(super) fn close_chat_window(&mut self) {
+        self.pick_window_closed();
         if let Some(chat) = self.chat_shown.clone() {
             self.stop_streaming(&chat);
         }
@@ -835,6 +841,11 @@ impl App {
             ChatEvent::OpenFile(r) => self.chat_file(&r, true),
             ChatEvent::RevealFile(r) => self.chat_file(&r, false),
             ChatEvent::RevealCommand(url) => self.chat_reveal_command(&url),
+            ChatEvent::Button { message, button } => {
+                if let Some(chat) = self.chat_shown.clone() {
+                    self.chat_button_pressed(&chat, &message, &button, event_loop);
+                }
+            }
         }
     }
 

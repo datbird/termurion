@@ -59,6 +59,8 @@ pub(super) struct WinSlot {
     block_buttons: Vec<blocks_ui::BlockButton>,
     block_hover: Option<(PaneId, u32, i32, i32)>,
     porthole_hits: Vec<porthole_ui::PortholeHit>,
+    /// The session picker's buttons this window drew (`chat_session_app`).
+    picker_hits: Vec<(PaneId, Rect)>,
     focused: bool,
     wheel_acc: f32,
     wheel_acc_x: f32,
@@ -135,6 +137,7 @@ impl WinSlot {
             block_buttons: Vec::new(),
             block_hover: None,
             porthole_hits: Vec::new(),
+            picker_hits: Vec::new(),
             focused: false,
             wheel_acc: 0.0,
             wheel_acc_x: 0.0,
@@ -226,6 +229,7 @@ impl App {
         swap(&mut self.block_buttons, &mut s.block_buttons);
         swap(&mut self.block_hover, &mut s.block_hover);
         swap(&mut self.porthole_hits, &mut s.porthole_hits);
+        swap(&mut self.picker_hits, &mut s.picker_hits);
         swap(&mut self.focused, &mut s.focused);
         swap(&mut self.wheel_acc, &mut s.wheel_acc);
         swap(&mut self.wheel_acc_x, &mut s.wheel_acc_x);
@@ -787,6 +791,7 @@ impl WinSlot {
             block_buttons: Vec::new(),
             block_hover: None,
             porthole_hits: Vec::new(),
+            picker_hits: Vec::new(),
             focused: false,
             wheel_acc: 0.0,
             wheel_acc_x: 0.0,

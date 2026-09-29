@@ -139,6 +139,7 @@ mod settings_export_ui;
 mod ai_app;
 mod chat_app;
 mod chat_window_app;
+mod chat_session_app;
 mod chat_engine;
 mod ai_tools_app;
 mod ai_exec_app;
@@ -891,6 +892,10 @@ pub struct App {
     chat_msgs: Vec<crate::chat_message::Message>,
     chat_convo: std::sync::Arc<Vec<crate::chat_window_ui::RowData>>,
     chat_convo_dirty: bool,
+    /// A pick of a session for a chat is open (app-wide; every terminal window shows the picker).
+    chat_picker: Option<chat_session_app::Pick>,
+    /// The picker buttons this window drew, per pane (this window's, in `WinSlot`).
+    picker_hits: Vec<(PaneId, Rect)>,
     /// The subscription that hears every chat for as long as the store is open, so a minted
     /// title needs no window (ruling F14).
     chat_mint_sub: Option<crate::chat_broker::SubId>,
@@ -1521,6 +1526,8 @@ pub fn run() {
         chat_msgs: Vec::new(),
         chat_convo: Default::default(),
         chat_convo_dirty: true,
+        chat_picker: None,
+        picker_hits: Vec::new(),
         chat_mint_sub: None,
         chat_prompt: None,
         title_runs: HashMap::new(),
@@ -3658,7 +3665,7 @@ impl App {
         self.blink_on = true;
         self.last_blink = Instant::now();
         self.banners.clear("action");
-        if self.clip_key(ev) || self.shortcut_key(ev) || self.find_key(ev) || self.copy_mode_key(ev) || self.completion_key(ev) {
+        if self.picker_key(ev) || self.clip_key(ev) || self.shortcut_key(ev) || self.find_key(ev) || self.copy_mode_key(ev) || self.completion_key(ev) {
             return;
         }
         let base = keystroke::key_of(&ev.key_without_modifiers(), None);
@@ -3825,6 +3832,10 @@ impl App {
             return;
         }
         if self.toolbelt_press(button, x, y, event_loop) {
+            return;
+        }
+        // The session picker's button on a pane (Task 5): a pick waits until one is pressed.
+        if button == MouseButton::Left && self.picker_press(x, y) {
             return;
         }
         if button == MouseButton::Left && self.clip_press(x, y, event_loop) {
@@ -4258,6 +4269,7 @@ impl App {
         let area = self.content_area();
         let backgrounds = self.pane_backgrounds();
         let mut block_buttons = Vec::new();
+        let mut picker_hits = Vec::new();
         self.prepare_portholes();
         self.prepare_badges();
         let mut porthole_hits = Vec::new();
@@ -4305,6 +4317,7 @@ impl App {
                     scene::buffering_sign(&mut frame, self.inner(rect), cell);
                 }
                 self.draw_coprocess_indicator(&mut frame, id, self.inner(rect), cell, (sends, receives));
+                picker_hits.extend(self.draw_session_picker(&mut frame, id, self.inner(rect), cell));
                 self.draw_info_bar(&mut frame, id, rect, cell);
                 if let Some(t) = self.draw_attention(&mut frame, id, self.inner(rect), cell) {
                     attention = Some(attention.map_or(t, |a: Instant| a.min(t)));
@@ -4371,6 +4384,7 @@ impl App {
         self.attention_due = attention;
         self.block_buttons = block_buttons;
         self.porthole_hits = porthole_hits;
+        self.picker_hits = picker_hits;
         let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
         if let Some(text) = error {
             let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));

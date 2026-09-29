@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::ai_catalog::{Effort, ServiceTier};
+use crate::chat_buttons::{self, Button};
 use crate::chat_list::{self, Row, Selection};
 use crate::chat_message::{Message, Participant};
 use crate::chat_search::{self, Hit};
@@ -75,6 +76,9 @@ pub struct RowData {
     /// The short time drawn beside the bubble.
     pub time: String,
     pub editable: bool,
+    /// The buttons under the text, and whether they can be pressed now (Task 5).
+    pub buttons: Vec<Button>,
+    pub enabled: bool,
     /// The Segoe glyph drawn before the text.
     pub glyph: Option<char>,
     /// Changes when the content does; keys the rendered markdown.
@@ -84,7 +88,7 @@ pub struct RowData {
 impl RowData {
     /// A date row or the typing row.
     pub fn marker(item: Item) -> RowData {
-        RowData { item, id: String::new(), user: false, style: Style::System, body: Body::Plain(String::new()), time: String::new(), editable: false, glyph: None, key: 0 }
+        RowData { item, id: String::new(), user: false, style: Style::System, body: Body::Plain(String::new()), time: String::new(), editable: false, buttons: Vec::new(), enabled: false, glyph: None, key: 0 }
     }
 }
 
@@ -129,6 +133,8 @@ pub enum ChatEvent {
     RevealFile(String),
     /// A terminal command row was clicked: its `iterm2:reveal-mark` URL.
     RevealCommand(String),
+    /// A button under a message was pressed (Task 5); the app re-checks it against the store.
+    Button { message: String, button: String },
     Close,
 }
 
@@ -162,6 +168,9 @@ struct ConvoState {
     reveal: Option<(Option<String>, String)>,
     /// A file or code item took this frame's right click, so the bubble's own menu stays shut.
     taken: bool,
+    /// Messages whose buttons were pressed and are disabled at once, until the app answers
+    /// (iTerm2's optimistic disable); the permissions bubble is re-tappable and never in it.
+    pressed: std::collections::HashSet<String>,
 }
 
 pub struct ChatWindow {
@@ -583,15 +592,19 @@ fn icon_texture<'a>(ctx: &egui::Context, textures: &'a mut HashMap<u64, Option<e
 
 /// The conversation's rows for a chat's messages (`ChatViewControllerModel` and the cells'
 /// own texts): dates, visible messages, the typing row.
-pub fn convo_rows(messages: &[Message], typing: bool, day: &dyn Fn(f64) -> (i32, u32, u32), label: &dyn Fn(f64) -> String, time: &dyn Fn(f64) -> String) -> Vec<RowData> {
+pub fn convo_rows(messages: &[Message], typing: bool, day: &dyn Fn(f64) -> (i32, u32, u32), label: &dyn Fn(f64) -> String, time: &dyn Fn(f64) -> String, for_message: &dyn Fn(&Message, bool) -> (Vec<Button>, bool)) -> Vec<RowData> {
     let visible = chat_view::visible(messages);
+    let last = visible.last().map(|m| m.unique_id.clone());
     chat_view::items(&visible, typing, day, label)
         .into_iter()
         .map(|item| match item {
             Item::Message(i) => {
                 let m = visible[i];
                 let body = chat_view::body(&m.content);
+                let (buttons, enabled) = for_message(m, last.as_deref() == Some(m.unique_id.as_str()));
                 RowData {
+                    buttons,
+                    enabled,
                     item,
                     id: m.unique_id.clone(),
                     user: m.author == Participant::User,
@@ -606,6 +619,39 @@ pub fn convo_rows(messages: &[Message], typing: bool, day: &dyn Fn(f64) -> (i32,
             marker => RowData::marker(marker),
         })
         .collect()
+}
+
+/// How a button under a message draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Look {
+    /// Can be pressed.
+    Live,
+    /// Greyed: the message's buttons are not enabled, or were pressed a moment ago.
+    Off,
+    /// Greyed with the "comes in milestone 12f" tooltip.
+    Later,
+}
+
+/// The look of `b` on `row` (`pressed` holds the messages pressed and awaiting the app).
+fn button_look(row: &RowData, pressed: &std::collections::HashSet<String>, b: &Button) -> Look {
+    if chat_buttons::is_orchestration(&b.id) {
+        Look::Later
+    } else if row.enabled && !pressed.contains(&row.id) {
+        Look::Live
+    } else {
+        Look::Off
+    }
+}
+
+/// Whether a press leaves the row's buttons live: the permissions bubble is tapped again and
+/// again (`CVC:2770-2778`); every other bubble greys at once.
+fn stays_live(row: &RowData) -> bool {
+    !row.buttons.is_empty() && row.buttons.iter().all(|b| crate::ai_permissions::Category::parse(&b.id).is_some())
+}
+
+/// Forgets pressed messages whose buttons the app has since disabled or removed.
+fn prune_pressed(pressed: &mut std::collections::HashSet<String>, rows: &[RowData]) {
+    pressed.retain(|id| rows.iter().any(|r| r.id == *id && r.enabled));
 }
 
 /// The colors a row draws with.
@@ -632,6 +678,8 @@ fn ink_for(v: &egui::Visuals, row: &RowData) -> Ink {
 }
 
 const BODY_SIZE: f32 = 14.0;
+/// A button row's height in points (`CVC`'s 30-point buttons).
+const BUTTON_HEIGHT: f32 = 30.0;
 /// One terminal cell of a block's indent, in points.
 const INDENT_STEP: f32 = 9.0;
 
@@ -639,6 +687,7 @@ const INDENT_STEP: f32 = 9.0;
 /// person has not scrolled up, and each chat keeps its own position.
 fn conversation(ui: &mut egui::Ui, d: &ChatData, st: &mut ConvoState, icons: bool, out: &mut Vec<ChatEvent>) {
     st.taken = false;
+    prune_pressed(&mut st.pressed, &d.convo);
     if st.reveal.as_ref().is_some_and(|(chat, _)| *chat != d.chat) {
         st.reveal = None;
     }
@@ -720,8 +769,42 @@ fn row_content(ui: &mut egui::Ui, row: &RowData, ink: &Ink, st: &mut ConvoState,
             let color = if g == chat_view::WARNING_GLYPH { ink.warn } else { ink.muted };
             ui.label(egui::RichText::new(g.to_string()).family(egui::FontFamily::Name("icons".into())).size(15.0).color(color));
         }
-        ui.vertical(|ui| draw_body(ui, &row.body, row, 0, ink, st, icons, dark, out));
+        ui.vertical(|ui| {
+            draw_body(ui, &row.body, row, 0, ink, st, icons, dark, out);
+            draw_buttons(ui, row, st, out);
+        });
     });
+}
+
+/// The buttons under a bubble's text: full-width rows of 30 points with a separator above each,
+/// destructive ones in the error color, greyed unless the row is enabled and not just pressed.
+/// A press is reported at once and greys the row until the app answers (iTerm2's optimistic
+/// disable), except in the permissions bubble, which is tapped again and again. The
+/// orchestration ones show with a tooltip that they wait for milestone 12f.
+fn draw_buttons(ui: &mut egui::Ui, row: &RowData, st: &mut ConvoState, out: &mut Vec<ChatEvent>) {
+    if row.buttons.is_empty() {
+        return;
+    }
+    let error = ui.visuals().error_fg_color;
+    for b in &row.buttons {
+        ui.separator();
+        let look = button_look(row, &st.pressed, b);
+        let mut label = egui::RichText::new(&b.title).size(BODY_SIZE);
+        if b.destructive {
+            label = label.color(error);
+        }
+        let width = ui.available_width();
+        let mut r = ui.add_enabled(look == Look::Live, egui::Button::new(label).frame(false).min_size(egui::vec2(width, BUTTON_HEIGHT)));
+        if look == Look::Later {
+            r = r.on_disabled_hover_text(chat_buttons::ORCHESTRATION_LATER);
+        }
+        if look == Look::Live && r.clicked() {
+            out.push(ChatEvent::Button { message: row.id.clone(), button: b.id.clone() });
+            if !stays_live(row) {
+                st.pressed.insert(row.id.clone());
+            }
+        }
+    }
 }
 
 fn draw_body(ui: &mut egui::Ui, body: &Body, row: &RowData, part: usize, ink: &Ink, st: &mut ConvoState, icons: bool, dark: bool, out: &mut Vec<ChatEvent>) {
@@ -955,7 +1038,7 @@ mod tests {
         let day = |t: f64| (2026, 9, (t / 86_400.0) as u32);
         let label = |t: f64| format!("day {}", (t / 86_400.0) as u32);
         let time = |t: f64| format!("t{}", t as u64 % 100);
-        let rows = convo_rows(&[user.clone(), hidden, flagged.clone()], true, &day, &label, &time);
+        let rows = convo_rows(&[user.clone(), hidden, flagged.clone()], true, &day, &label, &time, &|_, _| (vec![], false));
         let items: Vec<&Item> = rows.iter().map(|r| &r.item).collect();
         assert_eq!(items, [&Item::Date("day 100".into()), &Item::Message(0), &Item::Date("day 101".into()), &Item::Message(1), &Item::Typing]);
         let (a, b) = (&rows[1], &rows[3]);
@@ -967,7 +1050,61 @@ mod tests {
         assert_eq!(rows[0], RowData::marker(Item::Date("day 100".into())));
         assert_eq!(rows[4], RowData::marker(Item::Typing));
         // The same messages give the same keys, so a redraw reuses the rendered markdown.
-        assert_eq!(convo_rows(&[user, flagged], false, &day, &label, &time)[1].key, a.key);
+        assert_eq!(convo_rows(&[user, flagged], false, &day, &label, &time, &|_, _| (vec![], false))[1].key, a.key);
+    }
+
+    #[test]
+    fn buttons_ride_on_the_row_with_the_last_message_rule() {
+        let mk = |text: &str| Message::new("C", Participant::Agent, Content::Markdown(text.into()), 100.0);
+        let (first, second) = (mk("one"), mk("two"));
+        let day = |_: f64| (2026, 9, 1);
+        let seen = std::cell::RefCell::new(Vec::new());
+        let for_message = |m: &Message, last: bool| {
+            seen.borrow_mut().push((m.unique_id.clone(), last));
+            (vec![Button { title: "Go".into(), destructive: false, id: "go".into() }], last)
+        };
+        let rows = convo_rows(&[first.clone(), second.clone()], false, &day, &|_| "d".into(), &|_| "t".into(), &for_message);
+        let msgs: Vec<&RowData> = rows.iter().filter(|r| matches!(r.item, Item::Message(_))).collect();
+        assert_eq!(msgs.iter().map(|r| (r.buttons.len(), r.enabled)).collect::<Vec<_>>(), [(1, false), (1, true)]);
+        assert_eq!(*seen.borrow(), [(first.unique_id, false), (second.unique_id, true)]);
+        assert!(rows.iter().filter(|r| !matches!(r.item, Item::Message(_))).all(|r| r.buttons.is_empty() && !r.enabled), "dates carry none");
+    }
+
+    fn row(id: &str, buttons: &[(&str, &str)], enabled: bool) -> RowData {
+        let buttons = buttons.iter().map(|(title, id)| Button { title: title.to_string(), destructive: false, id: id.to_string() }).collect();
+        RowData { id: id.into(), buttons, enabled, ..RowData::marker(Item::Message(0)) }
+    }
+
+    #[test]
+    fn buttons_grey_when_pressed_or_disabled_or_waiting_for_12f() {
+        let mut pressed = std::collections::HashSet::new();
+        let request = row("R", &[("Allow Once", "allowOnce"), ("Always Deny", "denyAlways")], true);
+        assert_eq!(button_look(&request, &pressed, &request.buttons[0]), Look::Live);
+        assert!(!stays_live(&request));
+        // A press greys the whole row at once, before the app answers.
+        pressed.insert("R".to_string());
+        assert!(request.buttons.iter().all(|b| button_look(&request, &pressed, b) == Look::Off));
+        // The app disables the row (or it goes): the note is forgotten.
+        prune_pressed(&mut pressed, &[row("R", &[("Allow Once", "allowOnce")], false)]);
+        assert!(pressed.is_empty());
+        pressed.insert("R".to_string());
+        prune_pressed(&mut pressed, &[row("R", &[("Allow Once", "allowOnce")], true)]);
+        assert!(pressed.contains("R"), "still enabled: still waiting for the answer");
+        prune_pressed(&mut pressed, &[]);
+        assert!(pressed.is_empty(), "the message is gone");
+        // A row the app did not enable stays off.
+        let off = row("R", &[("Link", "link")], false);
+        assert_eq!(button_look(&off, &pressed, &off.buttons[0]), Look::Off);
+        // The orchestration buttons show but wait for 12f, enabled row or not.
+        let offer = row("O", &[("Link", "link"), ("Enable Orchestration", "orchestrate")], true);
+        assert_eq!(button_look(&offer, &pressed, &offer.buttons[0]), Look::Live);
+        assert_eq!(button_look(&offer, &pressed, &offer.buttons[1]), Look::Later);
+        let revoke = row("V", &[("Revoke", "revokeOrchestrationPermission:s")], true);
+        assert_eq!(button_look(&revoke, &pressed, &revoke.buttons[0]), Look::Later);
+        // The permissions bubble is tapped again and again.
+        let perms = row("P", &[("AI can Run Commands: Ask", "Run Commands"), ("AI can View Contents: Ask", "View Contents")], true);
+        assert!(stays_live(&perms));
+        assert!(!stays_live(&row("X", &[], true)), "no buttons, nothing to tap");
     }
 
     #[test]

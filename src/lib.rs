@@ -361,6 +361,7 @@ pub mod chat_agent;
 pub mod chat_json;
 pub mod chat_list;
 pub mod chat_search;
+pub mod chat_buttons;
 pub mod chat_view;
 pub mod chat_toolbar;
 #[cfg(windows)]
