@@ -309,6 +309,8 @@ pub enum Effect {
     StopQueueingInput,
     SendInitialText,
     StateChanged,
+    /// The remote process rows changed: jobs, titles and triggers read them again.
+    ProcessesChanged,
     /// A message for the pane (a Files to Copy job that was skipped).
     Notice(String),
     Abort(String),
@@ -630,6 +632,10 @@ pub struct Conductor {
     pub(crate) environment_variables: BTreeMap<String, String>,
     /// Whether framing starts the remote process list (`CD:381`, always true).
     pub autopoll_enabled: bool,
+    /// The autopoll text so far, taken at its "EOF" piece (`CD:2600-2611`).
+    pub(crate) autopoll: String,
+    /// The remote process list, made at first use (`CD:461-470`).
+    pub(crate) procs: Option<crate::ssh_procs::Provider>,
     /// The command whose output is the remote's `uname` (the `unameCommand` setting).
     pub uname_command: String,
     /// Every background job completion, for the tests.
@@ -684,6 +690,8 @@ impl Conductor {
             guid: uuid::Uuid::new_v4().hyphenated().to_string(),
             environment_variables: BTreeMap::new(),
             autopoll_enabled: true,
+            autopoll: String::new(),
+            procs: None,
             uname_command: "uname -s".to_string(),
             #[cfg(test)]
             completed: Vec::new(),

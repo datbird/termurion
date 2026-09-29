@@ -43,8 +43,9 @@ fn knob_bool(c: &Component, key: &str, default: bool) -> bool {
 /// What a graph component shows now, from the meters (`SPK:196-200`: each series drops the
 /// oldest stored sample and keeps the last 60; the ceiling is over everything stored).
 /// `has_battery` is this computer's (`metrics_win::has_battery`); `since_sample` is the
-/// time since the last sample while the graphs animate, else None.
-pub(super) fn graph_of(kind: Kind, c: &Component, m: &Meters, has_battery: bool, since_sample: Option<Duration>) -> Content {
+/// time since the last sample while the graphs animate, else None. `cpu` is a framing
+/// session's remote CPU series, shown in place of the local meter's.
+pub(super) fn graph_of(kind: Kind, c: &Component, m: &Meters, has_battery: bool, since_sample: Option<Duration>, cpu: Option<&sm::Series>) -> Content {
     let base = Graph {
         left: String::new(),
         right: String::new(),
@@ -64,7 +65,7 @@ pub(super) fn graph_of(kind: Kind, c: &Component, m: &Meters, has_battery: bool,
         // `CPU:78-152`: the samples left-padded with zeros to 60; the smoothed estimate at
         // the left, room for "100%".
         Kind::Cpu => {
-            let samples = m.cpu.samples.values();
+            let samples = cpu.unwrap_or(&m.cpu.samples).values();
             let padded = if samples.len() >= sp::SHOWN { samples.clone() } else { sm::cpu_graph(&samples) };
             Graph { left: format!("{}%", sm::cpu_estimate(&samples)), left_reserve: ("100%".into(), 0.0), ceiling: sp::ceiling(&[&padded]), series: vec![(sp::graph_values(&padded), None)], ..base }
         }
@@ -119,7 +120,7 @@ pub(super) fn graph_of(kind: Kind, c: &Component, m: &Meters, has_battery: bool,
 
 impl App {
     /// A graph component's content for now.
-    pub(super) fn graph_content(&self, kind: Kind, c: &Component) -> Content {
+    pub(super) fn graph_content(&self, pane: PaneId, kind: Kind, c: &Component) -> Content {
         let s = self.meters.sampled;
         let own = match kind {
             Kind::Cpu => s.cpu,
@@ -127,8 +128,11 @@ impl App {
             Kind::Network => s.network,
             _ => s.battery,
         };
-        let since = self.globals.bool(ANIMATE_KEY).then(|| own.map(|t| t.elapsed())).flatten();
-        graph_of(kind, c, &self.meters, crate::metrics_win::has_battery(), since)
+        // A framing session shows its remote's CPU (the session's own publisher); the local
+        // sample times do not drive its slide.
+        let remote = if kind == Kind::Cpu { self.panes.get(&pane).and_then(|p| p.remote_cpu()) } else { None };
+        let since = self.globals.bool(ANIMATE_KEY).then(|| own.map(|t| t.elapsed())).flatten().filter(|_| remote.is_none());
+        graph_of(kind, c, &self.meters, crate::metrics_win::has_battery(), since, remote)
     }
 
     /// The meters some session's bar has a component for (on screen or not: iTerm2's

@@ -135,6 +135,10 @@ impl App {
         }
         // Keys handed to a conductor outside its tokens (a coprocess, a write routed to it).
         self.ssh_apply(pane);
+        // The remote job is read once however many process blocks this pass held (F22).
+        if self.panes.get_mut(&pane).is_some_and(|p| p.take_jobs_dirty()) {
+            self.jobs_changed();
+        }
     }
 
     /// A conductor hooked (`TD:3852-3870`, then `PS:20118-20170` without jumps): the banner,
@@ -218,13 +222,25 @@ impl App {
         let mut redraw = false;
         let mut next: Option<Instant> = None;
         let mut changes = Vec::new();
-        for p in self.panes.values_mut().filter(|p| p.conductor.is_some()) {
+        let mut published = Vec::new();
+        for (id, p) in self.panes.iter_mut().filter(|(_, p)| p.conductor.is_some()) {
             redraw |= p.tick_ssh(now);
+            // The remote CPU values, once a second (F8: folded into this tick).
+            if p.tick_procs(now) {
+                published.push(*id);
+            }
             changes.append(&mut p.take_ssh_registry());
-            next = [next, p.ssh_deadline()].into_iter().flatten().min();
+            next = [next, p.ssh_deadline(), p.procs_due()].into_iter().flatten().min();
         }
         if self.ssh_registry.apply(changes) {
             self.ssh_hosts_changed();
+        }
+        // A new remote CPU value redraws only a window whose bar shows it.
+        redraw |= published.into_iter().any(|id| self.shows_status_bar(id));
+        // A process list that changed or a conductor that left (the pane's job is read again).
+        let dirty = self.panes.values_mut().fold(false, |d, p| p.take_jobs_dirty() | d);
+        if dirty {
+            self.jobs_changed();
         }
         if redraw {
             self.redraw();

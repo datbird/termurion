@@ -536,7 +536,7 @@ impl App {
                 if kind == Kind::TmuxLeft { Content::text(sbt::tmux_left_variants(&left)) } else { Content { right_align: true, ..Content::text(sbt::tmux_right_variants(&right)) } }
             }
             // The four graphs (`metrics_ui`).
-            Kind::Battery | Kind::Cpu | Kind::Memory | Kind::Network => self.graph_content(kind, c),
+            Kind::Battery | Kind::Cpu | Kind::Memory | Kind::Network => self.graph_content(pane, kind, c),
             // git state (`git_ui`).
             Kind::Git => self.git_content(pane, c),
         };

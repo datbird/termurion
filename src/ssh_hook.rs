@@ -488,7 +488,17 @@ impl Batch {
     }
 }
 
+/// Hands the reduced pieces on. A job's channel 1 is joined into one piece (a conductor
+/// joins them with nothing, so the result is the same and a stream of newlines costs one
+/// piece); autopoll and notif keep every piece, since autopoll ends on a piece that is exactly
+/// "EOF" (`CD:2601`), and another channel's pieces each complete a job.
 fn flush_side(pieces: &mut Vec<String>, pid: i32, channel: i32, depth: i32, out: &mut Vec<Out>) {
+    if channel == 1 && pid != AUTOPOLL_PID && pid != NOTIF_PID {
+        if !pieces.is_empty() {
+            out.push(Out::Side { text: pieces.drain(..).collect(), pid, channel, depth });
+        }
+        return;
+    }
     out.extend(pieces.drain(..).map(|text| Out::Side { text, pid, channel, depth }));
 }
 
@@ -929,7 +939,7 @@ mod tests {
         // Depth 0 channel -1: the screen, and the same bytes for the coprocess.
         assert_eq!(h.feed(&output("1", 4242, -1, 0, b"hi\r\n")), vec![s(b"hi\r\n"), raw(b"hi\r\n")]);
         // A side channel never reaches the screen or the coprocess.
-        assert_eq!(h.feed(&output("2", 4242, 1, 0, b"x\n")), vec![side("x", 4242, 1, 0), side("\n", 4242, 1, 0)]);
+        assert_eq!(h.feed(&output("2", 4242, 1, 0, b"x\n")), vec![side("x\n", 4242, 1, 0)], "a job's pieces of one read are one");
         // A second ssh inside: the child's meta tokens carry the child's depth.
         let mut h = hooked();
         let inner = [dcs_hook("", "u", "YQ==", "Yg=="), pre_reply("1.1", &["zsh"])].concat();
@@ -954,6 +964,12 @@ mod tests {
         let mut h = hooked();
         assert_eq!(h.feed(&output("5", 7, 1, 0, b"a\x1b[")), vec![side("a", 7, 1, 0)]);
         assert_eq!(h.feed(&output("6", 7, 1, 0, b"1mb")), vec![side("b", 7, 1, 0)]);
+        // A job's channel 1 comes as one piece per read, not one per newline; autopoll and notif
+        // keep every piece (autopoll ends only on a piece that is exactly "EOF").
+        let mut h = hooked();
+        assert_eq!(h.feed(&output("5a", 8, 1, 0, b"a\r\nb\nc\n\n")), vec![side("a\r\nb\nc\n\n", 8, 1, 0)]);
+        assert_eq!(h.feed(&output("5b", 8, 2, 0, b"e\nf")), vec![side("e", 8, 2, 0), side("\n", 8, 2, 0), side("f", 8, 2, 0)], "stderr completes a job per piece");
+        let mut h = hooked();
         // A child's screen bytes of a side channel are reduced, its tokens dropped.
         assert_eq!(h.feed(&output("7", 7, 1, 0, &pre_reply("9", &["q"]))), vec![]);
         // Autopoll and notif leave no child and keep no state.

@@ -6,6 +6,9 @@ use crate::conductor_parser::{AUTOPOLL_PID, NOTIF_PID};
 use crate::framer_script::framer_code;
 
 /// How many `%it2` frames a conductor keeps.
+/// The most autopoll text kept between EOF pieces (the parser's own cap for one block).
+const AUTOPOLL_TEXT_MAX: usize = crate::conductor_parser::MAX_AUTOPOLL;
+
 const IT2_INBOX_MAX: usize = 16;
 /// The most of one `%it2` frame it keeps (F30).
 pub(crate) const IT2_ENTRY_MAX: usize = 64 * 1024;
@@ -249,7 +252,7 @@ impl Conductor {
     }
 
     /// handleSideChannelOutput (`CD:2582-2636`): routed by depth like the rest. The autopoll
-    /// pid is Task 7's; the notif pid is the tty rule; a job keeps channel 1 and any other
+    /// pid feeds the process list; the notif pid is the tty rule; a job keeps channel 1 and any other
     /// channel completes it at once with -2 (it stays and completes again at its end).
     pub fn handle_side(&mut self, text: &str, pid: i32, channel: i32, depth: i32) {
         if depth != self.depth() {
@@ -257,6 +260,22 @@ impl Conductor {
             return;
         }
         if pid == AUTOPOLL_PID {
+            // "EOF" hands the text to the process list and re-arms the poll; any other piece
+            // joins the text (`CD:2600-2611`), up to the cap.
+            if text == "EOF" {
+                let polled = std::mem::take(&mut self.autopoll);
+                let changed = self.processes().is_some_and(|p| p.handle(&polled));
+                self.send(Command::FramerAutopoll, Handler::FireAndForget, false);
+                if changed {
+                    self.effects.push(Effect::ProcessesChanged);
+                }
+            } else {
+                let mut end = text.len().min(AUTOPOLL_TEXT_MAX.saturating_sub(self.autopoll.len()));
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                self.autopoll.push_str(&text[..end]);
+            }
             return;
         }
         if pid == NOTIF_PID {
@@ -300,6 +319,59 @@ impl Conductor {
         if self.it2_inbox.len() > IT2_INBOX_MAX {
             self.it2_inbox.remove(0);
         }
+    }
+
+    /// The remote process list (`CD:461-470`): made at first use once the shell is framed,
+    /// it registers the framed pid with the framer (fire and forget) and tracks it. None
+    /// while not framing.
+    pub fn processes(&mut self) -> Option<&mut crate::ssh_procs::Provider> {
+        let pid = self.framed_pid?;
+        if self.procs.is_none() {
+            let mut provider = crate::ssh_procs::Provider::new(pid);
+            provider.track(pid);
+            self.procs = Some(provider);
+            self.send(Command::FramerRegister(pid), Handler::FireAndForget, false);
+        }
+        self.procs.as_mut()
+    }
+
+    /// transitiveProcesses (`CD:684-694`): the names of this conductor's shell's descendants
+    /// then its parent's, as the remotes spell them. A conductor that is not framing has
+    /// none, and a list that has not arrived gives none (never an error).
+    pub fn transitive_process_names(&self) -> Vec<String> {
+        let Some(pid) = self.framed_pid else { return Vec::new() };
+        let mut names = self.procs.as_ref().map(|p| p.descendant_names(pid)).unwrap_or_default();
+        if let Some(parent) = &self.parent {
+            names.extend(parent.transitive_process_names());
+        }
+        names
+    }
+
+    /// The job and its ancestors on this conductor's remote, once a process list has arrived.
+    pub fn remote_job(&self) -> Option<(Option<crate::proctree::Job>, Vec<String>)> {
+        let provider = self.procs.as_ref().filter(|p| !p.rows().is_empty())?;
+        Some(provider.job(self.framed_pid?))
+    }
+
+    /// Once a second, for every framing conductor in the chain (parents first): make its
+    /// process list if it has none and publish its CPU value. True when a value was pushed.
+    pub fn tick_processes(&mut self) -> bool {
+        let mut pushed = self.parent.as_mut().is_some_and(|p| p.tick_processes());
+        if self.framed_pid.is_some() {
+            pushed |= self.processes().is_some_and(|p| p.tick());
+        }
+        pushed
+    }
+
+    /// Whether this conductor or a parent frames (has a process list to publish).
+    pub fn frames_anywhere(&self) -> bool {
+        self.framing() || self.parent.as_ref().is_some_and(|p| p.frames_anywhere())
+    }
+
+    /// The innermost conductor that frames: a session shows its remote's values, and while its
+    /// newest hop is still setting up, the hop under it.
+    pub fn innermost_framing(&self) -> Option<&Conductor> {
+        if self.framing() { Some(self) } else { self.parent.as_deref().and_then(Conductor::innermost_framing) }
     }
 
     /// The framer protocol version, None until the framer is launched.
@@ -560,9 +632,79 @@ mod tests {
         c.handle_side("%notif", NOTIF_PID, 1, 0);
         assert_eq!(c.tty, TtyState { echo: false, icanon: true });
         assert!(c.completed.is_empty() && c.take_effects().is_empty());
-        // Nothing here writes or runs anything, and the autopoll pid is Task 7's.
-        c.handle_side("EOF", AUTOPOLL_PID, 1, 0);
+        assert!(c.completed.is_empty() && c.take_effects().is_empty(), "nothing here writes or runs anything");
+    }
+
+    /// The recorded autopoll block, fed through a hook that is past its init line, reaches
+    /// `handle_side` piece by piece.
+    fn poll_pieces(body: &str) -> Vec<(String, i32)> {
+        let mut h = crate::ssh_hook::Hook::default();
+        h.feed(&crate::ssh_fixtures::dcs_hook("", "A", "YQ==", "Yg=="));
+        h.feed(&crate::ssh_fixtures::autopoll("9", body)).into_iter().map(|o| match o {
+            crate::ssh_hook::Out::Side { text, pid, .. } => (text, pid),
+            other => panic!("{other:?}"),
+        }).collect()
+    }
+
+    #[test]
+    fn autopoll_follows_iterm2() {
+        let mut c = Conductor::new(Setup { client_unique_id: "A".into(), ..Setup::default() }, None, "P");
+        assert!(c.processes().is_none(), "not framing: no provider");
         assert_eq!(c.take_effects(), []);
+        c.framed_pid = Some(4242);
+        // The provider is made at first use and registers the framed pid once (`CD:461-470`).
+        assert!(c.processes().is_some());
+        assert_eq!(c.take_effects(), [Effect::Write(framer_cmd(&["register", "4242"]))]);
+        feed(&mut c, &[Token::Begin("a".into()), end("a", 0, "f")]);
+        assert!(c.processes().is_some());
+        assert_eq!(c.take_effects(), [], "registered once");
+        // The text fills the provider only when the "EOF" piece arrives (`CD:2600-2611`), and
+        // that re-arms the poll.
+        let pieces = poll_pieces("$begin ps\n+4242 1 Ss Mon Sep 27 10:00:00 2026 -zsh\n");
+        assert!(pieces.iter().all(|(_, pid)| *pid == AUTOPOLL_PID));
+        let eof = pieces.iter().position(|(t, _)| t == "EOF").expect("EOF is a piece of its own");
+        assert_eq!(eof, pieces.len() - 2, "the parser's line end follows it");
+        for (text, pid) in &pieces[..eof] {
+            c.handle_side(text, *pid, 1, 0);
+        }
+        assert!(c.processes().unwrap().rows().is_empty());
+        assert_eq!(c.take_effects(), []);
+        c.handle_side("EOF", AUTOPOLL_PID, 1, 0);
+        assert_eq!(c.processes().unwrap().rows().len(), 1);
+        assert_eq!(c.take_effects(), [Effect::Write(framer_cmd(&["autopoll"])), Effect::ProcessesChanged]);
+        assert!(c.autopoll.is_empty(), "the text is taken");
+        feed(&mut c, &[Token::Begin("b".into()), end("b", 0, "f")]);
+        // The line end after EOF starts the next block's text (iTerm2's quirk; empty lines
+        // are ignored when it is read).
+        c.handle_side(&pieces[eof + 1].0, AUTOPOLL_PID, 1, 0);
+        assert_eq!(c.autopoll, "\n");
+        // A second block starts from nothing.
+        c.handle_side("$begin cpu\n=5", AUTOPOLL_PID, 1, 0);
+        c.handle_side("EOF", AUTOPOLL_PID, 1, 0);
+        assert_eq!(c.take_effects(), [Effect::Write(framer_cmd(&["autopoll"]))], "a cpu change alone does not change the jobs");
+        assert_eq!(c.processes().unwrap().cpu(), Some(0.05));
+        // A hostile block cannot grow the text without bound.
+        let chunk = "x".repeat(1 << 20);
+        for _ in 0..10 {
+            c.handle_side(&chunk, AUTOPOLL_PID, 1, 0);
+        }
+        assert!(c.autopoll.len() <= super::AUTOPOLL_TEXT_MAX);
+        c.handle_side("EOF", AUTOPOLL_PID, 1, 0);
+        assert!(c.autopoll.is_empty());
+    }
+
+    #[test]
+    fn transitive_names_join_the_parents() {
+        let row = |pid: i32, ppid: i32, name: &str| format!("+{pid} {ppid} S+ Mon Sep 27 10:00:00 2026 {name}\n");
+        let mut parent = Conductor::new(Setup { client_unique_id: "A".into(), ..Setup::default() }, None, "P");
+        parent.framed_pid = Some(10);
+        parent.processes().unwrap().handle(&format!("$begin ps\n+10 1 Ss Mon Sep 27 10:00:00 2026 -bash\n+11 10 S+ Mon Sep 27 10:00:00 2026 ssh\n"));
+        let mut child = Conductor::new(Setup { client_unique_id: "B".into(), ..Setup::default() }, Some(Box::new(parent)), "Q");
+        assert!(child.transitive_process_names().is_empty(), "a conductor that does not frame has none (`CD:685`)");
+        child.framed_pid = Some(20);
+        child.processes().unwrap().handle(&format!("$begin ps\n+20 1 Ss Mon Sep 27 10:00:00 2026 -zsh\n{}", row(21, 20, "/usr/bin/htop")));
+        assert_eq!(child.transitive_process_names(), ["htop", "ssh"], "this conductor's, then its parent's (`CD:684-694`)");
+        assert!(child.remote_job().is_some());
     }
 
     /// A conductor driven through getshell, any cd, and pythonversion to a launched framer

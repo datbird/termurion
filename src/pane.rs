@@ -768,6 +768,8 @@ impl Pane {
     /// False when there was none.
     pub fn pop_conductor(&mut self) -> bool {
         let Some(c) = crate::conductor::pop(&mut self.conductor) else { return false };
+        // The next job comes from the parent's remote or the local shell again.
+        self.ssh.jobs_dirty = true;
         self.ssh_registry_out.push(crate::ssh_registry::Change::Remove(c.guid.clone()));
         if let Some(saved) = &c.saved {
             self.own_mut().restore_ssh_saved(saved);
@@ -934,6 +936,7 @@ impl Pane {
                     // Decision: Tandem sends no Initial Text anywhere yet; it goes here.
                     Effect::SendInitialText => {}
                     Effect::StateChanged => redraw = true,
+                    Effect::ProcessesChanged => self.ssh.jobs_dirty = true,
                     Effect::Registered { guid, identity } => self.ssh_registry_out.push(crate::ssh_registry::Change::Add(guid, identity)),
                     Effect::Deregistered { guid } => self.ssh_registry_out.push(crate::ssh_registry::Change::Remove(guid)),
                     Effect::Notice(text) => {
@@ -970,6 +973,52 @@ impl Pane {
         let Some(c) = self.conductor.as_mut() else { return false };
         c.tick(now);
         self.apply_ssh_effects()
+    }
+
+    /// The remote job and ancestors of the innermost conductor that frames, once its process
+    /// list has arrived; None shows the local watcher's values (`PS:25574-25581`).
+    pub fn remote_job(&self) -> Option<(Option<crate::proctree::Job>, Vec<String>)> {
+        self.conductor.as_deref()?.innermost_framing()?.remote_job()
+    }
+
+    /// The names of the remote programs for the close prompt (`CD:684-694`), once a process
+    /// list has arrived; None asks the local tree.
+    pub fn remote_process_names(&self) -> Option<Vec<String>> {
+        let c = self.conductor.as_deref()?.innermost_framing()?;
+        c.remote_job()?;
+        Some(c.transitive_process_names())
+    }
+
+    /// The remote CPU values of the innermost framing conductor, in place of the local meter.
+    pub fn remote_cpu(&self) -> Option<&crate::statusbar_metrics::Series> {
+        self.conductor.as_deref()?.innermost_framing()?.procs.as_ref().map(|p| &p.cpu_series)
+    }
+
+    /// Whether the job must be read again (taken).
+    pub fn take_jobs_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.ssh.jobs_dirty)
+    }
+
+    /// The once-a-second publish of every framing conductor's CPU value (making each process
+    /// list at first use), then the effects that caused. True when a value was pushed.
+    pub fn tick_procs(&mut self, now: std::time::Instant) -> bool {
+        let framing = self.conductor.as_ref().is_some_and(|c| c.frames_anywhere());
+        if !framing {
+            self.ssh.procs_due = None;
+            return false;
+        }
+        if self.ssh.procs_due.is_some_and(|due| now < due) {
+            return false;
+        }
+        self.ssh.procs_due = Some(now + std::time::Duration::from_secs(1));
+        let pushed = self.conductor.as_mut().is_some_and(|c| c.tick_processes());
+        self.apply_ssh_effects();
+        pushed
+    }
+
+    /// When the process lists next publish.
+    pub fn procs_due(&self) -> Option<std::time::Instant> {
+        self.ssh.procs_due
     }
 
     /// When the pane's current conductor times out if nothing happens first.
@@ -2253,6 +2302,39 @@ mod tests {
         read.push(b'\n');
         reply(&mut p, &read);
         assert!(p.has_ssh());
+    }
+
+    /// A framing conductor's process list gives the pane its job, close-prompt names and CPU
+    /// series once rows have arrived; the values go when the conductor does.
+    #[test]
+    fn remote_processes_belong_to_the_framing_pane() {
+        use crate::conductor::{Conductor, Setup};
+        let mut p = Pane::with(1, None, 20, 6);
+        assert!(p.remote_job().is_none() && p.remote_process_names().is_none() && p.remote_cpu().is_none());
+        let mut c = Conductor::new(Setup { client_unique_id: "A".into(), ..Setup::default() }, None, "P");
+        c.framed_pid = Some(10);
+        p.conductor = Some(Box::new(c));
+        let t0 = std::time::Instant::now();
+        // The first tick makes the process list; nothing is known until rows come.
+        assert!(!p.tick_procs(t0));
+        assert!(p.remote_job().is_none() && p.remote_process_names().is_none(), "no rows: the local values stay");
+        assert_eq!(p.procs_due(), Some(t0 + std::time::Duration::from_secs(1)));
+        let procs = p.conductor.as_mut().unwrap().processes().unwrap();
+        procs.handle("$begin ps\n+10 1 Ss Mon Sep 27 10:00:00 2026 -bash\n+11 10 S+ Mon Sep 27 10:00:01 2026 vim x\n$begin cpu\n=50\n");
+        let (job, ancestors) = p.remote_job().unwrap();
+        assert_eq!((job.unwrap().name, ancestors), ("vim".to_string(), vec!["vim".to_string()]));
+        assert_eq!(p.remote_process_names(), Some(vec!["vim".to_string()]));
+        // Once a second, and only when a value is known.
+        assert!(!p.tick_procs(t0 + std::time::Duration::from_millis(500)));
+        assert!(p.tick_procs(t0 + std::time::Duration::from_secs(1)));
+        assert_eq!(p.remote_cpu().unwrap().values(), [0.5]);
+        // The conductor going marks the job for a fresh read from the local watcher.
+        p.take_jobs_dirty();
+        assert!(p.pop_conductor());
+        assert!(p.take_jobs_dirty());
+        assert!(p.remote_job().is_none() && p.remote_cpu().is_none());
+        assert!(!p.tick_procs(t0 + std::time::Duration::from_secs(5)));
+        assert_eq!(p.procs_due(), None);
     }
 
     #[test]

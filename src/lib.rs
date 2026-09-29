@@ -245,6 +245,7 @@ pub mod conductor;
 pub mod framer_script;
 pub mod conductor_framer;
 pub mod ssh_registry;
+pub mod ssh_procs;
 pub mod side_channel;
 #[cfg(test)]
 pub mod ssh_fixtures;
