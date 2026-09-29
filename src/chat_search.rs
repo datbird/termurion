@@ -184,7 +184,7 @@ pub struct Tick {
     pub changed: bool,
     /// When to call `tick` again; None when nothing is left to do.
     pub next: Option<Instant>,
-    /// The store could not search.
+    /// The store could not search, or a hit's chat could not be read (the first such error).
     pub error: Option<String>,
 }
 
@@ -226,7 +226,7 @@ impl State {
 
     /// Runs what is due: the store's search after the debounce, then at most `SLICE` of hits
     /// (at least one pair), asking for another pass after `TICK` while any remain.
-    pub fn tick(&mut self, now: Instant, search: &mut dyn FnMut(&str) -> Result<Vec<(String, String)>, String>, messages: &mut dyn FnMut(&str) -> Vec<Message>) -> Tick {
+    pub fn tick(&mut self, now: Instant, search: &mut dyn FnMut(&str) -> Result<Vec<(String, String)>, String>, messages: &mut dyn FnMut(&str) -> Result<Vec<Message>, String>) -> Tick {
         let mut out = Tick::default();
         if let Some(due) = self.due {
             if now < due {
@@ -243,7 +243,12 @@ impl State {
         let start = Instant::now();
         while let Some((chat, id)) = self.pending.pop_front() {
             if !self.loaded.contains_key(&chat) {
-                let map = messages(&chat).into_iter().map(|m| (m.unique_id, (m.content, m.author == Participant::User))).collect();
+                // A chat that cannot be read is reported and kept as empty, so it is tried once.
+                let read = messages(&chat).unwrap_or_else(|e| {
+                    out.error.get_or_insert(e);
+                    Vec::new()
+                });
+                let map = read.into_iter().map(|m| (m.unique_id, (m.content, m.author == Participant::User))).collect();
                 self.loaded.insert(chat.clone(), map);
             }
             if let Some((content, user)) = self.loaded.get(&chat).and_then(|m| m.get(&id)) {
@@ -352,12 +357,12 @@ mod tests {
             assert_eq!(q, "wor");
             Ok(vec![("c1".into(), "m1".into()), ("c1".into(), "m2".into()), ("c2".into(), "m3".into()), ("c2".into(), "gone".into())])
         };
-        let mut messages = |chat: &str| -> Vec<Message> {
+        let mut messages = |chat: &str| -> Result<Vec<Message>, String> {
             loads.push(chat.to_string());
-            match chat {
+            Ok(match chat {
                 "c1" => vec![message("c1", "m1", Participant::User, "Hello World"), message("c1", "m2", Participant::Agent, "no match here")],
                 _ => vec![message("c2", "m3", Participant::Agent, "a wordy reply")],
-            }
+            })
         };
         let early = st.tick(t0, &mut search, &mut messages);
         assert_eq!(early, Tick { changed: false, next: Some(t0 + DEBOUNCE), error: None }, "nothing runs before the debounce");
@@ -383,20 +388,54 @@ mod tests {
         let t0 = Instant::now();
         let mut st = State::default();
         st.set_query("a", t0);
-        let many: Vec<(String, String)> = (0..50_000).map(|i| ("c".to_string(), format!("m{i}"))).collect();
-        let mut search = |_: &str| Ok(many.clone());
-        let mut messages = |_: &str| (0..50_000).map(|i| message("c", &format!("m{i}"), Participant::User, "a b c")).collect::<Vec<_>>();
+        let mut search = |_: &str| Ok(vec![("c".to_string(), "m0".to_string()), ("c".to_string(), "m1".to_string())]);
+        // Loading the chat takes longer than a slice, so exactly one pair is done in this pass.
+        let mut messages = |_: &str| {
+            std::thread::sleep(SLICE * 3);
+            Ok((0..2).map(|i| message("c", &format!("m{i}"), Participant::User, "a b c")).collect::<Vec<_>>())
+        };
         let t = st.tick(t0 + DEBOUNCE, &mut search, &mut messages);
-        assert!(t.changed && !st.hits().is_empty());
-        if st.searching() {
-            let now = Instant::now();
-            assert!(t.next.is_some_and(|n| n >= now.checked_sub(SLICE).unwrap_or(now)), "more work asks for another pass after TICK");
-        }
+        assert!(t.changed);
+        assert_eq!(st.hits().len(), 1, "one pair, then the slice is over");
+        assert!(st.searching());
+        assert_eq!(t.next, Some(t0 + DEBOUNCE + TICK), "the rest waits one TICK");
+        let t = st.tick(t0 + DEBOUNCE + TICK, &mut search, &mut messages);
+        assert_eq!((st.hits().len(), t.next, st.searching()), (2, None, false));
+
         let mut search_err = |_: &str| Err("db".to_string());
         let mut st2 = State::default();
         st2.set_query("a", t0);
         let e = st2.tick(t0 + DEBOUNCE, &mut search_err, &mut messages);
         assert_eq!(e.error.as_deref(), Some("db"));
         assert!(!st2.searching());
+    }
+
+    #[test]
+    fn a_chat_that_cannot_be_read_is_reported_and_the_rest_still_show() {
+        let t0 = Instant::now();
+        let mut st = State::default();
+        st.set_query("a", t0);
+        let mut search = |_: &str| Ok(vec![("bad".to_string(), "m0".to_string()), ("bad".to_string(), "m1".to_string()), ("good".to_string(), "m2".to_string())]);
+        let mut reads = Vec::new();
+        let mut messages = |chat: &str| {
+            reads.push(chat.to_string());
+            if chat == "bad" {
+                Err("locked".to_string())
+            } else {
+                Ok(vec![message("good", "m2", Participant::User, "a b c")])
+            }
+        };
+        let t = st.tick(t0 + DEBOUNCE, &mut search, &mut messages);
+        assert_eq!(t.error.as_deref(), Some("locked"), "the read error is reported, not dropped");
+        assert_eq!(st.hits().iter().map(|h| h.chat.as_str()).collect::<Vec<_>>(), ["good"]);
+        assert_eq!(reads, ["bad", "good"], "an unreadable chat is tried once, not for each of its pairs");
+    }
+
+    #[test]
+    fn a_context_only_match_is_never_a_result() {
+        // Ruling F8: the model-only context of a person's message is not searchable text.
+        let c = Content::PlainText { text: "a".into(), context: Some("secret".into()) };
+        assert_eq!(result_snippet(&c, "secret"), None);
+        assert!(result_snippet(&c, "a").is_some());
     }
 }

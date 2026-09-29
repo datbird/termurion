@@ -497,10 +497,12 @@ impl App {
     fn chat_search_tick(&mut self) -> (bool, Option<Instant>) {
         let Some(db) = self.chat_db.as_ref() else { return (false, None) };
         let mut search = |q: &str| db.search(q);
-        let mut messages = |chat: &str| db.messages(chat).unwrap_or_default();
+        let mut messages = |chat: &str| db.messages(chat);
         let t = self.chat_search.tick(Instant::now(), &mut search, &mut messages);
         if let Some(e) = t.error {
-            self.banners.set("chat_search", format!("Search failed: {e}"));
+            // Store errors are logged, never shown (`chat_db`'s policy).
+            crate::ai_wire_log::console(self.globals.bool("aiChatVerboseConsoleLogging"), &format!("chat search: {e}"));
+            self.banners.set("chat_search", "The search could not be completed.".to_string());
         }
         (t.changed, t.next)
     }
