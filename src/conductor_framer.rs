@@ -15,6 +15,9 @@ pub(crate) const IT2_ENTRY_MAX: usize = 64 * 1024;
 const MAX_JOBS: usize = 256;
 /// The most output one job keeps (1 MiB, the parser's own cap on a block); the rest is dropped.
 const JOB_OUTPUT_MAX: usize = 1024 * 1024;
+/// The most output all of one conductor's jobs keep together (16 MiB); a hostile remote
+/// could otherwise hold 256 jobs of 1 MiB, and more at each hook depth.
+pub(crate) const JOBS_OUTPUT_MAX: usize = 16 * 1024 * 1024;
 /// The most a login reply or a getenv value keeps (F13): a pid or a short failure text, a
 /// PATH. More fails the login and drops the value.
 pub const REPLY_MAX: usize = 16 * 1024;
@@ -103,7 +106,9 @@ impl Conductor {
         if self.background_jobs.len() >= MAX_JOBS && !self.background_jobs.contains_key(&pid) {
             return;
         }
-        self.background_jobs.insert(pid, Job { command, purpose, output: String::new() });
+        if let Some(old) = self.background_jobs.insert(pid, Job { command, purpose, output: String::new() }) {
+            self.job_output = self.job_output.saturating_sub(old.output.len());
+        }
     }
 
     /// The completion closures of `exfiltrateUsefulFramerInfo`, the uname command and
@@ -238,6 +243,7 @@ impl Conductor {
                 self.send(Command::Quit, Handler::FireAndForget, false);
             }
         } else if let Some(job) = self.background_jobs.remove(&pid) {
+            self.job_output = self.job_output.saturating_sub(job.output.len());
             self.complete(&job.purpose, job.output.as_bytes(), rc);
         }
     }
@@ -256,14 +262,22 @@ impl Conductor {
         if pid == NOTIF_PID {
             self.handle_notif(text);
         }
+        let left = JOBS_OUTPUT_MAX.saturating_sub(self.job_output);
         let Some(job) = self.background_jobs.get_mut(&pid) else { return };
         if channel == 1 {
-            let room = JOB_OUTPUT_MAX.saturating_sub(job.output.len());
+            let room = JOB_OUTPUT_MAX.saturating_sub(job.output.len()).min(left);
             let mut end = text.len().min(room);
             while !text.is_char_boundary(end) {
                 end -= 1;
             }
+            // Grow by doubling but never past the job's cap, so its allocation stays within
+            // what the cap counts.
+            let len = job.output.len();
+            if job.output.capacity() - len < end {
+                job.output.reserve_exact((len + end).next_power_of_two().min(JOB_OUTPUT_MAX) - len);
+            }
             job.output.push_str(&text[..end]);
+            self.job_output += end;
         } else {
             let purpose = job.purpose.clone();
             self.complete(&purpose, b"", -2);
@@ -450,6 +464,31 @@ mod tests {
         c.handle_terminate(7, 0, 0);
         assert_eq!(c.completed.len(), 1);
         assert_eq!(c.completed[0].1.len(), 1024 * 1024);
+    }
+
+    #[test]
+    fn job_output_has_a_total_per_conductor() {
+        let mut c = framing();
+        for pid in 1..=20 {
+            start_job(&mut c, "x", Purpose::Ignore, &pid.to_string());
+        }
+        let piece = "a".repeat(1024 * 1024);
+        for pid in 1..=20 {
+            c.handle_side(&piece, pid, 1, 0);
+        }
+        let held: usize = c.background_jobs.values().map(|j| j.output.len()).sum();
+        assert_eq!(held, super::JOBS_OUTPUT_MAX, "16 of the 20 MiB are kept");
+        assert_eq!(c.background_jobs[&17].output.len(), 0, "the jobs past the total keep nothing");
+        // No job holds more room than its share: a job at its cap owns exactly the cap.
+        assert!(c.background_jobs[&1].output.capacity() <= super::JOB_OUTPUT_MAX);
+        // A job that ends gives its share back.
+        c.handle_terminate(1, 0, 0);
+        c.handle_side("xyz", 17, 1, 0);
+        assert_eq!(c.background_jobs[&17].output, "xyz");
+        // The totals stay right when a job is replaced by a new one with its pid.
+        c.handle_side("q", 2, 1, 0);
+        let before: usize = c.background_jobs.values().map(|j| j.output.len()).sum();
+        assert!(before <= super::JOBS_OUTPUT_MAX);
     }
 
     #[test]

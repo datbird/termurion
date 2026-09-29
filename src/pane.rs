@@ -802,6 +802,28 @@ impl Pane {
         banner
     }
 
+    /// A `Token::Unhook` from the hook at `depth` (`PS:20172-20177`, which has no depth): the
+    /// conductor at that depth unhooks and the held writes go out raw. Beyond iTerm2, every
+    /// conductor deeper than `depth` is popped first, innermost first: their remote sits
+    /// behind the process that just ended, and a conductor left framing keys would type them
+    /// into the host above (`cat evil; exit` inside a deep session). An unhook for a depth
+    /// with no conductor (it is gone) is dropped, so it never unhooks a healthy shallower one.
+    pub fn unhook_conductor_at(&mut self, depth: i32) {
+        let mut popped_setup = false;
+        while let Some(c) = self.conductor.as_deref().filter(|c| c.depth() > depth) {
+            popped_setup |= c.queue_writes() && !c.handles_keystrokes();
+            self.ssh_unhook_conductor();
+        }
+        if popped_setup {
+            // Keys held for a setup that is gone were for its remote.
+            self.ssh_held.clear();
+        }
+        let Some(c) = self.conductor.as_mut().filter(|c| c.depth() == depth) else { return };
+        c.handle_unhook();
+        let held = self.take_ssh_held();
+        self.write_no_broadcast(&held);
+    }
+
     /// Drops the pane's innermost conductor and its hop, keeping the two chains in step:
     /// every path that drops a conductor but EndSSH comes here (`PS:20179-20204`).
     pub fn ssh_unhook_conductor(&mut self) {
@@ -1886,6 +1908,34 @@ mod tests {
         assert!(!p.ssh_hook.owned(1) && p.ssh_hook.owned(0));
         assert_eq!(ssh_depths(&mut p, &output("m", 200, -1, 0, &pre_reply("1.2", &["x"]))), Vec::<i32>::new());
         assert!(still_parses(&mut p));
+    }
+
+    #[test]
+    fn an_unhook_takes_the_deeper_conductors_first() {
+        let name = |p: &Pane| p.conductor.as_ref().map(|c| (c.setup.client_unique_id.clone(), c.unhooked()));
+        // Beyond iTerm2: an unhook at depth 0 while a depth 1 conductor frames pops that one
+        // (its keys must never go into a host that is no longer there), then unhooks depth 0.
+        let mut p = nested_framing();
+        let inner = p.conductor.as_ref().unwrap().guid.clone();
+        p.unhook_conductor_at(0);
+        assert_eq!(name(&p), Some(("o".into(), true)));
+        assert_eq!(p.ssh.chain.hops.len(), 1, "the hop of the popped conductor went with it");
+        assert!(p.take_ssh_registry().contains(&crate::ssh_registry::Change::Remove(inner)));
+        assert!(p.ssh_chain_in_step());
+        // Typing now goes straight to the pty, never framed into a gone remote.
+        assert_eq!(p.ssh_route(), crate::conductor::Route::Direct);
+        // An unhook at the innermost depth takes that conductor only.
+        let mut p = nested_framing();
+        p.unhook_conductor_at(1);
+        assert_eq!(name(&p), Some(("a".into(), true)));
+        assert_eq!(p.ssh.chain.hops.len(), 2);
+        // An unhook for a depth with no conductor (it is gone) does not unhook a healthy
+        // shallower one.
+        let mut p = nested_framing();
+        p.ssh_unhook_conductor();
+        p.unhook_conductor_at(1);
+        assert_eq!(name(&p), Some(("o".into(), false)));
+        assert!(p.conductor.as_ref().unwrap().handles_keystrokes());
     }
 
     #[test]

@@ -620,6 +620,8 @@ pub struct Conductor {
     pub discovered_hostname: Option<String>,
     /// The commands running in the background on the remote, by pid (`CD:471`); not restorable.
     pub background_jobs: BTreeMap<i32, Job>,
+    /// The bytes of output the jobs hold in all (kept in step with `background_jobs`).
+    pub(crate) job_output: usize,
     /// The remote tty's echo and icanon, from `%notif tty` (`CD:672-679`).
     pub tty: TtyState,
     /// This conductor's own id in the connected hosts (iTerm2's `guid`).
@@ -677,6 +679,7 @@ impl Conductor {
             uname: None,
             discovered_hostname: None,
             background_jobs: BTreeMap::new(),
+            job_output: 0,
             tty: TtyState::default(),
             guid: uuid::Uuid::new_v4().hyphenated().to_string(),
             environment_variables: BTreeMap::new(),

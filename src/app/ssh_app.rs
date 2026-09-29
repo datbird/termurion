@@ -106,6 +106,12 @@ impl App {
                         self.redraw();
                     }
                 }
+                // Beyond iTerm2 (`PS:20172-20177` has no depth): see `unhook_conductor_at`.
+                Out::Ssh(Token::Unhook, depth) => {
+                    if let Some(p) = self.panes.get_mut(&pane) {
+                        p.unhook_conductor_at(depth);
+                    }
+                }
                 Out::Ssh(token, depth) => {
                     // A token with no conductor (its setup was refused) is dropped.
                     let Some(p) = self.panes.get_mut(&pane) else { continue };
@@ -114,12 +120,8 @@ impl App {
                         Token::Begin(cmd) => c.handle_begin(&cmd, depth),
                         Token::Line(line) => c.handle_line(&line, depth),
                         Token::End { id: cmd, status, kind } => c.handle_end(&cmd, &kind, status, depth),
-                        // `PS:20172-20177`: the held writes go out raw.
-                        Token::Unhook => {
-                            c.handle_unhook();
-                            let held = p.take_ssh_held();
-                            p.write_no_broadcast(&held);
-                        }
+                        // Routed above by its depth.
+                        Token::Unhook => {}
                         // Routed above by its depth.
                         Token::Error(_) => {}
                         Token::Terminate { pid, rc } => c.handle_terminate(pid, rc, depth),
