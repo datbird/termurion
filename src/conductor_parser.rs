@@ -66,6 +66,11 @@ pub enum Token {
     Terminate { pid: i32, rc: i32 },
     /// `%it2 ...`: the text after the word, never empty.
     It2(String),
+    /// Not from the parser but the hook (`T:2742-2759`): an OSC 134 outside a hooked parser
+    /// found a framer mid-stream. The depth is the parent's (-1: none).
+    BeginFramerRecovery(i32),
+    /// One recovery line, the OSC string after "134;" whole, its leading colon kept (F14).
+    RecoveryLine(String),
 }
 
 /// Checks the init line; the parser's id is appended as the last word first, as iTerm2 builds

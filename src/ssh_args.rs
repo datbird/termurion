@@ -214,7 +214,7 @@ pub fn config_paths(appdata: &Path, profile_dir: &Path, program_data: &Path) -> 
 }
 
 /// Who and where an ssh session is (`SSHIdentity.swift`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Identity {
     pub host: String,
     pub hostname: String,
@@ -256,7 +256,7 @@ impl Identity {
 }
 
 /// ParsedSSHArguments (`PSA:10-192`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ParsedArgs {
     /// The destination as given (for an ssh:// URL, the whole URL, surprise 8).
     pub host: String,

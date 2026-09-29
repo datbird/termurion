@@ -787,6 +787,20 @@ impl Pane {
         std::mem::take(&mut self.ssh_held)
     }
 
+    /// The pane is or was an ssh session (F27): an OSC 134 outside the hook may now start an
+    /// in-band recovery, and the pane saves the fact. Called when a conductor hooks, when
+    /// it2ssh begins, for a session started from an SSH profile and for a restored ssh pane;
+    /// never for a plain local one, so a hostile file cannot make Tandem type into its shell.
+    pub fn note_ssh_session(&mut self) {
+        self.ssh.was_ssh = true;
+        self.ssh_hook.allow_recovery();
+    }
+
+    /// Whether `note_ssh_session` was called.
+    pub fn was_ssh_session(&self) -> bool {
+        self.ssh.was_ssh
+    }
+
     /// Leaves the conductor without an `unhook`: what follows is output again.
     pub fn unhook_ssh(&mut self) {
         self.ssh_hook.unhook();
@@ -895,12 +909,123 @@ impl Pane {
         self.send_routed(&held);
     }
 
+    /// terminalBeginFramerRecoveryForChildOfConductorAtDepth and screenBeginFramerRecovery
+    /// (`TD:4067-4071`, `PS:20307-20342`): "Recovering ssh connection..." on the screen; a
+    /// depth below 0 unhooks every conductor first; then a shim takes the previous innermost
+    /// as its parent and asks the framer to recover. A depth the conductors do not have (the
+    /// shim would sit where the hook has no owner for it) is not started: nothing is written.
+    pub fn begin_framer_recovery(&mut self, parent_depth: i32) {
+        if parent_depth >= 0 && crate::conductor::child_depth(self.conductor.as_deref()) != parent_depth + 1 {
+            self.ssh_hook.end_recovery();
+            return;
+        }
+        self.own_mut().append_banner(crate::ssh_recovery::RECOVERING);
+        if parent_depth < 0 {
+            while self.conductor.is_some() {
+                self.ssh_unhook_conductor();
+            }
+        }
+        let mut shim = crate::conductor::Conductor::recovery_shim(self.conductor.take());
+        shim.start_recovery();
+        let location = self.ssh.chain.location().unwrap_or_default().to_string();
+        self.ssh.chain.push(crate::ssh_session::Hop { unique_id: shim.setup.client_unique_id.clone(), location });
+        self.conductor = Some(Box::new(shim));
+        debug_assert!(self.ssh_chain_in_step(), "the hops follow the conductors");
+        self.apply_ssh_effects();
+    }
+
+    /// screenHandleFramerRecoveryString (`PS:20344-20370`): one recovery line for the shim. When
+    /// the last one finishes the recovery the shim is replaced by the recovered conductor, its
+    /// hop and registry entry, the hook follows its tree, "ssh connection recovered!" is shown
+    /// and it resynchronizes (`TD:4074-4090`); true then, and the rest of the batch is dropped
+    /// as iTerm2 drops the tokens read before the parser was replaced. A recovery that ended
+    /// without a login (the shim quit) leaves recovery mode for the hook. Only a shim in
+    /// recovery reads a line.
+    pub fn framer_recovery_line(&mut self, line: &str) -> bool {
+        use crate::conductor::State;
+        let Some(shim) = self.conductor.as_mut().filter(|c| matches!(c.state(), State::Recovery(_))) else {
+            self.ssh_hook.end_recovery();
+            return false;
+        };
+        let Some(finished) = shim.handle_recovery_line(line) else {
+            self.apply_ssh_effects();
+            if !self.conductor.as_ref().is_some_and(|c| matches!(c.state(), State::Recovery(_))) {
+                self.ssh_hook.end_recovery();
+            }
+            return false;
+        };
+        let parent = self.conductor.take().and_then(|mut shim| shim.parent.take());
+        self.ssh.chain.pop();
+        self.conductor = Some(Box::new(crate::conductor::Conductor::from_recovery(&finished, parent)));
+        self.adopt_recovered(&finished.dcs_id, &finished.tree());
+        self.own_mut().append_banner(crate::ssh_recovery::RECOVERED);
+        true
+    }
+
+    /// The conductor just made from a recovery (already the pane's innermost) gets its hop and
+    /// registry entry, the hook follows `tree` (in recovery mode), and it resynchronizes. What
+    /// was typed meanwhile goes out through it.
+    fn adopt_recovered(&mut self, dcs_id: &str, tree: &crate::ssh_recovery::Tree) {
+        let Some(c) = self.conductor.as_ref() else { return };
+        let hop = crate::ssh_session::Hop { unique_id: c.setup.client_unique_id.clone(), location: c.identity().compact(&crate::ssh_args::local_user()) };
+        self.ssh.chain.push(hop);
+        self.ssh_registry_out.push(crate::ssh_registry::Change::Add(c.guid.clone(), c.identity()));
+        self.ssh_hook.start_conductor_recovery(dcs_id, tree);
+        if let Some(c) = self.conductor.as_mut() {
+            c.did_resynchronize();
+        }
+        debug_assert!(self.ssh_chain_in_step(), "the hops follow the conductors");
+        self.apply_ssh_effects();
+        let held = self.take_ssh_held();
+        self.send_routed(&held);
+    }
+
+    /// The session's conductor chain from its saved state (`PS:2284-2298`), for a pane that
+    /// re-attached to its hosted session: the conductors come from `json` (untrusted: false
+    /// when it does not read), a hop and a registry entry for each framing one, the hook in
+    /// recovery mode with `tree`, and the framers reset at once (Tandem's hook swap is
+    /// synchronous, so iTerm2's boundary token is not needed). False, and nothing changed but
+    /// the pane counting as an ssh session, when there is nothing usable to restore.
+    pub fn restore_conductor(&mut self, json: &str, dcs_id: &str, tree: &crate::ssh_recovery::Tree) -> bool {
+        self.note_ssh_session();
+        if self.conductor.is_some() || !tree.valid() || tree.is_empty() {
+            return false;
+        }
+        let Some(restored) = crate::conductor::Conductor::from_json(json) else { return false };
+        let mut hops = Vec::new();
+        let mut adds = Vec::new();
+        let mut c = Some(&restored);
+        while let Some(conductor) = c {
+            hops.push(crate::ssh_session::Hop { unique_id: conductor.setup.client_unique_id.clone(), location: conductor.identity().compact(&crate::ssh_args::local_user()) });
+            if conductor.framing() {
+                adds.push(crate::ssh_registry::Change::Add(conductor.guid.clone(), conductor.identity()));
+            }
+            c = conductor.parent.as_deref();
+        }
+        hops.reverse();
+        adds.reverse();
+        self.ssh.chain.hops = hops;
+        self.ssh_registry_out.extend(adds);
+        self.conductor = Some(Box::new(restored));
+        self.ssh_hook = crate::ssh_hook::Hook::recovering(dcs_id, tree, 0);
+        self.ssh_hook.allow_recovery();
+        if let Some(c) = self.conductor.as_mut() {
+            c.did_resynchronize();
+        }
+        debug_assert!(self.ssh_chain_in_step(), "the hops follow the conductors");
+        self.apply_ssh_effects();
+        true
+    }
+
     /// conductorQuit (`PS:25603-25612`): "Disconnected from <identity>" on the screen, then the
     /// innermost conductor and its hop leave (`unhookSSHConductor`, which pops the hop too, so
     /// the EndSSH that follows finds none and writes nothing), and the held writes are cleared.
     fn ssh_quit(&mut self) {
-        let Some(identity) = self.conductor.as_ref().map(|c| c.identity().description()) else { return };
-        self.own_mut().append_banner(&crate::conductor_framer::disconnected_banner(&identity));
+        let Some((identity, named)) = self.conductor.as_ref().map(|c| (c.identity().description(), !c.setup.parsed.hostname.is_empty())) else { return };
+        // A recovery shim that quit has no host to name.
+        if named {
+            self.own_mut().append_banner(&crate::conductor_framer::disconnected_banner(&identity));
+        }
         self.ssh_unhook_conductor();
         self.take_ssh_held();
     }
@@ -3438,5 +3563,169 @@ mod tests {
         let mut p = framed_root();
         assert!(p.ssh_frames());
         assert_eq!(p.ssh_clock_tick(now, Some("h")), crate::ssh_clock::Refresh::Fetch);
+    }
+
+    /// What `App::ssh_pump_pane` does with the recovery tokens: the pane's output goes through
+    /// the hook, then each token runs. True when a recovery finished (the rest of the read is
+    /// dropped there).
+    fn recover_from(p: &mut Pane, bytes: &[u8]) -> bool {
+        use crate::conductor_parser::Token;
+        use crate::ssh_hook::Out;
+        p.tmux_io().unwrap().push_output(bytes);
+        p.pump();
+        for out in p.take_ssh() {
+            match out {
+                Out::Ssh(Token::BeginFramerRecovery(d), _) => p.begin_framer_recovery(d),
+                Out::Ssh(Token::RecoveryLine(line), _) => {
+                    if p.framer_recovery_line(&line) {
+                        return true;
+                    }
+                }
+                Out::Screen(bytes) => p.feed_after_ssh(&bytes),
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// What a live framer prints once it is told to recover: a stale block's header and end
+    /// first (Tandem restarted mid-stream), then the recovery lines.
+    fn stale_then_recovery(login: i32) -> Vec<u8> {
+        use crate::ssh_fixtures::{osc134, recovery};
+        let keys = [("dcsID", "D0"), ("sshargs", "-p 22 h"), ("boolArgs", "46"), ("clientUniqueID", "99")];
+        [osc134("%output 1 2 -1 0"), b"stale".to_vec(), osc134("%end 1"), recovery(login, &keys, &[5000])].concat()
+    }
+
+    #[test]
+    fn a_plain_pane_never_recovers() {
+        // F27: a hostile file cat'd in a local pane, recovery lines and all, makes Tandem type
+        // nothing into the local shell.
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        let bytes = stale_then_recovery(4242);
+        assert!(!recover_from(&mut p, &bytes));
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"", "nothing was written");
+        assert!(p.conductor.is_none() && !p.ssh_hook.active() && p.ssh.chain.hops.is_empty());
+    }
+
+    #[test]
+    fn framer_recovery_follows_iterm2() {
+        use crate::ssh_fixtures::output;
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        p.note_ssh_session();
+        // The stale block starts recovery: "Recovering ssh connection..." and the recover
+        // line, with a shim in recovery.
+        assert!(!recover_from(&mut p, &crate::ssh_fixtures::osc134("%output 1 2 -1 0")));
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"\ncmVjb3Zlcg==\n\n\n");
+        assert!(matches!(p.conductor.as_ref().map(|c| c.state().clone()), Some(crate::conductor::State::Recovery(_))));
+        assert!(p.ssh_chain_in_step() && p.ssh.chain.hops.len() == 1);
+        assert!(p.own().all_text().contains(crate::ssh_recovery::RECOVERING), "{}", p.own().all_text());
+        // The lines finish it: the shim is replaced by the recovered conductor, the hook follows
+        // the tree, the framer is reset, the registry hears of it and the banner says so.
+        let first = crate::ssh_fixtures::osc134("%output 1 2 -1 0").len();
+        let bytes = [stale_then_recovery(4242)[first..].to_vec(), b"dropped".to_vec()].concat();
+        assert!(recover_from(&mut p, &bytes), "the last line finished it");
+        let c = p.conductor.as_ref().expect("recovered");
+        assert_eq!((c.framed_pid, c.depth(), c.setup.client_unique_id.as_str(), c.setup.dcs_id.as_str()), (Some(4242), 0, "99", "D0"));
+        assert!(p.ssh_chain_in_step() && p.ssh.chain.hops.len() == 1 && p.ssh.chain.hops[0].unique_id == "99");
+        assert!(p.ssh_hook.active() && p.ssh_hook.owned(0));
+        assert!(p.own().all_text().contains(crate::ssh_recovery::RECOVERED));
+        let changes = p.take_ssh_registry();
+        assert!(matches!(&changes[..], [crate::ssh_registry::Change::Add(_, _)]), "{changes:?}");
+        p.apply_ssh_effects();
+        let sent = p.tmux_io().unwrap().take_input();
+        assert!(sent.starts_with(b"cmVzZXQy\n"), "reset2 first: {:?}", String::from_utf8_lossy(&sent));
+        // Output of the framed shell renders again through the recovered hook.
+        p.tmux_io().unwrap().push_output(&output("2", 4242, -1, 0, b"hello"));
+        p.pump();
+        for o in p.take_ssh() {
+            if let crate::ssh_hook::Out::Screen(b) = o {
+                p.feed_after_ssh(&b);
+            }
+        }
+        assert!(p.own().all_text().contains("hello"));
+    }
+
+    #[test]
+    fn a_recovery_without_a_login_ends() {
+        use crate::ssh_fixtures::{osc134, recovery};
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        p.note_ssh_session();
+        recover_from(&mut p, &osc134("junk"));
+        p.tmux_io().unwrap().take_input();
+        // begin, version, end: no login. The shim quits and goes; the hook stops recovering, so
+        // the next stale OSC starts one again.
+        let bytes = [osc134("begin-recovery"), osc134("recovery: version 2"), osc134("end-recovery")].concat();
+        assert!(!recover_from(&mut p, &bytes));
+        assert!(p.conductor.is_none() && p.ssh.chain.hops.is_empty(), "the shim is gone");
+        let _ = recovery(1, &[], &[]);
+        recover_from(&mut p, &osc134("junk again"));
+        assert!(p.conductor.is_some(), "a new recovery began");
+    }
+
+    #[test]
+    fn a_nested_recovery_keeps_its_parent() {
+        use crate::ssh_fixtures::{osc134, output, recovery};
+        let mut p = framing_root();
+        p.note_ssh_session();
+        assert!(p.ssh_hook.active());
+        wire(&mut p);
+        // The inner framer (a child of pid 100's shell) is found mid-stream: recovery begins for
+        // the child of the depth 0 conductor, which stays as the shim's parent.
+        assert!(!recover_from(&mut p, &output("a", 100, -1, 0, &osc134("%output 1 2 -1 0"))));
+        assert_eq!(p.conductor.as_ref().map(|c| c.depth()), Some(1));
+        assert!(p.ssh_chain_in_step() && p.ssh.chain.hops.len() == 2);
+        // The recover line went into the outer framer's shell, framed.
+        assert_eq!(wire(&mut p), sent_to(100, b"\ncmVjb3Zlcg==\n\n\n"));
+        let keys = [("dcsID", "D9"), ("sshargs", "h2"), ("boolArgs", ""), ("clientUniqueID", "77")];
+        assert!(recover_from(&mut p, &output("b", 100, -1, 0, &recovery(300, &keys, &[]))));
+        let c = p.conductor.as_ref().unwrap();
+        assert_eq!((c.framed_pid, c.depth(), c.parent.as_ref().map(|q| q.framed_pid)), (Some(300), 1, Some(Some(100))));
+        assert!(p.ssh_chain_in_step() && p.ssh.chain.hops.len() == 2);
+        assert!(p.ssh_hook.owned(0) && p.ssh_hook.owned(1) && !p.ssh_hook.owned(2), "the hook follows the tree of both");
+    }
+
+    #[test]
+    fn a_recovery_at_the_wrong_depth_is_ignored() {
+        // A remote cannot start a recovery for a depth the conductors do not have: nothing is
+        // written and the chain is left alone.
+        let mut p = framing_root();
+        p.note_ssh_session();
+        wire(&mut p);
+        p.begin_framer_recovery(5);
+        assert_eq!(wire(&mut p), b"");
+        assert_eq!(p.conductor.as_ref().map(|c| (c.depth(), c.framed_pid)), Some((0, Some(100))));
+        assert!(p.ssh_chain_in_step());
+    }
+
+    #[test]
+    fn restore_conductor_follows_iterm2() {
+        use crate::conductor::{Conductor, Setup};
+        let at = |id: &str, dcs: &str| Setup { client_unique_id: id.into(), dcs_id: dcs.into(), sshargs: format!("{id}.example"), parsed: crate::ssh_args::parse(&format!("{id}.example"), "", &crate::ssh_args::NoConfig), ..Setup::default() };
+        let mut outer = Conductor::new(at("o", "D0"), None, "O");
+        outer.framed_pid = Some(100);
+        outer.framer_version = Some(2);
+        let mut inner = Conductor::new(at("a", "D1"), Some(Box::new(outer)), "U");
+        inner.framed_pid = Some(200);
+        inner.framer_version = Some(2);
+        let (json, tree) = (inner.json(), inner.tree());
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        assert!(p.restore_conductor(&json, "D1", &tree));
+        // The chain comes back, one hop per conductor, outermost first; the hook follows the
+        // saved tree; the framers are reset and the registry hears of both.
+        let ids: Vec<&str> = p.ssh.chain.hops.iter().map(|h| h.unique_id.as_str()).collect();
+        assert_eq!(ids, ["o", "a"]);
+        assert!(p.ssh_chain_in_step());
+        assert_eq!(p.ssh_level(), 2);
+        assert!(p.ssh_hook.owned(0) && p.ssh_hook.owned(1) && !p.ssh_hook.owned(2));
+        assert_eq!(p.take_ssh_registry().len(), 2);
+        assert!(p.ssh.was_ssh, "a restored ssh pane may recover in band");
+        let sent = p.tmux_io().unwrap().take_input();
+        assert!(sent.starts_with(b"cmVzZXQy\n"), "the outer framer is reset first: {:?}", String::from_utf8_lossy(&sent));
+        // Nothing usable: no conductor and no hook, but the pane still counts as ssh.
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        assert!(!p.restore_conductor("{}", "D1", &tree));
+        assert!(p.conductor.is_none() && !p.ssh_hook.active() && p.ssh.chain.hops.is_empty());
+        assert!(!p.restore_conductor(&json, "D1", &crate::ssh_recovery::Tree::default()), "no tree: nothing to parse with");
+        assert!(p.conductor.is_none());
     }
 }

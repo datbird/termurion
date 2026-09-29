@@ -7,6 +7,7 @@ use crate::conductor_framer::{Job, Purpose, TtyState, REPLY_MAX};
 use crate::conductor_parser::Init;
 use crate::ssh_jumps::Reconnection;
 use crate::ssh_args::{HostnameFinder, Identity, ParsedArgs};
+use crate::ssh_recovery::{RecoveryInfo, Tree};
 use crate::ssh_inject::{expand_local_tilde, injection_payloads, last_component, modify_remote, shell_supports_injection, tarballs, tweak_destination, Payload, Source, INTEGRATION_SUBDIR};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -173,6 +174,9 @@ impl Command {
 /// How long a timed command may go without a begin, a line or its end (Tandem's; iTerm2
 /// waits forever, ruling 2), and how long a setup stalled in ground may wait.
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Why a recovery that never finished fails (Tandem's).
+pub const RECOVERY_TIMEOUT: &str = "The ssh connection could not be recovered: the remote did not finish answering";
 
 /// Seconds added per square MiB of a command's encoded bytes. conductor.sh reads a command
 /// one 128-character line at a time and appends each to the text so far
@@ -380,6 +384,10 @@ pub enum Handler {
     /// `LOGIN_LIMIT` (more are dropped, and the reply is then invalid) and the end hands
     /// them over; an abort or a cancel answers with an error.
     Ephemeral(Purpose, Vec<String>),
+    /// The framer's `reset2` (`CD:2184-2197`): the lines it answered so far, and the code the
+    /// reply must hold. An end without the code is not this command's (a stale reply): it is
+    /// ignored, and the command stays in flight.
+    Reset { code: String, lines: Vec<String> },
 }
 
 /// The most a pipeline holds before it stops taking commands (`CD:2986-3010`).
@@ -420,6 +428,19 @@ pub enum State {
     Executing(Context, Vec<Context>),
     /// Not using the conductor: input and output are direct.
     Unhooked,
+    /// Reading a recovering framer's lines (`CD:1505`); the shim of `start_recovery`.
+    Recovery(RecoveryState),
+    /// A recovered conductor waiting for `did_resynchronize` (`CD:1506`): nothing is sent, and
+    /// stray ends are ignored.
+    Recovered,
+}
+
+/// What the recovery lines have built (`CD:1466-1480`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum RecoveryState {
+    /// The recover line was sent; the block has not begun.
+    Ground,
+    Building(RecoveryInfo),
 }
 
 /// What a handler is told (PartialResult, `CD:1509-1515`; side-channel lines are 14c).
@@ -682,6 +703,11 @@ pub struct Conductor {
     pub subsequent_jumps: Vec<Reconnection>,
     /// The remote shell's current directory (`currentDirectory`), from the pane's tracking.
     pub current_directory: Option<String>,
+    /// A recovered or restored conductor that has not resynchronized yet (`CD:460`): it has no
+    /// process list until it has (`CD:721`).
+    pub(crate) waiting_to_resync: bool,
+    /// The code of the next `reset2` (None: a fresh one), so a test can know it.
+    pub(crate) reset_code: Option<String>,
     /// Every background job completion, for the tests.
     #[cfg(test)]
     pub(crate) completed: Vec<(Purpose, Vec<u8>, i32)>,
@@ -690,14 +716,14 @@ pub struct Conductor {
     /// Set by `fail`: the pane's abort takes this conductor, and every one inside it, out.
     failed: bool,
     pub(crate) effects: Vec<Effect>,
-    state: State,
+    pub(crate) state: State,
     queue: Vec<Context>,
     /// Set while a handler runs and while commands are written: `send` only enqueues, and
     /// the transition's own dequeue sends it next (`CD:384-391`, `CD:2964-2969`).
     transition: bool,
     /// When the conductor last wrote a command or heard a begin, a line or an end for one.
     /// None before the first write and after a failure.
-    last_activity: Option<Instant>,
+    pub(crate) last_activity: Option<Instant>,
     /// The timeout text of the last command written, for a setup stalled in ground.
     last_written: Option<String>,
     /// The clock for tests: `now()` reads this when set.
@@ -740,6 +766,8 @@ impl Conductor {
             my_jump: None,
             subsequent_jumps: Vec::new(),
             current_directory: None,
+            waiting_to_resync: false,
+            reset_code: None,
             #[cfg(test)]
             completed: Vec::new(),
             line_prefix: format!("\u{3}{prefix_uuid}"),
@@ -1009,7 +1037,7 @@ impl Conductor {
         let written: Vec<&Context> = match &self.state {
             State::WillExecute(contexts) => contexts.iter().collect(),
             State::Executing(context, rest) => std::iter::once(context).chain(rest).collect(),
-            State::Ground | State::Unhooked => Vec::new(),
+            State::Ground | State::Unhooked | State::Recovery(_) | State::Recovered => Vec::new(),
         };
         written.into_iter().chain(&self.queue).map(|c| &c.command).collect()
     }
@@ -1035,7 +1063,7 @@ impl Conductor {
         match &self.state {
             State::WillExecute(contexts) => contexts.first(),
             State::Executing(context, _) => Some(context),
-            State::Ground | State::Unhooked => None,
+            State::Ground | State::Unhooked | State::Recovery(_) | State::Recovered => None,
         }
     }
 
@@ -1065,6 +1093,8 @@ impl Conductor {
                 }
             }
             State::Unhooked => "unhooked".into(),
+            State::Recovery(_) => "recovering".into(),
+            State::Recovered => "recovered".into(),
         }
     }
 
@@ -1085,7 +1115,8 @@ impl Conductor {
         match self.state {
             State::Ground => self.dequeue(),
             State::WillExecute(_) | State::Executing(..) => self.extend(),
-            State::Unhooked => {}
+            // Nothing is sent from here until the conductor has resynchronized (`CD:1796`).
+            State::Unhooked | State::Recovery(_) | State::Recovered => {}
         }
     }
 
@@ -1123,7 +1154,7 @@ impl Conductor {
         let (first, rest): (Option<&Context>, &[Context]) = match &self.state {
             State::WillExecute(contexts) => (None, contexts),
             State::Executing(first, rest) => (Some(first), rest),
-            State::Ground | State::Unhooked => (None, &[]),
+            State::Ground | State::Unhooked | State::Recovery(_) | State::Recovered => (None, &[]),
         };
         first.into_iter().chain(rest)
     }
@@ -1180,7 +1211,7 @@ impl Conductor {
             self.in_transition(|c| {
                 match &mut c.state {
                     State::WillExecute(contexts) | State::Executing(_, contexts) => contexts.append(&mut pipeline),
-                    State::Ground | State::Unhooked => c.state = State::WillExecute(pipeline),
+                    State::Ground | State::Unhooked | State::Recovery(_) | State::Recovered => c.state = State::WillExecute(pipeline),
                 }
                 for text in &texts {
                     c.write(text);
@@ -1248,12 +1279,19 @@ impl Conductor {
         let (context, pending) = match &self.state {
             State::WillExecute(contexts) => (contexts[0].clone(), contexts[1..].to_vec()),
             State::Executing(context, pending) => (context.clone(), pending.clone()),
-            // Ground and unhooked tolerate stray input.
-            State::Ground | State::Unhooked => return,
+            // Ground and unhooked tolerate stray input, and so do the recovery states: that is
+            // how a restored session gets back on its feet (`CD:2494-2498`).
+            State::Ground | State::Unhooked | State::Recovery(_) | State::Recovered => return,
         };
         // Before the handler, so a failure it causes clears the clock.
         self.last_activity = Some(self.now());
-        self.in_transition(|c| c.update(&context, Partial::End(status)));
+        // A handler may answer "not mine" (a stale end while waiting for a reset code): the
+        // state is then left as it was (`CD:2186-2197`, `CD:2517-2519`).
+        let mut ignore = false;
+        self.in_transition(|c| ignore = c.update(&context, Partial::End(status)));
+        if ignore {
+            return;
+        }
         if pending.is_empty() {
             self.state = State::Ground;
             self.dequeue();
@@ -1270,7 +1308,7 @@ impl Conductor {
         let mut aborted: Vec<Context> = match std::mem::replace(&mut self.state, State::Unhooked) {
             State::WillExecute(mut contexts) => vec![contexts.remove(0)],
             State::Executing(context, _) => vec![context],
-            State::Ground | State::Unhooked => Vec::new(),
+            State::Ground | State::Unhooked | State::Recovery(_) | State::Recovered => Vec::new(),
         };
         aborted.append(&mut self.queue);
         for context in aborted {
@@ -1286,6 +1324,13 @@ impl Conductor {
     /// stays unhooked (iTerm2 bug B17 fixed): iTerm2 grounds every parent, so a failed
     /// nested setup makes the unhooked level 1 parent hold typing forever.
     pub fn force_ground(&mut self) {
+        self.ground_self();
+        self.via_parent(Conductor::force_ground);
+    }
+
+    /// `force_ground` without the parents: what `reset` needs (the parent has just sent its own
+    /// reset, which grounding it again would drop with everything queued behind it).
+    pub(crate) fn ground_self(&mut self) {
         // A clock fetch that was written is still owed its answer: it is told, though the
         // other written commands are dropped unheard.
         let mut aborted: Vec<Context> = self.written().filter(|c| matches!(c.handler, Handler::Ephemeral(..))).cloned().collect();
@@ -1299,7 +1344,6 @@ impl Conductor {
             }
         });
         self.queue.clear();
-        self.via_parent(Conductor::force_ground);
     }
 
     /// fail (`CD:3095-3103`): back to ground, then the raw `exec_login_shell` line through
@@ -1334,7 +1378,9 @@ impl Conductor {
             // A nested setup under an unhooked parent holds no writes, but the pane's DCS hook
             // still takes its output (final review Minor 1): it is timed as well.
             State::Ground => (!self.framing()).then_some(COMMAND_TIMEOUT),
-            State::Unhooked => None,
+            // Tandem's: a remote that begins a recovery and stops is failed, not waited on.
+            State::Recovery(_) => Some(COMMAND_TIMEOUT),
+            State::Unhooked | State::Recovered => None,
         };
         self.last_activity.zip(timeout).and_then(|(t, timeout)| due_at(t, timeout))
     }
@@ -1348,6 +1394,7 @@ impl Conductor {
         }
         let reason = match self.in_flight_context() {
             Some(context) => timeout_text(&context.command, context.timeout),
+            None if matches!(self.state, State::Recovery(_)) => RECOVERY_TIMEOUT.to_string(),
             None => self.last_written.clone().unwrap_or_default(),
         };
         self.fail(&reason);
@@ -1366,6 +1413,15 @@ impl Conductor {
             Handler::GetShell(lines) => (lines, GETSHELL_LIMIT),
             Handler::CheckForPython(lines) => (lines, PYTHON_LIMIT),
             Handler::FramerLogin(lines) | Handler::Jump(lines) => (lines, LOGIN_LIMIT),
+            // Lines that pile up past the limit are dropped: a reply that never holds the code
+            // is ignored anyway, and must not grow without end.
+            Handler::Reset { lines, .. } => {
+                let kept: usize = lines.iter().map(String::len).sum();
+                if lines.len() < LOGIN_LIMIT.1 && kept + line.len() <= LOGIN_LIMIT.0 {
+                    lines.push(line.to_string());
+                }
+                return;
+            }
             // A reply past the limit is dropped, not a reason to fail the connection: what
             // was kept then reads as an invalid reply.
             Handler::Ephemeral(_, lines) => {
@@ -1393,20 +1449,21 @@ impl Conductor {
         self.fail(&reason);
     }
 
-    /// update(executionContext:result:) (`CD:2106-2396`) for the 14b handlers.
-    fn update(&mut self, context: &Context, result: Partial) {
+    /// update(executionContext:result:) (`CD:2106-2396`) for the 14b handlers. True when the
+    /// end is not this command's and must be ignored (`IgnoreCommandError`, `CD:2186-2197`).
+    fn update(&mut self, context: &Context, result: Partial) -> bool {
         #[cfg(test)]
         self.updates.push((context.command.clone(), result.clone(), self.state.clone()));
         let status = match result {
             Partial::End(status) => status,
             // Lines are kept by `collect_line`, never through a copy of the context.
-            Partial::Line(_) => return,
+            Partial::Line(_) => return false,
             Partial::Abort | Partial::Canceled => {
                 if matches!(context.handler, Handler::CheckForPython(_)) {
                     self.exec_login_shell();
                 }
                 self.time_offset_lost(&context.handler);
-                return;
+                return false;
             }
         };
         match &context.handler {
@@ -1446,7 +1503,153 @@ impl Conductor {
                 }
             }
             Handler::Ephemeral(purpose, lines) => self.finish_ephemeral(purpose, lines, status),
+            Handler::Reset { code, lines } => return !lines.contains(code),
         }
+        false
+    }
+}
+
+/// The most a restored conductor's JSON may hold (Tandem's): the state file is read as
+/// untrusted, and one conductor's saved strings are each a few KiB at most.
+pub const JSON_MAX: usize = 1024 * 1024;
+
+/// The most conductors one saved chain may hold (a chain deeper than the hooks nest is not one
+/// Tandem saved).
+const CHAIN_MAX: usize = 16;
+
+/// A saved id (a dcs id, a client unique id) is a token, not a document.
+const SAVED_ID_MAX: usize = 256;
+
+/// A conductor's restorable state (`RestorableState`, `CD:100-225`) as JSON: identity and ids,
+/// the framed pid, what the remote told us, and the chain above it. Never the environment
+/// values, the modified variables or the Files to Copy (F26: they may be secrets, and a
+/// restored conductor is past setup), nor the state and queue (iTerm2 writes ground and an
+/// empty queue, `CD:212-213`); the depth and guid are made again.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Saved {
+    sshargs: String,
+    bool_args: String,
+    dcs_id: String,
+    client_unique_id: String,
+    initial_directory: Option<String>,
+    parsed: ParsedArgs,
+    /// Tandem's own token vouched for this hop (`Setup::local_origin`): the state file is
+    /// Tandem's, so what it says of its own chain stands.
+    local_origin: bool,
+    framed_pid: Option<i32>,
+    home_directory: Option<String>,
+    shell: Option<String>,
+    uname: Option<String>,
+    discovered_hostname: Option<String>,
+    framer_version: Option<u8>,
+    parent: Option<Box<Saved>>,
+}
+
+impl Saved {
+    /// Whether every value is one Tandem would have saved: text of a sane size with no control
+    /// characters, ids that are short, a pid that names a process.
+    fn sane(&self) -> bool {
+        let text = |s: &str| s.len() <= crate::ssh_recovery::VALUE_MAX && !s.chars().any(char::is_control);
+        let opt = |s: &Option<String>| s.as_deref().is_none_or(text);
+        let id = |s: &str| s.len() <= SAVED_ID_MAX && !s.chars().any(char::is_control);
+        let p = &self.parsed;
+        text(&self.sshargs)
+            && text(&self.bool_args)
+            && id(&self.dcs_id)
+            && id(&self.client_unique_id)
+            && opt(&self.initial_directory)
+            && opt(&self.home_directory)
+            && opt(&self.shell)
+            && opt(&self.uname)
+            && opt(&self.discovered_hostname)
+            && self.framed_pid.is_none_or(|pid| pid > 0)
+            && text(&p.host)
+            && text(&p.hostname)
+            && opt(&p.username)
+            && opt(&p.login_name)
+            && opt(&p.port_param)
+            && p.command_args.len() <= 1024
+            && p.command_args.iter().all(|a| text(a))
+    }
+
+    /// The conductor, its chain first. None when any of it is not sane or the chain is too long.
+    fn build(self, links: usize) -> Option<Conductor> {
+        if links >= CHAIN_MAX || !self.sane() {
+            return None;
+        }
+        let parent = match self.parent {
+            Some(p) => Some(Box::new(p.build(links + 1)?)),
+            None => None,
+        };
+        let setup = Setup {
+            sshargs: self.sshargs,
+            bool_args: self.bool_args,
+            dcs_id: self.dcs_id,
+            client_unique_id: self.client_unique_id,
+            initial_directory: self.initial_directory,
+            parsed: self.parsed,
+            local_origin: self.local_origin,
+            ..Setup::default()
+        };
+        let mut c = Conductor::new(setup, parent, "");
+        // Its remote code predates the prefix, so it has none (`CD:484-496`).
+        c.line_prefix = String::new();
+        c.framed_pid = self.framed_pid;
+        c.home_directory = self.home_directory;
+        c.shell = self.shell;
+        c.uname = self.uname;
+        c.discovered_hostname = self.discovered_hostname;
+        c.framer_version = self.framer_version;
+        c.waiting_to_resync = true;
+        Some(c)
+    }
+}
+
+impl Conductor {
+    fn to_saved(&self) -> Saved {
+        Saved {
+            sshargs: self.setup.sshargs.clone(),
+            bool_args: self.setup.bool_args.clone(),
+            dcs_id: self.setup.dcs_id.clone(),
+            client_unique_id: self.setup.client_unique_id.clone(),
+            initial_directory: self.setup.initial_directory.clone(),
+            parsed: self.setup.parsed.clone(),
+            local_origin: self.setup.local_origin,
+            framed_pid: self.framed_pid,
+            home_directory: self.home_directory.clone(),
+            shell: self.shell.clone(),
+            uname: self.uname.clone(),
+            discovered_hostname: self.discovered_hostname.clone(),
+            framer_version: self.framer_version,
+            parent: self.parent.as_ref().map(|p| Box::new(p.to_saved())),
+        }
+    }
+
+    /// The restorable state as JSON (`CD:227-260`): this conductor and the chain above it.
+    pub fn json(&self) -> String {
+        serde_json::to_string(&self.to_saved()).unwrap_or_default()
+    }
+
+    /// A conductor from its saved JSON (`newConductorWithJSON`, `CD:262-300`): state ground, an
+    /// empty queue and line prefix, a fresh guid, waiting to resynchronize. The text is
+    /// untrusted: anything of the wrong shape or size gives None.
+    pub fn from_json(s: &str) -> Option<Conductor> {
+        if s.len() > JSON_MAX {
+            return None;
+        }
+        serde_json::from_str::<Saved>(s).ok()?.build(0)
+    }
+
+    /// The parser tree of the chain down to this conductor (`CD:1551-1572`).
+    pub fn tree(&self) -> Tree {
+        crate::ssh_recovery::chain_tree(&self.links())
+    }
+
+    /// Each conductor's framed pid and dcs id, outermost first.
+    fn links(&self) -> Vec<(Option<i32>, String)> {
+        let mut links = self.parent.as_ref().map(|p| p.links()).unwrap_or_default();
+        links.push((self.framed_pid, self.setup.dcs_id.clone()));
+        links
     }
 }
 
@@ -2284,7 +2487,7 @@ mod tests {
                     c.handle_end(&id, &kind, status, 0);
                     break;
                 }
-                Token::Init(_) | Token::Unhook | Token::Error(_) | Token::Output { .. } | Token::Terminate { .. } | Token::It2(_) => {}
+                Token::Init(_) | Token::Unhook | Token::Error(_) | Token::Output { .. } | Token::Terminate { .. } | Token::It2(_) | Token::BeginFramerRecovery(_) | Token::RecoveryLine(_) => {}
             }
         }
         assert_eq!(c.shell.as_deref(), Some("/bin/sh"));
@@ -2623,7 +2826,7 @@ mod tests {
                         Token::End { id, status, kind } => c.handle_end(&id, &kind, status, depth),
                         Token::Unhook => c.handle_unhook(),
                         Token::Error(reason) => c.fail(&reason),
-                        Token::Init(_) | Token::Output { .. } | Token::Terminate { .. } | Token::It2(_) => {}
+                        Token::Init(_) | Token::Output { .. } | Token::Terminate { .. } | Token::It2(_) | Token::BeginFramerRecovery(_) | Token::RecoveryLine(_) => {}
                     }
                 }
             }

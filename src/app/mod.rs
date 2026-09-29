@@ -2532,6 +2532,9 @@ impl App {
                 pane.command = cmd;
                 if self.start_command_override.is_none() {
                     pane.ssh.profile_ssh = profile::is_ssh(&p);
+                    if pane.ssh.profile_ssh {
+                        pane.note_ssh_session();
+                    }
                     pane.ssh.initial_directory = profile::ssh_initial_directory(&p);
                 }
                 if let Some(jumps) = self.start_jumps_override.take() {

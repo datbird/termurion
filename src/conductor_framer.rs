@@ -1,7 +1,8 @@
 //! The framer half of the Conductor (`CR`, milestone 14c): iTerm2 splits
 //! `Conductor+SSHCommandRunning.swift` from `Conductor.swift` the same way.
 
-use crate::conductor::{Command, Conductor, Effect, Handler};
+use crate::conductor::{Command, Conductor, Effect, Handler, RecoveryState, Setup, State};
+use crate::ssh_recovery::{Finished, RecoveryInfo};
 use crate::conductor_parser::{AUTOPOLL_PID, NOTIF_PID};
 use crate::framer_script::framer_code;
 use crate::ssh_jumps::Reconnection;
@@ -190,9 +191,7 @@ impl Conductor {
         self.send(Command::FramerSave(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()), Handler::FireAndForget, false);
         let uname = self.uname_command.clone();
         self.run_remote_command(&uname, Purpose::Uname);
-        // exfiltrateUsefulFramerInfo (`CD:1932-1940`).
-        self.run_remote_command("echo $HOME", Purpose::Home);
-        self.send(Command::FramerGetenv("PATH".into()), Handler::Getenv("PATH".into(), None), false);
+        self.exfiltrate_useful_framer_info();
         if self.my_jump.is_some() {
             // framerJump (`CD:1970-1972`): the jump script replaces the login.
             let script = self.jump_script();
@@ -208,6 +207,12 @@ impl Conductor {
         // handleGetHostname: its pid line adds a Hostname job (`CD:2198-2214`).
         self.send(Command::FramerRun(DISCOVER_HOSTNAME.into()), Handler::RunRemote(Purpose::Hostname), false);
         self.effects.push(Effect::StateChanged);
+    }
+
+    /// exfiltrateUsefulFramerInfo (`CD:1932-1940`): the remote's home and PATH.
+    fn exfiltrate_useful_framer_info(&mut self) {
+        self.run_remote_command("echo $HOME", Purpose::Home);
+        self.send(Command::FramerGetenv("PATH".into()), Handler::Getenv("PATH".into(), None), false);
     }
 
     /// jumpScript (`CD:1754-1770`): the script for `my_jump`, which it uses up. The hop's
@@ -401,6 +406,10 @@ impl Conductor {
     /// it registers the framed pid with the framer (fire and forget) and tracks it. None
     /// while not framing.
     pub fn processes(&mut self) -> Option<&mut crate::ssh_procs::Provider> {
+        // None until a recovered conductor has resynchronized (`CD:721`).
+        if self.waiting_to_resync {
+            return None;
+        }
         let pid = self.framed_pid?;
         if self.procs.is_none() {
             let mut provider = crate::ssh_procs::Provider::new(pid);
@@ -494,6 +503,143 @@ impl Conductor {
     /// The framer protocol version, None until the framer is launched.
     pub fn framer_version(&self) -> Option<u8> {
         self.framer_version
+    }
+
+    /// The conductor `startRecovery` runs on (`PS:20321-20334`): empty fields, no framed pid,
+    /// no line prefix, and an id of its own that no EndSSH can name.
+    pub fn recovery_shim(parent: Option<Box<Conductor>>) -> Conductor {
+        let setup = Setup { client_unique_id: uuid::Uuid::new_v4().hyphenated().to_string(), ..Setup::default() };
+        let mut c = Conductor::new(setup, parent, "");
+        c.line_prefix = String::new();
+        c
+    }
+
+    /// startRecovery (`CD:1789-1794`): "\n", base64("recover") and "\n\n" plus write's newline
+    /// ask a running framer for its state; the lines that answer come to `handle_recovery_line`.
+    pub fn start_recovery(&mut self) {
+        use base64::Engine;
+        let recover = base64::engine::general_purpose::STANDARD.encode("recover");
+        self.write(&format!("\n{recover}\n\n"));
+        self.waiting_to_resync = true;
+        self.state = State::Recovery(RecoveryState::Ground);
+        // A recovery the remote never finishes fails at the command timeout.
+        self.last_activity = Some(self.now());
+        self.effects.push(Effect::StateChanged);
+    }
+
+    /// The framed pid and dcs id of this conductor and each above it, outermost first (0: not
+    /// framing), the parentage a recovery's tree starts with (`CD:2731-2733`, whose own order is
+    /// innermost first and so wrong past two conductors).
+    fn nesting(&self) -> Vec<(i32, String)> {
+        let mut out = self.parent.as_ref().map(|p| p.nesting()).unwrap_or_default();
+        out.push((self.framed_pid.unwrap_or(0), self.setup.dcs_id.clone()));
+        out
+    }
+
+    /// handleRecovery(line:) (`CD:2713-2800`) for one recovery line, the OSC string with its
+    /// leading colon. Only a conductor in recovery reads them (Tandem-side: iTerm2's
+    /// `:begin-recovery` would put any conductor in it). The block ends at `:end-recovery`:
+    /// without a login the conductor quits and gives None; else it has the framed pid and the
+    /// finished information comes back for the app to build the recovered conductor from.
+    pub fn handle_recovery_line(&mut self, raw: &str) -> Option<Finished> {
+        let line = raw.trim_end_matches(['\r', '\n']);
+        if !line.starts_with(':') || !matches!(self.state, State::Recovery(_)) {
+            return None;
+        }
+        if line == ":begin-recovery" {
+            self.state = State::Recovery(RecoveryState::Building(RecoveryInfo::default()));
+            self.last_activity = Some(self.now());
+            return None;
+        }
+        // Background jobs are not restored.
+        if line.starts_with(":recovery: process ") {
+            return None;
+        }
+        let State::Recovery(RecoveryState::Building(info)) = &self.state else { return None };
+        if line.starts_with(":end-recovery") {
+            let Some(finished) = info.finished(self.parent.as_ref().map(|p| p.nesting()).unwrap_or_default()) else {
+                self.quit();
+                return None;
+            };
+            self.framed_pid = Some(finished.login);
+            self.state = State::Ground;
+            self.effects.push(Effect::StateChanged);
+            return Some(finished);
+        }
+        let (key, value) = line.strip_prefix(":recovery: ")?.split_once(' ')?;
+        let mut next = info.clone();
+        if next.set(key, value) {
+            self.state = State::Recovery(RecoveryState::Building(next));
+            self.last_activity = Some(self.now());
+        }
+        None
+    }
+
+    /// init(recovery:) (`CD:553-593`): a conductor for a framer found by recovery. It has the
+    /// framed pid and the framer's version, no line prefix and nothing else the remote's
+    /// lines did not give; it waits to resynchronize. Its arguments are text the remote sent,
+    /// so it is never a local origin, and its host is the name as given (no ssh_config).
+    pub fn from_recovery(f: &Finished, parent: Option<Box<Conductor>>) -> Conductor {
+        let setup = Setup {
+            sshargs: f.sshargs.clone(),
+            bool_args: f.bool_args.clone(),
+            dcs_id: f.dcs_id.clone(),
+            client_unique_id: f.client_unique_id.clone(),
+            parsed: crate::ssh_args::parse(&f.sshargs, &f.bool_args, &crate::ssh_args::NoConfig),
+            ..Setup::default()
+        };
+        let mut c = Conductor::new(setup, parent, "");
+        c.line_prefix = String::new();
+        c.framed_pid = Some(f.login);
+        c.state = State::Recovered;
+        c.framer_version = u8::try_from(f.version).ok();
+        c.waiting_to_resync = true;
+        c
+    }
+
+    /// didResynchronize (`CD:1809-1820`): tokens may have been dropped, so the conductor and its
+    /// parents are reset and the framer's home and PATH read again. Nothing waits for the
+    /// parser's boundary token here (Decision: Tandem swaps its hook at once).
+    pub fn did_resynchronize(&mut self) {
+        self.waiting_to_resync = false;
+        self.force_ground();
+        self.reset_transitively();
+        self.exfiltrate_useful_framer_info();
+    }
+
+    /// resetTransitively (`CD:3078-3081`): the conductors above are reset first, outermost
+    /// first (iTerm2 resets only the parent).
+    pub fn reset_transitively(&mut self) {
+        if let Some(parent) = self.parent.as_mut() {
+            parent.reset_transitively();
+        }
+        self.reset();
+    }
+
+    /// reset (`CR:22-44`) with a fresh code.
+    pub fn reset(&mut self) {
+        let code = self.reset_code.take().unwrap_or_else(|| uuid::Uuid::new_v4().hyphenated().to_string().to_uppercase());
+        self.reset_with(&code);
+    }
+
+    /// reset (`CR:22-44`) with `code`: back to ground (this conductor's own; the parents' resets
+    /// were sent before it and grounding them again would drop those), `reset2` with the code
+    /// (`reset` for framer version 1 or none), then autopoll and the framed pid registered
+    /// again. The process list is made here if it was not (it registers the pid itself).
+    pub fn reset_with(&mut self, code: &str) {
+        self.ground_self();
+        if self.framer_version == Some(2) {
+            self.send(Command::FramerReset2(code.to_string()), Handler::Reset { code: code.to_string(), lines: Vec::new() }, false);
+        } else {
+            self.send(Command::FramerReset1, Handler::FireAndForget, false);
+        }
+        if self.autopoll_enabled {
+            self.send(Command::FramerAutopoll, Handler::FireAndForget, false);
+            if let Some(pid) = self.framed_pid {
+                self.processes();
+                self.send(Command::FramerRegister(pid), Handler::FireAndForget, false);
+            }
+        }
     }
 }
 
@@ -1608,5 +1754,237 @@ mod tests {
         root.setup.local_origin = true;
         assert!(root.root_is_local());
         assert!(child(root).root_is_local(), "the chain's first hook decides");
+    }
+
+    use crate::ssh_recovery::{Finished, Tree};
+
+    fn finished(login: i32, parentage: Vec<(i32, String)>) -> Finished {
+        Finished { login, dcs_id: "D0".into(), sshargs: "-p 22 h".into(), bool_args: "46".into(), client_unique_id: "99".into(), version: 2, parentage }
+    }
+
+    /// The recovery lines framer.py prints for a login shell (`F:1300-1321`), through the last.
+    const LINES: [&str; 9] = [
+        ":begin-recovery",
+        ":recovery: version 2",
+        ":recovery: login 4242",
+        ":recovery: dcsID D0",
+        ":recovery: sshargs -p 22 h",
+        ":recovery: boolArgs 46",
+        ":recovery: clientUniqueID 99",
+        ":recovery: process 5000",
+        ":end-recovery",
+    ];
+
+    #[test]
+    fn recovery_lines_follow_iterm2() {
+        // A shim (empty fields, no parent) starts recovery: "\n" + base64("recover") + "\n\n"
+        // plus write's newline (`CD:1789-1794`).
+        let mut c = Conductor::recovery_shim(None);
+        c.start_recovery();
+        assert_eq!(c.take_effects(), [Effect::Write(b"\ncmVjb3Zlcg==\n\n\n".to_vec()), Effect::StateChanged]);
+        assert!(c.waiting_to_resync);
+        assert!(matches!(c.state(), State::Recovery(_)));
+        for line in &LINES[..8] {
+            assert_eq!(c.handle_recovery_line(line), None, "{line}");
+        }
+        assert_eq!(c.handle_recovery_line(LINES[8]), Some(finished(4242, vec![])));
+        assert_eq!(c.framed_pid, Some(4242));
+        assert_eq!(c.state(), &State::Ground);
+
+        // No login line: the conductor quits (Task 9's effects) and nothing is returned.
+        let mut c = Conductor::recovery_shim(None);
+        c.start_recovery();
+        c.take_effects();
+        for line in [":begin-recovery", ":recovery: version 2", ":end-recovery"] {
+            assert_eq!(c.handle_recovery_line(line), None);
+        }
+        assert!(c.take_effects().contains(&Effect::Quit));
+        assert_eq!(c.framed_pid, None);
+
+        // A line without the leading colon changes nothing; so does an unknown key, a login that
+        // is not a pid and a line before recovery began.
+        let mut c = Conductor::recovery_shim(None);
+        c.start_recovery();
+        assert_eq!(c.handle_recovery_line("begin-recovery"), None);
+        assert_eq!(c.state(), &State::Recovery(crate::conductor::RecoveryState::Ground));
+        assert_eq!(c.handle_recovery_line(":recovery: login 1"), None);
+        assert_eq!(c.state(), &State::Recovery(crate::conductor::RecoveryState::Ground), "the begin line is what opens the block");
+        assert_eq!(c.handle_recovery_line(":begin-recovery"), None);
+        let building = c.state().clone();
+        assert_eq!(c.handle_recovery_line(":recovery: bogus 1"), None);
+        assert_eq!(c.handle_recovery_line(":recovery: login -1000"), None);
+        assert_eq!(c.handle_recovery_line(":recovery: version x"), None);
+        assert_eq!(c.handle_recovery_line(":recovery: login"), None);
+        assert_eq!(c.state(), &building);
+        // Lines when no recovery runs are ignored.
+        let mut c = framing();
+        assert_eq!(c.handle_recovery_line(":begin-recovery"), None);
+        assert_eq!(c.state(), &State::Ground);
+        assert_eq!(c.handle_recovery_line(":end-recovery"), None);
+
+        // The conductors above are the parentage, outermost first (framing ones by their pid).
+        let outer = framing();
+        let mut shim = Conductor::recovery_shim(Some(Box::new(outer)));
+        shim.start_recovery();
+        shim.take_effects();
+        for line in &LINES[..8] {
+            shim.handle_recovery_line(line);
+        }
+        let f = shim.handle_recovery_line(LINES[8]).expect("finished");
+        assert_eq!(f.parentage, [(100, String::new())]);
+        assert_eq!(f.tree(), Tree(std::collections::BTreeMap::from([(100, (String::new(), Tree(std::collections::BTreeMap::from([(4242, ("D0".to_string(), Tree::default()))]))))])));
+    }
+
+    #[test]
+    fn a_recovery_never_ends_by_itself() {
+        // Tandem-side guard: a remote that begins recovery and stops is failed by the command
+        // clock rather than held forever.
+        let mut c = Conductor::recovery_shim(None);
+        let t0 = Instant::now();
+        c.fake_now = Some(t0);
+        c.start_recovery();
+        assert_eq!(c.deadline(), Some(t0 + crate::conductor::COMMAND_TIMEOUT));
+        c.take_effects();
+        c.tick(t0 + crate::conductor::COMMAND_TIMEOUT);
+        assert!(c.take_effects().iter().any(|e| matches!(e, Effect::Abort(_))));
+    }
+
+    /// Feeds one recorded framer reply to the conductor.
+    fn reply_to(c: &mut Conductor, id: &str, lines: &[&str], status: u8) {
+        let mut tokens = vec![Token::Begin(id.into())];
+        tokens.extend(lines.iter().map(|l| Token::Line(l.to_string())));
+        tokens.push(end(id, status, "f"));
+        feed(c, &tokens);
+    }
+
+    #[test]
+    fn resynchronize_follows_iterm2() {
+        let f = finished(4242, vec![]);
+        let mut c = Conductor::from_recovery(&f, None);
+        assert_eq!((c.depth(), c.framed_pid, c.line_prefix(), c.framer_version()), (0, Some(4242), "", Some(2)));
+        assert_eq!(c.state(), &State::Recovered);
+        assert!(c.waiting_to_resync);
+        assert_eq!((c.setup.dcs_id.as_str(), c.setup.sshargs.as_str(), c.setup.bool_args.as_str(), c.setup.client_unique_id.as_str()), ("D0", "-p 22 h", "46", "99"));
+        assert_eq!((c.setup.parsed.hostname.as_str(), c.setup.parsed.port), ("h", 22), "parsed from the args");
+        assert!(!c.setup.local_origin, "text the remote sent never vouches for a local command");
+        // Depth: a framing parent's plus one; a non-framing parent's own.
+        assert_eq!(Conductor::from_recovery(&f, Some(Box::new(framing()))).depth(), 1);
+        let mut quiet = Conductor::new(Setup { client_unique_id: "B".into(), ..Setup::default() }, Some(Box::new(framing())), "Q");
+        quiet.framed_pid = None;
+        assert_eq!(quiet.depth(), 1);
+        assert_eq!(Conductor::from_recovery(&f, Some(Box::new(quiet))).depth(), 1);
+
+        // Resynchronizing: only the reset goes out at once; autopoll and the two registers
+        // (the process list's own and reset's) wait behind it, then the home and PATH.
+        c.reset_code = Some("C0DE".into());
+        c.did_resynchronize();
+        assert!(!c.waiting_to_resync);
+        assert_eq!(c.take_effects(), [Effect::Write(framer_cmd(&["reset2", "C0DE"]))]);
+        assert_eq!(
+            c.pending(),
+            [
+                &Command::FramerReset2("C0DE".into()),
+                &Command::FramerAutopoll,
+                &Command::FramerRegister(4242),
+                &Command::FramerRegister(4242),
+                &Command::FramerRun("echo $HOME".into()),
+                &Command::FramerGetenv("PATH".into())
+            ]
+        );
+        // A stale end before the code arrives is ignored: still waiting.
+        reply_to(&mut c, "x", &["stale"], 0);
+        assert_eq!(c.in_flight(), Some(&Command::FramerReset2("C0DE".into())));
+        assert_eq!(c.take_effects(), []);
+        // The code arrives: ground, and the rest go out one per end.
+        reply_to(&mut c, "y", &["C0DE"], 0);
+        assert_eq!(c.take_effects(), [Effect::Write(framer_cmd(&["autopoll"]))]);
+        reply_to(&mut c, "a", &[], 0);
+        assert_eq!(c.take_effects(), [Effect::Write(framer_cmd(&["register", "4242"]))]);
+        reply_to(&mut c, "b", &[], 0);
+        assert_eq!(c.take_effects(), [Effect::Write(framer_cmd(&["register", "4242"]))]);
+        reply_to(&mut c, "c", &[], 0);
+        assert_eq!(c.take_effects(), [Effect::Write(framer_cmd(&["run", "echo $HOME"]))]);
+        reply_to(&mut c, "d", &["5100"], 0);
+        assert_eq!(c.take_effects(), [Effect::Write(framer_cmd(&["getenv", "PATH"]))]);
+
+        // The parent is reset first: its reset2 is the outer framer's own write, the child's
+        // reset rides inside it as a framed send behind.
+        let mut outer = framing();
+        outer.framer_version = Some(2);
+        let mut c = Conductor::from_recovery(&f, Some(Box::new(outer)));
+        c.reset_transitively();
+        let fx = c.take_effects();
+        let Some(Effect::Write(first)) = fx.first() else { panic!("{fx:?}") };
+        assert!(first.starts_with(b"cmVzZXQy\n"), "the parent's reset2 goes to the pty first");
+        assert_eq!(fx.len(), 1, "the child's reset waits behind it");
+        assert!(matches!(c.parent.as_ref().and_then(|p| p.pending().first().copied()), Some(Command::FramerReset2(_))));
+        // The reset waits like every framed command (M14-I2): a slept laptop's late answer counts.
+        let mut c = Conductor::from_recovery(&f, None);
+        let t0 = Instant::now();
+        c.fake_now = Some(t0);
+        c.did_resynchronize();
+        c.take_effects();
+        assert_eq!(c.deadline(), None);
+    }
+
+    #[test]
+    fn conductor_json_follows_iterm2() {
+        let mut outer = Conductor::new(Setup { sshargs: "h1".into(), bool_args: "46".into(), dcs_id: "D0".into(), client_unique_id: "A".into(), local_origin: true, ..Setup::default() }, None, "P");
+        outer.framed_pid = Some(100);
+        outer.home_directory = Some("/home/u".into());
+        let mut inner = Conductor::new(Setup { sshargs: "-p 2222 u@h2".into(), bool_args: "46".into(), dcs_id: "D1".into(), client_unique_id: "B".into(), initial_directory: Some("/srv".into()), ..Setup::default() }, Some(Box::new(outer)), "Q");
+        inner.setup.parsed = crate::ssh_args::parse("-p 2222 u@h2", "46", &crate::ssh_args::NoConfig);
+        inner.framed_pid = Some(200);
+        inner.shell = Some("/bin/zsh".into());
+        inner.uname = Some("Linux".into());
+        inner.framer_version = Some(2);
+        // Secrets never reach the state file (F26): environment values, Files to Copy.
+        inner.setup.vars_to_send = vec![("TOKEN".into(), "hunter2-secret".into())];
+        inner.setup.client_vars = vec![("PASS".into(), "hunter2-secret".into())];
+        inner.modified_vars = Some(vec![("K".into(), "hunter2-secret".into())]);
+        inner.payloads.push(crate::ssh_inject::Payload { source: crate::ssh_inject::Source::Disk("/x".into()), destination: "/y".into() });
+        let json = inner.json();
+        assert!(!json.contains("hunter2-secret") && !json.contains("TOKEN") && !json.contains("PASS"), "{json}");
+        // It round trips: identity, ids, pids, values, the chain, a fresh guid, no line prefix,
+        // a conductor that waits to resynchronize.
+        let back = Conductor::from_json(&json).expect("restores");
+        assert_eq!((back.setup.sshargs.as_str(), back.setup.dcs_id.as_str(), back.setup.client_unique_id.as_str()), ("-p 2222 u@h2", "D1", "B"));
+        assert_eq!((back.framed_pid, back.shell.as_deref(), back.uname.as_deref(), back.framer_version()), (Some(200), Some("/bin/zsh"), Some("Linux"), Some(2)));
+        assert_eq!(back.setup.initial_directory.as_deref(), Some("/srv"));
+        assert_eq!(back.setup.parsed, inner.setup.parsed);
+        assert_eq!((back.depth(), back.line_prefix(), back.state(), back.waiting_to_resync), (1, "", &State::Ground, true));
+        assert!(back.setup.vars_to_send.is_empty() && back.payloads.is_empty() && back.modified_vars.is_none());
+        let parent = back.parent.as_ref().expect("the chain comes back");
+        assert_eq!((parent.framed_pid, parent.home_directory.as_deref(), parent.setup.client_unique_id.as_str(), parent.depth()), (Some(100), Some("/home/u"), "A", 0));
+        assert!(parent.setup.local_origin && back.root_is_local());
+        assert_ne!(back.guid, inner.guid);
+        assert_eq!(back.tree(), inner.tree());
+        assert_eq!(inner.tree().0.keys().copied().collect::<Vec<_>>(), [100]);
+        // A saved conductor has an empty queue and ground state, whatever it was doing.
+        inner.send(Command::Cd("/tmp".into()), Handler::FireAndForget, false);
+        assert_eq!(Conductor::from_json(&inner.json()).unwrap().pending(), Vec::<&Command>::new());
+    }
+
+    #[test]
+    fn restored_json_is_checked() {
+        let mut c = framing();
+        c.setup.dcs_id = "D0".into();
+        let good = c.json();
+        assert!(Conductor::from_json(&good).is_some());
+        // Not JSON, the wrong shape, an id that is not text, a chain deeper than any hook, text
+        // with controls, and an enormous value are all refused.
+        assert!(Conductor::from_json("").is_none());
+        assert!(Conductor::from_json("{}").is_none());
+        assert!(Conductor::from_json("[1,2]").is_none());
+        assert!(Conductor::from_json(&good.replace("\"D0\"", "5")).is_none());
+        assert!(Conductor::from_json(&good.replace("\"D0\"", "\"D\\u0007x\"")).is_none(), "a control character in an id");
+        assert!(Conductor::from_json(&good.replace("\"D0\"", &format!("\"{}\"", "d".repeat(70_000)))).is_none());
+        let mut deep = good.clone();
+        for _ in 0..20 {
+            deep = good.replacen("\"parent\":null", &format!("\"parent\":{deep}"), 1);
+        }
+        assert!(Conductor::from_json(&deep).is_none(), "more conductors than a hook tree can follow");
+        // A pid that names no process is refused.
+        assert!(Conductor::from_json(&good.replace("\"framed_pid\":100", "\"framed_pid\":-1000")).is_none());
     }
 }

@@ -4,11 +4,20 @@
 
 use crate::conductor_parser::{Parser, Token, AUTOPOLL_PID, NOTIF_PID};
 use crate::side_channel::Reducer;
+use crate::ssh_recovery::Tree as RecoveryTree;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 pub const START: &[u8] = b"\x1bP2000p";
+
+/// What begins an OSC 134 (framer.py's `send_esc`), which outside a hooked parser means a
+/// framer found mid-stream (`T:2742-2759`).
+const OSC134: &[u8] = b"\x1b]134;";
+
+/// The longest OSC 134 the hook waits for outside a parser (Tandem's, F27): the longest
+/// recovery line is a saved value of `ssh_recovery::VALUE_MAX`. A longer one is output.
+const RECOVERY_LINE_MAX: usize = crate::ssh_recovery::VALUE_MAX + 4096;
 
 /// The hook's name in iTerm2's DCS parser.
 pub const HOOK_DESCRIPTION: &str = "[SSH CONDUCTOR]";
@@ -76,6 +85,9 @@ struct Tree {
     levels: [Level; LEVELS],
     /// The last hook serial given out (the root is 1).
     serial: AtomicU64,
+    /// Whether the pane is or was an ssh session, so an OSC 134 outside a parser may begin an
+    /// in-band recovery (F27). Shared by the whole tree: a child hook made later has it too.
+    recovery_ok: AtomicBool,
 }
 
 impl Tree {
@@ -150,6 +162,18 @@ impl Drop for Owner {
     }
 }
 
+/// Where a hook is in an in-band recovery (`VT100TerminalFramerRecoveryMode`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Recovery {
+    #[default]
+    None,
+    /// The first OSC 134 was seen: the next ones are recovery lines.
+    Recovering,
+    /// The last line was read: what the hook reads is dropped until the recovered parser
+    /// exists (iTerm2 drops what its parser had already read, `T:2761-2767`).
+    Syncing,
+}
+
 /// The parser of one remote process (`VP:181-275`), and its side channel's reducer.
 struct Child {
     hook: Hook,
@@ -192,11 +216,13 @@ pub struct Hook {
     charge: Charge,
     /// Where parser ids come from (None: `new_dcs_id`).
     ids: Option<fn() -> String>,
+    /// Whether this hook, with no parser, is reading recovery lines.
+    recovery: Recovery,
 }
 
 impl Default for Hook {
     fn default() -> Hook {
-        Hook { depth: 0, may_own: true, serial: 1, owner: None, children: HashMap::new(), main_pid: None, held: Vec::new(), parser: None, charge: Charge::default(), ids: None }
+        Hook { depth: 0, may_own: true, serial: 1, owner: None, children: HashMap::new(), main_pid: None, held: Vec::new(), parser: None, charge: Charge::default(), ids: None, recovery: Recovery::None }
     }
 }
 
@@ -212,6 +238,74 @@ impl Hook {
         hook.depth = depth;
         hook.charge.depth = depth;
         hook
+    }
+
+    /// A hook at `depth` following a saved parser tree (`VP:481-532`): the restored pane's
+    /// hook, in recovery mode, with a child for each pid the tree names.
+    pub fn recovering(dcs_id: &str, tree: &RecoveryTree, depth: i32) -> Hook {
+        let mut hook = Hook::with_depth(depth);
+        hook.recover(dcs_id, tree);
+        hook
+    }
+
+    /// startConductorRecoveryMode (`VP:481-485`): the children go first, then the tree is
+    /// followed as `recovering` does. The recovery this hook read lines for is over.
+    pub fn start_conductor_recovery(&mut self, dcs_id: &str, tree: &RecoveryTree) {
+        self.recovery = Recovery::None;
+        self.held.clear();
+        self.recover(dcs_id, tree);
+    }
+
+    /// reallyStartConductorRecoveryMode (`VP:497-518`). An empty tree does nothing; key 0 means
+    /// this node needs no special parsing and the node under it takes its place; otherwise the
+    /// node hooks in conductor recovery mode with a child hook per pid, each following its own
+    /// subtree. A node past the depth cap or one whose depth another hook owns hooks nothing.
+    fn recover(&mut self, dcs_id: &str, tree: &RecoveryTree) {
+        self.drop_children();
+        if tree.0.is_empty() {
+            return;
+        }
+        if let Some((child_id, child_tree)) = tree.0.get(&0) {
+            self.recover(child_id, child_tree);
+            return;
+        }
+        if self.depth > MAX_DEPTH {
+            return;
+        }
+        self.end_parser();
+        self.parser = Some(Parser::recovering(dcs_id));
+        if !self.claim() {
+            self.parser = None;
+            return;
+        }
+        for (pid, (child_id, child_tree)) in &tree.0 {
+            if !self.make_child(*pid, -1) {
+                break;
+            }
+            if let Some(child) = self.children.get_mut(pid) {
+                child.hook.recover(child_id, child_tree);
+            }
+        }
+    }
+
+    /// Lets this pane's OSC 134s outside a parser begin a recovery (F27): called for a pane
+    /// that is or was an ssh session, never for a plain local one.
+    pub fn allow_recovery(&self) {
+        self.charge.tree.recovery_ok.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether `allow_recovery` was called.
+    pub fn recovery_allowed(&self) -> bool {
+        self.charge.tree.recovery_ok.load(Ordering::Relaxed)
+    }
+
+    /// A recovery that did not finish (no login line, a refused depth): the next OSC 134 begins
+    /// one again. Every hook of the tree, since the one that read the lines may be a child.
+    pub fn end_recovery(&mut self) {
+        self.recovery = Recovery::None;
+        for child in self.children.values_mut() {
+            child.hook.end_recovery();
+        }
     }
 
     /// The pids that have a child parser now, sorted.
@@ -308,27 +402,8 @@ impl Hook {
     /// on first use, at depth + 1), and what the child finds goes up. False when this depth
     /// may make no more children.
     fn output(&mut self, pid: i32, channel: i32, data: Vec<u8>, out: &mut Vec<Out>) -> bool {
-        if !self.children.contains_key(&pid) {
-            let tree = self.charge.tree.clone();
-            let Some(level) = tree.level(self.depth) else { return false };
-            if level.children.load(Ordering::Relaxed) >= MAX_CHILDREN {
-                return false;
-            }
-            if self.children.is_empty() && channel == -1 {
-                self.main_pid = Some(pid);
-            }
-            level.children.fetch_add(1, Ordering::Relaxed);
-            let slot = Slot { tree: tree.clone(), depth: self.depth };
-            let depth = self.depth + 1;
-            let hook = Hook {
-                depth,
-                may_own: self.may_own && channel == -1,
-                serial: tree.next_serial(),
-                ids: self.ids,
-                charge: Charge { tree: tree.clone(), depth, bytes: 0 },
-                ..Default::default()
-            };
-            self.children.insert(pid, Box::new(Child { hook, reducer: Reducer::default(), _slot: slot }));
+        if !self.make_child(pid, channel) {
+            return false;
         }
         let Some(child) = self.children.get_mut(&pid) else { return true };
         let mut pieces = Vec::new();
@@ -353,6 +428,35 @@ impl Hook {
         if self.depth == 0 && channel == -1 {
             out.push(Out::Raw(data));
         }
+        true
+    }
+
+    /// The child hook for `pid`, made on first use at depth + 1. False when this depth may
+    /// make no more children.
+    fn make_child(&mut self, pid: i32, channel: i32) -> bool {
+        if self.children.contains_key(&pid) {
+            return true;
+        }
+        let tree = self.charge.tree.clone();
+        let Some(level) = tree.level(self.depth) else { return false };
+        if level.children.load(Ordering::Relaxed) >= MAX_CHILDREN {
+            return false;
+        }
+        if self.children.is_empty() && channel == -1 {
+            self.main_pid = Some(pid);
+        }
+        level.children.fetch_add(1, Ordering::Relaxed);
+        let slot = Slot { tree: tree.clone(), depth: self.depth };
+        let depth = self.depth + 1;
+        let hook = Hook {
+            depth,
+            may_own: self.may_own && channel == -1,
+            serial: tree.next_serial(),
+            ids: self.ids,
+            charge: Charge { tree: tree.clone(), depth, bytes: 0 },
+            ..Default::default()
+        };
+        self.children.insert(pid, Box::new(Child { hook, reducer: Reducer::default(), _slot: slot }));
         true
     }
 
@@ -434,18 +538,62 @@ impl Hook {
                 }
                 continue;
             }
+            if self.recovery == Recovery::Syncing {
+                // Dropped until the recovered parser exists.
+                self.held.clear();
+                break;
+            }
             // Past the depth cap nothing hooks: the bytes are plain output.
-            let found = if self.depth > MAX_DEPTH { None } else { data.windows(START.len()).position(|w| w == START) };
-            match found {
-                Some(k) => {
+            let hooks = self.depth <= MAX_DEPTH;
+            let recovers = hooks && self.recovery_allowed();
+            let start = if hooks { data.windows(START.len()).position(|w| w == START) } else { None };
+            let osc = if recovers { data.windows(OSC134.len()).position(|w| w == OSC134) } else { None };
+            match (start, osc) {
+                (Some(k), osc) if osc.is_none_or(|j| k < j) => {
                     screen(&mut out, &data[..k]);
                     let id = self.ids.map_or_else(new_dcs_id, |next| next());
                     self.parser = Some(Parser::new(&id));
                     data.drain(..k + START.len());
                 }
-                None => {
-                    // A tail that may begin the start sequence waits for the next read.
-                    let keep = if self.depth > MAX_DEPTH { 0 } else { (1..START.len()).rev().find(|n| data.ends_with(&START[..*n])).unwrap_or(0) };
+                (_, Some(k)) => {
+                    screen(&mut out, &data[..k]);
+                    match recovery_osc(&data[k..]) {
+                        Found::Wait => {
+                            self.held = data[k..].to_vec();
+                            break;
+                        }
+                        Found::Plain(n) => {
+                            screen(&mut out, &data[k..k + n]);
+                            data.drain(..k + n);
+                        }
+                        Found::Line(text, n) => {
+                            data.drain(..k + n);
+                            if self.recovery == Recovery::None {
+                                // The stale block's own OSC is only the sign of it (`T:2743-2745`).
+                                out.push(Out::Ssh(Token::BeginFramerRecovery(self.depth - 1), self.depth));
+                                self.recovery = Recovery::Recovering;
+                            } else {
+                                let last = text.starts_with(":end-recovery");
+                                out.push(Out::Ssh(Token::RecoveryLine(text), self.depth));
+                                if last {
+                                    self.recovery = Recovery::Syncing;
+                                    self.held.clear();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // A tail that may begin a start sequence waits for the next read.
+                    let tail = |prefix: &[u8]| (1..prefix.len()).rev().find(|n| data.ends_with(&prefix[..*n])).unwrap_or(0);
+                    let keep = if !hooks {
+                        0
+                    } else if recovers {
+                        tail(START).max(tail(OSC134))
+                    } else {
+                        tail(START)
+                    };
                     screen(&mut out, &data[..data.len() - keep]);
                     self.held = data[data.len() - keep..].to_vec();
                     break;
@@ -500,6 +648,43 @@ fn flush_side(pieces: &mut Vec<String>, pid: i32, channel: i32, depth: i32, out:
         return;
     }
     out.extend(pieces.drain(..).map(|text| Out::Side { text, pid, channel, depth }));
+}
+
+/// What an OSC 134 that begins some bytes turned out to be.
+enum Found {
+    /// A whole OSC: the string after "134;" (its leading colon kept, F14) and the bytes it took.
+    Line(String, usize),
+    /// It may still end in a later read.
+    Wait,
+    /// Not one (another sequence began inside it, or it is too long): this many bytes are output.
+    Plain(usize),
+}
+
+/// Reads the OSC 134 that starts `bytes` (the hook's own reader: the parser's drops what comes
+/// before the first colon, and recovery lines need it). Either terminator ends it. Only
+/// `RECOVERY_LINE_MAX` bytes are looked at, so a remote cannot make each read rescan a flood.
+fn recovery_osc(bytes: &[u8]) -> Found {
+    let body = &bytes[OSC134.len()..];
+    let window = &body[..body.len().min(RECOVERY_LINE_MAX)];
+    let text = |n: usize| String::from_utf8_lossy(&body[..n]).into_owned();
+    for (i, b) in window.iter().enumerate() {
+        match *b {
+            0x07 => return Found::Line(text(i), OSC134.len() + i + 1),
+            0x1b => {
+                return match body.get(i + 1) {
+                    Some(b'\\') => Found::Line(text(i), OSC134.len() + i + 2),
+                    Some(_) => Found::Plain(OSC134.len() + i),
+                    None => Found::Wait,
+                }
+            }
+            _ => {}
+        }
+    }
+    if body.len() >= RECOVERY_LINE_MAX {
+        Found::Plain(OSC134.len() + RECOVERY_LINE_MAX)
+    } else {
+        Found::Wait
+    }
 }
 
 /// Adds screen bytes, joined to screen bytes just before them.
@@ -1261,5 +1446,116 @@ mod tests {
         assert!(!h.active());
         assert_eq!(h.child_pids(), Vec::<i32>::new());
         assert_eq!(h.tree_children(), 0);
+    }
+
+    fn tree_of(entries: Vec<(i32, &str, crate::ssh_recovery::Tree)>) -> crate::ssh_recovery::Tree {
+        crate::ssh_recovery::Tree(entries.into_iter().map(|(pid, id, sub)| (pid, (id.to_string(), sub))).collect())
+    }
+
+    #[test]
+    fn recovering_hook_follows_iterm2() {
+        use crate::ssh_fixtures::{osc134, output};
+        use crate::ssh_recovery::Tree;
+        // A child that is plain: the top parser is hooked in recovery mode (unknown lines and
+        // plain bytes are skipped), and pid 100's output reaches the screen.
+        let plain = tree_of(vec![(100, "D0", Tree::default())]);
+        let mut h = Hook::recovering("D1", &plain, 0);
+        assert!(h.active() && h.owned(0));
+        assert_eq!(h.child_pids(), [100]);
+        assert_eq!(h.feed(&[b"xx".to_vec(), osc134("junk")].concat()), vec![], "recovery mode skips what it does not know");
+        assert!(h.active());
+        assert_eq!(h.feed(&output("1", 100, -1, 0, b"x")), vec![s(b"x"), raw(b"x")], "child 100 is plain");
+        assert!(!h.owned(1));
+        // Key 0 needs no special parsing at this node (`VP:501-508`): the node below it is
+        // hooked in its place, at the same depth, with the child tree.
+        let zero = tree_of(vec![(0, "D0", tree_of(vec![(100, "D1", Tree::default())]))]);
+        let h = Hook::recovering("D1", &zero, 0);
+        assert!(h.active() && h.owned(0));
+        assert_eq!(h.child_pids(), [100], "the children of the node under key 0");
+        // A nested tree: the child for 100 is hooked in recovery mode, so it reads pid 200's
+        // block; 200 is plain.
+        let nested = tree_of(vec![(100, "D0", tree_of(vec![(200, "D1", Tree::default())]))]);
+        let mut h = Hook::recovering("D2", &nested, 0);
+        assert!(h.owned(0) && h.owned(1) && !h.owned(2));
+        let inner = output("3", 200, -1, 1, b"z");
+        assert_eq!(h.feed(&output("2", 100, -1, 0, &inner)), vec![s(b"z"), raw(&inner)]);
+        // An empty tree leaves the hook as it was.
+        let h = Hook::recovering("D", &Tree::default(), 0);
+        assert!(!h.active() && h.child_pids().is_empty());
+        // Beginning recovery drops the children first, then follows the new tree.
+        let mut h = hooked();
+        h.feed(&output("a", 7, -1, 0, b"q"));
+        assert_eq!(h.child_pids(), [7]);
+        h.start_conductor_recovery("D3", &plain);
+        assert!(h.active());
+        assert_eq!(h.child_pids(), [100]);
+        h.start_conductor_recovery("D3", &Tree::default());
+        assert_eq!(h.child_pids(), Vec::<i32>::new(), "the children go even for an empty tree");
+        // A tree deeper than a hook can nest is cut, not followed.
+        let mut deep = Tree::default();
+        for pid in 1..=30 {
+            deep = tree_of(vec![(pid, "D", deep)]);
+        }
+        let h = Hook::recovering("D", &deep, 0);
+        assert!(h.tree_children() <= MAX_DEPTH as usize + 1);
+    }
+
+    #[test]
+    fn framer_recovery_detection() {
+        use crate::ssh_fixtures::{osc134, output};
+        // The first OSC 134 outside a hooked parser starts recovery and is consumed; other
+        // output still renders (`T:2742-2759`).
+        let mut h = hook();
+        h.allow_recovery();
+        let got = h.feed(&[b"a".to_vec(), osc134("%output 1 2 -1 0"), b"b".to_vec()].concat());
+        assert_eq!(got, vec![s(b"a"), ssh(Token::BeginFramerRecovery(-1)), s(b"b")]);
+        // The rest come whole, the leading colon kept (the string after "134;", F14).
+        assert_eq!(h.feed(&osc134("begin-recovery")), vec![ssh(Token::RecoveryLine(":begin-recovery".into()))]);
+        assert_eq!(h.feed(&osc134("recovery: login 5")), vec![ssh(Token::RecoveryLine(":recovery: login 5".into()))]);
+        assert_eq!(h.feed(b"plain"), vec![s(b"plain")], "other output still renders while recovering");
+        // After the end line the rest of that read is dropped, and so is every read until the
+        // recovery starts (Syncing).
+        let got = h.feed(&[osc134("end-recovery"), b"dropped".to_vec()].concat());
+        assert_eq!(got, vec![ssh(Token::RecoveryLine(":end-recovery".into()))]);
+        assert_eq!(h.feed(b"more"), vec![]);
+        let tree = tree_of(vec![(5, "D0", crate::ssh_recovery::Tree::default())]);
+        h.start_conductor_recovery("D0", &tree);
+        assert_eq!(h.feed(&output("1", 5, -1, 0, b"q")), vec![s(b"q"), raw(b"q")]);
+        // A child hook at depth 2 reports its parent's depth.
+        let mut c = Hook::with_depth(2);
+        c.allow_recovery();
+        assert_eq!(c.feed(&osc134("x")), vec![Out::Ssh(Token::BeginFramerRecovery(1), 2)]);
+        // Split across reads at any byte, and a BEL terminator.
+        let mut h = hook();
+        h.allow_recovery();
+        assert_eq!(h.feed(b"a\x1b]134;:%out"), vec![s(b"a")]);
+        assert_eq!(h.feed(b"put x\x1b"), vec![]);
+        assert_eq!(h.feed(b"\\"), vec![ssh(Token::BeginFramerRecovery(-1))]);
+        assert_eq!(h.feed(b"\x1b]13"), vec![]);
+        assert_eq!(h.feed(b"4;:end\x07"), vec![ssh(Token::RecoveryLine(":end".into()))]);
+        // A recovery that failed ends its mode: the next OSC 134 begins one again.
+        h.end_recovery();
+        assert_eq!(h.feed(&osc134("y")), vec![ssh(Token::BeginFramerRecovery(-1))]);
+    }
+
+    #[test]
+    fn recovery_needs_an_ssh_session() {
+        use crate::ssh_fixtures::osc134;
+        // F27: a hook nobody allowed (a plain local pane) shows the OSC as it does today, so a
+        // hostile file cannot make Tandem type into the local shell.
+        let mut h = hook();
+        let bytes = osc134("%output 1 2 -1 0");
+        assert_eq!(h.feed(&bytes), vec![s(&bytes)]);
+        assert_eq!(h.feed(b"\x1b]134;:begin-rec"), vec![s(b"\x1b]134;:begin-rec")], "no tail is kept for it either");
+        // An OSC that never ends is shown, not kept without limit.
+        let mut h = hook();
+        h.allow_recovery();
+        let long = [b"\x1b]134;".to_vec(), vec![b'a'; 30_000]].concat();
+        assert_eq!(h.feed(&long), vec![s(&long)]);
+        // A tree shares the permission: a child hook made later has it.
+        let mut h = hooked();
+        h.allow_recovery();
+        h.feed(&crate::ssh_fixtures::output("a", 7, -1, 0, b"x"));
+        assert_eq!(h.child_pids(), [7]);
     }
 }

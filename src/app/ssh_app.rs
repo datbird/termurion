@@ -40,7 +40,11 @@ impl App {
     pub(super) fn ssh_request(&mut self, pane: PaneId, r: Request) {
         let Some(p) = self.panes.get_mut(&pane) else { return };
         match r {
-            Request::SshWillBegin => p.ssh.begin(CONDUCTOR_READY),
+            Request::SshWillBegin => {
+                p.ssh.begin(CONDUCTOR_READY);
+                // it2ssh runs here: a framer may need recovering later (F27).
+                p.note_ssh_session();
+            }
             Request::SshSendConductor(h) => p.ssh_send_conductor(&h),
             // `PS:20253-20275` (`Pane::end_ssh`, which writes END_WRITE); the banner after
             // the write, as `PS:20269` then `TD:4043-4046`.
@@ -117,6 +121,23 @@ impl App {
                         self.redraw();
                     }
                 }
+                // A framer found mid-stream (`TD:4067-4071`) and its lines (`PS:20344-20370`).
+                Out::Ssh(Token::BeginFramerRecovery(parent_depth), _) => {
+                    if let Some(p) = self.panes.get_mut(&pane) {
+                        p.begin_framer_recovery(parent_depth);
+                    }
+                    self.redraw();
+                }
+                Out::Ssh(Token::RecoveryLine(line), _) => {
+                    let done = self.panes.get_mut(&pane).is_some_and(|p| p.framer_recovery_line(&line));
+                    self.redraw();
+                    if done {
+                        // What the batch still holds was read before the hook followed the new
+                        // tree: iTerm2 drops it (`T:2761-2767`).
+                        self.ssh_apply(pane);
+                        break;
+                    }
+                }
                 // Beyond iTerm2 (`PS:20172-20177` has no depth): see `unhook_conductor_at`.
                 Out::Ssh(Token::Unhook, depth) => {
                     if let Some(p) = self.panes.get_mut(&pane) {
@@ -137,8 +158,9 @@ impl App {
                         Token::Error(_) => {}
                         Token::Terminate { pid, rc } => c.handle_terminate(pid, rc, depth),
                         Token::It2(text) => c.handle_it2(&text, depth),
-                        // The hook turns output into `Out::Side` and `Out::Raw`.
-                        Token::Init(_) | Token::Output { .. } => {}
+                        // The hook turns output into `Out::Side` and `Out::Raw`, and routes the
+                        // recovery tokens above.
+                        Token::Init(_) | Token::Output { .. } | Token::BeginFramerRecovery(_) | Token::RecoveryLine(_) => {}
                     }
                 }
             }
@@ -161,6 +183,7 @@ impl App {
             None => (Default::default(), false),
         };
         let Some(p) = self.panes.get_mut(&pane) else { return false };
+        p.note_ssh_session();
         p.own_mut().append_banner(&hook_banner(&init.sshargs));
         let saved = p.own().ssh_saved();
         // resetForSSH: before the conductor starts, so its replies are not held behind setup.
