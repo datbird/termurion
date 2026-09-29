@@ -1,18 +1,26 @@
 //! The AI Chat window (iTerm2's `ChatWindowController`): one egui window through `EguiHost`, the
-//! tmux Dashboard's pattern, data in and events out. This file holds the shell and the toolbar;
-//! the chat list, the conversation and the input are filled by the tasks after it.
+//! tmux Dashboard's pattern, data in and events out. This file holds the shell, the toolbar, the chat list and the
+//! conversation; the input and the find bar are filled by the tasks after it.
 
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
 
 use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Instant;
 
 use crate::ai_catalog::{Effort, ServiceTier};
 use crate::chat_list::{self, Row, Selection};
+use crate::chat_message::{Message, Participant};
 use crate::chat_search::{self, Hit};
 use crate::chat_toolbar::{self as tb, Popup, ProviderOption};
+use crate::chat_view::{self, Body, CodeBlock, Item, Part, Style};
 use crate::egui_host::EguiHost;
+use crate::palette::{rgb, Palette};
+use crate::porthole::detect::Language;
+use crate::porthole::render::{Block, Doc, Face};
 
 /// What the toolbar shows (`ChatToolbar`).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -50,6 +58,34 @@ pub struct ChatData {
     pub search: Vec<Hit>,
     /// More results are still being found.
     pub searching: bool,
+    /// The conversation of the shown chat: dates, messages and the typing row, in order.
+    pub convo: Arc<Vec<RowData>>,
+}
+
+/// One row of the conversation, made by the app from the chat's messages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowData {
+    pub item: Item,
+    /// The message's id ("" for a date or the typing row).
+    pub id: String,
+    /// The person's own message (drawn on the right, in the accent color).
+    pub user: bool,
+    pub style: Style,
+    pub body: Body,
+    /// The short time drawn beside the bubble.
+    pub time: String,
+    pub editable: bool,
+    /// The Segoe glyph drawn before the text.
+    pub glyph: Option<char>,
+    /// Changes when the content does; keys the rendered markdown.
+    pub key: u64,
+}
+
+impl RowData {
+    /// A date row or the typing row.
+    pub fn marker(item: Item) -> RowData {
+        RowData { item, id: String::new(), user: false, style: Style::System, body: Body::Plain(String::new()), time: String::new(), editable: false, glyph: None, key: 0 }
+    }
 }
 
 /// What the person did (later tasks add variants).
@@ -78,6 +114,21 @@ pub enum ChatEvent {
     Delete(Vec<String>),
     /// A right click: the pointer in screen pixels and the selected chats.
     ListMenu { at: (f32, f32), ids: Vec<String> },
+    /// A right click on a message: the pointer in screen pixels and the message's id.
+    MessageMenu { at: (f32, f32), id: String },
+    /// Copy this text (a code block's, a code attachment's).
+    CopyText(String),
+    /// The message menu's verbs, by message id (they also arrive from its native menu).
+    Edit(String),
+    DeleteMessage(String),
+    Fork(String),
+    /// A markdown link was clicked; the app opens it only when `chat_view::web_link` allows.
+    OpenUrl(String),
+    /// A file item's verbs; the string is `chat_view::file_ref(message, attachment)`.
+    OpenFile(String),
+    RevealFile(String),
+    /// A terminal command row was clicked: its `iterm2:reveal-mark` URL.
+    RevealCommand(String),
     Close,
 }
 
@@ -94,12 +145,32 @@ struct ListState {
     textures: HashMap<u64, Option<egui::TextureHandle>>,
 }
 
+/// A markdown body rendered once for a content and a theme.
+struct Rendered {
+    doc: Doc,
+    blocks: Vec<CodeBlock>,
+}
+
+/// What the conversation remembers between frames: rendered markdown, the code block that
+/// shows "Copied", and the message a search result asked to be centered.
+#[derive(Default)]
+struct ConvoState {
+    docs: HashMap<(u64, usize, bool), Rc<Rendered>>,
+    /// (message id, code block's first block, when it was copied).
+    copied: Option<(String, usize, Instant)>,
+    /// (chat, message) to scroll to the center once its row is laid out.
+    reveal: Option<(Option<String>, String)>,
+    /// A file or code item took this frame's right click, so the bubble's own menu stays shut.
+    taken: bool,
+}
+
 pub struct ChatWindow {
     host: EguiHost,
     data: ChatData,
     title: String,
     pub list_visible: bool,
     list: ListState,
+    convo: ConvoState,
 }
 
 impl ChatWindow {
@@ -110,7 +181,7 @@ impl ChatWindow {
             .with_min_inner_size(winit::dpi::LogicalSize::new(tb::MIN_SIZE.0, tb::MIN_SIZE.1));
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         crate::settings_keys::add_icon_font(host.ctx());
-        Ok(ChatWindow { host, data: ChatData::default(), title: tb::WINDOW_TITLE.to_string(), list_visible: true, list: ListState::default() })
+        Ok(ChatWindow { host, data: ChatData::default(), title: tb::WINDOW_TITLE.to_string(), list_visible: true, list: ListState::default(), convo: ConvoState::default() })
     }
 
     /// Follows a forced appearance (`tab_theme::forced_dark`), or Windows' when `None`.
@@ -160,12 +231,39 @@ impl ChatWindow {
         self.host.request_redraw();
     }
 
+    /// Centers a message's row once it is laid out (a chosen search result, `CVC:1069-1098`).
+    pub fn reveal(&mut self, message: &str) {
+        self.convo.reveal = Some((self.data.chat.clone(), message.to_string()));
+        self.host.request_redraw();
+    }
+
+    /// What the window needs the clock for: "Copied" goes after a second, and the typing row
+    /// turns. Redraws when either is due; answers when to ask again.
+    pub fn tick(&mut self, now: Instant) -> Option<Instant> {
+        let mut due = None;
+        if let Some((_, _, at)) = &self.convo.copied {
+            let end = *at + chat_view::COPIED_FOR;
+            if now >= end {
+                self.convo.copied = None;
+                self.host.request_redraw();
+            } else {
+                due = Some(end);
+            }
+        }
+        if self.data.convo.iter().any(|r| r.item == Item::Typing) {
+            self.host.request_redraw();
+            due = due.into_iter().chain(Some(now + std::time::Duration::from_millis(120))).min();
+        }
+        due
+    }
+
     /// One frame. Every event of the frame, in order.
     pub fn redraw(&mut self) -> Vec<ChatEvent> {
         let mut out = Vec::new();
         let d = &self.data;
         let list_visible = &mut self.list_visible;
         let list = &mut self.list;
+        let convo_state = &mut self.convo;
         self.host.paint(|ui| {
             let icons = crate::settings_keys::has_icon_font(ui.ctx());
             // Ctrl+W closes, as every other egui window of Tandem does.
@@ -182,8 +280,9 @@ impl ChatWindow {
                     sidebar(ui, d, list, icons, &mut out);
                 });
             }
-            egui::CentralPanel::default().show(ui, |_ui| {
-                // The conversation, its input and the find bar: Tasks 4, 7 and 8.
+            egui::CentralPanel::default().show(ui, |ui| {
+                // The input and the find bar: Tasks 7 and 8.
+                conversation(ui, d, convo_state, icons, &mut out);
             });
         });
         out
@@ -480,4 +579,408 @@ fn icon_texture<'a>(ctx: &egui::Context, textures: &'a mut HashMap<u64, Option<e
             Some(ctx.load_texture(format!("chat-icon-{key:x}"), image, egui::TextureOptions::LINEAR))
         })
         .as_ref()
+}
+
+/// The conversation's rows for a chat's messages (`ChatViewControllerModel` and the cells'
+/// own texts): dates, visible messages, the typing row.
+pub fn convo_rows(messages: &[Message], typing: bool, day: &dyn Fn(f64) -> (i32, u32, u32), label: &dyn Fn(f64) -> String, time: &dyn Fn(f64) -> String) -> Vec<RowData> {
+    let visible = chat_view::visible(messages);
+    chat_view::items(&visible, typing, day, label)
+        .into_iter()
+        .map(|item| match item {
+            Item::Message(i) => {
+                let m = visible[i];
+                let body = chat_view::body(&m.content);
+                RowData {
+                    item,
+                    id: m.unique_id.clone(),
+                    user: m.author == Participant::User,
+                    style: chat_view::style(&m.content),
+                    time: time(m.sent_date),
+                    editable: chat_view::editable(m),
+                    glyph: chat_view::glyph(&m.content),
+                    key: chat_view::body_key(&m.unique_id, &body),
+                    body,
+                }
+            }
+            marker => RowData::marker(marker),
+        })
+        .collect()
+}
+
+/// The colors a row draws with.
+struct Ink {
+    text: egui::Color32,
+    strong: egui::Color32,
+    link: egui::Color32,
+    muted: egui::Color32,
+    code_bg: egui::Color32,
+    warn: egui::Color32,
+}
+
+fn ink_for(v: &egui::Visuals, row: &RowData) -> Ink {
+    let base = |text, strong, link| Ink { text, strong, link, muted: v.weak_text_color(), code_bg: egui::Color32::from_black_alpha(48), warn: v.warn_fg_color };
+    if row.style == Style::System {
+        let m = v.weak_text_color();
+        Ink { text: m, strong: v.text_color(), link: v.hyperlink_color, ..base(m, m, m) }
+    } else if row.user {
+        // User text and links are white on the accent (`CVC:2760-2765`).
+        Ink { muted: egui::Color32::from_white_alpha(190), ..base(egui::Color32::WHITE, egui::Color32::WHITE, egui::Color32::WHITE) }
+    } else {
+        base(v.text_color(), v.strong_text_color(), v.hyperlink_color)
+    }
+}
+
+const BODY_SIZE: f32 = 14.0;
+/// One terminal cell of a block's indent, in points.
+const INDENT_STEP: f32 = 9.0;
+
+/// The conversation in the central panel: it scrolls, follows the newest message while the
+/// person has not scrolled up, and each chat keeps its own position.
+fn conversation(ui: &mut egui::Ui, d: &ChatData, st: &mut ConvoState, icons: bool, out: &mut Vec<ChatEvent>) {
+    st.taken = false;
+    if st.reveal.as_ref().is_some_and(|(chat, _)| *chat != d.chat) {
+        st.reveal = None;
+    }
+    if st.docs.len() > 500 {
+        st.docs.clear();
+    }
+    let dark = ui.visuals().dark_mode;
+    let mut found = false;
+    egui::ScrollArea::vertical().id_salt(egui::Id::new(("chat_convo", &d.chat))).auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
+        ui.add_space(6.0);
+        for row in d.convo.iter() {
+            match &row.item {
+                Item::Date(label) => {
+                    ui.vertical_centered(|ui| ui.label(egui::RichText::new(label).size(12.0).color(ui.visuals().weak_text_color())));
+                    ui.add_space(4.0);
+                }
+                Item::Typing => {
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        ui.add(egui::Spinner::new().size(14.0));
+                    });
+                }
+                Item::Message(_) => {
+                    let rect = message_row(ui, row, st, icons, dark, out);
+                    if st.reveal.as_ref().is_some_and(|(_, m)| *m == row.id) {
+                        ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                        found = true;
+                    }
+                    ui.add_space(6.0);
+                }
+            }
+        }
+    });
+    // Asked for once: the row is centered when found; a row that is not there is not waited for.
+    if found || (st.reveal.is_some() && !d.convo.is_empty()) {
+        st.reveal = None;
+    }
+}
+
+/// One message: a bubble (the person's at the right, the agent's at the left) with its short
+/// time beside it, or a full-width muted line for a system row. Answers the row's rectangle.
+fn message_row(ui: &mut egui::Ui, row: &RowData, st: &mut ConvoState, icons: bool, dark: bool, out: &mut Vec<ChatEvent>) -> egui::Rect {
+    let ink = ink_for(ui.visuals(), row);
+    let rect = if row.style == Style::System {
+        ui.horizontal_top(|ui| {
+            ui.add_space(8.0);
+            row_content(ui, row, &ink, st, icons, dark, out);
+        })
+        .response
+        .rect
+    } else {
+        let max_inner = (ui.available_width() * chat_view::MAX_BUBBLE - 24.0).max(60.0);
+        let fill = if row.user { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.inactive.weak_bg_fill };
+        let layout = if row.user { egui::Layout::right_to_left(egui::Align::Min) } else { egui::Layout::left_to_right(egui::Align::Min) };
+        ui.with_layout(layout, |ui| {
+            ui.add_space(8.0);
+            let bubble = egui::Frame::new().fill(fill).corner_radius(10.0).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+                ui.set_max_width(max_inner);
+                row_content(ui, row, &ink, st, icons, dark, out);
+            });
+            ui.label(egui::RichText::new(&row.time).size(11.0).color(ui.visuals().weak_text_color()));
+            bubble.response.rect
+        })
+        .inner
+    };
+    // Right click on the message: its menu, unless a file or code item inside took the click.
+    if !st.taken && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary)) && ui.rect_contains_pointer(rect) {
+        if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+            out.push(ChatEvent::MessageMenu { at: screen_pixels(ui, p), id: row.id.clone() });
+        }
+    }
+    rect
+}
+
+/// A row's glyph, then its body.
+fn row_content(ui: &mut egui::Ui, row: &RowData, ink: &Ink, st: &mut ConvoState, icons: bool, dark: bool, out: &mut Vec<ChatEvent>) {
+    ui.horizontal_top(|ui| {
+        if let (Some(g), true) = (row.glyph, icons) {
+            let color = if g == chat_view::WARNING_GLYPH { ink.warn } else { ink.muted };
+            ui.label(egui::RichText::new(g.to_string()).family(egui::FontFamily::Name("icons".into())).size(15.0).color(color));
+        }
+        ui.vertical(|ui| draw_body(ui, &row.body, row, 0, ink, st, icons, dark, out));
+    });
+}
+
+fn draw_body(ui: &mut egui::Ui, body: &Body, row: &RowData, part: usize, ink: &Ink, st: &mut ConvoState, icons: bool, dark: bool, out: &mut Vec<ChatEvent>) {
+    match body {
+        Body::Plain(t) => {
+            ui.add(egui::Label::new(egui::RichText::new(t).size(BODY_SIZE).color(ink.text)).wrap());
+        }
+        Body::Markdown(md) => markdown(ui, md, row, part, ink, st, icons, dark, out),
+        Body::Command { command, url } => {
+            ui.horizontal(|ui| {
+                if icons {
+                    ui.label(egui::RichText::new(chat_view::COMMAND_GLYPH.to_string()).family(egui::FontFamily::Name("icons".into())).size(15.0).color(ink.muted));
+                }
+                let r = ui.add(egui::Label::new(egui::RichText::new(command).monospace().color(ink.text)).sense(egui::Sense::click()));
+                if r.clicked() {
+                    out.push(ChatEvent::RevealCommand(url.clone()));
+                }
+            });
+        }
+        Body::Parts(parts) => {
+            for (i, p) in parts.iter().enumerate() {
+                match p {
+                    Part::Text(b) => draw_body(ui, b, row, i + 1, ink, st, icons, dark, out),
+                    Part::Status(s) => {
+                        let muted = Ink { text: ink.muted, strong: ink.muted, link: ink.link, muted: ink.muted, code_bg: ink.code_bg, warn: ink.warn };
+                        markdown(ui, s, row, i + 1, &muted, st, icons, dark, out);
+                    }
+                    Part::Code(code) => code_attachment(ui, code, row, i, ink, st, icons, out),
+                    Part::File { id, name } => file_item(ui, name, Some(chat_view::file_ref(&row.id, id)), row, ink, st, icons, out),
+                    Part::RemoteFile { name } => file_item(ui, name, None, row, ink, st, icons, out),
+                }
+            }
+        }
+    }
+}
+
+/// A code attachment: a box titled "Code Interpreter" with its own copy button
+/// (`MultipartMessageCellView.swift:387-405`).
+fn code_attachment(ui: &mut egui::Ui, code: &str, row: &RowData, part: usize, ink: &Ink, st: &mut ConvoState, icons: bool, out: &mut Vec<ChatEvent>) {
+    let frame = egui::Frame::new().fill(ink.code_bg).corner_radius(6.0).inner_margin(egui::Margin::same(6));
+    let shown = frame.show(ui, |ui| {
+        ui.label(egui::RichText::new(chat_view::CODE_INTERPRETER).size(11.0).strong().color(ink.muted));
+        ui.add(egui::Label::new(egui::RichText::new(code).monospace().color(ink.text)).wrap());
+    });
+    let rect = shown.response.rect;
+    copy_button(ui, rect, &row.id, usize::MAX - part, code, ink, st, icons, out);
+}
+
+/// The copy glyph in the top right corner of `rect`, and "Copied" beside it for a second.
+#[allow(clippy::too_many_arguments)]
+fn copy_button(ui: &mut egui::Ui, rect: egui::Rect, message: &str, slot: usize, text: &str, ink: &Ink, st: &mut ConvoState, icons: bool, out: &mut Vec<ChatEvent>) {
+    let button = egui::Rect::from_min_size(egui::pos2(rect.right() - 24.0, rect.top() + 2.0), egui::vec2(22.0, 20.0));
+    let id = ui.id().with(("copy", message, slot));
+    let resp = ui.interact(button, id, egui::Sense::click());
+    let color = if resp.hovered() { ink.strong } else { ink.muted };
+    let painter = ui.painter();
+    if icons {
+        painter.text(button.center(), egui::Align2::CENTER_CENTER, chat_view::COPY_GLYPH.to_string(), egui::FontId::new(14.0, egui::FontFamily::Name("icons".into())), color);
+    } else {
+        painter.text(button.center(), egui::Align2::CENTER_CENTER, "Copy", egui::FontId::proportional(11.0), color);
+    }
+    if st.copied.as_ref().is_some_and(|(m, s, at)| m == message && *s == slot && at.elapsed() < chat_view::COPIED_FOR) {
+        painter.text(egui::pos2(button.left() - 4.0, button.center().y), egui::Align2::RIGHT_CENTER, chat_view::COPIED, egui::FontId::proportional(11.0), ink.muted);
+    }
+    if resp.on_hover_text("Copy").clicked() {
+        st.copied = Some((message.to_string(), slot, Instant::now()));
+        st.taken = true;
+        out.push(ChatEvent::CopyText(text.to_string()));
+    }
+}
+
+/// A file part: its glyph and name; right-click offers Reveal in Explorer, and Open only for an
+/// inert type (ruling F19). A `fileID` attachment (`reference` None) has no bytes to write, so
+/// its items are disabled.
+#[allow(clippy::too_many_arguments)]
+fn file_item(ui: &mut egui::Ui, name: &str, reference: Option<String>, _row: &RowData, ink: &Ink, st: &mut ConvoState, icons: bool, out: &mut Vec<ChatEvent>) {
+    let resp = ui
+        .horizontal(|ui| {
+            if icons {
+                ui.label(egui::RichText::new(chat_view::FILE_GLYPH.to_string()).family(egui::FontFamily::Name("icons".into())).size(15.0).color(ink.muted));
+            }
+            ui.add(egui::Label::new(egui::RichText::new(name).color(ink.text)).sense(egui::Sense::click()))
+        })
+        .inner;
+    if resp.secondary_clicked() {
+        st.taken = true;
+    }
+    let usable = reference.is_some() && chat_view::attachment_name(name).is_some();
+    resp.context_menu(|ui| {
+        if ui.add_enabled(usable, egui::Button::new(chat_view::REVEAL_TITLE)).clicked() {
+            if let Some(r) = &reference {
+                out.push(ChatEvent::RevealFile(r.clone()));
+            }
+            ui.close();
+        }
+        if chat_view::openable(name) && ui.add_enabled(usable, egui::Button::new(chat_view::OPEN_TITLE)).clicked() {
+            if let Some(r) = &reference {
+                out.push(ChatEvent::OpenFile(r.clone()));
+            }
+            ui.close();
+        }
+    });
+}
+
+/// A markdown body through `porthole::render`, block by block. Links are drawn as links only
+/// when `chat_view::web_link` accepts them; a click posts `OpenUrl`, which the app checks again.
+#[allow(clippy::too_many_arguments)]
+fn markdown(ui: &mut egui::Ui, md: &str, row: &RowData, part: usize, ink: &Ink, st: &mut ConvoState, icons: bool, dark: bool, out: &mut Vec<ChatEvent>) {
+    let key = (row.key, part, dark);
+    let rendered = match st.docs.get(&key) {
+        Some(r) => r.clone(),
+        None => {
+            let c = |c: egui::Color32| rgb(c.r(), c.g(), c.b());
+            let palette = Palette { fg: c(ink.text), link: c(ink.link), ..Palette::default() };
+            let doc = crate::porthole::render::render(md, &Language::Markdown, &palette, dark);
+            let blocks = chat_view::code_blocks(&doc);
+            let r = Rc::new(Rendered { doc, blocks });
+            st.docs.insert(key, r.clone());
+            r
+        }
+    };
+    let spacing = ui.spacing().item_spacing.y;
+    ui.spacing_mut().item_spacing.y = 0.0;
+    for (i, block) in rendered.doc.blocks.iter().enumerate() {
+        if block.rule {
+            ui.add_space(3.0);
+            ui.separator();
+            continue;
+        }
+        if block.runs.is_empty() && !block.code_bg {
+            ui.add_space(6.0);
+            continue;
+        }
+        let copy = rendered.blocks.iter().find(|b| b.first == i);
+        draw_block(ui, block, ink, copy, row, st, icons, out);
+    }
+    ui.spacing_mut().item_spacing.y = spacing;
+}
+
+/// One block: its runs as a wrapped text, code lines on a shaded band, a copy glyph at the
+/// first line of a code block.
+#[allow(clippy::too_many_arguments)]
+fn draw_block(ui: &mut egui::Ui, block: &Block, ink: &Ink, copy: Option<&CodeBlock>, row: &RowData, st: &mut ConvoState, icons: bool, out: &mut Vec<ChatEvent>) {
+    let indent = block.indent * INDENT_STEP;
+    let (job, links) = block_job(block, ink, (ui.available_width() - indent).max(20.0));
+    let galley = ui.painter().layout_job(job);
+    let width = if block.code_bg { ui.available_width() } else { indent + galley.size().x };
+    let height = galley.size().y.max(if block.code_bg { BODY_SIZE + 2.0 } else { 0.0 });
+    let sense = if links.is_empty() { egui::Sense::hover() } else { egui::Sense::click() };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, height), sense);
+    if block.code_bg {
+        ui.painter().rect_filled(rect, 0.0, ink.code_bg);
+    }
+    let origin = rect.min + egui::vec2(indent + if block.code_bg { 4.0 } else { 0.0 }, 0.0);
+    ui.painter().galley(origin, galley.clone(), ink.text);
+    if !links.is_empty() {
+        let at = resp.hover_pos().or_else(|| resp.interact_pointer_pos());
+        let url = at.and_then(|p| {
+            let index = galley.cursor_from_pos(p - origin).index;
+            links.iter().find(|(from, to, _)| (*from..*to).contains(&index.0)).map(|(_, _, u)| u.clone())
+        });
+        if url.is_some() && resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if resp.clicked() {
+            if let Some(u) = url {
+                out.push(ChatEvent::OpenUrl(u));
+            }
+        }
+    }
+    if let Some(cb) = copy {
+        copy_button(ui, rect, &row.id, cb.first, &cb.text, ink, st, icons, out);
+    }
+}
+
+/// A block's runs as one text job, and the character ranges that are links.
+fn block_job(block: &Block, ink: &Ink, wrap: f32) -> (egui::text::LayoutJob, Vec<(usize, usize, String)>) {
+    let mut job = egui::text::LayoutJob::default();
+    job.wrap.max_width = wrap;
+    let (mut at, mut links) = (0usize, Vec::new());
+    let size = BODY_SIZE * block.scale;
+    for run in &block.runs {
+        let link = run.link.as_deref().and_then(chat_view::web_link);
+        let font = match run.face {
+            Face::Prose => egui::FontId::proportional(size),
+            Face::Code => egui::FontId::monospace(size * 0.93),
+        };
+        // Code lines keep their highlight colors; egui has no bold face, so bold is the strong color.
+        let color = if link.is_some() {
+            ink.link
+        } else if block.code_bg {
+            egui::Color32::from_rgb(run.color.r, run.color.g, run.color.b)
+        } else if run.bold || block.scale > 1.0 {
+            ink.strong
+        } else {
+            ink.text
+        };
+        let mut format = egui::TextFormat::simple(font, color);
+        format.italics = run.italic;
+        if link.is_some() {
+            format.underline = egui::Stroke::new(1.0, color);
+        }
+        job.append(&run.text, 0.0, format);
+        let n = run.text.chars().count();
+        if let Some(url) = link {
+            links.push((at, at + n, url));
+        }
+        at += n;
+    }
+    (job, links)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chat_message::{Content, RemoteCommand};
+
+    fn ink() -> Ink {
+        let c = egui::Color32::WHITE;
+        Ink { text: c, strong: c, link: c, muted: c, code_bg: c, warn: c }
+    }
+
+    #[test]
+    fn conversation_rows_follow_the_messages() {
+        use crate::ai_tools::Call;
+        let d1 = 86_400.0 * 100.0 + 50.0;
+        let d2 = d1 + 86_400.0;
+        let user = Message::new("C", Participant::User, Content::PlainText { text: " hi".into(), context: Some("secret".into()) }, d1);
+        let flagged = Message::new("C", Participant::Agent, Content::RemoteCommandRequest { payload: crate::chat_message::Payload::Classic(RemoteCommand { llm_message: serde_json::json!({}), call: Call::ExecuteCommand { command: "rm x".into() } }), safe: Some(false) }, d2);
+        let hidden = Message::new("C", Participant::Agent, Content::RenameChat("t".into()), d2);
+        let day = |t: f64| (2026, 9, (t / 86_400.0) as u32);
+        let label = |t: f64| format!("day {}", (t / 86_400.0) as u32);
+        let time = |t: f64| format!("t{}", t as u64 % 100);
+        let rows = convo_rows(&[user.clone(), hidden, flagged.clone()], true, &day, &label, &time);
+        let items: Vec<&Item> = rows.iter().map(|r| &r.item).collect();
+        assert_eq!(items, [&Item::Date("day 100".into()), &Item::Message(0), &Item::Date("day 101".into()), &Item::Message(1), &Item::Typing]);
+        let (a, b) = (&rows[1], &rows[3]);
+        assert_eq!((a.id.as_str(), a.user, a.style, a.editable, a.glyph, a.time.as_str()), (user.unique_id.as_str(), true, Style::Regular, true, None, "t50"));
+        assert_eq!(a.body, Body::Plain("hi".into()));
+        assert_eq!((b.id.as_str(), b.user, b.editable, b.glyph), (flagged.unique_id.as_str(), false, false, Some(chat_view::WARNING_GLYPH)));
+        assert!(matches!(&b.body, Body::Markdown(t) if t.contains("rm x")));
+        assert_ne!(a.key, b.key);
+        assert_eq!(rows[0], RowData::marker(Item::Date("day 100".into())));
+        assert_eq!(rows[4], RowData::marker(Item::Typing));
+        // The same messages give the same keys, so a redraw reuses the rendered markdown.
+        assert_eq!(convo_rows(&[user, flagged], false, &day, &label, &time)[1].key, a.key);
+    }
+
+    #[test]
+    fn only_web_and_mail_links_are_clickable() {
+        // Rulings F18 and m10, at the drawing: the runs of a model-written link a person could click.
+        let md = "[a](file:///C:/x.exe) [b](https://ok.example/p) [c](iterm2:reveal-mark?s=1) [d](\\\\host\\share) [e](mailto:x@y.example)";
+        let doc = crate::porthole::render::render(md, &Language::Markdown, &Palette::default(), true);
+        let (job, links) = block_job(&doc.blocks[0], &ink(), 300.0);
+        let urls: Vec<&str> = links.iter().map(|(_, _, u)| u.as_str()).collect();
+        assert_eq!(urls, ["https://ok.example/p", "mailto:x@y.example"]);
+        // The ranges cover exactly the link texts.
+        let text: Vec<char> = job.text.chars().collect();
+        let shown: Vec<String> = links.iter().map(|(from, to, _)| text[*from..*to].iter().collect()).collect();
+        assert_eq!(shown, ["b", "e"]);
+    }
 }

@@ -886,6 +886,11 @@ pub struct App {
     /// The chat window's search across chats: its query, debounce and streamed hits.
     chat_search: crate::chat_search::State,
     chat_menu_ids: Vec<String>,
+    /// The shown chat's messages, kept current from the broker, and the conversation rows made
+    /// from them (rebuilt only when `chat_convo_dirty`, never per frame).
+    chat_msgs: Vec<crate::chat_message::Message>,
+    chat_convo: std::sync::Arc<Vec<crate::chat_window_ui::RowData>>,
+    chat_convo_dirty: bool,
     /// The subscription that hears every chat for as long as the store is open, so a minted
     /// title needs no window (ruling F14).
     chat_mint_sub: Option<crate::chat_broker::SubId>,
@@ -1513,6 +1518,9 @@ pub fn run() {
         chat_snippets: HashMap::new(),
         chat_search: Default::default(),
         chat_menu_ids: Vec::new(),
+        chat_msgs: Vec::new(),
+        chat_convo: Default::default(),
+        chat_convo_dirty: true,
         chat_mint_sub: None,
         chat_prompt: None,
         title_runs: HashMap::new(),

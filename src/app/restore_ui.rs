@@ -292,17 +292,9 @@ fn mark_banner(v: &mut Value, line: &str) {
 
 /// Now, in the person's locale: the short date and the time without seconds.
 fn restore_date() -> String {
-    use windows_sys::Win32::Globalization::{DATE_SHORTDATE, GetDateFormatEx, GetTimeFormatEx, TIME_NOSECONDS};
-    let mut date = [0u16; 128];
-    let mut time = [0u16; 128];
-    let (d, t) = unsafe {
-        (
-            GetDateFormatEx(std::ptr::null(), DATE_SHORTDATE, std::ptr::null(), std::ptr::null(), date.as_mut_ptr(), date.len() as i32, std::ptr::null()),
-            GetTimeFormatEx(std::ptr::null(), TIME_NOSECONDS, std::ptr::null(), std::ptr::null(), time.as_mut_ptr(), time.len() as i32),
-        )
-    };
-    let text = |buf: &[u16], n: i32| String::from_utf16_lossy(&buf[..(n.max(1) as usize - 1)]);
-    format!("{} at {}", text(&date, d), text(&time, t))
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let now = crate::stamps::local(secs);
+    format!("{} at {}", crate::stamps::short_date(&now), crate::stamps::short_time(&now))
 }
 
 #[cfg(test)]

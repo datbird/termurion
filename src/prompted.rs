@@ -144,10 +144,15 @@ pub fn open_url(value: &str) -> Option<String> {
     use base64::Engine;
     let (_, b64) = value.split_once(':')?;
     let url = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b64.trim()).ok()?).ok()?;
+    safe_url(&url)
+}
+
+/// The URL itself when it is a web or mail link (the schemes OpenURL opens); None for a file,
+/// a drive path, or another scheme, any of which could run something.
+pub fn safe_url(url: &str) -> Option<String> {
     let (scheme, rest) = url.split_once(':')?;
-    // Web and mail links only: a file, a drive path, or another scheme could run something.
     let ok = matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https" | "ftp" | "mailto") && !rest.is_empty();
-    ok.then_some(url)
+    ok.then(|| url.to_string())
 }
 
 /// The host part of a URL (without user, port, path), as iTerm2 compares it.

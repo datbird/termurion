@@ -4,6 +4,7 @@
 //! filled by the tasks after this one; the window is app-wide (one per app, iTerm2's singleton).
 
 use super::*;
+use std::path::PathBuf;
 use crate::ai_catalog::{Effort, Feature, ServiceTier};
 use crate::ai_settings::Vendor;
 use crate::chat_agent::{self, EFFORT_KEY, HIGH_EFFORT_KEY, TIER_KEY, WEB_SEARCH_KEY};
@@ -11,7 +12,8 @@ use crate::chat_message::{ClientLocal, Content, Message, Participant};
 use crate::chat_store::{Chat, Store};
 use crate::chat_list::{self, Row};
 use crate::chat_toolbar::{self as tb, Reuse};
-use crate::chat_window_ui::{ChatData, ChatEvent, ChatWindow, ToolbarData};
+use crate::chat_view;
+use crate::chat_window_ui::{convo_rows, ChatData, ChatEvent, ChatWindow, ToolbarData};
 
 /// `update_chat` from a row read just now, changing only what `f` names (ruling F6): the row's
 /// permissions, model and every other column a window or list read earlier are never written
@@ -20,6 +22,51 @@ pub(super) fn update_chat_in(store: &mut Store, id: &str, f: impl FnOnce(&mut Ch
     let Ok(Some(mut row)) = store.chat(id) else { return false };
     f(&mut row);
     store.update_chat(&row).is_ok()
+}
+
+/// One broker update applied to the shown chat's kept messages; whether the rows must be built
+/// again. A chunk, an attached file or a commit (`Append`, `AppendAttachment`, `Commit`) names a
+/// stored message whose row the broker already changed, so `reload` reads that row again; a
+/// whole message replaces its old copy or joins the end; a removal drops.
+fn apply_update(msgs: &mut Vec<Message>, u: &crate::chat_broker::Update, reload: &dyn Fn(&str) -> Option<Message>) -> bool {
+    use crate::chat_broker::Update;
+    match u {
+        Update::Delivery { message, .. } => match &message.content {
+            Content::Append { uuid, .. } | Content::AppendAttachment { uuid, .. } | Content::Commit(uuid) => {
+                let Some(at) = msgs.iter().position(|m| m.unique_id == *uuid) else { return false };
+                let Some(fresh) = reload(uuid) else { return false };
+                msgs[at] = fresh;
+                true
+            }
+            _ => {
+                match msgs.iter().position(|m| m.unique_id == message.unique_id) {
+                    Some(at) => msgs[at] = message.clone(),
+                    None => msgs.push(message.clone()),
+                }
+                true
+            }
+        },
+        Update::Removed { ids, .. } => {
+            let before = msgs.len();
+            msgs.retain(|m| !ids.contains(&m.unique_id));
+            msgs.len() != before
+        }
+        Update::Typing { .. } | Update::Turn(_) => false,
+    }
+}
+
+/// The blobs of a fork's retained rounds (ruling F5): copied with fresh ids only when the
+/// retained messages' references are exactly the source's first blobs, then each clone (found
+/// through `ids`, old message id to clone id) points at its copy. Nothing is linked when
+/// nothing was copied, so no clone keeps a reference into the source chat.
+fn fork_blobs(store: &mut Store, source: &str, fork: &str, retained: &[Message], ids: &std::collections::HashMap<String, String>) -> Result<(), String> {
+    let refs: Vec<String> = retained.iter().filter_map(|m| m.first_blob_ref.clone()).collect();
+    let map = store.copy_blobs(source, fork, &refs)?;
+    for m in retained {
+        let (Some(new), Some(clone)) = (m.first_blob_ref.as_ref().and_then(|r| map.get(r)), ids.get(&m.unique_id)) else { continue };
+        store.set_first_blob_ref(fork, clone, new)?;
+    }
+    Ok(())
 }
 
 /// The list menu's ids (picked through `run_menu_id`).
@@ -161,6 +208,7 @@ impl App {
     /// `CL:522-527`): the title, the toolbar and the data follow.
     fn show_chat_in_search(&mut self, chat: Option<String>) {
         self.chat_shown = chat;
+        self.chat_load_messages();
         self.chat_toolbar_dirty = true;
         self.chat_rows_dirty = true;
         self.chat_window_refresh();
@@ -184,6 +232,9 @@ impl App {
         if self.chat_rows_dirty || self.chat_rows_built.is_none() {
             self.chat_rows_build();
         }
+        if self.chat_convo_dirty {
+            self.chat_convo_build();
+        }
         let title = self.chat_window_title();
         self.chat_toolbar.title = title.clone();
         let data = ChatData {
@@ -193,6 +244,7 @@ impl App {
             query: self.chat_search.query.clone(),
             search: self.chat_search.hits().to_vec(),
             searching: self.chat_search.searching(),
+            convo: self.chat_convo.clone(),
         };
         if let Some(w) = self.chat_window.as_mut() {
             w.set_title(&title);
@@ -409,6 +461,7 @@ impl App {
             let updates = self.chat_broker.drain(sub);
             if !updates.is_empty() {
                 changed = true;
+                self.chat_apply_updates(&updates);
                 let shown = self.chat_shown.as_deref();
                 if updates.iter().any(|(chat, u)| Some(chat.as_str()) == shown && matches!(u, crate::chat_broker::Update::Delivery { partial: false, .. } | crate::chat_broker::Update::Removed { .. })) {
                     self.chat_toolbar_dirty = true;
@@ -423,8 +476,13 @@ impl App {
             let minute = self.chat_rows_built.map(|b| b + std::time::Duration::from_secs(60));
             if minute.is_some_and(|t| Instant::now() >= t) {
                 self.chat_rows_dirty = true;
+                // A day may have turned: the date rows' labels are relative to now.
+                self.chat_convo_dirty = true;
             }
-            if changed || self.chat_rows_dirty {
+            if let Some(w) = self.chat_window.as_mut() {
+                due = [due, w.tick(Instant::now())].into_iter().flatten().min();
+            }
+            if changed || self.chat_rows_dirty || self.chat_convo_dirty {
                 self.chat_window_refresh();
             }
             let minute = self.chat_rows_built.map(|b| b + std::time::Duration::from_secs(60));
@@ -454,11 +512,230 @@ impl App {
         }
     }
 
-    /// A result was clicked: its chat shows, search mode stays (`CL:522-527`). Centering the
-    /// message is Task 4's `reveal`.
+    /// A result was clicked: its chat shows, search mode stays (`CL:522-527`), and the message
+    /// is centered (`CWC:822-826`, `CVC:1069-1098`).
     fn chat_choose_hit(&mut self, index: usize) {
-        let Some(chat) = self.chat_search.hits().get(index).map(|h| h.chat.clone()) else { return };
+        let Some((chat, message)) = self.chat_search.hits().get(index).map(|h| (h.chat.clone(), h.message.clone())) else { return };
         self.show_chat_in_search(Some(chat));
+        if let Some(w) = self.chat_window.as_mut() {
+            w.reveal(&message);
+        }
+    }
+
+    /// The shown chat's messages, read from the store (a failed read shows a fixed notice).
+    fn chat_load_messages(&mut self) {
+        self.chat_convo_dirty = true;
+        self.chat_msgs = Vec::new();
+        let Some(id) = self.chat_shown.clone() else { return };
+        match self.chat_db.as_ref().map(|db| db.messages(&id)) {
+            Some(Ok(m)) => self.chat_msgs = m,
+            Some(Err(_)) => self.banners.set("chat_read", "The chat could not be read.".to_string()),
+            None => {}
+        }
+    }
+
+    /// The conversation's rows from the kept messages (dates in the person's locale).
+    fn chat_convo_build(&mut self) {
+        self.chat_convo_dirty = false;
+        let typing = self.chat_shown.as_deref().is_some_and(|c| self.chat_broker.is_typing(c, Participant::Agent));
+        let local = |t: f64| crate::stamps::local(chat_view::epoch_secs(t));
+        let now = crate::stamps::local(chat_view::epoch_secs(super::warnings_app::unix_now()));
+        let day = |t: f64| {
+            let p = local(t);
+            (i32::from(p.year), u32::from(p.month), u32::from(p.day))
+        };
+        let label = |t: f64| chat_view::date_text(&local(t), &now);
+        let time = |t: f64| crate::stamps::short_time(&local(t));
+        self.chat_convo = std::sync::Arc::new(convo_rows(&self.chat_msgs, typing, &day, &label, &time));
+    }
+
+    /// What the broker delivered for the shown chat, kept in `chat_msgs`. A chunk, an attached
+    /// file or a commit (`Append`, `AppendAttachment`, `Commit`) names a stored message whose
+    /// row the broker already changed, so that row is read again; a whole message replaces or
+    /// joins; a removal drops.
+    fn chat_apply_updates(&mut self, updates: &[(String, crate::chat_broker::Update)]) {
+        let Some(shown) = self.chat_shown.clone() else { return };
+        let db = self.chat_db.as_ref();
+        let reload = |id: &str| db.and_then(|db| db.message(id).ok().flatten());
+        let mut changed = false;
+        for (_, u) in updates.iter().filter(|(chat, _)| *chat == shown) {
+            // The typing row is part of the rows, though no message changes.
+            changed |= apply_update(&mut self.chat_msgs, u, &reload) | matches!(u, crate::chat_broker::Update::Typing { .. });
+        }
+        self.chat_convo_dirty |= changed;
+    }
+
+    /// A visible message of the shown chat.
+    fn chat_visible_message(&self, id: &str) -> Option<&Message> {
+        chat_view::visible(&self.chat_msgs).into_iter().find(|m| m.unique_id == id)
+    }
+
+    /// The message menu at `at` (screen pixels), built from `chat_view::message_menu`; its picks
+    /// come back through `run_menu_id` as `chat_message_picked`.
+    fn chat_message_menu(&mut self, at: (f32, f32), id: String) {
+        use muda::ContextMenu;
+        let Some(hwnd) = self.chat_window.as_ref().and_then(|w| w.hwnd()) else { return };
+        let Some(editable) = self.chat_visible_message(&id).map(chat_view::editable) else { return };
+        let menu = muda::Menu::new();
+        for title in chat_view::message_menu(editable) {
+            let item = muda::MenuItem::with_id(format!("{}{}:{id}", chat_view::MENU_PREFIX, title.to_lowercase()), title, true, None);
+            if let Err(e) = menu.append(&item) {
+                self.banners.set("menu", format!("Chat menu: {e}"));
+                return;
+            }
+        }
+        let at = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.0 as i32, at.1 as i32));
+        unsafe { menu.show_context_menu_for_hwnd(hwnd, Some(at)) };
+        // The pick arrives after the menu closes, so the menu lives until the next one.
+        self.popup_menu = Some(menu);
+    }
+
+    /// A pick from the message menu. False for other menu ids.
+    pub(super) fn chat_message_picked(&mut self, menu_id: &str) -> bool {
+        let Some(rest) = menu_id.strip_prefix(chat_view::MENU_PREFIX) else { return false };
+        let Some((verb, id)) = rest.split_once(':') else { return true };
+        let id = id.to_string();
+        match verb {
+            "edit" => self.chat_edit(&id),
+            "copy" => self.chat_copy_message(&id),
+            "fork" => self.chat_fork(&id),
+            "delete" => self.chat_delete_from(&id),
+            _ => {}
+        }
+        true
+    }
+
+    /// Text on the clipboard.
+    fn chat_copy(&mut self, text: String) {
+        if let Some(cb) = &mut self.clipboard {
+            if let Err(e) = cb.set_text(text) {
+                self.banners.set("clipboard", format!("Copy failed: {e}"));
+            }
+        }
+    }
+
+    /// Copy in the message menu: the rendered text (`Doc::plain` for markdown).
+    fn chat_copy_message(&mut self, id: &str) {
+        let Some(text) = self.chat_visible_message(id).map(|m| chat_view::copy_text(&chat_view::body(&m.content))) else { return };
+        self.chat_copy(text);
+    }
+
+    /// The chat's ids from this message on (`messageIDs(fromIndex:)`), and the person's text when
+    /// it is one of theirs.
+    fn chat_from_message(&self, id: &str) -> Option<(String, Vec<String>, Option<String>)> {
+        let chat = self.chat_shown.clone()?;
+        let visible = chat_view::visible(&self.chat_msgs);
+        let m = visible.iter().find(|m| m.unique_id == id)?;
+        let text = match (&m.content, chat_view::editable(m)) {
+            (Content::PlainText { text, .. }, true) => Some(text.clone()),
+            _ => None,
+        };
+        Some((chat, chat_view::ids_from(&visible, id), text))
+    }
+
+    /// Edit (`CVC:1555-1571`): this message and every later one are removed through the broker
+    /// and the text goes back to the input.
+    fn chat_edit(&mut self, id: &str) {
+        let Some((chat, ids, Some(text))) = self.chat_from_message(id) else { return };
+        self.chat_remove(&chat, &ids);
+        self.set_input(&chat, &text);
+    }
+
+    /// Delete (`CVC:1573-1584`): the same truncation, without the input.
+    fn chat_delete_from(&mut self, id: &str) {
+        let Some((chat, ids, _)) = self.chat_from_message(id) else { return };
+        self.chat_remove(&chat, &ids);
+    }
+
+    /// Puts text in the chat's input (filled by Task 7; until then it is dropped).
+    fn set_input(&mut self, _chat: &str, _text: &str) {}
+
+    /// Fork (`CWC:876-990`): a new chat holding the messages before this one (renames dropped,
+    /// each cloned with a fresh id), the source's terminal, browser, permissions and icon, and
+    /// copies of its blobs for the retained rounds linked to the clones (ruling F5); the new
+    /// chat shows and the chosen message is staged in its input.
+    fn chat_fork(&mut self, id: &str) {
+        let Some(source_id) = self.chat_shown.clone() else { return };
+        let Some(db) = self.chat_db.as_ref() else { return };
+        let (Ok(Some(source)), Ok(all)) = (db.chat(&source_id), db.messages(&source_id)) else { return };
+        let Some(index) = all.iter().position(|m| m.unique_id == id) else { return };
+        let retained = &all[..index];
+        let mut ids = std::collections::HashMap::new();
+        let clones: Vec<Message> = retained.iter().filter(|m| !matches!(m.content, Content::RenameChat(_))).map(|m| chat_view::clone_for_fork(m, &mut ids)).collect();
+        let now = crate::stamps::local(chat_view::epoch_secs(super::warnings_app::unix_now()));
+        let stamp = format!("{} {}", crate::stamps::short_date(&now), crate::stamps::short_time(&now));
+        let title = chat_view::fork_title(&source.title, &stamp);
+        let Some(fork) = self.chat_create(&title, source.terminal_session_guid.as_deref(), source.browser_session_guid.as_deref(), &source.permissions, clones) else { return };
+        let verbose = self.globals.bool("aiChatVerboseConsoleLogging");
+        // The icon: not fatal when it cannot be copied (`CWC:920-932`); the row is read again first.
+        if let Some(icon) = source.icon.clone() {
+            if !self.chat_update(&fork, |c| c.icon = Some(icon)) {
+                crate::ai_wire_log::console(verbose, "fork: the icon could not be copied");
+            }
+        }
+        if let Some(db) = self.chat_db.as_mut() {
+            if let Err(e) = fork_blobs(db, &source_id, &fork, retained, &ids) {
+                crate::ai_wire_log::console(verbose, &format!("fork: the blobs could not be copied: {e}"));
+            }
+        }
+        self.show_chat(Some(fork.clone()));
+        if let Content::PlainText { text, .. } = &all[index].content {
+            self.set_input(&fork, text);
+        }
+    }
+
+    /// A markdown link: opened only when it is a web or mail link (ruling F18); the drawing
+    /// already refuses the rest, and this is the second check.
+    fn chat_open_url(&mut self, url: &str) {
+        let Some(url) = chat_view::web_link(url) else { return };
+        if let Err(e) = super::semantic_ui::shell_open(&url, None, false) {
+            self.banners.set("action", format!("Could not open {url}: {e}"));
+        }
+    }
+
+    /// A terminal command row was clicked (filled by Task 6, which accepts only a reveal-mark
+    /// route from it).
+    fn chat_reveal_command(&mut self, _url: &str) {}
+
+    /// The file a file item names: written under the chat's temp folder through
+    /// `chat_view::materialize` only (ruling R12cd-6), from the bytes in the message itself.
+    fn chat_attachment_file(&self, reference: &str) -> Result<(PathBuf, String), String> {
+        use crate::chat_json::Attachment;
+        let (message, attachment) = chat_view::split_file_ref(reference).ok_or("not an attachment")?;
+        let chat = self.chat_shown.as_deref().ok_or("no chat is shown")?;
+        let m = self.chat_msgs.iter().find(|m| m.unique_id == message).ok_or("the message is gone")?;
+        let Content::Multipart { parts, .. } = &m.content else { return Err("the message has no attachments".to_string()) };
+        let found = parts.iter().find_map(|p| match p {
+            crate::chat_message::Subpart::Attachment(v) => crate::chat_json::attachment(v).filter(|(id, _)| id == attachment).map(|(_, a)| a),
+            _ => None,
+        });
+        let (name, bytes) = match found.ok_or("the attachment is gone")? {
+            Attachment::File { name, content, .. } => (name, content),
+            Attachment::Code(code) => (chat_view::CODE_FILE.to_string(), code.into_bytes()),
+            _ => return Err("the attachment has no local bytes".to_string()),
+        };
+        let root = std::env::temp_dir().join(chat_view::ATTACHMENTS_DIR);
+        chat_view::materialize(&root, chat, attachment, &name, &bytes).map(|p| (p, name))
+    }
+
+    /// Reveal in Explorer, or Open (only for an inert type, ruling F19; anything else is revealed).
+    fn chat_file(&mut self, reference: &str, open: bool) {
+        match self.chat_attachment_file(reference) {
+            Ok((path, name)) => {
+                let text = path.to_string_lossy().to_string();
+                if open && chat_view::openable(&name) {
+                    if let Err(e) = super::semantic_ui::shell_open(&text, None, false) {
+                        self.banners.set("action", format!("Could not open {text}: {e}"));
+                    }
+                } else {
+                    self.reveal_in_explorer(&text);
+                }
+            }
+            Err(e) => {
+                crate::ai_wire_log::console(self.globals.bool("aiChatVerboseConsoleLogging"), &format!("attachment: {e}"));
+                self.banners.set("action", "The attachment could not be written.".to_string());
+            }
+        }
     }
 
     /// Stops the chat's streaming bubble (filled by Task 6; ruling F24).
@@ -478,6 +755,9 @@ impl App {
         }
         self.chat_window = None;
         self.chat_shown = None;
+        self.chat_msgs.clear();
+        self.chat_convo = Default::default();
+        self.chat_convo_dirty = true;
         self.chat_search.set_query("", Instant::now());
     }
 
@@ -544,6 +824,15 @@ impl App {
             ChatEvent::Rename(id) => self.rename_chat(&id, event_loop),
             ChatEvent::Delete(ids) => self.ask_ai(chat_list::delete_alert(ids)),
             ChatEvent::ListMenu { at, ids } => self.chat_list_menu(at, ids),
+            ChatEvent::MessageMenu { at, id } => self.chat_message_menu(at, id),
+            ChatEvent::CopyText(text) => self.chat_copy(text),
+            ChatEvent::Edit(id) => self.chat_edit(&id),
+            ChatEvent::DeleteMessage(id) => self.chat_delete_from(&id),
+            ChatEvent::Fork(id) => self.chat_fork(&id),
+            ChatEvent::OpenUrl(url) => self.chat_open_url(&url),
+            ChatEvent::OpenFile(r) => self.chat_file(&r, true),
+            ChatEvent::RevealFile(r) => self.chat_file(&r, false),
+            ChatEvent::RevealCommand(url) => self.chat_reveal_command(&url),
         }
     }
 
@@ -590,7 +879,7 @@ impl App {
                 }
                 true
             }
-            _ => false,
+            _ => self.chat_message_picked(id),
         }
     }
 
@@ -822,5 +1111,86 @@ mod tests {
         assert_eq!(now.model_name.as_deref(), Some("gpt"));
         assert_eq!(now.permissions, "[\"answered\"]", "the pick did not revert the permission");
         assert!(!update_chat_in(&mut store, "gone", |c| c.model_name = None));
+    }
+
+    #[test]
+    fn a_fork_links_its_clones_to_copied_blobs() {
+        use crate::chat_store::BlobRow;
+        let blob = |id: &str| BlobRow { seq: 0, blob_id: id.into(), chat_id: "S".into(), protocol: 5, role: "user".into(), payload: id.as_bytes().to_vec(), response_id: None, token_count: None, wire_format_version: 1 };
+        let mut store = Store::open_in_memory().unwrap();
+        let mut source = Chat::new("Source", 1.0);
+        source.id = "S".into();
+        source.blob_protocol = Some("5".into());
+        store.add_chat(&source).unwrap();
+        for id in ["X1", "X2", "X3"] {
+            store.add_blob(&blob(id)).unwrap();
+        }
+        let user = |text: &str, at: f64, blob: Option<&str>| {
+            let mut m = Message::new("S", Participant::User, Content::PlainText { text: text.into(), context: None }, at);
+            m.first_blob_ref = blob.map(str::to_string);
+            m
+        };
+        let build = |store: &mut Store, kept: &[Message]| {
+            let fork = Chat::new("Fork", 2.0);
+            store.add_chat(&fork).unwrap();
+            let mut ids = std::collections::HashMap::new();
+            for m in kept {
+                let clone = chat_view::clone_for_fork(m, &mut ids);
+                store.add_message(&Message { chat_id: fork.id.clone(), ..clone }).unwrap();
+            }
+            (fork.id, ids)
+        };
+        // The first two rounds are retained: their blobs are copied under new ids and the clones follow.
+        let kept = [user("one", 1.0, Some("X1")), Message::new("S", Participant::Agent, Content::Markdown("ok".into()), 2.0), user("two", 3.0, Some("X2"))];
+        let (fork, ids) = build(&mut store, &kept);
+        fork_blobs(&mut store, "S", &fork, &kept, &ids).unwrap();
+        let copies = store.blobs(&fork).unwrap();
+        assert_eq!(copies.len(), 2);
+        assert!(copies.iter().all(|b| !["X1", "X2", "X3"].contains(&b.blob_id.as_str())), "fresh blob ids");
+        let stored = store.messages(&fork).unwrap();
+        let refs: Vec<Option<String>> = stored.iter().map(|m| m.first_blob_ref.clone()).collect();
+        assert_eq!(refs, vec![Some(copies[0].blob_id.clone()), None, Some(copies[1].blob_id.clone())]);
+        assert_eq!(store.chat(&fork).unwrap().unwrap().blob_protocol.as_deref(), Some("5"));
+        // The source is untouched.
+        assert_eq!(store.blobs("S").unwrap().len(), 3);
+        // A gap (the second round retained without the first) copies nothing and links nothing.
+        let gap = [user("two", 3.0, Some("X2"))];
+        let (fork, ids) = build(&mut store, &gap);
+        fork_blobs(&mut store, "S", &fork, &gap, &ids).unwrap();
+        assert!(store.blobs(&fork).unwrap().is_empty());
+        assert_eq!(store.messages(&fork).unwrap()[0].first_blob_ref, None);
+    }
+
+    #[test]
+    fn updates_keep_the_shown_messages_current() {
+        use crate::chat_broker::Update;
+        let agent = |text: &str| Message::new("C", Participant::Agent, Content::Markdown(text.into()), 1.0);
+        let first = agent("Hel");
+        let mut msgs = vec![first.clone()];
+        // A chunk is a delta: the message is read again from the store, which already holds the text.
+        let stored = Message { content: Content::Markdown("Hello".into()), ..first.clone() };
+        let chunk = Update::Delivery { message: Message::new("C", Participant::Agent, Content::Append { text: "lo".into(), uuid: first.unique_id.clone() }, 2.0), partial: true };
+        assert!(apply_update(&mut msgs, &chunk, &|id| (id == first.unique_id).then(|| stored.clone())));
+        assert_eq!(msgs, vec![stored.clone()]);
+        // A commit reads the message again too; one for a message not kept changes nothing.
+        let commit = Update::Delivery { message: Message::new("C", Participant::Agent, Content::Commit(first.unique_id.clone()), 3.0), partial: false };
+        assert!(apply_update(&mut msgs, &commit, &|_| Some(Message { content: Content::Markdown("Hello!".into()), ..first.clone() })));
+        assert_eq!(msgs[0].content, Content::Markdown("Hello!".into()));
+        let stray = Update::Delivery { message: Message::new("C", Participant::Agent, Content::Commit("other".into()), 3.0), partial: false };
+        assert!(!apply_update(&mut msgs, &stray, &|_| None));
+        // A whole message joins the end; delivered again it replaces its copy.
+        let second = agent("next");
+        let whole = |m: &Message| Update::Delivery { message: m.clone(), partial: false };
+        assert!(apply_update(&mut msgs, &whole(&second), &|_| None));
+        assert_eq!(msgs.len(), 2);
+        let edited = Message { content: Content::Markdown("edited".into()), ..second.clone() };
+        assert!(apply_update(&mut msgs, &whole(&edited), &|_| None));
+        assert_eq!((msgs.len(), &msgs[1].content), (2, &Content::Markdown("edited".into())));
+        // A removal drops the ids; typing and turn events change no message.
+        assert!(apply_update(&mut msgs, &Update::Removed { ids: vec![first.unique_id.clone()], chat: "C".into() }, &|_| None));
+        assert_eq!(msgs, vec![edited]);
+        assert!(!apply_update(&mut msgs, &Update::Removed { ids: vec!["none".into()], chat: "C".into() }, &|_| None));
+        assert!(!apply_update(&mut msgs, &Update::Typing { on: true, who: Participant::Agent }, &|_| None));
+        assert!(!apply_update(&mut msgs, &Update::Turn(crate::chat_message::TurnEvent::Started), &|_| None));
     }
 }
