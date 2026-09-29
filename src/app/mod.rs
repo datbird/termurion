@@ -2631,6 +2631,8 @@ impl App {
             if let (Some(reference), Some(p)) = (reference, self.panes.get_mut(&id)) {
                 p.keep_reference(&reference);
             }
+            // The new Screen has no chat watch: a chat streaming this session goes on (`CVC:144-165`).
+            self.chat_refresh(crate::chat_menu::StateChange::PaneRestarted);
         }
     }
 

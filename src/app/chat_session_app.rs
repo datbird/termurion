@@ -95,6 +95,7 @@ impl App {
         self.notice(chat, &chat_buttons::linked_notice(true, Some(name.as_str()).filter(|n| !n.trim().is_empty())));
         self.client_local(chat, ClientLocal::Permissions { terminal: true, guid: reference });
         self.ai_publish_permissions(chat);
+        self.chat_refresh(chat_menu::StateChange::Linked);
         self.chat_state_changed();
         Ok(())
     }
@@ -103,6 +104,8 @@ impl App {
     /// window shows the buttons as they now stand, and every terminal window draws the picker
     /// or forgets it.
     pub(super) fn chat_state_changed(&mut self) {
+        // The indicators read the links again on this very redraw (F33).
+        self.chat_links_stale();
         self.chat_window_refresh();
         self.redraw();
         self.redraw_all();
@@ -383,6 +386,7 @@ impl App {
         self.ai_watermarks.remove(chat);
         self.notice(chat, if terminal { chat_menu::UNLINKED_TERMINAL } else { chat_menu::UNLINKED_BROWSER });
         self.ai_publish_permissions(chat);
+        self.chat_refresh(chat_menu::StateChange::Unlinked);
         self.chat_state_changed();
     }
 
@@ -417,7 +421,7 @@ impl App {
         if self.chat_live_link(chat).is_none() || !self.streaming_chats.insert(chat.to_string()) {
             return;
         }
-        self.sync_chat_watch();
+        self.chat_refresh(chat_menu::StateChange::StreamStarted);
         self.client_local(chat, ClientLocal::StreamingChanged(Streaming::Active));
         self.chat_state_changed();
     }
@@ -428,20 +432,28 @@ impl App {
         if !self.streaming_chats.remove(chat) {
             return;
         }
-        self.sync_chat_watch();
+        self.chat_refresh(chat_menu::StateChange::StreamStopped);
         self.client_local(chat, ClientLocal::StreamingChanged(Streaming::Stopped));
         self.chat_window_refresh();
         self.redraw_all();
     }
 
-    /// Every pane's `chat_watch` follows the streaming chats' links.
-    pub(super) fn sync_chat_watch(&mut self) {
-        let mut wanted = std::collections::HashSet::new();
-        for chat in &self.streaming_chats {
-            if let Some((_, pane)) = self.chat_live_link(chat) {
-                wanted.insert(pane);
-            }
+    /// What a change of links, streams or panes refreshes (`chat_menu::refresh_for`): the panes'
+    /// watch flags and the indicators' link cache. Every such site calls this.
+    pub(super) fn chat_refresh(&mut self, change: chat_menu::StateChange) {
+        let r = chat_menu::refresh_for(change);
+        if r.watch {
+            self.sync_chat_watch();
         }
+        if r.links {
+            self.chat_links_stale();
+        }
+    }
+
+    /// Every pane's `chat_watch` follows the streaming chats' current links.
+    pub(super) fn sync_chat_watch(&mut self) {
+        let links: Vec<(String, Option<PaneId>)> = self.streaming_chats.iter().map(|c| (c.clone(), self.chat_live_link(c).map(|(_, pane)| pane))).collect();
+        let wanted = chat_menu::watched_panes(links.iter().map(|(c, p)| (c.as_str(), *p)), &self.streaming_chats);
         for (id, p) in self.panes.iter_mut() {
             let on = wanted.contains(id);
             if p.own().chat_watch != on {
@@ -491,7 +503,7 @@ impl App {
                 self.unlink_chat(&chat, true);
             }
         }
-        self.chat_links_stale();
+        self.chat_refresh(chat_menu::StateChange::PaneClosed);
     }
 
     /// The links the indicators read, refreshed at most once a second unless something changed

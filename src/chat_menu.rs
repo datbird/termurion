@@ -272,6 +272,43 @@ pub fn stale_streaming(last_state: Option<crate::chat_message::Streaming>, strea
     last_state == Some(crate::chat_message::Streaming::Active) && !streaming_now
 }
 
+/// A change of what chats and panes are linked or streaming. Each one must bring the panes'
+/// watch flags and the indicators' link cache up to date (findings 1 and 2 of Task 6's review).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StateChange {
+    Linked,
+    Unlinked,
+    StreamStarted,
+    StreamStopped,
+    /// The linked session was restarted: a new Screen (its watch flag is off) with the same reference.
+    PaneRestarted,
+    PaneClosed,
+    ChatDeleted,
+}
+
+impl StateChange {
+    pub const ALL: [StateChange; 7] = [StateChange::Linked, StateChange::Unlinked, StateChange::StreamStarted, StateChange::StreamStopped, StateChange::PaneRestarted, StateChange::PaneClosed, StateChange::ChatDeleted];
+}
+
+/// What a change refreshes: the panes' `chat_watch` flags, the indicators' link cache.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Refresh {
+    pub watch: bool,
+    pub links: bool,
+}
+
+/// Every change refreshes both: the streamed pane follows the chat's current link (a restart or
+/// a relink moves it, `CVC:144-165`), and the glyph never lies for a second.
+pub fn refresh_for(_change: StateChange) -> Refresh {
+    Refresh { watch: true, links: true }
+}
+
+/// The panes that must queue their finished commands: the panes the streaming chats link to.
+/// `links` is each chat with its live linked pane (None when unlinked or the pane is gone).
+pub fn watched_panes<'a>(links: impl IntoIterator<Item = (&'a str, Option<crate::layout::PaneId>)>, streaming: &std::collections::HashSet<String>) -> std::collections::HashSet<crate::layout::PaneId> {
+    links.into_iter().filter(|(chat, _)| streaming.contains(*chat)).filter_map(|(_, pane)| pane).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,5 +503,23 @@ mod tests {
         assert!(!stale_streaming(Some(Streaming::Active), true));
         assert!(!stale_streaming(Some(Streaming::Stopped), false));
         assert!(!stale_streaming(None, false));
+    }
+
+    #[test]
+    fn every_state_change_refreshes_the_watch_and_the_links() {
+        for c in StateChange::ALL {
+            assert_eq!(refresh_for(c), Refresh { watch: true, links: true }, "{c:?}");
+        }
+    }
+
+    #[test]
+    fn the_watch_follows_the_streaming_chats_current_link() {
+        use std::collections::HashSet;
+        let streaming: HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let links = [("a", Some(3)), ("b", None), ("c", Some(9))];
+        assert_eq!(watched_panes(links, &streaming), HashSet::from([3]), "b is unlinked, c is not streaming");
+        // A streaming chat relinked to another pane moves the watch with it.
+        assert_eq!(watched_panes([("a", Some(4)), ("b", Some(4))], &streaming), HashSet::from([4]));
+        assert!(watched_panes(links, &HashSet::new()).is_empty());
     }
 }
