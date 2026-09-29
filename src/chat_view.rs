@@ -491,7 +491,8 @@ pub fn web_link(url: &str) -> Option<String> {
     if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return None;
     }
-    crate::prompted::safe_url(url)
+    // F18 names web and mail only; OpenURL's own list also has ftp, which a bubble never opens.
+    crate::prompted::safe_url(url).filter(|u| !u.to_ascii_lowercase().starts_with("ftp:"))
 }
 
 /// What Copy puts on the clipboard for a body: the rendered text.
@@ -924,7 +925,7 @@ mod tests {
         assert_eq!(web_link("https://example.com/a?b=1").as_deref(), Some("https://example.com/a?b=1"));
         assert_eq!(web_link("HTTP://example.com").as_deref(), Some("HTTP://example.com"));
         assert_eq!(web_link("mailto:a@b.example").as_deref(), Some("mailto:a@b.example"));
-        for no in ["file:///C:/x.exe", "file://host/share/x", "\\\\host\\share\\x", "//host/share", "C:\\x.exe", "ms-msdt:/id", "iterm2:reveal-mark?s=1", "javascript:alert(1)", "vscode://x", "search-ms:query=x", "https:", "", "example.com", "  https://example.com", "https://exa mple.com/\n"] {
+        for no in ["ftp://host/x", "FTP://host/x", "file:///C:/x.exe", "file://host/share/x", "\\\\host\\share\\x", "//host/share", "C:\\x.exe", "ms-msdt:/id", "iterm2:reveal-mark?s=1", "javascript:alert(1)", "vscode://x", "search-ms:query=x", "https:", "", "example.com", "  https://example.com", "https://exa mple.com/\n"] {
             assert_eq!(web_link(no), None, "{no:?}");
         }
     }

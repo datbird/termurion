@@ -765,9 +765,13 @@ fn message_row(ui: &mut egui::Ui, row: &RowData, st: &mut ConvoState, icons: boo
 /// A row's glyph, then its body.
 fn row_content(ui: &mut egui::Ui, row: &RowData, ink: &Ink, st: &mut ConvoState, icons: bool, dark: bool, out: &mut Vec<ChatEvent>) {
     ui.horizontal_top(|ui| {
-        if let (Some(g), true) = (row.glyph, icons) {
+        if let Some(g) = row.glyph {
             let color = if g == chat_view::WARNING_GLYPH { ink.warn } else { ink.muted };
-            ui.label(egui::RichText::new(g.to_string()).family(egui::FontFamily::Name("icons".into())).size(15.0).color(color));
+            if icons {
+                ui.label(egui::RichText::new(g.to_string()).family(egui::FontFamily::Name("icons".into())).size(15.0).color(color));
+            } else if let Some(word) = glyph_fallback(g) {
+                ui.label(egui::RichText::new(word).size(BODY_SIZE).color(color));
+            }
         }
         ui.vertical(|ui| {
             draw_body(ui, &row.body, row, 0, ink, st, icons, dark, out);
@@ -851,6 +855,19 @@ fn code_attachment(ui: &mut egui::Ui, code: &str, row: &RowData, part: usize, in
     });
     let rect = shown.response.rect;
     copy_button(ui, rect, &row.id, usize::MAX - part, code, ink, st, icons, out);
+}
+
+/// The "Copied" slot of a code block: its markdown part and its first block, so two parts of one
+/// message that both start with a code block never share one.
+fn copy_slot(part: usize, first: usize) -> usize {
+    // Parts number from 0 and a code attachment's slot counts down from usize::MAX.
+    (part + 1) * 1_000_000 + first
+}
+
+/// The text drawn for a row's glyph when the icon font is missing: a flagged request must never
+/// look like a safe one, so the warning glyph has a word, the others none.
+fn glyph_fallback(g: char) -> Option<&'static str> {
+    (g == chat_view::WARNING_GLYPH).then_some("Warning")
 }
 
 /// The copy glyph in the top right corner of `rect`, and "Copied" beside it for a second.
@@ -939,7 +956,7 @@ fn markdown(ui: &mut egui::Ui, md: &str, row: &RowData, part: usize, ink: &Ink, 
             continue;
         }
         let copy = rendered.blocks.iter().find(|b| b.first == i);
-        draw_block(ui, block, ink, copy, row, st, icons, out);
+        draw_block(ui, block, ink, copy, row, part, st, icons, out);
     }
     ui.spacing_mut().item_spacing.y = spacing;
 }
@@ -947,7 +964,7 @@ fn markdown(ui: &mut egui::Ui, md: &str, row: &RowData, part: usize, ink: &Ink, 
 /// One block: its runs as a wrapped text, code lines on a shaded band, a copy glyph at the
 /// first line of a code block.
 #[allow(clippy::too_many_arguments)]
-fn draw_block(ui: &mut egui::Ui, block: &Block, ink: &Ink, copy: Option<&CodeBlock>, row: &RowData, st: &mut ConvoState, icons: bool, out: &mut Vec<ChatEvent>) {
+fn draw_block(ui: &mut egui::Ui, block: &Block, ink: &Ink, copy: Option<&CodeBlock>, row: &RowData, part: usize, st: &mut ConvoState, icons: bool, out: &mut Vec<ChatEvent>) {
     let indent = block.indent * INDENT_STEP;
     let (job, links) = block_job(block, ink, (ui.available_width() - indent).max(20.0));
     let galley = ui.painter().layout_job(job);
@@ -966,8 +983,10 @@ fn draw_block(ui: &mut egui::Ui, block: &Block, ink: &Ink, copy: Option<&CodeBlo
             let index = galley.cursor_from_pos(p - origin).index;
             links.iter().find(|(from, to, _)| (*from..*to).contains(&index.0)).map(|(_, _, u)| u.clone())
         });
-        if url.is_some() && resp.hovered() {
+        if let (Some(u), true) = (&url, resp.hovered()) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            // The text of a link can differ from its target; the target shows while pointing.
+            resp.clone().on_hover_text(u);
         }
         if resp.clicked() {
             if let Some(u) = url {
@@ -976,7 +995,7 @@ fn draw_block(ui: &mut egui::Ui, block: &Block, ink: &Ink, copy: Option<&CodeBlo
         }
     }
     if let Some(cb) = copy {
-        copy_button(ui, rect, &row.id, cb.first, &cb.text, ink, st, icons, out);
+        copy_button(ui, rect, &row.id, copy_slot(part, cb.first), &cb.text, ink, st, icons, out);
     }
 }
 
@@ -1105,6 +1124,15 @@ mod tests {
         let perms = row("P", &[("AI can Run Commands: Ask", "Run Commands"), ("AI can View Contents: Ask", "View Contents")], true);
         assert!(stays_live(&perms));
         assert!(!stays_live(&row("X", &[], true)), "no buttons, nothing to tap");
+    }
+
+    #[test]
+    fn copied_slots_are_per_part_and_the_warning_has_a_word() {
+        assert_ne!(copy_slot(1, 0), copy_slot(2, 0), "two parts starting with a code block");
+        assert_ne!(copy_slot(1, 3), copy_slot(1, 4));
+        assert_ne!(copy_slot(0, 5), usize::MAX - 0, "never a code attachment's slot");
+        assert_eq!(glyph_fallback(chat_view::WARNING_GLYPH), Some("Warning"));
+        assert_eq!(glyph_fallback(chat_view::TIMER_GLYPH), None);
     }
 
     #[test]
