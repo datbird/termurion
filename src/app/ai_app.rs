@@ -38,6 +38,11 @@ impl App {
             let selection = crate::warnings::selection_key(id);
             if self.globals.bool(id) {
                 let index = usize::try_from(self.globals.int(&selection)).unwrap_or(0);
+                // A silence that answers for the person is listed in Suppressed Alerts (ruling F3).
+                if let Some(spec) = ai_gate::silence_spec(&alert) {
+                    super::warnings_app::record_answer(&spec, index, &self.globals, &mut self.suppressed, super::warnings_app::unix_now());
+                    self.catalog_due_after_record();
+                }
                 return self.ai_answered(alert.then, index);
             }
         }
@@ -332,6 +337,8 @@ impl App {
                     self.start_streaming(&chat);
                 }
             }
+            // Only Attach attaches; Insert Path, a close and a stale index insert the paths.
+            Then::DropChoice { chat, supported, all } => self.chat_drop_answered(&chat, &supported, &all, index),
             Then::Grant(host) => {
                 if index == 0 {
                     ai_gate::grant(&mut self.globals, &host);

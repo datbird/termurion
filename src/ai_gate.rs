@@ -115,6 +115,10 @@ pub enum Then {
     ConfirmChange { chat: String, guid: String, category: crate::ai_permissions::Category },
     /// The Privacy Warning before streaming (`CVC:1335-1357`): only OK starts it.
     PrivacyWarning(String),
+    /// The drop question (`IN:507-528`): only the first button (Attach) attaches `supported`;
+    /// it also inserts the paths of the others in `all`. Any other answer, a close included
+    /// (ruling F2), inserts every path in `all` as text. Applies only while `chat` is shown.
+    DropChoice { chat: String, supported: Vec<std::path::PathBuf>, all: Vec<std::path::PathBuf> },
 }
 
 /// One AI alert for `App::ask_ai`. `silence` is a permanent-silence key (the `scripts_alerts`
@@ -134,6 +138,14 @@ pub struct Alert {
     /// first. A consent question with no "Cancel" button names its refusing button here, so
     /// closing it can never grant.
     pub close: Option<&'static str>,
+}
+
+/// The warning spec of an alert that has a silence key, as Suppressed Alerts lists it (a
+/// permanent silence, buttons as labels), so an answer the silence gives on its own is recorded
+/// (ruling F3, 12c ruling 14). None for an alert with no key.
+pub fn silence_spec(alert: &Alert) -> Option<crate::warnings::Spec> {
+    let id = alert.silence.clone()?;
+    Some(crate::warnings::Spec { id: Some(id), kind: crate::warnings::Kind::Permanent, heading: alert.heading.clone(), text: alert.text.clone(), labels: alert.buttons.iter().map(|b| b.to_string()).collect(), cancel: None, never_remember: Vec::new() })
 }
 
 pub const FEATURE_UNAVAILABLE: &str = "Feature Unavailable";
@@ -381,5 +393,28 @@ mod tests {
         let i = crate::prompt_ui::close_index(&a.buttons);
         assert_ne!(i, 0, "the first button grants");
         assert_eq!(a.buttons[i], CANCEL);
+    }
+
+    /// An alert with a silence key is listed in Suppressed Alerts when the silence answers it, and
+    /// Unsuppress forgets the answer (ruling F3).
+    #[test]
+    fn a_silenced_ai_alert_is_listed_in_suppressed_alerts() {
+        use crate::warnings::{self, Catalog};
+        let id = crate::chat_input::DROP_SILENCE;
+        let spec = silence_spec(&crate::chat_input::drop_alert("c", vec![], vec![])).unwrap();
+        assert_eq!((spec.id.as_deref(), spec.kind, spec.labels.clone()), (Some(id), warnings::Kind::Permanent, vec!["Attach".to_string(), "Insert Path".to_string()]));
+        assert_eq!(silence_spec(&crate::chat_menu::help_alert()), None, "no key, nothing to list");
+
+        let mut g = open();
+        g.set(id, Value::Boolean(true));
+        g.set(&warnings::selection_key(id), Value::Integer(0));
+        let mut catalog = Catalog::default();
+        catalog.record(&spec, &spec.labels[0], warnings::episode(&g, id, 5.0), 5.0);
+        let listed = catalog.current(&g, 6.0);
+        assert_eq!(listed.len(), 1);
+        assert_eq!((listed[0].id.as_str(), listed[0].label.as_str(), listed[0].count), (id, "Attach", 1));
+        catalog.unsuppress(&mut g, id);
+        assert!(catalog.current(&g, 7.0).is_empty());
+        assert!(g.get(id).is_none() && g.get(&warnings::selection_key(id)).is_none(), "the drop question asks again");
     }
 }

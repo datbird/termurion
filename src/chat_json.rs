@@ -37,6 +37,13 @@ pub fn attachment(v: &Value) -> Option<(String, Attachment)> {
     Some((id, found))
 }
 
+/// A file attachment object in the Swift shape (`LLM.Message.Attachment` with `.file`): what
+/// `attachment` reads back. The input builds these for a message it sends.
+pub fn file_attachment(id: &str, name: &str, content: &[u8], mime: &str) -> Value {
+    let content = base64::engine::general_purpose::STANDARD.encode(content);
+    serde_json::json!({"inline": false, "id": id, "type": {"file": {"_0": {"name": name, "content": content, "mimeType": mime}}}})
+}
+
 /// A status update (`StatusUpdate`).
 pub fn status(v: &Value) -> Option<Status> {
     status_of(v)
@@ -74,6 +81,12 @@ mod tests {
         assert_eq!(attachment(&json!({"inline":false,"id":"x","type":{"fileID":{"id":"f1","name":"a.pdf"}}})), Some(("x".to_string(), Attachment::FileId { id: "f1".into(), name: "a.pdf".into() })));
         assert_eq!(attachment(&json!({"inline":false,"id":"x","type":{"mystery":{}}})), None);
         assert_eq!(attachment(&json!({"inline":false,"type":{"code":{"_0":"x"}}})), None, "no id");
+        // The writer is the reader's inverse and exactly the Swift shape.
+        assert_eq!(
+            file_attachment("A", "a.txt", b"hi", "text/plain"),
+            json!({"inline":false,"id":"A","type":{"file":{"_0":{"name":"a.txt","content":"aGk=","mimeType":"text/plain"}}}})
+        );
+        assert_eq!(attachment(&file_attachment("B", "b.bin", &[0, 255, 7], "application/octet-stream")), Some(("B".to_string(), Attachment::File { name: "b.bin".into(), content: vec![0, 255, 7], mime: "application/octet-stream".into() })));
         // The case body wraps the event (ruling F9).
         assert_eq!(watcher(&json!({"_0":{"reason":"timerFired","detail":"d","watcherID":"w"}})), Some((true, "d".to_string())));
         assert_eq!(watcher(&json!({"_0":{"reason":"stateReached","detail":"d"}})), Some((false, "d".to_string())));

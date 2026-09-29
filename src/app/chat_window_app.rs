@@ -13,7 +13,8 @@ use crate::chat_store::{Chat, Store};
 use crate::chat_list::{self, Row};
 use crate::chat_toolbar::{self as tb, Reuse};
 use crate::chat_view;
-use crate::chat_window_ui::{convo_rows, ChatData, ChatEvent, ChatWindow, ToolbarData};
+use crate::chat_input::{self, Draft};
+use crate::chat_window_ui::{convo_rows, ChatData, ChatEvent, ChatWindow, InputData, ToolbarData};
 
 /// `update_chat` from a row read just now, changing only what `f` names (ruling F6): the row's
 /// permissions, model and every other column a window or list read earlier are never written
@@ -72,6 +73,11 @@ fn fork_blobs(store: &mut Store, source: &str, fork: &str, retained: &[Message],
 /// The list menu's ids (picked through `run_menu_id`).
 const RENAME_ID: &str = "aichat:rename";
 const DELETE_ID: &str = "aichat:delete";
+/// The attach popup's items.
+const ATTACH_FILES_ID: &str = "aichat:attach:files";
+const ATTACH_FOLDER_ID: &str = "aichat:attach:folder";
+/// Most paths one window gathers from a drop before the next pass asks about them.
+const DROPS_MAX: usize = 1000;
 
 /// What a chord does in the chat window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -211,6 +217,7 @@ impl App {
         if let Some(old) = self.chat_shown.clone().filter(|old| Some(old) != chat.as_ref()) {
             self.stop_streaming(&old);
         }
+        self.chat_input_switch(chat.as_deref());
         self.chat_shown = chat;
         self.chat_load_messages();
         // A chat whose last state is Active with nothing streaming it was left on by an earlier
@@ -257,6 +264,7 @@ impl App {
             search: self.chat_search.hits().to_vec(),
             searching: self.chat_search.searching(),
             convo: self.chat_convo.clone(),
+            input: self.chat_input_data(),
         };
         if let Some(w) = self.chat_window.as_mut() {
             w.set_title(&title);
@@ -460,6 +468,7 @@ impl App {
     /// the ages' minute, and soon again while a title run is going.
     pub(super) fn chat_window_tick(&mut self) -> Option<Instant> {
         let mut changed = false;
+        let dropped = self.chat_drops_flush();
         self.pick_tick();
         if let Some(sub) = self.chat_mint_sub {
             let updates = self.chat_broker.drain(sub);
@@ -500,6 +509,10 @@ impl App {
             }
             let minute = self.chat_rows_built.map(|b| b + std::time::Duration::from_secs(60));
             due = [due, minute].into_iter().flatten().min();
+        }
+        // A drop question just queued opens on the next pass.
+        if dropped {
+            due = Some(Instant::now());
         }
         due
     }
@@ -665,8 +678,23 @@ impl App {
         self.chat_remove(&chat, &ids);
     }
 
-    /// Puts text in the chat's input (filled by Task 7; until then it is dropped).
-    fn set_input(&mut self, _chat: &str, _text: &str) {}
+    /// Puts text in the shown chat's input (Edit, a fork's staged message): the text is replaced
+    /// and kept from a selection offer. Another chat's input is not touched.
+    pub(super) fn set_input(&mut self, chat: &str, text: &str) {
+        if self.chat_shown.as_deref() != Some(chat) {
+            return;
+        }
+        self.chat_input.set(text);
+        self.chat_window_refresh();
+    }
+
+    /// A terminal selection offered to the shown chat's input (`offerSelectedText`): only an
+    /// empty input nobody typed in takes it.
+    pub(super) fn offer_text(&mut self, chat: &str, text: &str) {
+        if self.chat_shown.as_deref() == Some(chat) && self.chat_input.offer(text) {
+            self.chat_window_refresh();
+        }
+    }
 
     /// Fork (`CWC:876-990`): a new chat holding the messages before this one (renames dropped,
     /// each cloned with a fresh id), the source's terminal, browser, permissions and icon, and
@@ -764,6 +792,8 @@ impl App {
     /// (`CWC:481-501`). Nothing restores it at relaunch.
     pub(super) fn close_chat_window(&mut self) {
         self.pick_window_closed();
+        self.chat_drops.clear();
+        self.chat_input_switch(None);
         if let Some(chat) = self.chat_shown.clone() {
             self.stop_streaming(&chat);
         }
@@ -809,6 +839,12 @@ impl App {
         }
         match event {
             WindowEvent::CloseRequested => self.close_chat_window(),
+            // One event per dropped path: they are gathered and asked about together (ruling F27).
+            WindowEvent::DroppedFile(path) => {
+                if self.chat_drops.len() < DROPS_MAX {
+                    self.chat_drops.push(path.clone());
+                }
+            }
             // Back from Settings: a key or a model may have changed meanwhile (ruling F17).
             WindowEvent::Focused(true) => {
                 w.event(event);
@@ -856,12 +892,166 @@ impl App {
             ChatEvent::OpenFile(r) => self.chat_file(&r, true),
             ChatEvent::RevealFile(r) => self.chat_file(&r, false),
             ChatEvent::RevealCommand(url) => self.chat_reveal_command(&url, event_loop),
+            ChatEvent::InputChanged(text) => {
+                self.chat_input.typed(text);
+                self.chat_window_refresh();
+            }
+            ChatEvent::Send => self.send_input(),
+            ChatEvent::Stop => self.stop_chat(),
+            ChatEvent::Attach(at) => self.chat_attach_menu(at),
+            ChatEvent::RemoveAttachment(i) => {
+                self.chat_input.remove_attachment(i);
+                self.chat_window_refresh();
+            }
             ChatEvent::Button { message, button } => {
                 if let Some(chat) = self.chat_shown.clone() {
                     self.chat_button_pressed(&chat, &message, &button, event_loop);
                 }
             }
         }
+    }
+
+    /// The input's draft moves with the shown chat (`CVC:864-894`): the outgoing chat's text and
+    /// attachments are kept, the incoming chat's come back. The same chat changes nothing.
+    fn chat_input_switch(&mut self, to: Option<&str>) {
+        let from = self.chat_shown.clone();
+        if from.as_deref() == to {
+            return;
+        }
+        let current = std::mem::take(&mut self.chat_input.draft);
+        let next = self.chat_drafts.switch(from.as_deref(), current, to);
+        self.chat_input.switched(next);
+    }
+
+    /// What the input shows now.
+    fn chat_input_data(&self) -> InputData {
+        let shown = self.chat_shown.as_deref();
+        let stoppable = shown.is_some_and(|c| self.chat_broker.is_typing(c, Participant::Agent));
+        let orchestrating = shown.and_then(|c| self.chat_db.as_ref()?.chat(c).ok().flatten()).is_some_and(|c| c.orchestration_enabled);
+        let text = self.chat_input.draft.text.clone();
+        InputData {
+            send_enabled: chat_input::send_enabled(&text, false, stoppable),
+            text,
+            pending: self.chat_input.draft.pending.iter().map(chat_input::Pending::label).collect(),
+            placeholder: chat_input::placeholder(orchestrating).to_string(),
+            stoppable,
+            loading: false,
+            focus: self.chat_input.focus,
+        }
+    }
+
+    /// The model the shown chat's attachments are checked against: its own, else the default.
+    fn chat_input_model(&mut self, chat: &str) -> Option<crate::ai_catalog::Model> {
+        let found = self.ai_found();
+        let catalog = crate::ai_catalog::bundled();
+        let name = self.chat_db.as_ref().and_then(|db| db.chat(chat).ok().flatten()).and_then(|c| c.model_name);
+        name.and_then(|n| crate::ai_model::named(&n, &self.globals, catalog, &found)).or_else(|| crate::ai_model::configured(&self.globals, catalog, &found))
+    }
+
+    /// Send (`sendButtonClicked`, `CVC:2269-2388`): the text and the pending files become one
+    /// user message published to the chat; the agent adds the terminal state itself. Nothing
+    /// goes while the agent types (the button is Stop then) or for whitespace-only text; the
+    /// input clears only when the message was published.
+    pub(super) fn send_input(&mut self) {
+        let Some(chat) = self.chat_shown.clone() else { return };
+        if self.chat_broker.is_typing(&chat, Participant::Agent) || !chat_input::send_enabled(&self.chat_input.draft.text, false, false) {
+            return;
+        }
+        let model = self.chat_input_model(&chat);
+        let accepts = |name: &str| model.as_ref().is_some_and(|m| crate::ai_model::accepts(m, crate::ai_files::upload_mime(name)));
+        let total = std::cell::Cell::new(0u64);
+        let read = |p: &std::path::Path| {
+            let bytes = chat_input::read_capped(p)?;
+            total.set(total.get() + bytes.len() as u64);
+            (total.get() <= chat_input::TOTAL_BYTES_MAX).then_some(bytes)
+        };
+        let list = |p: &std::path::Path| chat_input::list_folder(p, &accepts, chat_input::FOLDER_FILES_MAX);
+        let mime = |n: &str| crate::ai_files::upload_mime(n).to_string();
+        let draft = self.chat_input.draft.clone();
+        let parts = chat_input::attachments(&draft.pending, &read, &list, &mime);
+        let vector_store = self.chat_db.as_ref().and_then(|db| db.chat(&chat).ok().flatten()).and_then(|c| c.vector_store);
+        let Some(content) = chat_input::message_content(&draft.text, parts, vector_store) else { return };
+        let m = Message::new(&chat, Participant::User, content, super::warnings_app::unix_now());
+        // The store and the window are not held across the publish: it may deliver at once.
+        match self.chat_publish(&chat, m, false) {
+            Ok(()) => self.chat_input.sent(),
+            Err(e) => crate::ai_wire_log::console(self.globals.bool("aiChatVerboseConsoleLogging"), &format!("send: {e}")),
+        }
+        self.chat_window_refresh();
+    }
+
+    /// Stop (`stopButtonClicked`, `CVC:2256-2267`): 12c's `chat_stop` for the shown chat. Not the
+    /// streaming bubble's Stop.
+    pub(super) fn stop_chat(&mut self) {
+        if let Some(chat) = self.chat_shown.clone() {
+            self.chat_stop(&chat);
+        }
+    }
+
+    /// The attach button's popup at `at` (screen pixels): files or a folder, two dialogs because
+    /// Windows has no one for both. Its pick returns through `run_menu_id`.
+    fn chat_attach_menu(&mut self, at: (f32, f32)) {
+        use muda::ContextMenu;
+        let Some(hwnd) = self.chat_window.as_ref().and_then(|w| w.hwnd()) else { return };
+        let menu = muda::Menu::new();
+        for (id, title) in [(ATTACH_FILES_ID, chat_input::ATTACH_FILES), (ATTACH_FOLDER_ID, chat_input::ATTACH_FOLDER)] {
+            if let Err(e) = menu.append(&muda::MenuItem::with_id(id, title, true, None)) {
+                self.banners.set("menu", format!("Attach menu: {e}"));
+                return;
+            }
+        }
+        let at = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.0 as i32, at.1 as i32));
+        unsafe { menu.show_context_menu_for_hwnd(hwnd, Some(at)) };
+        self.popup_menu = Some(menu);
+    }
+
+    /// Paths chosen in a dialog: the ones the model takes wait for the next send, the others
+    /// are named in an alert (`addFiles`, `IN:532-560`).
+    fn chat_attach(&mut self, paths: &[PathBuf]) {
+        let Some(chat) = self.chat_shown.clone() else { return };
+        let model = self.chat_input_model(&chat);
+        let accepts = |name: &str| model.as_ref().is_some_and(|m| crate::ai_model::accepts(m, crate::ai_files::upload_mime(name)));
+        let (ok, no) = chat_input::split_by_model(paths, &|p| p.is_dir(), &accepts);
+        if !no.is_empty() {
+            let names: Vec<String> = no.iter().map(|p| chat_input::file_name(p)).collect();
+            let provider = model.as_ref().map(|m| crate::ai_model::display_name(m));
+            self.ask_ai(chat_input::rejected_alert(&names, provider));
+        }
+        chat_input::add_paths(&mut self.chat_input.draft.pending, &ok);
+        self.chat_window_refresh();
+    }
+
+    /// The paths dropped on the window since the last pass, as one question (ruling F27): with
+    /// nothing the model takes they are inserted as text; else the drop question asks (and its
+    /// silence may answer at once).
+    fn chat_drops_flush(&mut self) -> bool {
+        if self.chat_drops.is_empty() {
+            return false;
+        }
+        let paths = std::mem::take(&mut self.chat_drops);
+        let Some(chat) = self.chat_shown.clone() else { return false };
+        let model = self.chat_input_model(&chat);
+        let accepts = |name: &str| model.as_ref().is_some_and(|m| crate::ai_model::accepts(m, crate::ai_files::upload_mime(name)));
+        let (supported, _) = chat_input::split_by_model(&paths, &|p| p.is_dir(), &accepts);
+        if supported.is_empty() {
+            self.chat_input.insert(&chat_input::inserted_paths(&paths));
+            self.chat_window_refresh();
+            return false;
+        }
+        self.ask_ai(chat_input::drop_alert(&chat, supported, paths));
+        true
+    }
+
+    /// The drop question's answer (`IN:518-527`): only the first button attaches. It applies
+    /// only while the chat it was asked for is still shown.
+    pub(super) fn chat_drop_answered(&mut self, chat: &str, supported: &[PathBuf], all: &[PathBuf], index: usize) {
+        if self.chat_shown.as_deref() != Some(chat) {
+            return;
+        }
+        let (attach, insert) = chat_input::drop_result(chat_input::drop_action(index), supported, all);
+        chat_input::add_paths(&mut self.chat_input.draft.pending, &attach);
+        self.chat_input.insert(&chat_input::inserted_paths(&insert));
+        self.chat_window_refresh();
     }
 
     /// The list's right-click menu at `at` (screen pixels) for the selected chats (`CL:393-414`);
@@ -904,6 +1094,18 @@ impl App {
                 let ids = std::mem::take(&mut self.chat_menu_ids);
                 if !ids.is_empty() {
                     self.ask_ai(chat_list::delete_alert(ids));
+                }
+                true
+            }
+            ATTACH_FILES_ID => {
+                if let Some(paths) = rfd::FileDialog::new().pick_files() {
+                    self.chat_attach(&paths);
+                }
+                true
+            }
+            ATTACH_FOLDER_ID => {
+                if let Some(paths) = rfd::FileDialog::new().pick_folders() {
+                    self.chat_attach(&paths);
                 }
                 true
             }
@@ -976,6 +1178,10 @@ impl App {
             let _ = runner.cancel();
         });
         for id in &ids {
+            self.chat_drafts.forget(id);
+            if self.chat_shown.as_deref() == Some(id.as_str()) {
+                self.chat_input.switched(Draft::default());
+            }
             self.streaming_chats.remove(id);
             self.chat_delete(id);
             self.ai_watermarks.remove(id);

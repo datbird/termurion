@@ -367,6 +367,7 @@ pub mod chat_menu;
 pub mod chat_routes;
 pub mod chat_view;
 pub mod chat_toolbar;
+pub mod chat_input;
 #[cfg(windows)]
 pub mod chat_window_ui;
 pub mod settings_ai;

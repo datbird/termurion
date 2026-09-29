@@ -875,6 +875,11 @@ pub struct App {
     chat_window: Option<crate::chat_window_ui::ChatWindow>,
     chat_sub: Option<crate::chat_broker::SubId>,
     chat_shown: Option<String>,
+    /// The shown chat's input (text, pending attachments), the drafts of the chats not shown,
+    /// and the paths dropped on the chat window since the last pass (app-wide: the window is).
+    chat_input: crate::chat_input::InputState,
+    chat_drafts: crate::chat_input::Drafts,
+    chat_drops: Vec<std::path::PathBuf>,
     chat_toolbar: crate::chat_window_ui::ToolbarData,
     chat_toolbar_dirty: bool,
     /// The chat list: its rows as last built, whether they need building again, when they were
@@ -1523,6 +1528,9 @@ pub fn run() {
         chat_window: None,
         chat_sub: None,
         chat_shown: None,
+        chat_input: Default::default(),
+        chat_drafts: Default::default(),
+        chat_drops: Vec::new(),
         chat_toolbar: crate::chat_window_ui::ToolbarData::default(),
         chat_toolbar_dirty: false,
         chat_rows: Vec::new(),

@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use crate::ai_catalog::{Effort, ServiceTier};
 use crate::chat_buttons::{self, Button};
+use crate::chat_input::{self, Enter};
 use crate::chat_list::{self, Row, Selection};
 use crate::chat_message::{Message, Participant};
 use crate::chat_search::{self, Hit};
@@ -61,6 +62,22 @@ pub struct ChatData {
     pub searching: bool,
     /// The conversation of the shown chat: dates, messages and the typing row, in order.
     pub convo: Arc<Vec<RowData>>,
+    pub input: InputData,
+}
+
+/// What the input shows (`ChatInputView`): the text (the field follows it when the app changes
+/// it), the pending attachments' names, and the button's state.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InputData {
+    pub text: String,
+    pub pending: Vec<String>,
+    pub placeholder: String,
+    /// The agent is typing: the button stops it.
+    pub stoppable: bool,
+    pub send_enabled: bool,
+    pub loading: bool,
+    /// Changes when the app set the text and wants the field focused.
+    pub focus: u64,
 }
 
 /// One row of the conversation, made by the app from the chat's messages.
@@ -135,6 +152,15 @@ pub enum ChatEvent {
     RevealCommand(String),
     /// A button under a message was pressed (Task 5); the app re-checks it against the store.
     Button { message: String, button: String },
+    /// The input's text changed.
+    InputChanged(String),
+    /// Send, or Enter: the app sends the text and attachments (only while the agent is idle).
+    Send,
+    /// The stop glyph, or Enter while the agent types.
+    Stop,
+    /// The attach button, its bottom left in screen pixels: the app opens its two-item popup.
+    Attach((f32, f32)),
+    RemoveAttachment(usize),
     Close,
 }
 
@@ -173,6 +199,13 @@ struct ConvoState {
     pressed: std::collections::HashSet<String>,
 }
 
+/// What the input remembers between frames: the text being edited and the focus request seen.
+#[derive(Default)]
+struct InputUi {
+    text: String,
+    focus_seen: u64,
+}
+
 pub struct ChatWindow {
     host: EguiHost,
     data: ChatData,
@@ -180,6 +213,7 @@ pub struct ChatWindow {
     pub list_visible: bool,
     list: ListState,
     convo: ConvoState,
+    input: InputUi,
 }
 
 impl ChatWindow {
@@ -190,7 +224,7 @@ impl ChatWindow {
             .with_min_inner_size(winit::dpi::LogicalSize::new(tb::MIN_SIZE.0, tb::MIN_SIZE.1));
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         crate::settings_keys::add_icon_font(host.ctx());
-        Ok(ChatWindow { host, data: ChatData::default(), title: tb::WINDOW_TITLE.to_string(), list_visible: true, list: ListState::default(), convo: ConvoState::default() })
+        Ok(ChatWindow { host, data: ChatData::default(), title: tb::WINDOW_TITLE.to_string(), list_visible: true, list: ListState::default(), convo: ConvoState::default(), input: InputUi::default() })
     }
 
     /// Follows a forced appearance (`tab_theme::forced_dark`), or Windows' when `None`.
@@ -236,6 +270,10 @@ impl ChatWindow {
     }
 
     pub fn set_data(&mut self, d: ChatData) {
+        // The field follows the app's text when the app changed it (a send, Edit, a chat switch).
+        if d.input.text != self.input.text {
+            self.input.text = d.input.text.clone();
+        }
         self.data = d;
         self.host.request_redraw();
     }
@@ -273,6 +311,7 @@ impl ChatWindow {
         let list_visible = &mut self.list_visible;
         let list = &mut self.list;
         let convo_state = &mut self.convo;
+        let input_state = &mut self.input;
         self.host.paint(|ui| {
             let icons = crate::settings_keys::has_icon_font(ui.ctx());
             // Ctrl+W closes, as every other egui window of Tandem does.
@@ -289,13 +328,95 @@ impl ChatWindow {
                     sidebar(ui, d, list, icons, &mut out);
                 });
             }
+            egui::Panel::bottom("chat_input").show(ui, |ui| {
+                input_area(ui, d, input_state, icons, &mut out);
+            });
             egui::CentralPanel::default().show(ui, |ui| {
-                // The input and the find bar: Tasks 7 and 8.
+                // The find bar: Task 8.
                 conversation(ui, d, convo_state, icons, &mut out);
             });
         });
         out
     }
+}
+
+/// The input under the conversation (`ChatInputView`): the attachments' strip, then the attach
+/// button, the field (about six lines, then it scrolls) with the hint at its right, and the send
+/// glyph (the stop glyph while the agent types). Enter is decided before the editor sees it.
+fn input_area(ui: &mut egui::Ui, d: &ChatData, st: &mut InputUi, icons: bool, out: &mut Vec<ChatEvent>) {
+    let id = egui::Id::new("chat_input_field");
+    let enabled = d.chat.is_some();
+    ui.add_space(6.0);
+    if !d.input.pending.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            for (i, name) in d.input.pending.iter().enumerate() {
+                ui.label(name);
+                if glyph_button(ui, icons, '\u{E711}', "x", "Remove", true, false) {
+                    out.push(ChatEvent::RemoveAttachment(i));
+                }
+                ui.add_space(6.0);
+            }
+        });
+    }
+    if d.input.focus != st.focus_seen {
+        st.focus_seen = d.input.focus;
+        ui.memory_mut(|m| m.request_focus(id));
+    }
+    // Enter is taken before the editor sees it; Shift+Enter (and Enter with nothing to do) stays
+    // in the editor. The events go out after the text's own change, so a send sees the text.
+    let mut after = Vec::new();
+    if enabled && ui.memory(|m| m.has_focus(id)) {
+        let (pressed, mods) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.modifiers));
+        if pressed && !mods.ctrl && !mods.alt && !mods.command {
+            let send = chat_input::send_enabled(&st.text, d.input.loading, d.input.stoppable);
+            let action = chat_input::on_enter(mods.shift, send, d.input.stoppable);
+            match action {
+                Enter::Send => after.push(ChatEvent::Send),
+                Enter::StopThenSend => after.extend([ChatEvent::Stop, ChatEvent::Send]),
+                Enter::Stop => after.push(ChatEvent::Stop),
+                Enter::Newline | Enter::Nothing => {}
+            }
+            if !after.is_empty() {
+                ui.input_mut(|i| i.consume_key(mods, egui::Key::Enter));
+            }
+        }
+    }
+    let line = ui.text_style_height(&egui::TextStyle::Body);
+    let cap = line * 6.0 + 8.0;
+    let mut edited = None;
+    ui.add_enabled_ui(enabled, |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            let (glyph, fallback, tip, stop) = if d.input.stoppable { (chat_input::STOP_GLYPH, "Stop", "Stop", true) } else { (chat_input::SEND_GLYPH, "Send", "Send", false) };
+            if glyph_button(ui, icons, glyph, fallback, tip, d.input.send_enabled, false) {
+                out.push(if stop { ChatEvent::Stop } else { ChatEvent::Send });
+            }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                let attach = glyph_response(ui, icons, '\u{E723}', "+", chat_input::ATTACH_TIP, true, false);
+                if attach.clicked() {
+                    out.push(ChatEvent::Attach(screen_pixels(ui, attach.rect.left_bottom())));
+                }
+                egui::ScrollArea::vertical().id_salt("chat_input_scroll").max_height(cap).auto_shrink([false, true]).show(ui, |ui| {
+                    let field = egui::TextEdit::multiline(&mut st.text).id(id).hint_text(d.input.placeholder.as_str()).desired_rows(1).desired_width(f32::INFINITY).frame(egui::Frame::NONE);
+                    edited = Some(field.show(ui));
+                });
+            });
+        });
+    });
+    if let Some(o) = edited {
+        if o.response.changed() {
+            out.push(ChatEvent::InputChanged(st.text.clone()));
+        }
+        // The hint, at the field's right, unless the text would reach it or the agent types.
+        let font = egui::FontId::proportional(12.0);
+        let hint_w = ui.painter().layout_no_wrap(chat_input::HINT.to_string(), font.clone(), egui::Color32::WHITE).size().x;
+        let rect = o.response.rect;
+        if !d.input.stoppable && !chat_input::hint_hidden(&st.text, o.galley.rows.len(), o.galley.rect.width(), hint_w, rect.width()) {
+            let weak = ui.visuals().weak_text_color();
+            ui.painter().text(egui::pos2(rect.right() - 12.0, rect.top() + line * 0.5 + 2.0), egui::Align2::RIGHT_CENTER, chat_input::HINT, font, weak);
+        }
+    }
+    out.extend(after);
+    ui.add_space(6.0);
 }
 
 /// The toolbar row, left to right (`CWC:505-521`): the title, provider, model, effort, tier,

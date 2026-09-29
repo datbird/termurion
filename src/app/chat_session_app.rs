@@ -665,7 +665,7 @@ impl App {
 
     /// A terminal selection ended (`textViewLiveSelectionDidEnd`, `PTYSession.m:14912-14916`): a
     /// short one in the pane the shown chat links goes to the chat's input when it is still
-    /// eligible (`CVC:1060-1067`, Task 7's `offer_text`).
+    /// eligible (`CVC:1060-1067`, `offer_text`).
     pub(super) fn chat_offer_selection(&mut self, pane: PaneId) {
         let Some(chat) = self.chat_shown.clone() else { return };
         let Some(reference) = self.session_ref(pane) else { return };
@@ -678,10 +678,6 @@ impl App {
             self.offer_text(&chat, &text);
         }
     }
-
-    /// Puts terminal text in the chat's input while nothing was typed since the last send (filled
-    /// by Task 7's input; until then nothing).
-    fn offer_text(&mut self, _chat: &str, _text: &str) {}
 }
 
 /// The indicator menu's ids are `aichat:ind:<index>` into the routes it was built with.
