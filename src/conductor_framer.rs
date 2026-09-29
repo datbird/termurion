@@ -4,6 +4,7 @@
 use crate::conductor::{Command, Conductor, Effect, Handler};
 use crate::conductor_parser::{AUTOPOLL_PID, NOTIF_PID};
 use crate::framer_script::framer_code;
+use crate::ssh_jumps::Reconnection;
 
 /// The most autopoll text kept between EOF pieces (the parser's own cap for one block).
 const AUTOPOLL_TEXT_MAX: usize = crate::conductor_parser::MAX_AUTOPOLL;
@@ -192,16 +193,65 @@ impl Conductor {
         // exfiltrateUsefulFramerInfo (`CD:1932-1940`).
         self.run_remote_command("echo $HOME", Purpose::Home);
         self.send(Command::FramerGetenv("PATH".into()), Handler::Getenv("PATH".into(), None), false);
-        // Task 10 adds the jump branch here and in the login handler.
-        let cwd = self.setup.initial_directory.clone().unwrap_or_else(|| "$HOME".to_string());
-        let args = self.modified_command_args.clone().unwrap_or_else(|| self.setup.parsed.command_args.clone());
-        self.send(Command::FramerLogin { cwd, args }, Handler::FramerLogin(Vec::new()), false);
+        if self.my_jump.is_some() {
+            // framerJump (`CD:1970-1972`): the jump script replaces the login.
+            let script = self.jump_script();
+            self.send(Command::FramerEval(script), Handler::Jump(Vec::new()), false);
+        } else {
+            let cwd = self.setup.initial_directory.clone().unwrap_or_else(|| "$HOME".to_string());
+            let args = self.modified_command_args.clone().unwrap_or_else(|| self.setup.parsed.command_args.clone());
+            self.send(Command::FramerLogin { cwd, args }, Handler::FramerLogin(Vec::new()), false);
+        }
         if self.autopoll_enabled {
             self.send(Command::FramerAutopoll, Handler::FireAndForget, false);
         }
         // handleGetHostname: its pid line adds a Hostname job (`CD:2198-2214`).
         self.send(Command::FramerRun(DISCOVER_HOSTNAME.into()), Handler::RunRemote(Purpose::Hostname), false);
         self.effects.push(Effect::StateChanged);
+    }
+
+    /// jumpScript (`CD:1754-1770`): the script for `my_jump`, which it uses up. The hop's
+    /// arguments are text an earlier hop reported and the script runs on that same host.
+    fn jump_script(&mut self) -> String {
+        let jump = self.my_jump.take();
+        crate::ssh_jumps::jump_script(crate::ssh_jumps::IT2SSH, jump.as_ref().map_or("", |j| j.sshargs.as_str()))
+    }
+
+    /// jumpWithEval (`CD:1772-1774`): a host without a usable Python evals the script through
+    /// conductor.sh, fire and forget.
+    pub(crate) fn jump_with_eval(&mut self) {
+        use base64::Engine;
+        let script = self.jump_script();
+        let code = base64::engine::general_purpose::STANDARD.encode(script.as_bytes());
+        self.send(Command::Eval(code), Handler::FireAndForget, false);
+    }
+
+    /// childDidBeginJumping (`CD:1776-1778`): the next hop's conductor took this one's jumps.
+    pub fn child_did_begin_jumping(&mut self) {
+        self.my_jump = None;
+    }
+
+    /// reconnectionInfo (`CD:737-741`): the current directory wins over the initial one.
+    pub fn reconnection_info(&self) -> Reconnection {
+        Reconnection {
+            sshargs: self.setup.sshargs.clone(),
+            initial_directory: self.current_directory.clone().or_else(|| self.setup.initial_directory.clone()),
+            boolargs: self.setup.bool_args.clone(),
+        }
+    }
+
+    /// The hops from the outermost to this conductor (`PS:2956-2966`).
+    pub fn sequence(&self) -> Vec<Reconnection> {
+        let mut out = self.parent.as_ref().map(|p| p.sequence()).unwrap_or_default();
+        out.push(self.reconnection_info());
+        out
+    }
+
+    /// Whether the chain's first hook was vouched for by Tandem's own origin token. Only then
+    /// is the first hop's ssh text something the person typed; a hook any program can print
+    /// says nothing about what to run locally.
+    pub fn root_is_local(&self) -> bool {
+        self.parent.as_ref().map_or(self.setup.local_origin, |p| p.root_is_local())
     }
 
     /// finalizeFraming (`CD:2398-2411`): the login's answer is the shell's pid, or why there is
@@ -1425,5 +1475,138 @@ mod tests {
         // A value that is only invisible is left out.
         c.shell = Some("\u{200b}\u{202e}".into());
         assert!(session_values(Some(&c), "", "").iter().all(|(n, _)| *n != "shell"));
+    }
+    fn reconnection(args: &str, dir: Option<&str>) -> crate::ssh_jumps::Reconnection {
+        crate::ssh_jumps::Reconnection { sshargs: args.into(), initial_directory: dir.map(String::from), boolargs: "46".into() }
+    }
+
+    /// A jumping conductor driven to the point the framing sequence sends its login step:
+    /// getshell answered, python 3.11, the runpython reply, then uname, home and getenv.
+    fn jumping_to_login(jumps: Vec<crate::ssh_jumps::Reconnection>) -> (Conductor, Vec<Effect>) {
+        let mut c = Conductor::new(sequence_setup(), None, "P");
+        c.start_jumping(jumps);
+        let started = c.take_effects();
+        feed(&mut c, &[Token::Begin("1.1".into()), Token::Line("/bin/sh".into()), Token::Line("\n/home/u".into()), end("1.1", 0, "r")]);
+        for _ in 0..4 {
+            if c.in_flight() == Some(&Command::PythonVersion) {
+                break;
+            }
+            feed(&mut c, &[Token::Begin("1.2".into()), end("1.2", 0, "r")]);
+        }
+        c.take_effects();
+        feed(&mut c, &[Token::Begin("2.1".into()), Token::Line("Python 3.11.4".into()), end("2.1", 0, "r")]);
+        c.take_effects();
+        feed(&mut c, &[Token::Begin("3.1".into()), Token::Line("31337".into()), end("3.1", 0, "0")]);
+        c.take_effects();
+        answer(&mut c, &[], 0, "r");
+        answer(&mut c, &["501"], 0, "r");
+        answer(&mut c, &["502"], 0, "r");
+        (c, started)
+    }
+
+    #[test]
+    fn jumps_follow_iterm2() {
+        use crate::ssh_jumps::{jump_script, IT2SSH};
+        use base64::Engine;
+        let (a, b) = (reconnection("-p 1 a", Some("/da")), reconnection("-p 2 b", None));
+        let mut first = Conductor::new(sequence_setup(), None, "P");
+        first.start_jumping(vec![a.clone(), b.clone()]);
+        assert_eq!(first.my_jump, Some(a.clone()));
+        assert_eq!(first.subsequent_jumps, [b.clone()]);
+        let started = first.take_effects();
+        assert!(matches!(started.first(), Some(Effect::Write(w)) if w.starts_with(b"\x03P")), "start writes the line prefix first: {started:?}");
+        // The framing sequence queues the jump at once and uses the jump up.
+        let (mut c, _) = jumping_to_login(vec![a.clone(), b.clone()]);
+        assert_eq!(c.my_jump, None);
+        // The framing path: the eval of the jump script replaces the login.
+        let script = base64::engine::general_purpose::STANDARD.encode(jump_script(IT2SSH, "-p 1 a"));
+        let fx = answer(&mut c, &["/usr/bin:/bin"], 0, "r");
+        assert_eq!(fx, [Effect::Write(framer_cmd(&["eval", &script]))]);
+        assert_eq!(c.subsequent_jumps, [b.clone()], "the rest wait for the next hop");
+        // Its reply finalizes framing exactly as a login's.
+        let fx = answer(&mut c, &["4300"], 0, "f");
+        assert!(c.framing());
+        assert_eq!(c.framed_pid, Some(4300));
+        assert!(matches!(&fx[0], Effect::Registered { .. }), "{fx:?}");
+        assert_eq!(fx[1..], [Effect::SendInitialText, Effect::StateChanged, Effect::StopQueueingInput, Effect::Write(framer_cmd(&["autopoll"]))]);
+        // A failing jump fails the conductor with the reply's text.
+        let (mut c, _) = jumping_to_login(vec![a.clone()]);
+        answer(&mut c, &["/bin"], 0, "r");
+        let fx = answer(&mut c, &["Command failed: boom"], 1, "r");
+        assert_eq!(fx.last(), Some(&Effect::Abort("Command failed: boom".into())));
+        // childDidBeginJumping (`CD:1776-1778`) clears the jump.
+        let mut p = Conductor::new(sequence_setup(), None, "P");
+        p.start_jumping(vec![a.clone()]);
+        p.child_did_begin_jumping();
+        assert_eq!(p.my_jump, None);
+
+        // Python below 3.7: the pre-framer eval, fire and forget, in place of the login shell.
+        let mut c = Conductor::new(sequence_setup(), None, "P");
+        c.start_jumping(vec![a.clone(), b.clone()]);
+        c.take_effects();
+        feed(&mut c, &[Token::Begin("1.1".into()), Token::Line("/bin/sh".into()), Token::Line("\n/home/u".into()), end("1.1", 0, "r")]);
+        for _ in 0..4 {
+            if c.in_flight() == Some(&Command::PythonVersion) {
+                break;
+            }
+            feed(&mut c, &[Token::Begin("1.2".into()), end("1.2", 0, "r")]);
+        }
+        c.take_effects();
+        feed(&mut c, &[Token::Begin("2.1".into()), Token::Line("Python 3.6.9".into()), end("2.1", 0, "r")]);
+        let eval = format!("eval {}", base64::engine::general_purpose::STANDARD.encode(jump_script(IT2SSH, "-p 1 a")));
+        assert_eq!(c.take_effects(), [Effect::Write(pre_cmd("\u{3}P", &[&eval]))]);
+        assert_eq!(c.my_jump, None);
+        assert!(!c.python_ok);
+        // No jump pending: the login shell, as before.
+        let mut c = Conductor::new(sequence_setup(), None, "P");
+        c.start();
+        c.take_effects();
+        feed(&mut c, &[Token::Begin("1.1".into()), Token::Line("/bin/sh".into()), Token::Line("\n/home/u".into()), end("1.1", 0, "r")]);
+        for _ in 0..4 {
+            if c.in_flight() == Some(&Command::PythonVersion) {
+                break;
+            }
+            feed(&mut c, &[Token::Begin("1.2".into()), end("1.2", 0, "r")]);
+        }
+        c.take_effects();
+        feed(&mut c, &[Token::Begin("2.1".into()), Token::Line("Python 3.6.9".into()), end("2.1", 0, "r")]);
+        assert_eq!(c.take_effects()[0], Effect::StopQueueingInput);
+    }
+
+    #[test]
+    fn jump_reply_lines_are_bounded() {
+        let (mut c, _) = jumping_to_login(vec![reconnection("a", None)]);
+        answer(&mut c, &["/bin"], 0, "r");
+        let piece = "x".repeat(64 * 1024);
+        let many: Vec<&str> = (0..40).map(|_| piece.as_str()).collect();
+        let fx = answer(&mut c, &many, 1, "r");
+        let Some(Effect::Abort(reason)) = fx.last() else { panic!("{fx:?}") };
+        assert!(reason.len() <= super::REPLY_MAX, "{}", reason.len());
+    }
+
+    #[test]
+    fn sequence_follows_iterm2() {
+        let mut outer = Conductor::new(Setup { sshargs: "h1".into(), bool_args: "b1".into(), initial_directory: Some("/a".into()), client_unique_id: "A".into(), ..Setup::default() }, None, "P");
+        outer.framed_pid = Some(10);
+        let mut inner = Conductor::new(Setup { sshargs: "h2".into(), bool_args: "b2".into(), initial_directory: Some("/ignored".into()), client_unique_id: "B".into(), ..Setup::default() }, Some(Box::new(outer)), "Q");
+        inner.current_directory = Some("/b".into());
+        let r = |args: &str, dir: &str, bool_args: &str| crate::ssh_jumps::Reconnection { sshargs: args.into(), initial_directory: Some(dir.into()), boolargs: bool_args.into() };
+        assert_eq!(inner.sequence(), [r("h1", "/a", "b1"), r("h2", "/b", "b2")]);
+        assert_eq!(inner.reconnection_info(), r("h2", "/b", "b2"));
+        // The current directory wins over the initial one; with neither there is none.
+        inner.current_directory = None;
+        assert_eq!(inner.reconnection_info().initial_directory.as_deref(), Some("/ignored"));
+        let bare = Conductor::new(Setup { sshargs: "h".into(), ..Setup::default() }, None, "P");
+        assert_eq!(bare.reconnection_info().initial_directory, None);
+    }
+
+    #[test]
+    fn only_a_local_origin_root_may_reconnect_from_here() {
+        let mut root = Conductor::new(Setup { client_unique_id: "A".into(), ..Setup::default() }, None, "P");
+        let child = |root: Conductor| Conductor::new(Setup { client_unique_id: "B".into(), ..Setup::default() }, Some(Box::new(root)), "Q");
+        assert!(!child(Conductor::new(Setup::default(), None, "P")).root_is_local(), "a hook the local secret did not vouch for");
+        root.setup.local_origin = true;
+        assert!(root.root_is_local());
+        assert!(child(root).root_is_local(), "the chain's first hook decides");
     }
 }

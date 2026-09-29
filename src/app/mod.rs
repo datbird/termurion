@@ -402,6 +402,9 @@ pub struct App {
     /// The command the next pane runs instead of its profile's (a git menu command's
     /// single-use window, the REPL's interpreter).
     start_command_override: Option<String>,
+    /// The hops the next pane reconnects through (Duplicate Session), moved into the new pane
+    /// by `start_pane_as`. Set and cleared around one start, so it is not per-window state.
+    start_jumps_override: Option<Vec<crate::ssh_jumps::Reconnection>>,
     /// Variables the next pane gets over its session variables (the REPL's cookie and key; a
     /// secret, never logged). Set and cleared around one `open_window`.
     start_env_override: Option<Vec<String>>,
@@ -1231,6 +1234,7 @@ pub fn run() {
         menus_dirty: false,
         start_dir_override: None,
         start_command_override: None,
+        start_jumps_override: None,
         start_env_override: None,
         start_tab: None,
         single_use: HashMap::new(),
@@ -2529,6 +2533,9 @@ impl App {
                 if self.start_command_override.is_none() {
                     pane.ssh.profile_ssh = profile::is_ssh(&p);
                     pane.ssh.initial_directory = profile::ssh_initial_directory(&p);
+                }
+                if let Some(jumps) = self.start_jumps_override.take() {
+                    pane.pending_jumps = jumps;
                 }
                 self.install_pane(id, pane, &p);
                 true

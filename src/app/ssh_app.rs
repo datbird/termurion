@@ -67,6 +67,10 @@ impl App {
         // The remote jobs are read once however many panes and process blocks this pass held
         // (F22).
         self.ssh_jobs_changed(&ids);
+        // The shells' directories reach their conductors (`PS:19373-19376`).
+        for p in self.panes.values_mut() {
+            p.track_ssh_cwd();
+        }
         !ids.is_empty()
     }
 
@@ -163,8 +167,14 @@ impl App {
         p.own_mut().soft_reset();
         // The origin token is checked before anything the remote sent is parsed.
         let local = self.ssh_secrets.lock().unwrap().check(&init.token);
-        let directory = if p.ssh.profile_ssh && p.conductor.is_none() { p.ssh.initial_directory.clone() } else { None };
+        // The directory and the start (`PS:20129-20169`): the SSH profile's folder, a pending
+        // jump's directory, and the jumps left to make.
+        let pwd = if p.ssh.profile_ssh { p.ssh.initial_directory.clone() } else { None };
+        let previous_jumps = p.conductor.as_ref().map(|c| c.subsequent_jumps.clone());
+        let plan = crate::ssh_jumps::hook_plan(&mut p.pending_jumps, pwd, previous_jumps.is_some(), previous_jumps.as_deref().unwrap_or_default());
+        let directory = plan.directory;
         p.ssh.profile_ssh = false;
+        p.note_ssh_cwd();
         let env = p.own().exfiltrated(None);
         let finder = crate::ssh_args::SshConfigs::load(&ssh_config_paths());
         let setup = setup_for_hook(&init, local, &env, &cfg.environment_variables_to_copy, directory, inject, &finder);
@@ -178,7 +188,16 @@ impl App {
                 c.add_path(path, destination, &home);
             }
         }
-        c.start();
+        match plan.start {
+            crate::ssh_jumps::Start::Jump(jumps) => c.start_jumping(jumps),
+            crate::ssh_jumps::Start::ParentJumps(jumps) => {
+                c.start_jumping(jumps);
+                if let Some(parent) = c.parent.as_mut() {
+                    parent.child_did_begin_jumping();
+                }
+            }
+            crate::ssh_jumps::Start::Plain => c.start(),
+        }
         let hop = Hop { unique_id: c.setup.client_unique_id.clone(), location: c.identity().compact(&crate::ssh_args::local_user()) };
         p.conductor = Some(Box::new(c));
         p.ssh.chain.push(hop);

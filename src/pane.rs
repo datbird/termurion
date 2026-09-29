@@ -245,6 +245,10 @@ pub struct Pane {
     /// Session writes held while the conductor sets up (`_sshWriteQueue`, `PS:4191-4197`),
     /// sent when it unhooks.
     ssh_held: Vec<u8>,
+    /// The hops this pane still has to reconnect through (`_pendingJumps`, `PS:20139-20169`): a
+    /// hook uses up the first (its directory) and the rest start the jumping. Set for a
+    /// Duplicate Session or a restored arrangement's session.
+    pub pending_jumps: Vec<crate::ssh_jumps::Reconnection>,
     /// A screen-like TERM: italics as reverse video (iTerm2's translateFromScreenTerminal).
     pub screen_filter: Option<crate::screenterm::Filter>,
     /// A tmux gateway: its pty carries tmux commands only, so no input reaches it.
@@ -392,7 +396,7 @@ impl Pane {
     fn with(id: PaneId, pty: Option<Io>, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = pty.is_some();
-        Pane { id, screen, pty, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() }
+        Pane { id, screen, pty, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -1130,6 +1134,29 @@ impl Pane {
     /// The remote CPU values of the innermost framing conductor, in place of the local meter.
     pub fn remote_cpu(&self) -> Option<&crate::statusbar_metrics::Series> {
         self.conductor.as_deref()?.innermost_framing()?.procs.as_ref().map(|p| &p.cpu_series)
+    }
+
+    /// A conductor hooked: the directory the pane has now is not the remote's, so only a later
+    /// change is told to the conductor.
+    pub fn note_ssh_cwd(&mut self) {
+        self.ssh.cwd_seen = self.own().shell.cwd.clone();
+    }
+
+    /// didUpdateCurrentDirectory (`PS:19373-19376`): when the shell's directory changed since
+    /// last looked at, the innermost conductor learns it as its current directory, for a later
+    /// reconnection. The remote chose the text, so a directory that is not one line is not
+    /// kept. True when the directory changed.
+    pub fn track_ssh_cwd(&mut self) -> bool {
+        let Some(conductor) = self.conductor.as_mut() else { return false };
+        let cwd = self.live.as_ref().unwrap_or(&self.screen).shell.cwd.clone();
+        if cwd == self.ssh.cwd_seen {
+            return false;
+        }
+        if let Some(dir) = cwd.as_deref().and_then(crate::ssh_jumps::clean_directory) {
+            conductor.current_directory = Some(dir);
+        }
+        self.ssh.cwd_seen = cwd;
+        true
     }
 
     /// Whether the job must be read again (taken).
@@ -2518,8 +2545,31 @@ mod tests {
     }
 
     #[test]
+    fn cwd_tracking_follows_iterm2() {
+        use crate::conductor::{Conductor, Setup};
+        let mut p = Pane::with(1, None, 80, 24);
+        p.conductor = Some(Box::new(Conductor::new(Setup::default(), None, "P")));
+        p.feed_output(b"\x1b]7;file://localhost/local/dir\x07");
+        p.note_ssh_cwd();
+        assert!(!p.track_ssh_cwd(), "the directory the pane had when the conductor hooked is not the remote's");
+        assert_eq!(p.conductor.as_ref().unwrap().current_directory, None);
+        p.feed_output(b"\x1b]7;file://h/home/u/x\x07");
+        assert!(p.track_ssh_cwd());
+        assert_eq!(p.conductor.as_ref().unwrap().current_directory.as_deref(), Some("/home/u/x"));
+        assert!(!p.track_ssh_cwd(), "once per change");
+        // A directory that is not one line of text never reaches the conductor.
+        p.feed_output(b"\x1b]7;file://h/a%0Ab\x07");
+        assert!(p.track_ssh_cwd());
+        assert_eq!(p.conductor.as_ref().unwrap().current_directory.as_deref(), Some("/home/u/x"));
+        // With no conductor there is nothing to tell.
+        p.conductor = None;
+        p.feed_output(b"\x1b]7;file://h/other\x07");
+        assert!(!p.track_ssh_cwd());
+    }
+
+    #[test]
     fn gateway_panes_take_no_input() {
-        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
+        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
         p.buffer.on = true;
         p.input(b"a");
         p.gateway = true;
@@ -2532,7 +2582,7 @@ mod tests {
         // During a replay iTerm2's tab shows the task-less synthetic session, so nothing
         // the user sends reaches the live shell; the live session's own writes (a
         // trigger's Send Text) still do.
-        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
+        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
         p.buffer.on = true;
         p.input(b"a");
         p.replay = Some(replay::Replay { decoder: None, read_only: false });
@@ -2547,7 +2597,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
+        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);

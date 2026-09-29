@@ -81,6 +81,9 @@ pub struct PaneSsh {
     /// The SSH profile's remote initial directory (`profile::ssh_initial_directory`), used
     /// only while `profile_ssh` and there is no conductor yet.
     pub initial_directory: Option<String>,
+    /// The shell directory the pane had when a conductor last took it, so only a later change
+    /// reaches the conductor (`didUpdateCurrentDirectory`, `PS:19373-19376`).
+    pub cwd_seen: Option<String>,
     /// The remote process rows changed, or a conductor left: the job is read again once by the
     /// app (`App::ssh_pump_pane`), however many blocks came in that pass.
     pub jobs_dirty: bool,

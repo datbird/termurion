@@ -232,6 +232,20 @@ impl Identity {
         }
     }
 
+    /// commandLine (`SSHIdentity.swift:51-56`): `-l <user>` with a user, `-p <port>` off port 22,
+    /// then the host name.
+    pub fn command_line(&self) -> String {
+        let mut words = Vec::new();
+        if let Some(u) = &self.username {
+            words.push(format!("-l {u}"));
+        }
+        if self.port != 22 {
+            words.push(format!("-p {}", self.port));
+        }
+        words.push(self.hostname.clone());
+        words.join(" ")
+    }
+
     /// debugDescription (`SSHIdentity.swift:24-31`).
     pub fn description(&self) -> String {
         match &self.username {

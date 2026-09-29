@@ -5,6 +5,7 @@
 
 use crate::conductor_framer::{Job, Purpose, TtyState, REPLY_MAX};
 use crate::conductor_parser::Init;
+use crate::ssh_jumps::Reconnection;
 use crate::ssh_args::{HostnameFinder, Identity, ParsedArgs};
 use crate::ssh_inject::{expand_local_tilde, injection_payloads, last_component, modify_remote, shell_supports_injection, tarballs, tweak_destination, Payload, Source, INTEGRATION_SUBDIR};
 use std::collections::BTreeMap;
@@ -347,6 +348,9 @@ pub struct Setup {
     pub initial_directory: Option<String>,
     pub inject: bool,
     pub parsed: ParsedArgs,
+    /// Whether the hook's origin token was Tandem's own (the first hop of a session Tandem
+    /// started): only such a chain's first hop is text the person typed.
+    pub local_origin: bool,
 }
 
 /// How a command's results are handled (`CD:1205-1221`). The reply lines a handler keeps
@@ -365,6 +369,8 @@ pub enum Handler {
     /// The framer's `login` reply: its lines are the shell's pid, or the failure text
     /// (`CD:2216-2225`); the end finishes framing.
     FramerLogin(Vec<String>),
+    /// The framer's `eval` of the jump script: answered as a login is (`CD:2225-2234`).
+    Jump(Vec<String>),
     /// A framer `getenv`: the first line is the value of the named variable (`CD:2236-2246`).
     /// The variable's name and the first reply line: `None` before one arrived, `Some(None)`
     /// when it was too long to keep.
@@ -541,6 +547,7 @@ pub fn setup_for_hook(init: &Init, local: bool, env: &[(String, String)], env_na
         initial_directory: directory,
         inject,
         parsed: crate::ssh_args::parse(&init.sshargs, &init.bool_args, finder),
+        local_origin: local,
     }
 }
 
@@ -668,6 +675,13 @@ pub struct Conductor {
     pub(crate) procs: Option<crate::ssh_procs::Provider>,
     /// The command whose output is the remote's `uname` (the `unameCommand` setting).
     pub uname_command: String,
+    /// Where this hop reconnects to (`myJump`, `CD:444`): set by `start_jumping`, used up by
+    /// the framing sequence's jump.
+    pub my_jump: Option<Reconnection>,
+    /// The hops after `my_jump` (`subsequentJumps`, `CD:442`), taken by the next hop's conductor.
+    pub subsequent_jumps: Vec<Reconnection>,
+    /// The remote shell's current directory (`currentDirectory`), from the pane's tracking.
+    pub current_directory: Option<String>,
     /// Every background job completion, for the tests.
     #[cfg(test)]
     pub(crate) completed: Vec<(Purpose, Vec<u8>, i32)>,
@@ -723,6 +737,9 @@ impl Conductor {
             autopoll: String::new(),
             procs: None,
             uname_command: "uname -s".to_string(),
+            my_jump: None,
+            subsequent_jumps: Vec::new(),
+            current_directory: None,
             #[cfg(test)]
             completed: Vec::new(),
             line_prefix: format!("\u{3}{prefix_uuid}"),
@@ -744,6 +761,15 @@ impl Conductor {
     /// `local_home`.
     pub fn add_path(&mut self, path: &str, destination: &str, local_home: &Path) {
         self.payloads.push(Payload { source: Source::Disk(expand_local_tilde(path, local_home)), destination: tweak_destination(destination) });
+    }
+
+    /// startJumping (`CD:1613-1618`): the first hop is this conductor's own jump, the rest
+    /// wait for the next hop's conductor. No hops is an ordinary start.
+    pub fn start_jumping(&mut self, jumps: Vec<Reconnection>) {
+        let mut rest = jumps.into_iter();
+        self.my_jump = rest.next();
+        self.subsequent_jumps = rest.collect();
+        self.start();
     }
 
     /// start (`CD:1606-1611`): the line prefix conductor.sh reads first, then getshell.
@@ -807,11 +833,13 @@ impl Conductor {
         self.send(Command::PythonVersion, Handler::CheckForPython(Vec::new()), false);
     }
 
-    /// The end of pythonversion's reply (`CD:2130-2161`): a usable python is ready; anything
-    /// else starts the login shell (a pending jump's eval is 14c).
+    /// The end of pythonversion's reply (`CD:2130-2161`): a usable python is ready; a python
+    /// below the minimum with a jump pending evals the jump script; anything else starts the
+    /// login shell.
     fn did_check_for_python(&mut self, lines: &[String], status: u8) {
         match python_version(&lines.join("\n")) {
             Some(version) if status == 0 && version >= MIN_PYTHON => self.python_ready(),
+            Some(_) if status == 0 && self.my_jump.is_some() => self.jump_with_eval(),
             _ => self.exec_login_shell(),
         }
     }
@@ -1337,7 +1365,7 @@ impl Conductor {
         let (lines, (max_bytes, max_lines)) = match &mut context.handler {
             Handler::GetShell(lines) => (lines, GETSHELL_LIMIT),
             Handler::CheckForPython(lines) => (lines, PYTHON_LIMIT),
-            Handler::FramerLogin(lines) => (lines, LOGIN_LIMIT),
+            Handler::FramerLogin(lines) | Handler::Jump(lines) => (lines, LOGIN_LIMIT),
             // A reply past the limit is dropped, not a reason to fail the connection: what
             // was kept then reads as an invalid reply.
             Handler::Ephemeral(_, lines) => {
@@ -1411,7 +1439,7 @@ impl Conductor {
             }
             Handler::CheckForPython(lines) => self.did_check_for_python(lines, status),
             Handler::RunRemote(_) => {}
-            Handler::FramerLogin(lines) => self.finalize_framing(status, lines),
+            Handler::FramerLogin(lines) | Handler::Jump(lines) => self.finalize_framing(status, lines),
             Handler::Getenv(name, first) => {
                 if let Some(Some(line)) = first {
                     self.environment_variables.insert(name.clone(), line.clone());

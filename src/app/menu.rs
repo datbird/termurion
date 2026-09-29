@@ -725,18 +725,13 @@ impl App {
                 self.new_window(event_loop, g.as_deref());
             }
             "duplicateTab:" => self.duplicate_tab(self.active),
-            "newSessionWithSameProfile:" | "duplicateSession:" => {
+            "duplicateSession:" => self.duplicate_session(),
+            "newSessionWithSameProfile:" => {
                 let g = self.focused_guid();
                 self.new_tab(g.as_deref());
             }
-            "splitVertically:" => {
-                let g = self.focused_guid();
-                self.split(Axis::Row, g.as_deref());
-            }
-            "splitHorizontally:" => {
-                let g = self.focused_guid();
-                self.split(Axis::Column, g.as_deref());
-            }
+            "splitVertically:" => self.split_current(Axis::Row),
+            "splitHorizontally:" => self.split_current(Axis::Column),
             "runCoprocess:" => self.open_coprocess_prompt(event_loop),
             "stopCoprocess:" => {
                 if let Some(id) = self.focused_id() {

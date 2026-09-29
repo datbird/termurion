@@ -77,6 +77,14 @@ impl App {
         if let Some(t) = v.as_table_mut() {
             t.extend(self.clippings_table(id));
         }
+        // A session that runs ssh saved without contents (an arrangement, Duplicate Tab): the
+        // hops to reconnect through, each with its directory (`PS:7342-7347`). Restoration with
+        // contents keeps the conductor itself instead (F16).
+        if let (Contents::None | Contents::Plain, Some(c), Some(t)) = (contents, p.conductor.as_deref(), v.as_table_mut()) {
+            if self.store.get(&p.profile).is_some_and(crate::profile::is_ssh) {
+                t.insert(crate::ssh_jumps::PENDING_JUMPS_KEY.into(), crate::ssh_jumps::jumps_value(&c.sequence()));
+            }
+        }
         // Session restoration: the host session, so a later launch can take the shell back.
         if let (Contents::Styled(_) | Contents::KeysOnly, Some((host_id, offset)), Some(pid), Some(t)) = (contents, p.host_session(), p.shell_pid(), v.as_table_mut()) {
             t.insert(crate::restore_state::HOST_KEY.into(), super::restore_ui::host_key_value(host_id, pid, offset));
@@ -463,6 +471,9 @@ impl App {
             self.start_dir_override = None;
             match id {
                 Some(id) => {
+                    if launched {
+                        self.restore_ssh_session(id, &session);
+                    }
                     if let Some(p) = self.panes.get_mut(&id) {
                         if let Some(text) = arrangement::styled_contents(&session) {
                             // Session restoration: styled text, then the banner when no job came back.
@@ -514,6 +525,22 @@ impl App {
         (tab.pinned, tab.group) = arrangement::tab_pin_group(t);
         self.next_tab_id += 1;
         Ok(tab)
+    }
+
+    /// A restored session that runs ssh: its saved hops become its pending jumps, and the
+    /// folder the arrangement saved for it is the remote folder it starts in (iTerm2 sends the
+    /// saved one, `iTermSessionFactory.m:323-345`); the first hop's own directory still wins
+    /// when the hook runs (`hook_plan`). A saved folder counts only as a POSIX path of one line,
+    /// since a Windows folder cannot name a remote one.
+    fn restore_ssh_session(&mut self, id: PaneId, session: &Value) {
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        p.pending_jumps = session.get(crate::ssh_jumps::PENDING_JUMPS_KEY).map(crate::ssh_jumps::jumps_from).unwrap_or_default();
+        if p.ssh.profile_ssh {
+            let saved = session.get("Working Directory").and_then(|v| v.as_str()).and_then(crate::ssh_jumps::saved_remote_directory);
+            if saved.is_some() {
+                p.ssh.initial_directory = saved;
+            }
+        }
     }
 
     /// A restored pane's announcements: a broken profile offers Assign Profile when there is a

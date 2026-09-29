@@ -7,6 +7,9 @@ Which files are iTerm2's, and where they come from:
 
   framer.py
       iTerm2 OtherResources/framer.py, byte for byte.
+  it2ssh
+      iTerm2 OtherResources/Utilities/it2ssh, byte for byte. Tandem sends it to a remote
+      host as the jump script (Duplicate Session through several hops).
   shell_integration/bash-si-loader
       iTerm2 OtherResources/bash-si-loader, byte for byte.
   shell_integration/.zshenv
