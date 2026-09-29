@@ -16,6 +16,10 @@ pub struct EguiHost {
     state: egui_winit::State,
     renderer: egui_wgpu::Renderer,
     pub window: Arc<Window>,
+    /// Set to read the selected label text on the next frame (see `paint`).
+    probe: bool,
+    /// What the last probe found.
+    pub probed: Option<String>,
 }
 
 impl EguiHost {
@@ -63,7 +67,7 @@ impl EguiHost {
         let ctx = egui::Context::default();
         let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, Some(device.limits().max_texture_dimension_2d as usize));
         let renderer = egui_wgpu::Renderer::new(device, format, egui_wgpu::RendererOptions::default());
-        Ok(EguiHost { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, window })
+        Ok(EguiHost { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, window, probe: false, probed: None })
     }
 
     pub fn id(&self) -> WindowId {
@@ -116,10 +120,33 @@ impl EguiHost {
         r.repaint
     }
 
+    /// Asks for the text selected in the labels: the next frame copies it into `probed`
+    /// instead of the clipboard.
+    pub fn probe_selection(&mut self) {
+        self.probe = true;
+        self.window.request_redraw();
+    }
+
     /// Runs one egui frame with `f` and draws it.
     pub fn paint(&mut self, f: impl FnMut(&mut egui::Ui)) {
-        let input = self.state.take_egui_input(&self.window);
-        let out = self.ctx.run_ui(input, f);
+        let mut input = self.state.take_egui_input(&self.window);
+        let probing = std::mem::take(&mut self.probe);
+        if probing {
+            input.events.push(egui::Event::Copy);
+        }
+        let mut out = self.ctx.run_ui(input, f);
+        if probing {
+            // The copy is ours: taken out of the frame's output so the clipboard is untouched.
+            let mut found = String::new();
+            out.platform_output.commands.retain(|c| match c {
+                egui::OutputCommand::CopyText(t) => {
+                    found.push_str(t);
+                    false
+                }
+                _ => true,
+            });
+            self.probed = Some(found);
+        }
         self.state.handle_platform_output(&self.window, out.platform_output);
         let jobs = self.ctx.tessellate(out.shapes, out.pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [self.config.width, self.config.height], pixels_per_point: out.pixels_per_point };

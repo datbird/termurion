@@ -368,6 +368,7 @@ pub mod chat_routes;
 pub mod chat_view;
 pub mod chat_toolbar;
 pub mod chat_input;
+pub mod chat_find;
 #[cfg(windows)]
 pub mod chat_window_ui;
 pub mod settings_ai;

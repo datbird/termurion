@@ -202,10 +202,14 @@ pub fn pwm_chord(c: &Chord) -> bool {
     matches!(c.key, ChordKey::Char('b' | 'u' | 'c')) && c.cmd && !c.alt && !c.shift && !c.ctrl
 }
 
-/// The chords the AI Chat window takes: Win+W (close) and Shift+Win+Y (focus), with no other
-/// modifier (`CWC:481-501`).
+/// The chords the AI Chat window takes, with no other modifier: Win+W (close), Shift+Win+Y
+/// (focus) (`CWC:481-501`), and the find chords Win+F, Win+G, Shift+Win+G and Win+E
+/// (`CVC:2917-2960`).
 pub fn chat_chord(c: &Chord) -> bool {
-    c.cmd && !c.alt && !c.ctrl && matches!((&c.key, c.shift), (ChordKey::Char('w'), false) | (ChordKey::Char('y'), true))
+    c.cmd
+        && !c.alt
+        && !c.ctrl
+        && matches!((&c.key, c.shift), (ChordKey::Char('w' | 'f' | 'e'), false) | (ChordKey::Char('y'), true) | (ChordKey::Char('g'), _))
 }
 static SETTINGS: AtomicIsize = AtomicIsize::new(0);
 /// The settings window is recording a keystroke: every Win chord goes to it.

@@ -14,7 +14,9 @@ use crate::chat_list::{self, Row};
 use crate::chat_toolbar::{self as tb, Reuse};
 use crate::chat_view;
 use crate::chat_input::{self, Draft};
-use crate::chat_window_ui::{convo_rows, ChatData, ChatEvent, ChatWindow, InputData, ToolbarData};
+use crate::chat_find::{self, Finder, Segments};
+use crate::chat_window_ui::{convo_rows, ChatData, ChatEvent, ChatWindow, FindData, InputData, ToolbarData};
+use crate::find::Mode;
 
 /// `update_chat` from a row read just now, changing only what `f` names (ruling F6): the row's
 /// permissions, model and every other column a window or list read earlier are never written
@@ -84,18 +86,132 @@ const DROPS_MAX: usize = 1000;
 pub(super) enum ChatChord {
     Close,
     Focus,
+    /// Win+F, Win+G, Shift+Win+G and Win+E: the find bar (`CVC:2917-2960`).
+    Find,
+    FindNext,
+    FindPrevious,
+    UseSelection,
 }
 
-/// Win+W closes (`CWC:481-501`); Shift+Win+Y focuses (Window > AI Chats).
+/// Win+W closes (`CWC:481-501`); Shift+Win+Y focuses (Window > AI Chats); Win+F, Win+G,
+/// Shift+Win+G and Win+E are the find chords.
 pub(super) fn chat_chord(c: &crate::menus::Chord) -> Option<ChatChord> {
     match c.key {
         crate::menus::ChordKey::Char('w') if crate::winkeys::chat_chord(c) => Some(ChatChord::Close),
         crate::menus::ChordKey::Char('y') if crate::winkeys::chat_chord(c) => Some(ChatChord::Focus),
+        crate::menus::ChordKey::Char('f') if crate::winkeys::chat_chord(c) => Some(ChatChord::Find),
+        crate::menus::ChordKey::Char('g') if crate::winkeys::chat_chord(c) => Some(if c.shift { ChatChord::FindPrevious } else { ChatChord::FindNext }),
+        crate::menus::ChordKey::Char('e') if crate::winkeys::chat_chord(c) => Some(ChatChord::UseSelection),
         _ => None,
     }
 }
 
+/// The chat window's find bar while it is open: the matches, the bar's mode, the findable
+/// texts of each row (kept by the row's content key, so a streamed chunk renders one row again),
+/// a counter that asks the field for focus, and whether the rows changed since the last scan.
+#[derive(Default)]
+pub(super) struct ChatFind {
+    finder: Option<Finder>,
+    mode: Mode,
+    texts: std::collections::HashMap<u64, Vec<String>>,
+    focus: u64,
+    dirty: bool,
+}
+
+/// The plain text of a markdown source as the window renders it (the offsets find works in).
+fn markdown_plain(md: &str) -> String {
+    crate::porthole::render::render(md, &crate::porthole::detect::Language::Markdown, &crate::palette::Palette::default(), false).plain()
+}
+
 impl App {
+    /// Win+F, or Use Selection for Find: opens the bar seeded with the last query (or `seed`),
+    /// the field focused with its text selected, and searches (`CVC:2986-3006`).
+    pub(super) fn chat_find_open(&mut self, seed: Option<String>) {
+        if self.chat_shown.is_none() || self.chat_window.is_none() {
+            return;
+        }
+        if let Some(q) = seed {
+            self.chat_find_query = q;
+        }
+        // Rows changed while the bar was closed were never scanned: read every row again.
+        self.chat_find.texts.clear();
+        let mut finder = self.chat_find.finder.take().unwrap_or_default();
+        let segments = self.chat_find_segments();
+        finder.search(&self.chat_find_query.clone(), self.chat_find.mode, &segments);
+        self.chat_find.finder = Some(finder);
+        self.chat_find.focus += 1;
+        self.chat_find.dirty = false;
+        self.chat_window_refresh();
+    }
+
+    /// Win+G and Shift+Win+G (and the bar's arrows): the next or previous match.
+    pub(super) fn chat_find_step(&mut self, forward: bool) {
+        let Some(f) = self.chat_find.finder.as_mut() else { return };
+        if forward {
+            f.next();
+        } else {
+            f.previous();
+        }
+        self.chat_window_refresh();
+    }
+
+    /// The bar's field or mode changed.
+    fn chat_find_query(&mut self, query: String, mode_index: usize) {
+        if self.chat_find.finder.is_none() {
+            return;
+        }
+        let mode = chat_find::MODES.get(mode_index).map_or(Mode::SmartCase, |m| m.1);
+        self.chat_find_query = query;
+        self.chat_find.mode = mode;
+        let segments = self.chat_find_segments();
+        if let Some(f) = self.chat_find.finder.as_mut() {
+            f.search(&self.chat_find_query, mode, &segments);
+        }
+        self.chat_window_refresh();
+    }
+
+    /// Closes the bar and forgets its matches (`CVC:3041-3050`).
+    pub(super) fn chat_find_close(&mut self) {
+        if let Some(mut f) = self.chat_find.finder.take() {
+            f.clear();
+            self.chat_find.texts.clear();
+            self.chat_window_refresh();
+        }
+    }
+
+    /// The conversation changed: the same query again over the new rows, keeping the current
+    /// match. Called once per refresh, so a burst of chunks is one scan.
+    fn chat_find_rescan(&mut self) {
+        if !std::mem::take(&mut self.chat_find.dirty) || self.chat_find.finder.is_none() {
+            return;
+        }
+        let segments = self.chat_find_segments();
+        if let Some(f) = self.chat_find.finder.as_mut() {
+            f.rescan(&segments);
+        }
+    }
+
+    /// Each message row's findable texts, as the window draws them.
+    fn chat_find_segments(&mut self) -> Vec<Segments> {
+        let mut found = Vec::new();
+        let texts = &mut self.chat_find.texts;
+        if texts.len() > 4000 {
+            texts.clear();
+        }
+        for (i, row) in self.chat_convo.iter().enumerate() {
+            if matches!(row.item, chat_view::Item::Message(_)) {
+                let segs = texts.entry(row.key).or_insert_with(|| chat_find::body_segments(&row.body, &markdown_plain)).clone();
+                found.push((row.id.clone(), i, segs));
+            }
+        }
+        found
+    }
+
+    /// The find bar's data for the window.
+    fn chat_find_data(&self) -> Option<FindData> {
+        let f = self.chat_find.finder.as_ref()?;
+        Some(FindData { query: f.query.clone(), mode_index: chat_find::popup_index(f.mode), counter: f.counter(), matches: f.matches.clone(), current: f.current, focus: self.chat_find.focus })
+    }
     /// The focused pane, when it is a live one.
     fn chat_focused_pane(&self) -> Option<PaneId> {
         self.focused_id().filter(|id| self.panes.contains_key(id))
@@ -217,6 +333,10 @@ impl App {
         if let Some(old) = self.chat_shown.clone().filter(|old| Some(old) != chat.as_ref()) {
             self.stop_streaming(&old);
         }
+        // Showing another chat closes the find bar (`CVC:891-893`).
+        if self.chat_shown != chat {
+            self.chat_find_close();
+        }
         self.chat_input_switch(chat.as_deref());
         self.chat_shown = chat;
         self.chat_load_messages();
@@ -253,6 +373,7 @@ impl App {
         if self.chat_convo_dirty {
             self.chat_convo_build();
         }
+        self.chat_find_rescan();
         self.chat_buttons_refresh();
         let title = self.chat_window_title();
         self.chat_toolbar.title = title.clone();
@@ -265,6 +386,7 @@ impl App {
             searching: self.chat_search.searching(),
             convo: self.chat_convo.clone(),
             input: self.chat_input_data(),
+            find: self.chat_find_data(),
         };
         if let Some(w) = self.chat_window.as_mut() {
             w.set_title(&title);
@@ -565,6 +687,7 @@ impl App {
     /// The conversation's rows from the kept messages (dates in the person's locale).
     fn chat_convo_build(&mut self) {
         self.chat_convo_dirty = false;
+        self.chat_find.dirty = true;
         let typing = self.chat_shown.as_deref().is_some_and(|c| self.chat_broker.is_typing(c, Participant::Agent));
         let local = |t: f64| crate::stamps::local(chat_view::epoch_secs(t));
         let now = crate::stamps::local(chat_view::epoch_secs(super::warnings_app::unix_now()));
@@ -804,6 +927,7 @@ impl App {
             crate::winkeys::remove_chat_window(hwnd);
         }
         self.chat_window = None;
+        self.chat_find = Default::default();
         self.chat_shown = None;
         self.chat_msgs.clear();
         self.chat_convo = Default::default();
@@ -825,6 +949,15 @@ impl App {
             ChatChord::Focus => {
                 if let Some(w) = &self.chat_window {
                     w.focus();
+                }
+            }
+            ChatChord::Find => self.chat_find_open(None),
+            ChatChord::FindNext => self.chat_find_step(true),
+            ChatChord::FindPrevious => self.chat_find_step(false),
+            // The window answers with its selected text on its next frame.
+            ChatChord::UseSelection => {
+                if let Some(w) = self.chat_window.as_mut() {
+                    w.request_selection();
                 }
             }
         }
@@ -895,6 +1028,22 @@ impl App {
             ChatEvent::InputChanged(text) => {
                 self.chat_input.typed(text);
                 self.chat_window_refresh();
+            }
+            ChatEvent::FindQuery(q, mode) => self.chat_find_query(q, mode),
+            ChatEvent::FindNext => self.chat_find_step(true),
+            ChatEvent::FindPrevious => self.chat_find_step(false),
+            ChatEvent::FindClose => self.chat_find_close(),
+            ChatEvent::FindClick(c) => {
+                if let Some(f) = self.chat_find.finder.as_mut() {
+                    f.set_cursor(Some(c));
+                }
+            }
+            // A selection is text for the field; nothing selected changes nothing.
+            ChatEvent::FindUseSelection(text) => {
+                let text = text.trim();
+                if !text.is_empty() {
+                    self.chat_find_open(Some(text.to_string()));
+                }
             }
             ChatEvent::Send => self.send_input(),
             ChatEvent::Stop => self.stop_chat(),
@@ -1329,6 +1478,24 @@ mod tests {
         assert_eq!(chat_chord(&Chord { ctrl: true, ..chord('w', false) }), None);
         assert_eq!(chat_chord(&Chord { alt: true, ..chord('w', false) }), None);
         assert_eq!(chat_chord(&Chord { cmd: false, ..chord('w', false) }), None);
+    }
+
+    #[test]
+    fn find_chords_are_win_f_g_shift_g_and_e() {
+        assert_eq!(chat_chord(&chord('f', false)), Some(ChatChord::Find));
+        assert_eq!(chat_chord(&chord('g', false)), Some(ChatChord::FindNext));
+        assert_eq!(chat_chord(&chord('g', true)), Some(ChatChord::FindPrevious));
+        assert_eq!(chat_chord(&chord('e', false)), Some(ChatChord::UseSelection));
+        assert_eq!(chat_chord(&chord('f', true)), None);
+        assert_eq!(chat_chord(&chord('e', true)), None);
+        assert_eq!(chat_chord(&Chord { ctrl: true, ..chord('f', false) }), None);
+        assert_eq!(chat_chord(&Chord { alt: true, ..chord('g', false) }), None);
+        assert_eq!(chat_chord(&Chord { cmd: false, ..chord('f', false) }), None);
+        // The hook takes exactly the chords the window answers.
+        for (k, shift) in [('w', false), ('y', true), ('f', false), ('g', false), ('g', true), ('e', false)] {
+            assert!(crate::winkeys::chat_chord(&chord(k, shift)), "{k} {shift}");
+        }
+        assert!(!crate::winkeys::chat_chord(&chord('f', true)));
     }
 
     #[test]

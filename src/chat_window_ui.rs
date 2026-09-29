@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use crate::ai_catalog::{Effort, ServiceTier};
 use crate::chat_buttons::{self, Button};
+use crate::chat_find::{self, Cursor, Mark, Match};
 use crate::chat_input::{self, Enter};
 use crate::chat_list::{self, Row, Selection};
 use crate::chat_message::{Message, Participant};
@@ -63,6 +64,22 @@ pub struct ChatData {
     /// The conversation of the shown chat: dates, messages and the typing row, in order.
     pub convo: Arc<Vec<RowData>>,
     pub input: InputData,
+    /// The find bar, while it is open.
+    pub find: Option<FindData>,
+}
+
+/// What the find bar shows (`ChatFindBarView`): the query and mode the app runs (the field
+/// follows them when the app changes them), the counter, and every match with the current one.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FindData {
+    pub query: String,
+    /// The popup item (`chat_find::popup_index`).
+    pub mode_index: usize,
+    pub counter: String,
+    pub matches: Vec<Match>,
+    pub current: Option<usize>,
+    /// Changes when the app wants the field focused with its text selected.
+    pub focus: u64,
 }
 
 /// What the input shows (`ChatInputView`): the text (the field follows it when the app changes
@@ -161,6 +178,15 @@ pub enum ChatEvent {
     /// The attach button, its bottom left in screen pixels: the app opens its two-item popup.
     Attach((f32, f32)),
     RemoveAttachment(usize),
+    /// The find field's text or the mode item changed.
+    FindQuery(String, usize),
+    FindNext,
+    FindPrevious,
+    FindClose,
+    /// A click in a bubble's text: Find Next and Previous start from here.
+    FindClick(Cursor),
+    /// The text selected in the conversation (asked for with `request_selection`).
+    FindUseSelection(String),
     Close,
 }
 
@@ -181,6 +207,26 @@ struct ListState {
 struct Rendered {
     doc: Doc,
     blocks: Vec<CodeBlock>,
+    /// Where each block sits in `Doc::plain`, the offsets find works in.
+    spans: Vec<std::ops::Range<usize>>,
+}
+
+/// The row being drawn: its place among the rows, the next findable text to claim, and the
+/// find matches inside it (the same order as `chat_find::body_segments`).
+#[derive(Default)]
+struct RowFind {
+    item: usize,
+    segment: usize,
+    open: bool,
+    matches: Vec<Match>,
+    current: Option<usize>,
+}
+
+impl RowFind {
+    fn claim(&mut self) -> usize {
+        self.segment += 1;
+        self.segment - 1
+    }
 }
 
 /// What the conversation remembers between frames: rendered markdown, the code block that
@@ -197,6 +243,18 @@ struct ConvoState {
     /// Messages whose buttons were pressed and are disabled at once, until the app answers
     /// (iTerm2's optimistic disable); the permissions bubble is re-tappable and never in it.
     pressed: std::collections::HashSet<String>,
+    row: RowFind,
+    /// The current find match last scrolled to, so a rescan that keeps it never scrolls again.
+    find_seen: Option<(String, usize, std::ops::Range<usize>)>,
+    find: FindUi,
+}
+
+/// What the find bar remembers: the field's text, and the app's query and focus request seen.
+#[derive(Default)]
+struct FindUi {
+    text: String,
+    seen_query: String,
+    seen_focus: u64,
 }
 
 /// What the input remembers between frames: the text being edited and the focus request seen.
@@ -279,6 +337,11 @@ impl ChatWindow {
     }
 
     /// Centers a message's row once it is laid out (a chosen search result, `CVC:1069-1098`).
+    /// Asks for the selected conversation text; it comes back as `FindUseSelection`.
+    pub fn request_selection(&mut self) {
+        self.host.probe_selection();
+    }
+
     pub fn reveal(&mut self, message: &str) {
         self.convo.reveal = Some((self.data.chat.clone(), message.to_string()));
         self.host.request_redraw();
@@ -332,10 +395,15 @@ impl ChatWindow {
                 input_area(ui, d, input_state, icons, &mut out);
             });
             egui::CentralPanel::default().show(ui, |ui| {
-                // The find bar: Task 8.
                 conversation(ui, d, convo_state, icons, &mut out);
+                if let Some(f) = &d.find {
+                    find_bar(ui, f, &mut convo_state.find, icons, &mut out);
+                }
             });
         });
+        if let Some(text) = self.host.probed.take() {
+            out.push(ChatEvent::FindUseSelection(text));
+        }
         out
     }
 }
@@ -531,6 +599,71 @@ fn glyph_response(ui: &mut egui::Ui, icons: bool, glyph: char, fallback: &str, t
 /// A glyph toggle (its name when the icon font is missing), tinted with the accent color when on.
 fn glyph_button(ui: &mut egui::Ui, icons: bool, glyph: char, fallback: &str, tip: &str, enabled: bool, on: bool) -> bool {
     glyph_response(ui, icons, glyph, fallback, tip, enabled, on).clicked()
+}
+
+/// The find bar (`ChatFindBarView`): a floating box at the top of the conversation, at most
+/// `chat_find::MAX_WIDTH` wide and 8 points down, with the field, the counter, previous and next,
+/// the mode popup and a close glyph. Enter is Find Next (Shift+Enter Previous), Escape closes.
+fn find_bar(ui: &mut egui::Ui, f: &FindData, st: &mut FindUi, icons: bool, out: &mut Vec<ChatEvent>) {
+    // The field follows the app when it changed the query (a selection used for find).
+    if st.seen_query != f.query {
+        st.seen_query = f.query.clone();
+        st.text = f.query.clone();
+    }
+    let area = ui.max_rect();
+    let width = (area.width() - 16.0).clamp(160.0, chat_find::MAX_WIDTH);
+    let pos = egui::pos2(area.center().x - width / 2.0, area.top() + 8.0);
+    let focus_now = st.seen_focus != f.focus;
+    st.seen_focus = f.focus;
+    egui::Area::new(egui::Id::new("chat_find_bar")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
+        egui::Frame::popup(ui.style()).show(ui, |ui| {
+            ui.set_width(width - 16.0);
+            ui.horizontal(|ui| {
+                let field_id = egui::Id::new("chat_find_field");
+                let mut mode = f.mode_index;
+                let controls = 3.0 * 24.0 + 130.0 + 70.0;
+                let field = ui.add(egui::TextEdit::singleline(&mut st.text).id(field_id).hint_text(chat_find::PLACEHOLDER).desired_width((ui.available_width() - controls).max(60.0)));
+                if focus_now {
+                    field.request_focus();
+                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), field_id) {
+                        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(st.text.chars().count()))));
+                        state.store(ui.ctx(), field_id);
+                    }
+                }
+                let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+                let mut query_changed = field.changed();
+                if field.lost_focus() && enter {
+                    out.push(if ui.input(|i| i.modifiers.shift) { ChatEvent::FindPrevious } else { ChatEvent::FindNext });
+                    field.request_focus();
+                }
+                if (field.has_focus() || field.lost_focus()) && escape {
+                    out.push(ChatEvent::FindClose);
+                }
+                ui.label(egui::RichText::new(&f.counter).size(12.0).color(ui.visuals().weak_text_color()));
+                let steppable = !f.matches.is_empty();
+                if glyph_button(ui, icons, '\u{E70E}', "Prev", "Find Previous", steppable, false) {
+                    out.push(ChatEvent::FindPrevious);
+                }
+                if glyph_button(ui, icons, '\u{E70D}', "Next", "Find Next", steppable, false) {
+                    out.push(ChatEvent::FindNext);
+                }
+                egui::ComboBox::from_id_salt("chat_find_mode").selected_text(chat_find::MODES[mode.min(chat_find::MODES.len() - 1)].0).width(120.0).show_ui(ui, |ui| {
+                    for (i, (title, _)) in chat_find::MODES.iter().enumerate() {
+                        if ui.selectable_label(mode == i, *title).clicked() {
+                            mode = i;
+                            query_changed = true;
+                        }
+                    }
+                });
+                if query_changed {
+                    out.push(ChatEvent::FindQuery(st.text.clone(), mode));
+                }
+                if glyph_button(ui, icons, '\u{E711}', "Close", "Close", true, false) {
+                    out.push(ChatEvent::FindClose);
+                }
+            });
+        });
+    });
 }
 
 /// A point of the window in screen pixels (where a native popup menu opens).
@@ -817,9 +950,21 @@ fn conversation(ui: &mut egui::Ui, d: &ChatData, st: &mut ConvoState, icons: boo
     }
     let dark = ui.visuals().dark_mode;
     let mut found = false;
+    let find = d.find.as_ref();
+    if let Some(cur) = find.and_then(|f| f.current.and_then(|i| f.matches.get(i))) {
+        // A different current match scrolls its row into view (`CVC`'s reveal); the same one after a rescan does not.
+        let id = (cur.message.clone(), cur.segment, cur.range.clone());
+        if st.find_seen.as_ref() != Some(&id) {
+            st.reveal = Some((d.chat.clone(), cur.message.clone()));
+            st.find_seen = Some(id);
+        }
+    } else {
+        st.find_seen = None;
+    }
     egui::ScrollArea::vertical().id_salt(egui::Id::new(("chat_convo", &d.chat))).auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
         ui.add_space(6.0);
-        for row in d.convo.iter() {
+        for (index, row) in d.convo.iter().enumerate() {
+            st.row = row_find(find, index, &row.id);
             match &row.item {
                 Item::Date(label) => {
                     ui.vertical_centered(|ui| ui.label(egui::RichText::new(label).size(12.0).color(ui.visuals().weak_text_color())));
@@ -850,6 +995,16 @@ fn conversation(ui: &mut egui::Ui, d: &ChatData, st: &mut ConvoState, icons: boo
 
 /// One message: a bubble (the person's at the right, the agent's at the left) with its short
 /// time beside it, or a full-width muted line for a system row. Answers the row's rectangle.
+/// The find matches of one row (its message's), sliced out of the ordered list.
+fn row_find(find: Option<&FindData>, item: usize, message: &str) -> RowFind {
+    let Some(f) = find else { return RowFind::default() };
+    let from = f.matches.partition_point(|m| m.item < item);
+    let to = f.matches.partition_point(|m| m.item <= item);
+    let matches: Vec<Match> = f.matches[from..to].iter().filter(|m| m.message == message).cloned().collect();
+    let current = f.current.filter(|c| (from..to).contains(c)).and_then(|c| matches.iter().position(|m| *m == f.matches[c]));
+    RowFind { item, segment: 0, open: true, matches, current }
+}
+
 fn message_row(ui: &mut egui::Ui, row: &RowData, st: &mut ConvoState, icons: bool, dark: bool, out: &mut Vec<ChatEvent>) -> egui::Rect {
     let ink = ink_for(ui.visuals(), row);
     let rect = if row.style == Style::System {
@@ -935,7 +1090,7 @@ fn draw_buttons(ui: &mut egui::Ui, row: &RowData, st: &mut ConvoState, out: &mut
 fn draw_body(ui: &mut egui::Ui, body: &Body, row: &RowData, part: usize, ink: &Ink, st: &mut ConvoState, icons: bool, dark: bool, out: &mut Vec<ChatEvent>) {
     match body {
         Body::Plain(t) => {
-            ui.add(egui::Label::new(egui::RichText::new(t).size(BODY_SIZE).color(ink.text)).wrap());
+            leaf(ui, t, Face::Prose, ink, row, st, icons, out);
         }
         Body::Markdown(md) => markdown(ui, md, row, part, ink, st, icons, dark, out),
         Body::Command { command, url } => {
@@ -943,7 +1098,7 @@ fn draw_body(ui: &mut egui::Ui, body: &Body, row: &RowData, part: usize, ink: &I
                 if icons {
                     ui.label(egui::RichText::new(chat_view::COMMAND_GLYPH.to_string()).family(egui::FontFamily::Name("icons".into())).size(15.0).color(ink.muted));
                 }
-                let r = ui.add(egui::Label::new(egui::RichText::new(command).monospace().color(ink.text)).sense(egui::Sense::click()));
+                let r = leaf(ui, command, Face::Code, ink, row, st, icons, out);
                 if r.clicked() {
                     out.push(ChatEvent::RevealCommand(url.clone()));
                 }
@@ -972,7 +1127,7 @@ fn code_attachment(ui: &mut egui::Ui, code: &str, row: &RowData, part: usize, in
     let frame = egui::Frame::new().fill(ink.code_bg).corner_radius(6.0).inner_margin(egui::Margin::same(6));
     let shown = frame.show(ui, |ui| {
         ui.label(egui::RichText::new(chat_view::CODE_INTERPRETER).size(11.0).strong().color(ink.muted));
-        ui.add(egui::Label::new(egui::RichText::new(code).monospace().color(ink.text)).wrap());
+        leaf(ui, code, Face::Code, ink, row, st, icons, out);
     });
     let rect = shown.response.rect;
     copy_button(ui, rect, &row.id, usize::MAX - part, code, ink, st, icons, out);
@@ -1059,11 +1214,13 @@ fn markdown(ui: &mut egui::Ui, md: &str, row: &RowData, part: usize, ink: &Ink, 
             let palette = Palette { fg: c(ink.text), link: c(ink.link), ..Palette::default() };
             let doc = crate::porthole::render::render(md, &Language::Markdown, &palette, dark);
             let blocks = chat_view::code_blocks(&doc);
-            let r = Rc::new(Rendered { doc, blocks });
+            let spans = chat_find::block_spans(&doc);
+            let r = Rc::new(Rendered { doc, blocks, spans });
             st.docs.insert(key, r.clone());
             r
         }
     };
+    let segment = st.row.claim();
     let spacing = ui.spacing().item_spacing.y;
     ui.spacing_mut().item_spacing.y = 0.0;
     for (i, block) in rendered.doc.blocks.iter().enumerate() {
@@ -1077,27 +1234,49 @@ fn markdown(ui: &mut egui::Ui, md: &str, row: &RowData, part: usize, ink: &Ink, 
             continue;
         }
         let copy = rendered.blocks.iter().find(|b| b.first == i);
-        draw_block(ui, block, ink, copy, row, part, st, icons, out);
+        draw_block(ui, block, rendered.spans[i].start, segment, ink, copy, row, part, st, icons, out);
     }
     ui.spacing_mut().item_spacing.y = spacing;
+}
+
+/// A plain text (a message, a command, a code attachment) drawn as one block in its own face,
+/// so it wraps, highlights and takes a click for find like markdown does.
+#[allow(clippy::too_many_arguments)]
+fn leaf(ui: &mut egui::Ui, text: &str, face: Face, ink: &Ink, row: &RowData, st: &mut ConvoState, icons: bool, out: &mut Vec<ChatEvent>) -> egui::Response {
+    let segment = st.row.claim();
+    let run = crate::porthole::render::Run { text: text.to_string(), color: rgb(ink.text.r(), ink.text.g(), ink.text.b()), bold: false, italic: false, underline: false, face, link: None };
+    let block = Block { runs: vec![run], scale: 1.0, indent: 0.0, code_bg: false, rule: false };
+    draw_block(ui, &block, 0, segment, ink, None, row, 0, st, icons, out)
 }
 
 /// One block: its runs as a wrapped text, code lines on a shaded band, a copy glyph at the
 /// first line of a code block.
 #[allow(clippy::too_many_arguments)]
-fn draw_block(ui: &mut egui::Ui, block: &Block, ink: &Ink, copy: Option<&CodeBlock>, row: &RowData, part: usize, st: &mut ConvoState, icons: bool, out: &mut Vec<ChatEvent>) {
+fn draw_block(ui: &mut egui::Ui, block: &Block, base: usize, segment: usize, ink: &Ink, copy: Option<&CodeBlock>, row: &RowData, part: usize, st: &mut ConvoState, icons: bool, out: &mut Vec<ChatEvent>) -> egui::Response {
     let indent = block.indent * INDENT_STEP;
-    let (job, links) = block_job(block, ink, (ui.available_width() - indent).max(20.0));
+    let len: usize = block.runs.iter().map(|r| r.text.len()).sum();
+    let marks = if st.row.open { chat_find::marks(&st.row.matches, st.row.current, &row.id, segment, &(base..base + len)) } else { Vec::new() };
+    let (job, links) = block_job(block, ink, (ui.available_width() - indent).max(20.0), &marks);
     let galley = ui.painter().layout_job(job);
     let width = if block.code_bg { ui.available_width() } else { indent + galley.size().x };
     let height = galley.size().y.max(if block.code_bg { BODY_SIZE + 2.0 } else { 0.0 });
-    let sense = if links.is_empty() { egui::Sense::hover() } else { egui::Sense::click() };
+    // Every block can be selected and clicked (a click moves the find position).
+    let mut sense = egui::Sense::click_and_drag();
+    sense -= egui::Sense::FOCUSABLE;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, height), sense);
     if block.code_bg {
         ui.painter().rect_filled(rect, 0.0, ink.code_bg);
     }
     let origin = rect.min + egui::vec2(indent + if block.code_bg { 4.0 } else { 0.0 }, 0.0);
-    ui.painter().galley(origin, galley.clone(), ink.text);
+    egui::text_selection::LabelSelectionState::label_text_selection(ui, &resp, origin, galley.clone(), ink.text, egui::Stroke::NONE);
+    if st.row.open && resp.clicked() {
+        if let Some(p) = resp.interact_pointer_pos() {
+            let chars = galley.cursor_from_pos(p - origin).index.0;
+            let text: String = block.runs.iter().map(|r| r.text.as_str()).collect();
+            let byte = text.char_indices().nth(chars).map_or(text.len(), |(b, _)| b);
+            out.push(ChatEvent::FindClick(Cursor { item: st.row.item, segment, at: base + byte }));
+        }
+    }
     if !links.is_empty() {
         let at = resp.hover_pos().or_else(|| resp.interact_pointer_pos());
         let url = at.and_then(|p| {
@@ -1118,13 +1297,23 @@ fn draw_block(ui: &mut egui::Ui, block: &Block, ink: &Ink, copy: Option<&CodeBlo
     if let Some(cb) = copy {
         copy_button(ui, rect, &row.id, copy_slot(part, cb.first), &cb.text, ink, st, icons, out);
     }
+    resp
 }
 
-/// A block's runs as one text job, and the character ranges that are links.
-fn block_job(block: &Block, ink: &Ink, wrap: f32) -> (egui::text::LayoutJob, Vec<(usize, usize, String)>) {
+/// The find highlight (the system's find yellow): the current match solid, the others at
+/// `HIGHLIGHT_ALPHA`.
+fn find_color(current: bool) -> egui::Color32 {
+    let yellow = egui::Color32::from_rgb(255, 230, 0);
+    if current { yellow } else { yellow.gamma_multiply(chat_find::HIGHLIGHT_ALPHA) }
+}
+
+/// A block's runs as one text job, and the character ranges that are links. Runs are cut at the
+/// edges of the find `marks` (bytes into the block's text) and the marked pieces get the
+/// highlight as a background.
+fn block_job(block: &Block, ink: &Ink, wrap: f32, marks: &[Mark]) -> (egui::text::LayoutJob, Vec<(usize, usize, String)>) {
     let mut job = egui::text::LayoutJob::default();
     job.wrap.max_width = wrap;
-    let (mut at, mut links) = (0usize, Vec::new());
+    let (mut at, mut links, mut byte) = (0usize, Vec::new(), 0usize);
     let size = BODY_SIZE * block.scale;
     for run in &block.runs {
         let link = run.link.as_deref().and_then(chat_view::web_link);
@@ -1147,7 +1336,17 @@ fn block_job(block: &Block, ink: &Ink, wrap: f32) -> (egui::text::LayoutJob, Vec
         if link.is_some() {
             format.underline = egui::Stroke::new(1.0, color);
         }
-        job.append(&run.text, 0.0, format);
+        for (piece, mark) in chat_find::cut_run(byte..byte + run.text.len(), marks) {
+            let mut f = format.clone();
+            if let Some(current) = mark {
+                f.background = find_color(current);
+                if current {
+                    f.color = egui::Color32::BLACK;
+                }
+            }
+            job.append(&run.text[piece.start - byte..piece.end - byte], 0.0, f);
+        }
+        byte += run.text.len();
         let n = run.text.chars().count();
         if let Some(url) = link {
             links.push((at, at + n, url));
@@ -1261,7 +1460,7 @@ mod tests {
         // Rulings F18 and m10, at the drawing: the runs of a model-written link a person could click.
         let md = "[a](file:///C:/x.exe) [b](https://ok.example/p) [c](iterm2:reveal-mark?s=1) [d](\\\\host\\share) [e](mailto:x@y.example)";
         let doc = crate::porthole::render::render(md, &Language::Markdown, &Palette::default(), true);
-        let (job, links) = block_job(&doc.blocks[0], &ink(), 300.0);
+        let (job, links) = block_job(&doc.blocks[0], &ink(), 300.0, &[]);
         let urls: Vec<&str> = links.iter().map(|(_, _, u)| u.as_str()).collect();
         assert_eq!(urls, ["https://ok.example/p", "mailto:x@y.example"]);
         // The ranges cover exactly the link texts.

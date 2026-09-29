@@ -880,6 +880,10 @@ pub struct App {
     chat_input: crate::chat_input::InputState,
     chat_drafts: crate::chat_input::Drafts,
     chat_drops: Vec<std::path::PathBuf>,
+    /// The find bar of the chat window (app-wide, as the window is): the query the next bar
+    /// opens with (Tandem has no shared find pasteboard), and the bar's state while it is open.
+    chat_find_query: String,
+    chat_find: chat_window_app::ChatFind,
     chat_toolbar: crate::chat_window_ui::ToolbarData,
     chat_toolbar_dirty: bool,
     /// The chat list: its rows as last built, whether they need building again, when they were
@@ -1531,6 +1535,8 @@ pub fn run() {
         chat_input: Default::default(),
         chat_drafts: Default::default(),
         chat_drops: Vec::new(),
+        chat_find_query: String::new(),
+        chat_find: Default::default(),
         chat_toolbar: crate::chat_window_ui::ToolbarData::default(),
         chat_toolbar_dirty: false,
         chat_rows: Vec::new(),
@@ -4833,7 +4839,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if self.pwm_take_chord(&c) {
                     return;
                 }
-                // Win+W and Shift+Win+Y in the AI Chat window are its own keys.
+                // Win+W, Shift+Win+Y and the find chords in the AI Chat window are its own keys.
                 if self.chat_take_chord(&c, event_loop) {
                     return;
                 }
