@@ -12,6 +12,9 @@ use crate::layout::PaneId;
 use crate::pty::{self, Notify, Pty, Read};
 use crate::ssh_transport::Transport;
 use crate::replay;
+
+/// The most keystroke bytes a framed conductor may hold queued before the coprocess waits (F20).
+const COPROCESS_BACKLOG: usize = crate::conductor::PIPELINE_BYTES * 64;
 use crate::screen::Screen;
 
 /// The bytes to send for a paste. Newlines become carriage returns, as a typed
@@ -406,7 +409,9 @@ impl Pane {
             loop {
                 let Some(pty) = &self.pty else { break };
                 let budget = crate::coprocess::budget(pty.pending());
-                if budget == 0 {
+                // A framed link answers slowly: what is queued for it holds the coprocess back
+                // until replies come (F20), so its output cannot grow the queue without end.
+                if budget == 0 || self.coprocess_backlogged() {
                     break;
                 }
                 if self.co_out.is_empty() {
@@ -698,6 +703,12 @@ impl Pane {
         }
     }
 
+    /// Whether the conductor's queue of keystrokes is too long for the coprocess to add to
+    /// (F20): the pump stops draining it until replies come back.
+    pub fn coprocess_backlogged(&self) -> bool {
+        self.conductor.as_ref().is_some_and(|c| c.framing() && c.queued_bytes() > COPROCESS_BACKLOG)
+    }
+
     /// A coprocess's output: to the conductor's `send_keys` while the pane has one (`PK:354-361`,
     /// `PS:4639-4642`: held during setup, framed from 14c), else to the pty as typed. False when
     /// the pty refused it.
@@ -973,8 +984,10 @@ impl Pane {
             return;
         }
         // While SSH integration connects, writes wait for the conductor, ahead of Buffer
-        // Input and before `writeTaskImpl`'s effects (`PS:4411-4430`).
-        if self.ssh.queue(bytes) {
+        // Input and before `writeTaskImpl`'s effects (`PS:4411-4430`) but after a conductor
+        // that handles keystrokes: a nested hop's password reaches the outer framer (F9,
+        // `PS:4418-4426`).
+        if self.ssh_route() != crate::conductor::Route::Conductor && self.ssh.queue(bytes) {
             return;
         }
         // Any write cancels the composer's clear probe (`PS:4154-4158`), held by Buffer
@@ -2099,7 +2112,8 @@ mod tests {
         p.conductor = setting_up();
         p.conductor.as_mut().unwrap().framed_pid = Some(1);
         p.write_session(b"q");
-        assert_eq!(p.conductor.as_mut().unwrap().take_effects(), [Effect::Keys(b"q".to_vec())]);
+        // Framed: a send to the framed pid, written by the conductor (never raw keys).
+        assert_eq!(p.conductor.as_mut().unwrap().take_effects(), [Effect::Write(b"c2VuZA==\nMQ==\nY1E9PQ==\n\n".to_vec())]);
         assert!(p.tmux_io().unwrap().take_input().is_empty(), "nothing written");
         assert!(p.ssh_held.is_empty(), "nothing held");
     }
@@ -2500,5 +2514,101 @@ mod tests {
         let after = drain(&p);
         assert_eq!(while_paused, 0, "nothing read while paused");
         assert!(after > 0, "reading resumes");
+    }
+
+    fn framing_conductor(pid: i32) -> Box<crate::conductor::Conductor> {
+        let mut c = crate::conductor::Conductor::new(Default::default(), None, "U");
+        c.framed_pid = Some(pid);
+        Box::new(c)
+    }
+
+    fn sends(p: &Pane) -> Vec<Vec<u8>> {
+        use crate::conductor::Command;
+        p.conductor.as_ref().unwrap().pending().into_iter().filter_map(|c| match c {
+            Command::FramerSend { data, pid: 4242 } => Some(data.clone()),
+            _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn framed_writes_go_through_send() {
+        let mut p = Pane::with(7, None, 80, 24);
+        p.conductor = Some(framing_conductor(4242));
+        p.live_input(b"a");
+        p.reply(b"\x1b[?1;2c");
+        assert!(p.coprocess_output(b"co"));
+        assert_eq!(sends(&p), [b"a".to_vec(), b"\x1b[?1;2c".to_vec(), b"co".to_vec()]);
+        assert!(p.take_ssh_held().is_empty(), "nothing raw is held for the session");
+
+        // A level 1 conductor (writes are not queued) sends nothing framed.
+        let mut p = Pane::with(8, None, 80, 24);
+        let mut c = crate::conductor::Conductor::new(Default::default(), None, "U");
+        c.handle_unhook();
+        p.conductor = Some(Box::new(c));
+        p.live_input(b"a");
+        p.reply(b"r");
+        assert!(sends(&p).is_empty());
+    }
+
+    #[test]
+    fn connecting_input_goes_through_send() {
+        use crate::conductor::Effect;
+        let mut p = Pane::with(7, None, 80, 24);
+        p.conductor = setting_up();
+        p.ssh.begin(true);
+        p.live_input(b"ls\r");
+        p.live_input(b"x");
+        assert!(sends(&p).is_empty(), "queued while connecting, not sent before the login");
+        // The login's reply frames the conductor and stops the queueing.
+        let c = p.conductor.as_mut().unwrap();
+        c.framed_pid = Some(4242);
+        c.effects.push(Effect::StopQueueingInput);
+        p.apply_ssh_effects();
+        assert_eq!(sends(&p), [b"ls\rx".to_vec()], "one send for everything typed while connecting");
+        assert!(p.ssh.connecting.is_none());
+        // Nothing typed: nothing sent (F18).
+        let mut p = Pane::with(7, None, 80, 24);
+        p.conductor = setting_up();
+        p.ssh.begin(true);
+        let c = p.conductor.as_mut().unwrap();
+        c.framed_pid = Some(4242);
+        c.effects.push(Effect::StopQueueingInput);
+        p.apply_ssh_effects();
+        assert!(sends(&p).is_empty());
+    }
+
+    #[test]
+    fn typing_while_a_nested_hop_connects_reaches_the_outer_send() {
+        // F9: iTerm2 asks handlesKeystrokes before the connecting queue (`PS:4418-4426`).
+        let mut p = Pane::with(7, None, 80, 24);
+        p.conductor = Some(framing_conductor(4242));
+        p.ssh.begin(true);
+        p.live_input(b"secret\r");
+        assert_eq!(sends(&p), [b"secret\r".to_vec()]);
+        assert_eq!(p.ssh.connecting.as_deref(), Some(&b""[..]), "nothing waits in the connecting queue");
+    }
+
+    #[test]
+    fn a_coprocess_cannot_flood_the_queue() {
+        // F20: a slow link must not grow the queue without end.
+        let mut p = Pane::with(7, None, 80, 24);
+        let mut c = framing_conductor(4242);
+        c.send(crate::conductor::Command::FramerRun("x".into()), crate::conductor::Handler::FireAndForget, false);
+        p.conductor = Some(c);
+        assert!(!p.coprocess_backlogged());
+        for _ in 0..80 {
+            assert!(p.coprocess_output(&[b'z'; 1024]));
+        }
+        assert!(p.coprocess_backlogged(), "over 64 KiB waits");
+        // Replies come back and the queue drains into the wire.
+        let c = p.conductor.as_mut().unwrap();
+        for i in 0..200 {
+            c.handle_end("a", "f", 0, 0);
+            if !c.has_command(&|x| matches!(x, crate::conductor::Command::FramerSend { .. })) {
+                break;
+            }
+            assert!(i < 199);
+        }
+        assert!(!p.coprocess_backlogged());
     }
 }

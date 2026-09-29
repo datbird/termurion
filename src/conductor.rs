@@ -121,6 +121,21 @@ impl Command {
         }
     }
 
+    /// supportsPipelining (`CD:1375-1386`): several may be written before the first answers.
+    /// 14d adds the file fetch; iTerm2's `framerIT2Send` is not built (ruling 3).
+    pub fn supports_pipelining(&self) -> bool {
+        matches!(self, Command::FramerSend { .. })
+    }
+
+    /// size (`CD:1388-1416`): about the bytes on the wire, from the base64 form. Only a
+    /// command that pipelines has a size; the others are `usize::MAX`.
+    pub fn size(&self) -> usize {
+        match self {
+            Command::FramerSend { .. } => self.string_value().chars().count() * 4 / 3,
+            _ => usize::MAX,
+        }
+    }
+
     /// isFramer (`CD:957-967`).
     pub fn is_framer(&self) -> bool {
         !matches!(
@@ -347,6 +362,9 @@ pub enum Handler {
     /// when it was too long to keep.
     Getenv(String, Option<Option<String>>),
 }
+
+/// The most a pipeline holds before it stops taking commands (`CD:2986-3010`).
+pub const PIPELINE_BYTES: usize = 1024;
 
 /// A command with its handler (ExecutionContext, `CD:1159-1164`).
 #[derive(Clone, Debug, PartialEq)]
@@ -816,16 +834,28 @@ impl Conductor {
         !self.effects.is_empty() || self.parent.as_ref().is_some_and(|p| p.has_effects())
     }
 
-    /// sendKeys (`CD:1854-1862`), unframed: the bytes go to the session, which holds them
-    /// while setup runs. Milestone 14c adds the framed branch.
+    /// sendKeys (`CD:1854-1862`): framed, `send <pid> <base64>` fire and forget, pipelined
+    /// (`framerSend`); unframed, the bytes go to the session, which holds them while setup
+    /// runs. Nothing to send sends nothing (F18: the login's empty connecting queue).
     pub fn send_keys(&mut self, data: &[u8]) {
-        self.effects.push(Effect::Keys(data.to_vec()));
+        if data.is_empty() {
+            return;
+        }
+        match self.framed_pid {
+            Some(pid) => self.send(Command::FramerSend { data: data.to_vec(), pid }, Handler::FireAndForget, false),
+            None => self.effects.push(Effect::Keys(data.to_vec())),
+        }
     }
 
-    /// The conductor's own bytes as a parent carries them for a child's `write()`: an
-    /// unframed parent writes them raw (sendKeys with `_queueWrites` cleared, never held).
+    /// The conductor's own bytes as a parent carries them for a child's `write()`
+    /// (`CD:3039-3058`: the parent's `sendKeys`): a framing parent sends them to its framed
+    /// shell; an unframed one writes them raw (`_queueWrites` cleared, never held).
     fn write_through(&mut self, bytes: Vec<u8>) {
-        self.effects.push(Effect::Write(bytes));
+        if self.framing() {
+            self.send_keys(&bytes);
+        } else {
+            self.effects.push(Effect::Write(bytes));
+        }
     }
 
     /// Runs `f` on the parent, if any, and moves what the parent queues meanwhile into this
@@ -860,6 +890,29 @@ impl Conductor {
     /// Whether `pred` holds for the command in flight or one queued.
     pub(crate) fn has_command(&self, pred: &dyn Fn(&Command) -> bool) -> bool {
         self.in_flight().is_some_and(pred) || self.queue.iter().any(|c| pred(&c.command))
+    }
+
+    /// The commands written and not yet ended (a pipeline, first to last), then the queued
+    /// ones; `in_flight` is the first of them.
+    pub fn pending(&self) -> Vec<&Command> {
+        let written: Vec<&Context> = match &self.state {
+            State::WillExecute(contexts) => contexts.iter().collect(),
+            State::Executing(context, rest) => std::iter::once(context).chain(rest).collect(),
+            State::Ground | State::Unhooked => Vec::new(),
+        };
+        written.into_iter().chain(&self.queue).map(|c| &c.command).collect()
+    }
+
+    /// The bytes of keystrokes waiting in the queue (not yet written), for a coprocess's flow
+    /// control.
+    pub fn queued_bytes(&self) -> usize {
+        self.queue
+            .iter()
+            .map(|c| match &c.command {
+                Command::FramerSend { data, .. } => data.len(),
+                _ => 0,
+            })
+            .sum()
     }
 
     /// The command written and not yet ended, for the command timer (Task 9) and tests.
@@ -905,8 +958,9 @@ impl Conductor {
     }
 
     /// send (`CD:2802-2846`): enqueue (first when `high_priority`); from ground the command
-    /// is written at once. During a transition it only enqueues. In flight, iTerm2 tops up
-    /// a pipeline, which no 14b command joins (14c). Unhooked, it stays queued, unsent.
+    /// is written at once. During a transition it only enqueues. In flight, the pipeline is
+    /// topped up with what can ride along (`extend`): a keystroke need not wait for the
+    /// round trip of the one before it. Unhooked, it stays queued, unsent.
     pub fn send(&mut self, cmd: Command, handler: Handler, high_priority: bool) {
         let context = Context { command: cmd, handler, canceled: false, framed_at_write: false, timeout: COMMAND_TIMEOUT };
         if high_priority {
@@ -917,8 +971,21 @@ impl Conductor {
         if self.transition {
             return;
         }
-        if self.state == State::Ground {
-            self.dequeue();
+        match self.state.clone() {
+            State::Ground => self.dequeue(),
+            State::WillExecute(written) => self.extend(written, |c, contexts| c.state = State::WillExecute(contexts)),
+            // The first has had its begin, so it stays the executing one and the new
+            // commands join those behind it.
+            State::Executing(first, rest) => {
+                let written = std::iter::once(first).chain(rest).collect();
+                self.extend(written, |c, contexts| {
+                    let mut contexts = contexts.into_iter();
+                    if let Some(first) = contexts.next() {
+                        c.state = State::Executing(first, contexts.collect());
+                    }
+                });
+            }
+            State::Unhooked => {}
         }
     }
 
@@ -930,27 +997,61 @@ impl Conductor {
         }
     }
 
-    /// dequeue and extendPipeline from ground (`CD:2860-2869`, `CD:2888-2960`), one context
-    /// at a time (14c pipelines): canceled contexts are dropped, the next one becomes the
-    /// state before it is written, and the dropped handlers run once the state is
-    /// consistent.
+    /// dequeue from ground (`CD:2860-2869`): a pipeline of what is queued.
     fn dequeue(&mut self) {
         debug_assert_eq!(self.state, State::Ground);
-        let mut dropped = Vec::new();
-        while self.queue.first().is_some_and(|c| c.canceled) {
-            dropped.push((self.queue.remove(0), Partial::Canceled));
+        self.extend(Vec::new(), |c, contexts| c.state = State::WillExecute(contexts));
+    }
+
+    /// extendPipeline (`CD:2888-2960`) and takeNextContextPipeline (`CD:2986-3010`): takes
+    /// what can ride along behind the `written` pipeline (nothing when a written command does
+    /// not pipeline; from ground, the first command whatever it is), while the total size is
+    /// under `PIPELINE_BYTES` and each next command pipelines. `set` puts the whole pipeline
+    /// in the state before anything is written, inside the transition guard; canceled contexts
+    /// are dropped and their handlers told last, once the state is consistent.
+    fn extend(&mut self, written: Vec<Context>, set: impl FnOnce(&mut Conductor, Vec<Context>)) {
+        if !written.iter().all(|c| c.command.supports_pipelining()) {
+            return;
         }
-        if !self.queue.is_empty() {
+        let from_ground = written.is_empty();
+        let mut size: usize = written.iter().map(|c| c.command.size()).sum();
+        let mut pipeline = written;
+        let already = pipeline.len();
+        let mut dropped = Vec::new();
+        let mut texts = Vec::new();
+        while size < PIPELINE_BYTES {
+            while self.queue.first().is_some_and(|c| c.canceled) {
+                dropped.push((self.queue.remove(0), Partial::Canceled));
+            }
+            let Some(next) = self.queue.first() else { break };
+            if !pipeline.is_empty() && !next.command.supports_pipelining() {
+                break;
+            }
             let mut context = self.queue.remove(0);
             context.framed_at_write = self.framing();
-            self.last_activity = Some(self.now());
-            // A stall in ground after it waits COMMAND_TIMEOUT, whatever its size.
-            self.last_written = Some(timeout_text(&context.command, COMMAND_TIMEOUT));
             let text = encode(&context.command, &self.line_prefix);
             context.timeout = command_timeout(text.len());
+            // A stall in ground after it waits COMMAND_TIMEOUT, whatever its size.
+            self.last_written = Some(timeout_text(&context.command, COMMAND_TIMEOUT));
+            let pipelines = context.command.supports_pipelining();
+            if pipelines {
+                size += context.command.size();
+            }
+            pipeline.push(context);
+            texts.push(text);
+            if !pipelines {
+                break;
+            }
+        }
+        if pipeline.len() > already {
+            if from_ground {
+                self.last_activity = Some(self.now());
+            }
             self.in_transition(|c| {
-                c.state = State::WillExecute(vec![context]);
-                c.write(&text);
+                set(c, pipeline);
+                for text in &texts {
+                    c.write(text);
+                }
             });
         }
         for (context, result) in dropped {
@@ -1024,8 +1125,9 @@ impl Conductor {
             self.state = State::Ground;
             self.dequeue();
         } else {
-            // amendPipeline: nothing joins a 14b pipeline, so only the state changes.
-            self.state = State::WillExecute(pending);
+            // amendPipeline: what was behind is still written; more may ride along.
+            self.state = State::WillExecute(pending.clone());
+            self.extend(pending, |c, contexts| c.state = State::WillExecute(contexts));
         }
     }
 
@@ -2729,5 +2831,65 @@ mod tests {
         // A write never puts its tarball on the screen, only where it goes.
         let write = Command::Write { data: vec![7; 4096], dest: "/$HOME/.config".into() };
         assert_eq!(unexpected_status(&write, 1), "write /$HOME/.config: Unepected status 1");
+    }
+
+    fn send_of(len: usize) -> Command {
+        Command::FramerSend { data: vec![b'a'; len], pid: 4242 }
+    }
+
+    fn wire_writes(c: &mut Conductor) -> usize {
+        c.take_effects().iter().filter(|e| matches!(e, Effect::Write(_))).count()
+    }
+
+    #[test]
+    fn pipeline_follows_iterm2() {
+        // 300 bytes: 400 base64 characters plus "send\n4242\n" is 410 characters, times 4 / 3.
+        let big = send_of(300);
+        assert_eq!(big.size(), 546);
+        assert!(big.supports_pipelining());
+        let run = Command::FramerRun("x".into());
+        assert!(!run.supports_pipelining());
+        assert_eq!(run.size(), usize::MAX);
+        assert_eq!(PIPELINE_BYTES, 1024);
+
+        let mut c = Conductor::new(setup("P"), None, "U");
+        c.framed_pid = Some(4242);
+        for _ in 0..3 {
+            c.send(send_of(300), Handler::FireAndForget, false);
+        }
+        // 546, then 1092 reaches the limit: two are written at once, the third waits.
+        assert_eq!(wire_writes(&mut c), 2);
+        assert_eq!(c.pending().len(), 3);
+        assert!(matches!(c.state(), State::WillExecute(v) if v.len() == 2));
+        let first = big.description();
+        assert_eq!(c.description(), format!("{first} (preparation stage) and 1 more"));
+        // The first has begun (its first line arrived).
+        c.handle_line("", 0);
+        assert_eq!(c.description(), format!("{first} and 1 more"));
+        // An end for the first tops the pipeline up: the third goes out.
+        c.handle_end("a", "f", 0, 0);
+        assert_eq!(wire_writes(&mut c), 1);
+        assert!(matches!(c.state(), State::WillExecute(v) if v.len() == 2));
+        c.handle_end("b", "f", 0, 0);
+        c.handle_end("c", "f", 0, 0);
+        assert!(c.pending().is_empty() && *c.state() == State::Ground);
+
+        // A run queued behind a pipeline is written only when the pipeline has ended.
+        for _ in 0..3 {
+            c.send(send_of(1), Handler::FireAndForget, false);
+        }
+        c.send(Command::FramerRun("x".into()), Handler::FireAndForget, false);
+        assert_eq!(wire_writes(&mut c), 3);
+        c.handle_end("a", "f", 0, 0);
+        c.handle_end("b", "f", 0, 0);
+        assert_eq!(wire_writes(&mut c), 0, "the run still waits for the last send");
+        c.handle_end("c", "f", 0, 0);
+        assert_eq!(wire_writes(&mut c), 1);
+        assert_eq!(c.in_flight(), Some(&run));
+        // A send behind a run waits for it, and a send after keystrokes joins them.
+        c.send(send_of(1), Handler::FireAndForget, false);
+        assert_eq!(wire_writes(&mut c), 0);
+        c.handle_end("d", "f", 0, 0);
+        assert_eq!(wire_writes(&mut c), 1);
     }
 }

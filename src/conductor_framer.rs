@@ -829,7 +829,9 @@ mod tests {
         let mut c = plain();
         assert!(!c.framing() && c.in_flight() == Some(&Command::Cd("/a".into())));
         c.handle_end("f", "f", 0, 0);
-        assert_eq!(parent_of(&c).in_flight(), None, "the parent took the framer end");
+        // The parent took the framer end: its poll is done and the child's write, which waited
+        // behind it as a send, is now in flight.
+        assert!(matches!(parent_of(&c).in_flight(), Some(Command::FramerSend { pid: 100, .. })), "{:?}", parent_of(&c).in_flight());
         assert_eq!(c.in_flight(), Some(&Command::Cd("/a".into())));
         let mut c = plain();
         c.handle_end("r", "r", 0, 1);
@@ -880,4 +882,81 @@ mod tests {
         assert!(last.chars().all(|ch| ch == '\u{e9}'));
         assert!(c.it2_inbox.iter().map(String::len).sum::<usize>() <= 16 * IT2_ENTRY_MAX);
     }
+
+    /// A framing conductor for pid 4242, depth 0, ground state.
+    fn framing_4242() -> Conductor {
+        let mut c = framing();
+        c.framed_pid = Some(4242);
+        c
+    }
+
+    fn send_of(data: &[u8]) -> Command {
+        Command::FramerSend { data: data.to_vec(), pid: 4242 }
+    }
+
+    #[test]
+    fn framed_keys_follow_iterm2() {
+        let mut c = framing_4242();
+        assert!(c.handles_keystrokes());
+        c.send_keys(b"ls\r");
+        assert_eq!(c.take_effects(), [Effect::Write(b"c2VuZA==\nNDI0Mg==\nYkhNTg==\n\n".to_vec())]);
+        // A second one before any reply goes out at once (the pipeline is topped up).
+        c.send_keys(b"x");
+        assert_eq!(c.take_effects(), [Effect::Write(framer_cmd(&["send", "4242", "eA=="]))]);
+        assert_eq!(c.pending(), [&send_of(b"ls\r"), &send_of(b"x")]);
+        // Nothing to send sends nothing (F18: the login's empty connecting queue).
+        c.send_keys(b"");
+        assert!(c.take_effects().is_empty() && c.pending().len() == 2);
+        feed(&mut c, &[end("a", 0, "f"), end("b", 0, "f")]);
+        assert!(c.pending().is_empty());
+
+        // A run does not pipeline: keys wait for its end.
+        c.send(Command::FramerRun("x".into()), Handler::FireAndForget, false);
+        c.take_effects();
+        c.send_keys(b"y");
+        assert!(c.take_effects().is_empty(), "written only after the run ends");
+        assert_eq!(c.pending(), [&Command::FramerRun("x".into()), &send_of(b"y")]);
+        feed(&mut c, &[end("a", 0, "f")]);
+        assert_eq!(c.take_effects(), [Effect::Write(framer_cmd(&["send", "4242", "eQ=="]))]);
+
+        // Not framing (a level 1 conductor that unhooked): the session writes it raw.
+        let mut plain = Conductor::new(Setup::default(), None, "P");
+        plain.handle_unhook();
+        assert!(!plain.handles_keystrokes());
+        plain.send_keys(b"ls\r");
+        assert_eq!(plain.take_effects(), [Effect::Keys(b"ls\r".to_vec())]);
+        // Framing but unhooked: not routed here.
+        let mut gone = framing_4242();
+        gone.handle_unhook();
+        assert!(!gone.handles_keystrokes());
+    }
+
+    #[test]
+    fn nested_writes_follow_iterm2() {
+        // A child under a framing parent: everything it writes is the parent's send of those
+        // bytes, never a raw write into the outer framer's stdin.
+        let parent = framing_4242();
+        let mut child = Conductor::new(Setup { client_unique_id: "B".into(), ..Setup::default() }, Some(Box::new(parent)), "V");
+        child.start();
+        let prefix_line = format!("{}\n", child.line_prefix());
+        let got = child.take_effects();
+        let first = crate::conductor::encode(&send_of(prefix_line.as_bytes()), "");
+        assert_eq!(got[0], Effect::Write((first + "\n").into_bytes()), "the prefix line rides in a send");
+        // The getshell command carries the child's prefix inside its own send.
+        let getshell = crate::conductor::encode(&Command::GetShell, child.line_prefix()) + "\n";
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(got[1], Effect::Write((crate::conductor::encode(&send_of(getshell.as_bytes()), "") + "\n").into_bytes()));
+        assert_eq!(child.parent.as_ref().unwrap().pending(), [&send_of(prefix_line.as_bytes()), &send_of(getshell.as_bytes())]);
+        // The launch write of Task 1 is one of them too: the code and the framer's EOF line.
+        let parent = framing_4242();
+        let mut child = Conductor::new(Setup { client_unique_id: "B".into(), ..Setup::default() }, Some(Box::new(parent)), "V");
+        child.exec_framer();
+        child.take_effects();
+        child.handle_begin("q", 1);
+        child.handle_end("q", "r", 0, 1);
+        let code = framer_code(child.depth()) + "\nEOF\n\n";
+        let want = crate::conductor::encode(&send_of(code.as_bytes()), "") + "\n";
+        assert_eq!(child.take_effects(), [Effect::Write(want.into_bytes())]);
+    }
+
 }
