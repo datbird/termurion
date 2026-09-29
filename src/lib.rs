@@ -351,6 +351,7 @@ pub mod ai_terminal;
 pub mod ai_shell;
 pub mod ai_exec;
 pub mod ai_actions;
+pub mod inert_files;
 pub mod ai_hard_rules;
 pub mod ai_classifier;
 pub mod chat_message;

@@ -424,7 +424,7 @@ pub fn attachment_name(name: &str) -> Option<String> {
     let last = *parts.last()?;
     // Bidirectional and zero-width marks can disguise an extension.
     let disguises = |c: char| matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}');
-    let bad = last.is_empty() || last == "." || last.chars().count() > 255 || last.ends_with(['.', ' ']) || last.chars().any(|c| c.is_control() || disguises(c) || "<>:\"|?*".contains(c)) || reserved(last);
+    let bad = last.is_empty() || last == "." || last.chars().count() > 255 || last.ends_with(['.', ' ']) || last.chars().any(|c| c.is_control() || disguises(c) || "<>:\"|?*".contains(c)) || reserved(last) || crate::inert_files::refused_on_listing(last);
     (!bad).then(|| last.to_string())
 }
 
@@ -474,7 +474,7 @@ pub fn materialize(root: &Path, chat: &str, id: &str, name: &str, content: &[u8]
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("could not read {}: {e}", path.display())),
     }
-    std::fs::write(&path, content).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    crate::inert_files::write_marked(&path, content).map_err(|e| format!("could not write {}: {e}", path.display()))?;
     Ok(path)
 }
 
@@ -839,6 +839,8 @@ mod tests {
             "", ".", "..", "..\\..\\x.cmd", "a/../../x", "..\\..\\..\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\a.cmd", "C:\\x", "C:x", "c:", "\\x", "/x", "\\\\h\\s\\x", "//h/s/x", "\\\\?\\C:\\x",
             "\\\\.\\PhysicalDrive0", "CON", "con", "nul.txt", "AUX", "PRN.log", "COM1", "com9.txt", "LPT1", "lpt9.log", "CONIN$", "CONOUT$", "a.txt:evil", "a.txt::$DATA", "a\u{7}b", "a\nb", "a\u{0}", "a\u{7f}", "a.txt.", "a.txt ",
             "sub\\", "a<b", "a|b", "a?b", "a*b", "a\"b", "CON .txt", "Con..",
+            // Types Explorer reads on listing (an icon location can name a UNC host).
+            "x.url", "sub\\X.URL", "a.lnk", "a.website", "a.library-ms", "a.searchConnector-ms", "a.scf", "a.settingcontent-ms", "a.appref-ms", "a.theme", "a.themepack", "a.desktopthemepack", "desktop.ini",
         ] {
             assert_eq!(attachment_name(bad), None, "{bad:?}");
         }
