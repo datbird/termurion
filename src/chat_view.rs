@@ -403,8 +403,7 @@ pub fn ids_from(visible: &[&Message], id: &str) -> Vec<String> {
 
 /// Windows device names, which no file or folder may be called, with any extension.
 fn reserved(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or("").trim_end_matches([' ', '.']).to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+    crate::inert_files::is_device_name(name)
 }
 
 /// The final component of an untrusted attachment name, or None when it is refused

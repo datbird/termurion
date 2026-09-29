@@ -381,6 +381,10 @@ mod tests {
         for name in ["x.url", r"sub\X.LNK", r"D:\a\x.library-ms", "desktop.ini", "x.url.", "a.txt:evil"] {
             assert_eq!(file_target(name, Some(r"C:\w"), true, home), listing, "{name}");
         }
+        // Device names are never created, with or without an extension.
+        for name in ["con", "NUL.txt", r"sub\aux.md", r"D:\a\COM1", "lpt9.log"] {
+            assert_eq!(file_target(name, Some(r"C:\w"), true, home), listing, "{name}");
+        }
         assert_eq!(file_target("urls.txt", Some(r"C:\w"), true, home), local(r"C:\w\urls.txt"));
         assert_eq!(create_failed("E"), "Error: E");
         assert_eq!(created_notice("x.txt"), "Created x.txt and revealed in Explorer.");
