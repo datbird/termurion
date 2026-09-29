@@ -601,8 +601,9 @@ pub enum Route {
 /// handlesKeystrokes gives Conductor (`PS:4278-4293`, `PS:4411-4432`), queueWrites gives
 /// Held (`PS:4191-4197`). Where iTerm2 then writes to the pty, Tandem first looks outward:
 /// while an ancestor's framer reads the pty (a level 1 hop inside a framed session, a nested
-/// exit before its EndSSH, a cat'd hook that unhooked), the nearest one sends the bytes
-/// (Tandem-side guard: iTerm2 types them into framer.py's stdin). Direct only with none.
+/// exit before its EndSSH, a cat'd hook that unhooked, or a hop that frames under an unhooked
+/// parent), the nearest one, the current conductor first, sends the bytes (Tandem-side guard:
+/// iTerm2 types them into framer.py's stdin). Direct only with none.
 pub fn route(c: Option<&Conductor>) -> Route {
     let Some(c) = c else { return Route::Direct };
     if c.handles_keystrokes() {
@@ -611,8 +612,10 @@ pub fn route(c: Option<&Conductor>) -> Route {
     if c.queue_writes() {
         return Route::Held;
     }
-    let mut hops = 1;
-    let mut up = c.parent.as_deref();
+    // From the current conductor itself: one that frames with its parent unhooked has its
+    // own framer running, and it is the first to take the bytes.
+    let mut hops = 0;
+    let mut up = Some(c);
     while let Some(p) = up {
         if p.frames_keys() {
             return Route::Conductor(hops);

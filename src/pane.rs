@@ -687,7 +687,7 @@ impl Pane {
     /// a conductor's `send_keys` when one sends for the session (the app applies its effects
     /// in `ssh_pump`), else the connecting queue, else `send_routed`.
     pub fn write_session(&mut self, bytes: &[u8]) {
-        if matches!(self.ssh_route(), crate::conductor::Route::Conductor(_)) || !self.ssh.queue(bytes) {
+        if self.ssh_route() == crate::conductor::Route::Conductor(0) || !self.ssh.queue(bytes) {
             self.send_routed(bytes);
         }
     }
@@ -720,14 +720,24 @@ impl Pane {
     }
 
     /// iTerm2's `conductorWrite` outside `write()` (a failed setup's `exec_login_shell` line):
-    /// held while any conductor would take the session's bytes, else the pty; never framed.
-    /// The abort that follows it drops what was held.
+    /// to the pty when nothing frames; through the framer above when the conductor is still
+    /// setting up under one (its conductor.sh reads the tty that framer's child owns, which is
+    /// where iTerm2's raw write lands); otherwise held, and the abort that follows drops it (a
+    /// framing conductor has no conductor.sh to read it, an unhooked one's is gone).
     fn write_unless_held(&mut self, bytes: &[u8]) {
-        if self.ssh_route() == crate::conductor::Route::Direct {
-            self.write_pty(bytes);
-        } else {
-            self.composer.probe = None;
-            self.ssh_held.extend_from_slice(bytes);
+        use crate::conductor::Route;
+        let setting_up = self.conductor.as_deref().is_some_and(|c| !c.framing() && !c.unhooked());
+        match self.ssh_route() {
+            Route::Direct => {
+                self.write_pty(bytes);
+            }
+            Route::Conductor(hops) if hops >= 1 && setting_up => {
+                self.send_routed(bytes);
+            }
+            _ => {
+                self.composer.probe = None;
+                self.ssh_held.extend_from_slice(bytes);
+            }
         }
     }
 
@@ -735,8 +745,12 @@ impl Pane {
     /// long for the coprocess to add to (F20): the pump stops draining it until replies come
     /// back.
     pub fn coprocess_backlogged(&self) -> bool {
-        let crate::conductor::Route::Conductor(hops) = self.ssh_route() else { return false };
-        self.conductor.as_deref().and_then(|c| c.ancestor(hops)).is_some_and(|c| c.queued_bytes() > COPROCESS_BACKLOG)
+        match self.ssh_route() {
+            // Setup holds the bytes here: the same limit, or a coprocess grows them without end.
+            crate::conductor::Route::Held => self.ssh_held.len() > COPROCESS_BACKLOG,
+            crate::conductor::Route::Conductor(hops) => self.conductor.as_deref().and_then(|c| c.ancestor(hops)).is_some_and(|c| c.queued_bytes() > COPROCESS_BACKLOG),
+            crate::conductor::Route::Direct => false,
+        }
     }
 
     /// A coprocess's output (`PK:354-361`, `PS:4639-4642`): `send_routed`, held during setup,
@@ -1147,8 +1161,11 @@ impl Pane {
         // Input and before `writeTaskImpl`'s effects (`PS:4411-4430`) but after a conductor
         // that handles keystrokes: a nested hop's password reaches the outer framer (F9,
         // `PS:4418-4426`).
+        // Only the current conductor's own keys skip the queue: with a hop connecting from
+        // a level 1 host (route `Conductor(n)`, n >= 1) typing waits, as iTerm2 queues unless the
+        // current conductor handles keystrokes.
         let routed = matches!(self.ssh_route(), crate::conductor::Route::Conductor(_));
-        if !routed && self.ssh.queue(bytes) {
+        if self.ssh_route() != crate::conductor::Route::Conductor(0) && self.ssh.queue(bytes) {
             return;
         }
         // Any write cancels the composer's clear probe (`PS:4154-4158`), held by Buffer
@@ -2921,28 +2938,33 @@ mod tests {
 
     /// Every way into the session, each asserted framed for `pid` with nothing raw.
     fn every_path_is_framed(p: &mut Pane, pid: i32) {
+        every_path_is_framed_by(p, &|data| sent_to(pid, data));
+    }
+
+    /// Every way into the session, each asserted to reach the wire as `framed(data)`.
+    fn every_path_is_framed_by(p: &mut Pane, framed: &dyn Fn(&[u8]) -> Vec<u8>) {
         wire(p);
         p.live_input(b"k");
-        assert_eq!(wire(p), sent_to(pid, b"k"), "typing");
+        assert_eq!(wire(p), framed(b"k"), "typing");
         p.input(b"\r");
-        assert_eq!(wire(p), sent_to(pid, b"\r"), "Enter");
+        assert_eq!(wire(p), framed(b"\r"), "Enter");
         p.paste("a\nb");
-        assert_eq!(wire(p), sent_to(pid, b"a\rb"), "a paste");
+        assert_eq!(wire(p), framed(b"a\rb"), "a paste");
         p.own_mut().feed(b"\x1b[?2004h");
         p.paste("c");
-        assert_eq!(wire(p), sent_to(pid, b"\x1b[200~c\x1b[201~"), "a bracketed paste");
+        assert_eq!(wire(p), framed(b"\x1b[200~c\x1b[201~"), "a bracketed paste");
         p.own_mut().feed(b"\x1b[?2004l");
         p.reply(b"\x1b[?1;2c");
-        assert_eq!(wire(p), sent_to(pid, b"\x1b[?1;2c"), "a report");
+        assert_eq!(wire(p), framed(b"\x1b[?1;2c"), "a report");
         p.focus_report(true);
-        assert_eq!(wire(p), sent_to(pid, b"\x1b[I"), "a focus report");
+        assert_eq!(wire(p), framed(b"\x1b[I"), "a focus report");
         assert!(p.coprocess_output(b"co"));
-        assert_eq!(wire(p), sent_to(pid, b"co"), "coprocess output");
+        assert_eq!(wire(p), framed(b"co"), "coprocess output");
         p.write_session(b"w");
-        assert_eq!(wire(p), sent_to(pid, b"w"), "a session write");
+        assert_eq!(wire(p), framed(b"w"), "a session write");
         p.set_buffering(true);
         p.live_input(b"b");
-        assert_eq!(wire(p), sent_to(pid, b"b"), "Buffer Input never holds a conductor's keys (PS:4417-4431)");
+        assert_eq!(wire(p), framed(b"b"), "Buffer Input never holds a conductor's keys (PS:4417-4431)");
         p.set_buffering(false);
         assert!(p.take_ssh_held().is_empty(), "nothing held");
     }
@@ -3103,5 +3125,130 @@ mod tests {
         p.apply_ssh_effects();
         let answers = p.take_ssh_answers();
         assert!(matches!(&answers[..], [(7, Err(_))]), "{answers:?}");
+    }
+
+    /// A conductor chained under the pane's current one as `App::ssh_hooked` does, at `depth`
+    /// (the hook fits), framing `pid` in ground when given (a conductor whose setup is done).
+    fn chain(p: &mut Pane, id: &str, depth: i32, pid: Option<i32>) {
+        use crate::conductor::{Conductor, Setup};
+        assert!(p.ssh_init_fits(depth), "a conductor fits at depth {depth}");
+        let mut c = Conductor::new(Setup { client_unique_id: id.into(), ..Setup::default() }, p.conductor.take(), "X");
+        c.framed_pid = pid;
+        assert_eq!(c.depth(), depth);
+        p.ssh.chain.push(crate::ssh_session::Hop { unique_id: id.into(), location: "x".into() });
+        p.conductor = Some(Box::new(c));
+    }
+
+    /// A `cat`'d hook: an unframed conductor that unhooked at once.
+    fn chain_catd(p: &mut Pane, id: &str, depth: i32) {
+        chain(p, id, depth, None);
+        p.conductor.as_mut().unwrap().handle_unhook();
+    }
+
+    #[test]
+    fn a_framing_hop_under_a_catd_hook_is_framed_by_every_framer_above() {
+        use crate::ssh_fixtures::{dcs_hook, osc135, output};
+        // `cat evil` in the framed shell (pid 100) leaves an unhooked, unframed depth 1
+        // conductor; the person then runs it2ssh to a host with Python and its framer frames
+        // at depth 1. Nothing typed may reach that framer's stdin raw.
+        let mut p = framing_root();
+        run_hook(&mut p, &output("n", 100, -1, 0, &[dcs_hook("", "evil", "YQ==", "Yg=="), osc135("unhook")].concat()));
+        assert_eq!(p.conductor.as_ref().map(|c| (c.depth(), c.unhooked())), Some((1, true)));
+        chain(&mut p, "x", 1, Some(300));
+        assert_eq!(crate::conductor::route(p.conductor.as_deref()), crate::conductor::Route::Conductor(0));
+        every_path_is_framed_by(&mut p, &|d| sent_to(100, &sent_to(300, d)));
+
+        // At depth 3: framing d0 (100), d1 (200), d2 (300), a cat'd unhooked d3, then a framing
+        // hop at depth 3 (400): each send is framed by every framer above it. A fresh pane per
+        // path: nothing answers here, and four framings of a few writes fill the pipeline.
+        let deep = || {
+            let mut p = framed_nested();
+            chain(&mut p, "c", 2, Some(300));
+            chain_catd(&mut p, "evil", 3);
+            chain(&mut p, "x", 3, Some(400));
+            assert_eq!(p.conductor.as_ref().map(|c| c.depth()), Some(3));
+            wire(&mut p);
+            p
+        };
+        let framed = |d: &[u8]| sent_to(100, &sent_to(200, &sent_to(300, &sent_to(400, d))));
+        let mut p = deep();
+        p.live_input(b"k");
+        assert_eq!(wire(&mut p), framed(b"k"), "typing");
+        let mut p = deep();
+        p.paste("a\nb");
+        assert_eq!(wire(&mut p), framed(b"a\rb"), "a paste");
+        let mut p = deep();
+        p.reply(b"\x1b[?1;2c");
+        assert_eq!(wire(&mut p), framed(b"\x1b[?1;2c"), "a report");
+        let mut p = deep();
+        assert!(p.coprocess_output(b"co"));
+        assert_eq!(wire(&mut p), framed(b"co"), "coprocess output");
+    }
+
+    #[test]
+    fn a_framing_hop_after_a_hop_without_python_is_framed() {
+        use crate::ssh_fixtures::{dcs_hook, output, pre_reply};
+        // A hop without Python 3.7 (unframed, unhooked, depth 1) inside the framed session, then
+        // a further hop from that host that does frame.
+        let mut p = framing_root();
+        run_hook(&mut p, &output("n", 100, -1, 0, &dcs_hook("", "u", "YQ==", "Yg==")));
+        run_hook(&mut p, &output("n", 100, -1, 0, &[pre_reply("1.1", &["sh"]), crate::ssh_fixtures::osc135("unhook")].concat()));
+        assert!(p.conductor.as_ref().unwrap().unhooked() && p.conductor.as_ref().unwrap().depth() == 1);
+        chain(&mut p, "x", 1, Some(300));
+        every_path_is_framed_by(&mut p, &|d| sent_to(100, &sent_to(300, d)));
+    }
+
+    #[test]
+    fn typing_while_connecting_from_a_level_1_hop_waits_in_the_queue() {
+        // iTerm2 queues while connecting unless the CURRENT conductor handles keystrokes
+        // (`PS:4417-4426`); only a route through the current conductor skips the queue.
+        let mut p = framed_nested();
+        p.unhook_conductor_at(1);
+        assert_eq!(crate::conductor::route(p.conductor.as_deref()), crate::conductor::Route::Conductor(1));
+        wire(&mut p);
+        p.ssh.begin(true);
+        p.live_input(b"pass");
+        p.write_session(b"word");
+        assert_eq!(wire(&mut p), b"", "nothing is typed at the outer shell yet");
+        assert_eq!(p.ssh.connecting.as_deref(), Some(&b"password"[..]));
+        // The release goes through the route.
+        let queued = p.ssh.stop_queueing();
+        p.send_routed(&queued);
+        assert_eq!(wire(&mut p), sent_to(100, b"password"));
+    }
+
+    #[test]
+    fn a_failed_setup_under_an_unhooked_parent_reaches_its_conductor_sh() {
+        use crate::ssh_fixtures::{dcs_hook, osc135, output};
+        // The new hop's ssh runs in the framed shell; conductor.sh is still reading its tty when
+        // setup fails, so `exec_login_shell` goes through the framer to it (iTerm2 writes it
+        // to the pty, which is that tty).
+        let mut p = framing_root();
+        run_hook(&mut p, &output("n", 100, -1, 0, &[dcs_hook("", "evil", "YQ==", "Yg=="), osc135("unhook")].concat()));
+        chain(&mut p, "x", 1, None);
+        wire(&mut p);
+        p.conductor.as_mut().unwrap().fail("boom");
+        assert_eq!(wire(&mut p), sent_to(100, b"exec_login_shell\n"));
+        // A framing conductor's own failure (nothing reads a line at its end) or an unhooked
+        // one (its conductor.sh is gone) types nothing.
+        let mut p = framed_nested();
+        wire(&mut p);
+        p.conductor.as_mut().unwrap().fail("boom");
+        assert_eq!(wire(&mut p), b"");
+    }
+
+    #[test]
+    fn a_coprocess_cannot_flood_the_held_bytes_during_setup() {
+        let mut p = Pane::with(7, None, 80, 24);
+        p.conductor = setting_up();
+        assert!(!p.coprocess_backlogged());
+        for _ in 0..80 {
+            assert!(p.coprocess_output(&[b'z'; 1024]));
+        }
+        assert!(p.coprocess_backlogged(), "over 64 KiB held waits");
+        // The unhook releases them and the pump runs again.
+        p.conductor.as_mut().unwrap().handle_unhook();
+        p.take_ssh_held();
+        assert!(!p.coprocess_backlogged());
     }
 }
