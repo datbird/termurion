@@ -51,6 +51,25 @@ pub(super) fn pick_stale(pick: &Pick, agent: Option<&Agent>) -> bool {
     }
 }
 
+/// What ending a pick does.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Outcome {
+    Nothing,
+    /// Link the chat to the chosen pane.
+    Link { chat: String, pane: PaneId },
+    /// Answer a parked select-session request: with the pane, or None to decline it.
+    Answer { chat: String, request: String, pane: Option<PaneId> },
+}
+
+/// The end of `pick` with `pane` chosen, or None for Cancel, Escape and no pane.
+pub(super) fn pick_outcome(pick: &Pick, pane: Option<PaneId>) -> Outcome {
+    match (&pick.then, pane) {
+        (PickThen::Link, Some(pane)) => Outcome::Link { chat: pick.chat.clone(), pane },
+        (PickThen::Link, None) => Outcome::Nothing,
+        (PickThen::Request(id), pane) => Outcome::Answer { chat: pick.chat.clone(), request: id.clone(), pane },
+    }
+}
+
 /// What the person sees when a link cannot be made.
 const NOT_LIVE: &str = "That session is no longer open.";
 const NOT_LINKED: &str = "The chat could not be linked.";
@@ -94,6 +113,10 @@ impl App {
     /// the picker's button. A browser pick finds no browser pane before milestone 13, so it
     /// shows none, and Cancel or Escape ends it.
     pub(super) fn start_pick(&mut self, chat: &str, terminal: bool, then: PickThen) {
+        // An open pick ends first, with no pane: its request is declined and its turn goes on.
+        if self.chat_picker.is_some() {
+            self.picked(None);
+        }
         self.chat_picker = Some(Pick { chat: chat.to_string(), terminal, then });
         self.client_local(chat, ClientLocal::PickingSession);
         self.chat_state_changed();
@@ -106,15 +129,14 @@ impl App {
     pub(super) fn picked(&mut self, pane: Option<PaneId>) {
         let Some(pick) = self.chat_picker.take() else { return };
         let pane = pane.filter(|p| self.session_ref(*p).is_some());
-        match pick.then {
-            PickThen::Link => {
-                if let Some(pane) = pane {
-                    if let Err(e) = self.link_chat(&pick.chat, pane) {
-                        self.banners.set("chat_link", e);
-                    }
+        match pick_outcome(&pick, pane) {
+            Outcome::Nothing => {}
+            Outcome::Link { chat, pane } => {
+                if let Err(e) = self.link_chat(&chat, pane) {
+                    self.banners.set("chat_link", e);
                 }
             }
-            PickThen::Request(id) => self.ai_session_selected(&pick.chat, &id, pane),
+            Outcome::Answer { chat, request, pane } => self.ai_session_selected(&chat, &request, pane),
         }
         self.chat_state_changed();
     }
@@ -692,6 +714,18 @@ mod tests {
         assert_eq!(choice_of(Answer::AlwaysAllow), Choice::AlwaysAllow);
         assert_eq!(choice_of(Answer::DenyOnce), Choice::DenyOnce);
         assert_eq!(choice_of(Answer::AlwaysDeny), Choice::AlwaysDeny);
+    }
+
+    #[test]
+    fn ending_a_pick_with_no_pane_declines_its_request() {
+        let request = Pick { chat: "a".into(), terminal: true, then: PickThen::Request("R".into()) };
+        let link = Pick { chat: "b".into(), terminal: true, then: PickThen::Link };
+        // start_pick ends the open pick with no pane: its request is declined, not left parked.
+        assert_eq!(pick_outcome(&request, None), Outcome::Answer { chat: "a".into(), request: "R".into(), pane: None });
+        assert_eq!(pick_outcome(&link, None), Outcome::Nothing);
+        assert_eq!(pick_outcome(&request, Some(3)), Outcome::Answer { chat: "a".into(), request: "R".into(), pane: Some(3) });
+        assert_eq!(pick_outcome(&link, Some(3)), Outcome::Link { chat: "b".into(), pane: 3 });
+        assert_eq!(pick_outcome(&link, None), Outcome::Nothing);
     }
 
     #[test]
