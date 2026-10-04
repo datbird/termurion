@@ -17,7 +17,7 @@ use crate::ai_permissions::{self, Category, Gate, Key, Overrides, Permission};
 use crate::ai_settings::Vendor;
 use crate::ai_terminal::Outcome;
 use crate::ai_tools::Call;
-use crate::ai_turn::{Hosted, Out, ToolResult, TurnInput, Wire};
+use crate::ai_turn::{Hosted, Out, ToolDecl, ToolResult, TurnInput, Wire};
 use crate::chat_agent::{self, Agent, FileDriver, FileFlow, Park, TurnDriver};
 use crate::chat_broker::{Broker, Effect};
 use crate::chat_gate::{self, endpoint_of, files_endpoint, Passed};
@@ -59,6 +59,11 @@ pub(super) struct Ctx<'a> {
     /// The explanation processor (ruling P8, `ChatClient.swift:59-83`): a message about to be
     /// stored with the stored row an append or commit targets, answering what to store.
     pub explain: &'a mut dyn FnMut(&str, Message, Option<&Message>, bool) -> Explained,
+    /// The orchestration system message for the chat (12f; the engine never calls an App method).
+    pub orch_system: &'a dyn Fn(&Chat) -> String,
+    /// The tools 12f adds: an orchestration chat's own, or a session-bound chat's enable tool and
+    /// watch tools (which of them depends on the linked terminal's permissions).
+    pub orch_tools: &'a dyn Fn(&Chat, &Overrides) -> Vec<ToolDecl>,
     /// Seconds since 1970, for the messages published.
     pub now: f64,
 }
@@ -77,6 +82,9 @@ pub(super) enum EngineEffect {
     AskKey { vendor: Vendor, endpoint: Endpoint, then: KeyThen },
     Link { chat: String, pane: PaneId },
     Republish { chat: String, request_id: String },
+    /// The model called an orchestration tool (12f): the App runs `orch_call` and, for an answer,
+    /// `orch_resume`. The call id is the model's, from the call message (ruling 12c-1).
+    Orch { chat: String, call_id: String, name: String, args: serde_json::Value },
     /// A request carried the terminal context: commit its watermark (minor m2).
     VolatileSent(String),
     /// An Always Allow or Always Deny holds for this run but its row was not written: tell the
@@ -159,6 +167,11 @@ fn classic(m: &Message) -> Option<&RemoteCommand> {
     }
 }
 
+/// A message no person wrote: a watcher's or a timer's event (12f Task 11).
+fn is_machine(c: &Content) -> bool {
+    matches!(c, Content::WatcherEvent(_))
+}
+
 impl Engine {
     /// The explanation processor over `m` (ruling P8): the stored row an append or commit
     /// targets is read as `publish_in` reads it, then the closure converts the message. Only the
@@ -203,19 +216,36 @@ impl Engine {
     }
 
     /// `ChatBroker.publish` and the service's hand-off (`ChatService.swift:116-178`).
+    /// Every publish but the person's own send: no message it hands the service is the
+    /// person's (Task 11 fix round 2).
     pub(super) fn publish(cx: &mut Ctx, chat: &str, m: Message, partial: bool) -> Result<Fx, String> {
+        Self::publish_as(cx, chat, m, partial, false)
+    }
+
+    /// `by_person` marks `m` (by its id) as the person's own; nothing else the hand-off brings
+    /// carries the mark.
+    fn publish_as(cx: &mut Ctx, chat: &str, m: Message, partial: bool, by_person: bool) -> Result<Fx, String> {
         Self::ensure_agent(cx, chat);
+        let id = m.unique_id.clone();
         let handoff = publish_in(cx.store, cx.broker, chat, m, partial)?;
         let mut fx = Vec::new();
         for e in handoff {
             if let Effect::ToService(m) = e {
-                fx.extend(Self::service(cx, chat, m));
+                let person = by_person && m.unique_id == id;
+                fx.extend(Self::service(cx, chat, m, person));
             }
         }
         Ok(fx)
     }
 
-    fn service(cx: &mut Ctx, chat: &str, m: Message) -> Fx {
+    /// A message the person composed and sent from a chat input (the window or the inline
+    /// panel): the only publish that carries the person-authored mark.
+    pub(super) fn publish_by_person(cx: &mut Ctx, chat: &str, m: Message) -> Result<Fx, String> {
+        Self::publish_as(cx, chat, m, false, true)
+    }
+
+    /// `by_person`: the message carries the person-authored mark (Task 11 fix round 2).
+    fn service(cx: &mut Ctx, chat: &str, m: Message, by_person: bool) -> Fx {
         match m.content {
             Content::SetPermissions(set) => {
                 // An orchestration chat's agent is 12f's.
@@ -230,9 +260,18 @@ impl Engine {
             Content::UserCommand(_) | Content::RemoteCommandResponse { .. } | Content::Unsupported(_) => Vec::new(),
             _ => {
                 let mut fx = Vec::new();
-                // A turn wedged on the person's answer is cancelled for the new message
-                // (`isAwaitingUserApproval`, `CA:1249-1282`); a working turn keeps it queued.
-                if cx.agents.get(chat).is_some_and(Agent::is_awaiting_approval) {
+                // A turn wedged on the person's answer is cancelled for the person's new
+                // message (`isAwaitingUserApproval`, `CA:1249-1282`); a working turn keeps it
+                // queued. Only the person's own send carries that mark: a watcher's or timer's
+                // event, a streamed terminal command and anything code publishes never
+                // abandon the approval or reset the machine-turn cap (Task 11 fix rounds 1-2).
+                if by_person {
+                    if let Some(a) = cx.agents.get_mut(chat) {
+                        a.machine_turns = 0;
+                        a.machine_paused = false;
+                    }
+                }
+                if by_person && cx.agents.get(chat).is_some_and(Agent::is_awaiting_approval) {
                     fx.extend(Self::halt(cx, chat));
                 }
                 fx.extend(Self::next(cx, chat));
@@ -246,10 +285,24 @@ impl Engine {
         if cx.agents.get(chat).is_some_and(|a| a.in_turn || a.held.is_some() || a.files.is_some()) {
             return Vec::new();
         }
-        match cx.broker.next_turn(chat) {
-            Some(m) => Self::begin(cx, chat, m, true),
-            None => Vec::new(),
+        let Some(m) = cx.broker.next_turn(chat) else { return Vec::new() };
+        if is_machine(&m.content) {
+            // At most MACHINE_TURNS turns started by watchers and timers since the person's
+            // last message; past that the event stays in the log, unanswered, and one notice
+            // says the chat waits for the person (Task 11 fix round 1).
+            let a = cx.agents.entry(chat.to_string()).or_default();
+            if a.machine_turns >= crate::orch_watch::MACHINE_TURNS {
+                let first = !a.machine_paused;
+                a.machine_paused = true;
+                cx.broker.turn_done(chat);
+                if first {
+                    Self::notice(cx, chat, crate::orch_watch::MACHINE_TURNS_PAUSED);
+                }
+                return Self::next(cx, chat);
+            }
+            a.machine_turns += 1;
         }
+        Self::begin(cx, chat, m, true)
     }
 
     /// Ends the turn every way a turn ends: the reply committed, typing off, `Turn(Ended)`, the
@@ -263,6 +316,7 @@ impl Engine {
             a.reasoning = None;
             a.held = None;
             a.model = None;
+            a.orch_pending = None;
             if let Ok(mut v) = a.volatile.lock() {
                 *v = None;
             }
@@ -361,9 +415,22 @@ impl Engine {
         let Some(a) = cx.agents.get_mut(chat) else { return Vec::new() };
         let allowed = a.allowed.clone().unwrap_or_default();
         let functions = has(&model, Feature::FunctionCalling);
-        let key = chat_agent::prompt_key(functions, &allowed);
+        let orchestrating = row.orchestration_enabled;
+        // An orchestration chat takes its system message and tools from 12f and ignores the
+        // permission set; a session-bound chat's tools are 12c's followed by the enable tool.
+        let system = if orchestrating { (cx.orch_system)(&row) } else { chat_agent::system_message(&cx.globals.string(chat_agent::prompt_key(functions, &allowed).global_key())) };
+        let tools = if !functions {
+            Vec::new()
+        } else if orchestrating {
+            (cx.orch_tools)(&row, cx.overrides)
+        } else {
+            let mut t = crate::ai_tools::tool_defs(&allowed);
+            t.extend((cx.orch_tools)(&row, cx.overrides));
+            t
+        };
         a.system_dirty = false;
-        a.update_system(chat_agent::system_message(&cx.globals.string(key.global_key())));
+        a.orch_tooled = orchestrating;
+        a.update_system(system);
         let mut messages = vec![ai_msg::Message::text(Role::System, &a.system)];
         messages.extend(chat_agent::history(&before));
         messages.push(ai_msg::Message::new(Some(Role::User), body));
@@ -373,7 +440,7 @@ impl Engine {
         let input = TurnInput {
             model: model.clone(),
             messages,
-            tools: if functions { crate::ai_tools::tool_defs(&allowed) } else { Vec::new() },
+            tools,
             stream: has(&model, Feature::Streaming),
             hosted: Hosted { file_search_vector_stores: stores, web_search: options.web_search, code_interpreter: has(&model, Feature::HostedCodeInterpreter) },
             previous_response_id: None,
@@ -498,6 +565,20 @@ impl Engine {
     /// `CA:2110-2162`). A call that does not parse is the tool's failure, which 12b counts.
     fn invoke(cx: &mut Ctx, chat: &str, call: FunctionCall, id: Option<CallId>) -> Fx {
         let name = call.name.clone().unwrap_or_default();
+        // An orchestration chat owns the orchestration names; any chat owns the enable tool. A
+        // session-bound chat's `get_screen_contents` stays 12c's.
+        let orchestrating = cx.store.chat(chat).ok().flatten().is_some_and(|c| c.orchestration_enabled);
+        if name == crate::orch::ENABLE_TOOL || crate::orch::is_watch_tool(&name) || (orchestrating && crate::orch::orch_owns(&name)) {
+            let args = match arguments_json(call.arguments.as_deref()) {
+                Ok(args) => args,
+                Err(e) => return Self::continue_turn(cx, chat, ToolResult::Failed(e)),
+            };
+            let call_id = id.map(|i| i.call_id).or(call.id).unwrap_or_default();
+            if let Some(a) = cx.agents.get_mut(chat) {
+                a.orch_pending = Some((call_id.clone(), false));
+            }
+            return vec![EngineEffect::Orch { chat: chat.to_string(), call_id, name, args }];
+        }
         let parsed = arguments_json(call.arguments.as_deref()).and_then(|args| crate::ai_tools::parse(&name, &args));
         let tool = match parsed {
             Ok(tool) => tool,
@@ -663,6 +744,36 @@ impl Engine {
             fx.push(EngineEffect::GateRefused { endpoint, silent: true });
         }
         fx
+    }
+
+    /// The answer to an orchestration call (12f's `orch_resume`), after the turn's gate (ruling
+    /// R12cd-1). One for a call that is not pending (answered already, or orphaned by Stop) is
+    /// dropped. A chat that switched to orchestration while its call was out gets its new system
+    /// message and tools in the driver first, so the very next request carries them.
+    pub(super) fn orch_done(cx: &mut Ctx, chat: &str, call_id: &str, result: ToolResult) -> Fx {
+        let Some(a) = cx.agents.get_mut(chat).filter(|a| a.in_turn) else { return Vec::new() };
+        if a.orch_pending.as_ref().is_none_or(|(c, _)| c != call_id) {
+            return Vec::new();
+        }
+        a.orch_pending = None;
+        let Some(model) = a.model.clone() else { return Vec::new() };
+        let endpoint = endpoint_of(&model);
+        let Some(passed) = chat_gate::pass(cx.globals, &endpoint) else { return Self::refuse(cx, chat, endpoint) };
+        let row = cx.store.chat(chat).ok().flatten();
+        let retool = row.filter(|r| r.orchestration_enabled && cx.agents.get(chat).is_some_and(|a| !a.orch_tooled)).map(|r| ((cx.orch_system)(&r), (cx.orch_tools)(&r, cx.overrides)));
+        if let Some(a) = cx.agents.get_mut(chat) {
+            if let (Some((system, tools)), Some(d)) = (retool, a.driver.as_mut()) {
+                d.reconfigure(&system, tools);
+                a.orch_tooled = true;
+                a.update_system(system);
+            }
+        }
+        cx.broker.typing(chat, true, Participant::Agent);
+        let outs = match cx.agents.get_mut(chat).and_then(|a| a.driver.as_mut()) {
+            Some(d) => send_tool_done(&mut **d, passed, result),
+            None => Vec::new(),
+        };
+        Self::outs(cx, chat, outs)
     }
 
     /// A tool's result from the App (`ai_tool_finished`); one for a request that is not
@@ -975,7 +1086,7 @@ mod tests {
     use crate::ai_files::{FileOut, Job};
     use crate::ai_msg::{Attachment, Body, CallId, FunctionCall, Status};
     use crate::ai_settings::{Api, Vendor, ADMIN, ENABLE_AI};
-    use crate::ai_turn::{Hosted, Out, ToolResult, TurnInput};
+    use crate::ai_turn::{Hosted, Out, ToolDecl, ToolResult, TurnInput};
     use crate::chat_broker::Update;
     use crate::chat_message::Subpart;
     use std::cell::RefCell;
@@ -991,6 +1102,7 @@ mod tests {
         Key(Option<String>),
         Tool(ToolResult),
         Cancel,
+        Retool(String, Vec<String>),
         FileStart(Option<String>),
         FileCancel,
     }
@@ -1043,6 +1155,9 @@ mod tests {
         fn cancel(&mut self) -> Vec<Out> {
             self.0.borrow_mut().events.push(Ev::Cancel);
             vec![Out::Canceled]
+        }
+        fn reconfigure(&mut self, system: &str, tools: Vec<ToolDecl>) {
+            self.0.borrow_mut().events.push(Ev::Retool(system.to_string(), tools.into_iter().map(|t| t.name).collect()));
         }
     }
 
@@ -1127,6 +1242,11 @@ mod tests {
                 new_turn: &mut new_turn,
                 new_files: &mut new_files,
                 explain: &mut explain,
+                orch_system: &|_: &Chat| "O".to_string(),
+                orch_tools: &|c: &Chat, _: &Overrides| {
+                    let send = ToolDecl { name: "send_text".into(), description: "d".into(), parameters: serde_json::json!({}) };
+                    if c.orchestration_enabled { vec![send] } else { crate::orch::tools_for(false, c.terminal_session_guid.as_ref().map(|_| (true, true))) }
+                },
                 now: 10.0,
             };
             f(&mut cx)
@@ -1147,8 +1267,10 @@ mod tests {
             self.run(|cx| Engine::publish(cx, chat, m, false).unwrap())
         }
 
+        /// The person's own send from a chat input.
         fn say(&mut self, chat: &str, text: &str) -> Vec<EngineEffect> {
-            self.send(chat, Content::PlainText { text: text.into(), context: None })
+            let m = Message::new(chat, Participant::User, Content::PlainText { text: text.into(), context: None }, 5.0);
+            self.run(|cx| Engine::publish_by_person(cx, chat, m).unwrap())
         }
 
         fn set(&mut self, chat: &str, guid: &str, c: Category, p: Permission) {
@@ -1555,6 +1677,137 @@ mod tests {
         assert_eq!(h.events().last(), Some(&Ev::Cancel));
     }
 
+    fn watcher_event(id: &str) -> Content {
+        Content::WatcherEvent(serde_json::json!({"_0": {"watcherID": id, "workgroupName": "w", "roleName": "w", "reason": "timerFired", "timestamp": 0, "detail": "fired"}}))
+    }
+
+    /// Ends the running turn the way the model does when it has nothing more to say.
+    fn finish_turn(h: &mut H) {
+        h.log.borrow_mut().on_poll.push_back(vec![Out::StreamEnd]);
+        h.run(|cx| Engine::poll(cx));
+    }
+
+    /// Task 11 fix round 1, ruling 1: a turn a watcher or timer starts never abandons the
+    /// person's pending approval (iTerm2's ChatService: only a person's message does); it
+    /// queues until the approval is answered.
+    #[test]
+    fn machine_turns_never_abandon_an_approval() {
+        let mut h = H::new();
+        let chat = h.chat(Some("7"));
+        h.script(vec![screen("c1")]);
+        h.say(&chat, "first");
+        let rid = h.park_ids(&chat)[0].clone();
+        assert!(h.agents[&chat].is_awaiting_approval());
+        let fx = h.send(&chat, watcher_event("W1"));
+        assert!(!fx.contains(&EngineEffect::CancelChecks(chat.clone())), "{fx:?}");
+        assert_eq!(h.count(&Ev::Cancel), 0, "the approval stands");
+        assert_eq!(h.park_ids(&chat), vec![rid.clone()]);
+        assert!(h.agents[&chat].is_awaiting_approval() && h.in_turn(&chat));
+        assert_eq!(h.count(&Ev::Start), 1, "the event waits");
+        // Answered: the turn finishes, then the queued event starts its own turn.
+        let fx = h.run(|cx| Engine::answer_request(cx, &chat, &rid, Choice::AllowOnce));
+        assert_eq!(run_ids(&fx).len(), 1);
+        h.after_tool(vec![Out::StreamEnd]);
+        h.run(|cx| Engine::tool_finished(cx, &chat, &rid, ran("the screen", None)));
+        assert_eq!(h.count(&Ev::Start), 2);
+        let last = h.log.borrow().inputs[1].messages.last().cloned().unwrap();
+        assert!(format!("{last:?}").contains("status_update"), "{last:?}");
+        // A person's message still abandons a wedged turn (`wedged_turn_follows_iterm2`).
+    }
+
+    /// Task 11 fix round 1, ruling 2: at most 20 turns started by watchers and timers since the
+    /// person's last message; then one notice and a pause until the person writes.
+    #[test]
+    fn machine_turns_pause_after_twenty() {
+        let mut h = H::new();
+        let chat = h.chat(Some("7"));
+        for i in 0..crate::orch_watch::MACHINE_TURNS {
+            h.send(&chat, watcher_event(&format!("W{i}")));
+            finish_turn(&mut h);
+        }
+        assert_eq!(h.count(&Ev::Start), 20);
+        assert!(h.notices(&chat).is_empty());
+        h.send(&chat, watcher_event("W20"));
+        h.send(&chat, watcher_event("W21"));
+        assert_eq!(h.count(&Ev::Start), 20, "paused");
+        assert!(!h.in_turn(&chat) && !h.broker.turn_in_progress(&chat));
+        assert_eq!(h.notices(&chat), vec![crate::orch_watch::MACHINE_TURNS_PAUSED.to_string()], "one notice");
+        // The person writes: their turn runs and the count starts over.
+        h.say(&chat, "go on");
+        assert_eq!(h.count(&Ev::Start), 21);
+        finish_turn(&mut h);
+        h.send(&chat, watcher_event("W22"));
+        assert_eq!(h.count(&Ev::Start), 22, "running again");
+        finish_turn(&mut h);
+        for i in 0..crate::orch_watch::MACHINE_TURNS {
+            h.send(&chat, watcher_event(&format!("X{i}")));
+            finish_turn(&mut h);
+        }
+        assert_eq!(h.count(&Ev::Start), 41);
+        assert_eq!(h.notices(&chat).len(), 2, "a second pause, a second notice");
+    }
+
+    fn streamed_command() -> Content {
+        Content::TerminalCommand(TerminalCommand { username: None, hostname: None, directory: None, command: "c".into(), output: "o".into(), exit_code: 0, url: String::new() })
+    }
+
+    /// Task 11 fix round 2: only the person's own send is the person. A streamed terminal
+    /// command (even one the model typed) or a user-role message published by code neither
+    /// abandons a pending approval nor resets the machine-turn cap.
+    #[test]
+    fn only_a_person_send_is_the_person() {
+        for content in [streamed_command(), Content::PlainText { text: "published by code".into(), context: None }] {
+            let mut h = H::new();
+            let chat = h.chat(Some("7"));
+            h.script(vec![screen("c1")]);
+            h.say(&chat, "first");
+            let rid = h.park_ids(&chat)[0].clone();
+            let fx = h.send(&chat, content.clone());
+            assert!(!fx.contains(&EngineEffect::CancelChecks(chat.clone())), "{content:?}: {fx:?}");
+            assert_eq!(h.count(&Ev::Cancel), 0, "{content:?}");
+            assert_eq!(h.park_ids(&chat), vec![rid], "{content:?}");
+            // The person's send abandons it.
+            h.say(&chat, "second");
+            assert_eq!(h.count(&Ev::Cancel), 1, "{content:?}");
+        }
+        // The cap: a streamed command does not reset it; the person's send does.
+        let mut h = H::new();
+        let chat = h.chat(Some("7"));
+        for i in 0..crate::orch_watch::MACHINE_TURNS {
+            h.send(&chat, watcher_event(&format!("W{i}")));
+            finish_turn(&mut h);
+        }
+        let started = h.count(&Ev::Start);
+        h.send(&chat, streamed_command());
+        if h.in_turn(&chat) {
+            finish_turn(&mut h);
+        }
+        let after_command = h.count(&Ev::Start);
+        h.send(&chat, watcher_event("W20"));
+        assert_eq!(h.count(&Ev::Start), after_command, "still paused after a streamed command");
+        assert!(after_command <= started + 1);
+        h.say(&chat, "go on");
+        finish_turn(&mut h);
+        let before = h.count(&Ev::Start);
+        h.send(&chat, watcher_event("W21"));
+        assert_eq!(h.count(&Ev::Start), before + 1, "the person's send resets the cap");
+    }
+
+    /// Task 11 fix round 2: the person-authored mark is set only by the chat input's own send.
+    #[test]
+    fn the_person_mark_comes_only_from_the_send_path() {
+        let srcs = [include_str!("chat_window_app.rs"), include_str!("chat_app.rs"), include_str!("chat_session_app.rs"), include_str!("orch_watch_app.rs"), include_str!("orch_dispatch.rs"), include_str!("orch_app.rs"), include_str!("ai_explain_app.rs"), include_str!("inline_chat_ui.rs")];
+        let code = |s: &'static str| s.split("#[cfg(test)]").next().unwrap();
+        let callers: usize = srcs.iter().map(|s| code(s).matches("self.chat_publish_by_person(").count()).sum();
+        assert_eq!(callers, 1, "one caller");
+        let send = code(include_str!("chat_window_app.rs"));
+        let at = send.find("fn send_input_for(").unwrap();
+        let body = &send[at..at + send[at..].find("\n    }\n").unwrap()];
+        assert!(body.contains("self.chat_publish_by_person(&chat, m)"), "the window's and the panel's Send");
+        assert!(code(include_str!("chat_app.rs")).contains("Engine::publish_by_person(cx, chat, message)"));
+        assert_eq!(code(include_str!("chat_engine.rs")).matches("Self::publish_as(cx, chat, m, false, true)").count(), 1);
+    }
+
     #[test]
     fn wedged_turn_follows_iterm2() {
         let mut h = H::new();
@@ -1742,7 +1995,10 @@ mod tests {
         let log = h.log.borrow();
         let (first, second) = (&log.inputs[0], &log.inputs[1]);
         let only: BTreeSet<Category> = [Category::ViewContents].into_iter().collect();
-        assert_eq!(second.tools, crate::ai_tools::tool_defs(&only).into_iter().map(|t| t.name).collect::<Vec<_>>());
+        // A session-bound chat always carries the enable tool after 12c's.
+        let mut want: Vec<String> = crate::ai_tools::tool_defs(&only).into_iter().map(|t| t.name).collect();
+        want.extend([crate::orch::ENABLE_TOOL, "register_timer", "register_watch", "unregister_watch", "list_watches"].map(String::from));
+        assert_eq!(second.tools, want);
         assert_ne!(first.tools, second.tools);
         assert_ne!(first.messages[0], second.messages[0], "a new system message");
         let ro = chat_agent::system_message(&h.g.string(chat_agent::PromptKey::ReadOnlyTerminal.global_key()));
@@ -2113,5 +2369,144 @@ mod tests {
         assert_eq!(arguments_json(Some("{\"command\":\"ls")), Ok(serde_json::json!({"command":"ls"})), "a truncated text is completed");
         assert_eq!(arguments_json(Some("{\"a\":[1,{\"b\":\"x\\\"")), Ok(serde_json::json!({"a":[1,{"b":"x\""}]})));
         assert!(arguments_json(Some("nope")).is_err());
+    }
+
+    fn orch_chat(h: &mut H) -> String {
+        let chat = h.chat(None);
+        let row = h.store.chat(&chat).unwrap().unwrap();
+        h.store.update_chat(&Chat { orchestration_enabled: true, ..row }).unwrap();
+        chat
+    }
+
+    fn orch_effect(chat: &str, call: &str, name: &str, args: serde_json::Value) -> EngineEffect {
+        EngineEffect::Orch { chat: chat.to_string(), call_id: call.to_string(), name: name.to_string(), args }
+    }
+
+    #[test]
+    fn orch_calls_leave_the_engine() {
+        let mut h = H::new();
+        let chat = orch_chat(&mut h);
+        h.script(vec![invoke("send_text", "{\"text\":\"ls\"}", "c1")]);
+        let fx = h.say(&chat, "hi");
+        {
+            let l = h.log.borrow();
+            assert_eq!(l.inputs[0].tools, vec!["send_text".to_string()], "the orch tools and no 12c tool");
+            assert_eq!(l.inputs[0].messages[0].body, Body::Text("O".into()), "the orchestration system message");
+        }
+        assert_eq!(fx, vec![orch_effect(&chat, "c1", "send_text", serde_json::json!({"text": "ls"}))], "no RunTool and no Check");
+        assert!(h.requests(&chat).is_empty(), "no classic request is stored");
+        let fx = h.run(|cx| Engine::orch_done(cx, &chat, "c1", ToolResult::Ok("{\"ack\":true}".into())));
+        assert_eq!(fx, vec![]);
+        assert_eq!(h.count(&Ev::Tool(ToolResult::Ok("{\"ack\":true}".into()))), 1);
+        // Answered twice, the second is an orphan.
+        h.run(|cx| Engine::orch_done(cx, &chat, "c1", ToolResult::Ok("again".into())));
+        assert_eq!(h.count(&Ev::Tool(ToolResult::Ok("again".into()))), 0);
+    }
+
+    #[test]
+    fn orch_done_meets_the_gate_and_stop() {
+        let mut h = H::new();
+        let chat = orch_chat(&mut h);
+        h.script(vec![invoke("get_state", "{}", "c1")]);
+        h.say(&chat, "hi");
+        h.off();
+        let fx = h.run(|cx| Engine::orch_done(cx, &chat, "c1", ToolResult::Ok("x".into())));
+        assert!(silent_refusal(&fx));
+        assert_eq!(h.count(&Ev::Tool(ToolResult::Ok("x".into()))), 0, "a closed gate sends nothing");
+        assert_eq!(h.count(&Ev::Cancel), 1);
+        h.on();
+        // Stop drops the pending call as an orphan.
+        let mut h = H::new();
+        let chat = orch_chat(&mut h);
+        h.script(vec![invoke("get_state", "{}", "c1")]);
+        h.say(&chat, "hi");
+        h.send(&chat, Content::UserCommand(UserCommand::Stop));
+        assert!(h.agents[&chat].orch_pending.is_none(), "Stop forgets the call");
+        h.run(|cx| Engine::orch_done(cx, &chat, "c1", ToolResult::Ok("late".into())));
+        assert_eq!(h.count(&Ev::Tool(ToolResult::Ok("late".into()))), 0);
+    }
+
+    #[test]
+    fn a_session_bound_chats_watch_call_leaves_the_engine() {
+        let mut h = H::new();
+        let chat = h.chat(Some("7"));
+        h.script(vec![invoke("register_timer", "{\"delay_seconds\":5,\"fire_at\":null,\"note\":null}", "t1")]);
+        let fx = h.say(&chat, "hi");
+        assert_eq!(fx, vec![orch_effect(&chat, "t1", "register_timer", serde_json::json!({"delay_seconds": 5, "fire_at": null, "note": null}))]);
+    }
+
+    #[test]
+    fn every_chat_that_is_not_orchestrating_carries_the_enable_tool() {
+        let mut h = H::new();
+        let chat = h.chat(Some("7"));
+        h.script(vec![invoke("request_orchestration_enable", "{}", "e1")]);
+        let fx = h.say(&chat, "hi");
+        let allowed = h.agents[&chat].allowed.clone().unwrap();
+        let mut want: Vec<String> = crate::ai_tools::tool_defs(&allowed).into_iter().map(|t| t.name).collect();
+        want.extend(["request_orchestration_enable", "register_timer", "register_watch", "unregister_watch", "list_watches"].map(String::from));
+        assert_eq!(h.log.borrow().inputs[0].tools, want);
+        assert_eq!(fx, vec![orch_effect(&chat, "e1", "request_orchestration_enable", serde_json::json!({}))]);
+        // The call parks on the person: a new message from them cancels the wedged turn.
+        h.agents.get_mut(&chat).unwrap().orch_pending.as_mut().unwrap().1 = true;
+        assert!(h.agents[&chat].is_awaiting_approval());
+        // An orchestration name is a plain unknown function for a chat that is not orchestrating.
+        let mut h = H::new();
+        let chat = h.chat(Some("7"));
+        h.script(vec![invoke("send_text", "{}", "c1")]);
+        let fx = h.say(&chat, "hi");
+        assert!(!fx.iter().any(|e| matches!(e, EngineEffect::Orch { .. })));
+        // A plain chat with no session can ask too (`ChatService.swift:459`, Task 9 fix round 1).
+        let mut h = H::new();
+        let chat = h.chat(None);
+        h.say(&chat, "hi");
+        assert!(h.log.borrow().inputs[0].tools.contains(&"request_orchestration_enable".to_string()));
+    }
+
+    #[test]
+    fn set_permissions_never_changes_an_orchestration_chats_tools() {
+        let mut h = H::new();
+        let chat = orch_chat(&mut h);
+        h.send(&chat, Content::SetPermissions(vec![Category::RunCommands]));
+        h.say(&chat, "hi");
+        assert_eq!(h.log.borrow().inputs[0].tools, vec!["send_text".to_string()]);
+    }
+
+    #[test]
+    fn approval_retools_the_running_turn() {
+        let mut h = H::new();
+        let chat = h.chat(Some("7"));
+        h.script(vec![invoke("request_orchestration_enable", "{}", "e1")]);
+        h.say(&chat, "hi");
+        // The App flips the mode, then answers the call.
+        let row = h.store.chat(&chat).unwrap().unwrap();
+        h.store.update_chat(&Chat { orchestration_enabled: true, terminal_session_guid: None, ..row }).unwrap();
+        h.run(|cx| Engine::orch_done(cx, &chat, "e1", ToolResult::Ok(crate::orch::APPROVED.into())));
+        let ev = h.events();
+        assert_eq!(ev[ev.len() - 2], Ev::Retool("O".into(), vec!["send_text".into()]), "the next request carries the new system message and tools: {ev:?}");
+        assert_eq!(ev[ev.len() - 1], Ev::Tool(ToolResult::Ok(crate::orch::APPROVED.into())));
+    }
+
+    #[test]
+    fn a_bad_orch_argument_fails_the_call() {
+        let mut h = H::new();
+        let chat = orch_chat(&mut h);
+        h.script(vec![invoke("send_text", "{nope", "c1")]);
+        let fx = h.say(&chat, "hi");
+        assert!(!fx.iter().any(|e| matches!(e, EngineEffect::Orch { .. })));
+        assert!(matches!(h.events().last(), Some(Ev::Tool(ToolResult::Failed(_)))));
+    }
+
+    #[test]
+    fn the_switch_off_sends_no_orchestration_prompt() {
+        for guid in [None, Some("7")] {
+            let mut h = H::new();
+            let chat = h.chat(guid);
+            h.say(&chat, "hi");
+            let l = h.log.borrow();
+            assert_ne!(l.inputs[0].messages[0].body, Body::Text("O".into()), "no orchestration system message");
+            assert!(!l.inputs[0].tools.contains(&"send_text".to_string()), "no orchestration tool");
+            assert!(h.agents[&chat].volatile.lock().unwrap().is_none(), "no snapshot");
+            assert!(!h.agents[&chat].orch_tooled);
+        }
     }
 }

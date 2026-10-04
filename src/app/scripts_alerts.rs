@@ -75,6 +75,14 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::SshKeepOrReplace { .. } => Answer::Button(0),
         // Cancel: a closed window never uploads the person's files (P9).
         Then::SshUpload { .. } | Then::BindScheme { .. } => Answer::Button(1),
+        // Cancel: a closed window never uninstalls or goes on past a failed removal (P10).
+        Then::ClaudeUninstall | Then::ClaudeHooksFailed => Answer::Button(1),
+        // Leave Enabled: a closed window never turns the person's API off (P10).
+        Then::ClaudeDisableApi => Answer::Button(0),
+        // Not Now: a closed window never rewrites settings.json (P10).
+        Then::ClaudeRepair => Answer::Button(1),
+        // Cancel: a closed window never turns session cookies on.
+        Then::ClaudeCookie => Answer::Button(1),
         // No, Deny, Don't Copy and Discard Local Changes.
         Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::PrefsCopyNow | Then::PrefsOverwrite => Answer::Button(1),
         _ => Answer::Button(fallback),
@@ -199,6 +207,21 @@ pub(super) enum Then {
     /// directory `to`; Cancel (1) does nothing. A closed window cancels and a dropped ask is
     /// dropped (P9: a close never sends local files). Never capped.
     SshUpload { pane: crate::layout::PaneId, files: Vec<std::path::PathBuf>, to: crate::ssh_files::ScpPath },
+    /// "Uninstall Claude Code Integration?": Uninstall (0) strips the hook; Cancel (1) does
+    /// nothing. A closed window cancels (P10).
+    ClaudeUninstall,
+    /// "Couldn't Remove Hooks": Continue (0) goes on and clears the integration's flags; Cancel
+    /// (1) stops. A closed window cancels (P10).
+    ClaudeHooksFailed,
+    /// "Disable the Python API?" after an uninstall: Leave Enabled (0) or Disable (1). A closed
+    /// window leaves it enabled (P10).
+    ClaudeDisableApi,
+    /// "Claude Code Integration Looks Broken": Reinstall (0) opens the setup; Not Now (1)
+    /// does nothing. A closed window is Not Now, and Reinstall is never remembered (P10).
+    ClaudeRepair,
+    /// "Enable Session Cookies?": Enable (0) turns them on; Cancel (1) leaves them as they are.
+    /// A closed window cancels.
+    ClaudeCookie,
     /// "Tandem is not the default handler for ssh. ...": OK (0) registers Tandem for the user
     /// and binds the scheme to the profile `guid` once Windows reports Tandem as the handler;
     /// Cancel (1) does nothing. A closed window cancels: a close never changes Windows.
@@ -215,6 +238,8 @@ impl Then {
             Then::Archive(_) => vec![1, 2],
             // Replace would overwrite for every later file of that name.
             Then::SshKeepOrReplace { .. } => vec![1],
+            // A remembered Reinstall would rewrite the person's settings.json unasked.
+            Then::ClaudeRepair => vec![0],
             _ => Vec::new(),
         }
     }
@@ -514,6 +539,7 @@ impl App {
                     self.ssh_upload_confirmed(pane, files, to);
                 }
             }
+            Then::ClaudeUninstall | Then::ClaudeHooksFailed | Then::ClaudeDisableApi | Then::ClaudeRepair | Then::ClaudeCookie => self.claude_answered(&then, index),
         }
     }
 }
@@ -643,6 +669,38 @@ mod tests {
         assert_eq!(queue.back().map(|q| &q.then), Some(&Then::SshKeepOrReplace { job: 7 }));
         // The cap still holds for every capped ask.
         assert!(push_capped(&mut queue, ask("H", "T", &["OK"], None, Kind::Persistent, Then::Nothing)).is_some());
+    }
+
+    /// The four Claude Code questions (P10): closing one never takes the destructive or
+    /// file-writing choice. The window's own close answer is the first button, which would
+    /// uninstall, go on, disable and reinstall.
+    #[test]
+    fn closing_the_uninstall_question_never_uninstalls() {
+        assert_eq!(on_close(&Then::ClaudeUninstall, 0), Answer::Button(1), "Cancel, not Uninstall");
+    }
+
+    #[test]
+    fn closing_couldnt_remove_hooks_cancels() {
+        assert_eq!(on_close(&Then::ClaudeHooksFailed, 0), Answer::Button(1), "Cancel, not Continue");
+    }
+
+    #[test]
+    fn closing_disable_the_api_leaves_it_enabled() {
+        assert_eq!(on_close(&Then::ClaudeDisableApi, 1), Answer::Button(0), "Leave Enabled, not Disable");
+        assert_eq!(on_close(&Then::ClaudeDisableApi, 0), Answer::Button(0));
+    }
+
+    #[test]
+    fn closing_the_cookie_question_cancels() {
+        assert_eq!(on_close(&Then::ClaudeCookie, 0), Answer::Button(1), "Cancel, not Enable");
+    }
+
+    #[test]
+    fn closing_the_repair_prompt_is_not_now_and_reinstall_is_never_remembered() {
+        assert_eq!(on_close(&Then::ClaudeRepair, 0), Answer::Button(1), "Not Now, not Reinstall");
+        let a = ask("H", "T", &["Reinstall", "Not Now"], Some(crate::claude_code::REPAIR_ID), Kind::Permanent, Then::ClaudeRepair);
+        assert_eq!(a.spec.never_remember, [0]);
+        assert!(!a.spec.rememberable(0) && a.spec.rememberable(1));
     }
 
     /// An Alt-drop's "OK to copy" question (P9): a closed window is Cancel, never OK; the queue's

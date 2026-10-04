@@ -582,7 +582,7 @@ impl App {
     }
 
     /// Writes and saves "Enable Python API".
-    fn set_api_enabled(&mut self, on: bool) {
+    pub(super) fn set_api_enabled(&mut self, on: bool) {
         self.globals.set(ENABLE_KEY, toml::Value::Boolean(on));
         self.api_settings_seen.0 = on;
         self.save_globals();
@@ -653,6 +653,9 @@ impl App {
         let key = &p.upgrade.key;
         if allow {
             self.api_keys.insert(p.conn, (key.clone(), name.clone()));
+            if p.upgrade.library_version == crate::api_client::LIBRARY_VERSION {
+                self.api_hooks.insert(p.conn, p.upgrade.cookie.as_ref().map(|c| c.as_str().to_string()));
+            }
             self.script_history.accepted(key, &name, reason, &stamp, now);
         } else {
             let key = (!p.upgrade.disable_auth_ui).then_some(key.as_str());
@@ -691,6 +694,7 @@ impl App {
     /// A connection's functions go and its waiting calls fail (`H:2154-2214`).
     fn api_forget_fns(&mut self, conn: u64) {
         self.api_keys.remove(&conn);
+        self.api_hooks.remove(&conn);
         for (token, failure) in self.api_fns.drop_conn(conn) {
             self.api_rpc_done.push_back((token, Err(failure)));
         }
@@ -1344,6 +1348,7 @@ mod tests {
             advisory_name: None,
             library_version: "python 2.24".into(),
             disable_auth_ui: false,
+            cookie: None,
         };
         Pending { conn, upgrade, peer_pid: 1 }
     }

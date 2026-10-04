@@ -22,7 +22,7 @@ use crate::ai_turn::{Out, Runner, ToolResult, Turn, TurnInput};
 use crate::chat_agent::{self, Agent, FileDriver, TurnDriver};
 use crate::chat_broker::{Broker, Effect, Step};
 use crate::chat_gate::Passed;
-use crate::chat_message::{Content, Message, Participant, TerminalCommand};
+use crate::chat_message::{ClientLocal, Content, Message, Participant, TerminalCommand};
 use crate::chat_store::{self, Chat, Store, OPEN_FAILED, OPEN_FAILED_HEADING};
 use crate::layout::PaneId;
 use crate::pwm::Secret;
@@ -138,6 +138,8 @@ trait ChatRows {
     fn all(&self) -> Result<Vec<Chat>, String>;
     fn one(&self, id: &str) -> Result<Option<Chat>, String>;
     fn put(&mut self, chat: &Chat) -> Result<(), String>;
+    /// A notice the person reads in the chat (best effort).
+    fn notice(&mut self, chat: &str, text: &str);
 }
 
 impl ChatRows for Store {
@@ -150,6 +152,10 @@ impl ChatRows for Store {
     fn put(&mut self, chat: &Chat) -> Result<(), String> {
         self.update_chat(chat)
     }
+    fn notice(&mut self, chat: &str, text: &str) {
+        let m = Message::new(chat, Participant::Agent, Content::ClientLocal(ClientLocal::Notice(text.to_string())), unix_now());
+        let _ = self.add_message(&m);
+    }
 }
 
 /// The first open of a run (ruling F1): pane ids restart at 1 every launch, so a chat linked to
@@ -157,7 +163,10 @@ impl ChatRows for Store {
 /// of an earlier run. Each such chat is unlinked, and its stored entries keyed by a pane id are
 /// dropped (a fork or the overrides cannot carry them). Imported UUID guids stay. False when
 /// the chat list could not be read or a row could not be written: the caller then binds no
-/// chat to a pane this run (`chat_links_off`), so a stale link can never take hold.
+/// chat to a pane this run (`chat_links_off`), so a stale link can never take hold. Claimed
+/// scopes and watchers do not survive a launch either (ruling P2): an imported or older row
+/// could carry a forged control grant or a timer, so every chat's are emptied, and a chat that
+/// had watchers is told.
 fn unlink_stale_panes(store: &mut Store) -> bool {
     unlink_stale_in(store)
 }
@@ -168,7 +177,8 @@ fn unlink_stale_in(store: &mut impl ChatRows) -> bool {
     let mut clean = true;
     for chat in chats {
         let scrubbed = ai_permissions::without_pane_guids(&chat.permissions);
-        if !stale(&chat.terminal_session_guid) && !stale(&chat.browser_session_guid) && scrubbed.is_none() {
+        let carried = !chat.claimed_scopes.is_empty() || chat.watchers.is_some();
+        if !stale(&chat.terminal_session_guid) && !stale(&chat.browser_session_guid) && scrubbed.is_none() && !carried {
             continue;
         }
         // Re-read, so only this row's own fields change (ruling F6).
@@ -189,8 +199,13 @@ fn unlink_stale_in(store: &mut impl ChatRows) -> bool {
         if let Some(text) = ai_permissions::without_pane_guids(&row.permissions) {
             row.permissions = text;
         }
+        let had_watchers = row.watchers.is_some();
+        row.claimed_scopes.clear();
+        row.watchers = None;
         if store.put(&row).is_err() {
             clean = false;
+        } else if had_watchers {
+            store.notice(&row.id, crate::orch::WATCHES_LOST);
         }
     }
     clean
@@ -350,6 +365,18 @@ impl App {
         create_in(db, &mut self.chat_broker, &mut self.ai_overrides, title, terminal_guid, browser_guid, permissions, initial, model_name, &global, unix_now()).ok()
     }
 
+    /// The person's own send from a chat input (the window or the inline panel): the one
+    /// publish that marks a message as the person's (Task 11 fix round 2).
+    pub(super) fn chat_publish_by_person(&mut self, chat: &str, message: Message) -> Result<(), String> {
+        if self.chat_db().is_none() {
+            return Err(OPEN_FAILED.to_string());
+        }
+        self.ai_refresh_volatile(chat);
+        let fx = self.engine(|cx| Engine::publish_by_person(cx, chat, message)).ok_or_else(|| OPEN_FAILED.to_string())??;
+        self.chat_apply(fx);
+        Ok(())
+    }
+
     /// `ChatBroker.delete(chatID:)`: the chat's turn stops and its agent goes before it can
     /// publish again, then its rows go and the broker forgets it.
     #[allow(dead_code)] // Called by the chat window (12d).
@@ -359,6 +386,7 @@ impl App {
             self.chat_apply(fx);
             self.chat_agents.remove(chat);
         }
+        self.orch_chat_ended(chat);
         if let Some(db) = self.chat_db() {
             let _ = db.delete_chat(chat);
         }
@@ -508,7 +536,7 @@ impl App {
 
     /// Lends the engine its `Ctx` over the App's own fields for one call (ruling R12cd-4).
     /// None when the database cannot open.
-    fn engine<T>(&mut self, f: impl FnOnce(&mut Ctx) -> T) -> Option<T> {
+    pub(super) fn engine<T>(&mut self, f: impl FnOnce(&mut Ctx) -> T) -> Option<T> {
         self.chat_db()?;
         let found = self.ai_found();
         let catalog = crate::ai_catalog::bundled();
@@ -524,6 +552,14 @@ impl App {
         let panes = std::cell::RefCell::new(&mut self.panes);
         let model_for = |c: &Chat| c.model_name.as_deref().and_then(|n| crate::ai_model::named(n, globals, catalog, &found)).or_else(|| crate::ai_model::configured(globals, catalog, &found));
         let links_off = self.chat_links_off;
+        let orch_system = |_: &Chat| crate::orch::system_message(globals);
+        let orch_tools = |c: &Chat, ov: &Overrides| {
+            let offer = c.terminal_session_guid.as_deref().map(|g| {
+                let permission = |cat: Category| ov.get(&c.id, g, cat, &|k: Category| globals.int(k.global_key()));
+                crate::orch_watch::watch_offer(permission(Category::ViewContents), permission(Category::CheckTerminalState))
+            });
+            crate::orch::tools_for(c.orchestration_enabled, offer)
+        };
         let pane_of = |g: &str| pane_for_ref(&panes.borrow(), g).filter(|_| !links_off);
         let (t, o, n) = (transport.clone(), options.clone(), notify.clone());
         let mut new_turn = move |_: &Model| -> Box<dyn TurnDriver> {
@@ -553,6 +589,8 @@ impl App {
             new_turn: &mut new_turn,
             new_files: &mut new_files,
             explain: &mut explain,
+            orch_system: &orch_system,
+            orch_tools: &orch_tools,
             now: unix_now(),
         };
         Some(f(&mut cx))
@@ -561,9 +599,11 @@ impl App {
     /// Refreshes the terminal context snapshot the chat's next request reads
     /// (`ai_volatile_context` as a peek, minor m2); called before every engine call that can
     /// send. The request reads it only after its own gate passed.
-    fn ai_refresh_volatile(&mut self, chat: &str) {
+    pub(super) fn ai_refresh_volatile(&mut self, chat: &str) {
         let Some(row) = self.chat_db.as_ref().and_then(|db| db.chat(chat).ok().flatten()) else { return };
-        let block = self.ai_volatile_context(&row, false);
+        // An orchestration chat reads the workgroups snapshot instead of a linked terminal's
+        // context (and commits no watermark).
+        let block = if row.orchestration_enabled { self.orch_volatile(&row) } else { self.ai_volatile_context(&row, false) };
         if let Ok(mut slot) = self.chat_agents.entry(chat.to_string()).or_default().volatile.lock() {
             *slot = block;
         }
@@ -580,7 +620,12 @@ impl App {
                     self.ai_exec_cancel(pane);
                     self.ai_help_cancel(pane);
                 }
-                EngineEffect::CancelChecks(chat) => self.ai_cancel_checks(&chat),
+                EngineEffect::CancelChecks(chat) => {
+                    self.ai_cancel_checks(&chat);
+                    // Every halt (Stop, EnableAI off, a delete) ends what orchestration parked.
+                    self.orch_chat_ended(&chat);
+                }
+                EngineEffect::Orch { chat, call_id, name, args } => self.orch_effect(&chat, &call_id, &name, &args),
                 EngineEffect::Check { chat, pane, command, request } => self.ai_check_command(&chat, pane, &command, request),
                 EngineEffect::GateRefused { endpoint, silent } => {
                     self.ai_check_endpoint(Some(&endpoint), silent);
@@ -600,7 +645,8 @@ impl App {
                 }
                 EngineEffect::PermissionNotSaved => self.ai_permission_not_saved(),
                 EngineEffect::VolatileSent(chat) => {
-                    if let Some(row) = self.chat_db.as_ref().and_then(|db| db.chat(&chat).ok().flatten()) {
+                    // An orchestration chat commits no watermark.
+                    if let Some(row) = self.chat_db.as_ref().and_then(|db| db.chat(&chat).ok().flatten()).filter(|r| !r.orchestration_enabled) {
                         self.ai_volatile_context(&row, true);
                     }
                 }
@@ -610,7 +656,7 @@ impl App {
 
     /// The text already on `pane`'s prompt line: shell integration's typed command while at a
     /// prompt, and the agent's own staged typing (ruling R12cd-2).
-    fn ai_prompt_text(&self, pane: PaneId) -> (Option<String>, String) {
+    pub(super) fn ai_prompt_text(&self, pane: PaneId) -> (Option<String>, String) {
         let Some(p) = self.panes.get(&pane) else { return (None, String::new()) };
         let s = p.own();
         let typed = if s.at_prompt() == Some(true) { s.typed_command() } else { None };
@@ -633,7 +679,7 @@ impl App {
     }
 
     /// Forgets the Get-Help running for a request on `pane`; its (chat, request id).
-    fn ai_help_cancel(&mut self, pane: PaneId) -> Option<(String, String)> {
+    pub(super) fn ai_help_cancel(&mut self, pane: PaneId) -> Option<(String, String)> {
         self.ai_helps.remove(&pane);
         self.ai_pending_tools.remove(&pane)
     }
@@ -676,6 +722,10 @@ impl App {
     /// The one App-side return of every tool result (`ai_run_tool`'s answer, each finished
     /// command and Get-Help, each cancel answer): the engine stores it and answers the model.
     pub(super) fn ai_tool_finished(&mut self, chat: &str, request_id: &str, o: Outcome) {
+        // A `session_*` mirror's answer goes back to orchestration (12f Task 10).
+        if self.orch_mirror_finished(chat, request_id, &o.model) {
+            return;
+        }
         self.ai_refresh_volatile(chat);
         let fx = self.engine(|cx| Engine::tool_finished(cx, chat, request_id, o)).unwrap_or_default();
         self.chat_apply(fx);
@@ -798,6 +848,12 @@ impl TurnDriver for LiveTurn {
     fn cancel(&mut self) -> Vec<Out> {
         crate::ai_wire_log::console(self.verbose, "chat turn canceled");
         self.runner.as_mut().map(Runner::cancel).unwrap_or_default()
+    }
+
+    fn reconfigure(&mut self, system: &str, tools: Vec<crate::ai_turn::ToolDecl>) {
+        if let Some(r) = self.runner.as_mut() {
+            r.reconfigure(system, tools);
+        }
     }
 }
 
@@ -1087,6 +1143,7 @@ mod tests {
         fn put(&mut self, chat: &Chat) -> Result<(), String> {
             if self.fail_write { Err("write".into()) } else { self.store.update_chat(chat) }
         }
+        fn notice(&mut self, _: &str, _: &str) {}
     }
 
     #[test]
@@ -1119,6 +1176,29 @@ mod tests {
         assert!(unlink_stale_panes(&mut store));
         assert_eq!(store.chat(&old.id).unwrap().unwrap().browser_session_guid, None);
         assert_eq!(store.chat(&imported.id).unwrap().unwrap().browser_session_guid, imported.browser_session_guid);
+    }
+
+    #[test]
+    fn a_launch_clears_claims_and_watchers() {
+        // Ruling P2: claims and watchers do not survive a launch (an imported or older row can
+        // forge a control grant or a timer).
+        let mut store = Store::open_in_memory().unwrap();
+        let (mut forged, quiet) = (Chat::new("forged", 1.0), Chat::new("quiet", 2.0));
+        forged.claimed_scopes = vec!["session:ptys_0123456789ABW".into(), "wg-1".into()];
+        forged.watchers = Some("[{\"watcherID\":\"w\",\"screenReadConsented\":true}]".into());
+        store.add_chat(&forged).unwrap();
+        store.add_chat(&quiet).unwrap();
+        assert!(unlink_stale_panes(&mut store));
+        let row = store.chat(&forged.id).unwrap().unwrap();
+        assert!(row.claimed_scopes.is_empty(), "claimed_scopes empties");
+        assert_eq!(row.watchers, None, "watchers empty");
+        let notices = |id: &str| -> Vec<String> { store.messages(id).unwrap().into_iter().filter_map(|m| if let Content::ClientLocal(ClientLocal::Notice(n)) = m.content { Some(n) } else { None }).collect() };
+        assert_eq!(notices(&forged.id), vec!["Watches and timers did not survive a restart; register them again.".to_string()]);
+        assert!(notices(&quiet.id).is_empty());
+        // A row that cannot be written fails the cleanup closed.
+        let mut f = Flaky { store: Store::open_in_memory().unwrap(), fail_read: false, fail_write: true };
+        f.store.add_chat(&forged).unwrap();
+        assert!(!unlink_stale_in(&mut f));
     }
 
     #[test]

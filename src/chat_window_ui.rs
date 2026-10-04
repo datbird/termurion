@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::ai_catalog::{Effort, ServiceTier};
-use crate::chat_buttons::{self, Button};
+use crate::chat_buttons::Button;
 use crate::chat_find::{self, Cursor, Mark, Match};
 use crate::chat_input::{self, Enter};
 use crate::chat_list::{self, Row, Selection};
@@ -21,6 +21,8 @@ use crate::chat_search::{self, Hit};
 use crate::chat_toolbar::{self as tb, Popup, ProviderOption};
 use crate::chat_view::{self, Body, CodeBlock, Item, Part, Style};
 use crate::egui_host::EguiHost;
+use crate::mention::{Chip, Picker};
+use crate::mention_picker_ui;
 use crate::palette::{rgb, Palette};
 use crate::porthole::detect::Language;
 use crate::porthole::render::{Block, Doc, Face};
@@ -95,6 +97,10 @@ pub struct InputData {
     pub loading: bool,
     /// Changes when the app set the text and wants the field focused.
     pub focus: u64,
+    /// The sessions picked with `@` (orchestration chats): a chip each, with its name.
+    pub chips: Vec<(Chip, String)>,
+    /// The `@` picker under the field, while it is open.
+    pub picker: Option<Picker>,
 }
 
 /// One row of the conversation, made by the app from the chat's messages.
@@ -207,6 +213,14 @@ pub enum ChatEvent {
     Button { message: String, button: String },
     /// The input's text changed.
     InputChanged(String),
+    /// The `@` picker: Up (true) or Down (false).
+    MentionMove(bool),
+    /// Return, Tab or a click (its item index) on the picker.
+    MentionCommit(Option<usize>),
+    /// Escape on the picker.
+    MentionClose,
+    /// A mention chip's close button (its index).
+    RemoveMention(usize),
     /// Send, or Enter: the app sends the text and attachments (only while the agent is idle).
     Send,
     /// The stop glyph, or Enter while the agent types.
@@ -467,14 +481,38 @@ fn input_area(ui: &mut egui::Ui, d: &ChatData, st: &mut InputUi, icons: bool, ou
             }
         });
     }
+    if !d.input.chips.is_empty() {
+        if let Some(i) = mention_picker_ui::chip_strip(ui, &d.input.chips) {
+            out.push(ChatEvent::RemoveMention(i));
+        }
+    }
     if d.input.focus != st.focus_seen {
         st.focus_seen = d.input.focus;
         ui.memory_mut(|m| m.request_focus(id));
     }
+    // The picker owns Up, Down, Return, Tab and Escape while it is open (the keys are taken before
+    // the editor sees them); a list with nothing in it owns none.
+    let mut picked = false;
+    if enabled && ui.memory(|m| m.has_focus(id)) && d.input.picker.as_ref().is_some_and(|p| !p.items.is_empty()) {
+        let none = egui::Modifiers::NONE;
+        let (up, down, enter, tab, esc) = ui.input_mut(|i| (i.consume_key(none, egui::Key::ArrowUp), i.consume_key(none, egui::Key::ArrowDown), i.consume_key(none, egui::Key::Enter), i.consume_key(none, egui::Key::Tab), i.consume_key(none, egui::Key::Escape)));
+        if up {
+            out.push(ChatEvent::MentionMove(true));
+        }
+        if down {
+            out.push(ChatEvent::MentionMove(false));
+        }
+        if enter || tab {
+            out.push(ChatEvent::MentionCommit(None));
+            picked = true;
+        } else if esc {
+            out.push(ChatEvent::MentionClose);
+        }
+    }
     // Enter is taken before the editor sees it; Shift+Enter (and Enter with nothing to do) stays
     // in the editor. The events go out after the text's own change, so a send sees the text.
     let mut after = Vec::new();
-    if enabled && ui.memory(|m| m.has_focus(id)) {
+    if enabled && !picked && ui.memory(|m| m.has_focus(id)) {
         let (pressed, mods) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.modifiers));
         if pressed && !mods.ctrl && !mods.alt && !mods.command {
             let send = chat_input::send_enabled(&st.text, d.input.loading, d.input.stoppable);
@@ -514,6 +552,15 @@ fn input_area(ui: &mut egui::Ui, d: &ChatData, st: &mut InputUi, icons: bool, ou
     if let Some(o) = edited {
         if o.response.changed() {
             out.push(ChatEvent::InputChanged(st.text.clone()));
+        }
+        if let Some(p) = &d.input.picker {
+            // Focus leaving the field closes the list, except for the press that picks from it.
+            if !o.response.has_focus() && !ui.input(|i| i.pointer.any_down() || i.pointer.any_released()) {
+                out.push(ChatEvent::MentionClose);
+            }
+            if let Some(i) = mention_picker_ui::show_above(ui, p, o.response.rect.left_top() - egui::vec2(0.0, 4.0)) {
+                out.push(ChatEvent::MentionCommit(Some(i)));
+            }
         }
         // The hint, at the field's right, unless the text would reach it or the agent types.
         let font = egui::FontId::proportional(12.0);
@@ -924,15 +971,11 @@ enum Look {
     Live,
     /// Greyed: the message's buttons are not enabled, or were pressed a moment ago.
     Off,
-    /// Greyed with the "comes in milestone 12f" tooltip.
-    Later,
 }
 
 /// The look of `b` on `row` (`pressed` holds the messages pressed and awaiting the app).
-fn button_look(row: &RowData, pressed: &std::collections::HashSet<String>, b: &Button) -> Look {
-    if chat_buttons::is_orchestration(&b.id) {
-        Look::Later
-    } else if row.enabled && !pressed.contains(&row.id) {
+fn button_look(row: &RowData, pressed: &std::collections::HashSet<String>, _b: &Button) -> Look {
+    if row.enabled && !pressed.contains(&row.id) {
         Look::Live
     } else {
         Look::Off
@@ -1109,8 +1152,7 @@ fn row_content(ui: &mut egui::Ui, row: &RowData, ink: &Ink, st: &mut ConvoState,
 /// The buttons under a bubble's text: full-width rows of 30 points with a separator above each,
 /// destructive ones in the error color, greyed unless the row is enabled and not just pressed.
 /// A press is reported at once and greys the row until the app answers (iTerm2's optimistic
-/// disable), except in the permissions bubble, which is tapped again and again. The
-/// orchestration ones show with a tooltip that they wait for milestone 12f.
+/// disable), except in the permissions bubble, which is tapped again and again.
 fn draw_buttons(ui: &mut egui::Ui, row: &RowData, st: &mut ConvoState, out: &mut Vec<ChatEvent>) {
     if row.buttons.is_empty() {
         return;
@@ -1124,10 +1166,7 @@ fn draw_buttons(ui: &mut egui::Ui, row: &RowData, st: &mut ConvoState, out: &mut
             label = label.color(error);
         }
         let width = ui.available_width();
-        let mut r = ui.add_enabled(look == Look::Live, egui::Button::new(label).frame(false).min_size(egui::vec2(width, BUTTON_HEIGHT)));
-        if look == Look::Later {
-            r = r.on_disabled_hover_text(chat_buttons::ORCHESTRATION_LATER);
-        }
+        let r = ui.add_enabled(look == Look::Live, egui::Button::new(label).frame(false).min_size(egui::vec2(width, BUTTON_HEIGHT)));
         if look == Look::Live && r.clicked() {
             out.push(ChatEvent::Button { message: row.id.clone(), button: b.id.clone() });
             if !stays_live(row) {
@@ -1507,12 +1546,11 @@ mod tests {
         // A row the app did not enable stays off.
         let off = row("R", &[("Link", "link")], false);
         assert_eq!(button_look(&off, &pressed, &off.buttons[0]), Look::Off);
-        // The orchestration buttons show but wait for 12f, enabled row or not.
+        // The orchestration buttons live or off like any other.
         let offer = row("O", &[("Link", "link"), ("Enable Orchestration", "orchestrate")], true);
-        assert_eq!(button_look(&offer, &pressed, &offer.buttons[0]), Look::Live);
-        assert_eq!(button_look(&offer, &pressed, &offer.buttons[1]), Look::Later);
-        let revoke = row("V", &[("Revoke", "revokeOrchestrationPermission:s")], true);
-        assert_eq!(button_look(&revoke, &pressed, &revoke.buttons[0]), Look::Later);
+        assert_eq!(button_look(&offer, &pressed, &offer.buttons[1]), Look::Live);
+        let revoke = row("V", &[("Revoke", "revokeOrchestrationPermission:s")], false);
+        assert_eq!(button_look(&revoke, &pressed, &revoke.buttons[0]), Look::Off);
         // The permissions bubble is tapped again and again.
         let perms = row("P", &[("AI can Run Commands: Ask", "Run Commands"), ("AI can View Contents: Ask", "View Contents")], true);
         assert!(stays_live(&perms));

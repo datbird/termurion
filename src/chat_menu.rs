@@ -86,13 +86,13 @@ pub fn item_title(c: Category, p: Permission) -> String {
     }
 }
 
-/// The menu for the chat's state (`CVC:3369-3483`). Orchestration and the browser items are
-/// shown disabled until 12f and milestone 13.
+/// The menu for the chat's state (`CVC:3369-3483`). The browser items are shown disabled until
+/// milestone 13.
 pub fn session_menu(f: &MenuFacts, perm: &dyn Fn(Category) -> Permission) -> Vec<Entry> {
     if f.orchestrating {
-        return vec![item(DISABLE_ORCHESTRATION, Action::Orchestration, None, false), Entry::Separator, item(HELP, Action::Help, None, true)];
+        return vec![item(DISABLE_ORCHESTRATION, Action::Orchestration, None, true), Entry::Separator, item(HELP, Action::Help, None, true)];
     }
-    let mut out = vec![item(ENABLE_ORCHESTRATION, Action::Orchestration, None, false), Entry::Separator];
+    let mut out = vec![item(ENABLE_ORCHESTRATION, Action::Orchestration, None, true), Entry::Separator];
     if f.terminal_live {
         out.push(item(REVEAL_TERMINAL, Action::Reveal, None, true));
         out.push(item(UNLINK_TERMINAL, Action::Unlink, None, true));
@@ -253,7 +253,7 @@ pub fn menu_id(a: &Action, chat: &str) -> String {
     format!("{MENU_PREFIX}{verb}:{chat}")
 }
 
-/// The action and chat of a pick. The disabled items (orchestration, the browser link) and a
+/// The action and chat of a pick. The disabled item (the browser link) and a
 /// browser category are never a pick.
 pub fn parse_menu_id(id: &str) -> Option<(Action, String)> {
     let (verb, chat) = id.strip_prefix(MENU_PREFIX)?.split_once(':')?;
@@ -267,6 +267,7 @@ pub fn parse_menu_id(id: &str) -> Option<(Action, String)> {
         "stream" => Action::Stream,
         "link" => Action::Link,
         "help" => Action::Help,
+        "orchestration" => Action::Orchestration,
         v => {
             let c = *Category::ALL.get(v.strip_prefix("toggle-")?.parse::<usize>().ok()?)?;
             if c.is_browser() {
@@ -354,7 +355,7 @@ mod tests {
                 "Send Commands & Output to AI Automatically", "-", "Link Browser Session", "-", "Help",
             ]
         );
-        assert!(!enabled(&m, "Enable Orchestration"), "orchestration waits for 12f");
+        assert!(enabled(&m, "Enable Orchestration"));
         assert!(!enabled(&m, "Link Browser Session"), "no browser pane before milestone 13");
         assert!(enabled(&m, "Help") && enabled(&m, "Unlink Terminal Session"));
         assert_eq!(state(&m, "AI can Check Terminal State"), Some(Tri::Mixed));
@@ -372,7 +373,7 @@ mod tests {
         // Orchestrating.
         let orch = session_menu(&MenuFacts { orchestrating: true, terminal_live: true, ..MenuFacts::default() }, &run_always);
         assert_eq!(titles(&orch), vec!["Disable Orchestration", "-", "Help"]);
-        assert!(!enabled(&orch, "Disable Orchestration"));
+        assert!(enabled(&orch, "Disable Orchestration"));
         // Streaming shows the send item On.
         let streaming = session_menu(&MenuFacts { streaming: true, ..live }, &run_always);
         assert_eq!(state(&streaming, "Send Commands & Output to AI Automatically"), Some(Tri::On));
@@ -461,7 +462,7 @@ mod tests {
 
     #[test]
     fn menu_ids_round_trip_and_refuse_the_rest() {
-        for a in [Action::Reveal, Action::Unlink, Action::Put, Action::Stream, Action::Link, Action::Help, Action::Toggle(Category::RunCommands), Action::Toggle(Category::ViewContents)] {
+        for a in [Action::Orchestration, Action::Reveal, Action::Unlink, Action::Put, Action::Stream, Action::Link, Action::Help, Action::Toggle(Category::RunCommands), Action::Toggle(Category::ViewContents)] {
             let id = menu_id(&a, "chat-1");
             assert!(id.starts_with("aichat:menu:"));
             assert_eq!(parse_menu_id(&id), Some((a, "chat-1".to_string())));
@@ -469,7 +470,7 @@ mod tests {
         assert_eq!(menu_id(&Action::Unlink, "c"), "aichat:menu:unlink:c");
         assert_eq!(menu_id(&Action::Toggle(Category::RunCommands), "c"), "aichat:menu:toggle-1:c");
         // The disabled items are never a pick, nor is a browser toggle, an unknown verb or no chat.
-        assert_eq!(parse_menu_id("aichat:menu:orchestration:c"), None);
+        assert_eq!(parse_menu_id("aichat:menu:orchestration:c"), Some((Action::Orchestration, "c".to_string())));
         assert_eq!(parse_menu_id("aichat:menu:link-browser:c"), None);
         assert_eq!(parse_menu_id("aichat:menu:toggle-7:c"), None, "Act in Web Browser has no item");
         assert_eq!(parse_menu_id("aichat:menu:toggle-99:c"), None);

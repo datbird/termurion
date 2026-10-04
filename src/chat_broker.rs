@@ -75,6 +75,9 @@ pub struct Broker {
     /// Chats whose agent is busy with a turn: `next_turn` hands out nothing until `turn_done`.
     busy: HashSet<String>,
     queues: HashMap<String, VecDeque<Message>>,
+    /// Chats whose running message is a watcher event (iTerm2 keeps the in-flight message at
+    /// the queue's head, `ChatService.swift:31-39`; the queue here holds only waiting ones).
+    running_watcher: HashSet<String>,
 }
 
 impl Default for Broker {
@@ -95,6 +98,7 @@ impl Broker {
             in_turn: HashSet::new(),
             busy: HashSet::new(),
             queues: HashMap::new(),
+            running_watcher: HashSet::new(),
         }
     }
 
@@ -201,13 +205,27 @@ impl Broker {
             self.newest.insert(chat.to_string(), Some(decided.message.unique_id.clone()));
             if routes_to_service(&decided.message) {
                 if !bypasses_queue(&decided.message.content) {
-                    self.queues.entry(chat.to_string()).or_default().push_back(decided.message.clone());
+                    self.enqueue(chat, decided.message.clone());
                 }
                 after.push(Effect::ToService(decided.message.clone()));
             }
         }
         self.fan_out(chat, Update::Delivery { message: decided.message, partial });
         Ok(after)
+    }
+
+    /// Queues a message: a person's message goes before the queued watcher events, never before
+    /// the running message (`ChatService.swift:365-403`, `queue_insertion_index`).
+    fn enqueue(&mut self, chat: &str, m: Message) {
+        let busy = self.busy.contains(chat);
+        let mut flags: Vec<bool> = Vec::new();
+        if busy {
+            flags.push(self.running_watcher.contains(chat));
+        }
+        let queue = self.queues.entry(chat.to_string()).or_default();
+        flags.extend(queue.iter().map(is_watcher));
+        let at = crate::orch_watch::queue_insertion_index(is_watcher(&m), &flags);
+        queue.insert(if busy { at.saturating_sub(1) } else { at }, m);
     }
 
     /// The streaming rule (`ChatClient.processAppend`, `processCommit`) and the list model's
@@ -343,12 +361,18 @@ impl Broker {
         }
         let m = self.queues.get_mut(chat)?.pop_front()?;
         self.busy.insert(chat.to_string());
+        if is_watcher(&m) {
+            self.running_watcher.insert(chat.to_string());
+        } else {
+            self.running_watcher.remove(chat);
+        }
         Some(m)
     }
 
     /// The running turn finished; the queue moves on.
     pub fn turn_done(&mut self, chat: &str) {
         self.busy.remove(chat);
+        self.running_watcher.remove(chat);
     }
 
     /// The ids of the chat's messages still waiting for their turn (iTerm2's `historyExcluding`
@@ -370,6 +394,7 @@ impl Broker {
         self.typing.retain(|(c, _)| c != chat);
         self.in_turn.remove(chat);
         self.busy.remove(chat);
+        self.running_watcher.remove(chat);
         self.queues.remove(chat);
     }
 }
@@ -401,6 +426,11 @@ fn stored(chat: &str, m: Message) -> Decided {
 /// turn that asked for it) and a message this build cannot read.
 pub fn bypasses_queue(c: &Content) -> bool {
     matches!(c, Content::ClientLocal(_) | Content::UserCommand(_) | Content::SetPermissions(_) | Content::RemoteCommandResponse { .. } | Content::Unsupported(_))
+}
+
+/// A watcher event (`Content::WatcherEvent`), which a person's message does not wait behind.
+fn is_watcher(m: &Message) -> bool {
+    matches!(m.content, Content::WatcherEvent(_))
 }
 
 /// The service handles every user-authored message but client-local ones
@@ -770,6 +800,83 @@ mod tests {
         assert_eq!(b.newest.get("C").cloned(), before);
         assert!(b.publish_with("C", append("f", &a.unique_id), true, Some(&target_n), &mut unsettled).is_err());
         assert_eq!(b.append_target("C", &a.unique_id), n, "an unsettled chunk keeps the rewrite it found");
+    }
+
+    fn watcher(detail: &str) -> Message {
+        msg(Participant::User, Content::WatcherEvent(json!({"_0": {"detail": detail}})))
+    }
+
+    /// Runs the queue dry: each answered message, in order, as a short label.
+    fn drain(b: &mut Broker, label: &dyn Fn(&Message) -> String) -> Vec<String> {
+        let mut order = Vec::new();
+        loop {
+            b.turn_done("C");
+            match b.next_turn("C") {
+                Some(m) => order.push(label(&m)),
+                None => return order,
+            }
+        }
+    }
+
+    fn label_of(m: &Message) -> String {
+        match &m.content {
+            Content::PlainText { text, .. } => text.clone(),
+            Content::WatcherEvent(v) => v["_0"]["detail"].as_str().unwrap_or_default().to_string(),
+            _ => "?".into(),
+        }
+    }
+
+    #[test]
+    fn watcher_events_queue_behind_people() {
+        // A person's message in flight; two watcher events wait; a person's message P arrives.
+        let mut b = Broker::new();
+        b.seed_newest("C", None);
+        b.publish("C", user("M0"), false, None);
+        assert_eq!(b.next_turn("C").map(|m| label_of(&m)), Some("M0".into()));
+        b.turn("C", TurnEvent::Started);
+        b.publish("C", watcher("A"), false, None);
+        b.publish("C", watcher("B"), false, None);
+        b.publish("C", user("P"), false, None);
+        assert_eq!(drain(&mut b, &label_of), ["P", "A", "B"], "a person's message is answered before the queued watcher events");
+
+        // A person's message waits behind another person's, but before the watcher event.
+        let mut b = Broker::new();
+        b.seed_newest("C", None);
+        b.publish("C", user("M0"), false, None);
+        b.next_turn("C");
+        b.turn("C", TurnEvent::Started);
+        b.publish("C", user("X"), false, None);
+        b.publish("C", watcher("A"), false, None);
+        b.publish("C", user("P"), false, None);
+        b.publish("C", watcher("C"), false, None);
+        assert_eq!(drain(&mut b, &label_of), ["X", "P", "A", "C"], "P after X and before A; a watcher event published meanwhile goes last");
+
+        // A watcher event in flight and nothing waiting: P is next.
+        let mut b = Broker::new();
+        b.seed_newest("C", None);
+        b.publish("C", watcher("W0"), false, None);
+        assert_eq!(b.next_turn("C").map(|m| label_of(&m)), Some("W0".into()));
+        b.turn("C", TurnEvent::Started);
+        b.publish("C", user("P"), false, None);
+        assert_eq!(drain(&mut b, &label_of), ["P"]);
+
+        // A watcher event in flight, a watcher event waiting: P goes before the waiting one only.
+        let mut b = Broker::new();
+        b.seed_newest("C", None);
+        b.publish("C", watcher("W0"), false, None);
+        b.next_turn("C");
+        b.turn("C", TurnEvent::Started);
+        b.publish("C", watcher("W1"), false, None);
+        b.publish("C", user("P"), false, None);
+        assert_eq!(drain(&mut b, &label_of), ["P", "W1"]);
+
+        // Nothing running: arrival order, as 12c's queue.
+        let mut b = Broker::new();
+        b.seed_newest("C", None);
+        b.publish("C", watcher("A"), false, None);
+        b.publish("C", user("P"), false, None);
+        assert_eq!(b.next_turn("C").map(|m| label_of(&m)), Some("A".into()), "the first message starts at once");
+        assert_eq!(drain(&mut b, &label_of), ["P"]);
     }
 
     #[test]

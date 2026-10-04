@@ -368,6 +368,9 @@ impl App {
         }
         self.chat_input_switch(chat.as_deref());
         self.chat_shown = chat;
+        if let Some(shown) = self.chat_shown.clone() {
+            self.orch_rearm(&shown);
+        }
         self.chat_load_messages();
         // A chat whose last state is Active with nothing streaming it was left on by an earlier
         // run: it says so (`CVC:1006-1011`).
@@ -1119,6 +1122,27 @@ impl App {
             ChatEvent::RevealCommand(url) => self.chat_reveal_command(&url, event_loop),
             ChatEvent::InputChanged(text) => {
                 self.chat_input.typed(text);
+                self.chat_mention_follow();
+                self.chat_window_refresh();
+            }
+            ChatEvent::MentionMove(up) => {
+                if let Some(p) = self.chat_input.picker.as_mut() {
+                    if up { p.up() } else { p.down() }
+                }
+                self.chat_window_refresh();
+            }
+            ChatEvent::MentionCommit(index) => {
+                self.chat_input.commit_mention(index);
+                self.chat_window_refresh();
+            }
+            ChatEvent::MentionClose => {
+                self.chat_input.close_mention();
+                self.chat_window_refresh();
+            }
+            ChatEvent::RemoveMention(i) => {
+                if i < self.chat_input.draft.mentions.len() {
+                    self.chat_input.draft.mentions.remove(i);
+                }
                 self.chat_window_refresh();
             }
             ChatEvent::FindQuery(q, mode) => self.chat_find_query(q, mode),
@@ -1163,11 +1187,26 @@ impl App {
         self.chat_input.switched(next);
     }
 
+    /// Whether the shown chat is in orchestration mode (the only chats with the `@` picker).
+    fn chat_shown_orchestrating(&self) -> bool {
+        let shown = self.chat_shown.as_deref();
+        shown.and_then(|c| self.chat_db.as_ref()?.chat(c).ok().flatten()).is_some_and(|c| c.orchestration_enabled)
+    }
+
+    /// The typed text moved the `@` picker (ruling P11: the chat window's input only; the inline
+    /// panel has no picker and parses typed tokens).
+    fn chat_mention_follow(&mut self) {
+        let orchestrating = self.chat_shown_orchestrating();
+        let world = if orchestrating && crate::mention::completion_target(&self.chat_input.draft.text).is_some() { self.cockpit_world() } else { Default::default() };
+        self.chat_input.follow_mention(orchestrating, &world);
+    }
+
     /// What the input shows now.
     fn chat_input_data(&self) -> InputData {
         let shown = self.chat_shown.as_deref();
         let stoppable = shown.is_some_and(|c| self.chat_broker.is_typing(c, Participant::Agent));
-        let orchestrating = shown.and_then(|c| self.chat_db.as_ref()?.chat(c).ok().flatten()).is_some_and(|c| c.orchestration_enabled);
+        let orchestrating = self.chat_shown_orchestrating();
+        let chips = self.chat_input.draft.mentions.iter().map(|id| (crate::mention::Chip::Session { stable_id: id.clone() }, self.mention_label(id))).collect();
         let text = self.chat_input.draft.text.clone();
         InputData {
             send_enabled: chat_input::send_enabled(&text, false, stoppable),
@@ -1177,6 +1216,8 @@ impl App {
             stoppable,
             loading: false,
             focus: self.chat_input.focus,
+            chips,
+            picker: self.chat_input.picker.clone().filter(|_| orchestrating),
         }
     }
 
@@ -1206,11 +1247,17 @@ impl App {
         let mime = |n: &str| crate::ai_files::upload_mime(n).to_string();
         let (parts, skipped) = chat_input::attachments(&draft.pending, &read, &list, &mime);
         let vector_store = self.chat_db.as_ref().and_then(|db| db.chat(&chat).ok().flatten()).and_then(|c| c.vector_store);
-        let Some(content) = chat_input::message_content(&draft.text, parts, vector_store) else { return };
+        // A picked session is already a token where the person put it; the grants are the draft's own.
+        let text = draft.text.clone();
+        let grants = chat_input::send_grants(&draft);
+        let Some(content) = chat_input::message_content(&text, parts, vector_store) else { return };
         let m = Message::new(&chat, Participant::User, content, super::warnings_app::unix_now());
         // The store and the window are not held across the publish: it may deliver at once.
-        match self.chat_publish(&chat, m, false) {
+        // The one publish that carries the person's mark (Task 11 fix round 2).
+        match self.chat_publish_by_person(&chat, m) {
             Ok(()) => {
+                // The person's own picks grant control (ruling P9), after the message is sent.
+                self.orch_grant_mentions(&chat, &grants);
                 match view {
                     ChatView::Window => self.chat_input.sent(),
                     ChatView::Panel(pane) => self.inline_sent(pane),

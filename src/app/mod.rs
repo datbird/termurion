@@ -131,6 +131,7 @@ mod api_ui;
 mod api_requests;
 mod script_ui;
 mod script_runtime_ui;
+mod claude_code_app;
 mod scripts_alerts;
 mod warnings_app;
 mod suppressed_app;
@@ -147,6 +148,10 @@ mod codecierge_app;
 mod ai_explain_app;
 mod chat_app;
 mod chat_window_app;
+mod cockpit_app;
+mod orch_app;
+mod orch_dispatch;
+mod orch_watch_app;
 mod chat_session_app;
 mod transparency_ui;
 mod chat_engine;
@@ -640,11 +645,13 @@ pub struct App {
     /// Status Change, and the idle codes sent.
     last_notified: Option<PaneId>,
     alert_limits: crate::triggers::RateLimit<PaneId>,
-    notify_status_armed: bool,
+    /// Window > Notify on Status Change for the current window (per window: `WinSlot`).
+    status_armed: bool,
     last_status: HashMap<PaneId, Option<String>>,
-    /// Session Status' bell on one session: it and its status when armed; the next change
-    /// from that shows the alert, then it disarms (`NotifyOnStatusChangeController`).
-    status_watch: Option<(PaneId, Option<String>)>,
+    /// The bells on sessions (Session Status', the Cockpit's): each armed session and its status
+    /// when armed; the next different status shows the alert, then it disarms
+    /// (`NotifyOnStatusChangeController`).
+    status_watches: std::collections::BTreeMap<PaneId, Option<String>>,
     /// Session Status' settings popover (one at a time: it closes when it loses focus), when
     /// it last closed (a press on its gear that took the focus away closes it, not reopens
     /// it), and its + prompt.
@@ -960,6 +967,9 @@ pub struct App {
     api_rpc_done: VecDeque<(u64, Result<crate::expr::Value, crate::expr::Failure>)>,
     /// Each allowed connection's `x-iterm2-key` and display name, for its log lines.
     api_keys: HashMap<u64, (String, String)>,
+    /// The connections that are cc-status hooks, each with the cookie it presented (ruling P14):
+    /// they may set a status only on the pane that cookie belongs to.
+    api_hooks: HashMap<u64, Option<String>>,
     /// Running invocations by id (app-wide, as every script field is), the next run id and
     /// call token, and the run each started call's token belongs to.
     script_runs: BTreeMap<u64, script_ui::Run>,
@@ -1041,6 +1051,18 @@ pub struct App {
     /// reads every chat through, the chat it shows, and its toolbar as last computed (rebuilt
     /// only when `chat_toolbar_dirty`, so a streamed chunk never re-reads the providers).
     chat_window: Option<crate::chat_window_ui::ChatWindow>,
+    /// The Cockpit (app-wide, never swapped: one per app), what it keeps between redraws
+    /// (kept when the window closes), and when its frame or split is next written out.
+    cockpit: Option<crate::cockpit_ui::CockpitWindow>,
+    cockpit_view: crate::cockpit::View,
+    cockpit_save_due: Option<Instant>,
+    /// The Claude Code setup window (app-wide, one at a time), whether this launch's health
+    /// check ran, whether the announcement was put off for this run ("Ask Later"), and a
+    /// setup wanted from an answer that has no event loop (the next pass opens it).
+    cc_onboarding: Option<crate::cc_onboarding_ui::OnboardingWindow>,
+    claude_health_done: bool,
+    claude_watcher_off: bool,
+    claude_install_due: bool,
     chat_sub: Option<crate::chat_broker::SubId>,
     chat_shown: Option<String>,
     /// The shown chat's input (text, pending attachments), the drafts of the chats not shown,
@@ -1119,6 +1141,34 @@ pub struct App {
     chat_agents: HashMap<String, crate::chat_agent::Agent>,
     /// (chat, request id) of the Get-Help running on each pane (minor m1), app-wide.
     ai_pending_tools: HashMap<PaneId, (String, String)>,
+    /// What a model said about the session it started (provenance, 12f Task 9), by pane.
+    orch_provenance: HashMap<PaneId, String>,
+    /// Orchestration requests parked on the person: request id to (chat id, call id).
+    orch_parks: crate::orch::Parks,
+    /// What each parked orchestration request runs on its answer (12f Task 10), by request id.
+    orch_waits: HashMap<String, orch_dispatch::Wait>,
+    /// Scopes the person refused per chat (asked again only once claimed), in memory.
+    orch_denied: HashMap<String, Vec<String>>,
+    /// (chat id, call id) of `session_*` mirror calls running through `ai_run_tool`, with their
+    /// pane and start; `ai_tool_finished` hands their results to `orch_resume`.
+    orch_mirrors: HashMap<(String, String), (PaneId, Instant)>,
+    /// CRs due 75 ms after an orchestration bracketed paste.
+    orch_pending_cr: Vec<orch_dispatch::PendingCr>,
+    /// Running orchestration safety checks.
+    orch_checks: Vec<orch_dispatch::Check>,
+    /// Allowed start_session calls waiting for the event loop.
+    orch_spawns: Vec<orch_dispatch::Spawn>,
+    /// The sessions each chat's agent started, and when (ruling P15's cap).
+    orch_spawned: HashMap<String, Vec<(Instant, PaneId)>>,
+    /// Each chat's watchers and timers (Task 11); in memory only, a launch starts empty (ruling P2).
+    orch_watchers: HashMap<String, Vec<crate::orch_watch::Watcher>>,
+    /// What the agent submitted into each pane since its last prompt, so a split command is
+    /// classified whole (Task 10 fix round 1).
+    orch_held: HashMap<PaneId, crate::orch_gate::Held>,
+    /// A screen watch's poll, by watcher id.
+    orch_polls: HashMap<String, crate::orch_watch::Poll>,
+    /// The events each chat is about to receive, held for the gate and the rate.
+    orch_outbox: HashMap<String, crate::orch_watch::Outbox>,
     /// 12b's wire log file for the chat turns' requests (app-wide).
     #[cfg(windows)]
     ai_wire_log: Arc<Mutex<crate::ai_wire_log::WireLog>>,
@@ -1440,6 +1490,7 @@ pub fn run() {
     let ai_transport: Arc<dyn crate::ai_transport::Transport> = Arc::new(crate::ai_winhttp::WinHttp);
     let composer_worker = crate::composer_worker::Worker::new(notify.clone(), Arc::new(crate::composer_worker::RealFs));
     let ui_element_confirmed = globals.bool(crate::presence::UI_ELEMENT_KEY);
+    let cockpit_view = cockpit_app::initial_view(&globals);
     let mut app = App {
         host,
         hotkey: None,
@@ -1621,9 +1672,9 @@ pub fn run() {
         badges: HashMap::new(),
         last_notified: None,
         alert_limits: crate::triggers::RateLimit::default(),
-        notify_status_armed: false,
+        status_armed: false,
         last_status: HashMap::new(),
-        status_watch: None,
+        status_watches: Default::default(),
         status_popover: None,
         status_popover_closed: None,
         open_quickly: None,
@@ -1769,6 +1820,7 @@ pub fn run() {
         api_fns: Default::default(),
         api_rpc_done: VecDeque::new(),
         api_keys: HashMap::new(),
+        api_hooks: HashMap::new(),
         script_runs: BTreeMap::new(),
         script_next: 1,
         script_tokens: HashMap::new(),
@@ -1815,6 +1867,13 @@ pub fn run() {
         chat_links_off: false,
         chat_broker: crate::chat_broker::Broker::new(),
         chat_window: None,
+        cockpit: None,
+        cockpit_view,
+        cockpit_save_due: None,
+        cc_onboarding: None,
+        claude_health_done: false,
+        claude_watcher_off: false,
+        claude_install_due: false,
         chat_sub: None,
         chat_shown: None,
         chat_input: Default::default(),
@@ -1855,6 +1914,19 @@ pub fn run() {
         ai_nag: crate::ai_classifier::NagGate::default(),
         chat_agents: HashMap::new(),
         ai_pending_tools: HashMap::new(),
+        orch_provenance: HashMap::new(),
+        orch_parks: HashMap::new(),
+        orch_waits: HashMap::new(),
+        orch_denied: HashMap::new(),
+        orch_mirrors: HashMap::new(),
+        orch_pending_cr: Vec::new(),
+        orch_checks: Vec::new(),
+        orch_spawns: Vec::new(),
+        orch_spawned: HashMap::new(),
+        orch_watchers: HashMap::new(),
+        orch_held: HashMap::new(),
+        orch_polls: HashMap::new(),
+        orch_outbox: HashMap::new(),
         #[cfg(windows)]
         ai_wire_log: Arc::new(Mutex::new(crate::ai_wire_log::WireLog::new())),
         script_procs: HashMap::new(),
@@ -2917,6 +2989,9 @@ impl App {
         let guid = self.panes.get(&id).map(|p| p.profile.clone());
         // The session keeps its chat reference across a restart (`PTYSession.m:2403-2420`).
         let reference = self.panes.get(&id).map(|p| p.session_guid.clone());
+        let stable = self.panes.get(&id).map(|p| p.stable_id.clone());
+        // The new shell never saw what a model typed into the old one.
+        self.orch_held.remove(&id);
         if let Some(old) = self.panes.remove(&id) {
             if let Some(pid) = old.shell_pid() {
                 self.jobs.forget(pid);
@@ -2930,6 +3005,10 @@ impl App {
         if self.start_pane_as(id, rect, guid.as_deref()) {
             if let (Some(reference), Some(p)) = (reference.clone(), self.panes.get_mut(&id)) {
                 p.keep_reference(&reference);
+            }
+            // So does its stable id: a model's claim on the session outlives its shell.
+            if let (Some(sid), Some(p)) = (stable, self.panes.get_mut(&id)) {
+                p.keep_stable_id(&sid);
             }
             // The new Screen has no chat watch: a chat streaming this session goes on (`CVC:144-165`).
             self.chat_refresh();
@@ -3012,6 +3091,8 @@ impl App {
     /// Every drop path calls this, so an app-wide map keyed by pane cannot leak.
     pub(super) fn pane_gone(&mut self, id: PaneId) {
         self.api_session_subs.forget_session(id);
+        // The shell a model's held text was typed into is gone (Task 10 fix round 2).
+        self.orch_held.remove(&id);
         self.held_on_exit.remove(&id);
         self.unread_session_counts.retain(|(p, _), _| *p != id);
         self.script_templates.retain(|(p, _), _| *p != id);
@@ -5086,6 +5167,9 @@ impl ApplicationHandler<UserEvent> for App {
         self.save_state(lost);
         self.replay_follow_focus(event_loop);
         self.replay_panels_follow_app();
+        self.cockpit_follows_app();
+        self.claude_tick(event_loop);
+        let cockpit_due = self.cockpit_tick();
         // Menu checks that follow the current tab and pane (broadcast input) refresh when
         // either changes.
         let key = (self.current_window(), self.active, self.tabs.get(self.active).map(|t| t.focused));
@@ -5168,6 +5252,10 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_ai_engage_windows(event_loop);
         let ai_due = self.ai_discovery_due();
         let chat_due = self.chat_tick();
+        // Orchestration's checks, mirror limits, delayed CRs and spawns (12f Task 10).
+        self.orch_check_tick();
+        self.orch_spawn_tick(event_loop);
+        let orch_due = [self.orch_due(), self.orch_watch_tick()].into_iter().flatten().min();
         let chat_window_due = self.chat_window_tick();
         self.open_script_dialogs(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
@@ -5203,7 +5291,7 @@ impl ApplicationHandler<UserEvent> for App {
         let tip_due = self.tick_tab_tip();
         let flash_due = self.tick_tab_flash();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, chat_window_due, desktop_due, self.display_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -5323,7 +5411,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

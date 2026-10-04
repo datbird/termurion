@@ -56,6 +56,25 @@ pub struct Upgrade {
     pub library_version: String,
     /// `x-iterm2-disable-auth-ui` was present, whatever its value (`S:540`).
     pub disable_auth_ui: bool,
+    /// The known cookie the client presented (a secret: never shown by `Debug`), kept so the app
+    /// can tell whose cookie it was.
+    pub cookie: Option<Presented>,
+}
+
+/// A cookie text a client presented. `Debug` hides it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Presented(String);
+
+impl Presented {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Presented {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Presented(..)")
+    }
 }
 
 /// Why an upgrade was refused.
@@ -230,7 +249,8 @@ pub fn check(r: &Request, consume_cookie: &mut dyn FnMut(&str) -> bool, fresh_ke
         return bad(format!("sec-websocket-version of {version} is older than {WEBSOCKET_VERSION}"));
     }
     // An unknown cookie only leaves the connection unauthorized; it is consumed either way.
-    let preauthorized = header("x-iterm2-cookie").is_some_and(|c| consume_cookie(c));
+    let presented = header("x-iterm2-cookie").filter(|c| consume_cookie(c)).map(|c| Presented(c.to_string()));
+    let preauthorized = presented.is_some();
     let Some(library_version) = header("x-iterm2-library-version") else {
         return bad("The \u{201c}x-iterm2-library-version\u{201d} header was not set. You may need to update your Python runtime to a newer version.".to_string());
     };
@@ -253,6 +273,7 @@ pub fn check(r: &Request, consume_cookie: &mut dyn FnMut(&str) -> bool, fresh_ke
         advisory_name: header("x-iterm2-advisory-name").map(str::to_string),
         library_version: library_version.to_string(),
         disable_auth_ui: header("x-iterm2-disable-auth-ui").is_some(),
+        cookie: presented,
     })
 }
 
@@ -455,6 +476,8 @@ mod tests {
         assert_eq!(calls, ["abc"]);
         let u = check(&with("x-iterm2-cookie", Some("good")), &mut |c| c == "good", &mut || "FRESH".into()).unwrap();
         assert!(u.preauthorized);
+        assert_eq!(u.cookie.as_ref().map(Presented::as_str), Some("good"), "the app can tell whose cookie it was");
+        assert!(!format!("{u:?}").contains("good"), "a cookie is a secret: Debug hides it");
         // No cookie header: nothing consumed.
         let mut called = false;
         check(&valid(), &mut |_| {

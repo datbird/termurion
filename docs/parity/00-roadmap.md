@@ -8,8 +8,8 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 |---|---|---|---|---|
 | `01-profile-settings.md` | 315 | 191 | 109 | 15 |
 | `02-global-settings.md` | 819 | 450 | 76 | 293 |
-| `03-features-and-menus.md` | 644 | 545 | 47 | 52 |
-| Total | 1,778 | 1,186 | 232 | 360 |
+| `03-features-and-menus.md` | 644 | 550 | 47 | 47 |
+| Total | 1,778 | 1,191 | 232 | 355 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -320,6 +320,32 @@ available on Windows (ruling 7): the 4096 bit draws nothing. The chat icon waits
 SVG rasterizing (ruling 11). The tables count have, partial and missing rows; n/a rows (02: 3, 03: 1)
 are left out of them. Every kept quirk is listed in `docs/acceptance/m12e-checklist.md` and ruled on
 in `docs/superpowers/rulings/m12e-rulings.txt`; 12c's and 12d's checklists are run with this window.
+Milestone 12f built the Cockpit and the Claude Code integration, and gave AI chats orchestration mode
+(03: Install, Reinstall and Uninstall Claude Code Integration, Window > Cockpit and the Orchestration
+mode row, 5 rows to have; OSC 21337, Toolbelt > Session Status and Window > Notify on Status Change
+noted; 02: the orchestration prompt noted). Window > Cockpit (Alt+Win+Shift+C) is one always-on-top
+egui panel, hidden while another app is in front, that lists every session of every window and the
+buried ones by Status or by Window (Workgroup stays empty until milestone 13), with a filter bar,
+search, a bell on a session or a window, and a command bar that types once into the selected rows or
+`@` chips (Shift+Enter; `@all`, `@working`, `@waiting`, `@idle`; it types into buried sessions as
+iTerm2 does). Sessions carry lasting stable ids (`ptys_...`, restored only at launch restoration).
+`cc-status.exe`, a console program beside tandem.exe, turns Claude Code's ten hook events into the
+session's tab status (working orange, waiting blue, idle green) through the Python API with the
+session's cookie, and `set_status` keeps `background_tasks`. The setup writes the hooks into
+`settings.json` without touching other settings (an unparsable or unreadable file is refused, a backup
+is kept, the write is atomic); setCookie turns on only when the person answers its own question;
+npm and WSL Claude Code sessions are not detected. In an AI chat the model can ask to switch
+orchestration on (only the person's press does it), then drives sessions through 14 of iTerm2's 16
+tools and 23 `session_*` mirrors: a session needs a claim (an `@` pick in the chat input grants one),
+every keystroke goes through one typed-text gate that classifies a staged or split command as one
+line, typing reaches only live, visible, non-secret panes, the safety check always runs, and watchers
+and timers die with the chat's turn and with the launch. notify and request_notification_permission
+are n/a (iPhone companion). Milestone 13's Workgroups sub-part
+(`docs/superpowers/plans/2026-10-15-m13y1-workgroups.md`) owns start_code_review, the Workgroup
+grouping, workgroup peers, role prefixes, the setup's workgroup and trigger steps, the browser
+mirrors, `ai.default_code_review_prompt` and `ai.saved_prompt_names`. Nothing of 12f was checked on
+screen during the build. Every kept quirk is listed in `docs/acceptance/m12f-checklist.md` and ruled on
+in `docs/superpowers/rulings/m12f-rulings.txt`.
 Milestone 13a built Settings > Advanced as iTerm2's pane (02): the rows under iTerm2's 19
 categories in Finder order with bold, pinned headers; a search that matches every typed word in a
 row's description or category; "Show only non-default values", which keeps the row being edited
@@ -444,7 +470,7 @@ lists every window, opens Settings, lists buried sessions and quits; the dock cl
 The rows that need the person: 01:179 to 01:181, the new rendering row, 02:209, 02:262, 03:157 and 03:158 are partial
 until checklist line 1 (a DirectComposition and an HWND swapchain in one process on the desktop GPU) passes, and
 blur (01:182, checklist line 9) stays partial until acrylic is seen behind the visual swapchain, and Blur Radius (01:183) stays partial because it has no effect; if the line fails they stay partial
-("stored and shown; no see-through rendering on this path"); if it passes they read have (1,194 have, 224 partial in total).
+("stored and shown; no see-through rendering on this path"); if it passes they read have (1,199 have, 224 partial in total).
 StatusBarIcon alone decides the icon (iTerm2's rule); with it off, starting Tandem again acts as the dock click. Nothing of 13g was
 checked on screen during the build. Every kept quirk is listed in `docs/acceptance/m13g-checklist.md` and ruled on
 in `docs/superpowers/rulings/m13g-rulings.txt`.

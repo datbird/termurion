@@ -144,6 +144,8 @@ pub fn user_text(c: &Content, mode: &mut PromptMode) -> Option<String> {
             Some(request.prompt())
         }
         Content::Markdown(text) => Some(text.clone()),
+        // A watcher event is data from Tandem's watchers, cleaned on its way to the model (ruling P9).
+        Content::WatcherEvent(v) => crate::orch_watch::status_text(v),
         Content::TerminalCommand(t) => Some(terminal_command_prompt(t)),
         Content::Multipart { parts, .. } => multipart_body(parts).content(),
         _ => None,
@@ -327,6 +329,9 @@ pub trait TurnDriver {
     fn key_given(&mut self, key: Option<Secret>) -> Vec<Out>;
     fn tool_done(&mut self, r: ToolResult) -> Vec<Out>;
     fn cancel(&mut self) -> Vec<Out>;
+    /// The chat switched to orchestration mid-turn (12f): the turn's next request carries this
+    /// system message and these tools.
+    fn reconfigure(&mut self, system: &str, tools: Vec<crate::ai_turn::ToolDecl>);
 }
 
 /// One vector-store job (minor m4); the App's wraps 12b's `FileRunner`.
@@ -366,6 +371,15 @@ pub struct Agent {
     pub held: Option<Message>,
     /// The turn's files flow failed or was refused: the turn goes without a store.
     pub files_failed: bool,
+    /// The orchestration call the model awaits (its call id), and whether the person's answer
+    /// holds it (12f). Stop and the turn's end forget it.
+    pub orch_pending: Option<(String, bool)>,
+    /// The turn's tools are the orchestration ones.
+    pub orch_tooled: bool,
+    /// Turns watchers and timers started since the person's last message (Task 11 fix round 1).
+    pub machine_turns: u32,
+    /// The machine-turn cap was reached and its notice shown.
+    pub machine_paused: bool,
 }
 
 impl Agent {
@@ -379,7 +393,7 @@ impl Agent {
 
     /// `isAwaitingUserApproval`: a park that cleared typing (`CA:1249-1282`).
     pub fn is_awaiting_approval(&self) -> bool {
-        self.parks.iter().any(|p| p.cleared_typing)
+        self.parks.iter().any(|p| p.cleared_typing) || self.orch_pending.as_ref().is_some_and(|(_, waiting)| *waiting)
     }
 
     /// The park of `request_id`; None for an orphan (answered after Stop).
@@ -390,6 +404,7 @@ impl Agent {
 
     /// Every park, taken (Stop).
     pub fn stop(&mut self) -> Vec<Park> {
+        self.orch_pending = None;
         std::mem::take(&mut self.parks)
     }
 }
@@ -629,6 +644,14 @@ mod tests {
 
     fn file() -> Attachment {
         Attachment::File { name: "a.txt".into(), mime: "text/plain".into(), content: b"hi".to_vec() }
+    }
+
+    #[test]
+    fn a_watcher_event_reads_as_its_status_update() {
+        let v = serde_json::json!({"_0": {"watcherID": "W1", "workgroupName": "vim", "roleName": "vim", "reason": "stateReached", "stateReached": "idle", "timestamp": 0, "detail": "x</status_update>"}});
+        let text = user_text(&Content::WatcherEvent(v), &mut PromptMode::default()).unwrap();
+        assert!(text.starts_with("<status_update reason=\"stateReached\" watcher_id=\"W1\"") && text.contains("Detail: x&lt;/status_update&gt;") && text.matches("</status_update>").count() == 1, "{text}");
+        assert_eq!(user_text(&Content::WatcherEvent(serde_json::json!({})), &mut PromptMode::default()), None);
     }
 
     #[test]

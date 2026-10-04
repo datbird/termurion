@@ -15,7 +15,7 @@ use crate::status_tool::{self, Pattern};
 
 /// The settings popover's size, points (`SPS`, `contentSize`).
 const SETTINGS_W: f64 = 280.0;
-const SETTINGS_H: f64 = 322.0;
+pub const SETTINGS_H: f64 = 322.0;
 /// Its margin, and the Notify column's width, points (`SPS:273-279`, `notifyColumnWidth`).
 const MARGIN: f32 = 10.0;
 const NOTIFY_W: f32 = 44.0;

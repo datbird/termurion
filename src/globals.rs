@@ -109,6 +109,11 @@ impl Globals {
     /// Stores a value. A value equal to the default is removed, so the file keeps only changes,
     /// except for a key whose having been set at all is read (`KEPT_WHEN_DEFAULT`).
     pub fn set(&mut self, key: &str, value: Value) {
+        // A changed cookie setting is no longer the one the Claude Code setup turned on, so its
+        // marker goes; the setup writes the marker after the setting (Task 8 fix round 2).
+        if key == crate::api_profile::SET_COOKIE && value.as_bool() != Some(self.bool(key)) {
+            self.values.remove(crate::claude_code::COOKIE_BY_KEY);
+        }
         if default_of(key).as_ref() == Some(&value) && !KEPT_WHEN_DEFAULT.contains(&key) {
             self.values.remove(key);
         } else {

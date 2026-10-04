@@ -1330,6 +1330,15 @@ impl App {
             Ok(t) => t,
             Err(resp) => return reply(req, Resp::InvokeFunctionResponse(resp)),
         };
+        // A hook acts only on the session its own cookie was minted for (ruling P14): a hosted
+        // shell taken back after a relaunch keeps an old TERM_SESSION_ID that can now name
+        // another pane. Anything else it asks for is refused the same way.
+        if let Some(presented) = self.api_hooks.get(&conn) {
+            let owns = matches!(target, Target::Session(p) if crate::cc_status::may_report(self.panes.get(&p).and_then(|x| x.cookie.as_deref()), presented.as_deref()));
+            if !owns {
+                return reply(req, Resp::InvokeFunctionResponse(crate::script_eval::invoke_error(pb::invoke_function_response::Status::Failed, Some(crate::cc_status::DROPPED))));
+            }
+        }
         let scope = match target {
             Target::App => ScopeSpec::App,
             Target::Tab(t) => ScopeSpec::Tab(t),
@@ -1589,5 +1598,32 @@ impl Objects for ApiObjects<'_> {
         let mut out = api_vars::scope_values(&vars, scope);
         api_vars::typed_users(&app.api_vars, &vars, scope, id, &mut out);
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Final review fix (M6): a hook connection (one that presented a cookie on upgrade) acts
+    /// only on the session its own cookie was minted for. Its `set_status` on another pane's id,
+    /// or on anything that is not a session, is refused with `DROPPED` before anything runs.
+    #[test]
+    fn a_hook_acts_only_on_its_own_session() {
+        let code = include_str!("api_requests.rs").split("#[cfg(test)]").next().unwrap();
+        let start = code.find("fn api_invoke_function(").expect("api_invoke_function");
+        let rest = &code[start..];
+        let f = &rest[..rest.find("\n    }\n").unwrap()];
+        let guard = f.find("if let Some(presented) = self.api_hooks.get(&conn) {").expect("the guard reads the hook's own cookie");
+        let run = f.find("self.invoke(").expect("the invocation");
+        assert!(guard < run, "the guard runs before the invocation");
+        let g = &f[guard..run];
+        assert!(g.contains("matches!(target, Target::Session(p) if crate::cc_status::may_report(self.panes.get(&p).and_then(|x| x.cookie.as_deref()), presented.as_deref()))"), "only the target pane's own cookie, and only a session target:\n{g}");
+        assert!(g.contains("if !owns {") && g.contains("Some(crate::cc_status::DROPPED)") && g.contains("return reply("), "a refusal answers DROPPED and returns:\n{g}");
+        // A connection is a hook only by the cookie it upgraded with.
+        let ui = include_str!("api_ui.rs").split("#[cfg(test)]").next().unwrap();
+        assert_eq!(ui.matches("self.api_hooks.insert(").count(), 1);
+        // The comparison itself (`may_report`): the pane's cookie only, never an empty one.
+        assert!(crate::cc_status::may_report(Some("A"), Some("A")));
+        assert!(!crate::cc_status::may_report(Some("B"), Some("A")), "another pane's cookie");
+        assert!(!crate::cc_status::may_report(None, Some("A")) && !crate::cc_status::may_report(Some(""), Some("")) && !crate::cc_status::may_report(Some("A"), None));
     }
 }

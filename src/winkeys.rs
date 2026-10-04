@@ -184,6 +184,32 @@ fn is_chat(hwnd: isize) -> bool {
     CHAT_WINDOWS.lock().is_ok_and(|w| w.contains(&hwnd))
 }
 
+/// The Cockpit window: Window > Cockpit (Alt+Win+Shift+C) works while it has the focus.
+static COCKPIT_WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
+pub fn add_cockpit_window(hwnd: isize) {
+    if let Ok(mut w) = COCKPIT_WINDOWS.lock() {
+        if !w.contains(&hwnd) {
+            w.push(hwnd);
+        }
+    }
+}
+
+pub fn remove_cockpit_window(hwnd: isize) {
+    if let Ok(mut w) = COCKPIT_WINDOWS.lock() {
+        w.retain(|h| *h != hwnd);
+    }
+}
+
+fn is_cockpit(hwnd: isize) -> bool {
+    COCKPIT_WINDOWS.lock().is_ok_and(|w| w.contains(&hwnd))
+}
+
+/// The one chord the Cockpit window takes: Window > Cockpit, Alt+Win+Shift+C.
+pub fn cockpit_chord(c: &Chord) -> bool {
+    c.cmd && c.alt && c.shift && !c.ctrl && matches!(c.key, ChordKey::Char('c'))
+}
+
 /// The window in front when the hook last took a chord, read by the app when the chord arrives
 /// (the focus may have moved by then).
 static CHORD_FOREGROUND: AtomicIsize = AtomicIsize::new(0);
@@ -319,16 +345,17 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 let recording = RECORDING.load(Ordering::Relaxed) && fg == SETTINGS.load(Ordering::Relaxed);
                 let pwm = is_pwm(fg);
                 let chat = is_chat(fg);
+                let cockpit = is_cockpit(fg);
                 let e = KeyEvent {
                     vk: kb.vkCode as u16,
                     down,
                     win_held: held(VK_LWIN as i32) || held(VK_RWIN as i32),
-                    focused: is_tandem(fg) || recording || pwm || chat,
+                    focused: is_tandem(fg) || recording || pwm || chat || cockpit,
                     shift: held(0x10),
                     alt: held(0x12),
                     ctrl: held(0x11),
                 };
-                let bound = |c: &Chord| recording || if pwm { pwm_chord(c) } else if chat { chat_chord(c) } else { (h.bound)(c) };
+                let bound = |c: &Chord| recording || if pwm { pwm_chord(c) } else if chat { chat_chord(c) } else if cockpit { cockpit_chord(c) } else { (h.bound)(c) };
                 let verdict = h.gate.lock().unwrap().on_key(e, &bound);
                 if let Verdict::Take(chord) = verdict {
                     if let Some(c) = chord {
@@ -793,5 +820,17 @@ mod tests {
         assert!(is_chat(78));
         remove_chat_window(78);
         assert!(!is_chat(78));
+    }
+
+    #[test]
+    fn the_cockpit_window_takes_window_cockpit() {
+        let c = |k: char, alt: bool, shift: bool| Chord { key: ChordKey::Char(k), cmd: true, alt, shift, ctrl: false };
+        assert!(cockpit_chord(&c('c', true, true)));
+        assert!(!cockpit_chord(&c('c', false, true)) && !cockpit_chord(&c('c', true, false)) && !cockpit_chord(&c('x', true, true)));
+        assert!(!cockpit_chord(&Chord { ctrl: true, ..c('c', true, true) }));
+        add_cockpit_window(79);
+        assert!(is_cockpit(79));
+        remove_cockpit_window(79);
+        assert!(!is_cockpit(79));
     }
 }

@@ -83,7 +83,7 @@ impl Jar {
 
 /// Byte equality whose time depends only on the lengths (cookies all have 32 characters, so the
 /// length gives nothing away).
-fn same_secret(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn same_secret(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }

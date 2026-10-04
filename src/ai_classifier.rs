@@ -248,6 +248,11 @@ fn row(e: &Entry) -> String {
     }
 }
 
+/// The transcript's rows, one per line (`renderTranscriptLine` joined), for 12f's TUI prompt.
+pub fn rows(transcript: &[Entry]) -> String {
+    transcript.iter().map(row).collect::<Vec<_>>().join("\n")
+}
+
 /// The user message of a check: the fenced transcript, the action, and the closing instruction
 /// (`AMC:143-152`; the source's em dash is `\u{2014}`, verbatim iTerm2 text sent to the model).
 pub fn render(transcript: &[Entry], action: &Entry) -> String {

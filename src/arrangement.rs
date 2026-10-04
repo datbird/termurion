@@ -397,12 +397,27 @@ pub fn save_reference(session: &mut Table, guid: &str) {
     session.insert(SESSION_REF_KEY.into(), Value::String(guid.into()));
 }
 
-/// At launch: the saved reference becomes adoptable (the persisted key is removed).
+/// Writes a pane's stable id into its session table (session restoration only).
+pub fn save_stable_id(session: &mut Table, id: &str) {
+    session.insert(STABLE_ID_KEY.into(), Value::String(id.into()));
+}
+
+/// At launch: the saved reference and stable id become adoptable (the persisted keys are
+/// removed, and a marker a file carried is dropped first).
 pub fn mark_adoptable(session: &mut Table) {
     session.remove(ADOPT_REF_KEY);
     if let Some(saved) = session.remove(SESSION_REF_KEY) {
         session.insert(ADOPT_REF_KEY.into(), saved);
     }
+    session.remove(ADOPT_STABLE_KEY);
+    if let Some(saved) = session.remove(STABLE_ID_KEY) {
+        session.insert(ADOPT_STABLE_KEY.into(), saved);
+    }
+}
+
+/// The stable id a restored session may adopt: a canonical one only.
+pub fn adoptable_stable_id(session: &Value) -> Option<String> {
+    crate::stable_id::canonical(session.get(ADOPT_STABLE_KEY)?.as_str()?)
 }
 
 /// The reference a restored session may adopt: a well-formed UUID only, upper-cased.
@@ -518,6 +533,11 @@ pub const SESSION_REF_KEY: &str = "Tandem Session Reference";
 /// from handing a pane someone else's reference is `reference_for`, which reads it only when the
 /// caller says the table is the launch's own restoration.
 pub const ADOPT_REF_KEY: &str = "Tandem Adopt Reference";
+/// Session restoration only: the pane's stable id (`Pane::stable_id`), which a model names the
+/// session by. Written only by `Contents::restoring` snapshots; never in an arrangement or file.
+pub const STABLE_ID_KEY: &str = "Tandem Stable Session ID";
+/// The launch's marker for the saved stable id (as `ADOPT_REF_KEY` is for the reference).
+pub const ADOPT_STABLE_KEY: &str = "Tandem Adopt Stable Session ID";
 /// Session restoration's contents: styled text (SGR sequences only).
 pub const STYLED_KEY: &str = "Tandem Styled Contents";
 /// Set on a session while it is restored: the banner line to draw under its contents.
@@ -1068,5 +1088,41 @@ mod tests {
         let mut junk = Table::new();
         junk.insert(ADOPT_REF_KEY.into(), Value::String("4".into()));
         assert_eq!(reference_for(&Value::Table(junk), true, &|_| false), None);
+    }
+
+    /// What `App::adopt_stable_id` does with a session table.
+    fn adopted(session: &Value, launch: bool, in_use: &dyn Fn(&str) -> bool) -> Option<String> {
+        crate::stable_id::adopt(adoptable_stable_id(session).as_deref(), launch, in_use)
+    }
+
+    #[test]
+    fn only_the_launch_restoration_adopts_a_stable_id() {
+        const ID: &str = "ptys_0123456789ABW";
+        let mut launch = Table::new();
+        save_stable_id(&mut launch, ID);
+        // Not adoptable until the launch reads it.
+        assert_eq!(adoptable_stable_id(&Value::Table(launch.clone())), None);
+        mark_adoptable(&mut launch);
+        assert!(launch.get(STABLE_ID_KEY).is_none());
+        let session = Value::Table(launch);
+        assert_eq!(adopted(&session, true, &|_| false).as_deref(), Some(ID));
+        assert_eq!(adopted(&session, true, &|g| g == ID), None, "held by a live or buried pane");
+        assert_eq!(adopted(&session, false, &|_| false), None, "an arrangement, file or duplicate with the marker in it");
+        // A file that carries either key is never adopted from, on any path.
+        let mut persisted = Table::new();
+        save_stable_id(&mut persisted, ID);
+        let mut marked = Table::new();
+        marked.insert(ADOPT_STABLE_KEY.into(), Value::String(ID.into()));
+        for launch in [true, false] {
+            assert_eq!(adopted(&Value::Table(persisted.clone()), launch, &|_| false), None);
+        }
+        assert_eq!(adopted(&Value::Table(marked.clone()), false, &|_| false), None);
+        // At launch a marker that came in a file is dropped, not trusted.
+        mark_adoptable(&mut marked);
+        assert_eq!(adopted(&Value::Table(marked), true, &|_| false), None);
+        // A malformed saved id keeps the fresh one.
+        let mut bad = Table::new();
+        bad.insert(ADOPT_STABLE_KEY.into(), Value::String("ptys_bad".into()));
+        assert_eq!(adopted(&Value::Table(bad), true, &|_| false), None);
     }
 }

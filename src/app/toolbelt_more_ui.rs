@@ -794,7 +794,7 @@ impl App {
             .into_iter()
             .map(|row| {
                 let st = self.panes.get(&row.pane).map(|p| p.own().tab_status.clone()).unwrap_or_default();
-                let watched = self.status_watch.as_ref().is_some_and(|(w, _)| *w == row.pane);
+                let watched = self.status_watches.contains_key(&row.pane);
                 StatusItem { dot: st.indicator.as_deref().and_then(crate::tabstatus::xterm_color), color: st.status_color.as_deref().and_then(crate::tabstatus::xterm_color), watched, row }
             })
             .collect();
@@ -817,7 +817,7 @@ impl App {
             }
             0u8.hash(h);
         }
-        (self.active, self.focused_id(), &self.belt.snoozed, &self.status_watch, self.notify_status_armed).hash(h);
+        (self.active, self.focused_id(), &self.belt.snoozed, &self.status_watches, self.status_armed).hash(h);
         (self.globals.int("SwitchTabModifier"), self.globals.int("SwitchPaneModifier")).hash(h);
         for p in self.status_patterns() {
             (p.pattern, p.notify).hash(h);
@@ -857,28 +857,52 @@ impl App {
     /// Notify on Status Change (`TS`, `toggleNotify`).
     pub(super) fn arm_status_watch(&mut self, pane: Option<PaneId>) {
         match pane {
-            Some(p) => {
-                if self.status_watch.as_ref().is_some_and(|(w, _)| *w == p) {
-                    self.status_watch = None;
-                } else {
-                    let now = self.panes.get(&p).and_then(|x| x.own().tab_status.status.clone());
-                    self.status_watch = Some((p, now));
+            Some(p) => self.arm_session_watch(p),
+            None => {
+                if let Some(k) = self.windows.current() {
+                    self.arm_window_watch(k);
                 }
             }
-            None => {
-                self.notify_status_armed = !self.notify_status_armed;
-                self.sync_checks();
-            }
+        }
+    }
+
+    /// Arms the bell on a session (capturing its status), or disarms it.
+    pub(super) fn arm_session_watch(&mut self, pane: PaneId) {
+        if self.status_watches.remove(&pane).is_none() {
+            let now = self.panes.get(&pane).and_then(|x| x.own().tab_status.status.clone());
+            self.status_watches.insert(pane, now);
         }
         self.tools_changed();
         self.redraw();
     }
 
+    /// Toggles Notify on Status Change for a window, current or parked.
+    pub(super) fn arm_window_watch(&mut self, window: u64) {
+        if self.windows.current() == Some(window) {
+            self.status_armed = !self.status_armed;
+        } else if let Some((_, s)) = self.windows.parked_mut().find(|(k, _)| **k == window) {
+            s.status_armed = !s.status_armed;
+        } else {
+            return;
+        }
+        self.sync_checks();
+        self.tools_changed();
+        self.redraw();
+    }
+
+    /// Window > Notify on Status Change is armed for `window`.
+    pub(super) fn window_armed(&self, window: u64) -> bool {
+        if self.windows.current() == Some(window) {
+            return self.status_armed;
+        }
+        self.windows.parked().find(|(k, _)| **k == window).is_some_and(|(_, s)| s.status_armed)
+    }
+
     /// The bell is lit: armed for what it acts on now.
     pub(super) fn status_bell_lit(&mut self) -> bool {
         match self.status_selected() {
-            Some(p) => self.status_watch.as_ref().is_some_and(|(w, _)| *w == p),
-            None => self.notify_status_armed,
+            Some(p) => self.status_watches.contains_key(&p),
+            None => self.status_armed,
         }
     }
 
@@ -891,19 +915,35 @@ impl App {
 
     /// The gear: the settings popover above it, or closes the open one (`SPS`, `show`).
     pub(super) fn open_status_popover(&mut self, event_loop: &ActiveEventLoop) {
-        if self.status_popover.take().is_some() || self.status_popover_closed.is_some_and(|t| t.elapsed() < REOPEN_GUARD) {
-            self.status_prompt = None;
+        if self.status_popover_closes() {
             return;
         }
         let Some(area) = self.tool_area(ToolId::SessionStatus) else { return };
         let (l, ..) = self.tool_layout(ToolId::SessionStatus, area);
         let Some(&(_, r)) = l.buttons.iter().find(|(b, _)| *b == tool_list::ToolButton::Settings) else { return };
-        let (patterns, merge, subtitle, dark) = (self.status_patterns(), self.globals.bool(status_tool::MERGE_KEY), self.globals.bool(status_tool::SUBTITLE_KEY), self.dark());
         // The button is in this window: the popover stays on this window's monitor.
         let work = self.monitor_rects().map(|(w, _)| w);
         let Some(g) = self.gpu.as_ref() else { return };
         let origin = g.window.inner_position().unwrap_or_default();
         let at = (origin.x as f64 + f64::from(r.x + r.w / 2.0), origin.y as f64 + f64::from(r.y));
+        self.show_status_popover(event_loop, at, work);
+    }
+
+    /// A press on a gear while the popover is open (or just closed by that press) closes it
+    /// instead of opening another. True when it did.
+    pub(super) fn status_popover_closes(&mut self) -> bool {
+        if self.status_popover.take().is_some() || self.status_popover_closed.is_some_and(|t| t.elapsed() < REOPEN_GUARD) {
+            self.status_prompt = None;
+            return true;
+        }
+        false
+    }
+
+    /// The settings popover with the stored patterns, merge and subtitle, its bottom centered
+    /// on `at` (screen pixels), kept on `work`.
+    pub(super) fn show_status_popover(&mut self, event_loop: &ActiveEventLoop, at: (f64, f64), work: Option<Rect>) {
+        let (patterns, merge, subtitle, dark) = (self.status_patterns(), self.globals.bool(status_tool::MERGE_KEY), self.globals.bool(status_tool::SUBTITLE_KEY), self.dark());
+        let Some(g) = self.gpu.as_ref() else { return };
         match crate::status_popover_ui::StatusPopover::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, patterns, merge, subtitle, at, work, dark) {
             Ok(w) => self.status_popover = Some(w),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
@@ -1023,24 +1063,33 @@ impl App {
                 }
             }
         }
-        let mut alerted = None;
-        if let Some((pane, base)) = self.status_watch.clone() {
-            match self.panes.get(&pane).map(|p| p.own().tab_status.status.clone()) {
-                None => self.status_watch = None,
-                Some(now) if now != base => {
-                    self.status_watch = None;
-                    self.status_alert(pane, base.as_deref(), now.as_deref());
-                    alerted = Some(pane);
-                    self.tools_changed();
-                }
-                Some(_) => {}
+        // Each window's armed state and its panes now (panes made after arming count).
+        let panes_of = |tabs: &[Tab]| tabs.iter().flat_map(|t| t.layout.panes()).collect::<Vec<PaneId>>();
+        let current = self.windows.current().map(|k| (k, self.status_armed));
+        let parked: Vec<(u64, bool)> = self.windows.parked().map(|(k, s)| (*k, s.status_armed)).collect();
+        let armed: Vec<(u64, Vec<PaneId>)> = super::windows_ui::armed_windows(current, &parked)
+            .into_iter()
+            .map(|k| (k, self.window_tabs(k).map(|(tabs, _)| panes_of(tabs)).unwrap_or_default()))
+            .collect();
+        if armed.is_empty() && self.status_watches.is_empty() {
+            return;
+        }
+        let panes = &self.panes;
+        let fired = status_tool::fire(changes, &armed, &self.status_watches, &|p| panes.get(&p).map(|x| x.own().tab_status.status.clone()));
+        for pane in &fired.disarm_sessions {
+            self.status_watches.remove(pane);
+        }
+        for k in &fired.disarm_windows {
+            if self.windows.current() == Some(*k) {
+                self.status_armed = false;
+            } else if let Some((_, s)) = self.windows.parked_mut().find(|(kk, _)| **kk == *k) {
+                s.status_armed = false;
             }
         }
-        if let (true, Some((pane, from, to))) = (self.notify_status_armed, changes.first()) {
-            self.notify_status_armed = false;
-            if alerted != Some(*pane) {
-                self.status_alert(*pane, from.as_deref(), to.as_deref());
-            }
+        for (pane, from, to) in &fired.alerts {
+            self.status_alert(*pane, from.as_deref(), to.as_deref());
+        }
+        if !fired.disarm_sessions.is_empty() || !fired.disarm_windows.is_empty() {
             self.sync_checks();
             self.tools_changed();
         }

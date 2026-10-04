@@ -262,6 +262,12 @@ pub(super) fn saved_cookie(session: &Value) -> Option<String> {
     session.get(crate::session_env::REUSABLE_COOKIE_KEY).and_then(|v| v.as_str()).filter(|c| crate::session_env::is_cookie(c)).map(str::to_string)
 }
 
+/// The stable id a session saved for the launch's restoration, canonical, when it is one Tandem
+/// could have minted (the marker `arrangement::mark_adoptable` sets at launch).
+pub(super) fn stable_id_in(session: &Value) -> Option<String> {
+    crate::arrangement::adoptable_stable_id(session)
+}
+
 /// A session marked to take its shell back: (host session id, pid, output offset).
 pub(super) fn attach_key(session: &Value) -> Option<(u64, u32, u64)> {
     let t = session.get(crate::arrangement::ATTACH_KEY)?;
@@ -322,5 +328,36 @@ mod tests {
         for s in sessions {
             assert!(s.get(SESSION_REF_KEY).is_none() && s.get(ADOPT_REF_KEY).is_some());
         }
+    }
+
+    #[test]
+    fn stable_id_survives_a_restoration_only() {
+        use super::super::arrange_ui::{carry_ids, Contents};
+        const ID: &str = "ptys_0123456789ABW";
+        // Session restoration saves the id and the launch read makes it adoptable.
+        let mut t = toml::Table::new();
+        carry_ids(&mut t, Contents::Styled(100), "6F1C2A3B-0000-4000-8000-000000000001", ID);
+        assert_eq!(t.get(crate::arrangement::STABLE_ID_KEY).and_then(|v| v.as_str()), Some(ID));
+        let mut window = toml::Table::new();
+        let mut view = toml::Table::new();
+        view.insert("View Type".into(), Value::String("SessionView".into()));
+        view.insert("Session".into(), Value::Table(t));
+        window.insert("Tabs".into(), Value::Array(vec![Value::Table(view)]));
+        let mut windows = [Value::Table(window)];
+        mark_adoptable(&mut windows);
+        let mut sessions = Vec::new();
+        sessions_mut(&mut windows[0], &mut sessions);
+        let back = Value::Table(sessions[0].clone());
+        assert_eq!(stable_id_in(&back).as_deref(), Some(ID));
+        // An arrangement, a file or a duplicate holds no id at all, with or without contents.
+        for c in [Contents::None, Contents::Plain] {
+            let mut t = toml::Table::new();
+            carry_ids(&mut t, c, "6F1C2A3B-0000-4000-8000-000000000001", ID);
+            assert!(t.is_empty(), "{c:?}");
+        }
+        // A saved value that is not a stable id gives None, so a fresh id is minted.
+        let mut bad = toml::Table::new();
+        bad.insert(crate::arrangement::ADOPT_STABLE_KEY.into(), Value::String("ptys_bad".into()));
+        assert_eq!(stable_id_in(&Value::Table(bad)), None);
     }
 }
