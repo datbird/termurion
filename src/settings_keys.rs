@@ -1925,6 +1925,48 @@ mod tests {
         assert_eq!(last.section, "Experimental");
     }
 
+    /// `SL:562-640`, `AS:444`, `AS:746`, `AS:880`: the ssh: URL rows. `SshIntegrationForURLs` is
+    /// General > Experimental (tested above, built by 13a); the other three are Advanced rows.
+    #[test]
+    fn ssh_url_rows_follow_iterm2() {
+        let ssh = schema::find_global("SshIntegrationForURLs").expect("SshIntegrationForURLs");
+        assert_eq!((ssh.tab.as_str(), ssh.section.as_str(), ssh.kind), ("General", "Experimental", Kind::Bool));
+        assert_eq!(ssh.default, Some(Value::Boolean(false)));
+        assert!(page_rows("General").iter().any(|s| s.key == "SshIntegrationForURLs" && s.section == "Experimental"));
+        for (key, section, kind, default, label, help) in [
+            ("sshSchemePath", "Terminal", Kind::String, Value::String("ssh".into()), "Command to run when handling an ssh:// URL.", None),
+            (
+                "validCharactersInSSHUserNames",
+                "SSH Integration",
+                Kind::String,
+                Value::String("_-+.".into()),
+                "Valid characters in SSH user names",
+                Some("Valid characters in SSH user names\nAlphanumerics are always valid. This specifies other valid characters."),
+            ),
+            (
+                "sshURLsSupportPath",
+                "Experimental Features",
+                Kind::Bool,
+                Value::Boolean(true),
+                "SSH URLs respect the path.",
+                Some("SSH URLs respect the path.\nThey run the command: ssh -t \"cd $$PATH$$; exec \\$SHELL -l\""),
+            ),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", section, kind), "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.label, label, "{key}");
+            if let Some(help) = help {
+                assert_eq!(row.help, help, "{key}");
+            }
+            assert!(page_rows("Advanced").iter().any(|s| s.key == key), "{key}");
+        }
+        // Each key is declared once.
+        for key in ["SshIntegrationForURLs", "sshSchemePath", "validCharactersInSSHUserNames", "sshURLsSupportPath"] {
+            assert_eq!(schema::global().iter().filter(|s| s.key == key).count(), 1, "{key}");
+        }
+    }
+
     #[test]
     fn utilities_rows_follow_iterm2() {
         let lc = "Set LC_TERMINAL=iTerm2.";

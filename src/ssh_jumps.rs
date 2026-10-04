@@ -204,13 +204,13 @@ fn words_are_safe(words: &[String]) -> bool {
 }
 
 /// A user name: `[A-Za-z0-9._-]+`, not starting with `-`.
-fn user_is_safe(user: &str) -> bool {
+pub(crate) fn user_is_safe(user: &str) -> bool {
     !user.is_empty() && !user.starts_with('-') && user.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
 }
 
 /// A host: `[A-Za-z0-9.-]+` not starting with `-`, or a bracketed IPv6 literal
 /// `[0-9A-Fa-f:.]+`, with a `%zone` of `[A-Za-z0-9]+` only where `zone` allows one.
-fn host_is_safe(host: &str, zone: bool) -> bool {
+pub(crate) fn host_is_safe(host: &str, zone: bool) -> bool {
     if let Some(literal) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
         let (address, zone_id) = match literal.split_once('%') {
             Some((a, z)) if zone => (a, Some(z)),
@@ -225,7 +225,7 @@ fn host_is_safe(host: &str, zone: bool) -> bool {
 }
 
 /// A port: decimal digits naming 1-65535.
-fn port_is_safe(port: &str) -> bool {
+pub(crate) fn port_is_safe(port: &str) -> bool {
     port.bytes().all(|b| b.is_ascii_digit()) && port.parse::<u16>().is_ok_and(|p| p > 0)
 }
 
