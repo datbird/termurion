@@ -311,9 +311,10 @@ Composer; Win+Alt+Y opens an AI chat that explains the selection or the last com
 output with hidden notes, each reachable from a bullet link in the answer; with AI Completion on the
 Composer offers model replacements in its popup (never as ghost text; a tmux pane never asks); and
 Codecierge works through goal, suggestion and auto-run views, with iTerm2's Danger! and Privacy
-warnings, a usage warning after 10 commands, and a `write` tool that writes the file directly for
-cmd and PowerShell, only inside the session's directory, and types `cat >` for POSIX and remote
-sessions. Every request passes 12a's gate for its own host right before it is sent, and Codecierge
+warnings (auto-run only after Danger! is answered OK), a usage warning after 10 commands, and a
+`write` tool that types `cat >` for a POSIX shell and refuses in cmd and PowerShell, local or remote
+(final review ruling). An explanation request's "attached terminal content" link selects the
+explained text, as iTerm2. Every request passes 12a's gate for its own host right before it is sent, and Codecierge
 stops for real when the gate closes, on End Task, or when its pane closes. AI tab titles are not
 available on Windows (ruling 7): the 4096 bit draws nothing. The chat icon waits for milestone 13's
 SVG rasterizing (ruling 11). The tables count have, partial and missing rows; n/a rows (02: 3, 03: 1)
