@@ -756,16 +756,20 @@ impl App {
             let _ = super::caption_ui::request_inner_size(&g.window, winit::dpi::PhysicalSize::new((frame.w as u32).saturating_sub(dw).max(1), (frame.h as u32).saturating_sub(dh).max(1)));
         }
         self.apply_resizable();
-        let initial = self.win_transparency.on;
+        // The window's first profile seeds it, never a stale App default (`PT:864`).
+        let first = self.first_arrangement_guid(w);
+        let initial = crate::transparency::initial_use(first.as_deref().and_then(|g| self.store.get(g)), self.store.default_profile());
         if f.style != crate::frames::NORMAL {
             self.apply_window_style(f.style, false);
         }
         // The saved key wins when present; a full screen window starts from the setting (`PT:3640-3659`).
         self.win_transparency = if f.style == crate::frames::FULL_SCREEN {
-            crate::transparency::WinTransparency::restored_fullscreen(self.globals.bool(crate::transparency::DISABLE_FULLSCREEN_KEY))
+            crate::transparency::WinTransparency::restored_fullscreen(f.use_transparency, self.globals.bool(crate::transparency::DISABLE_FULLSCREEN_KEY))
         } else {
             crate::transparency::WinTransparency::restored(f.use_transparency, initial)
         };
+        // The state changed after `apply_window_style` ran the border rule.
+        self.apply_border();
         self.restore_toolbelt(&crate::toolbelt::read_arrangement(w));
         self.relayout();
         Ok(())

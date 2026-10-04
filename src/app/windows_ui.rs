@@ -515,7 +515,7 @@ impl App {
             NewWindow::Hotkey(g, _) | NewWindow::HotkeyRestored(g, _) => Some(g.clone()),
         };
         // A new window's Use Transparency is the first profile's Initial Use Transparency (`PT:864`).
-        let initial = first_guid.as_deref().and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).bool("Initial Use Transparency");
+        let initial = crate::transparency::initial_use(first_guid.as_deref().and_then(|g| self.store.get(g)), self.store.default_profile());
         self.win_transparency = crate::transparency::WinTransparency::new(initial);
         self.apply_fonts();
         self.size_window(first_guid.as_deref());

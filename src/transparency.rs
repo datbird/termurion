@@ -43,8 +43,13 @@ impl WinTransparency {
     }
 
     /// A full screen window restored from an arrangement (PT:3656-3659).
-    pub fn restored_fullscreen(disable_pref: bool) -> Self {
-        WinTransparency { on: !disable_pref, old: true, restore: true }
+    /// The saved key is applied on top when present (PT:4189-4191), keeping the bookkeeping.
+    pub fn restored_fullscreen(saved: Option<bool>, disable_pref: bool) -> Self {
+        let mut t = WinTransparency { on: !disable_pref, old: true, restore: true };
+        if let Some(s) = saved {
+            t.on = s;
+        }
+        t
     }
 
     /// The menu item and Win+U: flips the state and forgets any pending restore.
@@ -66,6 +71,12 @@ impl WinTransparency {
             self.restore = false;
         }
     }
+}
+
+/// A new window's Use Transparency: the first profile's Initial Use Transparency (PT:864), the default
+/// profile's when the window has none.
+pub fn initial_use(first: Option<&crate::profile::Profile>, default: &crate::profile::Profile) -> bool {
+    first.unwrap_or(default).bool("Initial Use Transparency")
 }
 
 /// The check marks of the two View items (AD:700-702, AD:580-584).
@@ -324,11 +335,11 @@ mod tests {
         w.before_fullscreen_toggle(true, true);
         assert!(!w.on);
 
-        let mut w = WinTransparency::restored_fullscreen(true);
+        let mut w = WinTransparency::restored_fullscreen(None, true);
         assert!(!w.on);
         w.before_fullscreen_toggle(true, true);
         assert!(w.on);
-        assert!(WinTransparency::restored_fullscreen(false).on);
+        assert!(WinTransparency::restored_fullscreen(None, false).on);
     }
 
     #[test]
@@ -452,5 +463,29 @@ mod tests {
         let p = crate::hotkey::dedicated_profile(&Profile::default(), &[], &toml::Table::new(), "g");
         assert!((pane_alpha(p.float("Transparency"), p.bool("Initial Use Transparency"), false, false) - 0.7).abs() < 1e-6);
         assert!(tab_blur(&[BlurInput { transparency: 0.3, blur: p.bool("Blur"), radius: Some(p.float("Blur Radius")) }], true));
+    }
+
+    #[test]
+    fn restored_fullscreen_applies_the_saved_key() {
+        // PT:3656-3659 builds the state from the setting, then PT:4189-4191 applies the saved key.
+        let w = WinTransparency::restored_fullscreen(Some(true), true);
+        assert!(w.on);
+        // The bookkeeping from the first step stays: leaving full screen still restores.
+        let mut w = WinTransparency::restored_fullscreen(Some(false), false);
+        assert!(!w.on);
+        w.before_fullscreen_toggle(true, true);
+        assert!(w.on, "old and restore come from the setting step");
+        assert!(!WinTransparency::restored_fullscreen(Some(false), false).on);
+    }
+
+    #[test]
+    fn launch_window_takes_initial_use_transparency() {
+        use crate::profile::Profile;
+        let mut off = Profile::default();
+        off.set("Initial Use Transparency", toml::Value::Boolean(false));
+        let on = Profile::default();
+        assert!(!initial_use(Some(&off), &on));
+        assert!(initial_use(None, &on));
+        assert!(!initial_use(None, &off));
     }
 }

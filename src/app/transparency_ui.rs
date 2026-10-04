@@ -286,8 +286,8 @@ impl App {
                 Err(e) => {
                     // This window stays opaque and is not tried again; one banner says so.
                     eprintln!("transparency: could not recreate a window: {e}");
+                    // Only this window stays opaque; windows that already work keep their alpha.
                     self.win_alpha_failed = true;
-                    self.transparency_unavailable = true;
                     if !self.transparency_banner {
                         self.transparency_banner = true;
                         self.banners.set("transparency", UNAVAILABLE);
@@ -356,11 +356,12 @@ impl App {
         self.font_sig = String::new();
         self.apply_fonts();
         self.install_menus();
-        self.apply_border();
         self.relayout();
         if carried.fullscreen {
             window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(old.current_monitor())));
         }
+        // After full screen, so the border rule sees the state the window ends in.
+        self.apply_border();
         if carried.on_top {
             window.set_window_level(winit::window::WindowLevel::AlwaysOnTop);
         }

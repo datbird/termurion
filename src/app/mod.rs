@@ -4964,6 +4964,11 @@ impl ApplicationHandler<UserEvent> for App {
         if !orphans.is_empty() {
             self.pending_windows.push(windows_ui::NewWindow::Orphans(orphans));
         }
+        if !arranged {
+            // The launch window starts from its first profile's Initial Use Transparency (`PT:864`).
+            let first = self.tabs.first().and_then(|t| t.layout.panes().first().copied()).and_then(|id| self.panes.get(&id)).and_then(|p| self.store.get(&p.profile));
+            self.win_transparency = crate::transparency::WinTransparency::new(crate::transparency::initial_use(first, self.store.default_profile()));
+        }
         self.install_menus();
         // A window the default arrangement filled keeps its frame, style, and locks.
         let steps = crate::winmodel::open_steps(arranged);
