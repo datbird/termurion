@@ -134,6 +134,7 @@ mod scripts_alerts;
 mod warnings_app;
 mod suppressed_app;
 mod host_offers_ui;
+mod host_state_app;
 mod frustration_ui;
 mod shell_version_ui;
 mod prefs_ui;
@@ -162,6 +163,7 @@ mod ssh_app;
 mod ssh_framer_app;
 mod ssh_files_app;
 mod ssh_panel_app;
+mod ssh_url_app;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -182,6 +184,8 @@ pub enum UserEvent {
     /// A window button of a Minimal or Compact window's caption was hovered, pressed or released:
     /// the window (its HWND) and what happened (`caption_ui`).
     Caption(isize, crate::caption::Event),
+    /// An ssh: URL came from outside (the URL pipe): `ssh_url_app::receive_url`.
+    OpenUrl(String),
 }
 
 #[derive(Clone)]
@@ -464,6 +468,13 @@ pub struct App {
     group_prompt: Option<(crate::prompt_ui::PromptWindow, tab_groups_ui::GroupPrompt)>,
     /// Windows to open at the next turn of the event loop (new windows need it).
     pending_windows: Vec<windows_ui::NewWindow>,
+    /// ssh: URLs that arrived before the first window (app-wide, not in `swap_live`; m14e).
+    pending_urls_at_start: Vec<String>,
+    /// The URL pipe's listener thread, when this Tandem owns the pipe (it ends with the process).
+    #[allow(dead_code)]
+    url_listener: Option<std::thread::JoinHandle<()>>,
+    /// The flood cap on URLs from outside (P13).
+    url_flood: crate::url_launch::Flood,
     /// Automatic Profile Switching: each session's stack, and this computer's name.
     aps: HashMap<PaneId, crate::aps::Switcher>,
     local_host: String,
@@ -502,6 +513,10 @@ pub struct App {
     mods: Mods,
     /// Announcement bars waiting in each pane.
     bars: HashMap<PaneId, crate::infobar::Bars>,
+    /// Each pane's host stack (m14e Task 4), per pane and not in `swap_live`.
+    host_stacks: HashMap<PaneId, crate::host_state::Stack>,
+    /// A title a pane may get back when its ssh session ended, waiting on the offer bar.
+    pending_title_restores: HashMap<PaneId, Option<String>>,
     /// RequestAttention: pane flashes and fireworks (start time, and the cursor cell).
     flashes: HashMap<PaneId, Instant>,
     fireworks: HashMap<PaneId, (Instant, (usize, usize))>,
@@ -1201,6 +1216,20 @@ pub fn run() {
         // the API server) exists, so nothing reads the environment meanwhile.
         unsafe { std::env::remove_var(name) };
     }
+    // An ssh: URL from a protocol handler (m14e): a running Tandem of this user takes it and this
+    // process ends; a refused command line opens nothing. Before any window or thread exists.
+    let mut pending_urls_at_start = Vec::new();
+    match crate::url_launch::url_argument(&std::env::args_os().collect::<Vec<_>>()) {
+        crate::url_launch::UrlArg::None => {}
+        crate::url_launch::UrlArg::Refused(why) => return crate::host::log(&format!("url: refused {why}")),
+        // Only when no Tandem of this user runs does this one start (fix r1): a busy or failed
+        // hand-over never opens a second Tandem beside the first.
+        crate::url_launch::UrlArg::Url(url) => match crate::url_launch::hand_to_running(&url) {
+            crate::url_launch::AfterHand::Exit => return,
+            crate::url_launch::AfterHand::Start => pending_urls_at_start.push(url),
+            crate::url_launch::AfterHand::Refuse(why) => return crate::host::log(&format!("url: refused: {why}")),
+        },
+    }
     // Started again after Import All Settings and Data: the old Tandem ends first (`IE:898-911`).
     let wait_pid = std::env::var(settings_export_ui::WAIT_PID_VAR).ok().and_then(|v| v.parse::<u32>().ok());
     // SAFETY: as above, before any thread exists; no session or child inherits the variable.
@@ -1221,6 +1250,17 @@ pub fn run() {
     let jobs = crate::jobwatch::JobWatch::start(Arc::new(move || {
         let _ = job_wake.lock().map(|p| p.send_event(UserEvent::JobsChanged));
     }));
+    // This Tandem takes URLs sent to it; a second one of the same user cannot bind and does not listen.
+    let url_proxy = proxy.clone();
+    let url_listener = match crate::url_launch::listen(Box::new(move |url| {
+        let _ = url_proxy.lock().map(|p| p.send_event(UserEvent::OpenUrl(url)));
+    })) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            crate::host::log(&format!("url: not listening: {e}"));
+            None
+        }
+    };
     let wake = proxy.clone();
     let notify: Notify = Arc::new(move || {
         let _ = wake.lock().unwrap().send_event(UserEvent::Wake);
@@ -1293,6 +1333,12 @@ pub fn run() {
     // "Load settings from a custom folder or URL": the location's settings replace the local
     // ones before anything reads them; its questions and failures show with the first window.
     let (prefs_saved, prefs_startup) = prefs_ui::load_at_start(&mut globals, &mut store, &prefs_ui::curl_fetch);
+    // iTerm2 drops bindings whose profile is gone when it loads them (P11).
+    if crate::url_schemes::prune_globals(&mut globals, &store) {
+        if let Err(e) = globals.save() {
+            banners.set("globals", format!("Could not save settings: {e}"));
+        }
+    }
     let prefs_launch_folder = Some(globals.string(crate::remote_prefs::FOLDER_KEY));
     // The warnings answered automatically in earlier runs (iTerm2 reads its catalog at start).
     let suppressed = crate::warnings::Catalog::from_value(globals.get(crate::warnings::CATALOG_KEY).as_ref());
@@ -1454,6 +1500,9 @@ pub fn run() {
         undo: Default::default(),
         undo_capture: None,
         pending_windows: Vec::new(),
+        pending_urls_at_start,
+        url_listener,
+        url_flood: Default::default(),
         local_host: aps_ui::local_host(),
         dropped: Vec::new(),
         coprocess_errors: HashMap::new(),
@@ -1468,6 +1517,8 @@ pub fn run() {
         mods: Mods::default(),
         sent_keys: keyproto_ui::Held::default(),
         bars: HashMap::new(),
+        host_stacks: HashMap::new(),
+        pending_title_restores: HashMap::new(),
         pending_reads: HashMap::new(),
         pending_properties: HashMap::new(),
         pending_urls: HashMap::new(),
@@ -2920,6 +2971,8 @@ impl App {
         self.script_templates.retain(|(p, _), _| *p != id);
         self.script_components.retain(|(p, _), _| *p != id);
         self.script_titles.remove(&id);
+        self.host_stacks.remove(&id);
+        self.pending_title_restores.remove(&id);
         if self.text_popover.as_ref().is_some_and(|(p, _)| *p == id) {
             self.text_popover = None;
         }
@@ -3165,7 +3218,10 @@ impl App {
                 for s in self.aps.values_mut() {
                     s.mark_dirty();
                 }
-                if matches!(edit, Edit::Imported(_)) {
+                // A deleted profile's ssh: binding goes with it, and an import's iTerm2 Guids that
+                // match nothing are dropped (P11).
+                let pruned = crate::url_schemes::prune_globals(&mut self.globals, &self.store);
+                if matches!(edit, Edit::Imported(_)) || pruned {
                     self.save_globals();
                 }
                 // Saving waits for a pause in editing, so a color drag does not write the file every frame.
@@ -4904,6 +4960,8 @@ impl ApplicationHandler<UserEvent> for App {
         if steps.profile_style && style != crate::frames::NORMAL {
             self.apply_window_style(style, false);
         }
+        // URLs that came with the start or before the window open now, after the first window.
+        self.open_pending_urls();
     }
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
@@ -5098,6 +5156,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::JobsChanged => return self.jobs_changed(),
             UserEvent::ThemeReset => return self.reapply_forced_theme(),
             UserEvent::Caption(hwnd, e) => return self.caption_event(hwnd, e, event_loop),
+            UserEvent::OpenUrl(url) => return self.receive_url(url),
             UserEvent::Wake => {}
         }
         let mut changed = false;
@@ -5182,10 +5241,15 @@ impl ApplicationHandler<UserEvent> for App {
                     let setup = slot.as_mut().and_then(|s| s.configure_status_bar.take());
                     // Configure SSH's help button opens its page in the browser.
                     let url = slot.as_mut().and_then(|s| s.open_url.take());
+                    // Profiles > General's URL schemes menu asks before Tandem becomes the handler.
+                    let scheme_ask = slot.as_mut().and_then(|s| s.scheme_ask.take());
                     self.apply_edit(edit);
                     self.settings_warnings_answered(answered);
                     if let Some(guid) = setup {
                         self.open_status_setup(statusbar_ui::SetupTarget::Shared(guid), None, false, event_loop);
+                    }
+                    if let Some(a) = scheme_ask {
+                        self.ask_scheme(a);
                     }
                     if let Some(url) = url {
                         if let Err(e) = semantic_ui::shell_open(&url, None, false) {

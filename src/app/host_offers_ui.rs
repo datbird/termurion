@@ -100,7 +100,7 @@ impl App {
         let allowed: Vec<(PaneId, bool)> = self.panes.keys().map(|id| (*id, self.mouse_allowed(*id))).collect();
         for (id, mouse_allowed) in allowed {
             if let Some(p) = self.panes.get_mut(&id) {
-                p.own_mut().host_policy = HostPolicy { focus, mouse, paste, mouse_allowed };
+                p.own_mut().host_policy = HostPolicy { focus, mouse, paste, mouse_allowed, local_names: super::statusbar_content::local_names() };
             }
         }
     }

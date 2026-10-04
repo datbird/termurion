@@ -122,6 +122,9 @@ pub struct SettingsWindow {
     /// A page to open in the browser (the Configure SSH help button); the app takes it after
     /// each frame.
     pub open_url: Option<String>,
+    /// Profiles > General's "URL schemes:" menu chose a scheme Tandem does not handle yet: the
+    /// not-default question to ask (the app takes it after each frame).
+    pub scheme_ask: Option<SchemeAsk>,
     /// The window was opened from a tmux session (iTerm2's `_tmuxSession`, set by how the
     /// panel opened, `PreferencePanel.m:725-766`): its status bar controls are disabled.
     tmux_session: bool,
@@ -253,6 +256,7 @@ impl SettingsWindow {
             configure_status_bar: None,
             ssh_sheet: None,
             open_url: None,
+            scheme_ask: None,
             tmux_session: false,
             open_editor: None,
             title_providers: Vec::new(),
@@ -345,6 +349,7 @@ impl SettingsWindow {
         let configure_status_bar = &mut self.configure_status_bar;
         let ssh_sheet = &mut self.ssh_sheet;
         let open_url = &mut self.open_url;
+        let scheme_ask = &mut self.scheme_ask;
         let home = std::env::var("USERPROFILE").unwrap_or_default();
         let tmux_session = self.tmux_session;
         let title_providers = &self.title_providers;
@@ -679,6 +684,13 @@ impl SettingsWindow {
                             }
                         }
                     }
+                    // iTerm2's "URL schemes:" sits at the bottom of the General tab.
+                    if schema::TABS[tab] == "General" {
+                        ui.add_space(8.0);
+                        if url_schemes_control(ui, globals, &selected, scheme_ask) {
+                            edit = Edit::GlobalsChanged;
+                        }
+                    }
                 });
             });
         });
@@ -970,6 +982,56 @@ pub fn chose_meta(key: &str, value: Option<&Value>) -> bool {
 /// Font settings follow the default profile until each pane can have its own renderer.
 pub const FONT_KEYS: [&str; 5] = ["Normal Font", "Non Ascii Font", "Use Non-ASCII Font", "Horizontal Spacing", "Vertical Spacing"];
 
+/// The not-default question a scheme menu choice raised: the question, its detail, and what it
+/// would bind.
+pub struct SchemeAsk {
+    pub guid: String,
+    pub scheme: String,
+    pub text: String,
+    pub info: String,
+}
+
+/// Choosing a scheme in the "URL schemes:" menu: the binding is kept in the app-wide table, never
+/// in the profile. `Unbind` and `Bind` change `table`; `Ask` leaves it for the question's OK.
+pub fn url_scheme_toggled(table: &mut toml::Table, reg: &dyn crate::url_schemes::SchemeRegistry, scheme: &str, guid: &str, exe: &std::path::Path) -> crate::url_schemes::Pick {
+    use crate::url_schemes as us;
+    let pick = us::pick(table, reg, scheme, guid, exe);
+    match &pick {
+        us::Pick::Unbind => us::unbind(table, scheme),
+        us::Pick::Bind => us::bind(table, scheme, guid),
+        us::Pick::Ask { .. } => {}
+    }
+    pick
+}
+
+/// "URL schemes:" and its "Select URL Schemes..." menu (`PG:1043-1092`). The registry is read
+/// only while the menu is open. True when the table changed.
+fn url_schemes_control(ui: &mut egui::Ui, globals: &mut Globals, guid: &str, ask: &mut Option<SchemeAsk>) -> bool {
+    use crate::url_schemes as us;
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(us::LABEL);
+        ui.menu_button(us::SELECT, |ui| {
+            let Ok(exe) = std::env::current_exe() else { return };
+            let reg = us::system();
+            let mut table = globals.table(us::HANDLERS_KEY);
+            for scheme in us::SCHEMES {
+                let on = us::handles(&table, reg.as_ref(), scheme, guid, &exe);
+                if ui.selectable_label(on, scheme).clicked() {
+                    if let us::Pick::Ask { text, info } = url_scheme_toggled(&mut table, reg.as_ref(), scheme, guid, &exe) {
+                        *ask = Some(SchemeAsk { guid: guid.to_string(), scheme: scheme.to_string(), text, info });
+                    } else {
+                        globals.set(us::HANDLERS_KEY, toml::Value::Table(table.clone()));
+                        changed = true;
+                    }
+                    ui.close();
+                }
+            }
+        });
+    });
+    changed
+}
+
 /// One control for one setting. Returns true when a change is committed: at once for
 /// checkboxes, pickers, and colors; when a drag ends for sliders; when the field loses
 /// focus (or Enter) for text. Uncommitted edits still update the profile in memory.
@@ -1097,6 +1159,47 @@ fn shows_ai_models_on(mode: Mode, page: Page, sub: crate::settings_ai::SubTab) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Reg(Option<String>);
+    impl crate::url_schemes::SchemeRegistry for Reg {
+        fn handler_command(&self, _: &str) -> Option<String> {
+            self.0.clone()
+        }
+        fn handler_name(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn user_choice(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn classes_command(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn register(&mut self, _: &str, _: &std::path::Path) -> Result<(), String> {
+            panic!("a menu choice never writes the registry")
+        }
+    }
+
+    #[test]
+    fn url_schemes_control_stores_nothing_in_the_profile() {
+        use crate::url_schemes as us;
+        let exe = std::path::PathBuf::from(r"C:\T\tandem.exe");
+        let profile = Profile::new("P");
+        let before = profile.values.clone();
+        let mut table = toml::Table::new();
+        let ours = Reg(Some(us::tandem_command(&exe)));
+        assert_eq!(url_scheme_toggled(&mut table, &ours, "ssh", "G1", &exe), us::Pick::Bind);
+        assert_eq!(table.get("ssh").and_then(|v| v.as_str()), Some("G1"));
+        assert_eq!(table.len(), 1);
+        assert_eq!(profile.values, before, "the profile holds no URL scheme key");
+        assert_eq!(url_scheme_toggled(&mut table, &ours, "ssh", "G1", &exe), us::Pick::Unbind);
+        assert!(table.is_empty());
+        // Not the handler: asks, binds nothing, writes nothing.
+        let other = Reg(None);
+        assert!(matches!(url_scheme_toggled(&mut table, &other, "ssh", "G1", &exe), us::Pick::Ask { .. }));
+        assert!(table.is_empty());
+        assert!(schema::profile().iter().all(|s| !s.key.starts_with("__") && s.key != us::HANDLERS_KEY && !us::SCHEMES.contains(&s.key.as_str())));
+        assert!(crate::schema::global().iter().all(|s| s.key != us::HANDLERS_KEY), "no settings row for the table");
+    }
 
     /// Task 10 re-review: stale Ollama servers are asked again only where the models show.
     #[test]

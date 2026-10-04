@@ -55,6 +55,14 @@ impl App {
         self.refresh_panes();
     }
 
+    /// Puts `values` on a session copy, stores it under `guid` and returns the Guid. Pane-free (P8):
+    /// the caller forgets it (`forget_session_profile`) when no pane takes it.
+    pub(super) fn add_session_copy(&mut self, mut copy: crate::session_profile::SessionProfile, shared: &crate::profile::Profile, values: &[(String, Option<toml::Value>)], guid: String) -> String {
+        copy.set(values, shared);
+        self.store.sessions.push(copy);
+        guid
+    }
+
     /// Drops the private profile copy of a pane that closed.
     pub(super) fn forget_session_profile(&mut self, guid: &str) {
         if self.panes.values().any(|p| p.profile == guid) {

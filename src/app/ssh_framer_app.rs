@@ -45,16 +45,14 @@ impl App {
         let shared = self.store.profiles.iter().find(|p| p.guid() == saved).unwrap_or_else(|| self.store.default_profile()).clone();
         let fresh = uuid::Uuid::new_v4().to_string().to_uppercase();
         let own = self.store.sessions.iter().find(|s| s.profile.guid() == guid).cloned();
-        let mut copy = match own {
+        let copy = match own {
             Some(mut c) if !from_saved => {
                 c.profile.set(crate::profile::GUID, toml::Value::String(fresh.clone()));
                 c
             }
             _ => crate::session_profile::divorce(&shared, fresh.clone()),
         };
-        copy.set(values, &shared);
-        self.store.sessions.push(copy);
-        Some(fresh)
+        Some(self.add_session_copy(copy, &shared, values, fresh))
     }
 
     /// Shell > Duplicate Session (`PT:2776-2808`). With no conductor it is a new session of the

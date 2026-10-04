@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 190 | 108 | 16 |
-| `02-global-settings.md` | 820 | 439 | 73 | 308 |
-| `03-features-and-menus.md` | 646 | 549 | 45 | 52 |
-| Total | 1,780 | 1,178 | 226 | 376 |
+| `01-profile-settings.md` | 314 | 190 | 109 | 15 |
+| `02-global-settings.md` | 819 | 443 | 74 | 302 |
+| `03-features-and-menus.md` | 644 | 549 | 45 | 50 |
+| Total | 1,777 | 1,182 | 228 | 367 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -544,6 +544,32 @@ upload alert is Cancel. Deferred: the transfers lists, Stop, the "Download using
 right-click item, Favorites and an in-app browser. Nothing of 14d was checked on screen during the
 build. Every kept quirk is listed in `docs/acceptance/m14d-checklist.md` and ruled on in
 `docs/superpowers/rulings/m14d-rulings.txt`.
+Milestone 14e added ssh: URLs and closed milestone 14 (14a to 14e all built; 14d landed first). A profile's
+General tab has "URL schemes:" with "Select URL Schemes..." and `ssh`; ticking it asks, naming the
+current handler and every `HKCU` entry OK replaces (or "There is currently no handler."), then writes
+only `HKCU` keys (never `HKLM`, never a protected user choice, which is reported and left for Default
+apps). An `ssh://user@host:port/path` link from a browser or Run starts `tandem.exe --url`, which
+hands the URL to the running Tandem over a per-user pipe and exits (with none running it starts and
+opens the tab); a Win-click on an `ssh:` link opens a tab only in a local pane with a bound profile.
+The tab runs ssh with iTerm2's `-l`, `-p`, `-t` and `cd <path>; exec $SHELL -l`, through SSH
+integration when "Use SSH integration for ssh: URLs" is on; a user name outside iTerm2's set (and
+14c's grammar) shows "Illegal Username". Leaving an ssh session restores the keyboard mode and offers
+to restore the title (a per-pane host stack, iTerm2's). Rows: 02 `SshIntegrationForURLs`, sshSchemePath,
+sshURLsSupportPath and restoreKeyModeAutomaticallyOnHostChange to have, and
+validCharactersInSSHUserNames to partial (iTerm2's default accepts characters Tandem refuses);
+01 URL schemes handled to partial (`ssh` only); 03 Remote host can control iTerm2, OSC 1337 wrap and
+02 channelsEnabled are n/a (rulings 3 and 4; they leave the counts, as in 12e and 14d), and the menu
+item shows unavailable with no milestone (`Status::NotApplicable`). Beyond iTerm2, for safety: the
+URL command line is accepted only as exactly `tandem.exe --url <one ssh URL>` and anything else is
+refused; a URL's words pass iTerm2's check and 14c's grammar, a host-less URL opens nothing, a URL
+path is a remote folder, sent only as iTerm2's cd word, and never touches this PC's file system (a `//` or `\\` path drops the cd part),
+at most 4 external links open per 10 s, and each shows a banner naming `user@host:port`; the key
+mode and title restored are the ones in effect at the host report. Deferred: other URL schemes
+(ftp, telnet and the rest of iTerm2's 14), `$$` substitutions in a bound profile's command, a
+window-style click and a
+local mode set in the same output chunk as the restore. Nothing of 14e was checked on screen during the
+build. Every kept quirk is listed in `docs/acceptance/m14e-checklist.md` and ruled on in
+`docs/superpowers/rulings/m14e-rulings.txt`.
 
 ## Order
 
@@ -564,7 +590,7 @@ the command system, or shows up in a menu, so those come first.
 | 11 | Python API and utilities | 03: Python API (the same protobuf API over a local socket), utilities scripts (Windows builds of imgcat, it2dl, it2copy and the rest). 02: Magic, Advanced > Scripting. | most of the above |
 | 12 | AI features | 02: AI, AI > Prompts, AI > Features. 03: AI and chat features. | 3, 9 |
 | 13 | Advanced settings sweep and parity audit | 02: every Advanced row not closed earlier. A final pass over all three files. | all |
-| 14 | SSH integration | 03: iTerm2's SSH integration (it2ssh, the conductor and its remote scripts, file download), Shell > ssh; OSC 1337 it2ssh, SendConductor, EndSSH, wrap, and Env's use. | 5 |
+| 14 | SSH integration (closed with 14e) | 03: iTerm2's SSH integration (it2ssh, the conductor and its remote scripts, file download), Shell > ssh; OSC 1337 it2ssh, SendConductor, EndSSH, wrap, and Env's use. | 5 |
 
 ## Windows notes that apply everywhere
 

@@ -74,7 +74,7 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         // Keep Both: a closed window never replaces a file (P9).
         Then::SshKeepOrReplace { .. } => Answer::Button(0),
         // Cancel: a closed window never uploads the person's files (P9).
-        Then::SshUpload { .. } => Answer::Button(1),
+        Then::SshUpload { .. } | Then::BindScheme { .. } => Answer::Button(1),
         // Cancel: a closed window never uninstalls or goes on past a failed removal (P10).
         Then::ClaudeUninstall | Then::ClaudeHooksFailed => Answer::Button(1),
         // Leave Enabled: a closed window never turns the person's API off (P10).
@@ -220,6 +220,10 @@ pub(super) enum Then {
     /// "Enable Session Cookies?": Enable (0) turns them on; Cancel (1) leaves them as they are.
     /// A closed window cancels.
     ClaudeCookie,
+    /// "Tandem is not the default handler for ssh. ...": OK (0) registers Tandem for the user
+    /// and binds the scheme to the profile `guid` once Windows reports Tandem as the handler;
+    /// Cancel (1) does nothing. A closed window cancels: a close never changes Windows.
+    BindScheme { guid: String, scheme: String },
 }
 
 impl Then {
@@ -305,6 +309,33 @@ impl App {
     /// Whether an ask that `about` picks is queued or showing.
     pub(super) fn alert_waits(&self, about: impl Fn(&Then) -> bool) -> bool {
         waits(self.scripts_alert.as_ref().map(|(_, a)| a), &self.scripts_alerts, about)
+    }
+
+    /// Queues the not-default question for a scheme the profiles' menu chose.
+    pub(super) fn ask_scheme(&mut self, a: crate::settings_ui::SchemeAsk) {
+        let ask = ask(&a.text, &a.info, &[crate::api_auth::OK, crate::api_auth::CANCEL], None, Kind::Persistent, Then::BindScheme { guid: a.guid, scheme: a.scheme });
+        self.ask_scripts(ask);
+    }
+
+    /// The question's OK: Windows is changed only here, only under HKCU, through the registry
+    /// seam; the scheme is bound only when Tandem then is the handler (else Tandem's text).
+    fn bind_scheme_confirmed(&mut self, guid: &str, scheme: &str) {
+        if self.store.get(guid).is_none() {
+            return self.banners.set("url-schemes", "That profile no longer exists, so nothing was registered.");
+        }
+        let exe = match std::env::current_exe() {
+            Ok(exe) => exe,
+            Err(e) => return self.banners.set("url-schemes", format!("Could not find Tandem's own path to register it for {scheme} links: {e}")),
+        };
+        let mut reg = crate::url_schemes::system();
+        let mut table = self.globals.table(crate::url_schemes::HANDLERS_KEY);
+        match crate::url_schemes::register_and_bind(&mut table, reg.as_mut(), scheme, guid, &exe) {
+            Ok(()) => {
+                self.globals.set(crate::url_schemes::HANDLERS_KEY, toml::Value::Table(table));
+                self.save_globals();
+            }
+            Err(e) => self.banners.set("url-schemes", e),
+        }
     }
 
     /// Opens the next queued alert when none shows.
@@ -491,6 +522,11 @@ impl App {
                 }
             }
             Then::SshKeepOrReplace { job } => self.ssh_keep_or_replace(job, index),
+            Then::BindScheme { guid, scheme } => {
+                if index == 0 {
+                    self.bind_scheme_confirmed(&guid, &scheme);
+                }
+            }
             Then::SshUpload { pane, files, to } => {
                 if index == 0 {
                     self.ssh_upload_confirmed(pane, files, to);
@@ -662,6 +698,10 @@ mod tests {
         // The actions window's own close answer is the first button (OK): it must not reach us.
         assert_eq!(on_close(&then, 0), Answer::Button(1));
         assert_eq!(on_close(&then, 1), Answer::Button(1));
+        // The not-default question: a closed window is Cancel, never OK, so nothing is registered.
+        let bind = Then::BindScheme { guid: "G".into(), scheme: "ssh".into() };
+        assert_eq!(on_close(&bind, 0), Answer::Button(1));
+        assert_eq!(on_close(&bind, 1), Answer::Button(1));
         let a = ask("", "OK to copy", &[crate::api_auth::OK, crate::api_auth::CANCEL], None, Kind::Persistent, then);
         assert_eq!(a.spec.cancel, Some(1), "Escape is Cancel");
         let mut queue: VecDeque<Ask> = (0..LIMIT).map(|_| ask("H", "T", &["OK"], None, Kind::Persistent, Then::Nothing)).collect();

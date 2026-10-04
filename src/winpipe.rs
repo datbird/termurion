@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_OPERATION_ABORTED,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_OPERATION_ABORTED,
     ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
     HLOCAL, INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0,
 };
@@ -266,6 +266,13 @@ pub fn secret_pipe_name() -> Result<String, String> {
     Ok(format!(r"\\.\pipe\tandem-ssh-secrets-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))
 }
 
+/// `\\.\pipe\tandem-url-<user SID>`, plus `-admin` when elevated: the pipe a second `tandem.exe
+/// --url` hands an ssh: URL to (m14e).
+pub fn url_pipe_name() -> Result<String, String> {
+    // As the host pipe: an elevated Tandem's URLs are its own, never a normal one's.
+    Ok(format!(r"\\.\pipe\tandem-url-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))
+}
+
 /// The security descriptor of every pipe instance: a DACL that lets only `sid` in, and a
 /// mandatory label with no-read-up. Elevated: high, so a normal-integrity process cannot open
 /// it. Not elevated: medium, so a low-integrity process of this user (a sandboxed browser or
@@ -384,6 +391,21 @@ impl Drop for Listener {
 
 /// Connects to `name`. None when nothing listens there.
 pub fn connect(name: &str, wait: Duration) -> Result<Option<Pipe>, String> {
+    connect_owned(name, wait).map_err(|e| match e {
+        ConnectError::Denied(e) | ConnectError::Other(e) => e,
+    })
+}
+
+/// Why `connect_owned` failed.
+#[derive(Debug)]
+pub enum ConnectError {
+    /// The pipe's DACL refused this user: someone else serves the name.
+    Denied(String),
+    Other(String),
+}
+
+/// `connect`, telling a pipe whose owner refused this user from any other failure.
+pub fn connect_owned(name: &str, wait: Duration) -> Result<Option<Pipe>, ConnectError> {
     let w = wide(name);
     let end = std::time::Instant::now() + wait;
     loop {
@@ -398,11 +420,12 @@ pub fn connect(name: &str, wait: Duration) -> Result<Option<Pipe>, String> {
             ERROR_PIPE_BUSY => {
                 let left = end.saturating_duration_since(std::time::Instant::now());
                 if left.is_zero() {
-                    return Err(format!("the pipe {name} stayed busy"));
+                    return Err(ConnectError::Other(format!("the pipe {name} stayed busy")));
                 }
                 unsafe { WaitNamedPipeW(w.as_ptr(), left.as_millis().clamp(1, u32::MAX as u128 - 1) as u32) };
             }
-            _ => return Err(last_error(&format!("connecting to {name}"))),
+            ERROR_ACCESS_DENIED => return Err(ConnectError::Denied(last_error(&format!("connecting to {name}")))),
+            _ => return Err(ConnectError::Other(last_error(&format!("connecting to {name}")))),
         }
     }
 }
@@ -433,6 +456,42 @@ impl Pipe {
             }
         }
         Ok(n as usize)
+    }
+
+    /// Reads what is there, waiting at most `wait`. None when nothing came; Some(0) when the other
+    /// end closed. The read is cancelled and finished before this returns, so the `OVERLAPPED`
+    /// outlives its I/O (R14de-10: `read` blocks without limit and is not for the URL pipe).
+    pub fn read_timeout(&self, buf: &mut [u8], wait: Duration) -> Result<Option<usize>, String> {
+        let open = self.gate.read().unwrap();
+        if !*open || self.closed.load(Ordering::Acquire) {
+            return Ok(Some(0));
+        }
+        let mut op = Op::new()?;
+        let mut n = 0u32;
+        unsafe {
+            if ReadFile(self.handle(), buf.as_mut_ptr(), buf.len() as u32, null_mut(), &mut op.ov) != 0 {
+                return if GetOverlappedResult(self.handle(), &op.ov, &mut n, 1) == 0 { closed_or(GetLastError(), "ReadFile").map(Some) } else { Ok(Some(n as usize)) };
+            }
+            if GetLastError() != ERROR_IO_PENDING {
+                return closed_or(GetLastError(), "ReadFile").map(Some);
+            }
+            if WaitForSingleObject(op.event.0, wait.as_millis().min(u32::MAX as u128 - 1) as u32) != WAIT_OBJECT_0 {
+                // The wait must end before `op` goes: cancel it and let it finish.
+                CancelIoEx(self.handle(), &op.ov);
+                if GetOverlappedResult(self.handle(), &op.ov, &mut n, 1) == 0 {
+                    return match GetLastError() {
+                        ERROR_OPERATION_ABORTED => Ok(None),
+                        other => closed_or(other, "ReadFile").map(Some),
+                    };
+                }
+                // The data landed as the cancel went in: it is not lost.
+                return Ok(Some(n as usize));
+            }
+            if GetOverlappedResult(self.handle(), &op.ov, &mut n, 0) == 0 {
+                return closed_or(GetLastError(), "ReadFile").map(Some);
+            }
+        }
+        Ok(Some(n as usize))
     }
 
     pub fn write_all(&self, bytes: &[u8]) -> Result<(), String> {
@@ -479,8 +538,8 @@ impl Pipe {
         }
     }
 
-    /// Ok when the process serving this pipe runs as this user.
-    pub fn server_is_this_user(&self) -> Result<(), String> {
+    /// The id of the process serving this pipe.
+    pub fn server_pid(&self) -> Result<u32, String> {
         let open = self.gate.read().unwrap();
         if !*open {
             return Err("the pipe is closed".into());
@@ -489,6 +548,12 @@ impl Pipe {
         if unsafe { GetNamedPipeServerProcessId(self.handle(), &mut pid) } == 0 {
             return Err(last_error("GetNamedPipeServerProcessId"));
         }
+        Ok(pid)
+    }
+
+    /// Ok when the process serving this pipe runs as this user.
+    pub fn server_is_this_user(&self) -> Result<(), String> {
+        let pid = self.server_pid()?;
         let token = process_token(pid)?;
         let theirs = token_sid(token.0)?;
         let mine = user_sid()?;
@@ -587,6 +652,25 @@ pub(crate) mod tests {
         assert_eq!(reader.join().unwrap(), b"from client");
         drop(client);
         assert_eq!(server.read(&mut buf).unwrap(), 0, "the other end closed");
+    }
+
+    #[test]
+    fn read_timeout_gives_none_on_silence() {
+        let (server, client) = pair();
+        let t = std::time::Instant::now();
+        assert_eq!(client.read_timeout(&mut [0u8; 8], Duration::from_millis(100)), Ok(None));
+        assert!(t.elapsed() < Duration::from_secs(1));
+        server.write_all(b"x").unwrap();
+        assert_eq!(client.read_timeout(&mut [0u8; 8], Duration::from_secs(2)), Ok(Some(1)));
+        drop(server);
+        assert_eq!(client.read_timeout(&mut [0u8; 8], Duration::from_secs(2)), Ok(Some(0)), "the other end closed");
+    }
+
+    #[test]
+    fn url_pipe_name_follows_the_host_pipe() {
+        let sid = user_sid().unwrap();
+        let admin = elevated().unwrap();
+        assert_eq!(url_pipe_name().unwrap(), format!(r"\\.\pipe\tandem-url-{sid}{}", if admin { "-admin" } else { "" }));
     }
 
     #[test]

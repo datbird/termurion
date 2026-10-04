@@ -101,6 +101,10 @@ pub struct Shell {
     pub cwd: Option<String>,
     pub host: Option<String>,
     pub user: Option<String>,
+    /// Whether the reported host was this machine, decided when it was reported and kept
+    /// (iTerm2's frozen locality, `VT100ScreenMutableState.m:4083-4103`). Only the host stack
+    /// reads it; it never feeds an open or run decision (14d-G1).
+    pub host_local: Option<bool>,
     pub shell: Option<String>,
     pub version: Option<u32>,
     /// SetUserVar values, by name (iTerm2's `user.<name>` variables).
@@ -204,10 +208,15 @@ pub fn clear_start(marks: &[i32], prompt_line: Option<i32>, cursor: i32) -> i32 
 
 /// Whether a reported host is a host change that may reset modes: a previous host existed,
 /// the name differs (exactly, as iTerm2's `isEqualToString:`), and the two are not both this
-/// machine (`local`, compared ignoring case as Windows names are).
-pub fn host_changed(previous: Option<&str>, new: &str, local: &str) -> bool {
-    let is_local = |h: &str| !local.is_empty() && h.eq_ignore_ascii_case(local);
-    previous.is_some_and(|p| p != new && !(is_local(p) && is_local(new)))
+/// machine (`local` names, compared ignoring case as Windows names are; P1: the same list the
+/// host stack's locality is decided with).
+pub fn host_changed(previous: Option<&str>, new: &str, local: &[String]) -> bool {
+    previous.is_some_and(|p| p != new && !(is_local_name(p, local) && is_local_name(new, local)))
+}
+
+/// Whether `host` is one of this computer's `names` (ignoring case).
+fn is_local_name(host: &str, names: &[String]) -> bool {
+    names.iter().any(|n| !n.is_empty() && n.eq_ignore_ascii_case(host))
 }
 
 /// What a host change does with a mode left on, from its saved answer.
@@ -236,6 +245,8 @@ pub struct HostPolicy {
     pub mouse: Option<bool>,
     pub paste: Option<bool>,
     pub mouse_allowed: bool,
+    /// The names this computer answers to (P1: the one answer for the offers and the host stack).
+    pub local_names: &'static [String],
 }
 
 /// The modes a host change offers to turn off.
@@ -770,6 +781,7 @@ impl Screen {
     pub(crate) fn apply(&mut self, osc: Osc) {
         use crate::trigger_events::{EventFacts, EventKind};
         let before = (self.shell.cwd.clone(), self.shell.host.clone(), self.shell.user.clone());
+        let was_local = self.shell.host_local;
         self.apply_osc(osc);
         // Directory, host, and user changes are events for triggers.
         let after = (self.shell.cwd.clone(), self.shell.host.clone(), self.shell.user.clone());
@@ -778,9 +790,21 @@ impl Screen {
         // (`PS:17929-17940`).
         if after.1.is_some() && (before.1 != after.1 || before.2 != after.2) {
             let new = after.1.as_deref().unwrap_or_default();
-            let moved = before.1 != after.1 && host_changed(before.1.as_deref(), new, &std::env::var("COMPUTERNAME").unwrap_or_default());
+            // Locality is decided when a host is reported and kept: a report of the same host
+            // (a user-only change) copies the previous answer (`VT100ScreenMutableState.m:4083-4103`).
+            let local = if before.1 == after.1 { was_local.unwrap_or(false) } else { is_local_name(new, self.host_policy.local_names) };
+            self.shell.host_local = Some(local);
+            let moved = before.1 != after.1 && host_changed(before.1.as_deref(), new, self.host_policy.local_names);
             let left_on = if moved { self.reset_modes_on_host_change() } else { LeftOn::default() };
             self.requests.push(Request::HostChanged(left_on));
+            if let (true, Some(prev)) = (before.1 != after.1, before.1.clone()) {
+                use crate::host_state::Remote;
+                let previous = Remote { user: before.2.clone(), host: prev, local: was_local.unwrap_or(false) };
+                // The mode and title as they are at the report (the bytes before it are fed, the
+                // rest of the chunk not yet), so a remote's same-chunk writes cannot be saved.
+                let (mode, title) = (self.keyboard().mode, self.title().map(crate::host_state::capped_title));
+                self.requests.push(Request::HostMoved { previous, current: Remote { user: after.2.clone(), host: new.to_string(), local }, mode, title });
+            }
         }
         for (kind, old, new) in [(EventKind::DirectoryChanged, before.0, after.0), (EventKind::HostChanged, before.1, after.1), (EventKind::UserChanged, before.2, after.2)] {
             if let Some(v) = new.filter(|n| Some(n) != old.as_ref()) {
@@ -1915,12 +1939,13 @@ mod tests {
 
     #[test]
     fn host_change_follows_iterm2() {
-        assert!(!host_changed(None, "b", "PC"), "no previous host");
-        assert!(!host_changed(Some("a"), "a", "PC"));
-        assert!(host_changed(Some("a"), "A", "PC"), "iTerm2 compares names exactly (isEqualToString:)");
-        assert!(host_changed(Some("a"), "b", "PC"));
-        assert!(!host_changed(Some("pc"), "PC", "PC"), "both this machine");
-        assert!(host_changed(Some("PC"), "b", "PC"));
+        let pc = ["PC".to_string()];
+        assert!(!host_changed(None, "b", &pc), "no previous host");
+        assert!(!host_changed(Some("a"), "a", &pc));
+        assert!(host_changed(Some("a"), "A", &pc), "iTerm2 compares names exactly (isEqualToString:)");
+        assert!(host_changed(Some("a"), "b", &pc));
+        assert!(!host_changed(Some("pc"), "PC", &pc), "both this machine");
+        assert!(host_changed(Some("PC"), "b", &pc));
         let changes = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::HostChanged(l) if *l != LeftOn::default())).collect::<Vec<_>>();
         let offer = |mouse, focus, paste| vec![Request::HostChanged(LeftOn { mouse, focus, paste })];
         let mut s = Screen::new(40, 10);
@@ -1942,6 +1967,65 @@ mod tests {
         let mut f = Screen::new(40, 10);
         f.feed(b"\x1b]1337;ShellIntegrationVersion=5;shell=fish\x07\x1b]1337;RemoteHost=u@a\x07\x1b[?2004h\x1b]1337;RemoteHost=u@b\x07");
         assert!(changes(&mut f).is_empty());
+    }
+
+    /// Fix r1: the key mode and title the stack saves are the ones in effect AT the host report,
+    /// so a remote that writes a mode and a title in the same chunk, after its first report,
+    /// cannot choose what the local shell gets back.
+    #[test]
+    fn the_saved_mode_and_title_are_the_ones_at_the_report() {
+        use crate::keyproto::KeyMode;
+        static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+        let names: &'static [String] = NAMES.get_or_init(|| vec!["pc".to_string()]);
+        let saved = |s: &mut Screen| {
+            s.take_requests().into_iter().find_map(|r| match r {
+                Request::HostMoved { mode, title, .. } => Some((mode, title)),
+                _ => None,
+            })
+        };
+        let mut s = Screen::new(40, 10);
+        s.host_policy.local_names = names;
+        s.feed(b"\x1b]2;local\x07\x1b]1337;RemoteHost=me@pc\x07");
+        s.take_requests();
+        s.feed(b"\x1b]1337;RemoteHost=u@box\x07\x1b[>4;2m\x1b]2;evil\x07");
+        assert_eq!(s.keyboard().mode, KeyMode::Mok2, "the remote's mode is on after the chunk");
+        assert_eq!(saved(&mut s), Some((KeyMode::Standard, Some("local".to_string()))), "the mode and title at the report");
+        // A mode set before the report in the same chunk is the one in effect at the report.
+        s.feed(b"\x1b[>4;0m\x1b]2;box\x07\x1b[>4;1m\x1b]1337;RemoteHost=me@pc\x07\x1b[>4;2m\x1b]2;after\x07");
+        assert_eq!(saved(&mut s), Some((KeyMode::Mok1, Some("box".to_string()))));
+    }
+
+    /// A host change reaches the host stack (m14e Task 4): locality is decided when the host is
+    /// reported and kept, a user-only report copies it, OSC 7 reports a host too.
+    #[test]
+    fn host_changes_are_requested() {
+        use crate::host_state::Remote;
+        static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+        let names: &'static [String] = NAMES.get_or_init(|| vec!["pc".to_string()]);
+        let moved = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::HostMoved { .. })).collect::<Vec<_>>();
+        let rem = |u: &str, h: &str, local| Remote { user: Some(u.into()), host: h.into(), local };
+        let mut s = Screen::new(40, 10);
+        s.host_policy.local_names = names;
+        s.feed(b"\x1b]1337;RemoteHost=me@pc\x07");
+        assert!(moved(&mut s).is_empty(), "the first report");
+        s.feed(b"\x1b]1337;RemoteHost=u@box\x07");
+        assert_eq!(moved(&mut s), vec![Request::HostMoved { previous: rem("me", "pc", true), current: rem("u", "box", false), mode: crate::keyproto::KeyMode::Standard, title: None }]);
+        // A user-only change queues none and copies the locality, even if the answer changed.
+        static BOTH: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+        s.host_policy.local_names = BOTH.get_or_init(|| vec!["pc".to_string(), "box".to_string()]);
+        s.feed(b"\x1b]1337;RemoteHost=root@box\x07");
+        assert!(moved(&mut s).is_empty(), "user-only");
+        assert_eq!(s.shell.host_local, Some(false), "copied, not recomputed");
+        // OSC 7 reports a host too; locality is as the seam answers when it is reported.
+        s.feed(b"\x1b]7;file://pc/tmp\x07");
+        assert_eq!(moved(&mut s), vec![Request::HostMoved { previous: rem("root", "box", false), current: Remote { user: None, host: "pc".into(), local: true }, mode: crate::keyproto::KeyMode::Standard, title: None }]);
+        // Once reported, a later change of the answer changes nothing.
+        s.host_policy.local_names = &[];
+        s.feed(b"\x1b]1337;CurrentDir=/x\x07");
+        assert_eq!(s.shell.host_local, Some(true));
+        s.feed(b"\x1b]1337;RemoteHost=root@pc\x07");
+        assert!(moved(&mut s).is_empty());
+        assert_eq!(s.shell.host_local, Some(true));
     }
 
     /// Every host report that changes the account (user or host name), the first included,

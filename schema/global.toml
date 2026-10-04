@@ -2371,6 +2371,42 @@ default = "uname -s"
 help = "Command used to set the `uname` variable.\nThe main use of this is to use in the AI prompt so the language model knows the operating system."
 
 [[setting]]
+key = "sshSchemePath"
+tab = "Advanced"
+section = "Terminal"
+label = "Command to run when handling an ssh:// URL."
+type = "string"
+default = "ssh"
+help = "Command to run when handling an ssh:// URL."
+
+[[setting]]
+key = "validCharactersInSSHUserNames"
+tab = "Advanced"
+section = "SSH Integration"
+label = "Valid characters in SSH user names"
+type = "string"
+default = "_-+."
+help = "Valid characters in SSH user names\nAlphanumerics are always valid. This specifies other valid characters."
+
+[[setting]]
+key = "sshURLsSupportPath"
+tab = "Advanced"
+section = "Experimental Features"
+label = "SSH URLs respect the path."
+type = "bool"
+default = true
+help = "SSH URLs respect the path.\nThey run the command: ssh -t \"cd $$PATH$$; exec \\$SHELL -l\""
+
+[[setting]]
+key = "restoreKeyModeAutomaticallyOnHostChange"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Automatically restore keyboard mode when an ssh session ends?"
+type = "bool"
+default = true
+help = "Automatically restore keyboard mode when an ssh session ends?"
+
+[[setting]]
 key = "aiModernModelPrefixes"
 tab = "Advanced"
 section = "Experimental Features"
