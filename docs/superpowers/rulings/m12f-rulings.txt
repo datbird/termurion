@@ -187,6 +187,7 @@ D37: Decision: parity rows are found by title - cost if wrong: a stale line numb
 
 FR-1: Ruling (final review, binding): while a chat awaits the person's approval its watcher and timer outbox holds (orch_watch::may_release); nothing is posted and events queue under the same caps (32 held, 6 a minute). An orchestration request's buttons (workgroupPermissionRequest, enableOrchestrationRequest) answer while the request is open (f.open), wherever the message sits - cost if wrong: none (an approval cannot be greyed by a later notice; events arrive after the answer).
 FR-2: Ruling (final review, SECURITY, binding; amends T10-20): held text whose whole text still ends in a continuation the pane's shell waits on survives the chat's end (Stop, AI off, mode off, chat delete); it clears only on a prompt advance with shell integration, the 5-minute window without, pane close or the person's own input. Held text that does not end in a continuation still clears on chat end - cost if wrong: more refusals of a legitimate line sent after a Stop.
+
 Deferred minors (progress.md; none blocks acceptance):
 M1: Task 1: sub-pixel rounding saves one extra Moved frame on the first redraw.
 M2: Task 2: the App-level wiring (the in-use scan, the launch flag, the restart keep) has no test.
@@ -195,3 +196,13 @@ M4: Task 4: world and rows are rebuilt every redraw; markdown is re-parsed per r
 M5: Task 5/6: a grant survives while the same id appears as a whole token elsewhere in the text (only ever the picked session). (The stale InputChanged doc line is fixed in the final review fix wave.)
 M6: Task 7: the guard comment overstates (a cookie holder can call other functions on its own session; no new power); the recorded cost omits taken-back hosted shells; a refused connection retries on [::1]. (The P14 guard now has a source-check test, api_requests a_hook_acts_only_on_its_own_session.)
 M7: Task 8: the health check reads settings.json on the main thread; serde_json may normalize number spellings (1e3) in a file it rewrites (the backup keeps the original); minors 1 to 8 of the first review untouched.
+M8: Final review 11: the direct writers at menu.rs:1411 and semantic_ui.rs:209 do not clear a pane's held text - cost: extra refusals only.
+M9: Final review 3: watch tools are dispatched in any chat by name (register_timer works in a plain chat that never offered it) - cost: machine turns in a chat that did not ask, bounded by the 20-turn cap.
+M10: Final review 4: a read mirror with no claim (session_get_terminal_size) cancels another chat's in-flight execute_command bookkeeping on that pane (iTerm2's newer-tool-cancels rule, now across chats) - cost: that chat reads "canceled" while its command keeps running.
+M11: Final review 5: orch_provenance is not removed on pane gone, and orch_denied and orch_spawned are not removed on chat delete - cost: a small leak and an ownerless refused-scope set.
+M12: Final review 6: orch_grant_mentions grants buried or exited panes (guard row 13 says live) - cost: a grant notice names a session the model cannot type into; no new power.
+M13: Final review 7: approving a parked command does not re-run the claim, so an approval answered after a Revoke still types - cost: none beyond the person's own press on that very command.
+M14: Final review 8: docs/parity/00-roadmap.md:341-342 says "visible" (should be "live, unburied") and "die with the chat's turn" (should be Stop, mode off, the chat, and the link) - cost: parity wording only.
+M15: Final review 9: the checklist has no rows for T11-8 (an event during an approval waits; now the outbox holds, FR-1), T11-9 (the 20-turn pause and its notice) or T11-10 (unlink or relink ends watchers) - cost: those rules are not checked by hand at acceptance.
+M16: Final review 10: src/chat_buttons.rs has a stray 16-space indent in consent_texts_follow_iterm2 - cost: cosmetic; rustfmt fixes it.
+M17: Final review M6 triage: the P14 guard comment still overstates (a cookie holder can call other functions on its own session) - cost: comment accuracy only.
