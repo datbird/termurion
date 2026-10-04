@@ -18,6 +18,10 @@ const LOCATOR64: u32 = 0x0706_4b50;
 const EXTRA_ZIP64: u16 = 0x0001;
 /// PKWARE's Unix extra field, which can carry a link's target (`APPNOTE` 4.5.7).
 const EXTRA_UNIX: u16 = 0x000d;
+/// Info-ZIP's Unicode Path and Unicode Comment fields: libarchive (tar.exe) takes the entry's
+/// name from the first when its CRC matches the main name, a name `check` never saw.
+const EXTRA_UNICODE_PATH: u16 = 0x7075;
+const EXTRA_UNICODE_COMMENT: u16 = 0x6375;
 /// Hosts whose external attributes hold a Unix mode in their high half.
 const HOST_UNIX: u8 = 3;
 const HOST_OSX: u8 = 19;
@@ -151,6 +155,9 @@ fn check_extra(extra: &[u8]) -> Result<Vec<(u16, &[u8])>, String> {
     if fields.iter().any(|(id, _)| *id == EXTRA_UNIX) {
         return Err(refused("an entry is a link"));
     }
+    if fields.iter().any(|(id, _)| *id == EXTRA_UNICODE_PATH || *id == EXTRA_UNICODE_COMMENT) {
+        return Err(refused("an entry carries a second name"));
+    }
     Ok(fields)
 }
 
@@ -177,6 +184,12 @@ pub fn check(b: &[u8]) -> Result<(), String> {
 /// `check` with other caps on the entry count and the total uncompressed size the directory
 /// claims (the sizes of the data are not trusted: the directory is read, nothing is expanded).
 pub fn check_with(b: &[u8], limits: Limits) -> Result<(), String> {
+    check_total(b, limits).map(|_| ())
+}
+
+/// `check_with`, giving the total uncompressed size the directory claims. Nothing trusts that
+/// size alone: the extraction is watched against it (`ssh_local::watchdog`).
+pub fn check_total(b: &[u8], limits: Limits) -> Result<u64, String> {
     let first = u32_at(b, 0);
     if first != Some(LOCAL) && first != Some(END) {
         return Err(refused("it is not a zip archive"));
@@ -260,7 +273,7 @@ pub fn check_with(b: &[u8], limits: Limits) -> Result<(), String> {
     if seen != count {
         return Err(corrupt());
     }
-    Ok(())
+    Ok(total)
 }
 
 #[cfg(test)]
@@ -496,5 +509,17 @@ pub(crate) mod tests {
         }
         assert_eq!(bad_part("tool"), None);
         assert!(bad_part("tool.").is_some() && bad_part("a:b").is_some() && bad_part("CON").is_some() && bad_part("").is_some());
+    }
+
+    /// libarchive replaces an entry's name with the Info-ZIP Unicode Path field (0x7075) when its
+    /// CRC matches: a name `check` never saw. Both Unicode fields are refused like 0x000d.
+    #[test]
+    fn unicode_name_fields_are_refused() {
+        for id in [0x7075u16, 0x6375] {
+            // version 1, crc32 of "x", name "CON"
+            let field: Vec<u8> = [id.to_le_bytes(), 8u16.to_le_bytes()].concat().into_iter().chain([1, 0, 0, 0, 0]).chain(*b"CON").collect();
+            assert!(check(&zip(&[dir("d/"), Entry { extra: field, ..file("d/a.txt", "a") }])).is_err(), "{id:#x}");
+        }
+        assert!(check(&zip(&[dir("d/"), file("d/a.txt", "a")])).is_ok());
     }
 }
