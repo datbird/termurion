@@ -316,7 +316,8 @@ impl App {
             // A tool call comes only from a run that offers tools: Codecierge's.
             if let Out::Invoke { call, id: call_id } = out {
                 if let Owner::Codecierge(guid) = owner {
-                    self.codecierge_invoke(&guid, id, crate::ai_msg::Message::new(Some(crate::ai_msg::Role::Assistant), crate::ai_msg::Body::FunctionCall(call, call_id)));
+                    let kept = self.ai_runs.get(&id).and_then(|r| r.runner.call_message().cloned());
+                    self.codecierge_invoke(&guid, id, stored_call(kept, call, call_id));
                 }
             }
         }
@@ -330,6 +331,16 @@ impl App {
             Owner::Codecierge(guid) => self.codecierge_done(&guid, id, done),
         }
     }
+}
+
+/// The model message of a call kept in Codecierge's conversation: the turn's whole message
+/// (reasoning fields and response id included, which DeepSeek and the Responses API need
+/// echoed), else one rebuilt from the call.
+fn stored_call(kept: Option<crate::ai_msg::Message>, call: crate::ai_msg::FunctionCall, id: Option<crate::ai_msg::CallId>) -> crate::ai_msg::Message {
+    if let Some(whole) = kept {
+        return whole;
+    }
+    crate::ai_msg::Message::new(Some(crate::ai_msg::Role::Assistant), crate::ai_msg::Body::FunctionCall(call, id))
 }
 
 #[cfg(test)]
@@ -530,5 +541,20 @@ mod tests {
             let body = body_of(&plain, one_shot_turn(plain.clone(), "p", Wire::from_globals(&g), String::new(), think));
             assert!(!body.contains(r#""reasoning":"#), "a model without ConfigurableThinking sends no reasoning key: {body}");
         }
+    }
+
+    #[test]
+    fn a_stored_call_keeps_the_models_whole_message() {
+        use crate::ai_msg::{Body, CallId, FunctionCall, Message, Role};
+        let call = FunctionCall { name: Some("execute".into()), arguments: Some("{}".into()), id: Some("c1".into()), thought_signature: None };
+        let id = Some(CallId { call_id: "c1".into(), item_id: "i1".into() });
+        let mut whole = Message::new(Some(Role::Assistant), Body::FunctionCall(call.clone(), id.clone()));
+        whole.reasoning_content = Some("thinking".into());
+        whole.response_id = Some("resp_1".into());
+        whole.reasoning_items = vec![crate::ai_msg::ReasoningItem { id: "r1".into(), encrypted_content: None, summary: vec![] }];
+        let got = stored_call(Some(whole.clone()), call.clone(), id.clone());
+        assert_eq!(got, whole, "reasoning_content, reasoning_items and response_id survive");
+        let rebuilt = stored_call(None, call.clone(), id.clone());
+        assert_eq!(rebuilt, Message::new(Some(Role::Assistant), Body::FunctionCall(call, id)));
     }
 }

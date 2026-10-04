@@ -706,6 +706,15 @@ impl Turn {
         self.send(amended)
     }
 
+    /// The whole model message that made the call awaiting its tool, with its reasoning fields
+    /// and response id (iTerm2 keeps the message; DeepSeek needs `reasoning_content` echoed).
+    pub fn call_message(&self) -> Option<&Message> {
+        match &self.state {
+            State::AwaitingTool { messages, .. } => messages.last(),
+            _ => None,
+        }
+    }
+
     /// The tool's result: sent back to the model (truncated to fit), or the end of the turn.
     pub fn tool_done(&mut self, result: ToolResult) -> Vec<Out> {
         if !matches!(self.state, State::AwaitingTool { .. }) {
@@ -902,6 +911,11 @@ impl Runner {
     pub fn key_given(&mut self, key: Option<Secret>) -> Vec<Out> {
         let out = self.turn.key_given(key);
         self.route(out)
+    }
+
+    /// See `Turn::call_message`.
+    pub fn call_message(&self) -> Option<&Message> {
+        self.turn.call_message()
     }
 
     pub fn tool_done(&mut self, result: ToolResult) -> Vec<Out> {
@@ -1490,6 +1504,23 @@ mod tests {
         let (mut t, _) = sent(openai(), true);
         feed(&mut t, &stuck, None);
         assert!(started.elapsed() < Duration::from_secs(20), "took {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_call_message_keeps_its_reasoning_fields() {
+        let (mut t, _) = sent(openai(), true);
+        let call = FunctionCall { name: Some("f".into()), arguments: Some("{}".into()), id: Some("c1".into()), thought_signature: None };
+        let id = Some(CallId { call_id: "c1".into(), item_id: "i1".into() });
+        let mut m = Message::new(Some(Role::Assistant), Body::FunctionCall(call.clone(), id));
+        m.reasoning_content = Some("thinking".into());
+        m.response_id = Some("resp_1".into());
+        m.reasoning_items = vec![crate::ai_msg::ReasoningItem { id: "r1".into(), encrypted_content: None, summary: vec![] }];
+        let out = t.dispatch(m.clone(), call);
+        assert!(matches!(&out[..], [Out::Invoke { .. }]), "{out:?}");
+        let kept = t.call_message().expect("the call message");
+        assert_eq!(kept.reasoning_content.as_deref(), Some("thinking"));
+        assert_eq!(kept.response_id.as_deref(), Some("resp_1"));
+        assert_eq!(kept.reasoning_items.len(), 1);
     }
 
     #[test]
