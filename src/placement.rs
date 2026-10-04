@@ -225,6 +225,13 @@ pub fn chase_frame(style: i64, outer: Rect, from: Rect, to: Rect) -> Chased {
     }
 }
 
+/// What a chase does to an OS-maximized window: (restore it before it moves, maximize it again on
+/// the new monitor). A maximized window ignores a position; a style that frames the window
+/// itself (`refit`) re-frames it, so only the other styles maximize again.
+pub fn chase_maximize(refit: bool, was_maximized: bool) -> (bool, bool) {
+    (was_maximized, was_maximized && !refit)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,5 +389,15 @@ mod tests {
         let normal = chase_frame(NORMAL, outer, from, to);
         assert!(!normal.refit);
         assert_eq!(normal.frame, Rect { x: 1100.0, y: 50.0, w: 600.0, h: 400.0 });
+    }
+
+    /// A chased window that was OS-maximized is restored before it moves (a maximized window
+    /// ignores a position) and maximized again on the new monitor unless its style re-frames it.
+    #[test]
+    fn chase_keeps_a_maximized_window_maximized() {
+        assert_eq!(chase_maximize(false, true), (true, true), "a normal-style window");
+        assert_eq!(chase_maximize(true, true), (true, false), "the style frames it again");
+        assert_eq!(chase_maximize(false, false), (false, false));
+        assert_eq!(chase_maximize(true, false), (false, false));
     }
 }

@@ -1414,11 +1414,16 @@ impl App {
                     if let (Some(i), Some(from)) = (placement::chase(self.win_anchor, monitors.len(), at), monitors.get(at).copied()) {
                         let chased = placement::chase_frame(self.win_style, outer, from, monitors[i]);
                         let w = g.window.clone();
-                        // A maximized window is not moved by position: restore it first.
-                        if chased.refit && w.is_maximized() {
+                        // A maximized window is not moved by position: restore it first, and
+                        // maximize it again on the new monitor unless its style frames it.
+                        let (restore, remaximize) = placement::chase_maximize(chased.refit, w.is_maximized());
+                        if restore {
                             w.set_maximized(false);
                         }
                         w.set_outer_position(PhysicalPosition::new(chased.frame.x.round() as i32, chased.frame.y.round() as i32));
+                        if remaximize {
+                            w.set_maximized(true);
+                        }
                         // The move canonicalizes again (`PT:5128`): the style frames it on the new screen.
                         if chased.refit {
                             let style = self.win_style;

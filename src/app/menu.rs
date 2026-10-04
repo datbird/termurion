@@ -1442,6 +1442,12 @@ pub(super) fn window_list(entries: &[(u64, usize, String, String)], focused: Opt
     sorted.into_iter().map(|(k, n, text, title)| (*k, crate::wintitle::menu_entry(text, title, include, tag, *n), focused == Some(*k))).collect()
 }
 
+/// The notification area icon's window list: (menu id, text) for every window, the same ids the
+/// Window menu uses so a pick runs `window_list_picked`.
+pub(super) fn tray_window_items(entries: &[(u64, usize, String, String)], focused: Option<u64>, include: bool, tag: i64) -> Vec<(String, String)> {
+    window_list(entries, focused, include, tag).into_iter().map(|(k, text, _)| (format!("{}{k}", crate::wintitle::LIST_PREFIX), text)).collect()
+}
+
 /// "Restart session?" (`PT:2855-2866`): the object API with no cancel label, so Cancel may be
 /// remembered, as in iTerm2.
 pub(super) fn restart_spec() -> crate::warnings::Spec {
@@ -1459,6 +1465,19 @@ pub(super) fn restart_spec() -> crate::warnings::Spec {
 
 #[cfg(test)]
 mod tests {
+
+    /// The notification area icon lists every window, minimized or hidden or excluded from the
+    /// taskbar, so none is without a way back (Task 8 review).
+    #[test]
+    fn tray_lists_every_window() {
+        let entries = vec![(7, 1, "one".to_string(), "one".to_string()), (9, 2, "two".to_string(), "two".to_string()), (4, 3, "three".to_string(), "three".to_string())];
+        let items = super::tray_window_items(&entries, Some(9), false, 0);
+        assert_eq!(items.len(), 3);
+        for (k, _, _, _) in &entries {
+            assert!(items.iter().any(|(id, _)| id == &format!("{}{k}", crate::wintitle::LIST_PREFIX)), "{k}");
+        }
+        assert!(super::tray_window_items(&[], None, false, 0).is_empty());
+    }
     use crate::warnings::{Kind, checkbox_label};
 
     /// `restartSessionWithConfirmation:` (`PT:2848-2870`): built with the object API, which

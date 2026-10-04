@@ -1,10 +1,10 @@
 //! Leaving the taskbar and Alt+Tab (13g): applies `presence` to every window each loop pass.
 
 use super::*;
-use crate::presence::{self, Look};
+use crate::presence::{self, Look, Reshow};
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GetWindowLongPtrW, SW_HIDE, SW_SHOWNA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, ShowWindow, WS_EX_TOOLWINDOW,
+    GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, IsIconic, IsZoomed, SW_HIDE, SW_SHOW, SW_SHOWMAXIMIZED, SW_SHOWMINNOACTIVE, SW_SHOWNA, SetWindowLongPtrW, ShowWindow, WS_EX_TOOLWINDOW,
 };
 
 /// Whether the window's actual extended style carries the tool window bit.
@@ -12,28 +12,44 @@ fn has_tool_style(hwnd: isize) -> bool {
     unsafe { GetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW != 0 }
 }
 
-/// Sets the tool window bit when it differs from `want`; a visible window with a taskbar
-/// button is hidden and shown again so the taskbar drops or adds it (`SW_SHOWNA`: no focus
-/// change). A hotkey window is never hidden by this (its focus loss would auto-hide it).
-fn set_tool_style(window: &winit::window::Window, hwnd: isize, want: bool, hotkey: bool) {
+/// Sets the tool window bit when it differs from `want`, inside `keep_client` so the client area
+/// keeps its size across the caption change (P9). A visible window with a taskbar button is hidden
+/// and shown again so the taskbar drops or adds it, in the state it was in (minimized, maximized,
+/// focused). A hotkey window is never hidden by this (its focus loss would auto-hide it).
+/// Returns whether the style changed.
+fn set_tool_style(window: &winit::window::Window, hwnd: isize, want: bool, hotkey: bool) -> bool {
     if has_tool_style(hwnd) == want {
-        return;
+        return false;
     }
-    unsafe {
+    super::caption_ui::keep_client(hwnd, || unsafe {
         let style = GetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE);
         let style = if want { style | WS_EX_TOOLWINDOW as isize } else { style & !(WS_EX_TOOLWINDOW as isize) };
         SetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE, style);
-        SetWindowPos(hwnd as HWND, std::ptr::null_mut(), 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-        if presence::restyle_needs_reshow(hotkey, window.is_visible() != Some(false)) {
+    });
+    if presence::restyle_needs_reshow(hotkey, window.is_visible() != Some(false)) {
+        unsafe {
+            let minimized = IsIconic(hwnd as HWND) != 0;
+            let maximized = IsZoomed(hwnd as HWND) != 0 && window.fullscreen().is_none();
+            let focused = GetForegroundWindow() == hwnd as HWND;
             ShowWindow(hwnd as HWND, SW_HIDE);
-            ShowWindow(hwnd as HWND, SW_SHOWNA);
+            ShowWindow(
+                hwnd as HWND,
+                match presence::reshow_command(minimized, maximized, focused) {
+                    Reshow::MinimizedNoActivate => SW_SHOWMINNOACTIVE,
+                    Reshow::Maximized => SW_SHOWMAXIMIZED,
+                    Reshow::Show => SW_SHOW,
+                    Reshow::ShowNoActivate => SW_SHOWNA,
+                },
+            );
         }
     }
+    true
 }
 
 /// Applies `look` to a terminal window: winit's skip only on a change, the tool style against
 /// the window's actual style every pass (winit rewrites the style on its own flag changes).
-fn apply_look(window: &winit::window::Window, look: Look, seen: &mut Option<Look>, hotkey: bool) {
+fn apply_look(window: &winit::window::Window, look: Look, seen: &mut Option<Look>, hotkey: bool) -> bool {
+    let mut changed = false;
     use winit::platform::windows::WindowExtWindows;
     // A hotkey window is made without a taskbar button; a regular one with.
     let before = seen.map_or(hotkey, |l| l.skip_taskbar);
@@ -41,9 +57,10 @@ fn apply_look(window: &winit::window::Window, look: Look, seen: &mut Option<Look
         window.set_skip_taskbar(look.skip_taskbar);
     }
     if let Some(hwnd) = super::menu::hwnd_of(window) {
-        set_tool_style(window, hwnd, look.tool_window, hotkey);
+        changed = set_tool_style(window, hwnd, look.tool_window, hotkey);
     }
     *seen = Some(look);
+    changed
 }
 
 impl App {
@@ -56,9 +73,15 @@ impl App {
         self.ui_element_now = now;
         let excluded = self.globals.bool(presence::EXCLUDED_FROM_CYCLING_KEY);
         let look_of = |hotkey: Option<bool>, style: i64| presence::with_accessory(presence::window_look(now, hotkey, excluded), style == crate::frames::ACCESSORY);
+        let mut flipped = false;
         if let Some(g) = &self.gpu {
             let hotkey = self.hotkey.as_ref().map(|h| h.shown);
-            apply_look(&g.window, look_of(hotkey, self.win_style), &mut self.look_seen, hotkey.is_some());
+            flipped = apply_look(&g.window, look_of(hotkey, self.win_style), &mut self.look_seen, hotkey.is_some());
+        }
+        if flipped {
+            // The caption math follows the style (13e): the frame is re-checked and the panes refit.
+            self.refresh_caption_frame();
+            self.relayout();
         }
         for (_, s) in self.windows.parked_mut() {
             let hotkey = s.hotkey.as_ref().map(|h| h.shown);
@@ -184,6 +207,15 @@ impl App {
         use muda::{ContextMenu, Menu, MenuItem, PredefinedMenuItem, Submenu};
         let Some(hwnd) = self.hwnd() else { return };
         let menu = Menu::new();
+        // Every window first: one that left the taskbar and Alt+Tab (or was minimized) has no
+        // other way back. A pick runs `window_list_picked`.
+        let windows = super::menu::tray_window_items(&self.window_menu_entries(), self.last_window.map(super::windows_ui::key), self.globals.bool("IncludeShortcutInWindowsMenu"), self.globals.int("SwitchWindowModifier"));
+        for (id, text) in &windows {
+            let _ = menu.append(&MenuItem::with_id(id.clone(), text.replace('&', "&&"), true, None));
+        }
+        if !windows.is_empty() {
+            let _ = menu.append(&PredefinedMenuItem::separator());
+        }
         for (label, what) in presence::TRAY_ITEMS {
             let appended = match what {
                 "buried" => {
@@ -220,5 +252,19 @@ impl App {
         }
         self.tray_bring_all();
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The style flip of a visible window keeps the client area (P9): it runs inside
+    /// `caption_ui::keep_client`, and the current window re-checks its caption frame.
+    #[test]
+    fn style_flip_keeps_the_client_size() {
+        let src = include_str!("presence_ui.rs");
+        let flip = src.split("fn set_tool_style").nth(1).and_then(|r| r.split("\nfn apply_look").next()).expect("set_tool_style");
+        assert!(flip.contains("keep_client("), "the flip runs inside keep_client");
+        let tick = src.split("fn presence_tick").nth(1).and_then(|r| r.split("fn presence_globals_changed").next()).expect("presence_tick");
+        assert!(tick.contains("refresh_caption_frame()"), "the current window re-checks its caption frame");
     }
 }

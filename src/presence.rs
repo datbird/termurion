@@ -46,6 +46,33 @@ pub fn restyle_needs_reshow(hotkey: bool, visible: bool) -> bool {
     visible && !hotkey
 }
 
+/// How a window is shown again after its style flipped (`ShowWindow`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reshow {
+    /// SW_SHOWMINNOACTIVE: a minimized window stays minimized.
+    MinimizedNoActivate,
+    /// SW_SHOWMAXIMIZED: a maximized window stays maximized.
+    Maximized,
+    /// SW_SHOW: the focused window keeps its activation.
+    Show,
+    /// SW_SHOWNA: any other window, no focus change.
+    ShowNoActivate,
+}
+
+/// The show command after the hide of a style flip. `maximized` is an OS-maximized window (not
+/// full screen, which is sized by hand and shows as a normal window).
+pub fn reshow_command(minimized: bool, maximized: bool, focused: bool) -> Reshow {
+    if minimized {
+        Reshow::MinimizedNoActivate
+    } else if maximized {
+        Reshow::Maximized
+    } else if focused {
+        Reshow::Show
+    } else {
+        Reshow::ShowNoActivate
+    }
+}
+
 /// Whether Next and Previous Window pass a hotkey window by (`PT:1026-1047`).
 pub fn cycling_skips(hotkey: Option<bool>, excluded_from_cycling: bool) -> bool {
     match hotkey {
@@ -210,5 +237,17 @@ mod tests {
         assert!(tray_wanted(true, false));
         assert!(!tray_wanted(false, true));
         assert!(!tray_wanted(false, false));
+    }
+
+    /// A style flip keeps the window's state (Task 8 review): minimized stays minimized,
+    /// maximized stays maximized, the focused window keeps its activation.
+    #[test]
+    fn reshow_keeps_the_window_state() {
+        assert_eq!(reshow_command(true, false, false), Reshow::MinimizedNoActivate);
+        assert_eq!(reshow_command(true, true, true), Reshow::MinimizedNoActivate);
+        assert_eq!(reshow_command(false, true, false), Reshow::Maximized);
+        assert_eq!(reshow_command(false, true, true), Reshow::Maximized);
+        assert_eq!(reshow_command(false, false, true), Reshow::Show);
+        assert_eq!(reshow_command(false, false, false), Reshow::ShowNoActivate);
     }
 }
