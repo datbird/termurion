@@ -154,8 +154,8 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | View > Toggle Full Screen | Ctrl+Cmd+F | Toggles native full screen mode for the window. | have |
 | View > Toolbelt > Show Toolbelt | Shift+Cmd+B | Shows or hides the Toolbelt sidebar of utility panels. (milestone 9) | have |
 | View > Toolbelt > Set Default Width | no shortcut | Sets the current Toolbelt width as the default for new windows. (milestone 9) | have |
-| View > Use Transparency | Cmd+U | Toggles background transparency for the window. (milestone 7) | missing |
-| View > Disable Transparency for Active Window | no shortcut | Forces the current window to be opaque regardless of the profile setting. (milestone 7) | missing |
+| View > Use Transparency | Cmd+U | Toggles background transparency for the window. (milestone 7) | partial, milestone 13g: built; see-through proof pending checklist line 1 (P1: one process, a DirectComposition swapchain and an HWND swapchain on the desktop GPU); have once it passes (Win+U, check mark follows the window) |
+| View > Disable Transparency for Active Window | no shortcut | Forces the current window to be opaque regardless of the profile setting. (milestone 7) | partial, milestone 13g: built; see-through proof pending checklist line 1 (P1: one process, a DirectComposition swapchain and an HWND swapchain on the desktop GPU); have once it passes |
 | View > Zoom In on Selection | Opt+Cmd+Z | Temporarily enlarges the pane to focus on the current selection. (milestone 4) | partial |
 | View > Zoom Out | no shortcut | Reverses Zoom In on Selection. (milestone 4) | have |
 | View > Find Cursor | Cmd+/ | Flashes a highlight around the cursor to help locate it. (milestone 4) | have |
@@ -671,7 +671,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Hotkey windows | Animated show/hide | Slide/fade animation when the hotkey window appears or disappears. | partial |  |
 | Hotkey windows | Floating (always-on-top) | Keeps the hotkey window above all other windows. | have |  |
 | Hotkey windows | Alternate shortcuts | A hotkey window can respond to more than one key combination. | have |  |
-| Hotkey windows | Dock icon preference | Controls whether the app shows in the Dock while only a hotkey window is open. | missing | Maps to taskbar visibility on Windows. |
+| Hotkey windows | Dock icon preference | Controls whether the app shows in the Dock while only a hotkey window is open. | have, milestone 13g | Windows note: the dock click is a left click on the notification-area icon, and the row is the hotkey window's "On Dock icon click" (labelled "On notification area icon click:"); the three choices work while the icon exists. Correction: 03:671 is the hotkey sheet's radio group, not the Exclude from Dock setting. |
 | Hotkey windows | Multiple independent hotkey windows | Several different profiles can each have their own hotkey window active simultaneously. | have |  |
 
 ### AI / chat features
