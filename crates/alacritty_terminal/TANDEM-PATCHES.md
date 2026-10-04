@@ -76,6 +76,7 @@ test data) is left out. Changes:
 
 16. `term/mod.rs`: DECSET 1007 starts off, as iTerm2 (`VT100Terminal.m:399`), and upstream's default
     had it on; `Term.alternate_scroll_allowed` (default true) refuses a set, never a reset (the
-    profile's Allow Alternate Mouse Scroll).
+    profile's Allow Alternate Mouse Scroll). `Term::clear_alternate_scroll` turns it off for an
+    initial OSC 133 prompt mark.
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

@@ -1012,6 +1012,11 @@ impl Screen {
         self.term.alternate_scroll_allowed = on;
     }
 
+    /// Turns DECSET 1007 off (an initial prompt mark, `VT100Terminal.m:4944`).
+    pub fn clear_alternate_scroll(&mut self) {
+        self.term.clear_alternate_scroll();
+    }
+
     /// Whether DECSET 1007 (alternate scroll) is on.
     pub fn alternate_scroll_mode(&self) -> bool {
         self.term.mode().contains(alacritty_terminal::term::TermMode::ALTERNATE_SCROLL)
@@ -1383,7 +1388,7 @@ impl Screen {
     /// sequences are fed in.
     pub fn soft_reset(&mut self) {
         const DECSTR: &[u8] = b"\x1b[?25h\x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\
-            \x1b[?2004l\x1b[?1004l\x1b[4l\x1b[0m\x1b[r\x1b[?6l\x1b[?7h\x1b(B";
+            \x1b[?2004l\x1b[?1004l\x1b[?1007l\x1b[4l\x1b[0m\x1b[r\x1b[?6l\x1b[?7h\x1b(B";
         // Straight to the parser: Literal Controls would print the sequence instead.
         let reply = self.feed_raw(DECSTR);
         self.replies.extend(reply);
@@ -1554,10 +1559,9 @@ mod tests {
         s.feed(b"\x1b[?1007h");
         s.feed(b"\x1bc");
         assert!(!s.alternate_scroll_mode());
-        // The profile's gate is a Term field, so a reset (RIS and DECSTR) keeps it.
+        // The profile's gate is a Term field, so a RIS keeps it.
         s.set_alternate_scroll_allowed(false);
         s.feed(b"\x1bc");
-        s.feed(b"\x1b[!p");
         s.feed(b"\x1b[?1007h");
         assert!(!s.alternate_scroll_mode());
         s.set_alternate_scroll_allowed(true);
@@ -1566,6 +1570,26 @@ mod tests {
         assert_eq!(ask(&mut s), b"\x1b[?1007;2$y");
         s.feed(b"\x1b[?1007h");
         assert_eq!(ask(&mut s), b"\x1b[?1007;1$y");
+    }
+
+    #[test]
+    fn soft_reset_and_a_prompt_clear_alternate_scroll() {
+        // DECSTR (soft_reset) clears 1007 (VT100Terminal.m:1697).
+        let mut s = Screen::new(80, 24);
+        s.feed(b"\x1b[?1007h");
+        assert!(s.alternate_scroll_mode());
+        s.soft_reset();
+        assert!(!s.alternate_scroll_mode());
+        // An initial prompt mark clears it, as ssh dying would need (VT100Terminal.m:4944).
+        s.feed(b"\x1b[?1007h\x1b]133;A\x07");
+        assert!(!s.alternate_scroll_mode());
+        // Also from the alternate screen, where the prompt mark itself is ignored.
+        s.feed(b"\x1b[?1049h\x1b[?1007h\x1b]133;A\x07");
+        assert!(!s.alternate_scroll_mode());
+        s.feed(b"\x1b[?1049l");
+        // A secondary or continuation prompt does not disturb it.
+        s.feed(b"\x1b[?1007h\x1b]133;A;k=s\x07\x1b]133;A;k=c\x07");
+        assert!(s.alternate_scroll_mode());
     }
 
     #[test]

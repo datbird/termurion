@@ -685,6 +685,11 @@ impl<T> Term<T> {
         self.scrollback_with_region = on;
     }
 
+    /// Tandem: turns DECSET 1007 off (an initial prompt mark, as iTerm2).
+    pub fn clear_alternate_scroll(&mut self) {
+        self.mode.remove(TermMode::ALTERNATE_SCROLL);
+    }
+
     /// Tandem: drops every program key reporting request (kitty flags on both screens,
     /// modifyOtherKeys).
     pub fn clear_keyboard_modes(&mut self) {

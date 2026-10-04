@@ -5930,6 +5930,21 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_edit_reaches_tmux_panes_alternate_scroll_gate() {
+        // refresh_panes walks every pane (tmux ones too) through screen_follows_profile on its own screen.
+        let mut pane = Pane::tmux(1, 0, 0, 10, 3);
+        let mut p = Profile::new("x");
+        p.values.insert("Allow Alternate Mouse Scroll".into(), toml::Value::Boolean(false));
+        screen_follows_profile(pane.own_mut(), &p);
+        pane.own_mut().feed(b"\x1b[?1007h");
+        assert!(!pane.own_mut().alternate_scroll_mode());
+        p.values.insert("Allow Alternate Mouse Scroll".into(), toml::Value::Boolean(true));
+        screen_follows_profile(pane.own_mut(), &p);
+        pane.own_mut().feed(b"\x1b[?1007h");
+        assert!(pane.own_mut().alternate_scroll_mode());
+    }
+
+    #[test]
     fn steal_focus_asks_once() {
         use crate::screen::Request;
         let now = Instant::now();

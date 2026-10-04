@@ -850,6 +850,11 @@ impl Screen {
     }
 
     fn apply_osc(&mut self, osc: Osc) {
+        // An initial prompt mark clears alternate scroll even from the alternate screen: "avoid
+        // leaving it on when ssh dies" (`VT100Terminal.m:4944`).
+        if matches!(osc, Osc::Prompt { kind: PromptKind::Initial, .. }) {
+            self.clear_alternate_scroll();
+        }
         let alt = self.term.mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
         if alt && matches!(osc, Osc::Prompt { .. } | Osc::CommandStart | Osc::OutputStart | Osc::CommandEnd { .. })
             || alt && matches!(&osc, Osc::Kv(k, _) if k == "SetMark")
