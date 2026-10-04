@@ -194,6 +194,7 @@ pub fn rule_rows(rules: &[Rule]) -> Vec<[String; 3]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema;
 
     #[test]
     fn rule_rows_round_trip() {
@@ -212,5 +213,16 @@ mod tests {
         let stored = v.as_array().unwrap()[0].as_table().unwrap().clone();
         assert!(!stored.contains_key("actions"), "a rule with no actions stores none, as iTerm2 does");
         assert_eq!(stored["precision"].as_str(), Some("low"));
+    }
+
+    /// Review Focus 10: the Apple-only rows are not offered and `aiTitle` is never set.
+    #[test]
+    fn apple_only_rows_are_hidden() {
+        assert!(schema::find_global("aiGeneratedTabTitles").is_none());
+        assert!(schema::find_global("logAITabTitleCorpus").is_none());
+        let help = &schema::find("Title Components").unwrap().help;
+        assert!(help.contains("not available on Windows"), "{help}");
+        let out = crate::interp::evaluate("\\(session.aiTitle)", &|_| None, &[]);
+        assert_eq!(out.as_deref(), Ok(""));
     }
 }
