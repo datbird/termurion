@@ -152,6 +152,9 @@ impl App {
         let distinct = distinct_tab_colors(panes.iter().map(|&p| self.pane_tab_color(p)));
         let bview = self.broadcast_view();
         let dim_background = self.globals.bool("DimBackgroundWindows");
+        // A see-through frame (`build_frame` set `frame_alpha`) gives each pane its 13g alpha, as
+        // the pane's own background takes it; an opaque window draws every bar opaque.
+        let alphas = if self.frame_alpha { self.pane_alphas(tab) } else { Vec::new() };
         let mut drawn = Vec::new();
         for (id, rect) in visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), GAP) {
             let chrome = self.pane_chrome(tab, id, rect);
@@ -178,10 +181,10 @@ impl App {
                 bar_bg,
                 legibility,
                 locked: false,
+                transparency_alpha: alphas.iter().find(|(a, _)| *a == id).map_or(1.0, |(_, a)| *a),
             };
-            // P11 (13g's seam): the Minimal theme's background alpha (`transparencyAlpha`,
-            // `iTermTheme.m:134-150`) multiplies in here, Minimal branch only, once 13g lands;
-            // until then the title bar is opaque.
+            // P11: the Minimal theme's background alpha (`transparencyAlpha`, `iTermTheme.m:322-353`)
+            // comes from `look` via `transparency_alpha` above; text, menu and line stay pre-blended.
             let look = pane_title::look(&parts);
             let ordinal = panes.iter().position(|&x| x == id).and_then(|i| ordinals.get(i)).copied().unwrap_or(0);
             let text = pane_title::title_text(&self.session_title(id), ordinal, tag);

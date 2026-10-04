@@ -1873,7 +1873,9 @@ const TITLE_GLYPH: f32 = 12.0 / 17.0;
 pub fn pane_title_bar(frame: &mut Frame, bar: &TitleBar, cell: (f32, f32)) {
     let (g, look) = (&bar.geometry, &bar.look);
     let back = look.background;
-    frame.quads.push(Quad { rect: g.bar, color: rgba(back, 1.0) });
+    // A see-through Minimal bar (P11) is premultiplied like the pane's margins; an opaque one is as before.
+    let color = if look.background_alpha < 1.0 { crate::transparency::premultiplied([back.r, back.g, back.b], look.background_alpha) } else { rgba(back, 1.0) };
+    frame.quads.push(Quad { rect: g.bar, color });
     if let Some((c, a)) = look.line {
         frame.quads.push(Quad { rect: g.line, color: rgba(c, a) });
     }
@@ -5174,7 +5176,23 @@ mod title_bar_tests {
     const CELL: (f32, f32) = (8.0, 16.0);
 
     fn dark_active() -> Look {
-        Look { background: white(0.27), text: (white(0.8), 1.0), menu: (white(0.8), 0.55), line: Some((white(1.0), 0.25)) }
+        Look { background: white(0.27), background_alpha: 1.0, text: (white(0.8), 1.0), menu: (white(0.8), 0.55), line: Some((white(1.0), 0.25)) }
+    }
+
+    /// P11: a see-through Minimal bar's background is the session color at the pane's alpha,
+    /// premultiplied like the pane's own margins (`transparency::premultiplied`); the label stays
+    /// pre-blended into the solid color.
+    #[test]
+    fn title_bar_background_carries_its_alpha() {
+        let mut b = bar("bash", true);
+        b.look.background = crate::palette::rgb(10, 20, 30);
+        b.look.background_alpha = 0.6;
+        b.look.line = None;
+        let mut f = Frame::default();
+        pane_title_bar(&mut f, &b, CELL);
+        assert_eq!(f.quads[0].color, crate::transparency::premultiplied([10, 20, 30], 0.6));
+        let label = f.rows.iter().find(|r| r.spans.iter().all(|s| !s.icon)).unwrap();
+        assert_eq!(label.spans[0].color, blend(crate::palette::rgb(10, 20, 30), white(0.8), 1.0));
     }
 
     fn bar<'a>(text: &'a str, show_label: bool) -> TitleBar<'a> {

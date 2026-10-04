@@ -166,6 +166,10 @@ pub fn hit(g: &Geometry, x: f32, y: f32) -> Option<Hit> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Look {
     pub background: Rgb,
+    /// The background's alpha: the pane's `transparencyAlpha` in the Minimal theme's session
+    /// colored branch (`iTermTheme.m:322-353`, `PSMShouldExtendTransparencyIntoMinimalTabBar`),
+    /// 1 everywhere else.
+    pub background_alpha: f32,
     pub text: (Rgb, f32),
     pub menu: (Rgb, f32),
     /// The bottom line and its alpha; `None` in the Minimal theme.
@@ -194,6 +198,8 @@ pub struct Parts<'a> {
     /// `MinimalTextLegibilityAdjustment`.
     pub legibility: f32,
     pub locked: bool,
+    /// The pane's `transparencyAlpha` (13g's `pane_alpha` on a see-through window, else 1).
+    pub transparency_alpha: f32,
 }
 
 /// A fixed style for a switch iTerm2 asserts on (Automatic, Compact, Minimal): Dark.
@@ -284,7 +290,16 @@ pub fn look(p: &Parts) -> Look {
     let line = (!minimal).then(|| {
         if tab_theme::perceived(background) > 0.5 { (hexcolor::white(0.0), 0.25) } else { (hexcolor::white(1.0), 0.25) }
     });
-    Look { background, text, menu, line }
+    Look { background, background_alpha: background_alpha(p), text, menu, line }
+}
+
+/// The background's alpha (P11): iTerm2 extends transparency into the title bar only in the
+/// Minimal theme (`PSMShouldExtendTransparencyIntoMinimalTabBar`) and only where it draws the
+/// session color (`dimmedBackgroundColorWithAppearance:`, `iTermTheme.m:322-353`); a custom
+/// color, a distinct tab color (`iTermTheme.m:134-142`) and a status bar's color are opaque.
+fn background_alpha(p: &Parts) -> f32 {
+    let session_colored = p.style == TabStyle::Minimal && p.bar_bg.is_none() && hex_word(p.custom_bg).is_none() && !(p.tab_color.is_some() && p.distinct_tab_colors);
+    if session_colored { p.transparency_alpha.clamp(0.0, 1.0) } else { 1.0 }
 }
 
 /// The pane's rectangle cut into its title bar (on top) and the rest.
@@ -396,7 +411,48 @@ mod tests {
             bar_bg: None,
             legibility: 0.0,
             locked: false,
+            transparency_alpha: 1.0,
         }
+    }
+
+    /// P11: the Minimal title bar takes the pane's transparency only where iTerm2's Minimal
+    /// branch draws the session color (`iTermTheme.m:322-353`); a custom color, a distinct tab
+    /// color, a status bar's color and every other theme stay opaque.
+    #[test]
+    fn minimal_background_alpha_follows_transparency() {
+        let minimal = |dimmed: bool| {
+            let mut p = parts(TabStyle::Dark, dimmed);
+            p.style = TabStyle::Minimal;
+            p.transparency_alpha = 0.6;
+            p
+        };
+        assert_eq!(look(&minimal(false)).background_alpha, 0.6);
+        assert_eq!(look(&minimal(true)).background_alpha, 0.6);
+        let mut p = minimal(true);
+        p.dim_only_text = true;
+        assert_eq!(look(&p).background_alpha, 0.6);
+        // A tab color alone still draws the session color in Minimal.
+        let mut p = minimal(false);
+        p.tab_color = Some(rgb(255, 0, 0));
+        assert_eq!(look(&p).background_alpha, 0.6);
+        p.distinct_tab_colors = true;
+        assert_eq!(look(&p).background_alpha, 1.0);
+        let mut p = minimal(false);
+        p.custom_bg = "#112233";
+        assert_eq!(look(&p).background_alpha, 1.0);
+        let mut p = minimal(false);
+        p.bar_bg = Some(rgb(1, 2, 3));
+        assert_eq!(look(&p).background_alpha, 1.0);
+        // Other themes never extend transparency into the title bar.
+        let mut p = parts(TabStyle::Dark, false);
+        p.transparency_alpha = 0.6;
+        assert_eq!(look(&p).background_alpha, 1.0);
+        p.tab_color = Some(rgb(255, 0, 0));
+        assert_eq!(look(&p).background_alpha, 1.0);
+        // An opaque pane keeps an opaque bar.
+        let mut p = minimal(false);
+        p.transparency_alpha = 1.0;
+        assert_eq!(look(&p).background_alpha, 1.0);
     }
 
     #[test]
