@@ -296,9 +296,12 @@ impl App {
     /// seam; the scheme is bound only when Tandem then is the handler (else Tandem's text).
     fn bind_scheme_confirmed(&mut self, guid: &str, scheme: &str) {
         if self.store.get(guid).is_none() {
-            return;
+            return self.banners.set("url-schemes", "That profile no longer exists, so nothing was registered.");
         }
-        let Ok(exe) = std::env::current_exe() else { return };
+        let exe = match std::env::current_exe() {
+            Ok(exe) => exe,
+            Err(e) => return self.banners.set("url-schemes", format!("Could not find Tandem's own path to register it for {scheme} links: {e}")),
+        };
         let mut reg = crate::url_schemes::system();
         let mut table = self.globals.table(crate::url_schemes::HANDLERS_KEY);
         match crate::url_schemes::register_and_bind(&mut table, reg.as_mut(), scheme, guid, &exe) {
@@ -637,6 +640,10 @@ mod tests {
         // The actions window's own close answer is the first button (OK): it must not reach us.
         assert_eq!(on_close(&then, 0), Answer::Button(1));
         assert_eq!(on_close(&then, 1), Answer::Button(1));
+        // The not-default question: a closed window is Cancel, never OK, so nothing is registered.
+        let bind = Then::BindScheme { guid: "G".into(), scheme: "ssh".into() };
+        assert_eq!(on_close(&bind, 0), Answer::Button(1));
+        assert_eq!(on_close(&bind, 1), Answer::Button(1));
         let a = ask("", "OK to copy", &[crate::api_auth::OK, crate::api_auth::CANCEL], None, Kind::Persistent, then);
         assert_eq!(a.spec.cancel, Some(1), "Escape is Cancel");
         let mut queue: VecDeque<Ask> = (0..LIMIT).map(|_| ask("H", "T", &["OK"], None, Kind::Persistent, Then::Nothing)).collect();

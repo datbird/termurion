@@ -982,9 +982,6 @@ pub fn chose_meta(key: &str, value: Option<&Value>) -> bool {
 /// Font settings follow the default profile until each pane can have its own renderer.
 pub const FONT_KEYS: [&str; 5] = ["Normal Font", "Non Ascii Font", "Use Non-ASCII Font", "Horizontal Spacing", "Vertical Spacing"];
 
-/// One control for one setting. Returns true when a change is committed: at once for
-/// checkboxes, pickers, and colors; when a drag ends for sliders; when the field loses
-/// focus (or Enter) for text. Uncommitted edits still update the profile in memory.
 /// The not-default question a scheme menu choice raised: the question, its detail, and what it
 /// would bind.
 pub struct SchemeAsk {
@@ -1035,6 +1032,9 @@ fn url_schemes_control(ui: &mut egui::Ui, globals: &mut Globals, guid: &str, ask
     changed
 }
 
+/// One control for one setting. Returns true when a change is committed: at once for
+/// checkboxes, pickers, and colors; when a drag ends for sliders; when the field loses
+/// focus (or Enter) for text. Uncommitted edits still update the profile in memory.
 fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is_default: bool) -> bool {
     let font_locked = !is_default && FONT_KEYS.contains(&s.key.as_str());
     let key = edit_key(profile, s, dark);
@@ -1169,6 +1169,9 @@ mod tests {
             None
         }
         fn user_choice(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn classes_command(&self, _: &str) -> Option<String> {
             None
         }
         fn register(&mut self, _: &str, _: &std::path::Path) -> Result<(), String> {

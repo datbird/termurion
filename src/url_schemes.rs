@@ -19,6 +19,17 @@ pub fn not_default(scheme: &str) -> String {
     format!("Tandem is not the default handler for {scheme}. Would you like to set Tandem as the default handler?")
 }
 
+const ANOTHER_PROGRAM: &str = "another program";
+
+pub fn replaces(program: &str) -> String {
+    format!("Tandem will replace this program's registration: {program}")
+}
+
+/// Tandem's own: Windows keeps the user's choice, so Tandem's entry waits for the person.
+pub fn not_effective(scheme: &str) -> String {
+    format!("Windows keeps another app as the handler for {scheme} links, so Tandem's entry will not take effect until you choose Tandem in Settings > Apps > Default apps.")
+}
+
 pub fn current_handler(name: &str) -> String {
     format!("The current handler is: {name}")
 }
@@ -36,6 +47,10 @@ pub trait SchemeRegistry {
     fn handler_name(&self, scheme: &str) -> Option<String>;
     /// The ProgId of the protected user choice for the scheme (read only).
     fn user_choice(&self, scheme: &str) -> Option<String>;
+    /// The command of `HKCU\Software\Classes\<scheme>\shell\open\command`, the entry Tandem's OK
+    /// overwrites: None when there is no such entry, Some("") when it has no readable command
+    /// (a `DelegateExecute` verb).
+    fn classes_command(&self, scheme: &str) -> Option<String>;
     /// Registers Tandem as a handler for the user (`HKCU` only). Runs only after the person's OK.
     fn register(&mut self, scheme: &str, exe: &Path) -> Result<(), String>;
 }
@@ -110,16 +125,42 @@ pub fn pick(table: &toml::Table, reg: &dyn SchemeRegistry, scheme: &str, guid: &
     if is_default(reg, scheme, exe) {
         return Pick::Bind;
     }
-    // A handler that exists is always named (friendly name, else its program), so its command is
-    // never replaced unseen; "no handler" only when there is none.
-    let info = match reg.handler_command(scheme) {
-        None => NO_HANDLER.to_string(),
-        Some(command) => {
-            let name = reg.handler_name(scheme).filter(|n| !n.trim().is_empty()).unwrap_or_else(|| command_program(&command));
-            current_handler(&name)
+    Pick::Ask { text: not_default(scheme), info: ask_info(reg, scheme) }
+}
+
+/// The question's detail. Every handler the OK touches is named, so none is replaced unseen: the
+/// effective handler (friendly name, else its program, else "another program" when one exists
+/// whose command cannot be read), the `HKCU\Classes` entry the OK overwrites when it is another
+/// program, and, when Windows keeps a protected choice, that Tandem's entry will not take effect.
+/// "No handler" only when there is none at all.
+fn ask_info(reg: &dyn SchemeRegistry, scheme: &str) -> String {
+    let command = reg.handler_command(scheme);
+    let classes = reg.classes_command(scheme);
+    let choice = reg.user_choice(scheme).filter(|c| !c.eq_ignore_ascii_case(&format!("Tandem.{scheme}")));
+    let name = reg.handler_name(scheme).filter(|n| !n.trim().is_empty());
+    let effective_program = command.as_deref().map(command_program).filter(|p| !p.is_empty());
+    let mut lines = Vec::new();
+    match (&name, &effective_program) {
+        (Some(n), _) => lines.push(current_handler(n)),
+        (None, Some(p)) => lines.push(current_handler(p)),
+        // Something handles the scheme but its command cannot be read.
+        (None, None) if command.is_some() || classes.is_some() || choice.is_some() => lines.push(current_handler(ANOTHER_PROGRAM)),
+        (None, None) => lines.push(NO_HANDLER.to_string()),
+    }
+    if let Some(entry) = &classes {
+        let program = command_program(entry);
+        let ours = Path::new(&program).file_name().is_some_and(|f| f.eq_ignore_ascii_case("tandem.exe"));
+        let same = effective_program.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(&program));
+        // An entry with no readable command is named only when another handler is named above.
+        let hidden = program.is_empty() && effective_program.is_none() && name.is_none();
+        if !ours && !same && !hidden {
+            lines.push(replaces(if program.is_empty() { ANOTHER_PROGRAM } else { &program }));
         }
-    };
-    Pick::Ask { text: not_default(scheme), info }
+    }
+    if choice.is_some() {
+        lines.push(not_effective(scheme));
+    }
+    lines.join(" ")
 }
 
 /// The OK of the not-default question: registers, then binds only when Tandem really is the
@@ -171,6 +212,9 @@ impl SchemeRegistry for NoRegistry {
     fn user_choice(&self, _: &str) -> Option<String> {
         None
     }
+    fn classes_command(&self, _: &str) -> Option<String> {
+        None
+    }
     fn register(&mut self, _: &str, _: &Path) -> Result<(), String> {
         Err("not Windows".into())
     }
@@ -183,7 +227,6 @@ pub struct WinRegistry;
 mod win {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ, RegCloseKey, RegCreateKeyExW, RegGetValueW, RegSetValueExW};
-    #[cfg(test)]
     use windows_sys::Win32::System::Registry::RegDeleteTreeW;
 
     pub fn wide(s: &str) -> Vec<u16> {
@@ -223,8 +266,35 @@ mod win {
         Some(String::from_utf16_lossy(&buf[..end]))
     }
 
-    /// Removes `HKCU\<subkey>` and everything under it (tests' throwaway key only).
-    #[cfg(test)]
+    /// Whether `HKCU\<subkey>` exists.
+    pub fn key_exists(subkey: &str) -> bool {
+        use windows_sys::Win32::System::Registry::{KEY_READ, RegOpenKeyExW};
+        let key = wide(subkey);
+        let mut h: HKEY = std::ptr::null_mut();
+        let rc = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, key.as_ptr(), 0, KEY_READ, &mut h) };
+        if rc == ERROR_SUCCESS {
+            unsafe { RegCloseKey(h) };
+        }
+        rc == ERROR_SUCCESS
+    }
+
+    /// Removes the string value `name` (None: the key's default) of `HKCU\<subkey>` when present.
+    pub fn delete_value(subkey: &str, name: Option<&str>) {
+        use windows_sys::Win32::System::Registry::{KEY_SET_VALUE, RegDeleteValueW, RegOpenKeyExW};
+        let key = wide(subkey);
+        let mut h: HKEY = std::ptr::null_mut();
+        if unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, key.as_ptr(), 0, KEY_SET_VALUE, &mut h) } != ERROR_SUCCESS {
+            return;
+        }
+        let n = name.map(wide);
+        unsafe {
+            RegDeleteValueW(h, n.as_ref().map_or(std::ptr::null(), |n| n.as_ptr()));
+            RegCloseKey(h);
+        }
+    }
+
+    /// Removes `HKCU\<subkey>` and everything under it: a key Tandem's own registration leaves
+    /// stale, and the tests' throwaway key.
     pub fn delete_tree(subkey: &str) {
         let key = wide(subkey);
         unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, key.as_ptr()) };
@@ -244,6 +314,13 @@ impl WinRegistry {
         let key = format!("{root}\\{scheme}");
         win::set(&key, None, &format!("URL:{scheme} Protocol"))?;
         win::set(&key, Some("URL Protocol"), "")?;
+        // What a program that held these keys before left would still route the link to it (a
+        // `DelegateExecute` verb, a DDE launch, another default verb): only these three go.
+        for k in [&progid, &key] {
+            win::delete_value(&format!("{k}\\shell\\open\\command"), Some("DelegateExecute"));
+            win::delete_tree(&format!("{k}\\shell\\open\\ddeexec"));
+            win::delete_value(&format!("{k}\\shell"), None);
+        }
         win::set(&format!("{key}\\shell\\open\\command"), None, &command)
     }
 
@@ -284,6 +361,11 @@ impl SchemeRegistry for WinRegistry {
         win::get(&format!("Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\{scheme}\\UserChoice"), Some("ProgId"))
     }
 
+    fn classes_command(&self, scheme: &str) -> Option<String> {
+        let key = format!("Software\\Classes\\{scheme}\\shell\\open\\command");
+        win::get(&key, None).or_else(|| win::key_exists(&key).then(String::new))
+    }
+
     fn register(&mut self, scheme: &str, exe: &Path) -> Result<(), String> {
         // Listed in Default apps first; the protocol handler itself last.
         win::set("Software\\Tandem\\Capabilities", Some("ApplicationName"), "Tandem")?;
@@ -304,6 +386,7 @@ mod tests {
         command: Option<String>,
         name: Option<String>,
         choice: Option<String>,
+        classes: Option<String>,
         registered: Vec<(String, PathBuf)>,
         fail: bool,
     }
@@ -317,6 +400,9 @@ mod tests {
         }
         fn user_choice(&self, _: &str) -> Option<String> {
             self.choice.clone()
+        }
+        fn classes_command(&self, _: &str) -> Option<String> {
+            self.classes.clone()
         }
         fn register(&mut self, scheme: &str, exe: &Path) -> Result<(), String> {
             if self.fail {
@@ -417,6 +503,39 @@ mod tests {
         assert_eq!(HANDLERS_KEY, "URLHandlersByGuid");
     }
 
+    /// Consent (task 2 fix round 1): the question names the effective handler AND the
+    /// `HKCU\Classes` entry the OK replaces, and says so when Windows keeps another choice.
+    #[test]
+    fn the_question_names_every_handler_it_replaces() {
+        let mut t = toml::Table::new();
+        bind(&mut t, "ssh", "G1");
+        let info = |reg: &Fake| match pick(&t, reg, "ssh", "G1", &exe()) {
+            Pick::Ask { info, .. } => info,
+            other => panic!("{other:?}"),
+        };
+        // The effective handler is PuTTY and HKCU\Classes\ssh holds another program's entry.
+        let two = Fake { command: Some("putty.exe %1".into()), name: Some("PuTTY".into()), classes: Some("\"C:\\Tools\\sshx.exe\" %1".into()), ..Fake::default() };
+        let text = info(&two);
+        assert!(text.contains("The current handler is: PuTTY"), "{text}");
+        assert!(text.contains(&replaces("C:\\Tools\\sshx.exe")), "{text}");
+        // Protected: the same, and Tandem's entry will not take effect until chosen in Windows.
+        let kept = Fake { choice: Some("PuTTY.ssh".into()), ..two };
+        let text = info(&kept);
+        assert!(text.contains(&replaces("C:\\Tools\\sshx.exe")) && text.contains(&not_effective("ssh")), "{text}");
+        // The same program in both places is named once, as the handler.
+        let same = Fake { command: Some("\"C:\\Tools\\sshx.exe\" %1".into()), classes: Some("\"C:\\Tools\\sshx.exe\" %1".into()), ..Fake::default() };
+        assert!(!info(&same).contains(&replaces("C:\\Tools\\sshx.exe")), "{}", info(&same));
+        // A handler whose command cannot be read (packaged app, DelegateExecute) is "another program",
+        // never "no handler".
+        let packaged = Fake { classes: Some(String::new()), ..Fake::default() };
+        let text = info(&packaged);
+        assert!(text.contains("The current handler is: another program") && !text.contains(NO_HANDLER), "{text}");
+        let chosen = Fake { choice: Some("AppX123".into()), ..Fake::default() };
+        assert!(info(&chosen).contains("The current handler is: another program"));
+        // Nothing anywhere: "no handler".
+        assert_eq!(info(&Fake::default()), NO_HANDLER);
+    }
+
     #[test]
     fn globals_table_is_pruned_against_the_store() {
         let path = std::env::temp_dir().join(format!("tandem-urlschemes-{}.toml", std::process::id()));
@@ -438,10 +557,20 @@ mod tests {
     fn registry_writes_under_hkcu() {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let root = format!("Software\\Tandem\\test-{}-{nanos}", std::process::id());
+        // A previous program's leftovers under the keys Tandem writes.
+        win::set(&format!("{root}\\ssh\\shell\\open\\command"), Some("DelegateExecute"), "{GUID}").unwrap();
+        win::set(&format!("{root}\\ssh\\shell\\open\\ddeexec"), None, "[open]").unwrap();
+        win::set(&format!("{root}\\ssh\\shell"), None, "other").unwrap();
         let result = WinRegistry::register_under(&root, "ssh", &exe());
+        let leftovers = (
+            win::get(&format!("{root}\\ssh\\shell\\open\\command"), Some("DelegateExecute")),
+            win::key_exists(&format!("{root}\\ssh\\shell\\open\\ddeexec")),
+            win::get(&format!("{root}\\ssh\\shell"), None),
+        );
         let read = WinRegistry::read_under(&root, "ssh");
         win::delete_tree(&root);
         assert_eq!(result, Ok(()));
+        assert_eq!(leftovers, (None, false, None), "DelegateExecute, ddeexec and a default verb are cleared");
         let command = tandem_command(&exe());
         assert_eq!(read, (Some("URL:ssh Protocol".to_string()), Some(command.clone()), Some(command)));
         assert_eq!(win::get(&root, None), None, "the throwaway key is gone");
