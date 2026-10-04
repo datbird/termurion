@@ -21,6 +21,8 @@ use crate::chat_search::{self, Hit};
 use crate::chat_toolbar::{self as tb, Popup, ProviderOption};
 use crate::chat_view::{self, Body, CodeBlock, Item, Part, Style};
 use crate::egui_host::EguiHost;
+use crate::mention::{Chip, Picker};
+use crate::mention_picker_ui;
 use crate::palette::{rgb, Palette};
 use crate::porthole::detect::Language;
 use crate::porthole::render::{Block, Doc, Face};
@@ -95,6 +97,10 @@ pub struct InputData {
     pub loading: bool,
     /// Changes when the app set the text and wants the field focused.
     pub focus: u64,
+    /// The sessions picked with `@` (orchestration chats): a chip each, with its name.
+    pub chips: Vec<(Chip, String)>,
+    /// The `@` picker under the field, while it is open.
+    pub picker: Option<Picker>,
 }
 
 /// One row of the conversation, made by the app from the chat's messages.
@@ -207,6 +213,14 @@ pub enum ChatEvent {
     Button { message: String, button: String },
     /// The input's text changed.
     InputChanged(String),
+    /// The `@` picker: Up (true) or Down (false).
+    MentionMove(bool),
+    /// Return, Tab or a click (its item index) on the picker.
+    MentionCommit(Option<usize>),
+    /// Escape on the picker.
+    MentionClose,
+    /// A mention chip's close button (its index).
+    RemoveMention(usize),
     /// Send, or Enter: the app sends the text and attachments (only while the agent is idle).
     Send,
     /// The stop glyph, or Enter while the agent types.
@@ -466,14 +480,38 @@ fn input_area(ui: &mut egui::Ui, d: &ChatData, st: &mut InputUi, icons: bool, ou
             }
         });
     }
+    if !d.input.chips.is_empty() {
+        if let Some(i) = mention_picker_ui::chip_strip(ui, &d.input.chips) {
+            out.push(ChatEvent::RemoveMention(i));
+        }
+    }
     if d.input.focus != st.focus_seen {
         st.focus_seen = d.input.focus;
         ui.memory_mut(|m| m.request_focus(id));
     }
+    // The picker owns Up, Down, Return, Tab and Escape while it is open (the keys are taken before
+    // the editor sees them); a list with nothing in it owns none.
+    let mut picked = false;
+    if enabled && ui.memory(|m| m.has_focus(id)) && d.input.picker.as_ref().is_some_and(|p| !p.items.is_empty()) {
+        let none = egui::Modifiers::NONE;
+        let (up, down, enter, tab, esc) = ui.input_mut(|i| (i.consume_key(none, egui::Key::ArrowUp), i.consume_key(none, egui::Key::ArrowDown), i.consume_key(none, egui::Key::Enter), i.consume_key(none, egui::Key::Tab), i.consume_key(none, egui::Key::Escape)));
+        if up {
+            out.push(ChatEvent::MentionMove(true));
+        }
+        if down {
+            out.push(ChatEvent::MentionMove(false));
+        }
+        if enter || tab {
+            out.push(ChatEvent::MentionCommit(None));
+            picked = true;
+        } else if esc {
+            out.push(ChatEvent::MentionClose);
+        }
+    }
     // Enter is taken before the editor sees it; Shift+Enter (and Enter with nothing to do) stays
     // in the editor. The events go out after the text's own change, so a send sees the text.
     let mut after = Vec::new();
-    if enabled && ui.memory(|m| m.has_focus(id)) {
+    if enabled && !picked && ui.memory(|m| m.has_focus(id)) {
         let (pressed, mods) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.modifiers));
         if pressed && !mods.ctrl && !mods.alt && !mods.command {
             let send = chat_input::send_enabled(&st.text, d.input.loading, d.input.stoppable);
@@ -513,6 +551,15 @@ fn input_area(ui: &mut egui::Ui, d: &ChatData, st: &mut InputUi, icons: bool, ou
     if let Some(o) = edited {
         if o.response.changed() {
             out.push(ChatEvent::InputChanged(st.text.clone()));
+        }
+        if let Some(p) = &d.input.picker {
+            // Focus leaving the field closes the list, except for the press that picks from it.
+            if !o.response.has_focus() && !ui.input(|i| i.pointer.any_down() || i.pointer.any_released()) {
+                out.push(ChatEvent::MentionClose);
+            }
+            if let Some(i) = mention_picker_ui::show_above(ui, p, o.response.rect.left_top() - egui::vec2(0.0, 4.0)) {
+                out.push(ChatEvent::MentionCommit(Some(i)));
+            }
         }
         // The hint, at the field's right, unless the text would reach it or the agent types.
         let font = egui::FontId::proportional(12.0);

@@ -602,8 +602,8 @@ mod tests {
         assert_eq!((parts.text.y, parts.text.h), (ten.y + INPUT_PAD_V, 6.0 * 18.0));
         assert_eq!(input_parts(input_rect(panel, 1, 18.0, 1.0), 1.0).text.w, parts.text.w, "the text's width does not depend on the lines");
         // Enter and the send glyph are Task 7's rules over the panel's draft.
-        let typed = Draft { text: "hello".into(), pending: vec![] };
-        let blank = Draft { text: " \n ".into(), pending: vec![] };
+        let typed = Draft { text: "hello".into(), pending: vec![], ..Default::default() };
+        let blank = Draft { text: " \n ".into(), pending: vec![], ..Default::default() };
         assert_eq!(panel_enter(&typed, false, false), Enter::Send);
         assert_eq!(panel_enter(&typed, false, true), Enter::StopThenSend);
         assert_eq!(panel_enter(&typed, true, false), Enter::Newline);

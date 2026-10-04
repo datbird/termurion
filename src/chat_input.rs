@@ -670,12 +670,25 @@ pub fn list_with(dir: &Path, accepts: &dyn Fn(&str) -> bool, max: usize, disk: &
 pub struct Draft {
     pub text: String,
     pub pending: Vec<Pending>,
+    /// The sessions picked with `@` in an orchestration chat, by stable id, in the order picked.
+    /// They are chips above the field and join the message as their `mention_text` when it is sent.
+    pub mentions: Vec<String>,
 }
 
 impl Draft {
     pub fn is_empty(&self) -> bool {
-        self.text.is_empty() && self.pending.is_empty()
+        self.text.is_empty() && self.pending.is_empty() && self.mentions.is_empty()
     }
+}
+
+/// The message text to send: each picked session as the token a chat mention is sent as
+/// (`mention::mention_text`), then the typed text. Only a valid stable id is ever sent as one.
+pub fn with_mentions(text: &str, mentions: &[String]) -> String {
+    let tokens: Vec<String> = mentions.iter().filter_map(|id| crate::mention::mention_text(&crate::mention::Chip::parse(id)?)).collect();
+    if tokens.is_empty() {
+        return text.to_string();
+    }
+    format!("{} {}", tokens.join(" "), text)
 }
 
 /// Unsent input kept per chat (`CVC:108-115,864-894`).
@@ -719,11 +732,14 @@ pub struct InputState {
     pub draft: Draft,
     pub eligible: bool,
     pub focus: u64,
+    /// The `@` picker under the field (orchestration chats only), and the "@query" an Escape closed.
+    pub picker: Option<crate::mention::Picker>,
+    pub dismissed: Option<(usize, String)>,
 }
 
 impl Default for InputState {
     fn default() -> InputState {
-        InputState { draft: Draft::default(), eligible: true, focus: 0 }
+        InputState { draft: Draft::default(), eligible: true, focus: 0, picker: None, dismissed: None }
     }
 }
 
@@ -763,6 +779,8 @@ impl InputState {
     pub fn switched(&mut self, draft: Draft) {
         self.eligible = draft.text.is_empty();
         self.draft = draft;
+        self.picker = None;
+        self.dismissed = None;
     }
 
     /// Paths inserted as text (a drop), at the end.
@@ -773,6 +791,52 @@ impl InputState {
         self.draft.text = append_text(&self.draft.text, text);
         self.eligible = false;
         self.focus += 1;
+    }
+
+    /// The text moved the picker (`CW:985-1034`): it follows the first "@" at a word start while
+    /// `orchestrating`, with that query, and stays closed after an Escape until the target changes.
+    /// A picker already open for the same query is kept, so the choice does not jump.
+    pub fn follow_mention(&mut self, orchestrating: bool, world: &crate::cockpit_rows::World) {
+        let raw = crate::mention::completion_target(&self.draft.text);
+        if self.dismissed != raw {
+            self.dismissed = None;
+        }
+        let Some((_, query)) = raw.filter(|_| orchestrating && self.dismissed.is_none()) else {
+            self.picker = None;
+            return;
+        };
+        if self.picker.as_ref().is_some_and(|p| p.query == query) {
+            return;
+        }
+        let mut p = crate::mention::Picker::new(world, &query);
+        // Window and tab rows only group sessions here, so the first session is the choice.
+        p.selected = p.items.iter().position(|i| matches!(i.chip, crate::mention::Chip::Session { .. })).unwrap_or(0);
+        self.picker = Some(p);
+    }
+
+    /// Commits the chosen item (Return, Tab or a click): a session's `@query` text leaves the field and
+    /// its id joins the chips. A window or tab row only groups sessions and commits nothing.
+    pub fn commit_mention(&mut self, index: Option<usize>) -> bool {
+        let Some(p) = self.picker.as_mut() else { return false };
+        if let Some(i) = index.filter(|i| *i < p.items.len()) {
+            p.selected = i;
+        }
+        let Some(crate::mention::Chip::Session { stable_id }) = p.current().map(|i| i.chip.clone()) else { return false };
+        if let Some(rest) = crate::mention::remove_target(&self.draft.text) {
+            self.draft.text = rest;
+        }
+        if !self.draft.mentions.contains(&stable_id) {
+            self.draft.mentions.push(stable_id);
+        }
+        self.picker = None;
+        self.focus += 1;
+        true
+    }
+
+    /// Escape: the picker closes and stays closed for this "@query".
+    pub fn close_mention(&mut self) {
+        self.dismissed = crate::mention::completion_target(&self.draft.text);
+        self.picker = None;
     }
 
     pub fn remove_attachment(&mut self, index: usize) {
@@ -897,9 +961,9 @@ mod tests {
     #[test]
     fn drafts_follow_iterm2() {
         let mut d = Drafts::default();
-        let a = Draft { text: "a".into(), pending: vec![Pending::Path(p("C:\\f.txt"))] };
+        let a = Draft { text: "a".into(), pending: vec![Pending::Path(p("C:\\f.txt"))], ..Default::default() };
         assert_eq!(d.switch(Some("1"), a.clone(), Some("2")), Draft::default(), "chat 2 starts empty");
-        let b = Draft { text: "b".into(), pending: vec![] };
+        let b = Draft { text: "b".into(), pending: vec![], ..Default::default() };
         assert_eq!(d.switch(Some("2"), b.clone(), Some("1")), a, "chat 1 gets its text and attachments back");
         assert_eq!(d.switch(Some("1"), a.clone(), None), a, "no chat keeps the input");
         assert_eq!(d.switch(None, a.clone(), Some("2")), b, "and chat 2 is still there");
@@ -984,7 +1048,7 @@ mod tests {
         assert!(!s.eligible, "typed text stays protected across a code change");
         assert!(!s.offer("nope"));
         // A chat switch brings the draft and sets eligibility from its text.
-        s.switched(Draft { text: "kept".into(), pending: vec![] });
+        s.switched(Draft { text: "kept".into(), pending: vec![], ..Default::default() });
         assert!(!s.eligible);
         s.switched(Draft::default());
         assert!(s.eligible);
@@ -1267,5 +1331,58 @@ mod tests {
         assert_eq!(names, ["a\\x.txt"], "the same files are not attached again through the loop");
         assert!(l.skipped.contains(&Skipped { name: "a\\loop".into(), reason: Reason::Link }), "{:?}", l.skipped);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn world_with(id: &str) -> crate::cockpit_rows::World {
+        use crate::cockpit_rows::{SessionFact, TabFact, WindowFact};
+        let fact = SessionFact { pane: 1, stable_id: id.into(), name: "build".into(), status: Default::default(), exited: false, alt_screen: false, ancestors: Vec::new(), armed: false };
+        crate::cockpit_rows::World { windows: vec![WindowFact { guid: "g".into(), number: 1, title: String::new(), active_tab: 0, armed: false, tabs: vec![TabFact { id: 5, title: String::new(), sessions: vec![fact] }] }], buried: Vec::new() }
+    }
+
+    #[test]
+    fn mentions_ride_the_draft() {
+        const ID: &str = "ptys_0123456789ABW";
+        let world = world_with(ID);
+        let mut s = InputState::default();
+        s.typed("ask @bu".into());
+        // Only an orchestration chat has the picker.
+        s.follow_mention(false, &world);
+        assert!(s.picker.is_none());
+        s.follow_mention(true, &world);
+        let p = s.picker.as_ref().expect("the picker opens for the query");
+        assert_eq!(p.query, "bu");
+        // The window and tab rows group sessions; the choice starts on the session.
+        assert_eq!(p.current().map(|i| i.label.as_str()), Some("build"));
+        // Escape closes it for this query only.
+        s.close_mention();
+        s.follow_mention(true, &world);
+        assert!(s.picker.is_none());
+        s.typed("ask @b".into());
+        s.follow_mention(true, &world);
+        assert!(s.picker.is_some());
+        // Return commits a session: the typed query leaves the text and the id is a chip.
+        assert!(s.commit_mention(None));
+        assert_eq!((s.draft.text.as_str(), s.draft.mentions.clone()), ("ask ", vec![ID.to_string()]));
+        assert!(s.picker.is_none());
+        assert!(!s.draft.is_empty());
+        // A window row commits nothing.
+        s.typed("@".into());
+        s.follow_mention(true, &world);
+        assert!(!s.commit_mention(Some(0)), "item 0 is the window");
+        assert_eq!(s.draft.mentions.len(), 1);
+        assert!(s.commit_mention(Some(2)));
+        assert_eq!(s.draft.mentions.len(), 1, "the same session is one chip");
+        // Sent as the chat token, ahead of the text; a bad id is never sent.
+        assert_eq!(with_mentions("run it", &[ID.to_string()]), "@ptys_0123456789ABW run it");
+        assert_eq!(with_mentions("run it", &["ptys_bad".to_string(), "win:x".to_string()]), "run it");
+        assert_eq!(with_mentions("hi", &[]), "hi");
+        // Switching chats drops the open picker; a sent draft is clean.
+        s.typed("@x".into());
+        s.follow_mention(true, &world);
+        s.switched(Draft::default());
+        assert!(s.picker.is_none());
+        s.draft.mentions.push(ID.into());
+        s.sent();
+        assert!(s.draft.is_empty());
     }
 }

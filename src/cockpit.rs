@@ -376,6 +376,10 @@ pub struct View {
     pub selection_armed: bool,
     /// The gear's rect as last drawn, in points: x, y, w, h (the settings popover opens below it).
     pub gear_rect: Option<(f32, f32, f32, f32)>,
+    /// The command bar's targets, in the order they were chosen; kept after a send.
+    pub chips: Vec<crate::mention::Chip>,
+    /// The `@` picker while the command text has a completion target.
+    pub picker: Option<crate::mention::Picker>,
 }
 
 /// What a redraw asks the app to do (later tasks add variants).

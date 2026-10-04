@@ -34,6 +34,21 @@ impl App {
         crate::stable_id::find(reference, self.panes.iter().map(|(k, p)| (*k, p.stable_id.as_str())))
     }
 
+    /// A mention's current session name, else `DEFUNCT` (a session that is gone, or an id that
+    /// names none; only a stable id names a session, ruling P3).
+    pub(super) fn mention_label(&self, id: &str) -> String {
+        match self.pane_by_reference(id) {
+            Some(p) => crate::cockpit_rows::session_title(&self.session_label(p).0, p),
+            None => crate::mention::DEFUNCT.to_string(),
+        }
+    }
+
+    /// A chip's label: "Window N", a tab's title, a session's name, else `DEFUNCT`.
+    #[allow(dead_code)] // the window labels chips from the world it is handed; the command bar's messages (Task 6) name one chip here
+    pub(super) fn cockpit_chip_label(&self, chip: &crate::mention::Chip) -> String {
+        crate::mention::chip_label(&self.cockpit_world(), chip)
+    }
+
     fn session_fact(&self, pane: PaneId) -> Option<SessionFact> {
         let p = self.panes.get(&pane)?;
         let s = p.own();
@@ -120,7 +135,7 @@ impl App {
                 view.selected = crate::cockpit_rows::keep_selection(&view.selected, &rows);
                 let items = cockpit::filter_items(total, &per);
                 let Some(w) = self.cockpit.as_mut() else { return true };
-                let acts = w.redraw(&mut self.cockpit_view, &rows, &items);
+                let acts = w.redraw(&mut self.cockpit_view, &rows, &items, &world);
                 self.cockpit_acts(event_loop, acts);
             }
             other => {

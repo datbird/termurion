@@ -19,3 +19,11 @@ T4-2 Glyphs (Segoe Fluent Icons, same points in MDL2): window E737, tab E7C4, se
 T4-3 Shift-click chooses the run from the first chosen row to the clicked one over the visible rows that can be chosen; Ctrl toggles. Cost if wrong: selection feel only.
 T4-4 The list is rebuilt from cockpit_world every 500 ms while the window shows (a status changes with no window event). Cost if wrong: up to 0.5 s stale rows.
 T4-5 Row gains a tint field (status_tint of the session's status) so the draw needs no Status. Cost if wrong: none.
+
+Task 5 (mentions and the @ session picker):
+T5-1: Decision (P3, P9): mention::granted_ids(text, Source) is the one place a message's text names sessions to grant; only Source::Typed (text the person typed or sent through the chat input) grants, and only an "@"-signed, checksum-valid stable id (prefix none or "session:"); Source::Other (a model, a watcher event, a tool result, pasted remote text) grants nothing. mention::resolve names a pane only for a stable id (a uuid, a session guid and "wg-" name nothing; a decimal is no mention) - cost if wrong: none.
+T5-2: Decision (P11): the picker is built for the egui chat window's input only (orchestration chats); the inline panel parses typed tokens and has no picker - cost if wrong: no picker in the inline panel.
+T5-3: Decision: in the chat input the picked session is a chip above the field (Draft.mentions, by stable id), not an inline token; it joins the message as "@ptys_..." ahead of the text at send (chat_input::with_mentions) - cost if wrong: the token's position in the sentence is not kept.
+T5-4: Decision: in the chat input the picker starts on the first session row; window and tab rows only group and commit nothing; Return and Tab commit, Escape closes until the "@query" changes - cost if wrong: none.
+T5-5: Decision: the Cockpit window builds the picker and chip labels from the World the app hands redraw (no round trip through Act); a press on the list may take the field's focus for a frame, so the list closes on blur only when no pointer button is down or just released - cost if wrong: a list left open after clicking elsewhere until the next key.
+T5-6: Decision: App::cockpit_chip_label carries allow(dead_code) (the window labels chips itself; Task 6's messages use it) - cost if wrong: none.

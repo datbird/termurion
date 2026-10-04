@@ -11,7 +11,8 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 
 use crate::cockpit::{self, Act, Frame, Tint, View};
-use crate::cockpit_rows::{self, Row, RowKey};
+use crate::cockpit_rows::{self, Row, RowKey, World};
+use crate::{mention, mention_picker_ui};
 use crate::egui_host::EguiHost;
 
 /// The divider's height in points.
@@ -230,6 +231,22 @@ pub struct CockpitWindow {
     command: String,
     /// When the list was last drawn: it is rebuilt every `REFRESH` while the window shows.
     painted: Instant,
+    /// The query the picker was last opened for, so it is rebuilt only when the query changes.
+    last_query: Option<String>,
+    /// The "@query" an Escape closed: the picker stays closed until the target changes.
+    dismissed: Option<(usize, String)>,
+}
+
+/// The picker's choice becomes a chip and the typed "@query" leaves the text.
+fn commit(view: &mut View, command: &mut String) {
+    let Some(chip) = view.picker.as_ref().and_then(|p| p.current()).map(|i| i.chip.clone()) else { return };
+    if let Some(rest) = mention::remove_target(command) {
+        *command = rest;
+    }
+    if !view.chips.contains(&chip) {
+        view.chips.push(chip);
+    }
+    view.picker = None;
 }
 
 impl CockpitWindow {
@@ -258,7 +275,7 @@ impl CockpitWindow {
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         host.follow_theme(Some(dark));
         crate::settings_keys::add_icon_font(host.ctx());
-        Ok(CockpitWindow { host, shown: false, shown_at: None, reported: frame, command: String::new(), painted: Instant::now() })
+        Ok(CockpitWindow { host, shown: false, shown_at: None, reported: frame, command: String::new(), painted: Instant::now(), last_query: None, dismissed: None })
     }
 
     pub fn id(&self) -> WindowId {
@@ -346,11 +363,11 @@ impl CockpitWindow {
     }
 
     /// Draws the window from `view`; returns what it asks of the app.
-    pub fn redraw(&mut self, view: &mut View, rows: &[Row], items: &[(Option<String>, String)]) -> Vec<Act> {
+    pub fn redraw(&mut self, view: &mut View, rows: &[Row], items: &[(Option<String>, String)], world: &World) -> Vec<Act> {
         let mut acts = Vec::new();
         let now = Instant::now();
         self.painted = now;
-        let Self { host, command, .. } = self;
+        let Self { host, command, last_query, dismissed, .. } = self;
         host.paint(|ui| {
             // Ctrl+W closes, as every other egui window of Tandem does.
             if ui.input(|i| i.key_pressed(egui::Key::W) && i.modifiers.command) {
@@ -389,13 +406,70 @@ impl CockpitWindow {
                     }
                 }
 
-                // The command bar (Task 6 sends from it).
+                // The chips: the targets chosen with `@`, a strip of rounded labels above the field.
                 let id = ui.id().with("cockpit-command");
+                if !view.chips.is_empty() {
+                    let shown: Vec<(mention::Chip, String)> = view.chips.iter().map(|c| (c.clone(), mention::chip_label(world, c))).collect();
+                    if let Some(i) = mention_picker_ui::chip_strip(ui, &shown) {
+                        view.chips.remove(i);
+                    }
+                }
+                // Keys the picker owns are taken before the editor sees them: Up and Down move, Return
+                // commits, Escape closes. With it closed Return is the editor's newline.
+                let focused = ui.memory(|m| m.has_focus(id));
+                let open = view.picker.as_ref().is_some_and(|p| !p.items.is_empty());
+                if open && focused {
+                    let (up, down, enter, esc) = ui.input_mut(|i| {
+                        (i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp), i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown), i.consume_key(egui::Modifiers::NONE, egui::Key::Enter), i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+                    });
+                    if let Some(p) = view.picker.as_mut() {
+                        if up {
+                            p.up();
+                        }
+                        if down {
+                            p.down();
+                        }
+                    }
+                    if enter {
+                        commit(view, command);
+                    } else if esc {
+                        *dismissed = mention::completion_target(command);
+                        view.picker = None;
+                    }
+                }
+                // Backspace in an empty field removes the last chip.
+                if focused && command.is_empty() && !view.chips.is_empty() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)) {
+                    view.chips.pop();
+                }
                 let size = ui.available_size();
                 let field = egui::TextEdit::multiline(command).id(id).hint_text(cockpit::PLACEHOLDER).desired_width(f32::INFINITY).min_size(size);
-                ui.add_sized(size, field);
+                let response = ui.add_sized(size, field);
                 if std::mem::take(&mut view.focus_command) {
                     ui.memory_mut(|m| m.request_focus(id));
+                }
+                // The text moves the picker: it opens under the field for the first "@" at a word
+                // start, with the query after it, and is rebuilt only when that query changes.
+                let raw = mention::completion_target(command);
+                if dismissed.as_ref() != raw.as_ref() {
+                    *dismissed = None;
+                }
+                let target = if dismissed.is_some() { None } else { raw };
+                // A press on the picker takes the focus off the field for a moment; the click lands on the release.
+                let pointer = ui.input(|i| i.pointer.any_down() || i.pointer.any_released());
+                let query = target.map(|(_, q)| q).filter(|_| response.has_focus() || pointer);
+                if query != *last_query {
+                    view.picker = query.as_deref().map(|q| mention::Picker::new(world, q));
+                    *last_query = query;
+                }
+                if let Some(p) = &view.picker {
+                    if let Some(i) = mention_picker_ui::show(ui, p, response.rect.left_top() + egui::vec2(0.0, line + 6.0)) {
+                        if let Some(p) = view.picker.as_mut() {
+                            p.selected = i;
+                        }
+                        commit(view, command);
+                        *last_query = None;
+                        ui.memory_mut(|m| m.request_focus(id));
+                    }
                 }
             });
         });
