@@ -110,16 +110,19 @@ pub struct Area {
 /// The size of the corner that must stay on a monitor for the frame to count as reachable.
 const GRAB: f32 = 40.0;
 
-/// Where the window opens: the saved frame when its top left corner is on a monitor, else
-/// `SIZE` centered in the first work area. A frame larger than its area is shrunk to fit.
-pub fn place(saved: Option<Frame>, work: &[Area]) -> Frame {
+/// Where the window opens: the saved frame (physical pixels) when its top left corner is on a
+/// monitor, else `SIZE` (logical, so times `scale`) centered in the first work area. A frame
+/// larger than its area is shrunk to fit. A scale that is not a positive number counts as 1.
+pub fn place(saved: Option<Frame>, work: &[Area], scale: f32) -> Frame {
+    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let size = (SIZE.0 * scale, SIZE.1 * scale);
     let Some(first) = work.first() else {
-        return saved.unwrap_or(Frame { x: 0.0, y: 0.0, w: SIZE.0, h: SIZE.1 });
+        return saved.unwrap_or(Frame { x: 0.0, y: 0.0, w: size.0, h: size.1 });
     };
     let on = |f: &Frame| work.iter().find(|a| f.x >= a.x && f.y >= a.y && f.x + GRAB <= a.x + a.w && f.y + GRAB <= a.y + a.h);
     let (frame, area) = match saved.and_then(|f| on(&f).map(|a| (f, *a))) {
         Some(pair) => pair,
-        None => (Frame { x: first.x + (first.w - SIZE.0) / 2.0, y: first.y + (first.h - SIZE.1) / 2.0, w: SIZE.0, h: SIZE.1 }, *first),
+        None => (Frame { x: first.x + (first.w - size.0) / 2.0, y: first.y + (first.h - size.1) / 2.0, w: size.0, h: size.1 }, *first),
     };
     if frame.w <= area.w && frame.h <= area.h {
         return frame;
@@ -251,18 +254,29 @@ mod tests {
         assert_eq!(Frame { x: 10.0, y: 20.0, w: 877.0, h: 416.0 }.text(), "10 20 877 416");
         let area = [Area { x: 0.0, y: 0.0, w: 1920.0, h: 1040.0 }];
         let f = Frame { x: 100.0, y: 80.0, w: 600.0, h: 300.0 };
-        assert_eq!(place(Some(f), &area), f);
+        assert_eq!(place(Some(f), &area, 1.0), f);
         // Only the top left 40 by 40 has to be on the monitor.
         let edge = Frame { x: 1900.0 - 40.0, y: 1000.0 - 40.0, w: 600.0, h: 300.0 };
-        assert_eq!(place(Some(edge), &area), edge);
+        assert_eq!(place(Some(edge), &area, 1.0), edge);
         let centered = Frame { x: 521.5, y: 312.0, w: 877.0, h: 416.0 };
-        assert_eq!(place(Some(Frame { x: 5000.0, ..f }), &area), centered);
-        assert_eq!(place(None, &area), centered);
+        assert_eq!(place(Some(Frame { x: 5000.0, ..f }), &area, 1.0), centered);
+        assert_eq!(place(None, &area, 1.0), centered);
         // Off every monitor in a second area's space only when no area holds the corner.
         let two = [area[0], Area { x: 1920.0, y: 0.0, w: 1280.0, h: 1000.0 }];
-        assert_eq!(place(Some(Frame { x: 2000.0, ..f }), &two), Frame { x: 2000.0, ..f });
+        assert_eq!(place(Some(Frame { x: 2000.0, ..f }), &two, 1.0), Frame { x: 2000.0, ..f });
+        // A first open at 150% scale: SIZE is logical, so the frame is 1.5 times larger, centered,
+        // and (at 416 * 1.5) above the 280 logical minimum height instead of clamped to it.
+        let hi = [Area { x: 0.0, y: 0.0, w: 2880.0, h: 1560.0 }];
+        let first = place(None, &hi, 1.5);
+        assert_eq!(first, Frame { x: (2880.0 - 877.0 * 1.5) / 2.0, y: (1560.0 - 416.0 * 1.5) / 2.0, w: 877.0 * 1.5, h: 416.0 * 1.5 });
+        assert_eq!(place(None, &[], 2.0), Frame { x: 0.0, y: 0.0, w: 877.0 * 2.0, h: 416.0 * 2.0 });
+        // A saved frame is already physical and is not scaled again.
+        assert_eq!(place(Some(f), &hi, 1.5), f);
+        // A scale that is not a positive number counts as 1.
+        assert_eq!(place(None, &area, 0.0), centered);
+        assert_eq!(place(None, &area, f32::NAN), centered);
         let big = Frame { x: 0.0, y: 0.0, w: 3000.0, h: 2000.0 };
-        assert_eq!(place(Some(big), &area), Frame { x: 0.0, y: 0.0, w: 1920.0, h: 1040.0 });
+        assert_eq!(place(Some(big), &area, 1.0), Frame { x: 0.0, y: 0.0, w: 1920.0, h: 1040.0 });
     }
 
     #[test]

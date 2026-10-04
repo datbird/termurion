@@ -66,7 +66,7 @@ impl App {
         }
         let Some(g) = self.gpu.as_ref() else { return };
         let work: Vec<cockpit::Area> = super::requests_ui::work_areas().into_iter().map(|(x, y, w, h)| cockpit::Area { x: x as f32, y: y as f32, w: w as f32, h: h as f32 }).collect();
-        let frame = cockpit::place(Frame::parse(&self.globals.string(cockpit::FRAME_KEY)), &work);
+        let frame = cockpit::place(Frame::parse(&self.globals.string(cockpit::FRAME_KEY)), &work, g.window.scale_factor() as f32);
         let dark = self.dark();
         match CockpitWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, frame, dark) {
             Ok(mut w) => {
