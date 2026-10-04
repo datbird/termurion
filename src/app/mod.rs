@@ -5372,6 +5372,8 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop) -> Result<Gpu, St
         ..Default::default()
     }))
     .map_err(|e| e.to_string())?;
+    let info = adapter.get_info();
+    eprintln!("renderer adapter: backend={:?} name={} vendor={:#06x} device_type={:?}", info.backend, info.name, info.vendor, info.device_type);
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| e.to_string())?;
     let caps = surface.get_capabilities(&adapter);
     let format = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);

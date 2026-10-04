@@ -780,6 +780,49 @@ mod tests {
         data
     }
 
+    /// Today's backend per adapter, and whether a default instance and a DX12 `DxgiFromVisual` one
+    /// make devices in one process (13g renderer ruling). Headless: no event loop, so both
+    /// instances are built without a display handle.
+    #[test]
+    fn adapters_are_recorded() {
+        let default = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+        desc.backends = wgpu::Backends::DX12;
+        desc.backend_options.dx12.presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
+        let visual = wgpu::Instance::new(desc);
+        let describe = |label: &str, instance: &wgpu::Instance| {
+            let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+            if adapters.is_empty() {
+                println!("ADAPTER {label}: no adapter");
+            }
+            for a in &adapters {
+                let i = a.get_info();
+                println!("ADAPTER {label}: backend={:?} name={} vendor={:#06x} device_type={:?}", i.backend, i.name, i.vendor, i.device_type);
+            }
+            adapters
+        };
+        let first = describe("default", &default);
+        let second = describe("dx12-visual", &visual);
+        let device_of = |label: &str, instance: &wgpu::Instance| {
+            let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+            let made = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()));
+            let i = adapter.get_info();
+            println!("DEVICE {label}: picked {:?} {} -> {}", i.backend, i.name, if made.is_ok() { "created" } else { "failed" });
+            made.ok()
+        };
+        let a = device_of("default", &default);
+        let b = device_of("dx12-visual", &visual);
+        if first.is_empty() || second.is_empty() {
+            println!("COEXIST: skipped (an instance has no adapter)");
+        } else {
+            println!("COEXIST: both devices alive at once = {}", a.is_some() && b.is_some());
+        }
+        // The record must be in the rulings file.
+        let rulings = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/superpowers/rulings/m13g-rulings.txt"))
+            .unwrap_or_default();
+        assert!(rulings.contains("Today's backend per adapter on EXTREME:"), "m13g-rulings.txt must record the backend");
+    }
+
     #[test]
     fn renders_a_range_offscreen() {
         let (device, queue) = device();
