@@ -4849,6 +4849,7 @@ impl App {
                     if dim.amount > 0.0 && !dim.only_text {
                         frame.overlay.push(scene::Quad { rect, color: scene::rgba(crate::palette::rgb(128, 128, 128), dim.amount) });
                     }
+                    self.draw_active_border(&mut frame, tab, id, rect);
                     // Broadcast stripes: over the cell backgrounds, under the text.
                     if let (Some((n, px)), true) = (&stripes, receives) {
                         let r = self.inner(rect);

@@ -3,8 +3,9 @@
 //! last-use order (`PTYTab orderedSessions`, `setActiveSession:`).
 
 use super::{App, Tab};
-use crate::layout::{most_recent, Axis, Dir, PaneId, Tree};
+use crate::layout::{most_recent, Axis, Dir, PaneId, Rect, Tree};
 use crate::pane_order;
+use crate::scene;
 
 /// The stamps a focus change takes: the pane that was seen and the pane focused now both get
 /// fresh counters (`setActiveSession:`, `TAB:907-914`). None when the focus did not change.
@@ -137,10 +138,69 @@ impl App {
     }
 }
 
+/// The four strips of the active pane border inside `r`, `w` pixels thick: top, bottom, left,
+/// right (`iTermActivePaneBorderView`, a stroke around the terminal area, square corners).
+pub(super) fn border_edges(r: Rect, w: f32) -> [Rect; 4] {
+    [
+        Rect { x: r.x, y: r.y, w: r.w, h: w },
+        Rect { x: r.x, y: r.y + r.h - w, w: r.w, h: w },
+        Rect { x: r.x, y: r.y, w, h: r.h },
+        Rect { x: r.x + r.w - w, y: r.y, w, h: r.h },
+    ]
+}
+
+/// The border's alpha factor: half in a window without focus (`SV:2582-2586`).
+pub(super) fn border_alpha(window_focused: bool) -> f32 {
+    if window_focused { 1.0 } else { 0.5 }
+}
+
+/// Whether a pane shows the border: the tab's active pane with the profile's setting on, a lone
+/// pane too (`SV:2563-2570`).
+pub(super) fn shows_border(use_border: bool, is_active: bool) -> bool {
+    use_border && is_active
+}
+
+impl App {
+    /// The active pane's border, in the overlay (no text) over the pane's content and its dim
+    /// quad, around the terminal area `rect` (below a title bar, above a bottom status bar).
+    pub(super) fn draw_active_border(&self, frame: &mut scene::Frame, tab: &Tab, id: PaneId, rect: Rect) {
+        let Some(profile) = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)) else { return };
+        let dark = self.dark();
+        if !shows_border(profile.bool_for("Use Active Pane Border", dark), id == tab.focused) {
+            return;
+        }
+        let color = profile.color_for("Active Pane Border Color", dark);
+        let alpha = profile.alpha_for("Active Pane Border Color", dark) * border_alpha(self.focused);
+        for edge in border_edges(rect, 2.0 * self.scale()) {
+            frame.overlay.push(scene::Quad { rect: edge, color: scene::rgba(color, alpha) });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::pane_order::by_number;
+
+    #[test]
+    fn active_border_follows_iterm2() {
+        let r = |x, y, w, h| Rect { x, y, w, h };
+        // iTermActivePaneBorderView: a 2 point stroke inside the terminal area, square corners.
+        assert_eq!(border_edges(r(0.0, 0.0, 100.0, 50.0), 2.0), [r(0.0, 0.0, 100.0, 2.0), r(0.0, 48.0, 100.0, 2.0), r(0.0, 0.0, 2.0, 50.0), r(98.0, 0.0, 2.0, 50.0)]);
+        assert_eq!(border_edges(r(10.0, 20.0, 100.0, 50.0), 4.0)[3], r(106.0, 20.0, 4.0, 50.0));
+        // SV:2582-2586: half alpha in a window without focus.
+        assert_eq!(border_alpha(true), 1.0);
+        assert_eq!(border_alpha(false), 0.5);
+        // SV:2563-2570: only the active pane with the setting on, a lone pane too.
+        assert!(shows_border(true, true));
+        assert!(!shows_border(true, false));
+        assert!(!shows_border(false, true));
+        assert!(!shows_border(false, false));
+        let app = include_str!("mod.rs");
+        assert!(app.contains("self.draw_active_border(&mut frame, tab, id, rect)"), "the render loop draws the border");
+        let me = include_str!("pane_nav_ui.rs");
+        assert!(me.contains("alpha_for(\"Active Pane Border Color\""), "the profile color keeps its alpha (P7)");
+    }
 
     #[test]
     fn direction_pick_follows_iterm2() {
