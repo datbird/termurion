@@ -7,6 +7,40 @@ use windows_sys::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_EXTENDED_FRAME
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_SHIFT};
 use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
+const THEME_SUBCLASS_ID: usize = 0x7468_656D;
+
+thread_local! {
+    /// The way back to the app from `theme_guard`, which never touches `App`.
+    static WAKE: std::cell::RefCell<Option<EventLoopProxy<UserEvent>>> = const { std::cell::RefCell::new(None) };
+    /// A `ThemeReset` is queued and not yet handled: one `WM_SETTINGCHANGE` broadcast reaches every
+    /// terminal window, and the app needs to hear of it once.
+    static RESET_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The window's subclass proc: winit handles `WM_SETTINGCHANGE` (resetting the title bar to
+/// Windows' mode), then the app is asked to apply the Theme again.
+unsafe extern "system" fn theme_guard(hwnd: windows_sys::Win32::Foundation::HWND, msg: u32, wparam: windows_sys::Win32::Foundation::WPARAM, lparam: windows_sys::Win32::Foundation::LPARAM, _id: usize, _data: usize) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_NCDESTROY, WM_SETTINGCHANGE};
+    // SAFETY: forwarding the message the system delivered, unchanged.
+    let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
+    if msg == WM_SETTINGCHANGE {
+        // The high contrast state may have changed.
+        crate::tab_theme::forget_high_contrast();
+        if !RESET_PENDING.with(|p| p.replace(true)) {
+            WAKE.with(|w| {
+                if let Some(proxy) = w.borrow().as_ref() {
+                    let _ = proxy.send_event(UserEvent::ThemeReset);
+                }
+            });
+        }
+    } else if msg == WM_NCDESTROY {
+        // SAFETY: removing this proc from the window being destroyed.
+        unsafe { RemoveWindowSubclass(hwnd, Some(theme_guard), THEME_SUBCLASS_ID) };
+    }
+    result
+}
+
 /// Gives the window's frame a border color (a COLORREF, or `chrome::COLOR_DEFAULT`). Only
 /// Windows 11 (build 22000 on) takes the attribute; Windows 10's refusal is ignored and the
 /// window keeps the system's border.
@@ -48,7 +82,7 @@ fn set_outer_frame(w: &winit::window::Window, r: Rect) {
     let (outer, inner) = (w.outer_size(), w.inner_size());
     let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
     w.set_outer_position(winit::dpi::PhysicalPosition::new(r.x.round() as i32, r.y.round() as i32));
-    let _ = w.request_inner_size(winit::dpi::PhysicalSize::new((r.w.round() as u32).saturating_sub(dw).max(1), (r.h.round() as u32).saturating_sub(dh).max(1)));
+    let _ = super::caption_ui::request_inner_size(&w, winit::dpi::PhysicalSize::new((r.w.round() as u32).saturating_sub(dw).max(1), (r.h.round() as u32).saturating_sub(dh).max(1)));
 }
 
 impl App {
@@ -92,7 +126,9 @@ impl App {
     /// a frame after it, so this runs from `render`; the setting's change reaches each window
     /// on its next frame.
     pub(super) fn sync_menu_hidden(&mut self) {
-        let hide = menu_should_hide(self.full_screen(), self.globals.bool("HideMenuBarInFullscreen"));
+        // A Minimal or Compact window has no room for the native menu bar: its caption strip is
+        // where the title bar and menu bar were (`caption_ui`).
+        let hide = menu_should_hide(self.full_screen(), self.globals.bool("HideMenuBarInFullscreen")) || self.compact_window();
         if hide == self.menu_hidden {
             return;
         }
@@ -116,6 +152,9 @@ impl App {
     /// Gives the current window the border `chrome::show_border` asks for, in its focused or
     /// unfocused color, or the system's border; DWM is told only when the color changes.
     pub(super) fn apply_border(&mut self) {
+        // Every way a window's chrome changes (a new window, its style, full screen, the Theme)
+        // ends here, so the caption frame follows too.
+        self.refresh_caption_frame();
         let Some(hwnd) = self.hwnd() else { return };
         let g = &self.globals;
         let show = chrome::show_border(g.bool("UseBorder"), self.any_pane_is_transparent(), g.bool("BordersOnlyInLightMode"), chrome::is_dark_style(self.resolved_style()), self.full_screen());
@@ -125,6 +164,77 @@ impl App {
         }
         set_border(hwnd, color);
         self.border_applied = Some(color);
+    }
+
+    /// This window (and its menu bar, password manager and replay panel) follows a fixed Theme's
+    /// mode, or Windows' again (`updateAppearance`, `iTermApplication.m:1276-1292`). muda's
+    /// `MenuTheme::Auto` reads the system's mode, not the window's, so a forced window's menu
+    /// bar is told its mode. Returns whether the mode the window follows changed. winit's
+    /// `Window::set_theme` does not update `Window::theme` on Windows, so the mode is worked out
+    /// here (`dark`) and remembered per window (`theme_applied`), never read back from winit.
+    pub(super) fn apply_theme(&mut self) -> bool {
+        let forced = crate::tab_theme::forced_dark(self.tab_style());
+        let Some(g) = self.gpu.as_ref() else { return false };
+        g.window.set_theme(crate::tab_theme::window_theme(forced));
+        let dark = self.dark();
+        let changed = crate::tab_theme::theme_changed(self.theme_applied, dark);
+        self.theme_applied = Some(dark);
+        if let (Some(hwnd), Some(bar)) = (self.hwnd(), &self.menu_bar) {
+            let theme = match forced {
+                Some(true) => muda::MenuTheme::Dark,
+                Some(false) => muda::MenuTheme::Light,
+                None => muda::MenuTheme::Auto,
+            };
+            // SAFETY: the HWND is this window's, and the bar was attached to it.
+            if let Err(e) = unsafe { bar.menu.set_theme_for_hwnd(hwnd, theme) } {
+                self.banners.set("menu", format!("Could not set the menu bar's theme: {e}"));
+            }
+        }
+        if let Some(w) = &self.pwm_window {
+            w.follow_theme(forced);
+        }
+        if let Some(w) = &self.replay_window {
+            w.follow_theme(forced);
+        }
+        changed
+    }
+
+    /// Keeps this window's forced title bar: winit resets a window with no preferred theme to
+    /// Windows' mode at every `WM_SETTINGCHANGE` and sends nothing unless the mode changed, so a
+    /// subclass asks the app to apply the Theme again after each one.
+    pub(super) fn guard_theme(&self) {
+        let Some(hwnd) = self.hwnd() else { return };
+        WAKE.with(|w| *w.borrow_mut() = Some(self.proxy.lock().unwrap().clone()));
+        // SAFETY: the HWND is this window's; the proc only forwards and posts an event.
+        unsafe { windows_sys::Win32::UI::Shell::SetWindowSubclass(hwnd as _, Some(theme_guard), THEME_SUBCLASS_ID, 0) };
+    }
+
+    /// After a system setting changed (`UserEvent::ThemeReset`): a fixed Theme's windows take
+    /// its mode again. Nothing to do for Regular, Minimal and Compact, which follow Windows.
+    pub(super) fn reapply_forced_theme(&mut self) {
+        RESET_PENDING.with(|p| p.set(false));
+        if crate::tab_theme::forced_dark(self.tab_style()).is_some() {
+            self.apply_theme_everywhere();
+        }
+    }
+
+    /// Every terminal window, the Settings window and the Profiles window follow the Theme, after
+    /// it changed. A window whose mode changed rebuilds its panes' colors.
+    pub(super) fn apply_theme_everywhere(&mut self) {
+        let forced = crate::tab_theme::forced_dark(self.tab_style());
+        for w in [&self.settings, &self.profiles_win].into_iter().flatten() {
+            w.follow_theme(forced);
+        }
+        let back = self.current_window();
+        let ids: Vec<WindowId> = self.registry.order().into_iter().filter_map(|k| self.window_id_of_key(k)).collect();
+        for id in ids {
+            if self.enter(id) && self.apply_theme() {
+                self.refresh_panes();
+            }
+        }
+        if let Some(b) = back {
+            self.enter(b);
+        }
     }
 
     /// Every window's border, after a setting changed.

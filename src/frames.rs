@@ -21,8 +21,10 @@ pub const NO_TITLE_BAR: i64 = 12;
 /// window on top of the others without a taskbar button.
 pub const ACCESSORY: i64 = 14;
 pub const MAXIMIZED: i64 = 15;
-/// The Compact theme's Maximized.
+/// The Compact and Minimal themes' Normal, Maximized and Centered.
+pub const COMPACT: i64 = 13;
 pub const COMPACT_MAXIMIZED: i64 = 16;
+pub const COMPACT_CENTERED: i64 = 18;
 pub const CENTERED: i64 = 17;
 pub const CENTERED_NO_TITLE_BAR: i64 = 19;
 
@@ -145,9 +147,9 @@ pub struct Frame {
 /// The Compact theme ids (13, 16, 18) are Normal, Maximized, and Centered.
 pub fn unthemed(style: i64) -> i64 {
     match style {
-        13 => NORMAL,
+        COMPACT => NORMAL,
         COMPACT_MAXIMIZED => MAXIMIZED,
-        18 => CENTERED,
+        COMPACT_CENTERED => CENTERED,
         s => s,
     }
 }
@@ -157,14 +159,25 @@ pub fn unthemed(style: i64) -> i64 {
 /// and back under the others; every other type is itself.
 pub fn themed(style: i64, compact_theme: bool) -> i64 {
     match (style, compact_theme) {
-        (NORMAL | 13, true) => 13,
-        (NORMAL | 13, false) => NORMAL,
+        (NORMAL | COMPACT, true) => COMPACT,
+        (NORMAL | COMPACT, false) => NORMAL,
         (MAXIMIZED | COMPACT_MAXIMIZED, true) => COMPACT_MAXIMIZED,
         (MAXIMIZED | COMPACT_MAXIMIZED, false) => MAXIMIZED,
-        (CENTERED | 18, true) => 18,
-        (CENTERED | 18, false) => CENTERED,
+        (CENTERED | COMPACT_CENTERED, true) => COMPACT_CENTERED,
+        (CENTERED | COMPACT_CENTERED, false) => CENTERED,
         (s, _) => s,
     }
+}
+
+/// The user may drag a window of this type (`ptyWindowIsDraggable:`, `PT:2106-2135`): not a
+/// centered or edge-docked one, nor full screen.
+pub fn draggable(style: i64) -> bool {
+    matches!(style, NORMAL | MAXIMIZED | NO_TITLE_BAR | ACCESSORY | COMPACT | COMPACT_MAXIMIZED)
+}
+
+/// The type is one of the Compact theme's forms (13, 16, 18), whose caption area holds the tabs.
+pub fn is_compact(style: i64) -> bool {
+    matches!(style, COMPACT | COMPACT_MAXIMIZED | COMPACT_CENTERED)
 }
 
 /// The id the profile stores for an edge style: the cells form when neither units popup
@@ -329,6 +342,18 @@ mod tests {
         assert_eq!(saved_percents(Some(0.0), Some(30.0)), (0.0, 30.0));
     }
 
+    /// `ptyWindowIsDraggable:` (`PT:2106-2135`): centered and edge-docked windows and full
+    /// screen are not; Normal, Maximized, No Title Bar, Accessory and the Compact forms are.
+    #[test]
+    fn draggable_types_follow_iterm2() {
+        for t in [NORMAL, MAXIMIZED, NO_TITLE_BAR, ACCESSORY, COMPACT, COMPACT_MAXIMIZED] {
+            assert!(draggable(t), "{}", name(t));
+        }
+        for t in [FULL_SCREEN, LION_FULL_SCREEN, CENTERED, COMPACT_CENTERED, CENTERED_NO_TITLE_BAR, TOP_PERCENT, BOTTOM_PERCENT, LEFT_PERCENT, RIGHT_PERCENT, TOP_CELLS, BOTTOM_CELLS, LEFT_CELLS, RIGHT_CELLS] {
+            assert!(!draggable(t), "{}", name(t));
+        }
+    }
+
     #[test]
     fn themed_window_types_follow_iterm2() {
         assert_eq!((themed(NORMAL, true), themed(13, true), themed(13, false)), (13, 13, 0));
@@ -336,6 +361,9 @@ mod tests {
         assert_eq!((themed(CENTERED, true), themed(18, false)), (18, 17));
         assert_eq!((themed(FULL_SCREEN, true), themed(TOP_CELLS, true)), (1, 9), "only Normal, Maximized and Centered have compact forms");
         assert_eq!(unthemed(13), NORMAL, "the frame math is unchanged");
+        assert_eq!((COMPACT, COMPACT_MAXIMIZED, COMPACT_CENTERED), (13, 16, 18));
+        assert!(is_compact(13) && is_compact(16) && is_compact(18));
+        assert!(!is_compact(0) && !is_compact(15) && !is_compact(17) && !is_compact(1));
     }
 
     #[test]

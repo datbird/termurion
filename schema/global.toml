@@ -2451,6 +2451,16 @@ default = false
 help = "Set after the first automatic burial of a tmux gateway; the notification shows once."
 
 [[setting]]
+key = "TabStyleWithAutomaticOption"
+tab = "Appearance"
+section = "General"
+label = "Theme:"
+type = "enum"
+default = 4
+choices = [ { value = 4, label = "Regular" }, { value = 5, label = "Minimal" }, { value = 6, label = "Compact" }, { value = 0, label = "Light" }, { value = 1, label = "Dark" }, { value = 2, label = "Light (High Contrast)" }, { value = 3, label = "Dark (High Contrast)" } ]
+help = "Regular follows Windows' light, dark and high contrast modes. Minimal and Compact put the tab bar in the caption area with the window buttons; Minimal also blends it into the session's background. Light, Dark and the High Contrast themes force that look, and the profile's light or dark colors with it."
+
+[[setting]]
 key = "TabViewType"
 tab = "Appearance"
 section = "General"
@@ -2900,6 +2910,178 @@ label = "Minimum width for tab labels."
 type = "float"
 default = 35.0
 help = "Minimum width for tab labels.\nThe activity/bell icon will be hidden when the space for the label drops below this size (in points)"
+
+[[setting]]
+key = "LightModeInactiveTabDarkness"
+tab = "Advanced"
+section = "Tabs"
+label = "Darkness (in [0\u20261]) for non-selected tabs in non-Minimal theme in light mode."
+type = "float"
+default = 0.07
+help = "Darkness (in [0\u20261]) for non-selected tabs in non-Minimal theme in light mode."
+
+[[setting]]
+key = "DarkModeInactiveTabDarkness"
+tab = "Advanced"
+section = "Tabs"
+label = "Darkness (in [0\u20261]) for non-selected tabs in non-Minimal theme in dark mode."
+type = "float"
+default = 0.5
+help = "Darkness (in [0\u20261]) for non-selected tabs in non-Minimal theme in dark mode."
+
+[[setting]]
+key = "HighVisibility"
+tab = "Advanced"
+section = "Tabs"
+label = "High Contrast modes maximize visibility."
+type = "bool"
+default = true
+help = "High Contrast modes maximize visibility.\nWhen enabled, the dark high-contrast theme emphasizes visibility over beauty."
+
+[[setting]]
+key = "ColoredSelectedTabOutlineStrength"
+tab = "Advanced"
+section = "Tabs"
+label = "How prominent should the outline around the selected tab be drawn when there are colored tabs in a window?"
+type = "float"
+default = 0.5
+help = "How prominent should the outline around the selected tab be drawn when there are colored tabs in a window?\nTakes a value in 0 to 3, where 0 means no outline and 3 means a very prominent outline."
+
+[[setting]]
+key = "ColoredUnselectedTabTextProminence"
+tab = "Advanced"
+section = "Tabs"
+label = "How prominent should the text in a non-selected tab be when there are colored tabs in a window?"
+type = "float"
+default = 0.5
+help = "How prominent should the text in a non-selected tab be when there are colored tabs in a window?\nTakes a value in 0 to 1, the alpha value."
+
+[[setting]]
+key = "MinimalTabStyleBackgroundColorDifference"
+tab = "Advanced"
+section = "Tabs"
+label = "In the Minimal theme, how different should the background color of the selected tab be from the others?"
+type = "float"
+default = 0.05
+help = "In the Minimal theme, how different should the background color of the selected tab be from the others?\nTakes a value in 0 to 1, where 0 is no difference and 1 very different."
+
+[[setting]]
+key = "MinimalTabStyleOutlineStrength"
+tab = "Advanced"
+section = "Tabs"
+label = "In the Minimal theme, how prominent should the tab outline be?"
+type = "float"
+default = 0.2
+help = "In the Minimal theme, how prominent should the tab outline be?\nTakes a value in 0 to 1, where 0 is invisible and 1 is very prominent"
+
+[[setting]]
+key = "MinimalSplitPaneDividerProminence"
+tab = "Advanced"
+section = "Tabs"
+label = "In the Minimal theme, how prominent should split pane dividers be?"
+type = "float"
+default = 0.15
+help = "In the Minimal theme, how prominent should split pane dividers be?\nTakes a value in 0 to 1, where 0 is invisible and 1 is very prominent"
+
+[[setting]]
+key = "CompactMinimalTabBarHeight"
+tab = "Advanced"
+section = "Tabs"
+label = "Tab bar height (points) for the Minimal theme."
+type = "float"
+default = 38.0
+help = "Tab bar height (points) for the Minimal theme.\nThe default is 38. Use 22 to match the compact theme's height."
+
+[[setting]]
+key = "ShowWindowNameBesideTabs"
+tab = "Advanced"
+section = "Windows"
+label = "Show the window name beside the tabs in the Compact and Minimal themes?"
+type = "enum"
+default = 1
+choices = [ { value = 0, label = "Never" }, { value = 1, label = "When a custom name is set" }, { value = 2, label = "Always" } ]
+help = "Show the window name beside the tabs in the Compact and Minimal themes?\nThose themes have no title bar, so the window name is otherwise only visible when the tab bar is hidden. \u201cWhen a custom name is set\u201d (the default) shows it only after you name the window with Window > Edit Window Title, leaving windows you have not named unchanged. \u201cAlways\u201d also shows the automatic title. This has no effect in themes that have a title bar."
+
+[[setting]]
+key = "ExtraSpaceBeforeCompactTopTabBar"
+tab = "Advanced"
+section = "Windows"
+label = "Amount of extra space (in points) between stoplight buttons and inline tab bar."
+type = "float"
+default = 0.0
+help = "Amount of extra space (in points) between stoplight buttons and inline tab bar.\nThis only takes effect for the Compact and Minimal themes when the tab bar is visible and located at the top of the window. On Windows the window buttons are at the right, so the space sits between the tabs and the buttons."
+
+[[setting]]
+key = "CompactTabBarStoplightButtonsWidth"
+tab = "Advanced"
+section = "Windows"
+label = "Width (in points) reserved for the window buttons (close/minimize/zoom) before the inline tab bar."
+type = "float"
+default = 75.0
+help = "Width (in points) reserved for the window buttons (close/minimize/zoom) before the inline tab bar.\nThe default is 75. Reduce it to move tab content closer to the buttons, or increase it for more breathing room. This only takes effect for the Compact and Minimal themes when the tab bar is visible and located at the top of the window. Setting it smaller than the buttons themselves will let tabs overlap them. On Windows the buttons are at the right and are 138 points wide with the default 75; the reserved room is their width plus this setting's difference from 75."
+
+[[setting]]
+key = "MinimalEdgeDragSize"
+tab = "Advanced"
+section = "Tabs"
+label = "In the Minimal theme, you can move the window by dragging starting in a region on the edge near the window border. This gives the size of that region."
+type = "float"
+default = 12.0
+help = "In the Minimal theme, you can move the window by dragging starting in a region on the edge near the window border. This gives the size of that region.\nThe size is in points. Only a tab bar at the top or bottom of the window has such a region."
+
+[[setting]]
+key = "CompactEdgeDragSize"
+tab = "Advanced"
+section = "Tabs"
+label = "In the Compact theme, you can move the window by dragging starting in a region on the edge near the window border. This gives the size of that region."
+type = "float"
+default = 10.0
+help = "In the Compact theme, you can move the window by dragging starting in a region on the edge near the window border. This gives the size of that region.\nThe size is in points. Only a tab bar at the top or bottom of the window has such a region."
+
+[[setting]]
+key = "ConvertTabDragToWindowDragForSolitaryTabInCompactOrMinimalTheme"
+tab = "Advanced"
+section = "Tabs"
+label = "In the Minimal and Compact themes when there is a single tab and the tab bar is visible, should dragging the tab bar move the window?"
+type = "bool"
+default = true
+help = "In the Minimal and Compact themes when there is a single tab and the tab bar is visible, should dragging the tab bar move the window?\nWith this on, dragging the only tab moves the window instead of tearing the tab off into a new window.\nThis also affects windows without titlebars in any theme."
+
+[[setting]]
+key = "MinimalTextLegibilityAdjustment"
+tab = "Advanced"
+section = "Tabs"
+label = "How much should contrast be increased for text in tabs in the Minimal theme?"
+type = "float"
+default = 1.0
+help = "How much should contrast be increased for text in tabs in the Minimal theme?\nChoose a value larger than 1 to increase contrast. Values between 0 and 1 have less contrast than the default."
+
+[[setting]]
+key = "MinimalTabStyleTreatLeftInsetAsPartOfFirstTab"
+tab = "Advanced"
+section = "Tabs"
+label = "In the Minimal theme, should the area left of the tab bar be treated as part of the first tab?"
+type = "bool"
+default = false
+help = "In the Minimal theme, should the area left of the tab bar be treated as part of the first tab?"
+
+[[setting]]
+key = "MinimalSelectedTabUnderlineProminence"
+tab = "Advanced"
+section = "Tabs"
+label = "Prominence of selected tab underline indicator in the Minimal theme when there is at least one colored tab."
+type = "float"
+default = 1.0
+help = "Prominence of selected tab underline indicator in the Minimal theme when there is at least one colored tab."
+
+[[setting]]
+key = "MinimalDeslectedColoredTabAlpha"
+tab = "Advanced"
+section = "Tabs"
+label = "Alpha value for tab color for non-selected colored tabs in the Minimal theme."
+type = "float"
+default = 0.5
+help = "Alpha value for tab color for non-selected colored tabs in the Minimal theme.\nMust be between 0 and 1."
 
 [[setting]]
 key = "DrawBottomLineForHorizontalTabBar"

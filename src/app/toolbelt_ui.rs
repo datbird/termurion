@@ -223,7 +223,7 @@ impl App {
         if w == inner.width {
             return false;
         }
-        let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new(w, inner.height));
+        let _ = super::caption_ui::request_inner_size(&g.window, winit::dpi::PhysicalSize::new(w, inner.height));
         g.window.inner_size() != inner
     }
 

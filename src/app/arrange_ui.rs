@@ -62,6 +62,14 @@ pub(super) fn saved_ssh_session(session: &Value) -> bool {
     session.get(crate::ssh_recovery::SESSION_KEY).and_then(|v| v.as_bool()) == Some(true)
 }
 
+impl Contents {
+    /// Session restoration (not a saved arrangement, a file or a duplicate): the only snapshots
+    /// that carry a pane's chat reference.
+    pub(super) fn restoring(self) -> bool {
+        matches!(self, Contents::Styled(_) | Contents::KeysOnly)
+    }
+}
+
 /// What a Save Window Arrangement window saves.
 #[derive(Clone, Debug)]
 pub(super) enum SaveWhat {
@@ -117,6 +125,12 @@ impl App {
         }
         if let Some(t) = v.as_table_mut() {
             t.extend(self.clippings_table(id));
+            t.extend(self.inline_table(id));
+            // Session restoration keeps the pane's chat reference, so a chat's link survives a
+            // relaunch; a saved arrangement, a file or a duplicate never carries it.
+            if contents.restoring() {
+                arrangement::save_reference(t, &p.session_guid);
+            }
         }
         // A session that runs ssh saved without contents (an arrangement, Duplicate Tab): the
         // hops to reconnect through, each with its directory (`PS:7342-7347`), as Duplicate
@@ -474,8 +488,9 @@ impl App {
 
     /// Builds one tab of an arrangement in the current window: a pane per session. `name`
     /// is the saved arrangement's (None for window restoration, a file, Duplicate Window or
-    /// Duplicate Tab).
-    pub(super) fn build_tab(&mut self, t: &Value, name: Option<&str>) -> Result<Tab, String> {
+    /// Duplicate Tab). `launch` is true only for the launch's own restoration of the saved
+    /// state: only then may a pane adopt the chat reference its table holds.
+    pub(super) fn build_tab(&mut self, t: &Value, name: Option<&str>, launch: bool) -> Result<Tab, String> {
         let root = t.get("Root").ok_or("a tab in the arrangement has no panes")?;
         let tree = arrangement::tree_of(root)?;
         let profiles = self.profile_list();
@@ -521,6 +536,12 @@ impl App {
             self.start_dir_override = None;
             match id {
                 Some(id) => {
+                    // Launch-time restoration: the pane takes the reference it saved, unless a
+                    // live pane already holds it (PTYSession.m:2403-2420).
+                    let saved = arrangement::reference_for(&session, launch, &|g| self.panes.values().any(|p| p.session_guid == g));
+                    if let (Some(guid), Some(p)) = (saved, self.panes.get_mut(&id)) {
+                        p.keep_reference(&guid);
+                    }
                     if launched {
                         self.restore_ssh_session(id, &session);
                     } else {
@@ -538,6 +559,7 @@ impl App {
                         }
                     }
                     self.restore_clippings(id, &session);
+                    self.restore_inline(id, &session);
                     let notice = if launched { notice } else { FolderNotice::Nothing };
                     self.arrangement_announcements(id, &session, &choice, name, notice, &folder);
                     started.push(id);
@@ -555,6 +577,7 @@ impl App {
         if let Some(e) = failed {
             for id in started {
                 self.clips.remove(&id);
+                self.inline_drop(id);
                 self.focus_order.remove(&id);
                 self.bars.remove(&id);
                 if let Some(p) = self.panes.remove(&id) {
@@ -692,10 +715,10 @@ impl App {
 
     /// Fills the current (new) window from an arrangement window table: its tabs, selected
     /// tab, title, locks, style, and frame.
-    pub(super) fn apply_arrangement_window(&mut self, w: &Value, name: Option<&str>) -> Result<(), String> {
+    pub(super) fn apply_arrangement_window(&mut self, w: &Value, name: Option<&str>, launch: bool) -> Result<(), String> {
         let tabs = w.get("Tabs").and_then(|t| t.as_array()).cloned().unwrap_or_default();
         for t in &tabs {
-            let tab = self.build_tab(t, name)?;
+            let tab = self.build_tab(t, name, launch)?;
             self.tabs.push(tab);
         }
         let f = arrangement::window_facts(w);
@@ -714,7 +737,7 @@ impl App {
             g.window.set_outer_position(winit::dpi::PhysicalPosition::new(frame.x.round() as i32, frame.y.round() as i32));
             let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
             let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
-            let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new((frame.w as u32).saturating_sub(dw).max(1), (frame.h as u32).saturating_sub(dh).max(1)));
+            let _ = super::caption_ui::request_inner_size(&g.window, winit::dpi::PhysicalSize::new((frame.w as u32).saturating_sub(dw).max(1), (frame.h as u32).saturating_sub(dh).max(1)));
         }
         self.apply_resizable();
         if f.style != crate::frames::NORMAL {
@@ -735,7 +758,7 @@ impl App {
         if as_tabs {
             for w in &windows {
                 for t in w.get("Tabs").and_then(|t| t.as_array()).cloned().unwrap_or_default() {
-                    match self.build_tab(&t, Some(name)) {
+                    match self.build_tab(&t, Some(name), false) {
                         Ok(tab) => {
                             self.tabs.push(tab);
                             self.active = self.tabs.len() - 1;
@@ -978,5 +1001,13 @@ mod tests {
         assert!(saved_ssh_session(&Value::Table(t.clone())));
         t.insert(crate::ssh_recovery::SESSION_KEY.into(), Value::String("true".into()));
         assert!(!saved_ssh_session(&Value::Table(t)), "only a boolean counts");
+    }
+
+    #[test]
+    fn only_session_restoration_saves_the_chat_reference() {
+        assert!(Contents::Styled(100).restoring());
+        assert!(Contents::KeysOnly.restoring());
+        assert!(!Contents::None.restoring(), "a saved arrangement, a file or a duplicate mints fresh references");
+        assert!(!Contents::Plain.restoring());
     }
 }

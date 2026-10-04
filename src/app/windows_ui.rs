@@ -59,6 +59,12 @@ pub(super) struct WinSlot {
     block_buttons: Vec<blocks_ui::BlockButton>,
     block_hover: Option<(PaneId, u32, i32, i32)>,
     porthole_hits: Vec<porthole_ui::PortholeHit>,
+    /// The session picker's buttons this window drew (`chat_session_app`).
+    picker_hits: Vec<(PaneId, Rect)>,
+    /// The inline chat panels' rectangles this window drew (`inline_chat_ui`).
+    inline_hits: Vec<inline_chat_ui::PanelHit>,
+    /// The AI indicators' rectangles this window drew, for a press on them (`chat_session_app`).
+    chat_indicator_hits: Vec<(PaneId, Rect, crate::scene::IndicatorKind)>,
     focused: bool,
     wheel_acc: f32,
     wheel_acc_x: f32,
@@ -69,7 +75,12 @@ pub(super) struct WinSlot {
     win_title: Option<String>,
     window_menu_text: (String, String),
     border_applied: Option<u32>,
+    theme_applied: Option<bool>,
     menu_hidden: bool,
+    caption_hover: Option<crate::caption::Button>,
+    caption_pressed: Option<crate::caption::Button>,
+    caption_label_w: f32,
+    caption_name_w: f32,
     zoom_restore: Option<Rect>,
     mru: Mru,
     mru_mods: Option<Mods>,
@@ -133,6 +144,9 @@ impl WinSlot {
             block_buttons: Vec::new(),
             block_hover: None,
             porthole_hits: Vec::new(),
+            picker_hits: Vec::new(),
+            inline_hits: Vec::new(),
+            chat_indicator_hits: Vec::new(),
             focused: false,
             wheel_acc: 0.0,
             wheel_acc_x: 0.0,
@@ -143,7 +157,12 @@ impl WinSlot {
             win_title: None,
             window_menu_text: Default::default(),
             border_applied: None,
+            theme_applied: None,
             menu_hidden: false,
+            caption_hover: None,
+            caption_pressed: None,
+            caption_label_w: 0.0,
+            caption_name_w: 0.0,
             zoom_restore: None,
             mru: Mru::default(),
             mru_mods: None,
@@ -220,6 +239,9 @@ impl App {
         swap(&mut self.block_buttons, &mut s.block_buttons);
         swap(&mut self.block_hover, &mut s.block_hover);
         swap(&mut self.porthole_hits, &mut s.porthole_hits);
+        swap(&mut self.picker_hits, &mut s.picker_hits);
+        swap(&mut self.inline_hits, &mut s.inline_hits);
+        swap(&mut self.chat_indicator_hits, &mut s.chat_indicator_hits);
         swap(&mut self.focused, &mut s.focused);
         swap(&mut self.wheel_acc, &mut s.wheel_acc);
         swap(&mut self.wheel_acc_x, &mut s.wheel_acc_x);
@@ -230,7 +252,12 @@ impl App {
         swap(&mut self.win_title, &mut s.win_title);
         swap(&mut self.window_menu_text, &mut s.window_menu_text);
         swap(&mut self.border_applied, &mut s.border_applied);
+        swap(&mut self.theme_applied, &mut s.theme_applied);
         swap(&mut self.menu_hidden, &mut s.menu_hidden);
+        swap(&mut self.caption_hover, &mut s.caption_hover);
+        swap(&mut self.caption_pressed, &mut s.caption_pressed);
+        swap(&mut self.caption_label_w, &mut s.caption_label_w);
+        swap(&mut self.caption_name_w, &mut s.caption_name_w);
         swap(&mut self.zoom_restore, &mut s.zoom_restore);
         swap(&mut self.mru, &mut s.mru);
         swap(&mut self.mru_mods, &mut s.mru_mods);
@@ -420,7 +447,7 @@ impl App {
                 match first {
                     NewWindow::Tab(tab) | NewWindow::TornOff(tab, _) => self.tabs.push(tab),
                     NewWindow::Tabs(tabs) => self.tabs.extend(tabs),
-                    NewWindow::Profile(_) | NewWindow::Arrangement(..) | NewWindow::Orphans(_) | NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..) => {}
+                    NewWindow::Profile(_) | NewWindow::Arrangement(..) | NewWindow::Restored(_) | NewWindow::Orphans(_) | NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..) => {}
                 }
                 // Pinned or grouped tabs coming back keep the order's rules, and tmux hears
                 // a changed order.
@@ -437,6 +464,8 @@ impl App {
         self.swap_live(&mut slot);
         // Edge drags snap to the cell grid, and follow AllowLiveResize.
         self.install_sizing();
+        // A forced Theme's title bar survives system setting changes.
+        self.guard_theme();
         // iTerm2 reads it once per tab bar it makes: a change affects new windows only.
         self.tab_selects_on_down = self.globals.bool("SelectsTabsOnMouseDown");
         // A new window's side bar starts at `LeftTabBarWidth`.
@@ -450,7 +479,7 @@ impl App {
             NewWindow::Profile(g) => g.clone(),
             NewWindow::Tab(t) | NewWindow::TornOff(t, _) => self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile)),
             NewWindow::Tabs(ts) => ts.first().and_then(|t| self.panes.get(&t.focused)).map(|p| self.store.shared_guid(&p.profile)),
-            NewWindow::Arrangement(w, _) => self.first_arrangement_guid(w),
+            NewWindow::Arrangement(w, _) | NewWindow::Restored(w) => self.first_arrangement_guid(w),
             NewWindow::Orphans(_) => None,
             NewWindow::Hotkey(g, _) | NewWindow::HotkeyRestored(g, _) => Some(g.clone()),
         };
@@ -460,7 +489,7 @@ impl App {
         // A git command's single-use window is never full screen (`iTermController.m`
         // `openSingleUseWindowWithCommand:` uses the default window type instead).
         let style = if self.start_command_override.is_some() && matches!(style, crate::frames::FULL_SCREEN | crate::frames::LION_FULL_SCREEN) { crate::frames::NORMAL } else { style };
-        let arranged = matches!(first, NewWindow::Arrangement(..) | NewWindow::HotkeyRestored(..));
+        let arranged = matches!(first, NewWindow::Arrangement(..) | NewWindow::Restored(_) | NewWindow::HotkeyRestored(..));
         let torn_at = match &first {
             NewWindow::TornOff(_, at) => Some(*at),
             _ => None,
@@ -479,7 +508,12 @@ impl App {
                 self.relayout();
             }
             NewWindow::Arrangement(w, name) => {
-                if let Err(e) = self.apply_arrangement_window(&w, name.as_deref()) {
+                if let Err(e) = self.apply_arrangement_window(&w, name.as_deref(), false) {
+                    self.banners.set("arrangement", e);
+                }
+            }
+            NewWindow::Restored(w) => {
+                if let Err(e) = self.apply_arrangement_window(&w, None, true) {
                     self.banners.set("arrangement", e);
                 }
             }
@@ -491,7 +525,7 @@ impl App {
                 self.hotkey = Some(h);
             }
             NewWindow::HotkeyRestored(guid, w) => {
-                if let Err(e) = self.apply_arrangement_window(&w, None) {
+                if let Err(e) = self.apply_arrangement_window(&w, None, true) {
                     self.banners.set("arrangement", e);
                 }
                 self.hotkey = Some(super::hotkey_ui::HotkeyWin::new(guid));
@@ -640,7 +674,7 @@ impl App {
 
     /// The current window's title before its number: the title rules, then the tmux client's
     /// name when the number shows (`PT:3105-3122`).
-    fn caption_base(&self) -> String {
+    pub(super) fn caption_base(&self) -> String {
         let focused = self.tabs.get(self.active).map(|t| t.focused);
         // The gate is the FORMAT being non-empty, not its evaluated text (`PT:13636-13639`).
         let custom = self.win_title.as_deref().filter(|f| !f.is_empty()).map(|f| self.window_title_text(f, focused));
@@ -659,14 +693,24 @@ impl App {
     /// full screen, and not a Compact or Minimal window (whose own caption draws the label,
     /// `compact_caption`).
     fn window_titled(&self) -> bool {
-        let decorated = self.gpu.as_ref().is_some_and(|g| g.window.is_decorated() && g.window.fullscreen().is_none());
-        decorated && !self.compact_window()
+        let decorated = self.gpu.as_ref().is_some_and(|g| g.window.is_decorated());
+        crate::wintitle::has_title_bar(decorated, self.full_screen(), self.compact_window())
     }
 
-    /// Whether the current window is a Compact or Minimal window. 13e replaces this body;
-    /// until then no window is.
+    /// Whether the current window is a Compact or Minimal window: its type as the Theme
+    /// themes it (`frames::themed`) is one of the compact forms, and it is not full screen. Worked
+    /// out here, never stored: `win_style` stays the unthemed type (arrangements, hotkey slides
+    /// and snapping read it), so a Theme change needs no new type.
     pub(super) fn compact_window(&self) -> bool {
-        false
+        !self.full_screen() && self.compact_type()
+    }
+
+    /// Whether the window's themed type is a compact form, full screen or not: the caption
+    /// subclass follows this, not `compact_window` (in full screen winit's style has no title bar
+    /// and the subclass leaves the frame alone, so a full screen round trip changes nothing).
+    pub(super) fn compact_type(&self) -> bool {
+        use crate::frames;
+        frames::is_compact(frames::themed(self.win_style, crate::tab_theme::compact_theme(self.tab_style())))
     }
 
     /// The current window's OS caption (`PT setWindowTitle:subtitle:`): `caption_base` with the
@@ -686,7 +730,6 @@ impl App {
 
     /// What a Compact or Minimal window's caption draws: its title, and the number label
     /// right-aligned (R11).
-    #[allow(dead_code)] // 13e Task 6 draws it.
     pub(super) fn compact_caption(&self) -> (String, Option<String>) {
         let show = self.globals.bool("WindowNumber");
         let accessory = self.globals.bool("UseShortcutAccessoryViewController");
@@ -761,6 +804,9 @@ impl WinSlot {
             block_buttons: Vec::new(),
             block_hover: None,
             porthole_hits: Vec::new(),
+            picker_hits: Vec::new(),
+            inline_hits: Vec::new(),
+            chat_indicator_hits: Vec::new(),
             focused: false,
             wheel_acc: 0.0,
             wheel_acc_x: 0.0,
@@ -771,7 +817,12 @@ impl WinSlot {
             win_title: None,
             window_menu_text: Default::default(),
             border_applied: None,
+            theme_applied: None,
             menu_hidden: false,
+            caption_hover: None,
+            caption_pressed: None,
+            caption_label_w: 0.0,
+            caption_name_w: 0.0,
             zoom_restore: None,
             mru: Mru::default(),
             mru_mods: None,
@@ -869,6 +920,9 @@ pub(super) enum NewWindow {
     /// A window table from an arrangement, and the saved arrangement's name (None for
     /// window restoration, a file, or Duplicate Window).
     Arrangement(crate::arrangement::Value, Option<String>),
+    /// A window table of the saved state, restored at launch: the only window whose panes may
+    /// adopt the chat references they saved (`arrangement::reference_for`).
+    Restored(crate::arrangement::Value),
     /// Host sessions nobody claimed at launch: (host session id, pid), a tab each.
     Orphans(Vec<(u64, u32)>),
     /// A profile's hotkey window, made on its first press (and the window that was in
@@ -1143,7 +1197,7 @@ impl App {
                 // The frame is the outer frame; the inner size leaves the borders out.
                 let (dw, dh) = if f.decorations { (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height)) } else { (0, 0) };
                 w.set_outer_position(PhysicalPosition::new(f.rect.x.round() as i32, f.rect.y.round() as i32));
-                let _ = w.request_inner_size(PhysicalSize::new((f.rect.w as u32).saturating_sub(dw).max(1), (f.rect.h as u32).saturating_sub(dh).max(1)));
+                let _ = super::caption_ui::request_inner_size(&w, PhysicalSize::new((f.rect.w as u32).saturating_sub(dw).max(1), (f.rect.h as u32).saturating_sub(dh).max(1)));
             }
         }
         // Accessory (iTerm2's floating panel) stays above other windows without a taskbar
@@ -1216,7 +1270,7 @@ impl App {
         if (r.w, r.h) != (current.w, current.h) {
             let (outer, inner) = (w.outer_size(), w.inner_size());
             let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
-            let _ = w.request_inner_size(PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
+            let _ = super::caption_ui::request_inner_size(&w, PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
         }
     }
 
@@ -1300,7 +1354,7 @@ impl App {
         let Some(g) = &self.gpu else { return };
         let inner = g.window.inner_size();
         let (w, h) = crate::winmodel::step_size((inner.width, inner.height), cell, r);
-        let _ = g.window.request_inner_size(PhysicalSize::new(w, h));
+        let _ = super::caption_ui::request_inner_size(&g.window, PhysicalSize::new(w, h));
     }
 
     /// Edit Window Title and Edit Tab Title: a one-line window; an empty title clears it.
@@ -1399,7 +1453,7 @@ impl App {
                     let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
                     let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
                     g.window.set_outer_position(PhysicalPosition::new(r.x as i32, r.y as i32));
-                    let _ = g.window.request_inner_size(PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
+                    let _ = super::caption_ui::request_inner_size(&g.window, PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
                 }
             }
         }

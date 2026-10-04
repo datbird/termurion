@@ -59,7 +59,7 @@ impl App {
     }
 
     /// As `scheduleFlush`: one catalog write per burst, due after the first record.
-    fn catalog_due_after_record(&mut self) {
+    pub(super) fn catalog_due_after_record(&mut self) {
         if self.catalog_due.is_none() {
             self.catalog_due = Some(Instant::now() + FLUSH_DELAY);
         }

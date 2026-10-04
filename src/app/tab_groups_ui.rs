@@ -57,7 +57,7 @@ impl App {
     /// A pinned tab's width in pixels: `PinnedTabWidth` points at the window's scale.
     #[allow(dead_code)] // 13h reads it.
     pub(super) fn pinned_width(&self) -> f32 {
-        tab_layout::Settings::from_globals(&self.globals).pinned_width * self.scale()
+        self.tab_settings().pinned_width * self.scale()
     }
 
     /// The tab at `at` joins the group `id` (None: no group) and takes its definition and pin
@@ -487,7 +487,7 @@ impl App {
         let guid = self.focused_guid();
         if self.new_tab_opens_window(guid.as_deref()) {
             let Some(value) = self.snapshot_tab(at) else { return };
-            match self.build_tab(&value, None) {
+            match self.build_tab(&value, None, false) {
                 Ok(mut tab) => {
                     tab.group = None;
                     self.pending_windows.push(windows_ui::NewWindow::Tab(tab));
@@ -536,7 +536,7 @@ impl App {
         let value = self.snapshot_tab(at)?;
         let tmux = self.tmux_of(self.tabs[at].focused).is_some();
         let (place, group) = duplicate_placement(at, self.tabs.len(), self.globals.bool("DuplicatedTabsOpenAdjacentToOriginal"), tmux, true, self.tabs[at].group.as_ref());
-        let tab = match self.build_tab(&value, None) {
+        let tab = match self.build_tab(&value, None, false) {
             Ok(t) => t,
             Err(e) => {
                 self.banners.set("arrangement", format!("Could not duplicate the tab: {e}"));

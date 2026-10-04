@@ -959,6 +959,9 @@ impl Screen {
                 if self.api_watch {
                     self.api_events.push(crate::api_notify::ApiEvent::CommandEnd { code: c, mark: target });
                 }
+                if self.chat_watch {
+                    self.requests.push(Request::CommandEnded { code: c, mark: target });
+                }
                 self.fire_event(crate::trigger_events::EventKind::CommandFinished, &crate::trigger_events::EventFacts { exit_code: Some(c), ..Default::default() }, &[c.to_string()]);
             }
             Osc::Notify(text) => {
@@ -1866,6 +1869,24 @@ mod tests {
         s.api_watch = false;
         s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07\x1b]133;D;0\x07\x1b]1337;Custom=id=me:hi\x07");
         assert!(s.api_events.is_empty());
+    }
+
+    #[test]
+    fn a_finished_command_is_queued_only_while_a_chat_watches() {
+        let mut s = Screen::new(40, 10);
+        let ended = |s: &mut Screen| s.take_requests().into_iter().filter_map(|r| if let Request::CommandEnded { code, mark } = r { Some((code, mark)) } else { None }).collect::<Vec<_>>();
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07\x1b]133;D;2\x07");
+        assert!(ended(&mut s).is_empty(), "unwatched: nothing");
+        s.chat_watch = true;
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07pwd\r\n\x1b]133;C\x07\x1b]133;D;5\x07");
+        let m = s.marks.last_command;
+        assert_eq!(ended(&mut s), vec![(5, m)]);
+        // A command that never started (Ctrl+C at the prompt) ended nothing.
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07\x1b]133;D\x07");
+        assert!(ended(&mut s).is_empty());
+        s.chat_watch = false;
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07id\r\n\x1b]133;C\x07\x1b]133;D;0\x07");
+        assert!(ended(&mut s).is_empty(), "watching stopped");
     }
 
     /// Host change offers: only when a previous host existed, the name changed and the two

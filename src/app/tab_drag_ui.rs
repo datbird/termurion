@@ -10,33 +10,85 @@
 //! `PT:10259-10261`). The rules are `crate::tab_drag`'s.
 
 use super::*;
-use crate::tab_drag::{Drop, Target};
+use crate::tab_drag::{Arm, Drop, Target};
 use crate::tab_groups;
 use crate::winmodel::LayoutOp;
 
 impl App {
-    /// A left press on the tab bar may start a drag: on a tab unless Lock Layout forbids
-    /// reordering (no beep: the press still selects, `PT:7610-7616`); on a group chip, whose
-    /// drop Lock Layout refuses instead (`PT:7781`, `:7813`); on the "+" button with
-    /// `AllowDragOnAddTabButton`.
+    /// A left press on the tab bar may start a drag (`tab_drag::press_arm`): on a tab unless
+    /// Lock Layout forbids reordering (no beep: the press still selects, `PT:7610-7616`); on a
+    /// group chip, whose drop Lock Layout refuses instead (`PT:7781`, `:7813`); on the "+" button
+    /// with `AllowDragOnAddTabButton`. Anywhere else on the bar (a close button, the empty bar,
+    /// a locked tab) only the window's drag is armed, which Alt, the edge strip or a solitary tab
+    /// converts on the move (`PSM:3788-3794`, asked before any cell is looked up).
     pub(super) fn tab_drag_press(&mut self, hit: tab_layout::Hit) {
         let start = self.cursor;
         self.tab_drop_marker = None;
-        match hit {
-            tab_layout::Hit::Tab(from) if self.layout_allowed_quiet(LayoutOp::ReorderTab) => {
+        let reorder = matches!(hit, tab_layout::Hit::Tab(_)) && self.layout_allowed_quiet(LayoutOp::ReorderTab);
+        let add_drags = self.globals.bool("AllowDragOnAddTabButton") && self.new_tab_button_rect().is_some_and(|r| r.contains(start.0, start.1));
+        match (tab_drag::press_arm(hit, reorder, add_drags), hit) {
+            (Arm::Tab, tab_layout::Hit::Tab(from)) => {
                 // Called before the press selects the tab: this is the selection before it.
                 let before = self.tabs.get(self.active).map(|t| t.id);
                 self.drag = Drag::Tab { from, start, began: false, before };
             }
-            tab_layout::Hit::Chip(_) => {
+            (Arm::Chip, _) => {
                 if let Some(group) = self.bar_chip_at(start.0, start.1) {
                     self.drag = Drag::Chip { group, start, began: false };
                 }
             }
-            tab_layout::Hit::Add if self.globals.bool("AllowDragOnAddTabButton") && self.new_tab_button_rect().is_some_and(|r| r.contains(start.0, start.1)) => {
-                self.drag = Drag::AddButton { start };
-            }
+            (Arm::AddButton, _) => self.drag = Drag::AddButton { start },
+            (Arm::Window, _) => self.drag = Drag::Window { start },
             _ => {}
+        }
+    }
+
+    /// The size in pixels of the current window's edge strip that drags it (`caption::edge_strip`
+    /// of the theme's key, times the scale); 0 outside Minimal and Compact and while the window
+    /// is full screen or maximized, and in a window type that cannot be dragged (Centered).
+    pub(super) fn edge_strip_px(&self) -> f32 {
+        let number = |key: &str, default: f32| self.globals.number(key).map_or(default, |v| v as f32);
+        // Centered and edge-docked windows are not draggable (`PT:2106-2135`, `:10127-10129`).
+        let draggable = crate::caption::window_movable(self.win_style, self.full_screen()) && !self.gpu.as_ref().is_some_and(|g| g.window.is_maximized());
+        let strip = crate::caption::edge_strip(self.tab_style(), number("MinimalEdgeDragSize", 12.0), number("CompactEdgeDragSize", 10.0), draggable);
+        if self.compact_window() { strip.max(0.0) * self.scale() } else { 0.0 }
+    }
+
+    /// Whether the drag of a tab that just began (or of a press that only a window drag can
+    /// take, `Drag::Window`), with the pointer now at the window point `at`, moves the window
+    /// instead (`caption::drag_to_window`, judged on the move only, `PSM:3788-3794`): Alt held
+    /// now, the window's theme, its No Title Bar type, its tabs (collapsed group members count;
+    /// only the overflow menu stops the count, `numberOfVisibleTabs`) and whether the drag event
+    /// is in the edge strip (`event.locationInWindow`, `PT:10232-10233`) decide it. A group
+    /// chip's drag is never asked (`PSM:3766-3795`).
+    pub(super) fn tab_drag_moves_window(&self, at: (f32, f32)) -> bool {
+        use crate::frames;
+        let no_title_bar = matches!(frames::unthemed(self.win_style), frames::NO_TITLE_BAR | frames::CENTERED_NO_TITLE_BAR);
+        let visible = crate::caption::visible_tab_count(self.tabs.len(), self.tab_bar.hidden.iter().copied().min());
+        let in_strip = self.tab_bar_rect().is_some_and(|b| crate::caption::in_edge_strip(b, self.tab_position(), self.edge_strip_px(), at.0, at.1));
+        let convert = self.globals.bool("ConvertTabDragToWindowDragForSolitaryTabInCompactOrMinimalTheme");
+        crate::caption::drag_to_window(self.mods.alt, self.compact_window(), no_title_bar, visible, in_strip, convert)
+    }
+
+    /// Hands the pointer to the OS to move the window; the press that led here is forgotten (it
+    /// selects, closes or drops nothing after the OS loop returns), as `add_button_drag` does.
+    /// A window that cannot be dragged (`caption::window_movable`: Centered, docked to an edge,
+    /// full screen) moves nothing, and the press is forgotten all the same (`iTermWindowImpl.m:163-167`).
+    pub(super) fn begin_window_drag(&mut self) {
+        self.drag = Drag::None;
+        self.tab_press = None;
+        self.end_tab_drag();
+        self.drag_window_if_movable();
+        self.redraw();
+    }
+
+    /// The OS moves the window with the pointer, where the window may be dragged.
+    fn drag_window_if_movable(&self) {
+        if !crate::caption::window_movable(self.win_style, self.full_screen()) {
+            return;
+        }
+        if let Some(g) = &self.gpu {
+            let _ = g.window.drag_window();
         }
     }
 
@@ -52,6 +104,17 @@ impl App {
     /// group's chip, in this bar or another window's, a dragged tab would join the group,
     /// which is framed instead. A press that went (the tab moved away under it) ends it.
     pub(super) fn tab_drag_move(&mut self, x: f32, y: f32) {
+        // A press that can only move the window: asked again at each move (Alt may come later).
+        if let Drag::Window { start } = self.drag {
+            if self.tab_press.is_none() {
+                return self.end_tab_drag();
+            }
+            if tab_drag::began(start, (x, y), self.min_tab_drag) && self.tab_drag_moves_window((x, y)) {
+                self.hide_tab_tip();
+                self.begin_window_drag();
+            }
+            return;
+        }
         let (Drag::Tab { start, began, .. } | Drag::Chip { start, began, .. }) = &mut self.drag else { return };
         let (start, was) = (*start, *began);
         if self.tab_press.is_none() || self.tab_press_moved() {
@@ -61,6 +124,11 @@ impl App {
         if !was {
             if !tab_drag::began(start, (x, y), self.min_tab_drag) {
                 return;
+            }
+            // Minimal and Compact windows (and No Title Bar ones) move instead of tearing off.
+            if matches!(self.drag, Drag::Tab { .. }) && self.tab_drag_moves_window((x, y)) {
+                self.hide_tab_tip();
+                return self.begin_window_drag();
             }
             if let Drag::Tab { began, .. } | Drag::Chip { began, .. } = &mut self.drag {
                 *began = true;
@@ -199,7 +267,7 @@ impl App {
     /// Ends a press on a tab, a chip or the "+" (dropped, cancelled, or never dragged): no
     /// marker, and no group framed as a join target.
     pub(super) fn end_tab_drag(&mut self) {
-        if matches!(self.drag, Drag::Tab { .. } | Drag::Chip { .. } | Drag::AddButton { .. }) {
+        if matches!(self.drag, Drag::Tab { .. } | Drag::Chip { .. } | Drag::AddButton { .. } | Drag::Window { .. }) {
             self.drag = Drag::None;
         }
         self.tab_drop_marker = None;
@@ -229,16 +297,15 @@ impl App {
     }
 
     /// The pointer moved during a press on the "+": once it passes `MinimumTabDragDistance`
-    /// the window moves with it and the press is forgotten, so no tab opens.
+    /// the window moves with it (where it may be dragged) and the press is forgotten, so no tab
+    /// opens.
     pub(super) fn add_button_drag(&mut self, start: (f32, f32), x: f32, y: f32) {
         if !tab_drag::began(start, (x, y), self.min_tab_drag) {
             return;
         }
         self.drag = Drag::None;
         self.tab_press = None;
-        if let Some(g) = &self.gpu {
-            let _ = g.window.drag_window();
-        }
+        self.drag_window_if_movable();
         self.redraw();
     }
 

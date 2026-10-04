@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 189 | 108 | 17 |
-| `02-global-settings.md` | 823 | 417 | 74 | 332 |
-| `03-features-and-menus.md` | 647 | 533 | 47 | 67 |
-| Total | 1,784 | 1,139 | 229 | 416 |
+| `01-profile-settings.md` | 314 | 190 | 108 | 16 |
+| `02-global-settings.md` | 823 | 437 | 73 | 313 |
+| `03-features-and-menus.md` | 647 | 538 | 47 | 62 |
+| Total | 1,784 | 1,165 | 228 | 391 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -284,6 +284,23 @@ typed in pieces is checked whole, the typing tools refuse line breaks and contro
 model-written field in a request is escaped) it is ruled and listed. The five browser tools wait
 for milestone 13. Every kept quirk is listed in `docs/acceptance/m12c-checklist.md` and ruled on
 in `docs/superpowers/rulings/m12c-rulings.txt`.
+Milestone 12d built the chat window and the inline chat (03: View > Show Inline Chat, Session > Open
+AI Chat..., Window > AI Chats, AI Chats window and In-chat find, 5 rows to have; Chat history
+persistence's browsing half, already have). Window > AI Chats (Shift+Win+Y) opens one egui window with
+the chat list (rename, delete, a search across every chat whose quote bug is fixed with bound
+parameters, minted titles) and a conversation (markdown, a copy for each code block, Edit, Fork and
+Delete on a message, attachments, drops and drafts), a toolbar of provider, model, effort, tier,
+thinking and web search, and the Chat Info menu. The four request buttons, Select a Session (a
+"Link this session to AI chat?" button on every pane), linking, per-category permissions and
+Send Commands & Output to AI Automatically answer through 12c's one gate; a linked pane shows a
+link glyph and a streaming glyph. Win+F finds in a conversation. View > Show Inline Chat
+(Shift+Win+,) draws a per-pane panel from the same models at the pane's right, beside Clippings,
+refused in tmux panes and kept by arrangements and restoration. A chat binds a terminal only through
+the pane's own session id, never its number, so a relaunch never gives an old grant to a new pane,
+and every file a model names goes through one helper that refuses Explorer-parsed types and marks
+the file. Orchestration buttons show disabled until 12f; "Link Browser Session" until milestone 13.
+Every kept quirk is listed in `docs/acceptance/m12d-checklist.md` and ruled on in
+`docs/superpowers/rulings/m12d-rulings.txt`. 12c's checklist is run with this window.
 Milestone 13a built Settings > Advanced as iTerm2's pane (02): the rows under iTerm2's 19
 categories in Finder order with bold, pinned headers; a search that matches every typed word in a
 row's description or category; "Show only non-default values", which keeps the row being edited
@@ -408,9 +425,26 @@ vertically only with MaxVertically, Window Type 4 opens full screen and 14 as a 
 without a taskbar button, and the profile's Window style popup has iTerm2's ten entries with
 units popups sizing Normal, No Title Bar, Centered and edge windows in cells or percent of the
 screen. SizeChangesAffectProfile stays missing for milestone 13n. The Compact and Minimal
-caption label waits for 13e, and a transparent pane forcing the border for 13g. Nothing of 13f
+caption label came with 13e, and a transparent pane forcing the border waits for 13g. Nothing of 13f
 was checked on screen during the build. Every kept quirk is listed in
 `docs/acceptance/m13f-checklist.md` and ruled on in `docs/superpowers/rulings/m13f-rulings.txt`.
+Milestone 13e built the tab themes (01: 1 row to have and the compact Window Types 13, 16 and 18 rewritten; 02: 20 rows to have, 19 from
+missing and 1 from partial). Settings > Appearance > General > Theme (the real key is
+TabStyleWithAutomaticOption, default Regular) has iTerm2's seven entries: Regular follows Windows' light and dark
+mode and its high contrast setting; Light, Dark, Light (High Contrast) and Dark (High Contrast) force the mode
+on the title bar, the menu bar and Tandem's own windows (Profiles > Colors shows iTerm2's warning under its mode
+line); Minimal and Compact leave the mode to Windows. Each theme draws the tab bar with iTerm2's pre-Tahoe
+palette (PSMYosemite, Dark, the two High Contrast styles and PSMMinimal, with the fills, outlines, notch and
+underline of colored tabs) and the split pane divider follows the theme. Under Minimal and Compact a window's
+tabs move into the caption area with Tandem's own minimize, maximize and close buttons at the right (snap layouts
+work on hover), a shortcut label ("Alt+Win+1") before them, and the window title when one tab hides the bar; the
+menu bar cannot sit under that strip, so a menu button at its left, Alt or F10, and a right click on empty bar
+space open the whole menu. A press in the top strip, on empty bar space, on a solitary tab, or Alt held on any bar
+point moves the window; a double click on the empty strip maximizes. The window name shows beside the tabs (Never,
+When a custom name is set, Always) and a double click on it edits the title. The nineteen Advanced rows for tab
+darkness, minimal knobs, drag strips, bar height and caption room are edited in Settings > Advanced. Nothing of 13e was checked on screen
+during the build. Context and popup menus still follow the system mode under a forced theme. Every kept quirk is
+listed in `docs/acceptance/m13e-checklist.md` and ruled on in `docs/superpowers/rulings/m13e-rulings.txt`.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's

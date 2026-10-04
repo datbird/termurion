@@ -38,6 +38,11 @@ impl App {
             let selection = crate::warnings::selection_key(id);
             if self.globals.bool(id) {
                 let index = usize::try_from(self.globals.int(&selection)).unwrap_or(0);
+                // A silence that answers for the person is listed in Suppressed Alerts (ruling F3).
+                if let Some(spec) = ai_gate::silence_spec(&alert) {
+                    super::warnings_app::record_answer(&spec, index, &self.globals, &mut self.suppressed, super::warnings_app::unix_now());
+                    self.catalog_due_after_record();
+                }
                 return self.ai_answered(alert.then, index);
             }
         }
@@ -223,6 +228,9 @@ impl App {
         if changed {
             self.ai_discovery.save();
             self.redraw_all();
+            // The chat window's model list follows the newly found models (ruling F17).
+            crate::chat_toolbar::mark_after_discovery(changed, &mut self.chat_toolbar_dirty);
+            self.chat_window_refresh();
             if let Some(s) = self.settings.as_mut() {
                 s.ai.found = self.ai_discovery.all();
                 s.request_redraw();
@@ -305,13 +313,32 @@ impl App {
                 }
             }
             // Turn On writes Granted; Not Now (also a close or Escape) writes Denied, as iTerm2.
+            // A question overtaken by Confirm Change's grant writes nothing (ruling F31).
             Then::AutoProvide => {
-                let consent = crate::ai_context::consent_answer(index);
-                self.globals.set(crate::ai_context::CONSENT_KEY, toml::Value::Integer(consent.raw()));
-                self.save_globals();
+                let current = crate::ai_context::Consent::from_global(self.globals.int(crate::ai_context::CONSENT_KEY));
+                if let Some(consent) = crate::chat_menu::queued_consent_write(current, index) {
+                    self.globals.set(crate::ai_context::CONSENT_KEY, toml::Value::Integer(consent.raw()));
+                    self.save_globals();
+                }
             }
             // OK turns the check on; either answer ends the question for good.
             Then::SafetyNag => self.ai_nag_answered(index),
+            // Only the second button (Delete) deletes; Cancel, a close and Escape never do.
+            Then::DeleteChats(ids) => {
+                if index == 1 {
+                    self.delete_chats(ids);
+                }
+            }
+            // The alert names the chat, session and category; a stale answer does nothing.
+            Then::ConfirmChange { chat, guid, category } => self.confirm_change_answered(&chat, &guid, category, index),
+            // Only OK starts streaming; Cancel, a close and Escape never do.
+            Then::PrivacyWarning { chat, guid } => {
+                if index == 0 {
+                    self.start_streaming(&chat, &guid);
+                }
+            }
+            // Only Attach attaches; Insert Path, a close and a stale index insert the paths.
+            Then::DropChoice { chat, supported, all } => self.chat_drop_answered(&chat, &supported, &all, index),
             Then::Grant(host) => {
                 if index == 0 {
                     ai_gate::grant(&mut self.globals, &host);

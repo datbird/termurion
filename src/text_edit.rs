@@ -985,6 +985,28 @@ pub fn caret_pos(text: &str, lines: &[VisualLine], at: usize, at_line_end: bool,
     (line, width(&text[l.start..at]))
 }
 
+/// The pieces of a selection to paint: (visual line index, x offset of its start, width) for
+/// each of `show` (indexes into `lines`) the selection touches. A selected line end shows as a
+/// space's width past the text. Shared by the Notes tool and the inline chat's input.
+pub fn selection_spans(sel: Option<Range<usize>>, text: &str, lines: &[VisualLine], show: Range<usize>, measure: &dyn Fn(&str) -> f32) -> Vec<(usize, f32, f32)> {
+    let mut out = Vec::new();
+    let Some(r) = sel else { return out };
+    let space = measure(" ");
+    for i in show.start..show.end.min(lines.len()) {
+        let v = &lines[i];
+        if r.end < v.start || r.start > v.end || (r.end == v.start && v.start != v.end) {
+            continue;
+        }
+        let (a, b) = (r.start.max(v.start), r.end.min(v.end));
+        let x0 = measure(&text[v.start..a]);
+        let x1 = measure(&text[v.start..b]) + if r.end > v.end && lines.get(i + 1).is_some_and(|n| n.start > v.end) { space } else { 0.0 };
+        if x1 > x0 {
+            out.push((i, x0, x1 - x0));
+        }
+    }
+    out
+}
+
 /// Whether a focused editor takes a key (Review Focus 6): every plain key; with Ctrl only its
 /// edit chords (Ctrl+A/C/X/V/Z/Y, Ctrl+Shift+Z) and the Ctrl word, document and page moves
 /// and word deletes; never an Alt or Win chord (Win is Cmd).
@@ -1161,6 +1183,18 @@ fn word_at(text: &str, at: usize) -> Range<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_spans_follow_the_notes_rule() {
+        // "ab cd" wrapped as "ab " / "cd" (one char = 1 unit); the selection 1..4 spans both lines.
+        let lines = vec![VisualLine { start: 0, end: 3 }, VisualLine { start: 3, end: 5 }];
+        let measure = |t: &str| t.chars().count() as f32;
+        let spans = selection_spans(Some(1..4), "ab cd", &lines, 0..2, &measure);
+        assert_eq!(spans, vec![(0, 1.0, 2.0), (1, 0.0, 1.0)]);
+        assert!(selection_spans(None, "ab cd", &lines, 0..2, &measure).is_empty());
+        // Only the shown lines are painted.
+        assert_eq!(selection_spans(Some(1..4), "ab cd", &lines, 1..2, &measure), vec![(1, 0.0, 1.0)]);
+    }
 
     /// Ten units per character, so positions read as plain column counts.
     fn w(s: &str) -> f32 {

@@ -241,6 +241,9 @@ pub struct Screen {
     /// A Python API connection watches this screen's prompts or custom escape sequences:
     /// `api_events` fills only then (screens outside panes never drain it).
     pub api_watch: bool,
+    /// A chat streams this session's finished commands: `Request::CommandEnded` is queued at
+    /// each command's end only then (`chat_session_app`).
+    pub chat_watch: bool,
     /// Prompt, command and custom escape sequence events for the API, taken by the app.
     pub api_events: Vec<crate::api_notify::ApiEvent>,
     /// The cursor (absolute line, column) at the last accrue check; set at B.
@@ -325,6 +328,8 @@ pub enum Request {
     SshSendConductor(crate::ssh_handshake::Handshake),
     /// Trusted `EndSSH=`: end the pane's hops through this it2ssh unique id.
     SshEnd(String),
+    /// A command finished in a session a chat streams: its exit code and mark (`chat_watch`).
+    CommandEnded { code: i32, mark: Option<u32> },
 }
 
 /// Key reporting and emulation chosen in Session > Terminal State.
@@ -442,6 +447,7 @@ impl Screen {
             prompt_state: Default::default(),
             composer_events: Vec::new(),
             api_watch: false,
+            chat_watch: false,
             api_events: Vec::new(),
             composer_from: None,
             composer_scanned: 0,

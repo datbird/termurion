@@ -1386,6 +1386,24 @@ impl App {
         self.redraw_all();
     }
 
+    /// A Paste key filled with the clipboard's text; any other key as it is. Shared by the
+    /// Notes tool and the inline chat's input.
+    pub(super) fn with_clipboard_text(&mut self, key: EditKey) -> EditKey {
+        match key {
+            EditKey::Paste(_) => EditKey::Paste(self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()).unwrap_or_default()),
+            k => k,
+        }
+    }
+
+    /// Puts an editor's Copy or Cut on the clipboard; a failure shows as a banner.
+    pub(super) fn set_clipboard_text(&mut self, text: String) {
+        if let Some(cb) = self.clipboard.as_mut() {
+            if let Err(e) = cb.set_text(text) {
+                self.banners.set("clipboard", format!("Could not copy: {e}"));
+            }
+        }
+    }
+
     /// Keys while the Notes editor has the keyboard (`text_edit::takes`): typing, Enter, Tab,
     /// the edit keys and their Ctrl chords are the editor's; Esc gives the keyboard back;
     /// other chords pass. True when taken.
@@ -1403,10 +1421,7 @@ impl App {
         if !text_edit::takes(ctrl, alt, mods.cmd, &key) {
             return false;
         }
-        let key = match key {
-            EditKey::Paste(_) => EditKey::Paste(self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()).unwrap_or_default()),
-            k => k,
-        };
+        let key = self.with_clipboard_text(key);
         let Some(area) = self.tool_area(ToolId::Notes) else { return true };
         self.notes_sync();
         let l = note_layout(area, self.scale());
@@ -1422,11 +1437,7 @@ impl App {
         match out {
             EditOut::Changed => self.notes_edited(),
             EditOut::Copied(text) => {
-                if let Some(cb) = self.clipboard.as_mut() {
-                    if let Err(e) = cb.set_text(text) {
-                        self.banners.set("clipboard", format!("Could not copy: {e}"));
-                    }
-                }
+                self.set_clipboard_text(text);
                 // A Cut changed the text as well.
                 if cut {
                     self.notes_edited();
@@ -1530,22 +1541,7 @@ impl App {
             .filter(|(i, _)| y_of(*i) + line_h > clip.y && y_of(*i) < clip.y + clip.h)
             .map(|(i, v)| (l.text.x, y_of(i), text[v.start..v.end].replace('\t', TAB_AS)))
             .collect();
-        let mut selection = Vec::new();
-        if let Some(r) = edit.selection() {
-            let space = measure(" ");
-            for (i, v) in lines.iter().enumerate() {
-                if r.end < v.start || r.start > v.end || (r.end == v.start && v.start != v.end) {
-                    continue;
-                }
-                let (a, b) = (r.start.max(v.start), r.end.min(v.end));
-                let x0 = measure(&text[v.start..a]);
-                // A selected line end shows as a space's width past the text.
-                let x1 = measure(&text[v.start..b]) + if r.end > v.end && lines.get(i + 1).is_some_and(|n| n.start > v.end) { space } else { 0.0 };
-                if x1 > x0 {
-                    selection.push(Rect { x: l.text.x + x0, y: y_of(i), w: x1 - x0, h: line_h });
-                }
-            }
-        }
+        let selection: Vec<Rect> = text_edit::selection_spans(edit.selection(), text, &lines, 0..lines.len(), &measure).into_iter().map(|(i, x, w)| Rect { x: l.text.x + x, y: y_of(i), w, h: line_h }).collect();
         // Trailing spaces hang past the edge: the caret stays inside the text's room.
         let caret = focused.then(|| {
             let (line, x) = edit.caret_line(&lines, &measure);

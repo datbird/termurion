@@ -219,6 +219,8 @@ impl App {
         // A new bar shows what the menu file says, so the Disconnect title is applied again.
         self.ssh_menu_shown = None;
         self.sync_checks();
+        // A fixed Theme forces the window's mode; the bar was attached with `Auto`.
+        self.apply_theme();
     }
 
     /// iTerm2's right-click menu, after `extra` items (label, what it does) and a separator,
@@ -551,7 +553,7 @@ impl App {
         if self.snippet_or_action_picked(id, event_loop) || self.toolbelt_picked(id, event_loop) {
             return;
         }
-        if self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) || self.porthole_language_picked(id) || self.tab_overflow_picked(id) || self.color_picked(id) || self.status_bar_picked(id, event_loop) {
+        if self.chat_list_picked(id, event_loop) || self.chat_menu_picked(id, event_loop) || self.inline_menu_picked(id) || self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) || self.porthole_language_picked(id) || self.tab_overflow_picked(id) || self.color_picked(id) || self.status_bar_picked(id, event_loop) {
             return;
         }
         if let Some(item) = menus::by_id(id) {
@@ -703,6 +705,8 @@ impl App {
                 }
             }
             "openDashboard:" => self.open_tmux_dashboard(event_loop),
+            "openAIChats:" => self.open_ai_chats(event_loop),
+            "openAIChat:" => self.open_ai_chat(event_loop),
             "toggleTmuxPausePane:" => self.tmux_toggle_pause(),
             "forceDetachTmux:" => self.tmux_force_detach(),
             "newTmuxWindow:" => {
@@ -810,6 +814,7 @@ impl App {
             "openDirectories:" => self.open_recent_dirs(event_loop),
             "openAutocomplete:" => self.open_autocomplete(),
             "toggleShowClippings:" => self.toggle_clippings(),
+            "toggleShowInlineChat:" => self.toggle_inline_chat(),
             "toggleToolbeltVisibility:" => self.toggle_toolbelt(),
             "setDefaultToolbeltWidth:" => self.set_default_toolbelt_width(),
             "toggleAutoCommandHistory:" => {
@@ -1030,9 +1035,9 @@ impl App {
     }
 
     /// The rectangles the active tab shows (only the zoomed pane when one is zoomed).
-    /// Each shown pane's terminal rectangle (a Clippings panel takes the right of it).
+    /// Each shown pane's terminal rectangle (Clippings and the inline chat take the right of it).
     pub(super) fn visible(&self, tab: &Tab) -> Vec<(PaneId, Rect)> {
-        visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), GAP).into_iter().map(|(id, r)| (id, self.clip_split(id, self.pane_bar_split(tab, id, r).0).0)).collect()
+        visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), GAP).into_iter().map(|(id, r)| (id, self.gutter_split(id, self.pane_bar_split(tab, id, r).0).0)).collect()
     }
 }
 

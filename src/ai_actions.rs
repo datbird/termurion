@@ -205,6 +205,9 @@ pub fn file_target(filename: &str, cwd: Option<&str>, local: bool, home: &Path) 
     if two.next().is_some_and(sep) && two.next().is_some_and(sep) {
         return FileTarget::Refused("Error: network paths are not allowed.".into());
     }
+    if crate::inert_files::refused_path(filename) {
+        return FileTarget::Refused("Error: files of this type are not allowed.".into());
+    }
     if drive_path(filename) {
         return FileTarget::Local(PathBuf::from(filename));
     }
@@ -373,6 +376,16 @@ mod tests {
         assert_eq!(file_target(r"\\?\C:\x", None, true, home), refused);
         assert_eq!(file_target("x.txt", Some(r"\\host\s"), true, home), local(r"C:\Users\u\x.txt"), "a UNC cwd is never used");
         assert_eq!(file_target("", Some(r"C:\w"), true, home), FileTarget::Refused("Error: the file name is empty.".into()));
+        // Types Explorer reads on listing are never created (an icon location can name a UNC host).
+        let listing = FileTarget::Refused("Error: files of this type are not allowed.".into());
+        for name in ["x.url", r"sub\X.LNK", r"D:\a\x.library-ms", "desktop.ini", "x.url.", "a.txt:evil"] {
+            assert_eq!(file_target(name, Some(r"C:\w"), true, home), listing, "{name}");
+        }
+        // Device names are never created, with or without an extension.
+        for name in ["con", "NUL.txt", r"sub\aux.md", r"D:\a\COM1", "lpt9.log"] {
+            assert_eq!(file_target(name, Some(r"C:\w"), true, home), listing, "{name}");
+        }
+        assert_eq!(file_target("urls.txt", Some(r"C:\w"), true, home), local(r"C:\w\urls.txt"));
         assert_eq!(create_failed("E"), "Error: E");
         assert_eq!(created_notice("x.txt"), "Created x.txt and revealed in Explorer.");
         assert_eq!(create_failed_notice("x.txt", "E"), "Failed to create x.txt: E");

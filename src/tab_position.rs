@@ -9,8 +9,9 @@
 use crate::layout::Rect;
 
 /// The tab bar's edge: `TabViewType` (`P:110`), iTerm2's `PSMTabPosition` (`PSMH:202-207`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TabPosition {
+    #[default]
     Top,
     Bottom,
     Left,

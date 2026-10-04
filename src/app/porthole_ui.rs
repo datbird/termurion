@@ -68,7 +68,7 @@ fn doc_of(p: &Porthole, palette: &crate::palette::Palette, dark: bool, theme: &r
 }
 
 /// A document laid out with the renderer's fonts.
-fn lay_doc(renderer: &mut Renderer, doc: &render::Doc, wide: bool, width: f32, cell_h: f32) -> Layout {
+pub(super) fn lay_doc(renderer: &mut Renderer, doc: &render::Doc, wide: bool, width: f32, cell_h: f32) -> Layout {
     let r = RefCell::new(renderer);
     let measure = |t: &str, f: Face, s: f32| r.borrow_mut().text_width(t, f == Face::Prose, s);
     render::layout(doc, width, cell_h, &measure, wide)

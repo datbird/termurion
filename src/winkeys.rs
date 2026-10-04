@@ -163,6 +163,27 @@ pub fn remove_pwm_window(hwnd: isize) {
     }
 }
 
+/// The AI Chat window: Win+W and Shift+Win+Y go to it (Windows keeps Win+W for itself).
+static CHAT_WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
+pub fn add_chat_window(hwnd: isize) {
+    if let Ok(mut w) = CHAT_WINDOWS.lock() {
+        if !w.contains(&hwnd) {
+            w.push(hwnd);
+        }
+    }
+}
+
+pub fn remove_chat_window(hwnd: isize) {
+    if let Ok(mut w) = CHAT_WINDOWS.lock() {
+        w.retain(|h| *h != hwnd);
+    }
+}
+
+fn is_chat(hwnd: isize) -> bool {
+    CHAT_WINDOWS.lock().is_ok_and(|w| w.contains(&hwnd))
+}
+
 /// The window in front when the hook last took a chord, read by the app when the chord arrives
 /// (the focus may have moved by then).
 static CHORD_FOREGROUND: AtomicIsize = AtomicIsize::new(0);
@@ -179,6 +200,16 @@ fn is_pwm(hwnd: isize) -> bool {
 /// (its key equivalents, `WX:138-219`).
 pub fn pwm_chord(c: &Chord) -> bool {
     matches!(c.key, ChordKey::Char('b' | 'u' | 'c')) && c.cmd && !c.alt && !c.shift && !c.ctrl
+}
+
+/// The chords the AI Chat window takes, with no other modifier: Win+W (close), Shift+Win+Y
+/// (focus) (`CWC:481-501`), and the find chords Win+F, Win+G, Shift+Win+G and Win+E
+/// (`CVC:2917-2960`).
+pub fn chat_chord(c: &Chord) -> bool {
+    c.cmd
+        && !c.alt
+        && !c.ctrl
+        && matches!((&c.key, c.shift), (ChordKey::Char('w' | 'f' | 'e'), false) | (ChordKey::Char('y'), true) | (ChordKey::Char('g'), _))
 }
 static SETTINGS: AtomicIsize = AtomicIsize::new(0);
 /// The settings window is recording a keystroke: every Win chord goes to it.
@@ -287,16 +318,17 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 let fg = unsafe { GetForegroundWindow() } as isize;
                 let recording = RECORDING.load(Ordering::Relaxed) && fg == SETTINGS.load(Ordering::Relaxed);
                 let pwm = is_pwm(fg);
+                let chat = is_chat(fg);
                 let e = KeyEvent {
                     vk: kb.vkCode as u16,
                     down,
                     win_held: held(VK_LWIN as i32) || held(VK_RWIN as i32),
-                    focused: is_tandem(fg) || recording || pwm,
+                    focused: is_tandem(fg) || recording || pwm || chat,
                     shift: held(0x10),
                     alt: held(0x12),
                     ctrl: held(0x11),
                 };
-                let bound = |c: &Chord| recording || if pwm { pwm_chord(c) } else { (h.bound)(c) };
+                let bound = |c: &Chord| recording || if pwm { pwm_chord(c) } else if chat { chat_chord(c) } else { (h.bound)(c) };
                 let verdict = h.gate.lock().unwrap().on_key(e, &bound);
                 if let Verdict::Take(chord) = verdict {
                     if let Some(c) = chord {
@@ -748,5 +780,18 @@ mod tests {
         assert!(is_pwm(77));
         remove_pwm_window(77);
         assert!(!is_pwm(77));
+    }
+
+    #[test]
+    fn the_chat_window_takes_win_w_and_shift_win_y() {
+        let c = |k: char, shift: bool| Chord { key: ChordKey::Char(k), cmd: true, alt: false, shift, ctrl: false };
+        assert!(chat_chord(&c('w', false)) && chat_chord(&c('y', true)));
+        assert!(!chat_chord(&c('w', true)) && !chat_chord(&c('y', false)) && !chat_chord(&c('x', false)));
+        assert!(!chat_chord(&Chord { ctrl: true, ..c('w', false) }));
+        assert!(matches!(Gate::default().on_key(key(0x57, true), &|ch| chat_chord(ch)), Verdict::Take(Some(_))), "Win+W in the chat window");
+        add_chat_window(78);
+        assert!(is_chat(78));
+        remove_chat_window(78);
+        assert!(!is_chat(78));
     }
 }

@@ -136,6 +136,7 @@ impl PwmWindow {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         owner: isize,
+        forced: Option<bool>,
     ) -> Result<PwmWindow, String> {
         use winit::platform::windows::WindowAttributesExtWindows;
         let (w, h) = pwm::WINDOW_SIZE;
@@ -146,8 +147,7 @@ impl PwmWindow {
             .with_owner_window(owner)
             .with_visible(false);
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
-        let dark = host.window.theme().is_none_or(|t| t == winit::window::Theme::Dark);
-        host.ctx().set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+        host.follow_theme(forced);
         if let Some(at) = sheet_origin(owner, host.window.outer_size()) {
             host.window.set_outer_position(at);
         }
@@ -167,6 +167,11 @@ impl PwmWindow {
             win_down: false,
             chords: Vec::new(),
         })
+    }
+
+    /// Follows a forced appearance (`tab_theme::forced_dark`), or Windows' when `None`.
+    pub fn follow_theme(&self, forced: Option<bool>) {
+        self.host.follow_theme(forced);
     }
 
     pub fn id(&self) -> WindowId {

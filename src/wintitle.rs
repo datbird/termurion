@@ -69,6 +69,12 @@ pub fn number_prefix(show_number: bool, accessory: bool, titled: bool, number: u
     (show_number && !(accessory && titled)).then(|| format!("{}. ", number + 1))
 }
 
+/// The window has an OS title bar to carry the number label: decorated, not full screen, and not
+/// a Compact or Minimal window (whose own caption draws it, `compact_caption`).
+pub fn has_title_bar(decorated: bool, full_screen: bool, compact: bool) -> bool {
+    decorated && !full_screen && !compact
+}
+
 /// The OS caption: the title with its "N. " prefix, or, where iTerm2 shows the label in a
 /// title bar accessory, the title and the label after four spaces (R11).
 pub fn caption(base: &str, show_number: bool, accessory: bool, titled: bool, tag: i64, number: usize) -> String {
@@ -196,6 +202,9 @@ mod tests {
         assert_eq!(caption("vim", true, true, true, 6, 9), "vim    10");
         assert_eq!(caption("vim", true, true, true, 9, 0), "vim    1");
         assert_eq!(caption("vim", true, true, false, 6, 0), "1. vim");
+        // A compact window has no OS title bar: its taskbar caption keeps the "N. " prefix.
+        assert!(!has_title_bar(true, false, true) && has_title_bar(true, false, false) && !has_title_bar(true, true, false) && !has_title_bar(false, false, false));
+        assert_eq!(caption("vim", true, true, has_title_bar(true, false, true), 6, 0), "1. vim");
         assert_eq!(caption("vim", true, false, true, 6, 0), "1. vim");
         assert_eq!(caption("vim", false, true, true, 6, 0), "vim");
     }

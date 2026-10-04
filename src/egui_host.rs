@@ -16,6 +16,10 @@ pub struct EguiHost {
     state: egui_winit::State,
     renderer: egui_wgpu::Renderer,
     pub window: Arc<Window>,
+    /// Set to read the selected label text on the next frame (see `paint`).
+    probe: bool,
+    /// What the last probe found.
+    pub probed: Option<String>,
 }
 
 impl EguiHost {
@@ -63,7 +67,7 @@ impl EguiHost {
         let ctx = egui::Context::default();
         let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, Some(device.limits().max_texture_dimension_2d as usize));
         let renderer = egui_wgpu::Renderer::new(device, format, egui_wgpu::RendererOptions::default());
-        Ok(EguiHost { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, window })
+        Ok(EguiHost { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, window, probe: false, probed: None })
     }
 
     pub fn id(&self) -> WindowId {
@@ -80,6 +84,15 @@ impl EguiHost {
 
     pub fn request_redraw(&self) {
         self.window.request_redraw();
+    }
+
+    /// Follows a forced appearance (`tab_theme::forced_dark`), or Windows' when `None`: the
+    /// window's theme, and the egui visuals to match. winit does not track a forced theme
+    /// (`Window::theme` stays Windows' mode), so the mode is the forced one, else the window's.
+    pub fn follow_theme(&self, forced: Option<bool>) {
+        self.window.set_theme(crate::tab_theme::window_theme(forced));
+        let dark = forced.unwrap_or_else(|| self.window.theme().is_none_or(|t| t == winit::window::Theme::Dark));
+        self.ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
     }
 
     /// The window's Win32 handle.
@@ -107,10 +120,47 @@ impl EguiHost {
         r.repaint
     }
 
+    /// Asks for the text selected in the labels: the next frame copies it into `probed`
+    /// instead of the clipboard.
+    pub fn probe_selection(&mut self) {
+        self.probe = true;
+        self.window.request_redraw();
+    }
+
     /// Runs one egui frame with `f` and draws it.
     pub fn paint(&mut self, f: impl FnMut(&mut egui::Ui)) {
-        let input = self.state.take_egui_input(&self.window);
-        let out = self.ctx.run_ui(input, f);
+        let mut input = self.state.take_egui_input(&self.window);
+        let mut probing = false;
+        if self.probe {
+            let real_copy = input.events.iter().any(|e| matches!(e, egui::Event::Copy | egui::Event::Cut));
+            match probe_plan(real_copy, self.ctx.memory(|m| m.focused().is_some())) {
+                ProbePlan::Run => {
+                    self.probe = false;
+                    probing = true;
+                    input.events.push(egui::Event::Copy);
+                }
+                // The real copy goes through alone; the probe asks again on the next frame.
+                ProbePlan::Wait => self.window.request_redraw(),
+                ProbePlan::Skip => {
+                    self.probe = false;
+                    self.probed = Some(String::new());
+                }
+            }
+        }
+        let mut out = self.ctx.run_ui(input, f);
+        if probing {
+            // The copy is ours: taken out of the frame's output so the clipboard is untouched.
+            // One source: the last answer (`CVC:3184-3193`), never several glued together.
+            let mut found = String::new();
+            out.platform_output.commands.retain(|c| match c {
+                egui::OutputCommand::CopyText(t) => {
+                    found = t.clone();
+                    false
+                }
+                _ => true,
+            });
+            self.probed = Some(found);
+        }
         self.state.handle_platform_output(&self.window, out.platform_output);
         let jobs = self.ctx.tessellate(out.shapes, out.pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [self.config.width, self.config.height], pixels_per_point: out.pixels_per_point };
@@ -152,5 +202,41 @@ impl EguiHost {
         for id in &out.textures_delta.free {
             self.renderer.free_texture(id);
         }
+    }
+}
+
+/// What a selection probe does with a frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbePlan {
+    /// Ask the labels: inject a copy and take what they answer.
+    Run,
+    /// A real copy is in this frame: it goes through untouched and the probe waits a frame.
+    Wait,
+    /// A text field has the focus and would answer the copy with its own selection: no label
+    /// selection can be meant, the probe answers nothing.
+    Skip,
+}
+
+/// How a probe frame goes (`CVC:3184-3193` has one source, the first responder's selection).
+pub fn probe_plan(real_copy: bool, text_field_focused: bool) -> ProbePlan {
+    if real_copy {
+        ProbePlan::Wait
+    } else if text_field_focused {
+        ProbePlan::Skip
+    } else {
+        ProbePlan::Run
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_selection_probe_never_takes_a_real_copy_or_a_text_fields_selection() {
+        assert_eq!(probe_plan(false, false), ProbePlan::Run);
+        assert_eq!(probe_plan(true, false), ProbePlan::Wait, "a real Ctrl+C or a Copy click is never swallowed");
+        assert_eq!(probe_plan(true, true), ProbePlan::Wait);
+        assert_eq!(probe_plan(false, true), ProbePlan::Skip, "the focused field would answer with its own text");
     }
 }

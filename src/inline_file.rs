@@ -116,10 +116,7 @@ pub fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
         .collect();
     // Windows drops trailing dots and spaces, and keeps some names for devices.
     let clean = clean.trim_end_matches(['.', ' ']).to_string();
-    let stem = clean.split('.').next().unwrap_or_default().to_ascii_uppercase();
-    let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str())
-        || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
-    let clean = if reserved { format!("_{clean}") } else { clean };
+    let clean = if crate::inert_files::is_device_name(&clean) { format!("_{clean}") } else { clean };
     let clean = if clean.trim().is_empty() || clean == "." || clean == ".." { "Unnamed file".to_string() } else { clean };
     let first = dir.join(&clean);
     if !first.exists() {
@@ -135,10 +132,9 @@ pub fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
 /// Mark of the Web), so Windows warns before running it.
 pub fn save(dir: &std::path::Path, name: &str, bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
     let path = unique_path(dir, name);
-    std::fs::write(&path, bytes)?;
-    // The mark lives in an alternate data stream; a drive without them (FAT) cannot keep it,
-    // and the file is still saved.
-    let _ = std::fs::write(format!("{}:Zone.Identifier", path.display()), "[ZoneTransfer]\r\nZoneId=3\r\n");
+    // The one rule for a file a remote program named: the types the shell reads on listing are
+    // refused, and the file gets the one Mark of the Web writer.
+    crate::inert_files::write_checked(&path, bytes)?;
     Ok(path)
 }
 
@@ -483,6 +479,20 @@ mod tests {
             s.feed(b"\x1b]1337;File=name=eA==:eA==\x07");
         }
         assert_eq!(s.downloads.len(), 1);
+    }
+
+    #[test]
+    fn a_download_named_for_the_shell_is_refused() {
+        let d = std::env::temp_dir().join(format!("tandem-dlref-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        for bad in ["x.url", "X.LNK", "a.library-ms", "desktop.ini", "x.url. ", r"..\evil.scf"] {
+            assert!(save(&d, bad, b"[InternetShortcut]").is_err(), "{bad:?}");
+        }
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 0, "nothing was written");
+        // A device name is renamed, as before; an ordinary name saves.
+        assert_eq!(save(&d, "CON", b"x").unwrap(), d.join("_CON"));
+        assert_eq!(save(&d, "notes.txt", b"x").unwrap(), d.join("notes.txt"));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

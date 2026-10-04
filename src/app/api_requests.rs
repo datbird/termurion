@@ -777,7 +777,7 @@ impl App {
                         let (dw, dh) = (f64::from(outer.width) - f64::from(inner.width), f64::from(outer.height) - f64::from(inner.height));
                         g.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
                         let size = winit::dpi::PhysicalSize::new((w - dw).round().max(1.0) as u32, (h - dh).round().max(1.0) as u32);
-                        let _ = g.window.request_inner_size(size);
+                        let _ = super::caption_ui::request_inner_size(&g.window, size);
                         Status::Ok
                     }
                     Some(Prop::Fullscreen) => {
@@ -1541,7 +1541,7 @@ impl App {
         let (want_cols, want_rows) = api_props::wanted_grid(cols, rows, cur_rows, max_new_rows);
         let w = f64::from(inner.width) + (want_cols - cur_cols) as f64 * f64::from(cw);
         let h = f64::from(inner.height) + (want_rows - cur_rows) as f64 * f64::from(ch);
-        let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new(w.round().max(1.0) as u32, h.round().max(1.0) as u32));
+        let _ = super::caption_ui::request_inner_size(&g.window, winit::dpi::PhysicalSize::new(w.round().max(1.0) as u32, h.round().max(1.0) as u32));
         status
     }
 }

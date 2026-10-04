@@ -65,6 +65,40 @@ pub fn clock_time(t: std::time::SystemTime) -> String {
     hms(&local(secs))
 }
 
+/// A local time as the SYSTEMTIME the formatting calls read.
+#[cfg(windows)]
+fn systemtime(p: &Parts) -> windows_sys::Win32::Foundation::SYSTEMTIME {
+    windows_sys::Win32::Foundation::SYSTEMTIME { wYear: p.year, wMonth: p.month, wDayOfWeek: p.weekday, wDay: p.day, wHour: p.hour, wMinute: p.minute, wSecond: p.second, wMilliseconds: 0 }
+}
+
+/// A formatting call's UTF-16 buffer as text; a call that failed (0) or gave nothing is "".
+#[cfg(windows)]
+fn wide_text(buf: &[u16], n: i32) -> String {
+    if n > 1 {
+        String::from_utf16_lossy(&buf[..n as usize - 1])
+    } else {
+        String::new()
+    }
+}
+
+/// The locale's short date (Windows' `DATE_SHORTDATE`) of a local date.
+#[cfg(windows)]
+pub fn short_date(p: &Parts) -> String {
+    use windows_sys::Win32::Globalization::{GetDateFormatEx, DATE_SHORTDATE};
+    let (st, mut buf) = (systemtime(p), [0u16; 128]);
+    let n = unsafe { GetDateFormatEx(std::ptr::null(), DATE_SHORTDATE, &st, std::ptr::null(), buf.as_mut_ptr(), buf.len() as i32, std::ptr::null()) };
+    wide_text(&buf, n)
+}
+
+/// The locale's time without seconds (`TIME_NOSECONDS`) of a local time.
+#[cfg(windows)]
+pub fn short_time(p: &Parts) -> String {
+    use windows_sys::Win32::Globalization::{GetTimeFormatEx, TIME_NOSECONDS};
+    let (st, mut buf) = (systemtime(p), [0u16; 128]);
+    let n = unsafe { GetTimeFormatEx(std::ptr::null(), TIME_NOSECONDS, &st, std::ptr::null(), buf.as_mut_ptr(), buf.len() as i32) };
+    wide_text(&buf, n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,5 +120,27 @@ mod tests {
         let p = local(1_790_251_200);
         assert_eq!((p.year, p.month), (2026, 9));
         assert!((23..=25).contains(&p.day), "{p:?}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn short_forms_follow_the_locale() {
+        use windows_sys::Win32::Foundation::SYSTEMTIME;
+        use windows_sys::Win32::Globalization::{GetDateFormatEx, GetTimeFormatEx, DATE_SHORTDATE, TIME_NOSECONDS};
+        let p = Parts { year: 2026, month: 9, day: 27, weekday: 0, hour: 15, minute: 4, second: 59 };
+        let st = SYSTEMTIME { wYear: 2026, wMonth: 9, wDayOfWeek: 0, wDay: 27, wHour: 15, wMinute: 4, wSecond: 59, wMilliseconds: 0 };
+        let (mut date, mut time) = ([0u16; 128], [0u16; 128]);
+        let (d, t) = unsafe {
+            (
+                GetDateFormatEx(std::ptr::null(), DATE_SHORTDATE, &st, std::ptr::null(), date.as_mut_ptr(), date.len() as i32, std::ptr::null()),
+                GetTimeFormatEx(std::ptr::null(), TIME_NOSECONDS, &st, std::ptr::null(), time.as_mut_ptr(), time.len() as i32),
+            )
+        };
+        assert!(d > 1 && t > 1);
+        assert_eq!(short_date(&p), String::from_utf16_lossy(&date[..d as usize - 1]));
+        assert_eq!(short_time(&p), String::from_utf16_lossy(&time[..t as usize - 1]));
+        // Seconds are not shown, and a date that does not exist gives no text rather than a wrong one.
+        assert_eq!(short_time(&p), short_time(&Parts { second: 0, ..p }));
+        assert_eq!(short_date(&Parts { month: 13, ..p }), "");
     }
 }

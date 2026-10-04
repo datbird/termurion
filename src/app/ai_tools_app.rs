@@ -168,7 +168,7 @@ impl App {
                 let Some(home) = home else { return Some(done(ai_actions::create_failed("the home folder is not known"), ai_actions::create_failed_notice(filename, "the home folder is not known"))) };
                 match ai_actions::file_target(filename, cwd.as_deref(), local, &home) {
                     FileTarget::Refused(why) => done(why.clone(), ai_actions::create_failed_notice(filename, &why)),
-                    FileTarget::Local(path) => match std::fs::write(&path, content) {
+                    FileTarget::Local(path) => match crate::inert_files::write_marked(&path, content.as_bytes()) {
                         Ok(()) => {
                             self.ai_reveal_file(&path);
                             done("Ok", ai_actions::created_notice(filename))

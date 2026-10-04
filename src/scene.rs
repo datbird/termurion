@@ -148,7 +148,7 @@ const BAR_BUTTON: Rgb = rgb(0xff, 0xff, 0xff);
 const LABEL_TEXT: Rgb = rgb(0x00, 0x00, 0x00);
 pub const FIND_ERROR: Rgb = rgb(0xff, 0x6b, 0x6b);
 /// How much an unfocused pane fades toward the background, as iTerm2 dims inactive splits.
-const DIM_ALPHA: f32 = 0.4;
+pub(crate) const DIM_ALPHA: f32 = 0.4;
 
 fn srgb_to_linear(c: u8) -> f32 {
     let c = c as f32 / 255.0;
@@ -664,6 +664,47 @@ pub fn blend(a: Rgb, b: Rgb, t: f32) -> Rgb {
 /// Pixels between a porthole's frame and its text.
 pub const PORTHOLE_MARGIN: f32 = 8.0;
 
+/// The lines of a laid-out document, cut to `area`: the `marks` (selection and find rectangles
+/// from the text's top left, with their color and alpha) under the text, then each line's code
+/// band, rule, underlines and runs. `origin` is where the text's top left sits; `band` is the
+/// left edge and width a code band and a rule are drawn in (a rule stops `PORTHOLE_MARGIN` short
+/// of the band's right edge); `back` and `fg` are the document's background and text colors.
+pub fn doc_lines(frame: &mut Frame, origin: (f32, f32), lines: &[crate::porthole::render::VisualLine], marks: &[(Rect, Rgb, f32)], area: Rect, band: (f32, f32), back: Rgb, fg: Rgb) {
+    let (ox, oy) = origin;
+    // Selection and find marks, from the text's top left, under the text.
+    for (m, color, alpha) in marks {
+        if let Some(r) = cut(Rect { x: ox + m.x, y: oy + m.y, ..*m }, area) {
+            frame.quads.push(Quad { rect: r, color: rgba(*color, *alpha) });
+        }
+    }
+    for l in lines {
+        let y = oy + l.y;
+        if l.code_bg {
+            if let Some(r) = cut(Rect { x: band.0, y, w: band.1, h: l.h }, area) {
+                frame.quads.push(Quad { rect: r, color: rgba(blend(back, fg, 0.08), 1.0) });
+            }
+        }
+        if l.rule {
+            if let Some(r) = cut(Rect { x: ox + l.x, y: y + l.h / 2.0, w: band.1 - PORTHOLE_MARGIN - l.x, h: 1.0 }, area) {
+                frame.quads.push(Quad { rect: r, color: rgba(fg, 0.5) });
+            }
+        }
+        for (run, (sx, sw)) in l.runs.iter().zip(&l.spans) {
+            if run.underline {
+                if let Some(r) = cut(Rect { x: ox + l.x + sx, y: y + l.h - 2.0, w: *sw, h: 1.0 }, area) {
+                    frame.quads.push(Quad { rect: r, color: rgba(run.color, 1.0) });
+                }
+            }
+        }
+        let spans = l
+            .runs
+            .iter()
+            .map(|r| Span { text: r.text.clone(), color: r.color, bold: r.bold, italic: r.italic, alt_font: false, icon: false, prose: r.face == crate::porthole::render::Face::Prose, badge: false, toolbelt: false })
+            .collect();
+        frame.rows.push(TextRow { x: ox + l.x, y, spans, clip: area, scale: l.scale });
+    }
+}
+
 /// A porthole over its rows (iTerm2's chrome): the background moved 20% toward grey, a 1 px
 /// border in the text color at 50%, the close button, the language button, and Wide at the
 /// top right, then the laid-out lines (`lines` holds the ones in view), all cut to `clip`.
@@ -700,38 +741,7 @@ pub fn porthole(frame: &mut Frame, rect: Rect, clip: Rect, lines: &[crate::porth
     let Some(area) = cut(inner, clip) else { return PortholeControls { close, language, wide } };
     let ox = rect.x + PORTHOLE_MARGIN - chrome.scroll_x;
     let oy = rect.y + PORTHOLE_MARGIN + s;
-    // Selection and find marks, from the text's top left, under the text.
-    for (m, color, alpha) in marks {
-        if let Some(r) = cut(Rect { x: ox + m.x, y: oy + m.y, ..*m }, area) {
-            frame.quads.push(Quad { rect: r, color: rgba(*color, *alpha) });
-        }
-    }
-    for l in lines {
-        let y = oy + l.y;
-        if l.code_bg {
-            if let Some(r) = cut(Rect { x: inner.x, y, w: inner.w, h: l.h }, area) {
-                frame.quads.push(Quad { rect: r, color: rgba(blend(back, fg, 0.08), 1.0) });
-            }
-        }
-        if l.rule {
-            if let Some(r) = cut(Rect { x: ox + l.x, y: y + l.h / 2.0, w: inner.w - PORTHOLE_MARGIN - l.x, h: 1.0 }, area) {
-                frame.quads.push(Quad { rect: r, color: rgba(fg, 0.5) });
-            }
-        }
-        for (run, (sx, sw)) in l.runs.iter().zip(&l.spans) {
-            if run.underline {
-                if let Some(r) = cut(Rect { x: ox + l.x + sx, y: y + l.h - 2.0, w: *sw, h: 1.0 }, area) {
-                    frame.quads.push(Quad { rect: r, color: rgba(run.color, 1.0) });
-                }
-            }
-        }
-        let spans = l
-            .runs
-            .iter()
-            .map(|r| Span { text: r.text.clone(), color: r.color, bold: r.bold, italic: r.italic, alt_font: false, icon: false, prose: r.face == crate::porthole::render::Face::Prose, badge: false, toolbelt: false })
-            .collect();
-        frame.rows.push(TextRow { x: ox + l.x, y, spans, clip: area, scale: l.scale });
-    }
+    doc_lines(frame, (ox, oy), lines, marks, area, (inner.x, inner.w), back, fg);
     PortholeControls { close, language, wide }
 }
 
@@ -911,18 +921,42 @@ pub const RECEIVE_ONLY_GLYPH: char = '\u{E701}';
 
 /// The top-right glyphs in iTerm2's order (right to left): broadcast or receive-only,
 /// then the coprocess.
-pub fn indicator_glyphs(sends: bool, receives: bool, coprocess: bool) -> Vec<char> {
+pub fn indicator_glyphs(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool) -> Vec<char> {
+    indicators(sends, receives, coprocess, linked, streaming).into_iter().map(|(g, _)| g).collect()
+}
+
+/// What a press on an indicator glyph does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndicatorKind {
+    Other,
+    AiLinked,
+    AiStreaming,
+}
+
+/// The glyphs with their kinds, in the same order.
+pub fn indicators(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool) -> Vec<(char, IndicatorKind)> {
     let mut out = Vec::new();
     if sends {
-        out.push(BROADCAST_GLYPH);
+        out.push((BROADCAST_GLYPH, IndicatorKind::Other));
     } else if receives {
-        out.push(RECEIVE_ONLY_GLYPH);
+        out.push((RECEIVE_ONLY_GLYPH, IndicatorKind::Other));
     }
     if coprocess {
-        out.push(COPROCESS_GLYPH);
+        out.push((COPROCESS_GLYPH, IndicatorKind::Other));
+    }
+    if linked {
+        out.push((AI_LINKED_GLYPH, IndicatorKind::AiLinked));
+    }
+    if streaming {
+        out.push((AI_STREAMING_GLYPH, IndicatorKind::AiStreaming));
     }
     out
 }
+
+/// The AI chat indicators: a session linked to a chat, and one whose finished commands stream to
+/// a chat (`IH:96-117`; iTerm2 gives the streaming one the receive-only symbol).
+pub const AI_LINKED_GLYPH: char = '\u{E8BD}';
+pub const AI_STREAMING_GLYPH: char = RECEIVE_ONLY_GLYPH;
 
 /// iTerm2's broadcast stripes as a tile to repeat: red at alpha 64 in "/" bands at 45
 /// degrees, 40 px on and 40 px off along each row (80 px tile), scaled by `scale`.
@@ -942,13 +976,17 @@ pub fn stripe_tile(scale: f32) -> (u32, Vec<u8>) {
 }
 
 /// A pane's top-right indicators, right to left from the corner.
-pub fn top_right_indicators(frame: &mut Frame, pane: Rect, glyphs: &[char], color: Rgb, cell: (f32, f32)) {
+/// Answers each glyph's rectangle, for the ones a press acts on.
+pub fn top_right_indicators(frame: &mut Frame, pane: Rect, glyphs: &[char], color: Rgb, cell: (f32, f32)) -> Vec<Rect> {
     let step = cell.0 * 2.5;
+    let mut hits = Vec::new();
     for (i, g) in glyphs.iter().enumerate() {
         let x = pane.x + pane.w - (i as f32 + 1.0) * step;
         let span = Span { text: g.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
         frame.rows.push(TextRow { x, y: pane.y + 4.0, spans: vec![span], clip: pane, scale: 1.0 });
+        hits.push(Rect { x, y: pane.y + 4.0, w: cell.0 * 2.0, h: cell.1 });
     }
+    hits
 }
 
 /// Segoe Fluent Icons glyphs for the indicators.
@@ -986,8 +1024,8 @@ const TAB_DOT_PT: f32 = 8.0;
 /// pinned on a bar that scrolls (`tab_layout::tab_area_width`). `overflow_down`: the overflow
 /// button's menu is open, so it draws pressed. The group runs are drawn over the tabs.
 #[allow(clippy::too_many_arguments)]
-pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab_layout::Bar, area: Rect, scale: f32, font_scale: f32, line: f32, key: bool, overflow_down: bool) {
-    draw_bar(frame, tabs, active, bar, area, scale, font_scale, line, key, overflow_down);
+pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab_layout::Bar, area: Rect, scale: f32, font_scale: f32, line: f32, key: bool, overflow_down: bool, pal: &crate::tab_theme::TabPalette) {
+    draw_bar(frame, tabs, active, bar, area, scale, font_scale, line, key, overflow_down, pal);
 }
 
 /// Draws a side tab bar (milestone 13d) laid out by `tab_layout::build_vertical` in `area`, as
@@ -996,8 +1034,8 @@ pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::
 /// row in pixels in `tabs` order (a zero-size rect for a tab with no row or a row wholly
 /// outside `area`) and each chip shown with its group id.
 #[allow(clippy::too_many_arguments)]
-pub fn tab_bar_vertical(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab_layout::Bar, area: Rect, scale: f32, font_scale: f32, line: f32, key: bool, overflow_down: bool) -> (Vec<Rect>, Vec<(Rect, String)>) {
-    draw_bar(frame, tabs, active, bar, area, scale, font_scale, line, key, overflow_down);
+pub fn tab_bar_vertical(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab_layout::Bar, area: Rect, scale: f32, font_scale: f32, line: f32, key: bool, overflow_down: bool, pal: &crate::tab_theme::TabPalette) -> (Vec<Rect>, Vec<(Rect, String)>) {
+    draw_bar(frame, tabs, active, bar, area, scale, font_scale, line, key, overflow_down, pal);
     let px = |r: Rect| Rect { x: area.x + r.x * scale, y: area.y + r.y * scale, w: r.w * scale, h: r.h * scale };
     let mut rects = vec![Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 }; tabs.len()];
     for (i, _, r) in &bar.cells {
@@ -1011,16 +1049,30 @@ pub fn tab_bar_vertical(frame: &mut Frame, tabs: &[TabLook], active: usize, bar:
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab_layout::Bar, area: Rect, scale: f32, font_scale: f32, line: f32, key: bool, overflow_down: bool) {
+fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab_layout::Bar, area: Rect, scale: f32, font_scale: f32, line: f32, key: bool, overflow_down: bool, pal: &crate::tab_theme::TabPalette) {
     use crate::tab_layout::{self, SUBTITLE_OFFSET, TITLE_OFFSET_WITH_SUBTITLE};
-    frame.quads.push(Quad { rect: area, color: rgba(TAB_BAR, 1.0) });
+    use crate::tab_theme::over;
+    frame.quads.push(Quad { rect: area, color: rgba(pal.bar, 1.0) });
     let px = |r: Rect| Rect { x: area.x + r.x * scale, y: area.y + r.y * scale, w: r.w * scale, h: r.h * scale };
     let tabs_area = if bar.vertical { area } else { Rect { w: (tab_layout::tab_area_width(bar, area.w / scale) * scale).min(area.w), ..area } };
+    // The bar's room beyond the last tab, in the margin fill.
+    let far = bar.cells.iter().map(|(_, _, r)| if bar.vertical { area.y + (r.y + r.h) * scale } else { area.x + (r.x + r.w) * scale }).fold(if bar.vertical { area.y } else { area.x }, f32::max);
+    let margin = if bar.vertical { Rect { y: far, h: area.y + area.h - far, ..area } } else { Rect { x: far, w: area.x + area.w - far, ..area } };
+    // Minimal's end inset with the selected tab in the overflow menu is the bar's color, the
+    // selected tab's (`drawEndInset`, `MIN:437-451`); a side bar's is always the unselected one.
+    let inset = if pal.minimal.is_some() && !bar.vertical && bar.hidden.contains(&active) { pal.selected } else { pal.margin };
+    if margin.w > 0.0 && margin.h > 0.0 {
+        fill_quad(frame, margin, inset);
+    }
     let first_quad = frame.quads.len();
     let title_scale = bar.font * font_scale;
     let sub_scale = tab_layout::subtitle_size(bar.font) * font_scale;
     let (title_h, sub_h) = (line * title_scale, line * sub_scale);
     let turn = spinner_turn();
+    let any_colored = tabs.iter().any(|t| t.color.is_some());
+    // The selected tab's cell, effective fill and brightness (`tabColorBrightness`, `YOS:776-797`),
+    // for what is drawn over the lines.
+    let mut selected_deco: Option<(usize, Rect, Rgb, f32)> = None;
     let span = |text: String, color: Rgb, bold: bool, italic: bool, icon: bool| Span { text, color, bold, italic, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false };
     for (k, (i, c, r)) in bar.cells.iter().enumerate() {
         let Some(tab) = tabs.get(*i) else { continue };
@@ -1032,15 +1084,39 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
         if clip.w <= 0.0 || clip.h <= 0.0 {
             continue;
         }
-        let back = if *i == active { TAB_ACTIVE } else { TAB_BAR };
-        if *i == active || tab.dragged {
+        let selected = *i == active;
+        let (tab_fill, mut text_fill) = if selected { (pal.selected, pal.text_selected) } else { (pal.unselected, pal.text_unselected) };
+        let mut back = over(pal.bar, tab_fill);
+        // With any colored tab, a colored tab is filled with its color (`YOS:611-636`; Minimal:
+        // the color itself at an alpha, `MIN:937-946`) and every tab's text follows the
+        // brightness of its effective fill (`YOS:466-509`).
+        let colored = tab.color.map(|col| match &pal.minimal {
+            Some(m) => crate::tab_theme::minimal_colored_fill(col, selected, key, m.deselected_colored_alpha),
+            None => crate::tab_theme::Fill { color: crate::tab_theme::colored_fill(col, selected, key), alpha: 1.0 },
+        });
+        if let Some(fill) = colored {
+            back = over(back, fill);
+        }
+        if any_colored {
+            text_fill = match colored {
+                Some(_) => crate::tab_theme::colored_text(back, selected, pal.colored_text_prominence),
+                None => crate::tab_theme::text_for_brightness(crate::tab_theme::fill_brightness(tab_fill, pal.dark_controls), selected, pal.colored_text_prominence),
+            };
+        }
+        if selected {
+            let brightness = if colored.is_some() { crate::tab_theme::hsp(back) } else { crate::tab_theme::fill_brightness(tab_fill, pal.dark_controls) };
+            selected_deco = Some((k, cell, back, brightness));
+        }
+        // A dragged tab covers the tabs it passes, so it is opaque; so is an opaque color.
+        if tab.dragged || colored.is_some_and(|f| f.alpha >= 1.0) {
             frame.quads.push(Quad { rect: cell, color: rgba(back, 1.0) });
+        } else {
+            fill_quad(frame, cell, tab_fill);
+            if let Some(fill) = colored {
+                fill_quad(frame, cell, fill);
+            }
         }
-        if let Some(col) = tab.color {
-            let h = (3.0 * scale).round();
-            frame.quads.push(Quad { rect: Rect { y: cell.y + cell.h - h, h, ..cell }, color: rgba(col, 1.0) });
-        }
-        let color = if *i == active { TAB_TEXT } else { TAB_TEXT_DIM };
+        let color = over(back, text_fill);
         // A glyph from the icon font centered in `box_`.
         let glyph = |frame: &mut Frame, ch: char, box_: Rect, color: Rgb| {
             let s = TAB_GLYPH_PT * font_scale;
@@ -1125,6 +1201,21 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
             frame.rows.push(TextRow { x, y, spans: vec![span(sub.clone(), color, false, false, false)], clip, scale: sub_scale });
         }
     }
+    // Minimal: the bar's room before the first tab is drawn as an unselected tab, or as the selected
+    // one when the first tab is selected and the setting says so (`drawStartInset`, `MIN:439-453`).
+    if let Some(m) = &pal.minimal {
+        let first = bar.cells.iter().min_by(|a, b| (a.2.x + a.2.y).total_cmp(&(b.2.x + b.2.y)));
+        if let Some((i, _, r)) = first {
+            let gap = if bar.vertical { Rect { h: (px(*r).y - area.y).max(0.0), ..area } } else { Rect { w: (px(*r).x - area.x).max(0.0), ..area } };
+            if gap.w > 0.0 && gap.h > 0.0 {
+                let color = match selected_deco {
+                    Some((_, _, back, _)) if *i == active && m.left_inset_is_first_tab => back,
+                    _ => pal.margin.color,
+                };
+                frame.quads.push(Quad { rect: gap, color: rgba(color, 1.0) });
+            }
+        }
+    }
     group_runs(frame, tabs, bar, area, tabs_area, scale, font_scale, line);
     // The tabs' quads (backgrounds, colors, dots, spinners, underlines, group runs) are cut like
     // their text.
@@ -1140,14 +1231,158 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
             }
         }
     }
+    // The lines (`YOS:715-757`, `YOS:1313-1316`), clipped to the tabs' area grown by the pixel
+    // the last tab's right line sits beyond its cell.
+    {
+        let grown = Rect { w: tabs_area.w + 1.0, h: tabs_area.h + 1.0, ..tabs_area };
+        let line_quad = |frame: &mut Frame, r: Rect, f: crate::tab_theme::Fill| {
+            if let Some(r) = cut(r, grown) {
+                fill_quad(frame, r, f);
+            }
+        };
+        let last = bar.cells.len().saturating_sub(1);
+        let mut top_done = [false; 2];
+        // The selected tab's lines first, then the unselected tabs' over them (`YOS:1290-1300`).
+        let passes = [true, false].into_iter().flat_map(|pass| bar.cells.iter().enumerate().filter(move |(_, (i, _, _))| (*i == active) == pass));
+        for (k, (i, _, r)) in passes {
+            let cell = px(*r);
+            let selected = *i == active;
+            if bar.vertical {
+                // A row's foot, across the row less the style's insets.
+                let (l, rt) = pal.line_inset;
+                line_quad(frame, Rect { x: cell.x + l * scale, y: cell.y + cell.h - 1.0, w: cell.w - (l + rt) * scale + 1.0, h: 1.0 }, pal.between);
+            } else {
+                // A left line before the first tab when it starts past the edge, the right line
+                // inside every tab but the last and just past the last, from below the top pixel.
+                if k == 0 && cell.x - area.x > 1.0 {
+                    line_quad(frame, Rect { y: cell.y + 1.0, w: 1.0, h: cell.h - 1.0, ..cell }, pal.between);
+                }
+                let x = if k == last { cell.x + cell.w } else { cell.x + cell.w - 1.0 };
+                line_quad(frame, Rect { x, y: cell.y + 1.0, w: 1.0, h: cell.h - 1.0, ..cell }, pal.between);
+            }
+            // The top line: a top bar (attached to the title bar) leaves it off the selected tab;
+            // the other positions draw it on every tab (a side bar once per kind).
+            let top = bar.position == crate::tab_position::TabPosition::Top;
+            // (`shouldDrawTopLineSelected:attached:position:`, `YOS:1628-1646`): an unattached top
+            // bar draws none.
+            if (pal.attached || !top) && !(top && selected) && !(bar.vertical && std::mem::replace(&mut top_done[usize::from(selected)], true)) {
+                line_quad(frame, Rect { y: area.y, h: 1.0, ..cell }, if selected { pal.top_selected } else { pal.top });
+            }
+        }
+        // Past the "+" button the top line runs to the bar's end.
+        if let (Some(add), crate::tab_position::TabPosition::Top, true) = (bar.add, bar.position, pal.attached) {
+            let x = px(add).x;
+            line_quad(frame, Rect { x, y: area.y, w: area.x + area.w - x, h: 1.0 }, pal.top);
+        }
+    }
+    // The line between the bar and the content, along the content's side of the bar.
+    {
+        use crate::tab_position::TabPosition;
+        let edge = match bar.position {
+            TabPosition::Top => Rect { y: area.y + area.h - 1.0, h: 1.0, ..area },
+            TabPosition::Bottom => Rect { h: 1.0, ..area },
+            TabPosition::Left => Rect { x: area.x + area.w - 1.0, w: 1.0, ..area },
+            TabPosition::Right => Rect { w: 1.0, ..area },
+        };
+        let solid = crate::tab_theme::Fill { color: rgb(0, 0, 0), alpha: 1.0 };
+        // Attached or not, Dark's gradient (`DRK:113-125`) covers its 0.3 divider on the same row, so
+        // the line stays solid.
+        fill_quad(frame, edge, if pal.dark_edge_gradient { solid } else { pal.edge });
+    }
+    // What is drawn over the selected tab and the lines (`drawPostHocDecorationsOnSelectedCell:`),
+    // only in a window with a colored tab: Minimal's underline (`MIN:278-325`) or the Regular
+    // styles' outline (`YOS:805-839`).
+    if let (true, Some((k, cell, _, brightness))) = (any_colored, selected_deco) {
+        if let Some(m) = &pal.minimal {
+            // Two 2-point strokes along the cell's bottom, from the bar's start when the first tab
+            // takes the left inset. The tab's darkness is `brightness < 0` in iTerm2 (never true),
+            // so the outer stroke is white over a dark bar.
+            let from = if k == 0 && m.left_inset_is_first_tab && !bar.vertical { area.x } else { cell.x };
+            let u = crate::tab_theme::minimal_underline(brightness < 0.0, pal.dark_controls, m.underline, key);
+            let t = (2.0 * scale).round().max(1.0);
+            for (rise, f) in [(t, u.outer), (2.0 * t, u.inner)] {
+                fill_quad(frame, Rect { x: from, y: cell.y + cell.h - rise, w: cell.x + cell.w - from, h: t }, f);
+            }
+        } else {
+            // The cell outset half a point sideways and inset half a point down, then each stroke
+            // (centered on its rectangle's edge) `width` in from the last: the outer ring's outside
+            // is `width / 2 - 1.5` in sideways and `width / 2 - 0.5` down, its inside and the inner
+            // ring's outside `1.5 x width` less 1.5 and less 0.5, the inner ring's inside `2.5 x
+            // width` less 1.5 and less 0.5. Each edge rounds to a pixel.
+            let o = crate::tab_theme::selected_outline(brightness, pal.colored_outline, key);
+            let w = o.width;
+            let edge = |dx: f32, dy: f32| {
+                let (x0, x1) = ((cell.x + dx * scale).round(), (cell.x + cell.w - dx * scale).round());
+                let (y0, y1) = ((cell.y + dy * scale).round(), (cell.y + cell.h - dy * scale).round());
+                Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+            };
+            let bounds = [edge(w / 2.0 - 1.5, w / 2.0 - 0.5), edge(1.5 * w - 1.5, 1.5 * w - 0.5), edge(2.5 * w - 1.5, 2.5 * w - 0.5)];
+            for (ring, f) in [(0, o.outer), (1, o.inner)] {
+                let (out, inn) = (bounds[ring], bounds[ring + 1]);
+                let bands = if inn.w <= 0.0 || inn.h <= 0.0 {
+                    vec![out]
+                } else {
+                    // Each pixel once: the top and bottom in full, the sides between them.
+                    vec![
+                        Rect { h: inn.y - out.y, ..out },
+                        Rect { y: inn.y + inn.h, h: out.y + out.h - inn.y - inn.h, ..out },
+                        Rect { y: inn.y, w: inn.x - out.x, h: inn.h, ..out },
+                        Rect { x: inn.x + inn.w, y: inn.y, w: out.x + out.w - inn.x - inn.w, h: inn.h },
+                    ]
+                };
+                for band in bands {
+                    if let Some(band) = cut(band, tabs_area) {
+                        fill_quad(frame, band, f);
+                    }
+                }
+            }
+        }
+    }
+    // Minimal: the outline notch around the selected tab replaces the edge line (`MIN:600-875`).
+    if let Some(m) = &pal.minimal {
+        let first = bar.cells.iter().map(|(i, _, r)| (*i, r.x + r.y)).min_by(|a, b| a.1.total_cmp(&b.1)).map(|c| c.0);
+        use crate::tab_position::TabPosition;
+        if let Some((_, _, r)) = bar.cells.iter().find(|(i, _, _)| *i == active) {
+            // One tab in all (`bar.cells.count`, which also counts the overflow menu and collapsed
+            // tabs, so the same count as `Inputs.tabs`): a bottom bar draws no outline, a top bar
+            // none when the inset joins the tab (`MIN:594-598`, `:735-737`).
+            let skip = tabs.len() == 1 && match bar.position {
+                TabPosition::Top => m.left_inset_is_first_tab,
+                TabPosition::Bottom => true,
+                _ => false,
+            };
+            if !skip {
+                for r in minimal_notch(area, px(*r), bar.position, m.left_inset_is_first_tab, first == Some(active)) {
+                    fill_quad(frame, r, m.outline);
+                }
+            }
+        } else if bar.hidden.contains(&active) && tabs.len() > 1 {
+            // The selected tab is in the overflow menu: only the part before it is drawn, with the
+            // right margin (24 points, `rightMarginForTabBarControlWithOverflow:`) standing in for
+            // the tab on a horizontal bar and the overflow row on a side bar (`MIN:848-870`,
+            // `:759-770`, `:890-911`, `:932-934`).
+            let stand_in = if bar.vertical {
+                bar.overflow.map(px)
+            } else {
+                let margin = crate::tab_layout::right_margin(true, bar.add.is_some()) * scale;
+                Some(Rect { x: area.x + area.w - margin, w: margin, ..area })
+            };
+            if let Some(stand_in) = stand_in {
+                for r in minimal_notch_parts(area, stand_in, bar.position, m.left_inset_is_first_tab, false).0 {
+                    fill_quad(frame, r, m.outline);
+                }
+            }
+        }
+    }
     // The "+" and the overflow button (`PSM setupButtons`), over the tabs' right margin (a side
     // bar's overflow button is its bottom row). The overflow button is two chevrons a gap
     // apart, in the text color while its menu is open (`PSMOverflowPopUpButton`
     // `overflowImagePressed`).
     let s = TAB_GLYPH_PT * font_scale;
     let em = TAB_GLYPH_PT * scale;
-    let overflow_color = if overflow_down { TAB_TEXT } else { TAB_TEXT_DIM };
-    let buttons = [(bar.add, TAB_ADD_GLYPH, 0.0, TAB_TEXT_DIM), (bar.overflow, TAB_OVERFLOW_GLYPH, TAB_OVERFLOW_GAP * em, overflow_color)];
+    let (bright, dim) = (over(pal.bar, pal.text_selected), over(pal.bar, pal.text_unselected));
+    let overflow_color = if overflow_down { bright } else { dim };
+    let buttons = [(bar.add, TAB_ADD_GLYPH, 0.0, dim), (bar.overflow, TAB_OVERFLOW_GLYPH, TAB_OVERFLOW_GAP * em, overflow_color)];
     for (rect, ch, gap, color) in buttons.into_iter().filter_map(|(r, ch, gap, color)| r.map(|r| (px(r), ch, gap, color))) {
         let x = rect.x + ((rect.w - em - gap) / 2.0).floor();
         let y = rect.y + ((rect.h - line * s) / 2.0).floor();
@@ -1156,6 +1391,172 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
             frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, false, false, true)], clip: clip_rect(rect, area), scale: s });
         }
     }
+}
+
+/// The 1-pixel lines of the Minimal outline notch (`MIN:600-875`) as disjoint rectangles: along
+/// the bar's content side up to the selected tab (`selected`), up its left side, down its right
+/// side and on to the bar's far end. A first tab drops the part before it when the left inset
+/// counts as part of it (a bottom bar drops it whatever the setting says). In a side bar the
+/// lines run down the inner edge and across the selected row's first and last pixel rows.
+pub fn minimal_notch(bar: Rect, selected: Rect, position: crate::tab_position::TabPosition, left_inset_is_first_tab: bool, first_selected: bool) -> Vec<Rect> {
+    let (mut before, after) = minimal_notch_parts(bar, selected, position, left_inset_is_first_tab, first_selected);
+    before.extend(after);
+    before
+}
+
+/// `minimal_notch` as its two parts: the lines before the selected tab (and its near side) and the
+/// lines from its far side on. With the selected tab in the overflow menu only the first is drawn.
+pub fn minimal_notch_parts(bar: Rect, selected: Rect, position: crate::tab_position::TabPosition, left_inset_is_first_tab: bool, first_selected: bool) -> (Vec<Rect>, Vec<Rect>) {
+    use crate::tab_position::TabPosition::{Bottom, Left, Right, Top};
+    let (mut before, mut after_parts) = (Vec::new(), Vec::new());
+    let add = |out: &mut Vec<Rect>, r: Rect| {
+        if r.w > 0.0 && r.h > 0.0 {
+            out.push(r);
+        }
+    };
+    match position {
+        Top | Bottom => {
+            let top = position == Top;
+            let (line_y, side_y) = if top { (bar.y + bar.h - 1.0, bar.y) } else { (bar.y, bar.y + 1.0) };
+            let side_h = bar.h - 1.0;
+            if !(first_selected && (!top || left_inset_is_first_tab)) {
+                add(&mut before, Rect { x: bar.x, y: line_y, w: selected.x - bar.x, h: 1.0 });
+                if selected.x - 1.0 >= bar.x {
+                    add(&mut before, Rect { x: selected.x - 1.0, y: side_y, w: 1.0, h: side_h });
+                }
+            }
+            let after = selected.x + selected.w;
+            if after < bar.x + bar.w {
+                add(&mut after_parts, Rect { x: after, y: side_y, w: 1.0, h: side_h });
+                add(&mut after_parts, Rect { x: after, y: line_y, w: bar.x + bar.w - after, h: 1.0 });
+            }
+        }
+        Left | Right => {
+            let edge = if position == Left { bar.x + bar.w - 1.0 } else { bar.x };
+            if !(first_selected && left_inset_is_first_tab) {
+                add(&mut before, Rect { x: edge, y: bar.y, w: 1.0, h: selected.y - bar.y });
+                add(&mut before, Rect { x: bar.x, y: selected.y, w: bar.w, h: 1.0 });
+            }
+            let below = selected.y + selected.h;
+            add(&mut after_parts, Rect { x: bar.x, y: below - 1.0, w: bar.w, h: 1.0 });
+            add(&mut after_parts, Rect { x: edge, y: below, w: 1.0, h: bar.y + bar.h - below });
+        }
+    }
+    (before, after_parts)
+}
+
+/// A quad of `f` over what is behind it; nothing when it is clear.
+fn fill_quad(frame: &mut Frame, rect: Rect, f: crate::tab_theme::Fill) {
+    if f.alpha > 0.0 {
+        frame.quads.push(Quad { rect, color: rgba(f.color, f.alpha) });
+    }
+}
+
+/// The icon font's size for the caption buttons' glyphs, in points (Windows 11's are 10).
+const CAPTION_GLYPH_PT: f32 = 10.0;
+/// Windows 11's caption button colors: the close button's red, and the hover and press tints of
+/// the others (black on a light bar, white on a dark one).
+const CAPTION_CLOSE: Rgb = rgb(0xc4, 0x2b, 0x1c);
+const CAPTION_HOVER: (f32, f32) = (0.0373, 0.0605);
+const CAPTION_PRESS: (f32, f32) = (0.0241, 0.0419);
+
+/// The strip a Minimal or Compact window's tab bar and caption sit in, under everything drawn
+/// there: the bar's material and its margin fill.
+pub fn caption_bar(frame: &mut Frame, bar: Rect, pal: &crate::tab_theme::TabPalette) {
+    frame.quads.push(Quad { rect: bar, color: rgba(pal.bar, 1.0) });
+    fill_quad(frame, bar, pal.margin);
+}
+
+/// The three window buttons in their rects (`caption::layout`): each glyph from the icon font in
+/// the selected tab's text color, a hover or press fill behind it (Windows 11's colors), the
+/// close button red with a white glyph, Restore in place of Maximize in a maximized window.
+#[allow(clippy::too_many_arguments)]
+pub fn caption_buttons(frame: &mut Frame, buttons: &[(crate::caption::Button, Rect); 3], hover: Option<crate::caption::Button>, pressed: Option<crate::caption::Button>, maximized: bool, pal: &crate::tab_theme::TabPalette, scale: f32, font_scale: f32, line: f32) {
+    use crate::caption::{Button, CLOSE_GLYPH, MAXIMIZE_GLYPH, MINIMIZE_GLYPH, RESTORE_GLYPH};
+    let ink = crate::tab_theme::over(pal.bar, pal.text_selected);
+    let s = CAPTION_GLYPH_PT * font_scale;
+    let em = CAPTION_GLYPH_PT * scale;
+    for (button, rect) in buttons {
+        let down = pressed == Some(*button);
+        let over = down || (pressed.is_none() && hover == Some(*button));
+        let mut color = ink;
+        if over {
+            let fill = match (button, pal.dark_controls) {
+                (Button::Close, _) => Some(rgba(CAPTION_CLOSE, if down { 0.9 } else { 1.0 })),
+                (_, false) => Some(rgba(rgb(0, 0, 0), if down { CAPTION_PRESS.0 } else { CAPTION_HOVER.0 })),
+                (_, true) => Some(rgba(rgb(255, 255, 255), if down { CAPTION_PRESS.1 } else { CAPTION_HOVER.1 })),
+            };
+            frame.quads.extend(fill.map(|color| Quad { rect: *rect, color }));
+            if *button == Button::Close {
+                color = rgb(255, 255, 255);
+            }
+        }
+        let glyph = match button {
+            Button::Minimize => MINIMIZE_GLYPH,
+            Button::Maximize if maximized => RESTORE_GLYPH,
+            Button::Maximize => MAXIMIZE_GLYPH,
+            Button::Close => CLOSE_GLYPH,
+        };
+        let span = Span { text: glyph.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
+        let x = rect.x + ((rect.w - em) / 2.0).floor();
+        let y = rect.y + ((rect.h - line * s) / 2.0).floor();
+        frame.rows.push(TextRow { x, y, spans: vec![span], clip: *rect, scale: s });
+    }
+}
+
+/// The caption's menu button: the hamburger glyph in the selected text color, centered in `rect`.
+pub fn caption_menu_button(frame: &mut Frame, rect: Rect, pal: &crate::tab_theme::TabPalette, scale: f32, font_scale: f32, line: f32) {
+    let ink = crate::tab_theme::over(pal.bar, pal.text_selected);
+    let s = CAPTION_GLYPH_PT * font_scale;
+    let em = CAPTION_GLYPH_PT * scale;
+    let span = Span { text: crate::caption::MENU_GLYPH.to_string(), color: ink, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
+    let x = rect.x + ((rect.w - em) / 2.0).floor();
+    let y = rect.y + ((rect.h - line * s) / 2.0).floor();
+    frame.rows.push(TextRow { x, y, spans: vec![span], clip: rect, scale: s });
+}
+
+/// A caption text row in the bar's prose font, `width` pixels wide, at `x`.
+#[allow(clippy::too_many_arguments)]
+fn caption_row(frame: &mut Frame, text: &str, x: f32, rect: Rect, color: Rgb, pal: &crate::tab_theme::TabPalette, font_scale: f32, line: f32) {
+    let s = pal.font_pt * font_scale;
+    let span = Span { text: text.to_string(), color, bold: false, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false };
+    let y = rect.y + ((rect.h - line * s) / 2.0).floor();
+    frame.rows.push(TextRow { x, y, spans: vec![span], clip: rect, scale: s });
+}
+
+/// The window's title in the caption where no tab bar shows: centered in `rect` (left-aligned and
+/// clipped when `width`, its measured pixels, is more than the room), in the selected text color.
+#[allow(clippy::too_many_arguments)]
+pub fn caption_title(frame: &mut Frame, text: &str, rect: Rect, width: f32, pal: &crate::tab_theme::TabPalette, _scale: f32, font_scale: f32, line: f32) {
+    if text.is_empty() {
+        return;
+    }
+    let x = rect.x + ((rect.w - width) / 2.0).floor().max(0.0);
+    caption_row(frame, text, x, rect, crate::tab_theme::over(pal.bar, pal.text_selected), pal, font_scale, line);
+}
+
+/// The window name beside the tabs: left-aligned in `rect` at `NAME_ALPHA` over the bar in the
+/// selected text color, cut with an ellipsis to the rect's width (`measure` gives a text's pixels).
+#[allow(clippy::too_many_arguments)]
+pub fn caption_name(frame: &mut Frame, text: &str, rect: Rect, measure: &mut dyn FnMut(&str) -> f32, pal: &crate::tab_theme::TabPalette, _scale: f32, font_scale: f32, line: f32) {
+    let text = crate::caption::fit_name(text, rect.w, measure);
+    if text.is_empty() {
+        return;
+    }
+    let full = crate::tab_theme::over(pal.bar, pal.text_selected);
+    let color = crate::tab_theme::over(pal.bar, crate::tab_theme::Fill { color: full, alpha: crate::caption::NAME_ALPHA });
+    caption_row(frame, &text, rect.x, rect, color, pal, font_scale, line);
+}
+
+/// The window switch label (R11) right-aligned in `rect` (`caption::layout`'s shortcut, the
+/// measured `width` plus padding, half of it on each side), in the unselected text color.
+#[allow(clippy::too_many_arguments)]
+pub fn caption_shortcut(frame: &mut Frame, text: &str, rect: Rect, width: f32, pal: &crate::tab_theme::TabPalette, scale: f32, font_scale: f32, line: f32) {
+    if text.is_empty() {
+        return;
+    }
+    let x = rect.x + rect.w - width - 4.0 * scale;
+    caption_row(frame, text, x, rect, crate::tab_theme::over(pal.bar, pal.text_unselected), pal, font_scale, line);
 }
 
 /// The squared group run decoration of iTerm2's non-Tahoe styles (`YS:1348-1600`), over the
@@ -1307,9 +1708,10 @@ pub fn spinner(frame: &mut Frame, rect: Rect, turn: f32, color: Rgb, scale: f32)
     }
 }
 
-pub fn dividers(frame: &mut Frame, dividers: &[Divider]) {
+/// The split pane dividers, in the theme's `color` (`App::divider_color`).
+pub fn dividers(frame: &mut Frame, dividers: &[Divider], color: Rgb) {
     for d in dividers {
-        frame.overlay.push(Quad { rect: d.rect, color: rgba(DIVIDER, 1.0) });
+        frame.overlay.push(Quad { rect: d.rect, color: rgba(color, 1.0) });
     }
 }
 
@@ -1550,6 +1952,23 @@ pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, foot
     }
 }
 
+/// The session picker's button (`SessionView.m:1203-1235`): a labelled box centered in the
+/// pane, as wide as the label plus padding and never wider than the pane. The box goes in
+/// `popups` (text over it stays text), the label in `rows`. Answers the box, which is the
+/// button's hit rectangle.
+pub fn session_picker_button(frame: &mut Frame, pane: Rect, label: &str, fg: Rgb, bg: Rgb, cell: (f32, f32), scale: f32) -> Rect {
+    let (pad, height) = (2.0 * cell.0, cell.1 + 16.0 * scale);
+    let w = (label.chars().count() as f32 * cell.0 + 2.0 * pad).min(pane.w);
+    let h = height.min(pane.h);
+    let r = Rect { x: pane.x + (pane.w - w) / 2.0, y: pane.y + (pane.h - h) / 2.0, w, h };
+    cut_out(frame, r, cell.1);
+    frame.popups.push(Quad { rect: r, color: rgba(blend(bg, fg, 0.18), 1.0) });
+    frame_lines(&mut frame.popups, r, rgba(blend(bg, fg, 0.6), 1.0));
+    let span = Span { text: label.to_string(), color: fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
+    frame.rows.push(TextRow { x: r.x + pad.min(r.w / 2.0), y: r.y + (h - cell.1) / 2.0, spans: vec![span], clip: r, scale: 1.0 });
+    r
+}
+
 /// A tab's tooltip (`PT tabView:toolTipForTabViewItem:`): a framed box at `at` (under the
 /// pointer) with one text row per line of `text`, moved left and up as far as it must to stay
 /// inside `area` (the window).
@@ -1644,6 +2063,170 @@ pub fn clippings_panel(frame: &mut Frame, d: &ClipDraw, cell: (f32, f32), scale:
     if let Some(text) = d.status {
         let r = l.status;
         frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(text.to_string(), TAB_TEXT_DIM, false, false)], clip: r, scale: 1.0 });
+    }
+}
+
+/// What the inline chat panel shows (Task 9: the toolbar and an empty band). The app fits the
+/// title to its rectangle (`inline_chat::truncate_tail`); a hovered button's tip takes the
+/// title's place.
+pub struct InlineDraw<'a> {
+    pub panel: Rect,
+    pub layout: &'a crate::inline_chat::ToolbarLayout,
+    pub title: &'a str,
+    pub hover: Option<crate::inline_chat::Button>,
+}
+
+/// The inline chat panel at the right of a session: its toolbar band, the four glyph buttons,
+/// the centered title, a separator under the toolbar and a leading hairline.
+pub fn inline_chat_panel(frame: &mut Frame, d: &InlineDraw, cell: (f32, f32), scale: f32) {
+    use crate::inline_chat::Button;
+    let l = d.layout;
+    frame.quads.push(Quad { rect: d.panel, color: rgba(CLIP_BG, 1.0) });
+    frame.quads.push(Quad { rect: Rect { w: 1.0, ..d.panel }, color: rgba(DIVIDER, 1.0) });
+    let band_h = crate::inline_chat::TOOLBAR_H * scale;
+    frame.quads.push(Quad { rect: Rect { x: d.panel.x, y: d.panel.y + band_h - 1.0, w: d.panel.w, h: 1.0 }, color: rgba(DIVIDER, 1.0) });
+    for (b, r) in [(Button::New, l.new), (Button::Switch, l.switch), (Button::Info, l.info), (Button::Hide, l.hide)] {
+        if d.hover == Some(b) {
+            frame.quads.push(Quad { rect: r, color: rgba(TAB_ACTIVE, 1.0) });
+        }
+        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(b.glyph().to_string(), TAB_TEXT, false, true)], clip: r, scale: 1.0 });
+    }
+    let text_w = d.title.chars().count() as f32 * cell.0;
+    let t = l.title;
+    frame.rows.push(TextRow { x: t.x + ((t.w - text_w) / 2.0).max(0.0), y: t.y + (t.h - cell.1) / 2.0, spans: vec![clip_span(d.title.to_string(), TAB_TEXT, true, false)], clip: t, scale: 1.0 });
+}
+
+/// One conversation row of the inline panel, placed in pixels already: its bubble (zero width for
+/// a date or the typing row), its text rectangle (where `lines` start), its buttons as (rectangle,
+/// title, the title's width, destructive, enabled) and the copy glyph of each code block.
+pub struct InlineRowDraw<'a> {
+    pub bubble: Rect,
+    pub text: Rect,
+    pub user: bool,
+    pub lines: &'a [crate::porthole::render::VisualLine],
+    /// A date row's label (centered in `text`).
+    pub date: Option<&'a str>,
+    pub typing: bool,
+    pub buttons: Vec<(Rect, &'a str, f32, bool, bool)>,
+    pub copies: Vec<Rect>,
+    /// Where "Copied" shows, beside the copy glyph of the block just copied.
+    pub copied: Option<Rect>,
+}
+
+/// The input band: its box, the attach and send glyph rectangles, the editor's lines already
+/// laid out (x, y, text), the selection and caret, the placeholder while empty.
+pub struct InlineInputDraw<'a> {
+    pub rect: Rect,
+    pub attach: Rect,
+    pub send: Rect,
+    pub send_glyph: char,
+    pub send_enabled: bool,
+    pub clip: Rect,
+    pub lines: &'a [(f32, f32, String)],
+    pub selection: &'a [Rect],
+    pub caret: Option<Rect>,
+    pub placeholder: Option<&'a str>,
+    pub focused: bool,
+    pub text_scale: f32,
+}
+
+/// What the inline panel's body shows under its toolbar.
+pub struct InlineBodyDraw<'a> {
+    /// The conversation's visible area: everything in the rows is cut to it.
+    pub area: Rect,
+    pub rows: Vec<InlineRowDraw<'a>>,
+    /// The line above the input: "Copied" or the pending attachments' names.
+    pub strip: Option<(Rect, &'a str)>,
+    pub input: InlineInputDraw<'a>,
+}
+
+/// The user's bubble color (the accent) and the text on it.
+const BUBBLE_USER: Rgb = LIST_SELECTED;
+
+/// The inline panel's conversation and input: bubbles as quads (the person's in the accent color
+/// with white text), each row's text by `doc_lines`, buttons as bordered rows with centered titles
+/// (destructive in red, disabled at half alpha), the typing row as three dots, the date rows
+/// centered, then the input band.
+pub fn inline_chat_body(frame: &mut Frame, d: &InlineBodyDraw, cell: (f32, f32), scale: f32) {
+    let agent_bubble = blend(CLIP_BG, rgb(128, 128, 128), 0.25);
+    for row in &d.rows {
+        if row.bubble.w > 0.0 {
+            if let Some(r) = cut(row.bubble, d.area) {
+                frame.quads.push(Quad { rect: r, color: rgba(if row.user { BUBBLE_USER } else { agent_bubble }, 1.0) });
+            }
+        }
+        if let Some(label) = row.date {
+            if let Some(c) = cut(row.text, d.area) {
+                let w = label.chars().count() as f32 * cell.0 * 0.9;
+                frame.rows.push(TextRow { x: row.text.x + ((row.text.w - w) / 2.0).max(0.0), y: row.text.y, spans: vec![clip_span(label.to_string(), TAB_TEXT_DIM, false, false)], clip: c, scale: 0.85 });
+            }
+            continue;
+        }
+        if row.typing {
+            let dot = (4.0 * scale).max(3.0);
+            let (gap, total) = (dot, dot * 5.0);
+            let x0 = row.text.x + (row.text.w - total) / 2.0;
+            for i in 0..3 {
+                let r = Rect { x: x0 + i as f32 * (dot + gap), y: row.text.y + (row.text.h - dot) / 2.0, w: dot, h: dot };
+                if let Some(r) = cut(r, d.area) {
+                    frame.quads.push(Quad { rect: r, color: rgba(TAB_TEXT_DIM, 1.0) });
+                }
+            }
+            continue;
+        }
+        let (fg, back) = if row.user { (rgb(255, 255, 255), BUBBLE_USER) } else { (TAB_TEXT, agent_bubble) };
+        let area = cut(row.text, d.area);
+        if let Some(area) = area {
+            // A rule stops short of the text's right edge by `PORTHOLE_MARGIN`.
+            doc_lines(frame, (row.text.x, row.text.y), row.lines, &[], area, (row.text.x, row.text.w + PORTHOLE_MARGIN), back, fg);
+        }
+        for r in &row.copies {
+            if let Some(c) = cut(*r, d.area) {
+                frame.quads.push(Quad { rect: c, color: rgba(blend(back, fg, 0.15), 1.0) });
+                frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(crate::chat_view::COPY_GLYPH.to_string(), fg, false, true)], clip: c, scale: 1.0 });
+            }
+        }
+        if let Some(r) = row.copied {
+            if let Some(c) = cut(r, d.area) {
+                frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(crate::chat_view::COPIED.to_string(), blend(back, fg, 0.6), false, false)], clip: c, scale: 0.85 });
+            }
+        }
+        for (r, title, title_w, destructive, enabled) in &row.buttons {
+            let Some(c) = cut(*r, d.area) else { continue };
+            let alpha = if *enabled { 1.0 } else { 0.5 };
+            let color = if *destructive { rgb(0xff, 0x45, 0x3a) } else { fg };
+            // The separator above the button, then its title centered.
+            frame.quads.push(Quad { rect: Rect { h: 1.0, ..c }, color: rgba(color, 0.35 * alpha) });
+            frame_lines(&mut frame.quads, c, rgba(color, 0.25 * alpha));
+            frame.rows.push(TextRow { x: r.x + ((r.w - title_w) / 2.0).max(0.0), y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span((*title).to_string(), blend(back, color, alpha), false, false)], clip: c, scale: 1.0 });
+        }
+    }
+    if let Some((r, text)) = d.strip {
+        frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(text.to_string(), TAB_TEXT_DIM, false, false)], clip: r, scale: 0.85 });
+    }
+    let i = &d.input;
+    frame.quads.push(Quad { rect: i.rect, color: rgba(FIELD_BG_DARK, 1.0) });
+    frame_lines(&mut frame.quads, i.rect, if i.focused { rgba(LIST_SELECTED, 1.0) } else { rgba(DIVIDER, 1.0) });
+    for r in i.selection {
+        let r = clip_rect(*r, i.clip);
+        if r.w > 0.0 && r.h > 0.0 {
+            frame.quads.push(Quad { rect: r, color: rgba(LIST_SELECTED, NOTE_SELECTION_ALPHA) });
+        }
+    }
+    for (x, y, line) in i.lines {
+        if !line.is_empty() {
+            frame.rows.push(TextRow { x: *x, y: *y, spans: vec![list_span(line.clone(), TAB_TEXT, false, 0)], clip: i.clip, scale: i.text_scale });
+        }
+    }
+    if let (Some(text), true) = (i.placeholder, i.lines.iter().all(|l| l.2.is_empty())) {
+        frame.rows.push(TextRow { x: i.clip.x, y: i.clip.y, spans: vec![list_span(text.to_string(), TAB_TEXT_DIM, false, 0)], clip: i.clip, scale: i.text_scale });
+    }
+    if let Some(c) = i.caret.map(|c| clip_rect(c, i.clip)).filter(|c| c.h > 0.0) {
+        frame.quads.push(Quad { rect: Rect { w: scale.max(1.0), ..c }, color: rgba(TAB_TEXT, 1.0) });
+    }
+    for (r, glyph, on) in [(i.attach, '\u{E710}', true), (i.send, i.send_glyph, i.send_enabled)] {
+        let color = if on { TAB_TEXT } else { TAB_TEXT_DIM };
+        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(glyph.to_string(), color, false, true)], clip: r, scale: 1.0 });
     }
 }
 
@@ -2391,15 +2974,595 @@ mod broadcast_tests {
 
     #[test]
     fn indicators_keep_iterm2_order() {
-        assert_eq!(indicator_glyphs(true, true, true), vec![BROADCAST_GLYPH, COPROCESS_GLYPH]);
-        assert_eq!(indicator_glyphs(false, true, false), vec![RECEIVE_ONLY_GLYPH]);
-        assert_eq!(indicator_glyphs(false, false, true), vec![COPROCESS_GLYPH]);
-        assert!(indicator_glyphs(false, false, false).is_empty());
+        assert_eq!(indicator_glyphs(true, true, true, false, false), vec![BROADCAST_GLYPH, COPROCESS_GLYPH]);
+        assert_eq!(indicator_glyphs(false, true, false, false, false), vec![RECEIVE_ONLY_GLYPH]);
+        assert_eq!(indicator_glyphs(false, false, true, false, false), vec![COPROCESS_GLYPH]);
+        assert!(indicator_glyphs(false, false, false, false, false).is_empty());
+    }
+
+    #[test]
+    fn indicator_glyphs_follow_iterm2() {
+        assert_eq!(indicator_glyphs(true, true, true, true, true), vec![BROADCAST_GLYPH, COPROCESS_GLYPH, AI_LINKED_GLYPH, AI_STREAMING_GLYPH]);
+        assert_eq!(indicator_glyphs(false, false, false, true, false), vec![AI_LINKED_GLYPH]);
+        assert_eq!(AI_STREAMING_GLYPH, RECEIVE_ONLY_GLYPH, "iTerm2 uses one symbol for both");
+        assert_eq!(AI_LINKED_GLYPH, '\u{E8BD}');
+        // Each glyph knows what a press on it means; the streaming glyph is told apart from
+        // receive-only by its kind, not its character.
+        let kinds: Vec<IndicatorKind> = indicators(false, true, true, true, true).into_iter().map(|(_, k)| k).collect();
+        assert_eq!(kinds, vec![IndicatorKind::Other, IndicatorKind::Other, IndicatorKind::AiLinked, IndicatorKind::AiStreaming]);
+        let hits = top_right_indicators(&mut Frame::default(), Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, &[BROADCAST_GLYPH, AI_LINKED_GLYPH], rgb(1, 2, 3), (8.0, 16.0));
+        assert_eq!(hits.len(), 2);
+        assert!(hits[0].x > hits[1].x, "right to left from the corner");
+        assert!(hits[0].x + hits[0].w <= 400.0);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    /// (quads, rows, digest) of the porthole frame in `doc_lines_draw_as_the_porthole_did`, taken from `porthole` before `doc_lines` was extracted from it.
+    const GOLDEN: (usize, usize, u64) = (10, 15, 10881690239227710009);
+
+    /// The palette the tab bar had before themes: one flat dark bar, a lighter selected tab, the
+    /// two greys for text and no lines. The layout tests below draw with it.
+    fn legacy() -> crate::tab_theme::TabPalette {
+        use crate::tab_theme::{Fill, TabPalette, TabStyle};
+        let clear = Fill { color: TAB_BAR, alpha: 0.0 };
+        TabPalette {
+            style: TabStyle::Dark,
+            resolved: TabStyle::Dark,
+            bar: TAB_BAR,
+            selected: Fill { color: TAB_ACTIVE, alpha: 1.0 },
+            unselected: clear,
+            margin: clear,
+            text_selected: Fill { color: TAB_TEXT, alpha: 1.0 },
+            text_unselected: Fill { color: TAB_TEXT_DIM, alpha: 1.0 },
+            between: clear,
+            edge: clear,
+            top: clear,
+            top_selected: clear,
+            line_inset: (1.0, 2.0),
+            dark_edge_gradient: false,
+            attached: true,
+            font_pt: 11.0,
+            dark_controls: true,
+            minimal: None,
+            colored_outline: 0.5,
+            colored_text_prominence: 0.5,
+        }
+    }
+
+    /// A colored tab is filled with its color over its whole cell (no bottom strip), the selected
+    /// one is outlined by two strokes, and every tab's text follows the brightness of its own fill.
+    #[test]
+    fn colored_tab_draws_fill_and_outline() {
+        use crate::tab_layout::{self, TabInput};
+        use crate::tab_theme::{Fill, Inputs, MinimalKnobs, TabStyle, colored_fill, colored_text, over, palette};
+        let red = rgb(255, 0, 0);
+        let pal = palette(
+            TabStyle::Light,
+            &Inputs { system_dark: false, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 2 },
+        );
+        let looks = vec![TabLook { title: "one".into(), number: 1, color: Some(red), ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
+        let inputs: Vec<TabInput> = looks
+            .iter()
+            .map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
+            .collect();
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, None, &s, &six);
+        let area = Rect { x: 0.0, y: 10.0, w: 400.0, h: 24.0 };
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, true, false, &pal);
+        let px = |r: Rect| Rect { x: area.x + r.x, y: area.y + r.y, w: r.w, h: r.h };
+        let (first, second) = (px(bar.cells[0].2), px(bar.cells[1].2));
+        let fill = colored_fill(red, true, true);
+        assert!(f.quads.iter().any(|q| q.rect == first && q.color == rgba(fill, 1.0)), "the fill over the whole cell");
+        assert!(!f.quads.iter().any(|q| q.rect.h == 3.0 && q.rect.y == first.y + first.h - 3.0), "no bottom strip");
+        let text_color = |t: &str| f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == t)).map(|r| r.spans[0].color);
+        assert_eq!(text_color("one"), Some(over(fill, colored_text(fill, true, 0.5))), "the colored tab's text");
+        let back = over(pal.bar, pal.unselected);
+        let expect = over(back, Fill { color: rgb(0, 0, 0), alpha: 0.5 });
+        assert_eq!(text_color("two"), Some(expect), "an uncolored tab's text at the unselected prominence");
+        assert!(!f.quads.iter().any(|q| q.rect == second && q.color == rgba(fill, 1.0)));
+    }
+
+    /// The selected tab's outline (`YOS:805-839`): two strokes of the width `clamp(strength, 1, 3)`,
+    /// the first outset half a point sideways, drawn after the lines and the edge so none covers
+    /// it, each ring's corners drawn once; only with a colored tab, only on the selected tab.
+    #[test]
+    fn selected_outline_follows_iterm2() {
+        use crate::tab_layout::{self, TabInput};
+        use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
+        let inputs = |outline: f32| Inputs { system_dark: false, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: outline, colored_text_prominence: 0.5, tabs: 2 };
+        let mut looks = vec![TabLook { title: "one".into(), number: 1, color: Some(rgb(255, 0, 0)), ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
+        let items: Vec<TabInput> = looks
+            .iter()
+            .map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
+            .collect();
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::build(&items, 1, 400.0, 0.0, None, &s, &six);
+        let area = Rect { x: 0.0, y: 10.0, w: 400.0, h: 24.0 };
+        let px = |r: Rect| Rect { x: area.x + r.x, y: area.y + r.y, w: r.w, h: r.h };
+        let c = px(bar.cells[1].2);
+        let draw = |looks: &[TabLook], outline: f32| {
+            let mut f = Frame::default();
+            tab_bar(&mut f, looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false, &palette(TabStyle::Light, &inputs(outline)));
+            f
+        };
+        // A ring's four bands, each pixel once: the top and bottom in full, the sides between.
+        let ring = |o: Rect, i: Rect| {
+            [
+                Rect { x: o.x, y: o.y, w: o.w, h: i.y - o.y },
+                Rect { x: o.x, y: i.y + i.h, w: o.w, h: o.y + o.h - i.y - i.h },
+                Rect { x: o.x, y: i.y, w: i.x - o.x, h: i.h },
+                Rect { x: i.x + i.w, y: i.y, w: o.x + o.w - i.x - i.w, h: i.h },
+            ]
+        };
+        let inset = |r: Rect, dx: f32, dy: f32| Rect { x: r.x + dx, y: r.y + dy, w: r.w - 2.0 * dx, h: r.h - 2.0 * dy };
+        let (white, black) = (|a: f32| rgba(rgb(255, 255, 255), a), |a: f32| rgba(rgb(0, 0, 0), a));
+        // Width 1: the outer ring one pixel outside the cell sideways and level with its top and
+        // bottom rows, the inner one just inside it. A bright selected tab: white outside, black inside.
+        let f = draw(&looks, 0.5);
+        for (band, color) in ring(inset(c, -1.0, 0.0), inset(c, 0.0, 1.0)).into_iter().map(|b| (b, white(0.5))).chain(ring(inset(c, 0.0, 1.0), inset(c, 1.0, 2.0)).into_iter().map(|b| (b, black(0.5)))) {
+            assert!(f.quads.iter().any(|q| q.rect == band && q.color == color), "{band:?} {color:?}");
+        }
+        assert_eq!(f.quads.iter().filter(|q| q.color == white(0.5)).count(), 4, "the outer ring is four bands");
+        assert_eq!(f.quads.iter().filter(|q| q.color == black(0.5)).count(), 4, "so is the inner one, and no tab but the selected has one");
+        // Drawn after the edge line, whose row it shares.
+        let at = |f: &Frame, rect: Rect| f.quads.iter().position(|q| q.rect == rect);
+        let edge = f.quads.iter().position(|q| q.color == rgba(rgb(230, 230, 230), 1.0)).unwrap();
+        assert!(edge < at(&f, Rect { x: c.x - 1.0, y: c.y + c.h - 1.0, w: c.w + 2.0, h: 1.0 }).unwrap(), "the outline covers the edge line");
+        // Width 3: strokes three pixels thick (`YOS:829`).
+        let f = draw(&looks, 3.0);
+        for (band, color) in ring(inset(c, 0.0, 1.0), inset(c, 3.0, 4.0)).into_iter().map(|b| (b, white(1.0))).chain(ring(inset(c, 3.0, 4.0), inset(c, 6.0, 7.0)).into_iter().map(|b| (b, black(1.0)))) {
+            assert!(f.quads.iter().any(|q| q.rect == band && q.color == color), "{band:?} {color:?}");
+        }
+        // Only with a colored tab: none without one.
+        looks[0].color = None;
+        let f = draw(&looks, 0.5);
+        assert!(!f.quads.iter().any(|q| q.color == white(0.5) || q.color == black(0.5)), "no outline without a colored tab");
+    }
+
+    /// A side bar's lines: the selected tab's are drawn first, so the unselected tabs' (which
+    /// share the top line's place) end on top (`YOS:1290-1300`).
+    #[test]
+    fn selected_lines_are_drawn_before_the_unselected() {
+        use crate::tab_layout::{self, TabInput};
+        use crate::tab_position::TabPosition;
+        use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
+        let inputs = Inputs { system_dark: true, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 3 };
+        let looks: Vec<TabLook> = (1..=3).map(|n| TabLook { title: format!("t{n}"), number: n, ..TabLook::default() }).collect();
+        let items: Vec<TabInput> = looks
+            .iter()
+            .map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
+            .collect();
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::Bar { position: TabPosition::Left, ..tab_layout::build_vertical(&items, 150.0, 200.0, 0.0, None, &s, &six) };
+        let area = Rect { x: 0.0, y: 0.0, w: 150.0, h: 200.0 };
+        let mut f = Frame::default();
+        tab_bar_vertical(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false, &palette(TabStyle::Dark, &inputs));
+        let top = |color: [f32; 4]| f.quads.iter().position(|q| q.rect.y == 0.0 && q.rect.h == 1.0 && q.color == color);
+        let (selected, unselected) = (top(rgba(rgb(255, 255, 255), 0.20)), top(rgba(rgb(0, 0, 0), 1.0)));
+        assert!(selected.is_some() && unselected.is_some(), "both top lines are drawn");
+        assert!(selected < unselected, "the unselected line covers the selected one");
+    }
+
+    /// A top bar draws the Dark style's black top line on the unselected tabs only, and past the
+    /// "+" button; the Light style draws none (`YOS:1313-1333`).
+    #[test]
+    fn top_lines_follow_iterm2() {
+        use crate::tab_layout::{self, TabInput};
+        use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
+        let inputs = Inputs { system_dark: true, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 2 };
+        let looks = vec![TabLook { title: "one".into(), number: 1, ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
+        let tabs: Vec<TabInput> = looks
+            .iter()
+            .map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
+            .collect();
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::build(&tabs, 1, 400.0, 0.0, None, &s, &six);
+        let area = Rect { x: 0.0, y: 10.0, w: 400.0, h: 24.0 };
+        let draw = |style: TabStyle| {
+            let mut f = Frame::default();
+            tab_bar(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false, &palette(style, &inputs));
+            f
+        };
+        let top = |r: Rect| Rect { x: area.x + r.x, y: area.y, w: r.w, h: 1.0 };
+        let black = rgba(rgb(0, 0, 0), 1.0);
+        let f = draw(TabStyle::Dark);
+        assert!(f.quads.iter().any(|q| q.rect == top(bar.cells[0].2) && q.color == black), "the unselected tab's top line");
+        assert!(!f.quads.iter().any(|q| q.rect == top(bar.cells[1].2)), "none on the selected tab of a top bar");
+        assert!(bar.add.is_some_and(|a| f.quads.iter().any(|q| q.rect.x == area.x + a.x && q.rect.y == area.y && q.rect.h == 1.0 && q.color == black)), "past the add button");
+        let f = draw(TabStyle::Light);
+        assert!(!f.quads.iter().any(|q| q.rect.y == area.y && q.rect.h == 1.0 && q.rect.w < 400.0), "Light has no top line");
+    }
+
+    /// Compact with a Top bar is not attached to the title bar (`PT:10142`): no top line on any
+    /// tab, none past the "+", and Dark's bottom line stays solid (its gradient covers the 0.3
+    /// divider, `DRK:113-125`) (`YOS:1628-1646`, `YOS:1326`); Minimal and the others stay attached.
+    #[test]
+    fn unattached_top_bar_follows_iterm2() {
+        use crate::tab_layout::{self, TabInput};
+        use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
+        let inputs = Inputs { system_dark: true, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 2 };
+        let looks = vec![TabLook { title: "one".into(), number: 1, ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
+        let tabs: Vec<TabInput> = looks
+            .iter()
+            .map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
+            .collect();
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::build(&tabs, 1, 400.0, 0.0, None, &s, &six);
+        let area = Rect { x: 0.0, y: 10.0, w: 400.0, h: 24.0 };
+        let draw = |attached: bool| {
+            let mut f = Frame::default();
+            let mut pal = palette(TabStyle::Dark, &inputs);
+            pal.attached = attached;
+            tab_bar(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false, &pal);
+            f
+        };
+        let top_lines = |f: &Frame| f.quads.iter().filter(|q| q.rect.y == area.y && q.rect.h == 1.0 && q.rect.w < 400.0).count();
+        assert!(top_lines(&draw(true)) >= 2, "attached: the unselected tab's line and the run past the add button");
+        assert_eq!(top_lines(&draw(false)), 0, "unattached: no top lines at all");
+        // The bottom line stays solid: Dark's gradient covers the 0.3 divider (`DRK:113-125`).
+        let f = draw(false);
+        let bottom = f.quads.iter().find(|q| q.rect.y == area.y + area.h - 1.0 && q.rect.w == 400.0).unwrap();
+        assert_eq!(bottom.color, rgba(rgb(0, 0, 0), 1.0));
+        // A bar on the bottom draws its lines whatever `attached` says.
+        let mut low = bar.clone();
+        low.position = crate::tab_position::TabPosition::Bottom;
+        let mut f = Frame::default();
+        let mut pal = palette(TabStyle::Dark, &inputs);
+        pal.attached = false;
+        tab_bar(&mut f, &looks, 1, &low, area, 1.0, 0.1, 20.0, true, false, &pal);
+        assert!(top_lines(&f) >= 2, "a bottom bar always draws top lines (YOS:1628)");
+    }
+
+    fn caption_palette(style: crate::tab_theme::TabStyle, dark: bool) -> crate::tab_theme::TabPalette {
+        use crate::tab_theme::{Inputs, MinimalKnobs, palette};
+        palette(style, &Inputs { system_dark: dark, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 2 })
+    }
+
+    fn caption_button_rects() -> [(crate::caption::Button, Rect); 3] {
+        use crate::caption::Button::*;
+        [(Minimize, Rect { x: 862.0, y: 0.0, w: 46.0, h: 38.0 }), (Maximize, Rect { x: 908.0, y: 0.0, w: 46.0, h: 38.0 }), (Close, Rect { x: 954.0, y: 0.0, w: 46.0, h: 38.0 })]
+    }
+
+    /// The three caption buttons: glyphs in the selected text color, the Windows 11 hover and press
+    /// colors, the restore glyph in a maximized window.
+    #[test]
+    fn caption_buttons_draw() {
+        use crate::caption::{Button, CLOSE_GLYPH, MAXIMIZE_GLYPH, MINIMIZE_GLYPH, RESTORE_GLYPH};
+        use crate::tab_theme::{TabStyle, over};
+        let light = caption_palette(TabStyle::Light, false);
+        let rects = caption_button_rects();
+        let mut f = Frame::default();
+        caption_buttons(&mut f, &rects, None, None, false, &light, 1.0, 0.1, 20.0);
+        let glyphs: Vec<(String, Rgb)> = f.rows.iter().map(|r| (r.spans[0].text.clone(), r.spans[0].color)).collect();
+        let ink = over(light.bar, light.text_selected);
+        assert_eq!(glyphs, vec![(MINIMIZE_GLYPH.to_string(), ink), (MAXIMIZE_GLYPH.to_string(), ink), (CLOSE_GLYPH.to_string(), ink)]);
+        assert!(f.rows.iter().all(|r| r.spans[0].icon), "drawn in the icon font");
+        assert!(f.quads.is_empty(), "no hover, no fill");
+        // A hovered Close: Windows 11's red with a white glyph.
+        let mut f = Frame::default();
+        caption_buttons(&mut f, &rects, Some(Button::Close), None, false, &light, 1.0, 0.1, 20.0);
+        assert_eq!(f.quads.len(), 1);
+        assert_eq!((f.quads[0].rect, f.quads[0].color), (rects[2].1, rgba(rgb(0xc4, 0x2b, 0x1c), 1.0)));
+        assert_eq!(f.rows.iter().find(|r| r.spans[0].text == CLOSE_GLYPH.to_string()).unwrap().spans[0].color, rgb(255, 255, 255));
+        // A hovered Minimize: black at 0.0373 on a light bar, white at 0.0605 on a dark one.
+        let mut f = Frame::default();
+        caption_buttons(&mut f, &rects, Some(Button::Minimize), None, false, &light, 1.0, 0.1, 20.0);
+        assert_eq!((f.quads[0].rect, f.quads[0].color), (rects[0].1, rgba(rgb(0, 0, 0), 0.0373)));
+        let dark = caption_palette(TabStyle::Dark, true);
+        let mut f = Frame::default();
+        caption_buttons(&mut f, &rects, Some(Button::Minimize), None, false, &dark, 1.0, 0.1, 20.0);
+        assert_eq!((f.quads[0].rect, f.quads[0].color), (rects[0].1, rgba(rgb(255, 255, 255), 0.0605)));
+        // Pressed is a little stronger; a pressed Close is the red at 0.9.
+        let mut f = Frame::default();
+        caption_buttons(&mut f, &rects, None, Some(Button::Close), false, &light, 1.0, 0.1, 20.0);
+        assert_eq!(f.quads[0].color, rgba(rgb(0xc4, 0x2b, 0x1c), 0.9));
+        // A maximized window offers Restore.
+        let mut f = Frame::default();
+        caption_buttons(&mut f, &rects, None, None, true, &light, 1.0, 0.1, 20.0);
+        assert!(f.rows.iter().any(|r| r.spans[0].text == RESTORE_GLYPH.to_string()));
+        assert!(!f.rows.iter().any(|r| r.spans[0].text == MAXIMIZE_GLYPH.to_string()));
+    }
+
+    /// R11: the window switch label draws right-aligned in its rect in the unselected text color;
+    /// no text, no row.
+    #[test]
+    fn caption_shortcut_draws() {
+        use crate::tab_theme::{TabStyle, over};
+        let pal = caption_palette(TabStyle::Light, false);
+        let rect = Rect { x: 792.0, y: 0.0, w: 70.0, h: 38.0 };
+        let mut f = Frame::default();
+        caption_shortcut(&mut f, "Alt+Win+1", rect, 62.0, &pal, 1.0, 0.1, 20.0);
+        assert_eq!(f.rows.len(), 1);
+        let row = &f.rows[0];
+        assert_eq!(row.spans[0].text, "Alt+Win+1");
+        assert_eq!(row.spans[0].color, over(pal.bar, pal.text_unselected));
+        assert_eq!(row.x + 62.0, rect.x + rect.w - 4.0, "right-aligned with the padding's half on the right");
+        assert!(row.y >= rect.y && row.y < rect.y + rect.h);
+        let mut none = Frame::default();
+        caption_shortcut(&mut none, "", rect, 0.0, &pal, 1.0, 0.1, 20.0);
+        assert!(none.rows.is_empty() && none.quads.is_empty());
+    }
+
+    /// The caption text (a window with no tab bar showing) is centered in its rect, in the selected
+    /// text color, clipped to it.
+    #[test]
+    fn caption_title_draws_centered() {
+        use crate::tab_theme::{TabStyle, over};
+        let pal = caption_palette(TabStyle::Dark, true);
+        let rect = Rect { x: 0.0, y: 0.0, w: 862.0, h: 38.0 };
+        let mut f = Frame::default();
+        caption_title(&mut f, "vim", rect, 100.0, &pal, 1.0, 0.1, 20.0);
+        assert_eq!(f.rows.len(), 1);
+        assert_eq!((f.rows[0].x, f.rows[0].clip), (381.0, rect));
+        assert_eq!(f.rows[0].spans[0].color, over(pal.bar, pal.text_selected));
+        // Wider than the room: left-aligned and clipped.
+        let mut wide = Frame::default();
+        caption_title(&mut wide, "vim", rect, 900.0, &pal, 1.0, 0.1, 20.0);
+        assert_eq!(wide.rows[0].x, 0.0);
+    }
+
+    /// The window name beside the tabs: left-aligned in its rect at alpha 0.55 over the bar, cut with
+    /// an ellipsis to the rect's width.
+    #[test]
+    fn caption_name_draws_dim_and_truncated() {
+        use crate::tab_theme::{Fill, TabStyle, over};
+        let pal = caption_palette(TabStyle::Dark, true);
+        let rect = Rect { x: 6.0, y: 0.0, w: 50.0, h: 38.0 };
+        let mut m = |t: &str| t.chars().count() as f32 * 10.0;
+        let mut f = Frame::default();
+        caption_name(&mut f, "build-all", rect, &mut m, &pal, 1.0, 0.1, 20.0);
+        assert_eq!(f.rows.len(), 1);
+        assert_eq!((f.rows[0].x, f.rows[0].clip), (6.0, rect));
+        assert_eq!(f.rows[0].spans[0].text, "buil\u{2026}");
+        let full = over(pal.bar, pal.text_selected);
+        assert_eq!(f.rows[0].spans[0].color, over(pal.bar, Fill { color: full, alpha: crate::caption::NAME_ALPHA }));
+        let mut none = Frame::default();
+        caption_name(&mut none, "", rect, &mut m, &pal, 1.0, 0.1, 20.0);
+        assert!(none.rows.is_empty());
+    }
+
+    /// The bar draws with its palette: the material, the unselected fill, no fill for a clear
+    /// selected tab, the line between tabs but not after the last, the edge on the content's
+    /// side of each bar position, and the two text colors.
+    #[test]
+    fn tab_bar_uses_palette() {
+        use crate::tab_layout::{self, TabInput};
+        use crate::tab_position::TabPosition;
+        use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
+        let pal = palette(
+            TabStyle::Light,
+            &Inputs { system_dark: false, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 2 },
+        );
+        let looks = vec![TabLook { title: "one".into(), number: 1, ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
+        let inputs: Vec<TabInput> = looks
+            .iter()
+            .map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
+            .collect();
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::build(&inputs, 1, 400.0, 0.0, None, &s, &six);
+        let area = Rect { x: 0.0, y: 10.0, w: 400.0, h: 24.0 };
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false, &pal);
+        let (first, second) = (bar.cells[0].2, bar.cells[1].2);
+        let px = |r: Rect| Rect { x: area.x + r.x, y: area.y + r.y, w: r.w, h: r.h };
+        assert_eq!((f.quads[0].rect, f.quads[0].color), (area, rgba(pal.bar, 1.0)), "the bar's material");
+        assert!(f.quads.iter().any(|q| q.rect == px(first) && q.color == rgba(rgb(0, 0, 0), 0.07)), "the unselected tab's fill");
+        assert!(!f.quads.iter().any(|q| q.rect == px(second)), "a clear selected tab has no fill quad");
+        // `YOS:715-757`: the right line inside every tab but the last, just past the last, and
+        // from below the top pixel.
+        let line = |r: Rect, x: f32| Rect { x, y: r.y + 1.0, w: 1.0, h: r.h - 1.0 };
+        let between = rgba(rgb(0, 0, 0), 0.07);
+        assert!(f.quads.iter().any(|q| q.rect == line(px(first), px(first).x + first.w - 1.0) && q.color == between), "a line at the first tab's right");
+        assert!(f.quads.iter().any(|q| q.rect == line(px(second), px(second).x + second.w) && q.color == between), "the last tab's line past its cell");
+        assert!(!f.quads.iter().any(|q| q.rect == line(px(second), px(second).x + second.w - 1.0) && q.color == between), "none inside the last");
+        assert!(!f.quads.iter().any(|q| q.rect.x == px(first).x && q.rect.w == 1.0 && q.color == between), "no left line for a first tab at the edge");
+        let edge = rgba(rgb(230, 230, 230), 1.0);
+        let edge_rect = |p: TabPosition| {
+            let mut f = Frame::default();
+            tab_bar(&mut f, &looks, 1, &tab_layout::Bar { position: p, ..bar.clone() }, area, 1.0, 0.1, 20.0, true, false, &pal);
+            f.quads.iter().find(|q| q.color == edge).map(|q| q.rect)
+        };
+        assert_eq!(edge_rect(TabPosition::Top), Some(Rect { y: 33.0, h: 1.0, ..area }), "the bottom of a top bar");
+        assert_eq!(edge_rect(TabPosition::Bottom), Some(Rect { h: 1.0, ..area }), "the top of a bottom bar");
+        assert_eq!(edge_rect(TabPosition::Left), Some(Rect { x: 399.0, w: 1.0, ..area }), "the inner side of a left bar");
+        assert_eq!(edge_rect(TabPosition::Right), Some(Rect { w: 1.0, ..area }), "the inner side of a right bar");
+        // The margin past the last tab is drawn in the margin fill.
+        let end = px(second).x + second.w;
+        assert!(f.quads.iter().any(|q| q.rect.x == end && q.color == rgba(rgb(0, 0, 0), 0.07)), "the margin");
+        let text = |t: &str| f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == t)).unwrap().spans[0].color;
+        assert_eq!((text("one"), text("two")), (rgb(0, 0, 0), rgb(0, 0, 0)), "black text for a focused window");
+        let mut off = Frame::default();
+        let unfocused = palette(TabStyle::Light, &Inputs { focused: false, system_dark: false, system_high_contrast: false, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 2 });
+        tab_bar(&mut off, &looks, 1, &bar, area, 1.0, 0.1, 20.0, false, false, &unfocused);
+        let text = |t: &str| off.rows.iter().find(|r| r.spans.iter().any(|s| s.text == t)).unwrap().spans[0].color;
+        assert_eq!((text("one"), text("two")), (rgb(164, 164, 164), rgb(189, 189, 189)), "unfocused: the two greys");
+    }
+
+    #[test]
+    fn minimal_notch_follows_iterm2() {
+        use super::*;
+        use crate::tab_position::TabPosition::{Bottom, Left, Right, Top};
+        let r = |x: f32, y: f32, w: f32, h: f32| Rect { x, y, w, h };
+        let top = r(0.0, 0.0, 400.0, 38.0);
+        let tab = r(100.0, 0.0, 100.0, 38.0);
+        // A top bar (`MIN:804-875`): the bottom line to the tab's left edge, up it, down the
+        // right edge and on along the bottom.
+        assert_eq!(minimal_notch(top, tab, Top, false, false), [r(0.0, 37.0, 100.0, 1.0), r(99.0, 0.0, 1.0, 37.0), r(200.0, 0.0, 1.0, 37.0), r(200.0, 37.0, 200.0, 1.0)]);
+        // The first tab with the left inset counted as part of it draws no left part.
+        let first = r(20.0, 0.0, 100.0, 38.0);
+        assert_eq!(minimal_notch(top, first, Top, true, true), [r(120.0, 0.0, 1.0, 37.0), r(120.0, 37.0, 280.0, 1.0)]);
+        assert_eq!(minimal_notch(top, first, Top, false, true).len(), 4, "the inset apart from the tab: both parts");
+        assert_eq!(minimal_notch(top, first, Top, true, false).len(), 4, "another tab selected: both parts");
+        // A first tab at the very edge has no room for a left part.
+        assert_eq!(minimal_notch(top, r(0.0, 0.0, 100.0, 38.0), Top, false, true), [r(100.0, 0.0, 1.0, 37.0), r(100.0, 37.0, 300.0, 1.0)]);
+        // A bottom bar mirrors it along the top; only its first tab drops the left part, the
+        // setting not consulted (`MIN:702-715`).
+        let bottom = minimal_notch(top, tab, Bottom, false, false);
+        assert_eq!(bottom, [r(0.0, 0.0, 100.0, 1.0), r(99.0, 1.0, 1.0, 37.0), r(200.0, 1.0, 1.0, 37.0), r(200.0, 0.0, 200.0, 1.0)]);
+        assert_eq!(minimal_notch(top, first, Bottom, false, true), [r(120.0, 1.0, 1.0, 37.0), r(120.0, 0.0, 280.0, 1.0)]);
+        // A side bar (`MIN:600-662`): on the inner edge around the selected row, the lines across
+        // the row's first and last pixel rows.
+        let side = r(0.0, 0.0, 120.0, 400.0);
+        let row = r(0.0, 100.0, 120.0, 40.0);
+        assert_eq!(minimal_notch(side, row, Left, false, false), [r(119.0, 0.0, 1.0, 100.0), r(0.0, 100.0, 120.0, 1.0), r(0.0, 139.0, 120.0, 1.0), r(119.0, 140.0, 1.0, 260.0)]);
+        assert_eq!(minimal_notch(side, row, Right, false, false), [r(0.0, 0.0, 1.0, 100.0), r(0.0, 100.0, 120.0, 1.0), r(0.0, 139.0, 120.0, 1.0), r(0.0, 140.0, 1.0, 260.0)]);
+        // The first row with the top inset joined draws no part above it.
+        assert_eq!(minimal_notch(side, r(0.0, 0.0, 120.0, 40.0), Left, true, true), [r(0.0, 39.0, 120.0, 1.0), r(119.0, 40.0, 1.0, 360.0)]);
+        assert_eq!(minimal_notch(side, r(0.0, 0.0, 120.0, 40.0), Left, false, true).len(), 3, "no vertical stub above a row at the edge");
+    }
+
+    #[test]
+    fn minimal_bar_draws_notch_inset_and_underline() {
+        use crate::tab_layout::{self, TabInput};
+        use crate::tab_position::TabPosition;
+        use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
+        let inputs = |focused: bool, tabs: usize, knobs: MinimalKnobs| Inputs { system_dark: false, system_high_contrast: false, focused, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: knobs, colored_outline: 0.5, colored_text_prominence: 0.5, tabs };
+        let pal = palette(TabStyle::Minimal, &inputs(true, 2, MinimalKnobs::default()));
+        let mut looks = vec![TabLook { title: "one".into(), number: 1, ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
+        let items: Vec<TabInput> = looks
+            .iter()
+            .map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
+            .collect();
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::build(&items, 1, 400.0, 0.0, None, &s, &six);
+        let area = Rect { x: 0.0, y: 10.0, w: 400.0, h: 24.0 };
+        let px = |r: Rect| Rect { x: area.x + r.x, y: area.y + r.y, w: r.w, h: r.h };
+        let (first, second) = (px(bar.cells[0].2), px(bar.cells[1].2));
+        let draw = |looks: &[TabLook], pal: &crate::tab_theme::TabPalette, active: usize, bar: &tab_layout::Bar| {
+            let mut f = Frame::default();
+            tab_bar(&mut f, looks, active, bar, area, 1.0, 0.1, 20.0, true, false, pal);
+            f
+        };
+        let f = draw(&looks, &pal, 1, &bar);
+        let outline = rgba(rgb(255, 255, 255), 0.2);
+        // The notch: the bottom line before the selected tab and after it, its sides; no line
+        // between the tabs and none under the selected one.
+        assert!(f.quads.iter().any(|q| q.color == outline && q.rect == Rect { x: area.x, y: area.y + area.h - 1.0, w: second.x - area.x, h: 1.0 }), "the bottom line before the tab");
+        assert!(f.quads.iter().any(|q| q.color == outline && q.rect == Rect { x: second.x - 1.0, y: area.y, w: 1.0, h: area.h - 1.0 }), "the tab's left side");
+        assert!(!f.quads.iter().any(|q| q.color == outline && q.rect.x >= second.x && q.rect.x < second.x + second.w && q.rect.w > 1.0), "open under the selected tab");
+        assert!(f.quads.iter().all(|q| q.color != rgba(rgb(0, 0, 0), 1.0) || q.rect.h != 1.0), "no black edge line");
+        // The room before the first tab is drawn as an unselected tab.
+        let bar_at = |x: f32| tab_layout::Bar { cells: bar.cells.iter().map(|(i, c, r)| (*i, c.clone(), Rect { x: r.x + x, ..*r })).collect(), ..bar.clone() };
+        let shifted = bar_at(30.0);
+        let inset = |f: &Frame| f.quads.iter().any(|q| q.rect == Rect { x: area.x, y: area.y, w: 30.0, h: area.h } && q.color == rgba(rgb(13, 13, 13), 1.0));
+        assert!(inset(&draw(&looks, &pal, 1, &shifted)), "the left inset in the unselected color");
+        // ...or as the selected tab when the first tab is selected and the setting is on.
+        let joined = palette(TabStyle::Minimal, &inputs(true, 2, MinimalKnobs { left_inset_is_first_tab: true, ..MinimalKnobs::default() }));
+        assert!(!inset(&draw(&looks, &joined, 0, &shifted)), "joined to the selected first tab");
+        assert!(inset(&draw(&looks, &joined, 1, &shifted)), "not joined when another tab is selected");
+        // A colored tab: its color over the tab at the deselected alpha, and with any colored
+        // tab the selected one's two-stroke underline (outer white, inner black on a dark bar).
+        looks[0].color = Some(rgb(255, 0, 0));
+        let f = draw(&looks, &pal, 1, &bar);
+        assert!(f.quads.iter().any(|q| q.rect == first && q.color == rgba(rgb(255, 0, 0), 0.5)), "the deselected colored tab at half alpha");
+        let under = |k: f32, w: f32| Rect { x: second.x, y: second.y + second.h - k, w, h: 2.0 };
+        assert!(f.quads.iter().any(|q| q.rect == under(2.0, second.w) && q.color == rgba(rgb(255, 255, 255), 0.75)), "the outer underline");
+        assert!(f.quads.iter().any(|q| q.rect == under(4.0, second.w) && q.color == rgba(rgb(0, 0, 0), 0.75f32.sqrt())), "the inner underline");
+        assert!(!f.quads.iter().any(|q| q.color == rgba(rgb(255, 255, 255), 0.5) || q.color == rgba(rgb(0, 0, 0), 0.5)), "no Regular outline strokes");
+        // A bottom bar's notch is on its top edge; one tab in a bottom bar draws none.
+        let bottom = draw(&looks, &pal, 1, &tab_layout::Bar { position: TabPosition::Bottom, ..bar.clone() });
+        assert!(bottom.quads.iter().any(|q| q.color == outline && q.rect == Rect { x: area.x, y: area.y, w: second.x - area.x, h: 1.0 }), "the top line of a bottom bar");
+        let mut one = looks.clone();
+        one.truncate(1);
+        let single = tab_layout::build(&items[..1], 0, 400.0, 0.0, None, &s, &six);
+        let solo = draw(&one, &pal, 0, &tab_layout::Bar { position: TabPosition::Bottom, ..single.clone() });
+        assert!(!solo.quads.iter().any(|q| q.color == outline), "one tab in a bottom bar: no outline");
+        let solo_top = draw(&one, &pal, 0, &single);
+        assert!(solo_top.quads.iter().any(|q| q.color == outline), "one tab in a top bar: the outline");
+    }
+
+    /// The setup the overflow notch tests share: three tabs, the Minimal palette, the light-on-dark
+    /// outline color.
+    fn overflow_setup() -> (Vec<TabLook>, Vec<crate::tab_layout::TabInput>, crate::tab_layout::Settings, crate::tab_theme::TabPalette, crate::tab_theme::Inputs) {
+        use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
+        let inputs = Inputs { system_dark: false, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 3 };
+        let looks: Vec<TabLook> = (1..=3).map(|n| TabLook { title: format!("t{n}"), number: n, ..TabLook::default() }).collect();
+        let items = looks
+            .iter()
+            .map(|l| crate::tab_layout::TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
+            .collect();
+        let s = crate::tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        (looks, items, s, palette(TabStyle::Minimal, &inputs), inputs)
+    }
+
+    #[test]
+    fn minimal_notch_with_the_selected_tab_in_overflow() {
+        use crate::tab_layout;
+        use crate::tab_position::TabPosition;
+        use crate::tab_theme::{Inputs, TabStyle, palette};
+        let (looks, items, s, pal, inputs) = overflow_setup();
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        // A real layout: 150 points hold one tab and the buttons' 24-point margin, and the selected
+        // third tab is in the overflow menu.
+        let fixed = tab_layout::Settings { prefs: tab_layout::Prefs { scrollable: false, ..s.prefs }, ..s.clone() };
+        let mut bar = tab_layout::build(&items, 2, 150.0, 0.0, None, &fixed, &six);
+        assert_eq!((bar.cells.len(), bar.hidden.clone()), (1, vec![1, 2]), "the layout the notch is drawn for");
+        bar.position = TabPosition::Top;
+        let area = Rect { x: 0.0, y: 10.0, w: 150.0, h: 24.0 };
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 2, &bar, area, 1.0, 0.1, 20.0, true, true, &pal);
+        let outline = rgba(rgb(255, 255, 255), 0.2);
+        // The part before the tab runs to the right margin, 24 points wide as `rightMarginFor...`
+        // says (`MIN:848-870`), and up its side; nothing after.
+        assert!(f.quads.iter().any(|q| q.color == outline && q.rect == Rect { x: 0.0, y: 33.0, w: 126.0, h: 1.0 }), "the bar-side line up to the margin");
+        assert!(f.quads.iter().any(|q| q.color == outline && q.rect == Rect { x: 125.0, y: 10.0, w: 1.0, h: 23.0 }), "the side at the margin");
+        assert_eq!(f.quads.iter().filter(|q| q.color == outline).count(), 2, "no part after");
+        // The end inset is the bar color (the selected tab's), not the tinted unselected one.
+        let far = bar.cells[0].2.x + bar.cells[0].2.w;
+        assert!(f.quads.iter().any(|q| q.rect == Rect { x: far, y: 10.0, w: 150.0 - far, h: 24.0 } && q.color == rgba(rgb(0, 0, 0), 1.0)), "the end inset in the bar color");
+        assert!(!f.quads.iter().any(|q| q.rect.x == far && q.color == rgba(rgb(13, 13, 13), 1.0)), "not the tinted unselected color");
+        // A bottom bar mirrors it along its top edge.
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 2, &tab_layout::Bar { position: TabPosition::Bottom, ..bar.clone() }, area, 1.0, 0.1, 20.0, true, true, &pal);
+        assert!(f.quads.iter().any(|q| q.color == outline && q.rect == Rect { x: 0.0, y: 10.0, w: 126.0, h: 1.0 }), "the bottom bar's top line up to the margin");
+        assert!(f.quads.iter().any(|q| q.color == outline && q.rect == Rect { x: 125.0, y: 11.0, w: 1.0, h: 23.0 }), "the bottom bar's side at the margin");
+        assert_eq!(f.quads.iter().filter(|q| q.color == outline).count(), 2, "no part after, in a bottom bar");
+        // One tab in all (cells plus the overflow menu are all counted): never a notch when it is
+        // the only tab, but a shown selected tab beside a collapsed one is not alone.
+        let built = tab_layout::build(&items, 0, 400.0, 0.0, None, &s, &six);
+        let mut alone = Frame::default();
+        tab_bar(&mut alone, &looks[..1], 0, &tab_layout::Bar { cells: built.cells[..1].to_vec(), hidden: vec![], ..built.clone() }, Rect { w: 400.0, ..area }, 1.0, 0.1, 20.0, true, false, &palette(TabStyle::Minimal, &Inputs { tabs: 1, ..inputs }));
+        assert!(alone.quads.iter().any(|q| q.color == outline), "one tab in a top bar: the outline");
+        let mut beside = Frame::default();
+        tab_bar(&mut beside, &looks, 0, &tab_layout::Bar { cells: built.cells[..1].to_vec(), hidden: vec![], ..built.clone() }, Rect { w: 400.0, ..area }, 1.0, 0.1, 20.0, true, false, &pal);
+        assert!(beside.quads.iter().any(|q| q.color == outline), "one shown tab of three: a notch");
+    }
+
+    /// A side bar with the selected tab in the overflow menu draws the "above" outline as
+    /// `drawOutlineAboveSelectedTabInVerticalTabBar` does with the overflow row as the tab
+    /// (`MIN:890-911`, `:932-934`): the inner-edge line down to the overflow row and the line across
+    /// it; nothing under it.
+    #[test]
+    fn minimal_notch_with_the_selected_row_in_overflow() {
+        use crate::tab_layout;
+        use crate::tab_position::TabPosition;
+        let (looks, items, s, pal, _) = overflow_setup();
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        let fixed = tab_layout::Settings { prefs: tab_layout::Prefs { scrollable: false, ..s.prefs }, ..s.clone() };
+        let mut bar = tab_layout::build_vertical(&items, 120.0, 60.0, 0.0, None, &fixed, &six);
+        assert_eq!((bar.cells.len(), bar.hidden.clone()), (1, vec![1, 2]), "one row shows, the rest are in the menu");
+        let row = bar.overflow.expect("the overflow row");
+        assert_eq!(row.y, 36.0);
+        let area = Rect { x: 0.0, y: 10.0, w: 120.0, h: 60.0 };
+        let outline = rgba(rgb(255, 255, 255), 0.2);
+        for (position, edge_x) in [(TabPosition::Left, 119.0), (TabPosition::Right, 0.0)] {
+            bar.position = position;
+            let mut f = Frame::default();
+            tab_bar_vertical(&mut f, &looks, 2, &bar, area, 1.0, 0.1, 20.0, true, true, &pal);
+            let lines: Vec<Rect> = f.quads.iter().filter(|q| q.color == outline).map(|q| q.rect).collect();
+            assert_eq!(lines, vec![Rect { x: edge_x, y: 10.0, w: 1.0, h: 36.0 }, Rect { x: 0.0, y: 46.0, w: 120.0, h: 1.0 }], "{position:?}: the edge down to the overflow row and the line across it");
+        }
+    }
 
     /// A flashing bar over the sessions: its boxes over theirs at the bar's alpha, its text
     /// blended from the sessions' background, their text behind it cut out only while the
@@ -2912,7 +4075,7 @@ mod tests {
         let area = Rect { x: 0.0, y: 0.0, w: 150.0, h: 100.0 };
         let bar = tab_layout::build_vertical(&inputs, 150.0, 100.0, 0.0, None, &s, &six);
         let mut f = Frame::default();
-        let (rects, chips) = tab_bar_vertical(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false);
+        let (rects, chips) = tab_bar_vertical(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false, &legacy());
         let row = |y: f32| Rect { x: 0.0, y, w: 150.0, h: 24.0 };
         assert_eq!(rects, vec![row(0.0), row(24.0), row(48.0)]);
         assert!(chips.is_empty());
@@ -2936,7 +4099,7 @@ mod tests {
         // shows its bottom 18 pixels, its text cut to the bar.
         let bar = tab_layout::build_vertical(&inputs, 150.0, 100.0, 30.0, None, &s, &six);
         let mut f = Frame::default();
-        let (rects, _) = tab_bar_vertical(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false);
+        let (rects, _) = tab_bar_vertical(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false, &legacy());
         assert_eq!(rects[0], Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
         assert_eq!(rects[1], row(-6.0));
         assert_eq!(rects[2], row(18.0));
@@ -2948,7 +4111,7 @@ mod tests {
         let fixed = tab_layout::Settings { prefs: tab_layout::Prefs { scrollable: false, ..s.prefs }, ..s.clone() };
         let bar = tab_layout::build_vertical(&inputs, 150.0, 60.0, 0.0, None, &fixed, &six);
         let mut f = Frame::default();
-        let (rects, _) = tab_bar_vertical(&mut f, &looks, 1, &bar, Rect { h: 60.0, ..area }, 1.0, 0.1, 20.0, true, false);
+        let (rects, _) = tab_bar_vertical(&mut f, &looks, 1, &bar, Rect { h: 60.0, ..area }, 1.0, 0.1, 20.0, true, false, &legacy());
         assert_eq!(rects[0], row(0.0));
         assert_eq!((rects[1].h, rects[2].h), (0.0, 0.0), "in the overflow menu");
         assert!(f.rows.iter().any(|r| r.y >= 36.0 && r.spans.iter().any(|s| s.icon && s.text == TAB_OVERFLOW_GLYPH.to_string())), "the button");
@@ -2995,7 +4158,7 @@ mod tests {
         let area = Rect { x: 0.0, y: 0.0, w: 600.0, h: 24.0 };
         let bar = tab_layout::build(&inputs(false), 2, 600.0, 0.0, None, &s, &six);
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks(false), 2, &bar, area, 1.0, 0.1, 20.0, true, false);
+        tab_bar(&mut f, &looks(false), 2, &bar, area, 1.0, 0.1, 20.0, true, false, &legacy());
         let chip = bar.chips[0].1;
         let (t0, t1) = (bar.cells[0].2, bar.cells[1].2);
         let has = |f: &Frame, rect: Rect| f.quads.iter().any(|q| q.rect == rect && q.color == rgba(orange, 1.0));
@@ -3015,14 +4178,14 @@ mod tests {
         // The side bar returns the chip with its group id.
         let side = Rect { x: 0.0, y: 0.0, w: 150.0, h: 200.0 };
         let vbar = tab_layout::build_vertical(&inputs(false), 150.0, 200.0, 0.0, None, &s, &six);
-        let (rects, chips) = tab_bar_vertical(&mut Frame::default(), &looks(false), 2, &vbar, side, 1.0, 0.1, 20.0, true, false);
+        let (rects, chips) = tab_bar_vertical(&mut Frame::default(), &looks(false), 2, &vbar, side, 1.0, 0.1, 20.0, true, false, &legacy());
         assert_eq!(chips, vec![(Rect { x: 0.0, y: 0.0, w: 150.0, h: 24.0 }, "g".to_string())]);
         assert_eq!(rects[0].y, 24.0, "the run's first tab is under its chip");
 
         // Collapsed: both tabs hidden, the chip drawn with "g  2" and the chevron.
         let bar = tab_layout::build(&inputs(true), 2, 600.0, 0.0, None, &s, &six);
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks(true), 2, &bar, area, 1.0, 0.1, 20.0, true, false);
+        tab_bar(&mut f, &looks(true), 2, &bar, area, 1.0, 0.1, 20.0, true, false, &legacy());
         let chip = bar.chips[0].1;
         assert!(has(&f, Rect { x: chip.x, y: 0.0, w: chip.w, h: 23.0 }), "the collapsed block");
         assert!(f.rows.iter().any(|r| r.spans.iter().any(|s| s.text == "g  2" && s.bold)), "the label");
@@ -3035,7 +4198,7 @@ mod tests {
         assert!(accent(&f).is_empty());
         let joining = tab_layout::Bar { join: Some("g".into()), ..bar.clone() };
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks(true), 2, &joining, area, 1.0, 0.1, 20.0, true, false);
+        tab_bar(&mut f, &looks(true), 2, &joining, area, 1.0, 0.1, 20.0, true, false, &legacy());
         let frame = accent(&f);
         assert_eq!(frame.len(), 4, "{frame:?}");
         assert!(frame.contains(&Rect { x: chip.x + chip.w - 1.0, y: 0.0, w: 2.0, h: 24.0 }), "the right edge: {frame:?}");
@@ -3043,14 +4206,14 @@ mod tests {
         // Another group's id frames nothing; an expanded group is never a join target.
         let other = tab_layout::Bar { join: Some("h".into()), ..bar.clone() };
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks(true), 2, &other, area, 1.0, 0.1, 20.0, true, false);
+        tab_bar(&mut f, &looks(true), 2, &other, area, 1.0, 0.1, 20.0, true, false, &legacy());
         assert!(accent(&f).is_empty());
         let expanded = tab_layout::Bar { join: Some("g".into()), ..tab_layout::build(&inputs(false), 2, 600.0, 0.0, None, &s, &six) };
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks(false), 2, &expanded, area, 1.0, 0.1, 20.0, true, false);
+        tab_bar(&mut f, &looks(false), 2, &expanded, area, 1.0, 0.1, 20.0, true, false, &legacy());
         assert!(accent(&f).is_empty());
         let vbar = tab_layout::build_vertical(&inputs(true), 150.0, 200.0, 0.0, None, &s, &six);
-        let (rects, chips) = tab_bar_vertical(&mut Frame::default(), &looks(true), 2, &vbar, side, 1.0, 0.1, 20.0, true, false);
+        let (rects, chips) = tab_bar_vertical(&mut Frame::default(), &looks(true), 2, &vbar, side, 1.0, 0.1, 20.0, true, false, &legacy());
         let zero = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
         assert_eq!((rects[0], rects[1]), (zero, zero), "hidden tabs are zero-size");
         assert_eq!(rects[2].y, 24.0);
@@ -3083,7 +4246,7 @@ mod tests {
         let area = Rect { x: 0.0, y: 10.0, w: 800.0, h: 48.0 };
         let px = |r: Rect| Rect { x: area.x + r.x * 2.0, y: area.y + r.y * 2.0, w: r.w * 2.0, h: r.h * 2.0 };
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks, 1, &bar, area, 2.0, 0.1, 20.0, true, false);
+        tab_bar(&mut f, &looks, 1, &bar, area, 2.0, 0.1, 20.0, true, false, &legacy());
 
         assert!(f.quads.iter().any(|q| q.rect == px(bar.cells[1].2) && q.color == rgba(TAB_ACTIVE, 1.0)), "the active tab's background");
         let glyph = |c: char| f.rows.iter().filter(move |r| r.spans.iter().any(|s| s.icon && s.text == c.to_string()));
@@ -3126,7 +4289,7 @@ mod tests {
         let uin: Vec<TabInput> = ul.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: 0, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() }).collect();
         let bar = tab_layout::build(&uin, 0, 400.0, 0.0, None, &html, &six);
         let mut f = Frame::default();
-        tab_bar(&mut f, &ul, 0, &bar, area, 2.0, 0.1, 20.0, true, false);
+        tab_bar(&mut f, &ul, 0, &bar, area, 2.0, 0.1, 20.0, true, false, &legacy());
         let ab = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "ab")).expect("the run");
         assert!(f.quads.iter().any(|q| q.rect.h == 1.0 && q.rect.w == 24.0 && q.rect.x == ab.x), "{:?}", f.quads);
 
@@ -3137,7 +4300,7 @@ mod tests {
         let bar = tab_layout::build(&sin, 0, 400.0, 0.0, None, &tall, &six);
         let area = Rect { x: 0.0, y: 0.0, w: 800.0, h: 56.0 };
         let mut f = Frame::default();
-        tab_bar(&mut f, &st, 0, &bar, area, 2.0, 0.1, 20.0, true, false);
+        tab_bar(&mut f, &st, 0, &bar, area, 2.0, 0.1, 20.0, true, false, &legacy());
         let t = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "t")).unwrap();
         let sub = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "sub")).unwrap();
         assert_eq!(t.y, ((56.0 - 22.0_f32) / 2.0).floor() - 10.0);
@@ -3158,7 +4321,7 @@ mod tests {
         assert_eq!(bar.cells[5].2.x, 500.0);
         let area = Rect { x: 0.0, y: 0.0, w: 600.0, h: 24.0 };
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks, 5, &bar, area, 1.0, 0.1, 20.0, true, false);
+        tab_bar(&mut f, &looks, 5, &bar, area, 1.0, 0.1, 20.0, true, false, &legacy());
         let add = bar.add.unwrap();
         assert_eq!(add.x, 576.0);
         let active = f.quads.iter().find(|q| q.color == rgba(TAB_ACTIVE, 1.0)).expect("the active tab");
@@ -3187,7 +4350,7 @@ mod tests {
         // while its menu is open is the same in the text color (`PSMOverflowPopUpButton`).
         for (down, color) in [(false, TAB_TEXT_DIM), (true, TAB_TEXT)] {
             let mut f = Frame::default();
-            tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, true, down);
+            tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, true, down, &legacy());
             let chevrons: Vec<&TextRow> = f.rows.iter().filter(|r| r.spans.iter().any(|s| s.icon && s.text == TAB_OVERFLOW_GLYPH.to_string())).collect();
             assert_eq!(chevrons.len(), 2, "two chevrons");
             assert!(chevrons[0].x < chevrons[1].x);
@@ -3210,7 +4373,7 @@ mod tests {
         let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 24.0 };
         let close_color = |key: bool| {
             let mut f = Frame::default();
-            tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, key, false);
+            tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, key, false, &legacy());
             let row = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == TAB_CLOSE_GLYPH.to_string())).expect("the close button");
             row.spans[0].color
         };
@@ -3220,11 +4383,11 @@ mod tests {
         let close = bar.cells[1].1.close.unwrap();
         let shade = rgba(blend(TAB_BAR, TAB_TEXT_DIM, TAB_CLOSE_PRESSED), 1.0);
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, true, false);
+        tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, true, false, &legacy());
         assert!(!f.quads.iter().any(|q| q.color == shade), "not held");
         let held: Vec<TabLook> = looks.iter().cloned().enumerate().map(|(i, l)| TabLook { close_pressed: i == 1, ..l }).collect();
         let mut f = Frame::default();
-        tab_bar(&mut f, &held, 0, &bar, area, 1.0, 0.1, 20.0, true, false);
+        tab_bar(&mut f, &held, 0, &bar, area, 1.0, 0.1, 20.0, true, false, &legacy());
         assert!(f.quads.iter().any(|q| q.color == shade && q.rect == close), "{:?}", f.quads);
     }
 
@@ -3241,7 +4404,7 @@ mod tests {
         assert_eq!(cell.w, PINNED_TAB_WIDTH);
         let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 24.0 };
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false);
+        tab_bar(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false, &legacy());
         let in_cell = |r: &&TextRow| cell.contains(r.x, r.y + 1.0);
         let pins: Vec<&TextRow> = f.rows.iter().filter(|r| r.spans.iter().any(|s| s.icon && s.text == PIN_GLYPH.to_string())).collect();
         assert_eq!(pins.len(), 1, "one pin");
@@ -3252,7 +4415,7 @@ mod tests {
         // The pin at iTerm2's alpha 0.6 in a key window, 0.3 otherwise.
         assert_eq!(pins[0].spans[0].color, blend(TAB_BAR, TAB_TEXT_DIM, 0.6));
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, false, false);
+        tab_bar(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, false, false, &legacy());
         let pin = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == PIN_GLYPH.to_string())).unwrap();
         assert_eq!(pin.spans[0].color, blend(TAB_BAR, TAB_TEXT_DIM, 0.3));
 
@@ -3260,7 +4423,7 @@ mod tests {
         let mut f = Frame::default();
         let side = Rect { x: 0.0, y: 0.0, w: 150.0, h: 100.0 };
         let vbar = tab_layout::build_vertical(&inputs, 150.0, 100.0, 0.0, None, &s, &six);
-        let (rects, _) = tab_bar_vertical(&mut f, &looks, 1, &vbar, side, 1.0, 0.1, 20.0, true, false);
+        let (rects, _) = tab_bar_vertical(&mut f, &looks, 1, &vbar, side, 1.0, 0.1, 20.0, true, false, &legacy());
         let pin = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == PIN_GLYPH.to_string())).expect("the pin");
         assert_eq!(pin.x, rects[0].x + 6.0);
         let vim = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "vim")).expect("the whole title");
@@ -3272,7 +4435,7 @@ mod tests {
         let bar = tab_layout::build(&icon_inputs(&iconed), 1, 400.0, 0.0, None, &s, &six);
         let cell = bar.cells[0].2;
         let mut f = Frame::default();
-        tab_bar(&mut f, &iconed, 1, &bar, area, 1.0, 0.1, 20.0, true, false);
+        tab_bar(&mut f, &iconed, 1, &bar, area, 1.0, 0.1, 20.0, true, false, &legacy());
         assert!(!f.rows.iter().any(|r| r.spans.iter().any(|s| s.text == PIN_GLYPH.to_string())), "no pin");
         let texts: Vec<String> = f.rows.iter().filter(|r| cell.contains(r.x, r.y + 1.0)).map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
         assert_eq!(texts, vec!["V".to_string()], "the icon's letter only, no title");
@@ -3316,7 +4479,7 @@ mod tests {
         let (c0, c1) = (bar.cells[0].2, bar.cells[1].2);
         let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 24.0 };
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false);
+        tab_bar(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false, &legacy());
         // The letter: a circle 1 point inside the 16-point box 6 points in (radius half its
         // side), the letter bold in the bar's color centered on it.
         let circle = Rect { x: c0.x + 7.0, y: 5.0, w: 14.0, h: 14.0 };
@@ -3336,7 +4499,7 @@ mod tests {
         assert!(title.x > c1.x + 6.0 + 16.0, "a short title stays centered, clear of the icon");
         // At 2 pixels a point the picture is 32 pixels square.
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks, 1, &bar, Rect { x: 0.0, y: 0.0, w: 800.0, h: 48.0 }, 2.0, 0.2, 40.0, true, false);
+        tab_bar(&mut f, &looks, 1, &bar, Rect { x: 0.0, y: 0.0, w: 800.0, h: 48.0 }, 2.0, 0.2, 40.0, true, false, &legacy());
         assert_eq!(f.images[0].rect, Rect { x: 2.0 * c1.x + 12.0, y: 8.0, w: 32.0, h: 32.0 });
 
         // A long title is truncated after the icon's room, 16 + 4 + 2 (`YS:1117`), not the
@@ -3346,7 +4509,7 @@ mod tests {
             let looks = vec![TabLook { title: long.clone(), number: 1, icon_image: image, ..TabLook::default() }, TabLook { title: "b".into(), number: 2, ..TabLook::default() }];
             let bar = tab_layout::build(&icon_inputs(&looks), 1, 400.0, 0.0, None, &s, &six);
             let mut f = Frame::default();
-            tab_bar(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false);
+            tab_bar(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false, &legacy());
             let row = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text.starts_with("a title"))).expect("the title");
             row.x - bar.cells[0].2.x
         };
@@ -3357,10 +4520,10 @@ mod tests {
         // button's); in a window that is not key the close button is half and so is the icon.
         let hover = tab_layout::build(&icon_inputs(&looks), 1, 400.0, 0.0, Some(1), &s, &six);
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks, 1, &hover, area, 1.0, 0.1, 20.0, true, false);
+        tab_bar(&mut f, &looks, 1, &hover, area, 1.0, 0.1, 20.0, true, false, &legacy());
         assert!(f.images.is_empty());
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks, 1, &hover, area, 1.0, 0.1, 20.0, false, false);
+        tab_bar(&mut f, &looks, 1, &hover, area, 1.0, 0.1, 20.0, false, false, &legacy());
         assert_eq!(f.images[0].key, (42, 127));
         assert_eq!(f.images[0].pixels[3], 5, "alpha 9 at half");
 
@@ -3368,7 +4531,7 @@ mod tests {
         let side = Rect { x: 0.0, y: 0.0, w: 150.0, h: 100.0 };
         let vbar = tab_layout::build_vertical(&icon_inputs(&looks), 150.0, 100.0, 0.0, None, &s, &six);
         let mut f = Frame::default();
-        let (rects, _) = tab_bar_vertical(&mut f, &looks, 1, &vbar, side, 1.0, 0.1, 20.0, true, false);
+        let (rects, _) = tab_bar_vertical(&mut f, &looks, 1, &vbar, side, 1.0, 0.1, 20.0, true, false, &legacy());
         assert_eq!(f.images[0].rect, Rect { x: rects[1].x + 6.0, y: rects[1].y + 4.0, w: 16.0, h: 16.0 });
         assert!(vbar.cells.iter().all(|(_, l, r)| l.label.x >= r.x + 26.0));
     }
@@ -3385,7 +4548,7 @@ mod tests {
         let cell = bar.cells[1].2;
         let back = |looks: &[TabLook]| {
             let mut f = Frame::default();
-            tab_bar(&mut f, looks, 0, &bar, area, 1.0, 0.1, 20.0, true, false);
+            tab_bar(&mut f, looks, 0, &bar, area, 1.0, 0.1, 20.0, true, false, &legacy());
             f.quads.iter().any(|q| q.rect == cell && q.color == rgba(TAB_BAR, 1.0))
         };
         assert!(!back(&looks), "an inactive tab draws on the bar");
@@ -3657,5 +4820,67 @@ mod tests {
         pane_with(&mut plain, &s, RECT, CELL, true, true, Some(&hl(false)));
         assert!(key_row(&plain).is_none());
         assert!(plain.quads.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0)), "the cursor otherwise");
+    }
+    #[test]
+    fn picker_hits_follow_iterm2() {
+        let cell = (10.0, 20.0);
+        let (fg, bg) = (rgb(0xee, 0xee, 0xee), rgb(0x10, 0x10, 0x10));
+        let pane = Rect { x: 10.0, y: 20.0, w: 400.0, h: 300.0 };
+        let mut f = Frame::default();
+        let r = session_picker_button(&mut f, pane, "Link this session to AI chat?", fg, bg, cell, 1.0);
+        assert!(((r.x + r.w / 2.0) - (pane.x + pane.w / 2.0)).abs() < 1.0, "centered across");
+        assert!(((r.y + r.h / 2.0) - (pane.y + pane.h / 2.0)).abs() < 1.0, "centered down");
+        let label_w = "Link this session to AI chat?".chars().count() as f32 * cell.0;
+        assert!(r.w > label_w, "wider than the label: {} vs {label_w}", r.w);
+        assert!(r.w < pane.w, "and narrower than this pane");
+        assert!(r.h >= cell.1, "tall enough for a row");
+        assert!(f.popups.iter().any(|q| q.rect == r), "the box is a popup, drawn under the text");
+        assert!(f.overlay.is_empty(), "nothing goes in the overlay, which draws over text");
+        assert_eq!(f.rows.len(), 1, "one label");
+        let row = &f.rows[0];
+        assert_eq!(row.spans.iter().map(|s| s.text.as_str()).collect::<String>(), "Link this session to AI chat?");
+        assert!(row.x >= r.x && row.x + label_w <= r.x + r.w, "the label sits inside its box");
+        // A pane narrower than the label: the box never spills over.
+        let narrow = Rect { x: 0.0, y: 0.0, w: 120.0, h: 60.0 };
+        let mut g = Frame::default();
+        let r = session_picker_button(&mut g, narrow, "Link this session to AI chat?", fg, bg, cell, 1.0);
+        assert!(r.w <= narrow.w && r.x >= narrow.x && r.x + r.w <= narrow.x + narrow.w, "kept inside the pane");
+        assert!(r.h <= narrow.h);
+    }
+
+    /// A fixed markdown document laid out with a fixed measure, for the extraction test.
+    fn sample_lines() -> Vec<crate::porthole::render::VisualLine> {
+        use crate::porthole::{detect::Language, render};
+        let md = "# Title\n\nSome *prose* with a [link](https://x.example/a) that wraps over more than one line of the narrow text.\n\n```rust\nfn main() {}\n```\n\n---\n\n- one\n- two\n";
+        let doc = render::render(md, &Language::Markdown, &crate::palette::Palette::default(), true);
+        let measure = |t: &str, _f: render::Face, s: f32| t.chars().count() as f32 * 8.0 * s;
+        render::layout(&doc, 220.0, 16.0, &measure, false).lines
+    }
+
+    fn digest(f: &Frame) -> u64 {
+        // FNV-1a over the frame's quads and rows.
+        let text = format!("{:?}{:?}", f.quads, f.rows);
+        text.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3))
+    }
+
+    #[test]
+    fn doc_lines_draw_as_the_porthole_did() {
+        let lines = sample_lines();
+        let rect = Rect { x: 10.0, y: 20.0, w: 260.0, h: 300.0 };
+        let chrome = PortholeChrome { fg: rgb(200, 200, 200), bg: rgb(20, 20, 20), language: "Markdown", wide: false, scroll_x: 0.0 };
+        let marks = [(Rect { x: 8.0, y: 0.0, w: 40.0, h: 16.0 }, rgb(255, 230, 0), 0.5)];
+        let mut whole = Frame::default();
+        porthole(&mut whole, rect, rect, &lines, &marks, &chrome, (8.0, 16.0));
+        // Before the extraction this exact frame came out of `porthole` alone; its digest was taken
+        // from that code and the extraction must keep it.
+        assert_eq!((whole.quads.len(), whole.rows.len(), digest(&whole)), GOLDEN, "the porthole's frame changed");
+        // The same frame in two steps: the chrome with no lines, then the lines by `doc_lines`.
+        let mut parts = Frame::default();
+        porthole(&mut parts, rect, rect, &[], &[], &chrome, (8.0, 16.0));
+        let inner = Rect { x: rect.x + 4.0, y: rect.y + 4.0 + 16.0, w: rect.w - 8.0, h: rect.h - 8.0 - 16.0 };
+        let back = blend(chrome.bg, rgb(128, 128, 128), 0.2);
+        doc_lines(&mut parts, (rect.x + PORTHOLE_MARGIN, rect.y + PORTHOLE_MARGIN + 16.0), &lines, &marks, inner, (inner.x, inner.w), back, chrome.fg);
+        assert_eq!(parts.quads, whole.quads);
+        assert_eq!(parts.rows, whole.rows);
     }
 }

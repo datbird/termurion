@@ -1993,6 +1993,131 @@ mod tests {
     }
 
     #[test]
+    fn darkness_rows_follow_iterm2() {
+        for (key, kind, default, label) in [
+            ("LightModeInactiveTabDarkness", Kind::Float, Value::Float(0.07), "Darkness (in [0\u{2026}1]) for non-selected tabs in non-Minimal theme in light mode."),
+            ("DarkModeInactiveTabDarkness", Kind::Float, Value::Float(0.5), "Darkness (in [0\u{2026}1]) for non-selected tabs in non-Minimal theme in dark mode."),
+            ("HighVisibility", Kind::Bool, Value::Boolean(true), "High Contrast modes maximize visibility."),
+        ] {
+            let row = schema::find_global(key).unwrap();
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.label, label, "{key}");
+        }
+    }
+
+    #[test]
+    fn colored_rows_follow_iterm2() {
+        for (key, label) in [
+            ("ColoredSelectedTabOutlineStrength", "How prominent should the outline around the selected tab be drawn when there are colored tabs in a window?"),
+            ("ColoredUnselectedTabTextProminence", "How prominent should the text in a non-selected tab be when there are colored tabs in a window?"),
+        ] {
+            let row = schema::find_global(key).unwrap();
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"), "{key}");
+            assert_eq!(row.kind, Kind::Float, "{key}");
+            assert_eq!(row.default, Some(Value::Float(0.5)), "{key}");
+            assert_eq!(row.label, label, "{key}");
+        }
+    }
+
+    #[test]
+    fn divider_row_follows_iterm2() {
+        let row = schema::find_global("MinimalSplitPaneDividerProminence").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"));
+        assert_eq!(row.kind, Kind::Float);
+        assert_eq!(row.default, Some(Value::Float(0.15)));
+        assert_eq!(row.label, "In the Minimal theme, how prominent should split pane dividers be?");
+    }
+
+    #[test]
+    fn compact_rows_follow_iterm2() {
+        for (key, section, default, label) in [
+            ("CompactMinimalTabBarHeight", "Tabs", 38.0, "Tab bar height (points) for the Minimal theme."),
+            ("ExtraSpaceBeforeCompactTopTabBar", "Windows", 0.0, "Amount of extra space (in points) between stoplight buttons and inline tab bar."),
+            ("CompactTabBarStoplightButtonsWidth", "Windows", 75.0, "Width (in points) reserved for the window buttons (close/minimize/zoom) before the inline tab bar."),
+        ] {
+            let row = schema::find_global(key).unwrap();
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
+            assert_eq!(row.kind, Kind::Float, "{key}");
+            assert_eq!(row.default, Some(Value::Float(default)), "{key}");
+            assert_eq!(row.label, label, "{key}");
+            assert!(section != "Windows" || row.help.contains("On Windows"), "{key}: the help adds the Windows note");
+        }
+    }
+
+    #[test]
+    fn window_name_row_follows_iterm2() {
+        let row = schema::find_global("ShowWindowNameBesideTabs").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Windows"));
+        assert_eq!(row.kind, Kind::Enum);
+        assert_eq!(row.default, Some(Value::Integer(1)));
+        assert_eq!(row.label, "Show the window name beside the tabs in the Compact and Minimal themes?");
+        let choices: Vec<(Value, &str)> = row.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
+        assert_eq!(choices, [(Value::Integer(0), "Never"), (Value::Integer(1), "When a custom name is set"), (Value::Integer(2), "Always")]);
+    }
+
+    #[test]
+    fn drag_region_rows_follow_iterm2() {
+        for (key, label, default) in [
+            ("MinimalEdgeDragSize", "In the Minimal theme, you can move the window by dragging starting in a region on the edge near the window border. This gives the size of that region.", Value::Float(12.0)),
+            ("CompactEdgeDragSize", "In the Compact theme, you can move the window by dragging starting in a region on the edge near the window border. This gives the size of that region.", Value::Float(10.0)),
+            ("ConvertTabDragToWindowDragForSolitaryTabInCompactOrMinimalTheme", "In the Minimal and Compact themes when there is a single tab and the tab bar is visible, should dragging the tab bar move the window?", Value::Boolean(true)),
+        ] {
+            let row = schema::find_global(key).unwrap();
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"), "{key}");
+            assert_eq!(row.kind, if matches!(default, Value::Boolean(_)) { Kind::Bool } else { Kind::Float }, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.label, label, "{key}");
+        }
+    }
+
+    #[test]
+    fn minimal_rows_follow_iterm2() {
+        for (key, label, default) in [
+            ("MinimalTabStyleBackgroundColorDifference", "In the Minimal theme, how different should the background color of the selected tab be from the others?", Value::Float(0.05)),
+            ("MinimalTabStyleOutlineStrength", "In the Minimal theme, how prominent should the tab outline be?", Value::Float(0.2)),
+            ("MinimalTextLegibilityAdjustment", "How much should contrast be increased for text in tabs in the Minimal theme?", Value::Float(1.0)),
+            ("MinimalTabStyleTreatLeftInsetAsPartOfFirstTab", "In the Minimal theme, should the area left of the tab bar be treated as part of the first tab?", Value::Boolean(false)),
+            ("MinimalSelectedTabUnderlineProminence", "Prominence of selected tab underline indicator in the Minimal theme when there is at least one colored tab.", Value::Float(1.0)),
+            ("MinimalDeslectedColoredTabAlpha", "Alpha value for tab color for non-selected colored tabs in the Minimal theme.", Value::Float(0.5)),
+        ] {
+            let row = schema::find_global(key).unwrap();
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"), "{key}");
+            assert_eq!(row.kind, if matches!(default, Value::Boolean(_)) { Kind::Bool } else { Kind::Float }, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.label, label, "{key}");
+        }
+    }
+
+    #[test]
+    fn theme_row_follows_iterm2() {
+        let row = schema::find_global("TabStyleWithAutomaticOption").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "General"));
+        assert_eq!(row.kind, Kind::Enum);
+        assert_eq!(row.default, Some(Value::Integer(4)));
+        assert_eq!(row.label, "Theme:");
+        let choices: Vec<(Value, &str)> = row.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
+        assert_eq!(
+            choices,
+            [
+                (Value::Integer(4), "Regular"),
+                (Value::Integer(5), "Minimal"),
+                (Value::Integer(6), "Compact"),
+                (Value::Integer(0), "Light"),
+                (Value::Integer(1), "Dark"),
+                (Value::Integer(2), "Light (High Contrast)"),
+                (Value::Integer(3), "Dark (High Contrast)"),
+            ]
+        );
+        // The first row of Appearance > General, before the tab bar location and the status bar.
+        let general: Vec<&str> = schema::global().iter().filter(|s| s.tab == "Appearance" && s.section == "General").map(|s| s.key.as_str()).collect();
+        assert_eq!(general.first(), Some(&"TabStyleWithAutomaticOption"));
+        let pos = |k: &str| general.iter().position(|g| *g == k).unwrap();
+        assert!(pos("TabStyleWithAutomaticOption") < pos("TabViewType") && pos("TabViewType") < pos("StatusBarPosition"));
+    }
+
+    #[test]
     fn tab_position_rows_follow_iterm2() {
         let row = schema::find_global("TabViewType").unwrap();
         assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "General"));

@@ -242,7 +242,7 @@ impl App {
     fn open_replay_panel(&mut self, event_loop: &ActiveEventLoop) {
         let ticks = self.focused_id().and_then(|id| self.panes.get(&id)).map(|p| p.dvr.timestamps()).unwrap_or_default();
         let Some(g) = self.gpu.as_ref() else { return };
-        match ReplayWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, ticks) {
+        match ReplayWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, ticks, crate::tab_theme::forced_dark(self.tab_style())) {
             Ok(mut w) => {
                 if let Some(at) = self.replay_panel_origin(w.outer_size()) {
                     w.place(at);

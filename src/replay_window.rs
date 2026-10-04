@@ -64,6 +64,7 @@ impl ReplayWindow {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         ticks: Vec<i64>,
+        forced: Option<bool>,
     ) -> Result<ReplayWindow, String> {
         use winit::platform::windows::WindowAttributesExtWindows;
         let (w, h) = replay_panel::SIZE;
@@ -79,13 +80,17 @@ impl ReplayWindow {
             .with_min_inner_size(winit::dpi::LogicalSize::new(replay_panel::MIN_WIDTH as f64, h as f64))
             .with_max_inner_size(winit::dpi::LogicalSize::new(100_000.0, h as f64));
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
-        let dark = host.window.theme().is_none_or(|t| t == winit::window::Theme::Dark);
-        host.ctx().set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+        host.follow_theme(forced);
         if let Some(hwnd) = host.hwnd() {
             use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_NOACTIVATE};
             unsafe { SetWindowLongPtrW(hwnd as _, GWL_EXSTYLE, GetWindowLongPtrW(hwnd as _, GWL_EXSTYLE) | WS_EX_NOACTIVATE as isize) };
         }
         Ok(ReplayWindow { host, panel: Panel { export: Export::Normal, ticks_at_open: ticks }, slider: 1.0, shown: false })
+    }
+
+    /// Follows a forced appearance (`tab_theme::forced_dark`), or Windows' when `None`.
+    pub fn follow_theme(&self, forced: Option<bool>) {
+        self.host.follow_theme(forced);
     }
 
     pub fn id(&self) -> WindowId {

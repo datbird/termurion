@@ -468,6 +468,12 @@ impl Store {
         .map_err(err)
     }
 
+    /// (chat id, guid) of every chat with a linked terminal session, for the indicators and for a
+    /// closing pane; a blank guid is no link.
+    pub fn linked_sessions(&self) -> Result<Vec<(String, String)>, String> {
+        rows(&self.conn, "select uuid, sessionGuid from Chat where sessionGuid is not null and sessionGuid != ''", [], |row| Ok(Some((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))).map_err(err)
+    }
+
     pub fn chat(&self, id: &str) -> Result<Option<Chat>, String> {
         let found = rows(
             &self.conn,
@@ -799,6 +805,24 @@ mod tests {
 
     fn chat(id: &str, title: &str, t: f64) -> Chat {
         Chat { id: id.into(), ..Chat::new(title, t) }
+    }
+
+    #[test]
+    fn linked_sessions_lists_only_linked_chats() {
+        let mut store = Store::open_in_memory().unwrap();
+        let mut a = chat("A", "First", 1.0);
+        a.terminal_session_guid = Some("g1".into());
+        let mut b = chat("B", "Second", 2.0);
+        b.terminal_session_guid = Some(String::new());
+        let mut c = chat("C", "Third", 3.0);
+        c.terminal_session_guid = Some("g2".into());
+        c.browser_session_guid = Some("browser".into());
+        for x in [&a, &b, &c, &chat("D", "Fourth", 4.0)] {
+            store.add_chat(x).unwrap();
+        }
+        let mut got = store.linked_sessions().unwrap();
+        got.sort();
+        assert_eq!(got, vec![("A".to_string(), "g1".to_string()), ("C".to_string(), "g2".to_string())], "a blank guid is not a link; the browser guid is not a terminal link");
     }
 
     #[test]

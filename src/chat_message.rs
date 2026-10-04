@@ -535,7 +535,7 @@ fn payload_description(payload: &Payload) -> String {
 }
 
 /// A hosted tool's status update (`LLM.Message.StatusUpdate`).
-fn status_of(v: &Value) -> Option<Status> {
+pub(crate) fn status_of(v: &Value) -> Option<Status> {
     let (name, body) = one_key(v)?;
     let first = body.get("_0");
     Some(match name {

@@ -50,6 +50,15 @@ pub struct PromptWindow {
     hint: String,
     /// A lone OK (NSAlert's default): no Cancel, and Escape does nothing.
     ok_only: bool,
+    /// The default button's own label, when the caller names one ("Rename").
+    ok_label: Option<String>,
+    /// The text starts selected (a rename shows the old name selected).
+    select_all: bool,
+}
+
+/// The default button's label: the caller's, else "OK".
+fn ok_label_of(custom: Option<&str>) -> &str {
+    custom.unwrap_or("OK")
 }
 
 impl PromptWindow {
@@ -65,7 +74,7 @@ impl PromptWindow {
         initial: &str,
     ) -> Result<PromptWindow, String> {
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, title, 420.0, 130.0)?;
-        Ok(PromptWindow { host, label: label.into(), text: initial.into(), first: true, choices: Vec::new(), check: None, refuse_blank: false, extra: None, hint: String::new(), ok_only: false })
+        Ok(PromptWindow { host, label: label.into(), text: initial.into(), first: true, choices: Vec::new(), check: None, refuse_blank: false, extra: None, hint: String::new(), ok_only: false, ok_label: None, select_all: false })
     }
 
     /// Earlier entries, offered in a list under the text.
@@ -99,6 +108,23 @@ impl PromptWindow {
         self
     }
 
+    /// The default button's label (NSAlert's first button title).
+    pub fn with_ok_label(mut self, label: &str) -> PromptWindow {
+        self.ok_label = Some(label.into());
+        self
+    }
+
+    /// The text starts selected, so typing replaces it.
+    pub fn with_selected(mut self) -> PromptWindow {
+        self.select_all = true;
+        self
+    }
+
+    /// The default button's label now.
+    pub fn ok_label(&self) -> &str {
+        ok_label_of(self.ok_label.as_deref())
+    }
+
     /// The field's text now.
     pub fn text(&self) -> &str {
         &self.text
@@ -129,14 +155,23 @@ impl PromptWindow {
     /// Draws the window. Enter or OK gives the text; Escape or Cancel gives up.
     pub fn redraw(&mut self) -> PromptResult {
         let mut result = PromptResult::Open;
+        let ok_label = ok_label_of(self.ok_label.as_deref()).to_string();
+        let select_all = self.select_all;
         let (label, text, first, choices, check, refuse_blank, extra, hint, ok_only) = (&self.label, &mut self.text, &mut self.first, &self.choices, &mut self.check, self.refuse_blank, &self.extra, &self.hint, self.ok_only);
         self.host.paint(|ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.label(label.as_str());
                 let before = text.clone();
-                let r = ui.add(egui::TextEdit::singleline(text).hint_text(hint.as_str()).desired_width(f32::INFINITY));
+                let edit = egui::TextEdit::singleline(text).hint_text(hint.as_str()).desired_width(f32::INFINITY).show(ui);
+                let r = edit.response;
                 if *first {
                     r.request_focus();
+                    if select_all {
+                        let mut state = edit.state;
+                        let end = egui::text::CCursor::new(text.chars().count());
+                        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), end)));
+                        state.store(ui.ctx(), r.id);
+                    }
                     *first = false;
                 }
                 if !choices.is_empty() {
@@ -157,7 +192,7 @@ impl PromptWindow {
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let escape = !ok_only && ui.input(|i| i.key_pressed(egui::Key::Escape));
                 ui.horizontal(|ui| {
-                    if ui.button("OK").clicked() || enter {
+                    if ui.button(ok_label.as_str()).clicked() || enter {
                         if refuse_blank && text.trim().is_empty() {
                             unsafe { windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK) };
                         } else {
@@ -474,6 +509,12 @@ impl ConfirmWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ok_label_follows_the_caller() {
+        assert_eq!(ok_label_of(Some("Rename")), "Rename");
+        assert_eq!(ok_label_of(None), "OK");
+    }
 
     #[test]
     fn action_keys_follow_iterm2() {

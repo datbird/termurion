@@ -35,6 +35,18 @@ enum Source {
     Main,
 }
 
+/// What `finished_command` reads.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Finished {
+    pub mark: u32,
+    pub command: String,
+    pub directory: Option<String>,
+    pub host: Option<String>,
+    pub user: Option<String>,
+    /// None when the ended mark is no longer in the buffer.
+    pub output: Option<String>,
+}
+
 impl Screen {
     /// The row at grid line `line`; None past either end.
     fn tool_row(&self, line: i32, source: Source) -> Option<&Row<Cell>> {
@@ -263,6 +275,27 @@ impl Screen {
         Some(if n > OUTPUT_CAP { text.chars().skip(n - OUTPUT_CAP).collect() } else { text })
     }
 
+    /// A finished command for a chat that streams (`streamLastCommand`, `CVC:2401-2455`): the
+    /// ended mark's own command, directory, the host and user the shell reported, and its output
+    /// only while that mark is still a prompt in the buffer (ruling F32: `command_output` would
+    /// answer the last command's otherwise). None without a mark or a command text.
+    pub fn finished_command(&self, mark: Option<u32>) -> Option<Finished> {
+        let id = mark?;
+        let record = self.marks.records.get(&id).filter(|m| m.kind == Kind::Prompt)?;
+        if record.command.is_empty() {
+            return None;
+        }
+        let in_buffer = self.row_marks().iter().any(|(_, m)| *m == id);
+        Some(Finished {
+            mark: id,
+            command: record.command.clone(),
+            directory: record.directory.clone(),
+            host: self.shell.host.clone(),
+            user: self.shell.user.clone(),
+            output: if in_buffer { self.command_output(Some(id)) } else { None },
+        })
+    }
+
     /// The last command's exit status: None with no command mark, Some(None) while it runs.
     pub fn last_exit(&self) -> Option<Option<i32>> {
         self.last_command_mark().map(|m| m.code)
@@ -345,6 +378,43 @@ mod tests {
         s.feed(b"\x1b[?1000h");
         assert_eq!(s.screen_contents(None, "tui", None)["screen_contents"]["mouse_reporting"], true);
         assert!(s.newest_visible_change().is_some());
+    }
+
+    #[test]
+    fn a_finished_command_reads_its_own_mark() {
+        let mut s = Screen::new(20, 10);
+        s.feed(b"\x1b]7;file://box/home/me\x07");
+        s.feed(b"\x1b]1337;RemoteHost=me@box\x07");
+        run(&mut s, "ls");
+        s.feed(b"a\r\nb\r\n\x1b]133;D;0\x07");
+        let ls = s.marks.last_command.unwrap();
+        run(&mut s, "pwd");
+        s.feed(b"/home\r\n\x1b]133;D;0\x07");
+        let f = s.finished_command(Some(ls)).unwrap();
+        assert_eq!((f.mark, f.command.as_str(), f.output.as_deref()), (ls, "ls", Some("a\nb")), "the ended mark's own output, not the last command's");
+        assert_eq!((f.host.as_deref(), f.user.as_deref()), (Some("box"), Some("me")));
+        assert_eq!(f.directory.as_deref(), Some("/home/me"));
+        // A mark that is no longer in the buffer: the command is known if the record is, the
+        // output is not, and the last command's output is never substituted (F32).
+        let last = s.marks.last_command.unwrap();
+        s.marks.records.get_mut(&ls).unwrap().output_start = None;
+        assert_eq!(s.finished_command(Some(ls)).unwrap().output, None);
+        assert_eq!(s.finished_command(Some(last)).unwrap().output.as_deref(), Some("/home"));
+        assert_eq!(s.finished_command(Some(999)), None, "an unknown mark");
+        assert_eq!(s.finished_command(None), None, "no mark");
+        let scrolled = {
+            let mut t = Screen::with_scrollback(20, 3, 0);
+            run(&mut t, "first");
+            t.feed(b"one\r\n\x1b]133;D;0\x07");
+            let first = t.marks.last_command.unwrap();
+            for c in ["b", "c", "d", "e"] {
+                run(&mut t, c);
+                t.feed(b"x\r\n\x1b]133;D;0\x07");
+            }
+            (t.finished_command(Some(first)), t.command_output(Some(first)))
+        };
+        assert!(scrolled.0.is_none_or(|f| f.output.is_none()), "the scrolled-away mark has no output of its own");
+        assert!(scrolled.1.is_some(), "while command_output falls back to another command's (the reason for the rule)");
     }
 
     #[test]

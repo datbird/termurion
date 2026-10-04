@@ -66,6 +66,15 @@ pub struct Doc {
     pub blocks: Vec<Block>,
 }
 
+impl Doc {
+    /// The document as text: each block's runs joined, the blocks joined with a newline; a
+    /// rule is an empty line.
+    pub fn plain(&self) -> String {
+        let lines: Vec<String> = self.blocks.iter().map(|b| if b.rule { String::new() } else { b.runs.iter().map(|r| r.text.as_str()).collect() }).collect();
+        lines.join("\n")
+    }
+}
+
 pub fn render(text: &str, language: &Language, palette: &Palette, dark: bool) -> Doc {
     render_themed(text, language, palette, dark, &Theme::builtin(palette, dark))
 }
@@ -912,6 +921,18 @@ mod tests {
 
     fn run<'a>(doc: &'a Doc, s: &str) -> &'a Run {
         doc.blocks.iter().flat_map(|b| &b.runs).find(|r| r.text == s).unwrap_or_else(|| panic!("no run {s:?} in {doc:#?}"))
+    }
+
+    #[test]
+    fn plain_text_follows_the_doc() {
+        let p = Palette::default();
+        let doc = render("# T\n\nsome **bold** text\n\n- a\n- b", &Language::Markdown, &p, true);
+        let joined = doc.blocks.iter().map(text).collect::<Vec<_>>().join("\n");
+        assert_eq!(doc.plain(), joined);
+        assert_eq!(doc.plain(), "T\n\nsome bold text\n\n\u{2022} a\n\u{2022} b");
+        let ruled = Doc { blocks: vec![Block::new(0.0), Block { rule: true, ..Block::new(0.0) }] };
+        assert_eq!(ruled.plain(), "\n");
+        assert_eq!(Doc::default().plain(), "");
     }
 
     #[test]

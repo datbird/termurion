@@ -105,6 +105,12 @@ fn saved_name(dir: &std::path::Path, name: &str) -> String {
     crate::inline_file::unique_path(dir, name).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
+/// Whether a download named `name` would be refused when saved in `dir` (`inert_files`): asked
+/// before the question, so the person is not asked to allow what cannot be saved.
+pub(super) fn download_refused(dir: &std::path::Path, name: &str) -> bool {
+    crate::inert_files::refused_path(&crate::inline_file::unique_path(dir, name).to_string_lossy())
+}
+
 /// The pane and inline file a question is about.
 fn inline_ask_of(then: &super::scripts_alerts::Then) -> Option<(PaneId, u64)> {
     use super::scripts_alerts::Then;
@@ -140,6 +146,11 @@ impl App {
             // Whether the question was silenced before it is asked (`wasSilenced`): a shown
             // question whose box is checked is not.
             let was_silenced = crate::warnings::is_silenced(&self.globals, DOWNLOAD_ID, super::warnings_app::unix_now());
+            // A name that cannot be saved is refused now, not after the person allowed it.
+            if download_refused(&dir, &d.name) {
+                self.banners.set("action", format!("Could not save {}: files of this type are not allowed.", shown_name(&saved_name(&dir, &d.name))));
+                continue;
+            }
             let spec = download_spec(&saved_name(&dir, &d.name), d.bytes.len(), false);
             self.ask_scripts(super::scripts_alerts::Ask::new(spec, super::scripts_alerts::Then::Download(pane, d, was_silenced)));
         }
@@ -271,6 +282,18 @@ mod tests {
         assert_eq!(inline_ask_of(&Then::Inline { pane: 3, serial: 7, name: "a.png".into(), size: 5, was_silenced: false }), Some((3, 7)));
         assert_eq!(inline_ask_of(&Then::BigInline(3, 8)), Some((3, 8)));
         assert_eq!(inline_ask_of(&Then::Nothing), None);
+    }
+
+    /// A download whose name cannot be saved is refused before the question is asked.
+    #[test]
+    fn a_refused_download_is_not_asked_about() {
+        let dir = std::path::Path::new("C:\\dl");
+        for bad in ["x.url", "X.LNK", "desktop.ini", "a.scf", "..\\evil.scf"] {
+            assert!(download_refused(dir, bad), "{bad:?}");
+        }
+        for fine in ["a.txt", "photo.png", "con", "a.ini", "a:b.txt"] {
+            assert!(!download_refused(dir, fine), "{fine:?} (a device name is renamed and a colon replaced, not refused)");
+        }
     }
 
     /// Only the download questions name a pane: its one question at a time.

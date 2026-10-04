@@ -4,7 +4,7 @@
 //! R12cd-4): applying its effects, among them `ai_run_tool`, the one dispatcher of every tool
 //! call, and the live drivers over 12b's runners.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -93,9 +93,89 @@ pub(super) fn publish_in(db: &mut Store, broker: &mut Broker, chat: &str, messag
 fn load_overrides(store: &Store, overrides: &mut Overrides) {
     for chat in store.chats().unwrap_or_default() {
         if !chat.permissions.is_empty() && !chat.orchestration_enabled {
-            overrides.merge_encoded(&chat.id, &chat.permissions);
+            // An entry keyed by a pane id belongs to a session of an earlier run (ruling F1).
+            let kept = ai_permissions::without_pane_guids(&chat.permissions).unwrap_or_else(|| chat.permissions.clone());
+            overrides.merge_encoded(&chat.id, &kept);
         }
     }
+}
+
+/// Whether removing messages from `chat` must stop it first: a turn in progress, a driver
+/// still reading, a parked request or a running command would outlive the messages (ruling F12).
+fn removal_needs_stop(broker: &Broker, agent: Option<&Agent>, chat: &str) -> bool {
+    broker.turn_in_progress(chat) || agent.is_some_and(|a| a.in_turn || a.driver.is_some() || !a.parks.is_empty() || a.running.is_some())
+}
+
+/// The chat rows the cleanup reads and writes (the store, or a test's failing stand-in).
+trait ChatRows {
+    fn all(&self) -> Result<Vec<Chat>, String>;
+    fn one(&self, id: &str) -> Result<Option<Chat>, String>;
+    fn put(&mut self, chat: &Chat) -> Result<(), String>;
+}
+
+impl ChatRows for Store {
+    fn all(&self) -> Result<Vec<Chat>, String> {
+        self.chats()
+    }
+    fn one(&self, id: &str) -> Result<Option<Chat>, String> {
+        self.chat(id)
+    }
+    fn put(&mut self, chat: &Chat) -> Result<(), String> {
+        self.update_chat(chat)
+    }
+}
+
+/// The first open of a run (ruling F1): pane ids restart at 1 every launch, so a chat linked to
+/// a pane id (a terminal or a browser session), and any grant stored under one, names a session
+/// of an earlier run. Each such chat is unlinked, and its stored entries keyed by a pane id are
+/// dropped (a fork or the overrides cannot carry them). Imported UUID guids stay. False when
+/// the chat list could not be read or a row could not be written: the caller then binds no
+/// chat to a pane this run (`chat_links_off`), so a stale link can never take hold.
+fn unlink_stale_panes(store: &mut Store) -> bool {
+    unlink_stale_in(store)
+}
+
+fn unlink_stale_in(store: &mut impl ChatRows) -> bool {
+    let Ok(chats) = store.all() else { return false };
+    let stale = |g: &Option<String>| g.as_deref().is_some_and(ai_permissions::is_pane_guid);
+    let mut clean = true;
+    for chat in chats {
+        let scrubbed = ai_permissions::without_pane_guids(&chat.permissions);
+        if !stale(&chat.terminal_session_guid) && !stale(&chat.browser_session_guid) && scrubbed.is_none() {
+            continue;
+        }
+        // Re-read, so only this row's own fields change (ruling F6).
+        let mut row = match store.one(&chat.id) {
+            Ok(Some(row)) => row,
+            Ok(None) => continue,
+            Err(_) => {
+                clean = false;
+                continue;
+            }
+        };
+        if stale(&row.terminal_session_guid) {
+            row.terminal_session_guid = None;
+        }
+        if stale(&row.browser_session_guid) {
+            row.browser_session_guid = None;
+        }
+        if let Some(text) = ai_permissions::without_pane_guids(&row.permissions) {
+            row.permissions = text;
+        }
+        if store.put(&row).is_err() {
+            clean = false;
+        }
+    }
+    clean
+}
+
+/// The live pane a session reference names: the pane whose own `session_guid` it is, exactly.
+/// A decimal id, an empty text or a reference of an earlier launch names nothing.
+pub(super) fn pane_for_ref(panes: &HashMap<PaneId, crate::pane::Pane>, guid: &str) -> Option<PaneId> {
+    if guid.is_empty() {
+        return None;
+    }
+    panes.iter().find(|(_, p)| p.session_guid == guid).map(|(id, _)| *id)
 }
 
 /// `ChatListModel.setPermission` (`ChatListModel.swift:432-446`) over an open database: the
@@ -160,19 +240,40 @@ pub(super) fn create_in(
     Ok(id)
 }
 
+/// The app-wide subscription that hears every chat (titles, list snippets, ruling F14): opened
+/// once, at the store's open, so nothing published right after it is missed.
+pub(super) fn ensure_mint_sub(broker: &mut crate::chat_broker::Broker, sub: &mut Option<crate::chat_broker::SubId>) {
+    if sub.is_none() {
+        *sub = Some(broker.subscribe(None));
+    }
+}
+
+/// What Session > Open AI Chat says when the earlier run's links could not be cleared, so no
+/// chat binds to a terminal this run; None while links work.
+pub(super) fn links_off_text(off: bool) -> Option<&'static str> {
+    off.then_some("Chats cannot be linked to terminal sessions in this run: an earlier run's links could not all be cleared. Restart Tandem to try again.")
+}
+
 impl App {
     /// The chat database, opened on first use at `chat_store::default_path()` with its lock
     /// beside it. Opening merges the chats' stored permissions into the overrides
-    /// (`load_overrides`). A failure leaves no store for the rest of the
+    /// (`load_overrides`), after every chat linked to a pane id of an earlier run is unlinked
+    /// (`unlink_stale_panes`, ruling F1). A failure leaves no store for the rest of the
     /// run and says so once (`ChatWindowController.swift:169-185`); the store's own error
     /// text, which can name the path, is never shown.
     pub(crate) fn chat_db(&mut self) -> Option<&mut Store> {
         if self.chat_db.is_none() && !self.chat_db_failed {
             let path = chat_store::default_path();
             match Store::open(&path, &path.with_file_name(chat_store::LOCK_NAME)) {
-                Ok(store) => {
+                Ok(mut store) => {
+                    if !unlink_stale_panes(&mut store) {
+                        // Fail closed: nothing binds to a pane until the next launch.
+                        self.chat_links_off = true;
+                        crate::ai_wire_log::console(true, "chat links are off for this run: an earlier run's links could not all be cleared");
+                    }
                     load_overrides(&store, &mut self.ai_overrides);
                     self.chat_db = Some(store);
+                    ensure_mint_sub(&mut self.chat_broker, &mut self.chat_mint_sub);
                 }
                 Err(_) => {
                     self.chat_db_failed = true;
@@ -181,6 +282,18 @@ impl App {
             }
         }
         self.chat_db.as_mut()
+    }
+
+    /// A pane's reference in a chat (its own `session_guid`, unique across panes and launches),
+    /// and the live pane a reference names. The only conversions: a reference read from a
+    /// stored row or message is trusted only when it names a live pane exactly.
+    /// Both answer None while `chat_links_off` (the cleanup of an earlier run's links failed).
+    pub(crate) fn session_ref(&self, pane: PaneId) -> Option<String> {
+        self.panes.get(&pane).filter(|_| !self.chat_links_off).map(|p| p.session_guid.clone())
+    }
+
+    pub(crate) fn ref_pane(&self, guid: &str) -> Option<PaneId> {
+        pane_for_ref(&self.panes, guid).filter(|_| !self.chat_links_off)
     }
 
     /// `ChatBroker.publish` with the list model behind it, and the hand-off to the chat's
@@ -225,6 +338,26 @@ impl App {
         self.chat_broker.forget(chat);
     }
 
+    /// `ChatBroker.deleteMessages` (`ChatBroker.swift:147-160`) with its effects applied as
+    /// `chat_publish` applies them: the messages leave the database and the chat's blobs go.
+    /// A turn, a parked request or a running command of the chat stops first, so none outlives
+    /// its messages (ruling F12). The removed ids are a suffix of the chat.
+    #[allow(dead_code)] // Called by the chat window (12d).
+    pub(crate) fn chat_remove(&mut self, chat: &str, ids: &[String]) {
+        if removal_needs_stop(&self.chat_broker, self.chat_agents.get(chat), chat) {
+            self.chat_stop(chat);
+        }
+        if self.chat_db().is_none() {
+            return;
+        }
+        let effects = self.chat_broker.remove(chat, ids.to_vec());
+        if let Some(db) = self.chat_db.as_mut() {
+            for e in &effects {
+                let _ = db.atomically(|s| write_effect(s, e));
+            }
+        }
+    }
+
     /// A category's global default as stored (0 Ask, 1 Allow, 2 Never; `P:276-285`).
     pub(crate) fn ai_global_permission(&self, c: Category) -> i64 {
         self.globals.int(c.global_key())
@@ -248,17 +381,26 @@ impl App {
             return;
         }
         let Some(db) = self.chat_db.as_mut() else { return };
-        let Some((row, saved)) = set_permission_in(db, &mut self.ai_overrides, Key { chat: chat.to_string(), guid: guid.to_string(), category: c }, p) else { return };
+        let Some((_, saved)) = set_permission_in(db, &mut self.ai_overrides, Key { chat: chat.to_string(), guid: guid.to_string(), category: c }, p) else { return };
         if !saved {
             self.ai_permission_not_saved();
         }
+        self.ai_publish_permissions(chat);
+    }
+
+    /// `publishUpdatedPermissions` (`ChatViewController.swift:1204-1220`): the chat's allowed
+    /// set as a user message, Check Terminal State left out while its state is sent
+    /// automatically (a live linked terminal at Always, `shouldShareTerminalStateAutomatically`).
+    /// The one copy of that rule: a permission change, a link and an unlink all call it (ruling
+    /// F11). It reads the row again, so it never publishes a stale set.
+    pub(crate) fn ai_publish_permissions(&mut self, chat: &str) {
+        let Some(row) = self.chat_db().and_then(|db| db.chat(chat).ok().flatten()) else { return };
         let allowed = self.ai_allowed(&row);
-        // `shouldShareTerminalStateAutomatically`: a live linked terminal at Always.
         let global = |c: Category| self.ai_global_permission(c);
         let check_state_always = row
             .terminal_session_guid
             .as_deref()
-            .filter(|g| g.parse::<crate::layout::PaneId>().is_ok_and(|id| id.to_string() == *g && self.panes.contains_key(&id)))
+            .filter(|g| self.ref_pane(g).is_some())
             .is_some_and(|g| self.ai_overrides.get(chat, g, Category::CheckTerminalState, &global) == Permission::Always);
         let set = ai_permissions::published_set(&allowed, check_state_always);
         // iTerm2 logs a failure here (`ChatViewController.swift:1195-1203`).
@@ -283,7 +425,7 @@ impl App {
         }
         let guid = chat.terminal_session_guid.as_deref()?;
         // A guid that is not a live pane's id is no linked terminal (`ai_set_permission`).
-        let pane = guid.parse::<crate::layout::PaneId>().ok().filter(|id| id.to_string() == guid && self.panes.contains_key(id))?;
+        let pane = self.ref_pane(guid)?;
         let global = |c: Category| self.ai_global_permission(c);
         let wants = crate::ai_context::wants(self.ai_overrides.get(&chat.id, guid, Category::CheckTerminalState, &global), self.ai_overrides.get(&chat.id, guid, Category::ViewContents, &global), true);
         let consent = crate::ai_context::Consent::from_global(self.globals.int(crate::ai_context::CONSENT_KEY));
@@ -352,7 +494,8 @@ impl App {
         let globals = &self.globals;
         let panes = &self.panes;
         let model_for = |c: &Chat| c.model_name.as_deref().and_then(|n| crate::ai_model::named(n, globals, catalog, &found)).or_else(|| crate::ai_model::configured(globals, catalog, &found));
-        let pane_of = |g: &str| g.parse::<PaneId>().ok().filter(|id| id.to_string() == g && panes.contains_key(id));
+        let links_off = self.chat_links_off;
+        let pane_of = |g: &str| pane_for_ref(panes, g).filter(|_| !links_off);
         let (t, o, n) = (transport.clone(), options.clone(), notify.clone());
         let mut new_turn = move |_: &Model| -> Box<dyn TurnDriver> {
             Box::new(LiveTurn {
@@ -409,12 +552,11 @@ impl App {
                     self.ai_check_endpoint(Some(&endpoint), silent);
                 }
                 EngineEffect::AskKey { vendor, endpoint, then } => self.ask_ai_key(vendor, Some(&endpoint), then),
-                // 12d Task 5 makes this its `link_chat` (minor m14).
+                // The one link path (12d Task 5, minor m14). A failed link is shown; the request that
+                // follows still meets the gate as it stands.
                 EngineEffect::Link { chat, pane } => {
-                    if let Some(db) = self.chat_db.as_mut() {
-                        if let Ok(Some(row)) = db.chat(&chat) {
-                            let _ = db.update_chat(&Chat { terminal_session_guid: Some(pane.to_string()), ..row });
-                        }
+                    if let Err(e) = self.link_chat(&chat, pane) {
+                        self.banners.set("chat_link", e);
                     }
                 }
                 EngineEffect::Republish { chat, request_id } => {
@@ -655,6 +797,24 @@ mod tests {
     use crate::ai_permissions::{allowed_of, defaults, Category, Key, Overrides, Permission};
     use crate::chat_broker::Broker;
 
+    #[test]
+    fn the_hearing_subscription_opens_once_at_the_store_open() {
+        let mut broker = Broker::new();
+        let mut sub = None;
+        ensure_mint_sub(&mut broker, &mut sub);
+        let first = sub.expect("opened");
+        ensure_mint_sub(&mut broker, &mut sub);
+        assert_eq!(sub, Some(first), "a second call keeps the one subscription");
+        assert!(broker.drain(first).is_empty());
+    }
+
+    #[test]
+    fn links_off_says_so() {
+        assert_eq!(links_off_text(false), None);
+        let text = links_off_text(true).expect("a message");
+        assert!(text.contains("cannot be linked") && text.contains("Restart Tandem"), "{text}");
+    }
+
     fn ask(_: Category) -> i64 {
         0
     }
@@ -764,17 +924,20 @@ mod tests {
         assert_eq!(store.chats().unwrap().len(), 6);
     }
 
+    /// A session guid that is not a pane id: a pane id stored in a row never loads (ruling F1).
+    const SESSION: &str = "S-7";
+
     fn key(chat: &str, c: Category) -> Key {
-        Key { chat: chat.to_string(), guid: "7".to_string(), category: c }
+        Key { chat: chat.to_string(), guid: SESSION.to_string(), category: c }
     }
 
     #[test]
     fn stored_permissions_stay_with_their_chat() {
         let (mut store, mut broker, mut overrides) = (Store::open_in_memory().unwrap(), Broker::new(), Overrides::default());
-        let source = create_in(&mut store, &mut broker, &mut overrides, "S", Some("7"), None, "", vec![], None, &ask, 1.0).unwrap();
+        let source = create_in(&mut store, &mut broker, &mut overrides, "S", Some(SESSION), None, "", vec![], None, &ask, 1.0).unwrap();
         assert!(set_permission_in(&mut store, &mut overrides, key(&source, Category::RunCommands), Permission::Always).unwrap().1);
         let text = store.chat(&source).unwrap().unwrap().permissions;
-        let fork = create_in(&mut store, &mut broker, &mut overrides, "F", Some("7"), None, &text, vec![], None, &ask, 2.0).unwrap();
+        let fork = create_in(&mut store, &mut broker, &mut overrides, "F", Some(SESSION), None, &text, vec![], None, &ask, 2.0).unwrap();
         // The source revokes and is used again, so it is newer than the fork.
         assert!(set_permission_in(&mut store, &mut overrides, key(&source, Category::RunCommands), Permission::Never).unwrap().1);
         store.bump(&source, 3.0).unwrap();
@@ -786,9 +949,142 @@ mod tests {
         // Relaunch: the source stays revoked, the fork keeps its own copy.
         let mut relaunched = Overrides::default();
         load_overrides(&store, &mut relaunched);
-        assert_eq!(relaunched.get(&source, "7", Category::RunCommands, &ask), Permission::Never);
-        assert_eq!(relaunched.get(&fork, "7", Category::RunCommands, &ask), Permission::Always);
+        assert_eq!(relaunched.get(&source, SESSION, Category::RunCommands, &ask), Permission::Never);
+        assert_eq!(relaunched.get(&fork, SESSION, Category::RunCommands, &ask), Permission::Always);
         assert_eq!(relaunched.encoded(&hostile.id), "[]", "a row grants nothing to another chat, itself included");
+    }
+
+    #[test]
+    fn edit_during_a_parked_request_stops_it() {
+        let broker = Broker::new();
+        let mut agent = Agent::default();
+        assert!(!removal_needs_stop(&broker, None, "c"), "an idle chat needs no stop");
+        assert!(!removal_needs_stop(&broker, Some(&agent), "c"));
+        agent.parks.push(chat_agent::Park { call_id: String::new(), request_id: "r".into(), call: Call::ExecuteCommand { command: "ls".into() }, safe: None, cleared_typing: true, guid: "S-7".into(), send: None });
+        assert!(removal_needs_stop(&broker, Some(&agent), "c"), "a parked request outlives its message otherwise");
+        agent.parks.clear();
+        agent.running = Some(("r".into(), "S-7".into()));
+        assert!(removal_needs_stop(&broker, Some(&agent), "c"), "a running command");
+        agent.running = None;
+        agent.in_turn = true;
+        assert!(removal_needs_stop(&broker, Some(&agent), "c"), "a turn");
+        let mut busy = Broker::new();
+        busy.turn("c", crate::chat_message::TurnEvent::Started);
+        assert!(removal_needs_stop(&busy, None, "c"));
+    }
+
+    #[test]
+    fn a_restarted_pane_id_never_inherits_a_chat() {
+        for pane in ["0", "3", "18446744073709551615"] {
+            assert!(ai_permissions::is_pane_guid(pane), "{pane}");
+        }
+        for other in ["", "03", "+3", "-3", " 3", "3 ", "6F1C2A3B-0000-4000-8000-000000000001", "18446744073709551616"] {
+            assert!(!ai_permissions::is_pane_guid(other), "{other:?}");
+        }
+        let mut store = Store::open_in_memory().unwrap();
+        let mut stored = Overrides::default();
+        // A chat of the previous run, linked to pane 3 with Always Allow; one imported with a UUID guid.
+        let (mut old, mut imported) = (Chat::new("old", 1.0), Chat::new("imported", 2.0));
+        old.terminal_session_guid = Some("3".into());
+        imported.terminal_session_guid = Some("6F1C2A3B-0000-4000-8000-000000000001".into());
+        for c in [&mut old, &mut imported] {
+            let guid = c.terminal_session_guid.clone().unwrap();
+            stored.set(Key { chat: c.id.clone(), guid, category: Category::RunCommands }, Permission::Always);
+            c.permissions = stored.encoded(&c.id);
+        }
+        store.add_chat(&old).unwrap();
+        store.add_chat(&imported).unwrap();
+
+        // The next launch: the first open.
+        unlink_stale_panes(&mut store);
+        let mut overrides = Overrides::default();
+        load_overrides(&store, &mut overrides);
+
+        let row = store.chat(&old.id).unwrap().unwrap();
+        assert_eq!(row.terminal_session_guid, None, "the chat is unlinked");
+        // A new pane 3 owns nothing of it.
+        assert_eq!(overrides.get(&old.id, "3", Category::RunCommands, &ask), Permission::Ask);
+        assert_eq!(row.permissions, "[]", "the stored grant is gone too, so a fork cannot carry it");
+        let (mut broker, mut later) = (Broker::new(), Overrides::default());
+        let fork = create_in(&mut store, &mut broker, &mut later, "F", Some("3"), None, &row.permissions, vec![], None, &ask, 5.0).unwrap();
+        assert_eq!(later.get(&fork, "3", Category::RunCommands, &ask), Permission::Ask);
+        // An entry keyed by a decimal guid is skipped even when a row still holds it.
+        let mut held = Chat::new("held", 3.0);
+        held.permissions = stored.encoded(&old.id).replace(&old.id, &held.id);
+        assert!(held.permissions.contains("\"guid\":\"3\""));
+        store.add_chat(&held).unwrap();
+        let mut skipped = Overrides::default();
+        load_overrides(&store, &mut skipped);
+        assert_eq!(skipped.get(&held.id, "3", Category::RunCommands, &ask), Permission::Ask);
+        // The imported chat keeps its link and its grant.
+        let kept = store.chat(&imported.id).unwrap().unwrap();
+        assert_eq!(kept.terminal_session_guid, imported.terminal_session_guid);
+        assert_eq!(overrides.get(&imported.id, "6F1C2A3B-0000-4000-8000-000000000001", Category::RunCommands, &ask), Permission::Always);
+    }
+
+    #[test]
+    fn a_session_ref_is_unique_per_pane_and_launch() {
+        // "Two launches" each have a pane 3.
+        let (a, b) = (crate::pane::Pane::recording(3, 80, 24), crate::pane::Pane::recording(3, 80, 24));
+        assert_ne!(a.session_guid, b.session_guid, "a reused pane id gets a new reference");
+        assert!(!ai_permissions::is_pane_guid(&a.session_guid), "a reference is never a decimal pane id");
+        let (ra, rb) = (a.session_guid.clone(), b.session_guid.clone());
+        let panes = HashMap::from([(3, a)]);
+        assert_eq!(pane_for_ref(&panes, &ra), Some(3));
+        assert_eq!(pane_for_ref(&panes, "3"), None, "a decimal id of an earlier run names nothing");
+        assert_eq!(pane_for_ref(&panes, &rb), None, "another launch's reference names nothing");
+        assert_eq!(pane_for_ref(&panes, ""), None);
+    }
+
+    /// A store whose reads or writes fail, as the cleanup must survive.
+    struct Flaky {
+        store: Store,
+        fail_read: bool,
+        fail_write: bool,
+    }
+
+    impl ChatRows for Flaky {
+        fn all(&self) -> Result<Vec<Chat>, String> {
+            if self.fail_read { Err("read".into()) } else { self.store.chats() }
+        }
+        fn one(&self, id: &str) -> Result<Option<Chat>, String> {
+            self.store.chat(id)
+        }
+        fn put(&mut self, chat: &Chat) -> Result<(), String> {
+            if self.fail_write { Err("write".into()) } else { self.store.update_chat(chat) }
+        }
+    }
+
+    #[test]
+    fn a_failed_cleanup_binds_nothing() {
+        let mut stale = Chat::new("old", 1.0);
+        stale.terminal_session_guid = Some("3".into());
+        let flaky = |fail_read, fail_write| {
+            let mut f = Flaky { store: Store::open_in_memory().unwrap(), fail_read: false, fail_write };
+            f.store.add_chat(&stale).unwrap();
+            f.fail_read = fail_read;
+            f
+        };
+        assert!(!unlink_stale_in(&mut flaky(true, false)), "the list cannot be read");
+        let mut unwritable = flaky(false, true);
+        assert!(!unlink_stale_in(&mut unwritable), "a row cannot be written");
+        assert_eq!(unwritable.store.chat(&stale.id).unwrap().unwrap().terminal_session_guid.as_deref(), Some("3"));
+        let mut fine = flaky(false, false);
+        assert!(unlink_stale_in(&mut fine));
+        assert_eq!(fine.store.chat(&stale.id).unwrap().unwrap().terminal_session_guid, None);
+    }
+
+    #[test]
+    fn a_decimal_browser_guid_is_unlinked_too() {
+        let mut store = Store::open_in_memory().unwrap();
+        let (mut old, mut imported) = (Chat::new("old", 1.0), Chat::new("imported", 2.0));
+        old.browser_session_guid = Some("4".into());
+        imported.browser_session_guid = Some("6F1C2A3B-0000-4000-8000-000000000002".into());
+        store.add_chat(&old).unwrap();
+        store.add_chat(&imported).unwrap();
+        assert!(unlink_stale_panes(&mut store));
+        assert_eq!(store.chat(&old.id).unwrap().unwrap().browser_session_guid, None);
+        assert_eq!(store.chat(&imported.id).unwrap().unwrap().browser_session_guid, imported.browser_session_guid);
     }
 
     #[test]
@@ -807,11 +1103,11 @@ mod tests {
         load_overrides(&store, &mut overrides);
         let (row, saved) = set_permission_in(&mut store, &mut overrides, key(&chat.id, Category::RunCommands), Permission::Never).unwrap();
         assert!(saved);
-        assert_eq!(overrides.get(&chat.id, "7", Category::RunCommands, &ask), Permission::Never, "the change is not overwritten");
+        assert_eq!(overrides.get(&chat.id, SESSION, Category::RunCommands, &ask), Permission::Never, "the change is not overwritten");
         let mut back = Overrides::default();
         assert!(back.merge_encoded(&chat.id, &store.chat(&chat.id).unwrap().unwrap().permissions));
-        assert_eq!(back.get(&chat.id, "7", Category::RunCommands, &ask), Permission::Never);
-        assert_eq!(back.get(&chat.id, "7", Category::ViewContents, &ask), Permission::Always, "the chat's other entries are kept");
+        assert_eq!(back.get(&chat.id, SESSION, Category::RunCommands, &ask), Permission::Never);
+        assert_eq!(back.get(&chat.id, SESSION, Category::ViewContents, &ask), Permission::Always, "the chat's other entries are kept");
         assert_eq!(row.permissions, overrides.encoded(&chat.id));
         assert_eq!(set_permission_in(&mut store, &mut overrides, key("gone", Category::RunCommands), Permission::Never), None);
 
@@ -819,7 +1115,7 @@ mod tests {
         store.refuse_chat_updates();
         let (_, saved) = set_permission_in(&mut store, &mut overrides, key(&chat.id, Category::ViewContents), Permission::Never).unwrap();
         assert!(!saved);
-        assert_eq!(overrides.get(&chat.id, "7", Category::ViewContents, &ask), Permission::Never);
+        assert_eq!(overrides.get(&chat.id, SESSION, Category::ViewContents, &ask), Permission::Never);
         assert_eq!(ai_permissions::NOT_SAVED, "The permission change could not be saved. It applies until Tandem quits.");
     }
 

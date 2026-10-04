@@ -64,6 +64,7 @@ mod history_ui;
 mod shell_history_ui;
 mod snippets_ui;
 mod clippings_ui;
+mod inline_chat_ui;
 mod completion_ui;
 mod composer_ui;
 mod annotations_ui;
@@ -101,6 +102,8 @@ mod windows_ui;
 mod chrome_ui;
 #[cfg(windows)]
 mod sizing_ui;
+#[cfg(windows)]
+mod caption_ui;
 mod tab_drag_ui;
 mod tab_groups_ui;
 mod undo_ui;
@@ -136,6 +139,8 @@ mod prefs_ui;
 mod settings_export_ui;
 mod ai_app;
 mod chat_app;
+mod chat_window_app;
+mod chat_session_app;
 mod chat_engine;
 mod ai_tools_app;
 mod ai_exec_app;
@@ -160,6 +165,12 @@ pub enum UserEvent {
     JobsChanged,
     /// A system-wide hotkey was pressed (the ids of every hotkey it matched).
     Hotkey(Vec<u32>),
+    /// A system setting changed under a forced Theme: winit reset the title bars to the
+    /// system mode, so the windows take the forced mode again.
+    ThemeReset,
+    /// A window button of a Minimal or Compact window's caption was hovered, pressed or released:
+    /// the window (its HWND) and what happened (`caption_ui`).
+    Caption(isize, crate::caption::Event),
 }
 
 #[derive(Clone)]
@@ -204,6 +215,8 @@ enum Drag {
     Porthole { pane: PaneId, id: u32, frame: Rect },
     /// A Clippings panel's width or one of its rows.
     Clip { pane: PaneId, kind: clippings_ui::ClipDrag },
+    /// An inline chat panel's width: where the drag began (pixels) and the width then (logical).
+    Inline { pane: PaneId, start_x: f32, start_w: f32 },
     /// The toolbelt's width, a divider between its tools, or a tool's row.
     Belt(toolbelt_ui::BeltDrag),
     /// A composer's text selection, drag handle, or border.
@@ -223,6 +236,10 @@ enum Drag {
     /// A left press on the "+" button, where it was (pixels): moving far enough drags the
     /// window.
     AddButton { start: (f32, f32) },
+    /// A left press on the bar that only a drag converts, to a window drag (`tab_drag::Arm::Window`:
+    /// the empty bar, a close button, a tab Lock Layout keeps in place), where it was (pixels).
+    /// It never selects or reorders; the press clicks as usual.
+    Window { start: (f32, f32) },
 }
 
 struct Gpu {
@@ -353,8 +370,21 @@ pub struct App {
     window_menu_text: (String, String),
     /// The border color last given to the current window's DWM frame (`apply_border`).
     border_applied: Option<u32>,
+    /// The mode (dark or not) the current window last followed (`apply_theme`), so a change of
+    /// it is known without asking winit, which does not track a forced theme.
+    theme_applied: Option<bool>,
     /// The current window's menu bar is hidden (full screen, `HideMenuBarInFullscreen`).
     menu_hidden: bool,
+    /// The caption button under the pointer and the one held down in the current Minimal or
+    /// Compact window (`caption_ui`).
+    caption_hover: Option<crate::caption::Button>,
+    caption_pressed: Option<crate::caption::Button>,
+    /// The width in pixels of the window switch label's slot in the caption (its text measured
+    /// plus padding), 0 without one; kept by `sync_caption_label` since layout cannot measure.
+    caption_label_w: f32,
+    /// The window name's text measured in pixels (its natural width), 0 without a name; kept by
+    /// `sync_caption_label`.
+    caption_name_w: f32,
     /// The current window's frame before a vertical Window > Zoom, which the next Zoom
     /// restores (a full Zoom maximizes, and Windows keeps that frame itself).
     zoom_restore: Option<Rect>,
@@ -612,6 +642,8 @@ pub struct App {
     /// Each session's clippings and panel, the New Clipping sheet (for its pane), and the
     /// panel button under the pointer.
     clips: HashMap<PaneId, clippings_ui::ClipState>,
+    /// Each pane's inline chat (its binding and panel state), app-wide as `clips` is.
+    inline: HashMap<PaneId, inline_chat_ui::InlineState>,
     add_clip_win: Option<(crate::clip_add_ui::AddClipWindow, PaneId)>,
     clip_hover: Option<(PaneId, crate::clippings::Button)>,
     shell_fed: HashMap<PaneId, shell_history_ui::Fed>,
@@ -848,7 +880,63 @@ pub struct App {
     /// opening it failed (then it is not tried again), and the broker.
     chat_db: Option<crate::chat_store::Store>,
     chat_db_failed: bool,
+    /// The cleanup of an earlier run's chat links failed: no chat binds to a pane this run.
+    chat_links_off: bool,
     chat_broker: crate::chat_broker::Broker,
+    /// The AI Chat window (app-wide, never swapped: one per app), the broker subscription it
+    /// reads every chat through, the chat it shows, and its toolbar as last computed (rebuilt
+    /// only when `chat_toolbar_dirty`, so a streamed chunk never re-reads the providers).
+    chat_window: Option<crate::chat_window_ui::ChatWindow>,
+    chat_sub: Option<crate::chat_broker::SubId>,
+    chat_shown: Option<String>,
+    /// The shown chat's input (text, pending attachments), the drafts of the chats not shown,
+    /// and the paths dropped on the chat window since the last pass (app-wide: the window is).
+    chat_input: crate::chat_input::InputState,
+    chat_drafts: crate::chat_input::Drafts,
+    chat_drops: Vec<std::path::PathBuf>,
+    /// The find bar of the chat window (app-wide, as the window is): the query the next bar
+    /// opens with (Tandem has no shared find pasteboard), and the bar's state while it is open.
+    chat_find_query: String,
+    chat_find: chat_window_app::ChatFind,
+    chat_toolbar: crate::chat_window_ui::ToolbarData,
+    chat_toolbar_dirty: bool,
+    /// The chat list: its rows as last built, whether they need building again, when they were
+    /// built (ages refresh every 60 s, `CCV:66-70`), each chat's row snippet until a message
+    /// of it changes, and the chats a right-click menu acts on (all app-wide).
+    chat_rows: Vec<crate::chat_list::Row>,
+    chat_rows_dirty: bool,
+    chat_rows_built: Option<Instant>,
+    chat_snippets: HashMap<String, String>,
+    /// The chat window's search across chats: its query, debounce and streamed hits.
+    chat_search: crate::chat_search::State,
+    chat_menu_ids: Vec<String>,
+    /// The shown chat's messages, kept current from the broker, and the conversation rows made
+    /// from them (rebuilt only when `chat_convo_dirty`, never per frame).
+    chat_msgs: Vec<crate::chat_message::Message>,
+    chat_convo: std::sync::Arc<Vec<crate::chat_window_ui::RowData>>,
+    chat_convo_dirty: bool,
+    /// A pick of a session for a chat is open (app-wide; every terminal window shows the picker).
+    chat_picker: Option<chat_session_app::Pick>,
+    /// The picker buttons this window drew, per pane (this window's, in `WinSlot`).
+    picker_hits: Vec<(PaneId, Rect)>,
+    /// The inline chat panels' rectangles this window drew, for a press on them.
+    inline_hits: Vec<inline_chat_ui::PanelHit>,
+    /// The AI indicators this window drew (this window's, in `WinSlot`).
+    chat_indicator_hits: Vec<(PaneId, Rect, scene::IndicatorKind)>,
+    /// Chats streaming their linked session's finished commands (app-wide, keyed by chat).
+    streaming_chats: std::collections::HashSet<String>,
+    /// The indicator menu on screen: the pane and the routes its items run (`chat_session_app`).
+    chat_indicator_menu: Option<(PaneId, Vec<crate::chat_routes::Route>)>,
+    /// Every chat's linked session, read for the indicators at most once a second.
+    chat_links: std::cell::RefCell<Option<(Instant, Vec<(String, String)>)>>,
+    /// The subscription that hears every chat for as long as the store is open, so a minted
+    /// title needs no window (ruling F14).
+    chat_mint_sub: Option<crate::chat_broker::SubId>,
+    /// The rename prompt and its chat.
+    chat_prompt: Option<(crate::prompt_ui::PromptWindow, String)>,
+    /// The minted-title runs in flight, each with the endpoint its gate is re-checked for every
+    /// pass (ruling R12cd-1); app-wide.
+    title_runs: HashMap<String, (crate::ai_turn::Runner, crate::ai_models::Endpoint)>,
     /// The chats' permission overrides (app-wide, never swapped); every chat's stored
     /// permissions are merged in when the database opens.
     ai_overrides: crate::ai_permissions::Overrides,
@@ -1209,7 +1297,12 @@ pub fn run() {
         win_title: None,
         window_menu_text: Default::default(),
         border_applied: None,
+        theme_applied: None,
         menu_hidden: false,
+        caption_hover: None,
+        caption_pressed: None,
+        caption_label_w: 0.0,
+        caption_name_w: 0.0,
         zoom_restore: None,
         belt: Default::default(),
         tool_gen: 0,
@@ -1325,6 +1418,7 @@ pub fn run() {
         paste_history: None,
         snippets: snippets_ui::load_snippets(),
         clips: HashMap::new(),
+        inline: HashMap::new(),
         add_clip_win: None,
         clip_hover: None,
         paste_history_win: None,
@@ -1453,7 +1547,37 @@ pub fn run() {
         ai_probe: None,
         chat_db: None,
         chat_db_failed: false,
+        chat_links_off: false,
         chat_broker: crate::chat_broker::Broker::new(),
+        chat_window: None,
+        chat_sub: None,
+        chat_shown: None,
+        chat_input: Default::default(),
+        chat_drafts: Default::default(),
+        chat_drops: Vec::new(),
+        chat_find_query: String::new(),
+        chat_find: Default::default(),
+        chat_toolbar: crate::chat_window_ui::ToolbarData::default(),
+        chat_toolbar_dirty: false,
+        chat_rows: Vec::new(),
+        chat_rows_dirty: true,
+        chat_rows_built: None,
+        chat_snippets: HashMap::new(),
+        chat_search: Default::default(),
+        chat_menu_ids: Vec::new(),
+        chat_msgs: Vec::new(),
+        chat_convo: Default::default(),
+        chat_convo_dirty: true,
+        chat_picker: None,
+        picker_hits: Vec::new(),
+        inline_hits: Vec::new(),
+        chat_indicator_hits: Vec::new(),
+        streaming_chats: std::collections::HashSet::new(),
+        chat_indicator_menu: None,
+        chat_links: std::cell::RefCell::new(None),
+        chat_mint_sub: None,
+        chat_prompt: None,
+        title_runs: HashMap::new(),
         ai_overrides: crate::ai_permissions::Overrides::default(),
         ai_staged: HashMap::new(),
         ai_consent_asked: false,
@@ -1597,7 +1721,7 @@ impl App {
                 if size == inner {
                     return false;
                 }
-                let _ = g.window.request_inner_size(size);
+                let _ = caption_ui::request_inner_size(&g.window, size);
                 // Windows resizes at once; what it granted is what a hide takes back.
                 let now = g.window.inner_size();
                 if showing {
@@ -1624,6 +1748,8 @@ impl App {
         let delta = match (visible, tab_position::vertical(self.tab_position())) {
             (false, _) => self.bar_grown,
             (true, true) => (self.side_bar_width().round(), 0.0),
+            // A compact window's top bar sits in the caption strip, which is there anyway.
+            (true, false) if self.caption_strip().is_some() && self.tab_position() == TabPosition::Top => (0.0, 0.0),
             (true, false) => (0.0, self.tab_height().round()),
         };
         self.fit_window_to_bar(visible, delta)
@@ -1731,12 +1857,12 @@ impl App {
     /// A horizontal tab bar's height in pixels (`DefaultTabBarHeight` points), whether or not
     /// the bar shows; `tab_bar_rect` says whether there is a bar.
     fn tab_height(&self) -> f32 {
-        (tab_layout::Settings::from_globals(&self.globals).height * self.scale()).round()
+        (self.tab_settings().height * self.scale()).round()
     }
 
     /// A side bar's narrowest width in points (`RTV minimumTabBarWidth`).
     pub(super) fn side_bar_minimum(&self) -> f32 {
-        tab_position::MIN_SIDE_WIDTH
+        crate::tab_theme::side_minimum(self.tab_style())
     }
 
     /// A side tab bar's width in pixels: the window's preferred width (`LeftTabBarWidth` when
@@ -1754,14 +1880,25 @@ impl App {
     /// (`tab_height` on the top or bottom, `side_bar_width` on a side) from its edge of the
     /// rest. No bar rect while the bar hides, no toolbelt rect while it hides.
     pub(super) fn window_layout(&self) -> (Option<Rect>, Rect, Option<Rect>) {
-        let room = self.window_room();
+        let mut room = self.window_room();
         let scale = self.scale();
+        // A Minimal or Compact window's caption strip takes the top of the room, across the whole
+        // window, tabs or no tabs (`caption_strip`); a top bar shows in it, and never moves the
+        // sessions, whether it takes room or flashes.
+        let strip = self.caption_strip().map(|h| Rect { h, ..room });
+        if let Some(s) = strip {
+            room = Rect { y: room.y + s.h, h: (room.h - s.h).max(1.0), ..room };
+        }
+        let in_strip = strip.is_some() && self.tab_position() == TabPosition::Top;
         let belt = self.belt.visible.then(|| crate::toolbelt::clamp_width(self.belt.width, room.w / scale) * scale);
         let bar = self.tab_bar_visible().then(|| {
             let position = self.tab_position();
             (position, if tab_position::vertical(position) { self.side_bar_width() } else { self.tab_height() })
         });
-        let (rect, sessions, belt_rect) = tab_position::window_split(room, belt, bar);
+        let (rect, sessions, belt_rect) = tab_position::window_split(room, belt, bar.filter(|_| !in_strip));
+        if in_strip {
+            return (strip.filter(|_| bar.is_some()), sessions, belt_rect);
+        }
         if bar.is_some() && !self.tab_bar_takes_room() {
             // A flashing bar lies over the sessions: they keep the room they had.
             return (rect, tab_position::window_split(room, belt, None).1, belt_rect);
@@ -1769,9 +1906,14 @@ impl App {
         (rect, sessions, belt_rect)
     }
 
-    /// The tab bar's rect in pixels, window coordinates; None while it hides.
+    /// The tab bar's rect in pixels, window coordinates; None while it hides. In a Minimal or
+    /// Compact window's caption the top bar is the strip's tab area, clear of the window buttons.
     pub(super) fn tab_bar_rect(&self) -> Option<Rect> {
-        self.window_layout().0
+        let bar = self.window_layout().0?;
+        match self.caption_layout().filter(|_| self.tab_position() == TabPosition::Top) {
+            Some(l) => crate::caption::tab_bar_rect(&l, true).map(|t| Rect { x: t.x, w: t.w, ..bar }),
+            None => Some(bar),
+        }
     }
 
     /// The horizontal tab bar's rect: the bar's, on the top or bottom edge.
@@ -1885,7 +2027,7 @@ impl App {
     /// Lays out the tab bar in `area` (pixels): a horizontal bar scrolled along by `offset`
     /// points, a side bar down, measuring labels in the prose font.
     fn layout_tab_bar(&mut self, looks: &[scene::TabLook], area: Rect, offset: f32) -> tab_layout::Bar {
-        let s = tab_layout::Settings::from_globals(&self.globals);
+        let s = self.tab_settings();
         let inputs = self.tab_inputs(looks);
         let vertical = tab_position::vertical(self.tab_position());
         let (scale, active, hovered) = (self.scale(), self.active, self.tab_hover.map(|(i, _)| i));
@@ -2208,7 +2350,7 @@ impl App {
             self.side_bar_wheel(delta);
             return true;
         }
-        let optimum = tab_layout::Settings::from_globals(&self.globals).prefs.optimum;
+        let optimum = self.tab_settings().prefs.optimum;
         // A notched wheel moves in lines; precise deltas are already a distance (pixels here).
         let (dx, dy) = match delta {
             MouseScrollDelta::LineDelta(x, y) => (x, y),
@@ -2237,7 +2379,7 @@ impl App {
         if !self.side_bar_scrollable() || content <= bar.h / scale {
             return;
         }
-        let row = tab_layout::Settings::from_globals(&self.globals).height;
+        let row = self.tab_settings().height;
         let dy = match delta {
             MouseScrollDelta::LineDelta(_, y) => y * row,
             MouseScrollDelta::PixelDelta(p) => p.y as f32 / scale,
@@ -2342,8 +2484,129 @@ impl App {
         guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).clone()
     }
 
+    /// The appearance everything follows: a fixed Theme's own mode, else Windows' for this window.
     fn dark(&self) -> bool {
+        crate::tab_theme::forced_dark(self.tab_style()).unwrap_or_else(|| self.system_dark())
+    }
+
+    /// The window's own winit theme (Windows' mode when nothing is forced), dark when unknown.
+    pub(super) fn system_dark(&self) -> bool {
         self.gpu.as_ref().and_then(|g| g.window.theme()).is_none_or(|t| t == winit::window::Theme::Dark)
+    }
+
+    /// The tab bar's settings for this window: the globals, with the label size the resolved
+    /// theme draws (`tab_theme::font_pt`) unless a custom size is on. The one place that builds
+    /// them, so layout, hits and drags agree.
+    pub(super) fn tab_settings(&self) -> tab_layout::Settings {
+        let mut s = tab_layout::Settings::from_globals(&self.globals).with_theme_font(&self.globals, crate::tab_theme::font_pt(self.resolved_style()));
+        s.height = self.theme_bar_height(self.compact_window(), self.tab_position(), s.height);
+        s
+    }
+
+    /// A tab bar's thickness in points under the Theme (`tab_theme::bar_height`): Minimal's
+    /// `CompactMinimalTabBarHeight` in a compact window's top bar and in a side bar, else `regular`.
+    fn theme_bar_height(&self, compact_window: bool, position: TabPosition, regular: f32) -> f32 {
+        let tall = self.globals.number("CompactMinimalTabBarHeight").map_or(38.0, |v| v as f32);
+        crate::tab_theme::bar_height(self.tab_style(), compact_window, position, regular, tall)
+    }
+
+    /// A Minimal or Compact window's caption strip in pixels, at the bar's height whatever the bar's
+    /// position or whether a bar shows (the panes never move when it hides); None in any other window.
+    pub(super) fn caption_strip(&self) -> Option<f32> {
+        if !self.compact_window() {
+            return None;
+        }
+        let regular = tab_layout::Settings::from_globals(&self.globals).height;
+        Some((self.theme_bar_height(true, TabPosition::Top, regular) * self.scale()).round())
+    }
+
+    /// The colors the tab bar draws with (`tab_theme::palette`), from the Theme, Windows' modes,
+    /// the window being key, the three tab darkness keys and the focused pane's background.
+    pub(super) fn tab_palette(&self) -> crate::tab_theme::TabPalette {
+        use crate::tab_theme::{Inputs, MinimalKnobs, dimming, DIMMING_AMOUNT};
+        let g = &self.globals;
+        let session_bg = self
+            .tabs
+            .get(self.active)
+            .and_then(|t| self.panes.get(&t.focused))
+            .map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
+        let focused = self.focused && self.app_active;
+        let float = |key: &str, default: f32| g.number(key).map_or(default, |v| v as f32);
+        let base = MinimalKnobs::default();
+        let mut minimal = MinimalKnobs {
+            difference: float("MinimalTabStyleBackgroundColorDifference", base.difference),
+            outline: float("MinimalTabStyleOutlineStrength", base.outline),
+            legibility: float("MinimalTextLegibilityAdjustment", base.legibility),
+            left_inset_is_first_tab: g.bool("MinimalTabStyleTreatLeftInsetAsPartOfFirstTab"),
+            underline: float("MinimalSelectedTabUnderlineProminence", base.underline),
+            deselected_colored_alpha: float("MinimalDeslectedColoredTabAlpha", base.deselected_colored_alpha),
+        };
+        // `shouldTweakMinimalTabOutlineAlpha` (`PT:10053-10107`): a dimmed inactive pane against the
+        // bar raises the outline toward 1 by the dimming amount x 0.375.
+        if self.dimmed_pane_touches_bar() {
+            let a = DIMMING_AMOUNT * 0.375;
+            minimal.outline = a + minimal.outline * (1.0 - a);
+        }
+        let inputs = Inputs {
+            system_dark: self.system_dark(),
+            system_high_contrast: crate::tab_theme::system_high_contrast(),
+            focused,
+            light_darkness: g.number("LightModeInactiveTabDarkness").map_or(0.07, |v| v as f32),
+            dark_darkness: g.number("DarkModeInactiveTabDarkness").map_or(0.5, |v| v as f32),
+            high_visibility: g.bool("HighVisibility"),
+            session_bg,
+            dimming: dimming(g.bool("DimBackgroundWindows"), focused, DIMMING_AMOUNT),
+            minimal,
+            colored_outline: g.number("ColoredSelectedTabOutlineStrength").map_or(0.5, |v| v as f32),
+            colored_text_prominence: g.number("ColoredUnselectedTabTextProminence").map_or(0.5, |v| v as f32),
+            tabs: self.tabs.len(),
+        };
+        let mut pal = crate::tab_theme::palette(self.tab_style(), &inputs);
+        pal.attached = crate::tab_theme::attached(self.tab_style(), self.tab_position() == TabPosition::Top);
+        pal
+    }
+
+    /// The split pane divider color (`tab_theme::divider_color`). Minimal starts from the focused
+    /// pane's unprocessed background; at prominence 0 the divider takes the one background the
+    /// window's other panes share (`PT:1911-1950`). Inactive panes keep their own background
+    /// under the dimming overlay, and Dim only text has no key, so both conditions hold.
+    pub(super) fn divider_color(&self) -> crate::palette::Rgb {
+        let bg = |id: PaneId| self.panes.get(&id).map(|p| p.screen.palette.bg);
+        let current = self.tabs.get(self.active).map(|t| t.focused);
+        let decoration_bg = current.and_then(bg).unwrap_or_else(|| crate::palette::Palette::default().bg);
+        let prominence = self.globals.number("MinimalSplitPaneDividerProminence").map_or(0.15, |v| v as f32);
+        let panes: Vec<(PaneId, crate::palette::Rgb)> = self.tabs.iter().flat_map(|t| t.layout.panes()).filter_map(|id| bg(id).map(|c| (id, c))).collect();
+        let invisible = crate::tab_theme::single_other_background(&panes, current);
+        crate::tab_theme::divider_color(self.tab_style(), self.resolved_style(), decoration_bg, prominence, invisible)
+    }
+
+    /// Whether a pane is drawn undimmed: the focused pane of a window that is not key while Dim
+    /// background windows is off, or (in the key window) a pane the broadcast input reaches.
+    fn pane_undimmed(&self, id: PaneId, focused_pane: PaneId, receives: bool, bview: &crate::broadcast::View) -> bool {
+        (!self.focused && id == focused_pane && !self.globals.bool("DimBackgroundWindows")) || (self.focused && receives && self.broadcast.should_broadcast_to(bview, focused_pane, Some(focused_pane)))
+    }
+
+    /// Whether a dimmed pane other than the tab's focused one lies against the tab bar's edge
+    /// (`shouldTweakMinimalTabOutlineAlpha`): not in a background window that dims as a whole,
+    /// whose dimming looks fine under the outline.
+    fn dimmed_pane_touches_bar(&self) -> bool {
+        use tab_position::TabPosition::{Bottom, Left, Right, Top};
+        if self.tab_style() != crate::tab_theme::TabStyle::Minimal || (self.globals.bool("DimBackgroundWindows") && !self.focused) {
+            return false;
+        }
+        let Some(tab) = self.tabs.get(self.active) else { return false };
+        let area = self.content_area_for(tab);
+        let bview = self.broadcast_view();
+        let position = self.tab_position();
+        self.visible(tab).into_iter().any(|(id, r)| {
+            let touches = match position {
+                Top => r.y <= area.y + 1.0,
+                Bottom => r.y + r.h >= area.y + area.h - 1.0,
+                Left => r.x <= area.x + 1.0,
+                Right => r.x + r.w >= area.x + area.w - 1.0,
+            };
+            touches && id != tab.focused && !self.pane_undimmed(id, tab.focused, self.broadcast.receives(&bview, id), &bview)
+        })
     }
 
     /// The Theme setting (`TabStyleWithAutomaticOption`), Automatic when unset.
@@ -2354,7 +2617,7 @@ impl App {
 
     /// The fixed style the current window draws (`crate::tab_theme::resolved`).
     pub(super) fn resolved_style(&self) -> crate::tab_theme::TabStyle {
-        crate::tab_theme::resolved(self.tab_style(), self.dark(), false)
+        crate::tab_theme::resolved(self.tab_style(), self.system_dark(), crate::tab_theme::system_high_contrast())
     }
 
     fn start_pane(&mut self, rect: Rect, guid: Option<&str>) -> Option<PaneId> {
@@ -2380,6 +2643,8 @@ impl App {
         // Instant Replay closes first; the new shell starts live.
         self.end_replays(&[id]);
         let guid = self.panes.get(&id).map(|p| p.profile.clone());
+        // The session keeps its chat reference across a restart (`PTYSession.m:2403-2420`).
+        let reference = self.panes.get(&id).map(|p| p.session_guid.clone());
         if let Some(old) = self.panes.remove(&id) {
             if let Some(pid) = old.shell_pid() {
                 self.jobs.forget(pid);
@@ -2390,7 +2655,17 @@ impl App {
         }
         // Its inline files went with its screen.
         self.close_inline_questions_of(id);
-        self.start_pane_as(id, rect, guid.as_deref());
+        if self.start_pane_as(id, rect, guid.as_deref()) {
+            if let (Some(reference), Some(p)) = (reference.clone(), self.panes.get_mut(&id)) {
+                p.keep_reference(&reference);
+            }
+            // The new Screen has no chat watch: a chat streaming this session goes on (`CVC:144-165`).
+            self.chat_refresh();
+        } else if let Some(reference) = reference {
+            // The old pane is gone and no new one started: its chats unlink with the notice and
+            // stop streaming, as if the pane had closed.
+            self.chat_reference_gone(id, &reference);
+        }
     }
 
     /// "Restart session?" answered OK: the pane restarts in its own window (gone: nothing
@@ -2676,6 +2951,7 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         match SettingsWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, mode) {
             Ok(mut s) => {
+                s.follow_theme(crate::tab_theme::forced_dark(self.tab_style()));
                 // Hotkeys that failed to register show in the sheet.
                 s.hotkeys.errors = self.hotkey_errors.clone();
                 s.title_providers = self.title_provider_items();
@@ -2752,6 +3028,8 @@ impl App {
         self.sync_checks();
         self.register_hotkeys();
         self.scripts_folder_changed();
+        // The Theme may have changed: every window follows the forced mode (or Windows' again).
+        self.apply_theme_everywhere();
         // The border settings, or the Theme, may have changed.
         self.apply_border_everywhere();
         // AllowLiveResize may have changed.
@@ -2917,7 +3195,7 @@ impl App {
         let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
         let size = winit::dpi::PhysicalSize::new((r.w.round() as u32).saturating_sub(dw).max(1), (r.h.round() as u32).saturating_sub(dh).max(1));
         if size != inner {
-            let _ = g.window.request_inner_size(size);
+            let _ = caption_ui::request_inner_size(&g.window, size);
         }
     }
 
@@ -2927,7 +3205,7 @@ impl App {
         let (cw, ch) = self.cell();
         let pad = 2.0 * PAD * self.scale();
         // The line under the title bar is part of the window's decoration (`PT:13235-13237`).
-        let line = self.division_height();
+        let line = self.division_height() + self.caption_strip().unwrap_or(0.0);
         let Some(g) = self.gpu.as_ref() else { return };
         // A percent-eligible type sizes by its explicit percentages of the work area, in whole
         // cells (`TerminalWindowSizeHelper.measurements`, `measurementToCells`).
@@ -2951,7 +3229,7 @@ impl App {
             w = w.min(work.w - outer.width.saturating_sub(inner.width) as f32);
             h = h.min(work.h - outer.height.saturating_sub(inner.height) as f32);
         }
-        let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new(w.max(1.0).ceil() as u32, h.max(1.0).ceil() as u32));
+        let _ = caption_ui::request_inner_size(&g.window, winit::dpi::PhysicalSize::new(w.max(1.0).ceil() as u32, h.max(1.0).ceil() as u32));
     }
 
     /// "Always open in a new window, never in a tab": a new tab of `guid` opens as a window
@@ -3023,6 +3301,8 @@ impl App {
 
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        // Every chat linked to this session unlinks while its reference still names the pane.
+        self.chat_pane_gone(id);
         // A git command's window closed any way ends its command, as does Manage
         // Dependencies' pip command.
         self.single_use_ended(id);
@@ -3094,6 +3374,7 @@ impl App {
             self.note_win = None;
         }
         self.clips.remove(&id);
+        self.inline_drop(id);
         if self.add_clip_win.as_ref().is_some_and(|(_, p)| *p == id) {
             self.add_clip_win = None;
         }
@@ -3171,6 +3452,7 @@ impl App {
             self.redraw();
             return;
         }
+        self.sync_caption_label();
         self.layout_toolbelt();
         self.laid_out = Some(self.room());
         if let Some(t) = self.tabs.get(self.active) {
@@ -3446,7 +3728,7 @@ impl App {
         self.blink_on = true;
         self.last_blink = Instant::now();
         self.banners.clear("action");
-        if self.clip_key(ev) || self.shortcut_key(ev) || self.find_key(ev) || self.copy_mode_key(ev) || self.completion_key(ev) {
+        if self.picker_key(ev) || self.inline_key(ev) || self.clip_key(ev) || self.shortcut_key(ev) || self.find_key(ev) || self.copy_mode_key(ev) || self.completion_key(ev) {
             return;
         }
         let base = keystroke::key_of(&ev.key_without_modifiers(), None);
@@ -3597,6 +3879,10 @@ impl App {
         if self.composer_press(button, x, y) {
             return;
         }
+        // The caption's menu button pops the whole menu (the native bar cannot sit under the strip).
+        if button == MouseButton::Left && self.caption_layout().and_then(|l| l.menu).is_some_and(|m| m.contains(x, y)) {
+            return self.show_caption_menu(false);
+        }
         // The side bar's drag handle, on its inner edge, before its rows (`RTV:1860-1895`).
         if button == MouseButton::Left && self.side_handle().is_some_and(|h| h.contains(x, y)) {
             self.drag = Drag::SideBar { start_x: x, start_width: self.side_bar_width() / self.scale() };
@@ -3611,11 +3897,22 @@ impl App {
         if self.toolbelt_press(button, x, y, event_loop) {
             return;
         }
+        // The session picker's button on a pane (Task 5): a pick waits until one is pressed.
+        if button == MouseButton::Left && self.picker_press(x, y) {
+            return;
+        }
+        // A pane's AI indicator (linked or streaming) opens its menu.
+        if button == MouseButton::Left && self.chat_indicator_press(x, y) {
+            return;
+        }
         if button == MouseButton::Left && self.clip_press(x, y, event_loop) {
             return;
         }
+        if self.inline_press(button, x, y, event_loop) {
+            return;
+        }
         // Other buttons in a panel do nothing (the terminal is not under it).
-        if self.clip_split_hit(x, y) {
+        if self.clip_split_hit(x, y) || self.inline_split_hit(x, y) {
             return;
         }
         if button == MouseButton::Left && (self.info_bar_press(x, y, event_loop) || self.porthole_press(x, y) || self.block_press(x, y)) {
@@ -3774,6 +4071,7 @@ impl App {
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::Porthole { pane, id, .. } => self.porthole_release(pane, id),
             Drag::Clip { pane, kind } => self.clip_release(pane, kind),
+            Drag::Inline { .. } => self.inline_release(),
             Drag::Belt(d) => self.toolbelt_release(d),
             Drag::Composer { pane, kind } => self.composer_release(pane, kind),
             Drag::Divider { .. } => self.tmux_drag_end(event_loop),
@@ -3784,7 +4082,7 @@ impl App {
                 self.update_side_handle_hover();
             }
             // Its press went (the tab moved away under it): the drag ends with nothing dropped.
-            Drag::Tab { .. } | Drag::Chip { .. } | Drag::AddButton { .. } => self.end_tab_drag(),
+            Drag::Tab { .. } | Drag::Chip { .. } | Drag::AddButton { .. } | Drag::Window { .. } => self.end_tab_drag(),
             Drag::Select { pane } => {
                 let empty = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string()).map_or(true, |s| s.is_empty());
                 if empty {
@@ -3802,6 +4100,7 @@ impl App {
                 } else {
                     // iTerm2 copies a selection as soon as it is made.
                     self.copy_selection(pane);
+                    self.chat_offer_selection(pane);
                 }
             }
             Drag::App { pane, button, clicks, at } => {
@@ -3838,6 +4137,7 @@ impl App {
         self.toolbelt_move(x, y);
         self.composer_move(x, y);
         self.clip_move(x, y);
+        self.inline_move(x, y);
         self.update_hover();
         self.update_block_hover();
         // Hover timestamps show while the pointer is at a pane's right edge.
@@ -3851,12 +4151,12 @@ impl App {
                 let (pane, id, frame) = (*pane, *id, *frame);
                 self.porthole_drag(pane, id, frame, x, y);
             }
-            Drag::Clip { .. } | Drag::Belt(_) | Drag::Composer { .. } => {}
+            Drag::Clip { .. } | Drag::Inline { .. } | Drag::Belt(_) | Drag::Composer { .. } => {}
             Drag::SideBar { start_x, start_width } => {
                 let (start_x, start_width) = (*start_x, *start_width);
                 self.side_bar_drag(start_x, start_width, x);
             }
-            Drag::Tab { .. } | Drag::Chip { .. } => self.tab_drag_move(x, y),
+            Drag::Tab { .. } | Drag::Chip { .. } | Drag::Window { .. } => self.tab_drag_move(x, y),
             Drag::AddButton { start } => {
                 let start = *start;
                 self.add_button_drag(start, x, y);
@@ -3924,7 +4224,7 @@ impl App {
             MouseScrollDelta::LineDelta(x, y) => (x * WHEEL_LINES, y * WHEEL_LINES),
             MouseScrollDelta::PixelDelta(p) => (p.x as f32 / cw, p.y as f32 / ch),
         };
-        if self.tab_bar_wheel(delta) || self.composer_wheel(dy) || self.toolbelt_wheel(dy) || self.clip_wheel(dy) || self.porthole_wheel(dx, dy) {
+        if self.tab_bar_wheel(delta) || self.composer_wheel(dy) || self.toolbelt_wheel(dy) || self.inline_wheel(dy) || self.clip_wheel(dy) || self.porthole_wheel(dx, dy) {
             return;
         }
         self.wheel_acc += dy;
@@ -3981,6 +4281,9 @@ impl App {
         let palette_bg = self.panes.values().next().map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
         let mut frame = Frame { clear: rgba(palette_bg, 1.0), ..Default::default() };
         self.note_tab_changes();
+        // A Minimal or Compact window's caption strip is under the tab bar and the sessions.
+        self.sync_caption_label();
+        self.draw_caption_bar(&mut frame);
         // A flashing bar is drawn apart, then laid over the sessions at its alpha.
         let flash_over = self.tab_flash.flashing() && !self.tab_bar_takes_room();
         let mut bar_layer = Frame::default();
@@ -4016,11 +4319,14 @@ impl App {
             let joining = join.map(|join| tab_layout::Bar { join: Some(join), ..drawn.clone() });
             let drawn = joining.as_ref().unwrap_or(drawn);
             let (key, overflow_down) = (self.focused && self.app_active, matches!(self.tab_press, Some((tab_layout::Hit::Overflow, _, _, _))));
+            let pal = self.tab_palette();
+            let positioned = tab_layout::Bar { position: self.tab_position(), ..drawn.clone() };
+            let drawn = &positioned;
             if vertical {
-                let (_, chips) = scene::tab_bar_vertical(bar_frame, &looks, self.active, drawn, area, scale, scale / font_px, cell.1, key, overflow_down);
+                let (_, chips) = scene::tab_bar_vertical(bar_frame, &looks, self.active, drawn, area, scale, scale / font_px, cell.1, key, overflow_down, &pal);
                 self.side_chips = chips;
             } else {
-                scene::tab_bar(bar_frame, &looks, self.active, drawn, area, scale, scale / font_px, cell.1, key, overflow_down);
+                scene::tab_bar(bar_frame, &looks, self.active, drawn, area, scale, scale / font_px, cell.1, key, overflow_down, &pal);
                 self.side_chips.clear();
             }
         } else {
@@ -4032,11 +4338,16 @@ impl App {
         }
         self.tab_bar_drawn = self.tab_bar_rect().map(|bar| (bar, self.bar_tab_rects(), self.bar_pills(None)));
         self.draw_drop_marker(bar_frame);
+        self.draw_caption_content(&mut frame);
         let area = self.content_area();
         let backgrounds = self.pane_backgrounds();
         let mut block_buttons = Vec::new();
+        let mut picker_hits = Vec::new();
+        let mut indicator_hits = Vec::new();
+        let mut inline_hits = Vec::new();
         self.prepare_portholes();
         self.prepare_badges();
+        self.prepare_inline_chats();
         let mut porthole_hits = Vec::new();
         let bview = self.broadcast_view();
         let stripes = self.globals.bool("Use background pattern indicator").then(|| self.stripe_tile());
@@ -4056,7 +4367,7 @@ impl App {
                     let matches = if labeled.is_empty() { self.finds.get(&id).filter(|f| f.open).map(|f| f.results.matches.as_slice()).unwrap_or_default() } else { labeled.as_slice() };
                     let hover = self.hover.filter(|(h, _)| *h == id).map(|(_, m)| m);
                     let notes: Vec<(crate::find::Match, Option<String>)> = self.note_cells(id).into_iter().map(|(m, _, t)| (m, t)).collect();
-                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, undimmed: (!self.focused && id == tab.focused && !self.globals.bool("DimBackgroundWindows")) || (self.focused && receives && self.broadcast.should_broadcast_to(&bview, tab.focused, Some(tab.focused))), key_cursor: self.focused && id == tab.focused && p.at_password_prompt() };
+                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, undimmed: self.pane_undimmed(id, tab.focused, receives, &bview), key_cursor: self.focused && id == tab.focused && p.at_password_prompt() };
                     // An Auto Composer hides the terminal cursor and the rows it covers.
                     let cover = self.auto_composer_cover(id, rect);
                     let overlay_from = frame.overlay.len();
@@ -4081,7 +4392,8 @@ impl App {
                 if self.panes.get(&id).is_some_and(|p| p.buffer.on) {
                     scene::buffering_sign(&mut frame, self.inner(rect), cell);
                 }
-                self.draw_coprocess_indicator(&mut frame, id, self.inner(rect), cell, (sends, receives));
+                indicator_hits.extend(self.draw_coprocess_indicator(&mut frame, id, self.inner(rect), cell, (sends, receives)));
+                picker_hits.extend(self.draw_session_picker(&mut frame, id, self.inner(rect), cell));
                 self.draw_info_bar(&mut frame, id, rect, cell);
                 if let Some(t) = self.draw_attention(&mut frame, id, self.inner(rect), cell) {
                     attention = Some(attention.map_or(t, |a: Instant| a.min(t)));
@@ -4109,8 +4421,9 @@ impl App {
                 self.draw_completion(&mut frame, id, self.inner(rect), cell);
             }
             self.draw_clippings(&mut frame, cell);
+            inline_hits = self.draw_inline_chats(&mut frame, cell);
             if tab.zoomed.is_none() {
-                scene::dividers(&mut frame, &tab.layout.dividers(area, GAP));
+                scene::dividers(&mut frame, &tab.layout.dividers(area, GAP), self.divider_color());
             }
             self.find_bar_rect = None;
             self.find_mode_rect = None;
@@ -4148,6 +4461,9 @@ impl App {
         self.attention_due = attention;
         self.block_buttons = block_buttons;
         self.porthole_hits = porthole_hits;
+        self.picker_hits = picker_hits;
+        self.inline_hits = inline_hits;
+        self.chat_indicator_hits = indicator_hits;
         let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
         if let Some(text) = error {
             let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
@@ -4163,6 +4479,8 @@ impl App {
         // The next edge drag snaps to what this frame shows.
         self.publish_snap();
         let frame = self.build_frame();
+        // The caption's hit tests answer from what this frame drew.
+        self.publish_caption();
         let (title, menu_text) = self.caption_text();
         if self.window_menu_text != menu_text {
             self.window_menu_text = menu_text;
@@ -4282,6 +4600,9 @@ impl ApplicationHandler<UserEvent> for App {
                 self.registry.open(k);
                 // Edge drags snap to the cell grid, and follow AllowLiveResize.
                 self.install_sizing();
+                // A forced Theme's title bar survives system setting changes.
+                self.guard_theme();
+                self.refresh_caption_frame();
                 self.apply_corners();
                 // The settings folder's questions and failures from the launch.
                 for ask in std::mem::take(&mut self.prefs_startup) {
@@ -4335,12 +4656,14 @@ impl ApplicationHandler<UserEvent> for App {
             .flatten()
             .filter(|(_, w)| !w.is_empty());
         let has_arrangement = default_arrangement.is_some();
-        let startup_arrangement = if startup_hotkey.is_some() { None } else { saved.map(|w| (None, w)).or(default_arrangement) };
+        // The saved state's windows are the launch's own restoration (`launch` true); a default
+        // arrangement is an arrangement like any other.
+        let startup_arrangement = if startup_hotkey.is_some() { None } else { saved.map(|w| (None, w, true)).or(default_arrangement.map(|(n, w)| (n, w, false))) };
         let mut arranged = false;
         match startup_arrangement {
-            Some((name, mut windows)) => {
+            Some((name, mut windows, launch)) => {
                 let first = windows.remove(0);
-                match self.apply_arrangement_window(&first, name.as_deref()) {
+                match self.apply_arrangement_window(&first, name.as_deref(), launch) {
                     Ok(()) => arranged = !self.tabs.is_empty(),
                     Err(e) => self.banners.set("arrangement", e),
                 }
@@ -4348,14 +4671,14 @@ impl ApplicationHandler<UserEvent> for App {
                     self.new_tab(None);
                 }
                 for w in windows {
-                    self.pending_windows.push(windows_ui::NewWindow::Arrangement(w, name.clone()));
+                    self.pending_windows.push(if launch { windows_ui::NewWindow::Restored(w) } else { windows_ui::NewWindow::Arrangement(w, name.clone()) });
                 }
             }
             None => match &startup_hotkey {
                 Some(guid) => {
                     if let Some(i) = hotkey_saved.iter().position(|(g, _)| g == guid) {
                         let (_, w) = hotkey_saved.remove(i);
-                        match self.apply_arrangement_window(&w, None) {
+                        match self.apply_arrangement_window(&w, None, true) {
                             Ok(()) => arranged = !self.tabs.is_empty(),
                             Err(e) => self.banners.set("arrangement", e),
                         }
@@ -4498,6 +4821,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.ai_discovery_tick();
         let ai_due = self.ai_discovery_due();
         let chat_due = self.chat_tick();
+        let chat_window_due = self.chat_window_tick();
         self.open_script_dialogs(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
@@ -4522,7 +4846,7 @@ impl ApplicationHandler<UserEvent> for App {
         let tip_due = self.tick_tab_tip();
         let flash_due = self.tick_tab_flash();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, chat_window_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -4557,6 +4881,10 @@ impl ApplicationHandler<UserEvent> for App {
                 if self.pwm_take_chord(&c) {
                     return;
                 }
+                // Win+W, Shift+Win+Y and the find chords in the AI Chat window are its own keys.
+                if self.chat_take_chord(&c, event_loop) {
+                    return;
+                }
                 if let Some(w) = self.last_window {
                     self.enter(w);
                 }
@@ -4573,6 +4901,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::NotificationClicked => return self.reveal_notified(),
             UserEvent::JobsChanged => return self.jobs_changed(),
+            UserEvent::ThemeReset => return self.reapply_forced_theme(),
+            UserEvent::Caption(hwnd, e) => return self.caption_event(hwnd, e, event_loop),
             UserEvent::Wake => {}
         }
         let mut changed = false;
@@ -4629,7 +4959,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.chat_window_event(id, &event, event_loop) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
             return;
         }
         for profiles in [false, true] {
@@ -4687,6 +5017,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
         match event {
             WindowEvent::ThemeChanged(_) => {
+                self.theme_applied = Some(self.dark());
                 self.refresh_panes();
                 // A light or dark window may gain or lose its border (`BordersOnlyInLightMode`).
                 self.apply_border();
@@ -4714,8 +5045,12 @@ impl ApplicationHandler<UserEvent> for App {
                 // Entering or leaving full screen resizes the window: the border goes or comes back.
                 self.apply_border();
             }
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                let _ = scale_factor;
+            WindowEvent::ScaleFactorChanged { mut inner_size_writer, .. } => {
+                // winit is about to size the window for a title bar the caption subclass removes:
+                // the size it sets is corrected here, before it does (`caption_ui::dpi_size`).
+                if let Some(size) = self.hwnd().and_then(caption_ui::dpi_size) {
+                    let _ = inner_size_writer.request_inner_size(size);
+                }
                 self.apply_fonts();
                 self.relayout();
             }

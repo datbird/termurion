@@ -4,8 +4,9 @@
 use crate::screen::Screen;
 
 /// iTerm2's `findMode_iTerm` values.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
+    #[default]
     SmartCase = 0,
     CaseSensitive = 1,
     CaseInsensitive = 2,
