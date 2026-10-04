@@ -106,7 +106,21 @@ pub(super) struct Check {
     pub then: Then,
     /// What the approval bubble says the agent wants.
     pub summary: String,
-    pub run: Run,
+    /// One per form judged (a command is judged alone and joined with its held text).
+    pub runs: Vec<Run>,
+}
+
+/// The verdict of a check once every form's run is done: the worst of them (any refusal
+/// refuses); None while one still runs.
+pub(super) fn runs_verdict(runs: &[Run]) -> Option<Verdict> {
+    let mut vs = Vec::new();
+    for r in runs {
+        match r {
+            Run::Done(v) => vs.push(v.clone()),
+            Run::Running(..) => return None,
+        }
+    }
+    Some(orch_gate::worst(&vs))
 }
 
 /// A call parked on the person, by request id (`orch_parks` maps the id to the chat and call).
@@ -712,11 +726,14 @@ impl App {
             Route::AccumulateOnly => self.orch_typed_finish(chat_id, call_id, then, None),
             Route::ClassifyLine(line) => {
                 let shell = self.ai_shell_of(pane).0;
-                // The shell may join this line with text already submitted (a trailing pipe,
-                // backslash, caret...): the check sees the whole command.
-                let whole = orch_gate::join_held(self.orch_held.get(&pane), prompts, super::warnings_app::unix_now(), &line);
-                let summary = ot::run_summary(&whole);
-                self.orch_check_start(chat_id, call_id, CheckKind::Command, Proposed::Line { line: whole, shell }, summary, then)
+                // The shell may join this line with text a model already submitted (a trailing
+                // pipe, its own continuation character, an open quote): the line alone and
+                // each joined form are judged, and any refusal refuses (Task 10 fix round 2).
+                let held = orch_gate::live_lines(self.orch_held.get(&pane), prompts, prompts > 0, super::warnings_app::unix_now(), shell);
+                let forms = orch_gate::forms(&held, &line, shell);
+                let summary = ot::run_summary(forms.get(1).unwrap_or(&line));
+                let proposed = forms.into_iter().map(|line| Proposed::Line { line, shell }).collect();
+                self.orch_check_start(chat_id, call_id, CheckKind::Command, proposed, summary, then)
             }
             Route::ScreenAware => {
                 let keystroke = format!("{text}{}", if append_newline { "\r" } else { "" });
@@ -725,7 +742,7 @@ impl App {
                 }
                 let screen = self.orch_screen_text(pane);
                 let summary = ot::keystroke_summary(&keystroke);
-                self.orch_check_start(chat_id, call_id, CheckKind::Keystroke, Proposed::Keystroke { keystroke, screen }, summary, then)
+                self.orch_check_start(chat_id, call_id, CheckKind::Keystroke, vec![Proposed::Keystroke { keystroke, screen }], summary, then)
             }
             Route::FailClosed(reason) => self.orch_ask_approval(chat_id, call_id, then, ot::FAILCLOSED_SUMMARY, &reason, false),
         }
@@ -760,7 +777,8 @@ impl App {
         }
         // Allowed and sent: what it submitted stays as context for a continuation.
         if let Route::ClassifyLine(l) = &t.plan.route {
-            let h = orch_gate::record_held(self.orch_held.get(&t.pane), prompts, super::warnings_app::unix_now(), l);
+            let shell = self.ai_shell_of(t.pane).0;
+            let h = orch_gate::record_held(self.orch_held.get(&t.pane), prompts, prompts > 0, super::warnings_app::unix_now(), shell, l, chat);
             self.orch_held.insert(t.pane, h);
         }
         match command {
@@ -833,18 +851,21 @@ impl App {
     /// Starts one safety check (ruling P6): always on (the AI Safety Check setting and its nag
     /// are 12c's and do not apply), hard rules first for a shell line only, then the model
     /// behind the gate for its own host; anything that cannot run asks the person.
-    fn orch_check_start(&mut self, chat: &str, call_id: &str, kind: CheckKind, proposed: Proposed, summary: String, then: Then) -> Outcome {
+    fn orch_check_start(&mut self, chat: &str, call_id: &str, kind: CheckKind, proposed: Vec<Proposed>, summary: String, then: Then) -> Outcome {
         let deny = block_is_deny(kind);
-        let pre = match &proposed {
-            Proposed::Line { line, shell } => ai_classifier::pre_check(&orch_gate::command_entry(line), false, *shell).map(|d| orch_gate::verdict_of(&d, deny)),
-            // A keystroke and a file's content are not shell lines (`OSG:66-77`, `TUISafetyPrompt`).
-            Proposed::File { .. } | Proposed::Keystroke { .. } => None,
-        };
-        let run = match pre {
-            Some(v) => Run::Done(v),
-            None => self.orch_check_run(chat, &proposed, deny),
-        };
-        self.orch_checks.push(Check { chat: chat.to_string(), call_id: call_id.to_string(), kind, then, summary, run });
+        let mut runs = Vec::new();
+        for p in &proposed {
+            let pre = match p {
+                Proposed::Line { line, shell } => ai_classifier::pre_check(&orch_gate::command_entry(line), false, *shell).map(|d| orch_gate::verdict_of(&d, deny)),
+                // A keystroke and a file's content are not shell lines (`OSG:66-77`, `TUISafetyPrompt`).
+                Proposed::File { .. } | Proposed::Keystroke { .. } => None,
+            };
+            runs.push(match pre {
+                Some(v) => Run::Done(v),
+                None => self.orch_check_run(chat, p, deny),
+            });
+        }
+        self.orch_checks.push(Check { chat: chat.to_string(), call_id: call_id.to_string(), kind, then, summary, runs });
         // A check done at once is finished by the next tick.
         (self.notify)();
         Outcome::Running
@@ -877,13 +898,11 @@ impl App {
         {
             let g = &self.globals;
             for mut c in checks {
-                c.run = run_advance(c.run, |e| crate::chat_gate::pass(g, e), block_is_deny(c.kind));
-                match c.run {
-                    Run::Done(ref v) => {
-                        let v = v.clone();
-                        finished.push((c.chat, c.call_id, c.then, c.summary, v));
-                    }
-                    Run::Running(..) => self.orch_checks.push(c),
+                let deny = block_is_deny(c.kind);
+                c.runs = std::mem::take(&mut c.runs).into_iter().map(|r| run_advance(r, |e| crate::chat_gate::pass(g, e), deny)).collect();
+                match runs_verdict(&c.runs) {
+                    Some(v) => finished.push((c.chat, c.call_id, c.then, c.summary, v)),
+                    None => self.orch_checks.push(c),
                 }
             }
         }
@@ -1002,7 +1021,7 @@ impl App {
                 let then = Then::Mirror { pane, guid, call: call.clone() };
                 match orch_gate::file_route(content) {
                     Some(v) => self.orch_verdict(chat, call_id, then, &summary, v),
-                    None => self.orch_check_start(chat, call_id, CheckKind::FileWrite, proposed, summary, then),
+                    None => self.orch_check_start(chat, call_id, CheckKind::FileWrite, vec![proposed], summary, then),
                 }
             }
             ref c if c.needs_safety_check() => done(ot::NEEDS_APPROVAL.to_string()),
@@ -1034,7 +1053,7 @@ impl App {
             SpawnStep::Start => Ok(self.orch_allowed(chat, call_id, Then::Spawn(a))),
             SpawnStep::Ask { command: Some(c) } => {
                 let summary = ot::start_prompt(ot::placement(a.window.as_deref()), Some(&c));
-                Ok(self.orch_check_start(chat, call_id, CheckKind::Command, Proposed::Line { line: c, shell: ShellKind::Unknown }, summary, Then::Spawn(a)))
+                Ok(self.orch_check_start(chat, call_id, CheckKind::Command, vec![Proposed::Line { line: c, shell: ShellKind::Unknown }], summary, Then::Spawn(a)))
             }
             SpawnStep::Ask { command: None } => Ok(self.orch_ask_spawn(chat, call_id, a, None, None)),
         }
@@ -1103,17 +1122,18 @@ impl App {
     /// calls, running checks (their requests cancelled), delayed CRs, mirrors and their 12c
     /// commands, queued spawns.
     pub(super) fn orch_drop_chat(&mut self, chat: &str) {
-        // Submitted text is cleared, but a command still waiting for its continuation is kept
-        // (Stop leaves the shell's own unfinished line, which the next send would complete).
-        orch_gate::after_chat_end(&mut self.orch_held, super::warnings_app::unix_now());
+        // The held text of the panes this chat sent to is cleared; other chats keep theirs.
+        orch_gate::after_chat_end(&mut self.orch_held, chat);
         let requests: Vec<String> = self.orch_parks.iter().filter(|(_, (c, _))| c == chat).map(|(r, _)| r.clone()).collect();
         for r in requests {
             self.orch_waits.remove(&r);
         }
         for c in std::mem::take(&mut self.orch_checks) {
             if c.chat == chat {
-                if let Run::Running(mut runner, _) = c.run {
-                    runner.cancel();
+                for r in c.runs {
+                    if let Run::Running(mut runner, _) = r {
+                        runner.cancel();
+                    }
                 }
             } else {
                 self.orch_checks.push(c);
@@ -1352,15 +1372,47 @@ mod tests {
         }
     }
 
-    /// Task 10 fix round 1: a split line is classified whole, and every halt clears the held text.
+    /// Task 10 fix rounds 1 and 2: every form of a split line is judged, the held text is
+    /// recorded only after an allowed send, and a chat's end clears its panes' held text.
     #[test]
     fn the_held_text_is_joined_recorded_and_cleared() {
         let src = include_str!("orch_dispatch.rs");
         let code = src.split("#[cfg(test)]").next().unwrap();
         let at = |needle: &str| code.match_indices(needle).map(|(i, _)| owner(code, i)).collect::<Vec<_>>();
-        assert_eq!(at("orch_gate::join_held("), ["orch_type_gated"], "the classified text is the joined one");
+        assert_eq!(at("orch_gate::forms("), ["orch_type_gated"], "the classified text is every form");
         assert_eq!(at("orch_gate::record_held("), ["orch_typed_finish"], "recorded only after an allowed send");
-        assert_eq!(at("orch_gate::after_chat_end("), ["orch_drop_chat"], "orch_chat_ended reaches orch_drop_chat");
+        assert_eq!(at("orch_gate::after_chat_end(&mut self.orch_held, chat)"), ["orch_drop_chat"], "only the ending chat's panes");
+        assert_eq!(at("runs_verdict(&"), ["orch_check_tick"], "a check's verdict is the worst of its forms");
         assert!(include_str!("orch_app.rs").split("#[cfg(test)]").next().unwrap().contains("self.orch_drop_chat(chat)"));
+    }
+
+    /// Task 10 fix round 2: every path that ends what the held text stands for clears it.
+    /// Stop, EnableAI off, the mode off and a delete reach `orch_chat_ended` (Task 10); a gate
+    /// that closes halts the turn (`chat_engine::ai_off_stops_the_chat`, `answers_need_the_gate`)
+    /// with `CancelChecks`, which App maps to `orch_chat_ended`; a pane gone for good, a
+    /// restart's new shell and the person's own writes clear it directly.
+    #[test]
+    fn every_halt_and_close_clears_the_held_text() {
+        let code = |s: &'static str| s.split("#[cfg(test)]").next().unwrap();
+        let fn_body = |src: &'static str, name: &str| {
+            let c = code(src);
+            let i = c.find(name).unwrap_or_else(|| panic!("{name} is missing"));
+            let rest = &c[i..];
+            rest[..rest.find("\n    }\n").unwrap()].to_string()
+        };
+        let apply = fn_body(include_str!("chat_app.rs"), "EngineEffect::CancelChecks(chat) =>");
+        assert!(apply.contains("self.orch_chat_ended(&chat);"), "a halt (and so a closed gate) ends the chat");
+        assert!(fn_body(include_str!("orch_app.rs"), "fn orch_chat_ended(").contains("self.orch_drop_chat(chat);"));
+        assert!(fn_body(include_str!("mod.rs"), "fn pane_gone(").contains("self.orch_held.remove(&id);"), "a pane closed for good");
+        assert!(fn_body(include_str!("mod.rs"), "fn restart_pane(").contains("self.orch_held.remove(&id);"), "a restarted pane runs a new shell");
+        let write = fn_body(include_str!("broadcast_ui.rs"), "fn user_write(");
+        assert!(write.contains("crate::orch_gate::person_writes(what)") && write.contains("self.orch_held.remove(&t);"), "the person's typing and pastes");
+    }
+
+    #[test]
+    fn a_check_waits_for_every_form() {
+        assert_eq!(runs_verdict(&[Run::Done(Verdict::Allow), Run::Done(Verdict::Allow)]), Some(Verdict::Allow));
+        assert_eq!(runs_verdict(&[Run::Done(Verdict::Allow), Run::Done(Verdict::Deny("d".into()))]), Some(Verdict::Deny("d".into())));
+        assert!(matches!(runs_verdict(&[]), Some(Verdict::RequireApproval(_))));
     }
 }

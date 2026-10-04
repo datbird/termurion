@@ -39,6 +39,11 @@ impl App {
         let gateways = self.tmux_gateways();
         let targets = broadcast::write_targets(&self.broadcast, &self.broadcast_view(), sender, what, &gateways);
         for t in targets {
+            // The person's own typing makes the line theirs: a model's held text no longer
+            // describes it (Task 10 fix round 2).
+            if crate::orch_gate::person_writes(what) {
+                self.orch_held.remove(&t);
+            }
             // A tmux gateway reads typing as its Command Menu's keys; reports and other
             // bytes would land in tmux's command stream, so they are dropped there.
             if self.is_tmux_gateway(t) {

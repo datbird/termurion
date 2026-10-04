@@ -2812,6 +2812,8 @@ impl App {
         // The session keeps its chat reference across a restart (`PTYSession.m:2403-2420`).
         let reference = self.panes.get(&id).map(|p| p.session_guid.clone());
         let stable = self.panes.get(&id).map(|p| p.stable_id.clone());
+        // The new shell never saw what a model typed into the old one.
+        self.orch_held.remove(&id);
         if let Some(old) = self.panes.remove(&id) {
             if let Some(pid) = old.shell_pid() {
                 self.jobs.forget(pid);
@@ -2911,6 +2913,8 @@ impl App {
     /// Every drop path calls this, so an app-wide map keyed by pane cannot leak.
     pub(super) fn pane_gone(&mut self, id: PaneId) {
         self.api_session_subs.forget_session(id);
+        // The shell a model's held text was typed into is gone (Task 10 fix round 2).
+        self.orch_held.remove(&id);
         self.held_on_exit.remove(&id);
         self.unread_session_counts.retain(|(p, _), _| *p != id);
         self.script_templates.retain(|(p, _), _| *p != id);
