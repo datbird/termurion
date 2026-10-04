@@ -486,52 +486,122 @@ pub(super) fn shell_open(target: &str, _cwd: Option<&std::path::Path>, _backgrou
 
 #[cfg(test)]
 mod tests {
-    /// The functions that turn text in a pane into a local open, run or coprocess: each asks the
-    /// one guard, `remote_text` (P10). Win-click and the Open Target pointer actions reach
-    /// `open_target`; the right-click menu and its pointer action `show_context_menu_at` and
-    /// `context_picked`; Open Selection and a label pick `open_text`; OSC 1337 OpenURL `open_url`.
+    /// The functions that turn text in a pane into a local open, run or coprocess, or a pane's
+    /// reported folder into a local shell's folder or an Explorer target: each asks the one
+    /// guard, `remote_text` (P10), or `pane_dir`, which asks it. Win-click and the Open Target
+    /// pointer actions reach `open_target`; the right-click menu and its pointer action
+    /// `show_context_menu_at` and `context_picked`; Open Selection and a label pick `open_text`;
+    /// OSC 1337 OpenURL `open_url`; the status bar's Current Directory menu `dir_menu_picked`; a
+    /// Porthole document link `open_porthole_link` and `open_link_target`; a new session's
+    /// folder `previous_dir`. Paths are under src/.
     const GATED: &[(&str, &str)] = &[
-        ("semantic_ui.rs", "open_target"),
-        ("semantic_ui.rs", "show_context_menu_at"),
-        ("semantic_ui.rs", "context_picked"),
-        ("semantic_ui.rs", "open_text"),
-        ("semantic_ui.rs", "pane_dir"),
-        ("prompted_ui.rs", "open_url"),
+        ("app/semantic_ui.rs", "open_target"),
+        ("app/semantic_ui.rs", "show_context_menu_at"),
+        ("app/semantic_ui.rs", "context_picked"),
+        ("app/semantic_ui.rs", "open_text"),
+        ("app/semantic_ui.rs", "pane_dir"),
+        ("app/prompted_ui.rs", "open_url"),
+        ("app/statusbar_content.rs", "dir_menu_picked"),
+        ("app/porthole_ui.rs", "open_porthole_link"),
+        ("app/porthole_ui.rs", "open_link_target"),
+        ("app/mod.rs", "previous_dir"),
     ];
 
-    /// Calls that open or run something on this machine.
-    const SINKS: &[&str] = &["self.execute(", "smart_action_run(", "semantic::plan(", "guard_open(", "shell_open(", "start_coprocess(", "reveal_in_explorer("];
+    /// The guard calls a GATED function may make.
+    const GUARDS: &[&str] = &["remote_text(", "self.pane_dir("];
+
+    /// Calls that open or run something on this machine: Tandem's own sinks and every direct
+    /// process start (`Command::new`, `ShellExecuteW`, `ShellExecuteExW`, `CreateProcessW`).
+    const SINKS: &[&str] = &[
+        "self.execute(",
+        "smart_action_run(",
+        "semantic::plan(",
+        "guard_open(",
+        "shell_open(",
+        "start_coprocess(",
+        "reveal_in_explorer(",
+        "Command::new(",
+        "ShellExecuteW(",
+        "ShellExecuteExW(",
+        "CreateProcessW(",
+    ];
 
     /// Callers of a sink whose input is not text a remote host wrote, and why.
     const NOT_PANE_TEXT: &[(&str, &str, &str)] = &[
-        ("semantic_ui.rs", "execute", "the sink itself; its callers are checked"),
-        ("semantic_ui.rs", "smart_action_run", "builds the Run; its callers are checked"),
-        ("actions.rs", "run_key_action", "the user's own key binding"),
-        ("ai_tools_app.rs", "ai_reveal_file", "reveals the AI's own new file, runs nothing"),
-        ("api_ui.rs", "open_link", "a fixed More Info page"),
-        ("builtin_ui.rs", "session_method", "a local script's request"),
-        ("chat_window_app.rs", "chat_open_url", "a link in the AI chat window, not a pane"),
-        ("chat_window_app.rs", "chat_file", "an AI chat attachment, inert types only (F19)"),
-        ("coprocess_ui.rs", "coprocess_prompt_event", "the command the user typed"),
-        ("coprocess_ui.rs", "flush_dropped", "files the user dropped"),
-        ("host_offers_ui.rs", "host_offer_bar", "a fixed help page"),
-        ("mod.rs", "window_event", "the Configure SSH help page"),
-        ("porthole_ui.rs", "open_link_target", "a Porthole document link, asked per link"),
-        ("snippets_ui.rs", "run_applied", "the user's own key binding"),
-        ("tmux_ui.rs", "tmux_bar", "a fixed help page"),
-        ("triggers_ui.rs", "trigger_request", "the user's own trigger rule"),
+        ("app/semantic_ui.rs", "execute", "the sink itself; its callers are checked"),
+        ("app/semantic_ui.rs", "smart_action_run", "builds the Run; its callers are checked"),
+        ("app/semantic_ui.rs", "shell_open", "the sink itself; its callers are checked"),
+        ("app/semantic_ui.rs", "reveal_in_explorer", "the sink itself; its callers are checked"),
+        ("semantic.rs", "plan", "builds a Run and opens nothing; its callers are checked"),
+        ("coproc_win.rs", "spawn", "the coprocess start; start_coprocess's callers are checked"),
+        ("app/actions.rs", "run_key_action", "the user's own key binding"),
+        ("app/ai_tools_app.rs", "ai_reveal_file", "reveals the AI's own new file, runs nothing"),
+        ("ai_actions.rs", "get_help", "PowerShell Get-Help on a name man_page_plan checked, runs no command"),
+        ("app/api_ui.rs", "open_link", "a fixed More Info page"),
+        ("app/api_ui.rs", "reveal_allow_all_file", "reveals Tandem's own allow-all file"),
+        ("app/builtin_ui.rs", "session_method", "a local script's request"),
+        ("app/chat_window_app.rs", "chat_open_url", "a link in the AI chat window, not a pane"),
+        ("app/chat_window_app.rs", "chat_file", "an AI chat attachment, inert types only (F19)"),
+        ("app/coprocess_ui.rs", "coprocess_prompt_event", "the command the user typed"),
+        ("app/coprocess_ui.rs", "coprocess_bar", "Notepad on Tandem's own coprocess error file"),
+        ("app/coprocess_ui.rs", "flush_dropped", "files the user dropped"),
+        ("app/host_offers_ui.rs", "host_offer_bar", "a fixed help page"),
+        ("app/menu.rs", "run_command", "the Help menu's fixed documentation page"),
+        ("app/mod.rs", "window_event", "the Configure SSH help page"),
+        ("app/prefs_ui.rs", "curl_fetch", "the settings URL the user typed in Settings"),
+        ("app/screenshot_ui.rs", "shot_event", "reveals the screenshot Tandem just saved"),
+        ("app/scripts_app.rs", "edit_new_script", "the user's new script, edited, never run"),
+        ("app/scripts_app.rs", "reveal_path", "a script in the user's Scripts folder, revealed"),
+        ("app/settings_export_ui.rs", "start_relaunched", "starts Tandem's own executable"),
+        ("app/snippets_ui.rs", "run_applied", "the user's own key binding"),
+        ("app/ssh_panel_app.rs", "reveal_all", "the Download Files batch folder Tandem made (P12)"),
+        ("app/tmux_ui.rs", "tmux_bar", "a fixed help page"),
+        ("app/triggers_ui.rs", "trigger_request", "the user's own trigger rule (ruling)"),
+        ("app/triggers_ui.rs", "start_command", "Run Command for the user's own trigger rule (ruling)"),
+        ("bin/tandem-git.rs", "run", "the git menu's wrapper: git with the menu's own command"),
+        ("git_run_win.rs", "start", "git for the status bar, Tandem's own arguments"),
+        ("host_client.rs", "start_host_process", "starts Tandem's own session host"),
+        ("probe.rs", "wsl", "`wsl.exe` with Tandem's own arguments"),
+        ("pty.rs", "start", "a pane's shell, from its profile"),
+        ("pty.rs", "start_pipes", "a pane's shell, from its profile"),
+        ("pwm_run.rs", "run", "the password manager CLI the user set up"),
+        ("script_proc.rs", "start", "a local Python API script"),
+        ("script_provision.rs", "run_watched", "the scripts' Python setup steps"),
+        ("util_console.rs", "run_command", "tandem-utils' program runner, run by the user at a prompt"),
     ];
 
-    /// Each `fn` in a source file with its body, up to the test module.
+    /// What may stand before `fn` in a declaration.
+    const QUALIFIERS: &[&str] = &["pub(super) ", "pub(crate) ", "pub ", "unsafe ", "const ", "async ", "extern \"system\" ", "extern \"C\" "];
+
+    fn unqualified(mut t: &str) -> &str {
+        while let Some(rest) = QUALIFIERS.iter().find_map(|q| t.strip_prefix(q)) {
+            t = rest;
+        }
+        t
+    }
+
+    /// Each `fn` in a source file with its body, up to its test module (`#[cfg(test)]` then
+    /// `mod x {`). A `#[cfg(test)]` fn is still read; `unsafe extern "system" fn` is a fn.
     fn functions(src: &str) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = Vec::new();
+        let mut cfg_test = false;
         for line in src.lines() {
-            if line.trim_start().starts_with("#[cfg(test)]") {
+            let t = line.trim_start();
+            if t.starts_with("#[cfg(test)]") {
+                cfg_test = true;
+                continue;
+            }
+            if t.starts_with("#[") {
+                continue;
+            }
+            let bare = unqualified(t);
+            if cfg_test && bare.starts_with("mod ") && t.trim_end().ends_with('{') {
                 break;
             }
-            let t = line.trim_start();
-            let decl = ["pub(super) fn ", "pub(crate) fn ", "pub fn ", "fn "].iter().find_map(|k| t.strip_prefix(k));
-            if let Some(rest) = decl {
+            if !t.is_empty() {
+                cfg_test = false;
+            }
+            if let Some(rest) = bare.strip_prefix("fn ") {
                 let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
                 out.push((name, String::new()));
             } else if let Some((_, body)) = out.last_mut() {
@@ -544,19 +614,40 @@ mod tests {
         out
     }
 
+    /// Every `.rs` file under `dir`, as (path under src/ with `/`, path).
+    fn sources(src: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, std::path::PathBuf)>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let path = e.unwrap().path();
+            if path.is_dir() {
+                sources(src, &path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let rel = path.strip_prefix(src).unwrap().to_string_lossy().replace('\\', "/");
+                out.push((rel, path));
+            }
+        }
+    }
+
+    #[test]
+    fn the_scan_reads_every_kind_of_fn() {
+        let src = "pub fn a() {\n    x();\n}\nunsafe extern \"system\" fn b() {\n    Command::new(1);\n}\n#[cfg(test)]\nfn c() {\n    y();\n}\n#[cfg(test)]\nmod tests {\n    fn d() {}\n}\n";
+        let names: Vec<String> = functions(src).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["a", "b", "c"]);
+        assert!(functions(src)[1].1.contains("Command::new("), "a spawn in an extern fn is its own");
+    }
+
     #[test]
     fn every_entry_point_is_gated() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("app");
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let (mut seen, mut wrong) = (Vec::new(), Vec::new());
-        let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|e| e == "rs")).collect();
+        let mut files = Vec::new();
+        sources(&src, &src, &mut files);
         files.sort();
-        for path in files {
-            let file = path.file_name().unwrap().to_string_lossy().to_string();
-            let src = std::fs::read_to_string(&path).unwrap();
-            for (name, body) in functions(&src) {
+        for (file, path) in files {
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (name, body) in functions(&text) {
                 let gated = GATED.contains(&(file.as_str(), name.as_str()));
                 if gated {
-                    if !body.contains("remote_text(") {
+                    if !GUARDS.iter().any(|g| body.contains(g)) {
                         wrong.push(format!("{file} {name} must ask remote_text (P10)"));
                     }
                     seen.push((file.clone(), name.clone()));
@@ -572,6 +663,11 @@ mod tests {
         for (f, n) in GATED {
             if !seen.iter().any(|(a, b)| a == f && b == n) {
                 wrong.push(format!("{f} {n} is gone: update GATED"));
+            }
+        }
+        for (f, n, _) in NOT_PANE_TEXT {
+            if !std::fs::read_to_string(src.join(f)).is_ok_and(|t| functions(&t).iter().any(|(m, _)| m == n)) {
+                wrong.push(format!("{f} {n} is gone: update NOT_PANE_TEXT"));
             }
         }
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));

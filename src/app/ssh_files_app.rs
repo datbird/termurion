@@ -9,6 +9,7 @@ use crate::ssh_files::{self, FileSub, ScpPath};
 use crate::ssh_local::{self as local, Local, Place};
 use crate::ssh_transfer::{has_room, Action, Outcome};
 use super::files_ui::shown_name;
+use super::ssh_panel_app::Landing;
 
 /// What waits for one request's answer.
 #[derive(Clone, Debug, PartialEq)]
@@ -193,22 +194,49 @@ impl App {
     }
 
     /// Unzips a folder download's zip on a worker thread (P11: a remote-sized archive never
-    /// freezes the UI); the answer comes through `ssh_unzip_tick`. The reason when it cannot start.
+    /// freezes the UI); the answer comes through `ssh_unzip_tick`. It waits while an earlier
+    /// item of its name is still landing (`Landings`). The reason when it cannot start.
     fn ssh_unzip(&mut self, job: u64) -> Option<String> {
         let l = self.ssh_locals.get(&job)?;
-        let Place::Temp { temp, dest, .. } = &l.place else { return Some("Internal error".to_string()) };
-        let (temp, dest, url) = (temp.clone(), dest.clone(), l.url());
+        let Place::Temp { dest, .. } = &l.place else { return Some("Internal error".to_string()) };
+        let dest = dest.clone();
+        if self.ssh_landings.claim(&dest, Landing::Unzip(job)).is_some() {
+            self.ssh_unzip_start(job, dest);
+        }
+        None
+    }
+
+    /// Starts the unzip of `job`, which holds `dest`. False when the job is gone.
+    fn ssh_unzip_start(&mut self, job: u64, dest: std::path::PathBuf) -> bool {
+        let Some(l) = self.ssh_locals.get(&job) else { return false };
+        let Place::Temp { temp, .. } = &l.place else { return false };
+        let (temp, url) = (temp.clone(), l.url());
         let (tx, rx) = std::sync::mpsc::channel();
         let wake = self.notify.clone();
         std::thread::spawn(move || {
             // Last one wins in the batch folder: an earlier item of this name never merges in.
             let r = super::ssh_panel_app::clear_earlier(&dest).map_err(|e| e.to_string()).and_then(|()| local::unzip(&temp, &dest, &url));
             let _ = std::fs::remove_file(&temp);
-            let _ = tx.send((job, r));
+            let _ = tx.send((job, dest, r));
             wake();
         });
         self.ssh_unzips.push(rx);
-        None
+        true
+    }
+
+    /// The landing at `dest` is done: the items waiting for it land in turn, until one unzips
+    /// (it holds `dest` until its own answer) or none waits.
+    fn ssh_land_next(&mut self, dest: &std::path::Path) {
+        while let Some(next) = self.ssh_landings.next(dest) {
+            match next {
+                Landing::Unzip(job) => {
+                    if self.ssh_unzip_start(job, dest.to_path_buf()) {
+                        return;
+                    }
+                }
+                Landing::File(job) => self.ssh_land_file(job),
+            }
+        }
     }
 
     /// Feeds the finished unzips to the engine.
@@ -224,9 +252,10 @@ impl App {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => break false,
             }
         });
-        for (job, r) in results {
+        for (job, dest, r) in results {
             let actions = self.ssh_transfers.unzipped(job, r);
             self.ssh_transfer_apply(actions);
+            self.ssh_land_next(&dest);
         }
     }
 
@@ -453,11 +482,18 @@ impl App {
             // Download Files: a file is marked and moved into its place in the batch folder, an
             // earlier item of that name removed first (last one wins, R14de-4); a folder was
             // unzipped there already. The batch reports.
+            // A file waits while an earlier item of its name is still unzipping there.
+            Place::Temp { dest, .. } if outcome == Outcome::File => {
+                let dest = dest.clone();
+                if self.ssh_landings.claim(&dest, Landing::File(job)).is_some() {
+                    self.ssh_land_file(job);
+                    self.ssh_land_next(&dest);
+                }
+            }
             Place::Temp { .. } => {
                 let l = self.ssh_locals.remove(&job).unwrap();
                 let Place::Temp { temp, dest, batch } = &l.place else { return };
                 let result = match outcome {
-                    Outcome::File => super::ssh_panel_app::clear_earlier(dest).map_err(|e| e.to_string()).and_then(|()| local::finish(temp, dest, &l.url())),
                     Outcome::Directory => Ok(dest.clone()),
                     _ => Err(crate::ssh_files::FileError::Internal.text().to_string()),
                 };
@@ -467,6 +503,17 @@ impl App {
                 self.ssh_batch_item_ended(*batch, &l.short_name, result);
             }
         }
+    }
+
+    /// Moves a finished Download Files file item, which holds its place, into the batch folder.
+    fn ssh_land_file(&mut self, job: u64) {
+        let Some(l) = self.ssh_locals.remove(&job) else { return };
+        let Place::Temp { temp, dest, batch } = &l.place else { return };
+        let result = super::ssh_panel_app::clear_earlier(dest).map_err(|e| e.to_string()).and_then(|()| local::finish(temp, dest, &l.url()));
+        if let Err(why) = &result {
+            Self::ssh_note_unremoved(why, temp);
+        }
+        self.ssh_batch_item_ended(*batch, &l.short_name, result);
     }
 
     /// Keep Both (0) or Replace (1) answered for the finished download `job`. Keep Both

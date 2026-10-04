@@ -792,7 +792,9 @@ pub struct App {
     /// The local side of each transfer job: its temp file and what its banner shows (Task 4).
     ssh_locals: HashMap<u64, crate::ssh_local::Local>,
     /// Folder unzips running on worker threads, each answering (job, result) once.
-    ssh_unzips: Vec<std::sync::mpsc::Receiver<(u64, Result<(), String>)>>,
+    ssh_unzips: Vec<std::sync::mpsc::Receiver<(u64, PathBuf, Result<(), String>)>>,
+    /// Download Files items waiting for an earlier item of their name to land (app-wide, P12).
+    ssh_landings: ssh_panel_app::Landings,
     /// The remote file panel (Shell > ssh > Download Files) and its model; one at a time (app-wide,
     /// not in `swap_live`; 14d).
     ssh_panel: Option<(crate::ssh_panel_ui::SshPanelWindow, crate::ssh_panel::Panel)>,
@@ -1540,6 +1542,7 @@ pub fn run() {
         ssh_transfers: crate::ssh_transfer::Transfers::new(),
         ssh_locals: HashMap::new(),
         ssh_unzips: Vec::new(),
+        ssh_landings: ssh_panel_app::Landings::default(),
         ssh_panel: None,
         ssh_batches: HashMap::new(),
         ssh_secret_server: None,
@@ -2958,12 +2961,8 @@ impl App {
     /// The focused session's directory, from shell integration, when it is on this machine
     /// (iTerm2 prefers the local directory for a new session).
     fn previous_dir(&self) -> Option<std::path::PathBuf> {
-        let t = self.tabs.get(self.active)?;
-        let shell = &self.panes.get(&t.focused)?.own().shell;
-        if shell.host.as_ref().is_some_and(|h| !self.host_is_this_machine(h)) {
-            return None;
-        }
-        profile::local_path(shell.cwd.as_deref()?)
+        // Through the guard: a framing pane's reported folder is remote text (P10).
+        self.pane_dir(self.tabs.get(self.active)?.focused)
     }
 
     /// The Settings window on one page.

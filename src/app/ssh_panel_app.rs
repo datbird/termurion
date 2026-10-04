@@ -46,6 +46,49 @@ pub(super) fn clear_earlier(dest: &Path) -> std::io::Result<()> {
     }
 }
 
+/// A Download Files item's last step at its place in the batch folder: a folder's unzip (on a
+/// worker thread) or a file's move.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Landing {
+    Unzip(u64),
+    File(u64),
+}
+
+/// One landing at a time at each batch destination (P12, R14de-4): an item of a name waits
+/// while an earlier one of that name is still unzipping, then replaces it, so two never merge
+/// and a file never removes a folder mid-unzip.
+#[derive(Debug, Default)]
+pub(super) struct Landings {
+    busy: std::collections::HashMap<PathBuf, std::collections::VecDeque<Landing>>,
+}
+
+impl Landings {
+    /// `item` wants `dest`: Some(item) when it lands now (the caller then calls `next` once it
+    /// is done), None when it waits its turn.
+    pub fn claim(&mut self, dest: &Path, item: Landing) -> Option<Landing> {
+        match self.busy.get_mut(dest) {
+            Some(waiting) => {
+                waiting.push_back(item);
+                None
+            }
+            None => {
+                self.busy.insert(dest.to_path_buf(), std::collections::VecDeque::new());
+                Some(item)
+            }
+        }
+    }
+
+    /// The landing at `dest` is done: the next item waiting for it, which lands now; None when
+    /// none waits, and `dest` is free.
+    pub fn next(&mut self, dest: &Path) -> Option<Landing> {
+        let next = self.busy.get_mut(dest).and_then(std::collections::VecDeque::pop_front);
+        if next.is_none() {
+            self.busy.remove(dest);
+        }
+        next
+    }
+}
+
 /// What Shell > ssh > Download Files must be set to: Some(enabled) when this window's bar does not
 /// show `on` yet (`shown` None: never set since the bar was made), None when it already does.
 pub(super) fn download_files_update(shown: Option<bool>, on: bool) -> Option<bool> {
@@ -521,6 +564,25 @@ mod tests {
         // Nothing there is not an error.
         clear_earlier(&root.join("none")).unwrap();
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn items_of_one_name_land_one_at_a_time() {
+        let (mut l, d, e) = (Landings::default(), PathBuf::from(r"C:\b\d"), PathBuf::from(r"C:\b\e"));
+        // A folder unzips into d; a file and a later folder of that name wait, in order.
+        assert_eq!(l.claim(&d, Landing::Unzip(1)), Some(Landing::Unzip(1)));
+        assert_eq!(l.claim(&d, Landing::File(2)), None);
+        assert_eq!(l.claim(&d, Landing::Unzip(3)), None);
+        // Another name is not held up.
+        assert_eq!(l.claim(&e, Landing::File(4)), Some(Landing::File(4)));
+        assert_eq!(l.next(&e), None);
+        // Each lands after the one before is done, then d is free.
+        assert_eq!(l.next(&d), Some(Landing::File(2)));
+        assert_eq!(l.next(&d), Some(Landing::Unzip(3)));
+        assert_eq!(l.claim(&d, Landing::File(5)), None, "d is held until the unzip is done");
+        assert_eq!(l.next(&d), Some(Landing::File(5)));
+        assert_eq!(l.next(&d), None);
+        assert_eq!(l.claim(&d, Landing::File(6)), Some(Landing::File(6)));
     }
 
     #[test]

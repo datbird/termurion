@@ -278,9 +278,14 @@ fn scheme(target: &str) -> Option<String> {
     Some(s.to_ascii_lowercase())
 }
 
-/// Whether `target` is a web or mail link: guard_open hands it to that app, never opens a path.
+/// The links remote text may open (P10): ftp is not one, since Explorer or a registered
+/// client may take it, not only the browser.
+const REMOTE_WEB: &[&str] = &["http", "https", "mailto"];
+
+/// Whether `target` is a web or mail link remote text may open: guard_open hands it to the
+/// browser or mail app, never opens a path.
 pub fn web_link(target: &str) -> bool {
-    scheme(target).is_some_and(|s| WEB.contains(&s.as_str()))
+    scheme(target).is_some_and(|s| REMOTE_WEB.contains(&s.as_str()))
 }
 
 /// What opening `target` (a URL or a path) runs. Only http, https, mailto, and ftp links

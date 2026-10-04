@@ -371,6 +371,39 @@ pub fn remote_action_allowed(remote: bool, action: &str) -> bool {
     !remote || matches!(action, "sendText:" | "copy:")
 }
 
+/// What a Porthole document link does in a remote pane (P10).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemoteDocLink {
+    /// A web or mail link: asked, as in any pane.
+    Ask,
+    /// A file link: the remote file it names may only download.
+    Download(String),
+    /// Another scheme, or a file on another host: nothing.
+    Refuse,
+}
+
+/// A Porthole document link in a remote pane: the document is remote text, so only a web or
+/// mail link may open here (and is asked, as anywhere); a `file:` link or a bare path names a
+/// file on the remote host, which may only download; anything else is refused.
+pub fn remote_doc_link(link: &str) -> RemoteDocLink {
+    let link = link.trim();
+    if crate::semantic::web_link(link) {
+        return RemoteDocLink::Ask;
+    }
+    if let Some(rest) = link.get(..7).filter(|p| p.eq_ignore_ascii_case("file://")).map(|_| &link[7..]) {
+        // `file:///p` and `file://localhost/p` name the remote host's own file; another host's never.
+        let path = rest.get(..9).filter(|h| h.eq_ignore_ascii_case("localhost")).map_or(rest, |_| &rest[9..]);
+        return if path.starts_with('/') { RemoteDocLink::Download(path.to_string()) } else { RemoteDocLink::Refuse };
+    }
+    // A scheme (two characters or more; "C:" is a drive) that is not a web link.
+    if let Some((scheme, _)) = link.split_once(':') {
+        if scheme.len() > 1 && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c)) {
+            return RemoteDocLink::Refuse;
+        }
+    }
+    if link.is_empty() { RemoteDocLink::Refuse } else { RemoteDocLink::Download(link.to_string()) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,11 +597,12 @@ mod tests {
         // reads it.
         assert_eq!(click_route(true, None), ClickRoute::SecureCopyOnly);
         // A web or mail link opens as before.
-        for u in ["http://example.com/a", "HTTPS://example.com", "mailto:a@example.com", "ftp://example.com/f"] {
+        for u in ["http://example.com/a", "HTTPS://example.com", "mailto:a@example.com"] {
             assert_eq!(click_route(true, Some(u)), ClickRoute::Local, "{u}");
         }
-        // A link guard_open would open as a local path, or refuse, may only download.
-        for u in ["file:///C:/Users/x/a.txt", "FILE://localhost/C:/a.doc", "file://server/share/a", "C:/a.txt", "www.example.com", "ms-settings:display"] {
+        // A link guard_open would open as a local path, or refuse, may only download. ftp is
+        // out too: Explorer or a registered client may take it, not only the browser.
+        for u in ["ftp://example.com/f", "file:///C:/Users/x/a.txt", "FILE://localhost/C:/a.doc", "file://server/share/a", "C:/a.txt", "www.example.com", "ms-settings:display"] {
             assert_eq!(click_route(true, Some(u)), ClickRoute::SecureCopyOnly, "{u}");
         }
         // No framing conductor is today's click.
@@ -584,6 +618,25 @@ mod tests {
         }
         for a in ["sendText:", "copy:"] {
             assert!(remote_action_allowed(true, a), "{a}");
+        }
+    }
+
+    #[test]
+    fn remote_document_links_never_open_here() {
+        // A web or mail link is asked, as in any pane.
+        for u in ["http://example.com/a", "HTTPS://example.com", "mailto:a@example.com"] {
+            assert_eq!(remote_doc_link(u), RemoteDocLink::Ask, "{u}");
+        }
+        // A file link or a bare path names a remote file: it may only download.
+        assert_eq!(remote_doc_link("file:///home/u/a.txt"), RemoteDocLink::Download("/home/u/a.txt".into()));
+        assert_eq!(remote_doc_link("FILE://localhost/home/u/a.txt"), RemoteDocLink::Download("/home/u/a.txt".into()));
+        assert_eq!(remote_doc_link("file:///C:/Users/x/a.exe"), RemoteDocLink::Download("/C:/Users/x/a.exe".into()));
+        for p in ["notes.md", "../a/b.txt", "/etc/hosts", "C:/Windows/notepad.exe", r"C:\x\run.bat", "~/a.txt"] {
+            assert_eq!(remote_doc_link(p), RemoteDocLink::Download(p.into()), "{p}");
+        }
+        // Another host's file, an ftp link or any other scheme: nothing.
+        for u in ["file://server/share/a", "ftp://example.com/f", "ms-settings:display", "javascript:x", "file://"] {
+            assert_eq!(remote_doc_link(u), RemoteDocLink::Refuse, "{u}");
         }
     }
 }
