@@ -651,38 +651,6 @@ pub fn job_terminated_text(jobs: &[(String, u32)]) -> (&'static str, String) {
     ("Jobs Terminated", text)
 }
 
-// ---------------------------------------------------------------------------------------------
-// Codecierge (`CC` = `ToolCodecierge.swift`, min 130).
-// ---------------------------------------------------------------------------------------------
-
-/// Codecierge's three states (`CC:646-709`): the admin switch, then `EnableAI`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CodeciergeState {
-    /// `GenerativeAIAllowed` false: Get Started is disabled.
-    AdminDisabled,
-    /// `EnableAI` false: Reveal Setting offers Settings.
-    NeedsAi,
-    Ready,
-}
-
-pub fn codecierge_state(admin_allowed: bool, ai_enabled: bool) -> CodeciergeState {
-    if !admin_allowed {
-        CodeciergeState::AdminDisabled
-    } else if !ai_enabled {
-        CodeciergeState::NeedsAi
-    } else {
-        CodeciergeState::Ready
-    }
-}
-
-pub fn codecierge_text(s: CodeciergeState) -> &'static str {
-    match s {
-        CodeciergeState::AdminDisabled => "Generative AI has been disabled by the system administrator.",
-        CodeciergeState::NeedsAi => "You must enable AI features to use Codecierge.",
-        CodeciergeState::Ready => "Codecierge uses AI to help you in your terminal.",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -1008,12 +976,5 @@ mod tests {
         let (_, text) = job_terminated_text(&[(String::new(), 9)]);
         assert!(text.contains("(unknown)"));
 
-        assert_eq!(codecierge_state(false, false), CodeciergeState::AdminDisabled);
-        assert_eq!(codecierge_state(false, true), CodeciergeState::AdminDisabled);
-        assert_eq!(codecierge_state(true, false), CodeciergeState::NeedsAi);
-        assert_eq!(codecierge_state(true, true), CodeciergeState::Ready);
-        assert_eq!(codecierge_text(CodeciergeState::AdminDisabled), "Generative AI has been disabled by the system administrator.");
-        assert_eq!(codecierge_text(CodeciergeState::NeedsAi), "You must enable AI features to use Codecierge.");
-        assert_eq!(codecierge_text(CodeciergeState::Ready), "Codecierge uses AI to help you in your terminal.");
     }
 }

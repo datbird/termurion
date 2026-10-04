@@ -30,8 +30,7 @@ pub(crate) enum KeyThen {
     Files(String),
     /// A 12e request (the run id) continues with the key; none ends it (`ai_runs`).
     Run(u64),
-    /// A Codecierge session (its session reference) goes on to its goal (Task 6).
-    #[allow(dead_code)]
+    /// A Codecierge session (its session guid) goes on to its goal.
     Codecierge(String),
     /// A waiting Explain Output request continues with the key (`ai_explain_app`).
     Explain,
@@ -212,8 +211,12 @@ impl App {
             KeyThen::Files(chat) => self.ai_files_key(&chat, key),
             KeyThen::Run(id) => self.ai_run_key(id, key),
             KeyThen::Explain => self.explain_key_given(key),
-            // Task 6 replaces this arm.
-            KeyThen::Codecierge(_) => drop(key),
+            // The key prompt stored the key; a given one goes on to the goal view, a refusal stays.
+            KeyThen::Codecierge(guid) => {
+                if key.is_some() {
+                    self.codecierge_goal(&guid);
+                }
+            }
         }
     }
 
@@ -350,6 +353,24 @@ impl App {
             }
             // Only Attach attaches; Insert Path, a close and a stale index insert the paths.
             Then::DropChoice { chat, supported, all } => self.chat_drop_answered(&chat, &supported, &all, index),
+            // Only OK keeps the box ticked.
+            Then::CodeciergeDanger(guid) => {
+                if index != 0 {
+                    if let Some(s) = self.codecierge.get_mut(&guid) {
+                        s.auto_box = false;
+                    }
+                    self.tools_changed();
+                    self.redraw_all();
+                }
+            }
+            // Only OK remembers the warning and starts; Cancel, a close and Escape stop.
+            Then::CodeciergePrivacy(guid) => {
+                if index == 0 {
+                    self.globals.set(crate::codecierge::PRIVACY_KEY, toml::Value::Boolean(true));
+                    self.save_globals();
+                    self.codecierge_start(&guid);
+                }
+            }
             Then::Grant(host) => {
                 if index == 0 {
                     ai_gate::grant(&mut self.globals, &host);

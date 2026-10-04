@@ -79,7 +79,7 @@ impl ToolId {
             ToolId::PasteHistory => 60.0,
             ToolId::Profiles => 110.0,
             ToolId::Snippets => 87.0,
-            ToolId::Codecierge => 130.0,
+            ToolId::Codecierge => crate::codecierge::MIN_HEIGHT,
         }
     }
 }

@@ -2858,8 +2858,11 @@ pub fn composer_popup(frame: &mut Frame, d: &ComposerPopupDraw, cell: (f32, f32)
     r
 }
 
-/// What Codecierge shows (`CC:646-709`): its label's lines, centered (x, y, text), a button
-/// (its rectangle, label, label width) dimmed when disabled.
+/// What Codecierge shows (`CG:641-1115`): its label's lines, centered (x, y, text), a button
+/// (its rectangle, label, label width) dimmed when disabled, and for the goal and suggestion
+/// views the rest of the view. Onboarding has the lines and the button (Get Started or Reveal
+/// Setting); the goal view the prompt as the lines, Start as the button and `goal`; the
+/// suggestion view End Task as the button and `run`.
 pub struct CodeciergeDraw<'a> {
     pub lines: &'a [(f32, f32, String)],
     pub clip: Rect,
@@ -2868,15 +2871,120 @@ pub struct CodeciergeDraw<'a> {
     pub label_w: f32,
     pub enabled: bool,
     pub dark: bool,
+    pub goal: Option<GoalDraw<'a>>,
+    pub run: Option<RunDraw<'a>>,
 }
 
-/// Codecierge's onboarding view: the label and its one button, in the prose font at
-/// `text_scale`.
+/// A text field of Codecierge: the editor's frame, text, selection and caret (the Notes
+/// editor's drawing, no mode control), and the placeholder shown while it is empty (x, y, text).
+pub struct FieldDraw<'a> {
+    pub edit: NoteDraw<'a>,
+    pub placeholder: Option<(f32, f32, &'a str)>,
+}
+
+/// The goal view's field and its checkbox: the box, whether it is ticked and enabled, and the
+/// label's origin and text.
+pub struct GoalDraw<'a> {
+    pub field: FieldDraw<'a>,
+    pub check: Rect,
+    pub checked: bool,
+    pub check_enabled: bool,
+    pub check_label: (f32, f32, &'a str),
+}
+
+/// The suggestion view: the goal line (x, y, text) and the busy spinner's box before it, the
+/// transcript (the laid-out markdown, its origin, the room it shows in and the shaded band's
+/// left and width), the reply field, and the send button (its box and whether it is enabled).
+pub struct RunDraw<'a> {
+    pub goal: (f32, f32, &'a str),
+    pub spinner: Option<(Rect, u32)>,
+    pub lines: &'a [crate::porthole::render::VisualLine],
+    pub origin: (f32, f32),
+    pub room: Rect,
+    pub band: (f32, f32),
+    pub busy: bool,
+    pub thumb: Option<Rect>,
+    pub reply: FieldDraw<'a>,
+    pub send: Rect,
+    pub send_enabled: bool,
+}
+
+/// Codecierge's text color and field background for the theme (the markdown palette's).
+pub fn codecierge_colors(dark: bool) -> (Rgb, Rgb) {
+    if dark { (TAB_TEXT, FIELD_BG_DARK) } else { (BELT_TEXT_LIGHT, FIELD_BG_LIGHT) }
+}
+
+/// The Segoe Fluent Icons Send glyph (the reply's button).
+pub const SEND_GLYPH: &str = "\u{E724}";
+/// The Segoe Fluent Icons check mark (the ticked box).
+const CHECK_GLYPH: &str = "\u{E73E}";
+
+fn codecierge_field(frame: &mut Frame, f: &FieldDraw, cell: (f32, f32), text_scale: f32, scale: f32) {
+    note_editor(frame, &f.edit, cell, text_scale, scale);
+    if let Some((x, y, t)) = f.placeholder {
+        let dim = if f.edit.dark { TAB_TEXT_DIM } else { LIST_DISABLED_LIGHT };
+        frame.rows.push(TextRow { x, y, spans: vec![list_span(t.to_string(), dim, false, 0)], clip: f.edit.clip, scale: text_scale });
+    }
+}
+
+/// Codecierge's views, in the prose font at `text_scale`.
 pub fn codecierge(frame: &mut Frame, d: &CodeciergeDraw, cell: (f32, f32), text_scale: f32, scale: f32) {
     let (text, disabled, field_bg) = if d.dark { (TAB_TEXT, LIST_DISABLED_DARK, FIELD_BG_DARK) } else { (BELT_TEXT_LIGHT, LIST_DISABLED_LIGHT, FIELD_BG_LIGHT) };
     let line_h = cell.1 * text_scale;
     for (x, y, line) in d.lines {
         frame.rows.push(TextRow { x: *x, y: *y, spans: vec![list_span(line.clone(), text, false, 1)], clip: d.clip, scale: text_scale });
+    }
+    if let Some(g) = &d.goal {
+        codecierge_field(frame, &g.field, cell, text_scale, scale);
+        let edge = rgba(DIVIDER, if d.dark { 1.0 } else { 0.4 });
+        frame.quads.push(Quad { rect: g.check, color: rgba(field_bg, 1.0) });
+        frame_lines(&mut frame.quads, g.check, if g.check_enabled { edge } else { rgba(disabled, 1.0) });
+        if g.checked {
+            let span = list_span(CHECK_GLYPH.to_string(), if g.check_enabled { text } else { disabled }, false, 2);
+            frame.rows.push(TextRow { x: g.check.x + 1.0, y: g.check.y + (g.check.h - line_h) / 2.0, spans: vec![span], clip: g.check, scale: text_scale });
+        }
+        let (x, y, t) = g.check_label;
+        frame.rows.push(TextRow { x, y, spans: vec![list_span(t.to_string(), if g.check_enabled { text } else { disabled }, false, 1)], clip: d.clip, scale: text_scale });
+    }
+    if let Some(r) = &d.run {
+        let (x, y, t) = r.goal;
+        frame.rows.push(TextRow { x, y, spans: vec![list_span(t.to_string(), text, false, 1)], clip: d.clip, scale: text_scale });
+        if let Some((b, phase)) = r.spinner {
+            // Eight dots round a circle, one lit, turning with `phase`.
+            let dot = (b.w / 6.0).max(1.5);
+            let radius = (b.w - dot) / 2.0;
+            for i in 0..8u32 {
+                let a = i as f32 * std::f32::consts::TAU / 8.0;
+                let age = (phase + 8 - i) % 8;
+                let alpha = 1.0 - age as f32 / 8.0;
+                let (cx, cy) = (b.x + b.w / 2.0 + radius * a.sin(), b.y + b.h / 2.0 - radius * a.cos());
+                frame.quads.push(Quad { rect: Rect { x: cx - dot / 2.0, y: cy - dot / 2.0, w: dot, h: dot }, color: rgba(text, alpha.max(0.15)) });
+            }
+        }
+        frame.quads.push(Quad { rect: r.room, color: rgba(field_bg, 1.0) });
+        frame_lines(&mut frame.quads, r.room, rgba(DIVIDER, if d.dark { 1.0 } else { 0.4 }));
+        let start = frame.rows.len();
+        doc_lines(frame, r.origin, r.lines, &[], r.room, r.band, field_bg, text);
+        // The document was laid out at `text_scale`: its rows are drawn at it.
+        for row in &mut frame.rows[start..] {
+            row.scale *= text_scale;
+        }
+        if r.busy {
+            // Dimmed to `codecierge::BUSY_ALPHA` of its color over the background.
+            for row in &mut frame.rows[start..] {
+                for span in &mut row.spans {
+                    span.color = blend(field_bg, span.color, crate::codecierge::BUSY_ALPHA);
+                }
+            }
+        }
+        if let Some(t) = r.thumb {
+            frame.quads.push(Quad { rect: t, color: rgba(TAB_TEXT_DIM, 0.6) });
+        }
+        codecierge_field(frame, &r.reply, cell, text_scale, scale);
+        let s = r.send;
+        let color = if r.send_enabled { text } else { disabled };
+        let span = list_span(SEND_GLYPH.to_string(), color, false, 2);
+        frame.rows.push(TextRow { x: s.x + (s.w - line_h) / 2.0, y: s.y + (s.h - line_h) / 2.0, spans: vec![span], clip: s, scale: text_scale });
     }
     let b = d.button;
     rounded_box(&mut frame.quads, b, 4.0 * scale, rgba(DIVIDER, if d.dark { 1.0 } else { 0.4 }));

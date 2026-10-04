@@ -884,6 +884,9 @@ pub struct App {
     ai_runs_next: u64,
     /// Composer suggestions: the run in flight for each pane (ruling P12).
     composer_ai: HashMap<PaneId, u64>,
+    /// Codecierge per terminal session, keyed by its session guid (`CG:554-567`). App-wide, not
+    /// in `swap_live`: a session is one pane whichever window shows it.
+    codecierge: HashMap<String, crate::codecierge::Session>,
     /// What the Explain Output items show now (app-wide), so a selection change refreshes them.
     explain_shown: Option<bool>,
     /// Engage AI: the dialog showing (with the pane and what it asked), the one queued to show,
@@ -1569,6 +1572,7 @@ pub fn run() {
         ai_runs: HashMap::new(),
         ai_runs_next: 0,
         composer_ai: HashMap::new(),
+        codecierge: HashMap::new(),
         explain_shown: None,
         ai_engage: None,
         ai_engage_open: None,
@@ -3337,6 +3341,10 @@ impl App {
         // AI requests that belong to the pane end with it.
         self.composer_ai_cancel(id);
         self.ai_runs_pane_gone(id);
+        // Codecierge's session for the pane goes with it (`CG:36-40`; Task 7 stops its run first).
+        if let Some(guid) = self.panes.get(&id).map(|p| p.session_guid.clone()) {
+            self.codecierge.remove(&guid);
+        }
         self.ai_annotations.retain(|_, (pane, _)| *pane != id);
         // A git command's window closed any way ends its command, as does Manage
         // Dependencies' pip command.
