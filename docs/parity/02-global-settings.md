@@ -926,8 +926,8 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | fakeNotchHeight | fakeNotchHeight (float, default 0) | Simulated notch height. | missing |  |
 | splitPaneColor | splitPaneColor (string, default @"") | Custom color for split pane dividers. | partial |  |
 | splitPaneDividerWidth | splitPaneDividerWidth (float, default 0) | Custom width for split pane dividers in points (1-5). | partial |  |
-| paneTitleBarBackgroundColor | paneTitleBarBackgroundColor (string, default @"") | Custom background color for pane title bars. | have | Hex color, #rgb or #rrggbb (p3# too); anything else is ignored. |
-| paneTitleBarTextColor | paneTitleBarTextColor (string, default @"") | Custom text color for pane title bars. | have | Hex color, #rgb or #rrggbb (p3# too); anything else is ignored. |
+| paneTitleBarBackgroundColor | paneTitleBarBackgroundColor (string, default @"") | Custom background color for pane title bars. | have | Hex color, #rgb, #rrggbb or #rrrrggggbbbb (p3# too); anything else is ignored. |
+| paneTitleBarTextColor | paneTitleBarTextColor (string, default @"") | Custom text color for pane title bars. | have | Hex color, #rgb, #rrggbb or #rrrrggggbbbb (p3# too); anything else is ignored. |
 | bordersOnlyInLightMode | bordersOnlyInLightMode (bool, default YES) | Opaque windows have a border only in light mode. | have | Milestone 13f: stored as BordersOnlyInLightMode; dark means the window's resolved theme is Dark or Dark High Contrast. |
 | allowLiveResize | allowLiveResize (bool, default YES) | Allow window resizing by dragging edges and corners? | have | Milestone 13f: stored as AllowLiveResize; off, no window (hotkey windows included) can be resized by its edges, as a size-locked one. |
 | showSecureKeyboardEntryIndicator | showSecureKeyboardEntryIndicator (bool, default YES) | Show secure keyboard entry indicator? | missing |  |

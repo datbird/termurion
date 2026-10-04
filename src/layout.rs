@@ -384,7 +384,6 @@ impl Layout {
     }
 }
 
-/// The rectangles a tab shows: only the zoomed pane when one is zoomed and still here.
 /// The most panes a line along `axis` crosses: for `Axis::Column`, the tallest column's pane
 /// count. A split on the same axis adds its sides, a split on the other takes the larger.
 pub fn max_stack(tree: &Tree<PaneId>, axis: Axis) -> usize {
@@ -397,6 +396,7 @@ pub fn max_stack(tree: &Tree<PaneId>, axis: Axis) -> usize {
     }
 }
 
+/// The rectangles a tab shows: only the zoomed pane when one is zoomed and still here.
 pub fn visible_rects(layout: &Layout, zoomed: Option<PaneId>, area: Rect, gap: f32) -> Vec<(PaneId, Rect)> {
     match zoomed.filter(|z| layout.panes().contains(z)) {
         Some(z) => vec![(z, area)],

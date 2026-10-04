@@ -1106,8 +1106,9 @@ impl App {
     /// its tab (which keeps its other panes) and becomes a tab of that window
     /// (`PseudoTerminal.m:8648-8677`, `MovePaneController.m:113-124`). The slot keeps the pinned
     /// zone and a group's run (P12). A window under Lock Layout takes no tab; a loaded recording
-    /// never moves. A tmux pane breaks out through tmux, its new window opening beside the old
-    /// one (`PseudoTerminal.m:8651-8659`).
+    /// never moves. A tmux pane breaks out through tmux into the destination window, next to the
+    /// tab the slot names (`PseudoTerminal.m:8651-8659`); a window with no tab of its session
+    /// refuses the drop.
     pub(super) fn move_session_to_new_tab(&mut self, pane: PaneId, window: WindowId, index: usize, event_loop: &ActiveEventLoop) {
         let _ = event_loop;
         let Some(source) = self.current_window() else { return };
@@ -1137,7 +1138,7 @@ impl App {
         }
         self.end_replays(&[pane]);
         let super::pane_move_ui::Detached::Kept = super::pane_move_ui::detach(&mut self.tabs, pane) else { return };
-        self.broadcast.forget(&[pane]);
+        self.broadcast.forget(&super::pane_move_ui::tab_drop_left(pane, window == source));
         let tab = Tab::new(self.next_tab_id, Layout::new(pane), pane);
         self.next_tab_id += 1;
         let id = tab.id;

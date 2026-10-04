@@ -4439,7 +4439,7 @@ impl App {
             self.redraw();
         }
         // A title bar drag whose release was lost (capture taken away) ends here.
-        if matches!(self.drag, Drag::Title { .. }) && self.title_drag_lost(pane_move_ui::DragLost::Moved { left_down: crate::winkeys::left_button_down() }) {
+        if matches!(self.drag, Drag::Title { .. }) && self.title_drag_lost(pane_move_ui::DragLost::Moved { left_down: { let (swapped, l, r) = crate::winkeys::mouse_buttons(); pane_move_ui::primary_down(swapped, l, r) } }) {
             return;
         }
         match &self.drag {

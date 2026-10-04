@@ -14,7 +14,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     MAPVK_VK_TO_VSC, MapVirtualKeyW, SendInput,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetForegroundWindow, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, MSG, SetWindowsHookExW, WH_KEYBOARD_LL, WM_KEYDOWN,
+    CallNextHookEx, GetForegroundWindow, GetMessageW, GetSystemMetrics, SM_SWAPBUTTON, HC_ACTION, KBDLLHOOKSTRUCT, MSG, SetWindowsHookExW, WH_KEYBOARD_LL, WM_KEYDOWN,
     WM_SYSKEYDOWN,
 };
 
@@ -263,9 +263,11 @@ fn held(vk: i32) -> bool {
     unsafe { GetAsyncKeyState(vk) as u16 & 0x8000 != 0 }
 }
 
-/// Whether the left mouse button is down right now (a drag whose capture was lost sees it up).
-pub fn left_button_down() -> bool {
-    held(0x01)
+/// The physical mouse buttons right now: (buttons swapped by `SM_SWAPBUTTON`, left down, right
+/// down). `GetAsyncKeyState` reads physical buttons, so a caller that wants the primary one
+/// (a drag whose capture was lost sees it up) picks by the swap flag.
+pub fn mouse_buttons() -> (bool, bool, bool) {
+    (unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0, held(0x01), held(0x02))
 }
 
 /// Sends a harmless key while Win is down, so Windows does not open the Start menu when

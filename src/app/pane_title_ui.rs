@@ -68,6 +68,13 @@ pub(super) fn arms_drag(hit: pane_title::Hit, button: u8, clicks: u8) -> bool {
     hit == pane_title::Hit::Bar && button == 0 && title_action(hit, button, clicks) == Some(TitleAction::Focus)
 }
 
+/// Whether a press makes its pane the tab's focused pane: only a left or middle press on the
+/// bar itself (`SessionTitleView.m:386-395`); the buttons and the right click's menu leave the
+/// focus where it is, so the menu's commands act on their own pane and give the focus back.
+pub(super) fn press_focuses(hit: pane_title::Hit, button: u8) -> bool {
+    hit == pane_title::Hit::Bar && matches!(button, 0 | 2)
+}
+
 /// The buttons act on the release over the part that was pressed (an NSButton tracks to the
 /// release, P14); the bar's own actions and the right-click menu act on the press.
 pub(super) fn acts_on_release(action: TitleAction) -> bool {
@@ -190,17 +197,19 @@ impl App {
         self.title_bars.iter().find_map(|(id, g)| pane_title::hit(g, x, y).map(|h| (*id, h)))
     }
 
-    /// A press on a pane's title bar. The pane becomes the tab's focused pane first
-    /// (`sessionTitleViewBecomeFirstResponder`), so the menu's commands act on it. The close,
+    /// A press on a pane's title bar. A left or middle press on the bar itself focuses the pane
+    /// (`press_focuses`); the buttons and the right click's menu leave the focus alone. The close,
     /// menu and lock buttons wait for the release over the same part (`title_release`, P14);
     /// the right click's menu and the double click's maximize act now. Nothing reaches the
     /// terminal: no report to the program, no selection. Left true when the press was on a bar.
     pub(super) fn title_press(&mut self, button: MouseButton, clicks: u8, x: f32, y: f32, _event_loop: &ActiveEventLoop) -> bool {
         let Some((pane, hit)) = self.title_hit_at(x, y) else { return false };
-        if let Some(t) = self.tabs.get_mut(self.active) {
-            t.focused = pane;
+        if press_focuses(hit, button_number(button)) {
+            if let Some(t) = self.tabs.get_mut(self.active) {
+                t.focused = pane;
+            }
+            self.refresh_route();
         }
-        self.refresh_route();
         let action = title_action(hit, button_number(button), clicks);
         match action {
             Some(a) if acts_on_release(a) && button == MouseButton::Left => self.title_press = Some((pane, hit, a)),
@@ -267,6 +276,19 @@ mod tests {
 
     fn r(x: f32, y: f32, w: f32, h: f32) -> Rect {
         Rect { x, y, w, h }
+    }
+
+    #[test]
+    fn only_a_left_or_middle_press_on_the_bar_focuses() {
+        use crate::pane_title::Hit::{Bar, Close, Lock, Menu};
+        assert!(press_focuses(Bar, 0));
+        assert!(press_focuses(Bar, 2));
+        assert!(!press_focuses(Bar, 1), "a right click opens the menu without moving focus");
+        for hit in [Close, Menu, Lock] {
+            for button in [0, 1, 2] {
+                assert!(!press_focuses(hit, button), "{hit:?} button {button}");
+            }
+        }
     }
 
     #[test]

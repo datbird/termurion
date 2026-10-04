@@ -166,6 +166,18 @@ pub(super) fn left_windows(source: PaneId, target: PaneId, same_window: bool, sw
     }
 }
 
+/// The panes a drop on a window's tab bar takes out of the broadcast: the pane only when it
+/// changes window (the Task 7 rule: broadcast keeps panes that stay).
+pub(super) fn tab_drop_left(pane: PaneId, same_window: bool) -> Vec<PaneId> {
+    left_windows(pane, pane, same_window, false).source_window
+}
+
+/// Whether the primary (logical left) mouse button is down, given the physical buttons and
+/// whether the buttons are swapped (`SM_SWAPBUTTON`): swapped, the primary is the right one.
+pub(super) fn primary_down(swapped: bool, left: bool, right: bool) -> bool {
+    if swapped { right } else { left }
+}
+
 /// `from` takes `to`'s id in the tab's layout, focus and zoom.
 fn replace_pane(tab: &mut Tab, from: PaneId, to: PaneId) {
     tab.layout = Layout::from_tree(tab.layout.tree().map(&mut |p| if p == from { to } else { p }));
@@ -469,6 +481,10 @@ impl App {
         match drag_outcome(at.is_some(), over_bar, over_pane, pane) {
             DragOutcome::Drop(target, half) => {
                 self.drop_pane(target, half, event_loop);
+                // A drop in another window brings that window to the front.
+                if let Some(w) = self.pane_window_id(pane).filter(|w| Some(*w) != here) {
+                    self.focus_terminal_window(w);
+                }
             }
             DragOutcome::NewTab(key, slot) => {
                 if let Some(window) = self.window_id_of_key(key) {
@@ -714,6 +730,20 @@ mod tests {
         assert_eq!(tmux_drop_sibling(&tabs, 0, 9), Some(4));
         assert_eq!(tmux_drop_sibling(&tabs, 0, 8), None, "no tab of that session: refused");
         assert_eq!(tmux_drop_sibling(&[], 0, 7), None);
+    }
+
+    #[test]
+    fn a_tab_bar_drop_forgets_broadcast_only_when_the_window_changes() {
+        assert_eq!(tab_drop_left(1, true), Vec::<PaneId>::new());
+        assert_eq!(tab_drop_left(1, false), vec![1]);
+    }
+
+    #[test]
+    fn the_primary_button_follows_the_swap_setting() {
+        assert!(primary_down(false, true, false));
+        assert!(!primary_down(false, false, true));
+        assert!(primary_down(true, false, true), "swapped: the physical right button is the primary");
+        assert!(!primary_down(true, true, false));
     }
 
     #[test]
