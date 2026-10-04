@@ -53,7 +53,7 @@ const fn m(on: On, name: &'static str, args: &'static [(&'static str, Ty)], opti
 /// The ported built-ins (`BIF:164-183`, `PS:815`, `PTYTab.m:335`, and the objects'
 /// `objectMethodRegistry`). The session id default is `iTermVariableKeySessionID` ("id"),
 /// the tab id's `iTermVariableKeyTabID` ("id").
-static CATALOG: [Builtin; 23] = [
+static CATALOG: [Builtin; 24] = [
     f("add_clipping", &[("type", Ty::Str), ("title", Ty::Str), ("detail", Ty::Str)], &[], &[("session", "id")], Some("[add_clipping]")),
     f("archive_clippings", &[], &[], &[("session", "id")], Some("[archive_clippings]")),
     f("count", &[("array", Ty::Array)], &[], &[], None),
@@ -72,6 +72,7 @@ static CATALOG: [Builtin; 23] = [
         &[("session_id", "id")],
         Some("[set_status]"),
     ),
+    f("get_background_task_count", &[], &[], &[("session_id", "id")], None),
     f("move_tab_to_window", &[], &[], &[("tab_id", "id")], Some("[move_tab_to_window]")),
     m(On::Session, "set_name", &[("name", Ty::Str)], &[], Some("[set_name]")),
     m(On::Session, "run_tmux_command", &[("command", Ty::Str)], &[], Some("[run_tmux_command]")),
@@ -388,6 +389,7 @@ mod tests {
             "with_alpha",
             "urlEncode",
             "set_status",
+            "get_background_task_count",
             "move_tab_to_window",
         ]
         .into_iter()
@@ -447,6 +449,6 @@ mod tests {
         let b = find(On::Session, "iterm2.get_time_offset()").expect("get_time_offset");
         assert!(b.args.is_empty() && b.placeholder.is_none() && b.defaults.is_empty());
         assert!(find(On::Function, "iterm2.get_time_offset()").is_none(), "a session method");
-        assert_eq!(catalog().len(), 23);
+        assert_eq!(catalog().len(), 24);
     }
 }

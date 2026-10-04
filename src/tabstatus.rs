@@ -73,9 +73,20 @@ pub struct Status {
     pub status: Option<String>,
     pub status_color: Option<String>,
     pub detail: Option<String>,
+    /// Claude Code's still-running background tasks, kept for a later idle prompt
+    /// (`iTermSessionTabStatus.backgroundTaskCount`): RAM only, never part of what a status shows.
+    pub background_tasks: i64,
 }
 
 impl Status {
+    /// Stores the background task count (`max(0, n)`); true when it changed.
+    pub fn set_background_tasks(&mut self, n: i64) -> bool {
+        let n = n.max(0);
+        let changed = self.background_tasks != n;
+        self.background_tasks = n;
+        changed
+    }
+
     /// Applies fields: a missing key leaves its field, an empty value clears it, a value sets
     /// it; unknown keys are ignored. True when something changed.
     pub fn apply(&mut self, pairs: &[(String, String)]) -> bool {
@@ -93,8 +104,10 @@ impl Status {
         *self != before
     }
 
+    /// No text, indicator, color or detail; the background count is not part of a status
+    /// (`hasActiveStatus` ignores it).
     pub fn is_empty(&self) -> bool {
-        *self == Status::default()
+        Status { background_tasks: 0, ..self.clone() } == Status::default()
     }
 
     /// Text or an indicator is set: a color or a detail alone is no status
@@ -185,6 +198,39 @@ mod tests {
         assert!(!s("detail", "x").is_active());
         assert!(!s("status-color", "#ff0000").is_active());
         assert!(!Status::default().is_active());
+    }
+
+    /// The count follows iTerm2: stored as `max(0, n)`, no part of an empty status, cleared with an
+    /// active status at a prompt and left alone when the status is inactive (`PTYSession.m:25702-25705`).
+    #[test]
+    fn background_tasks_follow_iterm2() {
+        let mut st = Status::default();
+        assert!(!st.set_background_tasks(-3), "a negative count stores 0: no change");
+        assert_eq!(st.background_tasks, 0);
+        assert!(st.set_background_tasks(4));
+        assert!(!st.set_background_tasks(4));
+        assert!(st.is_empty() && !st.is_active(), "the count is no status");
+        assert!(!st.apply(&[kv("detail", "")]), "apply leaves it");
+        assert_eq!(st.background_tasks, 4);
+        assert!(st.set_background_tasks(-1));
+        assert_eq!(st.background_tasks, 0);
+        let mut sc = Screen::new(20, 4);
+        assert!(sc.set_tab_background_tasks(4));
+        let before = sc.tab_status_gen;
+        sc.clear_tab_status();
+        assert_eq!(sc.tab_status.background_tasks, 4, "an inactive status keeps its count");
+        sc.apply_tab_status(&[kv("detail", "x")]);
+        sc.clear_tab_status();
+        assert_eq!(sc.tab_status.background_tasks, 4, "a detail alone is no active status");
+        assert!(sc.tab_status_gen > before);
+        sc.apply_tab_status(&[kv("status", "working")]);
+        sc.clear_tab_status();
+        assert_eq!(sc.tab_status, Status::default(), "an active status clears with its count");
+        let mut other = Screen::new(20, 4);
+        other.feed(b"\x1b]21337;status=busy\x07");
+        other.set_tab_background_tasks(2);
+        other.feed(b"\x1b]133;A\x07");
+        assert_eq!(other.tab_status.background_tasks, 0);
     }
 
     #[test]

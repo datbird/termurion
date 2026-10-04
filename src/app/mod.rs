@@ -869,6 +869,9 @@ pub struct App {
     api_rpc_done: VecDeque<(u64, Result<crate::expr::Value, crate::expr::Failure>)>,
     /// Each allowed connection's `x-iterm2-key` and display name, for its log lines.
     api_keys: HashMap<u64, (String, String)>,
+    /// The connections that are cc-status hooks, each with the cookie it presented (ruling P14):
+    /// they may set a status only on the pane that cookie belongs to.
+    api_hooks: HashMap<u64, Option<String>>,
     /// Running invocations by id (app-wide, as every script field is), the next run id and
     /// call token, and the run each started call's token belongs to.
     script_runs: BTreeMap<u64, script_ui::Run>,
@@ -1607,6 +1610,7 @@ pub fn run() {
         api_fns: Default::default(),
         api_rpc_done: VecDeque::new(),
         api_keys: HashMap::new(),
+        api_hooks: HashMap::new(),
         script_runs: BTreeMap::new(),
         script_next: 1,
         script_tokens: HashMap::new(),

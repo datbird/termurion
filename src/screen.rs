@@ -372,9 +372,19 @@ impl Screen {
         changed
     }
 
-    /// Clears the status (a new prompt); nothing moves when there was none.
+    /// Stores the status's background task count; a change moves `tab_status_gen`.
+    pub fn set_tab_background_tasks(&mut self, n: i64) -> bool {
+        let changed = self.tab_status.set_background_tasks(n);
+        if changed {
+            self.tab_status_changed();
+        }
+        changed
+    }
+
+    /// Clears an active status and its background count (a new prompt); an inactive status, a
+    /// count alone included, stays (`PTYSession.m:25702-25705`).
     pub(crate) fn clear_tab_status(&mut self) {
-        if !self.tab_status.is_empty() {
+        if self.tab_status.is_active() {
             self.tab_status = crate::tabstatus::Status::default();
             self.tab_status_changed();
         }

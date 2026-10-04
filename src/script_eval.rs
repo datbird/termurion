@@ -697,7 +697,7 @@ pub enum Target {
     Method(String),
 }
 
-fn invoke_error(status: pb::invoke_function_response::Status, reason: Option<&str>) -> pb::InvokeFunctionResponse {
+pub fn invoke_error(status: pb::invoke_function_response::Status, reason: Option<&str>) -> pb::InvokeFunctionResponse {
     pb::InvokeFunctionResponse {
         disposition: Some(pb::invoke_function_response::Disposition::Error(pb::invoke_function_response::Error {
             status: Some(status as i32),

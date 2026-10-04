@@ -676,7 +676,7 @@ mod tests {
 
     #[test]
     fn status_color_follows_iterm2() {
-        let st = |color: Option<&str>, ind: Option<&str>| Status { status: Some("x".into()), status_color: color.map(str::to_string), indicator: ind.map(str::to_string), detail: None };
+        let st = |color: Option<&str>, ind: Option<&str>| Status { status: Some("x".into()), status_color: color.map(str::to_string), indicator: ind.map(str::to_string), detail: None, ..Default::default() };
         assert_eq!(status_tint(&st(Some("#ff9500"), None)), Tint::Rgb(255, 149, 0));
         assert_eq!(status_tint(&st(None, Some("#5f87ff"))), Tint::Rgb(95, 135, 255));
         assert_eq!(status_tint(&st(Some("#ff9500"), Some("#5f87ff"))), Tint::Rgb(255, 149, 0));

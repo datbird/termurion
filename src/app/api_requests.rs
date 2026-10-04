@@ -1331,6 +1331,15 @@ impl App {
             Ok(t) => t,
             Err(resp) => return reply(req, Resp::InvokeFunctionResponse(resp)),
         };
+        // A hook acts only on the session its own cookie was minted for (ruling P14): a hosted
+        // shell taken back after a relaunch keeps an old TERM_SESSION_ID that can now name
+        // another pane. Anything else it asks for is refused the same way.
+        if let Some(presented) = self.api_hooks.get(&conn) {
+            let owns = matches!(target, Target::Session(p) if crate::cc_status::may_report(self.panes.get(&p).and_then(|x| x.cookie.as_deref()), presented.as_deref()));
+            if !owns {
+                return reply(req, Resp::InvokeFunctionResponse(crate::script_eval::invoke_error(pb::invoke_function_response::Status::Failed, Some(crate::cc_status::DROPPED))));
+            }
+        }
         let scope = match target {
             Target::App => ScopeSpec::App,
             Target::Tab(t) => ScopeSpec::Tab(t),

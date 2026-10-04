@@ -84,7 +84,7 @@ fn done(r: Result<Value, String>) -> HostOutcome {
 
 /// `set_status`'s fields as tab status pairs (`BF/SetStatusBuiltInFunction.swift:40-104`):
 /// an empty value clears its field, a color must be `#rrggbb` (or `#rgb`, `#rrrrggggbbbb`);
-/// `background_tasks` is accepted and ignored. Nothing applies when a color is bad.
+/// `background_tasks` is stored apart from the pairs (`background_tasks_arg`). Nothing applies when a color is bad.
 fn status_pairs(args: &BTreeMap<String, Value>) -> Result<Vec<(String, String)>, String> {
     let mut pairs = Vec::new();
     for (arg, key, bad) in [("status", "status", None), ("text_color", "status-color", Some(bf::INVALID_TEXT_COLOR)), ("dot_color", "indicator", Some(bf::INVALID_DOT_COLOR)), ("detail", "detail", None)] {
@@ -92,9 +92,16 @@ fn status_pairs(args: &BTreeMap<String, Value>) -> Result<Vec<(String, String)>,
         if let Some(text) = bad.filter(|_| !v.is_empty() && !bf::is_hash_color(v)) {
             return Err(text.to_string());
         }
-        pairs.push((key.to_string(), v.to_string()));
+        // Text shown to the person is cleaned and capped here, whoever sent it.
+        let v = if bad.is_none() { crate::inert_files::shown_name(v) } else { v.to_string() };
+        pairs.push((key.to_string(), v));
     }
     Ok(pairs)
+}
+
+/// `set_status`'s `background_tasks` argument, when it is given as a number.
+fn background_tasks_arg(args: &BTreeMap<String, Value>) -> Option<i64> {
+    args.get("background_tasks").and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
 }
 
 /// An id argument as text (a number from a tab scope's `id` too).
@@ -263,10 +270,20 @@ impl App {
                 };
                 if let Some(p) = self.panes.get_mut(&pane) {
                     p.own_mut().apply_tab_status(&pairs);
+                    if let Some(n) = background_tasks_arg(args) {
+                        p.own_mut().set_tab_background_tasks(n);
+                    }
                 }
                 self.redraw_all();
                 self.redraw();
                 HostOutcome::Done(Value::Null)
+            }
+            "get_background_task_count" => {
+                let pane = match self.session_arg(args, "session_id", false) {
+                    Ok(p) => p,
+                    Err(e) => return failed(e),
+                };
+                HostOutcome::Done(Value::from(self.panes.get(&pane).map_or(0, |p| p.own().tab_status.background_tasks)))
             }
             "set_status_bar_component_unread_count" => {
                 let id = str_arg(args, "identifier").unwrap_or_default().to_string();
@@ -575,6 +592,36 @@ fn dialog_token(d: &Dialog) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_tasks_follow_iterm2() {
+        let args = |v: Value| -> BTreeMap<String, Value> { [("background_tasks".to_string(), v)].into_iter().collect() };
+        assert_eq!(background_tasks_arg(&args(json!(4))), Some(4));
+        assert_eq!(background_tasks_arg(&args(json!(-3))), Some(-3), "the store clamps");
+        assert_eq!(background_tasks_arg(&args(json!(2.7))), Some(2));
+        assert_eq!(background_tasks_arg(&args(json!("x"))), None);
+        assert_eq!(background_tasks_arg(&BTreeMap::new()), None);
+        // The count is not a pair; a bad color still applies nothing.
+        let both: BTreeMap<String, Value> = [("background_tasks", json!(4)), ("dot_color", json!("red"))].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        assert_eq!(status_pairs(&both), Err(bf::INVALID_DOT_COLOR.to_string()));
+        assert_eq!(status_pairs(&args(json!(4))), Ok(vec![]));
+        // `get_background_task_count` is in the catalog, on a session, with the id default.
+        let b = crate::builtin_fns::find(crate::builtin_fns::On::Function, "iterm2.get_background_task_count()").expect("catalog entry");
+        assert_eq!(b.defaults, &[("session_id", "id")]);
+        assert!(b.args.is_empty());
+    }
+
+    /// What a status shows is cleaned and capped where it is stored, whoever sent it.
+    #[test]
+    fn status_text_is_capped_and_cleaned() {
+        let args: BTreeMap<String, Value> = [("status", json!(format!("wor\u{1b}k{}", "x".repeat(10_000)))), ("detail", json!("a\u{202e}b\n")), ("dot_color", json!("#0f0"))].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        let pairs = status_pairs(&args).unwrap();
+        let status = &pairs.iter().find(|(k, _)| k == "status").unwrap().1;
+        assert_eq!(status.chars().count(), crate::inert_files::SHOWN_NAME + 1);
+        assert!(status.starts_with("work") && status.ends_with('\u{2026}'));
+        assert_eq!(pairs.iter().find(|(k, _)| k == "detail").unwrap().1, "ab");
+        assert_eq!(pairs.iter().find(|(k, _)| k == "indicator").unwrap().1, "#0f0", "colors are validated, not cleaned");
+    }
 
     #[test]
     fn builtin_dialogs_follow_iterm2() {

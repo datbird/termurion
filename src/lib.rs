@@ -23,6 +23,8 @@ pub mod smartsel;
 pub mod semantic;
 pub mod synthetic;
 pub mod tabstatus;
+pub mod cc_status;
+pub mod api_client;
 pub mod tab_layout;
 pub mod tab_drag;
 pub mod tab_flash;
