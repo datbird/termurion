@@ -1122,8 +1122,10 @@ impl App {
     /// calls, running checks (their requests cancelled), delayed CRs, mirrors and their 12c
     /// commands, queued spawns.
     pub(super) fn orch_drop_chat(&mut self, chat: &str) {
-        // The held text of the panes this chat sent to is cleared; other chats keep theirs.
-        orch_gate::after_chat_end(&mut self.orch_held, chat);
+        // The held text of the panes this chat sent to is cleared, except a continuation the
+        // pane's shell still waits on (final review ruling 2); other chats keep theirs.
+        let shells: std::collections::HashMap<PaneId, ShellKind> = self.orch_held.keys().map(|p| (*p, self.ai_shell_of(*p).0)).collect();
+        orch_gate::after_chat_end(&mut self.orch_held, chat, |p| shells.get(p).copied().unwrap_or(ShellKind::Unknown));
         let requests: Vec<String> = self.orch_parks.iter().filter(|(_, (c, _))| c == chat).map(|(r, _)| r.clone()).collect();
         for r in requests {
             self.orch_waits.remove(&r);
@@ -1381,7 +1383,7 @@ mod tests {
         let at = |needle: &str| code.match_indices(needle).map(|(i, _)| owner(code, i)).collect::<Vec<_>>();
         assert_eq!(at("orch_gate::forms("), ["orch_type_gated"], "the classified text is every form");
         assert_eq!(at("orch_gate::record_held("), ["orch_typed_finish"], "recorded only after an allowed send");
-        assert_eq!(at("orch_gate::after_chat_end(&mut self.orch_held, chat)"), ["orch_drop_chat"], "only the ending chat's panes");
+        assert_eq!(at("orch_gate::after_chat_end(&mut self.orch_held, chat, "), ["orch_drop_chat"], "only the ending chat's panes");
         assert_eq!(at("runs_verdict(&"), ["orch_check_tick"], "a check's verdict is the worst of its forms");
         assert!(include_str!("orch_app.rs").split("#[cfg(test)]").next().unwrap().contains("self.orch_drop_chat(chat)"));
     }

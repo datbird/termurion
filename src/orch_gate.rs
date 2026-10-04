@@ -329,10 +329,20 @@ pub fn record_held(held: Option<&Held>, prompts: usize, integrated: bool, now: f
     Held { lines, prompts }
 }
 
-/// A chat's turn ended (ruling, Task 10 fix round 2): the held text of every pane that chat
-/// sent to is cleared; panes only other chats sent to keep theirs.
-pub fn after_chat_end<K>(held: &mut std::collections::HashMap<K, Held>, chat: &str) {
-    held.retain(|_, h| !h.lines.iter().any(|l| l.chat == chat));
+/// A chat ended (Stop, AI off, the mode off, a delete): the held text of every pane that chat
+/// sent to is cleared, unless the whole text still ends in a continuation that pane's shell
+/// waits on (final review ruling 2, which amends Task 10 fix round 2's ruling). That text is
+/// still the start of the command the next line completes, so it stays and expires by the
+/// normal rules: a prompt advance with shell integration, `HOLD_SECS` without, the pane gone
+/// or the person's own input. Panes only other chats sent to keep theirs.
+pub fn after_chat_end<K>(held: &mut std::collections::HashMap<K, Held>, chat: &str, shell_of: impl Fn(&K) -> ShellKind) {
+    held.retain(|pane, h| {
+        if !h.lines.iter().any(|l| l.chat == chat) {
+            return true;
+        }
+        let whole = h.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n");
+        continues(&whole, shell_of(pane))
+    });
 }
 
 /// A write by the person (typing, a paste, a drop, Send Text, the Cockpit's command bar): the
@@ -574,15 +584,43 @@ mod tests {
         assert_eq!(g(ShellKind::Posix, "A`"), "A`Z");
     }
 
-    /// Task 10 fix round 2: a chat's end clears the held text of the panes it sent to only.
+    /// Task 10 fix round 2, final review ruling 2: a chat's end clears the held text of the
+    /// panes it sent to, unless that text still ends in a continuation the pane's shell waits
+    /// on; other chats' panes keep theirs.
     #[test]
-    fn chat_end_clears_only_that_chats_panes() {
+    fn chat_end_clears_only_that_chats_finished_lines() {
         let mut m = std::collections::HashMap::new();
-        m.insert(1u64, held(&[("DANGEROUS_PART_1 |", 0.0, "c1")], 3));
-        m.insert(2u64, held(&[("DANGEROUS_PART_1 |", 0.0, "c2")], 3));
+        m.insert(1u64, held(&[("PART_1 |", 0.0, "c1")], 3));
+        m.insert(2u64, held(&[("PART_1 |", 0.0, "c2")], 3));
         m.insert(3u64, held(&[("a", 0.0, "c2"), ("b |", 1.0, "c1")], 3));
-        after_chat_end(&mut m, "c1");
-        assert_eq!(m.keys().copied().collect::<Vec<_>>(), [2], "even a pending continuation of the ending chat goes; another chat's survives");
+        m.insert(4u64, held(&[("PART_1", 0.0, "c1")], 3));
+        m.insert(5u64, held(&[("PART_1 \\", 0.0, "c1")], 3));
+        m.insert(6u64, held(&[("PART_1 \\", 0.0, "c1")], 3));
+        let shell_of = |p: &u64| if *p == 6 { ShellKind::Cmd } else { ShellKind::Posix };
+        after_chat_end(&mut m, "c1", shell_of);
+        let mut kept = m.keys().copied().collect::<Vec<_>>();
+        kept.sort();
+        assert_eq!(kept, [1, 2, 3, 5], "a continuation survives; a finished line (4) and one the pane's own shell does not continue (6) go");
+    }
+
+    /// Final review ruling 2: `<PART_1> |`, then Stop, then `<PART_2>` is still judged joined.
+    /// A fake classifier refuses the marker pair in any one form.
+    #[test]
+    fn stop_does_not_launder_a_split_line() {
+        let fake = |f: &String| if f.contains("PART_1") && f.contains("PART_2") { Verdict::Deny("joined".into()) } else { Verdict::Allow };
+        for integrated in [true, false] {
+            let mut m = std::collections::HashMap::new();
+            m.insert(1u64, record_held(None, 3, integrated, 0.0, ShellKind::Posix, "PART_1 |", "c1"));
+            after_chat_end(&mut m, "c1", |_| ShellKind::Posix);
+            let live = live_lines(m.get(&1), 3, integrated, 10.0, ShellKind::Posix);
+            let verdicts: Vec<Verdict> = forms(&live, "PART_2", ShellKind::Posix).iter().map(fake).collect();
+            assert_eq!(worst(&verdicts), Verdict::Deny("joined".into()), "integrated {integrated}");
+        }
+        // It still expires by the normal rules: the window without integration.
+        let mut m = std::collections::HashMap::new();
+        m.insert(1u64, record_held(None, 0, false, 0.0, ShellKind::Posix, "PART_1 |", "c1"));
+        after_chat_end(&mut m, "c1", |_| ShellKind::Posix);
+        assert!(live_lines(m.get(&1), 0, false, HOLD_SECS + 1.0, ShellKind::Posix).is_empty());
     }
 
     /// Task 10 fix round 2: the person's writes clear a pane's held text; a model's and the
