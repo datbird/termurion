@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 190 | 109 | 15 |
-| `02-global-settings.md` | 819 | 444 | 73 | 302 |
+| `02-global-settings.md` | 819 | 443 | 74 | 302 |
 | `03-features-and-menus.md` | 644 | 544 | 45 | 55 |
-| Total | 1,777 | 1,178 | 227 | 372 |
+| Total | 1,777 | 1,177 | 228 | 372 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -519,7 +519,7 @@ right-click item, Favorites and an in-app browser. Nothing of 14d was checked on
 build. Every kept quirk is listed in `docs/acceptance/m14d-checklist.md` and ruled on in
 `docs/superpowers/rulings/m14d-rulings.txt`.
 Milestone 14e added ssh: URLs and closed milestone 14 (14a to 14e all built; 14d landed first). A profile's
-General tab has "URL schemes:" with "Select URL Schemes\u{2026}" and `ssh`; ticking it asks, naming the
+General tab has "URL schemes:" with "Select URL Schemes..." and `ssh`; ticking it asks, naming the
 current handler and every `HKCU` entry OK replaces (or "There is currently no handler."), then writes
 only `HKCU` keys (never `HKLM`, never a protected user choice, which is reported and left for Default
 apps). An `ssh://user@host:port/path` link from a browser or Run starts `tandem.exe --url`, which
@@ -529,17 +529,18 @@ The tab runs ssh with iTerm2's `-l`, `-p`, `-t` and `cd <path>; exec $SHELL -l`,
 integration when "Use SSH integration for ssh: URLs" is on; a user name outside iTerm2's set (and
 14c's grammar) shows "Illegal Username". Leaving an ssh session restores the keyboard mode and offers
 to restore the title (a per-pane host stack, iTerm2's). Rows: 02 `SshIntegrationForURLs`, sshSchemePath,
-validCharactersInSSHUserNames, sshURLsSupportPath and restoreKeyModeAutomaticallyOnHostChange to have;
+sshURLsSupportPath and restoreKeyModeAutomaticallyOnHostChange to have, and
+validCharactersInSSHUserNames to partial (iTerm2's default accepts characters Tandem refuses);
 01 URL schemes handled to partial (`ssh` only); 03 Remote host can control iTerm2, OSC 1337 wrap and
 02 channelsEnabled are n/a (rulings 3 and 4; they leave the counts, as in 12e and 14d), and the menu
 item shows unavailable with no milestone (`Status::NotApplicable`). Beyond iTerm2, for safety: the
 URL command line is accepted only as exactly `tandem.exe --url <one ssh URL>` and anything else is
 refused; a URL's words pass iTerm2's check and 14c's grammar, a host-less URL opens nothing, a URL
-path is a remote folder and never touches this PC's file system (a `//` or `\\` path drops the cd part),
+path is a remote folder, sent only as iTerm2's cd word, and never touches this PC's file system (a `//` or `\\` path drops the cd part),
 at most 4 external links open per 10 s, and each shows a banner naming `user@host:port`; the key
 mode and title restored are the ones in effect at the host report. Deferred: other URL schemes
 (ftp, telnet and the rest of iTerm2's 14), `$$` substitutions in a bound profile's command, a
-window-style click, the folder of a link whose profile opens in a new window, and a
+window-style click and a
 local mode set in the same output chunk as the restore. Nothing of 14e was checked on screen during the
 build. Every kept quirk is listed in `docs/acceptance/m14e-checklist.md` and ruled on in
 `docs/superpowers/rulings/m14e-rulings.txt`.
