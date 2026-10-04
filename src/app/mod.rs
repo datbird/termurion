@@ -1068,6 +1068,9 @@ pub struct App {
     orch_spawned: HashMap<String, Vec<(Instant, PaneId)>>,
     /// Each chat's watchers and timers (Task 11); in memory only, a launch starts empty (ruling P2).
     orch_watchers: HashMap<String, Vec<crate::orch_watch::Watcher>>,
+    /// What the agent submitted into each pane since its last prompt, so a split command is
+    /// classified whole (Task 10 fix round 1).
+    orch_held: HashMap<PaneId, crate::orch_gate::Held>,
     /// A screen watch's poll, by watcher id.
     orch_polls: HashMap<String, crate::orch_watch::Poll>,
     /// The events each chat is about to receive, held for the gate and the rate.
@@ -1750,6 +1753,7 @@ pub fn run() {
         orch_spawns: Vec::new(),
         orch_spawned: HashMap::new(),
         orch_watchers: HashMap::new(),
+        orch_held: HashMap::new(),
         orch_polls: HashMap::new(),
         orch_outbox: HashMap::new(),
         #[cfg(windows)]
