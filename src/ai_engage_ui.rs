@@ -132,6 +132,10 @@ impl WaitWindow {
         self.host.id()
     }
 
+    pub fn focus(&self) {
+        self.host.focus();
+    }
+
     pub fn event(&mut self, event: &WindowEvent) -> bool {
         self.host.event(event)
     }

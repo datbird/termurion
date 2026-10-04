@@ -138,6 +138,8 @@ mod shell_version_ui;
 mod prefs_ui;
 mod settings_export_ui;
 mod ai_app;
+mod ai_runs;
+mod ai_engage_app;
 mod chat_app;
 mod chat_window_app;
 mod chat_session_app;
@@ -876,6 +878,15 @@ pub struct App {
     ai_discovery: crate::ai_discovery::Cache,
     ai_transport: Arc<dyn crate::ai_transport::Transport>,
     ai_probe: Option<crate::ai_discovery::Ticket>,
+    /// 12e's AI requests in flight and the next id (app-wide, never swapped; ruling R12e-1).
+    ai_runs: HashMap<u64, ai_runs::Run>,
+    ai_runs_next: u64,
+    /// Engage AI: the dialog showing (with the pane and what it asked), the one queued to show,
+    /// the wait window (with its run), and what each Engage run was started from.
+    ai_engage: Option<(crate::ai_engage_ui::EngageWindow, PaneId, crate::ai_engage::Ask)>,
+    ai_engage_open: Option<(PaneId, crate::ai_engage::Ask)>,
+    ai_wait: Option<(crate::ai_engage_ui::WaitWindow, u64)>,
+    ai_engage_pending: HashMap<u64, ai_engage_app::EngageFrom>,
     /// The AI chats (app-wide, never swapped): the chat database, opened on first use, whether
     /// opening it failed (then it is not tried again), and the broker.
     chat_db: Option<crate::chat_store::Store>,
@@ -1545,6 +1556,12 @@ pub fn run() {
         ai_discovery,
         ai_transport,
         ai_probe: None,
+        ai_runs: HashMap::new(),
+        ai_runs_next: 0,
+        ai_engage: None,
+        ai_engage_open: None,
+        ai_wait: None,
+        ai_engage_pending: HashMap::new(),
         chat_db: None,
         chat_db_failed: false,
         chat_links_off: false,
@@ -3303,6 +3320,8 @@ impl App {
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
         // Every chat linked to this session unlinks while its reference still names the pane.
         self.chat_pane_gone(id);
+        // AI requests that belong to the pane end with it.
+        self.ai_runs_pane_gone(id);
         // A git command's window closed any way ends its command, as does Manage
         // Dependencies' pip command.
         self.single_use_ended(id);
@@ -4819,6 +4838,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_ai_key_window(event_loop);
         self.open_ai_reveal(event_loop);
         self.ai_discovery_tick();
+        self.ai_runs_tick();
+        self.open_ai_engage_windows(event_loop);
         let ai_due = self.ai_discovery_due();
         let chat_due = self.chat_tick();
         let chat_window_due = self.chat_window_tick();
@@ -4959,7 +4980,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.chat_window_event(id, &event, event_loop) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.chat_window_event(id, &event, event_loop) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

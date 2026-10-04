@@ -395,6 +395,24 @@ impl Composer {
         self.edit.load(&full);
     }
 
+    /// `replaceSelectionOrWholeStringWithString:` (`LC:336-343`): the selection becomes `s`,
+    /// else everything after the prompt prefix does; the caret goes after the new text and the
+    /// undo history is dropped (the text changed under it).
+    pub fn replace_selection_or_all(&mut self, s: &str) {
+        let n = self.prefix_len();
+        let (from, to) = match self.edit.selection() {
+            Some(r) => (r.start.max(n), r.end.max(n)),
+            None => (n, self.edit.text.len()),
+        };
+        let s = if s.contains('\r') { s.replace("\r\n", "\n").replace('\r', "\n") } else { s.to_string() };
+        self.edit.text.replace_range(from..to, &s);
+        self.edit.caret = from + s.len();
+        self.edit.anchor = None;
+        self.edit.extra.clear();
+        self.edit.at_line_end = false;
+        self.edit.clear_undo();
+    }
+
     /// `setPrefix:` (`CM:553-557`, `CTV:475-505`): the prefix changes and the command after it
     /// is kept (the one way to change `prefix` without putting the text out of step).
     pub fn set_prefix(&mut self, prefix: Option<Prompt>) {
@@ -998,11 +1016,8 @@ pub fn help_lines(ai_allowed: bool) -> Vec<(&'static str, &'static str)> {
 pub const HELP_TIP: &str = "Describes how to use the composer.";
 /// The accessory row's right-aligned tip (`LCXIB:89`, "Press \u{21e7}\u{21a9} to send.").
 pub const SEND_TIP: &str = "Press Shift+Enter to send.";
-/// The AI completion warning (`LCXIB:98`); shown only with AI completions on, which Tandem
-/// does not have before milestone 12.
+/// The AI completion warning (`LCXIB:98`); shown only with AI completions on.
 pub const AI_WARNING: &str = "AI completion enabled: all text sent to AI";
-/// What the AI button, Win+Y and an AI completion answer until milestone 12.
-pub const AI_LATER: &str = "AI features come in milestone 12.";
 
 /// Whether the send tip shows at this accessory width (`LCVC:160-168`): hidden under 180
 /// points, or under 418 while the AI warning shows.
@@ -1154,6 +1169,32 @@ mod tests {
 
     fn m(ctrl: bool, alt: bool, shift: bool) -> Mods {
         Mods { ctrl, alt, shift, win: false }
+    }
+
+    #[test]
+    fn replace_selection_or_all_follows_iterm2() {
+        // The selection is replaced and the caret goes after the new text.
+        let mut c = Composer::default();
+        c.shown = Shown::Dropdown;
+        c.edit.load("git st");
+        c.edit.anchor = Some(4);
+        c.replace_selection_or_all("status");
+        assert_eq!(c.text(), "git status");
+        assert_eq!((c.edit.caret, c.edit.anchor), (10, None));
+        // No selection: everything is replaced.
+        let mut c = Composer::default();
+        c.edit.load("git st");
+        c.replace_selection_or_all("ls -la");
+        assert_eq!(c.text(), "ls -la");
+        assert_eq!(c.edit.caret, 6);
+        // A prompt prefix survives: only the command is replaced.
+        let mut c = Composer::default();
+        c.prefix = Some(Prompt { rows: Vec::new(), text: vec!["PS C:\\> ".to_string()], by_trigger: false });
+        c.set_string("git st", false);
+        c.replace_selection_or_all("ls -la");
+        assert_eq!(c.text(), "PS C:\\> ls -la");
+        assert_eq!(c.contents(), "ls -la");
+        assert_eq!(c.edit.caret, c.text().len());
     }
 
     #[test]

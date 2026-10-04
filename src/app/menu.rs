@@ -81,6 +81,9 @@ pub(super) struct MenuBar {
     /// Scripts > Manage > Install Python Runtime, retitled "Check for Updated Runtime" once uv
     /// is installed.
     pub(super) install_runtime: Option<MenuItem>,
+    /// Edit > Engage Artificial Intelligence, enabled only while `GenerativeAIAllowed` is on
+    /// (`PTA:169-171`; `sync_checks`).
+    pub(super) engage_ai: Option<MenuItem>,
     /// Shell > ssh > Disconnect, retitled and enabled for the focused session (`refresh_ssh_menu`).
     pub(super) ssh_disconnect: Option<MenuItem>,
     /// iTerm2 > Suppressed Alerts, retitled with the count and time (`retitle_suppressed_menu`).
@@ -118,6 +121,7 @@ impl App {
         let mut subs: HashMap<Vec<String>, Submenu> = HashMap::new();
         let mut checks = HashMap::new();
         let mut install_runtime = None;
+        let mut engage_ai = None;
         let mut ssh_disconnect = None;
         let mut suppressed = None;
         for item in menus::items() {
@@ -129,7 +133,7 @@ impl App {
                 (&item.path[..item.path.len() - 1], Box::new(s))
             } else {
                 // Disconnect is enabled by `refresh_ssh_menu`, for a session that has a conductor.
-                let enabled = Self::menu_enabled(item) && item.selector != "sshDisconnect:";
+                let enabled = Self::menu_enabled(item) && item.selector != "sshDisconnect:" && (item.selector != "performNaturalLanguageQuery:" || self.globals.bool(crate::ai_settings::ADMIN));
                 let parent = &item.path[..item.path.len() - 1];
                 let alert_check = super::marks_ui::CHECKS.iter().any(|(s, _)| *s == item.selector) || super::seltools_ui::CHECKED.contains(&item.selector.as_str()) || matches!(item.selector.as_str(), "toggleMultiLinePasteWarning:" | "promptToConvertTabsToSpacesWhenPasting:");
                 let state_check = parent.iter().any(|p| p == "Terminal State") && item.label() != "Reset";
@@ -141,6 +145,9 @@ impl App {
                     let m = MenuItem::with_id(item.id(), menu_text(item), enabled, None);
                     if item.selector == "installPythonRuntime:" {
                         install_runtime = Some(m.clone());
+                    }
+                    if item.selector == "performNaturalLanguageQuery:" {
+                        engage_ai = Some(m.clone());
                     }
                     if item.selector == "sshDisconnect:" {
                         ssh_disconnect = Some(m.clone());
@@ -213,7 +220,7 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, ssh_disconnect, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
+        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, ssh_disconnect, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
         self.runtime_menu_title();
         self.retitle_suppressed_menu();
         // A new bar shows what the menu file says, so the Disconnect title is applied again.
@@ -462,6 +469,13 @@ impl App {
 
     /// Check marks follow the focused pane's terminal modes.
     pub(super) fn sync_checks(&mut self) {
+        // Engage AI follows the administrator's switch in every window's bar (`PTA:169-171`).
+        let ai_allowed = self.globals.bool(crate::ai_settings::ADMIN);
+        for bar in self.menu_bars_mut() {
+            if let Some(item) = &bar.engage_ai {
+                item.set_enabled(ai_allowed);
+            }
+        }
         let mode = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).map(|p| *p.screen.term().mode());
         let Some(bar) = &self.menu_bar else { return };
         for (label, _, _, flag) in TOGGLES {
@@ -705,6 +719,7 @@ impl App {
                 }
             }
             "openDashboard:" => self.open_tmux_dashboard(event_loop),
+            "performNaturalLanguageQuery:" => self.engage_ai(event_loop),
             "openAIChats:" => self.open_ai_chats(event_loop),
             "openAIChat:" => self.open_ai_chat(event_loop),
             "toggleTmuxPausePane:" => self.tmux_toggle_pause(),

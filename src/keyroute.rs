@@ -257,8 +257,9 @@ mod tests {
     #[test]
     fn a_mapped_win_chord_is_bound_for_the_hook() {
         let e = toml::Table::new();
-        let j = map("0x79-0x100000", 13);
-        let chord = win(ChordKey::Char('y'));
+        // Win+B has no menu command (Win+Y is Engage AI's since milestone 12e).
+        let j = map("0x62-0x100000", 13);
+        let chord = win(ChordKey::Char('b'));
         assert!(win_chord_bound(&Snapshot::new(&ctx(&j, &e)), &chord));
         assert!(!win_chord_bound(&Snapshot::new(&ctx(&e, &e)), &chord));
         // Win+T has a menu command; Win+3 is a tab shortcut.

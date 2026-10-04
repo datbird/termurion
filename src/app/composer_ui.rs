@@ -33,7 +33,6 @@ use crate::text_edit::{self, EditKey, EditOut, VisualLine};
 /// A fade's frame interval.
 const FRAME: Duration = Duration::from_millis(16);
 /// The info bar the AI button and Win+Y show.
-const AI_BAR: &str = "composer-ai";
 /// The profile key of the dropdown's distance from the pane's top (`ITAddressBookMgr.h:384`),
 /// undeclared, read with its default 0.
 const TOP_OFFSET: &str = "Composer Top Offset";
@@ -409,7 +408,7 @@ impl App {
 
     /// `pane`'s composer takes the keyboard: every other key consumer lets it go, and the
     /// pane's find field stops typing.
-    fn composer_take_keys(&mut self, pane: PaneId) {
+    pub(super) fn composer_take_keys(&mut self, pane: PaneId) {
         self.belt.focus = None;
         self.composer_yield_keys_but(Some(pane));
         if let Some(p) = self.panes.get_mut(&pane) {
@@ -420,6 +419,44 @@ impl App {
             f.typing = false;
         }
         self.refresh_route();
+    }
+
+    /// Engage AI's answer from the terminal or the status bar: `text` goes into the large
+    /// Composer, which opens if it was hidden and takes the keyboard (`PS:21385-21399`). The
+    /// person still has to send it.
+    pub(super) fn composer_ai_place(&mut self, pane: PaneId, text: &str) {
+        let before = self.panes.get(&pane).map(|p| p.composer.shown);
+        self.set_composer_string(pane, text, true);
+        let Some(p) = self.panes.get(&pane) else { return };
+        let (shown, hidden) = (p.composer.shown, p.composer.hidden);
+        if shown != Shown::Dropdown {
+            return;
+        }
+        if before != Some(Shown::Dropdown) {
+            self.composer_opened(pane);
+        }
+        if !hidden {
+            self.composer_take_keys(pane);
+        }
+        self.redraw();
+    }
+
+    /// Engage AI's answer from the large Composer: it replaces the selection, else the whole
+    /// text after the prompt, and the Composer has the keyboard again (`LC:314-343`).
+    pub(super) fn composer_ai_replace(&mut self, pane: PaneId, text: &str) {
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        if p.composer.shown != Shown::Dropdown {
+            return;
+        }
+        p.composer.replace_selection_or_all(text);
+        let v = self.composers.entry(pane).or_default();
+        v.generation += 1;
+        v.ghost = None;
+        v.popup = None;
+        v.waiting = None;
+        v.highlight_due = Some(Instant::now());
+        self.composer_take_keys(pane);
+        self.redraw();
     }
 
     /// The global dropdown height (`ComposerHeight`, 135).
@@ -1688,8 +1725,7 @@ impl App {
 
     /// A Win chord (`composer::chord_of`): Win+W closes a shown dropdown (never an Auto
     /// Composer, `PS:8737-8743`); with a composer that has the keyboard, Win+Shift+Up and Down
-    /// step marks (`PS:24608-24625`), Win+Alt+V sends the text to Advanced Paste, Win+Y answers
-    /// that AI comes later, Win+Shift+; opens the command history for the text before the
+    /// step marks (`PS:24608-24625`), Win+Alt+V sends the text to Advanced Paste, Win+Y engages AI, Win+Shift+; opens the command history for the text before the
     /// caret on its line. Win+F goes on to Find, which takes the keyboard. True when used.
     pub(super) fn composer_chord(&mut self, chord: &crate::menus::Chord) -> bool {
         let Some(c) = composer::chord_of(chord) else { return false };
@@ -1710,11 +1746,7 @@ impl App {
             composer::Chord::AdvancedPaste => {
                 return self.composer_advanced_paste_menu();
             }
-            composer::Chord::Ai => {
-                if self.ai_check(false) {
-                    self.ask(pane, AI_BAR, composer::AI_LATER, &["OK"], false);
-                }
-            }
+            composer::Chord::Ai => self.engage_from_composer(pane),
             composer::Chord::Find | composer::Chord::Close => return false,
             composer::Chord::History => {
                 let Some(p) = self.panes.get(&pane) else { return false };
@@ -1777,9 +1809,7 @@ impl App {
                 let origin = self.gpu.as_ref().and_then(|g| g.window.inner_position().ok()).unwrap_or_default();
                 self.composer_windows.help_at = Some((origin.x as f64 + f64::from(l.help.x + l.help.w / 2.0), origin.y as f64 + f64::from(l.help.y)));
             } else if ai && l.ai.contains(x, y) {
-                if self.ai_check(false) {
-                    self.ask(pane, AI_BAR, composer::AI_LATER, &["OK"], false);
-                }
+                self.engage_from_composer(pane);
             } else if l.handle.contains(x, y) {
                 self.drag = Drag::Composer { pane, kind: ComposerDrag::Resize { start_y: y, start_h: l.panel.h / scale } };
             } else if l.text.contains(x, y) {

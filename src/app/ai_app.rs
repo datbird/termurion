@@ -16,8 +16,8 @@ use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 use crate::pwm::Secret;
 use crate::settings_ai::{AiRequest, SubTab};
 
-/// What a given or refused key continues (ruling 12e-1). 12e adds `Run(u64)`,
-/// `Codecierge(String)` and `Explain`, each with its arm in `App::ai_key_given`.
+/// What a given or refused key continues (ruling 12e-1): the variants 12e added each have their
+/// arm in `App::ai_key_given`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum KeyThen {
     #[allow(dead_code)] // Later callers that only store the key.
@@ -28,6 +28,14 @@ pub(crate) enum KeyThen {
     Turn(String),
     /// A chat's vector-store job (the chat id) starts again with the key (minor m4).
     Files(String),
+    /// A 12e request (the run id) continues with the key; none ends it (`ai_runs`).
+    Run(u64),
+    /// A Codecierge session (its session reference) goes on to its goal (Task 6).
+    #[allow(dead_code)]
+    Codecierge(String),
+    /// A waiting Explain Output request continues (Task 4).
+    #[allow(dead_code)]
+    Explain,
 }
 
 impl App {
@@ -203,6 +211,9 @@ impl App {
             }
             KeyThen::Turn(chat) => self.ai_turn_key(&chat, key),
             KeyThen::Files(chat) => self.ai_files_key(&chat, key),
+            KeyThen::Run(id) => self.ai_run_key(id, key),
+            // Their tasks replace these two arms (Codecierge, Task 6; Explain, Task 4).
+            KeyThen::Codecierge(_) | KeyThen::Explain => drop(key),
         }
     }
 
