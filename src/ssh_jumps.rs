@@ -152,12 +152,35 @@ pub fn jumps_from(v: &toml::Value) -> Vec<Reconnection> {
 const VALUE_LETTERS: &str = "BbcDEeFIiJLlmOoPpQRSWw";
 
 /// Options a hop may not carry: `-F` loads another configuration (which can run commands),
-/// `-I` loads a PKCS#11 library and `-E` appends to any file (ruling, final review I1).
-const REFUSED_LETTERS: &str = "EFI";
+/// `-I` loads a PKCS#11 library and `-E` appends to any file (ruling, final review I1); `-S`
+/// and `-M` create a control socket, `-L`, `-R`, `-D` and `-w` open forwards or a tunnel
+/// (ruling, residual 3).
+const REFUSED_LETTERS: &str = "DEFILMRSw";
 
 /// `-o` keywords a hop may not carry, lower case: each runs a command, loads code or reads
-/// another configuration on the host that runs the jump (ruling, final review I1).
-const REFUSED_KEYWORDS: &[&str] = &["proxycommand", "localcommand", "permitlocalcommand", "remotecommand", "knownhostscommand", "match", "include", "pkcs11provider", "securitykeyprovider", "xauthlocation"];
+/// another configuration on the host that runs the jump (ruling, final review I1), or writes
+/// files or opens forwards there (ruling, residual 3).
+const REFUSED_KEYWORDS: &[&str] = &[
+    "proxycommand",
+    "localcommand",
+    "permitlocalcommand",
+    "remotecommand",
+    "knownhostscommand",
+    "match",
+    "include",
+    "pkcs11provider",
+    "securitykeyprovider",
+    "xauthlocation",
+    "userknownhostsfile",
+    "globalknownhostsfile",
+    "controlpath",
+    "controlmaster",
+    "localforward",
+    "remoteforward",
+    "dynamicforward",
+    "tunnel",
+    "tunneldevice",
+];
 
 /// Characters no word of a hop may hold once unquoted: ssh expands words such as the host
 /// into commands a configuration names (`%h` in a ProxyCommand), and older ssh versions do not
@@ -185,15 +208,21 @@ fn hop_is_safe(hop: &Reconnection) -> bool {
 /// Whether no word is a refused option. Every word that starts with `-` is read as ssh's
 /// getopt reads one (letters that take no value, then one that takes the rest of the word or
 /// the next word), even where ssh would read it as a value: refusing too much only makes a
-/// plain session. `-o`'s value is a configuration line: its keyword, after any spaces or
-/// quotes, ends at a space or `=` (`-oX=v`, `-o X=v`, `-o "X v"`), in any case.
+/// plain session. `-o`'s value is a configuration line: its keyword, after any spaces, quotes
+/// or `=` (OpenSSH's tokenizer takes all three, residual 1), ends at a space or `=` (`-oX=v`,
+/// `-o X=v`, `-o=X=v`, `-o "X v"`), in any case. No word holds whitespace, raw or escaped,
+/// and no part of a `-J` or ProxyJump value starts with `-`: OpenSSH pastes that value
+/// unquoted into a shell command line for the inner ssh (residual 2).
 fn words_are_safe(words: &[String]) -> bool {
+    let separator = |c: char| c.is_whitespace() || c == '"' || c == '=';
     let refused_option = |line: &str| {
-        let key: String = line.trim_start_matches(|c: char| c.is_whitespace() || c == '"').chars().take_while(char::is_ascii_alphanumeric).collect();
-        REFUSED_KEYWORDS.contains(&key.to_ascii_lowercase().as_str())
+        let line = line.trim_start_matches(separator);
+        let key: String = line.chars().take_while(char::is_ascii_alphanumeric).collect();
+        let key = key.to_ascii_lowercase();
+        REFUSED_KEYWORDS.contains(&key.as_str()) || (key == "proxyjump" && !jump_is_safe(line[key.len()..].trim_start_matches(separator)))
     };
     for (i, w) in words.iter().enumerate() {
-        if w.chars().any(|c| SHELL_METACHARACTERS.contains(c)) {
+        if w.chars().any(|c| SHELL_METACHARACTERS.contains(c) || c.is_whitespace()) {
             return false;
         }
         let Some(letters) = w.strip_prefix('-').filter(|l| *l != "-") else { continue };
@@ -204,7 +233,7 @@ fn words_are_safe(words: &[String]) -> bool {
             if VALUE_LETTERS.contains(l) {
                 let rest = &letters[at + l.len_utf8()..];
                 let value = if rest.is_empty() { words.get(i + 1).map_or("", String::as_str) } else { rest };
-                if l == 'o' && refused_option(value) {
+                if (l == 'o' && refused_option(value)) || (l == 'J' && !jump_is_safe(value)) {
                     return false;
                 }
                 break;
@@ -212,6 +241,13 @@ fn words_are_safe(words: &[String]) -> bool {
         }
     }
     true
+}
+
+/// Whether a `-J` / ProxyJump value (`[user@]host[:port]`, comma-separated) is safe in the
+/// shell command line OpenSSH builds from it: no whitespace, and no hop, user or host that
+/// starts with `-` (residual 2).
+fn jump_is_safe(value: &str) -> bool {
+    !value.is_empty() && !value.chars().any(char::is_whitespace) && value.split(',').all(|hop| !hop.is_empty() && hop.split('@').all(|part| !part.starts_with('-')))
 }
 
 /// A restored session's pending jumps (`PS:2214`): only a session that runs ssh takes them,
@@ -387,13 +423,13 @@ mod tests {
     #[test]
     fn saved_hops_must_be_quoted_as_it2ssh_quotes() {
         let list = |args: &str| jumps_value(&[r("-p 22 h ", None), r(args, Some("/x"))]);
-        for good in ["-p 2222 user@host ", "h", "-o ProxyJump=a\\,b h", "a\\ b\\*c\\?d h ", "-l '' h ", "\\~u h", "-o ServerAliveInterval=30 h"] {
+        for good in ["-p 2222 user@host ", "h", "-o ProxyJump=a\\,b h", "a\\*c\\?d h ", "-l '' h ", "\\~u h", "-o ServerAliveInterval=30 h"] {
             assert_eq!(jumps_from(&list(&good)).len(), 2, "{good}");
         }
-        assert_eq!(jumps_from(&list(&crate::util_it2ssh::requote(&["a b".into(), "x,y".into(), "[z]".into(), "".into()]))).len(), 2, "what it2ssh writes for words without metacharacters");
-        // Escaped metacharacters are in it2ssh's form, but final review I1's screen refuses
-        // them in any word (`words_are_safe`).
-        for bad in ["a\\ b\\;c\\|d h ", "\\$HOME h", "it\\'s h", "\\{x\\} h"] {
+        assert_eq!(jumps_from(&list(&crate::util_it2ssh::requote(&["a*b".into(), "x,y".into(), "[z]".into(), "".into()]))).len(), 2, "what it2ssh writes for words without metacharacters");
+        // Escaped metacharacters and spaces are in it2ssh's form, but final review I1's screen
+        // and residual 2 refuse them in any word (`words_are_safe`).
+        for bad in ["a\\ b\\*c\\?d h ", "a\\ b\\;c\\|d h ", "\\$HOME h", "it\\'s h", "\\{x\\} h"] {
             assert!(jumps_from(&list(&bad)).is_empty(), "{bad}");
         }
         for bad in ["h; curl x|sh", "h && rm -rf ~", "$(id) h", "`id` h", "h > /tmp/x", "h | sh", "'a b' h", "\"a\" h", "h &", "h\\", "*", "h #x", "~/x h", "a  b", " h"] {
@@ -408,7 +444,7 @@ mod tests {
     #[test]
     fn a_hop_that_runs_a_command_is_refused() {
         let one = |args: &str| safe_hops(&[r(args, None)]);
-        for good in ["-p 2222 user@host ", "h", "-o ProxyJump=a\\,b h ", "-J bastion h ", "-L 8080:localhost:80 h ", "-o ServerAliveInterval=30 h ", "-4 -t h ", "-l '' h ", "-o SetEnv\\ A=b h "] {
+        for good in ["-p 2222 user@host ", "h", "-o ProxyJump=a\\,b h ", "-J bastion h ", "-o ServerAliveInterval=30 h ", "-4 -t h ", "-l '' h "] {
             assert!(one(good).is_some(), "{good}");
         }
         for bad in [
@@ -446,6 +482,75 @@ mod tests {
         // The arrangement path takes the same validator.
         assert!(jumps_from(&jumps_value(&[r("h1 ", None), r("-oProxyCommand=id h2 ", None)])).is_empty());
         assert!(jumps_from(&jumps_value(&[r("-F /tmp/c h ", None)])).is_empty());
+    }
+
+    /// Residual 1: OpenSSH's configuration-line tokenizer takes a `=` before the keyword too
+    /// (`-o=X=v`, `-o =X=v`), so the screen skips it as it skips spaces and quotes.
+    #[test]
+    fn an_equals_sign_before_the_keyword_is_still_screened() {
+        let one = |args: &str| safe_hops(&[r(args, None)]);
+        for bad in ["-o=ProxyCommand=id h ", "-o =ProxyCommand=id h ", "-o==LocalCommand=id h ", "-4o=Match=all h ", "-o =\\ ProxyCommand=id h "] {
+            assert!(one(bad).is_none(), "{bad}");
+        }
+        assert!(one("-o=ServerAliveInterval=30 h ").is_some());
+    }
+
+    /// Residual 2: OpenSSH pastes a `-J` / ProxyJump value unquoted into a shell command line,
+    /// so a hop word may hold no whitespace (raw or escaped) and no part of a jump value may
+    /// start with `-` (it would be read as an option of the inner ssh).
+    #[test]
+    fn a_jump_value_cannot_carry_options() {
+        let one = |args: &str| safe_hops(&[r(args, None)]);
+        for good in ["-J bastion h ", "-J u@b1:22\\,b2 h ", "-Jb1 h ", "-o ProxyJump=a\\,b h ", "-oProxyJump=u@a:2200 h "] {
+            assert!(one(good).is_some(), "{good}");
+        }
+        for bad in [
+            "-J a\\ -oProxyCommand=id h ",
+            "-J a\\,-oProxyCommand=id h ",
+            "-Ja\\,-F\\ cfg h ",
+            "-J -oProxyCommand=id h ",
+            "-J u@-oProxyCommand=id h ",
+            "-4J a\\,-oX=y h ",
+            "-o ProxyJump=a\\ -oProxyCommand=id h ",
+            "-oProxyJump=a\\,-oProxyCommand=id h ",
+            "-o ProxyJump=-oProxyCommand=id h ",
+            "-o =proxyjump=b\\,-Fx h ",
+            "-o SetEnv\\ A=b h ",
+            "a\\ b h ",
+        ] {
+            assert!(one(bad).is_none(), "{bad}");
+        }
+    }
+
+    /// Residual 3 (ruling): options that write files or open forwards refuse the hop too, so a
+    /// duplicated or restored session never binds ports or writes sockets on the host above.
+    #[test]
+    fn a_hop_that_writes_files_or_opens_forwards_is_refused() {
+        let one = |args: &str| safe_hops(&[r(args, None)]);
+        for bad in [
+            "-o UserKnownHostsFile=/tmp/k h ",
+            "-oGlobalKnownHostsFile=/tmp/k h ",
+            "-o ControlPath=/tmp/s h ",
+            "-o ControlMaster=yes h ",
+            "-S /tmp/s h ",
+            "-M h ",
+            "-4M h ",
+            "-o LocalForward=8080:x:80 h ",
+            "-o RemoteForward=9000:x:22 h ",
+            "-o DynamicForward=1080 h ",
+            "-L 8080:localhost:80 h ",
+            "-L8080:localhost:80 h ",
+            "-R 9000:localhost:22 h ",
+            "-D 1080 h ",
+            "-o Tunnel=yes h ",
+            "-o TunnelDevice=any h ",
+            "-w 0:0 h ",
+        ] {
+            assert!(one(bad).is_none(), "{bad}");
+        }
+        // A refused hop gives a plain session: no hops at all.
+        assert!(jumps_from(&jumps_value(&[r("h1 ", None), r("-L 1:x:1 h2 ", None)])).is_empty());
+        assert!(one("-p 2222 -4 -t h ").is_some());
     }
 
     /// Every argument goes into the remote `eval` quoted as `%q` quotes it, whatever the hop's
