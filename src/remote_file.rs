@@ -164,7 +164,8 @@ pub fn size_text(size: Option<u64>) -> String {
         _ if n < 1000 => return format!("{n} bytes"),
         _ => {}
     }
-    const UNITS: [&str; 6] = ["KB", "MB", "GB", "TB", "PB", "EB"];
+    // iTerm2 allows bytes to TB only (`allowedUnits`).
+    const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
     let mut v = n as f64 / 1000.0;
     let mut i = 0;
     while v >= 999.5 && i + 1 < UNITS.len() {
@@ -193,26 +194,25 @@ pub fn kind_text(f: &RemoteFile) -> String {
         Kind::Symlink(_) => return "Alias".into(),
         Kind::File { .. } => {}
     }
+    // NSString.pathExtension: empty for a dotfile and for a trailing dot.
     let name = f.name();
-    let ext = match name.rsplit_once('.') {
-        Some((_, e)) => e.to_ascii_lowercase(),
-        None => String::new(),
+    let ext = match name.rfind('.') {
+        Some(i) if i > 0 && i + 1 < name.len() => name[i + 1..].to_ascii_lowercase(),
+        _ => String::new(),
     };
-    let text = match ext.as_str() {
-        "png" | "gif" | "bmp" | "tif" | "tiff" | "heic" | "webp" | "svg" | "ico" => format!("{} image", ext.to_ascii_uppercase()),
-        "jpg" | "jpeg" => "JPEG image".into(),
-        "md" | "txt" | "text" | "rtf" => "Text document".into(),
+    match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tiff" => format!("{} image", ext.to_ascii_uppercase()),
+        "txt" | "md" | "rtf" => "Text document".into(),
         "pdf" => "PDF document".into(),
-        "mkv" | "mp4" | "mov" | "avi" | "webm" | "m4v" => "Video".into(),
-        "flac" | "mp3" | "wav" | "aac" | "m4a" | "ogg" => "Audio".into(),
-        "gz" | "zip" | "tar" | "tgz" | "bz2" | "xz" | "7z" => "Archive".into(),
+        "mp4" | "mov" | "avi" | "mkv" => "Video".into(),
+        "mp3" | "wav" | "aac" | "flac" => "Audio".into(),
+        "zip" | "tar" | "gz" | "bz2" => "Archive".into(),
         "lua" => "Lua script".into(),
         "nvim" => "Neovim config".into(),
-        "sh" | "bash" | "zsh" => "Shell script".into(),
+        "sh" => "Shell script".into(),
         "m" => "Objective-C source".into(),
         _ => "Document".into(),
-    };
-    text
+    }
 }
 
 /// "M/d/yy h:mm a" of a local time.
@@ -225,11 +225,16 @@ pub fn date_parts_text(p: &Parts) -> String {
     format!("{}/{}/{:02} {}:{:02} {}", p.month, p.day, p.year % 100, h, p.minute, ampm)
 }
 
+/// 9999-12-31 23:59:59 UTC in Unix seconds.
+#[cfg(windows)]
+const MAX_DATE: f64 = 253_402_300_799.0;
+
 /// A Unix time as the panel's date; none, or a time before 1970, is "--".
 #[cfg(windows)]
 pub fn date_text(unix: Option<f64>) -> String {
     match unix {
-        Some(t) if t >= 0.0 && t.is_finite() => date_parts_text(&crate::stamps::local(t.floor() as u64)),
+        // Past year 9999 is "--": stamps::local multiplies into u64 ticks, which a hostile time overflows.
+        Some(t) if (0.0..=MAX_DATE).contains(&t) => date_parts_text(&crate::stamps::local(t.floor() as u64)),
         _ => "--".into(),
     }
 }
@@ -243,7 +248,10 @@ pub fn posix_parent(path: &str) -> String {
     let p = path.trim_end_matches('/');
     match p.rfind('/') {
         Some(0) => "/".into(),
-        Some(i) => p[..i].to_string(),
+        Some(i) => match p[..i].trim_end_matches('/') {
+            "" => "/".into(),
+            q => q.to_string(),
+        },
         None => if path.starts_with('/') { "/".into() } else { String::new() },
     }
 }
@@ -376,7 +384,6 @@ mod tests {
         assert_eq!(size_text(Some(1500)), "2 KB");
         assert_eq!(size_text(Some(1_500_000)), "1.5 MB");
         assert_eq!(size_text(Some(1_234_567_890)), "1.23 GB");
-        assert_eq!(size_text(Some(u64::MAX)), "18.45 EB");
         let k = |n: &str| kind_text(&file(n, Kind::File { size: None }));
         assert_eq!(k("a.PNG"), "PNG image");
         assert_eq!(k("a.md"), "Text document");
@@ -408,5 +415,42 @@ mod tests {
         assert_eq!(date_text(Some(t)), date_parts_text(&p));
         assert_eq!(date_text(Some(t + 0.9)), date_text(Some(t)));
         assert_eq!(date_text(Some(-5.0)), "--");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hostile_times_are_dashes() {
+        // A time the remote chose: stamps::local multiplies it into u64 ticks, which overflows
+        // far below f64::MAX. Past year 9999 is "--".
+        for t in [253_402_300_800.0, 1.0e12, 1.0e15, 1.0e300, f64::MAX, f64::INFINITY, f64::NAN] {
+            assert_eq!(date_text(Some(t)), "--", "{t}");
+        }
+        assert_ne!(date_text(Some(253_402_300_799.0)), "--");
+    }
+
+    #[test]
+    fn source_kinds_and_sizes_are_exact() {
+        let k = |n: &str| kind_text(&file(n, Kind::File { size: None }));
+        // Extensions iTerm2's kindDescription does not list are Document.
+        for n in ["a.tif", "a.heic", "a.webp", "a.svg", "a.ico", "a.text", "a.webm", "a.m4v", "a.m4a", "a.ogg", "a.tgz", "a.xz", "a.7z", "a.bash", "a.zsh"] {
+            assert_eq!(k(n), "Document", "{n}");
+        }
+        assert_eq!(k("a.jpg"), "JPG image");
+        assert_eq!(k("a.jpeg"), "JPEG image");
+        assert_eq!(k("a.tiff"), "TIFF image");
+        // pathExtension is empty for a dotfile and a trailing dot.
+        assert_eq!(k(".png"), "Document");
+        assert_eq!(k("a."), "Document");
+        assert_eq!(k("x.tar.gz"), "Archive");
+        // The sizes stop at TB.
+        assert_eq!(size_text(Some(1_000_000_000_000_000)), "1000 TB");
+        assert_eq!(size_text(Some(u64::MAX)), "18446744.07 TB");
+        assert_eq!(posix_parent("/a//b"), "/a");
+        assert_eq!(posix_parent("//a"), "/");
+        assert_eq!(f_parent("/a//b"), Some("/a".to_string()));
+    }
+
+    fn f_parent(p: &str) -> Option<String> {
+        file(p, Kind::Folder).parent()
     }
 }
