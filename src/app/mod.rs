@@ -444,6 +444,8 @@ pub struct App {
     win_transparency: crate::transparency::WinTransparency,
     /// The current window failed to become an alpha window.
     win_alpha_failed: bool,
+    /// The current window follows the current desktop (Space is All Desktops).
+    win_follow_desktop: bool,
     /// DWM was last told this window's backdrop is blurred (the frame is extended); `set_blur` runs on a change.
     blur_applied: bool,
     /// The current window's toolbelt.
@@ -827,6 +829,10 @@ pub struct App {
     /// once the attempt was made, so a machine without one is asked only once.
     desktops: Option<crate::desktops::win::Manager>,
     desktops_tried: bool,
+    /// The missing-desktop notice was shown this run (iTerm2's `dispatch_once`).
+    space_complained: bool,
+    /// When following windows are next checked against the current desktop.
+    desktop_due: Option<Instant>,
     /// The font settings the renderer last loaded.
     font_sig: String,
     /// Cursor blink phase, and when it last flipped.
@@ -1484,6 +1490,7 @@ pub fn run() {
         win_alpha_surface: Default::default(),
         win_transparency: crate::transparency::WinTransparency::new(true),
         win_alpha_failed: false,
+        win_follow_desktop: false,
         blur_applied: false,
         belt: Default::default(),
         tool_gen: 0,
@@ -1671,6 +1678,8 @@ pub fn run() {
         focus_lost: false,
         desktops: None,
         desktops_tried: false,
+        space_complained: false,
+        desktop_due: None,
         font_sig: String::new(),
         profiles_win: None,
         blink_on: true,
@@ -5131,10 +5140,14 @@ impl ApplicationHandler<UserEvent> for App {
         for (gw, events) in std::mem::take(&mut self.tmux_held_events) {
             self.tmux_events(gw, events, event_loop);
         }
+        let desktop_due = self.desktop_tick();
+        if self.settings.as_mut().is_some_and(|s| s.take_space_warning()) {
+            self.ask_scripts(scripts_alerts::ask(crate::desktops::SPACES_WARNING_HEADING, crate::desktops::SPACES_WARNING, &["OK"], Some(crate::desktops::SPACES_WARNING_ID), crate::warnings::Kind::Permanent, scripts_alerts::Then::Nothing));
+        }
         let tip_due = self.tick_tab_tip();
         let flash_due = self.tick_tab_flash();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, chat_window_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, chat_window_due, desktop_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)

@@ -92,6 +92,38 @@ pub fn saved(window: &Value) -> Option<&str> {
     window.get(STATE_KEY)?.as_str()
 }
 
+/// Where a profile's Space opens a new window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    Current,
+    All,
+    Desktop(DesktopId),
+    Missing(i64),
+}
+
+/// The profile's Space against the desktop list: 0 current, -1 every desktop, 1 to 9 the n-th
+/// desktop in Task View order (missing when there is none), anything else current
+/// (`iTermController.m:1052-1061`).
+pub fn space_target(space: i64, desktops: &[DesktopId]) -> Target {
+    match space {
+        -1 => Target::All,
+        1..=9 => desktops.get((space - 1) as usize).map_or(Target::Missing(space), |d| Target::Desktop(*d)),
+        _ => Target::Current,
+    }
+}
+
+/// The notification title when a numbered desktop does not exist (`iTermMissionControlHacks.m:55-61`).
+pub fn cant_switch(n: i64) -> String {
+    format!("Can\u{2019}t switch to desktop {n}")
+}
+
+pub const CANT_SWITCH_FIX: &str = "That desktop does not exist. Add desktops in Task View (Win+Tab).";
+pub const SPACES_WARNING_ID: &str = "NeverWarnAboutSpaces";
+pub const SPACES_WARNING_HEADING: &str = "Warning";
+pub const SPACES_WARNING: &str = "To have a new window open on a specific desktop, make sure that the desktop exists in Task View (Win+Tab).";
+/// How often a following ("All Desktops") window is checked against the current desktop.
+pub const FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
 #[cfg(windows)]
 pub mod win {
     use super::{DesktopId, ids_from_registry, REG_CURRENT, REG_IDS, REG_PATH};
@@ -198,6 +230,29 @@ mod tests {
     use super::*;
 
     const GUID: [u8; 16] = [0x04, 0x03, 0x02, 0x01, 0x06, 0x05, 0x08, 0x07, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10];
+
+    #[test]
+    fn space_target_follows_iterm2() {
+        let d = [1u128, 2, 3];
+        assert_eq!(space_target(0, &d), Target::Current);
+        assert_eq!(space_target(-1, &d), Target::All);
+        assert_eq!(space_target(1, &d), Target::Desktop(1));
+        assert_eq!(space_target(3, &d), Target::Desktop(3));
+        assert_eq!(space_target(4, &d), Target::Missing(4));
+        assert_eq!(space_target(9, &d), Target::Missing(9));
+        assert_eq!(space_target(10, &d), Target::Current);
+        assert_eq!(space_target(-5, &d), Target::Current);
+    }
+
+    #[test]
+    fn space_texts_follow_windows() {
+        assert_eq!(cant_switch(4), "Can\u{2019}t switch to desktop 4");
+        assert_eq!(CANT_SWITCH_FIX, "That desktop does not exist. Add desktops in Task View (Win+Tab).");
+        assert_eq!(SPACES_WARNING, "To have a new window open on a specific desktop, make sure that the desktop exists in Task View (Win+Tab).");
+        assert_eq!(SPACES_WARNING_ID, "NeverWarnAboutSpaces");
+        assert_eq!(SPACES_WARNING_HEADING, "Warning");
+        assert_eq!(FOLLOW_EVERY, std::time::Duration::from_secs(1));
+    }
 
     #[test]
     fn desktop_ids_follow_windows() {

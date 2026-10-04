@@ -271,6 +271,15 @@ impl App {
         let Some(g) = &self.gpu else { return };
         g.window.set_visible(true);
         g.window.set_minimized(false);
+        // A following window (Space All Desktops, the dedicated profile's) comes to the current
+        // desktop before it shows; the saved state does not carry the flag.
+        if self.store.get(&guid).is_some_and(|p| p.int("Space") == -1) {
+            self.win_follow_desktop = true;
+        }
+        if self.win_follow_desktop {
+            self.follow_now();
+        }
+        let Some(g) = &self.gpu else { return };
         g.window.set_window_level(if floats { winit::window::WindowLevel::AlwaysOnTop } else { winit::window::WindowLevel::Normal });
         // The profile's Screen: the window shows on that monitor, in its style's frame there.
         self.move_to_preferred_screen(&guid);

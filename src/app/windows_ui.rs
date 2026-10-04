@@ -88,6 +88,8 @@ pub(super) struct WinSlot {
     pub(super) win_transparency: crate::transparency::WinTransparency,
     /// Making this window an alpha window failed once: it stays opaque and is not tried again.
     pub(super) win_alpha_failed: bool,
+    /// The window follows the current desktop (its profile's Space is All Desktops).
+    pub(super) win_follow_desktop: bool,
     /// DWM was last told this window's backdrop is blurred (the frame is extended).
     pub(super) blur_applied: bool,
     mru: Mru,
@@ -177,6 +179,7 @@ impl WinSlot {
             win_alpha_surface: Default::default(),
             win_transparency: crate::transparency::WinTransparency::new(true),
             win_alpha_failed: false,
+            win_follow_desktop: false,
             blur_applied: false,
             mru: Mru::default(),
             mru_mods: None,
@@ -277,6 +280,7 @@ impl App {
         swap(&mut self.win_alpha_surface, &mut s.win_alpha_surface);
         swap(&mut self.win_transparency, &mut s.win_transparency);
         swap(&mut self.win_alpha_failed, &mut s.win_alpha_failed);
+        swap(&mut self.win_follow_desktop, &mut s.win_follow_desktop);
         swap(&mut self.blur_applied, &mut s.blur_applied);
         swap(&mut self.mru, &mut s.mru);
         swap(&mut self.mru_mods, &mut s.mru_mods);
@@ -523,6 +527,7 @@ impl App {
         // A git command's single-use window is never full screen (`iTermController.m`
         // `openSingleUseWindowWithCommand:` uses the default window type instead).
         let style = if self.start_command_override.is_some() && matches!(style, crate::frames::FULL_SCREEN | crate::frames::LION_FULL_SCREEN) { crate::frames::NORMAL } else { style };
+        let applies_space = matches!(first, NewWindow::Profile(_) | NewWindow::Hotkey(..));
         let arranged = matches!(first, NewWindow::Arrangement(..) | NewWindow::Restored(_) | NewWindow::HotkeyRestored(..));
         let torn_at = match &first {
             NewWindow::TornOff(_, at) => Some(*at),
@@ -585,6 +590,12 @@ impl App {
             self.place_window();
         } else {
             self.claim_slot();
+        }
+        // The profile's Space puts a new window on a desktop (P8: a profile launch or a hotkey
+        // window's first opening, never an arrangement, restoration, tab or orphan window).
+        if applies_space {
+            let space = first_guid.as_deref().and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).int("Space");
+            self.apply_space(space);
         }
         if steps.profile_style && style != crate::frames::NORMAL {
             self.apply_window_style(style, false);
@@ -861,6 +872,7 @@ impl WinSlot {
             win_alpha_surface: Default::default(),
             win_transparency: crate::transparency::WinTransparency::new(true),
             win_alpha_failed: false,
+            win_follow_desktop: false,
             blur_applied: false,
             mru: Mru::default(),
             mru_mods: None,

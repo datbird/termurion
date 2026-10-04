@@ -188,6 +188,12 @@ impl SettingsWindow {
         settings_keys::take_folder_pending(self.host.ctx())
     }
 
+    /// Whether the Space row committed a numbered desktop since the last call, clearing the
+    /// note: the app then asks the "make sure the desktop exists" warning (`PWP:1087-1098`).
+    pub fn take_space_warning(&mut self) -> bool {
+        self.host.ctx().data_mut(|d| d.remove_temp::<bool>(egui::Id::new("space_warning"))).unwrap_or(false)
+    }
+
     /// Shows one profile on one of its tabs (Profiles > Session for the status bar).
     pub fn show_profile_tab(&mut self, guid: &str, tab: &str) {
         self.page = Page::Profiles;
@@ -694,6 +700,9 @@ impl SettingsWindow {
                                 if chose_meta(&s.key, profile.get(&s.key).as_ref()) {
                                     keys.ask = Some(settings_keys::SheetWarning::new(settings_keys::meta_spec(), settings_keys::SheetThen::Nothing));
                                     ui.ctx().request_repaint();
+                                }
+                                if s.key == "Space" && profile.int("Space") > 0 {
+                                    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("space_warning"), true));
                                 }
                                 edit = Edit::Changed(selected.clone());
                             }
@@ -1247,6 +1256,19 @@ mod tests {
         // Taken: once only.
         assert!(!page_turn_applies(&ctx, Page::Keys, Page::General));
         assert!(!settings_keys::take_folder_pending(&ctx));
+    }
+
+    #[test]
+    fn space_row_follows_windows() {
+        let s = crate::schema::profile().iter().find(|x| x.key == "Space").unwrap();
+        assert!(!s.macos_only);
+        assert_eq!(s.label, "Desktop");
+        let got: Vec<(Value, String)> = s.choices.iter().map(|c| (c.value.clone(), c.label.clone())).collect();
+        let mut want = vec![(Value::Integer(0), "Current Desktop".to_string()), (Value::Integer(-1), "All Desktops".to_string())];
+        for n in 1..=9 {
+            want.push((Value::Integer(n), format!("Desktop {n}")));
+        }
+        assert_eq!(got, want);
     }
 
     #[test]
