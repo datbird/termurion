@@ -8,8 +8,8 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 190 | 108 | 16 |
 | `02-global-settings.md` | 823 | 435 | 74 | 314 |
-| `03-features-and-menus.md` | 647 | 532 | 47 | 68 |
-| Total | 1,784 | 1,157 | 229 | 398 |
+| `03-features-and-menus.md` | 647 | 537 | 47 | 63 |
+| Total | 1,784 | 1,162 | 229 | 393 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -284,6 +284,23 @@ typed in pieces is checked whole, the typing tools refuse line breaks and contro
 model-written field in a request is escaped) it is ruled and listed. The five browser tools wait
 for milestone 13. Every kept quirk is listed in `docs/acceptance/m12c-checklist.md` and ruled on
 in `docs/superpowers/rulings/m12c-rulings.txt`.
+Milestone 12d built the chat window and the inline chat (03: View > Show Inline Chat, Session > Open
+AI Chat..., Window > AI Chats, AI Chats window and In-chat find, 5 rows to have; Chat history
+persistence's browsing half, already have). Window > AI Chats (Shift+Win+Y) opens one egui window with
+the chat list (rename, delete, a search across every chat whose quote bug is fixed with bound
+parameters, minted titles) and a conversation (markdown, a copy for each code block, Edit, Fork and
+Delete on a message, attachments, drops and drafts), a toolbar of provider, model, effort, tier,
+thinking and web search, and the Chat Info menu. The four request buttons, Select a Session (a
+"Link this session to AI chat?" button on every pane), linking, per-category permissions and
+Send Commands & Output to AI Automatically answer through 12c's one gate; a linked pane shows a
+link glyph and a streaming glyph. Win+F finds in a conversation. View > Show Inline Chat
+(Shift+Win+,) draws a per-pane panel from the same models at the pane's right, beside Clippings,
+refused in tmux panes and kept by arrangements and restoration. A chat binds a terminal only through
+the pane's own session id, never its number, so a relaunch never gives an old grant to a new pane,
+and every file a model names goes through one helper that refuses Explorer-parsed types and marks
+the file. Orchestration buttons show disabled until 12f; "Link Browser Session" until milestone 13.
+Every kept quirk is listed in `docs/acceptance/m12d-checklist.md` and ruled on in
+`docs/superpowers/rulings/m12d-rulings.txt`. 12c's checklist is run with this window.
 Milestone 13a built Settings > Advanced as iTerm2's pane (02): the rows under iTerm2's 19
 categories in Finder order with bold, pinned headers; a search that matches every typed word in a
 row's description or category; "Show only non-default values", which keeps the row being edited
