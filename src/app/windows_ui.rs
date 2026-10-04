@@ -88,6 +88,8 @@ pub(super) struct WinSlot {
     pub(super) win_transparency: crate::transparency::WinTransparency,
     /// Making this window an alpha window failed once: it stays opaque and is not tried again.
     pub(super) win_alpha_failed: bool,
+    /// DWM was last told this window's backdrop is blurred (the frame is extended).
+    pub(super) blur_applied: bool,
     mru: Mru,
     mru_mods: Option<Mods>,
     laid_out: Option<crate::statusbar_layout::Room>,
@@ -175,6 +177,7 @@ impl WinSlot {
             win_alpha_surface: Default::default(),
             win_transparency: crate::transparency::WinTransparency::new(true),
             win_alpha_failed: false,
+            blur_applied: false,
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
@@ -274,6 +277,7 @@ impl App {
         swap(&mut self.win_alpha_surface, &mut s.win_alpha_surface);
         swap(&mut self.win_transparency, &mut s.win_transparency);
         swap(&mut self.win_alpha_failed, &mut s.win_alpha_failed);
+        swap(&mut self.blur_applied, &mut s.blur_applied);
         swap(&mut self.mru, &mut s.mru);
         swap(&mut self.mru_mods, &mut s.mru_mods);
         swap(&mut self.laid_out, &mut s.laid_out);
@@ -857,6 +861,7 @@ impl WinSlot {
             win_alpha_surface: Default::default(),
             win_transparency: crate::transparency::WinTransparency::new(true),
             win_alpha_failed: false,
+            blur_applied: false,
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,

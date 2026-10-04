@@ -77,6 +77,7 @@ impl App {
     /// `any_pane_is_transparent`), the menu check marks and every window's drawing.
     fn transparency_changed(&mut self) {
         self.apply_border();
+        self.sync_blur();
         self.menus_dirty = true;
         self.sync_checks();
         self.redraw();
@@ -112,6 +113,35 @@ impl App {
                 (id, transparency::pane_alpha(t, self.win_transparency.on, key_window, disable_for_key))
             })
             .collect()
+    }
+
+    /// Applies the DWM backdrop to the current window when the blur it should have differs from what DWM was
+    /// last told (`PTYTab.m:3027-3066`): the active tab's sessions, the window's toggle, not while minimized.
+    /// The radius is computed but acrylic has none. A refused backdrop (Windows 10, before 22H2) is not
+    /// retried until the wanted state changes again.
+    pub(super) fn sync_blur(&mut self) {
+        let Some(g) = self.gpu.as_ref() else { return };
+        if g.window.is_minimized().unwrap_or(false) {
+            return;
+        }
+        let want = self.tabs.get(self.active).is_some_and(|tab| {
+            let sessions: Vec<transparency::BlurInput> = tab
+                .layout
+                .panes()
+                .into_iter()
+                .filter_map(|id| self.panes.get(&id).and_then(|p| self.store.get(&p.profile)))
+                .map(|p| transparency::BlurInput { transparency: p.float("Transparency"), blur: p.bool("Blur"), radius: p.get("Blur Radius").map(|_| p.float("Blur Radius")) })
+                .collect();
+            let _radius = transparency::tab_blur_radius(&sessions);
+            transparency::tab_blur(&sessions, self.window_uses_transparency())
+        });
+        // Only a window that was blurred is switched back: margins set by other code stay.
+        if want == self.blur_applied {
+            return;
+        }
+        let Some(hwnd) = self.hwnd() else { return };
+        crate::backdrop::set_blur(hwnd, want);
+        self.blur_applied = want;
     }
 
     /// Reconfigures the current window's surface when the alpha mode it should have differs from the one
@@ -309,6 +339,8 @@ impl App {
         let old_hwnd = menu::hwnd_of(&old);
         let old_gpu = self.gpu.replace(gpu);
         self.win_alpha_surface = SurfaceKind::Alpha;
+        // The new handle has no backdrop yet.
+        self.blur_applied = false;
         self.rekey_window(old_id, new_id);
         if let Some(h) = old_hwnd {
             crate::winkeys::remove_window(h);

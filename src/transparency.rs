@@ -118,6 +118,52 @@ pub fn backdrop(window: Rect, content: Rect, chrome: [f32; 4], panes: &[(Vec<Rec
     out
 }
 
+/// The glyph (Segoe Fluent warning) shown before the large radius warning; iTerm2's emoji is dropped.
+pub const WARNING_GLYPH: char = '\u{E7BA}';
+/// The note under the Transparency slider (PreferencePanel.xib).
+pub const OVERRIDE_NOTICE: &str = "View > Use Transparency can override this setting temporarily per window.";
+/// The warning under Blur Radius (PreferencePanel.xib).
+pub const LARGE_RADIUS: &str = "Large radius may reduce performance";
+
+/// One session's blur facts: its profile's Transparency, Blur and Blur Radius (None when unset).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlurInput {
+    pub transparency: f64,
+    pub blur: bool,
+    pub radius: Option<f64>,
+}
+
+/// The tab blurs when any session has Transparency above 0 and Blur on while the window uses
+/// transparency (PTYTab.m:3027-3037).
+pub fn tab_blur(sessions: &[BlurInput], window_uses: bool) -> bool {
+    window_uses && sessions.iter().any(|s| s.transparency > 0.0 && s.blur)
+}
+
+/// The blur radius: the average over the sessions that blur (a missing radius counts 2.0), capped at 64;
+/// 2.0 when none blurs (PTYTab.m:3039-3055). Acrylic has no radius, so the value is only computed.
+pub fn tab_blur_radius(sessions: &[BlurInput]) -> f64 {
+    let blurred: Vec<f64> = sessions.iter().filter(|s| s.transparency > 0.0 && s.blur).map(|s| s.radius.unwrap_or(DEFAULT_BLUR_RADIUS)).collect();
+    if blurred.is_empty() {
+        return DEFAULT_BLUR_RADIUS;
+    }
+    (blurred.iter().sum::<f64>() / blurred.len() as f64).min(MAX_BLUR_RADIUS)
+}
+
+/// Whether a Window tab row is enabled (PWP:157-170, 179-189): Keep background colors opaque and Blur need
+/// Transparency above 0; Blur Radius needs Blur as well.
+pub fn row_enabled(key: &str, transparency: f64, blur: bool) -> bool {
+    match key {
+        "Only The Default BG Color Uses Transparency" | "Blur" => transparency > 0.0,
+        "Blur Radius" => transparency > 0.0 && blur,
+        _ => true,
+    }
+}
+
+/// The large radius warning shows while Blur is on and the radius is above 26 (PWP:762-769).
+pub fn radius_warning(blur: bool, radius: f64) -> bool {
+    blur && radius > LARGE_RADIUS_LIMIT
+}
+
 /// The surface alpha mode: premultiplied when something is see-through and the surface offers it,
 /// opaque when nothing is; otherwise the first mode offered.
 pub fn pick_alpha_mode(modes: &[wgpu::CompositeAlphaMode], transparent: bool) -> wgpu::CompositeAlphaMode {
@@ -362,5 +408,49 @@ mod tests {
         let two = composite(&[q(0.0, 0.0, 10.0, 10.0, 0.7), q(0.0, 0.0, 10.0, 10.0, 0.7)], 5.0, 5.0);
         assert!((two[3] - 0.91).abs() < 1e-6);
         assert_eq!(composite(&[q(0.0, 0.0, 10.0, 10.0, 0.7)], 50.0, 5.0), [0.0; 4]);
+    }
+
+    #[test]
+    fn tab_blur_follows_iterm2() {
+        let b = |transparency, blur, radius| BlurInput { transparency, blur, radius };
+        assert!(tab_blur(&[b(0.3, true, None)], true));
+        assert!(!tab_blur(&[b(0.3, true, None)], false));
+        assert!(!tab_blur(&[b(0.0, true, None)], true));
+        assert!(tab_blur(&[b(0.3, false, None), b(0.2, true, Some(10.0))], true));
+    }
+
+    #[test]
+    fn blur_radius_follows_iterm2() {
+        let b = |transparency, blur, radius| BlurInput { transparency, blur, radius };
+        assert_eq!(tab_blur_radius(&[b(0.3, true, Some(10.0)), b(0.3, true, None)]), 6.0);
+        assert_eq!(tab_blur_radius(&[b(0.3, false, Some(30.0))]), 2.0);
+        assert_eq!(tab_blur_radius(&[b(0.3, true, Some(100.0))]), 64.0);
+    }
+
+    #[test]
+    fn transparency_rows_follow_iterm2() {
+        let keep = "Only The Default BG Color Uses Transparency";
+        assert!(!row_enabled(keep, 0.0, false));
+        assert!(row_enabled(keep, 0.1, false));
+        assert!(!row_enabled("Blur", 0.0, true));
+        assert!(row_enabled("Blur", 0.1, false));
+        assert!(!row_enabled("Blur Radius", 0.1, false));
+        assert!(row_enabled("Blur Radius", 0.1, true));
+        assert!(!row_enabled("Blur Radius", 0.0, true));
+        assert!(row_enabled("Transparency", 0.0, false));
+        assert!(!radius_warning(true, 26.0));
+        assert!(radius_warning(true, 26.5));
+        assert!(!radius_warning(false, 40.0));
+        assert_eq!(OVERRIDE_NOTICE, "View > Use Transparency can override this setting temporarily per window.");
+        assert_eq!(LARGE_RADIUS, "Large radius may reduce performance");
+        assert_eq!(WARNING_GLYPH, '\u{E7BA}');
+    }
+
+    #[test]
+    fn dedicated_hotkey_window_is_transparent() {
+        use crate::profile::Profile;
+        let p = crate::hotkey::dedicated_profile(&Profile::default(), &[], &toml::Table::new(), "g");
+        assert!((pane_alpha(p.float("Transparency"), p.bool("Initial Use Transparency"), false, false) - 0.7).abs() < 1e-6);
+        assert!(tab_blur(&[BlurInput { transparency: 0.3, blur: p.bool("Blur"), radius: Some(p.float("Blur Radius")) }], true));
     }
 }

@@ -443,6 +443,8 @@ pub struct App {
     win_transparency: crate::transparency::WinTransparency,
     /// The current window failed to become an alpha window.
     win_alpha_failed: bool,
+    /// DWM was last told this window's backdrop is blurred (the frame is extended); `set_blur` runs on a change.
+    blur_applied: bool,
     /// The current window's toolbelt.
     belt: toolbelt_ui::Belt,
     /// Bumped when something a toolbelt tool shows changes (`tools_changed`).
@@ -1477,6 +1479,7 @@ pub fn run() {
         win_alpha_surface: Default::default(),
         win_transparency: crate::transparency::WinTransparency::new(true),
         win_alpha_failed: false,
+        blur_applied: false,
         belt: Default::default(),
         tool_gen: 0,
         belt_keys: Default::default(),
@@ -3242,6 +3245,8 @@ impl App {
         self.apply_border_everywhere();
         // AllowLiveResize may have changed.
         self.apply_resizable_everywhere();
+        // Disable Transparency or a profile value may have changed the blur.
+        self.sync_blur();
     }
 
     /// Starts watching and scanning the Scripts folder the settings name (`FM:236-252`).
@@ -3321,6 +3326,7 @@ impl App {
         self.tmux_watch_status_all();
         // A profile edit may make a window need an alpha surface.
         self.check_alpha_surfaces();
+        self.sync_blur();
         // A pane's alpha may have changed: the border rule reads it.
         self.apply_border_everywhere();
         self.redraw();
@@ -4744,6 +4750,8 @@ impl App {
         // A mode change reconfigures the surface once; this frame draws with it.
         let transparent = self.frame_alpha;
         self.sync_surface_alpha(transparent);
+        // Tab switches, focus, restore from minimized: the backdrop follows what this frame shows.
+        self.sync_blur();
         let Some(gpu) = self.gpu.as_mut() else { return };
         gpu.window.set_title(&title);
         let texture = match gpu.surface.get_current_texture() {
@@ -5315,6 +5323,7 @@ impl ApplicationHandler<UserEvent> for App {
                     g.surface.configure(g.render_device(), &g.config);
                 }
                 self.relayout();
+                self.sync_blur();
                 self.tmux_save_all_windows();
                 // Entering or leaving full screen resizes the window: the border goes or comes back.
                 self.apply_border();

@@ -405,3 +405,5 @@ pub mod ai_key_ui;
 #[cfg(windows)]
 pub mod ai_engage_ui;
 pub mod transparency;
+#[cfg(windows)]
+pub mod backdrop;

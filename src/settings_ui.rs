@@ -674,7 +674,22 @@ impl SettingsWindow {
                                 }
                                 continue;
                             }
-                            if control(ui, profile, s, dark, is_default) {
+                            let enabled = crate::transparency::row_enabled(&s.key, profile.float("Transparency"), profile.bool("Blur"));
+                            let mut changed = false;
+                            ui.add_enabled_ui(enabled, |ui| changed = control(ui, profile, s, dark, is_default));
+                            // The notes under Transparency and Blur Radius (PWP:157-170, 762-769).
+                            if s.key == "Transparency" && profile.float("Transparency") > 0.0 {
+                                ui.label(egui::RichText::new(crate::transparency::OVERRIDE_NOTICE).small());
+                            }
+                            if s.key == "Blur Radius" && crate::transparency::radius_warning(profile.bool("Blur"), profile.float("Blur Radius")) {
+                                ui.horizontal(|ui| {
+                                    if let Some(g) = settings_keys::icon_text(ui.ctx(), crate::transparency::WARNING_GLYPH) {
+                                        ui.label(g.color(ui.visuals().warn_fg_color));
+                                    }
+                                    ui.label(egui::RichText::new(crate::transparency::LARGE_RADIUS).small());
+                                });
+                            }
+                            if changed {
                                 // Choosing Meta for either Option key warns (`PK:554-559`).
                                 if chose_meta(&s.key, profile.get(&s.key).as_ref()) {
                                     keys.ask = Some(settings_keys::SheetWarning::new(settings_keys::meta_spec(), settings_keys::SheetThen::Nothing));
