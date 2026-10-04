@@ -171,6 +171,8 @@ pub enum UserEvent {
     Menu(String),
     /// A notification was clicked.
     NotificationClicked,
+    /// The monitors or a work area changed.
+    DisplayChanged,
     /// A shell's foreground job changed.
     JobsChanged,
     /// A system-wide hotkey was pressed (the ids of every hotkey it matched).
@@ -446,6 +448,8 @@ pub struct App {
     win_alpha_failed: bool,
     /// The current window follows the current desktop (Space is All Desktops).
     win_follow_desktop: bool,
+    /// The monitor (primary first) the current window's profile anchors it to (`placement::anchor`).
+    win_anchor: Option<usize>,
     /// DWM was last told this window's backdrop is blurred (the frame is extended); `set_blur` runs on a change.
     blur_applied: bool,
     /// The current window's toolbelt.
@@ -833,6 +837,8 @@ pub struct App {
     space_complained: bool,
     /// When following windows are next checked against the current desktop.
     desktop_due: Option<Instant>,
+    /// When the windows refit after a display change (`UpdateScreenParamsDelay` after the last message).
+    display_due: Option<Instant>,
     /// The font settings the renderer last loaded.
     font_sig: String,
     /// Cursor blink phase, and when it last flipped.
@@ -1264,6 +1270,10 @@ pub fn run() {
     crate::notify::on_click(Box::new(move || {
         let _ = clicks.lock().map(|p| p.send_event(UserEvent::NotificationClicked));
     }));
+    let displays = proxy.clone();
+    crate::display_watch::on_change(Box::new(move || {
+        let _ = displays.lock().map(|p| p.send_event(UserEvent::DisplayChanged));
+    }));
     let job_wake = proxy.clone();
     let jobs = crate::jobwatch::JobWatch::start(Arc::new(move || {
         let _ = job_wake.lock().map(|p| p.send_event(UserEvent::JobsChanged));
@@ -1491,6 +1501,7 @@ pub fn run() {
         win_transparency: crate::transparency::WinTransparency::new(true),
         win_alpha_failed: false,
         win_follow_desktop: false,
+        win_anchor: None,
         blur_applied: false,
         belt: Default::default(),
         tool_gen: 0,
@@ -1680,6 +1691,7 @@ pub fn run() {
         desktops_tried: false,
         space_complained: false,
         desktop_due: None,
+        display_due: None,
         font_sig: String::new(),
         profiles_win: None,
         blink_on: true,
@@ -4882,6 +4894,9 @@ impl ApplicationHandler<UserEvent> for App {
                 self.install_sizing();
                 // A forced Theme's title bar survives system setting changes.
                 self.guard_theme();
+                if let Some(h) = self.hwnd() {
+                    crate::display_watch::watch(h);
+                }
                 self.refresh_caption_frame();
                 self.apply_corners();
                 // The settings folder's questions and failures from the launch.
@@ -4992,6 +5007,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.place_window();
         } else {
             self.claim_slot();
+            self.anchor_from_profile(startup_hotkey.as_deref());
         }
         if steps.profile_window && startup_hotkey.is_none() {
             self.apply_window_profile(None);
@@ -5140,6 +5156,10 @@ impl ApplicationHandler<UserEvent> for App {
         for (gw, events) in std::mem::take(&mut self.tmux_held_events) {
             self.tmux_events(gw, events, event_loop);
         }
+        if self.display_due.is_some_and(|t| Instant::now() >= t) {
+            self.display_due = None;
+            self.refit_all_windows();
+        }
         let desktop_due = self.desktop_tick();
         if self.settings.as_mut().is_some_and(|s| s.take_space_warning()) {
             self.ask_scripts(scripts_alerts::ask(crate::desktops::SPACES_WARNING_HEADING, crate::desktops::SPACES_WARNING, &["OK"], Some(crate::desktops::SPACES_WARNING_ID), crate::warnings::Kind::Permanent, scripts_alerts::Then::Nothing));
@@ -5147,7 +5167,7 @@ impl ApplicationHandler<UserEvent> for App {
         let tip_due = self.tick_tab_tip();
         let flash_due = self.tick_tab_flash();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, chat_window_due, desktop_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, chat_window_due, desktop_due, self.display_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -5202,6 +5222,11 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::NotificationClicked => return self.reveal_notified(),
             UserEvent::JobsChanged => return self.jobs_changed(),
+            UserEvent::DisplayChanged => {
+                let delay = crate::placement::display_delay(self.globals.number("UpdateScreenParamsDelay").unwrap_or(1.0));
+                self.display_due = Some(Instant::now() + delay);
+                return;
+            }
             UserEvent::ThemeReset => return self.reapply_forced_theme(),
             UserEvent::Caption(hwnd, e) => return self.caption_event(hwnd, e, event_loop),
             UserEvent::OpenUrl(url) => return self.receive_url(url),

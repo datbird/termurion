@@ -3318,6 +3318,24 @@ default = true
 help = "Use the running command's first letter as the tab's default icon if there isn't a built in one.\nThis takes effect when tabs are configured to use built-in icons."
 
 [[setting]]
+key = "UpdateScreenParamsDelay"
+tab = "Advanced"
+section = "General"
+label = "Delay after changing number of screens/resolution until refresh (seconds)."
+type = "float"
+default = 1.0
+help = "Delay after changing number of screens/resolution until refresh (seconds).\nWindows are fitted to the new screens once this long has passed since the last display change."
+
+[[setting]]
+key = "ChaseAnchoredScreen"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Aggressively keep windows on the screen they were configured to be on"
+type = "bool"
+default = false
+help = "Aggressively keep windows on the screen they were configured to be on\nAfter a display change, a window whose profile names a screen moves back to it when it is on another one."
+
+[[setting]]
 key = "NoSyncAutoProvideConsent"
 tab = "Stored"
 section = "AI"

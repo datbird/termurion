@@ -78,7 +78,7 @@ fn invisible_top_bottom(hwnd: isize) -> (f32, f32) {
 }
 
 /// Moves and sizes a window to an outer frame; the inner size leaves the borders out.
-fn set_outer_frame(w: &winit::window::Window, r: Rect) {
+pub(super) fn set_outer_frame(w: &winit::window::Window, r: Rect) {
     let (outer, inner) = (w.outer_size(), w.inner_size());
     let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
     w.set_outer_position(winit::dpi::PhysicalPosition::new(r.x.round() as i32, r.y.round() as i32));

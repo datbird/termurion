@@ -10,6 +10,8 @@ pub mod remap;
 pub mod keyroute;
 pub mod mru;
 pub mod desktops;
+#[cfg(windows)]
+pub mod display_watch;
 pub mod dvr;
 pub mod replay;
 pub mod replay_panel;

@@ -144,6 +144,30 @@ pub fn screen_for(pref: i64, monitors: &[Rect], window_monitor: usize, cursor_mo
     }
 }
 
+/// The monitor a window is anchored to for a Screen preference (`PT:567-578`, `PT:15306-15315`):
+/// the n-th monitor when in range, the cursor's for -2, none otherwise.
+pub fn anchor(pref: i64, monitors: usize, cursor_monitor: usize) -> Option<usize> {
+    match pref {
+        -2 => (cursor_monitor < monitors).then_some(cursor_monitor),
+        n if n >= 0 && (n as usize) < monitors => Some(n as usize),
+        _ => None,
+    }
+}
+
+/// The monitor an anchored window should go back to (`PT:5393-5403`): its anchor when that
+/// monitor still exists and the window is on another one.
+pub fn chase(anchor: Option<usize>, monitors: usize, window_monitor: usize) -> Option<usize> {
+    anchor.filter(|a| *a < monitors && *a != window_monitor)
+}
+
+/// `UpdateScreenParamsDelay`: how long a burst of display messages settles before windows refit.
+pub fn display_delay(seconds: f64) -> std::time::Duration {
+    if seconds.is_nan() {
+        return std::time::Duration::from_secs(1);
+    }
+    std::time::Duration::from_secs_f64(seconds.clamp(0.0, 3600.0))
+}
+
 /// Window > Arrange Windows Horizontally: side by side across the work area, left to right
 /// in the order the windows stood, at least 400 wide (more rows when they do not fit);
 /// each keeps its height up to its row's share.
@@ -279,5 +303,35 @@ mod tests {
         let left = Rect { x: -1920.0, y: 0.0, w: 1920.0, h: 1040.0 };
         let primary = Rect { x: 0.0, y: 0.0, w: 2560.0, h: 1400.0 };
         assert_eq!(primary_first(vec![left, primary]), vec![primary, left], "the primary monitor holds (0, 0)");
+    }
+
+    /// `PT:567-578`, `PT:15306-15315`: a Screen preference in range anchors the window, -2
+    /// anchors it to the cursor's monitor, anything else clears the anchor.
+    #[test]
+    fn anchor_follows_iterm2() {
+        assert_eq!(anchor(1, 2, 0), Some(1));
+        assert_eq!(anchor(0, 2, 1), Some(0));
+        assert_eq!(anchor(3, 2, 0), None);
+        assert_eq!(anchor(-1, 2, 0), None);
+        assert_eq!(anchor(-2, 2, 1), Some(1));
+    }
+
+    /// `PT:5393-5403`: only an anchored window on another monitor moves, to its anchor.
+    #[test]
+    fn chase_follows_iterm2() {
+        assert_eq!(chase(Some(1), 2, 0), Some(1));
+        assert_eq!(chase(Some(1), 2, 1), None);
+        assert_eq!(chase(Some(2), 2, 0), None, "the anchored screen is gone");
+        assert_eq!(chase(None, 2, 0), None);
+    }
+
+    /// `AS:485`: `UpdateScreenParamsDelay`, default 1 second; a negative delay is 0.
+    #[test]
+    fn display_delay_follows_iterm2() {
+        use std::time::Duration;
+        assert_eq!(display_delay(1.0), Duration::from_secs(1));
+        assert_eq!(display_delay(0.25), Duration::from_millis(250));
+        assert_eq!(display_delay(-3.0), Duration::ZERO);
+        assert_eq!(display_delay(f64::NAN), Duration::from_secs(1));
     }
 }

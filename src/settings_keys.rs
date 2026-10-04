@@ -2832,4 +2832,17 @@ mod tests {
             assert_eq!(s.label, label, "{key}");
         }
     }
+
+    /// `AS:485`, `AS:920`: the display change Advanced rows.
+    #[test]
+    fn display_rows_follow_iterm2() {
+        let d = schema::find_global("UpdateScreenParamsDelay").expect("UpdateScreenParamsDelay");
+        assert_eq!((d.tab.as_str(), d.section.as_str(), d.kind), ("Advanced", "General", Kind::Float));
+        assert_eq!(d.default, Some(Value::Float(1.0)));
+        assert_eq!(d.label, "Delay after changing number of screens/resolution until refresh (seconds).");
+        let c = schema::find_global("ChaseAnchoredScreen").expect("ChaseAnchoredScreen");
+        assert_eq!((c.tab.as_str(), c.section.as_str(), c.kind), ("Advanced", "Experimental Features", Kind::Bool));
+        assert_eq!(c.default, Some(Value::Boolean(false)));
+        assert_eq!(c.label, "Aggressively keep windows on the screen they were configured to be on");
+    }
 }

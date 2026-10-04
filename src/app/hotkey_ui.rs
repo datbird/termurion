@@ -325,7 +325,7 @@ impl App {
 
     /// Moves the current window onto its profile's Screen (-1: the one with the pointer) and
     /// frames it there by its style.
-    fn move_to_preferred_screen(&mut self, guid: &str) {
+    pub(super) fn move_to_preferred_screen(&mut self, guid: &str) {
         use crate::placement;
         let monitors: Vec<Rect> = placement::primary_first(super::requests_ui::work_areas().into_iter().map(|(x, y, w, h)| Rect { x: x as f32, y: y as f32, w: w as f32, h: h as f32 }).collect());
         let Some(g) = &self.gpu else { return };
