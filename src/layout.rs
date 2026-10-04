@@ -394,7 +394,7 @@ impl Layout {
                         && c.bottom >= b.top
                         && c.top < b.bottom
                         && c.left >= a.right
-                        && c.right <= b.left
+                        && c.right < b.left
                 })
             })
             .collect()
@@ -567,31 +567,39 @@ mod tests {
         let mut l = Layout::new(1);
         l.split(1, Axis::Row, 2);
         l.split(2, Axis::Column, 3);
-        assert_eq!(l.adjacent(1, Dir::Right, big, 0.0, 1.0), vec![2, 3]);
-        assert_eq!(l.adjacent(2, Dir::Left, big, 0.0, 1.0), vec![1]);
-        assert_eq!(l.adjacent(2, Dir::Down, big, 0.0, 1.0), vec![3]);
-        assert_eq!(l.adjacent(3, Dir::Left, big, 0.0, 1.0), vec![1]);
-        assert_eq!(l.adjacent(3, Dir::Up, big, 0.0, 1.0), vec![2]);
-        assert_eq!(l.adjacent(1, Dir::Left, big, 0.0, 1.0), Vec::<PaneId>::new());
+        assert_eq!(l.adjacent(1, Dir::Right, big, 1.0, 1.0), vec![2, 3]);
+        assert_eq!(l.adjacent(2, Dir::Left, big, 1.0, 1.0), vec![1]);
+        assert_eq!(l.adjacent(2, Dir::Down, big, 1.0, 1.0), vec![3]);
+        assert_eq!(l.adjacent(3, Dir::Left, big, 1.0, 1.0), vec![1]);
+        assert_eq!(l.adjacent(3, Dir::Up, big, 1.0, 1.0), vec![2]);
+        assert_eq!(l.adjacent(1, Dir::Left, big, 1.0, 1.0), Vec::<PaneId>::new());
         // Three columns: 2 sits between 1 and 3.
         let mut c = Layout::new(1);
         c.split(1, Axis::Row, 2);
         c.split(2, Axis::Row, 3);
-        assert_eq!(c.adjacent(1, Dir::Right, big, 0.0, 1.0), vec![2]);
-        // A sliver under the margin is not in the projection: 3 starts 0.5 below 1's bottom.
-        let mut s = Layout::new(1);
-        s.split(1, Axis::Row, 2);
-        s.split(1, Axis::Column, 4);
-        s.split(2, Axis::Column, 3);
-        s.set_ratio(&[true], 0.505);
-        assert_eq!(s.adjacent(1, Dir::Right, big, 0.0, 1.0), vec![2]);
+        assert_eq!(c.adjacent(1, Dir::Right, big, 1.0, 1.0), vec![2]);
+        // The 1-point margin with fractional geometry (gap 1.5): the left column splits at 49, the
+        // right one at 48.5 (a 0.5 overlap with 1, excluded) or 47.5 (a 1.5 overlap, included).
+        let build = |ratio: f32| {
+            let mut s = Layout::new(1);
+            s.split(1, Axis::Row, 2);
+            s.split(1, Axis::Column, 4);
+            s.split(2, Axis::Column, 3);
+            s.set_ratio(&[true], ratio);
+            s
+        };
+        let (half, deep) = (build(0.48), build(0.47));
+        assert_eq!(half.rect_of(3, big, 1.5).map(|r| r.y), Some(48.5));
+        assert_eq!(deep.rect_of(3, big, 1.5).map(|r| r.y), Some(47.5));
+        assert_eq!(half.adjacent(1, Dir::Right, big, 1.5, 1.0), vec![2], "a 0.5 overlap is under the margin");
+        assert_eq!(deep.adjacent(1, Dir::Right, big, 1.5, 1.0), vec![2, 3], "a 1.5 overlap is in the projection");
         let mut t = Layout::new(1);
         t.split(1, Axis::Column, 2);
         t.split(1, Axis::Row, 3);
         // 3 is the top-left quarter, 1 its neighbor: 2 spans the bottom; 3 looking down sees 2 only.
-        assert_eq!(t.adjacent(3, Dir::Down, big, 0.0, 1.0), vec![2]);
+        assert_eq!(t.adjacent(3, Dir::Down, big, 1.0, 1.0), vec![2]);
         // A margin wider than the overlap drops the neighbor (the 1-point rule).
-        assert_eq!(l.adjacent(2, Dir::Left, big, 0.0, 60.0), Vec::<PaneId>::new());
+        assert_eq!(l.adjacent(2, Dir::Left, big, 1.0, 60.0), Vec::<PaneId>::new());
     }
 
     #[test]
@@ -600,16 +608,16 @@ mod tests {
         let mut l = Layout::new(1);
         l.split(1, Axis::Row, 2);
         l.split(2, Axis::Column, 3);
-        assert_eq!(l.wraparound(2, Dir::Right, big, 0.0, 1.0), vec![1]);
-        assert_eq!(l.wraparound(3, Dir::Down, big, 0.0, 1.0), vec![2]);
+        assert_eq!(l.wraparound(2, Dir::Right, big, 1.0, 1.0), vec![1]);
+        assert_eq!(l.wraparound(3, Dir::Down, big, 1.0, 1.0), vec![2]);
         let mut c = Layout::new(1);
         c.split(1, Axis::Row, 2);
         c.split(2, Axis::Row, 3);
-        assert_eq!(c.wraparound(1, Dir::Left, big, 0.0, 1.0), vec![3]);
+        assert_eq!(c.wraparound(1, Dir::Left, big, 1.0, 1.0), vec![3]);
         let one = Layout::new(1);
         for d in [Dir::Left, Dir::Right, Dir::Up, Dir::Down] {
-            assert!(one.adjacent(1, d, big, 0.0, 1.0).is_empty());
-            assert!(one.wraparound(1, d, big, 0.0, 1.0).is_empty());
+            assert!(one.adjacent(1, d, big, 1.0, 1.0).is_empty());
+            assert!(one.wraparound(1, d, big, 1.0, 1.0).is_empty());
         }
     }
 
