@@ -157,6 +157,7 @@ mod ssh_app;
 mod ssh_framer_app;
 mod ssh_files_app;
 mod ssh_panel_app;
+mod ssh_url_app;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -177,6 +178,8 @@ pub enum UserEvent {
     /// A window button of a Minimal or Compact window's caption was hovered, pressed or released:
     /// the window (its HWND) and what happened (`caption_ui`).
     Caption(isize, crate::caption::Event),
+    /// An ssh: URL came from outside (the URL pipe): `ssh_url_app::receive_url`.
+    OpenUrl(String),
 }
 
 #[derive(Clone)]
@@ -459,6 +462,13 @@ pub struct App {
     group_prompt: Option<(crate::prompt_ui::PromptWindow, tab_groups_ui::GroupPrompt)>,
     /// Windows to open at the next turn of the event loop (new windows need it).
     pending_windows: Vec<windows_ui::NewWindow>,
+    /// ssh: URLs that arrived before the first window (app-wide, not in `swap_live`; m14e).
+    pending_urls_at_start: Vec<String>,
+    /// The URL pipe's listener thread, when this Tandem owns the pipe (it ends with the process).
+    #[allow(dead_code)]
+    url_listener: Option<std::thread::JoinHandle<()>>,
+    /// The flood cap on URLs from outside (P13).
+    url_flood: crate::url_launch::Flood,
     /// Automatic Profile Switching: each session's stack, and this computer's name.
     aps: HashMap<PaneId, crate::aps::Switcher>,
     local_host: String,
@@ -1151,6 +1161,21 @@ pub fn run() {
         // the API server) exists, so nothing reads the environment meanwhile.
         unsafe { std::env::remove_var(name) };
     }
+    // An ssh: URL from a protocol handler (m14e): a running Tandem of this user takes it and this
+    // process ends; a refused command line opens nothing. Before any window or thread exists.
+    let mut pending_urls_at_start = Vec::new();
+    match crate::url_launch::url_argument(&std::env::args_os().collect::<Vec<_>>()) {
+        crate::url_launch::UrlArg::None => {}
+        crate::url_launch::UrlArg::Refused(why) => return crate::host::log(&format!("url: refused {why}")),
+        crate::url_launch::UrlArg::Url(url) => match crate::url_launch::hand_to_running(&url) {
+            Ok(true) => return,
+            Ok(false) => pending_urls_at_start.push(url),
+            Err(e) => {
+                crate::host::log(&format!("url: could not hand the link to a running Tandem: {e}"));
+                pending_urls_at_start.push(url);
+            }
+        },
+    }
     // Started again after Import All Settings and Data: the old Tandem ends first (`IE:898-911`).
     let wait_pid = std::env::var(settings_export_ui::WAIT_PID_VAR).ok().and_then(|v| v.parse::<u32>().ok());
     // SAFETY: as above, before any thread exists; no session or child inherits the variable.
@@ -1171,6 +1196,17 @@ pub fn run() {
     let jobs = crate::jobwatch::JobWatch::start(Arc::new(move || {
         let _ = job_wake.lock().map(|p| p.send_event(UserEvent::JobsChanged));
     }));
+    // This Tandem takes URLs sent to it; a second one of the same user cannot bind and does not listen.
+    let url_proxy = proxy.clone();
+    let url_listener = match crate::url_launch::listen(Box::new(move |url| {
+        let _ = url_proxy.lock().map(|p| p.send_event(UserEvent::OpenUrl(url)));
+    })) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            crate::host::log(&format!("url: not listening: {e}"));
+            None
+        }
+    };
     let wake = proxy.clone();
     let notify: Notify = Arc::new(move || {
         let _ = wake.lock().unwrap().send_event(UserEvent::Wake);
@@ -1409,6 +1445,9 @@ pub fn run() {
         undo: Default::default(),
         undo_capture: None,
         pending_windows: Vec::new(),
+        pending_urls_at_start,
+        url_listener,
+        url_flood: Default::default(),
         local_host: aps_ui::local_host(),
         dropped: Vec::new(),
         coprocess_errors: HashMap::new(),
@@ -4832,6 +4871,8 @@ impl ApplicationHandler<UserEvent> for App {
         if steps.profile_style && style != crate::frames::NORMAL {
             self.apply_window_style(style, false);
         }
+        // URLs that came with the start or before the window open now, after the first window.
+        self.open_pending_urls();
     }
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
@@ -5019,6 +5060,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::JobsChanged => return self.jobs_changed(),
             UserEvent::ThemeReset => return self.reapply_forced_theme(),
             UserEvent::Caption(hwnd, e) => return self.caption_event(hwnd, e, event_loop),
+            UserEvent::OpenUrl(url) => return self.receive_url(url),
             UserEvent::Wake => {}
         }
         let mut changed = false;

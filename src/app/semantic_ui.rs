@@ -135,6 +135,14 @@ impl App {
             return self.secure_copy_at(id, point);
         }
         let Some((c, target, _)) = found else { return self.secure_copy_at(id, point) };
+        // A bound ssh: link opens a Tandem tab, never a local run, and never from a remote pane (P4).
+        if let Target::Link(u) | Target::Url(u) = &target {
+            let bound = self.bound_ssh_profile();
+            if let Some(guid) = super::ssh_url_app::click_plan(self.remote_text(id), u, bound.as_deref()) {
+                let url = u.clone();
+                return self.open_ssh_url(&url, Some(guid));
+            }
+        }
         let cwd = c.ctx.cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
         let run = match &target {
             Target::Action { rule, action, .. } => {

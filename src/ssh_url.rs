@@ -74,7 +74,7 @@ const MAX_URL: usize = 8 * 1024;
 
 /// A character that never belongs in a URL's text: whitespace, controls, and the invisible
 /// formatting characters that can disguise what a link says.
-fn is_hostile_char(c: char) -> bool {
+pub(crate) fn is_hostile_char(c: char) -> bool {
     c.is_control() || c.is_whitespace() || matches!(c, '\u{ad}' | '\u{61c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
 }
 
@@ -201,6 +201,16 @@ fn path_is_unsafe(path: &str) -> bool {
     path.chars().any(|c| matches!(c, '"' | '\'' | '\\') || (is_hostile_char(c) && c != ' '))
 }
 
+/// The remote folder a URL names, as the cd part takes it (a `/~` prefix loses its "/"): None when
+/// path support is off, the path is `/` or empty, or it holds a character that drops the cd part.
+pub fn cd_path(url: &SshUrl, s: &Settings) -> Option<String> {
+    let use_path = s.support_path && url.path.chars().count() > 1;
+    if !use_path || path_is_unsafe(&url.path) {
+        return None;
+    }
+    Some(url.path.strip_prefix("/~").map_or(url.path.clone(), |rest| format!("~{rest}")))
+}
+
 /// The command a URL gives, as a Windows command line tail (14a Task 9 hands it to it2ssh.exe or
 /// ssh.exe through CreateProcessW: the user and host are separate arguments, only the cd path is
 /// POSIX-escaped for the remote shell).
@@ -234,8 +244,7 @@ pub fn ssh_change(url: &SshUrl, s: &Settings) -> Result<Change, UrlError> {
         }
         words.push(host.clone());
     }
-    if use_path && !path_is_unsafe(&url.path) {
-        let path = url.path.strip_prefix("/~").map_or(url.path.clone(), |rest| format!("~{rest}"));
+    if let Some(path) = cd_path(url, s) {
         words.push(format!("cd {}; exec $SHELL -l", posix_escape(&path)));
     }
     let mut line = String::new();
