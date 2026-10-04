@@ -11,6 +11,16 @@ pub enum Status {
     Partial(&'static str),
     /// Shown disabled until this milestone.
     Later(u8),
+    /// Never built, with the reason (milestone 14e ruling P7): shown disabled like `Later`, but it
+    /// promises no milestone.
+    NotApplicable(&'static str),
+}
+
+impl Status {
+    /// The command does nothing and its menu item is disabled.
+    pub fn unavailable(self) -> bool {
+        matches!(self, Status::Later(_) | Status::NotApplicable(_))
+    }
 }
 
 /// Commands iTerm2 keeps disabled while a terminal has focus: Undo and Redo have nothing
@@ -78,6 +88,12 @@ pub const DONE: &[&str] = &[
     "irPrev:", "clearInstantReplay:", "exportRecording:", "loadRecording:", "openAIChats:", "openAIChat:", "toggleShowInlineChat:", "performNaturalLanguageQuery:", "explainOutputWithAI:", "openPasswordManager:",
     "sshDisconnect:", "downloadFiles:",
 ];
+
+/// Commands that will not be built, with the reason (rulings 3 and 4 of milestone 14).
+const NOT_APPLICABLE: &[(&str, &str)] = &[(
+    "toggleRemoteHostCanControlIterm2:",
+    "Milestone 11 did not port the it2 command tree, so there is nothing for a remote host to control.",
+)];
 
 /// Commands that work with a known difference for now.
 const PARTIAL: &[(&str, &str)] = &[
@@ -177,13 +193,16 @@ pub fn command_for_chord(chord: &Chord) -> Option<&'static Item> {
     if let Some((_, id)) = EXTRA_CHORDS.iter().find(|(c, _)| c == chord) {
         return menus::by_id(id);
     }
-    menus::items_for(chord).into_iter().find(|i| !matches!(status(i), Status::Later(_)))
+    menus::items_for(chord).into_iter().find(|i| !status(i).unavailable())
 }
 
 pub fn status(item: &Item) -> Status {
     // A partial note wins over DONE: the command runs, and the note says how it differs.
     if let Some((_, note)) = PARTIAL.iter().find(|(entry, _)| names(entry, item)) {
         return Status::Partial(note);
+    }
+    if let Some((_, why)) = NOT_APPLICABLE.iter().find(|(entry, _)| names(entry, item)) {
+        return Status::NotApplicable(why);
     }
     if in_list(DONE, item) {
         return Status::Done;
@@ -329,14 +348,23 @@ mod tests {
         assert_eq!(status(find("downloadFiles:", "Download Files...")), Status::Done, "14d");
         assert_eq!(
             status(find("toggleRemoteHostCanControlIterm2:", "Remote host can control iTerm2")),
-            Status::Later(14),
-            "14"
+            Status::NotApplicable("Milestone 11 did not port the it2 command tree, so there is nothing for a remote host to control."),
+            "14e ruling 3: not applicable, no milestone"
         );
         assert_eq!(owner(find("toggleCopyMode:", "Copy Mode")), 5, "done in 5, and not moved with ssh");
         assert!(DISABLED_UNDER_UV.contains(&"installAlreadyDownloadedPythonRuntime:"));
         for sel in DISABLED_UNDER_UV {
             assert!(items().iter().any(|i| i.selector == *sel), "{sel} is not in the menu");
         }
+    }
+
+    #[test]
+    fn a_not_applicable_command_is_unavailable_and_owns_no_chord() {
+        let item = find("toggleRemoteHostCanControlIterm2:", "Remote host can control iTerm2");
+        assert!(matches!(status(item), Status::NotApplicable(_)));
+        assert!(status(item).unavailable());
+        assert!(Status::Later(14).unavailable());
+        assert!(!Status::Done.unavailable() && !Status::Partial("x").unavailable());
     }
 
     #[test]

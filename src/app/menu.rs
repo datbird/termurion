@@ -11,7 +11,7 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Fullscreen;
 
 use super::*;
-use crate::commands::{self, Status};
+use crate::commands;
 use crate::layout::{Dir, visible_rects};
 use crate::marks::TOGGLES;
 use crate::menus::{self, Chord, Item};
@@ -259,7 +259,7 @@ impl App {
                 Slot::Command(id) => match menus::by_id(id) {
                     None => context.append(&PredefinedMenuItem::separator()),
                     Some(item) => {
-                        let enabled = !matches!(commands::status(item), Status::Later(_));
+                        let enabled = !commands::status(item).unavailable();
                         context.append(&MenuItem::with_id(item.id(), menu_text(item), enabled, None))
                     }
                 },
@@ -478,7 +478,7 @@ impl App {
     /// Whether a menu bar item is enabled: the rule `install_menus` builds the bar with.
     pub(super) fn menu_enabled(item: &Item) -> bool {
         let sel = item.selector.as_str();
-        !matches!(commands::status(item), Status::Later(_)) && !commands::DISABLED_IN_SESSION.contains(&sel) && !commands::DISABLED_UNDER_UV.contains(&sel)
+        !commands::status(item).unavailable() && !commands::DISABLED_IN_SESSION.contains(&sel) && !commands::DISABLED_UNDER_UV.contains(&sel)
     }
 
     /// Check marks follow the focused pane's terminal modes.
@@ -608,7 +608,7 @@ impl App {
 
     /// Runs one iTerm2 menu command. Commands owned by a later milestone do nothing.
     pub(super) fn run_command(&mut self, item: &'static Item, event_loop: &ActiveEventLoop) {
-        if matches!(commands::status(item), Status::Later(_)) {
+        if commands::status(item).unavailable() {
             return;
         }
         let label = item.label();
