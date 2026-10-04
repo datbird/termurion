@@ -22,6 +22,16 @@ impl Registry {
         n
     }
 
+    /// The window keeps its number and API id under a new key (its OS window was recreated).
+    pub fn rekey(&mut self, old: u64, new: u64) {
+        if let Some(n) = self.numbers.remove(&old) {
+            self.numbers.insert(new, n);
+        }
+        if let Some(g) = self.guids.remove(&old) {
+            self.guids.insert(new, g);
+        }
+    }
+
     pub fn close(&mut self, id: u64) {
         self.numbers.remove(&id);
         self.guids.remove(&id);
@@ -194,6 +204,13 @@ impl<S> Parked<S> {
         self.parked.insert(id, state);
     }
 
+    /// The current window is known by a new key (its OS window was recreated).
+    pub fn rekey_current(&mut self, old: u64, new: u64) {
+        if self.current == Some(old) {
+            self.current = Some(new);
+        }
+    }
+
     /// Makes `id` current, swapping its state into `live`. False for an unknown window.
     pub fn enter(&mut self, id: u64, live: &mut S) -> bool {
         if self.current == Some(id) {
@@ -290,6 +307,23 @@ pub fn can_fit(s: FitState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recreated_window_keeps_its_number_and_api_id() {
+        let mut r = Registry::default();
+        r.open(10);
+        let n = r.open(11);
+        let guid = r.guid(11).unwrap().to_string();
+        r.rekey(11, 99);
+        assert_eq!((r.number(99), r.guid(99)), (Some(n), Some(guid.as_str())));
+        assert_eq!((r.number(11), r.by_guid(&guid)), (None, Some(99)));
+        let mut p: Parked<u32> = Parked::default();
+        p.start(10);
+        p.rekey_current(11, 5);
+        assert_eq!(p.current(), Some(10));
+        p.rekey_current(10, 7);
+        assert_eq!(p.current(), Some(7));
+    }
 
     #[test]
     fn snapped_window_never_fits() {

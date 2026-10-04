@@ -58,7 +58,8 @@ impl EguiHost {
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: caps.alpha_modes[0],
+            // Explicit: an egui window is never see-through (a visual swapchain lists Auto first).
+            alpha_mode: crate::transparency::pick_alpha_mode(&caps.alpha_modes, false),
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
             color_space: wgpu::SurfaceColorSpace::Auto,

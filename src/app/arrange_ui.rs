@@ -466,7 +466,7 @@ pub(super) const RESTORE_ID: &str = "arrangement-restore:";
 pub(super) const RESTORE_TABS_ID: &str = "arrangement-tabs:";
 
 impl App {
-    fn profile_list(&self) -> Vec<(String, String)> {
+    pub(super) fn profile_list(&self) -> Vec<(String, String)> {
         self.store.profiles.iter().map(|p| (p.guid(), p.name())).collect()
     }
 
@@ -734,6 +734,8 @@ impl App {
             let tab = self.build_tab(t, name, launch)?;
             self.tabs.push(tab);
         }
+        // The restored sessions' profiles may want alpha (a window made for them already has it).
+        self.check_alpha_surfaces();
         let f = arrangement::window_facts(w);
         self.active = f.selected_tab.min(self.tabs.len().saturating_sub(1));
         // A file from elsewhere may break the order: pinned tabs first, groups together.

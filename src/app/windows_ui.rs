@@ -82,6 +82,8 @@ pub(super) struct WinSlot {
     caption_label_w: f32,
     caption_name_w: f32,
     zoom_restore: Option<Rect>,
+    /// Which kind of surface the window was made with (decided at creation, `transparency::SurfaceKind`).
+    pub(super) win_alpha_surface: crate::transparency::SurfaceKind,
     mru: Mru,
     mru_mods: Option<Mods>,
     laid_out: Option<crate::statusbar_layout::Room>,
@@ -166,6 +168,7 @@ impl WinSlot {
             caption_label_w: 0.0,
             caption_name_w: 0.0,
             zoom_restore: None,
+            win_alpha_surface: Default::default(),
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
@@ -262,6 +265,7 @@ impl App {
         swap(&mut self.caption_label_w, &mut s.caption_label_w);
         swap(&mut self.caption_name_w, &mut s.caption_name_w);
         swap(&mut self.zoom_restore, &mut s.zoom_restore);
+        swap(&mut self.win_alpha_surface, &mut s.win_alpha_surface);
         swap(&mut self.mru, &mut s.mru);
         swap(&mut self.mru_mods, &mut s.mru_mods);
         swap(&mut self.laid_out, &mut s.laid_out);
@@ -437,13 +441,23 @@ impl App {
             use winit::platform::windows::WindowAttributesExtWindows;
             attrs = attrs.with_visible(false).with_skip_taskbar(true);
         }
-        let made = event_loop.create_window(attrs).map_err(|e| e.to_string()).and_then(|w| {
-            let window = Arc::new(w);
-            match self.gpu.as_ref() {
-                Some(g) => init_gpu_shared(window, g),
-                None => init_gpu(window, event_loop),
+        // A window whose profiles want transparency is made for alpha (its surface cannot change later).
+        let mut kind = self.surface_kind_for(&first);
+        let made = loop {
+            let mut a = attrs.clone();
+            if kind == crate::transparency::SurfaceKind::Alpha {
+                use winit::platform::windows::WindowAttributesExtWindows;
+                a = a.with_no_redirection_bitmap(true);
             }
-        });
+            let made = event_loop.create_window(a).map_err(|e| e.to_string()).and_then(|w| self.gpu_for(event_loop, Arc::new(w), kind));
+            // No second instance on this machine: the window is made again, opaque.
+            if made.is_err() && kind == crate::transparency::SurfaceKind::Alpha {
+                self.transparency_unavailable = true;
+                kind = crate::transparency::SurfaceKind::Opaque;
+                continue;
+            }
+            break made;
+        };
         let gpu = match made {
             Ok(g) => g,
             Err(e) => {
@@ -465,6 +479,7 @@ impl App {
         let previous = self.current_window();
         let id = gpu.window.id();
         let mut slot = WinSlot::new(gpu);
+        slot.win_alpha_surface = kind;
         self.swap_live(&mut slot);
         // Edge drags snap to the cell grid, and follow AllowLiveResize.
         self.install_sizing();
@@ -828,6 +843,7 @@ impl WinSlot {
             caption_label_w: 0.0,
             caption_name_w: 0.0,
             zoom_restore: None,
+            win_alpha_surface: Default::default(),
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
@@ -856,14 +872,14 @@ pub(super) fn init_gpu_shared(window: Arc<Window>, from: &Gpu) -> Result<Gpu, St
         width: size.width.max(1),
         height: size.height.max(1),
         present_mode: wgpu::PresentMode::Fifo,
-        alpha_mode: caps.alpha_modes[0],
+        alpha_mode: crate::transparency::pick_alpha_mode(&caps.alpha_modes, false),
         view_formats: vec![],
         desired_maximum_frame_latency: 2,
         color_space: wgpu::SurfaceColorSpace::Auto,
     };
     surface.configure(&from.device, &config);
     let renderer = Renderer::new(&from.device, &from.queue, format, FONT, FONT_PX * window.scale_factor() as f32);
-    Ok(Gpu { surface, adapter: from.adapter.clone(), device: from.device.clone(), queue: from.queue.clone(), config, renderer, instance: from.instance.clone(), window })
+    Ok(Gpu { surface, adapter: from.adapter.clone(), device: from.device.clone(), queue: from.queue.clone(), config, renderer, instance: from.instance.clone(), alpha: None, window })
 }
 
 impl App {
