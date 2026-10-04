@@ -2,15 +2,44 @@
 //! terminal sit (`SessionView.m:2255-2275`, `PTYTab.m:610-650`).
 
 use super::*;
+use crate::layout::visible_rects;
 use crate::pane_title;
 use crate::statusbar_layout::{self as sbl, Position};
+
+/// Whether the scene lays the dim quad on a pane (`pane_undimmed` and the render loop's rule),
+/// so the title bar dims exactly when its pane does (B3): not the focused pane of a key
+/// window, and not undimmed (the focused pane of a background window unless Dim background
+/// windows is on, or in the key window a pane the broadcast input reaches). 13i replaces this
+/// with its dimming model.
+pub(super) fn dimmed_for(focused_pane: bool, window_focused: bool, broadcast_undims: bool, dim_background: bool) -> bool {
+    let undimmed = (!window_focused && focused_pane && !dim_background) || (window_focused && broadcast_undims);
+    !(window_focused && focused_pane) && !undimmed
+}
+
+/// `adjustedDimmingAmount` for a dimmed pane (the scene's `DIM_ALPHA`).
+pub(super) fn dim_amount(dimmed: bool) -> f32 {
+    if dimmed { 0.4 } else { 0.0 }
+}
+
+/// `sessionTabHasMultipleDistinctTabColors` (`PTYTab.m:7333-7348`): more than one distinct
+/// color among the panes that have one.
+pub(super) fn distinct_tab_colors(colors: impl IntoIterator<Item = Option<crate::palette::Rgb>>) -> bool {
+    let mut first = None;
+    for c in colors.into_iter().flatten() {
+        match first {
+            None => first = Some(c),
+            Some(f) if f != c => return true,
+            Some(_) => {}
+        }
+    }
+    false
+}
 
 /// A pane's rectangle cut into its parts.
 pub(super) struct Chrome {
     /// What the terminal gets.
     pub(super) rest: Rect,
     /// The title bar, when the pane's tab shows them.
-    #[allow(dead_code)] // the title bar draws from it (next task)
     pub(super) title: Option<Rect>,
     /// The pane's own status bar: in the title bar's slot when it sits at the top of a
     /// pane with a title bar, else a strip at the top or bottom of the rest.
@@ -47,6 +76,70 @@ impl App {
     /// A title bar's height in pixels.
     pub(super) fn title_height(&self) -> f32 {
         pane_title::height(self.status_bar_pt(), self.scale())
+    }
+
+    /// A pane's tab color: a program's (or tmux's saved) color, else its profile's. The tab and
+    /// the pane's title bar read the same one (P4).
+    pub(super) fn pane_tab_color(&self, id: PaneId) -> Option<crate::palette::Rgb> {
+        self.tab_colors.get(&id).copied().or_else(|| self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).and_then(|pr| pr.tab_color(self.dark())))
+    }
+
+    /// Draws the active tab's title bars and remembers where they are (`title_bars`, for
+    /// clicks). The background goes in `frame.quads` before the status bars draw, so a bar in
+    /// its title bar paints over it; the text is rows, never overlay.
+    pub(super) fn draw_title_bars(&mut self, frame: &mut scene::Frame, cell: (f32, f32)) {
+        self.title_bars.clear();
+        let Some(tab) = self.tabs.get(self.active) else { return };
+        if !self.tab_shows_titles(tab) {
+            return;
+        }
+        let panes = tab.layout.panes();
+        let ordinals = pane_title::ordinals(panes.len());
+        let tag = self.globals.int("SwitchPaneModifier");
+        let (style, resolved) = (self.tab_style(), self.resolved_style());
+        let legibility = self.globals.number("MinimalTextLegibilityAdjustment").map_or(1.0, |v| v as f32);
+        let (custom_bg, custom_text) = (self.globals.string("PaneTitleBarBackgroundColor"), self.globals.string("PaneTitleBarTextColor"));
+        let distinct = distinct_tab_colors(panes.iter().map(|&p| self.pane_tab_color(p)));
+        let bview = self.broadcast_view();
+        let dim_background = self.globals.bool("DimBackgroundWindows");
+        let mut drawn = Vec::new();
+        for (id, rect) in visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), GAP) {
+            let chrome = self.pane_chrome(tab, id, rect);
+            let (Some(title), Some(p)) = (chrome.title, self.panes.get(&id)) else { continue };
+            // A status bar in the title bar replaces the label (`STV:190-194`) and may color it.
+            let bar_in_title = chrome.bar.is_some_and(|b| title.contains(b.x, b.y));
+            let bar_bg = bar_in_title.then(|| self.bar_layout(id).0.advanced.background_color.as_ref().and_then(statusbar_ui::color_of).map(|(c, _)| c)).flatten();
+            let focused_pane = id == tab.focused;
+            let broadcast_undims = self.broadcast.receives(&bview, id) && self.broadcast.should_broadcast_to(&bview, tab.focused, Some(tab.focused));
+            let dimmed = dimmed_for(focused_pane, self.focused, broadcast_undims, dim_background);
+            let parts = pane_title::Parts {
+                style,
+                resolved,
+                dimmed: !focused_pane,
+                dim_amount: dim_amount(dimmed),
+                dim_only_text: false,
+                dim_inactive: true,
+                window_focused: self.focused,
+                session_bg: p.screen.palette.bg,
+                tab_color: self.pane_tab_color(id),
+                distinct_tab_colors: distinct,
+                custom_bg: &custom_bg,
+                custom_text: &custom_text,
+                bar_bg,
+                legibility,
+                locked: false,
+            };
+            // P11 (13g's seam): the Minimal theme's background alpha (`transparencyAlpha`,
+            // `iTermTheme.m:134-150`) multiplies in here, Minimal branch only, once 13g lands;
+            // until then the title bar is opaque.
+            let look = pane_title::look(&parts);
+            let ordinal = panes.iter().position(|&x| x == id).and_then(|i| ordinals.get(i)).copied().unwrap_or(0);
+            let text = pane_title::title_text(&self.session_title(id), ordinal, tag);
+            let geometry = pane_title::geometry(title, self.scale(), parts.locked);
+            scene::pane_title_bar(frame, &scene::TitleBar { geometry, look, text: &text, show_label: !bar_in_title }, cell);
+            drawn.push((id, geometry));
+        }
+        self.title_bars = drawn;
     }
 
     /// A pane's rectangle cut into title bar, status bar and terminal.
@@ -90,5 +183,24 @@ mod tests {
         // The pane without a bar still gets its title bar.
         let c = chrome(r(0.0, 0.0, 400.0, 100.0), 22.0, true, None, 1.0);
         assert!(c.title.is_some() && c.bar.is_none());
+    }
+
+    #[test]
+    fn title_parts_follow_the_pane() {
+        // (is the tab's focused pane, window focused, broadcast reaches it, Dim background windows)
+        assert!(!dimmed_for(true, true, false, false));
+        assert!(dimmed_for(false, true, false, false));
+        assert!(!dimmed_for(true, false, false, false), "the focused pane of a background window stays lit");
+        assert!(dimmed_for(true, false, false, true), "unless Dim background windows is on");
+        assert!(!dimmed_for(false, true, true, false), "a pane the broadcast reaches in the key window is lit");
+        assert!(dimmed_for(false, false, true, false), "broadcast undims only in the key window");
+        assert_eq!(dim_amount(true), 0.4);
+        assert_eq!(dim_amount(false), 0.0);
+        use crate::palette::rgb;
+        let (a, b) = (rgb(1, 2, 3), rgb(9, 9, 9));
+        assert!(!distinct_tab_colors([None, Some(a), None, Some(a)]));
+        assert!(distinct_tab_colors([Some(a), None, Some(b)]));
+        assert!(!distinct_tab_colors([None, None]));
+        assert!(!distinct_tab_colors([]));
     }
 }

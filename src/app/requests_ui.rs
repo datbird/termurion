@@ -279,7 +279,7 @@ impl App {
         let subtitle = crate::tab_layout::subtitle_text(&self.subtitle_text(t.focused), status.as_deref(), self.globals.bool(crate::status_tool::SUBTITLE_KEY));
         let dot = st.and_then(|s| s.indicator.as_deref()).and_then(xterm_color);
         // A program's (or tmux's saved) tab color, else the profile's.
-        let color = self.tab_colors.get(&t.focused).copied().or_else(|| self.panes.get(&t.focused).and_then(|p| self.store.get(&p.profile)).and_then(|pr| pr.tab_color(self.dark())));
+        let color = self.pane_tab_color(t.focused);
         let dead = self.panes.get(&t.focused).is_some_and(|p| p.exited.is_some());
         let bell = panes.iter().any(|id| self.bell_icons.contains(id));
         let (new_output, idle) = self.activity_icons(&panes);

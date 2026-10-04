@@ -312,6 +312,8 @@ pub struct App {
     /// Where the focused pane's find bar and its mode label were last drawn.
     find_bar_rect: Option<Rect>,
     find_mode_rect: Option<Rect>,
+    /// The title bars drawn last frame (pane, geometry), for clicks (per window).
+    title_bars: Vec<(PaneId, crate::pane_title::Geometry)>,
     /// The Win-click target under the pointer while Win is held.
     hover: Option<(PaneId, crate::find::Match)>,
     /// The annotation or session note window: its pane and note (None for the session note).
@@ -1427,6 +1429,7 @@ pub fn run() {
         finds: HashMap::new(),
         find_bar_rect: None,
         find_mode_rect: None,
+        title_bars: Vec::new(),
         hover: None,
         popup_menu: None,
         color_pick: None,
@@ -4684,6 +4687,7 @@ impl App {
             scene::lay_over(&mut frame, bar_layer, r, self.tab_flash.alpha(Instant::now()), palette_bg, cell.1);
         }
         self.draw_toolbelt(&mut frame, cell);
+        self.draw_title_bars(&mut frame, cell);
         self.draw_status_bars(&mut frame, cell);
         let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         let line = self.division_height();

@@ -1817,6 +1817,55 @@ pub fn rounded_box(quads: &mut Vec<Quad>, r: Rect, radius: f32, color: [f32; 4])
     }
 }
 
+/// A pane's title bar to draw (`SessionTitleView`): where its parts sit, its colors, the
+/// title, and whether the label shows (not while a status bar sits in the bar).
+pub struct TitleBar<'a> {
+    pub geometry: crate::pane_title::Geometry,
+    pub look: crate::pane_title::Look,
+    pub text: &'a str,
+    pub show_label: bool,
+}
+
+/// Glyph size against a part's box (12 of the tab bar's 17 point close box).
+const TITLE_GLYPH: f32 = 12.0 / 17.0;
+
+/// A title bar: its background and (outside Minimal) the 1 point line, then the label, the
+/// close, menu and lock glyphs. The background goes in `quads` so a status bar in the bar draws
+/// over it; every row is clipped to its part. `Span` has no alpha, so each text color is
+/// pre-blended into the background. `cell` is the terminal cell in pixels.
+pub fn pane_title_bar(frame: &mut Frame, bar: &TitleBar, cell: (f32, f32)) {
+    let (g, look) = (&bar.geometry, &bar.look);
+    let back = look.background;
+    frame.quads.push(Quad { rect: g.bar, color: rgba(back, 1.0) });
+    if let Some((c, a)) = look.line {
+        frame.quads.push(Quad { rect: g.line, color: rgba(c, a) });
+    }
+    let text = blend(back, look.text.0, look.text.1);
+    let menu = blend(back, look.menu.0, look.menu.1);
+    let span = |text: String, color: Rgb, icon: bool| Span { text, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false, toolbelt: false };
+    // The usable height centers the label above the line.
+    let usable = if look.line.is_some() { g.line.y - g.bar.y } else { g.bar.h };
+    if bar.show_label && g.label.w > 0.0 && cell.0 > 0.0 {
+        let label = crate::pane_title::fit_label(bar.text, (g.label.w / cell.0) as usize);
+        if !label.is_empty() {
+            let y = g.bar.y + ((usable - cell.1) / 2.0).floor();
+            frame.rows.push(TextRow { x: g.label.x, y, spans: vec![span(label, text, false)], clip: g.label, scale: 1.0 });
+        }
+    }
+    let mut glyph = |ch: char, r: Rect, color: Rgb| {
+        let em = r.h * TITLE_GLYPH;
+        let s = em / cell.1.max(1.0);
+        let x = r.x + ((r.w - em) / 2.0).floor();
+        let y = r.y + ((r.h - cell.1 * s) / 2.0).floor();
+        frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, true)], clip: r, scale: s });
+    };
+    glyph('\u{E711}', g.close, text);
+    glyph('\u{E712}', g.menu, menu);
+    if let Some(l) = g.lock {
+        glyph('\u{E72E}', l, text);
+    }
+}
+
 /// A status bar (`SV:151-162`): the background, the component bands, the boxes, the
 /// separators (one point wide, three points in from the top and bottom), button faces, the
 /// text, and the edge line.
@@ -4999,5 +5048,112 @@ mod tests {
         doc_lines(&mut parts, (rect.x + PORTHOLE_MARGIN, rect.y + PORTHOLE_MARGIN + 16.0), &lines, &marks, inner, (inner.x, inner.w), back, chrome.fg);
         assert_eq!(parts.quads, whole.quads);
         assert_eq!(parts.rows, whole.rows);
+    }
+}
+
+#[cfg(test)]
+mod title_bar_tests {
+    use super::*;
+    use crate::hexcolor::white;
+    use crate::pane_title::{self, Look};
+
+    const CELL: (f32, f32) = (8.0, 16.0);
+
+    fn dark_active() -> Look {
+        Look { background: white(0.27), text: (white(0.8), 1.0), menu: (white(0.8), 0.55), line: Some((white(1.0), 0.25)) }
+    }
+
+    fn bar<'a>(text: &'a str, show_label: bool) -> TitleBar<'a> {
+        let g = pane_title::geometry(Rect { x: 0.0, y: 0.0, w: 400.0, h: 22.0 }, 1.0, false);
+        TitleBar { geometry: g, look: dark_active(), text, show_label }
+    }
+
+    fn texts(f: &Frame) -> Vec<String> {
+        f.rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect()
+    }
+
+    #[test]
+    fn title_bars_draw_as_iterm2() {
+        let mut f = Frame::default();
+        pane_title_bar(&mut f, &bar("bash", true), CELL);
+        assert_eq!(f.quads[0], Quad { rect: Rect { x: 0.0, y: 0.0, w: 400.0, h: 22.0 }, color: rgba(white(0.27), 1.0) });
+        assert_eq!(f.quads[1], Quad { rect: Rect { x: 0.0, y: 21.0, w: 400.0, h: 1.0 }, color: rgba(white(1.0), 0.25) });
+        assert!(f.overlay.is_empty() && f.popups.is_empty(), "nothing of the title bar goes in the overlay");
+        let label: Vec<&TextRow> = f.rows.iter().filter(|r| r.spans.iter().all(|s| !s.icon)).collect();
+        assert_eq!(label.len(), 1);
+        assert_eq!(label[0].x, 27.0);
+        assert_eq!(label[0].spans[0].text, "bash");
+        assert_eq!(label[0].spans[0].color, white(0.8));
+        let icons: Vec<String> = f.rows.iter().filter(|r| r.spans[0].icon).map(|r| r.spans[0].text.clone()).collect();
+        assert_eq!(icons, vec!["\u{E711}".to_string(), "\u{E712}".to_string()]);
+        let menu = f.rows.iter().find(|r| r.spans[0].text == "\u{E712}").unwrap();
+        assert_eq!(menu.spans[0].color, crate::scene::blend(white(0.27), white(0.8), 0.55), "the menu glyph is pre-blended");
+        for r in &f.rows {
+            assert!(r.clip.x >= 0.0 && r.clip.x + r.clip.w <= 400.0 && r.clip.y >= 0.0 && r.clip.y + r.clip.h <= 22.0, "rows are clipped to the bar");
+        }
+        // Vertically centered in the bar above its line.
+        assert_eq!(label[0].y, ((21.0 - CELL.1) / 2.0).floor());
+
+        let mut f = Frame::default();
+        pane_title_bar(&mut f, &bar("bash", false), CELL);
+        assert!(f.rows.iter().all(|r| r.spans[0].icon), "no title row without the label");
+        assert_eq!(f.rows.len(), 2);
+        // A bar in the title bar: no line in Minimal.
+        let mut b = bar("x", true);
+        b.look.line = None;
+        let mut f = Frame::default();
+        pane_title_bar(&mut f, &b, CELL);
+        assert_eq!(f.quads.len(), 1);
+        // The lock mark.
+        let g = pane_title::geometry(Rect { x: 0.0, y: 0.0, w: 400.0, h: 22.0 }, 1.0, true);
+        let mut f = Frame::default();
+        pane_title_bar(&mut f, &TitleBar { geometry: g, ..bar("x", true) }, CELL);
+        assert!(texts(&f).contains(&"\u{E72E}".to_string()));
+    }
+
+    #[test]
+    fn title_labels_fit_by_display_width() {
+        let cells = (346.0f32 / CELL.0) as usize;
+        let long = "x".repeat(500);
+        let mut f = Frame::default();
+        pane_title_bar(&mut f, &bar(&long, true), CELL);
+        let label = f.rows.iter().find(|r| !r.spans[0].icon).unwrap().spans[0].text.clone();
+        assert_eq!(label.chars().count(), cells, "cut to the label width in cells");
+        assert!(label.ends_with('\u{2026}'));
+        // Wide CJK: two cells each, never past the width.
+        let cjk = "\u{4e2d}".repeat(100);
+        let fit = pane_title::fit_label(&cjk, cells);
+        assert!(unicode_width::UnicodeWidthStr::width(fit.as_str()) <= cells);
+        assert!(fit.ends_with('\u{2026}') && fit.chars().filter(|&c| c == '\u{4e2d}').count() == (cells - 1) / 2);
+        // A grapheme cluster (e + combining acute, a flag) is never split.
+        let combining = format!("{}e\u{301}", "a".repeat(cells - 2));
+        assert_eq!(pane_title::fit_label(&combining, cells), combining, "fits exactly");
+        let over = format!("{}e\u{301}zz", "a".repeat(cells - 2));
+        assert_eq!(pane_title::fit_label(&over, cells), format!("{}e\u{301}\u{2026}", "a".repeat(cells - 2)), "the accent stays with its letter");
+        assert_eq!(pane_title::fit_label(&over, cells - 1), format!("{}\u{2026}", "a".repeat(cells - 2)), "the whole cluster goes, never its accent alone");
+        let flags = "\u{1f1fa}\u{1f1f8}".repeat(40);
+        let fit = pane_title::fit_label(&flags, 9);
+        assert_eq!(fit.chars().filter(|c| ('\u{1f1e6}'..='\u{1f1ff}').contains(c)).count() % 2, 0, "a flag is two indicators or none");
+        // Short text is untouched, nothing fits in no room.
+        assert_eq!(pane_title::fit_label("bash", cells), "bash");
+        assert_eq!(pane_title::fit_label("bash", 0), "");
+        assert_eq!(pane_title::fit_label("bash", 1), "\u{2026}");
+    }
+
+    #[test]
+    fn hostile_titles_draw_as_one_inert_line() {
+        let hostile = format!("a\u{202e}b\u{202d}c\u{2066}\u{7}\r\nd\u{200b}e{}", "\u{4e2d}".repeat(10_000));
+        for text in [hostile.as_str(), "\u{202e}only rtl", "ok\u{202a}"] {
+            let mut f = Frame::default();
+            pane_title_bar(&mut f, &bar(text, true), CELL);
+            for r in &f.rows {
+                let t = &r.spans[0].text;
+                assert!(t.chars().all(|c| !c.is_control() && !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{200b}'..='\u{200f}')), "{t:?}");
+                assert!(unicode_width::UnicodeWidthStr::width(t.as_str()) <= 43 || r.spans[0].icon);
+            }
+        }
+        let mut f = Frame::default();
+        pane_title_bar(&mut f, &bar("a\u{202e}b\r\nc", true), CELL);
+        assert_eq!(f.rows.iter().find(|r| !r.spans[0].icon).unwrap().spans[0].text, "abc");
     }
 }

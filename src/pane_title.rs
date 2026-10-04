@@ -62,6 +62,49 @@ pub fn title_text(title: &str, ordinal: u32, pane_tag: i64) -> String {
     }
 }
 
+/// The label cut to `cells` terminal cells by display width, tail truncated with an ellipsis
+/// (`STV` truncates the tail). The text is program text: control, bidirectional and
+/// zero-width characters are dropped (so no mark is left unpaired), a cluster (a base with
+/// its combining marks, a pair of regional indicators) is never split, and only as much of
+/// the text as can matter is read.
+pub fn fit_label(text: &str, cells: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    let is_indicator = |c: char| ('\u{1f1e6}'..='\u{1f1ff}').contains(&c);
+    let mut clusters: Vec<(String, usize)> = Vec::new();
+    let mut total = 0usize;
+    for c in text.chars().filter(|&c| !crate::inert_files::is_hidden(c)) {
+        let w = c.width().unwrap_or(0);
+        let joins = match clusters.last() {
+            Some((last, _)) => w == 0 || (is_indicator(c) && last.chars().count() == 1 && last.chars().all(is_indicator)),
+            None => false,
+        };
+        if joins {
+            let last = clusters.last_mut().expect("joins implies a cluster");
+            last.0.push(c);
+            last.1 += w;
+        } else {
+            clusters.push((c.to_string(), w));
+        }
+        total += w;
+        if total > cells {
+            break;
+        }
+    }
+    if total <= cells {
+        return clusters.into_iter().map(|(s, _)| s).collect();
+    }
+    if cells == 0 {
+        return String::new();
+    }
+    while total + 1 > cells {
+        let Some((_, w)) = clusters.pop() else { break };
+        total -= w;
+    }
+    let mut out: String = clusters.into_iter().map(|(s, _)| s).collect();
+    out.push('\u{2026}');
+    out
+}
+
 /// Where every part of a title bar sits.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Geometry {

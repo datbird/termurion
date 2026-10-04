@@ -19,6 +19,8 @@ pub(super) struct WinSlot {
     hover: Option<(PaneId, crate::find::Match)>,
     find_bar_rect: Option<Rect>,
     find_mode_rect: Option<Rect>,
+    /// The title bars drawn last frame (pane, geometry), for clicks.
+    title_bars: Vec<(PaneId, crate::pane_title::Geometry)>,
     /// The tab bar as last laid out, in points, not scrolled (`build_frame`).
     tab_bar: crate::tab_layout::Bar,
     /// The tab bar's scroll offset in points.
@@ -127,6 +129,7 @@ impl WinSlot {
             hover: None,
             find_bar_rect: None,
             find_mode_rect: None,
+            title_bars: Vec::new(),
             tab_bar: crate::tab_layout::Bar::default(),
             tab_scroll: 0.0,
             tab_hover: None,
@@ -230,6 +233,7 @@ impl App {
         swap(&mut self.hover, &mut s.hover);
         swap(&mut self.find_bar_rect, &mut s.find_bar_rect);
         swap(&mut self.find_mode_rect, &mut s.find_mode_rect);
+        swap(&mut self.title_bars, &mut s.title_bars);
         swap(&mut self.tab_bar, &mut s.tab_bar);
         swap(&mut self.tab_scroll, &mut s.tab_scroll);
         swap(&mut self.tab_hover, &mut s.tab_hover);
@@ -797,6 +801,7 @@ impl WinSlot {
             hover: None,
             find_bar_rect: None,
             find_mode_rect: None,
+            title_bars: Vec::new(),
             tab_bar: crate::tab_layout::Bar::default(),
             tab_scroll: 0.0,
             tab_hover: None,
