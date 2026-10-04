@@ -196,17 +196,19 @@ impl App {
 
     /// Bring All Windows to Front from the tray: every window, in registry order.
     fn tray_bring_all(&mut self) {
-        let ids: Vec<WindowId> = self.registry.order().into_iter().filter_map(|k| self.window_id_of_key(k)).collect();
+        // arrangeInFront skips closed hotkey windows: a hidden one is not rolled in.
+        let ids: Vec<WindowId> = self.registry.order().into_iter().filter(|k| !self.hidden_hotkey_key(*k)).filter_map(|k| self.window_id_of_key(k)).collect();
         for w in ids {
             self.focus_terminal_window(w);
         }
     }
 
     /// The icon's menu (`AD:1846-1880`) on the current terminal window (a cloaked hotkey window
-    /// still has a handle; the message-only window cannot own a popup).
+    /// still has a handle), else on the notification window (a hidden top-level window), so it also
+    /// opens with no terminal window made yet.
     fn show_tray_menu(&mut self) {
         use muda::{ContextMenu, Menu, MenuItem, PredefinedMenuItem, Submenu};
-        let Some(hwnd) = self.hwnd() else { return };
+        let Some(hwnd) = presence::tray_menu_owner(self.hwnd(), crate::notify::window_handle()) else { return };
         let menu = Menu::new();
         // Every window first: one that left the taskbar and Alt+Tab (or was minimized) has no
         // other way back. A pick runs `window_list_picked`.
@@ -273,6 +275,15 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    /// Minor 5: tray "Bring All Windows to Front" skips hidden hotkey windows (arrangeInFront does).
+    #[test]
+    fn tray_bring_all_skips_hidden_hotkey_windows() {
+        let src = include_str!("presence_ui.rs");
+        let body = src.split("fn tray_bring_all").nth(1).expect("tray_bring_all");
+        let body = body.split("\n    }\n").next().unwrap();
+        assert!(body.contains("hidden_hotkey_key"), "a hidden hotkey window is not rolled in");
+    }
+
     /// The style flip of a visible window keeps the client area (P9): it runs inside
     /// `caption_ui::keep_client`, and the current window re-checks its caption frame.
     #[test]

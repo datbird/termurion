@@ -10,7 +10,7 @@ virtual desktops (Win+Ctrl+D to add one) and, for the display lines, a second mo
 profile with Transparency 0.3 (Settings > Profiles > Window) and a second with Transparency 0 and
 Blur on; make a Dedicated Hotkey Window profile. Mark each line pass or fail. Nothing of 13g was
 checked on screen during the build; every line below is unverified until you run it. Line 1 gates
-the see-through rows in `docs/parity/`: if it passes they read have, if it fails they stay partial.
+the see-through rows in `docs/parity/`: if it passes the eight rows it names read have (blur and Blur Radius stay partial either way), if it fails they stay partial.
 
 | # | Check | Result |
 |---|---|---|
@@ -27,7 +27,7 @@ the see-through rows in `docs/parity/`: if it passes they read have, if it fails
 | 11 | Settings > Profiles > Window: Keep background colors opaque, Blur and Blur Radius are greyed at Transparency 0 (Blur Radius also until Blur is on); the override notice shows under Transparency above 0; the large radius warning (with its glyph) shows above 26. The radius slider changes nothing. | |
 | 12 | A new Dedicated Hotkey Window is see-through (Transparency 0.3) and blurred. | |
 | 13 | A window with Transparency 0 is unchanged in look and speed and still uses the original renderer path (the `init_gpu` line shows the same backend as before); only see-through windows use the second instance. | |
-| 14 | Raising a profile's Transparency above 0 while its window is open recreates that window once, see-through, with its tabs, panes, shell sessions, position, size, menu bar, caption and border intact, no black frame, and focus only if it had focus. Recreating a full screen window keeps it full screen; a floating (topmost) hotkey window and an Accessory window stay topmost; a hidden window stays hidden; an open Password Manager is closed first and can reopen. | |
+| 14 | Raising a profile's Transparency above 0 while its window is open recreates that window once, see-through, with its tabs, panes, shell sessions, position, size, menu bar, caption and border intact, no black frame, and focus only if it had focus. Recreating a full screen window keeps it full screen; a floating (topmost) hotkey window and an Accessory window stay topmost; a hidden window stays hidden; an open Password Manager is closed first and can reopen. A minimized window stays minimized and un-minimizes to its old frame (not at the screen corner, not zero size); a maximized window stays maximized and restores to its old normal frame. | |
 | 15 | The first window of a transparent default profile opens opaque and is recreated once at launch (one flicker, no black window). With Initial Use Transparency off in the default profile the first window opens opaque. | |
 | 16 | A background image under a see-through pane stays opaque and shows through the margins only at the pane alpha; dimmed inactive panes in a see-through window are a little more opaque (kept quirk). | |
 | 17 | On a machine or session without a working second instance, windows stay opaque and the banner shows once; a failed window is not retried on every edit. | |
@@ -50,8 +50,14 @@ the see-through rows in `docs/parity/`: if it passes they read have, if it fails
 | 34 | A left click on the icon with "Always Show" shows the hotkey window and a second click hides it; with "Show if no other windows" it shows only with no regular window; a double click toggles twice (kept quirk). | |
 | 35 | An open hotkey window is in Alt+Tab; with `HotkeyWindowsExcludedFromCycling` it leaves Alt+Tab and Next/Previous Window skip it. A hidden hotkey window is never in Alt+Tab. | |
 | 36 | No window can become unreachable: with Exclude on, StatusBarIcon on, every window minimized, a window is reachable from the icon's menu; with StatusBarIcon off it is reachable by starting Tandem again; after a monitor is unplugged every window refits onto a screen; a window recreated for alpha is on screen; no hidden window outlives its hotkey. | |
-| 37 | Kept quirk (ruling): a recreate flickers once and RenderDoc cannot capture the visual swapchain; two devices stay in memory while a see-through window exists. | |
+| 37 | Kept quirk (ruling): a recreate flickers once and RenderDoc cannot capture the visual swapchain; two devices stay in memory for the rest of the run once the first see-through window has opened. | |
 | 38 | Kept quirk (ruling): background images stay opaque under transparency; the cursor, tab bar, status bars, toolbelt, dividers and popups never take the alpha. | |
 | 39 | Kept quirk (ruling): Blur Radius is stored and shown but acrylic has one fixed radius; the large radius warning shows although the slider does nothing. | |
 | 40 | Kept quirk (ruling): a numbered Space applies only to new windows (a new tab never switches); Restore windows to same desktops is never applied to saved arrangements. | |
 | 41 | Kept quirk (ruling): the tray menu's copy of the Main Menu shows no check marks; Check For Updates is disabled until 13v. | |
+| 42 | A see-through window on desktop 2 recreated by a profile edit (raise its Transparency) stays on desktop 2 and does not jump to the desktop you are on. | |
+| 43 | Restore windows to same desktops with a transparent first window: quit with it on desktop 2, start Tandem; it returns to desktop 2 (it is recreated once at launch and moved back before it shows). | |
+| 44 | Toggling Exclude from Dock and Cmd-Tab (UI element mode) on a profile that is see-through shows no taskbar button flash on the recreated window, and the tray menu opens with no terminal window made yet (UI element mode, hotkey profiles only). | |
+| 45 | Tray Bring All Windows to Front does not show a hidden hotkey window. | |
+| 46 | Toggling Exclude with a window on desktop 2 leaves it on desktop 2 (the tool-window flip hides and reshows the window; unverified that it keeps its desktop). | |
+| 47 | Windows 10 (or 11 before 22H2): a see-through window with Blur on shows no glass frame under its transparent pixels (the frame is extended only when DWM accepts the backdrop). | |

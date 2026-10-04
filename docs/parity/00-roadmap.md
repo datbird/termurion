@@ -426,7 +426,7 @@ image. Duplicate Tab copies every pane next to the original. Nothing of 13d was 
 screen during the build. Every kept quirk is listed in `docs/acceptance/m13d-checklist.md` and
 ruled on in `docs/superpowers/rulings/m13d-rulings.txt`.
 Milestone 13g built transparency and desktops (01: Space to have and one row added; 02: 7 rows to have; 03: the
-dock click row to have; ten rows stay partial until the person confirms checklist line 1). A profile's Transparency
+dock click row to have; eight rows stay partial until the person confirms checklist line 1). A profile's Transparency
 draws its default background and margins at 1 - Transparency over the desktop (per-pixel alpha through a
 DirectComposition swapchain on a second Direct3D 12 renderer instance used only by see-through windows; opaque
 windows keep the original path; the tab bar, status bars, toolbelt, dividers, popups and cursor stay opaque;
@@ -441,10 +441,10 @@ changes) refit top-of-screen, maximized and full screen windows after UpdateScre
 ChaseAnchoredScreen moves a window back to its profile's screen. Exclude from taskbar and Alt+Tab (with its hotkey
 only variant and HotkeyWindowsExcludedFromCycling) uses tool-window styles and a notification-area icon whose menu
 lists every window, opens Settings, lists buried sessions and quits; the dock click is a left click on that icon.
-The rows that need the person: 01:179 to 01:183, the new rendering row, 02:209, 02:262, 03:157 and 03:158 are partial
+The rows that need the person: 01:179 to 01:181, the new rendering row, 02:209, 02:262, 03:157 and 03:158 are partial
 until checklist line 1 (a DirectComposition and an HWND swapchain in one process on the desktop GPU) passes, and
-blur stays partial until acrylic is seen behind the visual swapchain; if the line fails they stay partial
-("stored and shown; no see-through rendering on this path"); if it passes they read have (1,196 have, 222 partial in total).
+blur (01:182, checklist line 9) stays partial until acrylic is seen behind the visual swapchain, and Blur Radius (01:183) stays partial because it has no effect; if the line fails they stay partial
+("stored and shown; no see-through rendering on this path"); if it passes they read have (1,194 have, 224 partial in total).
 StatusBarIcon alone decides the icon (iTerm2's rule); with it off, starting Tandem again acts as the dock click. Nothing of 13g was
 checked on screen during the build. Every kept quirk is listed in `docs/acceptance/m13g-checklist.md` and ruled on
 in `docs/superpowers/rulings/m13g-rulings.txt`.

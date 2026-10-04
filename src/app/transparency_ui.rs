@@ -308,25 +308,32 @@ impl App {
         if self.win_alpha_surface == SurfaceKind::Alpha {
             return Ok(old.id());
         }
-        let hotkey = self.hotkey.is_some();
         let floating_hotkey = self.hotkey.as_ref().is_some_and(|h| h.shown) && self.hotkey.as_ref().and_then(|h| self.store.get(&h.guid)).is_some_and(|p| crate::hotkey::Prefs::from_profile(p).floats);
-        let carried = transparency::carry(old.fullscreen().is_some(), self.win_style == crate::frames::ACCESSORY, floating_hotkey, old.is_visible() != Some(false), self.focused);
+        let old_hwnd = menu::hwnd_of(&old);
+        let placed = old_hwnd.and_then(placement_of).unwrap_or_else(|| transparency::placed(1, 0, [0; 4], (0, 0)));
+        let carried = transparency::carry(old.fullscreen().is_some(), self.win_style == crate::frames::ACCESSORY, floating_hotkey, old.is_visible() != Some(false), self.focused, &placed);
         // A manager owned by the old window would be destroyed with it: close it, so it can open again.
         self.close_pwm();
-        let position = old.outer_position().ok();
-        let size: PhysicalSize<u32> = old.inner_size();
+        // A minimized or maximized window's rectangle is the iconic or screen-filling one: its normal
+        // frame (from the placement) is what the new window takes, and the state is applied after.
+        let restore_frame = placed.minimized || placed.maximized;
+        let [pl, pt, pr, pb] = placed.frame;
+        let position = if restore_frame { Some(PhysicalPosition::new(pl, pt)) } else { old.outer_position().ok() };
+        let size: PhysicalSize<u32> = if restore_frame { PhysicalSize::new((pr - pl).max(1) as u32, (pb - pt).max(1) as u32) } else { old.inner_size() };
+        // The old window's desktop (None for a cloaked hotkey window or a session without a shell): the
+        // new window is created on the current desktop and moved there before it shows.
+        let old_desktop = old_hwnd.and_then(|h| self.desktops().and_then(|m| m.window_desktop(h)));
+        let hotkey_shown = self.hotkey.as_ref().map(|h| h.shown);
+        let look = crate::presence::with_accessory(crate::presence::window_look(self.ui_element_now, hotkey_shown, self.globals.bool(crate::presence::EXCLUDED_FROM_CYCLING_KEY)), self.win_style == crate::frames::ACCESSORY);
         let mut attrs = Window::default_attributes()
             .with_title(old.title())
             .with_inner_size(size)
             .with_decorations(old.is_decorated())
             .with_resizable(old.is_resizable())
-            .with_maximized(old.is_maximized())
+            .with_skip_taskbar(look.skip_taskbar)
             .with_visible(false)
             .with_active(false)
             .with_no_redirection_bitmap(true);
-        if hotkey {
-            attrs = attrs.with_skip_taskbar(true);
-        }
         if let Some(p) = position {
             attrs = attrs.with_position(p);
         }
@@ -336,7 +343,6 @@ impl App {
             window.set_outer_position(PhysicalPosition::new(p.x, p.y));
         }
         let (old_id, new_id) = (old.id(), window.id());
-        let old_hwnd = menu::hwnd_of(&old);
         let old_gpu = self.gpu.replace(gpu);
         self.win_alpha_surface = SurfaceKind::Alpha;
         // The new handle has no backdrop yet.
@@ -370,8 +376,28 @@ impl App {
         if carried.on_top {
             window.set_window_level(winit::window::WindowLevel::AlwaysOnTop);
         }
+        if restore_frame {
+            super::chrome_ui::set_outer_frame(&window, crate::layout::Rect { x: pl as f32, y: pt as f32, w: (pr - pl) as f32, h: (pb - pt) as f32 });
+        }
+        if carried.maximized {
+            window.set_maximized(true);
+        }
+        // Before the window shows, so it never appears on the wrong desktop (P18b: our own window).
+        if let (Some(id), Some(h)) = (old_desktop, menu::hwnd_of(&window)) {
+            if let Some(m) = self.desktops() {
+                if let Err(e) = m.move_window(h, id) {
+                    eprintln!("transparency: could not move the new window to its desktop: {e}");
+                }
+            }
+        }
         if carried.show {
-            window.set_visible(true);
+            match menu::hwnd_of(&window) {
+                // Minimized shows without activation, over the frame set above.
+                Some(h) if carried.minimized => unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(h as windows_sys::Win32::Foundation::HWND, windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWMINNOACTIVE);
+                },
+                _ => window.set_visible(true),
+            }
         }
         if carried.activate {
             window.focus_window();
@@ -417,6 +443,32 @@ impl App {
     }
 }
 
+/// The old window's placement (`GetWindowPlacement`): its normal frame in screen coordinates and its
+/// minimized and maximized state. A tool window's placement is in screen coordinates already; any other
+/// window's is relative to the work area.
+fn placement_of(hwnd: isize) -> Option<transparency::Placed> {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongW, GetWindowPlacement, GWL_EXSTYLE, WINDOWPLACEMENT, WS_EX_TOOLWINDOW};
+    let h = hwnd as HWND;
+    let mut wp: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+    wp.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+    if unsafe { GetWindowPlacement(h, &mut wp) } == 0 {
+        return None;
+    }
+    let tool = unsafe { GetWindowLongW(h, GWL_EXSTYLE) } as u32 & WS_EX_TOOLWINDOW != 0;
+    let mut shift = (0, 0);
+    if !tool {
+        let mut mi: MONITORINFO = unsafe { std::mem::zeroed() };
+        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if unsafe { GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mut mi) } != 0 {
+            shift = (mi.rcWork.left - mi.rcMonitor.left, mi.rcWork.top - mi.rcMonitor.top);
+        }
+    }
+    let r = wp.rcNormalPosition;
+    Some(transparency::placed(wp.showCmd, wp.flags, [r.left, r.top, r.right, r.bottom], shift))
+}
+
 /// The second instance: DX12 only, DirectComposition swapchains (the only kind that offers a premultiplied
 /// alpha mode), its adapter chosen against `window`'s surface. The probe surface is dropped before the
 /// window's real one is made.
@@ -437,6 +489,31 @@ fn make_alpha_gpu(event_loop: &ActiveEventLoop, window: &Arc<Window>) -> Result<
 mod watch_tests {
     /// A window recreated for alpha gets display change notifications like every other window
     /// (review of 13e): the recreate installs the subclass on the new handle.
+    /// Important 2: the new window is moved to the old window's desktop before it shows (Restore windows
+    /// to same desktops holds for a transparent first window).
+    #[test]
+    fn recreate_moves_the_new_window_to_the_old_desktop_before_showing() {
+        let src = include_str!("transparency_ui.rs");
+        let body = src.split("fn recreate_window_for_alpha").nth(1).expect("recreate_window_for_alpha");
+        let body = body.split("\n    }\n").next().unwrap();
+        let read = body.find("window_desktop(").expect("the old window's desktop is read");
+        let made = body.find("create_window(").expect("the new window is created");
+        let moved = body.find("move_window(").expect("the new window is moved to that desktop");
+        let shown = body.find("set_visible(true)").expect("the new window is shown");
+        assert!(read < made && made < moved && moved < shown, "read, create, move, then show");
+    }
+
+    /// Minor 3: the new window's taskbar skip comes from its current look, so the presence pass has nothing
+    /// to flip (no second hide and show, no button flash).
+    #[test]
+    fn recreate_builds_the_taskbar_skip_from_the_look() {
+        let src = include_str!("transparency_ui.rs");
+        let body = src.split("fn recreate_window_for_alpha").nth(1).expect("recreate_window_for_alpha");
+        let body = body.split("\n    }\n").next().unwrap();
+        assert!(body.contains("with_skip_taskbar(look.skip_taskbar)"), "skip from the look, not only for hotkey windows");
+        assert!(body.contains("placement_of"), "the old placement is read");
+    }
+
     #[test]
     fn recreate_watches_the_new_window() {
         let src = include_str!("transparency_ui.rs");

@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Shell::{NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_NOSOUND, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW};
-use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowExW, HWND_MESSAGE, IDI_APPLICATION, LoadIconW, PostMessageW, RegisterClassW, RegisterWindowMessageW, WM_APP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP};
+use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowExW, HWND_MESSAGE, IDI_APPLICATION, LoadIconW, PostMessageW, RegisterClassW, RegisterWindowMessageW, WM_APP, WM_CLOSE, WM_NCDESTROY, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP};
 
 const ICON_ID: u32 = 0x7A4D;
 /// The tray icon's callback message.
@@ -40,14 +40,42 @@ fn click_of(low: u32) -> Option<bool> {
     }
 }
 
-unsafe extern "system" fn reopen_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if msg == REOPEN {
-        if let Some(f) = ON_TRAY.get() {
-            f(false);
-        }
-        return 0;
+/// What the reopen window does with a message.
+#[derive(Debug, PartialEq, Eq)]
+enum ReopenMessage {
+    /// The second start's post: act as the dock click.
+    Click,
+    /// A close from any process: ignored, so the window (and the reopen route) stays.
+    Swallow,
+    /// The window is gone: its slot clears so `set_reopen(true)` can make it again.
+    Destroyed,
+    Other,
+}
+
+fn reopen_message(msg: u32) -> ReopenMessage {
+    match msg {
+        REOPEN => ReopenMessage::Click,
+        WM_CLOSE => ReopenMessage::Swallow,
+        WM_NCDESTROY => ReopenMessage::Destroyed,
+        _ => ReopenMessage::Other,
     }
-    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+unsafe extern "system" fn reopen_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    match reopen_message(msg) {
+        ReopenMessage::Click => {
+            if let Some(f) = ON_TRAY.get() {
+                f(false);
+            }
+            0
+        }
+        ReopenMessage::Swallow => 0,
+        ReopenMessage::Destroyed => {
+            REOPEN_WINDOW.store(0, Ordering::SeqCst);
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+        ReopenMessage::Other => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
 }
 
 /// While Tandem is excluded from the taskbar and Alt+Tab, a message-only window waits for a second
@@ -120,6 +148,12 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         return 0;
     }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// The hidden notification window's handle, once it exists (it owns the tray menu when no terminal
+/// window does).
+pub fn window_handle() -> Option<isize> {
+    Some(WINDOW.load(Ordering::SeqCst)).filter(|h| *h != 0)
 }
 
 /// The hidden notification window, made on first use (on the window thread, whose message loop
@@ -225,6 +259,16 @@ mod tests {
 
     /// The legacy callback's low word: a left button release is a left click, a right button
     /// release a right click, a balloon click is not a tray click.
+    #[test]
+    fn reopen_window_survives_a_foreign_close() {
+        assert_eq!(reopen_message(REOPEN), ReopenMessage::Click);
+        // Any process can post WM_CLOSE: it must not destroy the window and strand the reopen route.
+        assert_eq!(reopen_message(0x0010), ReopenMessage::Swallow);
+        // The slot clears when the window is destroyed some other way, so set_reopen(true) remakes it.
+        assert_eq!(reopen_message(0x0082), ReopenMessage::Destroyed);
+        assert_eq!(reopen_message(0x0001), ReopenMessage::Other);
+    }
+
     #[test]
     fn tray_clicks_decode() {
         assert_eq!(click_of(0x0202), Some(false));

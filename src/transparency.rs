@@ -219,12 +219,40 @@ pub struct Carry {
     pub on_top: bool,
     pub show: bool,
     pub activate: bool,
+    /// The old window was minimized: the new one comes back minimized (shown without activation).
+    pub minimized: bool,
+    /// The old window was maximized (or minimized from maximized): the new one maximizes over its normal frame.
+    pub maximized: bool,
+}
+
+/// `WINDOWPLACEMENT.showCmd` values that mean minimized, and `WPF_RESTORETOMAXIMIZED`.
+const MINIMIZED_CMDS: [u32; 4] = [2, 6, 7, 11];
+const SW_SHOWMAXIMIZED: u32 = 3;
+const WPF_RESTORETOMAXIMIZED: u32 = 2;
+
+/// A window's placement as `GetWindowPlacement` reports it: its normal (restore) frame as left, top, right,
+/// bottom, in workspace coordinates unless the window is a tool window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placed {
+    /// The normal frame in screen coordinates.
+    pub frame: [i32; 4],
+    pub minimized: bool,
+    pub maximized: bool,
+}
+
+/// Reads a `WINDOWPLACEMENT` (`show_cmd`, `flags`, normal rect) into the state a recreate carries.
+/// `shift` is the workspace origin relative to the screen (taskbar on the top or left), added to the
+/// frame; zero for a tool window, whose placement is already in screen coordinates.
+pub fn placed(show_cmd: u32, flags: u32, normal: [i32; 4], shift: (i32, i32)) -> Placed {
+    let minimized = MINIMIZED_CMDS.contains(&show_cmd);
+    let maximized = show_cmd == SW_SHOWMAXIMIZED || (minimized && flags & WPF_RESTORETOMAXIMIZED != 0);
+    Placed { frame: [normal[0] + shift.0, normal[1] + shift.1, normal[2] + shift.0, normal[3] + shift.1], minimized, maximized }
 }
 
 /// Full screen and the floating level ride along; the new window shows only if the old one was shown and
 /// takes focus only if the old one had it.
-pub fn carry(fullscreen: bool, accessory: bool, floating_hotkey: bool, visible: bool, focused: bool) -> Carry {
-    Carry { fullscreen, on_top: accessory || floating_hotkey, show: visible, activate: visible && focused }
+pub fn carry(fullscreen: bool, accessory: bool, floating_hotkey: bool, visible: bool, focused: bool, placed: &Placed) -> Carry {
+    Carry { fullscreen, on_top: accessory || floating_hotkey, show: visible, activate: visible && focused && !placed.minimized, minimized: placed.minimized, maximized: placed.maximized }
 }
 
 /// Takes a window that the old HWND owns out of its slot, so the slot is clear and it can open again.
@@ -251,12 +279,34 @@ mod tests {
 
     #[test]
     fn recreate_carries_the_old_window() {
+        let normal = placed(1, 0, [10, 20, 810, 620], (0, 0));
         // Full screen, floating and visibility ride along; activation only when the old window had focus.
-        assert_eq!(carry(true, false, false, true, false), Carry { fullscreen: true, on_top: false, show: true, activate: false });
-        assert_eq!(carry(false, true, false, true, true), Carry { fullscreen: false, on_top: true, show: true, activate: true });
-        assert!(carry(false, false, true, true, false).on_top, "a shown floating hotkey window");
-        let hidden = carry(false, false, false, false, true);
+        let c = |fullscreen, on_top, show, activate| Carry { fullscreen, on_top, show, activate, minimized: false, maximized: false };
+        assert_eq!(carry(true, false, false, true, false, &normal), c(true, false, true, false));
+        assert_eq!(carry(false, true, false, true, true, &normal), c(false, true, true, true));
+        assert!(carry(false, false, true, true, false, &normal).on_top, "a shown floating hotkey window");
+        let hidden = carry(false, false, false, false, true, &normal);
         assert!(!hidden.show && !hidden.activate, "a hidden window stays hidden and never takes focus");
+    }
+
+    #[test]
+    fn recreate_keeps_minimized_and_maximized_placement() {
+        // A minimized window reads its normal frame, never the (-32000, -32000) of its iconic rect.
+        let min = placed(2, 0, [100, 50, 900, 650], (0, 0));
+        assert_eq!(min, Placed { frame: [100, 50, 900, 650], minimized: true, maximized: false });
+        let c = carry(false, false, false, true, true, &min);
+        assert!(c.minimized && c.show && !c.activate, "comes back minimized and never takes focus");
+        // Minimized from maximized restores to maximized.
+        assert!(placed(7, 2, [0, 0, 10, 10], (0, 0)).maximized);
+        // A maximized window keeps its restore rectangle.
+        let max = placed(3, 0, [100, 50, 900, 650], (0, 0));
+        assert!(max.maximized && !max.minimized);
+        assert_eq!(max.frame, [100, 50, 900, 650]);
+        assert!(carry(false, false, false, true, true, &max).maximized);
+        // A taskbar on the top shifts workspace coordinates onto the screen.
+        assert_eq!(placed(1, 0, [0, 0, 800, 600], (0, 40)).frame, [0, 40, 800, 640]);
+        let n = placed(1, 0, [0, 0, 1, 1], (0, 0));
+        assert!(!n.minimized && !n.maximized);
     }
 
     #[test]

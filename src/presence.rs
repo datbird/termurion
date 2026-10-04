@@ -35,6 +35,12 @@ pub fn window_look(ui_element_now: bool, hotkey: Option<bool>, excluded_from_cyc
     Look { tool_window, skip_taskbar: ui_element_now || hotkey.is_some() }
 }
 
+/// The window that owns the tray menu: the current terminal window, else the notification window
+/// (a hidden top-level window), so the menu opens with no terminal window made yet. A zero handle is none.
+pub fn tray_menu_owner(terminal: Option<isize>, notify: Option<isize>) -> Option<isize> {
+    terminal.filter(|h| *h != 0).or(notify.filter(|h| *h != 0))
+}
+
 /// An Accessory window (`frames::ACCESSORY`) keeps its own taskbar skip.
 pub fn with_accessory(look: Look, accessory: bool) -> Look {
     Look { tool_window: look.tool_window, skip_taskbar: look.skip_taskbar || accessory }
@@ -210,6 +216,16 @@ mod tests {
     }
 
     /// `PT:1026-1047`, with pre-flight B5 and B6.
+    /// The tray menu is owned by the current terminal window, else by the notification window (a
+    /// top-level window since 96f2a4a), so it opens with no window made yet (UI element mode).
+    #[test]
+    fn tray_menu_owner_falls_back_to_the_notify_window() {
+        assert_eq!(tray_menu_owner(Some(7), Some(9)), Some(7));
+        assert_eq!(tray_menu_owner(None, Some(9)), Some(9));
+        assert_eq!(tray_menu_owner(None, None), None);
+        assert_eq!(tray_menu_owner(Some(0), Some(9)), Some(9));
+    }
+
     #[test]
     fn window_look_follows_iterm2() {
         let l = |tool_window, skip_taskbar| Look { tool_window, skip_taskbar };
