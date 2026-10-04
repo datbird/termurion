@@ -85,9 +85,10 @@ pub(super) enum SaveWhat {
 /// The working folder a saved arrangement keeps for a pane. A pane whose folder came from a
 /// framing conductor (`App::remote_text`) holds a folder the remote wrote, and a restore forces
 /// the saved folder as the LOCAL start folder, so it saves none (the restored pane uses its
-/// profile's start folder); an ssh-profile pane keeps it, as its session restores remotely.
+/// profile's start folder); an ssh-profile pane keeps a POSIX one, as its session restores
+/// remotely, but never a drive path (the restored ssh.exe would start in that LOCAL folder).
 fn saved_cwd(remote_text: bool, ssh_profile: bool, cwd: Option<&str>) -> Option<String> {
-    if remote_text && !ssh_profile {
+    if remote_text && (!ssh_profile || cwd.is_some_and(|c| crate::profile::local_path(c).is_some())) {
         return None;
     }
     cwd.map(arrangement::saved_folder)
@@ -959,6 +960,8 @@ mod tests {
         assert_eq!(saved_cwd(true, true, Some("/home/u")).as_deref(), Some("/home/u"), "an ssh-profile pane restores remotely");
         assert_eq!(saved_cwd(false, false, Some("/C:/Users/me")).as_deref(), Some(r"C:\Users\me"), "a local pane keeps its folder");
         assert_eq!(saved_cwd(false, false, None), None);
+        assert_eq!(saved_cwd(true, true, Some("/C:/Users/evil")), None, "a drive path the remote reported is never a local start folder");
+        assert_eq!(saved_cwd(true, true, Some(r"D:\x")), None);
     }
 
     fn hosted_chain() -> crate::conductor::Conductor {

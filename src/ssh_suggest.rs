@@ -211,9 +211,42 @@ pub fn ack_allowed(id: &str, current: Option<&str>, issued: &[String]) -> bool {
     valid_search_id(id) && (current == Some(id) || issued.iter().any(|i| i == id))
 }
 
+/// What a framed pane's reported working directory means for the Composer's file list.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FramedCwd {
+    /// The remote reported none: list from its home.
+    Unknown,
+    /// A clean POSIX folder.
+    Posix(String),
+    /// Anything else (a drive path): the remote has no such folder, and the list stays empty
+    /// rather than showing THIS PC's folder (G1: remote-written state never drives a local action).
+    Refused,
+}
+
+/// Reads the working directory a framed pane's remote reported.
+pub fn framed_cwd(reported: Option<&str>) -> FramedCwd {
+    match reported {
+        None => FramedCwd::Unknown,
+        Some(d) => match crate::ssh_jumps::clean_directory(d).filter(|d| d.starts_with('/')) {
+            Some(d) => FramedCwd::Posix(d),
+            None => FramedCwd::Refused,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_framed_pane_never_lists_this_pcs_folder() {
+        assert_eq!(framed_cwd(None), FramedCwd::Unknown);
+        assert_eq!(framed_cwd(Some("/home/u")), FramedCwd::Posix("/home/u".into()));
+        assert_eq!(framed_cwd(Some(r"C:\Users\me")), FramedCwd::Refused);
+        // A leading slash is a POSIX path for the remote, whatever follows.
+        assert_eq!(framed_cwd(Some("/C:/x")), FramedCwd::Posix("/C:/x".into()));
+        assert_eq!(framed_cwd(Some("relative")), FramedCwd::Refused);
+    }
 
     fn inp(prefix: &str) -> SuggestInputs {
         SuggestInputs { prefix: prefix.into(), full_prefix: "ls x/".into(), full_suffix: String::new(), directories: vec!["/h".into()], working_directory: Some("/h".into()), executable: false, limit: 8 }

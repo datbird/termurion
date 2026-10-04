@@ -794,7 +794,7 @@ pub struct App {
     /// The local side of each transfer job: its temp file and what its banner shows (Task 4).
     ssh_locals: HashMap<u64, crate::ssh_local::Local>,
     /// Folder unzips running on worker threads, each answering (job, result) once.
-    ssh_unzips: Vec<std::sync::mpsc::Receiver<(u64, PathBuf, Result<(), String>)>>,
+    ssh_unzips: Vec<crate::ssh_transfer::UnzipWait>,
     /// Download Files items waiting for an earlier item of their name to land (app-wide, P12).
     ssh_landings: ssh_panel_app::Landings,
     /// The remote file panel (Shell > ssh > Download Files) and its model; one at a time (app-wide,

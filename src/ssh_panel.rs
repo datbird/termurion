@@ -116,7 +116,7 @@ pub struct Panel {
     /// Go to Folder is waiting for its completions.
     pub completing: bool,
     files: Vec<RemoteFile>,
-    selected: Vec<String>,
+    selected: std::collections::HashSet<String>,
     anchor: Option<String>,
     sort: Column,
     ascending: bool,
@@ -134,6 +134,16 @@ pub struct Panel {
     comp_pending: usize,
     /// The id the remote gave the running search.
     search_id: Option<String>,
+    /// The shown order, as indexes into `files`, kept until the listing or its sort changes.
+    order: std::cell::RefCell<Option<Order>>,
+    /// How many times the order was built (a test reads it).
+    sorts: std::cell::Cell<usize>,
+}
+
+/// The rows shown, sorted: built once per listing, sort column, direction and hidden setting.
+struct Order {
+    key: (Column, bool, bool),
+    rows: Vec<usize>,
 }
 
 impl Panel {
@@ -150,7 +160,7 @@ impl Panel {
             notice: None,
             completing: false,
             files: Vec::new(),
-            selected: Vec::new(),
+            selected: std::collections::HashSet::new(),
             anchor: None,
             sort: Column::Name,
             ascending: true,
@@ -165,6 +175,8 @@ impl Panel {
             comp_found: false,
             comp_pending: 0,
             search_id: None,
+            order: std::cell::RefCell::new(None),
+            sorts: std::cell::Cell::new(0),
         }
     }
 
@@ -219,6 +231,7 @@ impl Panel {
         self.mode = Mode::Regular;
         self.search_id = None;
         self.files.clear();
+        self.dirty();
         self.selected.clear();
         self.notice = None;
         self.host.clone().map(|host| Request::SearchStop { host }).into_iter().collect()
@@ -269,6 +282,7 @@ impl Panel {
                 self.error = None;
                 self.notice = None;
                 self.files.clear();
+                self.dirty();
                 self.selected.clear();
                 self.anchor = None;
                 self.loading = true;
@@ -282,6 +296,7 @@ impl Panel {
                 self.error = None;
                 self.notice = None;
                 self.files.clear();
+                self.dirty();
                 match ssh_files::check(status) {
                     Err(e) => self.error = Some(e.text().to_string()),
                     Ok(()) => match remote_file::parse_list(content) {
@@ -291,6 +306,7 @@ impl Panel {
                                 self.notice = Some(TRUNCATED.to_string());
                             }
                             self.files = files;
+                            self.dirty();
                             if let Some(h) = self.host.clone() {
                                 self.last.retain(|(x, _)| *x != h);
                                 self.last.push((h, path.clone()));
@@ -448,6 +464,7 @@ impl Panel {
             self.host = None;
             self.path = None;
             self.files.clear();
+            self.dirty();
             self.selected.clear();
             self.loading = false;
             self.error = None;
@@ -505,6 +522,7 @@ impl Panel {
         self.mode = Mode::Search { generation, query: query.to_string() };
         self.search_id = None;
         self.files.clear();
+        self.dirty();
         self.selected.clear();
         self.anchor = None;
         self.error = None;
@@ -532,6 +550,7 @@ impl Panel {
             return;
         }
         self.files.push(file);
+        self.dirty();
     }
 
     /// The search of `generation` could not start.
@@ -565,17 +584,43 @@ impl Panel {
         }
     }
 
+    /// The listing changed: the shown order is stale.
+    fn dirty(&self) {
+        self.order.borrow_mut().take();
+    }
+
     /// The rows shown: hidden files dropped unless asked for, in the sort order. Name ignores
     /// case; Size counts a folder as 0; Date sorts by ctime although the column shows mtime
-    /// (`FL:474-478`).
+    /// (`FL:474-478`). The order is built once and kept until the listing, the sort or the
+    /// hidden setting changes; the lowercase keys are made once per build.
     pub fn visible(&self) -> Vec<&RemoteFile> {
-        let mut rows: Vec<&RemoteFile> = self.files.iter().filter(|f| self.show_hidden || !f.is_hidden()).collect();
-        let name = |f: &RemoteFile| f.name().to_lowercase();
+        let key = (self.sort, self.ascending, self.show_hidden);
+        let mut cached = self.order.borrow_mut();
+        if cached.as_ref().is_none_or(|o| o.key != key) {
+            self.sorts.set(self.sorts.get() + 1);
+            *cached = Some(Order { key, rows: self.build_order() });
+        }
+        cached.as_ref().map(|o| o.rows.iter().map(|&i| &self.files[i]).collect()).unwrap_or_default()
+    }
+
+    fn build_order(&self) -> Vec<usize> {
+        let mut rows: Vec<usize> = (0..self.files.len()).filter(|&i| self.show_hidden || !self.files[i].is_hidden()).collect();
+        let names: Vec<String> = self.files.iter().map(RemoteFile::name).collect();
+        let lower: Vec<String> = names.iter().map(|n| n.to_lowercase()).collect();
         match self.sort {
-            Column::Name => rows.sort_by_key(|f| (name(f), f.name())),
-            Column::Size => rows.sort_by(|a, b| a.size().unwrap_or(0).cmp(&b.size().unwrap_or(0)).then_with(|| name(a).cmp(&name(b)))),
-            Column::Date => rows.sort_by(|a, b| a.unix_ctime().unwrap_or(f64::MIN).total_cmp(&b.unix_ctime().unwrap_or(f64::MIN)).then_with(|| name(a).cmp(&name(b)))),
-            Column::Kind => rows.sort_by(|a, b| remote_file::kind_text(a).cmp(&remote_file::kind_text(b)).then_with(|| name(a).cmp(&name(b)))),
+            Column::Name => rows.sort_by(|&a, &b| lower[a].cmp(&lower[b]).then_with(|| names[a].cmp(&names[b]))),
+            Column::Size => {
+                let size: Vec<u64> = self.files.iter().map(|f| f.size().unwrap_or(0)).collect();
+                rows.sort_by(|&a, &b| size[a].cmp(&size[b]).then_with(|| lower[a].cmp(&lower[b])));
+            }
+            Column::Date => {
+                let ctime: Vec<f64> = self.files.iter().map(|f| f.unix_ctime().unwrap_or(f64::MIN)).collect();
+                rows.sort_by(|&a, &b| ctime[a].total_cmp(&ctime[b]).then_with(|| lower[a].cmp(&lower[b])));
+            }
+            Column::Kind => {
+                let kind: Vec<String> = self.files.iter().map(remote_file::kind_text).collect();
+                rows.sort_by(|&a, &b| kind[a].cmp(&kind[b]).then_with(|| lower[a].cmp(&lower[b])));
+            }
         }
         if !self.ascending {
             rows.reverse();
@@ -584,32 +629,27 @@ impl Panel {
     }
 
     pub fn is_selected(&self, path: &str) -> bool {
-        self.selected.iter().any(|p| p == path)
+        self.selected.contains(path)
     }
 
     /// A click on a row: alone it selects only that row, with Ctrl it toggles it, with Shift
     /// it selects the range from the last plain click.
     pub fn click(&mut self, path: &str, ctrl: bool, shift: bool) {
         let order: Vec<String> = self.visible().iter().map(|f| f.absolute_path.clone()).collect();
-        if !order.iter().any(|p| p == path) {
-            return;
-        }
+        let Some(at) = order.iter().position(|p| p == path) else { return };
         if shift {
-            let anchor = self.anchor.clone().filter(|a| order.contains(a)).unwrap_or_else(|| path.to_string());
-            let (a, b) = (order.iter().position(|p| *p == anchor), order.iter().position(|p| p == path));
-            if let (Some(a), Some(b)) = (a, b) {
-                self.selected = order[a.min(b)..=a.max(b)].to_vec();
-            }
+            let anchored = self.anchor.as_ref().and_then(|a| order.iter().position(|p| p == a));
+            let anchor = anchored.map(|i| order[i].clone()).unwrap_or_else(|| path.to_string());
+            let a = anchored.unwrap_or(at);
+            self.selected = order[a.min(at)..=a.max(at)].iter().cloned().collect();
             self.anchor = Some(anchor);
         } else if ctrl {
-            if let Some(i) = self.selected.iter().position(|p| p == path) {
-                self.selected.remove(i);
-            } else {
-                self.selected.push(path.to_string());
+            if !self.selected.remove(path) {
+                self.selected.insert(path.to_string());
             }
             self.anchor = Some(path.to_string());
         } else {
-            self.selected = vec![path.to_string()];
+            self.selected = std::iter::once(path.to_string()).collect();
             self.anchor = Some(path.to_string());
         }
     }
@@ -621,11 +661,11 @@ impl Panel {
 
     /// `FP:1969-1976`: one item of any kind opens; several only when none is a folder.
     pub fn open_enabled(&self) -> bool {
-        let c = self.chosen();
-        match c.len() {
-            0 => false,
-            1 => true,
-            _ => c.iter().all(|f| !f.is_folder()),
+        let mut shown = self.visible().into_iter().filter(|f| self.is_selected(&f.absolute_path));
+        match (shown.next(), shown.next()) {
+            (None, _) => false,
+            (Some(_), None) => true,
+            (Some(first), Some(second)) => !first.is_folder() && !second.is_folder() && shown.all(|f| !f.is_folder()),
         }
     }
 
@@ -868,6 +908,31 @@ mod tests {
         let (g2, op2, _) = first(&p.answered(g, &op, &folder("/home/a", 1.0), 0));
         p.answered(g2, &op2, "[", 0);
         assert_eq!(p.error.as_deref(), Some(ssh_files::GARBAGE));
+    }
+
+    #[test]
+    fn big_listing_sorts_once_and_selects_fast() {
+        let items: Vec<String> = (0..100_000).map(|i| file(&format!("/home/a/F{}", (i * 7919) % 100_000), 1, 1.0)).collect();
+        let mut p = shown(&items);
+        assert_eq!(p.sorts.get(), 0);
+        let started = std::time::Instant::now();
+        for _ in 0..5 {
+            assert_eq!(p.visible().len(), 100_000);
+        }
+        p.click("/home/a/F0", false, false);
+        p.click("/home/a/F99999", false, true);
+        assert_eq!(p.chosen().len(), 100_000);
+        assert!(p.open_enabled());
+        // A layout pass: every row asks whether it is selected.
+        let rows = p.visible();
+        let n = rows.iter().filter(|f| p.is_selected(&f.absolute_path)).count();
+        assert_eq!(n, 100_000);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
+        assert_eq!(p.sorts.get(), 1, "one sort for an unchanged listing");
+        p.sort_by(Column::Size);
+        p.visible();
+        p.visible();
+        assert_eq!(p.sorts.get(), 2, "a new sort key sorts again, once");
     }
 
     #[test]

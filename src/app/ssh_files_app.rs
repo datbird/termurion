@@ -216,14 +216,15 @@ impl App {
         let (temp, url) = (temp.clone(), l.url());
         let (tx, rx) = std::sync::mpsc::channel();
         let wake = self.notify.clone();
+        let landed = dest.clone();
         std::thread::spawn(move || {
             // Last one wins in the batch folder: an earlier item of this name never merges in.
             let r = super::ssh_panel_app::clear_earlier(&dest).map_err(|e| e.to_string()).and_then(|()| local::unzip(&temp, &dest, &url));
             let _ = std::fs::remove_file(&temp);
-            let _ = tx.send((job, dest, r));
+            let _ = tx.send(r);
             wake();
         });
-        self.ssh_unzips.push(rx);
+        self.ssh_unzips.push(crate::ssh_transfer::UnzipWait { job, dest: landed, rx });
         true
     }
 
@@ -247,14 +248,7 @@ impl App {
         if self.ssh_unzips.is_empty() {
             return;
         }
-        let mut results = Vec::new();
-        self.ssh_unzips.retain(|rx| loop {
-            match rx.try_recv() {
-                Ok(r) => results.push(r),
-                Err(std::sync::mpsc::TryRecvError::Empty) => break true,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => break false,
-            }
-        });
+        let results = crate::ssh_transfer::drain_unzips(&mut self.ssh_unzips);
         for (job, dest, r) in results {
             let actions = self.ssh_transfers.unzipped(job, r);
             self.ssh_transfer_apply(actions);
@@ -555,16 +549,18 @@ impl App {
     /// conductor frames and its working directory is a POSIX path (or unknown), the request is
     /// built from the remote `PATH` and home, answered from the 5-second cache when it can, else
     /// sent high priority after canceling the queued older ones. False when the pane is not
-    /// framing (or reports a local path): the local listing runs. The caller has set `waiting`.
+    /// framing: the local listing runs (a framing pane with a drive-path folder gets none). The caller has set `waiting`.
     pub(super) fn ssh_composer_fetch(&mut self, pane: PaneId, generation: u64, line: &str, suffix: &str, name: &str, explicit: bool) -> bool {
         let Some(c) = self.framing(pane) else { return false };
         let reported = self.panes.get(&pane).and_then(|p| p.own().shell.cwd.clone());
-        let cwd = match reported {
-            None => None,
-            Some(d) => match crate::ssh_jumps::clean_directory(&d).filter(|d| d.starts_with('/')) {
-                Some(d) => Some(d),
-                None => return false,
-            },
+        let cwd = match crate::ssh_suggest::framed_cwd(reported.as_deref()) {
+            crate::ssh_suggest::FramedCwd::Unknown => None,
+            crate::ssh_suggest::FramedCwd::Posix(d) => Some(d),
+            // A drive path is no folder of the remote: answer empty, never list THIS PC's.
+            crate::ssh_suggest::FramedCwd::Refused => {
+                self.composer_found(pane, generation, Vec::new());
+                return true;
+            }
         };
         let inputs = crate::ssh_suggest::inputs(line, suffix, c.environment_variable("PATH"), cwd.as_deref(), c.home_directory.as_deref(), explicit);
         if let Some(values) = self.ssh_suggest_cache.entry(pane).or_default().get(&inputs, Instant::now()) {

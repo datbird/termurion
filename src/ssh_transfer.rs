@@ -557,8 +557,55 @@ impl Transfers {
     }
 }
 
+/// A folder unzip running on a worker thread: its job, the folder it lands in, and the channel
+/// it answers on once.
+pub struct UnzipWait {
+    pub job: JobId,
+    pub dest: std::path::PathBuf,
+    pub rx: std::sync::mpsc::Receiver<Result<(), String>>,
+}
+
+/// What a crashed worker's job is told.
+pub const UNZIP_CRASHED: &str = "Internal error";
+
+/// Takes the answers of the finished unzips out of `waits`. A worker that ended without
+/// answering (it crashed) answers `UNZIP_CRASHED` for its job, so the download slot and the
+/// folder it holds are released.
+pub fn drain_unzips(waits: &mut Vec<UnzipWait>) -> Vec<(JobId, std::path::PathBuf, Result<(), String>)> {
+    let mut out = Vec::new();
+    waits.retain(|w| match w.rx.try_recv() {
+        Ok(r) => {
+            out.push((w.job, w.dest.clone(), r));
+            false
+        }
+        Err(std::sync::mpsc::TryRecvError::Empty) => true,
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            out.push((w.job, w.dest.clone(), Err(UNZIP_CRASHED.to_string())));
+            false
+        }
+    });
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_crashed_unzip_worker_fails_its_job() {
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        let (tx2, rx2) = std::sync::mpsc::channel::<Result<(), String>>();
+        let (_keep, rx3) = std::sync::mpsc::channel::<Result<(), String>>();
+        let mut waits = vec![
+            super::UnzipWait { job: 1, dest: "a".into(), rx },
+            super::UnzipWait { job: 2, dest: "b".into(), rx: rx2 },
+            super::UnzipWait { job: 3, dest: "c".into(), rx: rx3 },
+        ];
+        drop(tx); // the worker panicked: its sender dropped without an answer
+        tx2.send(Ok(())).unwrap();
+        let done = super::drain_unzips(&mut waits);
+        assert_eq!(done, vec![(1, "a".into(), Err(super::UNZIP_CRASHED.to_string())), (2, "b".into(), Ok(()))]);
+        assert_eq!(waits.len(), 1, "a worker still running keeps waiting");
+    }
+
     use super::*;
     use crate::ssh_files::{Chunk, GARBAGE};
     use base64::Engine;
