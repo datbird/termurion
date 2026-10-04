@@ -31,7 +31,7 @@ pub(super) fn update_chat_in(store: &mut Store, id: &str, f: impl FnOnce(&mut Ch
 /// again. A chunk, an attached file or a commit (`Append`, `AppendAttachment`, `Commit`) names a
 /// stored message whose row the broker already changed, so `reload` reads that row again; a
 /// whole message replaces its old copy or joins the end; a removal drops.
-fn apply_update(msgs: &mut Vec<Message>, u: &crate::chat_broker::Update, reload: &dyn Fn(&str) -> Option<Message>) -> bool {
+pub(super) fn apply_update(msgs: &mut Vec<Message>, u: &crate::chat_broker::Update, reload: &dyn Fn(&str) -> Option<Message>) -> bool {
     use crate::chat_broker::Update;
     match u {
         Update::Delivery { message, .. } => match &message.content {
@@ -80,6 +80,17 @@ const ATTACH_FILES_ID: &str = "aichat:attach:files";
 const ATTACH_FOLDER_ID: &str = "aichat:attach:folder";
 /// Most paths one window gathers from a drop before the next pass asks about them.
 const DROPS_MAX: usize = 1000;
+/// The attach popup of a panel: `aichat:pattach:<files|folder>:<pane>`.
+pub(super) const PANEL_ATTACH_ID: &str = "aichat:pattach:";
+
+/// Which view of a chat an action is for: the AI Chat window, or the inline panel of a pane. The
+/// conversation and input code is one path for both; only where the text, the messages and the
+/// draft live differs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ChatView {
+    Window,
+    Panel(PaneId),
+}
 
 /// What a chord does in the chat window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -591,6 +602,7 @@ impl App {
     pub(super) fn chat_window_tick(&mut self) -> Option<Instant> {
         let mut changed = false;
         self.inline_sweep();
+        let copied_due = self.inline_tick();
         let dropped = self.chat_drops_flush();
         self.pick_tick();
         if let Some(sub) = self.chat_mint_sub {
@@ -614,6 +626,7 @@ impl App {
             }
         }
         let mut due = (!self.title_runs.is_empty()).then(|| Instant::now() + std::time::Duration::from_millis(250));
+        due = [due, copied_due].into_iter().flatten().min();
         if self.chat_window.is_some() {
             let (search_changed, search_due) = self.chat_search_tick();
             changed |= search_changed;
@@ -689,7 +702,14 @@ impl App {
     fn chat_convo_build(&mut self) {
         self.chat_convo_dirty = false;
         self.chat_find.dirty = true;
-        let typing = self.chat_shown.as_deref().is_some_and(|c| self.chat_broker.is_typing(c, Participant::Agent));
+        let chat = self.chat_shown.clone().unwrap_or_default();
+        self.chat_convo = std::sync::Arc::new(self.chat_convo_rows(&chat, &self.chat_msgs));
+    }
+
+    /// The rows of a chat's messages for either view: the window's and the panel's rows are made
+    /// here, by one path.
+    pub(super) fn chat_convo_rows(&self, chat: &str, msgs: &[Message]) -> Vec<crate::chat_window_ui::RowData> {
+        let typing = self.chat_broker.is_typing(chat, Participant::Agent);
         let local = |t: f64| crate::stamps::local(chat_view::epoch_secs(t));
         let now = crate::stamps::local(chat_view::epoch_secs(super::warnings_app::unix_now()));
         let day = |t: f64| {
@@ -698,10 +718,9 @@ impl App {
         };
         let label = |t: f64| chat_view::date_text(&local(t), &now);
         let time = |t: f64| crate::stamps::short_time(&local(t));
-        let chat = self.chat_shown.clone().unwrap_or_default();
-        let row = self.chat_db.as_ref().and_then(|db| db.chat(&chat).ok().flatten());
-        let for_message = |m: &Message, last: bool| self.chat_row_buttons(&chat, row.as_ref(), &self.chat_msgs, m, last);
-        self.chat_convo = std::sync::Arc::new(convo_rows(&self.chat_msgs, typing, &day, &label, &time, &for_message));
+        let row = self.chat_db.as_ref().and_then(|db| db.chat(chat).ok().flatten());
+        let for_message = |m: &Message, last: bool| self.chat_row_buttons(chat, row.as_ref(), msgs, m, last);
+        convo_rows(msgs, typing, &day, &label, &time, &for_message)
     }
 
     /// What the broker delivered for the shown chat, kept in `chat_msgs`. A chunk, an attached
@@ -720,9 +739,40 @@ impl App {
         self.chat_convo_dirty |= changed;
     }
 
-    /// A visible message of the shown chat.
-    fn chat_visible_message(&self, id: &str) -> Option<&Message> {
-        chat_view::visible(&self.chat_msgs).into_iter().find(|m| m.unique_id == id)
+    /// The chat a view shows: the window's shown chat, or the chat of a pane's shown panel.
+    pub(super) fn view_chat(&self, view: ChatView) -> Option<String> {
+        match view {
+            ChatView::Window => self.chat_shown.clone(),
+            ChatView::Panel(pane) => self.inline.get(&pane).filter(|s| s.binding.visible).and_then(|s| s.binding.chat.clone()),
+        }
+    }
+
+    /// The messages a view keeps.
+    pub(super) fn view_msgs(&self, view: ChatView) -> &[Message] {
+        match view {
+            ChatView::Window => &self.chat_msgs,
+            ChatView::Panel(pane) => self.inline.get(&pane).map_or(&[], |s| s.msgs.as_slice()),
+        }
+    }
+
+    /// The input a view keeps (its draft: text and pending attachments).
+    pub(super) fn view_draft(&self, view: ChatView) -> Option<&Draft> {
+        match view {
+            ChatView::Window => Some(&self.chat_input.draft),
+            ChatView::Panel(pane) => self.inline.get(&pane).map(|s| &s.draft),
+        }
+    }
+
+    pub(super) fn view_draft_mut(&mut self, view: ChatView) -> Option<&mut Draft> {
+        match view {
+            ChatView::Window => Some(&mut self.chat_input.draft),
+            ChatView::Panel(pane) => self.inline.get_mut(&pane).map(|s| &mut s.draft),
+        }
+    }
+
+    /// A visible message of a view's chat.
+    pub(super) fn chat_visible_message(&self, view: ChatView, id: &str) -> Option<&Message> {
+        chat_view::visible(self.view_msgs(view)).into_iter().find(|m| m.unique_id == id)
     }
 
     /// The message menu at `at` (screen pixels), built from `chat_view::message_menu`; its picks
@@ -730,10 +780,10 @@ impl App {
     fn chat_message_menu(&mut self, at: (f32, f32), id: String) {
         use muda::ContextMenu;
         let Some(hwnd) = self.chat_window.as_ref().and_then(|w| w.hwnd()) else { return };
-        let Some(editable) = self.chat_visible_message(&id).map(chat_view::editable) else { return };
+        let Some(editable) = self.chat_visible_message(ChatView::Window, &id).map(chat_view::editable) else { return };
         let menu = muda::Menu::new();
         for title in chat_view::message_menu(editable) {
-            let item = muda::MenuItem::with_id(format!("{}{}:{id}", chat_view::MENU_PREFIX, title.to_lowercase()), title, true, None);
+            let item = muda::MenuItem::with_id(chat_view::menu_id(&title.to_lowercase(), None, &id), title, true, None);
             if let Err(e) = menu.append(&item) {
                 self.banners.set("menu", format!("Chat menu: {e}"));
                 return;
@@ -746,22 +796,21 @@ impl App {
     }
 
     /// A pick from the message menu. False for other menu ids.
-    pub(super) fn chat_message_picked(&mut self, menu_id: &str) -> bool {
-        let Some(rest) = menu_id.strip_prefix(chat_view::MENU_PREFIX) else { return false };
-        let Some((verb, id)) = rest.split_once(':') else { return true };
-        let id = id.to_string();
+    pub(super) fn chat_message_picked(&mut self, menu_id: &str, event_loop: &ActiveEventLoop) -> bool {
+        let Some((verb, pane, id)) = chat_view::parse_menu_id(menu_id) else { return menu_id.starts_with(chat_view::MENU_PREFIX) };
+        let view = pane.map_or(ChatView::Window, ChatView::Panel);
         match verb {
-            "edit" => self.chat_edit(&id),
-            "copy" => self.chat_copy_message(&id),
-            "fork" => self.chat_fork(&id),
-            "delete" => self.chat_delete_from(&id),
+            "edit" => self.chat_edit(view, id),
+            "copy" => self.chat_copy_message(view, id),
+            "fork" => self.chat_fork(view, id, event_loop),
+            "delete" => self.chat_delete_from(view, id),
             _ => {}
         }
         true
     }
 
     /// Text on the clipboard.
-    fn chat_copy(&mut self, text: String) {
+    pub(super) fn chat_copy(&mut self, text: String) {
         if let Some(cb) = &mut self.clipboard {
             if let Err(e) = cb.set_text(text) {
                 self.banners.set("clipboard", format!("Copy failed: {e}"));
@@ -770,16 +819,16 @@ impl App {
     }
 
     /// Copy in the message menu: the rendered text (`Doc::plain` for markdown).
-    fn chat_copy_message(&mut self, id: &str) {
-        let Some(text) = self.chat_visible_message(id).map(|m| chat_view::copy_text(&chat_view::body(&m.content))) else { return };
+    pub(super) fn chat_copy_message(&mut self, view: ChatView, id: &str) {
+        let Some(text) = self.chat_visible_message(view, id).map(|m| chat_view::copy_text(&chat_view::body(&m.content))) else { return };
         self.chat_copy(text);
     }
 
     /// The chat's ids from this message on (`messageIDs(fromIndex:)`), and the person's text when
     /// it is one of theirs.
-    fn chat_from_message(&self, id: &str) -> Option<(String, Vec<String>, Option<String>)> {
-        let chat = self.chat_shown.clone()?;
-        let visible = chat_view::visible(&self.chat_msgs);
+    fn chat_from_message(&self, view: ChatView, id: &str) -> Option<(String, Vec<String>, Option<String>)> {
+        let chat = self.view_chat(view)?;
+        let visible = chat_view::visible(self.view_msgs(view));
         let m = visible.iter().find(|m| m.unique_id == id)?;
         let text = match (&m.content, chat_view::editable(m)) {
             (Content::PlainText { text, .. }, true) => Some(text.clone()),
@@ -790,15 +839,18 @@ impl App {
 
     /// Edit (`CVC:1555-1571`): this message and every later one are removed through the broker
     /// and the text goes back to the input.
-    fn chat_edit(&mut self, id: &str) {
-        let Some((chat, ids, Some(text))) = self.chat_from_message(id) else { return };
+    pub(super) fn chat_edit(&mut self, view: ChatView, id: &str) {
+        let Some((chat, ids, Some(text))) = self.chat_from_message(view, id) else { return };
         self.chat_remove(&chat, &ids);
-        self.set_input(&chat, &text);
+        match view {
+            ChatView::Window => self.set_input(&chat, &text),
+            ChatView::Panel(pane) => self.inline_set_input(pane, &text),
+        }
     }
 
     /// Delete (`CVC:1573-1584`): the same truncation, without the input.
-    fn chat_delete_from(&mut self, id: &str) {
-        let Some((chat, ids, _)) = self.chat_from_message(id) else { return };
+    pub(super) fn chat_delete_from(&mut self, view: ChatView, id: &str) {
+        let Some((chat, ids, _)) = self.chat_from_message(view, id) else { return };
         self.chat_remove(&chat, &ids);
     }
 
@@ -824,8 +876,8 @@ impl App {
     /// each cloned with a fresh id), the source's terminal, browser, permissions and icon, and
     /// copies of its blobs for the retained rounds linked to the clones (ruling F5); the new
     /// chat shows and the chosen message is staged in its input.
-    fn chat_fork(&mut self, id: &str) {
-        let Some(source_id) = self.chat_shown.clone() else { return };
+    pub(super) fn chat_fork(&mut self, view: ChatView, id: &str, event_loop: &ActiveEventLoop) {
+        let Some(source_id) = self.view_chat(view) else { return };
         let Some(db) = self.chat_db.as_ref() else { return };
         let (Ok(Some(source)), Ok(all)) = (db.chat(&source_id), db.messages(&source_id)) else { return };
         let Some(index) = all.iter().position(|m| m.unique_id == id) else { return };
@@ -847,6 +899,11 @@ impl App {
             if let Err(e) = fork_blobs(db, &source_id, &fork, retained, &ids) {
                 crate::ai_wire_log::console(verbose, &format!("fork: the blobs could not be copied: {e}"));
             }
+        }
+        // The panel hosts one chat per session, so a fork from it shows in the window
+        // (`CVC:3858-3864`); the window shows it in place.
+        if view != ChatView::Window && !self.chat_window_enter(event_loop) {
+            return;
         }
         self.show_chat(Some(fork.clone()));
         if let Content::PlainText { text, .. } = &all[index].content {
@@ -1019,9 +1076,9 @@ impl App {
             ChatEvent::ListMenu { at, ids } => self.chat_list_menu(at, ids),
             ChatEvent::MessageMenu { at, id } => self.chat_message_menu(at, id),
             ChatEvent::CopyText(text) => self.chat_copy(text),
-            ChatEvent::Edit(id) => self.chat_edit(&id),
-            ChatEvent::DeleteMessage(id) => self.chat_delete_from(&id),
-            ChatEvent::Fork(id) => self.chat_fork(&id),
+            ChatEvent::Edit(id) => self.chat_edit(ChatView::Window, &id),
+            ChatEvent::DeleteMessage(id) => self.chat_delete_from(ChatView::Window, &id),
+            ChatEvent::Fork(id) => self.chat_fork(ChatView::Window, &id, event_loop),
             ChatEvent::OpenUrl(url) => self.chat_open_url(&url),
             ChatEvent::OpenFile(r) => self.chat_file(&r, true),
             ChatEvent::RevealFile(r) => self.chat_file(&r, false),
@@ -1046,8 +1103,8 @@ impl App {
                     self.chat_find_open(Some(text.to_string()));
                 }
             }
-            ChatEvent::Send => self.send_input(),
-            ChatEvent::Stop => self.stop_chat(),
+            ChatEvent::Send => self.send_input_for(ChatView::Window),
+            ChatEvent::Stop => self.stop_chat_for(ChatView::Window),
             ChatEvent::Attach(at) => self.chat_attach_menu(at),
             ChatEvent::RemoveAttachment(i) => {
                 self.chat_input.remove_attachment(i);
@@ -1098,13 +1155,14 @@ impl App {
         name.and_then(|n| crate::ai_model::named(&n, &self.globals, catalog, &found)).or_else(|| crate::ai_model::configured(&self.globals, catalog, &found))
     }
 
-    /// Send (`sendButtonClicked`, `CVC:2269-2388`): the text and the pending files become one
-    /// user message published to the chat; the agent adds the terminal state itself. Nothing
-    /// goes while the agent types (the button is Stop then) or for whitespace-only text; the
-    /// input clears only when the message was published.
-    pub(super) fn send_input(&mut self) {
-        let Some(chat) = self.chat_shown.clone() else { return };
-        if self.chat_broker.is_typing(&chat, Participant::Agent) || !chat_input::send_enabled(&self.chat_input.draft.text, false, false) {
+    /// Send (`sendButtonClicked`, `CVC:2269-2388`): the text and the pending files of a view's input
+    /// become one user message published to its chat; the agent adds the terminal state itself.
+    /// Nothing goes while the agent types (the button is Stop then) or for whitespace-only text;
+    /// the input clears only when the message was published.
+    pub(super) fn send_input_for(&mut self, view: ChatView) {
+        let Some(chat) = self.view_chat(view) else { return };
+        let Some(draft) = self.view_draft(view).cloned() else { return };
+        if self.chat_broker.is_typing(&chat, Participant::Agent) || !chat_input::send_enabled(&draft.text, false, false) {
             return;
         }
         let model = self.chat_input_model(&chat);
@@ -1113,7 +1171,6 @@ impl App {
         let read = |p: &std::path::Path| chat_input::read_capped(p, chat_input::FILE_BYTES_MAX, &budget, chat_input::TOTAL_BYTES_MAX);
         let list = |p: &std::path::Path| chat_input::list_folder(p, &accepts, chat_input::FOLDER_FILES_MAX);
         let mime = |n: &str| crate::ai_files::upload_mime(n).to_string();
-        let draft = self.chat_input.draft.clone();
         let (parts, skipped) = chat_input::attachments(&draft.pending, &read, &list, &mime);
         let vector_store = self.chat_db.as_ref().and_then(|db| db.chat(&chat).ok().flatten()).and_then(|c| c.vector_store);
         let Some(content) = chat_input::message_content(&draft.text, parts, vector_store) else { return };
@@ -1121,7 +1178,10 @@ impl App {
         // The store and the window are not held across the publish: it may deliver at once.
         match self.chat_publish(&chat, m, false) {
             Ok(()) => {
-                self.chat_input.sent();
+                match view {
+                    ChatView::Window => self.chat_input.sent(),
+                    ChatView::Panel(pane) => self.inline_sent(pane),
+                }
                 if !skipped.is_empty() {
                     self.notice(&chat, &chat_input::skipped_notice(&skipped));
                 }
@@ -1133,8 +1193,8 @@ impl App {
 
     /// Stop (`stopButtonClicked`, `CVC:2256-2267`): 12c's `chat_stop` for the shown chat. Not the
     /// streaming bubble's Stop.
-    pub(super) fn stop_chat(&mut self) {
-        if let Some(chat) = self.chat_shown.clone() {
+    pub(super) fn stop_chat_for(&mut self, view: ChatView) {
+        if let Some(chat) = self.view_chat(view) {
             self.chat_stop(&chat);
         }
     }
@@ -1158,8 +1218,8 @@ impl App {
 
     /// Paths chosen in a dialog: the ones the model takes wait for the next send, the others
     /// are named in an alert (`addFiles`, `IN:532-560`).
-    fn chat_attach(&mut self, paths: &[PathBuf]) {
-        let Some(chat) = self.chat_shown.clone() else { return };
+    pub(super) fn chat_attach(&mut self, view: ChatView, paths: &[PathBuf]) {
+        let Some(chat) = self.view_chat(view) else { return };
         let model = self.chat_input_model(&chat);
         let accepts = |name: &str| model.as_ref().is_some_and(|m| crate::ai_model::accepts(m, crate::ai_files::upload_mime(name)));
         let (ok, no) = chat_input::split_by_model(paths, &chat_input::links_to_network, &|p| p.is_dir(), &accepts);
@@ -1168,7 +1228,9 @@ impl App {
             let provider = model.as_ref().map(|m| crate::ai_model::display_name(m));
             self.ask_ai(chat_input::rejected_alert(&names, provider));
         }
-        chat_input::add_paths(&mut self.chat_input.draft.pending, &ok);
+        if let Some(d) = self.view_draft_mut(view) {
+            chat_input::add_paths(&mut d.pending, &ok);
+        }
         self.chat_window_refresh();
     }
 
@@ -1250,17 +1312,17 @@ impl App {
             }
             ATTACH_FILES_ID => {
                 if let Some(paths) = rfd::FileDialog::new().pick_files() {
-                    self.chat_attach(&paths);
+                    self.chat_attach(ChatView::Window, &paths);
                 }
                 true
             }
             ATTACH_FOLDER_ID => {
                 if let Some(paths) = rfd::FileDialog::new().pick_folders() {
-                    self.chat_attach(&paths);
+                    self.chat_attach(ChatView::Window, &paths);
                 }
                 true
             }
-            _ => self.chat_message_picked(id),
+            _ => self.chat_message_picked(id, event_loop),
         }
     }
 

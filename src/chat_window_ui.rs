@@ -903,7 +903,7 @@ fn button_look(row: &RowData, pressed: &std::collections::HashSet<String>, b: &B
 
 /// Whether a press leaves the row's buttons live: the permissions bubble is tapped again and
 /// again (`CVC:2770-2778`); every other bubble greys at once.
-fn stays_live(row: &RowData) -> bool {
+pub fn stays_live(row: &RowData) -> bool {
     !row.buttons.is_empty() && row.buttons.iter().all(|b| crate::ai_permissions::Category::parse(&b.id).is_some())
 }
 

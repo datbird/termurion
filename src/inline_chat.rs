@@ -251,6 +251,116 @@ pub fn switch_groups(items: Vec<SwitchItem>) -> (Vec<SwitchItem>, Vec<SwitchItem
     items.into_iter().partition(|i| i.bold)
 }
 
+/// Side margin of a row, padding inside a bubble, the gap between rows and the list's own
+/// padding, in points (`MCV:58-60`, `RegularMessageCellView.swift:43-57`).
+pub const SIDE: f32 = 8.0;
+pub const BUBBLE_PAD_X: f32 = 10.0;
+pub const BUBBLE_PAD_Y: f32 = 6.0;
+pub const ROW_GAP: f32 = 6.0;
+pub const LIST_PAD: f32 = 6.0;
+pub const BUTTON_H: f32 = 30.0;
+/// The input's outer margin, its vertical padding and the most lines it grows to before it
+/// scrolls (Decision).
+pub const INPUT_MARGIN: f32 = 8.0;
+pub const INPUT_PAD_V: f32 = 6.0;
+pub const INPUT_LINES_MAX: usize = 6;
+
+/// Where one conversation row sits, from the list's top left (`x` from the panel's left edge, `y`
+/// from the content's top): its bubble (zero width for a date or the typing row), its text, its
+/// buttons stacked under the text across the bubble, and whose it is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowBox {
+    pub item: usize,
+    pub bubble: Rect,
+    pub text: Rect,
+    pub buttons: Vec<Rect>,
+    pub user: bool,
+}
+
+/// The width a bubble holds at most: 70 percent of the panel (`MCV:58-60`).
+fn bubble_max(panel_w: f32) -> f32 {
+    panel_w * crate::chat_view::MAX_BUBBLE
+}
+
+/// The width text wraps at inside a bubble: 70 percent of the panel less the bubble's padding.
+pub fn text_width(panel_w: f32, scale: f32) -> f32 {
+    (bubble_max(panel_w) - 2.0 * BUBBLE_PAD_X * scale).max(20.0 * scale)
+}
+
+/// The boxes of the rows and the content's height. `rows` are (the person's, the text's height at
+/// `text_width`, its natural width, the number of buttons, a date or the typing row). A date or
+/// the typing row has no bubble and sits centered (the single flag of the brief; the typing dots
+/// are centered as well, Decision).
+pub fn row_boxes(rows: &[(bool, f32, f32, usize, bool)], panel_w: f32, scale: f32) -> (Vec<RowBox>, f32) {
+    if rows.is_empty() {
+        return (Vec::new(), 0.0);
+    }
+    let (side, pad_x, pad_y, gap, button_h) = (SIDE * scale, BUBBLE_PAD_X * scale, BUBBLE_PAD_Y * scale, ROW_GAP * scale, BUTTON_H * scale);
+    let (mut y, mut out) = (LIST_PAD * scale, Vec::with_capacity(rows.len()));
+    for (item, &(user, text_h, natural_w, buttons, marker)) in rows.iter().enumerate() {
+        if marker {
+            let w = natural_w.min(panel_w - 2.0 * side).max(0.0);
+            let text = Rect { x: (panel_w - w) / 2.0, y, w, h: text_h };
+            out.push(RowBox { item, bubble: Rect { x: text.x, y, w: 0.0, h: 0.0 }, text, buttons: Vec::new(), user });
+            y += text_h + gap;
+            continue;
+        }
+        let text_w = natural_w.min(text_width(panel_w, scale)).max(0.0);
+        let bubble_w = if buttons > 0 { bubble_max(panel_w) } else { text_w + 2.0 * pad_x };
+        let x = if user { panel_w - side - bubble_w } else { side };
+        let bubble_h = pad_y + text_h + pad_y + buttons as f32 * button_h;
+        let text = Rect { x: x + pad_x, y: y + pad_y, w: text_w, h: text_h };
+        let first = text.y + text_h + pad_y;
+        let buttons = (0..buttons).map(|i| Rect { x, y: first + i as f32 * button_h, w: bubble_w, h: button_h }).collect();
+        out.push(RowBox { item, bubble: Rect { x, y, w: bubble_w, h: bubble_h }, text, buttons, user });
+        y += bubble_h + gap;
+    }
+    (out, y - gap + LIST_PAD * scale)
+}
+
+/// The scroll after the content or the view changed: pinned to the bottom until the person
+/// scrolls up, else kept inside the content.
+pub fn scroll_after(scroll: f32, content_h: f32, view_h: f32, pinned: bool) -> f32 {
+    let max = (content_h - view_h).max(0.0);
+    if pinned { max } else { scroll.clamp(0.0, max) }
+}
+
+/// The input box at the panel's bottom: it grows with its lines, up to six.
+pub fn input_rect(panel: Rect, lines: usize, line_h: f32, scale: f32) -> Rect {
+    let (margin, pad) = (INPUT_MARGIN * scale, INPUT_PAD_V * scale);
+    let h = lines.clamp(1, INPUT_LINES_MAX) as f32 * line_h + 2.0 * pad;
+    Rect { x: panel.x + margin, y: panel.y + panel.h - margin - h, w: (panel.w - 2.0 * margin).max(0.0), h }
+}
+
+/// The parts of the input box: the attach glyph at its left, the send or stop glyph at its right
+/// (both at the bottom, so they stay put while the box grows upward) and the text between.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InputParts {
+    pub attach: Rect,
+    pub text: Rect,
+    pub send: Rect,
+}
+
+pub fn input_parts(input: Rect, scale: f32) -> InputParts {
+    let (pad, inset) = (INPUT_PAD_V * scale, 4.0 * scale);
+    let g = (24.0 * scale).min((input.h - 2.0).max(1.0));
+    let y = input.y + input.h - g - ((input.h - g) / 2.0).min(3.0 * scale);
+    let attach = Rect { x: input.x + inset, y, w: g, h: g };
+    let send = Rect { x: input.x + input.w - inset - g, y, w: g, h: g };
+    let left = attach.x + g + inset;
+    InputParts { attach, text: Rect { x: left, y: input.y + pad, w: (send.x - inset - left).max(0.0), h: (input.h - 2.0 * pad).max(0.0) }, send }
+}
+
+/// What Enter does in the panel's input: Task 7's rules over the panel's own draft.
+pub fn panel_enter(draft: &crate::chat_input::Draft, shift: bool, typing: bool) -> crate::chat_input::Enter {
+    crate::chat_input::on_enter(shift, crate::chat_input::send_enabled(&draft.text, false, false), typing)
+}
+
+/// The send or stop glyph and whether it can be pressed (`IN:394-411`).
+pub fn send_state(draft: &crate::chat_input::Draft, loading: bool, typing: bool) -> (char, bool) {
+    (if typing { crate::chat_input::STOP_GLYPH } else { crate::chat_input::SEND_GLYPH }, crate::chat_input::send_enabled(&draft.text, loading, typing))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,5 +506,97 @@ mod tests {
         assert_eq!(TITLE, "AI Chat");
         assert!(TMUX_REFUSED.starts_with("The inline chat is not shown in tmux panes"));
         assert!(!TMUX_REFUSED.contains('\u{2014}'));
+    }
+
+    fn box_top(b: &RowBox) -> f32 {
+        if b.bubble.w > 0.0 { b.bubble.y } else { b.text.y }
+    }
+
+    fn box_bottom(b: &RowBox) -> f32 {
+        if b.bubble.w > 0.0 { b.bubble.y + b.bubble.h } else { b.text.y + b.text.h }
+    }
+
+    #[test]
+    fn panel_layout_follows_iterm2() {
+        // user 100 x 20; agent 500 wide, 60 high; agent with 4 buttons; a date; the typing row.
+        let rows = [(true, 20.0, 100.0, 0, false), (false, 60.0, 500.0, 0, false), (false, 40.0, 150.0, 4, false), (false, 14.0, 60.0, 0, true), (false, 18.0, 30.0, 0, true)];
+        let (boxes, content) = row_boxes(&rows, 400.0, 1.0);
+        assert_eq!(boxes.len(), 5);
+        let user = &boxes[0];
+        assert!(user.user && user.bubble.w <= 280.0 && user.bubble.w == 100.0 + 2.0 * BUBBLE_PAD_X, "{user:?}");
+        assert_eq!(user.bubble.x + user.bubble.w, 400.0 - SIDE, "the person's bubble is right-aligned");
+        assert_eq!((user.text.w, user.text.h), (100.0, 20.0));
+        assert_eq!((user.text.x, user.text.y), (user.bubble.x + BUBBLE_PAD_X, user.bubble.y + BUBBLE_PAD_Y));
+        assert_eq!(user.bubble.h, 20.0 + 2.0 * BUBBLE_PAD_Y);
+        let agent = &boxes[1];
+        assert!(!agent.user);
+        assert_eq!((agent.bubble.x, agent.bubble.w), (SIDE, 280.0), "at most 70 percent of the panel");
+        assert_eq!(text_width(400.0, 1.0), 280.0 - 2.0 * BUBBLE_PAD_X);
+        assert_eq!(agent.text.w, text_width(400.0, 1.0), "wrapped at the text width");
+        let b = &boxes[2];
+        assert_eq!(b.buttons.len(), 4);
+        for (i, r) in b.buttons.iter().enumerate() {
+            assert_eq!((r.x, r.w, r.h), (b.bubble.x, b.bubble.w, BUTTON_H), "a full-bubble-width row of 30 points");
+            assert_eq!(r.y, b.text.y + b.text.h + BUBBLE_PAD_Y + i as f32 * BUTTON_H);
+        }
+        assert_eq!(b.bubble.h, BUBBLE_PAD_Y + 40.0 + BUBBLE_PAD_Y + 4.0 * BUTTON_H);
+        assert_eq!(b.bubble.w, 280.0, "a bubble with buttons takes its full width");
+        let date = &boxes[3];
+        assert_eq!(date.bubble.w, 0.0, "a date row has no bubble");
+        assert_eq!(date.text.x + date.text.w / 2.0, 200.0, "and is centered");
+        let typing = &boxes[4];
+        assert_eq!((typing.bubble.w, typing.text.x + typing.text.w / 2.0), (0.0, 200.0));
+        // The content is the rows, the gaps between them, and the list's padding at both ends.
+        assert_eq!(box_top(&boxes[0]), LIST_PAD);
+        for pair in boxes.windows(2) {
+            assert_eq!(box_top(&pair[1]) - box_bottom(&pair[0]), ROW_GAP);
+        }
+        assert_eq!(content, box_bottom(&boxes[4]) + LIST_PAD);
+        // Scaled: every length doubles, and an empty list has no height.
+        let (twice, content2) = row_boxes(&[(true, 40.0, 200.0, 0, false)], 800.0, 2.0);
+        assert_eq!((twice[0].bubble.w, twice[0].bubble.x + twice[0].bubble.w), (200.0 + 4.0 * BUBBLE_PAD_X, 800.0 - 2.0 * SIDE));
+        assert_eq!(content2, 2.0 * (2.0 * LIST_PAD) + twice[0].bubble.h);
+        assert_eq!(row_boxes(&[], 400.0, 1.0), (vec![], 0.0));
+        // Scrolling: pinned to the bottom until the person scrolls up; never past the ends.
+        assert_eq!(scroll_after(0.0, 1000.0, 300.0, true), 700.0);
+        assert_eq!(scroll_after(200.0, 1000.0, 300.0, false), 200.0);
+        assert_eq!(scroll_after(900.0, 500.0, 300.0, false), 200.0);
+        assert_eq!(scroll_after(50.0, 200.0, 300.0, true), 0.0);
+        assert_eq!(scroll_after(-5.0, 1000.0, 300.0, false), 0.0);
+    }
+
+    #[test]
+    fn panel_input_follows_iterm2() {
+        use crate::chat_input::{Draft, Enter, SEND_GLYPH, STOP_GLYPH};
+        let panel = r(10.0, 20.0, 400.0, 600.0);
+        let one = input_rect(panel, 1, 18.0, 1.0);
+        assert_eq!(one.h, 18.0 + 2.0 * INPUT_PAD_V, "one line and its padding");
+        assert_eq!(one.y + one.h, 20.0 + 600.0 - INPUT_MARGIN, "at the panel's bottom");
+        assert_eq!((one.x, one.w), (10.0 + INPUT_MARGIN, 400.0 - 2.0 * INPUT_MARGIN));
+        assert_eq!(input_rect(panel, 3, 18.0, 1.0).h, 54.0 + 2.0 * INPUT_PAD_V, "three lines");
+        let ten = input_rect(panel, 10, 18.0, 1.0);
+        assert_eq!(ten.h, 6.0 * 18.0 + 2.0 * INPUT_PAD_V, "capped at six lines");
+        assert_eq!(ten.y + ten.h, one.y + one.h, "growing upward");
+        assert_eq!(input_rect(panel, 0, 18.0, 1.0), one, "an empty field is one line");
+        assert_eq!(input_rect(panel, 1, 36.0, 2.0).h, 2.0 * one.h);
+        // The glyphs sit in the box's bottom corners and the text between them.
+        let parts = input_parts(ten, 1.0);
+        assert!(parts.attach.x >= ten.x && parts.attach.y + parts.attach.h <= ten.y + ten.h && parts.send.x + parts.send.w <= ten.x + ten.w);
+        assert_eq!(parts.attach.y, parts.send.y);
+        assert!(parts.attach.x + parts.attach.w <= parts.text.x && parts.text.x + parts.text.w <= parts.send.x, "{parts:?}");
+        assert_eq!((parts.text.y, parts.text.h), (ten.y + INPUT_PAD_V, 6.0 * 18.0));
+        assert_eq!(input_parts(input_rect(panel, 1, 18.0, 1.0), 1.0).text.w, parts.text.w, "the text's width does not depend on the lines");
+        // Enter and the send glyph are Task 7's rules over the panel's draft.
+        let typed = Draft { text: "hello".into(), pending: vec![] };
+        let blank = Draft { text: " \n ".into(), pending: vec![] };
+        assert_eq!(panel_enter(&typed, false, false), Enter::Send);
+        assert_eq!(panel_enter(&typed, false, true), Enter::StopThenSend);
+        assert_eq!(panel_enter(&typed, true, false), Enter::Newline);
+        assert_eq!(panel_enter(&blank, false, false), Enter::Nothing, "whitespace never sends");
+        assert_eq!(panel_enter(&blank, false, true), Enter::Stop);
+        assert_eq!(send_state(&typed, false, false), (SEND_GLYPH, true));
+        assert_eq!(send_state(&blank, false, false), (SEND_GLYPH, false));
+        assert_eq!(send_state(&typed, true, false), (SEND_GLYPH, false), "an attachment still loading blocks it");
+        assert_eq!(send_state(&blank, false, true), (STOP_GLYPH, true), "a typing agent: Stop is always enabled");
     }
 }

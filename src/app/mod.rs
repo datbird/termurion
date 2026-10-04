@@ -3355,7 +3355,7 @@ impl App {
             self.note_win = None;
         }
         self.clips.remove(&id);
-        self.inline.remove(&id);
+        self.inline_drop(id);
         if self.add_clip_win.as_ref().is_some_and(|(_, p)| *p == id) {
             self.add_clip_win = None;
         }
@@ -3709,7 +3709,7 @@ impl App {
         self.blink_on = true;
         self.last_blink = Instant::now();
         self.banners.clear("action");
-        if self.picker_key(ev) || self.clip_key(ev) || self.shortcut_key(ev) || self.find_key(ev) || self.copy_mode_key(ev) || self.completion_key(ev) {
+        if self.picker_key(ev) || self.inline_key(ev) || self.clip_key(ev) || self.shortcut_key(ev) || self.find_key(ev) || self.copy_mode_key(ev) || self.completion_key(ev) {
             return;
         }
         let base = keystroke::key_of(&ev.key_without_modifiers(), None);
@@ -4205,7 +4205,7 @@ impl App {
             MouseScrollDelta::LineDelta(x, y) => (x * WHEEL_LINES, y * WHEEL_LINES),
             MouseScrollDelta::PixelDelta(p) => (p.x as f32 / cw, p.y as f32 / ch),
         };
-        if self.tab_bar_wheel(delta) || self.composer_wheel(dy) || self.toolbelt_wheel(dy) || self.clip_wheel(dy) || self.porthole_wheel(dx, dy) {
+        if self.tab_bar_wheel(delta) || self.composer_wheel(dy) || self.toolbelt_wheel(dy) || self.inline_wheel(dy) || self.clip_wheel(dy) || self.porthole_wheel(dx, dy) {
             return;
         }
         self.wheel_acc += dy;
@@ -4328,6 +4328,7 @@ impl App {
         let mut inline_hits = Vec::new();
         self.prepare_portholes();
         self.prepare_badges();
+        self.prepare_inline_chats();
         let mut porthole_hits = Vec::new();
         let bview = self.broadcast_view();
         let stripes = self.globals.bool("Use background pattern indicator").then(|| self.stripe_tile());

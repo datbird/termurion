@@ -76,8 +76,29 @@ pub const ATTACHMENTS_DIR: &str = "TandemChatAttachments";
 pub const CODE_FILE: &str = "code.txt";
 pub const REVEAL_TITLE: &str = "Reveal in Explorer";
 pub const OPEN_TITLE: &str = "Open";
-/// The message menu's ids are `MENU_PREFIX<verb>:<message id>`.
+/// The message menu's ids are `MENU_PREFIX<verb>:<message id>`; a panel's carry its pane after
+/// the verb, `MENU_PREFIX<verb>@<pane>:<message id>`.
 pub const MENU_PREFIX: &str = "aichat:msg:";
+
+/// A message menu item's id for the window (`pane` None) or a pane's panel.
+pub fn menu_id(verb: &str, pane: Option<u64>, message: &str) -> String {
+    match pane {
+        None => format!("{MENU_PREFIX}{verb}:{message}"),
+        Some(p) => format!("{MENU_PREFIX}{verb}@{p}:{message}"),
+    }
+}
+
+/// (verb, pane, message id) of a menu id; None for any other id or one with no message.
+pub fn parse_menu_id(id: &str) -> Option<(&str, Option<u64>, &str)> {
+    let (head, message) = id.strip_prefix(MENU_PREFIX)?.split_once(':')?;
+    if message.is_empty() {
+        return None;
+    }
+    match head.split_once('@') {
+        None => Some((head, None, message)),
+        Some((verb, pane)) => Some((verb, Some(pane.parse().ok()?), message)),
+    }
+}
 
 /// The messages the conversation shows: hidden ones and requests already answered left out
 /// (`CVCM:140-170`); the two append kinds never reach a model of the conversation.
@@ -335,6 +356,36 @@ pub fn message_menu(editable: bool) -> Vec<&'static str> {
     } else {
         vec!["Copy"]
     }
+}
+
+/// A body as one document for the inline panel, which draws from the same models as the window
+/// (the window's egui drawing and this one never differ in what a body says): markdown through
+/// `porthole::render`, plain text and a command as one block each, a code attachment under its
+/// "Code Interpreter" title, a status line and a file in `muted`. `palette.fg` is the text color.
+pub fn body_doc(body: &Body, palette: &crate::palette::Palette, muted: crate::palette::Rgb, dark: bool) -> Doc {
+    use crate::porthole::{detect::Language, render::{self, Face, Run}};
+    let run = |text: &str, color: crate::palette::Rgb, face: Face, bold: bool| Run { text: text.to_string(), color, bold, italic: false, underline: false, face, link: None };
+    let block = |runs: Vec<Run>, code_bg: bool| Block { runs, scale: 1.0, indent: 0.0, code_bg, rule: false };
+    let mut blocks = Vec::new();
+    match body {
+        Body::Markdown(md) => blocks.extend(render::render(md, &Language::Markdown, palette, dark).blocks),
+        Body::Plain(t) => blocks.push(block(vec![run(t, palette.fg, Face::Prose, false)], false)),
+        Body::Command { command, .. } => blocks.push(block(vec![run(command, palette.fg, Face::Code, false)], false)),
+        Body::Parts(parts) => {
+            for part in parts {
+                match part {
+                    Part::Text(b) => blocks.extend(body_doc(b, palette, muted, dark).blocks),
+                    Part::Status(md) => blocks.extend(render::render(md, &Language::Markdown, &crate::palette::Palette { fg: muted, ..palette.clone() }, dark).blocks),
+                    Part::Code(code) => {
+                        blocks.push(block(vec![run(CODE_INTERPRETER, muted, Face::Prose, true)], false));
+                        blocks.extend(code.lines().map(|l| block(vec![run(l, palette.fg, Face::Code, false)], true)));
+                    }
+                    Part::File { name, .. } | Part::RemoteFile { name } => blocks.push(block(vec![run(name, muted, Face::Prose, false)], false)),
+                }
+            }
+        }
+    }
+    Doc { blocks }
 }
 
 /// A run of code blocks Copy takes as one: block indexes into the `Doc`, both included.
@@ -980,5 +1031,52 @@ mod tests {
         let file = |n: &str| Body::Parts(vec![Part::File { id: "i".into(), name: n.into() }]);
         assert_ne!(key("a", file("a.txt")), key("a", file("b.txt")));
         assert_ne!(key("a", Body::Command { command: "ls".into(), url: "u".into() }), key("a", Body::Command { command: "ls".into(), url: "v".into() }));
+    }
+
+    #[test]
+    fn panel_bodies_render_as_one_document() {
+        use crate::palette::{rgb, Palette};
+        use crate::porthole::render::Face;
+        let (palette, muted) = (Palette { fg: rgb(10, 20, 30), ..Palette::default() }, rgb(1, 2, 3));
+        let text = |d: &Doc| d.blocks.iter().map(|b| b.runs.iter().map(|r| r.text.as_str()).collect::<String>()).collect::<Vec<_>>();
+        let md = body_doc(&Body::Markdown("# Head\n\nSome `code` here.\n\n```\nlet x = 1;\n```".into()), &palette, muted, true);
+        assert!(text(&md).iter().any(|t| t == "Head") && md.blocks.iter().any(|b| b.code_bg), "{:?}", text(&md));
+        let plain = body_doc(&Body::Plain("hello there".into()), &palette, muted, true);
+        assert_eq!(text(&plain), ["hello there"]);
+        assert_eq!(plain.blocks[0].runs[0].color, rgb(10, 20, 30));
+        let cmd = body_doc(&Body::Command { command: "ls -l".into(), url: "u".into() }, &palette, muted, true);
+        assert_eq!((text(&cmd), cmd.blocks[0].runs[0].face), (vec!["ls -l".to_string()], Face::Code));
+        let parts = body_doc(
+            &Body::Parts(vec![
+                Part::Text(Body::Plain("see".into())),
+                Part::Code("a\nb".into()),
+                Part::Status("Finished executing code".into()),
+                Part::File { id: "i".into(), name: "x.txt".into() },
+                Part::RemoteFile { name: "y.bin".into() },
+            ]),
+            &palette,
+            muted,
+            true,
+        );
+        let t = text(&parts);
+        assert_eq!(t[0], "see");
+        assert!(t.iter().any(|l| l == CODE_INTERPRETER), "{t:?}");
+        let code: Vec<&Block> = parts.blocks.iter().filter(|b| b.code_bg).collect();
+        assert_eq!(code.len(), 2, "one band per code line");
+        assert!(t.iter().any(|l| l.contains("Finished executing code")) && t.iter().any(|l| l == "x.txt") && t.iter().any(|l| l == "y.bin"), "{t:?}");
+        let status = parts.blocks.iter().find(|b| b.runs.iter().any(|r| r.text.contains("Finished"))).unwrap();
+        assert_eq!(status.runs[0].color, muted, "a status line is muted");
+        assert!(body_doc(&Body::Plain(String::new()), &palette, muted, true).blocks.is_empty() || text(&body_doc(&Body::Plain(String::new()), &palette, muted, true)) == [""], "an empty body draws nothing or one empty line");
+    }
+
+    #[test]
+    fn message_menu_ids_carry_the_pane() {
+        assert_eq!(menu_id("edit", None, "m1"), "aichat:msg:edit:m1");
+        assert_eq!(menu_id("fork", Some(7), "m1"), "aichat:msg:fork@7:m1");
+        assert_eq!(parse_menu_id("aichat:msg:edit:m1"), Some(("edit", None, "m1")));
+        assert_eq!(parse_menu_id(&menu_id("fork", Some(7), "a-b")), Some(("fork", Some(7), "a-b")));
+        assert_eq!(parse_menu_id("aichat:msg:fork@x:m1"), None);
+        assert_eq!(parse_menu_id("aichat:msg:fork@7:"), None);
+        assert_eq!(parse_menu_id("aichat:inline:7:abc"), None);
     }
 }

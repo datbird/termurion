@@ -514,7 +514,7 @@ impl App {
         if let Some(e) = failed {
             for id in started {
                 self.clips.remove(&id);
-                self.inline.remove(&id);
+                self.inline_drop(id);
                 self.focus_order.remove(&id);
                 self.bars.remove(&id);
                 if let Some(p) = self.panes.remove(&id) {

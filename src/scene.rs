@@ -664,6 +664,47 @@ pub fn blend(a: Rgb, b: Rgb, t: f32) -> Rgb {
 /// Pixels between a porthole's frame and its text.
 pub const PORTHOLE_MARGIN: f32 = 8.0;
 
+/// The lines of a laid-out document, cut to `area`: the `marks` (selection and find rectangles
+/// from the text's top left, with their color and alpha) under the text, then each line's code
+/// band, rule, underlines and runs. `origin` is where the text's top left sits; `band` is the
+/// left edge and width a code band and a rule are drawn in (a rule stops `PORTHOLE_MARGIN` short
+/// of the band's right edge); `back` and `fg` are the document's background and text colors.
+pub fn doc_lines(frame: &mut Frame, origin: (f32, f32), lines: &[crate::porthole::render::VisualLine], marks: &[(Rect, Rgb, f32)], area: Rect, band: (f32, f32), back: Rgb, fg: Rgb) {
+    let (ox, oy) = origin;
+    // Selection and find marks, from the text's top left, under the text.
+    for (m, color, alpha) in marks {
+        if let Some(r) = cut(Rect { x: ox + m.x, y: oy + m.y, ..*m }, area) {
+            frame.quads.push(Quad { rect: r, color: rgba(*color, *alpha) });
+        }
+    }
+    for l in lines {
+        let y = oy + l.y;
+        if l.code_bg {
+            if let Some(r) = cut(Rect { x: band.0, y, w: band.1, h: l.h }, area) {
+                frame.quads.push(Quad { rect: r, color: rgba(blend(back, fg, 0.08), 1.0) });
+            }
+        }
+        if l.rule {
+            if let Some(r) = cut(Rect { x: ox + l.x, y: y + l.h / 2.0, w: band.1 - PORTHOLE_MARGIN - l.x, h: 1.0 }, area) {
+                frame.quads.push(Quad { rect: r, color: rgba(fg, 0.5) });
+            }
+        }
+        for (run, (sx, sw)) in l.runs.iter().zip(&l.spans) {
+            if run.underline {
+                if let Some(r) = cut(Rect { x: ox + l.x + sx, y: y + l.h - 2.0, w: *sw, h: 1.0 }, area) {
+                    frame.quads.push(Quad { rect: r, color: rgba(run.color, 1.0) });
+                }
+            }
+        }
+        let spans = l
+            .runs
+            .iter()
+            .map(|r| Span { text: r.text.clone(), color: r.color, bold: r.bold, italic: r.italic, alt_font: false, icon: false, prose: r.face == crate::porthole::render::Face::Prose, badge: false, toolbelt: false })
+            .collect();
+        frame.rows.push(TextRow { x: ox + l.x, y, spans, clip: area, scale: l.scale });
+    }
+}
+
 /// A porthole over its rows (iTerm2's chrome): the background moved 20% toward grey, a 1 px
 /// border in the text color at 50%, the close button, the language button, and Wide at the
 /// top right, then the laid-out lines (`lines` holds the ones in view), all cut to `clip`.
@@ -700,38 +741,7 @@ pub fn porthole(frame: &mut Frame, rect: Rect, clip: Rect, lines: &[crate::porth
     let Some(area) = cut(inner, clip) else { return PortholeControls { close, language, wide } };
     let ox = rect.x + PORTHOLE_MARGIN - chrome.scroll_x;
     let oy = rect.y + PORTHOLE_MARGIN + s;
-    // Selection and find marks, from the text's top left, under the text.
-    for (m, color, alpha) in marks {
-        if let Some(r) = cut(Rect { x: ox + m.x, y: oy + m.y, ..*m }, area) {
-            frame.quads.push(Quad { rect: r, color: rgba(*color, *alpha) });
-        }
-    }
-    for l in lines {
-        let y = oy + l.y;
-        if l.code_bg {
-            if let Some(r) = cut(Rect { x: inner.x, y, w: inner.w, h: l.h }, area) {
-                frame.quads.push(Quad { rect: r, color: rgba(blend(back, fg, 0.08), 1.0) });
-            }
-        }
-        if l.rule {
-            if let Some(r) = cut(Rect { x: ox + l.x, y: y + l.h / 2.0, w: inner.w - PORTHOLE_MARGIN - l.x, h: 1.0 }, area) {
-                frame.quads.push(Quad { rect: r, color: rgba(fg, 0.5) });
-            }
-        }
-        for (run, (sx, sw)) in l.runs.iter().zip(&l.spans) {
-            if run.underline {
-                if let Some(r) = cut(Rect { x: ox + l.x + sx, y: y + l.h - 2.0, w: *sw, h: 1.0 }, area) {
-                    frame.quads.push(Quad { rect: r, color: rgba(run.color, 1.0) });
-                }
-            }
-        }
-        let spans = l
-            .runs
-            .iter()
-            .map(|r| Span { text: r.text.clone(), color: r.color, bold: r.bold, italic: r.italic, alt_font: false, icon: false, prose: r.face == crate::porthole::render::Face::Prose, badge: false, toolbelt: false })
-            .collect();
-        frame.rows.push(TextRow { x: ox + l.x, y, spans, clip: area, scale: l.scale });
-    }
+    doc_lines(frame, (ox, oy), lines, marks, area, (inner.x, inner.w), back, fg);
     PortholeControls { close, language, wide }
 }
 
@@ -2086,6 +2096,140 @@ pub fn inline_chat_panel(frame: &mut Frame, d: &InlineDraw, cell: (f32, f32), sc
     frame.rows.push(TextRow { x: t.x + ((t.w - text_w) / 2.0).max(0.0), y: t.y + (t.h - cell.1) / 2.0, spans: vec![clip_span(d.title.to_string(), TAB_TEXT, true, false)], clip: t, scale: 1.0 });
 }
 
+/// One conversation row of the inline panel, placed in pixels already: its bubble (zero width for
+/// a date or the typing row), its text rectangle (where `lines` start), its buttons as (rectangle,
+/// title, the title's width, destructive, enabled) and the copy glyph of each code block.
+pub struct InlineRowDraw<'a> {
+    pub bubble: Rect,
+    pub text: Rect,
+    pub user: bool,
+    pub lines: &'a [crate::porthole::render::VisualLine],
+    /// A date row's label (centered in `text`).
+    pub date: Option<&'a str>,
+    pub typing: bool,
+    pub buttons: Vec<(Rect, &'a str, f32, bool, bool)>,
+    pub copies: Vec<Rect>,
+    /// Where "Copied" shows, beside the copy glyph of the block just copied.
+    pub copied: Option<Rect>,
+}
+
+/// The input band: its box, the attach and send glyph rectangles, the editor's lines already
+/// laid out (x, y, text), the selection and caret, the placeholder while empty.
+pub struct InlineInputDraw<'a> {
+    pub rect: Rect,
+    pub attach: Rect,
+    pub send: Rect,
+    pub send_glyph: char,
+    pub send_enabled: bool,
+    pub clip: Rect,
+    pub lines: &'a [(f32, f32, String)],
+    pub selection: &'a [Rect],
+    pub caret: Option<Rect>,
+    pub placeholder: Option<&'a str>,
+    pub focused: bool,
+    pub text_scale: f32,
+}
+
+/// What the inline panel's body shows under its toolbar.
+pub struct InlineBodyDraw<'a> {
+    /// The conversation's visible area: everything in the rows is cut to it.
+    pub area: Rect,
+    pub rows: Vec<InlineRowDraw<'a>>,
+    /// The line above the input: "Copied" or the pending attachments' names.
+    pub strip: Option<(Rect, &'a str)>,
+    pub input: InlineInputDraw<'a>,
+}
+
+/// The user's bubble color (the accent) and the text on it.
+const BUBBLE_USER: Rgb = LIST_SELECTED;
+
+/// The inline panel's conversation and input: bubbles as quads (the person's in the accent color
+/// with white text), each row's text by `doc_lines`, buttons as bordered rows with centered titles
+/// (destructive in red, disabled at half alpha), the typing row as three dots, the date rows
+/// centered, then the input band.
+pub fn inline_chat_body(frame: &mut Frame, d: &InlineBodyDraw, cell: (f32, f32), scale: f32) {
+    let agent_bubble = blend(CLIP_BG, rgb(128, 128, 128), 0.25);
+    for row in &d.rows {
+        if row.bubble.w > 0.0 {
+            if let Some(r) = cut(row.bubble, d.area) {
+                frame.quads.push(Quad { rect: r, color: rgba(if row.user { BUBBLE_USER } else { agent_bubble }, 1.0) });
+            }
+        }
+        if let Some(label) = row.date {
+            if let Some(c) = cut(row.text, d.area) {
+                let w = label.chars().count() as f32 * cell.0 * 0.9;
+                frame.rows.push(TextRow { x: row.text.x + ((row.text.w - w) / 2.0).max(0.0), y: row.text.y, spans: vec![clip_span(label.to_string(), TAB_TEXT_DIM, false, false)], clip: c, scale: 0.85 });
+            }
+            continue;
+        }
+        if row.typing {
+            let dot = (4.0 * scale).max(3.0);
+            let (gap, total) = (dot, dot * 5.0);
+            let x0 = row.text.x + (row.text.w - total) / 2.0;
+            for i in 0..3 {
+                let r = Rect { x: x0 + i as f32 * (dot + gap), y: row.text.y + (row.text.h - dot) / 2.0, w: dot, h: dot };
+                if let Some(r) = cut(r, d.area) {
+                    frame.quads.push(Quad { rect: r, color: rgba(TAB_TEXT_DIM, 1.0) });
+                }
+            }
+            continue;
+        }
+        let (fg, back) = if row.user { (rgb(255, 255, 255), BUBBLE_USER) } else { (TAB_TEXT, agent_bubble) };
+        let area = cut(row.text, d.area);
+        if let Some(area) = area {
+            // A rule stops short of the text's right edge by `PORTHOLE_MARGIN`.
+            doc_lines(frame, (row.text.x, row.text.y), row.lines, &[], area, (row.text.x, row.text.w + PORTHOLE_MARGIN), back, fg);
+        }
+        for r in &row.copies {
+            if let Some(c) = cut(*r, d.area) {
+                frame.quads.push(Quad { rect: c, color: rgba(blend(back, fg, 0.15), 1.0) });
+                frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(crate::chat_view::COPY_GLYPH.to_string(), fg, false, true)], clip: c, scale: 1.0 });
+            }
+        }
+        if let Some(r) = row.copied {
+            if let Some(c) = cut(r, d.area) {
+                frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(crate::chat_view::COPIED.to_string(), blend(back, fg, 0.6), false, false)], clip: c, scale: 0.85 });
+            }
+        }
+        for (r, title, title_w, destructive, enabled) in &row.buttons {
+            let Some(c) = cut(*r, d.area) else { continue };
+            let alpha = if *enabled { 1.0 } else { 0.5 };
+            let color = if *destructive { rgb(0xff, 0x45, 0x3a) } else { fg };
+            // The separator above the button, then its title centered.
+            frame.quads.push(Quad { rect: Rect { h: 1.0, ..c }, color: rgba(color, 0.35 * alpha) });
+            frame_lines(&mut frame.quads, c, rgba(color, 0.25 * alpha));
+            frame.rows.push(TextRow { x: r.x + ((r.w - title_w) / 2.0).max(0.0), y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span((*title).to_string(), blend(back, color, alpha), false, false)], clip: c, scale: 1.0 });
+        }
+    }
+    if let Some((r, text)) = d.strip {
+        frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(text.to_string(), TAB_TEXT_DIM, false, false)], clip: r, scale: 0.85 });
+    }
+    let i = &d.input;
+    frame.quads.push(Quad { rect: i.rect, color: rgba(FIELD_BG_DARK, 1.0) });
+    frame_lines(&mut frame.quads, i.rect, if i.focused { rgba(LIST_SELECTED, 1.0) } else { rgba(DIVIDER, 1.0) });
+    for r in i.selection {
+        let r = clip_rect(*r, i.clip);
+        if r.w > 0.0 && r.h > 0.0 {
+            frame.quads.push(Quad { rect: r, color: rgba(LIST_SELECTED, NOTE_SELECTION_ALPHA) });
+        }
+    }
+    for (x, y, line) in i.lines {
+        if !line.is_empty() {
+            frame.rows.push(TextRow { x: *x, y: *y, spans: vec![list_span(line.clone(), TAB_TEXT, false, 0)], clip: i.clip, scale: i.text_scale });
+        }
+    }
+    if let (Some(text), true) = (i.placeholder, i.lines.iter().all(|l| l.2.is_empty())) {
+        frame.rows.push(TextRow { x: i.clip.x, y: i.clip.y, spans: vec![list_span(text.to_string(), TAB_TEXT_DIM, false, 0)], clip: i.clip, scale: i.text_scale });
+    }
+    if let Some(c) = i.caret.map(|c| clip_rect(c, i.clip)).filter(|c| c.h > 0.0) {
+        frame.quads.push(Quad { rect: Rect { w: scale.max(1.0), ..c }, color: rgba(TAB_TEXT, 1.0) });
+    }
+    for (r, glyph, on) in [(i.attach, '\u{E710}', true), (i.send, i.send_glyph, i.send_enabled)] {
+        let color = if on { TAB_TEXT } else { TAB_TEXT_DIM };
+        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(glyph.to_string(), color, false, true)], clip: r, scale: 1.0 });
+    }
+}
+
 /// A clipping's preview over the terminal: its title and all of its detail that fits.
 pub fn clip_preview(frame: &mut Frame, area: Rect, title: &str, lines: &[String], cell: (f32, f32), scale: f32) {
     let w = (700.0 * scale).min(area.w - 2.0 * cell.0).max(cell.0 * 10.0);
@@ -2855,6 +2999,9 @@ mod broadcast_tests {
 
 #[cfg(test)]
 mod tests {
+    /// (quads, rows, digest) of the porthole frame in `doc_lines_draw_as_the_porthole_did`, taken from `porthole` before `doc_lines` was extracted from it.
+    const GOLDEN: (usize, usize, u64) = (10, 15, 10881690239227710009);
+
     /// The palette the tab bar had before themes: one flat dark bar, a lighter selected tab, the
     /// two greys for text and no lines. The layout tests below draw with it.
     fn legacy() -> crate::tab_theme::TabPalette {
@@ -4699,5 +4846,41 @@ mod tests {
         let r = session_picker_button(&mut g, narrow, "Link this session to AI chat?", fg, bg, cell, 1.0);
         assert!(r.w <= narrow.w && r.x >= narrow.x && r.x + r.w <= narrow.x + narrow.w, "kept inside the pane");
         assert!(r.h <= narrow.h);
+    }
+
+    /// A fixed markdown document laid out with a fixed measure, for the extraction test.
+    fn sample_lines() -> Vec<crate::porthole::render::VisualLine> {
+        use crate::porthole::{detect::Language, render};
+        let md = "# Title\n\nSome *prose* with a [link](https://x.example/a) that wraps over more than one line of the narrow text.\n\n```rust\nfn main() {}\n```\n\n---\n\n- one\n- two\n";
+        let doc = render::render(md, &Language::Markdown, &crate::palette::Palette::default(), true);
+        let measure = |t: &str, _f: render::Face, s: f32| t.chars().count() as f32 * 8.0 * s;
+        render::layout(&doc, 220.0, 16.0, &measure, false).lines
+    }
+
+    fn digest(f: &Frame) -> u64 {
+        // FNV-1a over the frame's quads and rows.
+        let text = format!("{:?}{:?}", f.quads, f.rows);
+        text.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3))
+    }
+
+    #[test]
+    fn doc_lines_draw_as_the_porthole_did() {
+        let lines = sample_lines();
+        let rect = Rect { x: 10.0, y: 20.0, w: 260.0, h: 300.0 };
+        let chrome = PortholeChrome { fg: rgb(200, 200, 200), bg: rgb(20, 20, 20), language: "Markdown", wide: false, scroll_x: 0.0 };
+        let marks = [(Rect { x: 8.0, y: 0.0, w: 40.0, h: 16.0 }, rgb(255, 230, 0), 0.5)];
+        let mut whole = Frame::default();
+        porthole(&mut whole, rect, rect, &lines, &marks, &chrome, (8.0, 16.0));
+        // Before the extraction this exact frame came out of `porthole` alone; its digest was taken
+        // from that code and the extraction must keep it.
+        assert_eq!((whole.quads.len(), whole.rows.len(), digest(&whole)), GOLDEN, "the porthole's frame changed");
+        // The same frame in two steps: the chrome with no lines, then the lines by `doc_lines`.
+        let mut parts = Frame::default();
+        porthole(&mut parts, rect, rect, &[], &[], &chrome, (8.0, 16.0));
+        let inner = Rect { x: rect.x + 4.0, y: rect.y + 4.0 + 16.0, w: rect.w - 8.0, h: rect.h - 8.0 - 16.0 };
+        let back = blend(chrome.bg, rgb(128, 128, 128), 0.2);
+        doc_lines(&mut parts, (rect.x + PORTHOLE_MARGIN, rect.y + PORTHOLE_MARGIN + 16.0), &lines, &marks, inner, (inner.x, inner.w), back, chrome.fg);
+        assert_eq!(parts.quads, whole.quads);
+        assert_eq!(parts.rows, whole.rows);
     }
 }
