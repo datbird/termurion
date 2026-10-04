@@ -221,17 +221,16 @@ impl App {
         let (open, _) = self.codecierge_gate();
         let Some(pane) = pane_for_ref(&self.panes, guid) else {
             // The session is gone: only a call that would have acted is answered.
-            let would = cc::invoke_plan(s, id, open, name, arguments, crate::ai_shell::ShellKind::Unknown, false, None, &crate::profile::home());
+            let would = cc::invoke_plan(s, id, open, name, arguments, crate::ai_shell::ShellKind::Unknown);
             if would != Invoke::Drop {
                 self.ai_run_tool_done(id, ToolResult::Failed(cc::SESSION_GONE.to_string()));
             }
             return;
         };
-        let (shell, local, _) = self.ai_shell_of(pane);
-        let (cwd, ancestors) = self.panes.get(&pane).map(|p| (codecierge_cwd(p.own().shell.cwd.as_deref()), p.own().shell.job_ancestors.clone())).unwrap_or_default();
-        let local = cc::session_is_local(local, &ancestors);
+        // The one shell detector decides; a write in cmd or PowerShell refuses, local or remote.
+        let (shell, _, _) = self.ai_shell_of(pane);
         let Some(s) = self.codecierge.get(guid) else { return };
-        let plan = cc::invoke_plan(s, id, open, name, arguments, shell, local, cwd.as_deref(), &crate::profile::home());
+        let plan = cc::invoke_plan(s, id, open, name, arguments, shell);
         match plan {
             Invoke::Drop => {}
             Invoke::Answer(text) => self.codecierge_answer_now(guid, id, ToolResult::Failed(text)),
@@ -247,14 +246,6 @@ impl App {
                 let filename = argument(arguments, "filename").unwrap_or_default();
                 match plan {
                     WritePlan::Refuse(text) => self.codecierge_answer_now(guid, id, ToolResult::Failed(text)),
-                    WritePlan::Direct { cwd, relative, contents } => {
-                        self.codecierge_note(guid, &cc::writing(&filename));
-                        let result = match cc::write_direct(&cwd, &relative, &contents) {
-                            Ok(()) => ToolResult::Ok("Done".to_string()),
-                            Err(text) => ToolResult::Failed(text),
-                        };
-                        self.codecierge_answer_now(guid, id, result);
-                    }
                     WritePlan::Typed(parts) => {
                         self.codecierge_note(guid, &cc::writing(&filename));
                         for part in &parts {
@@ -358,13 +349,6 @@ impl App {
             });
         }
     }
-}
-
-/// The shell integration's directory as a Windows path when it is one ("/C:/Users/x" is OSC 7's
-/// form), else as reported: a POSIX path stays a POSIX path and a direct write refuses it.
-fn codecierge_cwd(reported: Option<&str>) -> Option<String> {
-    let r = reported?;
-    Some(crate::profile::local_path(r).map_or_else(|| r.to_string(), |p| p.to_string_lossy().into_owned()))
 }
 
 #[cfg(test)]

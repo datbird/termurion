@@ -1,9 +1,7 @@
 //! Codecierge's per-session model, texts and views (`CG` = `Toolbelt/ToolCodecierge.swift`): the
 //! stage a session is in, what each stage shows, and the transcript's markdown sections. Pure;
 //! the App draws the views and runs the conversation. The conversation itself (prompts, feed,
-//! functions) and the Windows write plan are here too.
-
-use std::path::{Path, PathBuf};
+//! functions) and the write plan are here too.
 
 /// Codecierge's onboarding states (`CG:646-709`): the administrator's switch, then `EnableAI`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -270,18 +268,10 @@ pub const KEEP_GOING: &str = "Keep Going";
 pub const STOP: &str = "Stop Codecierge";
 pub const USAGE_ID: &str = "CodeciergeCommandWarning";
 
-/// Why a file is not written (Tandem's, rulings R12e-2, R12e-6 and R12e-7).
+/// Why a file is not written (Tandem's, rulings R12e-4 and the final ruling on Windows shells).
+pub const WINDOWS_SHELL: &str = "Writing files is not supported in this session's shell (cmd or PowerShell).";
 pub const UNKNOWN_SHELL: &str = "Tandem cannot tell which shell this session runs, so Codecierge cannot write files in it.";
-pub const NO_CWD: &str = "Tandem cannot write a relative path because this session's directory is unknown.";
-pub const WRITE_NOT_RELATIVE: &str = "Codecierge can only write a relative file name inside this session's directory.";
-pub const WRITE_PARENT: &str = "Codecierge cannot write outside this session's directory: \u{201c}..\u{201d} is not allowed.";
-pub const WRITE_DEVICE: &str = "Codecierge cannot write to a device name such as CON or NUL.";
-pub const WRITE_STREAM: &str = "Codecierge cannot write a file name that contains \u{201c}:\u{201d}.";
 pub const WRITE_INVALID: &str = "Codecierge cannot write a file name with characters Windows does not allow.";
-pub const WRITE_BAD_CWD: &str = "Codecierge cannot write here because this session's directory is not a folder on this computer.";
-pub const WRITE_ESCAPES: &str = "Codecierge cannot write there: the path leads outside this session's directory.";
-pub const WRITE_LINK: &str = "Codecierge cannot replace a link. Remove it or choose another name.";
-pub const WRITE_HARDLINK: &str = "Codecierge cannot replace a file that has other hard links. Remove it or choose another name.";
 /// 12c's text for an empty name, shared so the two writers answer alike.
 const EMPTY_NAME: &str = "Error: the file name is empty.";
 
@@ -475,8 +465,7 @@ fn typed_text(s: &str) -> String {
 
 /// Decides what a call of run `id` does. Only a Running, auto-run session whose current request
 /// it is, with the gate open, acts at all.
-#[allow(clippy::too_many_arguments)]
-pub fn invoke_plan(s: &Session, id: u64, gate_open: bool, name: &str, arguments: &str, shell: crate::ai_shell::ShellKind, local: bool, cwd: Option<&str>, home: &Path) -> Invoke {
+pub fn invoke_plan(s: &Session, id: u64, gate_open: bool, name: &str, arguments: &str, shell: crate::ai_shell::ShellKind) -> Invoke {
     if s.stage != Stage::Running || !gate_open || s.request != Some(id) {
         return Invoke::Drop;
     }
@@ -496,220 +485,21 @@ pub fn invoke_plan(s: &Session, id: u64, gate_open: bool, name: &str, arguments:
             Err(e) => Invoke::Answer(e),
         },
         "write" => match (text("filename"), text("contents")) {
-            (Ok(f), Ok(c)) => Invoke::Write(write_plan(shell, local, cwd, &f, &c, home)),
+            (Ok(f), Ok(c)) => Invoke::Write(write_plan(shell, &f, &c)),
             (Err(e), _) | (_, Err(e)) => Invoke::Answer(e),
         },
         _ => Invoke::Answer(crate::ai_turn::UNKNOWN_FUNCTION.to_string()),
     }
 }
 
-// ---- Writing a file (rulings R12e-2, R12e-4, R12e-6, R12e-7) ----
+// ---- Writing a file (ruling R12e-4 and the final ruling on Windows shells) ----
 
 /// How a `write` call is carried out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WritePlan {
-    /// Tandem writes the file itself: `relative` under `cwd`, UTF-8, a final newline.
-    Direct { cwd: PathBuf, relative: PathBuf, contents: String },
     /// The parts are typed at a POSIX shell: `cat >`, the contents, ^D.
     Typed(Vec<String>),
     Refuse(String),
-}
-
-/// Whether the session's shell runs on this computer (ruling R12e-6): the shell integration's
-/// host is local and no `ssh` is among the foreground job's ancestors.
-pub fn session_is_local(host_is_local: bool, ancestors: &[String]) -> bool {
-    host_is_local && !ancestors.iter().any(|a| matches!(a.trim().to_ascii_lowercase().as_str(), "ssh" | "ssh.exe"))
-}
-
-/// A name a model gave, as a path relative to the session folder (ruling R12e-2), or why not.
-pub fn relative_name(filename: &str) -> Result<PathBuf, String> {
-    if filename.trim().is_empty() {
-        return Err(EMPTY_NAME.to_string());
-    }
-    let is_sep = |c: char| c == '\\' || c == '/';
-    let b = filename.as_bytes();
-    // Rooted, UNC, `\\?\`, `\\.\`, `\??\` and `D:\x` are all outside the folder.
-    if filename.starts_with(is_sep) || (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && is_sep(b[2] as char)) {
-        return Err(WRITE_NOT_RELATIVE.to_string());
-    }
-    if filename.contains(':') {
-        return Err(WRITE_STREAM.to_string());
-    }
-    if filename.ends_with(is_sep) || filename.chars().any(|c| (c as u32) < 0x20 || matches!(c, '*' | '?' | '"' | '<' | '>' | '|')) {
-        return Err(WRITE_INVALID.to_string());
-    }
-    let mut out = PathBuf::new();
-    for part in filename.split(is_sep) {
-        if part.is_empty() || part == "." {
-            continue;
-        }
-        if part.chars().all(|c| c == '.' || c == ' ') {
-            return Err(WRITE_PARENT.to_string());
-        }
-        if crate::inert_files::is_device_name(part) {
-            return Err(WRITE_DEVICE.to_string());
-        }
-        out.push(part);
-    }
-    if out.as_os_str().is_empty() {
-        return Err(WRITE_INVALID.to_string());
-    }
-    Ok(out)
-}
-
-/// The session folder: only an absolute local drive path (ruling R12e-2).
-pub fn local_cwd(cwd: Option<&str>) -> Result<PathBuf, String> {
-    let Some(c) = cwd.filter(|c| !c.is_empty()) else { return Err(NO_CWD.to_string()) };
-    let b = c.as_bytes();
-    let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');
-    if !drive || c[2..].contains(':') || c.chars().any(|ch| (ch as u32) < 0x20 || matches!(ch, '*' | '?' | '"' | '<' | '>' | '|')) {
-        return Err(WRITE_BAD_CWD.to_string());
-    }
-    Ok(PathBuf::from(c.replace('/', "\\")))
-}
-
-/// The session folder and the relative name for a direct write.
-pub fn direct_path(filename: &str, cwd: Option<&str>, home: &Path) -> Result<(PathBuf, PathBuf), String> {
-    let relative = relative_name(filename)?;
-    let cwd_path = local_cwd(cwd)?;
-    // One join and one refusal rule for every model-named writer (`ai_actions::file_target`, which
-    // runs `inert_files::refused_path`): a listing type or a `desktop.ini` never writes.
-    match crate::ai_actions::file_target(&relative.to_string_lossy(), Some(&cwd_path.to_string_lossy()), true, home) {
-        crate::ai_actions::FileTarget::Refused(why) => Err(why),
-        crate::ai_actions::FileTarget::Local(p) if p.starts_with(&cwd_path) => Ok((cwd_path, relative)),
-        crate::ai_actions::FileTarget::Local(_) => Err(WRITE_ESCAPES.to_string()),
-    }
-}
-
-/// The components of a path, lower case, with a verbatim drive prefix read as the drive.
-fn parts(p: &Path) -> Vec<String> {
-    let text = p.to_string_lossy().replace('/', "\\");
-    let text = text.strip_prefix(r"\\?\").filter(|r| r.as_bytes().get(1) == Some(&b':')).unwrap_or(&text);
-    text.split('\\').filter(|c| !c.is_empty()).map(str::to_lowercase).collect()
-}
-
-/// Whether `target` lies under `canonical_cwd`, component by component and ignoring case as NTFS
-/// does: a prefix of the text is not a parent.
-pub fn contained(canonical_cwd: &Path, canonical_target: &Path) -> bool {
-    let (c, t) = (parts(canonical_cwd), parts(canonical_target));
-    t.len() >= c.len() && t[..c.len()] == c[..]
-}
-
-/// What the opened handle says decides (ruling R12e-7): `Err((text, delete))`, `delete` when
-/// this open created the file and it must be removed.
-pub fn after_open(canonical_cwd: &Path, final_path: &Path, created: bool, reparse: bool, links: u32) -> Result<(), (String, bool)> {
-    if reparse {
-        return Err((WRITE_LINK.to_string(), created));
-    }
-    if links > 1 && !created {
-        return Err((WRITE_HARDLINK.to_string(), false));
-    }
-    if !contained(canonical_cwd, final_path) {
-        return Err((WRITE_ESCAPES.to_string(), created));
-    }
-    Ok(())
-}
-
-/// Writes `contents` to `relative` under `cwd` (ruling R12e-2): the folder and the existing
-/// parent are canonicalized and the parent must lie inside, as a first and friendly refusal;
-/// then `open_checked` decides on the handle it really opened. Parent folders are not created.
-pub fn write_direct(cwd: &Path, relative: &Path, contents: &str) -> Result<(), String> {
-    let canonical_cwd = std::fs::canonicalize(cwd).map_err(|_| WRITE_BAD_CWD.to_string())?;
-    let full = cwd.join(relative);
-    let (Some(parent), Some(name)) = (full.parent(), full.file_name()) else { return Err(WRITE_INVALID.to_string()) };
-    let canonical_parent = std::fs::canonicalize(parent).map_err(|e| crate::ai_actions::create_failed(&e.to_string()))?;
-    if !contained(&canonical_cwd, &canonical_parent) {
-        return Err(WRITE_ESCAPES.to_string());
-    }
-    let target = canonical_parent.join(name);
-    if reparse_point(&target) {
-        return Err(WRITE_LINK.to_string());
-    }
-    open_checked(&canonical_cwd, &target, contents)
-}
-
-/// Whether `path` itself (not what it points to) is a link or a junction.
-fn reparse_point(path: &Path) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        std::fs::symlink_metadata(path).is_ok_and(|m| m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
-    }
-    #[cfg(not(windows))]
-    {
-        std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
-    }
-}
-
-/// The handle first, the check second, the write last (ruling R12e-7).
-#[cfg(windows)]
-pub fn open_checked(canonical_cwd: &Path, full: &Path, contents: &str) -> Result<(), String> {
-    use std::os::windows::ffi::{OsStrExt, OsStringExt};
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, GENERIC_WRITE, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, FileDispositionInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW, SetEndOfFile, SetFileInformationByHandle, SetFilePointerEx, WriteFile, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BEGIN,
-        FILE_DISPOSITION_INFO, FILE_FLAG_OPEN_REPARSE_POINT, FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, OPEN_ALWAYS, VOLUME_NAME_DOS,
-    };
-    let wide: Vec<u16> = full.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
-    // SAFETY: `wide` is a NUL-terminated path; the handle is closed on every path below.
-    unsafe {
-        let h = CreateFileW(wide.as_ptr(), GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ, std::ptr::null(), OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, std::ptr::null_mut());
-        if h == INVALID_HANDLE_VALUE {
-            return Err(crate::ai_actions::create_failed(&std::io::Error::last_os_error().to_string()));
-        }
-        let created = GetLastError() != ERROR_ALREADY_EXISTS;
-        let fail = |text: String, delete: bool| -> Result<(), String> {
-            if delete {
-                let info = FILE_DISPOSITION_INFO { DeleteFile: 1 };
-                SetFileInformationByHandle(h, FileDispositionInfo, &info as *const _ as *const _, std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32);
-            }
-            CloseHandle(h);
-            Err(text)
-        };
-        let mut info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
-        if GetFileInformationByHandle(h, &mut info) == 0 {
-            return fail(crate::ai_actions::create_failed(&std::io::Error::last_os_error().to_string()), created);
-        }
-        let mut buf = vec![0u16; 1024];
-        let mut n = GetFinalPathNameByHandleW(h, buf.as_mut_ptr(), buf.len() as u32, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-        if n as usize >= buf.len() {
-            buf = vec![0u16; n as usize + 1];
-            n = GetFinalPathNameByHandleW(h, buf.as_mut_ptr(), buf.len() as u32, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-        }
-        if n == 0 || n as usize >= buf.len() {
-            return fail(WRITE_ESCAPES.to_string(), created);
-        }
-        let final_path = PathBuf::from(std::ffi::OsString::from_wide(&buf[..n as usize]));
-        if let Err((text, delete)) = after_open(canonical_cwd, &final_path, created, info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0, info.nNumberOfLinks) {
-            return fail(text, delete);
-        }
-        // Checked: now, and only now, the file is cut to length and written.
-        let mut ok = SetFilePointerEx(h, 0, std::ptr::null_mut(), FILE_BEGIN) != 0 && SetEndOfFile(h) != 0;
-        let bytes = contents.as_bytes();
-        let mut done = 0usize;
-        while ok && done < bytes.len() {
-            let chunk = (bytes.len() - done).min(1 << 20) as u32;
-            let mut wrote = 0u32;
-            ok = WriteFile(h, bytes[done..].as_ptr(), chunk, &mut wrote, std::ptr::null_mut()) != 0 && wrote > 0;
-            done += wrote as usize;
-        }
-        if !ok {
-            let e = std::io::Error::last_os_error().to_string();
-            CloseHandle(h);
-            return Err(crate::ai_actions::create_failed(&e));
-        }
-        CloseHandle(h);
-        // The Mark of the Web on the file the handle really named, as every model-named writer
-        // does (`inert_files`, ruling P15).
-        crate::inert_files::mark(&final_path);
-    }
-    Ok(())
-}
-
-#[cfg(not(windows))]
-pub fn open_checked(_canonical_cwd: &Path, _full: &Path, _contents: &str) -> Result<(), String> {
-    Err(WRITE_BAD_CWD.to_string())
 }
 
 /// POSIX single quotes, `'` as `'\''`, always quoted.
@@ -717,15 +507,15 @@ pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// How a `write` call is carried out in a session (rulings R12e-2, R12e-4, R12e-6).
-pub fn write_plan(shell: crate::ai_shell::ShellKind, local: bool, cwd: Option<&str>, filename: &str, contents: &str, home: &Path) -> WritePlan {
+/// How a `write` call is carried out in a session (ruling R12e-4, final ruling): only a POSIX
+/// shell types the `cat >` form. cmd and PowerShell as `App::ai_shell_of` reports them refuse,
+/// local or remote (over ssh the detector still names the local shell, and a typed `cat >` there
+/// would run each line of the file as a command); an unknown shell refuses too.
+pub fn write_plan(shell: crate::ai_shell::ShellKind, filename: &str, contents: &str) -> WritePlan {
     use crate::ai_shell::ShellKind;
     match shell {
         ShellKind::Unknown => WritePlan::Refuse(UNKNOWN_SHELL.to_string()),
-        ShellKind::Cmd | ShellKind::PowerShell if local => match direct_path(filename, cwd, home) {
-            Ok((cwd, relative)) => WritePlan::Direct { cwd, relative, contents: with_final_newline(contents) },
-            Err(e) => WritePlan::Refuse(e),
-        },
+        ShellKind::Cmd | ShellKind::PowerShell => WritePlan::Refuse(WINDOWS_SHELL.to_string()),
         _ => {
             if filename.trim().is_empty() {
                 return WritePlan::Refuse(EMPTY_NAME.to_string());
@@ -742,10 +532,6 @@ pub fn write_plan(shell: crate::ai_shell::ShellKind, local: bool, cwd: Option<&s
     }
 }
 
-fn with_final_newline(contents: &str) -> String {
-    if contents.ends_with('\n') { contents.to_string() } else { format!("{contents}\n") }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -754,7 +540,7 @@ mod tests {
     use crate::ai_models::Endpoint;
     use crate::ai_settings::{Api, Vendor, ADMIN, ENABLE_AI};
     use crate::globals::Globals;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use toml::Value;
 
     #[test]
@@ -807,7 +593,7 @@ mod tests {
     }
 
     fn execute(s: &Session, id: u64) -> Invoke {
-        invoke_plan(s, id, true, "execute", "{\"command\":\"rm -rf ~\"}", ShellKind::Posix, true, None, home())
+        invoke_plan(s, id, true, "execute", "{\"command\":\"rm -rf ~\"}", ShellKind::Posix)
     }
 
     #[test]
@@ -921,10 +707,6 @@ mod tests {
         assert_eq!(initial_stage(open, true), Stage::GoalSetting);
     }
 
-    fn home() -> &'static Path {
-        Path::new(r"C:\Users\u")
-    }
-
     fn running_session(request: Option<u64>) -> Session {
         let mut s = Session::new("G", true, true);
         s.stage = Stage::Running;
@@ -989,182 +771,27 @@ mod tests {
     }
 
     #[test]
-    fn write_plan_follows_windows() {
-        let direct = |relative: &str| WritePlan::Direct { cwd: PathBuf::from(r"C:\src"), relative: PathBuf::from(relative), contents: "hi\n".into() };
-        for kind in [ShellKind::PowerShell, ShellKind::Cmd] {
-            assert_eq!(write_plan(kind, true, Some(r"C:\src"), r"notes\a.txt", "hi", home()), direct(r"notes\a.txt"));
-            assert_eq!(write_plan(kind, true, Some(r"C:\src"), "notes/a.txt", "hi", home()), direct(r"notes\a.txt"));
-            assert_eq!(write_plan(kind, true, Some(r"C:\src"), r".\a.txt", "hi", home()), direct("a.txt"));
-            assert_eq!(write_plan(kind, true, Some(r"C:\src"), "a.txt", "hi\n", home()), direct("a.txt"));
-            assert_eq!(write_plan(kind, true, None, "a.txt", "hi", home()), WritePlan::Refuse(NO_CWD.into()));
-        }
-        for local in [true, false] {
-            assert_eq!(write_plan(ShellKind::Unknown, local, Some(r"C:\src"), "a.txt", "hi", home()), WritePlan::Refuse(UNKNOWN_SHELL.into()));
-        }
+    fn write_plan_follows_the_shell() {
+        assert!(matches!(write_plan(ShellKind::Posix, "a.txt", "hi"), WritePlan::Typed(_)));
+        assert_eq!(write_plan(ShellKind::Unknown, "a.txt", "hi"), WritePlan::Refuse(UNKNOWN_SHELL.into()));
+        assert_eq!(write_plan(ShellKind::Posix, "", "hi"), WritePlan::Refuse("Error: the file name is empty.".into()));
     }
 
     #[test]
-    fn write_refusals_follow_tandem() {
-        let refused = |name: &str| write_plan(ShellKind::PowerShell, true, Some(r"C:\src"), name, "x", home());
-        for kind in [ShellKind::PowerShell, ShellKind::Cmd] {
-            let refused = |name: &str| write_plan(kind, true, Some(r"C:\src"), name, "x", home());
-            for (names, text) in [
-                (&[r"..\x", "../x", r"a\..\..\x", r"a\..\b", r"...\x", r".. \x"][..], WRITE_PARENT),
-                (&[r"D:\x.txt", r"C:\src\x.txt", r"\x", "/x", r"\\h\s\x", "//h/s/x", r"\\?\C:\x", r"\\.\PhysicalDrive0", r"\??\C:\x"][..], WRITE_NOT_RELATIVE),
-                (&["C:x", "a.txt:s", "a.txt::$DATA", r"a:b\c.txt"][..], WRITE_STREAM),
-                (&["CON", "con", "nul.txt", r"sub\aux", "COM1", "com9.log", "LPT1", "PRN.", "CONIN$", "CONOUT$", "COM\u{b9}", "nul .txt"][..], WRITE_DEVICE),
-                (&["a*.txt", "a?.txt", "a<b", "a|b", "a\"b", "a\u{1}b", "a.txt\n", r"notes\"][..], WRITE_INVALID),
-            ] {
-                for name in names {
-                    assert_eq!(refused(name), WritePlan::Refuse(text.into()), "{name:?}");
-                }
-            }
-            assert_eq!(refused(""), WritePlan::Refuse("Error: the file name is empty.".into()));
-        }
-        // The shell lists these types without opening them (`inert_files`), so they never write.
-        for name in ["x.url", "a.lnk", "desktop.ini", r"sub\a.scf", "a.theme"] {
-            assert!(matches!(refused(name), WritePlan::Refuse(_)), "{name}");
-        }
-        assert_eq!(refused("x.url"), WritePlan::Refuse("Error: files of this type are not allowed.".into()));
-        for cwd in [r"\\h\s", "//h/s", r"\\?\C:\src", r"\\.\C:\src", "src", "C:src", "/home/u"] {
-            assert_eq!(write_plan(ShellKind::PowerShell, true, Some(cwd), "a.txt", "x", home()), WritePlan::Refuse(WRITE_BAD_CWD.into()), "{cwd:?}");
-        }
-        assert!(!contained(Path::new(r"C:\src"), Path::new(r"C:\src2\a.txt")));
-        assert!(contained(Path::new(r"C:\src"), Path::new(r"C:\SRC\a.txt")));
-        assert!(!contained(Path::new(r"C:\src"), Path::new(r"C:\a.txt")));
-        assert!(contained(Path::new(r"\\?\C:\src"), Path::new(r"C:\src\sub\a.txt")));
-    }
-
-    #[test]
-    fn after_open_decides_from_the_handle() {
-        let s = r"C:\s";
-        assert_eq!(after_open(Path::new(s), Path::new(r"C:\s\a.txt"), true, false, 1), Ok(()));
-        assert_eq!(after_open(Path::new(s), Path::new(r"C:\out\a.txt"), true, false, 1), Err((WRITE_ESCAPES.to_string(), true)));
-        assert_eq!(after_open(Path::new(s), Path::new(r"C:\out\a.txt"), false, false, 1), Err((WRITE_ESCAPES.to_string(), false)));
-        assert_eq!(after_open(Path::new(s), Path::new(r"C:\s\a.txt"), true, true, 1), Err((WRITE_LINK.to_string(), true)));
-        assert_eq!(after_open(Path::new(s), Path::new(r"C:\s\a.txt"), false, true, 1), Err((WRITE_LINK.to_string(), false)));
-        assert_eq!(after_open(Path::new(s), Path::new(r"C:\s\a.txt"), false, false, 2), Err((WRITE_HARDLINK.to_string(), false)));
-    }
-
-    #[cfg(windows)]
-    mod disk {
-        use super::super::*;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-
-        /// A fresh folder with `s` and `out` in it.
-        pub fn scratch() -> (PathBuf, PathBuf, PathBuf) {
-            let t = std::env::temp_dir().join(format!("tandem-cc-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)));
-            let _ = std::fs::remove_dir_all(&t);
-            std::fs::create_dir_all(t.join("s")).unwrap();
-            std::fs::create_dir_all(t.join("out")).unwrap();
-            (t.clone(), t.join("s"), t.join("out"))
-        }
-
-        pub fn junction(link: &Path, target: &Path) {
-            let r = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(link).arg(target).output().unwrap();
-            assert!(r.status.success(), "mklink: {}", String::from_utf8_lossy(&r.stdout));
-        }
-
-        /// Removes junctions first so the delete never reaches through one.
-        pub fn clean(t: &Path) {
-            for sub in [t.join("s"), t.join("out")] {
-                if let Ok(rd) = std::fs::read_dir(&sub) {
-                    for e in rd.flatten() {
-                        if std::fs::symlink_metadata(e.path()).is_ok_and(|m| m.file_type().is_symlink()) {
-                            let _ = std::fs::remove_dir(e.path()).or_else(|_| std::fs::remove_file(e.path()));
-                        }
-                    }
-                }
-            }
-            let _ = std::fs::remove_dir_all(t);
-        }
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn junction_cannot_escape() {
-        let (t, s, out) = disk::scratch();
-        disk::junction(&s.join("j"), &out);
-        assert_eq!(write_direct(&s, Path::new(r"j\x.txt"), "x"), Err(WRITE_ESCAPES.to_string()));
-        assert!(!out.join("x.txt").exists(), "nothing reached the folder the junction names");
-        assert_eq!(write_direct(&s, Path::new("a.txt"), "x"), Ok(()));
-        assert_eq!(std::fs::read_to_string(s.join("a.txt")).unwrap(), "x");
-        // A final junction is a link too.
-        disk::junction(&s.join("l.txt"), &out);
-        assert_eq!(write_direct(&s, Path::new("l.txt"), "x"), Err(WRITE_LINK.to_string()));
-        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
-        // A symlink to a file needs a privilege: skipped, and said so, when Windows refuses one.
-        std::fs::write(out.join("target.txt"), "keep").unwrap();
-        match std::os::windows::fs::symlink_file(out.join("target.txt"), s.join("sym.txt")) {
-            Ok(()) => {
-                assert_eq!(write_direct(&s, Path::new("sym.txt"), "x"), Err(WRITE_LINK.to_string()));
-                assert_eq!(std::fs::read_to_string(out.join("target.txt")).unwrap(), "keep");
-            }
-            Err(e) => eprintln!("junction_cannot_escape: the file symlink half is skipped, Windows refused to make one: {e}"),
-        }
-        disk::clean(&t);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn write_race_is_closed() {
-        let (t, s, out) = disk::scratch();
-        let canon = std::fs::canonicalize(&s).unwrap();
-        disk::junction(&s.join("d"), &out);
-        assert_eq!(open_checked(&canon, &s.join("d").join("x.txt"), "x"), Err(WRITE_ESCAPES.to_string()));
-        assert!(!out.join("x.txt").exists(), "the file the open created is deleted by handle");
-        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0, "nothing else changed");
-        std::fs::write(out.join("x.txt"), "old").unwrap();
-        assert_eq!(open_checked(&canon, &s.join("d").join("x.txt"), "x"), Err(WRITE_ESCAPES.to_string()));
-        assert_eq!(std::fs::read_to_string(out.join("x.txt")).unwrap(), "old", "an existing file is never truncated before the check");
-        disk::clean(&t);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn hard_link_is_refused() {
-        let (t, s, out) = disk::scratch();
-        std::fs::write(out.join("secret.txt"), "keep").unwrap();
-        std::fs::hard_link(out.join("secret.txt"), s.join("h.txt")).unwrap();
-        assert_eq!(write_direct(&s, Path::new("h.txt"), "x"), Err(WRITE_HARDLINK.to_string()));
-        assert_eq!(std::fs::read_to_string(out.join("secret.txt")).unwrap(), "keep");
-        std::fs::remove_file(s.join("h.txt")).unwrap();
-        assert_eq!(write_direct(&s, Path::new("h.txt"), "x"), Ok(()));
-        assert_eq!(std::fs::read_to_string(s.join("h.txt")).unwrap(), "x");
-        disk::clean(&t);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn direct_write_carries_the_mark_of_the_web() {
-        let (t, s, _) = disk::scratch();
-        assert_eq!(write_direct(&s, Path::new("m.txt"), "hello\n"), Ok(()));
-        assert_eq!(std::fs::read_to_string(s.join("m.txt")).unwrap(), "hello\n");
-        let stream = format!("{}:Zone.Identifier", s.join("m.txt").display());
-        assert_eq!(std::fs::read_to_string(stream).unwrap(), crate::inert_files::ZONE_MARK);
-        // Writing again replaces the contents and keeps the mark.
-        assert_eq!(write_direct(&s, Path::new("m.txt"), "b"), Ok(()));
-        assert_eq!(std::fs::read_to_string(s.join("m.txt")).unwrap(), "b");
-        disk::clean(&t);
-    }
-
-    #[test]
-    fn remote_session_never_writes_locally() {
-        assert!(session_is_local(true, &["pwsh".into()]));
-        assert!(!session_is_local(false, &["pwsh".into()]));
-        assert!(!session_is_local(true, &["cmd".into(), "ssh.exe".into(), "pwsh".into()]));
-        assert!(!session_is_local(true, &["ssh".into()]));
+    fn a_windows_shell_never_writes() {
+        // Final ruling: cmd or PowerShell as `ai_shell_of` reports it refuses, local or remote
+        // (ssh from PowerShell to a Windows host would type the file's lines as commands). The
+        // plan has no local input at all, so a remote session cannot take another path.
         for kind in [ShellKind::Cmd, ShellKind::PowerShell] {
-            assert!(matches!(write_plan(kind, false, Some(r"C:\src"), "a.txt", "hi", home()), WritePlan::Typed(_)), "{kind:?}");
+            assert_eq!(write_plan(kind, "a.bat", "del /q *\nrd x"), WritePlan::Refuse(WINDOWS_SHELL.into()), "{kind:?}");
+            let s = busy_session();
+            assert_eq!(invoke_plan(&s, 7, true, "write", "{\"filename\":\"a.bat\",\"contents\":\"x\"}", kind), Invoke::Write(WritePlan::Refuse(WINDOWS_SHELL.into())));
         }
-        assert!(matches!(write_plan(ShellKind::Posix, false, Some("/home/u"), "a.txt", "hi", home()), WritePlan::Typed(_)));
     }
 
     #[test]
     fn typed_write_follows_tandem() {
-        let typed = |name: &str, contents: &str| write_plan(ShellKind::Posix, true, Some("/home/u"), name, contents, home());
+        let typed = |name: &str, contents: &str| write_plan(ShellKind::Posix, name, contents);
         let parts = |a: &str, b: &str| WritePlan::Typed(vec![a.into(), b.into(), "\u{4}".into()]);
         assert_eq!(typed("a.txt", "hi"), parts("cat > 'a.txt'\r", "hi\r"));
         assert_eq!(typed("a.txt", "hi\n"), parts("cat > 'a.txt'\r", "hi\r"));
@@ -1206,8 +833,8 @@ mod tests {
 
     #[test]
     fn late_execute_never_types() {
-        let exec = |s: &Session, id: u64, open: bool| invoke_plan(s, id, open, "execute", r#"{"command":"rm -rf ~"}"#, ShellKind::Posix, true, Some("/home/u"), home());
-        let write = |s: &Session, id: u64, open: bool| invoke_plan(s, id, open, "write", r#"{"filename":"a.txt","contents":"x"}"#, ShellKind::Posix, true, Some("/home/u"), home());
+        let exec = |s: &Session, id: u64, open: bool| invoke_plan(s, id, open, "execute", r#"{"command":"rm -rf ~"}"#, ShellKind::Posix);
+        let write = |s: &Session, id: u64, open: bool| invoke_plan(s, id, open, "write", r#"{"filename":"a.txt","contents":"x"}"#, ShellKind::Posix);
         let s = busy_session();
         assert_eq!(exec(&s, 7, true), Invoke::Type(vec!["rm -rf ~\r".into()]));
         assert_eq!(write(&s, 7, true), Invoke::Write(WritePlan::Typed(vec!["cat > 'a.txt'\r".into(), "x\r".into(), "\u{4}".into()])));
@@ -1229,13 +856,13 @@ mod tests {
         assert_eq!(write(&s, 7, true), Invoke::Answer(AUTO_OFF.into()));
         // Other names and bad arguments answer the model.
         let s = busy_session();
-        match invoke_plan(&s, 7, true, "nope", "{}", ShellKind::Posix, true, None, home()) {
+        match invoke_plan(&s, 7, true, "nope", "{}", ShellKind::Posix) {
             Invoke::Answer(t) => assert_eq!(t, crate::ai_turn::UNKNOWN_FUNCTION),
             i => panic!("{i:?}"),
         }
-        assert!(matches!(invoke_plan(&s, 7, true, "execute", "{", ShellKind::Posix, true, None, home()), Invoke::Answer(_)));
+        assert!(matches!(invoke_plan(&s, 7, true, "execute", "{", ShellKind::Posix), Invoke::Answer(_)));
         // The typed command has no unsafe control and one Enter.
-        assert_eq!(invoke_plan(&s, 7, true, "execute", "{\"command\":\"ls\\u0003\\n\"}", ShellKind::Posix, true, None, home()), Invoke::Type(vec!["ls\r".into()]));
+        assert_eq!(invoke_plan(&s, 7, true, "execute", "{\"command\":\"ls\\u0003\\n\"}", ShellKind::Posix), Invoke::Type(vec!["ls\r".into()]));
     }
 
     #[test]
