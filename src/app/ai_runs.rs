@@ -89,6 +89,16 @@ pub(super) fn launch(gate_open: bool, runner: &mut Runner, key: Option<&Secret>)
     Ok(runner.start(key))
 }
 
+/// The one tool-result path (ruling R12e-1): the follow-up request after a tool result is a send
+/// too, so a closed gate ends the run with `NOT_ENABLED` and the transport never sees it.
+pub(super) fn tool_done_gated(gate_open: bool, runner: &mut Runner, result: ToolResult) -> Result<Vec<Out>, Finished> {
+    if !gate_open {
+        runner.cancel();
+        return Err(Finished::Failed(NOT_ENABLED.into()));
+    }
+    Ok(runner.tool_done(result))
+}
+
 /// 12b's `one_shot` with iTerm2's `AIConversation.shouldThink` (`ChatIconGenerator.swift:86-89`),
 /// which `one_shot` cannot carry: the same fields, plus `should_think`. With None it is exactly
 /// `one_shot`.
@@ -222,8 +232,15 @@ impl App {
     #[allow(dead_code)] // Codecierge's execute and write (Task 7).
     pub(super) fn ai_run_tool_done(&mut self, id: u64, result: ToolResult) {
         let Some(run) = self.ai_runs.get_mut(&id) else { return };
-        let outs = run.runner.tool_done(result);
-        self.ai_run_outs(id, outs);
+        let open = chat_gate::gate_open(&self.globals, &run.endpoint);
+        match tool_done_gated(open, &mut run.runner, result) {
+            Ok(outs) => self.ai_run_outs(id, outs),
+            Err(done) => {
+                if let Some(run) = self.ai_runs.remove(&id) {
+                    self.ai_run_route(id, run.owner, done);
+                }
+            }
+        }
     }
 
     /// Polls every run. A continuation send spends a proof that the gate for the run's own
@@ -408,6 +425,54 @@ mod tests {
         let production = include_str!("ai_runs.rs").split("\n#[cfg(test)]\nmod tests").next().unwrap();
         let launch_fn = production.split("pub(super) fn launch").nth(1).unwrap().split("\n}\n").next().unwrap();
         assert_eq!(launch_fn.matches(call).count(), 1, "the one start is inside launch");
+    }
+
+    #[test]
+    fn closed_gate_after_a_tool_result_sends_nothing() {
+        use crate::ai_turn::{ToolDecl, Turn, TurnInput};
+        const CALL: &[u8] = br#"{"id":"resp_1","output":[{"type":"function_call","id":"fc_1","call_id":"c1","name":"execute","arguments":"{}"}]}"#;
+        let mut g = globals(true, true);
+        ai_gate::grant(&mut g, "api.openai.com");
+        let turn = || {
+            Turn::new(TurnInput {
+                model: fixture("gpt-test", URL, Api::Responses),
+                messages: vec![Message::text(Role::User, "go")],
+                tools: vec![ToolDecl { name: "execute".into(), description: "d".into(), parameters: serde_json::json!({"type": "object"}) }],
+                stream: false,
+                hosted: crate::ai_turn::Hosted::default(),
+                previous_response_id: None,
+                should_think: None,
+                effort: None,
+                tier: None,
+                volatile: Box::new(|| None),
+                frozen: None,
+                wire: Wire::from_globals(&g),
+                legacy_url_pref: String::new(),
+            })
+        };
+        // Runs one call to the point where the model asked for a tool.
+        let asked = || {
+            let recorded = Arc::new(Recorded::new(vec![Reply::ok(&[CALL]), Reply::ok(&[ANSWER])]));
+            let mut runner = Runner::new(turn(), recorded.clone(), Options { idle: Duration::ZERO, proxy: Proxy::Off }, Arc::new(|| {}));
+            assert!(launch(true, &mut runner, Some(&key())).is_ok());
+            let outs = runner.poll();
+            assert!(outs.iter().any(|o| matches!(o, Out::Invoke { .. })), "{outs:?}");
+            (runner, recorded)
+        };
+        let (mut runner, recorded) = asked();
+        assert_eq!(recorded.requests().len(), 1);
+        let done = tool_done_gated(false, &mut runner, ToolResult::Ok("out".into()));
+        assert_eq!(done.err(), Some(Finished::Failed(NOT_ENABLED.into())));
+        runner.poll();
+        assert_eq!(recorded.requests().len(), 1, "a closed gate sends no follow-up");
+        // Open: exactly the follow-up.
+        let (mut runner, recorded) = asked();
+        assert!(tool_done_gated(true, &mut runner, ToolResult::Ok("out".into())).is_ok());
+        runner.poll();
+        assert_eq!(recorded.requests().len(), 2);
+        // The only tool_done call of the production text sits behind that gate.
+        let production = include_str!("ai_runs.rs").split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        assert_eq!(production.matches(concat!(".tool", "_done(")).count(), 1);
     }
 
     #[test]

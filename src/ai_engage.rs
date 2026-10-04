@@ -96,12 +96,6 @@ pub fn erase_status_bar(current: &str, query: &str) -> bool {
     current == query
 }
 
-/// The session variable `uname` (`PS:19418-19440`, `PS:25625-25657`): "Windows_NT" for a session
-/// on this computer, none for a remote one (iTerm2 has it only through its SSH conductor).
-pub fn uname_value(local: bool) -> Option<String> {
-    local.then(|| crate::ai_prompts::WINDOWS_UNAME.to_string())
-}
-
 /// One row of the dialog, top to bottom.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Row {
@@ -199,11 +193,5 @@ mod tests {
         assert!(!status_bar_query_enabled(false, "list"));
         assert!(erase_status_bar("list", "list"));
         assert!(!erase_status_bar("list more", "list"));
-    }
-
-    #[test]
-    fn uname_follows_iterm2() {
-        assert_eq!(uname_value(true).as_deref(), Some("Windows_NT"));
-        assert_eq!(uname_value(false), None);
     }
 }

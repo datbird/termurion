@@ -134,10 +134,9 @@ impl App {
     /// `ai.prompt` the trimmed query (a template that fails sends nothing and shows nothing,
     /// as iTerm2's nil result, `ATO:380-396`), then one request through `ai_run`.
     pub(super) fn engage_send(&mut self, from: EngageFrom, query: &str) {
+        // An empty query is sent too: iTerm2 has no guard (`PS:21095-21104`, `PS:21324-21327`
+        // returns only for nil, `ATO:380-394` evaluates the template with `ai.prompt` "").
         let trimmed = ai_engage::trimmed_query(query);
-        if trimmed.is_empty() {
-            return;
-        }
         let template = self.globals.string("AI Prompt");
         let Ok(prompt) = self.ai_prompt(from.pane(), &template, &[(ai_engage::PROMPT_VAR, trimmed.as_str())]) else { return };
         // The answer can come back inside the call that starts the run, so the origin is
@@ -276,6 +275,17 @@ impl App {
 mod tests {
     use super::*;
     use crate::composer::Shown;
+
+    #[test]
+    fn empty_query_is_sent_as_iterm2() {
+        // The template evaluates with an empty `ai.prompt`, and the send has no emptiness guard.
+        assert_eq!(ai_engage::trimmed_query(" \n "), "");
+        let lookup = |_: &str| None;
+        assert_eq!(crate::ai_prompts::evaluate("[\\(ai.prompt)]", &[(ai_engage::PROMPT_VAR, "")], &lookup), Ok("[]".to_string()));
+        let production = include_str!("ai_engage_app.rs").split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        let send = production.split("fn engage_send").nth(1).unwrap().split("\n    }\n").next().unwrap();
+        assert!(!send.contains("is_empty()"), "engage_send must not skip an empty query");
+    }
 
     #[test]
     fn engage_route_follows_iterm2() {
