@@ -147,32 +147,10 @@ pub fn logical_name(maps: &Maps, command: &str) -> Option<String> {
     maps.icons.get(&normalized(command)).and_then(|l| l.first()).cloned()
 }
 
-/// `getHashColorRed:green:blue:` (`NSStringITerm.m:2620-2663`): "#rgb", "#rrggbb" or
-/// "#rrrrggggbbbb".
-fn hex_color(s: &str) -> Option<Rgb> {
-    let digits = s.strip_prefix('#')?;
-    if !digits.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    let part = |from: usize, len: usize| u32::from_str_radix(&digits[from..from + len], 16).ok();
-    match digits.len() {
-        3 => {
-            let d = |i: usize| part(i, 1).map(|v| (v * 17) as u8);
-            Some(rgb(d(0)?, d(1)?, d(2)?))
-        }
-        6 => Some(rgb(part(0, 2)? as u8, part(2, 2)? as u8, part(4, 2)? as u8)),
-        12 => {
-            let d = |i: usize| part(i, 4).map(|v| ((v as f64 / 65535.0) * 255.0).round() as u8);
-            Some(rgb(d(0)?, d(4)?, d(8)?))
-        }
-        _ => None,
-    }
-}
-
 /// The picture's tint (`GS:393-402`): the command's color, else the logical name's, else
 /// #888888; a value that is not a hex color is absent.
 pub fn tint(maps: &Maps, command: &str, logical: &str) -> Rgb {
-    let of = |k: &str| maps.colors.get(k).and_then(|c| hex_color(c));
+    let of = |k: &str| maps.colors.get(k).and_then(|c| crate::hexcolor::parse(c));
     of(&normalized(command)).or_else(|| of(logical)).unwrap_or(DEFAULT_TINT)
 }
 

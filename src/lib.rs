@@ -27,6 +27,7 @@ pub mod cc_onboarding_ui;
 pub mod cc_status;
 pub mod claude_code;
 pub mod api_client;
+pub mod hexcolor;
 pub mod tab_layout;
 pub mod tab_drag;
 pub mod tab_flash;

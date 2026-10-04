@@ -203,9 +203,7 @@ pub(super) fn color_of(v: &toml::Value) -> Option<(Rgb, f32)> {
 
 /// `NSColor colorWithHue:saturation:brightness:alpha:`, as `Rgb` bytes.
 fn hsb(h: f32, s: f32, b: f32) -> Rgb {
-    let (r, g, bl) = statusbar::hsb_to_rgb(h, s, b);
-    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    crate::palette::rgb(byte(r), byte(g), byte(bl))
+    crate::hexcolor::from_hsb(h, s, b)
 }
 
 /// A bar on screen: the session whose layout it shows, and where it is.
