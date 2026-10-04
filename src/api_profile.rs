@@ -265,8 +265,9 @@ pub const SET_COOKIE: &str = "setCookie";
 /// stores any key): the stored answers to Tandem's consent questions, which would let a
 /// program's output (a remote host's too) read the clipboard, change profiles, open URLs,
 /// files and links, report variables or sync a tmux clipboard without asking, the silenced
-/// API warnings, and the paths of programs the password manager runs.
-const REFUSED: [&str; 12] = [
+/// API warnings, the paths of programs the password manager runs, and the alternate mouse scroll switch and
+/// strings (bytes a wheel event types into a pane).
+const REFUSED: [&str; 15] = [
     "NoSyncAllowPaste",
     "NoSyncNeverAllowPaste",
     "NoSyncDisableOpenURL",
@@ -279,6 +280,9 @@ const REFUSED: [&str; 12] = [
     crate::api_auth::RESET_ID,
     "NoSyncPasswordManagerOnePasswordCLI",
     "NoSyncPasswordManagerLastPassCLI",
+    "AlternateMouseScroll",
+    "AlternateMouseScrollStringForUp",
+    "AlternateMouseScrollStringForDown",
 ];
 
 /// The same, for keys made per profile key, host or password manager adapter.
@@ -309,6 +313,14 @@ pub fn preference_step(key: &str, value: &Value, cookie_on: bool) -> PrefStep {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn alternate_scroll_settings_are_refused() {
+        // 13j sends these strings to the program on a wheel event: a script must not set them.
+        for key in ["AlternateMouseScroll", "AlternateMouseScrollStringForUp", "AlternateMouseScrollStringForDown"] {
+            assert!(refused(key), "{key}");
+        }
+    }
+
     use super::*;
     use crate::schema;
     use pb::preferences_response::result::set_preference_result::Status as PStatus;

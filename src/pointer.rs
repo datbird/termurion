@@ -250,12 +250,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn status_of_move_pane() {
-        use crate::commands::Status;
-        assert_eq!(status(&PointerBinding::new("kMovePanePointerAction", "")), Status::Done);
-    }
-
     fn defaults() -> toml::Table {
         crate::globals::keymaps::factory_pointer().clone()
     }

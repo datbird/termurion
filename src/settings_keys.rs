@@ -1568,6 +1568,14 @@ mod tests {
             assert_eq!(s.default.as_ref(), Some(&default), "{key} default");
             assert_eq!(s.help, help, "{key} help");
             assert_eq!(s.label, help.lines().next().unwrap(), "{key} label");
+            // The Advanced pane must draw it with the right control (preflight P9).
+            let want = match kind {
+                Kind::Bool => crate::advanced_pane::RowKind::Bool,
+                Kind::Float => crate::advanced_pane::RowKind::Float,
+                _ => crate::advanced_pane::RowKind::Text,
+            };
+            let row = crate::advanced_pane::rows().into_iter().find(|r| r.key == key).unwrap_or_else(|| panic!("{key} has no pane row"));
+            assert_eq!(row.kind, want, "{key} row kind");
         }
     }
 
