@@ -420,6 +420,9 @@ pub struct Context {
     /// A `Handler::File` reply that overran its cap: the lines are gone and the rest dropped
     /// (P8), and the end completes the request with `OVERRUN_STATUS`.
     overflow: bool,
+    /// The bytes a `Handler::File` reply holds so far: a running total, so a line costs O(1)
+    /// and not a re-sum of every line kept.
+    file_bytes: usize,
     /// Whether the conductor was framing when this command was written.
     framed_at_write: bool,
     /// Its timeout (`command_timeout` of its size), set when it is written.
@@ -1125,7 +1128,7 @@ impl Conductor {
     /// topped up with what can ride along (`extend`): a keystroke need not wait for the
     /// round trip of the one before it. Unhooked, it stays queued, unsent.
     pub fn send(&mut self, cmd: Command, handler: Handler, high_priority: bool) {
-        let context = Context { command: cmd, handler, canceled: false, overflow: false, framed_at_write: false, timeout: COMMAND_TIMEOUT };
+        let context = Context { command: cmd, handler, canceled: false, overflow: false, file_bytes: 0, framed_at_write: false, timeout: COMMAND_TIMEOUT };
         if high_priority {
             self.queue.insert(0, context);
         } else {
@@ -1481,10 +1484,11 @@ impl Conductor {
                     Command::FramerFile(sub) if sub.pipelines() => (crate::ssh_files::FETCH_REPLY_MAX, crate::ssh_files::FILE_REPLY_LINES),
                     _ => (crate::ssh_files::FILE_REPLY_MAX, crate::ssh_files::FILE_REPLY_LINES),
                 };
-                let kept: usize = lines.iter().map(String::len).sum();
-                if crate::ssh_files::reply_fits(kept, lines.len(), line.len(), max_bytes, max_lines) {
+                if crate::ssh_files::reply_fits(context.file_bytes, lines.len(), line.len(), max_bytes, max_lines) {
+                    context.file_bytes += line.len();
                     lines.push(line.to_string());
                 } else {
+                    context.file_bytes = 0;
                     lines.clear();
                     lines.shrink_to_fit();
                     context.overflow = true;
@@ -2414,10 +2418,10 @@ mod tests {
         assert_eq!(c.in_flight(), Some(&cd("/a")), "only queued commands are canceled");
         c.handle_end("1", "r", 0, 0);
         assert_eq!(wire(&mut c), sent(&Command::Run("x".into())), "the canceled command is dropped, the next written");
-        let run_in_flight = State::WillExecute(vec![Context { command: Command::Run("x".into()), handler: Handler::FailIfNonzero, canceled: false, overflow: false, framed_at_write: false, timeout: COMMAND_TIMEOUT }]);
+        let run_in_flight = State::WillExecute(vec![Context { command: Command::Run("x".into()), handler: Handler::FailIfNonzero, canceled: false, overflow: false, file_bytes: 0, framed_at_write: false, timeout: COMMAND_TIMEOUT }]);
         assert_eq!(
             c.updates,
-            [(cd("/a"), Partial::End(0), State::WillExecute(vec![Context { command: cd("/a"), handler: Handler::FailIfNonzero, canceled: false, overflow: false, framed_at_write: false, timeout: COMMAND_TIMEOUT }])), (cd("/b"), Partial::Canceled, run_in_flight)],
+            [(cd("/a"), Partial::End(0), State::WillExecute(vec![Context { command: cd("/a"), handler: Handler::FailIfNonzero, canceled: false, overflow: false, file_bytes: 0, framed_at_write: false, timeout: COMMAND_TIMEOUT }])), (cd("/b"), Partial::Canceled, run_in_flight)],
             "the canceled handler runs once the state is consistent"
         );
     }
@@ -3460,6 +3464,20 @@ mod tests {
         c.take_effects();
         file_reply(&mut c, &["ok"], 0);
         assert_eq!(file_done(&mut c), [Effect::FileDone { id: 10, content: "ok".into(), status: 0 }]);
+
+        // The running byte total sums across lines: 163 lines of 100 bytes fit a fetch's
+        // 16 KiB, the 164th does not (a few hundred lines only: this test log is quadratic).
+        let line = "A".repeat(100);
+        for (n, want) in [(163usize, 0), (164, OVERRUN_STATUS)] {
+            c.send(file_cmd(fetch("/tmp")), Handler::File { id: 20, lines: vec![] }, false);
+            c.take_effects();
+            let lines: Vec<&str> = (0..n).map(|_| line.as_str()).collect();
+            file_reply(&mut c, &lines, 0);
+            let effects = c.take_effects();
+            let done = effects.iter().find_map(|e| match e { Effect::FileDone { id: 20, status, .. } => Some(*status), _ => None });
+            assert_eq!(done, Some(want), "{n} lines");
+            assert!(!c.failed() && c.framing());
+        }
 
         // The line count is `ssh_files::reply_fits`' (tested there): this conductor's test log
         // clones the state on every line, so 100000 lines here would take gigabytes.

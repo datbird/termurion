@@ -2160,7 +2160,7 @@ mod tests {
         p.conductor.as_deref_mut().unwrap().fail("boom");
         p.apply_ssh_effects();
         assert_eq!(p.take_ssh_files(), [(3, String::new(), -1), (4, String::new(), -1)], "each once, though the abort pops it");
-        assert!(p.ssh_effects_pending() == false);
+        assert!(!p.ssh_effects_pending());
     }
 
     #[test]
