@@ -22,6 +22,35 @@ pub(super) fn pick_direction(adjacent: &[PaneId], wrap: &[PaneId], wrap_focus: b
     most_recent(adjacent, activity).or_else(|| if wrap_focus { most_recent(wrap, activity) } else { None })
 }
 
+/// Whether a new split pane takes focus (`PT:11365-11370`): only when the split pane was the
+/// active one, and then unless focus follows mouse is on with
+/// FocusNewSplitPaneWithFocusFollowsMouse off.
+pub(super) fn focus_new_split(focus_follows_mouse: bool, key: bool, target_is_active: bool) -> bool {
+    target_is_active && (!focus_follows_mouse || key)
+}
+
+/// Where a split's profile comes from (`profileForSplit`, `PS:2915-2953`).
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum SplitFrom {
+    /// The pane's own copy, local changes and all (UseDivorcedProfileToSplit, tested first).
+    Divorced,
+    /// The saved profile made an SSH one to the pane's host (14b).
+    Conductor,
+    /// The pane's saved profile.
+    Saved,
+}
+
+/// The rule behind `ssh_split_profile`: divorced first, then the conductor, then saved.
+pub(super) fn split_from(use_divorced: bool, is_copy: bool, has_conductor: bool) -> SplitFrom {
+    if use_divorced && is_copy {
+        SplitFrom::Divorced
+    } else if has_conductor {
+        SplitFrom::Conductor
+    } else {
+        SplitFrom::Saved
+    }
+}
+
 /// Which order the key picks: reading order with NavigatePanesInReadingOrder, else last use.
 pub(super) fn order_source(reading: bool) -> &'static str {
     if reading { "reading" } else { "activity" }
@@ -109,6 +138,29 @@ mod tests {
         assert!(builtin.contains("pane_in_direction"), "the script API pick");
         assert!(menu.contains("select_pane_dir("), "the menu shares select_pane_dir");
         assert!(app.contains("select_pane_dir("), "Action::Focus shares select_pane_dir");
+    }
+
+    #[test]
+    fn split_focus_follows_iterm2() {
+        assert!(focus_new_split(false, true, true));
+        assert!(focus_new_split(true, true, true));
+        assert!(!focus_new_split(true, false, true));
+        assert!(focus_new_split(false, false, true));
+        assert!(!focus_new_split(false, true, false), "a split of a pane that is not active never takes focus");
+        let (app, api) = (include_str!("mod.rs"), include_str!("api_requests.rs"));
+        assert!(app.contains("focus_new_split("), "split uses the rule");
+        assert!(api.contains("focus_new_split("), "the API split uses the rule");
+    }
+
+    #[test]
+    fn split_profile_follows_iterm2() {
+        // B1: divorced first (PS:2916-2921), then 14b's conductor arm, then the saved profile.
+        assert_eq!(split_from(true, true, false), SplitFrom::Divorced);
+        assert_eq!(split_from(true, true, true), SplitFrom::Divorced, "a divorced SSH pane splits with its own profile");
+        assert_eq!(split_from(false, true, true), SplitFrom::Conductor, "key off: the ssh profile");
+        assert_eq!(split_from(false, true, false), SplitFrom::Saved);
+        assert_eq!(split_from(true, false, true), SplitFrom::Conductor);
+        assert_eq!(split_from(true, false, false), SplitFrom::Saved);
     }
 
     #[test]

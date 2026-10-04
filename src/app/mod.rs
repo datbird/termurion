@@ -3651,6 +3651,7 @@ impl App {
             return;
         }
         let tab = &self.tabs[self.active];
+        let target_was_active = target == tab.focused;
         let area = self.content_area();
         let Some((_, rect)) = tab.layout.rects(area, GAP).into_iter().find(|(id, _)| *id == target) else { return };
         let half = match axis {
@@ -3663,8 +3664,10 @@ impl App {
         if let Some(id) = started {
             let tab = &mut self.tabs[self.active];
             tab.layout.split(target, axis, id);
-            tab.focused = id;
-            tab.zoomed = None;
+            if pane_nav_ui::focus_new_split(self.globals.bool("FocusFollowsMouse"), self.globals.bool("FocusNewSplitPaneWithFocusFollowsMouse"), target_was_active) {
+                self.tabs[self.active].focused = id;
+            }
+            self.tabs[self.active].zoomed = None;
             self.check_alpha_surfaces();
             self.relayout();
         }

@@ -628,12 +628,15 @@ impl App {
         let started = self.start_pane(half, Some(guid));
         self.start_tab = None;
         let Some(id) = started else { return SplitResult::Refused };
+        let focus = super::pane_nav_ui::focus_new_split(self.globals.bool("FocusFollowsMouse"), self.globals.bool("FocusNewSplitPaneWithFocusFollowsMouse"), self.tabs[index].focused == target);
         let tab = &mut self.tabs[index];
         tab.layout.split(target, axis, id);
         if before {
             tab.layout.swap(target, id);
         }
-        tab.focused = id;
+        if focus {
+            tab.focused = id;
+        }
         tab.zoomed = None;
         self.relayout();
         SplitResult::Made(id)
