@@ -1117,8 +1117,8 @@ impl App {
             ChatEvent::OpenFile(r) => self.chat_file(&r, true),
             ChatEvent::RevealFile(r) => self.chat_file(&r, false),
             ChatEvent::RevealCommand(url) => self.chat_reveal_command(&url, event_loop),
-            ChatEvent::InputChanged(text, keystrokes) => {
-                self.chat_input.typed(text, keystrokes);
+            ChatEvent::InputChanged(text) => {
+                self.chat_input.typed(text);
                 self.chat_mention_follow();
                 self.chat_window_refresh();
             }

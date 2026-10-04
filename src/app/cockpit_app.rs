@@ -29,7 +29,6 @@ impl App {
 
     /// The pane a model's reference names: a stable id of a live or buried pane. A decimal pane
     /// id or the per-launch session reference names nothing (ruling P3).
-    #[allow(dead_code)] // the orchestration dispatcher (a later task) resolves its references here
     pub(super) fn pane_by_reference(&self, reference: &str) -> Option<PaneId> {
         crate::stable_id::find(reference, self.panes.iter().map(|(k, p)| (*k, p.stable_id.as_str())))
     }
@@ -44,7 +43,7 @@ impl App {
     }
 
     /// A chip's label: "Window N", a tab's title, a session's name, else `DEFUNCT`.
-    #[allow(dead_code)] // the window labels chips from the world it is handed; the command bar's messages (Task 6) name one chip here
+    #[allow(dead_code)] // the window labels chips from the world it is handed; kept for the dispatcher's messages
     pub(super) fn cockpit_chip_label(&self, chip: &crate::mention::Chip) -> String {
         crate::mention::chip_label(&self.cockpit_world(), chip)
     }
@@ -269,8 +268,8 @@ impl App {
     }
 
     /// The command bar's Send. The text goes, as the person typed it, only to the panes the
-    /// person chose (chips or chosen rows) and only if live: a buried or exited pane is never
-    /// typed into (ruling P8). It is the person's own input (`SendTextLocal`, never
+    /// person chose (chips or chosen rows) and only if running: an exited pane is skipped, a buried
+    /// one is typed into as in iTerm2 (`CW:688,945-948`). It is the person's own input (`SendTextLocal`, never
     /// broadcast; ruling P17).
     pub(super) fn cockpit_send(&mut self) {
         let now = Instant::now();
@@ -291,7 +290,7 @@ impl App {
             }
             Ok(Some(t)) => t,
         };
-        let live = |p: PaneId| cockpit::typable(&world, p) && self.panes.get(&p).is_some_and(|x| x.exited.is_none()) && !self.buried.contains(p);
+        let live = |p: PaneId| cockpit::typable(&world, p) && self.panes.get(&p).is_some_and(|x| x.exited.is_none());
         let writes = cockpit::writes(&targets, &text, &live);
         if writes.is_empty() {
             self.cockpit_view.tip.show(&cockpit::SendError::NoneRunning.text(), true, now);

@@ -517,10 +517,12 @@ pub fn payload(text: &str) -> String {
     }
 }
 
-/// Whether the person's command may be typed into `pane`: it is in a window of the snapshot
-/// (not buried) and its program has not exited (ruling P8).
+/// Whether the person's command may be typed into `pane`: it is in the snapshot, in a window or
+/// buried (iTerm2 types into a buried session, `CW:688,945-948`; ruling P8 governs a model's
+/// typing, not the person's own), and its program has not exited.
 pub fn typable(world: &World, pane: PaneId) -> bool {
-    world.windows.iter().flat_map(|w| &w.tabs).flat_map(|t| &t.sessions).any(|s| s.pane == pane && !s.exited)
+    let windows = world.windows.iter().flat_map(|w| &w.tabs).flat_map(|t| &t.sessions);
+    windows.chain(&world.buried).any(|s| s.pane == pane && !s.exited)
 }
 
 /// The writes of a send: `payload(text)` for each target that is typable, in order.
@@ -832,16 +834,21 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_typed_into_a_buried_or_exited_pane() {
+    fn buried_is_typed_into_exited_is_not() {
         let w = world();
         assert!(typable(&w, 1));
         assert!(!typable(&w, 2), "an exited pane");
-        assert!(!typable(&w, 3), "a buried pane");
+        // The person's own input reaches a buried session as in iTerm2 (`CW:688,945-948`); only a
+        // pane the snapshot does not hold, or one that has exited, is skipped.
+        assert!(typable(&w, 3), "a buried pane");
         assert!(!typable(&w, 99), "a pane no window shows");
         let out = writes(&[1, 2, 3, 99], "rm x", &|p| typable(&w, p));
-        assert_eq!(out, vec![(1, b"rm x\r".to_vec())]);
+        assert_eq!(out, vec![(1, b"rm x\r".to_vec()), (3, b"rm x\r".to_vec())]);
         // Nothing typable: nothing written.
-        assert!(writes(&[2, 3], "ls", &|p| typable(&w, p)).is_empty());
+        assert!(writes(&[2, 99], "ls", &|p| typable(&w, p)).is_empty());
+        let mut gone = world();
+        gone.buried[0].exited = true;
+        assert!(!typable(&gone, 3), "an exited buried pane");
     }
 
     #[test]
@@ -850,7 +857,7 @@ mod tests {
         // Each target gets the person's text, trimmed, with one CR: no prefix, suffix or edit.
         let out = writes(&[5, 6], "  echo \"hi\" ; ls \n", &all);
         assert_eq!(out, vec![(5, b"echo \"hi\" ; ls\r".to_vec()), (6, b"echo \"hi\" ; ls\r".to_vec())]);
-        // A chip's token never reaches the text.
+        // A typed @ptys_ token is literal text (`CW:887-889`): a chip is never part of the text, but typing one sends it.
         let out = writes(&[5], "@ptys_0123456789ABW ls", &all);
         assert_eq!(out, vec![(5, b"@ptys_0123456789ABW ls\r".to_vec())]);
         // Non-ASCII text is sent as typed.
