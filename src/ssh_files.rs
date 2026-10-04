@@ -306,6 +306,64 @@ pub fn upload_refused(local: &str, size: Option<u64>) -> Option<String> {
     size.filter(|s| *s > UPLOAD_MAX).map(|_| "Too large to upload (the limit is 64 MiB).".to_string())
 }
 
+/// What a download offers (`CD:1630-1675`): a viewable type may be shown in a browser.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ViewChoice {
+    Download,
+    Ask { mime: String },
+}
+
+/// Tandem has no built-in browser, so nothing is offered for viewing (iTerm2's own path when
+/// its browser is off): the mime type is never consulted.
+pub const BROWSER_ALLOWED: bool = false;
+
+pub const VIEW_HEADING: &str = "Download or View File?";
+pub const DOWNLOAD: &str = "Download";
+pub const VIEW: &str = "View";
+
+/// `downloadOrView`: archives are never viewed, no browser or no mime type downloads.
+pub fn download_or_view(mime: Option<&str>, browser_allowed: bool) -> ViewChoice {
+    match mime {
+        Some(m) if browser_allowed && !matches!(m, "application/zip" | "application/x-gtar" | "application/x-tar") => ViewChoice::Ask { mime: m.to_string() },
+        _ => ViewChoice::Download,
+    }
+}
+
+pub fn view_title(name: &str) -> String {
+    format!("Download {name} or view in browser?")
+}
+
+/// The remembered-answer id of the view prompt.
+pub fn view_id(mime: &str, to: &ScpPath) -> String {
+    format!("DownloadOrViewInBrowser_{mime} {}", to.user_at_host())
+}
+
+/// The Win-click's last phase (`UF:879-899`): the Smart Selection match at the click, through
+/// `scpPathForFile`.
+pub fn secure_copy_target(smart_text: Option<&str>, scp: impl Fn(&str) -> Option<ScpPath>) -> Option<ScpPath> {
+    scp(smart_text?)
+}
+
+/// How a Win-click treats a pane (P10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClickRoute {
+    /// As for any pane: the local plan (open, run, reveal), then the secure-copy phase.
+    Local,
+    /// Remote text: only the secure copy; no local run is ever built from it.
+    SecureCopyOnly,
+}
+
+/// A pane whose conductor frames and whose reported host is not this machine (no reported host
+/// is not proof of this machine) has text a remote host wrote: a click on anything but a link
+/// may only download. `host_is_local` is None when the pane reports no host.
+pub fn click_route(framing: bool, host_is_local: Option<bool>, link: bool) -> ClickRoute {
+    if framing && !link && host_is_local != Some(true) {
+        ClickRoute::SecureCopyOnly
+    } else {
+        ClickRoute::Local
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,5 +523,42 @@ mod tests {
         assert_eq!(upload_refused("C:\\a", Some(UPLOAD_MAX)), None);
         assert!(upload_refused("C:\\a", Some(UPLOAD_MAX + 1)).is_some());
         assert!(upload_refused("C:\\a", Some(u64::MAX)).is_some());
+    }
+
+    #[test]
+    fn download_or_view_follows_iterm2() {
+        assert_eq!(download_or_view(Some("image/png"), false), ViewChoice::Download);
+        assert_eq!(download_or_view(Some("image/png"), true), ViewChoice::Ask { mime: "image/png".into() });
+        for m in ["application/zip", "application/x-gtar", "application/x-tar"] {
+            assert_eq!(download_or_view(Some(m), true), ViewChoice::Download);
+        }
+        assert_eq!(download_or_view(None, true), ViewChoice::Download);
+        assert_eq!(download_or_view(Some("text/html"), true), ViewChoice::Ask { mime: "text/html".into() });
+        assert_eq!(view_title("a.png"), "Download a.png or view in browser?");
+        assert_eq!((VIEW_HEADING, DOWNLOAD, VIEW), ("Download or View File?", "Download", "View"));
+        let to = ScpPath { path: "/a".into(), hostname: "h".into(), username: "u".into() };
+        assert_eq!(view_id("image/png", &to), "DownloadOrViewInBrowser_image/png u@h");
+        assert!(!BROWSER_ALLOWED);
+    }
+
+    #[test]
+    fn secure_copy_follows_iterm2() {
+        let to = || Some(ScpPath { path: "/w/a.txt".into(), hostname: "h".into(), username: "u".into() });
+        assert_eq!(secure_copy_target(Some("a.txt"), |_| to()), to());
+        assert_eq!(secure_copy_target(None, |_| to()), None);
+        assert_eq!(secure_copy_target(Some("a.txt"), |_| None), None);
+    }
+
+    #[test]
+    fn remote_click_builds_no_local_run() {
+        // A framing conductor and a host that is not this machine: a path, a command word or a
+        // Smart Selection action in the text may only download (P10).
+        assert_eq!(click_route(true, Some(false), false), ClickRoute::SecureCopyOnly);
+        // No reported host is not proof of this machine.
+        assert_eq!(click_route(true, None, false), ClickRoute::SecureCopyOnly);
+        // A link opens as before; a local host, or no framing conductor, is today's click.
+        assert_eq!(click_route(true, Some(false), true), ClickRoute::Local);
+        assert_eq!(click_route(true, Some(true), false), ClickRoute::Local);
+        assert_eq!(click_route(false, Some(false), false), ClickRoute::Local);
     }
 }

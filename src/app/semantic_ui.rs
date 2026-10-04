@@ -8,6 +8,7 @@ use super::find_ui::{reveal, to_pos};
 use crate::find::{self, Logical, Match};
 use crate::semantic::{self, Around, ClickContext, Prefs, Run, Target};
 use crate::smartsel::{self, Escape};
+use crate::ssh_files;
 
 /// Smart Selection looks this many logical lines each way from the click.
 const RADIUS: usize = 2;
@@ -30,7 +31,7 @@ impl App {
 
     /// What is around a click: the context Semantic History resolves, the clicked line
     /// (for ranges), and the Smart Selection match there.
-    fn clicked(&self, id: PaneId, point: Point) -> Option<Clicked> {
+    pub(super) fn clicked(&self, id: PaneId, point: Point) -> Option<Clicked> {
         let p = self.panes.get(&id)?;
         let profile = self.store.get(&p.profile)?;
         let rules = smartsel::rules(profile);
@@ -78,7 +79,7 @@ impl App {
     }
 
     /// The Win-click target at a point and the cells it covers.
-    fn target_at(&self, id: PaneId, point: Point) -> Option<(Clicked, Target, Match)> {
+    pub(super) fn target_at(&self, id: PaneId, point: Point) -> Option<(Clicked, Target, Match)> {
         let c = self.clicked(id, point)?;
         let (target, range) = semantic::resolve_range(&c.ctx)?;
         let cells = match (&target, range) {
@@ -113,11 +114,18 @@ impl App {
     /// Win-click (and the Open URL/Semantic History pointer actions): opens what is at
     /// the click. Returns false when nothing there opens.
     pub(super) fn open_target(&mut self, id: PaneId, point: Point, background: bool) -> bool {
-        let Some((c, target, _)) = self.target_at(id, point) else { return false };
+        let found = self.target_at(id, point);
+        // Text a remote host wrote never builds a local run (P10): only a link opens, anything
+        // else may only download.
+        let link = found.as_ref().is_some_and(|(_, t, _)| matches!(t, Target::Link(_) | Target::Url(_)));
+        if self.click_route(id, link) == ssh_files::ClickRoute::SecureCopyOnly {
+            return self.secure_copy_at(id, point);
+        }
+        let Some((c, target, _)) = found else { return self.secure_copy_at(id, point) };
         let cwd = c.ctx.cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
         let run = match &target {
             Target::Action { rule, action, .. } => {
-                let (Some(a), Some(f)) = (c.rules.get(*rule).and_then(|r| r.actions.get(*action)), c.found.as_ref()) else { return false };
+                let (Some(a), Some(f)) = (c.rules.get(*rule).and_then(|r| r.actions.get(*action)), c.found.as_ref()) else { return self.secure_copy_at(id, point) };
                 self.smart_action_run(id, a, &f.captures, &cwd)
             }
             _ => {
@@ -130,8 +138,14 @@ impl App {
                 self.execute(id, run, c.ctx.cwd.as_deref(), background);
                 true
             }
-            None => false,
+            None => self.secure_copy_at(id, point),
         }
+    }
+
+    /// How a Win-click on this pane treats what it hits (P10).
+    fn click_route(&self, id: PaneId, link: bool) -> ssh_files::ClickRoute {
+        let host_local = self.panes.get(&id).and_then(|p| p.own().shell.host.as_deref().map(|h| self.host_is_this_machine(h)));
+        ssh_files::click_route(self.framing(id).is_some(), host_local, link)
     }
 
     /// What a Smart Selection action runs. Copy runs here and returns None.
@@ -397,14 +411,14 @@ pub(super) struct CtxPending {
     providers: Vec<(String, String)>,
 }
 
-struct Clicked {
-    ctx: ClickContext,
+pub(super) struct Clicked {
+    pub(super) ctx: ClickContext,
     /// The clicked logical line, and where `ctx.before` starts in it.
     line: Logical,
     base: usize,
     /// The lines Smart Selection looked at, and its match.
-    joined: Logical,
-    found: Option<smartsel::Found>,
+    pub(super) joined: Logical,
+    pub(super) found: Option<smartsel::Found>,
     rules: Vec<smartsel::Rule>,
     prefs: Prefs,
     link_id: Option<String>,

@@ -247,6 +247,32 @@ impl App {
         self.ssh_transfer_apply(actions);
     }
 
+    /// Download or view (`downloadOrView`, `CD:1630-1675`). Tandem has no in-app browser, so
+    /// iTerm2's no-browser path applies: the file or folder downloads. The extension table is
+    /// ported with a browser (Decision: with no browser the mime type is never consulted).
+    pub(super) fn ssh_download_or_view(&mut self, pane: PaneId, to: &ScpPath) {
+        // `Ask` is unreachable while `BROWSER_ALLOWED` is false: its View would open a browser
+        // Tandem lacks, so both arms download.
+        match ssh_files::download_or_view(None, ssh_files::BROWSER_ALLOWED) {
+            ssh_files::ViewChoice::Download | ssh_files::ViewChoice::Ask { .. } => self.ssh_download(pane, &to.path),
+        }
+    }
+
+    /// The Win-click's last phase (`UF:879-899`): the Smart Selection match at the click through
+    /// `scpPathForFile`, downloaded when the pane's conductor can transfer. False when nothing
+    /// was started (iTerm2 would use scp, which Tandem does not have).
+    pub(super) fn secure_copy_at(&mut self, pane: PaneId, point: alacritty_terminal::index::Point) -> bool {
+        let Some(c) = self.clicked(pane, point) else { return false };
+        // The first component of the match (`components.firstObject`).
+        let text = c.found.as_ref().and_then(|f| c.joined.text.get(f.range.clone()));
+        let Some(to) = ssh_files::secure_copy_target(text, |t| self.scp_path_for(pane, t)) else { return false };
+        if !self.transfer_pane(pane, &to) {
+            return false;
+        }
+        self.ssh_download_or_view(pane, &to);
+        true
+    }
+
     /// The scp path of `file` for the pane's current host, user and directory (`scpPathForFile`;
     /// Tandem keeps no per-line host). `""` is the working directory itself. None when the pane
     /// reports no host, user or directory, or its host is this machine.
