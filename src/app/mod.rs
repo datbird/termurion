@@ -1276,6 +1276,11 @@ pub fn run() {
     if let Some(pid) = wait_pid {
         settings_export_ui::wait_for_pid(pid);
     }
+    // A second bare start while Tandem is excluded from the taskbar is iTerm2's reopen: the
+    // running one takes it as the dock click and this process ends.
+    if crate::presence::forwards_reopen(std::env::args_os().count(), wait_pid.is_some()) && crate::notify::forward_reopen() {
+        return;
+    }
     let event_loop = match EventLoop::<UserEvent>::with_user_event().build() {
         Ok(l) => l,
         Err(e) => return message_box(&format!("Could not start the event loop: {e}")),
@@ -1904,6 +1909,8 @@ pub fn run() {
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
     }
+    // Every exit that is not a crash takes the notification area icon with it.
+    crate::notify::remove(0);
     // The restart after Import All Settings and Data: the new Tandem finishes the import.
     if app.relaunch_on_exit {
         drop(app);

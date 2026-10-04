@@ -130,16 +130,17 @@ const TRAY_BRING_ALL_ID: &str = "tray-bring-all";
 impl App {
     /// Follows `presence_tick`'s value: the notification area icon is added or removed on a change.
     pub(super) fn tray_tick(&mut self, ui_element_now: bool) {
+        // A second start reaches an excluded Tandem whether or not the icon shows.
+        crate::notify::set_reopen(ui_element_now);
         let want = presence::tray_wanted(ui_element_now, self.globals.bool(presence::STATUS_BAR_ICON_KEY));
-        if want == self.tray_on {
+        if !presence::tray_changes(want, self.tray_on) {
             return;
         }
-        match crate::notify::set_resident(want) {
-            Ok(()) => self.tray_on = want,
-            Err(e) => {
-                self.tray_on = want;
-                self.banners.set("tray", e);
-            }
+        // A failure leaves the state as it was, so the next pass tries again (Explorer not up yet).
+        let result = crate::notify::set_resident(want);
+        self.tray_on = presence::tray_settle(want, self.tray_on, result.is_ok());
+        if let Err(e) = result {
+            self.banners.set("tray", e);
         }
     }
 
@@ -185,10 +186,10 @@ impl App {
                 }
             }
             // The reopen macOS runs: the last window comes forward, or a new one opens.
-            presence::DockClick::Unhandled => match self.last_window.filter(|w| states.iter().any(|(id, _, _)| id == w)) {
-                Some(w) => self.focus_terminal_window(w),
-                None if states.iter().all(|(_, _, on)| !on) => self.new_window(event_loop, None),
-                None => {}
+            presence::DockClick::Unhandled => match presence::reopen_target(self.last_window, &states) {
+                presence::Reopen::Focus(w) => self.focus_terminal_window(w),
+                presence::Reopen::NewWindow => self.new_window(event_loop, None),
+                presence::Reopen::Nothing => {}
             },
         }
     }
@@ -213,7 +214,10 @@ impl App {
         for (id, text) in &windows {
             let _ = menu.append(&MenuItem::with_id(id.clone(), text.replace('&', "&&"), true, None));
         }
-        if !windows.is_empty() {
+        for (id, text) in presence::tray_panel_items(&Self::panel_windows()) {
+            let _ = menu.append(&MenuItem::with_id(id, text.replace('&', "&&"), true, None));
+        }
+        if !windows.is_empty() || !Self::panel_windows().is_empty() {
             let _ = menu.append(&PredefinedMenuItem::separator());
         }
         for (label, what) in presence::TRAY_ITEMS {
@@ -245,8 +249,20 @@ impl App {
         self.popup_menu = Some(menu);
     }
 
+    /// Settings, chat and panel windows that left the taskbar: (window id, title).
+    fn panel_windows() -> Vec<(u64, String)> {
+        crate::egui_host::taskbar_windows().iter().map(|w| (u64::from(w.id()), w.title())).collect()
+    }
+
     /// A pick from the tray's own items. False for other ids.
     pub(super) fn tray_picked(&mut self, id: &str) -> bool {
+        if let Some(n) = presence::tray_panel_pick(id) {
+            if let Some(w) = crate::egui_host::taskbar_windows().into_iter().find(|w| u64::from(w.id()) == n) {
+                w.set_minimized(false);
+                w.focus_window();
+            }
+            return true;
+        }
         if id != TRAY_BRING_ALL_ID {
             return false;
         }
@@ -266,5 +282,23 @@ mod tests {
         assert!(flip.contains("keep_client("), "the flip runs inside keep_client");
         let tick = src.split("fn presence_tick").nth(1).and_then(|r| r.split("fn presence_globals_changed").next()).expect("presence_tick");
         assert!(tick.contains("refresh_caption_frame()"), "the current window re-checks its caption frame");
+    }
+
+    /// Every non-crash exit removes the notification area icon (task 9 review 2), and the
+    /// icon window hears the taskbar's broadcast (review 1), and a second start is the reopen.
+    #[test]
+    fn the_icon_is_removed_on_exit_and_survives_explorer() {
+        let m = include_str!("mod.rs");
+        let after = m.split("event_loop.run_app(&mut app)").nth(1).expect("run_app");
+        assert!(after[..400].contains("notify::remove"), "removed right after the event loop ends");
+        let relaunch = include_str!("settings_export_ui.rs");
+        let tail = relaunch.split("self.leave_host(false);").nth(1).expect("relaunch exit");
+        let before_exit = tail.split("std::process::exit(0)").next().unwrap();
+        assert!(before_exit.contains("notify::remove"), "removed before the relaunch exit");
+        let n = include_str!("../notify.rs");
+        let win = n.split("fn window()").nth(1).and_then(|r| r.split("\nfn base").next()).expect("window()");
+        assert!(!win.contains("HWND_MESSAGE"), "a message-only window never hears TaskbarCreated");
+        let run = m.split("pub fn run()").nth(1).and_then(|r| r.split("let event_loop").next()).expect("run");
+        assert!(run.contains("forward_reopen"), "a second bare start acts as the dock click");
     }
 }

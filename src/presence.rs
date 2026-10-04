@@ -101,12 +101,70 @@ pub const DOCK_DO_NOT_SHOW: i64 = 0;
 pub const DOCK_ALWAYS_SHOW: i64 = 1;
 pub const DOCK_SHOW_IF_NONE: i64 = 2;
 
-/// Whether the notification area icon is there: always while Tandem is a UI element, whatever
-/// the Advanced setting says. iTerm2 gates it on `StatusBarIcon` (`APP:979-993`), but Tandem's
-/// windows leave the taskbar and Alt+Tab too, so the icon is the only way back (coordinator
-/// ruling).
-pub fn tray_wanted(ui_element_now: bool, _status_bar_icon: bool) -> bool {
-    ui_element_now
+/// Whether the notification area icon is there: iTerm2's rule (`APP:979-993`), the status item
+/// exists only in UI-element mode and with `StatusBarIcon` on (read at start). The way back
+/// without it is starting Tandem again, which acts as the dock click (`forwards_reopen`).
+pub fn tray_wanted(ui_element_now: bool, status_bar_icon: bool) -> bool {
+    ui_element_now && status_bar_icon
+}
+
+/// The icon's state after a pass tried to reach `want`: a failed add or remove leaves it as it
+/// was, so the next pass tries again (an Explorer that is not up yet, at logon).
+pub fn tray_settle(want: bool, on: bool, done: bool) -> bool {
+    if done {
+        want
+    } else {
+        on
+    }
+}
+
+/// Whether a pass has anything to do for the icon.
+pub fn tray_changes(want: bool, on: bool) -> bool {
+    want != on
+}
+
+/// What a second, bare start of Tandem does for iTerm2's `applicationShouldHandleReopen`: only
+/// a start with no arguments that is not the relaunch after an import hands the dock click to
+/// the running Tandem.
+pub fn forwards_reopen(arg_count: usize, relaunch: bool) -> bool {
+    arg_count <= 1 && !relaunch
+}
+
+/// What the reopen (a dock click with no preference handling it) does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reopen<T> {
+    Focus(T),
+    NewWindow,
+    Nothing,
+}
+
+/// The reopen's target among `states` (id, Some(shown) for a hotkey window, on screen): the last
+/// window comes forward unless it is a hidden hotkey window (the preference says "Don't do
+/// anything special"); with no window on screen a new one opens.
+pub fn reopen_target<T: Copy + PartialEq>(last: Option<T>, states: &[(T, Option<bool>, bool)]) -> Reopen<T> {
+    if let Some(w) = last {
+        if states.iter().any(|(id, h, _)| *id == w && *h != Some(false)) {
+            return Reopen::Focus(w);
+        }
+    }
+    if states.iter().all(|(_, _, on)| !on) {
+        Reopen::NewWindow
+    } else {
+        Reopen::Nothing
+    }
+}
+
+const PANEL_PREFIX: &str = "tray-panel:";
+
+/// The tray menu entries for windows outside the terminal list (Settings, chat, panels):
+/// (menu id, title) from (window id, title).
+pub fn tray_panel_items(panels: &[(u64, String)]) -> Vec<(String, String)> {
+    panels.iter().map(|(id, t)| (format!("{PANEL_PREFIX}{id}"), if t.is_empty() { "Tandem".to_string() } else { t.clone() })).collect()
+}
+
+/// The window id of a tray panel menu id.
+pub fn tray_panel_pick(id: &str) -> Option<u64> {
+    id.strip_prefix(PANEL_PREFIX)?.parse().ok()
 }
 
 /// What a click on the icon does (`HKC:362-402`, `dockIconClicked`).
@@ -229,14 +287,62 @@ mod tests {
         assert_eq!(dock_click(0, &[], 0), DockClick::Unhandled);
     }
 
-    /// `APP:979-993`.
+    /// `APP:979-993`: the icon exists only in UI-element mode AND with `StatusBarIcon` on.
     #[test]
     fn tray_wanted_follows_iterm2() {
         assert!(tray_wanted(true, true));
-        // The icon is the only way back, so the Advanced setting cannot remove it.
-        assert!(tray_wanted(true, false));
+        assert!(!tray_wanted(true, false));
         assert!(!tray_wanted(false, true));
         assert!(!tray_wanted(false, false));
+    }
+
+    /// A failed add leaves the icon off, so the next pass tries again (task 9 review 1).
+    #[test]
+    fn tray_retries_a_failed_add() {
+        assert!(!tray_settle(true, false, false), "failed add stays off");
+        assert!(tray_settle(true, false, true));
+        assert!(tray_settle(false, true, false), "failed remove stays on");
+        assert!(!tray_settle(false, true, true));
+        // A pass changes something only while the wanted and actual states differ.
+        assert!(tray_changes(true, false));
+        assert!(!tray_changes(true, true));
+    }
+
+    /// iTerm2's reopen (`AD:946-952`): the last window comes forward, never a hidden hotkey
+    /// window ("Don't do anything special"); with nothing on screen a window opens.
+    #[test]
+    fn reopen_never_shows_a_hidden_hotkey_window() {
+        // (id, Some(shown) for a hotkey window, on screen)
+        let hidden_hotkey = [(1u32, Some(false), false)];
+        assert_eq!(reopen_target(Some(1), &hidden_hotkey), Reopen::NewWindow);
+        assert_eq!(reopen_target(None, &hidden_hotkey), Reopen::NewWindow);
+        let with_regular = [(1u32, Some(false), false), (2, None, true)];
+        assert_eq!(reopen_target(Some(1), &with_regular), Reopen::Nothing, "a window is already on screen");
+        assert_eq!(reopen_target(Some(2), &with_regular), Reopen::Focus(2));
+        let minimized = [(3u32, None, false)];
+        assert_eq!(reopen_target(Some(3), &minimized), Reopen::Focus(3));
+        assert_eq!(reopen_target(Some(9), &minimized), Reopen::NewWindow);
+        let shown_hotkey = [(4u32, Some(true), true)];
+        assert_eq!(reopen_target(Some(4), &shown_hotkey), Reopen::Focus(4));
+    }
+
+    /// Starting Tandem again is the reopen only for a bare launch, never a URL start or the
+    /// relaunch after an import.
+    #[test]
+    fn a_bare_launch_forwards_the_reopen() {
+        assert!(forwards_reopen(1, false));
+        assert!(!forwards_reopen(3, false));
+        assert!(!forwards_reopen(1, true));
+    }
+
+    /// Windows that left the taskbar (Settings, chat, panels) are in the tray menu too.
+    #[test]
+    fn tray_lists_panel_windows() {
+        let items = tray_panel_items(&[(7, "Settings".to_string()), (9, "Chat".to_string())]);
+        assert_eq!(items.len(), 2);
+        assert_eq!(tray_panel_pick(&items[1].0), Some(9));
+        assert_eq!(tray_panel_pick("window-3"), None);
+        assert_eq!(tray_panel_pick("tray-panel:x"), None);
     }
 
     /// A style flip keeps the window's state (Task 8 review): minimized stays minimized,

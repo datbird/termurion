@@ -436,6 +436,7 @@ impl App {
         for path in &list {
             super::scripts_app::remove_path(path);
         }
+        crate::notify::remove(0);
         std::process::exit(0);
     }
 
