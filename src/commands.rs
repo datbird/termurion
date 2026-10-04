@@ -75,7 +75,7 @@ pub const DONE: &[&str] = &[
     "setWindowStyle:|Full-Height Left of Screen", "setWindowStyle:|Full-Height Right of Screen",
     "setWindowStyle:|Bottom of Screen", "setWindowStyle:|Top of Screen", "setWindowStyle:|Left of Screen",
     "setWindowStyle:|Right of Screen", "toggleToolbeltVisibility:", "setDefaultToolbeltWidth:",
-    "irPrev:", "clearInstantReplay:", "exportRecording:", "loadRecording:", "openAIChats:", "openAIChat:", "toggleShowInlineChat:", "performNaturalLanguageQuery:", "openPasswordManager:",
+    "irPrev:", "clearInstantReplay:", "exportRecording:", "loadRecording:", "openAIChats:", "openAIChat:", "toggleShowInlineChat:", "performNaturalLanguageQuery:", "explainOutputWithAI:", "openPasswordManager:",
     "sshDisconnect:",
 ];
 
@@ -265,6 +265,14 @@ mod tests {
         use crate::menus::ChordKey::Char;
         assert_eq!(status(find("performNaturalLanguageQuery:", "Engage Artificial Intelligence")), Status::Done);
         assert_eq!(command_for_chord(&win(Char('y'), false)).unwrap().selector, "performNaturalLanguageQuery:");
+    }
+
+    #[test]
+    fn explain_is_done_and_takes_win_alt_y() {
+        use crate::menus::ChordKey::Char;
+        assert_eq!(status(find("explainOutputWithAI:", "Explain Output with AI")), Status::Done);
+        let chord = crate::menus::Chord { key: Char('y'), cmd: true, alt: true, shift: false, ctrl: false };
+        assert_eq!(command_for_chord(&chord).unwrap().selector, "explainOutputWithAI:");
     }
 
     #[test]

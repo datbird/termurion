@@ -920,6 +920,15 @@ impl App {
         }
     }
 
+    /// An annotation link in an explanation response was clicked: only a link inside an agent's
+    /// explanation message, and only its reveal route, runs (ruling P9).
+    fn chat_reveal_annotation(&mut self, message: &str, url: &str, event_loop: &ActiveEventLoop) {
+        let in_explanation = self.chat_msgs.iter().any(|m| m.unique_id == message && m.author == Participant::Agent && matches!(m.content, Content::ExplanationResponse(_)));
+        if let (true, Some(route)) = (in_explanation, crate::chat_routes::from_explanation_link(url)) {
+            self.run_chat_route(&route, event_loop);
+        }
+    }
+
     /// A terminal command row was clicked: only its reveal-mark route runs; any other route in
     /// the URL is ignored (minor m10).
     fn chat_reveal_command(&mut self, url: &str, event_loop: &ActiveEventLoop) {
@@ -1080,6 +1089,7 @@ impl App {
             ChatEvent::DeleteMessage(id) => self.chat_delete_from(ChatView::Window, &id),
             ChatEvent::Fork(id) => self.chat_fork(ChatView::Window, &id, event_loop),
             ChatEvent::OpenUrl(url) => self.chat_open_url(&url),
+            ChatEvent::RevealAnnotation { message, url } => self.chat_reveal_annotation(&message, &url, event_loop),
             ChatEvent::OpenFile(r) => self.chat_file(&r, true),
             ChatEvent::RevealFile(r) => self.chat_file(&r, false),
             ChatEvent::RevealCommand(url) => self.chat_reveal_command(&url, event_loop),

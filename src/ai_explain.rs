@@ -10,6 +10,7 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use crate::ai_tools::truncated;
+use crate::snippets::ellipsize;
 
 /// Text from the terminal with the grid cell of each UTF-16 unit (`iTermCodableLocatedString`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -474,6 +475,170 @@ pub fn response_snippet(r: &Response, u: Option<&Update>, max: usize) -> String 
     format!("{kind}: {annotations} annotations: {}", main.as_deref().map_or_else(|| "No main response".to_string(), |m| truncated(m, max)))
 }
 
+pub const MAX_LINES: i64 = 1000;
+pub const NO_CHAT_HEADING: &str = "Error";
+pub const NO_CHAT_TEXT: &str = "AI Chat could not be opened. Verify you only have one instance of Tandem running.";
+pub const COMMAND_OUTPUT: &str = "Command output";
+
+/// `selectionForOutputToExplainWithAI` (`PS:21211-21238`): the first line to read and whether the
+/// output was cut, more than `MAX_LINES` lines keeping the last `MAX_LINES`.
+pub fn capped(start_line: i64, end_line: i64) -> (i64, bool) {
+    if end_line - start_line > MAX_LINES {
+        (end_line - MAX_LINES, true)
+    } else {
+        (start_line, false)
+    }
+}
+
+/// What Explain reads (`PS:21211-21296`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// The selection, and the command marks its first and last characters follow.
+    Selection { text: String, marks: (Option<u32>, Option<u32>) },
+    /// The last command's output.
+    LastCommand { mark: u32, first_line: String, full: String },
+}
+
+/// `commandForOutputToExplainWithAI` (`PS:21240-21258`).
+pub fn command_for(source: &Source, full_command_of: &dyn Fn(u32) -> Option<String>) -> Option<String> {
+    match source {
+        Source::Selection { marks: (Some(a), Some(b)), .. } if a == b => full_command_of(*a),
+        Source::Selection { .. } => None,
+        Source::LastCommand { full, .. } => Some(full.clone()).filter(|f| !f.is_empty()),
+    }
+}
+
+/// `titleForExplainWithAI` (`PS:21260-21273`).
+pub fn title(source: &Source) -> String {
+    match source {
+        Source::Selection { text, .. } => ellipsize(text, 16),
+        Source::LastCommand { first_line, .. } if first_line.is_empty() => COMMAND_OUTPUT.to_string(),
+        Source::LastCommand { first_line, .. } => first_line.clone(),
+    }
+}
+
+/// `subjectMatterToExplainWithAI` (`PS:21275-21290`).
+pub fn subject(source: &Source) -> String {
+    match source {
+        Source::Selection { text, .. } => {
+            let short = ellipsize(text, 16);
+            if short.is_empty() {
+                "some selected text".to_string()
+            } else {
+                inline_code(&short)
+            }
+        }
+        Source::LastCommand { first_line, .. } if first_line.is_empty() => "the last command".to_string(),
+        Source::LastCommand { first_line, .. } => inline_code(first_line),
+    }
+}
+
+/// The grid lines the located text reads: a line's cells as characters ('\0' for the spacer
+/// after a wide character) and whether it wraps into the next line.
+pub trait Rows {
+    fn width(&self) -> usize;
+    fn row(&self, line: i32) -> Option<(Vec<char>, bool)>;
+}
+
+/// The text from `start` to `end` (exclusive) as Copy extracts it with trimmed whitespace.
+pub fn located(rows: &dyn Rows, start: (usize, i32), end: (usize, i32)) -> Located {
+    let width = rows.width();
+    let mut end = end;
+    // An end at the start of a later line means the previous line's end.
+    if end.1 > start.1 && end.0 == 0 {
+        end = (width, end.1 - 1);
+    }
+    let (mut string, mut coords) = (String::new(), Vec::new());
+    for y in start.1..=end.1 {
+        let Some((cells, wraps)) = rows.row(y) else { break };
+        let from = if y == start.1 { start.0 } else { 0 };
+        let to = if y == end.1 { end.0.min(width) } else { width };
+        let mut line: Vec<(usize, char)> = (from..to).map(|x| (x, cells.get(x).copied().unwrap_or(' '))).filter(|(_, c)| *c != '\0').collect();
+        let soft = wraps && y != end.1;
+        if !soft {
+            while line.last().is_some_and(|(_, c)| c.is_whitespace()) {
+                line.pop();
+            }
+        }
+        for (x, c) in line {
+            string.push(c);
+            coords.extend(std::iter::repeat((x as i32, y)).take(c.len_utf16()));
+        }
+        if !soft && y != end.1 {
+            string.push('\n');
+            coords.push((width as i32, y));
+        }
+    }
+    Located { string, coords }
+}
+
+/// An annotation's first cell and the cell after its last, each (column, grid line at request
+/// time), wrapped by the width as `PSS:185-206` does. None when its line or units are missing.
+pub fn cells(located: &Located, a: &Annotation, width: usize) -> Option<((usize, i32), (usize, i32))> {
+    let first = located.offset_of_line(a.line)? + a.utf16_offset_in_line;
+    if a.utf16_length == 0 || first + a.utf16_length > located.coords.len() || width == 0 {
+        return None;
+    }
+    let (x, y) = located.coords[first];
+    let (mut end_x, mut end_y) = (x as i64 + a.utf16_length as i64 - 1, y as i64);
+    if end_x >= width as i64 {
+        end_y += end_x / width as i64;
+        end_x %= width as i64;
+    }
+    Some(((x as usize, y), ((end_x + 1) as usize, end_y as i32)))
+}
+
+/// `PSS:216-234`.
+pub fn annotation_url(id: &str, session: &str) -> String {
+    format!("iterm2:annotation?ann={id}&s={session}")
+}
+
+/// The annotation id and session of a reveal link; None for any other URL.
+pub fn parse_annotation_url(url: &str) -> Option<(String, String)> {
+    let query = url.strip_prefix("iterm2:annotation?")?;
+    let (mut ann, mut session) = (None, None);
+    for pair in query.split('&') {
+        match pair.split_once('=') {
+            Some(("ann", v)) => ann = Some(v),
+            Some(("s", v)) => session = Some(v),
+            _ => {}
+        }
+    }
+    Some((ann.filter(|v| !v.is_empty())?.to_string(), session.filter(|v| !v.is_empty())?.to_string()))
+}
+
+/// `PSS:262-283`: a link to the selection, `sub` being its start and end as (x, absolute line).
+pub fn selection_url(session: &str, start: (usize, i64), end: (usize, i64)) -> String {
+    format!("iterm2:/compound-location?session={session}&sub={},{},{},{}", start.0, start.1, end.0, end.1)
+}
+
+/// `PTA:172-174`: enabled with a selection or a command mark, whatever the gate says.
+pub fn can_explain_with(has_selection: bool, has_command_mark: bool) -> bool {
+    has_selection || has_command_mark
+}
+
+/// What Explain does next (ruling R12e-1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExplainStep {
+    Stop,
+    NoChat,
+    AskKey,
+    Send,
+}
+
+/// A closed gate is `Stop` whatever else holds.
+pub fn explain_step(gate_open: bool, chat_open: bool, has_key: bool) -> ExplainStep {
+    if !gate_open {
+        ExplainStep::Stop
+    } else if !chat_open {
+        ExplainStep::NoChat
+    } else if !has_key {
+        ExplainStep::AskKey
+    } else {
+        ExplainStep::Send
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -633,5 +798,119 @@ mod tests {
         assert_eq!(markdown(&[], true, true, None), REVEAL_HINT);
         assert_eq!(REVEAL_HINT, "\nYou can click on a link in this message or on a yellow underline in the terminal to reveal an annotation.");
         assert_eq!(inline_code("x`y"), "`x\\`y`");
+    }
+    struct FakeRows(Vec<(String, bool)>);
+
+    impl Rows for FakeRows {
+        fn width(&self) -> usize {
+            10
+        }
+
+        fn row(&self, line: i32) -> Option<(Vec<char>, bool)> {
+            let (text, wraps) = self.0.get(usize::try_from(line).ok()?)?;
+            Some((text.chars().collect(), *wraps))
+        }
+    }
+
+    fn rows(lines: &[(&str, bool)]) -> FakeRows {
+        FakeRows(lines.iter().map(|(t, w)| (t.to_string(), *w)).collect())
+    }
+
+    #[test]
+    fn explain_source_follows_iterm2() {
+        assert_eq!(capped(0, 999), (0, false));
+        assert_eq!(capped(0, 1000), (0, false));
+        assert_eq!(capped(5, 1006), (6, true));
+        let full = |m: u32| Some(format!("cmd{m}"));
+        let sel = |a, b| Source::Selection { text: "x".into(), marks: (a, b) };
+        assert_eq!(command_for(&sel(Some(3), Some(3)), &full), Some("cmd3".into()));
+        assert_eq!(command_for(&sel(Some(3), Some(4)), &full), None);
+        assert_eq!(command_for(&sel(None, None), &full), None);
+        let last = Source::LastCommand { mark: 1, first_line: "make".into(), full: "make\nmake install".into() };
+        assert_eq!(command_for(&last, &|_| None), Some("make\nmake install".into()));
+    }
+
+    #[test]
+    fn title_and_subject_follow_iterm2() {
+        let sel = |t: &str| Source::Selection { text: t.into(), marks: (None, None) };
+        let long = sel("error: file not found here");
+        assert_eq!(title(&long), "error: file not\u{2026}");
+        assert_eq!(subject(&long), "`error: file not\u{2026}`");
+        assert_eq!(subject(&sel("a`b")), "`a\\`b`");
+        let last = |first: &str| Source::LastCommand { mark: 1, first_line: first.into(), full: String::new() };
+        assert_eq!(title(&last("cargo build")), "cargo build");
+        assert_eq!(subject(&last("cargo build")), "`cargo build`");
+        assert_eq!(title(&last("")), COMMAND_OUTPUT);
+        assert_eq!(subject(&last("")), "the last command");
+        assert_eq!(subject(&sel("  ")), "some selected text");
+    }
+
+    #[test]
+    fn annotation_cells_follow_iterm2() {
+        let one = super::located(&rows(&[("ls: nope  ", false)]), (0, 0), (10, 0));
+        assert_eq!(one.string, "ls: nope");
+        assert_eq!(one.coords, (0..8).map(|x| (x, 0)).collect::<Vec<_>>());
+
+        let wrapped = super::located(&rows(&[("error: tex", true), ("t busy    ", false)]), (0, 0), (10, 1));
+        assert_eq!(wrapped.string, "error: text busy");
+        let a = Annotation { line: 0, utf16_offset_in_line: 7, utf16_length: 4, note: String::new(), annotated_text: String::new() };
+        assert_eq!(cells(&wrapped, &a, 10), Some(((7, 0), (1, 1))));
+        assert_eq!(cells(&wrapped, &Annotation { line: 5, ..a.clone() }, 10), None);
+        assert_eq!(cells(&wrapped, &Annotation { utf16_offset_in_line: 99, ..a.clone() }, 10), None);
+
+        let hard = super::located(&rows(&[("one", false), ("two", false)]), (0, 0), (3, 1));
+        assert_eq!(hard.string, "one\ntwo");
+        let second = Annotation { line: 1, utf16_offset_in_line: 1, utf16_length: 2, ..a };
+        assert_eq!(cells(&hard, &second, 10), Some(((1, 1), (3, 1))));
+
+        let emoji = super::located(&rows(&[("a\u{1f600}b", false)]), (0, 0), (3, 0));
+        assert_eq!(emoji.string, "a\u{1f600}b");
+        assert_eq!(emoji.coords, vec![(0, 0), (1, 0), (1, 0), (2, 0)]);
+
+        // A range that starts mid-line and ends before the line's end reads only those cells.
+        let part = super::located(&rows(&[("abcdef", false)]), (2, 0), (4, 0));
+        assert_eq!((part.string.as_str(), part.coords.clone()), ("cd", vec![(2, 0), (3, 0)]));
+    }
+
+    #[test]
+    fn annotation_url_round_trips() {
+        assert_eq!(annotation_url("A1", "G1"), "iterm2:annotation?ann=A1&s=G1");
+        assert_eq!(parse_annotation_url("iterm2:annotation?ann=A1&s=G1"), Some(("A1".into(), "G1".into())));
+        assert_eq!(parse_annotation_url("iterm2:annotation?s=G1"), None);
+        assert_eq!(parse_annotation_url("https://x"), None);
+        assert_eq!(selection_url("G1", (0, 7), (3, 9)), "iterm2:/compound-location?session=G1&sub=0,7,3,9");
+    }
+
+    #[test]
+    fn explain_enabled_follows_iterm2() {
+        assert!(can_explain_with(true, false));
+        assert!(can_explain_with(false, true));
+        assert!(can_explain_with(true, true));
+        assert!(!can_explain_with(false, false));
+    }
+
+    #[test]
+    fn explain_is_gated() {
+        for (chat, key) in [(true, true), (false, false), (true, false)] {
+            assert_eq!(explain_step(false, chat, key), ExplainStep::Stop, "{chat} {key}");
+        }
+        assert_eq!(explain_step(true, false, true), ExplainStep::NoChat);
+        assert_eq!(explain_step(true, true, false), ExplainStep::AskKey);
+        assert_eq!(explain_step(true, true, true), ExplainStep::Send);
+
+        // The gate input is the real gate for a host nobody consented to.
+        let mut g = crate::globals::Globals::empty(std::path::Path::new("explain-gate-test.toml"));
+        g.set(crate::ai_settings::ENABLE_AI, toml::Value::Boolean(true));
+        g.set(crate::ai_settings::ADMIN, toml::Value::Boolean(true));
+        let ep = crate::ai_models::Endpoint {
+            vendor: crate::ai_settings::Vendor::OpenAI,
+            model: "gpt-test".into(),
+            url: "https://api.openai.com/v1/responses".into(),
+            api: crate::ai_settings::Api::Responses,
+            custom_headers: vec![],
+        };
+        let open = crate::ai_gate::check_endpoint(&g, Some(&ep)) == crate::ai_gate::Check::Pass;
+        assert!(!open);
+        assert_eq!(explain_step(open, true, true), ExplainStep::Stop);
     }
 }

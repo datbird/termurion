@@ -103,7 +103,7 @@ impl App {
         }
     }
 
-    fn open_note(&mut self, pane: PaneId, note: u32, event_loop: &ActiveEventLoop) {
+    pub(super) fn open_note(&mut self, pane: PaneId, note: u32, event_loop: &ActiveEventLoop) {
         let text = self.panes.get(&pane).and_then(|p| p.screen.notes.by_id.get(&note)).map(|n| n.text.clone()).unwrap_or_default();
         self.note_win = None;
         let Some(g) = self.gpu.as_ref() else { return };

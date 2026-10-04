@@ -33,8 +33,7 @@ pub(crate) enum KeyThen {
     /// A Codecierge session (its session reference) goes on to its goal (Task 6).
     #[allow(dead_code)]
     Codecierge(String),
-    /// A waiting Explain Output request continues (Task 4).
-    #[allow(dead_code)]
+    /// A waiting Explain Output request continues with the key (`ai_explain_app`).
     Explain,
 }
 
@@ -212,8 +211,9 @@ impl App {
             KeyThen::Turn(chat) => self.ai_turn_key(&chat, key),
             KeyThen::Files(chat) => self.ai_files_key(&chat, key),
             KeyThen::Run(id) => self.ai_run_key(id, key),
-            // Their tasks replace these two arms (Codecierge, Task 6; Explain, Task 4).
-            KeyThen::Codecierge(_) | KeyThen::Explain => drop(key),
+            KeyThen::Explain => self.explain_key_given(key),
+            // Task 6 replaces this arm.
+            KeyThen::Codecierge(_) => drop(key),
         }
     }
 

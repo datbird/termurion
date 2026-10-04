@@ -134,7 +134,6 @@ impl App {
 
     /// Whether a request to the default model has what it needs: a stored key for its vendor,
     /// or an endpoint that never takes one.
-    #[allow(dead_code)] // Codecierge's onboarding (Task 6).
     pub(super) fn ai_has_key(&mut self) -> bool {
         let found = self.ai_found();
         let catalog = crate::ai_catalog::bundled();
@@ -417,7 +416,7 @@ mod tests {
         }
         // `ai_run` is the only caller of the runner's start: the one call is inside `launch`.
         let call = concat!(".sta", "rt(");
-        for (name, source) in [("ai_runs.rs", include_str!("ai_runs.rs")), ("ai_engage_app.rs", include_str!("ai_engage_app.rs"))] {
+        for (name, source) in [("ai_runs.rs", include_str!("ai_runs.rs")), ("ai_engage_app.rs", include_str!("ai_engage_app.rs")), ("ai_explain_app.rs", include_str!("ai_explain_app.rs"))] {
             let production = source.split("\n#[cfg(test)]\nmod tests").next().unwrap();
             let calls = production.matches(call).count();
             assert_eq!(calls, usize::from(name == "ai_runs.rs"), "{name} starts a runner {calls} times");

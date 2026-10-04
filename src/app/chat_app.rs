@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::chat_engine::{Choice, Ctx, Engine, EngineEffect};
+use super::chat_engine::{Choice, Ctx, Engine, EngineEffect, Explained};
 use super::App;
 use crate::ai_catalog::Model;
 use crate::ai_files::{FileOut, FileRunner, Job};
@@ -519,10 +519,12 @@ impl App {
         #[cfg(windows)]
         let log = (self.ai_wire_log.clone(), self.globals.bool(WIRE_LOG_KEY));
         let globals = &self.globals;
-        let panes = &self.panes;
+        // The panes are read by `pane_of` and written by the explanation processor (it places
+        // hidden notes); the two never run at once.
+        let panes = std::cell::RefCell::new(&mut self.panes);
         let model_for = |c: &Chat| c.model_name.as_deref().and_then(|n| crate::ai_model::named(n, globals, catalog, &found)).or_else(|| crate::ai_model::configured(globals, catalog, &found));
         let links_off = self.chat_links_off;
-        let pane_of = |g: &str| pane_for_ref(panes, g).filter(|_| !links_off);
+        let pane_of = |g: &str| pane_for_ref(&panes.borrow(), g).filter(|_| !links_off);
         let (t, o, n) = (transport.clone(), options.clone(), notify.clone());
         let mut new_turn = move |_: &Model| -> Box<dyn TurnDriver> {
             Box::new(LiveTurn {
@@ -536,6 +538,10 @@ impl App {
             })
         };
         let mut new_files = move |m: &Model, job: Job| -> Box<dyn FileDriver> { Box::new(LiveFiles { runner: FileRunner::new(m.clone(), job, transport.clone(), options.clone(), notify.clone()), vendor: m.vendor }) };
+        let notes = &mut self.ai_annotations;
+        let mut explain = |_: &str, m: Message, target: Option<&Message>, _: bool| -> Explained {
+            super::ai_explain_app::process(m, target, &mut |r, u| super::ai_explain_app::marginal_in(&mut panes.borrow_mut(), notes, links_off, r, u))
+        };
         let mut cx = Ctx {
             store: self.chat_db.as_mut()?,
             broker: &mut self.chat_broker,
@@ -546,6 +552,7 @@ impl App {
             pane_of: &pane_of,
             new_turn: &mut new_turn,
             new_files: &mut new_files,
+            explain: &mut explain,
             now: unix_now(),
         };
         Some(f(&mut cx))

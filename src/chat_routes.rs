@@ -9,6 +9,8 @@ pub enum Route {
     RevealChatForSession(String),
     DisableStreaming(String),
     RevealMark { session: String, mark: String },
+    /// An annotation an explanation placed (`PSS:216-234`): its id and the session's reference.
+    RevealAnnotation { session: String, id: String },
 }
 
 const SCHEME: &str = "iterm2:";
@@ -16,6 +18,7 @@ const UNLINK: &str = "unlink-session-chat";
 const REVEAL_CHAT: &str = "reveal-chat-for-session";
 const DISABLE: &str = "disable-streaming-session-chat";
 const REVEAL_MARK: &str = "reveal-mark";
+const ANNOTATION: &str = "annotation";
 
 /// Percent-encodes everything but unreserved characters, as a query value.
 fn encode(s: &str) -> String {
@@ -55,6 +58,7 @@ pub fn format(r: &Route) -> String {
         Route::RevealChatForSession(s) => format!("{SCHEME}{REVEAL_CHAT}?s={}", encode(s)),
         Route::DisableStreaming(s) => format!("{SCHEME}{DISABLE}?s={}", encode(s)),
         Route::RevealMark { session, mark } => format!("{SCHEME}{REVEAL_MARK}?s={}&m={}", encode(session), encode(mark)),
+        Route::RevealAnnotation { session, id } => format!("{SCHEME}{ANNOTATION}?ann={}&s={}", encode(id), encode(session)),
     }
 }
 
@@ -70,11 +74,13 @@ pub fn parse(url: &str) -> Option<Route> {
     let (path, query) = rest.split_once('?')?;
     let mut session = None;
     let mut mark = None;
+    let mut ann = None;
     for pair in query.split('&') {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         match k {
             "s" => session = Some(decode(v)?),
             "m" => mark = Some(decode(v)?),
+            "ann" => ann = Some(decode(v)?),
             _ => {}
         }
     }
@@ -87,6 +93,7 @@ pub fn parse(url: &str) -> Option<Route> {
             let mark = mark.filter(|m| !m.is_empty() && m.bytes().all(|b| b.is_ascii_digit()))?;
             Some(Route::RevealMark { session, mark })
         }
+        ANNOTATION => Some(Route::RevealAnnotation { session, id: ann.filter(|a| !a.is_empty())? }),
         _ => None,
     }
 }
@@ -108,6 +115,12 @@ pub fn indicator_routes(linked: bool, streaming: bool, session: &str) -> Vec<(St
 /// route there is ignored.
 pub fn from_command_cell(url: &str) -> Option<Route> {
     parse(url).filter(|r| matches!(r, Route::RevealMark { .. }))
+}
+
+/// What a link inside an explanation response may run: only the reveal of one of its
+/// annotations (ruling P9); every other route, and every link in any other message, is refused.
+pub fn from_explanation_link(url: &str) -> Option<Route> {
+    parse(url).filter(|r| matches!(r, Route::RevealAnnotation { .. }))
 }
 
 #[cfg(test)]
@@ -147,6 +160,20 @@ mod tests {
         );
         assert_eq!(indicator_routes(true, false, "s1").len(), 2);
         assert!(indicator_routes(false, false, "s1").is_empty());
+    }
+
+    #[test]
+    fn an_explanation_link_reaches_only_reveal_annotation() {
+        let want = Route::RevealAnnotation { session: "G1".into(), id: "A1".into() };
+        assert_eq!(from_explanation_link("iterm2:annotation?ann=A1&s=G1"), Some(want.clone()));
+        assert_eq!(parse(&format(&want)), Some(want));
+        assert_eq!(from_explanation_link("iterm2:annotation?s=G1"), None, "no id");
+        assert_eq!(from_explanation_link("iterm2:annotation?ann=A1"), None, "no session");
+        assert_eq!(from_explanation_link("iterm2:reveal-mark?s=G1&m=7"), None);
+        assert_eq!(from_explanation_link("iterm2:unlink-session-chat?s=G1"), None);
+        assert_eq!(from_explanation_link("https://example.com"), None);
+        // A command cell never reaches it.
+        assert_eq!(from_command_cell("iterm2:annotation?ann=A1&s=G1"), None);
     }
 
     #[test]

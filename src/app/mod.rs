@@ -140,6 +140,7 @@ mod settings_export_ui;
 mod ai_app;
 mod ai_runs;
 mod ai_engage_app;
+mod ai_explain_app;
 mod chat_app;
 mod chat_window_app;
 mod chat_session_app;
@@ -887,6 +888,11 @@ pub struct App {
     ai_engage_open: Option<(PaneId, crate::ai_engage::Ask)>,
     ai_wait: Option<(crate::ai_engage_ui::WaitWindow, u64)>,
     ai_engage_pending: HashMap<u64, ai_engage_app::EngageFrom>,
+    /// Explain Output with AI (app-wide, never swapped): a request held while the key prompt
+    /// shows, with its chat title, and each hidden annotation the processor placed (its id to the
+    /// pane and note).
+    ai_explain_waiting: Option<(crate::ai_explain::Request, String)>,
+    ai_annotations: HashMap<String, (PaneId, u32)>,
     /// The AI chats (app-wide, never swapped): the chat database, opened on first use, whether
     /// opening it failed (then it is not tried again), and the broker.
     chat_db: Option<crate::chat_store::Store>,
@@ -1562,6 +1568,8 @@ pub fn run() {
         ai_engage_open: None,
         ai_wait: None,
         ai_engage_pending: HashMap::new(),
+        ai_explain_waiting: None,
+        ai_annotations: HashMap::new(),
         chat_db: None,
         chat_db_failed: false,
         chat_links_off: false,
@@ -3322,6 +3330,7 @@ impl App {
         self.chat_pane_gone(id);
         // AI requests that belong to the pane end with it.
         self.ai_runs_pane_gone(id);
+        self.ai_annotations.retain(|_, (pane, _)| *pane != id);
         // A git command's window closed any way ends its command, as does Manage
         // Dependencies' pip command.
         self.single_use_ended(id);
