@@ -354,13 +354,15 @@ impl App {
     /// Move Session to Window or to Tab on a tmux pane: tmux's break-pane moves it, and the
     /// new tmux window opens in a new Tandem window or beside its old one. True when it was
     /// a tmux pane (of a tab with other panes).
-    pub(super) fn tmux_break(&mut self, pane: PaneId, to_tab: bool) -> bool {
+    /// A new window opens at `at` when given (a title bar drop, P20), else a little right of and
+    /// below this one.
+    pub(super) fn tmux_break(&mut self, pane: PaneId, to_tab: bool, at: Option<(i32, i32)>) -> bool {
         let Some((gw, p, window)) = self.tmux_of(pane) else { return false };
         if self.tabs.iter().find(|t| t.layout.panes().contains(&pane)).is_none_or(|t| t.layout.panes().len() < 2) {
             return false;
         }
         // A new window opens a little right of and below this one (iTerm2's +10, -10).
-        let point = (!to_tab).then(|| self.gpu.as_ref().and_then(|g| window_geometry(&g.window)).map(|g| g.0)).flatten().map(|(x, y)| (x + 10, y + 10));
+        let point = (!to_tab).then(|| at.or_else(|| self.gpu.as_ref().and_then(|g| window_geometry(&g.window)).map(|g| g.0).map(|(x, y)| (x + 10, y + 10)))).flatten();
         if let Some(t) = self.tmux.get_mut(&gw) {
             t.ctl.break_pane(p, to_tab.then_some(window), point, &mut t.gw);
         }

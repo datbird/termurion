@@ -50,6 +50,61 @@ pub(super) fn cancel_on(event: PickEvent, source: PaneId) -> bool {
     }
 }
 
+/// A title bar drag begins once the pointer is this many points from the press
+/// (`SessionTitleView mouseDragged:`; the system's drag distance, scaled).
+pub(super) const DRAG_THRESHOLD: f32 = 4.0;
+
+/// Whether a title bar drag may start: Alt is required only with the Advanced key
+/// `RequireOptionToDragSplitPaneTitleBar` (`SessionTitleView.m:377-384`).
+pub(super) fn title_drag_allowed(require_alt: bool, alt: bool) -> bool {
+    !require_alt || alt
+}
+
+/// Whether the pointer at `to` is far enough from the press at `from` (pixels at `scale`).
+pub(super) fn drag_began(from: (f32, f32), to: (f32, f32), scale: f32) -> bool {
+    (to.0 - from.0).hypot(to.1 - from.1) >= DRAG_THRESHOLD * scale
+}
+
+/// What a released title bar drag does. A lone pane never gets here: it moves the window when the
+/// drag begins (P6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DragOutcome {
+    /// Dropped on another pane's half (`Half::None` when the pointer sits where no half shows).
+    Drop(PaneId, Half),
+    /// Dropped on a window's tab bar (registry key, slot): a tab there (`PseudoTerminal.m:8648-8677`).
+    NewTab(u64, usize),
+    /// Dropped outside every Tandem window (`MovePaneController.m:234-237`).
+    NewWindow,
+    /// Dropped on itself, or on a window's other chrome.
+    Nothing,
+}
+
+/// The outcome of a release: over another pane is a drop, over the source itself nothing
+/// (`MovePaneController.m:226-232`), over a tab bar a new tab, over a window's other parts
+/// nothing, outside every window a new window.
+pub(super) fn drag_outcome(over_window: bool, over_bar: Option<(u64, usize)>, over_pane: Option<(PaneId, Half)>, source: PaneId) -> DragOutcome {
+    if !over_window {
+        return DragOutcome::NewWindow;
+    }
+    match (over_pane, over_bar) {
+        (Some((p, _)), _) if p == source => DragOutcome::Nothing,
+        (Some((p, half)), _) => DragOutcome::Drop(p, half),
+        (None, Some((window, slot))) => DragOutcome::NewTab(window, slot),
+        (None, None) => DragOutcome::Nothing,
+    }
+}
+
+/// Where a pane dropped at bar slot `slot` takes its tab (P12): out of the pinned zone (the new
+/// tab is unpinned) and never inside a group's run (`groups` is each tab's group id), where a
+/// collapsed group would hide it: it goes after the group.
+pub(super) fn new_tab_slot(groups: &[Option<&str>], pinned: &[bool], slot: usize) -> usize {
+    let slot = crate::tab_drag::clamp_to_zone(pinned.len(), slot.min(groups.len()), pinned);
+    match slot.checked_sub(1).and_then(|b| groups.get(b).copied().flatten()) {
+        Some(g) if groups.get(slot).copied().flatten() == Some(g) => groups[slot..].iter().position(|x| *x != Some(g)).map_or(groups.len(), |n| slot + n),
+        _ => slot,
+    }
+}
+
 /// `from` takes `to`'s id in the tab's layout, focus and zoom.
 fn replace_pane(tab: &mut Tab, from: PaneId, to: PaneId) {
     tab.layout = Layout::from_tree(tab.layout.tree().map(&mut |p| if p == from { to } else { p }));
@@ -62,7 +117,7 @@ fn replace_pane(tab: &mut Tab, from: PaneId, to: PaneId) {
 }
 
 /// What leaving a tab did to it.
-enum Detached {
+pub(super) enum Detached {
     Refused,
     Kept,
     /// The tab had only that pane: it was removed from the list.
@@ -71,7 +126,7 @@ enum Detached {
 
 /// Takes `source` out of its tab: the tab's focus goes to its first pane and its zoom ends
 /// (`move_session_to_tab`); a tab left empty leaves the list.
-fn detach(tabs: &mut Vec<Tab>, source: PaneId) -> Detached {
+pub(super) fn detach(tabs: &mut Vec<Tab>, source: PaneId) -> Detached {
     let Some(at) = tabs.iter().position(|t| t.layout.panes().contains(&source)) else { return Detached::Refused };
     if tabs[at].layout.panes().len() < 2 {
         return Detached::Emptied(at, tabs.remove(at));
@@ -226,27 +281,146 @@ impl App {
         true
     }
 
-    /// The pointer moved: the half under it in the pane under it. A target in a Lock Layout
-    /// window shows none (P5).
+    /// The target pane under the window point and the half it shows, in the current window. A
+    /// target in a Lock Layout window shows none (P5); the source is no target.
+    fn hover_at(&self, source: PaneId, swap: bool, old: Option<(PaneId, Half)>, x: f32, y: f32) -> Option<(PaneId, Half)> {
+        let (p, r) = self.pick_rects().into_iter().find(|(_, r)| r.contains(x, y))?;
+        if p == source || self.pane_window_forbids(p, crate::winmodel::LayoutOp::MovePane) {
+            return None;
+        }
+        let current = old.filter(|(hp, _)| *hp == p).map_or(Half::None, |(_, h)| h);
+        let half = pane_move::half_at(current, swap, r.w, r.h, x - r.x, y - r.y, self.scale());
+        (half != Half::None).then_some((p, half))
+    }
+
+    /// The pointer moved: the half under it in the pane under it.
     pub(super) fn pane_move_hover(&mut self, x: f32, y: f32) {
         let Some(pm) = self.pane_move.as_ref().filter(|pm| !pm.drag) else { return };
-        let (source, swap, old) = (pm.source, pm.swap, pm.hover);
-        let hit = self.pick_rects().into_iter().find(|(_, r)| r.contains(x, y));
-        let new = match hit {
-            Some((p, r)) if p != source && !self.pane_window_forbids(p, crate::winmodel::LayoutOp::MovePane) => {
-                let current = old.filter(|(hp, _)| *hp == p).map_or(Half::None, |(_, h)| h);
-                let half = pane_move::half_at(current, swap, r.w, r.h, x - r.x, y - r.y, self.scale());
-                (half != Half::None).then_some((p, half))
-            }
-            _ => None,
-        };
-        if new != old {
+        let new = self.hover_at(pm.source, pm.swap, pm.hover, x, y);
+        self.set_hover(new);
+    }
+
+    /// The hover changed: every window redraws.
+    fn set_hover(&mut self, new: Option<(PaneId, Half)>) {
+        if self.pane_move.as_ref().is_some_and(|pm| pm.hover != new) {
             if let Some(pm) = self.pane_move.as_mut() {
                 pm.hover = new;
             }
             self.redraw();
             self.redraw_all();
         }
+    }
+
+    /// Runs `f` with window `w` current, then the window this was current in again. None when
+    /// `w` cannot be entered. `enter` swaps only fields, so it is cheap; nothing returns between
+    /// the two `enter` calls, which keeps this window's `Drag::Title` (a per-window field).
+    fn in_window<R>(&mut self, w: WindowId, f: impl FnOnce(&mut Self) -> R) -> Option<R> {
+        let home = self.current_window()?;
+        if w == home {
+            return Some(f(self));
+        }
+        if !self.enter(w) {
+            return None;
+        }
+        let out = f(self);
+        self.enter(home);
+        Some(out)
+    }
+
+    /// The Tandem terminal window under the cursor and the cursor in its client pixels (P18:
+    /// matched only against Tandem's own windows, never by title or class).
+    pub(super) fn terminal_window_at_cursor(&self) -> Option<(WindowId, (f32, f32))> {
+        use windows_sys::Win32::Foundation::{HWND, POINT};
+        use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetAncestor, WindowFromPoint, GA_ROOT};
+        let screen = tab_drag_ui::cursor_screen()?;
+        let under = unsafe { GetAncestor(WindowFromPoint(POINT { x: screen.0, y: screen.1 }), GA_ROOT) } as isize;
+        if under == 0 {
+            return None;
+        }
+        let windows = self.gpu.iter().chain(self.windows.parked().filter_map(|(_, s)| s.gpu.as_ref()));
+        let (id, hwnd) = windows.filter_map(|g| menu::hwnd_of(&g.window).map(|h| (g.window.id(), h))).find(|(_, h)| *h == under)?;
+        let mut p = POINT { x: screen.0, y: screen.1 };
+        (unsafe { ScreenToClient(hwnd as HWND, &mut p) } != 0).then_some((id, (p.x as f32, p.y as f32)))
+    }
+
+    /// A press on a title bar's pane moved: the drag begins at the threshold (a lone pane moves
+    /// the window instead, P6), then the hover follows the pointer over any Tandem window.
+    pub(super) fn title_drag_move(&mut self, pane: PaneId, from: (f32, f32), x: f32, y: f32) {
+        let began = self.pane_move.as_ref().is_some_and(|pm| pm.drag && pm.source == pane);
+        if !began {
+            if !drag_began(from, (x, y), self.scale()) || !title_drag_allowed(self.globals.bool("RequireOptionToDragSplitPaneTitleBar"), self.mods.alt) {
+                return;
+            }
+            let lone = self.tabs.iter().find(|t| t.layout.panes().contains(&pane)).is_none_or(|t| t.layout.panes().len() < 2);
+            if lone {
+                // Windows moves the window live (iTerm2 moves it by the drop offset).
+                return self.begin_window_drag();
+            }
+            // A drag exits any pick first (`MovePaneController.m:313-326`).
+            self.end_pane_move();
+            if self.pane_move_refused(pane) {
+                self.drag = Drag::None;
+                find_ui::beep();
+                return;
+            }
+            self.pane_move = Some(PaneMove { source: pane, swap: false, hover: None, drag: true });
+            self.redraw_all();
+        }
+        let old = self.pane_move.as_ref().and_then(|pm| pm.hover);
+        let new = self.terminal_window_at_cursor().and_then(|(w, (cx, cy))| self.in_window(w, |a| a.hover_at(pane, false, old, cx, cy)).flatten());
+        self.set_hover(new);
+        self.redraw();
+    }
+
+    /// The title bar drag's release (`drag_outcome`): a drop on a half, a new tab at a bar's
+    /// slot, a new window at the cursor; every outcome ends the drag. True when a drag was on.
+    pub(super) fn title_drag_release(&mut self, pane: PaneId, event_loop: &ActiveEventLoop) -> bool {
+        let Some(pm) = self.pane_move.clone().filter(|pm| pm.drag && pm.source == pane) else { return false };
+        let screen = tab_drag_ui::cursor_screen();
+        let here = self.current_window();
+        let at = self.terminal_window_at_cursor();
+        let (mut over_pane, mut over_bar) = (None, None);
+        if let Some((w, (cx, cy))) = at {
+            let swap = pm.swap;
+            over_pane = self.in_window(w, |a| {
+                let (p, r) = a.pick_rects().into_iter().find(|(_, r)| r.contains(cx, cy))?;
+                if p == pane {
+                    return Some((p, Half::None));
+                }
+                // No half shown still drops, below (the pick's rule).
+                let shown = pm.hover.filter(|(hp, _)| *hp == p).map(|(_, h)| h);
+                Some((p, shown.unwrap_or_else(|| pane_move::half_at(Half::None, swap, r.w, r.h, cx - r.x, cy - r.y, a.scale()))))
+            }).flatten();
+            over_bar = if Some(w) == here { self.own_bar_slot(cx, cy) } else { screen.and_then(|s| self.window_bar_hit(s)) };
+        }
+        match drag_outcome(at.is_some(), over_bar, over_pane, pane) {
+            DragOutcome::Drop(target, half) => {
+                self.drop_pane(target, half, event_loop);
+            }
+            DragOutcome::NewTab(key, slot) => {
+                if let Some(window) = self.window_id_of_key(key) {
+                    self.move_session_to_new_tab(pane, window, slot, event_loop);
+                }
+            }
+            DragOutcome::NewWindow => {
+                if let Some(point) = screen {
+                    self.move_session_to_window_at(pane, point, event_loop);
+                }
+            }
+            DragOutcome::Nothing => {}
+        }
+        self.end_pane_move();
+        self.redraw();
+        true
+    }
+
+    /// The slot a tab dropped at the window point takes in this window's own tab bar; None
+    /// off the bar. The key is this window's registry key.
+    fn own_bar_slot(&self, x: f32, y: f32) -> Option<(u64, usize)> {
+        self.tab_bar_rect().filter(|b| b.contains(x, y))?;
+        let vertical = tab_position::vertical(self.tab_position());
+        Some((self.windows.current()?, crate::tab_drag::drop_index(&self.bar_tab_rects(), x, y, vertical)))
     }
 
     /// Drops the source on `target`'s `half`. False when nothing happened and the pick stays
@@ -520,6 +694,52 @@ mod tests {
         assert_eq!(apply_drop(&mut tabs, 9, 1, Plan::Swap), Applied::Refused);
         assert_eq!(apply_drop(&mut tabs, 1, 3, Plan::Cancel), Applied::Refused);
         assert_eq!(tabs.iter().map(|t| t.layout.panes()).collect::<Vec<_>>(), before);
+    }
+
+    #[test]
+    fn title_drag_follows_iterm2() {
+        // `SessionTitleView.m:377-384`: Alt is required only with the Advanced key.
+        assert!(title_drag_allowed(false, false));
+        assert!(!title_drag_allowed(true, false));
+        assert!(title_drag_allowed(true, true));
+        assert!(title_drag_allowed(false, true));
+
+        // The drag begins once the pointer is DRAG_THRESHOLD points (times the scale) away.
+        assert_eq!(DRAG_THRESHOLD, 4.0);
+        assert!(!drag_began((10.0, 10.0), (12.0, 12.0), 1.0));
+        assert!(drag_began((10.0, 10.0), (14.0, 10.0), 1.0));
+        assert!(!drag_began((0.0, 0.0), (5.0, 5.0), 2.0), "7.07 pixels is under 8");
+        assert!(drag_began((0.0, 0.0), (0.0, 8.0), 2.0));
+
+        // The release: another pane's half, its own pane, a tab bar, outside every window, a
+        // window's other chrome (`MovePaneController.m:226-237`, `PseudoTerminal.m:8648-8677`).
+        use crate::pane_move::Half;
+        let on = |over_window, bar, pane| drag_outcome(over_window, bar, pane, 1);
+        assert_eq!(on(true, None, Some((2, Half::West))), DragOutcome::Drop(2, Half::West));
+        assert_eq!(on(true, None, Some((2, Half::None))), DragOutcome::Drop(2, Half::None), "no half still drops: below, as the pick");
+        assert_eq!(on(true, None, Some((1, Half::None))), DragOutcome::Nothing, "dropped on itself");
+        assert_eq!(on(true, Some((7, 2)), None), DragOutcome::NewTab(7, 2));
+        assert_eq!(on(false, None, None), DragOutcome::NewWindow);
+        assert_eq!(on(true, None, None), DragOutcome::Nothing, "a status bar or the margin");
+        assert_eq!(on(false, Some((7, 2)), None), DragOutcome::NewWindow, "no window means no bar");
+    }
+
+    #[test]
+    fn dropped_pane_tab_slot_keeps_zones() {
+        // P12: the slot is clamped out of the pinned zone and out of a group's run.
+        assert_eq!(new_tab_slot(&[None, None, None], &[false; 3], 2), 2);
+        assert_eq!(new_tab_slot(&[None, None, None], &[true, false, false], 0), 1, "not among the pinned tabs");
+        assert_eq!(new_tab_slot(&[None, None, None], &[true, true, false], 1), 2);
+        let groups = [None, Some("g"), Some("g"), Some("g"), None];
+        let loose = [false; 5];
+        assert_eq!(new_tab_slot(&groups, &loose, 1), 1, "before the group's first tab");
+        assert_eq!(new_tab_slot(&groups, &loose, 2), 4, "inside the group: after it");
+        assert_eq!(new_tab_slot(&groups, &loose, 3), 4);
+        assert_eq!(new_tab_slot(&groups, &loose, 4), 4, "after the group's last tab");
+        assert_eq!(new_tab_slot(&groups, &loose, 9), 5, "past the end is the end");
+        let two = [Some("a"), Some("a"), Some("b"), Some("b")];
+        assert_eq!(new_tab_slot(&two, &[false; 4], 2), 2, "between two groups belongs to neither");
+        assert_eq!(new_tab_slot(&[], &[], 0), 0);
     }
 
     #[test]

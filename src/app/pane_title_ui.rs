@@ -62,6 +62,12 @@ pub(super) fn title_action(hit: pane_title::Hit, button: u8, clicks: u8) -> Opti
     }
 }
 
+/// A left press on the bar itself (not a button, not the double click) arms the pane drag
+/// (`SessionTitleView mouseDragged:`).
+pub(super) fn arms_drag(hit: pane_title::Hit, button: u8, clicks: u8) -> bool {
+    hit == pane_title::Hit::Bar && button == 0 && title_action(hit, button, clicks) == Some(TitleAction::Focus)
+}
+
 /// The buttons act on the release over the part that was pressed (an NSButton tracks to the
 /// release, P14); the bar's own actions and the right-click menu act on the press.
 pub(super) fn acts_on_release(action: TitleAction) -> bool {
@@ -200,8 +206,11 @@ impl App {
             Some(a) if acts_on_release(a) && button == MouseButton::Left => self.title_press = Some((pane, hit, a)),
             Some(TitleAction::Menu) => self.show_context_menu_at(Some((pane, None))),
             Some(TitleAction::Maximize) => self.toggle_maximize(),
-            // Focus is done; a drag from the bar is Task 8's.
+            // Focus is done; moving the pointer far enough from here drags the pane.
             Some(_) | None => {}
+        }
+        if arms_drag(hit, button_number(button), clicks) {
+            self.drag = Drag::Title { pane, from: (x, y) };
         }
         self.redraw();
         true
@@ -277,6 +286,17 @@ mod tests {
         // The buttons act on release over the same part (P14); the bar's own actions on the press.
         assert!(acts_on_release(TitleAction::Close) && acts_on_release(TitleAction::Menu) && acts_on_release(TitleAction::ToggleLock));
         assert!(!acts_on_release(TitleAction::Maximize) && !acts_on_release(TitleAction::Focus));
+    }
+
+    #[test]
+    fn a_bar_press_arms_the_drag() {
+        use crate::pane_title::Hit::{Bar, Close, Lock, Menu};
+        assert!(arms_drag(Bar, 0, 1), "a left press on the bar");
+        assert!(!arms_drag(Bar, 0, 2), "the double click maximizes");
+        assert!(!arms_drag(Bar, 1, 1), "right is the menu");
+        for hit in [Close, Menu, Lock] {
+            assert!(!arms_drag(hit, 0, 1), "a button is pressed, not dragged");
+        }
     }
 
     #[test]

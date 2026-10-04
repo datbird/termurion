@@ -257,6 +257,9 @@ enum Drag {
     /// the empty bar, a close button, a tab Lock Layout keeps in place), where it was (pixels).
     /// It never selects or reorders; the press clicks as usual.
     Window { start: (f32, f32) },
+    /// A left press on a pane's title bar (`pane_title_ui`): the pane and where the press was
+    /// (pixels). Moving far enough drags the pane (`pane_move_ui`).
+    Title { pane: PaneId, from: (f32, f32) },
 }
 
 struct Gpu {
@@ -4346,6 +4349,9 @@ impl App {
             Drag::Belt(d) => self.toolbelt_release(d),
             Drag::Composer { pane, kind } => self.composer_release(pane, kind),
             Drag::Divider { .. } => self.tmux_drag_end(event_loop),
+            Drag::Title { pane, .. } => {
+                self.title_drag_release(pane, event_loop);
+            }
             // The width becomes every new window's (iTerm2 writes it at each move, `RTV:2264-2277`).
             Drag::SideBar { .. } => {
                 self.globals.set("LeftTabBarWidth", toml::Value::Float(self.side_bar_preferred as f64));
@@ -4432,6 +4438,10 @@ impl App {
             Drag::AddButton { start } => {
                 let start = *start;
                 self.add_button_drag(start, x, y);
+            }
+            Drag::Title { pane, from } => {
+                let (pane, from) = (*pane, *from);
+                self.title_drag_move(pane, from, x, y);
             }
             Drag::Select { pane } => {
                 let pane = *pane;

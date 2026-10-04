@@ -1061,7 +1061,7 @@ impl App {
     pub(super) fn move_session_to_window(&mut self) {
         let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) else { return };
         // A loaded recording is not moved.
-        if self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) || self.tmux_break(pane, false) {
+        if self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) || self.tmux_break(pane, false, None) {
             return;
         }
         let Some(t) = self.tabs.get_mut(self.active) else { return };
@@ -1085,7 +1085,7 @@ impl App {
     /// new tab of this window (only when the tab has other panes).
     pub(super) fn move_session_to_tab(&mut self) {
         let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) else { return };
-        if self.tmux_break(pane, true) {
+        if self.tmux_break(pane, true, None) {
             return;
         }
         let Some(t) = self.tabs.get_mut(self.active) else { return };
@@ -1100,6 +1100,90 @@ impl App {
         self.active = self.tabs.len() - 1;
         self.relayout();
         self.redraw();
+    }
+
+    /// A pane dragged by its title bar onto a window's tab bar (`window`, slot `index`): it leaves
+    /// its tab (which keeps its other panes) and becomes a tab of that window
+    /// (`PseudoTerminal.m:8648-8677`, `MovePaneController.m:113-124`). The slot keeps the pinned
+    /// zone and a group's run (P12). A window under Lock Layout takes no tab; a loaded recording
+    /// never moves. A tmux pane breaks out through tmux, its new window opening beside the old
+    /// one (`PseudoTerminal.m:8651-8659`).
+    pub(super) fn move_session_to_new_tab(&mut self, pane: PaneId, window: WindowId, index: usize, event_loop: &ActiveEventLoop) {
+        let _ = event_loop;
+        let Some(source) = self.current_window() else { return };
+        let Some(from) = self.tabs.iter().position(|t| t.layout.panes().contains(&pane)) else { return };
+        if self.tabs[from].layout.panes().len() < 2 || self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) {
+            return;
+        }
+        if window != source && self.windows.parked().any(|(_, s)| s.gpu.as_ref().is_some_and(|g| g.window.id() == window) && s.locks().forbids(crate::winmodel::LayoutOp::AddTab)) {
+            return;
+        }
+        if self.tmux_break(pane, true, None) {
+            return;
+        }
+        self.end_replays(&[pane]);
+        let super::pane_move_ui::Detached::Kept = super::pane_move_ui::detach(&mut self.tabs, pane) else { return };
+        self.broadcast.forget(&[pane]);
+        let tab = Tab::new(self.next_tab_id, Layout::new(pane), pane);
+        self.next_tab_id += 1;
+        let id = tab.id;
+        if window != source {
+            self.relayout();
+            self.redraw();
+            if !self.enter(window) {
+                // The window went: the session keeps a tab of its own here.
+                self.tabs.push(tab);
+                self.select_tab(self.tabs.len() - 1);
+                self.relayout();
+                return;
+            }
+        }
+        let groups: Vec<Option<&str>> = self.tabs.iter().map(|t| t.group.as_ref().map(|g| g.id.as_str())).collect();
+        let pinned: Vec<bool> = self.tabs.iter().map(|t| t.pinned).collect();
+        let slot = super::pane_move_ui::new_tab_slot(&groups, &pinned, index);
+        self.tabs.insert(slot, tab);
+        self.settle_tabs();
+        if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
+            self.select_tab(i);
+        }
+        self.tmux_reorder();
+        self.relayout();
+        if window != source {
+            self.focus_terminal_window(window);
+        }
+        self.redraw();
+    }
+
+    /// A pane dragged by its title bar outside every window (`MovePaneController.m:234-237`): it
+    /// leaves its tab for a new window whose top left corner is `origin` (13d's torn-off
+    /// placement). A loaded recording never moves; a tmux pane breaks out through tmux with that
+    /// point (`MovePaneController.m:136-140`).
+    pub(super) fn move_session_to_window_at(&mut self, pane: PaneId, origin: (i32, i32), event_loop: &ActiveEventLoop) {
+        let Some(source) = self.current_window() else { return };
+        let Some(from) = self.tabs.iter().position(|t| t.layout.panes().contains(&pane)) else { return };
+        if self.tabs[from].layout.panes().len() < 2 || self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) {
+            return;
+        }
+        if self.tmux_break(pane, false, Some(origin)) {
+            return;
+        }
+        self.end_replays(&[pane]);
+        let super::pane_move_ui::Detached::Kept = super::pane_move_ui::detach(&mut self.tabs, pane) else { return };
+        self.broadcast.forget(&[pane]);
+        let tab = Tab::new(self.next_tab_id, Layout::new(pane), pane);
+        self.next_tab_id += 1;
+        // Opened now: a failed open puts the tab back here.
+        self.open_pending(event_loop, NewWindow::TornOff(tab, origin));
+        let Some(new) = self.current_window().filter(|w| *w != source) else {
+            self.relayout();
+            self.redraw();
+            return;
+        };
+        if self.enter(source) {
+            self.relayout();
+            self.redraw();
+        }
+        self.focus_terminal_window(new);
     }
 
     /// The tab holds a loaded recording's pane, which is never moved to another window.
