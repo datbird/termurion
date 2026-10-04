@@ -1094,13 +1094,13 @@ impl App {
         let opened = match a.window.as_deref() {
             Some("current") if self.tabs.is_empty() => Err(OrchError::Unsupported(ot::NO_WINDOW_FOR_CURRENT.to_string())),
             Some("current") => {
-                self.split(crate::layout::Axis::Row, guid.as_deref());
+                self.split_as(crate::layout::Axis::Row, guid.as_deref(), false);
                 Ok(())
             }
             Some("new") => self.open_window(event_loop, guid.as_deref()).map(|_| ()).map_err(|_| OrchError::Unsupported(ot::LAUNCH_FAILED.to_string())),
             _ if self.tabs.is_empty() || self.new_tab_opens_window(guid.as_deref()) => self.open_window(event_loop, guid.as_deref()).map(|_| ()).map_err(|_| OrchError::Unsupported(ot::LAUNCH_FAILED.to_string())),
             _ => {
-                self.new_tab(guid.as_deref());
+                self.new_tab_as(guid.as_deref(), false);
                 Ok(())
             }
         };

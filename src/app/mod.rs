@@ -3483,10 +3483,15 @@ impl App {
     }
 
     fn new_tab(&mut self, guid: Option<&str>) {
+        self.new_tab_as(guid, true);
+    }
+
+    /// `by_person` false is a script's or the API's tab, which leaves a pick on (P15).
+    fn new_tab_as(&mut self, guid: Option<&str>, by_person: bool) {
         if !self.tabs.is_empty() && !self.layout_allowed(crate::winmodel::LayoutOp::AddTab) {
             return;
         }
-        self.pane_move_event(pane_move_ui::PickEvent::NewSession);
+        self.pane_move_event(pane_move_ui::PickEvent::NewSession { by_person });
         self.add_tab(guid);
     }
 
@@ -3513,6 +3518,11 @@ impl App {
     }
 
     fn split(&mut self, axis: Axis, guid: Option<&str>) {
+        self.split_as(axis, guid, true);
+    }
+
+    /// `by_person` false is a script's or the API's split, which leaves a pick on (P15).
+    fn split_as(&mut self, axis: Axis, guid: Option<&str>, by_person: bool) {
         if !self.layout_allowed(crate::winmodel::LayoutOp::Split) {
             return;
         }
@@ -3521,7 +3531,7 @@ impl App {
             return;
         }
         let Some(target) = self.tabs.get(self.active).map(|t| t.focused) else { return };
-        self.pane_move_event(pane_move_ui::PickEvent::NewSession);
+        self.pane_move_event(pane_move_ui::PickEvent::NewSession { by_person });
         if self.tmux_split(target, axis == Axis::Row) {
             return;
         }

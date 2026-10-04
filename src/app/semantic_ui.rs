@@ -352,7 +352,7 @@ impl App {
                 if let Some(item) = crate::menus::by_id(&id) {
                     self.run_command(item, event_loop);
                 }
-                let back = self.tabs.get(self.active).and_then(|t| restore_focus(restore, pend.pane, t.focused, t.zoomed.is_some(), |p| t.layout.panes().contains(&p)));
+                let back = self.tabs.get(self.active).and_then(|t| restore_focus(restore, pend.pane, t.layout.panes().contains(&pend.pane), t.focused, t.zoomed.is_some(), |p| t.layout.panes().contains(&p)));
                 if let (Some(pane), Some(t)) = (back, self.tabs.get_mut(self.active)) {
                     t.focused = pane;
                     self.refresh_route();
@@ -494,9 +494,11 @@ pub(super) enum CtxPick {
 /// The pane that takes the focus back after a menu command ran on the menu's pane, as a
 /// clicked-pane pointer action leaves it (`run_pointer_action`): the command did not move the
 /// focus off the menu's pane, the tab is not maximized on it, and the old pane is still there.
-pub(super) fn restore_focus(restore: Option<PaneId>, menu_pane: PaneId, now_focused: PaneId, zoomed: bool, present: impl Fn(PaneId) -> bool) -> Option<PaneId> {
+/// A command that took the menu's pane out of the tab (Move Session to Window) leaves the tab's
+/// focus on its first pane; the old pane gets it back too.
+pub(super) fn restore_focus(restore: Option<PaneId>, menu_pane: PaneId, menu_in_tab: bool, now_focused: PaneId, zoomed: bool, present: impl Fn(PaneId) -> bool) -> Option<PaneId> {
     let prev = restore?;
-    (now_focused == menu_pane && !zoomed && present(prev)).then_some(prev)
+    ((now_focused == menu_pane || !menu_in_tab) && !zoomed && present(prev)).then_some(prev)
 }
 
 pub(super) fn ctx_pick(item: &str, pend_pane: PaneId, focused: Option<PaneId>, in_tab: bool) -> CtxPick {
@@ -625,15 +627,17 @@ mod title_menu_tests {
     fn commands_leave_the_focus_where_it_was() {
         let present = |p: PaneId| p == 1 || p == 2 || p == 3;
         // Copy or Paste on B with A focused: the command reached B, then A has the focus again.
-        assert_eq!(restore_focus(Some(1), 2, 2, false, present), Some(1));
+        assert_eq!(restore_focus(Some(1), 2, true, 2, false, present), Some(1));
         // A command that moved the focus on (Split focuses the new pane) keeps it there.
-        assert_eq!(restore_focus(Some(1), 2, 3, false, present), None);
+        assert_eq!(restore_focus(Some(1), 2, true, 3, false, present), None);
         // Maximize on B keeps B focused: it is the one showing.
-        assert_eq!(restore_focus(Some(1), 2, 2, true, present), None);
+        assert_eq!(restore_focus(Some(1), 2, true, 2, true, present), None);
         // The old pane is gone (Close of A?): nothing to give back.
-        assert_eq!(restore_focus(Some(9), 2, 2, false, present), None);
+        assert_eq!(restore_focus(Some(9), 2, true, 2, false, present), None);
+        // Move Session to Window on B left the tab: its focus fell to the first pane (3), A gets it back.
+        assert_eq!(restore_focus(Some(1), 2, false, 3, false, present), Some(1));
         // The menu's pane was already focused.
-        assert_eq!(restore_focus(None, 2, 2, false, present), None);
+        assert_eq!(restore_focus(None, 2, true, 2, false, present), None);
     }
 
     #[test]

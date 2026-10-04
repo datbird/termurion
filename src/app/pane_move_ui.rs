@@ -35,8 +35,8 @@ pub(super) enum Applied {
 pub(super) enum PickEvent {
     /// A click on a pane.
     Click(PaneId),
-    /// A session was started by the person.
-    NewSession,
+    /// A session was started; only the person's cancels (P15), not a script's or the API's.
+    NewSession { by_person: bool },
     /// A session ended.
     Ended(PaneId),
 }
@@ -46,7 +46,7 @@ pub(super) enum PickEvent {
 pub(super) fn cancel_on(event: PickEvent, source: PaneId) -> bool {
     match event {
         PickEvent::Click(p) | PickEvent::Ended(p) => p == source,
-        PickEvent::NewSession => true,
+        PickEvent::NewSession { by_person } => by_person,
     }
 }
 
@@ -102,6 +102,25 @@ pub(super) fn new_tab_slot(groups: &[Option<&str>], pinned: &[bool], slot: usize
     match slot.checked_sub(1).and_then(|b| groups.get(b).copied().flatten()) {
         Some(g) if groups.get(slot).copied().flatten() == Some(g) => groups[slot..].iter().position(|x| *x != Some(g)).map_or(groups.len(), |n| slot + n),
         _ => slot,
+    }
+}
+
+/// The panes that left a window in a drop (`Broadcast::forget` is for those only).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Left {
+    /// Left the source's window.
+    pub(super) source_window: Vec<PaneId>,
+    /// Left the target's window.
+    pub(super) target_window: Vec<PaneId>,
+}
+
+/// A move or swap within one window takes nobody out of it; across windows the source left its
+/// window, and in a swap the target left its own.
+pub(super) fn left_windows(source: PaneId, target: PaneId, same_window: bool, swap: bool) -> Left {
+    match (same_window, swap) {
+        (true, _) => Left { source_window: vec![], target_window: vec![] },
+        (false, false) => Left { source_window: vec![source], target_window: vec![] },
+        (false, true) => Left { source_window: vec![source], target_window: vec![target] },
     }
 }
 
@@ -494,9 +513,6 @@ impl App {
                 self.forget_tab(id);
             }
         }
-        if !same_tab {
-            self.broadcast.forget(&[source, target]);
-        }
         if matches!(applied, Applied::Moved { .. }) {
             if let Some(at) = self.tabs.iter().position(|t| t.layout.panes().contains(&source)) {
                 self.active = at;
@@ -520,7 +536,8 @@ impl App {
             return false;
         }
         self.end_replays(&[source]);
-        self.broadcast.forget(&[source, target]);
+        let left = left_windows(source, target, false, plan == pane_move::Drop::Swap);
+        self.broadcast.forget(&left.source_window);
         let selected = self.tabs.get(self.active).map(|t| t.id);
         match plan {
             pane_move::Drop::Swap => {
@@ -533,6 +550,7 @@ impl App {
                     return false;
                 }
                 self.end_replays(&[target]);
+                self.broadcast.forget(&left.target_window);
                 if let Some(t) = self.tabs.iter_mut().find(|t| t.layout.panes().contains(&target)) {
                     replace_pane(t, target, source);
                 }
@@ -743,10 +761,22 @@ mod tests {
     }
 
     #[test]
+    fn broadcast_forgets_only_panes_that_left_a_window() {
+        // Within one window nothing left, move or swap, across tabs or not.
+        assert_eq!(left_windows(1, 3, true, false), Left { source_window: vec![], target_window: vec![] });
+        assert_eq!(left_windows(1, 3, true, true), Left { source_window: vec![], target_window: vec![] });
+        // A move to another window: the source left its window, the target never moved.
+        assert_eq!(left_windows(1, 3, false, false), Left { source_window: vec![1], target_window: vec![] });
+        // A swap across windows: each left the window it was in.
+        assert_eq!(left_windows(1, 3, false, true), Left { source_window: vec![1], target_window: vec![3] });
+    }
+
+    #[test]
     fn pick_mode_cancels() {
         assert!(cancel_on(PickEvent::Click(4), 4), "clicking the source cancels");
         assert!(!cancel_on(PickEvent::Click(5), 4), "clicking another pane drops, it does not cancel");
-        assert!(cancel_on(PickEvent::NewSession, 4), "a new session cancels");
+        assert!(cancel_on(PickEvent::NewSession { by_person: true }, 4), "a new session cancels");
+        assert!(!cancel_on(PickEvent::NewSession { by_person: false }, 4), "a script's or the API's session does not (P15)");
         assert!(cancel_on(PickEvent::Ended(4), 4), "the source ending cancels");
         assert!(!cancel_on(PickEvent::Ended(5), 4), "another pane ending does not");
     }

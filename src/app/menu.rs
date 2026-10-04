@@ -747,7 +747,7 @@ impl App {
                 }
             }
             "newWindow:" => {
-                self.pane_move_event(pane_move_ui::PickEvent::NewSession);
+                self.pane_move_event(pane_move_ui::PickEvent::NewSession { by_person: true });
                 if self.tmux_new(true, true).is_none() {
                     self.new_window(event_loop, None);
                 }
