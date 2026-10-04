@@ -294,7 +294,12 @@ impl Hook {
         self.charge.tree.recovery_ok.store(true, Ordering::Relaxed);
     }
 
-    /// Whether `allow_recovery` was called.
+    /// Takes the right `allow_recovery` gave back (final review I2: the pane's last hop ended).
+    pub fn forbid_recovery(&self) {
+        self.charge.tree.recovery_ok.store(false, Ordering::Relaxed);
+    }
+
+    /// Whether `allow_recovery` was called (and not `forbid_recovery` since).
     pub fn recovery_allowed(&self) -> bool {
         self.charge.tree.recovery_ok.load(Ordering::Relaxed)
     }

@@ -3,8 +3,8 @@
 //!
 //! Everything here can carry text the remote chose (the ssh arguments a hop reported, the
 //! directory its shell reported), so nothing builds a local command line from it without
-//! `identity_is_safe`, and a saved list is read back with `jumps_from`, which refuses a
-//! control character anywhere.
+//! `identity_is_safe`, and every hop a new session reconnects through passes `safe_hops`
+//! (a saved list is read back with `jumps_from`, which uses it).
 
 use crate::ssh_args::Identity;
 use serde::{Deserialize, Serialize};
@@ -28,8 +28,13 @@ pub struct Reconnection {
 
 /// The script a conductor evals to jump to the next hop (`CD:1754-1770`): it2ssh wrapped in
 /// a function and run with the hop's arguments, after the script removes its own file.
+/// Beyond iTerm2 (which puts the text in as it is): the arguments are read back as words
+/// (`hop_words`) and each goes in quoted as `%q` quotes it, so no text a hop reported is ever
+/// shell syntax in the remote `eval` (ruling, final review I1). Text not in that form gives
+/// no arguments; `Conductor::start_jumping` takes only hops `safe_hops` passed.
 pub fn jump_script(it2ssh: &str, sshargs: &str) -> String {
-    format!("#!/usr/bin/env bash\nrm $SELF\nunset SELF\nit2ssh_wrapper() {{\n{it2ssh}\n}}\nit2ssh_wrapper {sshargs}")
+    let args = crate::util_it2ssh::requote(&hop_words(sshargs).unwrap_or_default());
+    format!("#!/usr/bin/env bash\nrm $SELF\nunset SELF\nit2ssh_wrapper() {{\n{it2ssh}\n}}\nit2ssh_wrapper {args}")
 }
 
 /// How the new conductor of a hooked session starts.
@@ -127,9 +132,8 @@ pub fn jumps_value(jumps: &[Reconnection]) -> toml::Value {
 }
 
 /// A jump list read back. A file can be edited and a session's text came from a remote host,
-/// so a list with a control character in it, an entry of the wrong shape, ssh arguments not
-/// quoted as it2ssh quotes them (`quoted_as_it2ssh`: they reach a remote `eval`), or more
-/// than `MAX_JUMPS` hops is dropped whole: the session then starts as an ordinary one.
+/// so a list with an entry of the wrong shape, or one `safe_hops` refuses (they reach a remote
+/// `eval`), is dropped whole: the session then starts as an ordinary one.
 pub fn jumps_from(v: &toml::Value) -> Vec<Reconnection> {
     let Some(items) = v.as_array().filter(|a| a.len() <= MAX_JUMPS) else { return Vec::new() };
     let mut out = Vec::new();
@@ -137,14 +141,77 @@ pub fn jumps_from(v: &toml::Value) -> Vec<Reconnection> {
         let Some(t) = item.as_table() else { return Vec::new() };
         let text = |k: &str| t.get(k).and_then(toml::Value::as_str).map(str::to_string);
         let (Some(sshargs), Some(boolargs)) = (text("sshargs"), text("boolargs")) else { return Vec::new() };
-        let initial_directory = text("initialDirectory");
-        let bad = |s: &str| s.chars().any(char::is_control);
-        if bad(&sshargs) || bad(&boolargs) || initial_directory.as_deref().is_some_and(bad) || !quoted_as_it2ssh(&sshargs) {
-            return Vec::new();
-        }
-        out.push(Reconnection { sshargs, initial_directory, boolargs });
+        out.push(Reconnection { sshargs, initial_directory: text("initialDirectory"), boolargs });
     }
-    out
+    safe_hops(&out).unwrap_or_default()
+}
+
+/// ssh's options that take a value (OpenSSH `ssh.c`'s getopt string). Fixed here, not read
+/// from a hop's `boolargs`: those come from the same remote as its arguments, and a letter
+/// they called a value-taking one would hide the next option from the screen.
+const VALUE_LETTERS: &str = "BbcDEeFIiJLlmOoPpQRSWw";
+
+/// Options a hop may not carry: `-F` loads another configuration (which can run commands),
+/// `-I` loads a PKCS#11 library and `-E` appends to any file (ruling, final review I1).
+const REFUSED_LETTERS: &str = "EFI";
+
+/// `-o` keywords a hop may not carry, lower case: each runs a command, loads code or reads
+/// another configuration on the host that runs the jump (ruling, final review I1).
+const REFUSED_KEYWORDS: &[&str] = &["proxycommand", "localcommand", "permitlocalcommand", "remotecommand", "knownhostscommand", "match", "include", "pkcs11provider", "securitykeyprovider", "xauthlocation"];
+
+/// Characters no word of a hop may hold once unquoted: ssh expands words such as the host
+/// into commands a configuration names (`%h` in a ProxyCommand), and older ssh versions do not
+/// screen them there.
+const SHELL_METACHARACTERS: &str = ";|&$`<>(){}'\"\\";
+
+/// The hops a new session may reconnect through (Duplicate Session, Duplicate Tab, an
+/// arrangement), or None for a plain session: the one validator for all of them (ruling,
+/// final review I1). Every hop must be one line of text, its ssh arguments words as it2ssh
+/// quotes them (`hop_words`), and none of them an option that runs a command, loads code or
+/// reads another configuration (`words_are_safe`), however ssh would spell it. One refused
+/// hop refuses the list, as does an empty list or one longer than `MAX_JUMPS`.
+pub fn safe_hops(hops: &[Reconnection]) -> Option<Vec<Reconnection>> {
+    (!hops.is_empty() && hops.len() <= MAX_JUMPS && hops.iter().all(hop_is_safe)).then(|| hops.to_vec())
+}
+
+fn hop_is_safe(hop: &Reconnection) -> bool {
+    let bad = |s: &str| s.chars().any(char::is_control);
+    if bad(&hop.boolargs) || hop.initial_directory.as_deref().is_some_and(bad) {
+        return false;
+    }
+    hop_words(&hop.sshargs).is_some_and(|words| !words.is_empty() && words_are_safe(&words))
+}
+
+/// Whether no word is a refused option. Every word that starts with `-` is read as ssh's
+/// getopt reads one (letters that take no value, then one that takes the rest of the word or
+/// the next word), even where ssh would read it as a value: refusing too much only makes a
+/// plain session. `-o`'s value is a configuration line: its keyword, after any spaces or
+/// quotes, ends at a space or `=` (`-oX=v`, `-o X=v`, `-o "X v"`), in any case.
+fn words_are_safe(words: &[String]) -> bool {
+    let refused_option = |line: &str| {
+        let key: String = line.trim_start_matches(|c: char| c.is_whitespace() || c == '"').chars().take_while(char::is_ascii_alphanumeric).collect();
+        REFUSED_KEYWORDS.contains(&key.to_ascii_lowercase().as_str())
+    };
+    for (i, w) in words.iter().enumerate() {
+        if w.chars().any(|c| SHELL_METACHARACTERS.contains(c)) {
+            return false;
+        }
+        let Some(letters) = w.strip_prefix('-').filter(|l| *l != "-") else { continue };
+        for (at, l) in letters.char_indices() {
+            if REFUSED_LETTERS.contains(l) {
+                return false;
+            }
+            if VALUE_LETTERS.contains(l) {
+                let rest = &letters[at + l.len_utf8()..];
+                let value = if rest.is_empty() { words.get(i + 1).map_or("", String::as_str) } else { rest };
+                if l == 'o' && refused_option(value) {
+                    return false;
+                }
+                break;
+            }
+        }
+    }
+    true
 }
 
 /// A restored session's pending jumps (`PS:2214`): only a session that runs ssh takes them,
@@ -154,37 +221,51 @@ pub fn restored_jumps(saved: Option<&toml::Value>, profile_ssh: bool) -> Vec<Rec
     saved.filter(|_| profile_ssh).map(jumps_from).unwrap_or_default()
 }
 
-/// Whether a hop's ssh arguments are words as it2ssh writes them (`printf "%q "`, `IS:66-69`),
-/// the form iTerm2's jump script assumes when it puts them unquoted after `it2ssh_wrapper` in
-/// a remote `eval` (`CD:1754-1770`): words split by one space, each `''` or characters that
-/// `%q` leaves bare, any character escaped with a backslash. A shell metacharacter outside
-/// that (`;`, `|`, `$(`, a backquote, a quote, a redirection) is refused. `$'...'` words hold
-/// control characters, which a saved list never has.
-fn quoted_as_it2ssh(sshargs: &str) -> bool {
+/// A hop's ssh arguments as the words they stand for, when they are words as it2ssh writes
+/// them (`printf "%q "`, `IS:66-69`), the form iTerm2's jump script assumes when it puts them
+/// unquoted after `it2ssh_wrapper` in a remote `eval` (`CD:1754-1770`): words split by one
+/// space, each `''` or characters that `%q` leaves bare, any character escaped with a
+/// backslash. None for anything else: a shell metacharacter outside that (`;`, `|`, `$(`, a
+/// backquote, a quote, a redirection), or a `$'...'` word, which holds control characters.
+pub fn hop_words(sshargs: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word = String::new();
     let mut chars = sshargs.chars().peekable();
     // The previous character of the current word; None at a word's start.
     let mut prev: Option<char> = None;
     while let Some(c) = chars.next() {
         match c {
             // Words split by exactly one space: an empty word is `''`.
-            ' ' if prev.is_none() => return false,
-            ' ' => prev = None,
+            ' ' if prev.is_none() => return None,
+            ' ' => {
+                words.push(std::mem::take(&mut word));
+                prev = None;
+            }
             '\\' => match chars.next() {
-                Some(e) if !e.is_control() => prev = Some(e),
-                _ => return false,
+                Some(e) if !e.is_control() => {
+                    word.push(e);
+                    prev = Some(e);
+                }
+                _ => return None,
             },
             '\'' if prev.is_none() && chars.peek() == Some(&'\'') => {
                 chars.next();
                 if chars.peek().is_some_and(|&n| n != ' ') {
-                    return false;
+                    return None;
                 }
                 prev = Some('\'');
             }
-            c if crate::util_it2ssh::needs_quote(c, prev) || c.is_control() => return false,
-            c => prev = Some(c),
+            c if crate::util_it2ssh::needs_quote(c, prev) || c.is_control() => return None,
+            c => {
+                word.push(c);
+                prev = Some(c);
+            }
         }
     }
-    true
+    if prev.is_some() {
+        words.push(word);
+    }
+    Some(words)
 }
 
 #[cfg(test)]
@@ -197,7 +278,7 @@ mod tests {
 
     #[test]
     fn jump_script_follows_iterm2() {
-        assert_eq!(jump_script("BODY\n", "-p 22 h"), "#!/usr/bin/env bash\nrm $SELF\nunset SELF\nit2ssh_wrapper() {\nBODY\n\n}\nit2ssh_wrapper -p 22 h");
+        assert_eq!(jump_script("BODY\n", "-p 22 h"), "#!/usr/bin/env bash\nrm $SELF\nunset SELF\nit2ssh_wrapper() {\nBODY\n\n}\nit2ssh_wrapper -p 22 h ");
         assert!(IT2SSH.starts_with("#!"));
         assert_eq!(IT2SSH.lines().count(), 193);
         assert_eq!(IT2SSH.matches('\n').count(), 193, "the file ends with a newline, as wc -l counts");
@@ -306,13 +387,75 @@ mod tests {
     #[test]
     fn saved_hops_must_be_quoted_as_it2ssh_quotes() {
         let list = |args: &str| jumps_value(&[r("-p 22 h ", None), r(args, Some("/x"))]);
-        for good in ["-p 2222 user@host ", "h", "-o ProxyJump=a\\,b h", "a\\ b\\;c\\|d h ", "-l '' h ", "\\$HOME h", "-o ServerAliveInterval=30 h"] {
+        for good in ["-p 2222 user@host ", "h", "-o ProxyJump=a\\,b h", "a\\ b\\*c\\?d h ", "-l '' h ", "\\~u h", "-o ServerAliveInterval=30 h"] {
             assert_eq!(jumps_from(&list(&good)).len(), 2, "{good}");
         }
-        assert_eq!(jumps_from(&list(&crate::util_it2ssh::requote(&["it's".into(), "a b".into(), "{x}".into(), "".into()]))).len(), 2, "whatever it2ssh writes");
+        assert_eq!(jumps_from(&list(&crate::util_it2ssh::requote(&["a b".into(), "x,y".into(), "[z]".into(), "".into()]))).len(), 2, "what it2ssh writes for words without metacharacters");
+        // Escaped metacharacters are in it2ssh's form, but final review I1's screen refuses
+        // them in any word (`words_are_safe`).
+        for bad in ["a\\ b\\;c\\|d h ", "\\$HOME h", "it\\'s h", "\\{x\\} h"] {
+            assert!(jumps_from(&list(&bad)).is_empty(), "{bad}");
+        }
         for bad in ["h; curl x|sh", "h && rm -rf ~", "$(id) h", "`id` h", "h > /tmp/x", "h | sh", "'a b' h", "\"a\" h", "h &", "h\\", "*", "h #x", "~/x h", "a  b", " h"] {
             assert!(jumps_from(&list(&bad)).is_empty(), "{bad}");
         }
+    }
+
+    /// Final review I1 (ruling): one validator for every hop a new session reconnects through
+    /// (Duplicate Session, Duplicate Tab, an arrangement). Its text reaches a remote `eval`, so
+    /// an option that runs a command or loads code or another configuration refuses the hop,
+    /// in every spelling ssh takes; so does a shell metacharacter in any word.
+    #[test]
+    fn a_hop_that_runs_a_command_is_refused() {
+        let one = |args: &str| safe_hops(&[r(args, None)]);
+        for good in ["-p 2222 user@host ", "h", "-o ProxyJump=a\\,b h ", "-J bastion h ", "-L 8080:localhost:80 h ", "-o ServerAliveInterval=30 h ", "-4 -t h ", "-l '' h ", "-o SetEnv\\ A=b h "] {
+            assert!(one(good).is_some(), "{good}");
+        }
+        for bad in [
+            "-oProxyCommand=sh\\ -c\\ id h ",
+            "-o ProxyCommand=id h ",
+            "-o ProxyCommand\\ id h ",
+            "-oproxycommand=id h ",
+            "-o PROXYCOMMAND=id h ",
+            "-oLocalCommand=id -oPermitLocalCommand=yes h ",
+            "-o PermitLocalCommand=yes h ",
+            "-oRemoteCommand=id h ",
+            "-o KnownHostsCommand=id h ",
+            "-o Match\\ exec\\ id h ",
+            "-oMatch=all h ",
+            "-F cfg h ",
+            "-Fcfg h ",
+            "-4F cfg h ",
+            "-4oProxyCommand=id h ",
+            "-o \\ ProxyCommand=id h ",
+            "-o \\\"ProxyCommand\\\"\\ id h ",
+            "-I lib.so h ",
+            "-o PKCS11Provider=x.so h ",
+            "-o XAuthLocation=/tmp/x h ",
+            "-E log h ",
+            r"h\;id ",
+            "a\\$\\(id\\) h ",
+            "",
+        ] {
+            assert!(one(bad).is_none(), "{bad}");
+        }
+        // One refused hop refuses the list; so does a control character in any field.
+        assert!(safe_hops(&[r("h1 ", None), r("-oProxyCommand=id h2 ", None)]).is_none());
+        assert!(safe_hops(&[r("h1 ", Some("/a\nb"))]).is_none());
+        assert!(safe_hops(&[]).is_none());
+        // The arrangement path takes the same validator.
+        assert!(jumps_from(&jumps_value(&[r("h1 ", None), r("-oProxyCommand=id h2 ", None)])).is_empty());
+        assert!(jumps_from(&jumps_value(&[r("-F /tmp/c h ", None)])).is_empty());
+    }
+
+    /// Every argument goes into the remote `eval` quoted as `%q` quotes it, whatever the hop's
+    /// text says.
+    #[test]
+    fn the_jump_script_quotes_every_argument() {
+        let s = jump_script("B", "h; curl x|sh");
+        assert!(!s.contains("; curl"), "{s}");
+        assert!(jump_script("B", "-p 22 a\\ b ").ends_with("\nit2ssh_wrapper -p 22 a\\ b "));
+        assert!(jump_script("B", "-p 22 h").ends_with("\nit2ssh_wrapper -p 22 h "));
     }
 
     /// Pending Jumps are written only for an SSH-type profile (`PS:7342-7347`), so only such a

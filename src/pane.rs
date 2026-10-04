@@ -787,11 +787,13 @@ impl Pane {
         std::mem::take(&mut self.ssh_held)
     }
 
-    /// The pane is or was an ssh session (F27): an OSC 134 outside the hook may now start an
-    /// in-band recovery, and the pane saves the fact. Called only when a hook Tandem's origin
-    /// token vouched for hooks (`note_hook`) and for a restored pane that saved the fact; never
-    /// from output alone (the it2ssh OSC, an unvouched hook, a restored conductor), so a
-    /// hostile file cannot make Tandem type into its shell (ruling).
+    /// The pane is an ssh session (F27): an OSC 134 outside the hook may now start an in-band
+    /// recovery, and the pane saves the fact. Called only when a hook Tandem's origin token
+    /// vouched for hooks (`note_hook`) and for a restored pane that saved the fact; never from
+    /// output alone (the it2ssh OSC, an unvouched hook, a restored conductor), so a hostile
+    /// file cannot make Tandem type into a shell that never ran a vouched ssh (ruling). The
+    /// right ends when EndSSH empties the hop list (`end_ssh`, final review I2), so it does not
+    /// hold at the local prompt after ssh exits either.
     pub fn note_ssh_session(&mut self) {
         self.ssh.was_ssh = true;
         self.ssh_hook.allow_recovery();
@@ -888,6 +890,13 @@ impl Pane {
         for _ in 0..n {
             self.pop_conductor();
         }
+        // Back at the local prompt: the pane is no longer an ssh session, so output may not
+        // start a recovery there, and nothing saves the right for after a restart (final
+        // review I2, ruling). Only a new vouched hook gives it again.
+        if self.ssh.chain.hops.is_empty() {
+            self.ssh.was_ssh = false;
+            self.ssh_hook.forbid_recovery();
+        }
         if banner.is_some() {
             // Keys typed for a remote shell that is gone. A remaining conductor that still sets
             // up keeps them for its own unhook, as iTerm2 keeps `_sshWriteQueue` for
@@ -939,12 +948,20 @@ impl Pane {
         // The it2 state of the conductor being recovered rides the shim (`PS:20307-20336`,
         // `adoptIT2RecoveryStateFrom:`); Tandem's is the inbox kept for 14e (ruling 3).
         let it2 = self.conductor.as_ref().map(|c| c.it2_inbox.clone()).unwrap_or_default();
+        // A root-level recovery replaces every hop; the outermost one's id goes to the shim and
+        // the recovered conductor, so it2ssh's EndSSH, which names it, still ends the session
+        // whatever id the remote reports (final review I2, ruling).
+        self.ssh.recovery_replaces = None;
         if parent_depth < 0 {
+            self.ssh.recovery_replaces = self.ssh.chain.hops.first().map(|h| h.unique_id.clone());
             while self.conductor.is_some() {
                 self.ssh_unhook_conductor();
             }
         }
         let mut shim = crate::conductor::Conductor::recovery_shim(self.conductor.take());
+        if let Some(id) = &self.ssh.recovery_replaces {
+            shim.setup.client_unique_id = id.clone();
+        }
         shim.it2_inbox = it2;
         shim.start_recovery();
         let location = self.ssh.chain.location().unwrap_or_default().to_string();
@@ -977,6 +994,9 @@ impl Pane {
         let (parent, it2) = self.conductor.take().map(|mut shim| (shim.parent.take(), std::mem::take(&mut shim.it2_inbox))).unwrap_or_default();
         self.ssh.chain.pop();
         let mut recovered = crate::conductor::Conductor::from_recovery(&finished, parent);
+        if let Some(id) = self.ssh.recovery_replaces.take() {
+            recovered.setup.client_unique_id = id;
+        }
         // The shim's it2 state goes on (`handleRecovery` reads it off the shim).
         recovered.it2_inbox = it2;
         self.conductor = Some(Box::new(recovered));
@@ -3614,9 +3634,59 @@ mod tests {
     /// What a live framer prints once it is told to recover: a stale block's header and end
     /// first (Tandem restarted mid-stream), then the recovery lines.
     fn stale_then_recovery(login: i32) -> Vec<u8> {
+        stale_then_recovery_of(login, "99")
+    }
+
+    /// `stale_then_recovery` with the framer naming `id` as its hop's clientUniqueID.
+    fn stale_then_recovery_of(login: i32, id: &str) -> Vec<u8> {
         use crate::ssh_fixtures::{osc134, recovery};
-        let keys = [("dcsID", "D0"), ("sshargs", "-p 22 h"), ("boolArgs", "46"), ("clientUniqueID", "99")];
+        let keys = [("dcsID", "D0"), ("sshargs", "-p 22 h"), ("boolArgs", "46"), ("clientUniqueID", id)];
         [osc134("%output 1 2 -1 0"), b"stale".to_vec(), osc134("%end 1"), recovery(login, &keys, &[5000])].concat()
+    }
+
+    /// Final review I2 (ruling): the right to recover in band ends when EndSSH empties the hop
+    /// list, and nothing gives it back but a new vouched hook: a file `cat`ed at the local
+    /// prompt after ssh exited makes Tandem type nothing, and nothing is saved for a restart.
+    #[test]
+    fn the_recovery_right_ends_with_the_last_hop() {
+        let mut p = framed_root();
+        p.note_hook(true);
+        assert!(p.ssh_hook.recovery_allowed());
+        p.unhook_ssh();
+        p.end_ssh("o");
+        p.tmux_io().unwrap().take_input();
+        assert!(p.conductor.is_none() && p.ssh.chain.hops.is_empty());
+        assert!(!p.ssh_hook.recovery_allowed() && !p.was_ssh_session(), "the right is gone, and so is the saved fact");
+        assert!(!recover_from(&mut p, &stale_then_recovery(4242)));
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"", "nothing typed into the local shell");
+        assert!(p.conductor.is_none());
+        // An EndSSH that leaves a hop keeps the right.
+        let mut p = framed_root();
+        p.note_hook(true);
+        chain(&mut p, "i", 1, Some(200));
+        p.end_ssh("i");
+        assert!(p.ssh_hook.recovery_allowed() && p.was_ssh_session());
+    }
+
+    /// Final review I2 (ruling): a root-level recovery replaces the hops it pops, and the
+    /// recovered conductor takes the replaced hop's id, so it2ssh's EndSSH (which names the
+    /// original id) ends it whatever id the remote reported.
+    #[test]
+    fn a_recovered_conductor_ends_with_the_hop_it_replaced() {
+        let mut p = framed_root();
+        p.note_hook(true);
+        // The framer unhooks, then a root-level recovery naming a foreign id.
+        p.conductor.as_mut().unwrap().handle_unhook();
+        p.unhook_ssh();
+        assert!(!recover_from(&mut p, &crate::ssh_fixtures::osc134("%output 1 2 -1 0")));
+        let first = crate::ssh_fixtures::osc134("%output 1 2 -1 0").len();
+        assert!(recover_from(&mut p, &stale_then_recovery_of(4242, "evil")[first..]));
+        let c = p.conductor.as_ref().expect("recovered");
+        assert_eq!(c.setup.client_unique_id, "o", "the id of the hop it replaced");
+        assert!(p.ssh_chain_in_step());
+        p.end_ssh("o");
+        assert!(p.conductor.is_none() && p.ssh.chain.hops.is_empty(), "EndSSH of the original hop ends it");
+        // With no hop to replace, the framer's own id stands (`framer_recovery_follows_iterm2`).
     }
 
     #[test]
@@ -3725,7 +3795,7 @@ mod tests {
 
     #[test]
     fn a_recovery_without_a_login_ends() {
-        use crate::ssh_fixtures::{osc134, recovery};
+        use crate::ssh_fixtures::osc134;
         let mut p = Pane::tmux(5, 1, 3, 120, 10);
         p.note_ssh_session();
         recover_from(&mut p, &osc134("junk"));
@@ -3735,7 +3805,6 @@ mod tests {
         let bytes = [osc134("begin-recovery"), osc134("recovery: version 2"), osc134("end-recovery")].concat();
         assert!(!recover_from(&mut p, &bytes));
         assert!(p.conductor.is_none() && p.ssh.chain.hops.is_empty(), "the shim is gone");
-        let _ = recovery(1, &[], &[]);
         recover_from(&mut p, &osc134("junk again"));
         assert!(p.conductor.is_some(), "a new recovery began");
     }

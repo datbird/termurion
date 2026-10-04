@@ -119,11 +119,12 @@ impl App {
             t.extend(self.clippings_table(id));
         }
         // A session that runs ssh saved without contents (an arrangement, Duplicate Tab): the
-        // hops to reconnect through, each with its directory (`PS:7342-7347`). Restoration with
-        // contents keeps the conductor itself instead (F16).
-        if let (Contents::None | Contents::Plain, Some(c), Some(t)) = (contents, p.conductor.as_deref(), v.as_table_mut()) {
+        // hops to reconnect through, each with its directory (`PS:7342-7347`), as Duplicate
+        // Session takes them (`reconnect_hops`: vouched and validated, final review I1).
+        // Restoration with contents keeps the conductor itself instead (F16).
+        if let (Contents::None | Contents::Plain, Some(hops), Some(t)) = (contents, p.conductor.as_deref().and_then(|c| c.reconnect_hops()), v.as_table_mut()) {
             if self.store.get(&p.profile).is_some_and(crate::profile::is_ssh) {
-                t.insert(crate::ssh_jumps::PENDING_JUMPS_KEY.into(), crate::ssh_jumps::jumps_value(&c.sequence()));
+                t.insert(crate::ssh_jumps::PENDING_JUMPS_KEY.into(), crate::ssh_jumps::jumps_value(&hops));
             }
         }
         // Session restoration: the host session, so a later launch can take the shell back.

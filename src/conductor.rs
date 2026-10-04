@@ -792,9 +792,10 @@ impl Conductor {
     }
 
     /// startJumping (`CD:1613-1618`): the first hop is this conductor's own jump, the rest
-    /// wait for the next hop's conductor. No hops is an ordinary start.
+    /// wait for the next hop's conductor. No hops is an ordinary start, and so is a list
+    /// `ssh_jumps::safe_hops` refuses (beyond iTerm2, final review I1).
     pub fn start_jumping(&mut self, jumps: Vec<Reconnection>) {
-        let mut rest = jumps.into_iter();
+        let mut rest = crate::ssh_jumps::safe_hops(&jumps).unwrap_or_default().into_iter();
         self.my_jump = rest.next();
         self.subsequent_jumps = rest.collect();
         self.start();

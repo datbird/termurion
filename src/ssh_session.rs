@@ -90,9 +90,13 @@ pub struct PaneSsh {
     /// When the process lists next publish their CPU value (once a second while any conductor
     /// of the pane frames).
     pub procs_due: Option<std::time::Instant>,
-    /// The pane is or was an ssh session (F27): the only kind a stray OSC 134 may start an in-band
+    /// The pane is an ssh session (F27): the only kind a stray OSC 134 may start an in-band
     /// recovery in, and what is saved with the host key so a reattached pane keeps the right.
+    /// Set by a vouched hook, cleared when EndSSH empties `chain` (final review I2).
     pub was_ssh: bool,
+    /// The id of the outermost hop a root-level recovery replaced, which the recovered
+    /// conductor takes (final review I2: it2ssh's EndSSH names that id).
+    pub recovery_replaces: Option<String>,
 }
 
 impl PaneSsh {

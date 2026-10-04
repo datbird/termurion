@@ -514,6 +514,9 @@ pub fn from_plist(bytes: &[u8]) -> Result<Vec<Value>, String> {
     Ok(windows)
 }
 
+/// How the trust question names the profile of a session with no Bookmark table.
+const DEFAULT_PROFILE_NAME: &str = "Default profile";
+
 /// The question before opening a downloaded arrangement file: what its profiles would run.
 pub fn trust_text(name: &str, windows: &[Value]) -> String {
     let mut lines = vec![format!("Open the arrangement \u{201c}{name}\u{201d}?"), String::new()];
@@ -521,6 +524,13 @@ pub fn trust_text(name: &str, windows: &[Value]) -> String {
         for t in w.get("Tabs").and_then(|t| t.as_array()).into_iter().flatten() {
             let Some(tree) = t.get("Root").and_then(|r| tree_of(r).ok()) else { continue };
             for s in tree.leaves() {
+                // Pending Jumps reach a remote `eval`: every hop is named, also for a session
+                // with no Bookmark table, which restores with the default profile and takes its
+                // hops when that profile is an SSH one (final review I3).
+                let pname = profile_of(s).map_or_else(|| DEFAULT_PROFILE_NAME.to_string(), |(_, name, _)| name);
+                for hop in s.get(crate::ssh_jumps::PENDING_JUMPS_KEY).map(crate::ssh_jumps::jumps_from).unwrap_or_default() {
+                    lines.push(format!("Profile \u{201c}{pname}\u{201d} connects through: {}", hop.sshargs.trim_end()));
+                }
                 let Some((_, pname, prof)) = profile_of(s) else { continue };
                 let get = |k: &str| prof.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
                 if get("Custom Command") == "Yes" && !get("Command").is_empty() {
@@ -531,10 +541,6 @@ pub fn trust_text(name: &str, windows: &[Value]) -> String {
                 }
                 if prof.get("Triggers").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty()) {
                     lines.push(format!("Profile \u{201c}{pname}\u{201d} has triggers."));
-                }
-                // Pending Jumps reach a remote `eval`: every hop is named.
-                for hop in s.get(crate::ssh_jumps::PENDING_JUMPS_KEY).map(crate::ssh_jumps::jumps_from).unwrap_or_default() {
-                    lines.push(format!("Profile \u{201c}{pname}\u{201d} connects through: {}", hop.sshargs.trim_end()));
                 }
             }
         }
@@ -818,6 +824,24 @@ mod tests {
         assert!(t.contains("Profile \u{201c}Hosts\u{201d} connects through: -p 22 bastion.lan"), "{t}");
         assert!(t.contains("Profile \u{201c}Hosts\u{201d} connects through: evil.example"), "{t}");
         assert!(!t.contains("It came from another computer."), "the hops are what it runs: {t}");
+    }
+
+    /// Final review I3: a session with no Bookmark table restores with the default profile,
+    /// which may be an SSH one that takes its hops, so the question names them too.
+    #[test]
+    fn trust_text_names_hops_without_a_bookmark() {
+        let mut leaf = session(80, 24, Table::new(), "s", None);
+        let hops = [crate::ssh_jumps::Reconnection { sshargs: "-p 22 bastion.lan ".into(), initial_directory: None, boolargs: "46".into() }];
+        if let Value::Table(t) = &mut leaf {
+            t.remove("Bookmark");
+            t.insert(crate::ssh_jumps::PENDING_JUMPS_KEY.into(), crate::ssh_jumps::jumps_value(&hops));
+        }
+        assert!(profile_of(&leaf).is_none());
+        let tree = Tree::Leaf(leaf);
+        let windows = vec![window(WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25) }, vec![tab(node(&tree, 800.0, 600.0), true, None, false, None)])];
+        let t = trust_text("hops.itermarrangement", &windows);
+        assert!(t.contains("connects through: -p 22 bastion.lan"), "{t}");
+        assert!(!t.contains("It came from another computer."), "{t}");
     }
 
     #[test]

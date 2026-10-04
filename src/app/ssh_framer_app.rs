@@ -62,16 +62,18 @@ impl App {
     /// SSH one (made so with the first hop's arguments when it was not) and the hops go into
     /// its pending jumps, which its hooks use up one by one.
     ///
-    /// Beyond iTerm2: the first hop's text becomes a local command line, so it is used only
-    /// when Tandem's own token vouched for the chain's first hook (`root_is_local`); any other
-    /// chain (a hook a program printed) gets an ordinary new session.
+    /// Beyond iTerm2: the first hop's text becomes a local command line and every hop's text
+    /// reaches the eval of the host above, so the hops are `Conductor::reconnect_hops`: only
+    /// those Tandem's own token vouched for (the first hook), and only through the one
+    /// validator (ruling, final review I1). Any other chain (a hook a program printed) or a
+    /// refused hop gets an ordinary new session.
     pub(super) fn duplicate_session(&mut self) {
         let Some(pane) = self.focused_id() else { return };
         let plain = |app: &mut App| {
             let g = app.focused_guid();
             app.new_tab(g.as_deref());
         };
-        let sequence = self.panes.get(&pane).and_then(|p| p.conductor.as_deref()).filter(|c| c.root_is_local()).map(|c| c.sequence());
+        let sequence = self.panes.get(&pane).and_then(|p| p.conductor.as_deref()).and_then(|c| c.reconnect_hops());
         let Some(sequence) = sequence else { return plain(self) };
         let Some(guid) = self.panes.get(&pane).map(|p| p.profile.clone()) else { return };
         let is_ssh = crate::profile::is_ssh(&self.profile(Some(&guid)));
