@@ -185,6 +185,7 @@ D35: Decision (integration pass 2): orchestration's own model requests (the safe
 D36: Decision (integration pass 2): 12f reaches 12c's App-free engine only through two Ctx closures, EngineEffect::Orch and Engine::orch_done (ruling R12cd-4); orchestration button answers call orch_command from the button arm - cost if wrong: none.
 D37: Decision: parity rows are found by title - cost if wrong: a stale line number edits the wrong row.
 
+FR-1: Ruling (final review, binding): while a chat awaits the person's approval its watcher and timer outbox holds (orch_watch::may_release); nothing is posted and events queue under the same caps (32 held, 6 a minute). An orchestration request's buttons (workgroupPermissionRequest, enableOrchestrationRequest) answer while the request is open (f.open), wherever the message sits - cost if wrong: none (an approval cannot be greyed by a later notice; events arrive after the answer).
 Deferred minors (progress.md; none blocks acceptance):
 M1: Task 1: sub-pixel rounding saves one extra Moved frame on the first redraw.
 M2: Task 2: the App-level wiring (the in-use scan, the launch flag, the restart keep) has no test.

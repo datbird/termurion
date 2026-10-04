@@ -563,10 +563,11 @@ impl App {
                 }
             }
         }
-        // The outboxes: an event goes out only through an open gate and inside the rate.
+        // The outboxes: an event goes out only through an open gate, inside the rate, and not
+        // while the chat awaits the person's approval (the answer wakes the loop again).
         let held: Vec<String> = self.orch_outbox.iter().filter(|(_, o)| !o.is_empty()).map(|(c, _)| c.clone()).collect();
         for chat in held {
-            let open = self.orch_chat_gate(&chat);
+            let open = ow::may_release(self.orch_chat_gate(&chat), self.chat_agents.get(&chat).is_some_and(|a| a.is_awaiting_approval()));
             let events = self.orch_outbox.get_mut(&chat).map(|o| o.release(now, open)).unwrap_or_default();
             for v in events {
                 let m = Message::new(&chat, Participant::User, Content::WatcherEvent(v), now);
@@ -615,6 +616,15 @@ mod tests {
         assert_eq!(code.matches("chat_publish(").count(), 1, "one publish, in the tick's outbox loop");
         let tick = body(code, "orch_watch_tick");
         assert!(tick.contains("release(now, open)") && tick.contains("AdminOff"), "gate-checked release and the AI-off sweep");
+    }
+
+    /// Final review fix, ruling 1: the outbox releases only through the gate AND while the
+    /// chat does not await the person's approval, so no event lands under a parked bubble.
+    #[test]
+    fn an_approval_holds_the_watch_outbox() {
+        let code = include_str!("orch_watch_app.rs").split("#[cfg(test)]").next().unwrap();
+        let tick = body(code, "orch_watch_tick");
+        assert!(tick.contains("ow::may_release(self.orch_chat_gate(&chat), self.chat_agents.get(&chat).is_some_and(|a| a.is_awaiting_approval()))"), "{tick}");
     }
 
     /// Task 11 fix round 1, ruling 3: an unlink or a relink ends the chat's watchers and

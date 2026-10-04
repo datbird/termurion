@@ -106,8 +106,10 @@ pub fn enabled(content: &Content, f: &EnableFacts) -> bool {
             ClientLocal::Permissions { .. } => f.permissions_session_live,
             ClientLocal::Other(v) => match one_key(v) {
                 Some(("orchestrationPermissionGranted", _)) => f.claimed,
-                // A request answers only while it is still parked on the person (ruling P7).
-                Some(("workgroupPermissionRequest" | "enableOrchestrationRequest", _)) => f.is_last && f.open,
+                // A request answers only while it is still parked on the person (ruling P7), and
+                // then wherever it sits: the park is the liveness test, not the position, so a
+                // later notice cannot grey a pending approval (final review ruling 1).
+                Some(("workgroupPermissionRequest" | "enableOrchestrationRequest", _)) => f.open,
                 _ => f.is_last,
             },
             ClientLocal::Notice(_) => f.is_last,
@@ -359,7 +361,6 @@ mod tests {
         let approve = local(ClientLocal::Other(json!({"workgroupPermissionRequest": {}})));
         assert!(enabled(&approve, &EnableFacts { open: true, ..last() }));
         assert!(!enabled(&approve, &last()), "a request no longer parked is moot");
-        assert!(!enabled(&approve, &EnableFacts { open: true, ..EnableFacts::default() }), "and only the last message answers");
         let enable = local(ClientLocal::Other(json!({"enableOrchestrationRequest": {"requestID": "R"}})));
         assert!(enabled(&enable, &EnableFacts { open: true, ..last() }) && !enabled(&enable, &last()));
 
@@ -373,6 +374,21 @@ mod tests {
         assert!(answered(&[asked.clone(), response], "R"));
         assert!(!answered(&[asked], "R"));
         assert!(!answered(&[], "R"));
+    }
+
+    /// Final review fix, ruling 1: an orchestration request answers while it is open, wherever
+    /// the message sits; a later notice or event does not grey it, and a closed one stays moot.
+    #[test]
+    fn an_open_request_answers_wherever_it_sits() {
+        for v in [json!({"workgroupPermissionRequest": {"requestID": "R"}}), json!({"enableOrchestrationRequest": {"requestID": "R"}})] {
+            let request = local(ClientLocal::Other(v.clone()));
+            assert!(enabled(&request, &EnableFacts { open: true, ..EnableFacts::default() }), "not last, still open: {v}");
+            assert!(enabled(&request, &EnableFacts { open: true, ..last() }), "{v}");
+            assert!(!enabled(&request, &EnableFacts::default()) && !enabled(&request, &last()), "closed: {v}");
+            let id = if v.get("workgroupPermissionRequest").is_some() { "workgroupPermission:approve:R" } else { "enableOrchestration:approve:R" };
+            let on = enabled(&request, &EnableFacts { open: true, ..EnableFacts::default() });
+            assert!(press(&request, &none, on, id).is_some(), "Approve still answers: {v}");
+        }
     }
 
     #[test]

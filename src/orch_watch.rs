@@ -658,6 +658,13 @@ pub fn next_timer_wake(list: &[Watcher], now: f64) -> Option<Duration> {
     list.iter().filter(|w| w.effective_mode() == Mode::Timer).filter_map(|w| w.fire_date).map(|d| Duration::from_secs_f64((d - now).max(0.0)).min(TIMER_WAKE)).min()
 }
 
+/// Whether a chat's outbox may release now (final review ruling 1): only through an open gate,
+/// and never while the chat awaits the person's approval, so no event lands under a parked
+/// bubble; the events wait in the outbox, under its cap, until the approval is answered.
+pub fn may_release(gate_open: bool, awaiting_approval: bool) -> bool {
+    gate_open && !awaiting_approval
+}
+
 /// Events a chat is about to receive: held while the rate or the gate says wait, so a closed
 /// gate sends nothing and a burst becomes a trickle.
 #[derive(Debug, Default)]
@@ -1004,6 +1011,22 @@ mod tests {
         assert_eq!(o.len(), 2, "the events wait for it");
         assert_eq!(o.release(101.0, true), vec![json!(1), json!(2)], "an open gate lets them go, oldest first");
         assert!(o.is_empty());
+    }
+
+    /// Final review fix, ruling 1: while the chat awaits the person's approval the outbox
+    /// holds; events queue under the same cap and go once the approval is answered.
+    #[test]
+    fn an_approval_holds_the_outbox() {
+        assert!(may_release(true, false));
+        assert!(!may_release(true, true), "an approval holds an open gate");
+        assert!(!may_release(false, false) && !may_release(false, true));
+        let mut o = Outbox::default();
+        for i in 0..MAX_HELD {
+            assert!(o.hold(json!(i)));
+            assert!(o.release(i as f64, may_release(true, true)).is_empty(), "nothing goes while the approval waits");
+        }
+        assert!(!o.hold(json!("over")), "still bounded by the cap");
+        assert_eq!(o.release(100.0, may_release(true, false)).len(), EVENTS_PER_MINUTE, "answered: the queue goes at the rate");
     }
 
     #[test]
