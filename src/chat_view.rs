@@ -226,6 +226,19 @@ fn orchestration_body(v: &serde_json::Value) -> String {
     }
 }
 
+/// What an explanation request draws (`CVC` `explanationRequest`): the subject, a link to the
+/// attached text while the session still has it, and the truncation note.
+fn explanation_request_text(r: &crate::ai_explain::Request) -> String {
+    let mut text = match &r.url {
+        Some(url) => format!("Explain the output of {} based on [attached terminal content]({url}).", r.subject),
+        None => format!("Explain the output of {} based on some no-longer-available content.", r.subject),
+    };
+    if r.truncated {
+        text.push_str("\n*Note: The command output was truncated because it exceeded the maximum number of lines supported by AI Chat*");
+    }
+    text
+}
+
 /// The offer to link a session (`CVC:2665-2680`). The name is a terminal program's to set, so it
 /// is escaped (ruling F20).
 fn offer_link(terminal: bool, name: Option<&str>) -> String {
@@ -242,8 +255,16 @@ pub fn body(content: &Content) -> Body {
     match content {
         Content::PlainText { text, .. } => Body::Plain(trim_leading(text).to_string()),
         Content::Markdown(text) => Body::Markdown(trim_leading(text).to_string()),
-        // Filled by 12e Task 3 (ruling 12c-3).
-        Content::ExplanationRequest(_) | Content::ExplanationResponse(_) => Body::Plain(UNSUPPORTED_TEXT.to_string()),
+        // 12e's explanation kinds (ruling 12c-3): the request's description, the response's
+        // markdown (the client puts the bullets and the main response there).
+        Content::ExplanationRequest(v) => match crate::ai_explain::parse_request_content(v) {
+            Some(r) => Body::Markdown(explanation_request_text(&r)),
+            None => Body::Plain(UNSUPPORTED_TEXT.to_string()),
+        },
+        Content::ExplanationResponse(v) => match crate::ai_explain::parse_response_content(v) {
+            Some((_, _, markdown)) => Body::Markdown(markdown),
+            None => Body::Plain(UNSUPPORTED_TEXT.to_string()),
+        },
         Content::RemoteCommandRequest { payload: Payload::Classic(rc), safe } => Body::Markdown(crate::ai_permissions::parked_text(&rc.call.consent_description(), rc.call.category().title(), *safe)),
         Content::RemoteCommandRequest { payload: Payload::External(v), .. } => Body::Markdown(v.get("markdownDescription").and_then(serde_json::Value::as_str).unwrap_or_default().to_string()),
         Content::RemoteCommandResponse { result: Err(e), .. } => Body::Markdown(e.message.clone()),
@@ -692,6 +713,30 @@ mod tests {
         assert_eq!(date_text(&Parts { weekday: 2, ..p(2025, 12, 30) }, &now), "Dec 30, 2025");
     }
 
+    #[test]
+    fn explanation_views_follow_iterm2() {
+        let request = |url: Option<&str>| {
+            let r = crate::ai_explain::Request {
+                command: None,
+                truncated: true,
+                original: crate::ai_explain::Located { string: "x".into(), coords: vec![(0, 0)] },
+                question: String::new(),
+                subject: "ls".into(),
+                url: url.map(str::to_string),
+                context: crate::ai_explain::Context { session_id: "G".into(), base_offset: 0 },
+            };
+            Content::ExplanationRequest(crate::ai_explain::request_content(&r))
+        };
+        let note = "\n*Note: The command output was truncated because it exceeded the maximum number of lines supported by AI Chat*";
+        assert_eq!(body(&request(Some("u"))), Body::Markdown(format!("Explain the output of ls based on [attached terminal content](u).{note}")));
+        assert_eq!(body(&request(None)), Body::Markdown(format!("Explain the output of ls based on some no-longer-available content.{note}")));
+        let response = crate::ai_explain::Response::new(match request(None) {
+            Content::ExplanationRequest(v) => crate::ai_explain::parse_request_content(&v).unwrap(),
+            _ => unreachable!(),
+        });
+        assert_eq!(body(&Content::ExplanationResponse(crate::ai_explain::response_content(&response, None, "  * b\nmain"))), Body::Markdown("  * b\nmain".into()));
+    }
+
     fn tc(command: &str) -> Content {
         Content::TerminalCommand(TerminalCommand { username: None, hostname: None, directory: None, command: command.into(), output: "o".into(), exit_code: 0, url: "iterm2:reveal-mark?s=1&m=2".into() })
     }
@@ -704,6 +749,7 @@ mod tests {
     fn bodies_follow_iterm2() {
         assert_eq!(body(&plain("  hi")), Body::Plain("hi".into()));
         assert_eq!(body(&Content::Markdown("x".into())), Body::Markdown("x".into()));
+        // 12e Task 3 fills the explanation arms; an unreadable payload stays unsupported.
         assert_eq!(body(&Content::ExplanationRequest(json!({}))), Body::Plain(UNSUPPORTED_TEXT.into()));
         assert_eq!(body(&Content::ExplanationResponse(json!({}))), Body::Plain(UNSUPPORTED_TEXT.into()));
         let local = |a| Content::ClientLocal(a);

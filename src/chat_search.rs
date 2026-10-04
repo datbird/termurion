@@ -65,8 +65,8 @@ pub fn indexable(content: &Content) -> Option<String> {
         Content::RemoteCommandResponse { result, .. } => result.as_ref().ok().cloned(),
         Content::TerminalCommand(tc) => Some(tc.command.clone()),
         Content::WatcherEvent(v) => chat_json::watcher(v).map(|(_, detail)| detail),
-        Content::ExplanationRequest(_)
-        | Content::ExplanationResponse(_)
+        Content::ExplanationRequest(v) => crate::ai_explain::parse_request_content(v).map(|r| format!("{} {}", r.subject, r.question)),
+        Content::ExplanationResponse(_)
         | Content::RemoteCommandRequest { .. }
         | Content::SelectSessionRequest { .. }
         | Content::ClientLocal(_)
@@ -298,7 +298,17 @@ mod tests {
         let terminal = TerminalCommand { username: None, hostname: None, directory: None, command: "ls -l".into(), output: "out".into(), exit_code: 0, url: String::new() };
         assert_eq!(indexable(&Content::TerminalCommand(terminal)).as_deref(), Some("ls -l"));
         assert_eq!(indexable(&Content::WatcherEvent(json!({"_0":{"reason":"stateReached","detail":"went idle"}}))).as_deref(), Some("went idle"));
-        assert_eq!(indexable(&Content::ExplanationRequest(json!({"subjectMatter":"s","question":"q"}))), None, "12e Task 3 fills this arm (ruling 12c-3)");
+        assert_eq!(indexable(&Content::ExplanationRequest(json!({"subjectMatter":"s","question":"q"}))), None, "an unreadable payload indexes nothing");
+        let r = crate::ai_explain::Request {
+            command: None,
+            truncated: false,
+            original: crate::ai_explain::Located { string: "x".into(), coords: vec![(0, 0)] },
+            question: "why".into(),
+            subject: "ls".into(),
+            url: None,
+            context: crate::ai_explain::Context { session_id: "G".into(), base_offset: 0 },
+        };
+        assert_eq!(indexable(&Content::ExplanationRequest(crate::ai_explain::request_content(&r))).as_deref(), Some("ls why"));
         let parts = vec![
             Subpart::PlainText("p".into()),
             Subpart::Attachment(json!({"inline":true,"id":"c","type":{"code":{"_0":"c"}}})),

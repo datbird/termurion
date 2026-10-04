@@ -261,6 +261,14 @@ impl Engine {
         }
     }
 
+    /// The stored log but `user` and the messages still queued behind it: a reply and tool rows
+    /// stored while it waited are part of its history (iTerm2's `historyExcluding`,
+    /// `ChatService.swift:517-525`).
+    fn log_before(cx: &Ctx, chat: &str, user: &Message) -> Vec<Message> {
+        let queued = cx.broker.queued_ids(chat);
+        cx.store.messages(chat).unwrap_or_default().into_iter().filter(|m| m.unique_id != user.unique_id && !queued.contains(&m.unique_id)).collect()
+    }
+
     /// A turn for `user` (`CA:1323-1409`): the gate for the model's own endpoint first, the
     /// provider binding, the files' vector-store flow, then the request.
     fn begin(cx: &mut Ctx, chat: &str, user: Message, allow_files: bool) -> Fx {
@@ -269,9 +277,12 @@ impl Engine {
             cx.broker.turn_done(chat);
             return Vec::new();
         };
+        // The prompt mode after the log so far: a follow-up to an explanation is wrapped once
+        // (ruling P6). The log is read again for the history below; the mode needs it first.
+        let mut mode = chat_agent::history_mode(&Self::log_before(cx, chat, &user));
         let body = match &user.content {
             Content::Multipart { parts, .. } => Some(chat_agent::multipart_body(parts)),
-            c => chat_agent::user_text(c).map(ai_msg::Body::Text),
+            c => chat_agent::user_text(c, &mut mode).map(ai_msg::Body::Text),
         };
         let Some(body) = body else {
             // Not an LLM message here (12e and 12f add theirs): the turn closes at once.
@@ -304,8 +315,7 @@ impl Engine {
         // The whole stored log but this message and the ones still queued behind it: a reply
         // and tool rows stored while this message waited are part of its history (iTerm2's
         // `historyExcluding`, `ChatService.swift:517-525`).
-        let queued = cx.broker.queued_ids(chat);
-        let before: Vec<Message> = cx.store.messages(chat).unwrap_or_default().into_iter().filter(|m| m.unique_id != user.unique_id && !queued.contains(&m.unique_id)).collect();
+        let before = Self::log_before(cx, chat, &user);
         // `ChatProviderBinding`: a chat is bound to its first model's provider.
         match &row.model_name {
             None => {
@@ -412,7 +422,7 @@ impl Engine {
         let streaming = a.streaming_id.clone();
         let (fresh, more) = match chunk {
             Chunk::Text(text) => match &streaming {
-                None => (Some((chat_agent::reply_content(a.question.as_ref(), &text, true, ""), a.reasoning.take())), None),
+                None => (Some((Fresh::Reply(a.question.clone(), text), a.reasoning.take())), None),
                 Some(id) => (None, Some(Content::Append { text, uuid: id.clone() })),
             },
             Chunk::Attachment(att) => {
@@ -424,13 +434,18 @@ impl Engine {
                     }
                 };
                 match &streaming {
-                    None => (Some((Content::Multipart { parts: vec![Subpart::Attachment(json)], vector_store_id: None }, a.reasoning.take())), None),
+                    None => (Some((Fresh::Content(Content::Multipart { parts: vec![Subpart::Attachment(json)], vector_store_id: None }), a.reasoning.take())), None),
                     Some(id) => (None, Some(Content::AppendAttachment { attachment: json, uuid: id.clone() })),
                 }
             }
         };
-        if let Some((content, reasoning)) = fresh {
-            let m = Message { agent_reasoning: reasoning, ..Message::new(chat, Participant::Agent, content, cx.now) };
+        if let Some((fresh, reasoning)) = fresh {
+            let mut m = Message { agent_reasoning: reasoning, ..Message::new(chat, Participant::Agent, Content::Markdown(String::new()), cx.now) };
+            // A reply to an explanation names its own message in its update (ruling P6).
+            m.content = match fresh {
+                Fresh::Content(content) => content,
+                Fresh::Reply(question, text) => chat_agent::reply_content(question.as_ref(), &text, true, &m.unique_id),
+            };
             a.streaming_id = Some(m.unique_id.clone());
             Self::put(cx, chat, m, true);
         } else if let Some(content) = more {
@@ -453,8 +468,8 @@ impl Engine {
     /// A reply that did not stream.
     fn reply(cx: &mut Ctx, chat: &str, text: String) {
         let Some(a) = cx.agents.get_mut(chat) else { return };
-        let content = chat_agent::reply_content(a.question.as_ref(), &text, false, "");
-        let m = Message { agent_reasoning: a.reasoning.take(), ..Message::new(chat, Participant::Agent, content, cx.now) };
+        let mut m = Message { agent_reasoning: a.reasoning.take(), ..Message::new(chat, Participant::Agent, Content::Markdown(String::new()), cx.now) };
+        m.content = chat_agent::reply_content(a.question.as_ref(), &text, false, &m.unique_id);
         Self::put(cx, chat, m, false);
     }
 
@@ -916,6 +931,13 @@ enum Chunk {
     Attachment(Attachment),
 }
 
+/// The first message of a streamed reply: ready, or still to be built from the question once
+/// the message (and so its id) exists.
+enum Fresh {
+    Content(Content),
+    Reply(Option<Content>, String),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1352,6 +1374,43 @@ mod tests {
         let fx = h.run(|cx| Engine::checked(cx, &chat, request, None, Some(true)));
         assert_eq!(run_ids(&fx).iter().map(|r| r.1).collect::<Vec<_>>(), vec![7]);
         assert!(!format!("{fx:?}").contains("pane: 8"));
+    }
+
+    #[test]
+    fn explanation_update_replaces_its_message() {
+        use crate::ai_explain::{Context, Located, Request, Response, Update};
+        let mut h = H::new();
+        let chat = h.chat(None);
+        let request = Request {
+            command: None,
+            truncated: false,
+            original: Located { string: "x".into(), coords: vec![(0, 0)] },
+            question: String::new(),
+            subject: "s".into(),
+            url: None,
+            context: Context { session_id: "G".into(), base_offset: 0 },
+        };
+        let response = Response::with_text(request, "t", false);
+        let content = |md: &str, id: Option<&str>| Content::ExplanationResponse(crate::ai_explain::response_content(&response, id.map(|i| Update::new(false, Some(i.to_string()))).as_ref(), md));
+        // The stream's first message has no update once the client processed it: it is stored.
+        let base = h.messages(&chat).len();
+        let first = Message::new(&chat, Participant::Agent, content("one", None), 6.0);
+        let id = first.unique_id.clone();
+        h.run(|cx| Engine::publish(cx, &chat, first, true)).unwrap();
+        assert_eq!(h.messages(&chat).len(), base + 1);
+        // An update naming it replaces its content and adds no row.
+        let update = Message::new(&chat, Participant::Agent, content("two", Some(&id)), 7.0);
+        h.run(|cx| Engine::publish(cx, &chat, update, true)).unwrap();
+        let rows = h.messages(&chat);
+        assert_eq!(rows.len(), base + 1);
+        assert_eq!(rows[base].content, content("two", Some(&id)));
+        // The broker's newest is the stored row, so a chunk for it still appends in place.
+        assert_eq!(h.store.newest_id(&chat).unwrap().as_deref(), Some(id.as_str()));
+        // An unknown id is dropped.
+        let lost = Message::new(&chat, Participant::Agent, content("three", Some("NOPE")), 8.0);
+        h.run(|cx| Engine::publish(cx, &chat, lost, true)).unwrap();
+        assert_eq!(h.messages(&chat).len(), base + 1);
+        assert_eq!(h.messages(&chat)[base].content, content("two", Some(&id)));
     }
 
     #[test]

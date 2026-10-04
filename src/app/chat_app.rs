@@ -77,14 +77,41 @@ pub(super) fn publish_in(db: &mut Store, broker: &mut Broker, chat: &str, messag
     // One publish's writes land together or not at all, and are settled before the broker
     // delivers the message.
     db.unit_begin()?;
+    let mut handled = false;
     let result = broker.publish_with(chat, message, partial, target.as_ref(), &mut |step: Step| match step {
-        Step::Write(e) => write_effect(db, e),
+        Step::Write(e) => match explanation_update(db, chat, e) {
+            Some(done) => done.map(|_| handled = true),
+            None => write_effect(db, e),
+        },
         Step::Settle => db.unit_settle(),
     });
     if result.is_err() {
         db.unit_abort();
+    } else if handled {
+        // The message the broker recorded as newest was not stored.
+        if let Ok(id) = db.newest_id(chat) {
+            broker.seed_newest(chat, id);
+        }
     }
     result
+}
+
+/// An agent `ExplanationResponse` carrying an update (`ChatListModel.swift:322-333`): it replaces
+/// the content of the message its `messageID` names, adds no row, and is dropped when that row
+/// is not in this chat. None for every other write; Some(Ok(true)) when a row was replaced.
+fn explanation_update(db: &mut Store, chat: &str, effect: &Effect) -> Option<Result<bool, String>> {
+    let Effect::Store(m) = effect else { return None };
+    let Content::ExplanationResponse(v) = &m.content else { return None };
+    if m.author != Participant::Agent {
+        return None;
+    }
+    let (_, update, _) = crate::ai_explain::parse_response_content(v)?;
+    let update = update?;
+    let named = update.message_id.and_then(|id| db.message(&id).ok().flatten()).filter(|row| row.chat_id == chat);
+    Some(match named {
+        Some(row) => db.replace_content(&row.unique_id, &m.content).map(|_| true),
+        None => Ok(false),
+    })
 }
 
 /// Merges each chat row's stored permissions into the overrides, each for its own chat only

@@ -377,6 +377,7 @@ pub mod chat_menu;
 pub mod chat_routes;
 pub mod chat_view;
 pub mod ai_engage;
+pub mod ai_explain;
 pub mod chat_toolbar;
 pub mod chat_input;
 pub mod chat_find;

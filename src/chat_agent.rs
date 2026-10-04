@@ -12,6 +12,7 @@ use serde_json::{json, Map, Value};
 
 use crate::ai_catalog::{Effort, Feature, Model, ServiceTier};
 use crate::ai_files::{FileOut, Job};
+use crate::ai_explain::{self, PromptMode, Response, Update};
 use crate::ai_msg::{self, Attachment, Body, CallId, FunctionCall, Role, Status};
 use crate::ai_permissions::Category;
 use crate::ai_tools::Call;
@@ -123,12 +124,25 @@ pub fn tool_failed_text(e: &str) -> String {
 /// What the model reads for a user message (`MPS` `body(userMessage:)`): plain text with its
 /// context on the next line, the multipart text with the files preamble, a terminal command's
 /// render. None for kinds that are not LLM messages here.
-pub fn user_text(c: &Content) -> Option<String> {
+///
+/// `mode` is iTerm2's `MessageToPromptStateMachine.mode`, one per walk of a history: an
+/// explanation request reads as its prompt and the next plain text as the one-message
+/// conversational wrap, whose context line is dropped (`MPS:89-115`).
+pub fn user_text(c: &Content, mode: &mut PromptMode) -> Option<String> {
     match c {
-        Content::PlainText { text, context } => Some(match context {
-            Some(ctx) => format!("{text}\n{ctx}"),
-            None => text.clone(),
-        }),
+        Content::PlainText { text, context } => {
+            let was = std::mem::take(mode);
+            Some(match (was, context) {
+                (PromptMode::InitialExplanation, _) => ai_explain::conversational(text),
+                (PromptMode::Regular, Some(ctx)) => format!("{text}\n{ctx}"),
+                (PromptMode::Regular, None) => text.clone(),
+            })
+        }
+        Content::ExplanationRequest(v) => {
+            let request = ai_explain::parse_request_content(v)?;
+            *mode = PromptMode::InitialExplanation;
+            Some(request.prompt())
+        }
         Content::Markdown(text) => Some(text.clone()),
         Content::TerminalCommand(t) => Some(terminal_command_prompt(t)),
         Content::Multipart { parts, .. } => multipart_body(parts).content(),
@@ -136,10 +150,16 @@ pub fn user_text(c: &Content) -> Option<String> {
     }
 }
 
-/// The content of a reply's first agent message; later chunks append to it. 12e adds the
-/// explanation arm (ruling 12c-3).
+/// The content of a reply's first agent message; later chunks append to it. An answer to an
+/// explanation request is an `ExplanationResponse` (`ChatAgent.swift:2011-2021`): the whole text
+/// with no update, or a stream's first chunk with a fresh update naming the message's own id
+/// (`new_id`); its markdown is "added by the client".
 pub fn reply_content(user: Option<&Content>, text: &str, streaming: bool, new_id: &str) -> Content {
-    let _ = (user, streaming, new_id);
+    if let Some(request) = user.and_then(|c| if let Content::ExplanationRequest(v) = c { ai_explain::parse_request_content(v) } else { None }) {
+        let response = Response::with_text(request, text, !streaming);
+        let update = streaming.then(|| Update::new(false, Some(new_id.to_string())));
+        return Content::ExplanationResponse(ai_explain::response_content(&response, update.as_ref(), ""));
+    }
     Content::Markdown(text.to_string())
 }
 
@@ -216,7 +236,19 @@ pub fn multipart_body(parts: &[Subpart]) -> Body {
 /// `aiMessagesForStructuredReplay`), then every call without a result given the interrupted
 /// output (`repairingOrphanedToolCalls`).
 pub fn history(messages: &[Message]) -> Vec<ai_msg::Message> {
+    repaired(walk(messages).0)
+}
+
+/// The walk's final prompt mode: `InitialExplanation` when the log ends with an explanation
+/// whose follow-up has not been read yet, so the next plain text is wrapped once (ruling P6).
+pub fn history_mode(messages: &[Message]) -> PromptMode {
+    walk(messages).1
+}
+
+/// One `MessageToPromptStateMachine` walk: the messages the model reads and the mode it ends in.
+fn walk(messages: &[Message]) -> (Vec<ai_msg::Message>, PromptMode) {
     let mut out = Vec::new();
+    let mut mode = PromptMode::default();
     for m in messages {
         let (role, body) = match (&m.author, &m.content) {
             (_, Content::RemoteCommandRequest { payload: Payload::Classic(rc), .. }) => match call_from_json(&rc.llm_message) {
@@ -232,9 +264,14 @@ pub fn history(messages: &[Message]) -> Vec<ai_msg::Message> {
                 (Role::Function, Body::FunctionOutput { name: function_name.clone(), output, id })
             }
             (Participant::Agent, Content::PlainText { text, .. } | Content::Markdown(text)) => (Role::Assistant, Body::Text(text.clone())),
+            // An explanation reads to the model as its own raw answer (`MPS:28-29`).
+            (Participant::Agent, Content::ExplanationResponse(v)) => match ai_explain::parse_response_content(v) {
+                Some((response, _, _)) => (Role::Assistant, Body::Text(response.raw)),
+                None => continue,
+            },
             (Participant::Agent, Content::Multipart { parts, .. }) => (Role::Assistant, parts_body(parts, false)),
             (Participant::User, Content::Multipart { parts, .. }) => (Role::User, multipart_body(parts)),
-            (Participant::User, c) => match user_text(c) {
+            (Participant::User, c) => match user_text(c, &mut mode) {
                 Some(t) => (Role::User, Body::Text(t)),
                 None => continue,
             },
@@ -242,7 +279,7 @@ pub fn history(messages: &[Message]) -> Vec<ai_msg::Message> {
         };
         out.push(ai_msg::Message::new(Some(role), body));
     }
-    repaired(out)
+    (out, mode)
 }
 
 /// Every call answered: a call with an id is answered when any output carries it; one without
@@ -596,11 +633,11 @@ mod tests {
 
     #[test]
     fn user_text_follows_iterm2() {
-        assert_eq!(user_text(&Content::PlainText { text: "q".into(), context: Some("c".into()) }), Some("q\nc".into()));
+        assert_eq!(user_text(&Content::PlainText { text: "q".into(), context: Some("c".into()) }, &mut PromptMode::default()), Some("q\nc".into()));
         let multi = Content::Multipart { parts: vec![Subpart::PlainText("a".into()), Subpart::Attachment(file_json())], vector_store_id: None };
-        assert_eq!(user_text(&multi), Some("I have attached files for you to use.\na".into()));
+        assert_eq!(user_text(&multi, &mut PromptMode::default()), Some("I have attached files for you to use.\na".into()));
         for c in [Content::ClientLocal(ClientLocal::Notice("n".into())), Content::SetPermissions(vec![]), Content::UserCommand(crate::chat_message::UserCommand::Stop), Content::RenameChat("r".into())] {
-            assert_eq!(user_text(&c), None, "{c:?}");
+            assert_eq!(user_text(&c, &mut PromptMode::default()), None, "{c:?}");
         }
         let mut t = TerminalCommand { username: Some("u".into()), hostname: Some("h".into()), directory: Some("d".into()), command: "c".into(), output: "o".into(), exit_code: 1, url: String::new() };
         assert_eq!(
@@ -612,10 +649,57 @@ mod tests {
         t.hostname = None;
         let p = terminal_command_prompt(&t);
         assert!(!p.contains("hostname") && !p.contains("logged in"));
-        assert_eq!(user_text(&Content::TerminalCommand(t.clone())), Some(terminal_command_prompt(&t)));
+        assert_eq!(user_text(&Content::TerminalCommand(t.clone()), &mut PromptMode::default()), Some(terminal_command_prompt(&t)));
         assert_eq!(reply_content(Some(&Content::PlainText { text: "q".into(), context: None }), "x", false, "N"), Content::Markdown("x".into()));
         assert_eq!(reply_content(None, "x", true, "N"), Content::Markdown("x".into()));
         assert_eq!(tool_failed_text("e"), "I was unable to complete the function call: e");
+    }
+
+    fn explain_request() -> ai_explain::Request {
+        ai_explain::Request {
+            command: Some("make".into()),
+            truncated: false,
+            original: ai_explain::Located { string: "ab".into(), coords: vec![(0, 0), (1, 0)] },
+            question: String::new(),
+            subject: "`make`".into(),
+            url: None,
+            context: ai_explain::Context { session_id: "G".into(), base_offset: 0 },
+        }
+    }
+
+    #[test]
+    fn explanation_seams_follow_iterm2() {
+        let r = explain_request();
+        let response = Response::with_text(r.clone(), "R", true);
+        let log = vec![
+            msg(Participant::User, Content::ExplanationRequest(ai_explain::request_content(&r))),
+            msg(Participant::Agent, Content::ExplanationResponse(ai_explain::response_content(&response, None, ""))),
+            msg(Participant::User, Content::PlainText { text: "why?".into(), context: Some("ctx".into()) }),
+            msg(Participant::User, Content::PlainText { text: "and?".into(), context: None }),
+        ];
+        let texts: Vec<(Role, Body)> = history(&log).into_iter().map(|m| (m.role.unwrap(), m.body)).collect();
+        assert_eq!(
+            texts,
+            vec![
+                (Role::User, Body::Text(r.prompt())),
+                (Role::Assistant, Body::Text("R".into())),
+                (Role::User, Body::Text(ai_explain::conversational("why?"))),
+                (Role::User, Body::Text("and?".into())),
+            ]
+        );
+        assert_eq!(history_mode(&log[..1]), PromptMode::InitialExplanation);
+        assert_eq!(history_mode(&log[..3]), PromptMode::Regular);
+        assert_eq!(user_text(&Content::ExplanationRequest(json!({})), &mut PromptMode::default()), None);
+
+        let user = Content::ExplanationRequest(ai_explain::request_content(&r));
+        let Content::ExplanationResponse(v) = reply_content(Some(&user), "T", false, "N") else { panic!("not an explanation") };
+        let (resp, update, markdown) = ai_explain::parse_response_content(&v).unwrap();
+        assert_eq!((update, markdown.as_str()), (None, ""));
+        assert_eq!(resp, Response::with_text(r.clone(), "T", true));
+        let Content::ExplanationResponse(v) = reply_content(Some(&user), "T", true, "N") else { panic!("not an explanation") };
+        let (resp, update, _) = ai_explain::parse_response_content(&v).unwrap();
+        assert_eq!(update, Some(Update::new(false, Some("N".into()))));
+        assert_eq!(resp, Response::with_text(r, "T", false));
     }
 
     #[test]

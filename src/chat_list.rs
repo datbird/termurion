@@ -8,6 +8,7 @@ use crate::ai_turn::Out;
 use crate::ai_models::Endpoint;
 use crate::ai_msg::Message as AiMessage;
 use crate::ai_msg::Role;
+use crate::ai_explain::PromptMode;
 use crate::chat_agent::{history, user_text};
 use crate::chat_gate::{endpoint_of, gate_open};
 use crate::chat_message::{snippet, Content, Message, Participant, SNIPPET_MAX};
@@ -171,7 +172,7 @@ pub fn delete_text(n: usize) -> String {
 /// Whether the chat's first turn just finished and it has no name yet (`ChatAgent.swift:1476-1483`):
 /// exactly one message the model reads from the person, and an answer from the agent after it.
 pub fn needs_title(log: &[Message]) -> bool {
-    let users: Vec<usize> = log.iter().enumerate().filter(|(_, m)| m.author == Participant::User && user_text(&m.content).is_some()).map(|(i, _)| i).collect();
+    let users: Vec<usize> = log.iter().enumerate().filter(|(_, m)| m.author == Participant::User && user_text(&m.content, &mut PromptMode::default()).is_some()).map(|(i, _)| i).collect();
     let [first] = users[..] else { return false };
     log[first + 1..].iter().any(|m| m.author == Participant::Agent && matches!(m.content, Content::PlainText { .. } | Content::Markdown(_) | Content::Multipart { .. }))
 }
