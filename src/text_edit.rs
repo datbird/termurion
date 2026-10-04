@@ -1007,7 +1007,6 @@ pub fn selection_spans(sel: Option<Range<usize>>, text: &str, lines: &[VisualLin
     out
 }
 
-
 /// Whether a focused editor takes a key (Review Focus 6): every plain key; with Ctrl only its
 /// edit chords (Ctrl+A/C/X/V/Z/Y, Ctrl+Shift+Z) and the Ctrl word, document and page moves
 /// and word deletes; never an Alt or Win chord (Win is Cmd).

@@ -136,6 +136,8 @@ impl App {
             }
             return false;
         };
+        // One gutter panel holds the keyboard: the inline chat gives it up.
+        super::inline_chat_ui::release_gutter_keys(&mut self.clips, &mut self.inline, super::inline_chat_ui::GutterOwner::Clippings(id));
         // The panel's session becomes the focused one.
         if let Some(t) = self.tabs.get_mut(self.active) {
             t.focused = id;

@@ -1098,9 +1098,8 @@ impl App {
             }
             // A selection is text for the field; nothing selected changes nothing.
             ChatEvent::FindUseSelection(text) => {
-                let text = text.trim();
-                if !text.is_empty() {
-                    self.chat_find_open(Some(text.to_string()));
+                if let Some(seed) = find_seed(&text) {
+                    self.chat_find_open(Some(seed));
                 }
             }
             ChatEvent::Send => self.send_input_for(ChatView::Window),
@@ -1392,6 +1391,9 @@ impl App {
         });
         for id in &ids {
             self.chat_drafts.forget(id);
+            for s in self.inline.values_mut() {
+                s.forget_draft(id);
+            }
             if self.chat_shown.as_deref() == Some(id.as_str()) {
                 self.chat_input.switched(Draft::default());
             }
@@ -1524,10 +1526,22 @@ impl App {
     }
 }
 
+/// What Use Selection for Find seeds the bar with: the selected text as it is, nothing when
+/// nothing is selected (`CVC:3192`).
+fn find_seed(text: &str) -> Option<String> {
+    (!text.is_empty()).then(|| text.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::menus::{Chord, ChordKey};
+
+    #[test]
+    fn use_selection_seeds_the_bar_with_the_text_as_it_is() {
+        assert_eq!(find_seed("  two words \n"), Some("  two words \n".to_string()));
+        assert_eq!(find_seed(""), None);
+    }
 
     fn chord(c: char, shift: bool) -> Chord {
         Chord { key: ChordKey::Char(c), cmd: true, alt: false, shift, ctrl: false }

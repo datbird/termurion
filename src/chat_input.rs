@@ -490,7 +490,7 @@ fn check_link(link: &Path, roots: &[PathBuf]) -> Result<(), Reason> {
 
 /// Whether the item a person dropped or picked may be touched at all: neither it nor a folder
 /// above it is a link (read by its own entry, nothing it names is opened) whose chain reaches
-/// a network path. Err(Network) otherwise.
+/// a network path. Err(Network) otherwise, and Err(Unreadable) for a link that cannot be read.
 pub fn top_verdict(path: &Path, is_link: &dyn Fn(&Path) -> bool, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(), Reason> {
     verdict_from(path, is_link, read_link, 0)
 }
@@ -509,7 +509,8 @@ fn verdict_from(path: &Path, is_link: &dyn Fn(&Path) -> bool, read_link: &dyn Fn
         if !is_link(a) {
             continue;
         }
-        let Some(target) = read_link(a) else { continue };
+        // A link that cannot be read might lead to a share: refused and named, not skipped.
+        let Some(target) = read_link(a) else { return Err(Reason::Unreadable) };
         let target = match a.parent() {
             Some(parent) if target.is_relative() => parent.join(target),
             _ => target,
@@ -1133,6 +1134,17 @@ mod tests {
         let probing = |q: &Path| -> bool { assert_ne!(q, Path::new("C:\\drop\\share"), "probed the link"); false };
         let (ok, no) = split_by_model(&paths, &network, &probing, &|_| true);
         assert_eq!((ok, no), (vec![p("C:\\a.txt")], vec![p("C:\\drop\\share")]));
+    }
+
+    #[test]
+    fn a_link_whose_target_cannot_be_read_is_refused_not_skipped() {
+        // A link read_link cannot resolve might lead to a share: it is refused and named, never
+        // let through unchecked.
+        let is_link = |q: &Path| q == Path::new("C:\\drop\\odd");
+        let read_link = |_: &Path| None;
+        assert_eq!(top_verdict(Path::new("C:\\drop\\odd"), &is_link, &read_link), Err(Reason::Unreadable));
+        assert_eq!(top_verdict(Path::new("C:\\drop\\odd\\f.txt"), &is_link, &read_link), Err(Reason::Unreadable), "a folder above it");
+        assert_eq!(top_verdict(Path::new("C:\\drop\\plain.txt"), &is_link, &read_link), Ok(()));
     }
 
     #[test]

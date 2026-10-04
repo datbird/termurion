@@ -72,6 +72,8 @@ pub(super) struct InlineState {
     pub(super) keys: bool,
     /// The input: its draft (text and attachments) and the editor holding the text.
     pub(super) draft: crate::chat_input::Draft,
+    /// The other chats' unsent drafts, one per chat (`CVC:864-894`).
+    drafts: crate::chat_input::Drafts,
     pub(super) edit: crate::text_edit::TextEdit,
     pub(super) wrap: crate::text_edit::WrapCache,
     /// The broker subscription of the shown chat, held while the panel is shown.
@@ -265,6 +267,10 @@ impl App {
             self.inline_detach(pane);
         }
         let s = self.inline.entry(pane).or_default();
+        // Another chat in the panel: the field and its files go with the chat they were typed for.
+        if old.as_deref() != Some(chat) {
+            s.change_chat(old.as_deref(), chat);
+        }
         s.binding = Binding { chat: Some(chat.to_string()), visible };
         if !visible {
             s.keys = false;
@@ -444,11 +450,7 @@ impl App {
         }
         let r = hit.rect();
         // The panel's session becomes the focused one, and only this panel may hold the keys.
-        for (p, s) in self.inline.iter_mut() {
-            if *p != pane {
-                s.keys = false;
-            }
-        }
+        release_gutter_keys(&mut self.clips, &mut self.inline, GutterOwner::Inline(pane));
         if let Some(t) = self.tabs.get_mut(self.active) {
             t.focused = pane;
         }
@@ -1042,9 +1044,93 @@ impl App {
     }
 }
 
+/// Who takes the keyboard in a pane's gutter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GutterOwner {
+    Clippings(PaneId),
+    Inline(PaneId),
+}
+
+/// A press taken by one gutter panel gives the keyboard up in every other one (iTerm2 has one
+/// first responder): the owner's own flag is left to its press.
+pub(super) fn release_gutter_keys(clips: &mut HashMap<PaneId, super::clippings_ui::ClipState>, inline: &mut HashMap<PaneId, InlineState>, owner: GutterOwner) {
+    for (p, c) in clips.iter_mut() {
+        if owner != GutterOwner::Clippings(*p) {
+            c.keys = false;
+        }
+    }
+    for (p, s) in inline.iter_mut() {
+        if owner != GutterOwner::Inline(*p) {
+            s.keys = false;
+        }
+    }
+}
+
+impl InlineState {
+    /// A deleted chat's kept draft goes with it.
+    pub(super) fn forget_draft(&mut self, chat: &str) {
+        self.drafts.forget(chat);
+    }
+
+    /// The panel shows chat `to` after `from`: the outgoing chat's draft (text and attachments)
+    /// is kept for it and the incoming chat's comes back, the field and the conversation's
+    /// position reset (`CVC:864-894`).
+    pub(super) fn change_chat(&mut self, from: Option<&str>, to: &str) {
+        if from == Some(to) {
+            return;
+        }
+        let current = std::mem::take(&mut self.draft);
+        self.draft = self.drafts.switch(from, current, Some(to));
+        self.edit.load(&self.draft.text);
+        self.scroll = 0.0;
+        self.unpinned = false;
+        self.input_first = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_press_taken_by_one_gutter_panel_clears_the_other_keyboard_flags() {
+        let mut clips: HashMap<PaneId, super::super::clippings_ui::ClipState> = HashMap::new();
+        let mut inline: HashMap<PaneId, InlineState> = HashMap::new();
+        clips.entry(1).or_default().keys = true;
+        inline.entry(1).or_default().keys = true;
+        inline.entry(2).or_default().keys = true;
+        release_gutter_keys(&mut clips, &mut inline, GutterOwner::Clippings(1));
+        assert!(clips[&1].keys, "the owner keeps its own flag");
+        assert!(!inline[&1].keys && !inline[&2].keys, "a Clippings press leaves no inline panel with the keys");
+        clips.get_mut(&1).unwrap().keys = true;
+        inline.get_mut(&1).unwrap().keys = true;
+        release_gutter_keys(&mut clips, &mut inline, GutterOwner::Inline(2));
+        assert!(!clips[&1].keys, "an inline press clears Clippings");
+        assert!(!inline[&1].keys, "and the other panel");
+    }
+
+    #[test]
+    fn each_chat_keeps_its_own_draft_in_the_panel() {
+        let mut s = InlineState::default();
+        s.draft.text = "for a".into();
+        s.draft.pending.push(crate::chat_input::Pending::Path(std::path::PathBuf::from("C:\\a.png")));
+        s.edit.load("for a");
+        s.scroll = 40.0;
+        s.unpinned = true;
+        s.change_chat(Some("a"), "b");
+        assert!(s.draft.is_empty(), "chat b starts empty: a's files never go to b");
+        assert_eq!(s.edit.text, "");
+        assert_eq!((s.scroll, s.unpinned), (0.0, false));
+        s.draft.text = "for b".into();
+        s.edit.load("for b");
+        s.change_chat(Some("b"), "a");
+        assert_eq!(s.draft.text, "for a");
+        assert_eq!(s.draft.pending.len(), 1, "a's files come back with it");
+        assert_eq!(s.edit.text, "for a");
+        s.change_chat(Some("a"), "b");
+        assert_eq!(s.draft.text, "for b");
+        assert!(s.draft.pending.is_empty());
+    }
 
     #[test]
     fn switch_ids_round_trip_and_refuse_the_rest() {
