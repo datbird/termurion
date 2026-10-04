@@ -151,6 +151,7 @@ mod script_deps_app;
 mod builtin_ui;
 mod ssh_app;
 mod ssh_framer_app;
+mod ssh_files_app;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -767,6 +768,11 @@ pub struct App {
     /// The framed conductors of every window, by identity (app-wide, not in `swap_live`):
     /// 14d's Download Files reads it. Only `ssh_apply` and the pane drop paths change it.
     ssh_registry: crate::ssh_registry::Registry,
+    /// What waits for each file request, by pane and the id Tandem sent it with (app-wide,
+    /// not in `swap_live`; 14d).
+    ssh_waiters: HashMap<(PaneId, u64), ssh_files_app::Waiter>,
+    /// The id of the next file request.
+    ssh_next_file_id: u64,
     /// The secret pipe's server, started with the first window; None when it could not start.
     ssh_secret_server: Option<crate::ssh_secret_win::Server>,
     /// The Script Console's entries: scripts, connections and the app-wide logs.
@@ -1490,6 +1496,8 @@ pub fn run() {
         api_jar: Default::default(),
         ssh_secrets: Default::default(),
         ssh_registry: Default::default(),
+        ssh_waiters: HashMap::new(),
+        ssh_next_file_id: 1,
         ssh_secret_server: None,
         script_history: crate::script_history::History::new(aps_logging, api_ui::unix_secs()),
         api_alerts: Vec::new(),
@@ -3331,6 +3339,8 @@ impl App {
         self.aps.remove(&id);
         self.focus_order.remove(&id);
         if let Some(p) = self.panes.remove(&id) {
+            // Its file requests will never be answered: they fail now, and its waiters go.
+            self.ssh_files_pane_gone(id);
             if let Some(pid) = p.shell_pid() {
                 self.jobs.forget(pid);
             }

@@ -234,6 +234,8 @@ impl App {
         }
         self.ssh_registry_drain(pane);
         self.ssh_answers_drain(pane);
+        self.ssh_files_drain(pane);
+        self.ssh_files_settle();
     }
 
     /// Delivers what the pane's conductors answered to script calls (`get_time_offset`).
@@ -256,6 +258,9 @@ impl App {
         if self.ssh_registry.apply(changes) {
             self.ssh_hosts_changed();
         }
+        // A conductor that left the pane told its file requests; they are routed now.
+        self.ssh_files_drain(pane);
+        self.ssh_files_settle();
     }
 
     /// A pane that is dropped for good takes each of its conductors out of the connected hosts
@@ -269,6 +274,8 @@ impl App {
         // A script call whose pane goes is answered with an error, not left waiting.
         let owed = pane.owed_answers().into_iter().map(|t| (t, Err("Failed to fetch time: the session ended".to_string()))).collect();
         self.ssh_answers_deliver(owed);
+        // Its file requests fail (a pane kept for Undo Close does not reach here).
+        self.ssh_files_pane_gone(pane.id);
     }
 
     /// The connected hosts changed; 14d refreshes Download Files and its panel here.
@@ -283,6 +290,7 @@ impl App {
         let mut changes = Vec::new();
         let mut published = Vec::new();
         let mut answers = Vec::new();
+        let mut files = Vec::new();
         for (id, p) in self.panes.iter_mut().filter(|(_, p)| p.conductor.is_some()) {
             redraw |= p.tick_ssh(now);
             // The remote CPU values, once a second (F8: folded into this tick).
@@ -291,6 +299,7 @@ impl App {
             }
             changes.append(&mut p.take_ssh_registry());
             answers.append(&mut p.take_ssh_answers());
+            files.extend(p.take_ssh_files().into_iter().map(|f| (*id, f)));
             next = [next, p.ssh_deadline(), p.procs_due()].into_iter().flatten().min();
         }
         if self.ssh_registry.apply(changes) {
@@ -310,6 +319,11 @@ impl App {
             answers.extend(p.take_ssh_answers());
         }
         self.ssh_answers_deliver(answers);
+        // A conductor failed by its timer tells its file requests.
+        for (pane, (id, content, status)) in files {
+            self.ssh_file_done(pane, id, content, status);
+        }
+        self.ssh_files_settle();
         // A new remote CPU value redraws only a window whose bar shows it.
         redraw |= published.into_iter().any(|id| self.shows_status_bar(id));
         // A process list that changed or a conductor that left (the pane's job is read again).
