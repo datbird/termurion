@@ -800,7 +800,10 @@ impl Screen {
             if let (true, Some(prev)) = (before.1 != after.1, before.1.clone()) {
                 use crate::host_state::Remote;
                 let previous = Remote { user: before.2.clone(), host: prev, local: was_local.unwrap_or(false) };
-                self.requests.push(Request::HostMoved { previous, current: Remote { user: after.2.clone(), host: new.to_string(), local } });
+                // The mode and title as they are at the report (the bytes before it are fed, the
+                // rest of the chunk not yet), so a remote's same-chunk writes cannot be saved.
+                let (mode, title) = (self.keyboard().mode, self.title().map(crate::host_state::capped_title));
+                self.requests.push(Request::HostMoved { previous, current: Remote { user: after.2.clone(), host: new.to_string(), local }, mode, title });
             }
         }
         for (kind, old, new) in [(EventKind::DirectoryChanged, before.0, after.0), (EventKind::HostChanged, before.1, after.1), (EventKind::UserChanged, before.2, after.2)] {
@@ -1966,6 +1969,32 @@ mod tests {
         assert!(changes(&mut f).is_empty());
     }
 
+    /// Fix r1: the key mode and title the stack saves are the ones in effect AT the host report,
+    /// so a remote that writes a mode and a title in the same chunk, after its first report,
+    /// cannot choose what the local shell gets back.
+    #[test]
+    fn the_saved_mode_and_title_are_the_ones_at_the_report() {
+        use crate::keyproto::KeyMode;
+        static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+        let names: &'static [String] = NAMES.get_or_init(|| vec!["pc".to_string()]);
+        let saved = |s: &mut Screen| {
+            s.take_requests().into_iter().find_map(|r| match r {
+                Request::HostMoved { mode, title, .. } => Some((mode, title)),
+                _ => None,
+            })
+        };
+        let mut s = Screen::new(40, 10);
+        s.host_policy.local_names = names;
+        s.feed(b"\x1b]2;local\x07\x1b]1337;RemoteHost=me@pc\x07");
+        s.take_requests();
+        s.feed(b"\x1b]1337;RemoteHost=u@box\x07\x1b[>4;2m\x1b]2;evil\x07");
+        assert_eq!(s.keyboard().mode, KeyMode::Mok2, "the remote's mode is on after the chunk");
+        assert_eq!(saved(&mut s), Some((KeyMode::Standard, Some("local".to_string()))), "the mode and title at the report");
+        // A mode set before the report in the same chunk is the one in effect at the report.
+        s.feed(b"\x1b[>4;0m\x1b]2;box\x07\x1b[>4;1m\x1b]1337;RemoteHost=me@pc\x07\x1b[>4;2m\x1b]2;after\x07");
+        assert_eq!(saved(&mut s), Some((KeyMode::Mok1, Some("box".to_string()))));
+    }
+
     /// A host change reaches the host stack (m14e Task 4): locality is decided when the host is
     /// reported and kept, a user-only report copies it, OSC 7 reports a host too.
     #[test]
@@ -1980,7 +2009,7 @@ mod tests {
         s.feed(b"\x1b]1337;RemoteHost=me@pc\x07");
         assert!(moved(&mut s).is_empty(), "the first report");
         s.feed(b"\x1b]1337;RemoteHost=u@box\x07");
-        assert_eq!(moved(&mut s), vec![Request::HostMoved { previous: rem("me", "pc", true), current: rem("u", "box", false) }]);
+        assert_eq!(moved(&mut s), vec![Request::HostMoved { previous: rem("me", "pc", true), current: rem("u", "box", false), mode: crate::keyproto::KeyMode::Standard, title: None }]);
         // A user-only change queues none and copies the locality, even if the answer changed.
         static BOTH: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
         s.host_policy.local_names = BOTH.get_or_init(|| vec!["pc".to_string(), "box".to_string()]);
@@ -1989,7 +2018,7 @@ mod tests {
         assert_eq!(s.shell.host_local, Some(false), "copied, not recomputed");
         // OSC 7 reports a host too; locality is as the seam answers when it is reported.
         s.feed(b"\x1b]7;file://pc/tmp\x07");
-        assert_eq!(moved(&mut s), vec![Request::HostMoved { previous: rem("root", "box", false), current: Remote { user: None, host: "pc".into(), local: true } }]);
+        assert_eq!(moved(&mut s), vec![Request::HostMoved { previous: rem("root", "box", false), current: Remote { user: None, host: "pc".into(), local: true }, mode: crate::keyproto::KeyMode::Standard, title: None }]);
         // Once reported, a later change of the answer changes nothing.
         s.host_policy.local_names = &[];
         s.feed(b"\x1b]1337;CurrentDir=/x\x07");

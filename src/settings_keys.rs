@@ -1925,8 +1925,7 @@ mod tests {
         assert_eq!(last.section, "Experimental");
     }
 
-    /// `SL:562-640`, `AS:444`, `AS:746`, `AS:880`: the ssh: URL rows. `SshIntegrationForURLs` is
-    /// General > Experimental (tested above, built by 13a); the other three are Advanced rows.
+    /// m14e Task 4: the Advanced row that turns the key mode restore on.
     #[test]
     fn restore_key_mode_row_follows_iterm2() {
         let row = schema::find_global("restoreKeyModeAutomaticallyOnHostChange").expect("restoreKeyModeAutomaticallyOnHostChange");
@@ -1936,6 +1935,8 @@ mod tests {
         assert!(page_rows("Advanced").iter().any(|s| s.key == "restoreKeyModeAutomaticallyOnHostChange"));
     }
 
+    /// `SL:562-640`, `AS:444`, `AS:746`, `AS:880`: the ssh: URL rows. `SshIntegrationForURLs` is
+    /// General > Experimental (tested above, built by 13a); the other three are Advanced rows.
     #[test]
     fn ssh_url_rows_follow_iterm2() {
         let ssh = schema::find_global("SshIntegrationForURLs").expect("SshIntegrationForURLs");

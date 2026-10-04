@@ -323,8 +323,9 @@ pub enum Request {
     /// nothing is offered).
     HostChanged(crate::marks::LeftOn),
     /// The reported host name changed from a known one (m14e Task 4): the host stack decides
-    /// what to restore. Locality is as reported, decided when each host was.
-    HostMoved { previous: crate::host_state::Remote, current: crate::host_state::Remote },
+    /// what to restore. Locality is as reported, decided when each host was. `mode` and `title`
+    /// are the key mode and title in effect at the report (fix r1), never after the chunk.
+    HostMoved { previous: crate::host_state::Remote, current: crate::host_state::Remote, mode: crate::keyproto::KeyMode, title: Option<String> },
     /// ShellIntegrationVersion: the version and the shell this report names (None when it
     /// names none), for the outdated scripts notice.
     ShellIntegrationReported { version: Option<u32>, shell: Option<String> },

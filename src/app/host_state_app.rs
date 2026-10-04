@@ -12,15 +12,16 @@ use super::*;
 use crate::host_state::{self as hs, Others, Remote, TitleChoice};
 
 impl App {
-    /// A reported host name changed from a known one (`Request::HostMoved`).
-    pub(super) fn host_moved(&mut self, pane: PaneId, previous: Remote, current: Remote) {
+    /// A reported host name changed from a known one (`Request::HostMoved`); `mode` and `title`
+    /// are the pane's at the report (fix r1), not now: the rest of that output chunk may be the
+    /// new host's.
+    pub(super) fn host_moved(&mut self, pane: PaneId, previous: Remote, current: Remote, mode: crate::keyproto::KeyMode, title: Option<String>) {
         let enabled = self.globals.bool("restoreKeyModeAutomaticallyOnHostChange");
         if !hs::should_track(Some(&previous), &current, previous.local && current.local, false, enabled) {
             return;
         }
         let Some(p) = self.panes.get(&pane) else { return };
-        let screen = p.own();
-        let (mode, title, allow_title) = (screen.keyboard().mode, screen.title().map(str::to_string), screen.allow_title);
+        let allow_title = p.own().allow_title;
         let Some(restore) = self.host_stacks.entry(pane).or_default().push_or_pop(&current, &previous, mode, title.as_deref()) else { return };
         if let (Some(mode), Some(p)) = (restore.mode, self.panes.get_mut(&pane)) {
             p.own_mut().set_key_mode(mode);

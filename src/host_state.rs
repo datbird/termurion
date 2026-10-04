@@ -3,12 +3,20 @@
 //! is saved, and coming back to a host on the stack gives them back. Pure.
 //!
 //! Host reports come from the remote (OSC 1337 RemoteHost, OSC 7), so a hostile remote may send
-//! many different hosts: the stack is bounded (`MAX_DEPTH`, the oldest entry goes).
+//! many different hosts: the stack is bounded (`MAX_DEPTH`; the second-oldest entry goes, so the
+//! first host's is kept) and so is each saved title (`MAX_TITLE`).
 
 use crate::keyproto::KeyMode;
 
 /// The most entries one pane's stack keeps.
 pub const MAX_DEPTH: usize = 32;
+/// The longest title an entry keeps, in characters (the remote writes titles).
+pub const MAX_TITLE: usize = 256;
+
+/// `title` cut to `MAX_TITLE` characters.
+pub fn capped_title(title: &str) -> String {
+    title.chars().take(MAX_TITLE).collect()
+}
 
 pub const RESTORE_TITLES: &str = "Automatically restore the tab and window title when an ssh session ends?";
 pub const ONLY_THIS_TIME: &str = "_Only This Time";
@@ -64,10 +72,11 @@ impl Stack {
     /// differs (kitty key flags are not kept, iTerm2's TODO).
     pub fn push_or_pop(&mut self, new: &Remote, previous: &Remote, mode: KeyMode, title: Option<&str>) -> Option<Restore> {
         let Some(i) = self.saved.iter().position(|s| s.remote.same_host(new)) else {
+            // The bottom entry (the first host, the local one) is never the one dropped.
             if self.saved.len() == MAX_DEPTH {
-                self.saved.remove(0);
+                self.saved.remove(1);
             }
-            self.saved.push(Saved { remote: previous.clone(), mode, title: title.map(str::to_string) });
+            self.saved.push(Saved { remote: previous.clone(), mode, title: title.map(capped_title) });
             return None;
         };
         let state = self.saved[i].clone();
@@ -230,8 +239,24 @@ mod tests {
         assert_eq!(st.len(), MAX_DEPTH);
         // The newest entries are the ones kept.
         assert_eq!(st.saved.last().unwrap().remote.host, "h998");
+        assert_eq!(st.saved[0].remote, l, "the first (local) entry is never dropped");
         assert!(st.push_or_pop(&remote("u", "h990"), &prev, KeyMode::Standard, None).is_some());
         assert!(st.len() < MAX_DEPTH);
+        assert!(st.push_or_pop(&l, &remote("u", "h990"), KeyMode::Standard, None).is_some(), "back home after the flood");
+        assert_eq!(st.len(), 0);
+    }
+
+    #[test]
+    fn a_saved_title_is_capped() {
+        let (l, r) = (local("me", "pc"), remote("u", "box"));
+        let mut st = Stack::default();
+        let long = "\u{e9}".repeat(1000);
+        st.push_or_pop(&r, &l, KeyMode::Standard, Some(&long));
+        let back = st.push_or_pop(&l, &r, KeyMode::Standard, None).unwrap();
+        let title = back.title.unwrap().unwrap();
+        assert_eq!(title.chars().count(), MAX_TITLE);
+        assert!(title.chars().all(|c| c == '\u{e9}'), "cut on a character boundary");
+        assert_eq!(capped_title("short"), "short");
     }
 
     #[test]
