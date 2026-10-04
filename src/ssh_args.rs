@@ -246,6 +246,16 @@ impl Identity {
         words.join(" ")
     }
 
+    /// displayName (`SSHIdentity.swift:187-200`): the host as typed (not the hostname), the
+    /// port off 22 (0 counts as 22), the user only when it is not the local one.
+    pub fn display_name(&self, local_user: &str) -> String {
+        let hostport = if self.port == 22 || self.port == 0 { self.host.clone() } else { format!("{}:{}", self.host, self.port) };
+        match &self.username {
+            Some(u) if u != local_user => format!("{u}@{hostport}"),
+            _ => hostport,
+        }
+    }
+
     /// debugDescription (`SSHIdentity.swift:24-31`).
     pub fn description(&self) -> String {
         match &self.username {
@@ -572,5 +582,16 @@ mod tests {
             Path::new(r"C:\U").join(".ssh").join("config"),
             Path::new(r"C:\P").join("ssh").join("ssh_config"),
         ]);
+    }
+
+    #[test]
+    fn display_name_follows_iterm2() {
+        let id = |user: Option<&str>, port: u16| Identity { host: "box".into(), hostname: "box.lan".into(), username: user.map(String::from), port };
+        assert_eq!(id(Some("u"), 22).display_name("me"), "u@box");
+        assert_eq!(id(Some("u"), 2222).display_name("me"), "u@box:2222");
+        assert_eq!(id(Some("u"), 0).display_name("me"), "u@box");
+        assert_eq!(id(Some("me"), 22).display_name("me"), "box");
+        assert_eq!(id(None, 22).display_name("me"), "box");
+        assert_eq!(id(None, 2222).display_name("me"), "box:2222");
     }
 }

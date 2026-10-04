@@ -300,7 +300,7 @@ struct Popup {
 }
 
 /// A suggestion fetch waiting on the worker's file listing.
-struct Fetch {
+pub(super) struct Fetch {
     generation: u64,
     explicit: bool,
     line: String,
@@ -1441,7 +1441,7 @@ impl App {
     /// the file or PATH listing on the worker. A tmux pane gets the best history item as ghost
     /// text only (`PS:24466-24479`, `LCVC:622-643`). `explicit` (Tab) shows the popup, with
     /// "Thinking..." until the listing arrives.
-    fn composer_fetch(&mut self, pane: PaneId, explicit: bool) {
+    pub(super) fn composer_fetch(&mut self, pane: PaneId, explicit: bool) {
         self.composer_ai_cancel(pane);
         let ai_history = if self.globals.bool(crate::ai_settings::AI_COMPLETIONS) {
             let host = self.history_host_pub(pane);
@@ -1475,9 +1475,14 @@ impl App {
             None => ("", prefix),
         };
         let fetch = Fetch { generation, explicit, line: line.clone(), name: name.to_string(), history, inputs, ai_history, first: None, files: Vec::new(), expand: Vec::new(), ai_prefix: String::new() };
+        v.waiting = Some(fetch);
         if name.is_empty() || crate::prompted::network_path(dir_part) {
-            v.waiting = Some(fetch);
             return self.composer_found(pane, generation, Vec::new());
+        }
+        // A pane whose conductor frames asks the remote (14d); anything else lists locally.
+        let after: String = text[caret..].chars().take(256).collect();
+        if self.ssh_composer_fetch(pane, generation, &line, &after, name, explicit) {
+            return;
         }
         let base = cwd.clone().unwrap_or_else(|| PathBuf::from(home()));
         let join = |d: &Path| if dir_part.is_empty() { d.to_path_buf() } else { d.join(dir_part) };
@@ -1488,7 +1493,6 @@ impl App {
         } else {
             vec![(join(&base), false)]
         };
-        v.waiting = Some(fetch);
         let job = Job::Files { pane, generation, dirs };
         if self.composer_worker.send(job).is_err() {
             self.composer_found(pane, generation, Vec::new());
@@ -1499,7 +1503,7 @@ impl App {
     /// The listing for fetch `generation` arrived (`didFindCompletions:`, `LCVC:745-803`):
     /// files first, then history, deduplicated; the ghost from them (`composer_suggest::ghost`,
     /// suggestion-only while typing); the popup only for Tab.
-    fn composer_found(&mut self, pane: PaneId, generation: u64, entries: Vec<(String, bool)>) {
+    pub(super) fn composer_found(&mut self, pane: PaneId, generation: u64, entries: Vec<(String, bool)>) {
         let Some(p) = self.panes.get(&pane) else { return };
         let c = &p.composer;
         let at_end = c.edit.caret >= c.text().len();

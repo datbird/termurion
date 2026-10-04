@@ -15,7 +15,7 @@ pub(super) fn size_text(n: usize) -> String {
 }
 
 /// The Downloads folder (the user's profile when there is none).
-fn downloads_dir() -> Option<std::path::PathBuf> {
+pub(super) fn downloads_dir() -> Option<std::path::PathBuf> {
     let home = std::path::PathBuf::from(std::env::var_os("USERPROFILE")?);
     let d = home.join("Downloads");
     Some(if d.is_dir() { d } else { home })
@@ -60,17 +60,8 @@ fn yes_no_spec(id: &str, heading: &str, text: String, labels: [&str; 2]) -> crat
 /// text) shows it: control, bidirectional formatting, line and paragraph separator and
 /// zero-width characters dropped, and at most `SHOWN_NAME` characters, the rest an ellipsis.
 pub(super) fn shown_name(name: &str) -> String {
-    let bidi = |c: char| matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
-    let unseen = |c: char| matches!(c, '\u{2028}' | '\u{2029}' | '\u{200b}'..='\u{200d}' | '\u{2060}' | '\u{feff}');
-    let clean: Vec<char> = name.chars().filter(|&c| !c.is_control() && !bidi(c) && !unseen(c)).collect();
-    if clean.len() <= SHOWN_NAME {
-        return clean.into_iter().collect();
-    }
-    clean[..SHOWN_NAME].iter().chain(['\u{2026}'].iter()).collect()
+    crate::inert_files::shown_name(name)
 }
-
-/// The longest name a question shows.
-const SHOWN_NAME: usize = 200;
 
 /// "Allow Terminal-Initiated Download?" (or Display, for an `inline` file) for the file `name`
 /// of `size` bytes: Yes or No (`screenConfirmDownloadAllowed:`, `PS:19781-19811`).
@@ -274,6 +265,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inert_files::SHOWN_NAME;
 
     /// Only the inline file questions name a pane and file.
     #[test]

@@ -53,6 +53,8 @@ pub enum Command {
     FramerSave(Vec<(String, String)>),
     FramerGetenv(String),
     FramerExecPythonStatements(String),
+    /// A framer `file` request (`CD:1026-1027`, 14d): the subcommand's lines after `file`.
+    FramerFile(crate::ssh_files::FileSub),
 }
 
 impl Command {
@@ -88,6 +90,7 @@ impl Command {
             Command::FramerSave(pairs) => std::iter::once("save".to_string()).chain(pairs.iter().map(|(k, v)| format!("{k}={v}"))).collect::<Vec<_>>().join("\n"),
             Command::FramerGetenv(name) => lines(&["getenv", name]),
             Command::FramerExecPythonStatements(statements) => lines(&["runpy", &b64(statements.as_bytes())]),
+            Command::FramerFile(sub) => format!("file\n{}", sub.string_value()),
         }
     }
 
@@ -113,6 +116,7 @@ impl Command {
             Command::FramerKill(pid) => format!("kill {pid}"),
             Command::FramerGetenv(name) => format!("getenv {name}"),
             Command::FramerExecPythonStatements(statements) => format!("exec python statements {statements}"),
+            Command::FramerFile(sub) => format!("file {}", sub.description()),
             Command::FramerQuit => "quit".into(),
             Command::FramerRegister(pid) => format!("register {pid}"),
             Command::FramerDeregister(pid) => format!("dereigster {pid}"),
@@ -124,9 +128,14 @@ impl Command {
     }
 
     /// supportsPipelining (`CD:1375-1386`): several may be written before the first answers.
-    /// 14d adds the file fetch; iTerm2's `framerIT2Send` is not built (ruling 3).
+    /// Among the file commands only a fetch pipelines (`CD:1375-1388`); iTerm2's
+    /// `framerIT2Send` is not built (ruling 3).
     pub fn supports_pipelining(&self) -> bool {
-        matches!(self, Command::FramerSend { .. })
+        match self {
+            Command::FramerSend { .. } => true,
+            Command::FramerFile(sub) => sub.pipelines(),
+            _ => false,
+        }
     }
 
     /// size (`CD:1388-1416`): about the bytes on the wire, from the base64 form. Only a
@@ -134,6 +143,7 @@ impl Command {
     pub fn size(&self) -> usize {
         match self {
             Command::FramerSend { .. } => self.string_value().chars().count() * 4 / 3,
+            Command::FramerFile(sub) if sub.pipelines() => self.string_value().chars().count() * 4 / 3,
             _ => usize::MAX,
         }
     }
@@ -164,10 +174,13 @@ impl Command {
     }
 
     /// Whether a command written while framing keeps the command timeout (ruling M14-I2: a
-    /// sleeping laptop must not end SSH integration). None in 14b; 14d's file commands but
-    /// `file zip` add the true arm.
+    /// sleeping laptop must not end SSH integration). Only the file commands but `file zip`
+    /// (14d-1): a remote zip of a large folder is silent until it finishes.
     pub fn timed_when_framed(&self) -> bool {
-        false
+        match self {
+            Command::FramerFile(sub) => !matches!(sub, crate::ssh_files::FileSub::Zip { .. }),
+            _ => false,
+        }
     }
 }
 
@@ -330,6 +343,13 @@ pub enum Effect {
     /// The conductor quit (Shell > ssh > Disconnect, `CD:1837-1842`): the pane says so,
     /// unhooks it and clears what it held (`PS:25603-25612`).
     Quit,
+    /// A file request's reply is in: `id` is the one `Handler::File` carried (`CD:2273-2291`).
+    /// An abort or a cancel gives status -1 and no content; a reply past its cap gives
+    /// `ssh_files::OVERRUN_STATUS` (that request fails, never the connection).
+    FileDone { id: u64, content: String, status: i32 },
+    /// `%notif search <id> <json>` (`CD:2681-2698`): the text after `search `, unchecked (the
+    /// remote chose every byte of it, P18); the app parses it and acknowledges it.
+    SearchNotif(String),
 }
 
 /// What an unhook restores (Decision: the remote host and the working directory).
@@ -388,6 +408,10 @@ pub enum Handler {
     /// reply must hold. An end without the code is not this command's (a stale reply): it is
     /// ignored, and the command stays in flight.
     Reset { code: String, lines: Vec<String> },
+    /// A framer `file` request (`handleFile`, `CD:2273-2291`): every reply line is kept (up
+    /// to the request's cap) and the end completes it with them joined with "" and the
+    /// status; an abort or a cancel completes it with ("", -1). `id` is Tandem's.
+    File { id: u64, lines: Vec<String> },
 }
 
 /// The most a pipeline holds before it stops taking commands (`CD:2986-3010`).
@@ -399,6 +423,12 @@ pub struct Context {
     pub command: Command,
     pub handler: Handler,
     canceled: bool,
+    /// A `Handler::File` reply that overran its cap: the lines are gone and the rest dropped
+    /// (P8), and the end completes the request with `OVERRUN_STATUS`.
+    overflow: bool,
+    /// The bytes a `Handler::File` reply holds so far: a running total, so a line costs O(1)
+    /// and not a re-sum of every line kept.
+    file_bytes: usize,
     /// Whether the conductor was framing when this command was written.
     framed_at_write: bool,
     /// Its timeout (`command_timeout` of its size), set when it is written.
@@ -1104,7 +1134,7 @@ impl Conductor {
     /// topped up with what can ride along (`extend`): a keystroke need not wait for the
     /// round trip of the one before it. Unhooked, it stays queued, unsent.
     pub fn send(&mut self, cmd: Command, handler: Handler, high_priority: bool) {
-        let context = Context { command: cmd, handler, canceled: false, framed_at_write: false, timeout: COMMAND_TIMEOUT };
+        let context = Context { command: cmd, handler, canceled: false, overflow: false, file_bytes: 0, framed_at_write: false, timeout: COMMAND_TIMEOUT };
         if high_priority {
             self.queue.insert(0, context);
         } else {
@@ -1332,9 +1362,9 @@ impl Conductor {
     /// `force_ground` without the parents: what `reset` needs (the parent has just sent its own
     /// reset, which grounding it again would drop with everything queued behind it).
     pub(crate) fn ground_self(&mut self) {
-        // A clock fetch that was written is still owed its answer: it is told, though the
-        // other written commands are dropped unheard.
-        let mut aborted: Vec<Context> = self.written().filter(|c| matches!(c.handler, Handler::Ephemeral(..))).cloned().collect();
+        // A clock fetch or a file request that was written is still owed its answer (P5): it is
+        // told, though the other written commands are dropped unheard.
+        let mut aborted: Vec<Context> = self.written().filter(|c| matches!(c.handler, Handler::Ephemeral(..) | Handler::File { .. })).cloned().collect();
         if !self.unhooked() {
             self.state = State::Ground;
         }
@@ -1345,6 +1375,24 @@ impl Conductor {
             }
         });
         self.queue.clear();
+    }
+
+    /// Tells every written and queued file request it is over (-1), without touching anything
+    /// else: a conductor that leaves its pane (popped, unhooked) is never read again, so what
+    /// it still owes is answered here (P5).
+    pub fn abort_files(&mut self) {
+        let mut owed: Vec<Context> = self.written_and_queued().filter(|c| matches!(c.handler, Handler::File { .. })).cloned().collect();
+        self.queue.retain(|c| !matches!(c.handler, Handler::File { .. }));
+        // A written one is told once: its handler is no longer a file handler.
+        let written_ids: Vec<u64> = owed.iter().filter_map(|c| if let Handler::File { id, .. } = &c.handler { Some(*id) } else { None }).collect();
+        for context in owed.drain(..) {
+            self.update(&context, Partial::Abort);
+        }
+        match &mut self.state {
+            State::WillExecute(contexts) => contexts.iter_mut().for_each(|c| silence_file(c, &written_ids)),
+            State::Executing(first, rest) => std::iter::once(first).chain(rest.iter_mut()).for_each(|c| silence_file(c, &written_ids)),
+            _ => {}
+        }
     }
 
     /// fail (`CD:3095-3103`): back to ground, then the raw `exec_login_shell` line through
@@ -1432,6 +1480,27 @@ impl Conductor {
                 }
                 return;
             }
+            // A reply past its cap fails THAT request (P8), not the connection: what was kept is
+            // dropped and the end says so.
+            Handler::File { lines, .. } => {
+                if context.overflow {
+                    return;
+                }
+                let (max_bytes, max_lines) = match &context.command {
+                    Command::FramerFile(sub) if sub.pipelines() => (crate::ssh_files::FETCH_REPLY_MAX, crate::ssh_files::FILE_REPLY_LINES),
+                    _ => (crate::ssh_files::FILE_REPLY_MAX, crate::ssh_files::FILE_REPLY_LINES),
+                };
+                if crate::ssh_files::reply_fits(context.file_bytes, lines.len(), line.len(), max_bytes, max_lines) {
+                    context.file_bytes += line.len();
+                    lines.push(line.to_string());
+                } else {
+                    context.file_bytes = 0;
+                    lines.clear();
+                    lines.shrink_to_fit();
+                    context.overflow = true;
+                }
+                return;
+            }
             // Only the first line is the value; a value past the limit is not kept (F13).
             Handler::Getenv(_, first) => {
                 if first.is_none() {
@@ -1464,6 +1533,9 @@ impl Conductor {
                     self.exec_login_shell();
                 }
                 self.time_offset_lost(&context.handler);
+                if let Handler::File { id, .. } = &context.handler {
+                    self.effects.push(Effect::FileDone { id: *id, content: String::new(), status: -1 });
+                }
                 return false;
             }
         };
@@ -1505,8 +1577,20 @@ impl Conductor {
             }
             Handler::Ephemeral(purpose, lines) => self.finish_ephemeral(purpose, lines, status),
             Handler::Reset { code, lines } => return !lines.contains(code),
+            Handler::File { id, lines } => {
+                let (content, status) = if context.overflow { (String::new(), crate::ssh_files::OVERRUN_STATUS) } else { (lines.concat(), i32::from(status)) };
+                self.effects.push(Effect::FileDone { id: *id, content, status });
+            }
         }
         false
+    }
+}
+
+/// A written file request that has been told it is over hears nothing more: its handler
+/// becomes one that does nothing.
+fn silence_file(context: &mut Context, told: &[u64]) {
+    if matches!(&context.handler, Handler::File { id, .. } if told.contains(id)) {
+        context.handler = Handler::FireAndForget;
     }
 }
 
@@ -2340,10 +2424,10 @@ mod tests {
         assert_eq!(c.in_flight(), Some(&cd("/a")), "only queued commands are canceled");
         c.handle_end("1", "r", 0, 0);
         assert_eq!(wire(&mut c), sent(&Command::Run("x".into())), "the canceled command is dropped, the next written");
-        let run_in_flight = State::WillExecute(vec![Context { command: Command::Run("x".into()), handler: Handler::FailIfNonzero, canceled: false, framed_at_write: false, timeout: COMMAND_TIMEOUT }]);
+        let run_in_flight = State::WillExecute(vec![Context { command: Command::Run("x".into()), handler: Handler::FailIfNonzero, canceled: false, overflow: false, file_bytes: 0, framed_at_write: false, timeout: COMMAND_TIMEOUT }]);
         assert_eq!(
             c.updates,
-            [(cd("/a"), Partial::End(0), State::WillExecute(vec![Context { command: cd("/a"), handler: Handler::FailIfNonzero, canceled: false, framed_at_write: false, timeout: COMMAND_TIMEOUT }])), (cd("/b"), Partial::Canceled, run_in_flight)],
+            [(cd("/a"), Partial::End(0), State::WillExecute(vec![Context { command: cd("/a"), handler: Handler::FailIfNonzero, canceled: false, overflow: false, file_bytes: 0, framed_at_write: false, timeout: COMMAND_TIMEOUT }])), (cd("/b"), Partial::Canceled, run_in_flight)],
             "the canceled handler runs once the state is consistent"
         );
     }
@@ -3120,6 +3204,42 @@ mod tests {
     }
 
     #[test]
+    fn zip_is_not_timed_out() {
+        // Ruling M14-I2 with 14d-1: once framed only file commands but `file zip` are timed.
+        use crate::ssh_files::FileSub;
+        let t0 = Instant::now();
+        let mut c = root();
+        c.framed_pid = Some(4242);
+        at(&mut c, t0).send(Command::FramerFile(FileSub::Zip { path: "/h/d".into() }), Handler::File { id: 1, lines: Vec::new() }, false);
+        c.take_effects();
+        assert_eq!(c.deadline(), None);
+        c.tick(t0 + SECS(31));
+        assert!(c.take_effects().is_empty());
+
+        let mut c = root();
+        c.framed_pid = Some(4242);
+        at(&mut c, t0).send(Command::FramerFile(FileSub::Stat { path: "/h/a".into() }), Handler::File { id: 1, lines: Vec::new() }, false);
+        c.take_effects();
+        assert_eq!(c.deadline(), Some(t0 + SECS(30)));
+        c.tick(t0 + SECS(31));
+        assert_eq!(c.take_effects().last(), Some(&Effect::Abort("file stat /h/a: No response after 30 seconds".into())));
+
+        let mut c = root();
+        c.framed_pid = Some(4242);
+        at(&mut c, t0).send(Command::FramerGetenv("PATH".into()), Handler::FireAndForget, false);
+        c.take_effects();
+        assert_eq!(c.deadline(), None);
+        c.tick(t0 + SECS(31));
+        assert!(c.take_effects().is_empty());
+
+        let fetch = Command::FramerFile(FileSub::Fetch { path: "/h/a".into(), chunk: None, unique_id: None });
+        let zip = Command::FramerFile(FileSub::Zip { path: "/h/a".into() });
+        assert!(fetch.timed_when_framed());
+        assert!(!zip.timed_when_framed());
+        assert!(!fetch.streams() && !zip.streams());
+    }
+
+    #[test]
     fn framed_commands_are_not_timed_out() {
         // Ruling M14-I2: a sleeping laptop must not end SSH integration.
         let t0 = Instant::now();
@@ -3287,5 +3407,146 @@ mod tests {
         assert_eq!(wire_writes(&mut c), 0);
         c.handle_end("d", "f", 0, 0);
         assert_eq!(wire_writes(&mut c), 1);
+    }
+
+    fn file_cmd(sub: crate::ssh_files::FileSub) -> Command {
+        Command::FramerFile(sub)
+    }
+
+    fn stat(path: &str) -> crate::ssh_files::FileSub {
+        crate::ssh_files::FileSub::Stat { path: path.into() }
+    }
+
+    fn fetch(path: &str) -> crate::ssh_files::FileSub {
+        crate::ssh_files::FileSub::Fetch { path: path.into(), chunk: Some(crate::ssh_files::Chunk { offset: 0, size: 4096 }), unique_id: None }
+    }
+
+    fn framing_root() -> Conductor {
+        let mut c = root();
+        c.framed_pid = Some(4242);
+        c
+    }
+
+    fn file_reply(c: &mut Conductor, lines: &[&str], status: u8) {
+        c.handle_begin("a", 0);
+        for l in lines {
+            c.handle_line(l, 0);
+        }
+        c.handle_end("a", "f", status, 0);
+    }
+
+    fn file_done(c: &mut Conductor) -> Vec<Effect> {
+        c.take_effects().into_iter().filter(|e| matches!(e, Effect::FileDone { .. })).collect()
+    }
+
+    #[test]
+    fn framer_file_command_follows_iterm2() {
+        let cmd = file_cmd(stat("/tmp"));
+        assert_eq!(cmd.string_value(), "file\nstat\nL3RtcA==");
+        assert_eq!(cmd.description(), "file stat /tmp");
+        assert!(cmd.is_framer());
+        let fetch_cmd = file_cmd(fetch("/tmp"));
+        assert_eq!(fetch_cmd.string_value(), "file\nfetch\nL3RtcA==\n0\n4096");
+        assert_eq!(fetch_cmd.description(), "file fetch /tmp offset=0 size=4096");
+        assert!(fetch_cmd.supports_pipelining());
+        assert!(!cmd.supports_pipelining());
+        assert!(!cmd.streams() && !fetch_cmd.streams());
+        assert_eq!(fetch_cmd.size(), 34);
+        assert_eq!(cmd.size(), usize::MAX);
+        let lines: Vec<String> = ["file", "stat", "L3RtcA=="].iter().map(|l| b64(l.as_bytes())).collect();
+        assert_eq!(encode(&cmd, ""), lines.join("\n") + "\n");
+
+        // Lines are joined with nothing, and the end hands them over.
+        let mut c = framing_root();
+        c.send(cmd.clone(), Handler::File { id: 7, lines: vec![] }, false);
+        assert_eq!(c.take_effects(), [Effect::Write((encode(&cmd, "") + "\n").into_bytes())]);
+        file_reply(&mut c, &["a", "b"], 0);
+        assert_eq!(file_done(&mut c), [Effect::FileDone { id: 7, content: "ab".into(), status: 0 }]);
+        // A status is passed on as it came.
+        c.send(cmd.clone(), Handler::File { id: 8, lines: vec![] }, false);
+        c.take_effects();
+        file_reply(&mut c, &[], 2);
+        assert_eq!(file_done(&mut c), [Effect::FileDone { id: 8, content: String::new(), status: 2 }]);
+
+        // An abort is -1.
+        let mut c = framing_root();
+        c.send(cmd.clone(), Handler::File { id: 7, lines: vec![] }, false);
+        c.take_effects();
+        c.handle_unhook();
+        assert_eq!(file_done(&mut c), [Effect::FileDone { id: 7, content: String::new(), status: -1 }]);
+
+        // So is a cancel of a queued one (told when its turn comes).
+        let mut c = framing_root();
+        c.send(cmd.clone(), Handler::File { id: 1, lines: vec![] }, false);
+        c.send(cmd.clone(), Handler::File { id: 2, lines: vec![] }, false);
+        c.take_effects();
+        c.cancel_enqueued(&|x| matches!(x, Command::FramerFile(_)));
+        file_reply(&mut c, &["x"], 0);
+        assert_eq!(
+            file_done(&mut c),
+            [Effect::FileDone { id: 1, content: "x".into(), status: 0 }, Effect::FileDone { id: 2, content: String::new(), status: -1 }]
+        );
+    }
+
+    #[test]
+    fn file_replies_are_capped_per_request() {
+        use crate::ssh_files::{FETCH_REPLY_MAX, OVERRUN_STATUS};
+        // A fetch reply past 16 KiB fails that request, never the conductor (P8).
+        let mut c = framing_root();
+        c.send(file_cmd(fetch("/tmp")), Handler::File { id: 9, lines: vec![] }, false);
+        c.take_effects();
+        let big = "A".repeat(FETCH_REPLY_MAX / 2 + 1);
+        file_reply(&mut c, &[&big, &big, "more"], 0);
+        let effects = c.take_effects();
+        assert!(!effects.iter().any(|e| matches!(e, Effect::Abort(_))), "{effects:?}");
+        assert!(effects.contains(&Effect::FileDone { id: 9, content: String::new(), status: OVERRUN_STATUS }), "{effects:?}");
+        assert!(!c.failed() && c.framing());
+        // The next request is served.
+        c.send(file_cmd(stat("/tmp")), Handler::File { id: 10, lines: vec![] }, false);
+        c.take_effects();
+        file_reply(&mut c, &["ok"], 0);
+        assert_eq!(file_done(&mut c), [Effect::FileDone { id: 10, content: "ok".into(), status: 0 }]);
+
+        // The running byte total sums across lines: 163 lines of 100 bytes fit a fetch's
+        // 16 KiB, the 164th does not (a few hundred lines only: this test log is quadratic).
+        let line = "A".repeat(100);
+        for (n, want) in [(163usize, 0), (164, OVERRUN_STATUS)] {
+            c.send(file_cmd(fetch("/tmp")), Handler::File { id: 20, lines: vec![] }, false);
+            c.take_effects();
+            let lines: Vec<&str> = (0..n).map(|_| line.as_str()).collect();
+            file_reply(&mut c, &lines, 0);
+            let effects = c.take_effects();
+            let done = effects.iter().find_map(|e| match e { Effect::FileDone { id: 20, status, .. } => Some(*status), _ => None });
+            assert_eq!(done, Some(want), "{n} lines");
+            assert!(!c.failed() && c.framing());
+        }
+
+        // The line count is `ssh_files::reply_fits`' (tested there): this conductor's test log
+        // clones the state on every line, so 100000 lines here would take gigabytes.
+    }
+
+    #[test]
+    fn a_failed_conductor_tells_written_file_requests() {
+        // P5: a written (in flight) file request is answered -1 when the conductor fails.
+        let mut c = framing_root();
+        c.send(file_cmd(stat("/a")), Handler::File { id: 1, lines: vec![] }, false);
+        c.send(file_cmd(stat("/b")), Handler::File { id: 2, lines: vec![] }, false);
+        c.take_effects();
+        assert_eq!(c.in_flight(), Some(&file_cmd(stat("/a"))));
+        c.fail("boom");
+        let effects = c.take_effects();
+        let done: Vec<&Effect> = effects.iter().filter(|e| matches!(e, Effect::FileDone { .. })).collect();
+        assert_eq!(done.len(), 2, "{effects:?}");
+        for (i, e) in done.iter().enumerate() {
+            assert_eq!(**e, Effect::FileDone { id: i as u64 + 1, content: String::new(), status: -1 });
+        }
+        // A popped conductor answers them through `abort_files`.
+        let mut c = framing_root();
+        c.send(file_cmd(stat("/a")), Handler::File { id: 5, lines: vec![] }, false);
+        c.take_effects();
+        c.abort_files();
+        assert_eq!(file_done(&mut c), [Effect::FileDone { id: 5, content: String::new(), status: -1 }]);
+        c.abort_files();
+        assert!(file_done(&mut c).is_empty(), "answered once");
     }
 }

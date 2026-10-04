@@ -433,24 +433,42 @@ impl App {
     }
 
     /// A link in a rendered document: web and mail links and local files, after asking
-    /// (unless asked not to).
+    /// (unless asked not to). In a remote pane the document is remote text (P10): only a web or
+    /// mail link is asked; a file link may only download, whatever "Always" said.
     fn open_porthole_link(&mut self, pane: PaneId, link: &str, base: Option<&str>) {
+        if self.remote_text(pane) {
+            match crate::ssh_files::remote_doc_link(link) {
+                crate::ssh_files::RemoteDocLink::Ask => {}
+                crate::ssh_files::RemoteDocLink::Download(path) => {
+                    if !self.secure_copy_text(pane, Some(&path)) {
+                        self.banners.set("link", format!("{path} is on the remote host and cannot be downloaded from here."));
+                    }
+                    return;
+                }
+                crate::ssh_files::RemoteDocLink::Refuse => return self.banners.set("link", format!("Tandem opens only web and mail links from a remote document, not {link:?}.")),
+            }
+        }
         let Some(target) = crate::porthole::link_target(link, base) else {
             return self.banners.set("link", format!("Tandem opens web and mail links and local files only, not {link:?}."));
         };
         let (text, key) = crate::porthole::link_prompt(&target);
         if self.globals.bool(key) {
-            return self.open_link_target(&target);
+            return self.open_link_target(pane, &target);
         }
         if self.ask(pane, "porthole-link", &text, &["_Yes", "Always", "_No"], true) {
             self.porthole_link_asks.insert(pane, target);
         }
     }
 
-    fn open_link_target(&mut self, target: &crate::porthole::LinkTarget) {
+    fn open_link_target(&mut self, pane: PaneId, target: &crate::porthole::LinkTarget) {
         let t = match target {
             crate::porthole::LinkTarget::Url(u) | crate::porthole::LinkTarget::File(u) => u.clone(),
         };
+        // Asked again at the answer: the pane may have started framing since (P10).
+        let web = matches!(target, crate::porthole::LinkTarget::Url(u) if crate::semantic::web_link(u));
+        if self.remote_text(pane) && !web {
+            return self.banners.set("link", format!("Tandem opens only web and mail links from a remote document, not {t:?}."));
+        }
         // A program or script a document links to is shown in Explorer, never run.
         if crate::porthole::link_action(target) == crate::porthole::LinkAction::Reveal {
             if let Err(e) = std::process::Command::new("explorer").arg(format!("/select,{t}")).spawn() {
@@ -470,12 +488,12 @@ impl App {
         }
         let Some(target) = self.porthole_link_asks.remove(&pane) else { return true };
         match button {
-            Some("_Yes") => self.open_link_target(&target),
+            Some("_Yes") => self.open_link_target(pane, &target),
             Some("Always") => {
                 let (_, key) = crate::porthole::link_prompt(&target);
                 self.globals.set(key, toml::Value::Boolean(true));
                 self.save_globals();
-                self.open_link_target(&target);
+                self.open_link_target(pane, &target);
             }
             _ => {}
         }

@@ -579,9 +579,25 @@ impl RealRunner {
     }
 }
 
+/// What `run_watched` fails with when its watch stopped the program.
+pub const STOPPED: &str = "stopped by the watch";
+
 #[cfg(windows)]
-impl Runner for RealRunner {
-    fn run(&mut self, step: &Step) -> Result<String, String> {
+impl RealRunner {
+    /// `Runner::extract`, with `watch` polled while tar.exe runs: when it says true the
+    /// program's whole job is killed and the run fails with `STOPPED`.
+    pub fn extract_watched(&mut self, zip: &Path, to: &Path, watch: &dyn Fn() -> bool) -> Result<(), String> {
+        std::fs::create_dir_all(to).map_err(|e| format!("Could not create {}: {e}", to.display()))?;
+        let args = vec!["-xf".to_string(), zip.to_string_lossy().into_owned(), "-C".to_string(), to.to_string_lossy().into_owned()];
+        self.run_watched(&Step { program: Self::system_tool("tar.exe")?, args, env: Vec::new() }, Some(watch)).map(|_| ())
+    }
+}
+
+#[cfg(windows)]
+impl RealRunner {
+    /// `run`, polling `watch` while the program runs: when it says true the job is killed and
+    /// the run fails with `STOPPED`.
+    fn run_watched(&mut self, step: &Step, watch: Option<&dyn Fn() -> bool>) -> Result<String, String> {
         use std::io::Read;
         use std::os::windows::process::CommandExt;
         use std::process::{Command, Stdio};
@@ -648,6 +664,12 @@ impl Runner for RealRunner {
                         None => Err(format!("{label} did not finish within {within} and could not be stopped.")),
                     };
                 }
+                Ok(None) if watch.is_some_and(|w| w()) => {
+                    job.terminate();
+                    let _ = child.kill();
+                    let _ = wait_limited(|| child.try_wait().ok().flatten(), STOP_WAIT);
+                    break Err(STOPPED.to_string());
+                }
                 Ok(None) => std::thread::sleep(Duration::from_millis(50)),
                 Err(e) => {
                     job.terminate();
@@ -672,6 +694,13 @@ impl Runner for RealRunner {
         };
         let detail = if tail.is_empty() { String::new() } else { format!("\n{tail}") };
         Err(format!("{label} failed with status {code}.{detail}"))
+    }
+}
+
+#[cfg(windows)]
+impl Runner for RealRunner {
+    fn run(&mut self, step: &Step) -> Result<String, String> {
+        self.run_watched(step, None)
     }
 
     fn download(&mut self, url: &str, to: &Path) -> Result<(), String> {

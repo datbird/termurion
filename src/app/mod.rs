@@ -156,6 +156,8 @@ mod script_deps_app;
 mod builtin_ui;
 mod ssh_app;
 mod ssh_framer_app;
+mod ssh_files_app;
+mod ssh_panel_app;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -614,6 +616,9 @@ pub struct App {
     pwm_window: Option<pwm_app::PwmWin>,
     /// What Shell > ssh > Disconnect last showed in this window (per window: `swap_live`).
     ssh_menu_shown: Option<Option<String>>,
+    /// What Shell > ssh > Download Files last showed in this window, None until set (per window:
+    /// `swap_live`, P21).
+    download_files_shown: Option<bool>,
     /// The password manager's app-wide state: authentication, the source worker, the echo
     /// probes' passwords, broadcast rounds and questions.
     pwm: pwm_app::PwmState,
@@ -772,6 +777,36 @@ pub struct App {
     /// The framed conductors of every window, by identity (app-wide, not in `swap_live`):
     /// 14d's Download Files reads it. Only `ssh_apply` and the pane drop paths change it.
     ssh_registry: crate::ssh_registry::Registry,
+    /// What waits for each file request, by pane and the id Tandem sent it with (app-wide,
+    /// not in `swap_live`; 14d).
+    ssh_waiters: HashMap<(PaneId, u64), ssh_files_app::Waiter>,
+    /// The id of the next file request.
+    ssh_next_file_id: u64,
+    /// The Composer's remote suggestion answers, by pane (app-wide, not in `swap_live`; 14d).
+    ssh_suggest_cache: HashMap<PaneId, crate::ssh_suggest::Cache>,
+    /// When the cache is purged next (at most every 10 s).
+    ssh_purge_at: Option<Instant>,
+    /// The panel's running search: its pane, the id the remote gave it (empty until it
+    /// answers) and the panel's generation (app-wide; 14d).
+    ssh_search: Option<(PaneId, String, u64)>,
+    /// The ids of the searches Tandem started lately, by pane: results of a replaced search are
+    /// still acknowledged (P18), and no other id is.
+    ssh_search_issued: Vec<(PaneId, String)>,
+    /// The search acknowledgements still out, by pane: a result past 16 is dropped (P18).
+    ssh_search_acks: HashMap<PaneId, crate::ssh_suggest::AckWindow>,
+    /// The transfer engine's jobs (app-wide, not in `swap_live`; 14d).
+    ssh_transfers: crate::ssh_transfer::Transfers,
+    /// The local side of each transfer job: its temp file and what its banner shows (Task 4).
+    ssh_locals: HashMap<u64, crate::ssh_local::Local>,
+    /// Folder unzips running on worker threads, each answering (job, result) once.
+    ssh_unzips: Vec<crate::ssh_transfer::UnzipWait>,
+    /// Download Files items waiting for an earlier item of their name to land (app-wide, P12).
+    ssh_landings: ssh_panel_app::Landings,
+    /// The remote file panel (Shell > ssh > Download Files) and its model; one at a time (app-wide,
+    /// not in `swap_live`; 14d).
+    ssh_panel: Option<(crate::ssh_panel_ui::SshPanelWindow, crate::ssh_panel::Panel)>,
+    /// Download Files' batches still out, by id (app-wide; 14d).
+    ssh_batches: HashMap<u64, ssh_panel_app::Batch>,
     /// The secret pipe's server, started with the first window; None when it could not start.
     ssh_secret_server: Option<crate::ssh_secret_win::Server>,
     /// The Script Console's entries: scripts, connections and the app-wide logs.
@@ -1147,6 +1182,15 @@ pub fn run() {
         let _ = wake.lock().unwrap().send_event(UserEvent::Wake);
     });
 
+    // A crash mid-download leaves a hidden `.Tandem.*` temp: older ones are swept with the
+    // launch's other housekeeping (P24), off the launch path.
+    std::thread::spawn(|| {
+        let now = std::time::SystemTime::now();
+        if let Some(d) = files_ui::downloads_dir() {
+            crate::ssh_local::sweep_stale(&d, now);
+        }
+        crate::ssh_local::sweep_stale(&std::env::temp_dir(), now);
+    });
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default();
     let mut banners = Banners::default();
     let api = match conpty::load(&Source::Shipped(exe_dir.clone())) {
@@ -1389,6 +1433,7 @@ pub fn run() {
         replay_seen: None,
         pwm_window: None,
         ssh_menu_shown: None,
+        download_files_shown: None,
         pwm: Default::default(),
         replay_keys: Default::default(),
         recording_warnings: Vec::new(),
@@ -1522,6 +1567,19 @@ pub fn run() {
         api_jar: Default::default(),
         ssh_secrets: Default::default(),
         ssh_registry: Default::default(),
+        ssh_waiters: HashMap::new(),
+        ssh_next_file_id: 1,
+        ssh_suggest_cache: HashMap::new(),
+        ssh_purge_at: None,
+        ssh_search: None,
+        ssh_search_issued: Vec::new(),
+        ssh_search_acks: HashMap::new(),
+        ssh_transfers: crate::ssh_transfer::Transfers::new(),
+        ssh_locals: HashMap::new(),
+        ssh_unzips: Vec::new(),
+        ssh_landings: ssh_panel_app::Landings::default(),
+        ssh_panel: None,
+        ssh_batches: HashMap::new(),
         ssh_secret_server: None,
         script_history: crate::script_history::History::new(aps_logging, api_ui::unix_secs()),
         api_alerts: Vec::new(),
@@ -2952,13 +3010,8 @@ impl App {
     /// The focused session's directory, from shell integration, when it is on this machine
     /// (iTerm2 prefers the local directory for a new session).
     fn previous_dir(&self) -> Option<std::path::PathBuf> {
-        let t = self.tabs.get(self.active)?;
-        let shell = &self.panes.get(&t.focused)?.own().shell;
-        let here = std::env::var("COMPUTERNAME").unwrap_or_default();
-        if shell.host.as_ref().is_some_and(|h| !h.eq_ignore_ascii_case(&here) && !h.eq_ignore_ascii_case("localhost")) {
-            return None;
-        }
-        profile::local_path(shell.cwd.as_deref()?)
+        // Through the guard: a framing pane's reported folder is remote text (P10).
+        self.pane_dir(self.tabs.get(self.active)?.focused)
     }
 
     /// The Settings window on one page.
@@ -3387,6 +3440,8 @@ impl App {
         self.aps.remove(&id);
         self.focus_order.remove(&id);
         if let Some(p) = self.panes.remove(&id) {
+            // Its file requests will never be answered: they fail now, and its waiters go.
+            self.ssh_files_pane_gone(id);
             if let Some(pid) = p.shell_pid() {
                 self.jobs.forget(pid);
             }
@@ -4788,6 +4843,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.enter(w);
         }
         self.flush_dropped();
+        self.ssh_suggest_purge();
         for w in std::mem::take(&mut self.pending_windows) {
             self.open_pending(event_loop, w);
             self.tmux_apply_geometry();
@@ -4865,6 +4921,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_pending_repl(event_loop);
         let import_due = self.import_tick();
         self.script_export_tick();
+        self.ssh_unzip_tick();
         self.scripts_scan_tick();
         // OK in "Importing Settings and Data": Tandem quits and starts again.
         if std::mem::take(&mut self.relaunch_due) {
@@ -5021,7 +5078,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

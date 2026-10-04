@@ -103,21 +103,30 @@ fn decode_base64(data: &str) -> Option<Vec<u8>> {
     e.decode(&compact).ok().or_else(|| base64::engine::general_purpose::STANDARD_NO_PAD.decode(compact.trim_end_matches('=')).ok())
 }
 
-/// A free name for `name` in `dir`: "a.txt", then "a (1).txt", and so on. Any folder part
-/// of the name is dropped.
-pub fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
-    let base = std::path::Path::new(name).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    // Format characters (a right-to-left override, say) could disguise the file's type.
+/// One safe path component for `name` a program or a remote host sent: any folder part is
+/// dropped, format characters (a right-to-left override, say, which could disguise the file's
+/// type) are removed, control characters and `<>:"/\|?*` become `_` (so no stream name
+/// survives), trailing dots and spaces go (Windows drops them), a device name gets a leading
+/// `_`, and an empty, `.` or `..` result is "Unnamed file".
+pub fn clean_name(name: &str) -> String {
+    // The last component, split by hand: Windows' `Path` would read a leading `a:` as a drive
+    // and keep only what follows it.
+    let base = name.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or("").to_string();
     let format_char = |c: char| matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{061c}' | '\u{180e}' | '\u{00ad}');
     let clean: String = base
         .chars()
         .filter(|c| !format_char(*c))
         .map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c })
         .collect();
-    // Windows drops trailing dots and spaces, and keeps some names for devices.
     let clean = clean.trim_end_matches(['.', ' ']).to_string();
     let clean = if crate::inert_files::is_device_name(&clean) { format!("_{clean}") } else { clean };
-    let clean = if clean.trim().is_empty() || clean == "." || clean == ".." { "Unnamed file".to_string() } else { clean };
+    if clean.trim().is_empty() || clean == "." || clean == ".." { "Unnamed file".to_string() } else { clean }
+}
+
+/// A free name for `name` in `dir`: "a.txt", then "a (1).txt", and so on. Any folder part
+/// of the name is dropped.
+pub fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let clean = clean_name(name);
     let first = dir.join(&clean);
     if !first.exists() {
         return first;
@@ -503,5 +512,43 @@ mod tests {
         assert_eq!(std::fs::read(&p).unwrap(), b"hi");
         let zone = std::fs::read_to_string(format!("{}:Zone.Identifier", p.display())).unwrap();
         assert!(zone.contains("ZoneId=3"), "{zone}");
+    }
+
+    #[test]
+    fn clean_names_follow_windows() {
+        for unnamed in ["..", ".", "/", "...", ""] {
+            assert_eq!(clean_name(unnamed), "Unnamed file", "{unnamed:?}");
+        }
+        for (name, want) in [
+            ("a\\..\\b", "b"),
+            ("\\\\?\\C:\\x", "x"),
+            ("x.txt:Zone.Identifier", "x.txt_Zone.Identifier"),
+            ("a:b?.txt", "a_b_.txt"),
+            ("a\u{1}b", "a_b"),
+            ("a\tb", "a_b"),
+            ("a\u{202e}txt.exe", "atxt.exe"),
+            ("name. ", "name"),
+            ("x. . ", "x"),
+            ("CON", "_CON"),
+            ("CON.txt", "_CON.txt"),
+            ("com1.tar.gz", "_com1.tar.gz"),
+            ("NUL", "_NUL"),
+            ("CONIN$", "_CONIN$"),
+            ("conout$.log", "_conout$.log"),
+            ("COM\u{b9}", "_COM\u{b9}"),
+            ("lpt\u{b2}.txt", "_lpt\u{b2}.txt"),
+            ("LPT\u{b3}", "_LPT\u{b3}"),
+            ("CON .txt", "_CON .txt"),
+            ("CONSOLE", "CONSOLE"),
+            ("COM10", "COM10"),
+            ("COMa", "COMa"),
+            // The built rule (inert_files) says COM0 and LPT0 are not device names.
+            ("COM0", "COM0"),
+        ] {
+            let r = clean_name(name);
+            assert_eq!(r, want, "{name:?}");
+            assert_eq!(std::path::Path::new(&r).components().count(), 1, "{name:?} is one component");
+        }
+        assert!(crate::inert_files::is_device_name("aux") && crate::inert_files::is_device_name("aux.c") && !crate::inert_files::is_device_name("auxc"));
     }
 }

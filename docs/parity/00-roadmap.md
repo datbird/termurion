@@ -8,8 +8,8 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 190 | 108 | 16 |
 | `02-global-settings.md` | 820 | 439 | 73 | 308 |
-| `03-features-and-menus.md` | 646 | 543 | 45 | 58 |
-| Total | 1,780 | 1,172 | 226 | 382 |
+| `03-features-and-menus.md` | 646 | 544 | 45 | 57 |
+| Total | 1,780 | 1,173 | 226 | 381 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -498,6 +498,26 @@ command or loads a configuration, every argument `%q`-quoted), in-band recovery 
 such a hook and ends with the last hop, a restored conductor is never vouched, hook nesting is capped at 8, and every remote size is
 capped. Every kept quirk is listed in `docs/acceptance/m14c-checklist.md` and ruled on in
 `docs/superpowers/rulings/m14c-rulings.txt`.
+Milestone 14d added SSH file transfer over the framer (03: Shell > ssh > Download Files... to have; no
+other row changes status: the it2ssh, SendConductor and shell-integration rows stay partial for 14e).
+Shell > ssh > Download Files... opens Tandem's remote file panel on the focused pane's host
+(Connected Hosts, history, Go to Folder with completions, hidden files, sortable columns, search that
+streams results); the picked items download into a fresh `%TEMP%` batch folder and Explorer shows them
+selected. A Win-click on a file name in an ssh pane downloads it into Downloads (a folder arrives as
+`<name>.zip`), asking Keep Both or Replace on a name clash; dropping files or a folder on an ssh pane
+with Alt held asks, then uploads them over the conductor (a folder as `<name>.tgz`); the Composer's Tab
+completes remote file and command names. Beyond iTerm2, for safety: every name from the remote passes
+the one inert-file rule before the first byte is fetched and every file is marked with the Mark of the
+Web (a drive that cannot hold the mark fails the download); a remote folder zip is checked by Tandem's
+own parser, extracted by tar.exe in a Job Object whose watch kills it at the claimed size or at 1 GiB
+free, and moved into place by a walk that never follows a link; a remote that sends more than it
+claimed fails the download; in a pane with a framing conductor, only web and mail links open (user-written
+triggers are exempt, G2); other text is never opened, run or revealed on this PC (Win-click, the
+context menu, Open Selection, porthole links, the status bar folder menu), it can only be downloaded, and the pane's remote folder is never saved into an arrangement; a closed
+upload alert is Cancel. Deferred: the transfers lists, Stop, the "Download using SSH Integration"
+right-click item, Favorites and an in-app browser. Nothing of 14d was checked on screen during the
+build. Every kept quirk is listed in `docs/acceptance/m14d-checklist.md` and ruled on in
+`docs/superpowers/rulings/m14d-rulings.txt`.
 
 ## Order
 

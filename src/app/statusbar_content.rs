@@ -261,6 +261,18 @@ pub(super) fn field_history(history: &[CommandRecord]) -> Vec<String> {
 }
 
 /// The last component of a path, either separator (`lastPathComponent`).
+/// The folder a Current Directory "New Session Here" starts in: the path, unless the pane's text
+/// is remote (P10): a remote-reported folder never becomes a local shell's, so the profile's
+/// own rule decides, as for a pane with no known folder (None).
+pub(super) fn dir_menu_start(remote: bool, path: &str) -> Option<crate::arrangement::Folder> {
+    (!remote).then(|| crate::arrangement::Folder::Forced(path.to_string()))
+}
+
+/// Whether Show in Explorer may open the pane's reported folder: never a remote pane's (P10).
+pub(super) fn dir_menu_reveals(remote: bool) -> bool {
+    !remote
+}
+
 pub(super) fn folder_name(path: &str) -> String {
     let trimmed = path.trim_end_matches(['\\', '/']);
     trimmed.rsplit(['\\', '/']).next().filter(|s| !s.is_empty()).unwrap_or(trimmed).to_string()
@@ -751,7 +763,7 @@ impl App {
             results.push(menu.append(&PredefinedMenuItem::separator()));
             results.push(menu.append(&MenuItem::with_id("statusbar:dir-copy-path", "Copy Path", true, None)));
             results.push(menu.append(&MenuItem::with_id("statusbar:dir-copy-name", "Copy Folder Name", true, None)));
-            results.push(menu.append(&MenuItem::with_id("statusbar:dir-reveal", "Show in Explorer", true, None)));
+            results.push(menu.append(&MenuItem::with_id("statusbar:dir-reveal", "Show in Explorer", dir_menu_reveals(self.remote_text(pane)), None)));
             results.push(menu.append(&PredefinedMenuItem::separator()));
             results.push(menu.append(&MenuItem::with_id("statusbar:dir-new-window", "New Session Here in New Window", true, None)));
             results.push(menu.append(&MenuItem::with_id("statusbar:dir-new-tab", "New Session Here in New Tab", true, None)));
@@ -775,10 +787,13 @@ impl App {
             return true;
         }
         let Some(path) = path else { return what.starts_with("dir-") };
+        // The reported folder of a framing pane is remote text (P10).
+        let remote = self.remote_text(pane);
         match what {
             "dir-copy-path" => self.copy_status_text(path.to_string()),
             "dir-copy-name" => self.copy_status_text(folder_name(path)),
-            // "Reveal in Finder": Explorer opens the folder; nothing runs.
+            // "Reveal in Finder": Explorer opens the folder; nothing runs. Never a remote pane's.
+            "dir-reveal" if !dir_menu_reveals(remote) => self.banners.set("action", format!("{path} is on the remote host, not this computer.")),
             "dir-reveal" => match crate::profile::local_path(path).filter(|p| p.is_dir()) {
                 Some(dir) => {
                     if let Err(e) = std::process::Command::new("explorer.exe").arg(&dir).spawn() {
@@ -787,10 +802,11 @@ impl App {
                 }
                 None => self.banners.set("action", format!("{path} is not a folder on this computer.")),
             },
-            // The default profile, started in the path. A tab that must open as a window
-            // ("Prevent Opening in a Tab") opens it now, so the folder goes with it.
+            // The default profile, started in the path (a remote pane's: the profile's own
+            // folder). A tab that must open as a window ("Prevent Opening in a Tab") opens it
+            // now, so the folder goes with it.
             "dir-new-window" | "dir-new-tab" => {
-                self.start_dir_override = Some(crate::arrangement::Folder::Forced(path.to_string()));
+                self.start_dir_override = dir_menu_start(remote, path);
                 if what == "dir-new-window" || self.new_tab_opens_window(None) {
                     self.new_window(event_loop, None);
                 } else {
@@ -1169,5 +1185,14 @@ mod tests {
         let now = Instant::now();
         let next = next_whole_second(now);
         assert!(next > now && next <= now + std::time::Duration::from_millis(1000));
+    }
+
+    #[test]
+    fn a_remote_folder_never_starts_or_reveals_here() {
+        // P10: the reported folder of a framing pane is remote text.
+        assert_eq!(dir_menu_start(true, r"C:\Users\x"), None);
+        assert!(!dir_menu_reveals(true));
+        assert_eq!(dir_menu_start(false, r"C:\Users\x"), Some(crate::arrangement::Folder::Forced(r"C:\Users\x".to_string())));
+        assert!(dir_menu_reveals(false));
     }
 }
