@@ -98,10 +98,11 @@ impl App {
 
     /// The profile a split of `pane` starts with (`PS:2915-2953`): with a conductor, the
     /// saved profile made an SSH one to the innermost host (`Identity::command_line`); else the
-    /// pane's saved profile, as before. Only names that are safe in a local command line, from
-    /// a chain Tandem's token vouched for, are used (see `duplicate_session`).
+    /// pane's saved profile, as before. Only an innermost conductor Tandem's own token vouched
+    /// for names the host (`Conductor::split_identity`); a nested or restored one gives the
+    /// saved profile.
     pub(super) fn ssh_split_profile(&mut self, pane: PaneId) -> Option<String> {
-        let identity = self.panes.get(&pane).and_then(|p| p.conductor.as_deref()).filter(|c| c.root_is_local()).map(|c| c.identity()).filter(crate::ssh_jumps::identity_is_safe);
+        let identity = self.panes.get(&pane).and_then(|p| p.conductor.as_deref()).and_then(|c| c.split_identity());
         match identity {
             Some(id) => {
                 let saved = self.store.shared_guid(&self.panes.get(&pane)?.profile);

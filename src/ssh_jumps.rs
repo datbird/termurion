@@ -127,8 +127,9 @@ pub fn jumps_value(jumps: &[Reconnection]) -> toml::Value {
 }
 
 /// A jump list read back. A file can be edited and a session's text came from a remote host,
-/// so a list with a control character in it, an entry of the wrong shape, or more than
-/// `MAX_JUMPS` hops is dropped whole: the session then starts as an ordinary one.
+/// so a list with a control character in it, an entry of the wrong shape, ssh arguments not
+/// quoted as it2ssh quotes them (`quoted_as_it2ssh`: they reach a remote `eval`), or more
+/// than `MAX_JUMPS` hops is dropped whole: the session then starts as an ordinary one.
 pub fn jumps_from(v: &toml::Value) -> Vec<Reconnection> {
     let Some(items) = v.as_array().filter(|a| a.len() <= MAX_JUMPS) else { return Vec::new() };
     let mut out = Vec::new();
@@ -138,12 +139,52 @@ pub fn jumps_from(v: &toml::Value) -> Vec<Reconnection> {
         let (Some(sshargs), Some(boolargs)) = (text("sshargs"), text("boolargs")) else { return Vec::new() };
         let initial_directory = text("initialDirectory");
         let bad = |s: &str| s.chars().any(char::is_control);
-        if bad(&sshargs) || bad(&boolargs) || initial_directory.as_deref().is_some_and(bad) {
+        if bad(&sshargs) || bad(&boolargs) || initial_directory.as_deref().is_some_and(bad) || !quoted_as_it2ssh(&sshargs) {
             return Vec::new();
         }
         out.push(Reconnection { sshargs, initial_directory, boolargs });
     }
     out
+}
+
+/// A restored session's pending jumps (`PS:2214`): only a session that runs ssh takes them,
+/// since only such a session's are saved (`PS:7342-7347`). On any other pane they would wait
+/// for an it2ssh typed by hand and then run the file's hops on that host.
+pub fn restored_jumps(saved: Option<&toml::Value>, profile_ssh: bool) -> Vec<Reconnection> {
+    saved.filter(|_| profile_ssh).map(jumps_from).unwrap_or_default()
+}
+
+/// Whether a hop's ssh arguments are words as it2ssh writes them (`printf "%q "`, `IS:66-69`),
+/// the form iTerm2's jump script assumes when it puts them unquoted after `it2ssh_wrapper` in
+/// a remote `eval` (`CD:1754-1770`): words split by one space, each `''` or characters that
+/// `%q` leaves bare, any character escaped with a backslash. A shell metacharacter outside
+/// that (`;`, `|`, `$(`, a backquote, a quote, a redirection) is refused. `$'...'` words hold
+/// control characters, which a saved list never has.
+fn quoted_as_it2ssh(sshargs: &str) -> bool {
+    let mut chars = sshargs.chars().peekable();
+    // The previous character of the current word; None at a word's start.
+    let mut prev: Option<char> = None;
+    while let Some(c) = chars.next() {
+        match c {
+            // Words split by exactly one space: an empty word is `''`.
+            ' ' if prev.is_none() => return false,
+            ' ' => prev = None,
+            '\\' => match chars.next() {
+                Some(e) if !e.is_control() => prev = Some(e),
+                _ => return false,
+            },
+            '\'' if prev.is_none() && chars.peek() == Some(&'\'') => {
+                chars.next();
+                if chars.peek().is_some_and(|&n| n != ' ') {
+                    return false;
+                }
+                prev = Some('\'');
+            }
+            c if crate::util_it2ssh::needs_quote(c, prev) || c.is_control() => return false,
+            c => prev = Some(c),
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -256,5 +297,32 @@ mod tests {
         assert!(!identity_is_safe(&id("h h", None)));
         assert!(!identity_is_safe(&id("h\n", None)));
         assert!(!identity_is_safe(&id("", None)));
+    }
+
+    /// An arrangement file's hops reach a remote `eval` as `it2ssh_wrapper <sshargs>`
+    /// (`CD:1754-1770`), which iTerm2 gets away with because it2ssh wrote them with
+    /// `printf "%q "` (`IS:66-69`). A hop that is not in that form (a `;`, a `|`, a `$(...)`,
+    /// a backquote, a redirection outside quoting) drops the list.
+    #[test]
+    fn saved_hops_must_be_quoted_as_it2ssh_quotes() {
+        let list = |args: &str| jumps_value(&[r("-p 22 h ", None), r(args, Some("/x"))]);
+        for good in ["-p 2222 user@host ", "h", "-o ProxyJump=a\\,b h", "a\\ b\\;c\\|d h ", "-l '' h ", "\\$HOME h", "-o ServerAliveInterval=30 h"] {
+            assert_eq!(jumps_from(&list(&good)).len(), 2, "{good}");
+        }
+        assert_eq!(jumps_from(&list(&crate::util_it2ssh::requote(&["it's".into(), "a b".into(), "{x}".into(), "".into()]))).len(), 2, "whatever it2ssh writes");
+        for bad in ["h; curl x|sh", "h && rm -rf ~", "$(id) h", "`id` h", "h > /tmp/x", "h | sh", "'a b' h", "\"a\" h", "h &", "h\\", "*", "h #x", "~/x h", "a  b", " h"] {
+            assert!(jumps_from(&list(&bad)).is_empty(), "{bad}");
+        }
+    }
+
+    /// Pending Jumps are written only for an SSH-type profile (`PS:7342-7347`), so only such a
+    /// restored session takes them: on any other pane they would wait for an it2ssh typed by
+    /// hand and then run the file's hops on that host.
+    #[test]
+    fn only_an_ssh_session_takes_restored_jumps() {
+        let v = jumps_value(&[r("a", Some("/x")), r("b", None)]);
+        assert_eq!(restored_jumps(Some(&v), true).len(), 2);
+        assert!(restored_jumps(Some(&v), false).is_empty(), "a session that does not run ssh");
+        assert!(restored_jumps(None, true).is_empty());
     }
 }

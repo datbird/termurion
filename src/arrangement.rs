@@ -532,6 +532,10 @@ pub fn trust_text(name: &str, windows: &[Value]) -> String {
                 if prof.get("Triggers").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty()) {
                     lines.push(format!("Profile \u{201c}{pname}\u{201d} has triggers."));
                 }
+                // Pending Jumps reach a remote `eval`: every hop is named.
+                for hop in s.get(crate::ssh_jumps::PENDING_JUMPS_KEY).map(crate::ssh_jumps::jumps_from).unwrap_or_default() {
+                    lines.push(format!("Profile \u{201c}{pname}\u{201d} connects through: {}", hop.sshargs.trim_end()));
+                }
             }
         }
     }
@@ -794,6 +798,26 @@ mod tests {
         assert!(t.starts_with("Open the arrangement \u{201c}prod.itermarrangement\u{201d}?"), "{t}");
         assert!(t.contains("ssh prod") && t.contains("rm -rf /tmp/x") && t.contains("Ops"), "{t}");
         assert!(t.ends_with("Open it only if you trust where it came from."));
+    }
+
+    /// Pending Jumps are text an arrangement file sends to a remote `eval`, so the question
+    /// names every hop before the file is trusted.
+    #[test]
+    fn trust_text_lists_pending_jumps() {
+        let mut p = Table::new();
+        p.insert("Name".into(), Value::String("Hosts".into()));
+        p.insert("Custom Command".into(), Value::String("SSH".into()));
+        let mut leaf = session(80, 24, p, "s", None);
+        let hops = [("-p 22 bastion.lan ", Some("/srv")), ("evil.example ", None)].map(|(a, d)| crate::ssh_jumps::Reconnection { sshargs: a.into(), initial_directory: d.map(String::from), boolargs: "46".into() });
+        if let Value::Table(t) = &mut leaf {
+            t.insert(crate::ssh_jumps::PENDING_JUMPS_KEY.into(), crate::ssh_jumps::jumps_value(&hops));
+        }
+        let tree = Tree::Leaf(leaf);
+        let windows = vec![window(WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25) }, vec![tab(node(&tree, 800.0, 600.0), true, None, false, None)])];
+        let t = trust_text("hops.itermarrangement", &windows);
+        assert!(t.contains("Profile \u{201c}Hosts\u{201d} connects through: -p 22 bastion.lan"), "{t}");
+        assert!(t.contains("Profile \u{201c}Hosts\u{201d} connects through: evil.example"), "{t}");
+        assert!(!t.contains("It came from another computer."), "the hops are what it runs: {t}");
     }
 
     #[test]

@@ -70,15 +70,21 @@ fn quote_word(w: &str, out: &mut String) {
     }
     let mut prev: Option<char> = None;
     for c in w.chars() {
-        let special = matches!(c, ' ' | '!' | '"' | '$' | '&' | '\'' | '(' | ')' | '*' | ',' | ';' | '<' | '>' | '?' | '[' | '\\' | ']' | '^' | '`' | '{' | '|' | '}')
-            || (c == '~' && matches!(prev, None | Some('=') | Some(':')))
-            || (c == '#' && prev.is_none());
-        if special {
+        if needs_quote(c, prev) {
             out.push('\\');
         }
         out.push(c);
         prev = Some(c);
     }
+}
+
+/// Whether `%q` puts a backslash before `c`, a printable character after `prev` in its word
+/// (None at the word's start): the shell's special characters, `~` where it would expand, `#`
+/// where it would start a comment.
+pub fn needs_quote(c: char, prev: Option<char>) -> bool {
+    matches!(c, ' ' | '!' | '"' | '$' | '&' | '\'' | '(' | ')' | '*' | ',' | ';' | '<' | '>' | '?' | '[' | '\\' | ']' | '^' | '`' | '{' | '|' | '}')
+        || (c == '~' && matches!(prev, None | Some('=') | Some(':')))
+        || (c == '#' && prev.is_none())
 }
 
 /// The options without a value, from ssh's usage (`IS:77`): newlines removed, then the letters

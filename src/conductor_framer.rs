@@ -259,6 +259,15 @@ impl Conductor {
         self.parent.as_ref().map_or(self.setup.local_origin, |p| p.root_is_local())
     }
 
+    /// The host a split of this session connects to (`PS:2947-2952`), when it may go into a
+    /// local command line. Beyond iTerm2 (no check there): only when Tandem's own token vouched
+    /// for THIS conductor's hook (ruling). The chain's first hook vouching is not enough: a
+    /// nested hook is text the hop above printed and could name any user, port or host. And
+    /// only names `identity_is_safe` takes.
+    pub fn split_identity(&self) -> Option<crate::ssh_args::Identity> {
+        Some(self.identity()).filter(|_| self.setup.local_origin).filter(crate::ssh_jumps::identity_is_safe)
+    }
+
     /// finalizeFraming (`CD:2398-2411`): the login's answer is the shell's pid, or why there is
     /// none. The pieces join with nothing (StringArray).
     pub(crate) fn finalize_framing(&mut self, status: u8, lines: &[String]) {
@@ -1756,6 +1765,25 @@ mod tests {
         assert!(child(root).root_is_local(), "the chain's first hook decides");
     }
 
+    /// A split runs a LOCAL ssh to the innermost host, so only a hop Tandem's own token vouched
+    /// for names it (ruling). A hostile first hop prints a nested hook naming its own user, port
+    /// and host: the split must not connect there.
+    #[test]
+    fn a_split_takes_only_a_vouched_identity() {
+        let hook = |sshargs: &str, local: bool, parent: Option<Box<Conductor>>| {
+            let init = crate::conductor_parser::Init { token: String::new(), unique_id: "U".into(), bool_args: "46".into(), sshargs: sshargs.into(), dcs_id: "D".into() };
+            Conductor::new(crate::conductor::setup_for_hook(&init, local, &[], &[], None, false, &crate::ssh_args::NoConfig), parent, "P")
+        };
+        let root = hook("-l me -p 22 home.lan ", true, None);
+        let id = root.split_identity().expect("the vouched first hop names its host");
+        assert_eq!((id.hostname.as_str(), id.username.as_deref()), ("home.lan", Some("me")));
+        let mut hop0 = root;
+        hop0.framed_pid = Some(10);
+        let fake = hook("-l evil -p 2222 attacker.example ", false, Some(Box::new(hop0)));
+        assert_eq!(fake.split_identity(), None, "a nested hook the remote printed names no local host");
+        assert_eq!(hook("h", false, None).split_identity(), None, "an unvouched first hop either");
+    }
+
     use crate::ssh_recovery::{Finished, Tree};
 
     fn finished(login: i32, parentage: Vec<(i32, String)>) -> Finished {
@@ -1956,13 +1984,37 @@ mod tests {
         assert!(back.setup.vars_to_send.is_empty() && back.payloads.is_empty() && back.modified_vars.is_none());
         let parent = back.parent.as_ref().expect("the chain comes back");
         assert_eq!((parent.framed_pid, parent.home_directory.as_deref(), parent.setup.client_unique_id.as_str(), parent.depth()), (Some(100), Some("/home/u"), "A", 0));
-        assert!(parent.setup.local_origin && back.root_is_local());
+        assert!(!parent.setup.local_origin && !back.root_is_local(), "a restored chain is unvouched");
+        assert!(!json.contains("local_origin"), "{json}");
         assert_ne!(back.guid, inner.guid);
         assert_eq!(back.tree(), inner.tree());
         assert_eq!(inner.tree().0.keys().copied().collect::<Vec<_>>(), [100]);
         // A saved conductor has an empty queue and ground state, whatever it was doing.
         inner.send(Command::Cd("/tmp".into()), Handler::FireAndForget, false);
         assert_eq!(Conductor::from_json(&inner.json()).unwrap().pending(), Vec::<&Command>::new());
+    }
+
+    /// A state file can be edited, so what it says of a hop's origin is never believed: a
+    /// restored conductor is unvouched (ruling), and Duplicate Session and splits of it build
+    /// no local command from it.
+    #[test]
+    fn a_restored_conductor_is_never_vouched() {
+        let mut root = Conductor::new(Setup { sshargs: "-p 22 me@home.lan ".into(), client_unique_id: "A".into(), local_origin: true, ..Setup::default() }, None, "P");
+        root.setup.parsed = crate::ssh_args::parse("-p 22 me@home.lan ", "46", &crate::ssh_args::NoConfig);
+        root.framed_pid = Some(100);
+        let back = Conductor::from_json(&root.json()).expect("restores");
+        assert!(!back.setup.local_origin && !back.root_is_local() && back.split_identity().is_none(), "Tandem's own file vouches for nothing");
+        // An edited file claiming the origin at every level is not believed either.
+        let mut v: serde_json::Value = serde_json::from_str(&root.json()).unwrap();
+        v["local_origin"] = true.into();
+        let forged = Conductor::from_json(&v.to_string()).expect("restores");
+        assert!(!forged.setup.local_origin && !forged.root_is_local(), "{v}");
+        let child = Conductor::new(Setup { sshargs: "-l evil attacker.example".into(), client_unique_id: "B".into(), ..Setup::default() }, Some(Box::new(root)), "Q");
+        let mut v: serde_json::Value = serde_json::from_str(&child.json()).unwrap();
+        v["local_origin"] = true.into();
+        v["parent"]["local_origin"] = true.into();
+        let forged = Conductor::from_json(&v.to_string()).expect("restores");
+        assert!(!forged.setup.local_origin && !forged.root_is_local() && forged.split_identity().is_none(), "{v}");
     }
 
     #[test]

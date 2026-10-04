@@ -1533,9 +1533,8 @@ struct Saved {
     client_unique_id: String,
     initial_directory: Option<String>,
     parsed: ParsedArgs,
-    /// Tandem's own token vouched for this hop (`Setup::local_origin`): the state file is
-    /// Tandem's, so what it says of its own chain stands.
-    local_origin: bool,
+    // Never `local_origin`: a state file can be edited, so a restored conductor is unvouched
+    // (ruling) and builds no local command. An old file's field is ignored.
     framed_pid: Option<i32>,
     home_directory: Option<String>,
     shell: Option<String>,
@@ -1588,7 +1587,6 @@ impl Saved {
             client_unique_id: self.client_unique_id,
             initial_directory: self.initial_directory,
             parsed: self.parsed,
-            local_origin: self.local_origin,
             ..Setup::default()
         };
         let mut c = Conductor::new(setup, parent, "");
@@ -1614,7 +1612,6 @@ impl Conductor {
             client_unique_id: self.setup.client_unique_id.clone(),
             initial_directory: self.setup.initial_directory.clone(),
             parsed: self.setup.parsed.clone(),
-            local_origin: self.setup.local_origin,
             framed_pid: self.framed_pid,
             home_directory: self.home_directory.clone(),
             shell: self.shell.clone(),

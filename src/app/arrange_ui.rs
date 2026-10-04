@@ -601,7 +601,7 @@ impl App {
     /// since a Windows folder cannot name a remote one.
     fn restore_ssh_session(&mut self, id: PaneId, session: &Value) {
         let Some(p) = self.panes.get_mut(&id) else { return };
-        p.pending_jumps = session.get(crate::ssh_jumps::PENDING_JUMPS_KEY).map(crate::ssh_jumps::jumps_from).unwrap_or_default();
+        p.pending_jumps = crate::ssh_jumps::restored_jumps(session.get(crate::ssh_jumps::PENDING_JUMPS_KEY), p.ssh.profile_ssh);
         if p.ssh.profile_ssh {
             let saved = session.get("Working Directory").and_then(|v| v.as_str()).and_then(crate::ssh_jumps::saved_remote_directory);
             if saved.is_some() {
