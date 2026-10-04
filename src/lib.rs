@@ -366,6 +366,7 @@ pub mod chat_buttons;
 pub mod chat_menu;
 pub mod chat_routes;
 pub mod chat_view;
+pub mod ai_engage;
 pub mod chat_toolbar;
 pub mod chat_input;
 pub mod chat_find;
@@ -376,3 +377,5 @@ pub mod settings_ai;
 pub mod secret_field;
 #[cfg(windows)]
 pub mod ai_key_ui;
+#[cfg(windows)]
+pub mod ai_engage_ui;
