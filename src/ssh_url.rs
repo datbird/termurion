@@ -195,22 +195,31 @@ pub fn scheme_path_usable(path: &str) -> bool {
     path != "ssh" && path.chars().any(char::is_alphanumeric)
 }
 
-/// A path whose cd part is dropped (`SL:617-624`: `"'\`, CR, LF, NUL), widened to any control or
-/// invisible formatting character a percent-escape could carry in.
-fn path_is_unsafe(path: &str) -> bool {
-    path.chars().any(|c| matches!(c, '"' | '\'' | '\\') || (is_hostile_char(c) && c != ' '))
+/// The longest remote folder a URL may name (ruling R10).
+pub const MAX_REMOTE_FOLDER: usize = 1024;
+
+/// Ruling R10 (security, beyond iTerm2): the only remote folders a URL may cd to, in both modes.
+/// With integration on the cd word is parsed by a shell twice (it2ssh's requote, `ssh_args::parse`
+/// re-splitting the command words, then conductor.sh's `$SHELL -c`), so no escaping makes a shell
+/// character safe; the folder must hold none. `[A-Za-z0-9._/~+@%=,-]` only, not starting with
+/// `-`, at most `MAX_REMOTE_FOLDER` bytes, and a leading `~` only as `~` or `~/` (no `~user`,
+/// `~+`, `~-`). `dir` is the decoded folder the cd word would name.
+pub fn remote_folder_allowed(dir: &str) -> bool {
+    let chars_ok = dir.bytes().all(|b| b.is_ascii_alphanumeric() || b"._/~+@%=,-".contains(&b));
+    let tilde_ok = dir.strip_prefix('~').is_none_or(|rest| rest.is_empty() || rest.starts_with('/'));
+    !dir.is_empty() && dir.len() <= MAX_REMOTE_FOLDER && chars_ok && tilde_ok && !dir.starts_with('-')
 }
 
 /// The remote folder a URL names, as the cd part takes it (a `/~` prefix loses its "/"): None when
-/// path support is off, the path is `/` or empty, it holds a character that drops the cd part,
-/// or it starts `//` (decoded; `\\` is refused by the backslash), which a Windows reader takes for
-/// a UNC path (ruling r1).
+/// path support is off, the path is `/` or empty, the folder fails `remote_folder_allowed`, or it
+/// starts `//`, which a Windows reader takes for a UNC path (ruling r1).
 pub fn cd_path(url: &SshUrl, s: &Settings) -> Option<String> {
     let use_path = s.support_path && url.path.chars().count() > 1;
-    if !use_path || path_is_unsafe(&url.path) || url.path.starts_with("//") {
+    if !use_path || url.path.starts_with("//") {
         return None;
     }
-    Some(url.path.strip_prefix("/~").map_or(url.path.clone(), |rest| format!("~{rest}")))
+    let dir = url.path.strip_prefix("/~").map_or(url.path.clone(), |rest| format!("~{rest}"));
+    remote_folder_allowed(&dir).then_some(dir)
 }
 
 /// The command a URL gives, as a Windows command line tail (14a Task 9 hands it to it2ssh.exe or
@@ -408,8 +417,8 @@ mod tests {
         assert_eq!(command(on("ssh://h")), "h");
         assert_eq!(command(on("ssh://h/")), "h");
         assert_eq!(command(on("ssh://h/~/w")), "-t h \"cd \\~/w; exec $SHELL -l\"");
-        assert_eq!(command(on("ssh://h/a%20b")), "-t h \"cd /a\\ b; exec $SHELL -l\"");
-        // An unsafe path drops the cd part and keeps -t, as iTerm2.
+        // An unsafe path drops the cd part and keeps -t, as iTerm2; ruling R10 makes a space one.
+        assert_eq!(command(on("ssh://h/a%20b")), "-t h");
         for bad in ["a%27b", "a%22b", "a%5Cb", "a%0Db", "a%0Ab", "a%00b", "%1b[31m", "a%7Fb", "a%E2%80%AEb", "a%C2%85b", "a%E2%80%A8b"] {
             assert_eq!(command(on(&format!("ssh://h/{bad}"))), "-t h", "{bad}");
         }
@@ -466,15 +475,135 @@ mod tests {
             let r = ssh_change(&url(bad), &settings(true));
             assert!(matches!(r, Err(UrlError::IllegalUsername(_))), "{bad}: {r:?}");
         }
-        // A path cannot add a word: spaces are escaped inside the single cd argument.
-        let c = command(on("ssh://h/a%20-oProxyCommand=x"));
-        assert_eq!(c, "-t h \"cd /a\\ -oProxyCommand\\=x; exec $SHELL -l\"");
+        // A path cannot add a word: a space drops the cd part (ruling R10).
+        assert_eq!(command(on("ssh://h/a%20-oProxyCommand=x")), "-t h");
         // A trailing backslash or quote in the URL never reaches the line.
         assert_eq!(on_err("ssh://h\\"), UrlError::BadHostname);
         assert_eq!(command(on("ssh://h/a%5C")), "-t h");
         // Every generated word passes the 14c allowlist words.
         let c = command(on("ssh://bob@h.example:2222/x"));
         assert!(c.starts_with("-l bob -p 2222 -t h.example "));
+    }
+
+    /// CommandLineToArgvW's split of a command line (the MSVC runtime rules), as it2ssh.exe and
+    /// ssh.exe read the line `ssh_change` writes.
+    fn msvc_argv(line: &str) -> Vec<String> {
+        let c: Vec<char> = line.chars().collect();
+        let (mut out, mut i) = (Vec::new(), 0);
+        loop {
+            while i < c.len() && matches!(c[i], ' ' | '\t') {
+                i += 1;
+            }
+            if i >= c.len() {
+                return out;
+            }
+            let (mut word, mut quoted) = (String::new(), false);
+            while i < c.len() {
+                match c[i] {
+                    '\\' => {
+                        let n = c[i..].iter().take_while(|&&x| x == '\\').count();
+                        i += n;
+                        if c.get(i) == Some(&'"') {
+                            word.extend(std::iter::repeat_n('\\', n / 2));
+                            if n % 2 == 1 {
+                                word.push('"');
+                                i += 1;
+                            }
+                        } else {
+                            word.extend(std::iter::repeat_n('\\', n));
+                        }
+                    }
+                    '"' if quoted && c.get(i + 1) == Some(&'"') => {
+                        word.push('"');
+                        i += 2;
+                    }
+                    '"' => {
+                        quoted = !quoted;
+                        i += 1;
+                    }
+                    ' ' | '\t' if !quoted => break,
+                    x => {
+                        word.push(x);
+                        i += 1;
+                    }
+                }
+            }
+            out.push(word);
+        }
+    }
+
+    /// Integration on, end to end: the Command a URL gives, split as it2ssh.exe's argv, requoted
+    /// into the it2ssh OSC (`util_it2ssh::requote`), parsed by the hook (`setup_for_hook` ->
+    /// `ssh_args::parse`), and the command the conductor then writes (`exec_login_shell`), which
+    /// conductor.sh runs with `$SHELL -c`.
+    fn conductor_runs(u: &str) -> crate::conductor::Command {
+        let argv = msvc_argv(&command(on(u)));
+        let init = crate::conductor_parser::Init {
+            token: String::new(),
+            unique_id: "A".into(),
+            bool_args: "46AaCfGgKkMNnqsTtVvXxYy".into(),
+            sshargs: crate::util_it2ssh::requote(&argv),
+            dcs_id: String::new(),
+        };
+        let setup = crate::conductor::setup_for_hook(&init, false, &[], &[], None, false, &crate::ssh_args::NoConfig);
+        let mut c = crate::conductor::Conductor::new(setup, None, "U");
+        c.exec_login_shell();
+        c.in_flight().cloned().expect("the conductor writes a command")
+    }
+
+    /// Integration off, end to end: ssh.exe's argv for the Command a URL gives.
+    fn ssh_runs(u: &str) -> Vec<String> {
+        msvc_argv(&command(off(u)))
+    }
+
+    /// Ruling R10 (security, beyond iTerm2): with integration on the cd word is parsed by a shell
+    /// twice, so escaping cannot make it safe. A path outside the allowlist sends no cd word in
+    /// either mode: the session lands in the remote home and nothing from the URL runs.
+    #[test]
+    fn a_hostile_path_never_reaches_a_remote_shell() {
+        use crate::conductor::Command;
+        let hostile = [
+            "ssh://h/x;id",
+            "ssh://h/$(id)",
+            "ssh://h/`id`",
+            "ssh://h/a|b",
+            "ssh://h/a&b",
+            "ssh://h/a>b",
+            "ssh://h/a%20b",
+            "ssh://h/a'b",
+            "ssh://h/a\"b",
+            "ssh://h/a\\b",
+            "ssh://h/x%3Bid",
+            "ssh://h/%24(id)",
+            "ssh://h/%60id%60",
+            "ssh://h/x%0aid",
+        ];
+        for u in hostile {
+            assert_eq!(conductor_runs(u), Command::ExecLoginShell(Vec::new()), "{u}: integration on runs no command");
+            assert_eq!(ssh_runs(u), ["ssh", "-t", "h"], "{u}: integration off sends no remote command");
+        }
+        assert_eq!(conductor_runs("ssh://h/srv/app"), Command::Run("cd /srv/app; exec $SHELL -l".into()));
+        assert_eq!(ssh_runs("ssh://h/srv/app"), ["ssh", "-t", "h", "cd /srv/app; exec $SHELL -l"]);
+        // The home-relative path: the conductor's shell expands `~`; ssh's remote shell reads
+        // iTerm2's `\~` as a literal folder name (that cd fails and the session stays home).
+        assert_eq!(conductor_runs("ssh://h/~/w"), Command::Run("cd ~/w; exec $SHELL -l".into()));
+        assert_eq!(ssh_runs("ssh://h/~/w"), ["ssh", "-t", "h", "cd \\~/w; exec $SHELL -l"]);
+        assert_eq!(conductor_runs("ssh://h/a+b@c%25d=e,f.g_h~i-j"), Command::Run("cd /a+b@c%d=e,f.g_h~i-j; exec $SHELL -l".into()));
+    }
+
+    #[test]
+    fn the_remote_folder_allowlist_follows_ruling_r10() {
+        for ok in ["/srv/app", "~", "~/w", "/a+b@c%d=e,f.g_h~i-j", "/A/z/0/9"] {
+            assert!(remote_folder_allowed(ok), "{ok}");
+        }
+        assert!(remote_folder_allowed(&format!("/{}", "a".repeat(1023))), "1024 bytes");
+        assert!(!remote_folder_allowed(&format!("/{}", "a".repeat(1024))), "1025 bytes");
+        for bad in ["-x", "~root", "~+", "~-", "", "/a\u{e9}", "/a\u{200b}"] {
+            assert!(!remote_folder_allowed(bad), "{bad:?}");
+        }
+        for c in " '\"\\$`;|&<>()*?[]{}!#\n\r\t\0\u{7f}^:".chars() {
+            assert!(!remote_folder_allowed(&format!("/a{c}b")), "{c:?}");
+        }
     }
 
     fn profile(custom: &str, command: &str) -> Profile {
