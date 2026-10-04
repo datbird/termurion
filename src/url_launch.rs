@@ -83,6 +83,10 @@ impl Flood {
         while self.stamps.front().is_some_and(|t| now.saturating_duration_since(*t) >= FLOOD_WINDOW) {
             self.stamps.pop_front();
         }
+        // A new burst counts its own ignored links (fix r1 Minor).
+        if self.stamps.is_empty() {
+            self.ignored = 0;
+        }
         if self.stamps.len() >= FLOOD_MAX {
             self.ignored += 1;
             return false;
@@ -134,6 +138,46 @@ pub fn open_banner(url: &str) -> Option<String> {
     Some(format!("Opened an ssh link to {who}."))
 }
 
+/// What handing a URL to a running Tandem came to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Handed {
+    /// A running Tandem of this user took it.
+    Taken,
+    /// Nothing listens on the pipe: no Tandem of this user runs.
+    NoServer,
+    /// Another user (or another elevation) serves or holds the pipe name: this Tandem must run.
+    OtherOwner(String),
+    /// A Tandem may run but did not take it (the pipe stayed busy, a write failed).
+    Failed(String),
+}
+
+/// What a URL launch does after the hand-over.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AfterHand {
+    /// The running Tandem has the URL: this process ends.
+    Exit,
+    /// No Tandem of this user runs: this one starts and opens the URL.
+    Start,
+    /// This process ends without opening anything, with the reason to log.
+    Refuse(String),
+}
+
+/// Tries `attempt` up to `tries` times, `pause` between tries, and says what the launch does.
+pub fn hand_over(attempt: &mut dyn FnMut() -> Handed, tries: usize, pause: &dyn Fn()) -> AfterHand {
+    let mut why = String::from("no attempt");
+    for n in 0..tries {
+        if n > 0 {
+            pause();
+        }
+        match attempt() {
+            Handed::Taken => return AfterHand::Exit,
+            Handed::NoServer | Handed::OtherOwner(_) => return AfterHand::Start,
+            Handed::Failed(e) => why = e,
+        }
+    }
+    AfterHand::Refuse(format!("a running Tandem did not take the link ({why}); nothing opened"))
+}
+
 #[cfg(windows)]
 pub use pipe::{hand_to_running, hand_to_running_on, listen, listen_on};
 
@@ -142,9 +186,20 @@ mod pipe {
     use super::*;
     use crate::winpipe;
 
-    /// Hands `url` to a running Tandem of this user. Ok(true): it took it; Ok(false): none runs.
-    pub fn hand_to_running(url: &str) -> Result<bool, String> {
-        hand_to_running_on(&winpipe::url_pipe_name()?, url, &allow_foreground)
+    /// Hands `url` to a running Tandem of this user, retrying a busy pipe briefly.
+    pub fn hand_to_running(url: &str) -> AfterHand {
+        let name = match winpipe::url_pipe_name() {
+            Ok(n) => n,
+            Err(e) => return AfterHand::Refuse(format!("no link pipe name: {e}")),
+        };
+        let mut attempt = || {
+            let handed = hand_to_running_on(&name, url, &allow_foreground);
+            if let Handed::OtherOwner(e) = &handed {
+                crate::host::log(&format!("url: the link pipe is held by another owner, so this Tandem runs: {e}"));
+            }
+            handed
+        };
+        hand_over(&mut attempt, 3, &|| std::thread::sleep(Duration::from_millis(300)))
     }
 
     /// Lets the Tandem that serves the pipe (and only it) come forward (P16).
@@ -152,16 +207,28 @@ mod pipe {
         unsafe { windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(pid) };
     }
 
-    pub fn hand_to_running_on(name: &str, url: &str, grant: &dyn Fn(u32)) -> Result<bool, String> {
-        let message = pipe_message(url).ok_or("the URL is not one Tandem accepts")?;
-        let Some(pipe) = winpipe::connect(name, Duration::from_secs(1))? else { return Ok(false) };
-        pipe.server_is_this_user()?;
-        grant(pipe.server_pid()?);
-        pipe.write_all(&message)?;
+    pub fn hand_to_running_on(name: &str, url: &str, grant: &dyn Fn(u32)) -> Handed {
+        let Some(message) = pipe_message(url) else { return Handed::Failed("the URL is not one Tandem accepts".into()) };
+        let pipe = match winpipe::connect_owned(name, Duration::from_secs(1)) {
+            Ok(Some(p)) => p,
+            Ok(None) => return Handed::NoServer,
+            Err(winpipe::ConnectError::Denied(e)) => return Handed::OtherOwner(e),
+            Err(winpipe::ConnectError::Other(e)) => return Handed::Failed(e),
+        };
+        if let Err(e) = pipe.server_is_this_user() {
+            return Handed::OtherOwner(e);
+        }
+        match pipe.server_pid() {
+            Ok(pid) => grant(pid),
+            Err(e) => return Handed::Failed(e),
+        }
+        if let Err(e) = pipe.write_all(&message) {
+            return Handed::Failed(e);
+        }
         // The listener closes the pipe when it has read; waiting for that keeps the message from
         // being dropped with a closed handle.
         let _ = pipe.read_timeout(&mut [0u8; 1], Duration::from_secs(2));
-        Ok(true)
+        Handed::Taken
     }
 
     pub fn listen(notify: Box<dyn Fn(String) + Send>) -> Result<std::thread::JoinHandle<()>, String> {
@@ -217,6 +284,38 @@ mod tests {
 
     fn argv(parts: &[&str]) -> Vec<OsString> {
         std::iter::once(r"C:\T\tandem.exe").chain(parts.iter().copied()).map(OsString::from).collect()
+    }
+
+    fn sequence(results: Vec<Handed>) -> (impl FnMut() -> Handed, std::rc::Rc<std::cell::Cell<usize>>) {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let seen = calls.clone();
+        let mut results = results.into_iter();
+        (move || {
+            seen.set(seen.get() + 1);
+            results.next().unwrap_or(Handed::Failed("no more".into()))
+        }, calls)
+    }
+
+    /// Fix r1 Important: a second full Tandem starts only when none of this user runs (or
+    /// another user holds the pipe); a busy or failed hand-over retries, then ends refused.
+    #[test]
+    fn a_busy_hand_over_never_starts_a_second_tandem() {
+        let busy = || Handed::Failed("the pipe stayed busy".into());
+        let (mut f, calls) = sequence(vec![busy(), busy(), busy(), busy()]);
+        assert!(matches!(hand_over(&mut f, 3, &|| {}), AfterHand::Refuse(_)));
+        assert_eq!(calls.get(), 3, "retried, then refused");
+        let (mut f, calls) = sequence(vec![busy(), Handed::Taken]);
+        assert_eq!(hand_over(&mut f, 3, &|| {}), AfterHand::Exit);
+        assert_eq!(calls.get(), 2);
+        let (mut f, _) = sequence(vec![busy(), Handed::NoServer]);
+        assert_eq!(hand_over(&mut f, 3, &|| {}), AfterHand::Start, "the running Tandem ended meanwhile");
+        let (mut f, calls) = sequence(vec![Handed::NoServer]);
+        assert_eq!(hand_over(&mut f, 3, &|| {}), AfterHand::Start);
+        assert_eq!(calls.get(), 1);
+        let (mut f, _) = sequence(vec![Handed::OtherOwner("squatter".into())]);
+        assert_eq!(hand_over(&mut f, 3, &|| {}), AfterHand::Start);
+        let (mut f, _) = sequence(vec![Handed::Taken]);
+        assert_eq!(hand_over(&mut f, 3, &|| {}), AfterHand::Exit);
     }
 
     #[test]
@@ -291,6 +390,9 @@ mod tests {
         assert_eq!(flood.ignored(), 6);
         assert!(!flood.admit(t0 + Duration::from_secs(9)), "still inside the window");
         assert!(flood.admit(t0 + Duration::from_secs(11)), "the window moved on");
+        let later = t0 + Duration::from_secs(3600);
+        let admitted = (0..5).filter(|i| flood.admit(later + Duration::from_millis(*i))).count();
+        assert_eq!((admitted, flood.ignored()), (FLOOD_MAX, 1), "a new burst counts only its own ignored links");
         let mut pending = Vec::new();
         let mut flood = Flood::default();
         let queued = (0..12).filter(|i| queue_for_start(&mut pending, &mut flood, format!("ssh://h{i}"))).count();
@@ -328,9 +430,9 @@ mod tests {
         #[test]
         fn url_pipe_carries_one_url() {
             let name = test_name("url");
-            assert_eq!(hand_to_running_on(&name, "ssh://h", &|_| {}), Ok(false), "nothing listens");
+            assert_eq!(hand_to_running_on(&name, "ssh://h", &|_| {}), Handed::NoServer, "nothing listens");
             let rx = listening(&name, Duration::from_secs(2));
-            assert_eq!(hand_to_running_on(&name, "ssh://h", &|_| {}), Ok(true));
+            assert_eq!(hand_to_running_on(&name, "ssh://h", &|_| {}), Handed::Taken);
             assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), "ssh://h");
         }
 
@@ -340,7 +442,7 @@ mod tests {
             let name = test_name("url-pid");
             let _rx = listening(&name, Duration::from_secs(2));
             let granted = std::sync::Mutex::new(Vec::new());
-            assert_eq!(hand_to_running_on(&name, "ssh://h", &|pid| granted.lock().unwrap().push(pid)), Ok(true));
+            assert_eq!(hand_to_running_on(&name, "ssh://h", &|pid| granted.lock().unwrap().push(pid)), Handed::Taken);
             assert_eq!(*granted.lock().unwrap(), vec![std::process::id()]);
             let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("url_launch.rs")).unwrap();
             let code = &src[..src.find("#[cfg(test)]").unwrap()];
@@ -354,7 +456,7 @@ mod tests {
             let rx = listening(&name, Duration::from_millis(200));
             let silent = crate::winpipe::connect(&name, Duration::from_secs(1)).unwrap().unwrap();
             let t = Instant::now();
-            assert_eq!(hand_to_running_on(&name, "ssh://h2", &|_| {}), Ok(true));
+            assert_eq!(hand_to_running_on(&name, "ssh://h2", &|_| {}), Handed::Taken);
             assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), "ssh://h2");
             assert!(t.elapsed() < Duration::from_secs(3));
             assert_eq!(silent.read_timeout(&mut [0u8; 1], Duration::from_secs(1)), Ok(Some(0)), "the listener closed the silent pipe");

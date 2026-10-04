@@ -30,19 +30,22 @@ pub(super) fn click_plan(remote: bool, url: &str, bound: Option<&str>) -> Option
 }
 
 /// The profile keys a URL changes on `base`, as a session copy sets them (None: the profile is
-/// used unchanged). With SSH integration the cd path also goes as the profile's Working Directory
-/// (P9), because it2ssh drops the trailing cd word.
+/// used unchanged). The URL path is never a profile key: it is a remote folder, and the copy's
+/// Working Directory feeds the local folder check (ruling r1, revised P9).
 pub(super) fn session_values(base: &crate::profile::Profile, url: &str, s: &crate::ssh_url::Settings) -> Result<Option<Vec<(String, Option<toml::Value>)>>, crate::ssh_url::UrlError> {
     let Some(changed) = crate::ssh_url::profile_for_url(base, url, s)? else { return Ok(None) };
-    let mut values: Vec<(String, Option<toml::Value>)> =
-        changed.values.iter().filter(|(k, v)| base.values.get(*k) != Some(*v)).map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
-    if s.integration {
-        if let Some(path) = crate::ssh_url::parse(url).and_then(|u| crate::ssh_url::cd_path(&u, s)) {
-            values.push(("Custom Directory".to_string(), Some("Yes".into())));
-            values.push(("Working Directory".to_string(), Some(path.into())));
-        }
-    }
+    let values = changed.values.iter().filter(|(k, v)| base.values.get(*k) != Some(*v)).map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
     Ok(Some(values))
+}
+
+/// The remote folder the SSH conductor starts a URL's session in (revised P9): with integration
+/// only, because it2ssh drops the trailing cd word; without, the cd word in the command line is
+/// the only carrier. Never handed to anything local.
+pub(super) fn remote_directory(url: &str, s: &crate::ssh_url::Settings) -> Option<String> {
+    if !s.integration {
+        return None;
+    }
+    crate::ssh_url::parse(url).and_then(|u| crate::ssh_url::cd_path(&u, s))
 }
 
 impl App {
@@ -83,6 +86,9 @@ impl App {
             // A bad host or no host opens nothing and shows nothing (iTerm2's; Decision).
             Err(_) => return false,
         };
+        // A tab that opens as a window cannot carry the folder: that session starts in the
+        // remote home (Decision).
+        let remote_dir = remote_directory(url, &settings).filter(|_| !self.new_tab_opens_window(Some(&guid)));
         let before = (self.tabs.len(), self.pending_windows.len());
         let copy = values.map(|values| {
             let saved = self.store.shared_guid(&guid);
@@ -91,7 +97,9 @@ impl App {
             let divorced = crate::session_profile::divorce(&shared, fresh.clone());
             self.add_session_copy(divorced, &shared, &values, fresh)
         });
+        self.start_remote_dir_override = remote_dir;
         self.new_tab(Some(copy.as_deref().unwrap_or(&guid)));
+        self.start_remote_dir_override = None;
         let started = (self.tabs.len(), self.pending_windows.len()) != before;
         if let (false, Some(copy)) = (started, &copy) {
             self.forget_session_profile(copy);
@@ -198,22 +206,75 @@ mod session_tests {
         v.iter().find(|(key, _)| key == k).and_then(|(_, v)| v.as_ref())
     }
 
-    /// P9: with integration the cd path is the SSH profile's Working Directory; without, it is not.
+    /// Revised P9: with integration the cd path is the conductor's remote folder, never a
+    /// profile key; without, only the cd word carries it.
     #[test]
-    fn integration_passes_the_cd_path_as_working_directory() {
+    fn integration_passes_the_cd_path_as_the_remote_folder() {
         let base = Profile::default();
         let on = session_values(&base, "ssh://u@h/srv/app", &settings(true)).unwrap().unwrap();
         assert_eq!(get(&on, "Custom Command").and_then(|v| v.as_str()), Some("SSH"));
-        assert_eq!(get(&on, "Custom Directory").and_then(|v| v.as_str()), Some("Yes"));
-        assert_eq!(get(&on, "Working Directory").and_then(|v| v.as_str()), Some("/srv/app"));
+        assert!(get(&on, "Custom Directory").is_none() && get(&on, "Working Directory").is_none());
+        assert_eq!(remote_directory("ssh://u@h/srv/app", &settings(true)).as_deref(), Some("/srv/app"));
+        assert_eq!(remote_directory("ssh://h/~/w", &settings(true)).as_deref(), Some("~/w"));
+        assert_eq!(remote_directory("ssh://u@h", &settings(true)), None, "no path, no folder");
+        assert_eq!(remote_directory("ssh://h//attacker.example/share", &settings(true)), None);
+        assert_eq!(remote_directory("ssh://u@h/srv/app", &settings(false)), None, "the cd word carries it");
         let off = session_values(&base, "ssh://u@h/srv/app", &settings(false)).unwrap().unwrap();
         assert_eq!(get(&off, "Custom Command").and_then(|v| v.as_str()), Some("Yes"));
         assert!(get(&off, "Working Directory").is_none());
-        let none = session_values(&base, "ssh://u@h", &settings(true)).unwrap().unwrap();
-        assert!(get(&none, "Working Directory").is_none(), "no path, no directory");
-        let tilde = session_values(&base, "ssh://h/~/w", &settings(true)).unwrap().unwrap();
-        assert_eq!(get(&tilde, "Working Directory").and_then(|v| v.as_str()), Some("~/w"));
         assert!(session_values(&base, "ssh:h", &settings(true)).is_err(), "no host opens nothing");
+    }
+
+    /// The URLs a hostile page might send: ordinary, home-relative, Windows-looking, UNC-looking
+    /// (raw and percent-encoded), with and without SSH integration.
+    const PROBE_URLS: &[&str] = &[
+        "ssh://u@h/srv/app",
+        "ssh://h/~/w",
+        "ssh://h/C:/Windows",
+        "ssh://h//attacker.example/share",
+        "ssh://h/%2F%2Fattacker.example/share",
+        "ssh://h/%2F/attacker.example/share",
+        "ssh://h/%5C%5Cattacker.example%5Cshare",
+        "ssh://h//",
+        "ssh://h",
+    ];
+
+    /// Ruling r1 (revised P9): a URL session's copy never reaches the local folder check, for
+    /// every URL, with integration on or off.
+    #[test]
+    fn a_url_session_never_probes_a_local_folder() {
+        for integration in [true, false] {
+            for url in PROBE_URLS {
+                let base = Profile::default();
+                let Ok(Some(values)) = session_values(&base, url, &settings(integration)) else { continue };
+                let mut copy = base.clone();
+                for (k, v) in values {
+                    if let Some(v) = v {
+                        copy.set(&k, v);
+                    }
+                }
+                let calls = std::cell::RefCell::new(Vec::new());
+                let (_, warning) = crate::profile::start_dir_probing(&copy, None, &|d| {
+                    calls.borrow_mut().push(d.to_path_buf());
+                    false
+                });
+                assert!(calls.borrow().is_empty(), "{url} (integration {integration}) probed {:?}", calls.borrow());
+                assert_eq!(warning, None, "{url}: no local start-directory banner");
+            }
+        }
+    }
+
+    /// A path that starts `//` or `\\` after decoding drops the cd part in both modes.
+    #[test]
+    fn a_unc_looking_path_drops_the_cd_part() {
+        for integration in [true, false] {
+            for url in ["ssh://h//attacker.example/share", "ssh://h/%2F%2Fattacker.example/share", "ssh://h/%5C%5Cattacker.example%5Cshare"] {
+                let parsed = crate::ssh_url::parse(url).unwrap();
+                assert_eq!(crate::ssh_url::cd_path(&parsed, &settings(integration)), None, "{url}");
+                let change = crate::ssh_url::ssh_change(&parsed, &settings(integration)).unwrap();
+                assert!(!change.command.contains("attacker"), "{url}: {}", change.command);
+            }
+        }
     }
 
     /// P8: a copy no tab took is forgotten, and the copy helper is pane-free.

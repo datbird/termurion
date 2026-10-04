@@ -253,9 +253,14 @@ pub fn home() -> std::path::PathBuf {
 /// `start_dir`, with the directory of the session a new one comes from ("Reuse previous
 /// session's directory"). A missing or unusable directory falls back to home.
 pub fn start_dir_with(p: &Profile, previous: Option<&std::path::Path>) -> (std::path::PathBuf, Option<String>) {
+    start_dir_probing(p, previous, &|d| d.is_dir())
+}
+
+/// `start_dir_with`, with the local folder check given (tests record what it is asked).
+pub fn start_dir_probing(p: &Profile, previous: Option<&std::path::Path>, is_dir: &dyn Fn(&std::path::Path) -> bool) -> (std::path::PathBuf, Option<String>) {
     let home = home();
     if p.string("Custom Directory") == "Recycle" {
-        return (previous.filter(|d| d.is_dir()).map(|d| d.to_path_buf()).unwrap_or(home), None);
+        return (previous.filter(|d| is_dir(d)).map(|d| d.to_path_buf()).unwrap_or(home), None);
     }
     let wanted = p.string("Working Directory");
     if p.string("Custom Directory") != "Yes" || wanted.trim().is_empty() {
@@ -265,7 +270,7 @@ pub fn start_dir_with(p: &Profile, previous: Option<&std::path::Path>) -> (std::
         Some(rest) => home.join(rest.trim_start_matches(['/', '\\'])),
         None => std::path::PathBuf::from(wanted.trim()),
     };
-    if dir.is_dir() {
+    if is_dir(&dir) {
         (dir, None)
     } else {
         (home, Some(format!("Start directory {wanted} does not exist; using your home folder.")))

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_OPERATION_ABORTED,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_OPERATION_ABORTED,
     ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
     HLOCAL, INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0,
 };
@@ -391,6 +391,21 @@ impl Drop for Listener {
 
 /// Connects to `name`. None when nothing listens there.
 pub fn connect(name: &str, wait: Duration) -> Result<Option<Pipe>, String> {
+    connect_owned(name, wait).map_err(|e| match e {
+        ConnectError::Denied(e) | ConnectError::Other(e) => e,
+    })
+}
+
+/// Why `connect_owned` failed.
+#[derive(Debug)]
+pub enum ConnectError {
+    /// The pipe's DACL refused this user: someone else serves the name.
+    Denied(String),
+    Other(String),
+}
+
+/// `connect`, telling a pipe whose owner refused this user from any other failure.
+pub fn connect_owned(name: &str, wait: Duration) -> Result<Option<Pipe>, ConnectError> {
     let w = wide(name);
     let end = std::time::Instant::now() + wait;
     loop {
@@ -405,11 +420,12 @@ pub fn connect(name: &str, wait: Duration) -> Result<Option<Pipe>, String> {
             ERROR_PIPE_BUSY => {
                 let left = end.saturating_duration_since(std::time::Instant::now());
                 if left.is_zero() {
-                    return Err(format!("the pipe {name} stayed busy"));
+                    return Err(ConnectError::Other(format!("the pipe {name} stayed busy")));
                 }
                 unsafe { WaitNamedPipeW(w.as_ptr(), left.as_millis().clamp(1, u32::MAX as u128 - 1) as u32) };
             }
-            _ => return Err(last_error(&format!("connecting to {name}"))),
+            ERROR_ACCESS_DENIED => return Err(ConnectError::Denied(last_error(&format!("connecting to {name}")))),
+            _ => return Err(ConnectError::Other(last_error(&format!("connecting to {name}")))),
         }
     }
 }

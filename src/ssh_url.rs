@@ -202,10 +202,12 @@ fn path_is_unsafe(path: &str) -> bool {
 }
 
 /// The remote folder a URL names, as the cd part takes it (a `/~` prefix loses its "/"): None when
-/// path support is off, the path is `/` or empty, or it holds a character that drops the cd part.
+/// path support is off, the path is `/` or empty, it holds a character that drops the cd part,
+/// or it starts `//` (decoded; `\\` is refused by the backslash), which a Windows reader takes for
+/// a UNC path (ruling r1).
 pub fn cd_path(url: &SshUrl, s: &Settings) -> Option<String> {
     let use_path = s.support_path && url.path.chars().count() > 1;
-    if !use_path || path_is_unsafe(&url.path) {
+    if !use_path || path_is_unsafe(&url.path) || url.path.starts_with("//") {
         return None;
     }
     Some(url.path.strip_prefix("/~").map_or(url.path.clone(), |rest| format!("~{rest}")))
