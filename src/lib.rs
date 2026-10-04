@@ -143,6 +143,8 @@ pub mod screenterm;
 pub mod shell_history;
 pub mod snippets;
 pub mod clippings;
+pub mod cockpit;
+pub mod cockpit_ui;
 pub mod clip_add_ui;
 pub mod user_actions;
 pub mod statusbar;

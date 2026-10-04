@@ -27,7 +27,7 @@ pub const DONE: &[&str] = &[
     "newSessionWithSameProfile:", "duplicateTab:", "splitHorizontally:", "splitVertically:",
     "openSplitHorizontallySheet:", "openSplitVerticallySheet:", "saveContents:", "saveDocumentAs:",
     "closeCurrentSession:", "closeTerminalWindow:", "closeCurrentTab:", "copy:", "paste:|Paste",
-    "detachTmux:", "forceDetachTmux:", "newTmuxWindow:", "newTmuxTab:", "toggleTmuxPausePane:", "openDashboard:", "bury:",
+    "detachTmux:", "forceDetachTmux:", "newTmuxWindow:", "newTmuxTab:", "toggleTmuxPausePane:", "openDashboard:", "revealCockpit:", "bury:",
     "pasteSelection:", "selectAll:", "clearBuffer:", "clearScrollbackBuffer:", "toggleFullScreenMode:", "toggleFullScreenTabBar:",
     "nextTabGroup:", "previousTabGroup:", "addTabToNewGroupAction:", "removeTabFromGroupAction:",
     "biggerFont:", "smallerFont:", "returnToDefaultSize:|Make Text Normal Size",
@@ -246,9 +246,15 @@ mod tests {
     #[test]
     fn a_chord_for_a_later_milestone_stays_with_windows() {
         use crate::menus::ChordKey::Char;
-        // Cockpit (12f) is still a later milestone's.
-        assert_eq!(status(find("revealCockpit:", "Cockpit")), Status::Later(12));
         assert_eq!(command_for_chord(&win(Char('t'), false)).unwrap().selector, "newSession:");
+    }
+
+    #[test]
+    fn cockpit_is_done() {
+        use crate::menus::ChordKey::Char;
+        assert_eq!(status(find("revealCockpit:", "Cockpit")), Status::Done);
+        let chord = crate::menus::Chord { key: Char('c'), cmd: true, alt: true, shift: true, ctrl: false };
+        assert_eq!(command_for_chord(&chord).unwrap().selector, "revealCockpit:");
     }
 
     #[test]
