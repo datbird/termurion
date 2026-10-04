@@ -448,10 +448,6 @@ fn minimal_palette(p: &mut TabPalette, i: &Inputs) {
     p.minimal = Some(MinimalLook { outline: minimal_outline(bar, k.outline), left_inset_is_first_tab: k.left_inset_is_first_tab, underline: k.underline, deselected_colored_alpha: k.deselected_colored_alpha });
 }
 
-/// iTerm2's default split pane dimming amount (`SplitPaneDimmingAmount`), the same as the panes'
-/// own fade (`scene::DIM_ALPHA`); the dimming keys of 13i replace it.
-pub const DIMMING_AMOUNT: f32 = crate::scene::DIM_ALPHA;
-
 /// `colorByDimmingColor:` (`MIN:245-257`): every component moved toward 0.5 by `amount`.
 pub fn dimmed(c: Rgb, amount: f32) -> Rgb {
     let mix = |v: u8| ((amount * 0.5 + (1.0 - amount) * f32::from(v) / 255.0) * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8;
@@ -459,10 +455,10 @@ pub fn dimmed(c: Rgb, amount: f32) -> Rgb {
 }
 
 /// The dimming amount of a background window (`iTermDimmingAmount`, `PT:10038-10051`): none in the
-/// key window or unless Dim background windows is on (Dim only text has no key yet, so it is
-/// off), else the amount clamped to 0 to 0.9.
+/// key window or unless Dim background windows is on, else `dim::amount` of the
+/// `SplitPaneDimmingAmount` (clamped to 0 to 0.9).
 pub fn dimming(dim_background_windows: bool, focused: bool, amount: f32) -> f32 {
-    if focused || !dim_background_windows { 0.0 } else { amount.clamp(0.0, 0.9) }
+    crate::dim::amount(false, crate::dim::background(dim_background_windows, focused), amount)
 }
 
 /// `psm_nonSelectedColorWithDifference:` (`MIN:13-26`): every component moved by `-difference`,
@@ -844,7 +840,6 @@ mod tests {
         assert_eq!(dimming(false, false, 0.4), 0.0);
         assert_eq!(dimming(true, false, 0.95), 0.9);
         assert_eq!(dimming(true, false, -1.0), 0.0);
-        assert_eq!(DIMMING_AMOUNT, 0.4);
         // A background window's bar is dimmed, and its unselected tabs dimmed once more (`MIN:218-244`).
         let dim = palette(TabStyle::Minimal, &Inputs { dimming: 0.4, ..inputs(false) });
         assert_eq!(dim.bar, rgb(51, 51, 51));

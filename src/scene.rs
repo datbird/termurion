@@ -148,7 +148,7 @@ const BAR_BUTTON: Rgb = rgb(0xff, 0xff, 0xff);
 const LABEL_TEXT: Rgb = rgb(0x00, 0x00, 0x00);
 pub const FIND_ERROR: Rgb = rgb(0xff, 0x6b, 0x6b);
 /// How much an unfocused pane fades toward the background, as iTerm2 dims inactive splits.
-pub(crate) const DIM_ALPHA: f32 = 0.4;
+pub(crate) const DIM_ALPHA: f32 = crate::dim::Dim::LEGACY.amount;
 
 fn srgb_to_linear(c: u8) -> f32 {
     let c = c as f32 / 255.0;
@@ -198,9 +198,9 @@ pub struct Highlights<'a> {
     pub labels: &'a [(crate::find::Pos, String)],
     /// Annotated text (a yellow underline), with the note's text for a note on show.
     pub notes: &'a [(crate::find::Match, Option<String>)],
-    /// Not focused (a hollow cursor) but not dimmed: the key pane of a background window
-    /// when Dim background windows is off.
-    pub undimmed: bool,
+    /// How the pane dims (`App::pane_dim`). The app lays the gray quad over the whole pane;
+    /// with Dim Only Text `pane_with` dims the text and non-default backgrounds itself.
+    pub dim: crate::dim::Dim,
     /// The key window's focused pane at a password prompt: the key glyph replaces the cursor
     /// (`iTermTextDrawingHelper.m:4053-4068`).
     pub key_cursor: bool,
@@ -360,6 +360,7 @@ pub fn pane_with(
         .filter(|_| cursor_on && content.cursor.shape != CursorShape::Hidden)
         .map(|p| (p.line, p.column.0));
     let key_cursor = highlights.is_some_and(|h| h.key_cursor);
+    let bg_brightness = crate::tab_theme::perceived(palette.bg);
     let bg_alpha = highlights.map_or(1.0, |h| h.bg_alpha);
     let opaque_colors = highlights.is_some_and(|h| h.opaque_colors);
     let block_cursor = !key_cursor && focused && content.cursor.shape == CursorShape::Block;
@@ -374,6 +375,9 @@ pub fn pane_with(
         }
         let c = indexed.cell;
         let (mut fg, mut bg) = palette.cell(c.fg, c.bg, c.flags);
+        if let Some(d) = highlights.map(|h| h.dim).filter(|d| d.only_text) {
+            (fg, bg) = (crate::dim::text_color(fg, d, bg_brightness), crate::dim::bg_color(bg, palette.bg, d, bg_brightness));
+        }
         let mut hover = false;
         if let Some(h) = highlights {
             let at = crate::find::Pos { row: (indexed.point.line.0 + history) as usize, col };
@@ -584,7 +588,9 @@ pub fn pane_with(
         }
     }
 
-    if !focused && !highlights.is_some_and(|h| h.undimmed) {
+    // Highlights carry their own dim (the app's gray quad); the preview paths pass none and keep
+    // today's fade until 13y.
+    if !focused && highlights.is_none() {
         frame.overlay.push(Quad { rect, color: rgba(palette.bg, DIM_ALPHA) });
     }
 }
@@ -4126,7 +4132,7 @@ mod tests {
     }
 
     fn see_through(bg_alpha: f32, opaque_colors: bool) -> Highlights<'static> {
-        Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], undimmed: false, key_cursor: false, bg_alpha, opaque_colors }
+        Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha, opaque_colors }
     }
 
     /// "X" on red, then a selected "a", then a plain "b".
@@ -4844,7 +4850,7 @@ mod tests {
         let m = crate::find::find_all(&s, "ab").unwrap();
         let mut f = Frame::default();
         let yellow = rgb(0xff, 0xff, 0x00);
-        pane_with(&mut f, &s, RECT, CELL, true, false, Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], undimmed: false, key_cursor: false, bg_alpha: 1.0, opaque_colors: false }));
+        pane_with(&mut f, &s, RECT, CELL, true, false, Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false }));
         let y = rgba(yellow, 1.0);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 30.0, y: 0.0, w: 20.0, h: 20.0 }), "{:?}", f.quads);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 60.0, y: 0.0, w: 20.0, h: 20.0 }));
@@ -4886,7 +4892,7 @@ mod tests {
         let mut f = Frame::default();
         let link = rgb(0x06, 0x45, 0xad);
         let hover = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link, labels: &[], notes: &[], undimmed: false, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
         pane_with(&mut f, &s, RECT, CELL, true, false, Some(&hl));
         let q = f.overlay.iter().find(|q| q.color == rgba(link, 1.0)).unwrap();
         assert_eq!(q.rect, Rect { x: 40.0, y: CELL.1 - 1.0, w: 40.0, h: 1.0 });
@@ -4899,7 +4905,7 @@ mod tests {
         let s = screen(b"see https://x.y now");
         let mut f = Frame::default();
         let labels = [(crate::find::Pos { row: 0, col: 4 }, "1".to_string())];
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &labels, notes: &[], undimmed: false, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &labels, notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
         pane_with(&mut f, &s, RECT, CELL, true, false, Some(&hl));
         let texts: Vec<String> = f.rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
         assert!(texts.iter().any(|t| t.starts_with("see  ttps")), "{texts:?}");
@@ -4931,7 +4937,7 @@ mod tests {
         let mut f = Frame::default();
         let m = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
         let notes = [(m, Some("a file".to_string()))];
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, undimmed: false, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
         pane_with(&mut f, &s, RECT, CELL, true, false, Some(&hl));
         assert!(f.overlay.iter().any(|q| q.color == rgba(NOTE, 1.0) && q.rect == Rect { x: 40.0, y: CELL.1 - 3.0, w: 40.0, h: 1.0 }), "{:?}", f.overlay);
         assert!(f.rows.iter().any(|r| r.spans.iter().any(|s| s.text == "a file")));
@@ -4976,7 +4982,7 @@ mod tests {
         let m = crate::find::Match { start: crate::find::Pos { row: 0, col: 16 }, end: crate::find::Pos { row: 1_000_000, col: 19 } };
         let notes = [(m, Some("n".to_string()))];
         let rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 80.0 };
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, undimmed: false, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
         pane_with(&mut f, &s, rect, CELL, true, false, Some(&hl));
         assert!(f.overlay.iter().all(|q| q.rect.x + q.rect.w <= rect.w + 0.01 && q.rect.y + q.rect.h <= rect.h + 0.01), "{:?}", f.overlay);
         assert!(f.overlay.len() < 50);
@@ -5059,22 +5065,52 @@ mod tests {
     }
 
     #[test]
-    fn a_background_window_is_not_dimmed_unless_asked() {
+    fn a_background_window_keeps_a_hollow_cursor() {
         let s = screen(b"ab");
-        let hl = |undimmed| Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], undimmed, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
+        let hl = Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::NONE, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, true, Some(&hl(true)));
+        pane_with(&mut f, &s, RECT, CELL, false, true, Some(&hl));
         assert!(!f.overlay.iter().any(|q| q.rect == RECT), "the key pane of a background window keeps its brightness");
         assert!(!f.quads.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0)), "its cursor is hollow");
+    }
+
+    #[test]
+    fn dim_quads_follow_the_dim() {
+        let s = screen(b"ab");
+        let hl = |dim| Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
+        let whole = |f: &Frame| f.overlay.iter().any(|q| q.rect == RECT);
+        // The render loop lays the gray quad over the whole pane; pane_with draws none with highlights.
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, true, Some(&hl(crate::dim::Dim::NONE)));
+        assert!(!whole(&f));
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, true, Some(&hl(crate::dim::Dim { amount: 0.4, only_text: false })));
+        assert!(!whole(&f), "the app draws the gray quad, not pane_with");
+        // Dim Only Text: no quad, the text itself carries the dimmed color.
+        let first = |f: &Frame| f.rows.iter().flat_map(|r| r.spans.iter()).find(|sp| sp.text.contains('a')).map(|sp| sp.color);
+        let mut plain = Frame::default();
+        pane_with(&mut plain, &s, RECT, CELL, false, true, Some(&hl(crate::dim::Dim::NONE)));
+        let only_text = crate::dim::Dim { amount: 0.4, only_text: true };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, true, Some(&hl(only_text)));
+        assert!(!whole(&f));
+        let fg = s.palette.fg;
+        assert_eq!(first(&plain), Some(fg));
+        assert_eq!(first(&f), Some(crate::dim::text_color(fg, only_text, crate::tab_theme::perceived(s.palette.bg))));
+        assert_ne!(first(&f), first(&plain));
+        // No highlights and not focused: today's quad (the screenshot path).
         let mut g = Frame::default();
-        pane_with(&mut g, &s, RECT, CELL, false, true, Some(&hl(false)));
-        assert!(g.overlay.iter().any(|q| q.rect == RECT));
+        pane_with(&mut g, &s, RECT, CELL, false, true, None);
+        assert!(g.overlay.iter().any(|q| q.rect == RECT && q.color == rgba(s.palette.bg, 0.4)));
+        let mut g = Frame::default();
+        pane_with(&mut g, &s, RECT, CELL, true, true, None);
+        assert!(!whole(&g));
     }
 
     #[test]
     fn a_password_prompt_draws_the_key_for_the_cursor() {
         let key = crate::pwm_prompt::KEY_GLYPH.to_string();
-        let hl = |key_cursor| Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], undimmed: false, key_cursor, bg_alpha: 1.0, opaque_colors: false };
+        let hl = |key_cursor| Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor, bg_alpha: 1.0, opaque_colors: false };
         let key_row = |f: &Frame| f.rows.iter().find(|r| r.spans.iter().any(|s| s.icon && s.text == key)).cloned();
         let mut s = screen(b"ab");
         s.palette.bg = rgb(0, 0, 0);

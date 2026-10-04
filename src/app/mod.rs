@@ -2888,7 +2888,7 @@ impl App {
     /// The colors the tab bar draws with (`tab_theme::palette`), from the Theme, Windows' modes,
     /// the window being key, the three tab darkness keys and the focused pane's background.
     pub(super) fn tab_palette(&self) -> crate::tab_theme::TabPalette {
-        use crate::tab_theme::{Inputs, MinimalKnobs, dimming, DIMMING_AMOUNT};
+        use crate::tab_theme::{Inputs, MinimalKnobs, dimming};
         let g = &self.globals;
         let session_bg = self
             .tabs
@@ -2908,8 +2908,8 @@ impl App {
         };
         // `shouldTweakMinimalTabOutlineAlpha` (`PT:10053-10107`): a dimmed inactive pane against the
         // bar raises the outline toward 1 by the dimming amount x 0.375.
-        if self.dimmed_pane_touches_bar() {
-            let a = DIMMING_AMOUNT * 0.375;
+        if let Some(amount) = self.dimmed_pane_touches_bar() {
+            let a = amount * 0.375;
             minimal.outline = a + minimal.outline * (1.0 - a);
         }
         let inputs = Inputs {
@@ -2920,7 +2920,7 @@ impl App {
             dark_darkness: g.number("DarkModeInactiveTabDarkness").map_or(0.5, |v| v as f32),
             high_visibility: g.bool("HighVisibility"),
             session_bg,
-            dimming: dimming(g.bool("DimBackgroundWindows"), focused, DIMMING_AMOUNT),
+            dimming: dimming(g.bool("DimBackgroundWindows"), focused, self.dim_base()),
             minimal,
             colored_outline: g.number("ColoredSelectedTabOutlineStrength").map_or(0.5, |v| v as f32),
             colored_text_prominence: g.number("ColoredUnselectedTabTextProminence").map_or(0.5, |v| v as f32),
@@ -2941,38 +2941,53 @@ impl App {
         let decoration_bg = current.and_then(bg).unwrap_or_else(|| crate::palette::Palette::default().bg);
         let prominence = self.globals.number("MinimalSplitPaneDividerProminence").map_or(0.15, |v| v as f32);
         let panes: Vec<(PaneId, crate::palette::Rgb)> = self.tabs.iter().flat_map(|t| t.layout.panes()).filter_map(|id| bg(id).map(|c| (id, c))).collect();
-        let invisible = crate::tab_theme::single_other_background(&panes, current);
+        // The invisible divider needs the other panes' backgrounds to dim away: Dim inactive split
+        // panes on and Dim only text off (P12), on top of 13e's prominence 0 gate.
+        let invisible = (self.globals.bool("DimInactiveSplitPanes") && !self.globals.bool("DimOnlyText")).then(|| crate::tab_theme::single_other_background(&panes, current)).flatten();
         let theme = crate::tab_theme::divider_color(self.tab_style(), self.resolved_style(), decoration_bg, prominence, invisible);
         pane_nav_ui::divider_rgb(&self.globals.string("SplitPaneColor"), theme)
     }
 
-    /// Whether a pane is drawn undimmed: the focused pane of a window that is not key while Dim
-    /// background windows is off, or (in the key window) a pane the broadcast input reaches.
-    fn pane_undimmed(&self, id: PaneId, focused_pane: PaneId, receives: bool, bview: &crate::broadcast::View) -> bool {
-        (!self.focused && id == focused_pane && !self.globals.bool("DimBackgroundWindows")) || (self.focused && receives && self.broadcast.should_broadcast_to(bview, focused_pane, Some(focused_pane)))
+    /// `SplitPaneDimmingAmount`, the base of every dimming amount.
+    pub(super) fn dim_base(&self) -> f32 {
+        self.globals.number("SplitPaneDimmingAmount").map_or(0.4, |v| v as f32)
     }
 
-    /// Whether a dimmed pane other than the tab's focused one lies against the tab bar's edge
-    /// (`shouldTweakMinimalTabOutlineAlpha`): not in a background window that dims as a whole,
-    /// whose dimming looks fine under the outline.
-    fn dimmed_pane_touches_bar(&self) -> bool {
+    /// How a pane of `tab` dims (the model of `crate::dim`): the one place the settings become a
+    /// `Dim`, read by the render loop, the title bars, the tab bar's outline and the tab palette.
+    /// Broadcast inputs use the focused pane as the sender (`PT:12402-12422`); the window being key
+    /// is `self.focused`.
+    fn pane_dim(&self, tab: &Tab, id: PaneId, bview: &crate::broadcast::View) -> crate::dim::Dim {
+        use crate::dim;
+        let (receives, current_receives) = dim::broadcast_inputs(&self.broadcast, bview, id, tab.focused);
+        let split = dim::inactive_split(self.globals.bool("DimInactiveSplitPanes"), id == tab.focused, receives, current_receives);
+        let background = dim::background(self.globals.bool("DimBackgroundWindows"), self.focused);
+        dim::Dim { amount: dim::amount(split, background, self.dim_base()), only_text: self.globals.bool("DimOnlyText") }
+    }
+
+    /// The largest dimming amount of a dimmed pane lying against the tab bar's edge
+    /// (`shouldTweakMinimalTabOutlineAlpha`), when there is one: not in a background window that
+    /// dims as a whole, whose dimming looks fine under the outline.
+    fn dimmed_pane_touches_bar(&self) -> Option<f32> {
         use tab_position::TabPosition::{Bottom, Left, Right, Top};
         if self.tab_style() != crate::tab_theme::TabStyle::Minimal || (self.globals.bool("DimBackgroundWindows") && !self.focused) {
-            return false;
+            return None;
         }
-        let Some(tab) = self.tabs.get(self.active) else { return false };
+        let tab = self.tabs.get(self.active)?;
         let area = self.content_area_for(tab);
         let bview = self.broadcast_view();
         let position = self.tab_position();
-        self.visible(tab).into_iter().any(|(id, r)| {
-            let touches = match position {
+        self.visible(tab)
+            .into_iter()
+            .filter(|(_, r)| match position {
                 Top => r.y <= area.y + 1.0,
                 Bottom => r.y + r.h >= area.y + area.h - 1.0,
                 Left => r.x <= area.x + 1.0,
                 Right => r.x + r.w >= area.x + area.w - 1.0,
-            };
-            touches && id != tab.focused && !self.pane_undimmed(id, tab.focused, self.broadcast.receives(&bview, id), &bview)
-        })
+            })
+            .map(|(id, _)| self.pane_dim(tab, id, &bview).amount)
+            .filter(|a| *a > 0.0)
+            .max_by(f32::total_cmp)
     }
 
     /// The Theme setting (`TabStyleWithAutomaticOption`), Automatic when unset.
@@ -4812,7 +4827,8 @@ impl App {
                     let notes: Vec<(crate::find::Match, Option<String>)> = self.note_cells(id).into_iter().map(|(m, _, t)| (m, t)).collect();
                     let bg_alpha = if see_through { alphas.iter().find(|(a, _)| *a == id).map_or(1.0, |(_, a)| *a) } else { 1.0 };
                     let opaque_colors = see_through && self.store.get(&p.profile).is_some_and(|pr| pr.bool("Only The Default BG Color Uses Transparency"));
-                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, undimmed: self.pane_undimmed(id, tab.focused, receives, &bview), key_cursor: self.focused && id == tab.focused && p.at_password_prompt(), bg_alpha, opaque_colors };
+                    let dim = self.pane_dim(tab, id, &bview);
+                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, dim, key_cursor: self.focused && id == tab.focused && p.at_password_prompt(), bg_alpha, opaque_colors };
                     if see_through {
                         // The pane's margins (its rect less the cell grid) carry the default background at the
                         // pane's alpha; the grid's own background runs cover the rest, one layer per pixel.
@@ -4828,6 +4844,10 @@ impl App {
                     scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on && cover.is_none(), Some(&hl));
                     if let Some(c) = cover {
                         composer_ui::skip_covered(&mut frame.overlay, overlay_from, c);
+                    }
+                    // The gray quad over the whole pane (margins included); Dim Only Text dimmed the cells itself.
+                    if dim.amount > 0.0 && !dim.only_text {
+                        frame.overlay.push(scene::Quad { rect, color: scene::rgba(crate::palette::rgb(128, 128, 128), dim.amount) });
                     }
                     // Broadcast stripes: over the cell backgrounds, under the text.
                     if let (Some((n, px)), true) = (&stripes, receives) {

@@ -258,6 +258,7 @@ pub mod host_client;
 pub mod reattach;
 pub mod hotkey;
 pub mod broadcast;
+pub mod dim;
 mod tmux_probe;
 pub mod tmux_hook;
 pub mod conductor_parser;
