@@ -247,6 +247,7 @@ pub mod ssh_transfer;
 pub mod ssh_local;
 pub mod remote_file;
 pub mod ssh_panel;
+pub mod ssh_suggest;
 #[cfg(windows)]
 pub mod ssh_panel_ui;
 pub mod conductor;

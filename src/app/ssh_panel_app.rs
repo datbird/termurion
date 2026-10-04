@@ -192,7 +192,25 @@ impl App {
     fn ssh_panel_send(&mut self, requests: Vec<Request>) {
         let mut work: std::collections::VecDeque<Request> = requests.into();
         while let Some(r) = work.pop_front() {
-            let Request::File { generation, host, op, sub } = r else { continue };
+            let (generation, host, op, sub) = match r {
+                Request::File { generation, host, op, sub } => (generation, host, op, sub),
+                Request::SearchStop { .. } => {
+                    self.ssh_search_stop();
+                    continue;
+                }
+                Request::SearchStart { generation, host, query, base } => {
+                    match self.pane_for_identity(&host) {
+                        Some(pane) => self.ssh_search_start(pane, generation, query, base),
+                        None => {
+                            self.ssh_search_stop();
+                            if let Some((_, p)) = self.ssh_panel.as_mut() {
+                                p.search_failed(generation, crate::ssh_files::FileError::ConnectionClosed.text());
+                            }
+                        }
+                    }
+                    continue;
+                }
+            };
             let sent = match self.pane_for_identity(&host) {
                 Some(pane) => self.ssh_send(pane, sub, true, Waiter::Panel { generation, op: op.clone() }),
                 None => false,
@@ -254,6 +272,8 @@ impl App {
     /// Closes the panel, saving its path (`FP:220`).
     fn ssh_panel_close(&mut self) {
         self.ssh_panel_save_path();
+        // Closing the panel stops its search.
+        self.ssh_search_stop();
         self.ssh_panel = None;
     }
 
@@ -291,7 +311,8 @@ impl App {
         let mut then = Then::Stay;
         let home = p.host.as_ref().and_then(|h| self.panel_home(h));
         match e {
-            PanelEvent::None | PanelEvent::Search(_) => {}
+            PanelEvent::None => {}
+            PanelEvent::Search(query) => requests = p.search(&query),
             PanelEvent::Host(i) => {
                 if let Some(h) = p.hosts.get(i).cloned() {
                     requests = p.select_host(&h, self.panel_saved(&h), self.panel_home(&h));

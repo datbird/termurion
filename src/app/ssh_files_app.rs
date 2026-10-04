@@ -20,6 +20,10 @@ pub(super) enum Waiter {
     Transfer { job: u64, tag: u64 },
     /// The remote file panel's request of generation `generation` (Task 7).
     Panel { generation: u64, op: crate::ssh_panel::Op },
+    /// The Composer's suggestion fetch of `generation`, for the typed word `name` (Task 8).
+    Suggest { generation: u64, inputs: crate::ssh_files::SuggestInputs, name: String },
+    /// The panel's search start of `generation`: its answer is the search id (Task 8).
+    SearchStart { generation: u64 },
 }
 
 // Used by the transfer, panel, suggestion and search tasks that follow.
@@ -74,7 +78,7 @@ impl App {
     }
 
     /// The one dispatch point: later tasks add their waiters here.
-    pub(super) fn ssh_route(&mut self, _pane: PaneId, waiter: Waiter, content: String, status: i32) {
+    pub(super) fn ssh_route(&mut self, pane: PaneId, waiter: Waiter, content: String, status: i32) {
         match waiter {
             Waiter::Ignore => {}
             Waiter::Transfer { job, tag } => {
@@ -82,6 +86,8 @@ impl App {
                 self.ssh_transfer_apply(actions);
             }
             Waiter::Panel { generation, op } => self.ssh_panel_answered(generation, op, content, status),
+            Waiter::Suggest { generation, inputs, name } => self.ssh_suggested(pane, generation, inputs, &name, &content, status),
+            Waiter::SearchStart { generation } => self.ssh_search_started(pane, generation, &content, status),
         }
     }
 
@@ -495,9 +501,153 @@ impl App {
         }
     }
 
+    /// The Composer's remote suggestions (`CD:1864-1899`, `EP:184-209`): while the pane's
+    /// conductor frames and its working directory is a POSIX path (or unknown), the request is
+    /// built from the remote `PATH` and home, answered from the 5-second cache when it can, else
+    /// sent high priority after canceling the queued older ones. False when the pane is not
+    /// framing (or reports a local path): the local listing runs. The caller has set `waiting`.
+    pub(super) fn ssh_composer_fetch(&mut self, pane: PaneId, generation: u64, line: &str, suffix: &str, name: &str, explicit: bool) -> bool {
+        let Some(c) = self.framing(pane) else { return false };
+        let reported = self.panes.get(&pane).and_then(|p| p.own().shell.cwd.clone());
+        let cwd = match reported {
+            None => None,
+            Some(d) => match crate::ssh_jumps::clean_directory(&d).filter(|d| d.starts_with('/')) {
+                Some(d) => Some(d),
+                None => return false,
+            },
+        };
+        let inputs = crate::ssh_suggest::inputs(line, suffix, c.environment_variable("PATH"), cwd.as_deref(), c.home_directory.as_deref(), explicit);
+        if let Some(values) = self.ssh_suggest_cache.entry(pane).or_default().get(&inputs, Instant::now()) {
+            self.composer_found(pane, generation, crate::ssh_suggest::entries(name, &values));
+            return true;
+        }
+        self.ssh_cancel_queued(pane, &FileSub::is_suggest);
+        let waiter = Waiter::Suggest { generation, inputs: inputs.clone(), name: name.to_string() };
+        if !self.ssh_send(pane, FileSub::Suggest(inputs), true, waiter) {
+            self.composer_found(pane, generation, Vec::new());
+        }
+        true
+    }
+
+    /// A suggestion answer: status 0 is the JSON array (capped and cleaned, P18), anything else
+    /// is empty. Only an answer the remote gave (status 0 or above) is cached: a canceled or
+    /// failed request must not teach the cache that nothing matches. A stale generation is
+    /// dropped by `composer_found`.
+    fn ssh_suggested(&mut self, pane: PaneId, generation: u64, inputs: crate::ssh_files::SuggestInputs, name: &str, content: &str, status: i32) {
+        let values = if status == 0 { crate::ssh_suggest::parse_limited(content, inputs.limit) } else { Vec::new() };
+        if status >= 0 {
+            self.ssh_suggest_cache.entry(pane).or_default().insert(inputs, values.clone(), Instant::now());
+        }
+        self.composer_found(pane, generation, crate::ssh_suggest::entries(name, &values));
+    }
+
+    /// Drops the suggestion answers that expired (`about_to_wait`, at most every 10 s).
+    pub(super) fn ssh_suggest_purge(&mut self) {
+        let now = Instant::now();
+        if self.ssh_purge_at.is_some_and(|t| now < t) {
+            return;
+        }
+        self.ssh_purge_at = Some(now + std::time::Duration::from_secs(10));
+        for c in self.ssh_suggest_cache.values_mut() {
+            c.purge(now);
+        }
+        self.ssh_suggest_cache.retain(|_, c| !c.is_empty());
+    }
+
+    /// Takes the `%notif search` texts of the pane and handles them.
+    pub(super) fn ssh_search_drain(&mut self, pane: PaneId) {
+        let texts = self.panes.get_mut(&pane).map(|p| p.take_ssh_search()).unwrap_or_default();
+        for text in texts {
+            self.ssh_search_notif(pane, &text);
+        }
+    }
+
+    /// A search notification (`CD:2681-2698`): its result goes to the panel when its id is the
+    /// current search's, and every one is acknowledged, or the remote stops after 16 (`F:1088`).
+    /// The id the remote sent is acknowledged only when it is the current search's or one Tandem
+    /// started (P18); a result past the panel's cap is acknowledged and dropped.
+    pub(super) fn ssh_search_notif(&mut self, pane: PaneId, text: &str) {
+        let Some((id, json)) = crate::ssh_suggest::search_notif(text) else { return };
+        let current = self.ssh_search.as_ref().filter(|(p, i, _)| *p == pane && !i.is_empty());
+        let generation = current.map(|(_, _, g)| *g);
+        let current_id = current.map(|(_, i, _)| i.clone());
+        let issued: Vec<String> = self.ssh_search_issued.iter().filter(|(p, _)| *p == pane).map(|(_, i)| i.clone()).collect();
+        if !crate::ssh_suggest::ack_allowed(&id, current_id.as_deref(), &issued) {
+            return;
+        }
+        if let (Some(g), true) = (generation, current_id.as_deref() == Some(id.as_str())) {
+            if let Ok(file) = crate::remote_file::RemoteFile::parse(&json) {
+                if let Some((w, p)) = self.ssh_panel.as_mut() {
+                    p.search_result(g, file);
+                    w.request_redraw();
+                }
+            }
+        }
+        self.ssh_send(pane, FileSub::Search(crate::ssh_files::SearchSub::Ack { id, count: 1 }), false, Waiter::Ignore);
+    }
+
+    /// The answer to a search start: the id. One for a search that was replaced or stopped
+    /// meanwhile is stopped at once.
+    fn ssh_search_started(&mut self, pane: PaneId, generation: u64, content: &str, status: i32) {
+        let id = content.trim().to_string();
+        let pending = matches!(&self.ssh_search, Some((p, i, g)) if *p == pane && i.is_empty() && *g == generation);
+        if status != 0 || !crate::ssh_suggest::valid_search_id(&id) {
+            if pending {
+                self.ssh_search = None;
+                let why = if status != 0 { ssh_files::check(status).err().map(|e| e.text().to_string()) } else { None }.unwrap_or_else(|| ssh_files::GARBAGE.to_string());
+                if let Some((w, p)) = self.ssh_panel.as_mut() {
+                    p.search_failed(generation, &why);
+                    w.request_redraw();
+                }
+            }
+            return;
+        }
+        self.ssh_search_issued.push((pane, id.clone()));
+        if self.ssh_search_issued.len() > 16 {
+            self.ssh_search_issued.remove(0);
+        }
+        if !pending {
+            self.ssh_send(pane, FileSub::Search(crate::ssh_files::SearchSub::Stop { id }), false, Waiter::Ignore);
+            return;
+        }
+        self.ssh_search = Some((pane, id.clone(), generation));
+        if let Some((w, p)) = self.ssh_panel.as_mut() {
+            p.search_started(generation, &id);
+            w.request_redraw();
+        }
+    }
+
+    /// Starts the panel's search on `pane` (one at a time: the running one stops first).
+    pub(super) fn ssh_search_start(&mut self, pane: PaneId, generation: u64, query: String, base: String) {
+        self.ssh_search_stop();
+        self.ssh_search = Some((pane, String::new(), generation));
+        let sub = FileSub::Search(crate::ssh_files::SearchSub::Start { query, base });
+        if !self.ssh_send(pane, sub, true, Waiter::SearchStart { generation }) {
+            self.ssh_search = None;
+            if let Some((w, p)) = self.ssh_panel.as_mut() {
+                p.search_failed(generation, ssh_files::FileError::ConnectionClosed.text());
+                w.request_redraw();
+            }
+        }
+    }
+
+    /// Stops the running search: with its id known, a stop goes to the remote; one whose id has
+    /// not come yet is stopped when it does (`ssh_search_started`).
+    pub(super) fn ssh_search_stop(&mut self) {
+        let Some((pane, id, _)) = self.ssh_search.take() else { return };
+        if crate::ssh_suggest::valid_search_id(&id) {
+            self.ssh_send(pane, FileSub::Search(crate::ssh_files::SearchSub::Stop { id }), false, Waiter::Ignore);
+        }
+    }
+
     /// Answers -1 to every waiter of `pane` (its conductor went or the pane did), and
     /// forgets them: a request is never left unanswered (P5).
     pub(super) fn ssh_files_pane_gone(&mut self, pane: PaneId) {
+        self.ssh_suggest_cache.remove(&pane);
+        self.ssh_search_issued.retain(|(p, _)| *p != pane);
+        if self.ssh_search.as_ref().is_some_and(|(p, _, _)| *p == pane) {
+            self.ssh_search = None;
+        }
         let ids: Vec<u64> = self.ssh_waiters.keys().filter(|(p, _)| *p == pane).map(|(_, id)| *id).collect();
         for id in ids {
             self.ssh_file_done(pane, id, String::new(), -1);

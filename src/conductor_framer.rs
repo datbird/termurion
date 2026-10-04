@@ -173,6 +173,9 @@ impl Conductor {
     fn handle_notif(&mut self, message: &str) {
         if let Some(rest) = message.strip_prefix("%notif tty ") {
             self.handle_tty_notif(rest);
+        } else if let Some(rest) = message.strip_prefix("%notif search ").filter(|r| !r.is_empty()) {
+            // `CD:2681-2698`: the id and the file, checked by the app (P18).
+            self.effects.push(Effect::SearchNotif(rest.to_string()));
         }
     }
 
@@ -958,6 +961,20 @@ mod tests {
     }
 
     #[test]
+    fn search_notifications_follow_iterm2() {
+        let mut c = framing();
+        c.take_effects();
+        let found = |c: &mut Conductor| -> Vec<String> { c.take_effects().into_iter().filter_map(|e| if let Effect::SearchNotif(s) = e { Some(s) } else { None }).collect() };
+        c.handle_side("%notif search S1 {\"a\":1}", NOTIF_PID, 1, 0);
+        assert_eq!(found(&mut c), ["S1 {\"a\":1}".to_string()]);
+        // Other words and an empty payload yield nothing.
+        c.handle_side("%notif searchx S1 {}", NOTIF_PID, 1, 0);
+        c.handle_side("%notif search ", NOTIF_PID, 1, 0);
+        c.handle_side("%notif tty +echo", NOTIF_PID, 1, 0);
+        assert!(found(&mut c).is_empty());
+    }
+
+    #[test]
     fn tty_notifications_follow_iterm2() {
         let mut c = framing();
         assert_eq!(c.tty, TtyState { echo: true, icanon: true });
@@ -982,9 +999,8 @@ mod tests {
         // A repeated flag does not crash (iTerm2's dictionary would); the last one wins.
         c.handle_side("%notif tty +echo -echo +echo", NOTIF_PID, 1, 0);
         assert!(c.tty.echo);
-        // Not a tty notification: search is 14d's, the rest is ignored.
+        // Not a tty notification: the rest is ignored (search is its own effect, tested apart).
         c.handle_side("%notif tty -echo", NOTIF_PID, 1, 0);
-        c.handle_side("%notif search 1 {}", NOTIF_PID, 1, 0);
         c.handle_side("%notif ttyx +echo", NOTIF_PID, 1, 0);
         c.handle_side("%notif", NOTIF_PID, 1, 0);
         assert_eq!(c.tty, TtyState { echo: false, icanon: true });

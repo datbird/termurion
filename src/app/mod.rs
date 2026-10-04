@@ -777,6 +777,16 @@ pub struct App {
     ssh_waiters: HashMap<(PaneId, u64), ssh_files_app::Waiter>,
     /// The id of the next file request.
     ssh_next_file_id: u64,
+    /// The Composer's remote suggestion answers, by pane (app-wide, not in `swap_live`; 14d).
+    ssh_suggest_cache: HashMap<PaneId, crate::ssh_suggest::Cache>,
+    /// When the cache is purged next (at most every 10 s).
+    ssh_purge_at: Option<Instant>,
+    /// The panel's running search: its pane, the id the remote gave it (empty until it
+    /// answers) and the panel's generation (app-wide; 14d).
+    ssh_search: Option<(PaneId, String, u64)>,
+    /// The ids of the searches Tandem started lately, by pane: results of a replaced search are
+    /// still acknowledged (P18), and no other id is.
+    ssh_search_issued: Vec<(PaneId, String)>,
     /// The transfer engine's jobs (app-wide, not in `swap_live`; 14d).
     ssh_transfers: crate::ssh_transfer::Transfers,
     /// The local side of each transfer job: its temp file and what its banner shows (Task 4).
@@ -1523,6 +1533,10 @@ pub fn run() {
         ssh_registry: Default::default(),
         ssh_waiters: HashMap::new(),
         ssh_next_file_id: 1,
+        ssh_suggest_cache: HashMap::new(),
+        ssh_purge_at: None,
+        ssh_search: None,
+        ssh_search_issued: Vec::new(),
         ssh_transfers: crate::ssh_transfer::Transfers::new(),
         ssh_locals: HashMap::new(),
         ssh_unzips: Vec::new(),
@@ -4771,6 +4785,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.enter(w);
         }
         self.flush_dropped();
+        self.ssh_suggest_purge();
         for w in std::mem::take(&mut self.pending_windows) {
             self.open_pending(event_loop, w);
             self.tmux_apply_geometry();

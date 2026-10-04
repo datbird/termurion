@@ -347,6 +347,9 @@ pub enum Effect {
     /// An abort or a cancel gives status -1 and no content; a reply past its cap gives
     /// `ssh_files::OVERRUN_STATUS` (that request fails, never the connection).
     FileDone { id: u64, content: String, status: i32 },
+    /// `%notif search <id> <json>` (`CD:2681-2698`): the text after `search `, unchecked (the
+    /// remote chose every byte of it, P18); the app parses it and acknowledges it.
+    SearchNotif(String),
 }
 
 /// What an unhook restores (Decision: the remote host and the working directory).

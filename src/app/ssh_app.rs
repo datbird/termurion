@@ -235,6 +235,7 @@ impl App {
         self.ssh_registry_drain(pane);
         self.ssh_answers_drain(pane);
         self.ssh_files_drain(pane);
+        self.ssh_search_drain(pane);
         self.ssh_files_settle();
     }
 

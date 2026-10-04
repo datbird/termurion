@@ -47,6 +47,8 @@ pub fn connection_lost(host: &str) -> String {
 pub const LIST_MAX: usize = 100_000;
 /// The most search results the panel keeps (P18; Task 8 fills them).
 pub const SEARCH_MAX: usize = 10_000;
+/// The notice that goes with a truncated search (Tandem's).
+pub const SEARCH_TRUNCATED: &str = "Only the first 10000 results are shown.";
 /// The notice that goes with a truncated listing (Tandem's).
 pub const TRUNCATED: &str = "Only the first 100000 items are shown.";
 
@@ -130,6 +132,8 @@ pub struct Panel {
     completions: Vec<String>,
     comp_found: bool,
     comp_pending: usize,
+    /// The id the remote gave the running search.
+    search_id: Option<String>,
 }
 
 impl Panel {
@@ -160,6 +164,7 @@ impl Panel {
             completions: Vec::new(),
             comp_found: false,
             comp_pending: 0,
+            search_id: None,
         }
     }
 
@@ -194,7 +199,7 @@ impl Panel {
     /// `FP:346-372`: history is appended before going, then the path is stat'ed first and a
     /// failure leaves the panel where it was.
     pub fn navigate(&mut self, host: &Identity, path: &str, history: bool) -> Vec<Request> {
-        self.leave_search();
+        let mut out = self.leave_search();
         if history {
             if !self.history.is_empty() {
                 self.history.truncate(self.at + 1);
@@ -202,11 +207,21 @@ impl Panel {
             self.history.push((host.clone(), path.to_string()));
             self.at = self.history.len() - 1;
         }
-        self.begin(host, path, false)
+        out.extend(self.begin(host, path, false));
+        out
     }
 
-    fn leave_search(&mut self) {
+    /// Back to the regular listing; a search that ran is stopped (its results go too).
+    fn leave_search(&mut self) -> Vec<Request> {
+        if self.mode == Mode::Regular {
+            return Vec::new();
+        }
         self.mode = Mode::Regular;
+        self.search_id = None;
+        self.files.clear();
+        self.selected.clear();
+        self.notice = None;
+        self.host.clone().map(|host| Request::SearchStop { host }).into_iter().collect()
     }
 
     fn begin(&mut self, host: &Identity, path: &str, force: bool) -> Vec<Request> {
@@ -220,7 +235,7 @@ impl Panel {
     /// The panel shows `host` at its default path, listed even when its stat fails
     /// (`FP:289-296`: only `navigate` stays put).
     pub fn select_host(&mut self, host: &Identity, saved: Option<String>, home: Option<String>) -> Vec<Request> {
-        self.leave_search();
+        let mut out = self.leave_search();
         let path = self.default_path(host, saved, home);
         self.host = Some(host.clone());
         if !self.history.is_empty() {
@@ -228,7 +243,8 @@ impl Panel {
         }
         self.history.push((host.clone(), path.clone()));
         self.at = self.history.len() - 1;
-        self.begin(host, &path, true)
+        out.extend(self.begin(host, &path, true));
+        out
     }
 
     /// An answer. One for an old generation, or for nothing the panel waits for, changes nothing.
@@ -300,10 +316,11 @@ impl Panel {
     }
 
     fn go_to_entry(&mut self, i: usize) -> Vec<Request> {
-        self.leave_search();
+        let mut out = self.leave_search();
         self.at = i;
         let (h, p) = self.history[i].clone();
-        self.begin(&h, &p, false)
+        out.extend(self.begin(&h, &p, false));
+        out
     }
 
     pub fn can_back(&self) -> bool {
@@ -426,6 +443,8 @@ impl Panel {
     pub fn hosts_changed(&mut self, hosts: Vec<Identity>, home: &dyn Fn(&Identity) -> Option<String>) -> Vec<Request> {
         self.hosts = hosts;
         if self.hosts.is_empty() {
+            self.mode = Mode::Regular;
+            self.search_id = None;
             self.host = None;
             self.path = None;
             self.files.clear();
@@ -451,12 +470,89 @@ impl Panel {
     /// Show Hidden Files asks for the listing again (`FP:1765-1768`).
     pub fn toggle_hidden(&mut self) -> Vec<Request> {
         self.show_hidden = !self.show_hidden;
+        // Search results are filtered where they are shown: nothing to ask again.
+        if self.mode != Mode::Regular {
+            return Vec::new();
+        }
         let (Some(host), Some(path)) = (self.host.clone(), self.path.clone()) else { return Vec::new() };
         let generation = self.bump();
         self.nav_gen = generation;
         self.nav = None;
         self.loading = true;
         vec![self.list(generation, &host, &path)]
+    }
+
+    /// Search (`FP:961-1017`): typing a query stops the running search and starts one in the
+    /// folder shown; an empty query returns to the regular listing, listed again.
+    pub fn search(&mut self, query: &str) -> Vec<Request> {
+        let (Some(host), Some(path)) = (self.host.clone(), self.path.clone()) else { return Vec::new() };
+        if query.is_empty() {
+            if self.mode == Mode::Regular {
+                return Vec::new();
+            }
+            let mut out = self.leave_search();
+            let generation = self.bump();
+            self.nav_gen = generation;
+            self.nav = None;
+            self.loading = true;
+            out.push(self.list(generation, &host, &path));
+            return out;
+        }
+        let generation = self.bump();
+        self.nav = None;
+        // Results of an earlier listing or search must not answer this one.
+        self.nav_gen = generation;
+        self.mode = Mode::Search { generation, query: query.to_string() };
+        self.search_id = None;
+        self.files.clear();
+        self.selected.clear();
+        self.anchor = None;
+        self.error = None;
+        self.notice = None;
+        self.loading = true;
+        vec![Request::SearchStop { host: host.clone() }, Request::SearchStart { generation, host, query: query.to_string(), base: path }]
+    }
+
+    /// The remote named search `id` for generation `generation`.
+    pub fn search_started(&mut self, generation: u64, id: &str) {
+        if self.search_generation() == Some(generation) {
+            self.search_id = Some(id.to_string());
+            self.loading = false;
+        }
+    }
+
+    /// One result of the search of `generation`; an older generation's is dropped, and no more
+    /// than `SEARCH_MAX` are kept (P18).
+    pub fn search_result(&mut self, generation: u64, file: RemoteFile) {
+        if self.search_generation() != Some(generation) {
+            return;
+        }
+        if self.files.len() >= SEARCH_MAX {
+            self.notice = Some(SEARCH_TRUNCATED.to_string());
+            return;
+        }
+        self.files.push(file);
+    }
+
+    /// The search of `generation` could not start.
+    pub fn search_failed(&mut self, generation: u64, text: &str) {
+        if self.search_generation() == Some(generation) {
+            self.loading = false;
+            self.error = Some(text.to_string());
+        }
+    }
+
+    /// The id of the running search, once the remote named it.
+    pub fn search_id(&self) -> Option<&str> {
+        self.search_id.as_deref()
+    }
+
+    /// The generation of the current search, when the panel is searching.
+    pub fn search_generation(&self) -> Option<u64> {
+        match &self.mode {
+            Mode::Search { generation, .. } => Some(*generation),
+            Mode::Regular => None,
+        }
     }
 
     /// A second click on the same column reverses it (`FL:845`).
@@ -882,5 +978,73 @@ mod tests {
         assert_eq!(order.len(), SAVED_KEYS_MAX);
         assert_eq!(order.last().map(String::as_str), Some("new"));
         assert_eq!(order.first().map(String::as_str), Some("k1"));
+    }
+
+    #[test]
+    fn panel_search_follows_iterm2() {
+        let mut p = shown(&[file("/home/a/x", 1, 1.0)]);
+        let reqs = p.search("abc");
+        let g = p.search_generation().expect("searching");
+        assert_eq!(reqs, vec![Request::SearchStop { host: a() }, Request::SearchStart { generation: g, host: a(), query: "abc".into(), base: "/home/a".into() }]);
+        assert_eq!(p.mode, Mode::Search { generation: g, query: "abc".into() });
+        // The regular listing is gone while searching.
+        assert!(p.visible().is_empty());
+        assert_eq!(p.search_id(), None);
+        p.search_started(g, "S1");
+        assert_eq!(p.search_id(), Some("S1"));
+        let r = |path: &str| RemoteFile::parse(&file(path, 1, 1.0)).unwrap();
+        p.search_result(g, r("/home/a/abc1"));
+        p.search_result(g, r("/home/a/sub/abc2"));
+        assert_eq!(p.visible().len(), 2);
+        // A result of an older search is dropped.
+        p.search_result(g - 1, r("/home/a/old"));
+        assert_eq!(p.visible().len(), 2);
+        // A newer search drops the earlier one's results and its id.
+        let reqs = p.search("abcd");
+        let g2 = p.search_generation().unwrap();
+        assert!(g2 > g);
+        assert_eq!(reqs[0], Request::SearchStop { host: a() });
+        assert!(p.visible().is_empty());
+        assert_eq!(p.search_id(), None);
+        p.search_started(g, "S-old");
+        assert_eq!(p.search_id(), None, "an id for an old search is not the current one");
+        p.search_result(g, r("/home/a/old2"));
+        assert!(p.visible().is_empty());
+        // An empty query returns to Regular and asks for the current listing again.
+        let reqs = p.search("");
+        assert_eq!(p.mode, Mode::Regular);
+        assert_eq!(reqs[0], Request::SearchStop { host: a() });
+        let (_, op, sub) = first(&reqs[1..]);
+        assert_eq!((op, sub), (Op::List { path: "/home/a".into() }, FileSub::Ls { path: "/home/a".into(), sort: Sorting::ByName }));
+        // Not searching and an empty query: nothing to do.
+        assert!(p.search("").is_empty());
+        // Navigating while searching stops the search.
+        let mut p = shown(&[]);
+        p.search("q");
+        let reqs = p.navigate(&a(), "/tmp", true);
+        assert_eq!(reqs[0], Request::SearchStop { host: a() });
+        assert_eq!(p.mode, Mode::Regular);
+        // A failed start ends the loading and says why.
+        let mut p = shown(&[]);
+        p.search("q");
+        let g = p.search_generation().unwrap();
+        p.search_failed(g, "File not found");
+        assert!(!p.loading);
+        assert_eq!(p.error.as_deref(), Some("File not found"));
+    }
+
+    #[test]
+    fn panel_search_results_are_capped() {
+        let mut p = shown(&[]);
+        p.search("q");
+        let g = p.search_generation().unwrap();
+        let f = RemoteFile::parse(&file("/home/a/q", 1, 1.0)).unwrap();
+        for i in 0..SEARCH_MAX + 50 {
+            let mut f = f.clone();
+            f.absolute_path = format!("/home/a/q{i}");
+            p.search_result(g, f);
+        }
+        assert_eq!(p.visible().len(), SEARCH_MAX);
+        assert_eq!(p.notice.as_deref(), Some(SEARCH_TRUNCATED));
     }
 }
