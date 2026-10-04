@@ -478,7 +478,7 @@ impl App {
             }
             "kContextMenuPointerAction" => {
                 let point = self.grid_point(pane, cell.0, cell.1);
-                self.show_context_menu_at(Some((pane, point)));
+                self.show_context_menu_at(Some((pane, Some(point))));
             }
             "kOpenTargetPointerAction" | "kQuickLookAction" | "kOpenTargetInBackgroundPointerAction" => {
                 let point = self.grid_point(pane, cell.0, cell.1);

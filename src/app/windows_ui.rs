@@ -21,6 +21,7 @@ pub(super) struct WinSlot {
     find_mode_rect: Option<Rect>,
     /// The title bars drawn last frame (pane, geometry), for clicks.
     title_bars: Vec<(PaneId, crate::pane_title::Geometry)>,
+    title_press: Option<super::pane_title_ui::TitlePress>,
     /// The tab bar as last laid out, in points, not scrolled (`build_frame`).
     tab_bar: crate::tab_layout::Bar,
     /// The tab bar's scroll offset in points.
@@ -130,6 +131,7 @@ impl WinSlot {
             find_bar_rect: None,
             find_mode_rect: None,
             title_bars: Vec::new(),
+            title_press: None,
             tab_bar: crate::tab_layout::Bar::default(),
             tab_scroll: 0.0,
             tab_hover: None,
@@ -234,6 +236,7 @@ impl App {
         swap(&mut self.find_bar_rect, &mut s.find_bar_rect);
         swap(&mut self.find_mode_rect, &mut s.find_mode_rect);
         swap(&mut self.title_bars, &mut s.title_bars);
+        swap(&mut self.title_press, &mut s.title_press);
         swap(&mut self.tab_bar, &mut s.tab_bar);
         swap(&mut self.tab_scroll, &mut s.tab_scroll);
         swap(&mut self.tab_hover, &mut s.tab_hover);
@@ -802,6 +805,7 @@ impl WinSlot {
             find_bar_rect: None,
             find_mode_rect: None,
             title_bars: Vec::new(),
+            title_press: None,
             tab_bar: crate::tab_layout::Bar::default(),
             tab_scroll: 0.0,
             tab_hover: None,

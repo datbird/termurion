@@ -314,6 +314,8 @@ pub struct App {
     find_mode_rect: Option<Rect>,
     /// The title bars drawn last frame (pane, geometry), for clicks (per window).
     title_bars: Vec<(PaneId, crate::pane_title::Geometry)>,
+    /// A left press on a title bar button, waiting for its release.
+    title_press: Option<pane_title_ui::TitlePress>,
     /// The Win-click target under the pointer while Win is held.
     hover: Option<(PaneId, crate::find::Match)>,
     /// The annotation or session note window: its pane and note (None for the session note).
@@ -1430,6 +1432,7 @@ pub fn run() {
         find_bar_rect: None,
         find_mode_rect: None,
         title_bars: Vec::new(),
+        title_press: None,
         hover: None,
         popup_menu: None,
         color_pick: None,
@@ -4112,6 +4115,7 @@ impl App {
         // A press starts over on the tab bar too: a bar press whose release never came (focus
         // went mid-press) must not take this press's release; a press on the bar stores itself.
         self.tab_press = None;
+        self.title_press = None;
         // A press starts over: a tmux drag whose release never came lets tmux go on.
         self.tmux_drag_cancel();
         let (x, y) = self.cursor;
@@ -4173,6 +4177,13 @@ impl App {
             }) {
                 self.tmux_drag_start(&d.path, d.axis);
                 self.drag = Drag::Divider { path: d.path, axis: d.axis, parent: d.parent };
+                return;
+            }
+        }
+        // After the divider grab (P7), so a lower pane's title bar does not take the strip.
+        if self.title_hit_at(x, y).is_some() {
+            let clicks = self.os_clicks(button_number(button));
+            if self.title_press(button, clicks, x, y, event_loop) {
                 return;
             }
         }
@@ -4269,7 +4280,7 @@ impl App {
             // With no binding and no reporting app, a right click opens the menu (iTerm2's native behavior).
             1 => {
                 let point = self.grid_point(id, col, row);
-                self.show_context_menu_at(Some((id, point)));
+                self.show_context_menu_at(Some((id, Some(point))));
             }
             _ => {}
         }
@@ -4295,6 +4306,9 @@ impl App {
 
     fn mouse_release(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
         if self.tab_bar_release(button, event_loop) {
+            return;
+        }
+        if self.title_release(button, event_loop) {
             return;
         }
         let b = button_number(button);

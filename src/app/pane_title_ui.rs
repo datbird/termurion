@@ -35,6 +35,43 @@ pub(super) fn distinct_tab_colors(colors: impl IntoIterator<Item = Option<crate:
     false
 }
 
+/// What a press on a title bar does (`SessionTitleView.m`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TitleAction {
+    Close,
+    Menu,
+    ToggleLock,
+    Maximize,
+    Focus,
+}
+
+/// The action for `button` (0 left, 1 right, 2 middle) pressed on `hit` as click number
+/// `clicks`: the close button, the menu button and the lock mark by their own buttons; a right
+/// click anywhere is the menu (`STV:164-166`, NSView's `menu`); a double click on the bar
+/// maximizes (`PTYTab.m:7414-7416`); other presses just focus.
+pub(super) fn title_action(hit: pane_title::Hit, button: u8, clicks: u8) -> Option<TitleAction> {
+    use pane_title::Hit;
+    match (button, hit) {
+        (1, _) => Some(TitleAction::Menu),
+        (0, Hit::Close) => Some(TitleAction::Close),
+        (0, Hit::Menu) => Some(TitleAction::Menu),
+        (0, Hit::Lock) => Some(TitleAction::ToggleLock),
+        (0, Hit::Bar) if clicks == 2 => Some(TitleAction::Maximize),
+        (0, Hit::Bar) => Some(TitleAction::Focus),
+        _ => None,
+    }
+}
+
+/// The buttons act on the release over the part that was pressed (an NSButton tracks to the
+/// release, P14); the bar's own actions and the right-click menu act on the press.
+pub(super) fn acts_on_release(action: TitleAction) -> bool {
+    matches!(action, TitleAction::Close | TitleAction::Menu | TitleAction::ToggleLock)
+}
+
+/// A left press on a title bar button waiting for its release: the pane, the part, and the
+/// action it will take.
+pub(super) type TitlePress = (PaneId, pane_title::Hit, TitleAction);
+
 /// A pane's rectangle cut into its parts.
 pub(super) struct Chrome {
     /// What the terminal gets.
@@ -142,6 +179,77 @@ impl App {
         self.title_bars = drawn;
     }
 
+    /// The title bar and part under a point, in the active tab.
+    pub(super) fn title_hit_at(&self, x: f32, y: f32) -> Option<(PaneId, pane_title::Hit)> {
+        self.title_bars.iter().find_map(|(id, g)| pane_title::hit(g, x, y).map(|h| (*id, h)))
+    }
+
+    /// A press on a pane's title bar. The pane becomes the tab's focused pane first
+    /// (`sessionTitleViewBecomeFirstResponder`), so the menu's commands act on it. The close,
+    /// menu and lock buttons wait for the release over the same part (`title_release`, P14);
+    /// the right click's menu and the double click's maximize act now. Nothing reaches the
+    /// terminal: no report to the program, no selection. Left true when the press was on a bar.
+    pub(super) fn title_press(&mut self, button: MouseButton, clicks: u8, x: f32, y: f32, _event_loop: &ActiveEventLoop) -> bool {
+        let Some((pane, hit)) = self.title_hit_at(x, y) else { return false };
+        if let Some(t) = self.tabs.get_mut(self.active) {
+            t.focused = pane;
+        }
+        self.refresh_route();
+        let action = title_action(hit, button_number(button), clicks);
+        match action {
+            Some(a) if acts_on_release(a) && button == MouseButton::Left => self.title_press = Some((pane, hit, a)),
+            Some(TitleAction::Menu) => self.show_context_menu_at(Some((pane, None))),
+            Some(TitleAction::Maximize) => self.toggle_maximize(),
+            // Focus is done; a drag from the bar is Task 8's.
+            Some(_) | None => {}
+        }
+        self.redraw();
+        true
+    }
+
+    /// The release of a title bar button's press: the action runs when the pointer is still over
+    /// the part that was pressed. True when a press was waiting for this release.
+    pub(super) fn title_release(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) -> bool {
+        if button != MouseButton::Left {
+            return false;
+        }
+        let Some((pane, hit, action)) = self.title_press.take() else { return false };
+        let (x, y) = self.cursor;
+        if self.title_hit_at(x, y) != Some((pane, hit)) || !self.panes.contains_key(&pane) {
+            return true;
+        }
+        match action {
+            // `closeCurrentSession:`'s path for that pane.
+            TitleAction::Close => {
+                if self.layout_allowed(crate::winmodel::LayoutOp::ClosePane) && self.confirm_close(close_ui::Closing::Session(pane)) {
+                    self.close_session_undoable(pane, event_loop);
+                }
+            }
+            TitleAction::Menu => self.show_context_menu_at(Some((pane, None))),
+            // 13i's `toggle_pane_lock` goes here; until it lands the lock mark is never drawn.
+            TitleAction::ToggleLock => {}
+            TitleAction::Maximize | TitleAction::Focus => {}
+        }
+        self.redraw();
+        true
+    }
+
+    /// `maximizePane:` for the focused pane: a tmux pane zooms through tmux, any other toggles.
+    pub(super) fn toggle_maximize(&mut self) {
+        let Some(focused) = self.tabs.get(self.active).map(|t| t.focused) else { return };
+        if self.tmux_of(focused).is_some() {
+            self.tmux_zoom(focused);
+        } else if let Some(t) = self.tabs.get_mut(self.active) {
+            t.zoomed = if t.zoomed.is_some() { None } else { Some(t.focused) };
+        }
+    }
+
+    /// Move Session to Split Pane (`move_: true`) or Swap With Session (`false`) from `pane`:
+    /// the pick mode, which Task 7 builds. Until then it says so.
+    pub(super) fn start_pane_move(&mut self, _pane: PaneId, _move: bool) {
+        self.banners.set("action", "Moving a pane by picking another comes with the pick mode.".to_string());
+    }
+
     /// A pane's rectangle cut into title bar, status bar and terminal.
     pub(super) fn pane_chrome(&self, tab: &Tab, id: PaneId, rect: Rect) -> Chrome {
         let bar = (self.per_pane_bars(tab) && self.shows_status_bar(id)).then(|| (self.status_bar_height(), self.status_bar_position()));
@@ -156,6 +264,25 @@ mod tests {
 
     fn r(x: f32, y: f32, w: f32, h: f32) -> Rect {
         Rect { x, y, w, h }
+    }
+
+    #[test]
+    fn title_clicks_follow_iterm2() {
+        use crate::pane_title::Hit::{Bar, Close, Lock, Menu};
+        // (hit, button, clicks): left 0, right 1, middle 2.
+        assert_eq!(title_action(Close, 0, 1), Some(TitleAction::Close));
+        assert_eq!(title_action(Menu, 0, 1), Some(TitleAction::Menu));
+        assert_eq!(title_action(Lock, 0, 1), Some(TitleAction::ToggleLock));
+        assert_eq!(title_action(Bar, 0, 2), Some(TitleAction::Maximize));
+        assert_eq!(title_action(Bar, 0, 1), Some(TitleAction::Focus));
+        assert_eq!(title_action(Bar, 0, 3), Some(TitleAction::Focus), "only the double click maximizes");
+        for hit in [Bar, Close, Menu, Lock] {
+            assert_eq!(title_action(hit, 1, 1), Some(TitleAction::Menu), "right anywhere on the bar is the menu");
+            assert_eq!(title_action(hit, 2, 1), None, "middle does nothing");
+        }
+        // The buttons act on release over the same part (P14); the bar's own actions on the press.
+        assert!(acts_on_release(TitleAction::Close) && acts_on_release(TitleAction::Menu) && acts_on_release(TitleAction::ToggleLock));
+        assert!(!acts_on_release(TitleAction::Maximize) && !acts_on_release(TitleAction::Focus));
     }
 
     #[test]
