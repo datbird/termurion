@@ -174,10 +174,13 @@ impl Command {
     }
 
     /// Whether a command written while framing keeps the command timeout (ruling M14-I2: a
-    /// sleeping laptop must not end SSH integration). None in 14b; 14d's file commands but
-    /// `file zip` add the true arm.
+    /// sleeping laptop must not end SSH integration). Only the file commands but `file zip`
+    /// (14d-1): a remote zip of a large folder is silent until it finishes.
     pub fn timed_when_framed(&self) -> bool {
-        false
+        match self {
+            Command::FramerFile(sub) => !matches!(sub, crate::ssh_files::FileSub::Zip { .. }),
+            _ => false,
+        }
     }
 }
 
@@ -3195,6 +3198,43 @@ mod tests {
         assert_eq!(child.deadline(), Some(t0 + SECS(30)), "nothing is held, but the pane's hook swallows output until it ends");
         child.tick(t0 + SECS(30));
         assert_eq!(child.take_effects().last(), Some(&Effect::Abort("getshell: No response after 30 seconds".into())));
+    }
+
+    #[test]
+    fn zip_is_not_timed_out() {
+        // Ruling M14-I2 with 14d-1: once framed only file commands but `file zip` are timed.
+        use crate::ssh_files::FileSub;
+        let t0 = Instant::now();
+        let mut c = root();
+        c.framed_pid = Some(4242);
+        at(&mut c, t0).send(Command::FramerFile(FileSub::Zip { path: "/h/d".into() }), Handler::File { id: 1, lines: Vec::new() }, false);
+        c.take_effects();
+        assert_eq!(c.deadline(), None);
+        c.tick(t0 + SECS(31));
+        assert!(c.take_effects().is_empty());
+
+        let mut c = root();
+        c.framed_pid = Some(4242);
+        at(&mut c, t0).send(Command::FramerFile(FileSub::Stat { path: "/h/a".into() }), Handler::File { id: 1, lines: Vec::new() }, false);
+        c.take_effects();
+        assert_eq!(c.deadline(), Some(t0 + SECS(30)));
+        c.tick(t0 + SECS(31));
+        assert_eq!(c.take_effects().last(), Some(&Effect::Abort("file stat /h/a: No response after 30 seconds".into())));
+
+        let mut c = root();
+        c.framed_pid = Some(4242);
+        at(&mut c, t0).send(Command::FramerGetenv("PATH".into()), Handler::FireAndForget, false);
+        c.take_effects();
+        assert_eq!(c.deadline(), None);
+        c.tick(t0 + SECS(31));
+        assert!(c.take_effects().is_empty());
+
+        let fetch = Command::FramerFile(FileSub::Fetch { path: "/h/a".into(), chunk: None, unique_id: None });
+        let zip = Command::FramerFile(FileSub::Zip { path: "/h/a".into() });
+        assert!(fetch.timed_when_framed());
+        assert!(!zip.timed_when_framed());
+        assert!(!fetch.streams() && !zip.streams());
+        
     }
 
     #[test]

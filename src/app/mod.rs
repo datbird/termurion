@@ -773,6 +773,8 @@ pub struct App {
     ssh_waiters: HashMap<(PaneId, u64), ssh_files_app::Waiter>,
     /// The id of the next file request.
     ssh_next_file_id: u64,
+    /// The transfer engine's jobs (app-wide, not in `swap_live`; 14d).
+    ssh_transfers: crate::ssh_transfer::Transfers,
     /// The secret pipe's server, started with the first window; None when it could not start.
     ssh_secret_server: Option<crate::ssh_secret_win::Server>,
     /// The Script Console's entries: scripts, connections and the app-wide logs.
@@ -1498,6 +1500,7 @@ pub fn run() {
         ssh_registry: Default::default(),
         ssh_waiters: HashMap::new(),
         ssh_next_file_id: 1,
+        ssh_transfers: crate::ssh_transfer::Transfers::new(),
         ssh_secret_server: None,
         script_history: crate::script_history::History::new(aps_logging, api_ui::unix_secs()),
         api_alerts: Vec::new(),

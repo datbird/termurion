@@ -6,6 +6,7 @@
 use super::*;
 use crate::conductor::{Command, Conductor, Handler};
 use crate::ssh_files::FileSub;
+use crate::ssh_transfer::Action;
 
 /// What waits for one request's answer.
 #[derive(Clone, Debug, PartialEq)]
@@ -69,11 +70,36 @@ impl App {
     }
 
     /// The one dispatch point: later tasks add their waiters here.
-    pub(super) fn ssh_route(&mut self, _pane: PaneId, waiter: Waiter, _content: String, _status: i32) {
+    pub(super) fn ssh_route(&mut self, _pane: PaneId, waiter: Waiter, content: String, status: i32) {
         match waiter {
             Waiter::Ignore => {}
-            // Task 3 fills it.
-            Waiter::Transfer { .. } => {}
+            Waiter::Transfer { job, tag } => {
+                let actions = self.ssh_transfers.reply(job, tag, &content, status);
+                self.ssh_transfer_apply(actions);
+            }
+        }
+    }
+
+    /// Carries out the engine's actions: `Send` and `Fire` go to the conductor; the local side
+    /// (`Size`, `Write`, `Sent`, `Unzip`, `Done`) is Task 4's and is only dropped here until it
+    /// lands. `ssh_send` may route a reply before it returns (it runs the effect loop), so no
+    /// borrow is held across it, and a send that finds no framing conductor is answered -1 at
+    /// once or its job would wait forever.
+    pub(super) fn ssh_transfer_apply(&mut self, actions: Vec<Action>) {
+        let mut work: std::collections::VecDeque<Action> = actions.into();
+        while let Some(action) = work.pop_front() {
+            match action {
+                Action::Send { job, tag, pane, sub, high } => {
+                    if !self.ssh_send(pane, sub, high, Waiter::Transfer { job, tag }) {
+                        work.extend(self.ssh_transfers.reply(job, tag, "", -1));
+                    }
+                }
+                Action::Fire { pane, sub } => {
+                    self.ssh_send(pane, sub, false, Waiter::Ignore);
+                }
+                // The local side lands with Task 4.
+                Action::Size { .. } | Action::Write { .. } | Action::Sent { .. } | Action::Unzip { .. } | Action::Done { .. } => {}
+            }
         }
     }
 
