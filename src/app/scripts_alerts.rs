@@ -142,6 +142,8 @@ pub(super) enum Then {
     /// "Settings at ... changed since Tandem started. Overwrite it?": Overwrite (0) or Discard
     /// Local Changes (1).
     PrefsOverwrite,
+    /// "Warning" before Exclude from taskbar turns on: Exclude (0) turns it on and saves; Cancel (1) leaves it off.
+    ExcludeFromTaskbar,
     /// "Settings have changed. Copy them to ...?" at quit: Copy (0) or Lose Changes (1), which
     /// is never remembered.
     PrefsQuit,
@@ -511,6 +513,11 @@ impl App {
                 }
             }
             Then::PrefsUrlPrompt(_) | Then::PrefsFailedUrl { .. } | Then::PrefsLocationNotSet | Then::PrefsOverwrite | Then::PrefsQuit | Then::PrefsCopyNow => self.prefs_answered(then, index),
+            Then::ExcludeFromTaskbar => {
+                if index == 0 {
+                    self.exclude_from_taskbar_confirmed();
+                }
+            }
             Then::SlowScan => {
                 let go_on = index == 1;
                 if let Some(scanner) = &self.scripts_scan {
@@ -600,6 +607,14 @@ mod tests {
             assert_eq!(close_index(&labels), 0);
             assert_eq!(on_close(&a.then, close_index(&labels)), Answer::Button(1), "{:?}", a.spec.labels);
         }
+    }
+
+    /// Closing the Exclude warning is Cancel: the setting stays off.
+    #[test]
+    fn closing_the_exclude_warning_cancels() {
+        let a = ask(crate::presence::EXCLUDE_HEADING, crate::presence::EXCLUDE_WARNING, &[crate::presence::EXCLUDE_ACTION, crate::presence::CANCEL], None, Kind::Persistent, Then::ExcludeFromTaskbar);
+        let labels: Vec<&str> = a.spec.labels.iter().map(String::as_str).collect();
+        assert_eq!(on_close(&a.then, crate::prompt_ui::close_index(&labels)), Answer::Button(1));
     }
 
     /// The one exception: closing the quit question copies, since Lose Changes loses the

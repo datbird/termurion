@@ -100,6 +100,8 @@ mod aps_ui;
 mod windows_ui;
 #[cfg(windows)]
 mod chrome_ui;
+mod desktops_ui;
+mod presence_ui;
 #[cfg(windows)]
 mod sizing_ui;
 #[cfg(windows)]
@@ -153,6 +155,7 @@ mod orch_app;
 mod orch_dispatch;
 mod orch_watch_app;
 mod chat_session_app;
+mod transparency_ui;
 mod chat_engine;
 mod ai_tools_app;
 mod ai_exec_app;
@@ -176,6 +179,10 @@ pub enum UserEvent {
     Menu(String),
     /// A notification was clicked.
     NotificationClicked,
+    /// The monitors or a work area changed.
+    DisplayChanged,
+    /// The notification area icon was clicked (true for a right click).
+    Tray(bool),
     /// A shell's foreground job changed.
     JobsChanged,
     /// A system-wide hotkey was pressed (the ids of every hotkey it matched).
@@ -262,16 +269,54 @@ enum Drag {
     Title { pane: PaneId, from: (f32, f32) },
 }
 
+/// One wgpu instance with its adapter, device and queue.
+#[derive(Clone)]
+struct GpuHandles {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+
+/// The second instance (DX12 with DirectComposition swapchains) that serves only windows that need alpha.
+type AlphaGpu = GpuHandles;
+
 struct Gpu {
     surface: wgpu::Surface<'static>,
+    /// The primary instance, adapter, device and queue (the first window's): every egui window, prompt
+    /// and new opaque window takes its handles from here, whatever kind this window's own surface is.
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     renderer: Renderer,
     instance: wgpu::Instance,
+    /// Set on a window that needs alpha: the handles its surface and renderer were made on.
+    alpha: Option<AlphaGpu>,
     // Dropped last, after the surface.
     window: Arc<Window>,
+}
+
+impl Gpu {
+    /// The instance this window's surface was made on.
+    fn render_instance(&self) -> &wgpu::Instance {
+        self.alpha.as_ref().map_or(&self.instance, |a| &a.instance)
+    }
+
+    /// The device its renderer draws on.
+    fn render_device(&self) -> &wgpu::Device {
+        self.alpha.as_ref().map_or(&self.device, |a| &a.device)
+    }
+
+    /// The queue that presents its surface.
+    /// The adapter its surface was made against.
+    fn render_adapter(&self) -> &wgpu::Adapter {
+        self.alpha.as_ref().map_or(&self.adapter, |a| &a.adapter)
+    }
+
+    fn render_queue(&self) -> &wgpu::Queue {
+        self.alpha.as_ref().map_or(&self.queue, |a| &a.queue)
+    }
 }
 
 pub struct App {
@@ -414,6 +459,20 @@ pub struct App {
     /// The current window's frame before a vertical Window > Zoom, which the next Zoom
     /// restores (a full Zoom maximizes, and Windows keeps that frame itself).
     zoom_restore: Option<Rect>,
+    /// Which kind of surface this window was made with (decided at creation).
+    win_alpha_surface: crate::transparency::SurfaceKind,
+    /// The current window's Use Transparency toggle.
+    win_transparency: crate::transparency::WinTransparency,
+    /// The current window failed to become an alpha window.
+    win_alpha_failed: bool,
+    /// The current window follows the current desktop (Space is All Desktops).
+    win_follow_desktop: bool,
+    /// The monitor (primary first) the current window's profile anchors it to (`placement::anchor`).
+    win_anchor: Option<usize>,
+    /// DWM was last told this window's backdrop is blurred (the frame is extended); `set_blur` runs on a change.
+    blur_applied: bool,
+    /// The look `presence_tick` last applied to the current window.
+    look_seen: Option<crate::presence::Look>,
     /// The current window's toolbelt.
     belt: toolbelt_ui::Belt,
     /// Bumped when something a toolbelt tool shows changes (`tools_changed`).
@@ -793,6 +852,26 @@ pub struct App {
     state_debounce: crate::restore_state::Debounce,
     state_frozen: bool,
     focus_lost: bool,
+    /// The shell's virtual desktop manager, made on first use (13g); `desktops_tried` is set
+    /// once the attempt was made, so a machine without one is asked only once.
+    desktops: Option<crate::desktops::win::Manager>,
+    desktops_tried: bool,
+    /// The missing-desktop notice was shown this run (iTerm2's `dispatch_once`).
+    space_complained: bool,
+    /// When following windows are next checked against the current desktop.
+    desktop_due: Option<Instant>,
+    /// A window activated on its numbered desktop, checked once `SWITCH_RECHECK` later: its HWND, the Space, when.
+    switch_recheck: Option<(isize, i64, Instant)>,
+    /// The failed switch was logged this run.
+    switch_logged: bool,
+    /// When the windows refit after a display change (`UpdateScreenParamsDelay` after the last message).
+    display_due: Option<Instant>,
+    /// The setting is confirmed (the warning answered); the warning shows only while it is not.
+    ui_element_confirmed: bool,
+    /// Tandem is acting as a UI element now (`presence::is_ui_element`).
+    ui_element_now: bool,
+    /// The notification area icon is added (app-wide).
+    tray_on: bool,
     /// The font settings the renderer last loaded.
     font_sig: String,
     /// Cursor blink phase, and when it last flipped.
@@ -1193,6 +1272,16 @@ pub struct App {
     prefs_startup: Vec<scripts_alerts::Ask>,
     prefs_reveal: bool,
     prefs_gpu: Option<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)>,
+    /// The second wgpu instance for see-through windows, made on first need (app-wide).
+    alpha_gpu: Option<AlphaGpu>,
+    /// No DX12 adapter answered: every window draws opaque (a banner says so once).
+    transparency_unavailable: bool,
+    /// Windows whose surface kind no longer fits their profiles, recreated on the next pass.
+    alpha_pending: Vec<WindowId>,
+    /// The unavailable banner was shown.
+    transparency_banner: bool,
+    /// The frame just built has a see-through pane (the surface wants a premultiplied mode).
+    frame_alpha: bool,
     /// The custom folder's location as typed at launch; None once it was edited this session,
     /// which skips the quit step (`customFolderChanged`).
     prefs_launch_folder: Option<String>,
@@ -1248,6 +1337,11 @@ pub fn run() {
     if let Some(pid) = wait_pid {
         settings_export_ui::wait_for_pid(pid);
     }
+    // A second bare start while Tandem is excluded from the taskbar is iTerm2's reopen: the
+    // running one takes it as the dock click and this process ends.
+    if crate::presence::forwards_reopen(std::env::args_os().count(), wait_pid.is_some()) && crate::notify::forward_reopen() {
+        return;
+    }
     let event_loop = match EventLoop::<UserEvent>::with_user_event().build() {
         Ok(l) => l,
         Err(e) => return message_box(&format!("Could not start the event loop: {e}")),
@@ -1256,6 +1350,14 @@ pub fn run() {
     let clicks = proxy.clone();
     crate::notify::on_click(Box::new(move || {
         let _ = clicks.lock().map(|p| p.send_event(UserEvent::NotificationClicked));
+    }));
+    let trays = proxy.clone();
+    crate::notify::on_tray(Box::new(move |right| {
+        let _ = trays.lock().map(|p| p.send_event(UserEvent::Tray(right)));
+    }));
+    let displays = proxy.clone();
+    crate::display_watch::on_change(Box::new(move || {
+        let _ = displays.lock().map(|p| p.send_event(UserEvent::DisplayChanged));
     }));
     let job_wake = proxy.clone();
     let jobs = crate::jobwatch::JobWatch::start(Arc::new(move || {
@@ -1398,6 +1500,7 @@ pub fn run() {
     let ai_discovery = crate::ai_discovery::Cache::load(&crate::ai_discovery::default_path());
     let ai_transport: Arc<dyn crate::ai_transport::Transport> = Arc::new(crate::ai_winhttp::WinHttp);
     let composer_worker = crate::composer_worker::Worker::new(notify.clone(), Arc::new(crate::composer_worker::RealFs));
+    let ui_element_confirmed = globals.bool(crate::presence::UI_ELEMENT_KEY);
     let cockpit_view = cockpit_app::initial_view(&globals);
     let mut app = App {
         host,
@@ -1484,6 +1587,13 @@ pub fn run() {
         caption_label_w: 0.0,
         caption_name_w: 0.0,
         zoom_restore: None,
+        win_alpha_surface: Default::default(),
+        win_transparency: crate::transparency::WinTransparency::new(true),
+        win_alpha_failed: false,
+        win_follow_desktop: false,
+        win_anchor: None,
+        blur_applied: false,
+        look_seen: None,
         belt: Default::default(),
         tool_gen: 0,
         belt_keys: Default::default(),
@@ -1668,6 +1778,16 @@ pub fn run() {
         state_debounce: Default::default(),
         state_frozen: second_copy,
         focus_lost: false,
+        desktops: None,
+        desktops_tried: false,
+        space_complained: false,
+        desktop_due: None,
+        switch_recheck: None,
+        switch_logged: false,
+        display_due: None,
+        ui_element_confirmed,
+        ui_element_now: false,
+        tray_on: false,
         font_sig: String::new(),
         profiles_win: None,
         blink_on: true,
@@ -1861,6 +1981,11 @@ pub fn run() {
         prefs_startup,
         prefs_reveal: false,
         prefs_gpu: None,
+        alpha_gpu: None,
+        transparency_unavailable: false,
+        alpha_pending: Vec::new(),
+        transparency_banner: false,
+        frame_alpha: false,
         prefs_launch_folder,
         relaunch_on_exit: false,
         relaunch_due: false,
@@ -1870,6 +1995,8 @@ pub fn run() {
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
     }
+    // Every exit that is not a crash takes the notification area icon with it.
+    crate::notify::remove(0);
     // The restart after Import All Settings and Data: the new Tandem finishes the import.
     if app.relaunch_on_exit {
         drop(app);
@@ -3277,6 +3404,9 @@ impl App {
         // Title bars or the status bar's height or place may have changed (P13, P21): panes
         // gain or lose room in every window, parked ones and their tmux reports too.
         self.relayout_changed_windows();
+        // Disable Transparency or a profile value may have changed the blur.
+        self.sync_blur();
+        self.presence_globals_changed();
     }
 
     /// Starts watching and scanning the Scripts folder the settings name (`FM:236-252`).
@@ -3354,6 +3484,11 @@ impl App {
         self.tmux_save_tab_colors();
         // "Status bar enabled" may have changed for a tmux tab.
         self.tmux_watch_status_all();
+        // A profile edit may make a window need an alpha surface.
+        self.check_alpha_surfaces();
+        self.sync_blur();
+        // A pane's alpha may have changed: the border rule reads it.
+        self.apply_border_everywhere();
         self.redraw();
     }
 
@@ -3513,6 +3648,7 @@ impl App {
             self.tabs.push(Tab { title, ..Tab::new(self.next_tab_id, Layout::new(id), id) });
             self.next_tab_id += 1;
             self.active = self.tabs.len() - 1;
+            self.check_alpha_surfaces();
             self.relayout();
         }
     }
@@ -3550,6 +3686,7 @@ impl App {
             tab.layout.split(target, axis, id);
             tab.focused = id;
             tab.zoomed = None;
+            self.check_alpha_surfaces();
             self.relayout();
         }
     }
@@ -4580,6 +4717,15 @@ impl App {
         let cell = self.cell();
         let palette_bg = self.panes.values().next().map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
         let mut frame = Frame { clear: rgba(palette_bg, 1.0), ..Default::default() };
+        // Only a window made for alpha draws see-through; its panes' alphas come from their profiles.
+        let alphas = self.tabs.get(self.active).map(|t| self.pane_alphas(t)).unwrap_or_default();
+        let see_through = self.win_alpha_surface == crate::transparency::SurfaceKind::Alpha && !self.transparency_unavailable && crate::transparency::needs_alpha(&alphas.iter().map(|(_, a)| *a).collect::<Vec<_>>());
+        self.frame_alpha = see_through;
+        self.warn_transparency_unavailable(&alphas);
+        let mut margin_panes: Vec<(Vec<Rect>, [f32; 4])> = Vec::new();
+        if see_through {
+            frame.clear = [0.0; 4];
+        }
         self.note_tab_changes();
         // A Minimal or Compact window's caption strip is under the tab bar and the sessions.
         self.sync_caption_label();
@@ -4667,7 +4813,18 @@ impl App {
                     let matches = if labeled.is_empty() { self.finds.get(&id).filter(|f| f.open).map(|f| f.results.matches.as_slice()).unwrap_or_default() } else { labeled.as_slice() };
                     let hover = self.hover.filter(|(h, _)| *h == id).map(|(_, m)| m);
                     let notes: Vec<(crate::find::Match, Option<String>)> = self.note_cells(id).into_iter().map(|(m, _, t)| (m, t)).collect();
-                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, undimmed: self.pane_undimmed(id, tab.focused, receives, &bview), key_cursor: self.focused && id == tab.focused && p.at_password_prompt() };
+                    let bg_alpha = if see_through { alphas.iter().find(|(a, _)| *a == id).map_or(1.0, |(_, a)| *a) } else { 1.0 };
+                    let opaque_colors = see_through && self.store.get(&p.profile).is_some_and(|pr| pr.bool("Only The Default BG Color Uses Transparency"));
+                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, undimmed: self.pane_undimmed(id, tab.focused, receives, &bview), key_cursor: self.focused && id == tab.focused && p.at_password_prompt(), bg_alpha, opaque_colors };
+                    if see_through {
+                        // The pane's margins (its rect less the cell grid) carry the default background at the
+                        // pane's alpha; the grid's own background runs cover the rest, one layer per pixel.
+                        let inner = self.inner(rect);
+                        let (cols, lines) = (p.screen.term().columns(), p.screen.term().screen_lines());
+                        let grid = Rect { x: inner.x, y: inner.y, w: cols as f32 * cell.0, h: lines as f32 * cell.1 };
+                        let bg = p.screen.palette.bg;
+                        margin_panes.push((scene::margins(rect, grid), crate::transparency::premultiplied([bg.r, bg.g, bg.b], bg_alpha)));
+                    }
                     // An Auto Composer hides the terminal cursor and the rows it covers.
                     let cover = self.auto_composer_cover(id, rect);
                     let overlay_from = frame.overlay.len();
@@ -4761,6 +4918,13 @@ impl App {
             let (x, y) = self.cursor;
             scene::tab_tooltip(&mut frame, &text, (x, y + TIP_POINTER_PT * self.scale()), Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
         }
+        if see_through {
+            let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
+            let chrome = rgba(palette_bg, 1.0);
+            let mut quads = crate::transparency::backdrop(Rect { x: 0.0, y: 0.0, w: ww, h: wh }, area, chrome, &margin_panes);
+            quads.append(&mut frame.quads);
+            frame.quads = quads;
+        }
         self.attention_due = attention;
         self.block_buttons = block_buttons;
         self.porthole_hits = porthole_hits;
@@ -4791,23 +4955,28 @@ impl App {
         }
         // iTerm2 shows the Leader as sparkles on the cursor; Tandem says so in the title.
         let title = if self.leader_on { format!("[Leader] {title}") } else { title };
+        // A mode change reconfigures the surface once; this frame draws with it.
+        let transparent = self.frame_alpha;
+        self.sync_surface_alpha(transparent);
+        // Tab switches, focus, restore from minimized: the backdrop follows what this frame shows.
+        self.sync_blur();
         let Some(gpu) = self.gpu.as_mut() else { return };
         gpu.window.set_title(&title);
         let texture = match gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) => t,
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
-                gpu.surface.configure(&gpu.device, &gpu.config);
+                gpu.surface.configure(gpu.render_device(), &gpu.config);
                 gpu.window.request_redraw();
                 return;
             }
             wgpu::CurrentSurfaceTexture::Lost => {
-                match gpu.instance.create_surface(gpu.window.clone()) {
+                match gpu.render_instance().create_surface(gpu.window.clone()) {
                     Ok(s) => gpu.surface = s,
                     Err(e) => self.banners.set("gpu", format!("Lost the window surface: {e}")),
                 }
                 if let Some(gpu) = self.gpu.as_mut() {
-                    gpu.surface.configure(&gpu.device, &gpu.config);
+                    gpu.surface.configure(gpu.render_device(), &gpu.config);
                     gpu.window.request_redraw();
                 }
                 return;
@@ -4823,7 +4992,7 @@ impl App {
             self.banners.set("gpu", e);
         }
         if let Some(gpu) = self.gpu.as_ref() {
-            gpu.queue.present(texture);
+            gpu.render_queue().present(texture);
         }
     }
 }
@@ -4905,6 +5074,9 @@ impl ApplicationHandler<UserEvent> for App {
                 self.install_sizing();
                 // A forced Theme's title bar survives system setting changes.
                 self.guard_theme();
+                if let Some(h) = self.hwnd() {
+                    crate::display_watch::watch(h);
+                }
                 self.refresh_caption_frame();
                 self.apply_corners();
                 // The settings folder's questions and failures from the launch.
@@ -5003,6 +5175,11 @@ impl ApplicationHandler<UserEvent> for App {
         if !orphans.is_empty() {
             self.pending_windows.push(windows_ui::NewWindow::Orphans(orphans));
         }
+        if !arranged {
+            // The launch window starts from its first profile's Initial Use Transparency (`PT:864`).
+            let first = self.tabs.first().and_then(|t| t.layout.panes().first().copied()).and_then(|id| self.panes.get(&id)).and_then(|p| self.store.get(&p.profile));
+            self.win_transparency = crate::transparency::WinTransparency::new(crate::transparency::initial_use(first, self.store.default_profile()));
+        }
         self.install_menus();
         // A window the default arrangement filled keeps its frame, style, and locks.
         let steps = crate::winmodel::open_steps(arranged);
@@ -5010,6 +5187,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.place_window();
         } else {
             self.claim_slot();
+            self.anchor_from_profile(startup_hotkey.as_deref());
         }
         if steps.profile_window && startup_hotkey.is_none() {
             self.apply_window_profile(None);
@@ -5025,6 +5203,9 @@ impl ApplicationHandler<UserEvent> for App {
         if steps.profile_style && style != crate::frames::NORMAL {
             self.apply_window_style(style, false);
         }
+        // The first window is made on the primary instance; one whose profiles want alpha is recreated now.
+        self.check_alpha_surfaces();
+        self.alpha_recreate_tick(event_loop);
         // URLs that came with the start or before the window open now, after the first window.
         self.open_pending_urls();
     }
@@ -5096,6 +5277,7 @@ impl ApplicationHandler<UserEvent> for App {
         let composer_due = self.tick_composer();
         self.record_replay_frames();
         let replay_due = self.replay_frame_due();
+        self.alpha_recreate_tick(event_loop);
         self.open_composer_windows(event_loop);
         self.open_jobs_confirm(event_loop);
         self.open_recording_windows(event_loop);
@@ -5161,10 +5343,20 @@ impl ApplicationHandler<UserEvent> for App {
         for (gw, events) in std::mem::take(&mut self.tmux_held_events) {
             self.tmux_events(gw, events, event_loop);
         }
+        if self.display_due.is_some_and(|t| Instant::now() >= t) {
+            self.display_due = None;
+            self.refit_all_windows();
+        }
+        let desktop_due = self.desktop_tick();
+        let ui_element = self.presence_tick();
+        self.tray_tick(ui_element);
+        if self.settings.as_mut().is_some_and(|s| s.take_space_warning()) {
+            self.ask_scripts(scripts_alerts::ask(crate::desktops::SPACES_WARNING_HEADING, crate::desktops::SPACES_WARNING, &["OK"], Some(crate::desktops::SPACES_WARNING_ID), crate::warnings::Kind::Permanent, scripts_alerts::Then::Nothing));
+        }
         let tip_due = self.tick_tab_tip();
         let flash_due = self.tick_tab_flash();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -5218,7 +5410,13 @@ impl ApplicationHandler<UserEvent> for App {
                 return self.run_menu_id(&id, event_loop);
             }
             UserEvent::NotificationClicked => return self.reveal_notified(),
+            UserEvent::Tray(right) => return self.tray_clicked(right, event_loop),
             UserEvent::JobsChanged => return self.jobs_changed(),
+            UserEvent::DisplayChanged => {
+                let delay = crate::placement::display_delay(self.globals.number("UpdateScreenParamsDelay").unwrap_or(1.0));
+                self.display_due = Some(Instant::now() + delay);
+                return;
+            }
             UserEvent::ThemeReset => return self.reapply_forced_theme(),
             UserEvent::Caption(hwnd, e) => return self.caption_event(hwnd, e, event_loop),
             UserEvent::OpenUrl(url) => return self.receive_url(url),
@@ -5362,9 +5560,10 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(g) = self.gpu.as_mut() {
                     g.config.width = w;
                     g.config.height = h;
-                    g.surface.configure(&g.device, &g.config);
+                    g.surface.configure(g.render_device(), &g.config);
                 }
                 self.relayout();
+                self.sync_blur();
                 self.tmux_save_all_windows();
                 // Entering or leaving full screen resizes the window: the border goes or comes back.
                 self.apply_border();
@@ -5527,6 +5726,8 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop) -> Result<Gpu, St
         ..Default::default()
     }))
     .map_err(|e| e.to_string())?;
+    let info = adapter.get_info();
+    eprintln!("renderer adapter: backend={:?} name={} vendor={:#06x} device_type={:?}", info.backend, info.name, info.vendor, info.device_type);
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| e.to_string())?;
     let caps = surface.get_capabilities(&adapter);
     let format = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);
@@ -5537,14 +5738,14 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop) -> Result<Gpu, St
         width: size.width.max(1),
         height: size.height.max(1),
         present_mode: wgpu::PresentMode::Fifo,
-        alpha_mode: caps.alpha_modes[0],
+        alpha_mode: crate::transparency::pick_alpha_mode(&caps.alpha_modes, false),
         view_formats: vec![],
         desired_maximum_frame_latency: 2,
         color_space: wgpu::SurfaceColorSpace::Auto,
     };
     surface.configure(&device, &config);
     let renderer = Renderer::new(&device, &queue, format, FONT, FONT_PX * window.scale_factor() as f32);
-    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, window })
+    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, window })
 }
 
 /// The surface size to use, or None while the window is minimized (0 wide or high).

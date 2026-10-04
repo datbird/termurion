@@ -289,6 +289,8 @@ pub struct WindowFacts {
     pub layout_locked: bool,
     pub percent: (f64, f64),
     pub cells: (u16, u16),
+    /// The window's Use Transparency (`PT:198`); absent in a table that never wrote it.
+    pub use_transparency: Option<bool>,
 }
 
 /// A window table in iTerm2's keys.
@@ -307,6 +309,9 @@ pub fn window(f: WindowFacts, tabs: Vec<Value>) -> Value {
     t.insert("Desired Rows".into(), Value::Integer(f.cells.1 as i64));
     if let Some(x) = f.title {
         t.insert("Title Override".into(), Value::String(x));
+    }
+    if let Some(u) = f.use_transparency {
+        t.insert(crate::transparency::USE_KEY.into(), Value::Boolean(u));
     }
     t.insert("Tabs".into(), Value::Array(tabs));
     Value::Table(t)
@@ -338,6 +343,7 @@ pub fn window_facts(w: &Value) -> WindowFacts {
         layout_locked: b("Layout Locked"),
         percent: (num(w.get("Desired Screen Width Percentage")).unwrap_or(100.0), num(w.get("Desired Screen Height Percentage")).unwrap_or(100.0)),
         cells: (w.get("Desired Columns").and_then(|v| v.as_integer()).unwrap_or(80) as u16, w.get("Desired Rows").and_then(|v| v.as_integer()).unwrap_or(25) as u16),
+        use_transparency: w.get(crate::transparency::USE_KEY).and_then(|v| v.as_bool()),
     }
 }
 
@@ -637,6 +643,18 @@ pub fn change_profile(windows: &mut [Value], profile: &Table) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn arrangement_keeps_use_transparency() {
+        let facts = |u| WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25), use_transparency: u };
+        let w = window(facts(Some(false)), vec![]);
+        assert_eq!(w.get("Use Transparency").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(window_facts(&w).use_transparency, Some(false));
+        assert_eq!(window_facts(&window(facts(Some(true)), vec![])).use_transparency, Some(true));
+        let none = window(facts(None), vec![]);
+        assert!(none.get("Use Transparency").is_none());
+        assert_eq!(window_facts(&none).use_transparency, None);
+    }
+
     const UUID_A: &str = "6F1C2A3B-0000-4000-8000-000000000001";
 
     #[test]
@@ -759,7 +777,7 @@ mod tests {
         assert_eq!(t.get("Is Active").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(t.get("Title Override").and_then(|v| v.as_str()), Some("build"));
         assert!(t.get("Root").is_some());
-        let w = window(WindowFacts { x: 10.0, y: 20.0, w: 800.0, h: 600.0, style: 0, selected_tab: 1, title: None, size_locked: true, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25) }, vec![t.clone(), t]);
+        let w = window(WindowFacts { x: 10.0, y: 20.0, w: 800.0, h: 600.0, style: 0, selected_tab: 1, title: None, size_locked: true, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25), use_transparency: None }, vec![t.clone(), t]);
         for (k, v) in [("X Origin", 10.0), ("Y Origin", 20.0), ("Width", 800.0), ("Height", 600.0)] {
             assert_eq!(w.get(k).and_then(|x| x.as_float()), Some(v), "{k}");
         }
@@ -798,7 +816,7 @@ mod tests {
 
     /// Two windows: S1 beside S2, then S1 alone.
     fn two_windows() -> Vec<Value> {
-        let facts = WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25) };
+        let facts = WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25), use_transparency: None };
         let s = |g: &str| session(80, 24, profile(&[("Guid", "P"), ("Name", "Plain")]), g, Some(r"C:\old"));
         let split = Tree::Split { axis: Axis::Column, ratio: 0.5, a: Box::new(Tree::Leaf(s("S1"))), b: Box::new(Tree::Leaf(s("S2"))) };
         vec![window(facts.clone(), vec![tab(node(&split, 800.0, 600.0), true, None, false, None)]), window(facts, vec![tab(node(&Tree::Leaf(s("S1")), 800.0, 600.0), true, None, false, None)])]
@@ -866,7 +884,7 @@ mod tests {
 
     fn one_window(profile: Table) -> Vec<Value> {
         let tree = Tree::Leaf(session(80, 24, profile, "s", Some("C:\\")));
-        vec![window(WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25) }, vec![tab(node(&tree, 800.0, 600.0), true, None, false, None)])]
+        vec![window(WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25), use_transparency: None }, vec![tab(node(&tree, 800.0, 600.0), true, None, false, None)])]
     }
 
     #[test]
@@ -917,7 +935,7 @@ mod tests {
             t.insert(crate::ssh_jumps::PENDING_JUMPS_KEY.into(), crate::ssh_jumps::jumps_value(&hops));
         }
         let tree = Tree::Leaf(leaf);
-        let windows = vec![window(WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25) }, vec![tab(node(&tree, 800.0, 600.0), true, None, false, None)])];
+        let windows = vec![window(WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25), use_transparency: None }, vec![tab(node(&tree, 800.0, 600.0), true, None, false, None)])];
         let t = trust_text("hops.itermarrangement", &windows);
         assert!(t.contains("Profile \u{201c}Hosts\u{201d} connects through: -p 22 bastion.lan"), "{t}");
         assert!(t.contains("Profile \u{201c}Hosts\u{201d} connects through: evil.example"), "{t}");
@@ -936,7 +954,7 @@ mod tests {
         }
         assert!(profile_of(&leaf).is_none());
         let tree = Tree::Leaf(leaf);
-        let windows = vec![window(WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25) }, vec![tab(node(&tree, 800.0, 600.0), true, None, false, None)])];
+        let windows = vec![window(WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25), use_transparency: None }, vec![tab(node(&tree, 800.0, 600.0), true, None, false, None)])];
         let t = trust_text("hops.itermarrangement", &windows);
         assert!(t.contains("connects through: -p 22 bastion.lan"), "{t}");
         assert!(!t.contains("It came from another computer."), "{t}");
@@ -1028,7 +1046,7 @@ mod tests {
         assert_eq!(c.get("Color Space").and_then(|v| v.as_str()), Some("sRGB"));
         assert_eq!(tab_pin_group(&t), (true, Some(g.clone())));
         // An arrangement file holds it as a plist; reading one converts color dictionaries.
-        let w = window(WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25) }, vec![t]);
+        let w = window(WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25), use_transparency: None }, vec![t]);
         let back = from_plist(&to_plist(&[w]).unwrap()).unwrap();
         let t2 = &back[0].get("Tabs").and_then(|v| v.as_array()).unwrap()[0];
         assert_eq!(tab_pin_group(t2), (true, Some(g)), "through an arrangement file");

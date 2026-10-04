@@ -8,7 +8,6 @@ use alacritty_terminal::vte::ansi::{CharsetIndex, Handler, StandardCharset};
 use muda::{CheckMenuItem, ContextMenu, Icon, IconMenuItem, IsMenuItem, Menu, MenuItem, MenuTheme, PredefinedMenuItem, Submenu};
 use winit::event_loop::ActiveEventLoop;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use winit::window::Fullscreen;
 
 use super::*;
 use crate::commands;
@@ -42,7 +41,7 @@ const NUDGE: f32 = 0.05;
 
 /// Windows shows "&" as a mnemonic marker, so a literal "&" is written "&&". Mac words read
 /// as Windows ones ("Finder" is "Explorer").
-fn menu_text(item: &Item) -> String {
+pub(super) fn menu_text(item: &Item) -> String {
     let label = menus::shown_label(item.label()).replace('&', "&&");
     match item.chord().filter(menus::reaches_tandem) {
         Some(c) => format!("{label}\t{}", menus::chord_label(&c)),
@@ -250,6 +249,26 @@ impl App {
         self.sync_checks();
         // A fixed Theme forces the window's mode; the bar was attached with `Auto`.
         self.apply_theme();
+    }
+
+    /// A copy of the main menu built from `menus::items()` by the rule `install_menus` uses
+    /// (check marks are not copied): the notification area icon's Main Menu submenu.
+    pub(super) fn main_menu_tree(&self) -> Submenu {
+        let root = Submenu::new("Main Menu", true);
+        let mut subs: HashMap<Vec<String>, Submenu> = HashMap::new();
+        for item in menus::items() {
+            let (parent, entry): (&[String], Box<dyn IsMenuItem>) = if item.separator {
+                (&item.path[..], Box::new(PredefinedMenuItem::separator()))
+            } else if item.submenu {
+                let s = Submenu::new(item.label().replace('&', "&&"), true);
+                subs.insert(item.path.clone(), s.clone());
+                (&item.path[..item.path.len() - 1], Box::new(s))
+            } else {
+                (&item.path[..item.path.len() - 1], Box::new(MenuItem::with_id(item.id(), menu_text(item), Self::menu_enabled(item), None)))
+            };
+            let _ = if parent.is_empty() { root.append(entry.as_ref()) } else if let Some(s) = subs.get(parent) { s.append(entry.as_ref()) } else { continue };
+        }
+        root
     }
 
     /// iTerm2's right-click menu, after `extra` items (label, what it does) and a separator,
@@ -585,7 +604,7 @@ impl App {
         if self.tab_menu_picked(id, event_loop) {
             return;
         }
-        if self.buried_picked(id) || self.script_picked(id) {
+        if self.tray_picked(id) || self.buried_picked(id) || self.script_picked(id) {
             return;
         }
         if self.arrangement_picked(id) || self.window_list_picked(id) {
@@ -718,15 +737,16 @@ impl App {
             "performZoom:" => self.zoom_window(),
             "toggleFullScreenMode:" => {
                 let entering = window.as_ref().is_some_and(|w| w.fullscreen().is_none());
-                toggle_fullscreen(window.as_deref());
                 // The border goes in full screen and comes back after it, size change or not.
-                self.apply_border();
+                self.toggle_fullscreen();
                 // Entering full screen flashes the tab bar (`PseudoTerminal+WindowStyle.m:857`).
                 if entering {
                     self.flash_tab_bar();
                 }
             }
             "toggleFullScreenTabBar:" => self.toggle_full_screen_tab_bar(),
+            "toggleUseTransparency:" => self.toggle_use_transparency(),
+            "toggleDisableTransparencyForActiveWindow:" => self.toggle_disable_for_key_window(),
             "setWindowStyle:" => {
                 if let Some((id, _)) = crate::frames::MENU.iter().find(|(_, n)| *n == label) {
                     self.apply_window_style(*id, true);
@@ -1479,12 +1499,6 @@ impl App {
     }
 }
 
-pub(super) fn toggle_fullscreen(window: Option<&Window>) {
-    if let Some(w) = window {
-        w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) });
-    }
-}
-
 pub(super) fn info_box(text: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK, MessageBoxW};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
@@ -1505,6 +1519,12 @@ pub(super) fn window_list(entries: &[(u64, usize, String, String)], focused: Opt
     sorted.into_iter().map(|(k, n, text, title)| (*k, crate::wintitle::menu_entry(text, title, include, tag, *n), focused == Some(*k))).collect()
 }
 
+/// The notification area icon's window list: (menu id, text) for every window, the same ids the
+/// Window menu uses so a pick runs `window_list_picked`.
+pub(super) fn tray_window_items(entries: &[(u64, usize, String, String)], focused: Option<u64>, include: bool, tag: i64) -> Vec<(String, String)> {
+    window_list(entries, focused, include, tag).into_iter().map(|(k, text, _)| (format!("{}{k}", crate::wintitle::LIST_PREFIX), text)).collect()
+}
+
 /// "Restart session?" (`PT:2855-2866`): the object API with no cancel label, so Cancel may be
 /// remembered, as in iTerm2.
 pub(super) fn restart_spec() -> crate::warnings::Spec {
@@ -1522,6 +1542,19 @@ pub(super) fn restart_spec() -> crate::warnings::Spec {
 
 #[cfg(test)]
 mod tests {
+
+    /// The notification area icon lists every window, minimized or hidden or excluded from the
+    /// taskbar, so none is without a way back (Task 8 review).
+    #[test]
+    fn tray_lists_every_window() {
+        let entries = vec![(7, 1, "one".to_string(), "one".to_string()), (9, 2, "two".to_string(), "two".to_string()), (4, 3, "three".to_string(), "three".to_string())];
+        let items = super::tray_window_items(&entries, Some(9), false, 0);
+        assert_eq!(items.len(), 3);
+        for (k, _, _, _) in &entries {
+            assert!(items.iter().any(|(id, _)| id == &format!("{}{k}", crate::wintitle::LIST_PREFIX)), "{k}");
+        }
+        assert!(super::tray_window_items(&[], None, false, 0).is_empty());
+    }
     use crate::warnings::{Kind, checkbox_label};
 
     /// `restartSessionWithConfirmation:` (`PT:2848-2870`): built with the object API, which

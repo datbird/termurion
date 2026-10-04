@@ -72,7 +72,7 @@ pub(super) struct WinSlot {
     wheel_acc: f32,
     wheel_acc_x: f32,
     font_sig: String,
-    win_style: i64,
+    pub(super) win_style: i64,
     win_slot: Option<(String, u32)>,
     win_locks: crate::winmodel::Locks,
     pub(super) win_title: Option<String>,
@@ -85,6 +85,20 @@ pub(super) struct WinSlot {
     caption_label_w: f32,
     caption_name_w: f32,
     zoom_restore: Option<Rect>,
+    /// Which kind of surface the window was made with (decided at creation, `transparency::SurfaceKind`).
+    pub(super) win_alpha_surface: crate::transparency::SurfaceKind,
+    /// The window's Use Transparency toggle and its full screen bookkeeping.
+    pub(super) win_transparency: crate::transparency::WinTransparency,
+    /// Making this window an alpha window failed once: it stays opaque and is not tried again.
+    pub(super) win_alpha_failed: bool,
+    /// The window follows the current desktop (its profile's Space is All Desktops).
+    pub(super) win_follow_desktop: bool,
+    /// The monitor this window's profile anchors it to (`placement::anchor`).
+    pub(super) win_anchor: Option<usize>,
+    /// DWM was last told this window's backdrop is blurred (the frame is extended).
+    pub(super) blur_applied: bool,
+    /// The taskbar and Alt+Tab look `presence_tick` last applied (winit's skip is set on a change only).
+    pub(super) look_seen: Option<crate::presence::Look>,
     mru: Mru,
     mru_mods: Option<Mods>,
     laid_out: Option<crate::statusbar_layout::Room>,
@@ -173,6 +187,13 @@ impl WinSlot {
             caption_label_w: 0.0,
             caption_name_w: 0.0,
             zoom_restore: None,
+            win_alpha_surface: Default::default(),
+            win_transparency: crate::transparency::WinTransparency::new(true),
+            win_alpha_failed: false,
+            win_follow_desktop: false,
+            win_anchor: None,
+            blur_applied: false,
+            look_seen: None,
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
@@ -278,6 +299,13 @@ impl App {
         swap(&mut self.caption_label_w, &mut s.caption_label_w);
         swap(&mut self.caption_name_w, &mut s.caption_name_w);
         swap(&mut self.zoom_restore, &mut s.zoom_restore);
+        swap(&mut self.win_alpha_surface, &mut s.win_alpha_surface);
+        swap(&mut self.win_transparency, &mut s.win_transparency);
+        swap(&mut self.win_alpha_failed, &mut s.win_alpha_failed);
+        swap(&mut self.win_follow_desktop, &mut s.win_follow_desktop);
+        swap(&mut self.win_anchor, &mut s.win_anchor);
+        swap(&mut self.blur_applied, &mut s.blur_applied);
+        swap(&mut self.look_seen, &mut s.look_seen);
         swap(&mut self.mru, &mut s.mru);
         swap(&mut self.mru_mods, &mut s.mru_mods);
         swap(&mut self.laid_out, &mut s.laid_out);
@@ -470,13 +498,23 @@ impl App {
             use winit::platform::windows::WindowAttributesExtWindows;
             attrs = attrs.with_visible(false).with_skip_taskbar(true);
         }
-        let made = event_loop.create_window(attrs).map_err(|e| e.to_string()).and_then(|w| {
-            let window = Arc::new(w);
-            match self.gpu.as_ref() {
-                Some(g) => init_gpu_shared(window, g),
-                None => init_gpu(window, event_loop),
+        // A window whose profiles want transparency is made for alpha (its surface cannot change later).
+        let mut kind = self.surface_kind_for(&first);
+        let made = loop {
+            let mut a = attrs.clone();
+            if kind == crate::transparency::SurfaceKind::Alpha {
+                use winit::platform::windows::WindowAttributesExtWindows;
+                a = a.with_no_redirection_bitmap(true);
             }
-        });
+            let made = event_loop.create_window(a).map_err(|e| e.to_string()).and_then(|w| self.gpu_for(event_loop, Arc::new(w), kind));
+            // No second instance on this machine: the window is made again, opaque.
+            if made.is_err() && kind == crate::transparency::SurfaceKind::Alpha {
+                self.transparency_unavailable = true;
+                kind = crate::transparency::SurfaceKind::Opaque;
+                continue;
+            }
+            break made;
+        };
         let gpu = match made {
             Ok(g) => g,
             Err(e) => {
@@ -498,11 +536,15 @@ impl App {
         let previous = self.current_window();
         let id = gpu.window.id();
         let mut slot = WinSlot::new(gpu);
+        slot.win_alpha_surface = kind;
         self.swap_live(&mut slot);
         // Edge drags snap to the cell grid, and follow AllowLiveResize.
         self.install_sizing();
         // A forced Theme's title bar survives system setting changes.
         self.guard_theme();
+        if let Some(h) = self.hwnd() {
+            crate::display_watch::watch(h);
+        }
         // iTerm2 reads it once per tab bar it makes: a change affects new windows only.
         self.tab_selects_on_down = self.globals.bool("SelectsTabsOnMouseDown");
         // A new window's side bar starts at `LeftTabBarWidth`.
@@ -520,12 +562,16 @@ impl App {
             NewWindow::Orphans(_) => None,
             NewWindow::Hotkey(g, _) | NewWindow::HotkeyRestored(g, _) => Some(g.clone()),
         };
+        // A new window's Use Transparency is the first profile's Initial Use Transparency (`PT:864`).
+        let initial = crate::transparency::initial_use(first_guid.as_deref().and_then(|g| self.store.get(g)), self.store.default_profile());
+        self.win_transparency = crate::transparency::WinTransparency::new(initial);
         self.apply_fonts();
         self.size_window(first_guid.as_deref());
         let style = first_guid.as_deref().and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).int("Window Type");
         // A git command's single-use window is never full screen (`iTermController.m`
         // `openSingleUseWindowWithCommand:` uses the default window type instead).
         let style = if self.start_command_override.is_some() && matches!(style, crate::frames::FULL_SCREEN | crate::frames::LION_FULL_SCREEN) { crate::frames::NORMAL } else { style };
+        let applies_space = matches!(first, NewWindow::Profile(_) | NewWindow::Hotkey(..));
         let arranged = matches!(first, NewWindow::Arrangement(..) | NewWindow::Restored(_) | NewWindow::HotkeyRestored(..));
         let torn_at = match &first {
             NewWindow::TornOff(_, at) => Some(*at),
@@ -588,6 +634,15 @@ impl App {
             self.place_window();
         } else {
             self.claim_slot();
+        }
+        if torn_at.is_some() || !(steps.place && !hotkey) {
+            self.anchor_from_profile(first_guid.as_deref());
+        }
+        // The profile's Space puts a new window on a desktop (P8: a profile launch or a hotkey
+        // window's first opening, never an arrangement, restoration, tab or orphan window).
+        if applies_space {
+            let space = first_guid.as_deref().and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).int("Space");
+            self.apply_space(space);
         }
         if steps.profile_style && style != crate::frames::NORMAL {
             self.apply_window_style(style, false);
@@ -863,6 +918,13 @@ impl WinSlot {
             caption_label_w: 0.0,
             caption_name_w: 0.0,
             zoom_restore: None,
+            win_alpha_surface: Default::default(),
+            win_transparency: crate::transparency::WinTransparency::new(true),
+            win_alpha_failed: false,
+            win_follow_desktop: false,
+            win_anchor: None,
+            blur_applied: false,
+            look_seen: None,
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
@@ -892,14 +954,14 @@ pub(super) fn init_gpu_shared(window: Arc<Window>, from: &Gpu) -> Result<Gpu, St
         width: size.width.max(1),
         height: size.height.max(1),
         present_mode: wgpu::PresentMode::Fifo,
-        alpha_mode: caps.alpha_modes[0],
+        alpha_mode: crate::transparency::pick_alpha_mode(&caps.alpha_modes, false),
         view_formats: vec![],
         desired_maximum_frame_latency: 2,
         color_space: wgpu::SurfaceColorSpace::Auto,
     };
     surface.configure(&from.device, &config);
     let renderer = Renderer::new(&from.device, &from.queue, format, FONT, FONT_PX * window.scale_factor() as f32);
-    Ok(Gpu { surface, adapter: from.adapter.clone(), device: from.device.clone(), queue: from.queue.clone(), config, renderer, instance: from.instance.clone(), window })
+    Ok(Gpu { surface, adapter: from.adapter.clone(), device: from.device.clone(), queue: from.queue.clone(), config, renderer, instance: from.instance.clone(), alpha: None, window })
 }
 
 impl App {
@@ -1019,12 +1081,12 @@ impl App {
     /// Next Window and Previous Window: by number, wrapping.
     pub(super) fn step_window(&mut self, forward: bool) {
         let Some(k) = self.windows.current() else { return };
-        // Hidden hotkey windows take no part.
+        // Hidden hotkey windows take no part, nor open ones when excluded from cycling.
         let mut at = k;
         let next = loop {
             let n = if forward { self.registry.next(at) } else { self.registry.previous(at) };
             match n {
-                Some(n) if n != k && self.hidden_hotkey_key(n) => at = n,
+                Some(n) if n != k && self.cycling_skips_key(n) => at = n,
                 other => break other,
             }
         };
@@ -1327,6 +1389,10 @@ impl App {
         };
         let f = frames::frame(&input);
         let w = &g.window;
+        // Entering or leaving full screen runs the Use Transparency state machine (`PTWS:587-600`).
+        if f.fullscreen != w.fullscreen().is_some() {
+            self.win_transparency.before_fullscreen_toggle(w.fullscreen().is_some(), self.globals.bool(crate::transparency::DISABLE_FULLSCREEN_KEY));
+        }
         if f.fullscreen {
             w.set_fullscreen(Some(Fullscreen::Borderless(w.current_monitor())));
         } else {
@@ -1394,6 +1460,7 @@ impl App {
         let profile = self.store.get(&guid).unwrap_or_else(|| self.store.default_profile());
         let pref = profile.get("Screen").and_then(|v| v.as_integer()).unwrap_or(-1);
         let work = placement::screen_for(pref, &monitors, window_monitor, cursor_monitor);
+        self.win_anchor = placement::anchor(pref, monitors.len(), cursor_monitor);
         let saved = self.globals.table(SAVED_FRAMES).get(&placement::slot_key(&guid, slot)).and_then(|v| v.as_array()).and_then(|a| {
             let n: Vec<f32> = a.iter().filter_map(|x| x.as_float().or_else(|| x.as_integer().map(|i| i as f64))).map(|f| f as f32).collect();
             (n.len() == 4).then(|| R { x: n[0], y: n[1], w: n[2], h: n[3] })
@@ -1411,6 +1478,98 @@ impl App {
             let (outer, inner) = (w.outer_size(), w.inner_size());
             let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
             let _ = super::caption_ui::request_inner_size(&w, PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
+        }
+    }
+
+    /// The anchor of a window `place_window` did not place (hotkey, arrangement, torn-off): the
+    /// monitor its profile's Screen names.
+    pub(super) fn anchor_from_profile(&mut self, guid: Option<&str>) {
+        use crate::placement::{self, Rect as R};
+        let monitors: Vec<R> = placement::primary_first(super::requests_ui::work_areas().into_iter().map(to_rect).collect());
+        let Some(g) = self.gpu.as_ref() else { return };
+        let current = Self::outer_rect(g);
+        let inside = |r: &R, x: f32, y: f32| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+        let window_monitor = monitors.iter().position(|m| inside(m, current.x + current.w / 2.0, current.y + current.h / 2.0)).unwrap_or(0);
+        let mut pt = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+        let have_cursor = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) } != 0;
+        let cursor_monitor = if have_cursor { monitors.iter().position(|m| inside(m, pt.x as f32, pt.y as f32)).unwrap_or(window_monitor) } else { window_monitor };
+        let pref = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).get("Screen").and_then(|v| v.as_integer()).unwrap_or(-1);
+        self.win_anchor = placement::anchor(pref, monitors.len(), cursor_monitor);
+    }
+
+    /// After a display change (`applicationDidChangeScreenParameters`, `AD:954-961`): every
+    /// window refits by its style (`canonicalizeWindowFrame`, `PT:5126-5215`), then, with
+    /// `ChaseAnchoredScreen`, an anchored window on another monitor goes back to its anchor.
+    pub(super) fn refit_all_windows(&mut self) {
+        use crate::frames::{self, Refit};
+        use crate::placement::{self, Rect as R};
+        let back = self.current_window();
+        let ids: Vec<WindowId> = self.registry.order().into_iter().filter_map(|k| self.window_id_of_key(k)).collect();
+        for id in ids {
+            if !self.enter(id) {
+                continue;
+            }
+            let Some(g) = self.gpu.as_ref() else { continue };
+            if g.window.is_minimized() == Some(true) {
+                continue;
+            }
+            if let Some(h) = self.hotkey.as_ref() {
+                // A hotkey window is framed by its own style on its profile's screen.
+                let guid = h.guid.clone();
+                let moved = self.move_to_preferred_screen(&guid);
+                // Staying on its screen, its screen may still have changed size.
+                let style = self.win_style;
+                if placement::reframe_hotkey(style, moved) {
+                    self.apply_window_style(style, false);
+                }
+            } else {
+                match frames::refit(self.win_style) {
+                    Refit::Keep => {}
+                    Refit::Recenter => {
+                        if let Some((work, _)) = self.monitor_rects() {
+                            let w = g.window.clone();
+                            let r = frames::recenter(Self::outer_rect(g), work);
+                            super::chrome_ui::set_outer_frame(&w, r);
+                        }
+                    }
+                    Refit::Fit => {
+                        let style = self.win_style;
+                        self.apply_window_style(style, false);
+                    }
+                }
+            }
+            // The frame the old screens held no longer exists.
+            self.zoom_restore = None;
+            if self.globals.bool("ChaseAnchoredScreen") {
+                let monitors: Vec<R> = placement::primary_first(super::requests_ui::work_areas().into_iter().map(to_rect).collect());
+                if let Some(g) = self.gpu.as_ref() {
+                    let outer = Self::outer_rect(g);
+                    let inside = |r: &R, x: f32, y: f32| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+                    let at = monitors.iter().position(|m| inside(m, outer.x + outer.w / 2.0, outer.y + outer.h / 2.0)).unwrap_or(0);
+                    if let (Some(i), Some(from)) = (placement::chase(self.win_anchor, monitors.len(), at), monitors.get(at).copied()) {
+                        let chased = placement::chase_frame(self.win_style, outer, from, monitors[i]);
+                        let w = g.window.clone();
+                        // A maximized window is not moved by position: restore it first, and
+                        // maximize it again on the new monitor unless its style frames it.
+                        let (restore, remaximize) = placement::chase_maximize(chased.refit, w.is_maximized());
+                        if restore {
+                            w.set_maximized(false);
+                        }
+                        w.set_outer_position(PhysicalPosition::new(chased.frame.x.round() as i32, chased.frame.y.round() as i32));
+                        if remaximize {
+                            w.set_maximized(true);
+                        }
+                        // The move canonicalizes again (`PT:5128`): the style frames it on the new screen.
+                        if chased.refit {
+                            let style = self.win_style;
+                            self.apply_window_style(style, false);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(b) = back {
+            self.enter(b);
         }
     }
 

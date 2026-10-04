@@ -343,6 +343,7 @@ mod tests {
             ("NoSyncSuppressedAlertsCatalog", "Warnings", Kind::Dict, Some(toml::Value::Table(toml::Table::new()))),
             ("NoSyncAppSupportMoved", "Warnings", Kind::Bool, bool(false)),
             ("NoSyncAutoProvideConsent", "AI", Kind::Int, int(0)),
+            ("DisableTransparencyForKeyWindow", "Transparency", Kind::Bool, bool(false)),
         ];
         for (key, section, kind, default) in &expect {
             let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));

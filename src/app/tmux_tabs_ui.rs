@@ -392,6 +392,9 @@ impl App {
             w.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
         }
         if size == Some(crate::tmux_persist::WinSize::FullScreen) {
+            if w.fullscreen().is_none() {
+                self.win_transparency.before_fullscreen_toggle(false, self.globals.bool(crate::transparency::DISABLE_FULLSCREEN_KEY));
+            }
             w.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
             // A full screen window has no border.
             self.apply_border();

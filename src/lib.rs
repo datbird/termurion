@@ -9,6 +9,9 @@ pub mod pointer;
 pub mod remap;
 pub mod keyroute;
 pub mod mru;
+pub mod desktops;
+#[cfg(windows)]
+pub mod display_watch;
 pub mod dvr;
 pub mod replay;
 pub mod replay_panel;
@@ -422,3 +425,7 @@ pub mod secret_field;
 pub mod ai_key_ui;
 #[cfg(windows)]
 pub mod ai_engage_ui;
+pub mod transparency;
+pub mod presence;
+#[cfg(windows)]
+pub mod backdrop;

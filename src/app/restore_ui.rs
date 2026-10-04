@@ -23,7 +23,7 @@ impl App {
             return;
         }
         let back = self.current_window();
-        let windows = self.snapshot_all(self.restore_contents());
+        let windows = self.snapshot_all(self.restore_contents(), true);
         if let Some(b) = back {
             self.enter(b);
         }

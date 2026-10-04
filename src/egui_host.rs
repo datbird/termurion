@@ -7,6 +7,16 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 
+/// The egui windows that show a taskbar button (Settings, panels, chat), for `presence_tick`.
+static TASKBAR: std::sync::Mutex<Vec<std::sync::Weak<Window>>> = std::sync::Mutex::new(Vec::new());
+
+/// The tracked windows still open.
+pub fn taskbar_windows() -> Vec<Arc<Window>> {
+    let mut list = TASKBAR.lock().unwrap_or_else(|e| e.into_inner());
+    list.retain(|w| w.strong_count() > 0);
+    list.iter().filter_map(|w| w.upgrade()).collect()
+}
+
 pub struct EguiHost {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
@@ -35,7 +45,14 @@ impl EguiHost {
         h: f64,
     ) -> Result<EguiHost, String> {
         let attrs = Window::default_attributes().with_title(title).with_inner_size(winit::dpi::LogicalSize::new(w, h));
-        Self::open_with(event_loop, instance, adapter, device, queue, attrs)
+        let host = Self::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        host.track_taskbar();
+        Ok(host)
+    }
+
+    /// Lists this window for the taskbar and Alt+Tab exclusion (a window with a taskbar button).
+    pub fn track_taskbar(&self) {
+        TASKBAR.lock().unwrap_or_else(|e| e.into_inner()).push(Arc::downgrade(&self.window));
     }
 
     /// A window made from `attrs` (a popover's: no frame, placed, no taskbar button).
@@ -58,7 +75,8 @@ impl EguiHost {
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: caps.alpha_modes[0],
+            // Explicit: an egui window is never see-through (a visual swapchain lists Auto first).
+            alpha_mode: crate::transparency::pick_alpha_mode(&caps.alpha_modes, false),
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
             color_space: wgpu::SurfaceColorSpace::Auto,

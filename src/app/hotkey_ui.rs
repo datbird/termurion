@@ -135,8 +135,7 @@ impl App {
             }
             self.hotkey = None;
             if let (Some(hwnd), Some(g)) = (self.hwnd(), &self.gpu) {
-                use winit::platform::windows::WindowExtWindows;
-                g.window.set_skip_taskbar(false);
+                // The taskbar button comes back through `presence_tick`.
                 g.window.set_window_level(winit::window::WindowLevel::Normal);
                 g.window.set_visible(true);
                 cloak(hwnd, false);
@@ -271,6 +270,12 @@ impl App {
         let Some(g) = &self.gpu else { return };
         g.window.set_visible(true);
         g.window.set_minimized(false);
+        // A hotkey window shows on the desktop the person is on (iTerm2 opens it in the active
+        // space; its Space only matters for All Desktops). It keeps following only while the
+        // profile's Space is All Desktops; the saved state does not carry the flag.
+        self.win_follow_desktop = self.store.get(&guid).is_some_and(|p| crate::desktops::follows(p.int("Space")));
+        self.follow_now();
+        let Some(g) = &self.gpu else { return };
         g.window.set_window_level(if floats { winit::window::WindowLevel::AlwaysOnTop } else { winit::window::WindowLevel::Normal });
         // The profile's Screen: the window shows on that monitor, in its style's frame there.
         self.move_to_preferred_screen(&guid);
@@ -316,10 +321,11 @@ impl App {
 
     /// Moves the current window onto its profile's Screen (-1: the one with the pointer) and
     /// frames it there by its style.
-    fn move_to_preferred_screen(&mut self, guid: &str) {
+    /// True when the window was moved (and so framed by its style).
+    pub(super) fn move_to_preferred_screen(&mut self, guid: &str) -> bool {
         use crate::placement;
         let monitors: Vec<Rect> = placement::primary_first(super::requests_ui::work_areas().into_iter().map(|(x, y, w, h)| Rect { x: x as f32, y: y as f32, w: w as f32, h: h as f32 }).collect());
-        let Some(g) = &self.gpu else { return };
+        let Some(g) = &self.gpu else { return false };
         let r = Self::outer_rect(g);
         let inside = |m: &Rect, x: f32, y: f32| x >= m.x && x < m.x + m.w && y >= m.y && y < m.y + m.h;
         let window_monitor = monitors.iter().position(|m| inside(m, r.x + r.w / 2.0, r.y + r.h / 2.0)).unwrap_or(0);
@@ -328,13 +334,14 @@ impl App {
         let pref = self.store.get(guid).and_then(|p| p.get("Screen")).and_then(|v| v.as_integer()).unwrap_or(-1);
         let work = placement::screen_for(pref, &monitors, window_monitor, cursor_monitor);
         if inside(&work, r.x + r.w / 2.0, r.y + r.h / 2.0) {
-            return;
+            return false;
         }
         g.window.set_outer_position(winit::dpi::PhysicalPosition::new(work.x.round() as i32, work.y.round() as i32));
         let style = self.win_style;
         if style != crate::frames::NORMAL {
             self.apply_window_style(style, false);
         }
+        true
     }
 
     /// The hidden origin to slide from or to, or None to show and hide at once.
@@ -536,6 +543,13 @@ impl App {
             return self.hotkey.as_ref().is_some_and(|h| !h.shown);
         }
         self.windows.parked().any(|(kk, s)| *kk == k && s.hotkey.as_ref().is_some_and(|h| !h.shown))
+    }
+
+    /// A window Next and Previous Window pass by: a hidden hotkey window, or an open one while
+    /// Hotkey windows are excluded from Cycle Through Windows (P6).
+    pub(super) fn cycling_skips_key(&self, k: u64) -> bool {
+        let state = if self.windows.current() == Some(k) { self.hotkey.as_ref().map(|h| h.shown) } else { self.windows.parked().find(|(kk, _)| **kk == k).and_then(|(_, s)| s.hotkey.as_ref().map(|h| h.shown)) };
+        crate::presence::cycling_skips(state, self.globals.bool(crate::presence::EXCLUDED_FROM_CYCLING_KEY))
     }
 
     /// The app hotkey: Show/hide all windows. Windows has no "hide app", so the terminal

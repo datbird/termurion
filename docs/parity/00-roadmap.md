@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 190 | 109 | 15 |
-| `02-global-settings.md` | 819 | 456 | 67 | 296 |
-| `03-features-and-menus.md` | 644 | 550 | 45 | 49 |
-| Total | 1,777 | 1,196 | 221 | 360 |
+| `01-profile-settings.md` | 315 | 191 | 109 | 15 |
+| `02-global-settings.md` | 819 | 463 | 69 | 287 |
+| `03-features-and-menus.md` | 644 | 551 | 47 | 46 |
+| Total | 1,778 | 1,205 | 225 | 348 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -451,6 +451,29 @@ job or its ancestors (merged with the user's `graphic_icons.json`, `graphic_colo
 image. Duplicate Tab copies every pane next to the original. Nothing of 13d was checked on
 screen during the build. Every kept quirk is listed in `docs/acceptance/m13d-checklist.md` and
 ruled on in `docs/superpowers/rulings/m13d-rulings.txt`.
+Milestone 13g built transparency and desktops (01: Space to have and one row added; 02: 7 rows to have; 03: the
+dock click row to have; eight rows stay partial until the person confirms checklist line 1). A profile's Transparency
+draws its default background and margins at 1 - Transparency over the desktop (per-pixel alpha through a
+DirectComposition swapchain on a second Direct3D 12 renderer instance used only by see-through windows; opaque
+windows keep the original path; the tab bar, status bars, toolbelt, dividers, popups and cursor stay opaque;
+background images stay opaque). Keep background colors opaque keeps colored cells and the selection solid, Win+U
+and View > Disable Transparency for Active Window work per window, and full screen drops it by iTerm2's state
+machine (this also closes 13f's "transparent pane forces the border"). Blur is Windows 11 22H2 acrylic (none on
+older Windows; the radius is stored and shown, with the warning above 26). A window that needs alpha later is
+recreated once with its tabs, panes, position, full screen and topmost state. Space maps to Windows virtual
+desktops (Desktop 1 to 9 in Task View order, All Desktops follows within a second, a missing desktop notifies once),
+and Restore windows to same desktops moves restored windows back. Display changes (WM_DISPLAYCHANGE, work-area
+changes) refit top-of-screen, maximized and full screen windows after UpdateScreenParamsDelay, and
+ChaseAnchoredScreen moves a window back to its profile's screen. Exclude from taskbar and Alt+Tab (with its hotkey
+only variant and HotkeyWindowsExcludedFromCycling) uses tool-window styles and a notification-area icon whose menu
+lists every window, opens Settings, lists buried sessions and quits; the dock click is a left click on that icon.
+The rows that need the person: 01:179 to 01:181, the new rendering row, 02:209, 02:262, 03:157 and 03:158 are partial
+until checklist line 1 (a DirectComposition and an HWND swapchain in one process on the desktop GPU) passes, and
+blur (01:182, checklist line 9) stays partial until acrylic is seen behind the visual swapchain, and Blur Radius (01:183) stays partial because it has no effect; if the line fails they stay partial
+("stored and shown; no see-through rendering on this path"); if it passes they read have (1,199 have, 224 partial in total).
+StatusBarIcon alone decides the icon (iTerm2's rule); with it off, starting Tandem again acts as the dock click. Nothing of 13g was
+checked on screen during the build. Every kept quirk is listed in `docs/acceptance/m13g-checklist.md` and ruled on
+in `docs/superpowers/rulings/m13g-rulings.txt`.
 Milestone 13f built the window chrome, titles and sizing (01: 13 rows to have; 02: 15 rows to
 have and the window number row's note corrected). Titles follow iTerm2's rules: "Allow title setting" off ignores programs' titles, "Each
 tab may have its own window title" off copies a program's title to every session of its window,

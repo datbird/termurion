@@ -39,6 +39,13 @@ impl Burial {
         Some(self.list.remove(i))
     }
 
+    /// Sessions buried from a window that was recreated now name its new key.
+    pub fn rekey(&mut self, old: u64, new: u64) {
+        for b in self.list.iter_mut().filter(|b| b.window == old) {
+            b.window = new;
+        }
+    }
+
     /// The session buried last.
     pub fn newest(&self) -> Option<u64> {
         self.list.last().map(|b| b.pane)

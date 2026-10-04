@@ -1592,13 +1592,13 @@ macos_only = false
 key = "Space"
 tab = "Window"
 section = "Window Style"
-label = "Space"
+label = "Desktop"
 type = "enum"
 default = 0
-choices = [ { value = 0, label = "Current Space" }, { value = -1, label = "All Spaces" }, { value = 1, label = "Space 1" }, { value = 2, label = "Space 2" }, { value = 3, label = "Space 3" }, { value = 4, label = "Space 4" }, { value = 5, label = "Space 5" }, { value = 6, label = "Space 6" }, { value = 7, label = "Space 7" }, { value = 8, label = "Space 8" }, { value = 9, label = "Space 9" } ]
-help = "Picks which macOS Space (virtual desktop) a new window opens on: current, all, or a specific numbered space."
+choices = [ { value = 0, label = "Current Desktop" }, { value = -1, label = "All Desktops" }, { value = 1, label = "Desktop 1" }, { value = 2, label = "Desktop 2" }, { value = 3, label = "Desktop 3" }, { value = 4, label = "Desktop 4" }, { value = 5, label = "Desktop 5" }, { value = 6, label = "Desktop 6" }, { value = 7, label = "Desktop 7" }, { value = 8, label = "Desktop 8" }, { value = 9, label = "Desktop 9" } ]
+help = "Picks which virtual desktop a new window opens on: the current one, all of them (the window follows you to each desktop), or a numbered one in Task View order."
 light_dark = false
-macos_only = true
+macos_only = false
 
 [[setting]]
 key = "Hide After Opening"
@@ -2853,13 +2853,13 @@ macos_only = false
 key = "HotKey Window Dock Click Action"
 tab = "Keys"
 section = "Hotkey Window"
-label = "Hotkey window dock click action"
+label = "On notification area icon click:"
 type = "enum"
 default = 0
 choices = [ { value = 0, label = "Do Not Show" }, { value = 1, label = "Always Show" }, { value = 2, label = "Show If No Other Windows Open" } ]
-help = "Chooses what clicking the Dock icon does regarding the hotkey window."
+help = "What a left click on Tandem's notification area icon does for this hotkey window."
 light_dark = false
-macos_only = true
+macos_only = false
 
 [[setting]]
 key = "HotKey Activated By Modifier"

@@ -144,6 +144,30 @@ pub fn screen_for(pref: i64, monitors: &[Rect], window_monitor: usize, cursor_mo
     }
 }
 
+/// The monitor a window is anchored to for a Screen preference (`PT:567-578`, `PT:15306-15315`):
+/// the n-th monitor when in range, the cursor's for -2, none otherwise.
+pub fn anchor(pref: i64, monitors: usize, cursor_monitor: usize) -> Option<usize> {
+    match pref {
+        -2 => (cursor_monitor < monitors).then_some(cursor_monitor),
+        n if n >= 0 && (n as usize) < monitors => Some(n as usize),
+        _ => None,
+    }
+}
+
+/// The monitor an anchored window should go back to (`PT:5393-5403`): its anchor when that
+/// monitor still exists and the window is on another one.
+pub fn chase(anchor: Option<usize>, monitors: usize, window_monitor: usize) -> Option<usize> {
+    anchor.filter(|a| *a < monitors && *a != window_monitor)
+}
+
+/// `UpdateScreenParamsDelay`: how long a burst of display messages settles before windows refit.
+pub fn display_delay(seconds: f64) -> std::time::Duration {
+    if seconds.is_nan() {
+        return std::time::Duration::from_secs(1);
+    }
+    std::time::Duration::from_secs_f64(seconds.clamp(0.0, 3600.0))
+}
+
 /// Window > Arrange Windows Horizontally: side by side across the work area, left to right
 /// in the order the windows stood, at least 400 wide (more rows when they do not fit);
 /// each keeps its height up to its row's share.
@@ -173,6 +197,39 @@ pub fn arrange_horizontally(work: Rect, windows: &[Rect]) -> Vec<Rect> {
 /// A frame moved to another monitor at the same offset from its top-left.
 pub fn move_to(r: Rect, from: Rect, to: Rect) -> Rect {
     clamp_to_monitors(Rect { x: to.x + (r.x - from.x), y: to.y + (r.y - from.y), ..r }, &[to])
+}
+
+/// After a display change a hotkey window is re-framed by its style when it stayed on its
+/// screen (`moved` false): the screen's size may have changed (`PT:5176-5190`).
+pub fn reframe_hotkey(style: i64, moved: bool) -> bool {
+    !moved && style != crate::frames::NORMAL
+}
+
+/// Where a chased window goes (`PT:5128`: a move to another screen canonicalizes again):
+/// `refit` is true when the style's frame must be applied after the move (edge, maximized).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Chased {
+    pub frame: Rect,
+    pub refit: bool,
+}
+
+/// The frame a window anchored to `to` takes, moved from `from`: a window whose style fits the
+/// screen starts at the new screen's corner at no more than its size (the style then frames it
+/// there), a centered one is centered, any other keeps its offset, clamped.
+pub fn chase_frame(style: i64, outer: Rect, from: Rect, to: Rect) -> Chased {
+    use crate::frames::{self, Refit};
+    match frames::refit(style) {
+        Refit::Fit => Chased { frame: Rect { x: to.x, y: to.y, w: outer.w.min(to.w), h: outer.h.min(to.h) }, refit: true },
+        Refit::Recenter => Chased { frame: frames::recenter(outer, to), refit: false },
+        Refit::Keep => Chased { frame: move_to(outer, from, to), refit: false },
+    }
+}
+
+/// What a chase does to an OS-maximized window: (restore it before it moves, maximize it again on
+/// the new monitor). A maximized window ignores a position; a style that frames the window
+/// itself (`refit`) re-frames it, so only the other styles maximize again.
+pub fn chase_maximize(refit: bool, was_maximized: bool) -> (bool, bool) {
+    (was_maximized, was_maximized && !refit)
 }
 
 #[cfg(test)]
@@ -279,5 +336,68 @@ mod tests {
         let left = Rect { x: -1920.0, y: 0.0, w: 1920.0, h: 1040.0 };
         let primary = Rect { x: 0.0, y: 0.0, w: 2560.0, h: 1400.0 };
         assert_eq!(primary_first(vec![left, primary]), vec![primary, left], "the primary monitor holds (0, 0)");
+    }
+
+    /// `PT:567-578`, `PT:15306-15315`: a Screen preference in range anchors the window, -2
+    /// anchors it to the cursor's monitor, anything else clears the anchor.
+    #[test]
+    fn anchor_follows_iterm2() {
+        assert_eq!(anchor(1, 2, 0), Some(1));
+        assert_eq!(anchor(0, 2, 1), Some(0));
+        assert_eq!(anchor(3, 2, 0), None);
+        assert_eq!(anchor(-1, 2, 0), None);
+        assert_eq!(anchor(-2, 2, 1), Some(1));
+    }
+
+    /// `PT:5393-5403`: only an anchored window on another monitor moves, to its anchor.
+    #[test]
+    fn chase_follows_iterm2() {
+        assert_eq!(chase(Some(1), 2, 0), Some(1));
+        assert_eq!(chase(Some(1), 2, 1), None);
+        assert_eq!(chase(Some(2), 2, 0), None, "the anchored screen is gone");
+        assert_eq!(chase(None, 2, 0), None);
+    }
+
+    /// `AS:485`: `UpdateScreenParamsDelay`, default 1 second; a negative delay is 0.
+    #[test]
+    fn display_delay_follows_iterm2() {
+        use std::time::Duration;
+        assert_eq!(display_delay(1.0), Duration::from_secs(1));
+        assert_eq!(display_delay(0.25), Duration::from_millis(250));
+        assert_eq!(display_delay(-3.0), Duration::ZERO);
+        assert_eq!(display_delay(f64::NAN), Duration::from_secs(1));
+    }
+
+    /// Review of 13e: a hotkey window re-frames after a screen size change; a chase re-fits edge windows.
+    #[test]
+    fn display_refit_follows_iterm2() {
+        use crate::frames::{CENTERED, MAXIMIZED, NORMAL, TOP_PERCENT};
+        assert!(reframe_hotkey(TOP_PERCENT, false));
+        assert!(!reframe_hotkey(TOP_PERCENT, true), "a move already applied the style");
+        assert!(!reframe_hotkey(NORMAL, false));
+        let from = Rect { x: 0.0, y: 0.0, w: 1000.0, h: 800.0 };
+        let to = Rect { x: 1000.0, y: 0.0, w: 1200.0, h: 900.0 };
+        let outer = Rect { x: 100.0, y: 50.0, w: 600.0, h: 400.0 };
+        let fit = chase_frame(MAXIMIZED, outer, from, to);
+        assert!(fit.refit);
+        assert_eq!((fit.frame.x, fit.frame.y), (1000.0, 0.0));
+        let edge = chase_frame(TOP_PERCENT, outer, from, to);
+        assert!(edge.refit);
+        let centered = chase_frame(CENTERED, outer, from, to);
+        assert!(!centered.refit);
+        assert_eq!(centered.frame, Rect { x: 1300.0, y: 250.0, w: 600.0, h: 400.0 });
+        let normal = chase_frame(NORMAL, outer, from, to);
+        assert!(!normal.refit);
+        assert_eq!(normal.frame, Rect { x: 1100.0, y: 50.0, w: 600.0, h: 400.0 });
+    }
+
+    /// A chased window that was OS-maximized is restored before it moves (a maximized window
+    /// ignores a position) and maximized again on the new monitor unless its style re-frames it.
+    #[test]
+    fn chase_keeps_a_maximized_window_maximized() {
+        assert_eq!(chase_maximize(false, true), (true, true), "a normal-style window");
+        assert_eq!(chase_maximize(true, true), (true, false), "the style frames it again");
+        assert_eq!(chase_maximize(false, false), (false, false));
+        assert_eq!(chase_maximize(true, false), (false, false));
     }
 }

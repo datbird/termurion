@@ -626,6 +626,15 @@ default = false
 help = "Draws a border around the window when the OS otherwise would not. This is effective in light mode or when the window contains a transparent pane. Windows 11 draws it; Windows 10 shows none."
 
 [[setting]]
+key = "DisableFullscreenTransparency"
+tab = "Appearance"
+section = "Windows"
+label = "Disable transparency for non-native fullscreen windows by default"
+type = "bool"
+default = false
+help = "Turns off window transparency automatically when a window enters full screen; leaving full screen turns it back on unless you toggled it meanwhile."
+
+[[setting]]
 key = "HideMenuBarInFullscreen"
 tab = "Appearance"
 section = "Windows"
@@ -750,6 +759,15 @@ label = "Only restore hotkey window"
 type = "bool"
 default = false
 help = "Tandem starts with only its hotkey windows. With no hotkey window a window opens anyway, since Windows would show nothing."
+
+[[setting]]
+key = "RestoreWindowsToSameSpaces"
+tab = "General"
+section = "Startup"
+label = "Restore windows to same desktops"
+type = "bool"
+default = false
+help = "When windows are restored at launch, each goes back to the virtual desktop it was on, if that desktop still exists."
 
 [[setting]]
 key = "AlwaysOpenWindowAtStartup"
@@ -3318,6 +3336,24 @@ default = true
 help = "Use the running command's first letter as the tab's default icon if there isn't a built in one.\nThis takes effect when tabs are configured to use built-in icons."
 
 [[setting]]
+key = "UpdateScreenParamsDelay"
+tab = "Advanced"
+section = "General"
+label = "Delay after changing number of screens/resolution until refresh (seconds)."
+type = "float"
+default = 1.0
+help = "Delay after changing number of screens/resolution until refresh (seconds).\nWindows are fitted to the new screens once this long has passed since the last display change."
+
+[[setting]]
+key = "ChaseAnchoredScreen"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Aggressively keep windows on the screen they were configured to be on"
+type = "bool"
+default = false
+help = "Aggressively keep windows on the screen they were configured to be on\nAfter a display change, a window whose profile names a screen moves back to it when it is on another one."
+
+[[setting]]
 key = "NoSyncAutoProvideConsent"
 tab = "Stored"
 section = "AI"
@@ -3406,3 +3442,48 @@ label = "Color of drop target inner border when dragging a split pane."
 type = "string"
 default = "#000000"
 help = "Color of drop target inner border when dragging a split pane.\nShould be a web-style color, #rrggbb. You can also use p3#rrggbb for p3 color space."
+
+[[setting]]
+key = "DisableTransparencyForKeyWindow"
+tab = "Stored"
+section = "Transparency"
+label = "Disable Transparency for Active Window"
+type = "bool"
+default = false
+help = "Forces the focused window to be fully opaque even if its profile uses transparency (View menu)."
+
+[[setting]]
+key = "HideFromDockAndAppSwitcher"
+tab = "Appearance"
+section = "General"
+label = "Exclude from taskbar and Alt+Tab switcher"
+type = "bool"
+default = false
+help = "Tandem's windows get no taskbar button and do not appear in Alt+Tab; a notification area icon gets you back to Settings."
+
+[[setting]]
+key = "UIElementRequiresHotkeys"
+tab = "Appearance"
+section = "General"
+label = "\u2026but only if all windows are hotkey windows"
+type = "bool"
+default = false
+help = "Leaves the taskbar and Alt+Tab only while every open window is a hotkey window."
+
+[[setting]]
+key = "HotkeyWindowsExcludedFromCycling"
+tab = "Advanced"
+section = "General"
+label = "Hotkey windows are excluded from Cycle Through Windows."
+type = "bool"
+default = false
+help = "Hotkey windows are excluded from Cycle Through Windows."
+
+[[setting]]
+key = "StatusBarIcon"
+tab = "Advanced"
+section = "General"
+label = "Add notification area icon when excluded from taskbar?"
+type = "bool"
+default = true
+help = "Add notification area icon when excluded from taskbar?\nWhen you turn on \u201cExclude from taskbar and Alt+Tab switcher\u201d a notification area icon is added so you can switch the setting back off. Disable this to remove the icon. Doing so makes it very hard to get to Settings. You must restart Tandem after changing this setting."

@@ -154,6 +154,30 @@ pub fn unthemed(style: i64) -> i64 {
     }
 }
 
+/// What a display change does to a window of a type (`canonicalizeWindowFrame`,
+/// `PT:5144-5215`): normal, no-title-bar and accessory windows keep their frame, centered ones
+/// center again keeping their size, every other type takes its canonical frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refit {
+    Keep,
+    Recenter,
+    Fit,
+}
+
+pub fn refit(style: i64) -> Refit {
+    match unthemed(style) {
+        NORMAL | NO_TITLE_BAR | ACCESSORY => Refit::Keep,
+        CENTERED | CENTERED_NO_TITLE_BAR => Refit::Recenter,
+        _ => Refit::Fit,
+    }
+}
+
+/// A frame centered in a work area, keeping its size up to the work area's.
+pub fn recenter(current: Rect, work: Rect) -> Rect {
+    let (w, h) = (current.w.min(work.w), current.h.min(work.h));
+    Rect { x: work.x + ((work.w - w) / 2.0).floor(), y: work.y + ((work.h - h) / 2.0).floor(), w, h }
+}
+
 /// The theme's form of a type (`iTermThemedWindowType`, `ITAddressBookMgr.m:120-175`): under
 /// the Compact and Minimal themes Normal, Maximized and Centered become their Compact forms,
 /// and back under the others; every other type is itself.
@@ -376,5 +400,34 @@ mod tests {
         assert_eq!(store_id(CENTERED, false, false), CENTERED);
         assert_eq!(name(TOP_CELLS), "Top of Screen");
         assert_eq!(name(TOP_PERCENT), "Full-Width Top of Screen");
+    }
+
+    /// `PT:5144-5215` (`canonicalizeWindowFrame`): normal and no-title-bar windows keep their
+    /// frame, centered ones re-center, maximized and edge windows take the canonical frame.
+    #[test]
+    fn refit_follows_iterm2() {
+        for s in [NORMAL, NO_TITLE_BAR] {
+            assert_eq!(refit(s), Refit::Keep, "{s}");
+        }
+        for s in [CENTERED, CENTERED_NO_TITLE_BAR] {
+            assert_eq!(refit(s), Refit::Recenter, "{s}");
+        }
+        for s in [MAXIMIZED, TOP_PERCENT, BOTTOM_PERCENT, LEFT_PERCENT, RIGHT_PERCENT, TOP_CELLS, BOTTOM_CELLS, LEFT_CELLS, RIGHT_CELLS, FULL_SCREEN, LION_FULL_SCREEN] {
+            assert_eq!(refit(s), Refit::Fit, "{s}");
+        }
+        assert_eq!(refit(ACCESSORY), Refit::Keep);
+        // A themed id follows its base.
+        assert_eq!(refit(COMPACT), Refit::Keep);
+        assert_eq!(refit(COMPACT_CENTERED), Refit::Recenter);
+        assert_eq!(refit(COMPACT_MAXIMIZED), Refit::Fit);
+    }
+
+    /// A centered window keeps its size and is centered in its monitor's work area (`PT:5160-5172`).
+    #[test]
+    fn recenter_keeps_size() {
+        let work = Rect { x: -1920.0, y: 0.0, w: 1920.0, h: 1040.0 };
+        assert_eq!(recenter(Rect { x: 0.0, y: 0.0, w: 600.0, h: 400.0 }, work), Rect { x: -1260.0, y: 320.0, w: 600.0, h: 400.0 });
+        let work = Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1040.0 };
+        assert_eq!(recenter(Rect { x: 5.0, y: 5.0, w: 2000.0, h: 1200.0 }, work), work, "clamped to the work area");
     }
 }

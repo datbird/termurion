@@ -104,8 +104,10 @@ impl App {
         self.relayout();
     }
 
-    /// Session > Buried Sessions: the buried sessions, then the hidden tmux windows.
-    pub(super) fn refresh_buried_menu(&mut self) {
+    /// The Buried Sessions entries: the buried sessions, then the hidden tmux windows, as
+    /// (menu id, label); an empty id is a separator. The menu bar and the notification area
+    /// icon's menu both list these.
+    pub(super) fn buried_entries(&self) -> Vec<(muda::MenuId, String)> {
         let mut items: Vec<(String, String)> = self.buried.items().into_iter().map(|(p, n)| (format!("{BURIED_ID}{p}"), n)).collect();
         let prefix = self.globals.string("tmuxTitlePrefix");
         let mut gws: Vec<PaneId> = self.tmux.keys().copied().collect();
@@ -123,6 +125,12 @@ impl App {
             items.push((String::new(), String::new()));
         }
         items.extend(tmux_items);
+        items.into_iter().map(|(id, label)| (muda::MenuId::new(id), label)).collect()
+    }
+
+    /// Session > Buried Sessions: rebuilt from `buried_entries`.
+    pub(super) fn refresh_buried_menu(&mut self) {
+        let items: Vec<(String, String)> = self.buried_entries().into_iter().map(|(id, label)| (id.0, label)).collect();
         let Some(bar) = &mut self.menu_bar else { return };
         if bar.buried_items == items {
             return;

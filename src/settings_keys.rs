@@ -1062,6 +1062,10 @@ pub fn row_enabled(g: &Globals, key: &str) -> bool {
         "FlashTabBarInFullscreen" => !g.bool("ShowFullScreenTabBar") || g.bool("HideTab"),
         // The second title bar row follows the first (`APV:228-231`).
         "ShowPaneTitlesEvenIfOnlyOnePane" => g.bool("ShowPaneTitles"),
+        // Enabled only under the system restore policy (`GP:3496-3506`).
+        "RestoreWindowsToSameSpaces" => crate::desktops::restore_row_enabled(g.bool("OpenArrangementAtStartup"), g.bool("OpenNoWindowsAtStartup")),
+        // Narrows the first (`APV:285-290`).
+        crate::presence::REQUIRES_HOTKEYS_KEY => g.bool(crate::presence::UI_ELEMENT_KEY),
         "PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges" => g.bool("PreserveWindowSizeWhenTabBarVisibilityChanges"),
         _ => true,
     }
@@ -1823,6 +1827,20 @@ mod tests {
     }
 
     #[test]
+    fn restore_spaces_row_follows_windows() {
+        let s = schema::find_global("RestoreWindowsToSameSpaces").unwrap();
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.label.as_str()), ("General", "Startup", "Restore windows to same desktops"));
+        assert_eq!(s.kind, Kind::Bool);
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        let mut g = Globals::empty(std::path::Path::new("restore-spaces-test.toml"));
+        for (arr, none) in [(false, false), (true, false), (false, true), (true, true)] {
+            g.set("OpenArrangementAtStartup", Value::Boolean(arr));
+            g.set("OpenNoWindowsAtStartup", Value::Boolean(none));
+            assert_eq!(row_enabled(&g, "RestoreWindowsToSameSpaces"), crate::desktops::restore_row_enabled(arr, none));
+        }
+    }
+
+    #[test]
     fn scripts_folder_rows_follow_iterm2() {
         let use_custom = schema::find_global("UseCustomScriptsFolder").unwrap();
         assert_eq!((use_custom.tab.as_str(), use_custom.section.as_str(), use_custom.label.as_str()), ("General", "Python API", "Custom Python API Scripts Folder"));
@@ -2265,6 +2283,17 @@ mod tests {
         assert_eq!(row.kind, Kind::Float);
         assert_eq!(row.default, Some(Value::Float(150.0)));
         assert_eq!(row.label, "Left (side) tab bar width");
+    }
+
+    #[test]
+    fn transparency_globals_follow_iterm2() {
+        let s = schema::find_global("DisableFullscreenTransparency").unwrap();
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Appearance", "Windows", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        assert_eq!(s.label, "Disable transparency for non-native fullscreen windows by default");
+        let s = schema::find_global("DisableTransparencyForKeyWindow").unwrap();
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), (crate::advanced_pane::STORED_TAB, "Transparency", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
     }
 
     #[test]
@@ -2861,5 +2890,49 @@ mod tests {
             assert_eq!(s.default, Some(Value::Boolean(true)), "{key}");
             assert_eq!(s.label, label, "{key}");
         }
+    }
+
+    /// `AS:485`, `AS:920`: the display change Advanced rows.
+    #[test]
+    fn display_rows_follow_iterm2() {
+        let d = schema::find_global("UpdateScreenParamsDelay").expect("UpdateScreenParamsDelay");
+        assert_eq!((d.tab.as_str(), d.section.as_str(), d.kind), ("Advanced", "General", Kind::Float));
+        assert_eq!(d.default, Some(Value::Float(1.0)));
+        assert_eq!(d.label, "Delay after changing number of screens/resolution until refresh (seconds).");
+        let c = schema::find_global("ChaseAnchoredScreen").expect("ChaseAnchoredScreen");
+        assert_eq!((c.tab.as_str(), c.section.as_str(), c.kind), ("Advanced", "Experimental Features", Kind::Bool));
+        assert_eq!(c.default, Some(Value::Boolean(false)));
+        assert_eq!(c.label, "Aggressively keep windows on the screen they were configured to be on");
+    }
+
+    /// `APV:285-290`, `AS:520`: the presence rows.
+    #[test]
+    fn presence_rows_follow_iterm2() {
+        let rows = [
+            ("HideFromDockAndAppSwitcher", "Appearance", "Exclude from taskbar and Alt+Tab switcher"),
+            ("UIElementRequiresHotkeys", "Appearance", "\u{2026}but only if all windows are hotkey windows"),
+            ("HotkeyWindowsExcludedFromCycling", "Advanced", "Hotkey windows are excluded from Cycle Through Windows."),
+        ];
+        for (key, tab, label) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), (tab, "General", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(false)), "{key}");
+            assert_eq!(s.label, label, "{key}");
+        }
+        let mut g = Globals::empty(std::path::Path::new("presence-rows-test.toml"));
+        assert!(!row_enabled(&g, "UIElementRequiresHotkeys"));
+        g.set("HideFromDockAndAppSwitcher", Value::Boolean(true));
+        assert!(row_enabled(&g, "UIElementRequiresHotkeys"));
+        assert!(row_enabled(&g, "HideFromDockAndAppSwitcher"));
+    }
+
+    /// `AS:508`, Mac words replaced.
+    #[test]
+    fn status_bar_icon_row_follows_iterm2() {
+        let s = schema::find_global("StatusBarIcon").expect("StatusBarIcon");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(true)));
+        assert_eq!(s.label, "Add notification area icon when excluded from taskbar?");
+        assert_eq!(s.help, "Add notification area icon when excluded from taskbar?\nWhen you turn on \u{201c}Exclude from taskbar and Alt+Tab switcher\u{201d} a notification area icon is added so you can switch the setting back off. Disable this to remove the icon. Doing so makes it very hard to get to Settings. You must restart Tandem after changing this setting.");
     }
 }

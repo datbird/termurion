@@ -135,6 +135,12 @@ pub fn default_fits(s: &Setting) -> bool {
 mod tests {
     use super::*;
 
+    /// Invariant 6: no raw non-ASCII ellipsis in the schema (labels use escapes).
+    #[test]
+    fn global_schema_has_no_raw_ellipsis() {
+        assert!(!include_str!("../schema/global.toml").contains('\u{2026}'));
+    }
+
     #[test]
     fn loads_every_setting() {
         assert!(profile().len() >= 242, "{}", profile().len());

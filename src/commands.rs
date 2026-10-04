@@ -38,7 +38,7 @@ pub const DONE: &[&str] = &[
     "openSplitHorizontallySheet:", "openSplitVerticallySheet:", "saveContents:", "saveDocumentAs:",
     "closeCurrentSession:", "closeTerminalWindow:", "closeCurrentTab:", "copy:", "paste:|Paste",
     "detachTmux:", "forceDetachTmux:", "newTmuxWindow:", "newTmuxTab:", "toggleTmuxPausePane:", "openDashboard:", "revealCockpit:", "bury:",
-    "pasteSelection:", "selectAll:", "clearBuffer:", "clearScrollbackBuffer:", "toggleFullScreenMode:", "toggleFullScreenTabBar:",
+    "pasteSelection:", "selectAll:", "clearBuffer:", "clearScrollbackBuffer:", "toggleFullScreenMode:", "toggleFullScreenTabBar:", "toggleUseTransparency:", "toggleDisableTransparencyForActiveWindow:",
     "nextTabGroup:", "previousTabGroup:", "addTabToNewGroupAction:", "removeTabFromGroupAction:",
     "biggerFont:", "smallerFont:", "returnToDefaultSize:|Make Text Normal Size",
     "returnToDefaultSize:|Restore Text and Session Size", "maximizePane:",
@@ -289,6 +289,14 @@ mod tests {
         assert_eq!(command_for_chord(&chord(true, false)).unwrap().selector, "openAIChats:");
         assert_eq!(command_for_chord(&chord(true, true)).unwrap().selector, "openAIChat:");
         assert_eq!(command_for_chord(&chord(false, false)).unwrap().selector, "performNaturalLanguageQuery:");
+    }
+
+    #[test]
+    fn transparency_items_are_done() {
+        use crate::menus::ChordKey::Char;
+        assert_eq!(status(find("toggleUseTransparency:", "Use Transparency")), Status::Done);
+        assert_eq!(status(find("toggleDisableTransparencyForActiveWindow:", "Disable Transparency for Active Window")), Status::Done);
+        assert_eq!(command_for_chord(&win(Char('u'), false)).unwrap().selector, "toggleUseTransparency:");
     }
 
     #[test]
