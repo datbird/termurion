@@ -224,6 +224,7 @@ impl App {
         self.retitle_suppressed_menu();
         // A new bar shows what the menu file says, so the Disconnect title is applied again.
         self.ssh_menu_shown = None;
+        self.download_files_shown = None;
         self.sync_checks();
         // A fixed Theme forces the window's mode; the bar was attached with `Auto`.
         self.apply_theme();

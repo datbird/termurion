@@ -33,6 +33,25 @@ pub(super) fn batch_dest(folder: &Path, remote: &RemoteFile) -> PathBuf {
     folder.join(crate::inline_file::clean_name(&remote.name()))
 }
 
+/// Last one wins inside a batch folder (P12, R14de-4): an earlier item of the same name, a file
+/// or a folder, is removed before the next one lands at `dest`, so the two never merge. A link
+/// there is removed itself, never followed.
+pub(super) fn clear_earlier(dest: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(dest) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+        Ok(m) if m.file_type().is_symlink() => std::fs::remove_dir(dest).or_else(|_| std::fs::remove_file(dest)),
+        Ok(m) if m.is_dir() => std::fs::remove_dir_all(dest),
+        Ok(_) => std::fs::remove_file(dest),
+    }
+}
+
+/// What Shell > ssh > Download Files must be set to: Some(enabled) when this window's bar does not
+/// show `on` yet (`shown` None: never set since the bar was made), None when it already does.
+pub(super) fn download_files_update(shown: Option<bool>, on: bool) -> Option<bool> {
+    (shown != Some(on)).then_some(on)
+}
+
 /// One Download Files click's items still out, what arrived and what failed.
 #[derive(Debug)]
 pub(super) struct Batch {
@@ -114,12 +133,13 @@ impl App {
         self.ssh_registry.any()
     }
 
-    /// Lights or greys Shell > ssh > Download Files (P21).
+    /// Lights or greys Shell > ssh > Download Files in the live window (P21), only when its bar
+    /// shows otherwise. Called from every `tick_ssh` and on a host change.
     pub(super) fn refresh_download_files_menu(&mut self) {
-        let on = self.download_files_enabled();
-        if let Some(item) = self.menu_bar.as_ref().and_then(|b| b.ssh_download_files.as_ref()) {
-            item.set_enabled(on);
-        }
+        let Some(on) = download_files_update(self.download_files_shown, self.download_files_enabled()) else { return };
+        let Some(item) = self.menu_bar.as_ref().and_then(|b| b.ssh_download_files.as_ref()) else { return };
+        item.set_enabled(on);
+        self.download_files_shown = Some(on);
     }
 
     /// The pane that answers for `id`: the first, in tab order, whose innermost conductor frames
@@ -436,6 +456,50 @@ mod tests {
         assert!(b.arrived(t.join("c")));
         assert_eq!(b.done, [t.join("a"), t.join("c")]);
         assert_eq!(b.failed, [("b".to_string(), "File not found".to_string())]);
+    }
+
+    #[test]
+    fn download_files_menu_follows_every_window() {
+        // P21: each window's bar is set once from the registry and again only on a change.
+        assert_eq!(download_files_update(None, false), Some(false));
+        assert_eq!(download_files_update(None, true), Some(true));
+        assert_eq!(download_files_update(Some(false), true), Some(true));
+        assert_eq!(download_files_update(Some(true), false), Some(false));
+        assert_eq!(download_files_update(Some(true), true), None);
+        assert_eq!(download_files_update(Some(false), false), None);
+        // The cache is per window and the tick refreshes the live one, so a window that becomes
+        // live converges on its next tick; a new bar starts unset.
+        let src = |f: &str| std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("app").join(f)).unwrap();
+        assert!(src("windows_ui.rs").contains("swap(&mut self.download_files_shown, &mut s.download_files_shown)"), "download_files_shown must be in swap_live");
+        let tick = src("ssh_app.rs");
+        let body = &tick[tick.find("fn tick_ssh").unwrap()..];
+        assert!(body.contains("self.refresh_download_files_menu()"), "tick_ssh must refresh Download Files");
+        assert!(src("menu.rs").contains("self.download_files_shown = None;"), "a new bar must be set again");
+    }
+
+    #[test]
+    fn later_item_of_one_name_replaces_the_earlier() {
+        let root = std::env::temp_dir().join(format!("tandem-batch-last-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        // A folder item, then a later folder item of the same name: only the later one's files.
+        let d = batch_dest(&root, &remote("/a/d", true));
+        std::fs::create_dir_all(d.join("sub")).unwrap();
+        std::fs::write(d.join("old.txt"), b"1").unwrap();
+        std::fs::write(d.join("sub").join("old2.txt"), b"1").unwrap();
+        clear_earlier(&d).unwrap();
+        assert!(!d.exists(), "the earlier folder is gone before the later one lands");
+        // A file item, then a folder item of the same name, and the reverse.
+        let x = batch_dest(&root, &remote("/a/x", false));
+        std::fs::write(&x, b"1").unwrap();
+        clear_earlier(&x).unwrap();
+        assert!(!x.exists());
+        std::fs::create_dir(&x).unwrap();
+        clear_earlier(&x).unwrap();
+        assert!(!x.exists());
+        // Nothing there is not an error.
+        clear_earlier(&root.join("none")).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

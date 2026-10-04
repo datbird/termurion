@@ -340,6 +340,8 @@ impl App {
         }
         // Shell > ssh > Disconnect follows the focused session (F8: folded into this tick).
         self.refresh_ssh_menu();
+        // Download Files in whichever window is live (P21: every window's bar converges).
+        self.refresh_download_files_menu();
         next
     }
 }

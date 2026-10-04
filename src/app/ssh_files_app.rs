@@ -195,7 +195,8 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         let wake = self.notify.clone();
         std::thread::spawn(move || {
-            let r = local::unzip(&temp, &dest, &url);
+            // Last one wins in the batch folder: an earlier item of this name never merges in.
+            let r = super::ssh_panel_app::clear_earlier(&dest).map_err(|e| e.to_string()).and_then(|()| local::unzip(&temp, &dest, &url));
             let _ = std::fs::remove_file(&temp);
             let _ = tx.send((job, r));
             wake();
@@ -443,13 +444,14 @@ impl App {
                     }
                 }
             }
-            // Download Files: a file is marked and moved over its place in the batch folder
-            // (last one wins, R14de-4); a folder was unzipped there already. The batch reports.
+            // Download Files: a file is marked and moved into its place in the batch folder, an
+            // earlier item of that name removed first (last one wins, R14de-4); a folder was
+            // unzipped there already. The batch reports.
             Place::Temp { .. } => {
                 let l = self.ssh_locals.remove(&job).unwrap();
                 let Place::Temp { temp, dest, batch } = &l.place else { return };
                 let result = match outcome {
-                    Outcome::File => local::finish(temp, dest, &l.url()),
+                    Outcome::File => super::ssh_panel_app::clear_earlier(dest).map_err(|e| e.to_string()).and_then(|()| local::finish(temp, dest, &l.url())),
                     Outcome::Directory => Ok(dest.clone()),
                     _ => Err(crate::ssh_files::FileError::Internal.text().to_string()),
                 };
