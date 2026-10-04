@@ -3,7 +3,6 @@
 use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::index::Side;
 use winit::event_loop::ActiveEventLoop;
-use winit::window::Fullscreen;
 
 use super::App;
 use crate::commands::Status;
@@ -231,7 +230,6 @@ impl App {
         if self.run_applied(b) {
             return;
         }
-        let window = self.gpu.as_ref().map(|g| g.window.clone());
         match b.action {
             35 => {
                 if let Some(id) = self.focused_id() {
@@ -304,11 +302,8 @@ impl App {
             20 => self.select_pane_dir(Dir::Up),
             21 => self.select_pane_dir(Dir::Down),
             23 => {
-                if let Some(w) = &window {
-                    w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) });
-                }
                 // The border goes in full screen and comes back after it, size change or not.
-                self.apply_border();
+                self.toggle_fullscreen();
             }
             25 => match find_menu_item(&b.text, false) {
                 Some(item) => self.run_command(item, event_loop),

@@ -49,8 +49,59 @@ fn facts_of(profile: &crate::profile::Profile) -> (f64, bool) {
 }
 
 impl App {
-    /// The alpha of each visible pane of `tab` (`1 - Transparency` of the pane's profile; the window's
-    /// Use Transparency is on until Task 3 gives it a state).
+    /// The current window's Use Transparency toggle (iTerm2's `useTransparency`). It does not mean some
+    /// session is see-through: a window whose profiles all have Transparency 0 can answer true. Tandem has
+    /// no native full screen, so iTerm2's Lion check never applies.
+    pub(super) fn window_uses_transparency(&self) -> bool {
+        self.win_transparency.on
+    }
+
+    /// View > Use Transparency (Win+U, `PT:6296-6305`): flips this window's state and redraws it.
+    pub(super) fn toggle_use_transparency(&mut self) {
+        self.win_transparency.toggle();
+        self.transparency_changed();
+    }
+
+    /// View > Disable Transparency for Active Window (`AD:3331-3335`): flips the global, saves it and
+    /// redraws every window.
+    pub(super) fn toggle_disable_for_key_window(&mut self) {
+        let now = self.globals.bool(transparency::DISABLE_KEY_WINDOW_KEY);
+        self.globals.set(transparency::DISABLE_KEY_WINDOW_KEY, toml::Value::Boolean(!now));
+        self.save_globals();
+        self.menus_dirty = true;
+        self.sync_checks();
+        self.transparency_changed();
+    }
+
+    /// Everything that follows a change of a pane's alpha: the border rule (13f reads
+    /// `any_pane_is_transparent`), the menu check marks and every window's drawing.
+    fn transparency_changed(&mut self) {
+        self.apply_border();
+        self.menus_dirty = true;
+        self.sync_checks();
+        self.redraw();
+    }
+
+    /// Runs the Use Transparency full screen state machine for a window about to enter or leave full
+    /// screen (`PTWS:587-600`), then the border rule. Callers that set full screen themselves call this
+    /// with the window's state before the change.
+    pub(super) fn before_fullscreen_toggle(&mut self, full_screen_now: bool) {
+        let disable = self.globals.bool(transparency::DISABLE_FULLSCREEN_KEY);
+        self.win_transparency.before_fullscreen_toggle(full_screen_now, disable);
+    }
+
+    /// Enters or leaves full screen for the current window, the one entry point (the menu, the API, the key
+    /// action). The window's Use Transparency follows `DisableFullscreenTransparency`.
+    pub(super) fn toggle_fullscreen(&mut self) {
+        let Some(w) = self.gpu.as_ref().map(|g| g.window.clone()) else { return };
+        let is_full = w.fullscreen().is_some();
+        self.before_fullscreen_toggle(is_full);
+        w.set_fullscreen(if is_full { None } else { Some(winit::window::Fullscreen::Borderless(None)) });
+        self.transparency_changed();
+    }
+
+    /// The alpha of each visible pane of `tab` (`1 - Transparency` of the pane's profile while the
+    /// window's Use Transparency is on).
     pub(super) fn pane_alphas(&self, tab: &Tab) -> Vec<(PaneId, f32)> {
         let disable_for_key = self.globals.bool(transparency::DISABLE_KEY_WINDOW_KEY);
         let key_window = self.focused && self.app_active;
@@ -58,7 +109,7 @@ impl App {
             .into_iter()
             .map(|(id, _)| {
                 let t = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).map_or(0.0, |p| p.float("Transparency"));
-                (id, transparency::pane_alpha(t, true, key_window, disable_for_key))
+                (id, transparency::pane_alpha(t, self.win_transparency.on, key_window, disable_for_key))
             })
             .collect()
     }

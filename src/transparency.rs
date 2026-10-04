@@ -68,6 +68,11 @@ impl WinTransparency {
     }
 }
 
+/// The check marks of the two View items (AD:700-702, AD:580-584).
+pub fn checks(window_on: bool, disable_for_key: bool) -> [(&'static str, bool); 2] {
+    [("toggleUseTransparency:", window_on), ("toggleDisableTransparencyForActiveWindow:", disable_for_key)]
+}
+
 /// True when any pane draws below full opacity, so the surface must be premultiplied.
 pub fn needs_alpha(alphas: &[f32]) -> bool {
     alphas.iter().any(|a| *a < 1.0)
@@ -161,6 +166,12 @@ pub fn composite(quads: &[Quad], x: f32, y: f32) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transparency_checks_follow_iterm2() {
+        assert_eq!(checks(true, false), [("toggleUseTransparency:", true), ("toggleDisableTransparencyForActiveWindow:", false)]);
+        assert_eq!(checks(false, true), [("toggleUseTransparency:", false), ("toggleDisableTransparencyForActiveWindow:", true)]);
+    }
     use crate::layout::Rect;
     use crate::scene::Quad;
 

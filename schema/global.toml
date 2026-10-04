@@ -626,6 +626,15 @@ default = false
 help = "Draws a border around the window when the OS otherwise would not. This is effective in light mode or when the window contains a transparent pane. Windows 11 draws it; Windows 10 shows none."
 
 [[setting]]
+key = "DisableFullscreenTransparency"
+tab = "Appearance"
+section = "Windows"
+label = "Disable transparency for non-native fullscreen windows by default"
+type = "bool"
+default = false
+help = "Turns off window transparency automatically when a window enters full screen; leaving full screen turns it back on unless you toggled it meanwhile."
+
+[[setting]]
 key = "HideMenuBarInFullscreen"
 tab = "Appearance"
 section = "Windows"
@@ -3307,3 +3316,12 @@ label = "Share terminal contents with AI chats automatically"
 type = "int"
 default = 0
 help = "0 asks the first time a chat wants the terminal shared automatically, 1 is Turn On, 2 is refused. Kept out of imports and Toggle Setting."
+
+[[setting]]
+key = "DisableTransparencyForKeyWindow"
+tab = "Stored"
+section = "Transparency"
+label = "Disable Transparency for Active Window"
+type = "bool"
+default = false
+help = "Forces the focused window to be fully opaque even if its profile uses transparency (View menu)."

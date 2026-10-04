@@ -2211,6 +2211,17 @@ mod tests {
     }
 
     #[test]
+    fn transparency_globals_follow_iterm2() {
+        let s = schema::find_global("DisableFullscreenTransparency").unwrap();
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Appearance", "Windows", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        assert_eq!(s.label, "Disable transparency for non-native fullscreen windows by default");
+        let s = schema::find_global("DisableTransparencyForKeyWindow").unwrap();
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), (crate::advanced_pane::STORED_TAB, "Transparency", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+    }
+
+    #[test]
     fn full_screen_rows_follow_iterm2() {
         for (key, default, label) in [
             ("ShowFullScreenTabBar", true, "Show tab bar in fullscreen"),

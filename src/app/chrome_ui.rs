@@ -143,10 +143,10 @@ impl App {
     }
 
     /// Whether a pane of the current window is see-through (`anyPaneIsTransparent`,
-    /// `PT:9215-9225`: a session of the current tab drawn with alpha below 1). Tandem draws
-    /// every pane opaque until 13g adds transparency, which replaces this body.
+    /// `PT:9215-9225`: a session of the current tab drawn with alpha below 1).
     pub(super) fn any_pane_is_transparent(&self) -> bool {
-        false
+        let Some(tab) = self.tabs.get(self.active) else { return false };
+        crate::transparency::needs_alpha(&self.pane_alphas(tab).iter().map(|(_, a)| *a).collect::<Vec<_>>())
     }
 
     /// Gives the current window the border `chrome::show_border` asks for, in its focused or

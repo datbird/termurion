@@ -246,6 +246,7 @@ impl App {
                 crate::frames::saved_percents(w, h)
             },
             cells: (profile.int("Columns").clamp(1, 1000) as u16, profile.int("Rows").clamp(1, 1000) as u16),
+            use_transparency: Some(self.win_transparency.on),
         };
         let mut w = arrangement::window(facts, tabs);
         if let Some(t) = w.as_table_mut() {
@@ -755,9 +756,16 @@ impl App {
             let _ = super::caption_ui::request_inner_size(&g.window, winit::dpi::PhysicalSize::new((frame.w as u32).saturating_sub(dw).max(1), (frame.h as u32).saturating_sub(dh).max(1)));
         }
         self.apply_resizable();
+        let initial = self.win_transparency.on;
         if f.style != crate::frames::NORMAL {
             self.apply_window_style(f.style, false);
         }
+        // The saved key wins when present; a full screen window starts from the setting (`PT:3640-3659`).
+        self.win_transparency = if f.style == crate::frames::FULL_SCREEN {
+            crate::transparency::WinTransparency::restored_fullscreen(self.globals.bool(crate::transparency::DISABLE_FULLSCREEN_KEY))
+        } else {
+            crate::transparency::WinTransparency::restored(f.use_transparency, initial)
+        };
         self.restore_toolbelt(&crate::toolbelt::read_arrangement(w));
         self.relayout();
         Ok(())

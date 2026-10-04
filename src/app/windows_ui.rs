@@ -84,6 +84,8 @@ pub(super) struct WinSlot {
     zoom_restore: Option<Rect>,
     /// Which kind of surface the window was made with (decided at creation, `transparency::SurfaceKind`).
     pub(super) win_alpha_surface: crate::transparency::SurfaceKind,
+    /// The window's Use Transparency toggle and its full screen bookkeeping.
+    pub(super) win_transparency: crate::transparency::WinTransparency,
     mru: Mru,
     mru_mods: Option<Mods>,
     laid_out: Option<crate::statusbar_layout::Room>,
@@ -169,6 +171,7 @@ impl WinSlot {
             caption_name_w: 0.0,
             zoom_restore: None,
             win_alpha_surface: Default::default(),
+            win_transparency: crate::transparency::WinTransparency::new(true),
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
@@ -266,6 +269,7 @@ impl App {
         swap(&mut self.caption_name_w, &mut s.caption_name_w);
         swap(&mut self.zoom_restore, &mut s.zoom_restore);
         swap(&mut self.win_alpha_surface, &mut s.win_alpha_surface);
+        swap(&mut self.win_transparency, &mut s.win_transparency);
         swap(&mut self.mru, &mut s.mru);
         swap(&mut self.mru_mods, &mut s.mru_mods);
         swap(&mut self.laid_out, &mut s.laid_out);
@@ -502,6 +506,9 @@ impl App {
             NewWindow::Orphans(_) => None,
             NewWindow::Hotkey(g, _) | NewWindow::HotkeyRestored(g, _) => Some(g.clone()),
         };
+        // A new window's Use Transparency is the first profile's Initial Use Transparency (`PT:864`).
+        let initial = first_guid.as_deref().and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).bool("Initial Use Transparency");
+        self.win_transparency = crate::transparency::WinTransparency::new(initial);
         self.apply_fonts();
         self.size_window(first_guid.as_deref());
         let style = first_guid.as_deref().and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).int("Window Type");
@@ -844,6 +851,7 @@ impl WinSlot {
             caption_name_w: 0.0,
             zoom_restore: None,
             win_alpha_surface: Default::default(),
+            win_transparency: crate::transparency::WinTransparency::new(true),
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
@@ -1208,6 +1216,10 @@ impl App {
         };
         let f = frames::frame(&input);
         let w = &g.window;
+        // Entering or leaving full screen runs the Use Transparency state machine (`PTWS:587-600`).
+        if f.fullscreen != w.fullscreen().is_some() {
+            self.win_transparency.before_fullscreen_toggle(w.fullscreen().is_some(), self.globals.bool(crate::transparency::DISABLE_FULLSCREEN_KEY));
+        }
         if f.fullscreen {
             w.set_fullscreen(Some(Fullscreen::Borderless(w.current_monitor())));
         } else {

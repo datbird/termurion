@@ -439,6 +439,8 @@ pub struct App {
     zoom_restore: Option<Rect>,
     /// Which kind of surface this window was made with (decided at creation).
     win_alpha_surface: crate::transparency::SurfaceKind,
+    /// The current window's Use Transparency toggle.
+    win_transparency: crate::transparency::WinTransparency,
     /// The current window's toolbelt.
     belt: toolbelt_ui::Belt,
     /// Bumped when something a toolbelt tool shows changes (`tools_changed`).
@@ -1471,6 +1473,7 @@ pub fn run() {
         caption_name_w: 0.0,
         zoom_restore: None,
         win_alpha_surface: Default::default(),
+        win_transparency: crate::transparency::WinTransparency::new(true),
         belt: Default::default(),
         tool_gen: 0,
         belt_keys: Default::default(),
@@ -3315,6 +3318,8 @@ impl App {
         self.tmux_watch_status_all();
         // A profile edit may make a window need an alpha surface.
         self.check_alpha_surfaces();
+        // A pane's alpha may have changed: the border rule reads it.
+        self.apply_border_everywhere();
         self.redraw();
     }
 

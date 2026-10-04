@@ -8,7 +8,6 @@ use alacritty_terminal::vte::ansi::{CharsetIndex, Handler, StandardCharset};
 use muda::{CheckMenuItem, ContextMenu, Icon, IconMenuItem, IsMenuItem, Menu, MenuItem, MenuTheme, PredefinedMenuItem, Submenu};
 use winit::event_loop::ActiveEventLoop;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use winit::window::Fullscreen;
 
 use super::*;
 use crate::commands;
@@ -698,15 +697,16 @@ impl App {
             "performZoom:" => self.zoom_window(),
             "toggleFullScreenMode:" => {
                 let entering = window.as_ref().is_some_and(|w| w.fullscreen().is_none());
-                toggle_fullscreen(window.as_deref());
                 // The border goes in full screen and comes back after it, size change or not.
-                self.apply_border();
+                self.toggle_fullscreen();
                 // Entering full screen flashes the tab bar (`PseudoTerminal+WindowStyle.m:857`).
                 if entering {
                     self.flash_tab_bar();
                 }
             }
             "toggleFullScreenTabBar:" => self.toggle_full_screen_tab_bar(),
+            "toggleUseTransparency:" => self.toggle_use_transparency(),
+            "toggleDisableTransparencyForActiveWindow:" => self.toggle_disable_for_key_window(),
             "setWindowStyle:" => {
                 if let Some((id, _)) = crate::frames::MENU.iter().find(|(_, n)| *n == label) {
                     self.apply_window_style(*id, true);
@@ -1399,12 +1399,6 @@ impl App {
             p.scroll(Scroll::Bottom);
             p.input(typed.as_bytes());
         }
-    }
-}
-
-pub(super) fn toggle_fullscreen(window: Option<&Window>) {
-    if let Some(w) = window {
-        w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) });
     }
 }
 
