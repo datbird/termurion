@@ -1777,6 +1777,8 @@ pub struct BarText {
 /// What a status bar shows, already placed in window pixels (`iTermStatusBarView`).
 pub struct StatusBarDraw<'a> {
     pub rect: Rect,
+    /// A bar in a pane's title bar: the title bar has painted the background and the edge.
+    pub bare: bool,
     pub background: (Rgb, f32),
     /// Component background bands: from x, to x, color.
     pub bands: &'a [(f32, f32, Rgb, f32)],
@@ -1820,7 +1822,9 @@ pub fn rounded_box(quads: &mut Vec<Quad>, r: Rect, radius: f32, color: [f32; 4])
 /// text, and the edge line.
 pub fn status_bar(frame: &mut Frame, d: &StatusBarDraw, cell: (f32, f32)) {
     let r = d.rect;
-    frame.quads.push(Quad { rect: r, color: rgba(d.background.0, d.background.1) });
+    if !d.bare {
+        frame.quads.push(Quad { rect: r, color: rgba(d.background.0, d.background.1) });
+    }
     for &(x0, x1, c, a) in d.bands {
         if x1 > x0 {
             frame.quads.push(Quad { rect: Rect { x: x0, y: r.y, w: x1 - x0, h: r.h }, color: rgba(c, a) });
@@ -1845,7 +1849,7 @@ pub fn status_bar(frame: &mut Frame, d: &StatusBarDraw, cell: (f32, f32)) {
         let span = Span { text: t.text.clone(), color: t.color, bold: false, italic: false, alt_font: false, icon: t.icon, prose: !t.icon, badge: false, toolbelt: false };
         frame.rows.push(TextRow { x: t.x, y, spans: vec![span], clip: t.clip, scale: t.scale });
     }
-    if let Some(e) = d.edge {
+    if let Some(e) = d.edge.filter(|_| !d.bare) {
         frame.quads.push(Quad { rect: e, color: rgba(STATUS_BAR_EDGE, 1.0) });
     }
 }

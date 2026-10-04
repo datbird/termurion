@@ -116,6 +116,7 @@ mod tmux_tabs_ui;
 mod tmux_dashboard_app;
 mod bury_ui;
 mod statusbar_ui;
+mod pane_title_ui;
 mod statusbar_content;
 mod metrics_ui;
 mod git_ui;
@@ -3260,6 +3261,9 @@ impl App {
         self.apply_border_everywhere();
         // AllowLiveResize may have changed.
         self.apply_resizable_everywhere();
+        // Title bars or the status bar's height or place may have changed (P13, P21): panes
+        // gain or lose room in every window, parked ones and their tmux reports too.
+        self.relayout_changed_windows();
     }
 
     /// Starts watching and scanning the Scripts folder the settings name (`FM:236-252`).

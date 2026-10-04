@@ -385,6 +385,18 @@ impl Layout {
 }
 
 /// The rectangles a tab shows: only the zoomed pane when one is zoomed and still here.
+/// The most panes a line along `axis` crosses: for `Axis::Column`, the tallest column's pane
+/// count. A split on the same axis adds its sides, a split on the other takes the larger.
+pub fn max_stack(tree: &Tree<PaneId>, axis: Axis) -> usize {
+    match tree {
+        Tree::Leaf(_) => 1,
+        Tree::Split { axis: a, a: x, b: y, .. } => {
+            let (x, y) = (max_stack(x, axis), max_stack(y, axis));
+            if *a == axis { x + y } else { x.max(y) }
+        }
+    }
+}
+
 pub fn visible_rects(layout: &Layout, zoomed: Option<PaneId>, area: Rect, gap: f32) -> Vec<(PaneId, Rect)> {
     match zoomed.filter(|z| layout.panes().contains(z)) {
         Some(z) => vec![(z, area)],
@@ -568,5 +580,18 @@ mod tests {
         let t = Tree::Split { axis: Axis::Row, ratio: f32::NAN, a: Box::new(Tree::Leaf(1)), b: Box::new(Tree::Leaf(2)) };
         let Tree::Split { ratio, .. } = Layout::from_tree(t).tree() else { panic!() };
         assert_eq!(ratio, 0.5);
+    }
+
+    #[test]
+    fn the_tallest_stack() {
+        let leaf = |p: PaneId| Box::new(Tree::Leaf(p));
+        let t = Tree::Split { axis: Axis::Row, ratio: 0.5, a: leaf(1), b: Box::new(Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(2), b: leaf(3) }) };
+        assert_eq!(max_stack(&t, Axis::Column), 2);
+        assert_eq!(max_stack(&t, Axis::Row), 2);
+        assert_eq!(max_stack(&Tree::Leaf(1), Axis::Column), 1);
+        assert_eq!(max_stack(&Tree::Leaf(1), Axis::Row), 1);
+        let t = Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(1), b: Box::new(Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(2), b: leaf(3) }) };
+        assert_eq!(max_stack(&t, Axis::Column), 3);
+        assert_eq!(max_stack(&t, Axis::Row), 1);
     }
 }

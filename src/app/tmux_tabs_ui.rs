@@ -905,7 +905,19 @@ impl App {
             return;
         }
         // Each tab's own area: a tmux tab's shared status bar is already out of it.
-        let tabs: Vec<(PaneId, (u16, u16))> = self.tabs.iter().map(|t| (t.focused, self.grid_size(self.content_area_for(t)))).collect();
+        // Title bars take room from the stacked panes (`variableTmuxSize` adds each one's
+        // height, `PTYTab.m:4696-4754`): one per pane of the tallest column; widths are
+        // unchanged.
+        let (_, ch) = self.cell();
+        let tabs: Vec<(PaneId, (u16, u16))> = self
+            .tabs
+            .iter()
+            .map(|t| {
+                let area = self.content_area_for(t);
+                let stack = if self.tab_shows_titles(t) { crate::layout::max_stack(&t.layout.tree(), Axis::Column) } else { 0 };
+                (t.focused, (self.grid_size(area).0, tmux_rows(area.h, ch, PAD * self.scale(), self.title_height(), stack)))
+            })
+            .collect();
         let mut changed: Vec<PaneId> = Vec::new();
         for (focused, (cols, rows)) in tabs {
             let Some(io) = self.panes.get(&focused).and_then(|p| p.tmux_io()) else { continue };
@@ -1394,10 +1406,24 @@ pub(super) fn tmux_dir_of(p: Option<&Profile>) -> crate::tmux_edits::Dir {
     }
 }
 
+/// A tmux tab's rows: its area less the padding and `stack` title bars (0 with titles off),
+/// in cells.
+fn tmux_rows(area_h: f32, ch: f32, pad: f32, title_h: f32, stack: usize) -> u16 {
+    ((area_h - stack as f32 * title_h - 2.0 * pad) / ch).floor().max(1.0) as u16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::warnings::Kind;
+
+    /// Title bars take their height from a tmux tab's report, one per stacked pane.
+    #[test]
+    fn tmux_rows_leave_room_for_title_bars() {
+        assert_eq!(tmux_rows(600.0, 16.0, 4.0, 22.0, 2), 34, "(600 - 2 * 22 - 8) / 16");
+        assert_eq!(tmux_rows(600.0, 16.0, 4.0, 22.0, 0), 37, "titles off: today's rows");
+        assert_eq!(tmux_rows(10.0, 16.0, 4.0, 22.0, 3), 1, "never below one row");
+    }
 
     /// 13c's tab close buttons: another click on a tab whose close question waits (queued or
     /// showing) asks nothing more; another tab or the window question still asks.
