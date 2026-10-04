@@ -29,6 +29,7 @@ pub mod claude_code;
 pub mod api_client;
 pub mod hexcolor;
 pub mod pane_title;
+pub mod pane_move;
 pub mod tab_layout;
 pub mod tab_drag;
 pub mod tab_flash;
