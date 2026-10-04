@@ -75,7 +75,7 @@ const MAX_URL: usize = 8 * 1024;
 /// A character that never belongs in a URL's text: whitespace, controls, and the invisible
 /// formatting characters that can disguise what a link says.
 fn is_hostile_char(c: char) -> bool {
-    c.is_control() || c.is_whitespace() || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
+    c.is_control() || c.is_whitespace() || matches!(c, '\u{ad}' | '\u{61c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
 }
 
 fn percent_decode(s: &str) -> Option<String> {
@@ -205,7 +205,8 @@ fn path_is_unsafe(path: &str) -> bool {
 /// ssh.exe through CreateProcessW: the user and host are separate arguments, only the cd path is
 /// POSIX-escaped for the remote shell).
 pub fn ssh_change(url: &SshUrl, s: &Settings) -> Result<Change, UrlError> {
-    if s.integration && url.host.is_none() {
+    // P13(d): a URL with no host opens nothing in both modes (never a bare ssh from outside).
+    if url.host.is_none() {
         return Err(UrlError::NoHost);
     }
     let mut words: Vec<String> = Vec::new();
@@ -432,12 +433,19 @@ mod tests {
         assert!(!scheme_path_usable("ssh") && !scheme_path_usable("--") && !scheme_path_usable(""));
         assert_eq!(off("ssh://b%20o@h"), Err(UrlError::IllegalUsername("b o".into())));
         assert_eq!(off("ssh://-x"), Err(UrlError::BadHostname));
-        assert_eq!(command(off("ssh:h")), "ssh");
+        // P13(d): no host opens nothing in both modes.
+        assert_eq!(off("ssh:h"), Err(UrlError::NoHost));
     }
 
     /// P17: hostile URLs never reach a command line, and the words that do are one argument each.
     #[test]
     fn hostile_urls_never_become_options_or_extra_words() {
+        // Host-less URLs open nothing in both modes: the cd word must never become ssh's host.
+        for u in ["ssh:/etc;x", "ssh:///a", "ssh://u@/a", "ssh:h", "ssh:/a;b"] {
+            for integration in [true, false] {
+                assert_eq!(ssh_change(&url(u), &settings(integration)), Err(UrlError::NoHost), "{u} {integration}");
+            }
+        }
         for bad in ["ssh://%2Doproxy/", "ssh://-oProxyCommand=x/", "ssh://h%20x/", "ssh://h%2Fx/", "ssh://h%40x/", "ssh://[::1]/", "ssh://[fe80::1%25eth0]/", "ssh://h%00/"] {
             let parsed = parse(bad);
             let r = parsed.map(|u| ssh_change(&u, &settings(true)));
@@ -484,6 +492,7 @@ mod tests {
         // Errors reach the caller; an ssh URL that does not parse opens nothing (Decision).
         assert_eq!(profile_for_url(&profile("No", ""), "ssh://b%20o@h", &on), Err(UrlError::IllegalUsername("b o".into())));
         assert_eq!(profile_for_url(&profile("No", ""), "ssh://h:notaport", &on), Err(UrlError::NoHost));
+        assert_eq!(profile_for_url(&profile("No", ""), "ssh:h", &settings(false)), Err(UrlError::NoHost));
         assert_eq!(profile_for_url(&profile("No", ""), "SSH://-x", &on), Err(UrlError::BadHostname));
         assert_eq!(
             illegal_username("b o"),
