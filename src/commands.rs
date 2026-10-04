@@ -72,7 +72,7 @@ pub const DONE: &[&str] = &[
     "toggleAlertOnNextMark:", "toggleAlertOnMarksInOffscreenSessions:", "enableMarkAlertShowsModalAlert:",
     "enableMarkAlertPostsNotification:", "enableMarkAlertRingsBell:", "performMiniaturize:", "performZoom:", "nextTab:", "previousTab:", "moveTabLeft:",
     "moveTabRight:", "selectPaneUp:", "selectPaneDown:", "selectPaneLeft:", "selectPaneRight:", "nextPane:",
-    "previousPane:", "movePaneDividerUp:", "movePaneDividerDown:", "movePaneDividerLeft:",
+    "previousPane:", "movePane:", "movePaneDividerUp:", "movePaneDividerDown:", "movePaneDividerLeft:",
     "movePaneDividerRight:", "arrangeSplitPanesEvenly:", "restartSession:", "duplicateSession:", "showHelp:",
     "arrangeInFront:", "performFindPanelAction:|Find...", "performFindPanelAction:|Use Selection for Find",
     "findNext:", "findPrevious:", "clearFindString:", "jumpToSelection:", "zoomOut:", "findUrls:",
@@ -214,6 +214,11 @@ pub fn status(item: &Item) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn move_pane_is_done() {
+        assert_eq!(status(menus::by_identifier("Move Session to Split Pane").unwrap()), Status::Done);
+    }
     use crate::menus::items;
 
     fn find(sel: &str, label: &str) -> &'static Item {

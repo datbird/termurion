@@ -233,6 +233,12 @@ impl App {
         }
         let window = self.gpu.as_ref().map(|g| g.window.clone());
         match b.action {
+            // Move Pane: the Move Session to Split Pane pick (`PS:12228-12230`).
+            62 => {
+                if let Some(id) = self.focused_id().filter(|_| self.pane_move.is_none()) {
+                    self.start_pane_move(id, true, event_loop);
+                }
+            }
             35 => {
                 if let Some(id) = self.focused_id() {
                     self.start_coprocess(id, &b.text, false, crate::coprocess::Entry::KeyBinding);
@@ -474,6 +480,12 @@ impl App {
                 if let Some(sel) = self.panes.get_mut(&pane).and_then(|p| p.screen.term_mut().selection.as_mut()) {
                     sel.update(point, Side::Right);
                     self.copy_selection(pane);
+                }
+            }
+            // The clicked pane's session (`PTYTextView.m:8711-8713`).
+            "kMovePanePointerAction" => {
+                if self.pane_move.is_none() {
+                    self.start_pane_move(pane, true, event_loop);
                 }
             }
             "kContextMenuPointerAction" => {

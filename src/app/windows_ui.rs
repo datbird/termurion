@@ -364,6 +364,22 @@ impl App {
         self.windows.leave(live);
     }
 
+    /// The id of the window that shows `pane`, the current one or a parked one.
+    pub(super) fn pane_window_id(&self, pane: PaneId) -> Option<WindowId> {
+        if self.tabs.iter().any(|t| t.layout.panes().contains(&pane)) {
+            return self.current_window();
+        }
+        self.windows.parked().find(|(_, s)| s.tabs.iter().any(|t| t.layout.panes().contains(&pane))).and_then(|(_, s)| s.gpu.as_ref().map(|g| g.window.id()))
+    }
+
+    /// Lock Layout of the window that shows `pane` forbids `op` (false for a pane no window shows).
+    pub(super) fn pane_window_forbids(&self, pane: PaneId, op: crate::winmodel::LayoutOp) -> bool {
+        if self.tabs.iter().any(|t| t.layout.panes().contains(&pane)) {
+            return self.win_locks.forbids(op);
+        }
+        self.windows.parked().find(|(_, s)| s.tabs.iter().any(|t| t.layout.panes().contains(&pane))).is_some_and(|(_, s)| s.win_locks.forbids(op))
+    }
+
     /// Makes the window that shows `pane` current. False when no window shows it.
     pub(super) fn enter_pane_window(&mut self, pane: PaneId) -> bool {
         if self.tabs.iter().any(|t| t.layout.panes().contains(&pane)) {

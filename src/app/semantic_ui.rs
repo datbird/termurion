@@ -335,7 +335,7 @@ impl App {
         let Some(pend) = self.ctx_pending.take() else { return true };
         let focused = self.tabs.get(self.active).map(|t| t.focused);
         match ctx_pick(id, pend.pane, focused) {
-            CtxPick::Swap(pane) => self.start_pane_move(pane, false),
+            CtxPick::Swap(pane) => self.start_pane_move(pane, false, event_loop),
             CtxPick::Provider { pane, unique_id } => {
                 let title = pend.providers.iter().find(|(_, id)| *id == unique_id).map(|(t, _)| t.clone()).unwrap_or_default();
                 self.context_provider_picked(pane, &unique_id, &title);

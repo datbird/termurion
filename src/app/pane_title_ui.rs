@@ -244,12 +244,6 @@ impl App {
         }
     }
 
-    /// Move Session to Split Pane (`move_: true`) or Swap With Session (`false`) from `pane`:
-    /// the pick mode, which Task 7 builds. Until then it says so.
-    pub(super) fn start_pane_move(&mut self, _pane: PaneId, _move: bool) {
-        self.banners.set("action", "Moving a pane by picking another comes with the pick mode.".to_string());
-    }
-
     /// A pane's rectangle cut into title bar, status bar and terminal.
     pub(super) fn pane_chrome(&self, tab: &Tab, id: PaneId, rect: Rect) -> Chrome {
         let bar = (self.per_pane_bars(tab) && self.shows_status_bar(id)).then(|| (self.status_bar_height(), self.status_bar_position()));

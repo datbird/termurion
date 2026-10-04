@@ -117,6 +117,7 @@ mod tmux_dashboard_app;
 mod bury_ui;
 mod statusbar_ui;
 mod pane_title_ui;
+mod pane_move_ui;
 mod statusbar_content;
 mod metrics_ui;
 mod git_ui;
@@ -316,6 +317,8 @@ pub struct App {
     title_bars: Vec<(PaneId, crate::pane_title::Geometry)>,
     /// A left press on a title bar button, waiting for its release.
     title_press: Option<pane_title_ui::TitlePress>,
+    /// Move Session to Split Pane or Swap With Session is waiting for a pane to be picked. App-wide.
+    pane_move: Option<pane_move_ui::PaneMove>,
     /// The Win-click target under the pointer while Win is held.
     hover: Option<(PaneId, crate::find::Match)>,
     /// The annotation or session note window: its pane and note (None for the session note).
@@ -1433,6 +1436,7 @@ pub fn run() {
         find_mode_rect: None,
         title_bars: Vec::new(),
         title_press: None,
+        pane_move: None,
         hover: None,
         popup_menu: None,
         color_pick: None,
@@ -3479,6 +3483,7 @@ impl App {
         if !self.tabs.is_empty() && !self.layout_allowed(crate::winmodel::LayoutOp::AddTab) {
             return;
         }
+        self.pane_move_event(pane_move_ui::PickEvent::NewSession);
         self.add_tab(guid);
     }
 
@@ -3513,6 +3518,7 @@ impl App {
             return;
         }
         let Some(target) = self.tabs.get(self.active).map(|t| t.focused) else { return };
+        self.pane_move_event(pane_move_ui::PickEvent::NewSession);
         if self.tmux_split(target, axis == Axis::Row) {
             return;
         }
@@ -3537,6 +3543,8 @@ impl App {
 
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        // The source ending cancels the pick (`PS:3940-3942`).
+        self.pane_move_event(pane_move_ui::PickEvent::Ended(id));
         // Every chat linked to this session unlinks while its reference still names the pane.
         self.chat_pane_gone(id);
         // AI requests that belong to the pane end with it.
@@ -4140,6 +4148,10 @@ impl App {
         if let Some(hit) = self.tab_bar_hit(x, y) {
             return self.tab_bar_press(button, hit);
         }
+        // While a pick is on, a left press is a drop or a cancel, title bars and bars included.
+        if self.pane_move_press(button, x, y, event_loop) {
+            return;
+        }
         if self.status_press(button, x, y, event_loop) {
             return;
         }
@@ -4391,6 +4403,7 @@ impl App {
 
     fn mouse_move(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
+        self.pane_move_hover(x, y);
         self.update_tab_hover();
         self.update_side_handle_hover();
         self.toolbelt_move(x, y);
@@ -4703,6 +4716,8 @@ impl App {
         self.draw_toolbelt(&mut frame, cell);
         self.draw_title_bars(&mut frame, cell);
         self.draw_status_bars(&mut frame, cell);
+        // After the bars, so the overlay cuts their text out (P22).
+        self.draw_pane_move(&mut frame, cell);
         let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         let line = self.division_height();
         if line > 0.0 {

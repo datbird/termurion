@@ -58,7 +58,7 @@ pub fn status(b: &PointerBinding) -> Status {
     match b.action.as_str() {
         "kOpenTargetInBackgroundPointerAction" => Status::Partial("Asks the app not to take the focus; a browser may still come to the front."),
         "kQuickLookAction" => Status::Partial("Opens the target with its default app, since Windows has no Quick Look."),
-        "kNextWindowPointerAction" | "kPrevWindowPointerAction" | "kNewWindowWithProfilePointerAction" | "kMovePanePointerAction" => Status::Later(7),
+        "kNextWindowPointerAction" | "kPrevWindowPointerAction" | "kNewWindowWithProfilePointerAction" => Status::Later(7),
         _ => Status::Done,
     }
 }
@@ -239,6 +239,12 @@ impl Clicks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_of_move_pane() {
+        use crate::commands::Status;
+        assert_eq!(status(&PointerBinding::new("kMovePanePointerAction", "")), Status::Done);
+    }
 
     fn defaults() -> toml::Table {
         crate::globals::keymaps::factory_pointer().clone()

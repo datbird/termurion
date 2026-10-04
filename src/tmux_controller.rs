@@ -462,6 +462,12 @@ impl Controller {
         self.with_relist(crate::tmux_edits::swap_panes(a, b), gw);
     }
 
+    /// Move Session to Split Pane: `pane` joins `dest`'s window beside it (`side_by_side`) or
+    /// above or below it, before it when `before`. Numeric ids only.
+    pub fn move_pane(&mut self, src: u32, dst: u32, side_by_side: bool, before: bool, gw: &mut Gateway) {
+        self.with_relist(crate::tmux_edits::move_pane(src, dst, side_by_side, before), gw);
+    }
+
     /// New Tmux Tab (`affinity`: the tmux window whose Tandem window gets the tab) or New
     /// Tmux Window. With variable sizes the client first takes the new window's size.
     /// Returns the tag of the `new-window` command, whose reply comes as `NewWindowReply`.

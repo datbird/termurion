@@ -677,6 +677,14 @@ impl App {
             }
             "terminate:" => self.quit(event_loop),
             "moveTabToNewWindow:" if self.layout_allowed(crate::winmodel::LayoutOp::MoveTab) => self.move_tab_to_new_window(),
+            // Disabled while a pick is on (`PTYTextView.m:587-591`).
+            "movePane:" => {
+                if self.pane_move.is_none() {
+                    if let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) {
+                        self.start_pane_move(pane, true, event_loop);
+                    }
+                }
+            }
             "moveSessionToWindow:" if self.layout_allowed(crate::winmodel::LayoutOp::MovePane) => self.move_session_to_window(),
             "moveSessionToTab:" if self.layout_allowed(crate::winmodel::LayoutOp::MovePane) => self.move_session_to_tab(),
             "mergeAllWindows:" if self.layout_allowed(crate::winmodel::LayoutOp::MoveTab) => self.merge_all_windows(),
@@ -739,6 +747,7 @@ impl App {
                 }
             }
             "newWindow:" => {
+                self.pane_move_event(pane_move_ui::PickEvent::NewSession);
                 if self.tmux_new(true, true).is_none() {
                     self.new_window(event_loop, None);
                 }

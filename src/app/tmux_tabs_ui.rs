@@ -1077,6 +1077,21 @@ impl App {
         true
     }
 
+    /// Move Session to Split Pane in a tmux tab: tmux moves the pane (`move-pane`, numeric ids
+    /// only), and its layout change shows it (`TC:2129-2139`). A pane of another gateway is
+    /// left alone, as `tmux_swap` does.
+    pub(super) fn tmux_move_pane(&mut self, src: PaneId, dst: PaneId, plan: crate::pane_move::Drop) -> bool {
+        let crate::pane_move::Drop::Split { axis, before } = plan else { return false };
+        let (Some((gw, ps, _)), Some((gd, pd, _))) = (self.tmux_of(src), self.tmux_of(dst)) else { return false };
+        if gw != gd {
+            return true;
+        }
+        let Some(t) = self.tmux.get_mut(&gw) else { return false };
+        t.ctl.move_pane(ps, pd, axis == Axis::Row, before, &mut t.gw);
+        self.tmux_flush(gw);
+        true
+    }
+
     /// Edit Tab Title on a tmux tab renames the tmux window; %window-renamed brings it back.
     pub(super) fn tmux_rename(&mut self, pane: PaneId, name: &str) -> bool {
         let Some((gw, _, window)) = self.tmux_of(pane) else { return false };
