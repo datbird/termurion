@@ -330,15 +330,39 @@ impl App {
     }
 
     /// A pick from the right-click menu's own items. Returns false for other ids.
-    pub(super) fn context_picked(&mut self, id: &str) -> bool {
+    pub(super) fn context_picked(&mut self, id: &str, event_loop: &ActiveEventLoop) -> bool {
         let Some(item) = id.strip_prefix(CTX_ID) else { return false };
         let Some(pend) = self.ctx_pending.take() else { return true };
+        let focused = self.tabs.get(self.active).map(|t| t.focused);
+        match ctx_pick(id, pend.pane, focused) {
+            CtxPick::Swap(pane) => self.start_pane_move(pane, false),
+            CtxPick::Provider { pane, unique_id } => {
+                let title = pend.providers.iter().find(|(_, id)| *id == unique_id).map(|(t, _)| t.clone()).unwrap_or_default();
+                self.context_provider_picked(pane, &unique_id, &title);
+            }
+            CtxPick::Command { id, focus } => {
+                // The menu is for this pane, so the command acts on it: focus it first.
+                if let (Some(pane), Some(t)) = (focus, self.tabs.get_mut(self.active)) {
+                    if t.layout.panes().contains(&pane) {
+                        t.focused = pane;
+                        self.refresh_route();
+                    }
+                }
+                if let Some(item) = crate::menus::by_id(&id) {
+                    self.run_command(item, event_loop);
+                }
+            }
+            CtxPick::Other => self.context_other_picked(item, pend),
+        }
+        self.redraw();
+        true
+    }
+
+    fn context_other_picked(&mut self, item: &str, pend: CtxPending) {
         if item == "stopcoprocess" {
             self.stop_coprocess(pend.pane);
         } else if item == "togglebroadcast" {
             self.toggle_broadcast_pane(pend.pane);
-        } else if item == "swappane" {
-            self.start_pane_move(pend.pane, false);
         } else if item == "unfold" {
             if let Some(f) = pend.fold {
                 self.unfold(pend.pane, f);
@@ -349,9 +373,6 @@ impl App {
                     self.banners.set("clipboard", format!("Copy failed: {e}"));
                 }
             }
-        } else if let Some(unique_id) = item.strip_prefix("provider.") {
-            let title = pend.providers.iter().find(|(_, id)| id == unique_id).map(|(t, _)| t.clone()).unwrap_or_default();
-            self.context_provider_picked(pend.pane, unique_id, &title);
         } else if let Some(a) = item.strip_prefix("action.").and_then(|n| n.parse::<usize>().ok()).and_then(|n| pend.actions.get(n).cloned()) {
             let cwd_path = (!pend.cwd.is_empty()).then(|| std::path::PathBuf::from(&pend.cwd));
             // Asked again at the pick: the pane may have started framing since the menu showed.
@@ -361,8 +382,6 @@ impl App {
                 self.execute(pend.pane, run, cwd_path.as_deref(), false);
             }
         }
-        self.redraw();
-        true
     }
 
     /// Opens text picked from a label: an existing file (with its line) through Semantic
@@ -418,11 +437,13 @@ pub(super) enum CtxItem {
     SwapPane,
     /// A script context menu provider's item, by its unique id.
     Provider(String),
+    /// A menu command (by menu item id, and whether it is enabled) that acts on the menu's pane.
+    Command(String, bool),
 }
 
 impl CtxItem {
     pub(super) fn enabled(&self) -> bool {
-        !matches!(self, CtxItem::Action(_, false))
+        !matches!(self, CtxItem::Action(_, false) | CtxItem::Command(_, false))
     }
 
     pub(super) fn id(&self) -> String {
@@ -434,6 +455,7 @@ impl CtxItem {
             CtxItem::ToggleBroadcast => format!("{CTX_ID}togglebroadcast"),
             CtxItem::SwapPane => format!("{CTX_ID}swappane"),
             CtxItem::Provider(id) => format!("{CTX_ID}provider.{id}"),
+            CtxItem::Command(id, _) => format!("{CTX_ID}cmd.{id}"),
         }
     }
 }
@@ -447,6 +469,30 @@ pub(super) fn ctx_extras(running_coprocess: bool) -> Vec<&'static str> {
     }
     v.push("Toggle Broadcasting Input");
     v
+}
+
+/// What a pick from the pane menu does, decided from the menu's pane (`CtxPending::pane`) and
+/// the focused pane, so nothing acts on the focused pane when the menu is for another.
+#[derive(Debug, PartialEq)]
+pub(super) enum CtxPick {
+    Swap(PaneId),
+    Provider { pane: PaneId, unique_id: String },
+    /// A menu command: the pane to focus first (None when it already is), then the command.
+    Command { id: String, focus: Option<PaneId> },
+    Other,
+}
+
+pub(super) fn ctx_pick(item: &str, pend_pane: PaneId, focused: Option<PaneId>) -> CtxPick {
+    let Some(item) = item.strip_prefix(CTX_ID) else { return CtxPick::Other };
+    if item == "swappane" {
+        CtxPick::Swap(pend_pane)
+    } else if let Some(unique_id) = item.strip_prefix("provider.") {
+        CtxPick::Provider { pane: pend_pane, unique_id: unique_id.to_string() }
+    } else if let Some(id) = item.strip_prefix("cmd.") {
+        CtxPick::Command { id: id.to_string(), focus: (focused != Some(pend_pane)).then_some(pend_pane) }
+    } else {
+        CtxPick::Other
+    }
 }
 
 /// The pane a pane menu is for.
@@ -528,6 +574,23 @@ mod title_menu_tests {
     use super::*;
 
     #[test]
+    fn picks_act_on_the_menus_pane() {
+        let (a, b): (PaneId, PaneId) = (1, 2);
+        // Menu for B while A is focused: a provider pick and a Swap reach B only.
+        assert_eq!(ctx_pick("tandem.ctx.provider.u1", b, Some(a)), CtxPick::Provider { pane: b, unique_id: "u1".into() });
+        assert_eq!(ctx_pick("tandem.ctx.swappane", b, Some(a)), CtxPick::Swap(b));
+        // Every plain command of the menu (the move group among them) focuses B first.
+        for id in ["Session > Move Session > Move Session to Split Pane", "Session > Move Session > Move Session to Tab", "Session > Move Session > Move Session to Window", "Edit > Copy"] {
+            let item = format!("tandem.ctx.cmd.{id}");
+            assert_eq!(ctx_pick(&item, b, Some(a)), CtxPick::Command { id: id.into(), focus: Some(b) }, "{id}");
+            // Already focused: nothing to move.
+            assert_eq!(ctx_pick(&item, b, Some(b)), CtxPick::Command { id: id.into(), focus: None });
+        }
+        assert_eq!(ctx_pick("tandem.ctx.stopcoprocess", b, Some(a)), CtxPick::Other);
+        assert_eq!(CtxItem::Command("Edit > Copy".into(), true).id(), "tandem.ctx.cmd.Edit > Copy");
+    }
+
+    #[test]
     fn title_menu_is_the_pane_menu() {
         // No point: no link, fold or Smart Selection item; Stop Coprocess only while one runs.
         assert_eq!(ctx_extras(false), vec!["Toggle Broadcasting Input"]);
@@ -536,17 +599,12 @@ mod title_menu_tests {
         assert_eq!(swap_label(), "Swap With Session\u{2026}");
         assert_eq!(CtxItem::SwapPane.id(), "tandem.ctx.swappane");
         assert!(CtxItem::SwapPane.enabled());
-        // The pending item is built for the title bar's pane (B), whatever is focused (A),
-        // even with no other item, so the providers fill (P16, `m11c-rulings.txt:161`).
-        let (a, b): (PaneId, PaneId) = (1, 2);
-        let pend = CtxPending::for_pane(b, vec![("Item".into(), "u1".into())]);
-        assert_eq!(pend.pane, b);
-        assert_ne!(pend.pane, a);
+        // The pending item is built for the menu's pane even with no other item, so the
+        // providers fill (P16, `m11c-rulings.txt:161`); which pane a pick reaches is
+        // `picks_act_on_the_menus_pane`.
+        let pend = CtxPending::for_pane(2, vec![("Item".into(), "u1".into())]);
         assert!(pend.link.is_none() && pend.fold.is_none() && pend.actions.is_empty());
         assert_eq!(pend.providers, vec![("Item".to_string(), "u1".to_string())]);
-        // The menu is for pane B whatever `at` carries a point or not.
-        assert_eq!(menu_pane(Some((b, None))), Some(b));
-        assert_eq!(menu_pane(None), None);
     }
 }
 
@@ -556,14 +614,14 @@ mod tests {
     /// reported folder into a local shell's folder or an Explorer target: each asks the one
     /// guard, `remote_text` (P10), or `pane_dir`, which asks it. Win-click and the Open Target
     /// pointer actions reach `open_target`; the right-click menu and its pointer action
-    /// `show_context_menu_at` and `context_picked`; Open Selection and a label pick `open_text`;
+    /// `show_context_menu_at` and `context_other_picked`; Open Selection and a label pick `open_text`;
     /// OSC 1337 OpenURL `open_url`; the status bar's Current Directory menu `dir_menu_picked`; a
     /// Porthole document link `open_porthole_link` and `open_link_target`; a new session's
     /// folder `previous_dir`. Paths are under src/.
     const GATED: &[(&str, &str)] = &[
         ("app/semantic_ui.rs", "open_target"),
         ("app/semantic_ui.rs", "show_context_menu_at"),
-        ("app/semantic_ui.rs", "context_picked"),
+        ("app/semantic_ui.rs", "context_other_picked"),
         ("app/semantic_ui.rs", "open_text"),
         ("app/semantic_ui.rs", "pane_dir"),
         ("app/prompted_ui.rs", "open_url"),

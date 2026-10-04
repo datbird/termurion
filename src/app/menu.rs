@@ -269,7 +269,8 @@ impl App {
                     None => context.append(&PredefinedMenuItem::separator()),
                     Some(item) => {
                         let enabled = !commands::status(item).unavailable();
-                        context.append(&MenuItem::with_id(item.id(), menu_text(item), enabled, None))
+                        // Acts on the menu's pane, not the focused one (`context_picked`).
+                        context.append(&MenuItem::with_id(super::semantic_ui::CtxItem::Command(item.id().to_string(), enabled).id(), menu_text(item), enabled, None))
                     }
                 },
             });
@@ -596,7 +597,7 @@ impl App {
         if self.snippet_or_action_picked(id, event_loop) || self.toolbelt_picked(id, event_loop) {
             return;
         }
-        if self.chat_list_picked(id, event_loop) || self.chat_menu_picked(id, event_loop) || self.inline_menu_picked(id) || self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) || self.porthole_language_picked(id) || self.tab_overflow_picked(id) || self.color_picked(id) || self.status_bar_picked(id, event_loop) {
+        if self.chat_list_picked(id, event_loop) || self.chat_menu_picked(id, event_loop) || self.inline_menu_picked(id) || self.find_mode_picked(id) || self.context_picked(id, event_loop) || self.named_mark_picked(id) || self.porthole_language_picked(id) || self.tab_overflow_picked(id) || self.color_picked(id) || self.status_bar_picked(id, event_loop) {
             return;
         }
         if let Some(item) = menus::by_id(id) {
