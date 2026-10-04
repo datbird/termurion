@@ -9,6 +9,7 @@ pub mod pointer;
 pub mod remap;
 pub mod keyroute;
 pub mod mru;
+pub mod desktops;
 pub mod dvr;
 pub mod replay;
 pub mod replay_panel;

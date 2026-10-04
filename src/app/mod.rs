@@ -100,6 +100,7 @@ mod aps_ui;
 mod windows_ui;
 #[cfg(windows)]
 mod chrome_ui;
+mod desktops_ui;
 #[cfg(windows)]
 mod sizing_ui;
 #[cfg(windows)]
@@ -822,6 +823,10 @@ pub struct App {
     state_debounce: crate::restore_state::Debounce,
     state_frozen: bool,
     focus_lost: bool,
+    /// The shell's virtual desktop manager, made on first use (13g); `desktops_tried` is set
+    /// once the attempt was made, so a machine without one is asked only once.
+    desktops: Option<crate::desktops::win::Manager>,
+    desktops_tried: bool,
     /// The font settings the renderer last loaded.
     font_sig: String,
     /// Cursor blink phase, and when it last flipped.
@@ -1664,6 +1669,8 @@ pub fn run() {
         state_debounce: Default::default(),
         state_frozen: second_copy,
         focus_lost: false,
+        desktops: None,
+        desktops_tried: false,
         font_sig: String::new(),
         profiles_win: None,
         blink_on: true,

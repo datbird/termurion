@@ -259,14 +259,19 @@ impl App {
         Some(w)
     }
 
-    /// Every window, by number.
-    pub(super) fn snapshot_all(&mut self, contents: Contents) -> Vec<Value> {
+    /// Every window, by number. `state` is the saved state for restoration: each window table then
+    /// carries its virtual desktop (arrangements never do).
+    pub(super) fn snapshot_all(&mut self, contents: Contents, state: bool) -> Vec<Value> {
         let back = self.current_window();
         let ids: Vec<WindowId> = self.registry.order().into_iter().filter_map(|k| self.window_id_of_key(k)).collect();
         let mut out = Vec::new();
         for id in ids {
             if self.enter(id) {
-                out.extend(self.snapshot_window(contents));
+                let desktop = if state && self.globals.bool(crate::desktops::RESTORE_KEY) { self.hwnd().and_then(|h| self.desktops().and_then(|m| m.window_desktop(h))) } else { None };
+                if let Some(mut w) = self.snapshot_window(contents) {
+                    crate::desktops::stamp(&mut w, desktop);
+                    out.push(w);
+                }
             }
         }
         if let Some(b) = back {
@@ -340,7 +345,7 @@ impl App {
     /// The window tables `what` names (`save_arrangement` has entered the window used last).
     fn snapshots(&mut self, what: &SaveWhat, contents: Contents) -> Vec<Value> {
         match what {
-            SaveWhat::All => self.snapshot_all(contents),
+            SaveWhat::All => self.snapshot_all(contents, false),
             SaveWhat::Window => self.snapshot_window(contents).into_iter().collect(),
             SaveWhat::Tabs(window, ids) => {
                 if self.enter(*window) {
@@ -756,6 +761,9 @@ impl App {
             let _ = super::caption_ui::request_inner_size(&g.window, winit::dpi::PhysicalSize::new((frame.w as u32).saturating_sub(dw).max(1), (frame.h as u32).saturating_sub(dh).max(1)));
         }
         self.apply_resizable();
+        if launch {
+            self.restore_desktop(w);
+        }
         // The window's first profile seeds it, never a stale App default (`PT:864`).
         let first = self.first_arrangement_guid(w);
         let initial = crate::transparency::initial_use(first.as_deref().and_then(|g| self.store.get(g)), self.store.default_profile());

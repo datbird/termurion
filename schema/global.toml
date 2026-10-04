@@ -761,6 +761,15 @@ default = false
 help = "Tandem starts with only its hotkey windows. With no hotkey window a window opens anyway, since Windows would show nothing."
 
 [[setting]]
+key = "RestoreWindowsToSameSpaces"
+tab = "General"
+section = "Startup"
+label = "Restore windows to same desktops"
+type = "bool"
+default = false
+help = "When windows are restored at launch, each goes back to the virtual desktop it was on, if that desktop still exists."
+
+[[setting]]
 key = "AlwaysOpenWindowAtStartup"
 tab = "General"
 section = "Startup"

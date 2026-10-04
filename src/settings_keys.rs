@@ -1060,6 +1060,8 @@ pub fn row_enabled(g: &Globals, key: &str) -> bool {
         crate::remote_prefs::FOLDER_KEY => g.bool(crate::remote_prefs::LOAD_KEY),
         // The bar can hide in full screen: Show off, or hidden with one tab (`APV:436-441`).
         "FlashTabBarInFullscreen" => !g.bool("ShowFullScreenTabBar") || g.bool("HideTab"),
+        // Enabled only under the system restore policy (`GP:3496-3506`).
+        "RestoreWindowsToSameSpaces" => crate::desktops::restore_row_enabled(g.bool("OpenArrangementAtStartup"), g.bool("OpenNoWindowsAtStartup")),
         "PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges" => g.bool("PreserveWindowSizeWhenTabBarVisibilityChanges"),
         _ => true,
     }
@@ -1763,6 +1765,20 @@ mod tests {
         g.set(LOAD_KEY, Value::Boolean(false));
         assert!(!prefs_save_enabled(&g, home, &|_| None, &writable), "off");
         assert!(!row_enabled(&g, FOLDER_KEY));
+    }
+
+    #[test]
+    fn restore_spaces_row_follows_windows() {
+        let s = schema::find_global("RestoreWindowsToSameSpaces").unwrap();
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.label.as_str()), ("General", "Startup", "Restore windows to same desktops"));
+        assert_eq!(s.kind, Kind::Bool);
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        let mut g = Globals::empty(std::path::Path::new("restore-spaces-test.toml"));
+        for (arr, none) in [(false, false), (true, false), (false, true), (true, true)] {
+            g.set("OpenArrangementAtStartup", Value::Boolean(arr));
+            g.set("OpenNoWindowsAtStartup", Value::Boolean(none));
+            assert_eq!(row_enabled(&g, "RestoreWindowsToSameSpaces"), crate::desktops::restore_row_enabled(arr, none));
+        }
     }
 
     #[test]
