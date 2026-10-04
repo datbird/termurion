@@ -44,6 +44,28 @@ pub fn is_device_name(name: &str) -> bool {
 /// The mark Windows puts on a download (`ZoneId=3`, the Internet zone).
 pub const ZONE_MARK: &str = "[ZoneTransfer]\r\nZoneId=3\r\n";
 
+/// The Zone.Identifier text for a file that came from `host_url` (`HostUrl=` is left out when
+/// there is none). A control character in the URL is dropped, so no URL can add a line: the
+/// text always has its own lines and no others.
+pub fn zone_text(host_url: Option<&str>) -> String {
+    match host_url {
+        Some(url) => format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={}\r\n", url.chars().filter(|c| !c.is_control()).collect::<String>()),
+        None => ZONE_MARK.to_string(),
+    }
+}
+
+/// Marks the existing file `path` as from the internet, and fails when it cannot: a missing
+/// file (writing a stream would create it), or a drive that keeps no streams (FAT). For a
+/// download that must not land unmarked; `write_marked` stays lenient for inline files (12d).
+pub fn mark_strict(path: &Path, host_url: Option<&str>) -> std::io::Result<()> {
+    if !std::fs::symlink_metadata(path)?.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a file"));
+    }
+    let mut stream = path.as_os_str().to_os_string();
+    stream.push(":Zone.Identifier");
+    std::fs::write(stream, zone_text(host_url))
+}
+
 /// Writes `bytes` to `path`, then the Zone.Identifier stream, so SmartScreen or Protected View
 /// meets a file opened after it was revealed. A drive without streams (FAT) keeps the file
 /// unmarked.
@@ -116,6 +138,37 @@ mod tests {
         assert_eq!(std::fs::read(&p).unwrap(), b"hi");
         let zone = std::fs::read_to_string(format!("{}:Zone.Identifier", p.display())).unwrap();
         assert_eq!(zone, ZONE_MARK);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn zone_text_has_only_its_own_lines() {
+        assert_eq!(zone_text(None), ZONE_MARK);
+        assert_eq!(zone_text(Some("ssh://h/x")), "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=ssh://h/x\r\n");
+        // A URL that carries line breaks cannot add a ZoneId line.
+        let t = zone_text(Some("ssh://h/x\r\nZoneId=0"));
+        assert_eq!(t.lines().count(), 3, "{t:?}");
+        assert!(t.ends_with("\r\n") && !t.replace("\r\n", "").contains(['\r', '\n']));
+        assert_eq!(t.lines().filter(|l| l.starts_with("ZoneId=")).count(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_strict_mark_fails_when_it_cannot_be_written() {
+        let dir = std::env::temp_dir().join(format!("tandem-strict-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("a.txt");
+        std::fs::write(&p, "x").unwrap();
+        mark_strict(&p, Some("ssh://h/a.txt")).unwrap();
+        assert_eq!(std::fs::read_to_string(format!("{}:Zone.Identifier", p.display())).unwrap(), zone_text(Some("ssh://h/a.txt")));
+        // A missing file is an error, and the mark must not create it.
+        let gone = dir.join("gone.txt");
+        assert!(mark_strict(&gone, None).is_err());
+        assert!(!gone.exists(), "writing the stream would have created the file");
+        // A folder takes no mark here, nor does a file in a folder that is not there.
+        assert!(mark_strict(&dir, None).is_err());
+        assert!(mark_strict(&dir.join("no").join("b.txt"), None).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

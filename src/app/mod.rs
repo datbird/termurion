@@ -775,6 +775,10 @@ pub struct App {
     ssh_next_file_id: u64,
     /// The transfer engine's jobs (app-wide, not in `swap_live`; 14d).
     ssh_transfers: crate::ssh_transfer::Transfers,
+    /// The local side of each transfer job: its temp file and what its banner shows (Task 4).
+    ssh_locals: HashMap<u64, crate::ssh_local::Local>,
+    /// Folder unzips running on worker threads, each answering (job, result) once.
+    ssh_unzips: Vec<std::sync::mpsc::Receiver<(u64, Result<(), String>)>>,
     /// The secret pipe's server, started with the first window; None when it could not start.
     ssh_secret_server: Option<crate::ssh_secret_win::Server>,
     /// The Script Console's entries: scripts, connections and the app-wide logs.
@@ -1124,6 +1128,15 @@ pub fn run() {
         let _ = wake.lock().unwrap().send_event(UserEvent::Wake);
     });
 
+    // A crash mid-download leaves a hidden `.Tandem.*` temp: older ones are swept with the
+    // launch's other housekeeping (P24), off the launch path.
+    std::thread::spawn(|| {
+        let now = std::time::SystemTime::now();
+        if let Some(d) = files_ui::downloads_dir() {
+            crate::ssh_local::sweep_stale(&d, now);
+        }
+        crate::ssh_local::sweep_stale(&std::env::temp_dir(), now);
+    });
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default();
     let mut banners = Banners::default();
     let api = match conpty::load(&Source::Shipped(exe_dir.clone())) {
@@ -1501,6 +1514,8 @@ pub fn run() {
         ssh_waiters: HashMap::new(),
         ssh_next_file_id: 1,
         ssh_transfers: crate::ssh_transfer::Transfers::new(),
+        ssh_locals: HashMap::new(),
+        ssh_unzips: Vec::new(),
         ssh_secret_server: None,
         script_history: crate::script_history::History::new(aps_logging, api_ui::unix_secs()),
         api_alerts: Vec::new(),
@@ -4818,6 +4833,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_pending_repl(event_loop);
         let import_due = self.import_tick();
         self.script_export_tick();
+        self.ssh_unzip_tick();
         self.scripts_scan_tick();
         // OK in "Importing Settings and Data": Tandem quits and starts again.
         if std::mem::take(&mut self.relaunch_due) {

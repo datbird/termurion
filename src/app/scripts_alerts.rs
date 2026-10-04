@@ -71,6 +71,8 @@ pub(super) enum Answer {
 pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
     match then {
         Then::SlowScan => Answer::Button(1),
+        // Keep Both: a closed window never replaces a file (P9).
+        Then::SshKeepOrReplace { .. } => Answer::Button(0),
         // No, Deny, Don't Copy and Discard Local Changes.
         Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::PrefsCopyNow | Then::PrefsOverwrite => Answer::Button(1),
         _ => Answer::Button(fallback),
@@ -185,6 +187,10 @@ pub(super) enum Then {
     /// Upgrade's "It looks like you're not at a command prompt." for the pane: Run Installer
     /// Anyway (0) runs the installer there; Cancel (1) does nothing.
     InstallShellIntegration(crate::layout::PaneId),
+    /// "Overwrite existing file?" for the finished SSH download `job` whose plain name is
+    /// taken: Keep Both (0) or Replace (1, never remembered). Never dropped by the queue's cap
+    /// (it holds a finished temp file and a job); closed or dropped it keeps both (P9).
+    SshKeepOrReplace { job: u64 },
 }
 
 impl Then {
@@ -195,6 +201,8 @@ impl Then {
         match self {
             Then::OpenNewScript(_) | Then::PrefsQuit | Then::Malformed(_) => vec![1],
             Then::Archive(_) => vec![1, 2],
+            // Replace would overwrite for every later file of that name.
+            Then::SshKeepOrReplace { .. } => vec![1],
             _ => Vec::new(),
         }
     }
@@ -254,6 +262,8 @@ impl App {
             // Canceled: what waits on a consent or on the replace question hears so.
             Then::Consent(jobs) => self.consent_declined(jobs),
             Then::AlreadyInstalled(_) => self.scripts_answered(then, 1),
+            // The finished download keeps both files.
+            Then::SshKeepOrReplace { .. } => self.scripts_answered(then, 0),
             Then::Paste(pane) => self.paste_answered(pane, None),
             // The pane's output waits on the answer: dropped, the file is not shown.
             Then::Inline { pane, serial, .. } | Then::BigInline(pane, serial) => self.inline_released(pane, serial, false),
@@ -449,6 +459,7 @@ impl App {
                     self.ask_scripts(ask);
                 }
             }
+            Then::SshKeepOrReplace { job } => self.ssh_keep_or_replace(job, index),
         }
     }
 }
@@ -553,5 +564,22 @@ mod tests {
         }
         assert_eq!(q.len(), LIMIT + 7);
         assert!(push_capped(&mut q, ask(Then::Archive(std::path::PathBuf::from(r"C:\a.zip")))).is_some(), "a scan's asks are capped");
+    }
+
+    /// A finished SSH download's Keep Both or Replace question (P9, R14de-6): the queue's cap
+    /// never drops it, a closed window or a dropped ask keeps both files, and Replace is never remembered.
+    #[test]
+    fn ssh_keep_or_replace_is_never_dropped() {
+        use crate::warnings::Kind;
+        let a = ask("H", "T", &["Keep Both", "Replace"], Some("NoSyncOverwriteOrReplaceFile"), Kind::Permanent, Then::SshKeepOrReplace { job: 7 });
+        assert_eq!(a.spec.never_remember, [1]);
+        assert!(a.spec.rememberable(0) && !a.spec.rememberable(1), "a remembered Replace would overwrite for every later file");
+        assert_eq!(on_close(&a.then, 1), Answer::Button(0), "a closed window keeps both");
+        let mut queue: VecDeque<Ask> = (0..LIMIT).map(|_| ask("H", "T", &["OK"], None, Kind::Persistent, Then::Nothing)).collect();
+        assert!(push_capped(&mut queue, a).is_none());
+        assert_eq!(queue.len(), LIMIT + 1);
+        assert_eq!(queue.back().map(|q| &q.then), Some(&Then::SshKeepOrReplace { job: 7 }));
+        // The cap still holds for every capped ask.
+        assert!(push_capped(&mut queue, ask("H", "T", &["OK"], None, Kind::Persistent, Then::Nothing)).is_some());
     }
 }

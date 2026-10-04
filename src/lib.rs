@@ -244,6 +244,7 @@ pub mod ssh_args;
 pub mod ssh_inject;
 pub mod ssh_files;
 pub mod ssh_transfer;
+pub mod ssh_local;
 pub mod remote_file;
 pub mod conductor;
 pub mod framer_script;

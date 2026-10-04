@@ -15,7 +15,7 @@ pub(super) fn size_text(n: usize) -> String {
 }
 
 /// The Downloads folder (the user's profile when there is none).
-fn downloads_dir() -> Option<std::path::PathBuf> {
+pub(super) fn downloads_dir() -> Option<std::path::PathBuf> {
     let home = std::path::PathBuf::from(std::env::var_os("USERPROFILE")?);
     let d = home.join("Downloads");
     Some(if d.is_dir() { d } else { home })
