@@ -445,10 +445,6 @@ pub struct App {
     /// The hops the next pane reconnects through (Duplicate Session), moved into the new pane
     /// by `start_pane_as`. Set and cleared around one start, so it is not per-window state.
     start_jumps_override: Option<Vec<crate::ssh_jumps::Reconnection>>,
-    /// The remote folder the next pane's SSH conductor starts in (an ssh: URL's path, revised
-    /// P9), over its profile's; never a local folder. Set and cleared around one start, so it is
-    /// not per-window state.
-    start_remote_dir_override: Option<String>,
     /// Variables the next pane gets over its session variables (the REPL's cookie and key; a
     /// secret, never logged). Set and cleared around one `open_window`.
     start_env_override: Option<Vec<String>>,
@@ -1447,7 +1443,6 @@ pub fn run() {
         start_dir_override: None,
         start_command_override: None,
         start_jumps_override: None,
-        start_remote_dir_override: None,
         start_env_override: None,
         start_tab: None,
         single_use: HashMap::new(),
@@ -2961,7 +2956,7 @@ impl App {
                     // Not an ssh session for F27 yet: its hook, vouched by the origin token,
                     // makes it one.
                     pane.ssh.profile_ssh = profile::is_ssh(&p);
-                    pane.ssh.initial_directory = self.start_remote_dir_override.take().or_else(|| profile::ssh_initial_directory(&p));
+                    pane.ssh.initial_directory = profile::ssh_initial_directory(&p);
                 }
                 if let Some(jumps) = self.start_jumps_override.take() {
                     pane.pending_jumps = jumps;

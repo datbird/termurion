@@ -329,6 +329,13 @@ impl WinRegistry {
         (win::get(&format!("{root}\\{scheme}"), None), win::get(&format!("{root}\\{scheme}\\shell\\open\\command"), None), win::get(&format!("{root}\\Tandem.{scheme}\\shell\\open\\command"), None))
     }
 
+    /// Tells the shell the file and protocol associations changed, so Default apps lists Tandem
+    /// (documented for every new handler registration).
+    fn notify_assoc_changed() {
+        use windows_sys::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
+        unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED as _, SHCNF_IDLIST, std::ptr::null(), std::ptr::null()) };
+    }
+
     fn assoc(scheme: &str, what: windows_sys::Win32::UI::Shell::ASSOCSTR) -> Option<String> {
         use windows_sys::Win32::UI::Shell::{ASSOCF_IS_PROTOCOL, AssocQueryStringW};
         let a = win::wide(scheme);
@@ -372,7 +379,9 @@ impl SchemeRegistry for WinRegistry {
         win::set("Software\\Tandem\\Capabilities", Some("ApplicationDescription"), "Tandem terminal")?;
         win::set("Software\\Tandem\\Capabilities\\URLAssociations", Some(scheme), &format!("Tandem.{scheme}"))?;
         win::set("Software\\RegisteredApplications", Some("Tandem"), "Software\\Tandem\\Capabilities")?;
-        Self::register_under("Software\\Classes", scheme, exe)
+        Self::register_under("Software\\Classes", scheme, exe)?;
+        Self::notify_assoc_changed();
+        Ok(())
     }
 }
 
@@ -550,6 +559,20 @@ mod tests {
         let t = globals.table(HANDLERS_KEY);
         assert_eq!((guid_for(&t, "ssh"), guid_for(&t, "other")), (None, Some(live)));
         assert!(!prune_globals(&mut globals, &store));
+    }
+
+    /// Final review: Windows documents SHChangeNotify(SHCNE_ASSOCCHANGED) after a handler is
+    /// registered, so the shell and Default apps see Tandem (the call is the last thing
+    /// `register` does, after the protocol handler key).
+    #[test]
+    fn a_successful_register_tells_the_shell() {
+        // The anchors are built so this test's own text is not what is searched.
+        let src = include_str!("url_schemes.rs");
+        let real = src.split(&format!("impl SchemeRegistry for Win{}", "Registry {")).nth(1).expect("the Windows impl");
+        let body = real.split(&format!("fn reg{}", "ister(")).nth(1).and_then(|r| r.split("\n    }\n").next()).expect("register");
+        let handler = body.find("register_under(").expect("writes the handler");
+        let notify = body.find(&format!("notify_assoc{}", "_changed()")).expect("tells the shell");
+        assert!(notify > handler, "after the writes succeed");
     }
 
     #[cfg(windows)]

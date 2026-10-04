@@ -38,16 +38,6 @@ pub(super) fn session_values(base: &crate::profile::Profile, url: &str, s: &crat
     Ok(Some(values))
 }
 
-/// The remote folder the SSH conductor starts a URL's session in (revised P9): with integration
-/// only, because it2ssh drops the trailing cd word; without, the cd word in the command line is
-/// the only carrier. Never handed to anything local.
-pub(super) fn remote_directory(url: &str, s: &crate::ssh_url::Settings) -> Option<String> {
-    if !s.integration {
-        return None;
-    }
-    crate::ssh_url::parse(url).and_then(|u| crate::ssh_url::cd_path(&u, s))
-}
-
 impl App {
     /// The profile `ssh` is bound to, when Tandem is the default handler (iTerm2's `profileForScheme`).
     pub(super) fn bound_ssh_profile(&self) -> Option<String> {
@@ -86,9 +76,6 @@ impl App {
             // A bad host or no host opens nothing and shows nothing (iTerm2's; Decision).
             Err(_) => return false,
         };
-        // A tab that opens as a window cannot carry the folder: that session starts in the
-        // remote home (Decision).
-        let remote_dir = remote_directory(url, &settings).filter(|_| !self.new_tab_opens_window(Some(&guid)));
         let before = (self.tabs.len(), self.pending_windows.len());
         let copy = values.map(|values| {
             let saved = self.store.shared_guid(&guid);
@@ -97,9 +84,7 @@ impl App {
             let divorced = crate::session_profile::divorce(&shared, fresh.clone());
             self.add_session_copy(divorced, &shared, &values, fresh)
         });
-        self.start_remote_dir_override = remote_dir;
         self.new_tab(Some(copy.as_deref().unwrap_or(&guid)));
-        self.start_remote_dir_override = None;
         let started = (self.tabs.len(), self.pending_windows.len()) != before;
         if let (false, Some(copy)) = (started, &copy) {
             self.forget_session_profile(copy);
@@ -206,19 +191,20 @@ mod session_tests {
         v.iter().find(|(key, _)| key == k).and_then(|(_, v)| v.as_ref())
     }
 
-    /// Revised P9: with integration the cd path is the conductor's remote folder, never a
-    /// profile key; without, only the cd word carries it.
+    /// Final-review ruling: with integration on the URL path travels as iTerm2 sends it, the cd
+    /// word in the command line (the conductor runs it with the other command words and a failed
+    /// cd still ends in `exec $SHELL -l`); it is never a conductor `cd` command, which aborts
+    /// the integration when it fails. It is also never a profile key.
     #[test]
-    fn integration_passes_the_cd_path_as_the_remote_folder() {
+    fn integration_sends_the_cd_path_only_as_the_cd_word() {
         let base = Profile::default();
         let on = session_values(&base, "ssh://u@h/srv/app", &settings(true)).unwrap().unwrap();
         assert_eq!(get(&on, "Custom Command").and_then(|v| v.as_str()), Some("SSH"));
         assert!(get(&on, "Custom Directory").is_none() && get(&on, "Working Directory").is_none());
-        assert_eq!(remote_directory("ssh://u@h/srv/app", &settings(true)).as_deref(), Some("/srv/app"));
-        assert_eq!(remote_directory("ssh://h/~/w", &settings(true)).as_deref(), Some("~/w"));
-        assert_eq!(remote_directory("ssh://u@h", &settings(true)), None, "no path, no folder");
-        assert_eq!(remote_directory("ssh://h//attacker.example/share", &settings(true)), None);
-        assert_eq!(remote_directory("ssh://u@h/srv/app", &settings(false)), None, "the cd word carries it");
+        // The URL path is the cd word only (iTerm2's way, SL:617-624): no remote-folder override
+        // exists, so no conductor `cd` command can come from a URL.
+        let name = format!("start_remote_dir{}", "_override");
+        assert!(!include_str!("mod.rs").contains(&name));
         let off = session_values(&base, "ssh://u@h/srv/app", &settings(false)).unwrap().unwrap();
         assert_eq!(get(&off, "Custom Command").and_then(|v| v.as_str()), Some("Yes"));
         assert!(get(&off, "Working Directory").is_none());
