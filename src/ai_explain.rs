@@ -9,7 +9,6 @@ use std::sync::OnceLock;
 use regex::Regex;
 use serde_json::{json, Map, Value};
 
-use crate::ai_tools::truncated;
 use crate::snippets::ellipsize;
 
 /// Text from the terminal with the grid cell of each UTF-16 unit (`iTermCodableLocatedString`).
@@ -108,17 +107,6 @@ impl Request {
             url: text_of(v, "url"),
             context: Context { session_id: text_of(context, "sessionID")?, base_offset: context.get("baseOffset")?.as_i64()? },
         })
-    }
-
-    /// `snippetText`: the chat list's line.
-    pub fn snippet(&self) -> String {
-        if let Some(c) = &self.command {
-            format!("Explain {c}")
-        } else if !self.question.is_empty() {
-            self.question.clone()
-        } else {
-            format!("Explain {}", self.subject)
-        }
     }
 
     /// The text the model reads (`AIExplanationRequest.prompt`, `XQ:54-99`).
@@ -461,20 +449,6 @@ pub fn markdown(bullets: &[String], is_final: bool, any_annotations: bool, main:
     out
 }
 
-/// `shortDescription` of an explanation request (`Message.swift:392-393`).
-pub fn request_snippet(r: &Request, max: usize) -> String {
-    format!("Explain {}", truncated(&r.original.string, max))
-}
-
-/// `shortDescription` of an explanation response (`Message.swift:394-399`).
-pub fn response_snippet(r: &Response, u: Option<&Update>, max: usize) -> String {
-    let (kind, annotations, main) = match u {
-        Some(u) => ("Explanation (streaming)", u.annotations.len(), &u.main_response),
-        None => ("Explanation", r.annotations.len(), &r.main_response),
-    };
-    format!("{kind}: {annotations} annotations: {}", main.as_deref().map_or_else(|| "No main response".to_string(), |m| truncated(m, max)))
-}
-
 pub const MAX_LINES: i64 = 1000;
 pub const NO_CHAT_HEADING: &str = "Error";
 pub const NO_CHAT_TEXT: &str = "AI Chat could not be opened. Verify you only have one instance of Tandem running.";
@@ -691,11 +665,6 @@ mod tests {
         assert_eq!(parse_request_content(&request_content(&r)), Some(r.clone()));
         assert_eq!(parse_request_content(&json!({})), None);
 
-        assert_eq!(r.snippet(), "Explain make");
-        assert_eq!(Request { command: None, question: "why?".into(), ..r.clone() }.snippet(), "why?");
-        assert_eq!(bare.snippet(), "Explain `make`");
-        assert_eq!(request_snippet(&r, 256), "Explain ab\nc");
-        assert_eq!(request_snippet(&r, 3), "Explain ab\u{2026}");
         assert_eq!(located().lines(), vec!["ab", "c"]);
         assert_eq!((located().offset_of_line(0), located().offset_of_line(1), located().offset_of_line(2)), (Some(0), Some(3), None));
     }
@@ -783,9 +752,6 @@ mod tests {
         assert_eq!(Update::full(&grown), Update { annotations: grown.annotations.clone(), main_response: Some("m".into()), message_id: None, is_final: true });
         assert_eq!(parse_response_content(&json!({"_0": {}})), None);
 
-        assert_eq!(response_snippet(&grown, Some(&with), 256), "Explanation (streaming): 1 annotations: m");
-        assert_eq!(response_snippet(&grown, None, 256), "Explanation: 1 annotations: m");
-        assert_eq!(response_snippet(&Response::new(busy()), None, 256), "Explanation: 0 annotations: No main response");
     }
 
     #[test]

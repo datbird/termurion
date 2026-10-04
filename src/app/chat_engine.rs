@@ -1072,6 +1072,8 @@ mod tests {
         model: Model,
         pinned: Model,
         live: Vec<PaneId>,
+        /// Every message the explanation processor was handed, as it came from the turn.
+        seen: Rc<RefCell<Vec<Message>>>,
     }
 
     impl H {
@@ -1089,6 +1091,7 @@ mod tests {
                 model: crate::ai_model::fixture("gpt-t", "https://api.openai.com/v1/responses", Api::Responses),
                 pinned: crate::ai_model::fixture("p", "https://pinned.test/v1/chat/completions", Api::ChatCompletions),
                 live: vec![7, 8, 9],
+                seen: Rc::new(RefCell::new(Vec::new())),
             }
         }
 
@@ -1108,7 +1111,9 @@ mod tests {
                 Box::new(FakeFiles(log.clone()))
             };
             // The real processor over a session that is always there and has no annotations.
+            let seen = self.seen.clone();
             let mut explain = |_: &str, m: Message, target: Option<&Message>, _: bool| -> Explained {
+                seen.borrow_mut().push(m.clone());
                 super::super::ai_explain_app::process(m, target, &mut |_, u| Some(crate::ai_explain::markdown(&[], u.is_some_and(|u| u.is_final), false, u.and_then(|u| u.main_response.as_deref()))))
             };
             let mut cx = Ctx {
@@ -1466,6 +1471,61 @@ mod tests {
         assert!(update.is_final);
         assert_eq!(update.message_id.as_deref(), Some(answers[0].unique_id.as_str()));
         assert!(markdown.ends_with("Hello world"), "{markdown}");
+    }
+
+    fn explanation_request() -> Content {
+        use crate::ai_explain::{request_content, Context, Located, Request};
+        Content::ExplanationRequest(request_content(&Request {
+            command: None,
+            truncated: false,
+            original: Located { string: "x".into(), coords: vec![(0, 0)] },
+            question: String::new(),
+            subject: "s".into(),
+            url: None,
+            context: Context { session_id: "G".into(), base_offset: 0 },
+        }))
+    }
+
+    /// The text of the last message of turn `n`'s request.
+    fn last_body(h: &H, n: usize) -> String {
+        match h.log.borrow().inputs[n].messages.last().map(|m| m.body.clone()) {
+            Some(Body::Text(t)) => t,
+            other => panic!("not text: {other:?}"),
+        }
+    }
+
+    /// The first plain text after an explanation is wrapped once (ruling P6): the mode comes
+    /// from walking the stored log, not from a fresh one.
+    #[test]
+    fn a_follow_up_after_an_explanation_is_wrapped_once() {
+        let mut h = H::new();
+        let chat = h.chat(None);
+        h.script(vec![Out::Choice("<response>done</response>".into())]);
+        h.send(&chat, explanation_request());
+        assert!(h.messages(&chat).iter().any(|m| matches!(m.content, Content::ExplanationResponse(_))), "the answer is stored");
+        h.script(vec![Out::Choice("ok".into())]);
+        h.say(&chat, "why?");
+        assert_eq!(last_body(&h, 1), crate::ai_explain::conversational("why?"));
+        h.script(vec![Out::Choice("ok".into())]);
+        h.say(&chat, "and more?");
+        assert_eq!(last_body(&h, 2), "and more?", "wrapped once only");
+    }
+
+    /// A stream's first message names its own id in its update before the processor sees it
+    /// (ruling P6): the id is the message's real one, not the empty text.
+    #[test]
+    fn a_streamed_first_chunk_names_its_own_id() {
+        let mut h = H::new();
+        let chat = h.chat(None);
+        h.script(vec![Out::Delta("<response>a".into()), Out::StreamEnd]);
+        h.send(&chat, explanation_request());
+        let seen = h.seen.borrow();
+        let first = seen.iter().find(|m| matches!(m.content, Content::ExplanationResponse(_))).expect("the first chunk reached the processor");
+        let Content::ExplanationResponse(v) = &first.content else { unreachable!() };
+        let update = crate::ai_explain::parse_response_content(v).unwrap().1.expect("a stream's first message carries an update");
+        assert!(!first.unique_id.is_empty());
+        assert_eq!(update.message_id.as_deref(), Some(first.unique_id.as_str()));
+        assert!(!update.is_final);
     }
 
     #[test]
