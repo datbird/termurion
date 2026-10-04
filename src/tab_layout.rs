@@ -649,7 +649,7 @@ pub fn tab_colors(spec: &str) -> Vec<Rgb> {
 
 /// `NSColor colorFromHexString:`: "#rgb", "#rrggbb" or "#rrrrggggbbbb", in sRGB, or after
 /// "p3" in Display P3 (so "p3#rrrrggggbbbb").
-fn hex_color(word: &str) -> Option<Rgb> {
+pub fn hex_color(word: &str) -> Option<Rgb> {
     let (p3, hash) = match word.strip_prefix("p3") {
         Some(rest) if rest.starts_with('#') => (true, rest),
         _ => (false, word),

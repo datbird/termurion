@@ -1093,7 +1093,7 @@ impl App {
     /// The rectangles the active tab shows (only the zoomed pane when one is zoomed).
     /// Each shown pane's terminal rectangle (Clippings and the inline chat take the right of it).
     pub(super) fn visible(&self, tab: &Tab) -> Vec<(PaneId, Rect)> {
-        visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), GAP).into_iter().map(|(id, r)| (id, self.gutter_split(id, self.pane_bar_split(tab, id, r).0).0)).collect()
+        visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), self.gap()).into_iter().map(|(id, r)| (id, self.gutter_split(id, self.pane_bar_split(tab, id, r).0).0)).collect()
     }
 }
 

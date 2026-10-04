@@ -26,7 +26,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
 
 use super::close_ui::Closing;
-use super::{App, Rect, GAP};
+use super::{App, Rect};
 use crate::api_buffer;
 use crate::api_create::{self, SplitResult};
 use crate::api_layout::{self, Arrange};
@@ -619,7 +619,7 @@ impl App {
         }
         let Some(index) = self.tabs.iter().position(|t| t.layout.panes().contains(&target)) else { return SplitResult::Refused };
         let area = self.content_area_for(&self.tabs[index]);
-        let Some((_, rect)) = self.tabs[index].layout.rects(area, GAP).into_iter().find(|(id, _)| *id == target) else { return SplitResult::Refused };
+        let Some((_, rect)) = self.tabs[index].layout.rects(area, self.gap()).into_iter().find(|(id, _)| *id == target) else { return SplitResult::Refused };
         let half = match axis {
             Axis::Row => Rect { w: rect.w / 2.0, ..rect },
             Axis::Column => Rect { h: rect.h / 2.0, ..rect },

@@ -2,7 +2,7 @@
 //! pane number, swap-with-next and Status ordinal reads, and the activity stamps behind
 //! last-use order (`PTYTab orderedSessions`, `setActiveSession:`).
 
-use super::{App, Tab, GAP};
+use super::{App, Tab};
 use crate::layout::{most_recent, Axis, Dir, PaneId, Tree};
 use crate::pane_order;
 
@@ -51,18 +51,38 @@ pub(super) fn split_from(use_divorced: bool, is_copy: bool, has_conductor: bool)
     }
 }
 
+/// A divider's thickness in pixels (`PTYSplitView dividerThickness`, `PTYSplitView.m:102-119`):
+/// SplitPaneDividerWidth when above 0, capped at 5 points, else 1 point; scaled, rounded, at
+/// least one pixel.
+pub(super) fn divider_px(width_pt: f64, scale: f32) -> f32 {
+    let points = if width_pt > 0.0 { width_pt.min(5.0) } else { 1.0 };
+    (points as f32 * scale).round().max(1.0)
+}
+
+/// The divider color: a valid `#` color from SplitPaneColor overrides `theme`, the color the
+/// window's decoration control gives (`PTYSplitView.m:110-119`).
+pub(super) fn divider_rgb(custom: &str, theme: crate::palette::Rgb) -> crate::palette::Rgb {
+    crate::tab_layout::hex_color(custom.trim()).filter(|_| custom.trim().starts_with('#')).unwrap_or(theme)
+}
+
 /// Which order the key picks: reading order with NavigatePanesInReadingOrder, else last use.
 pub(super) fn order_source(reading: bool) -> &'static str {
     if reading { "reading" } else { "activity" }
 }
 
 impl App {
+    /// The divider thickness in pixels: the one gap drawing, hit testing, tmux sizes and the API
+    /// share (`SplitPaneDividerWidth`).
+    pub(super) fn gap(&self) -> f32 {
+        divider_px(self.globals.number("SplitPaneDividerWidth").unwrap_or(0.0), self.scale())
+    }
+
     /// The tab's panes in the order Next Pane, Previous Pane, pane numbers, swap with next
     /// and the Status tool's ordinals share (`PTYTab orderedSessions`).
     pub(super) fn ordered_panes(&self, tab: &Tab) -> Vec<PaneId> {
         if order_source(self.globals.bool("NavigatePanesInReadingOrder")) == "reading" {
             let side_by_side = matches!(tab.layout.tree(), Tree::Split { axis: Axis::Row, .. });
-            pane_order::reading_order(&tab.layout.rects(self.content_area_for(tab), GAP), side_by_side)
+            pane_order::reading_order(&tab.layout.rects(self.content_area_for(tab), self.gap()), side_by_side)
         } else {
             pane_order::activity_order(&tab.layout.panes(), &|id| self.panes.get(&id).map_or(0, |p| p.activity))
         }
@@ -83,8 +103,8 @@ impl App {
     pub(super) fn pane_in_direction(&self, tab: &Tab, dir: Dir) -> Option<PaneId> {
         let (area, margin) = (self.content_area_for(tab), self.scale());
         let activity = |id: PaneId| self.panes.get(&id).map_or(0, |p| p.activity);
-        let adjacent = tab.layout.adjacent(tab.focused, dir, area, GAP, margin);
-        let wrap = if adjacent.is_empty() { tab.layout.wraparound(tab.focused, dir, area, GAP, margin) } else { Vec::new() };
+        let adjacent = tab.layout.adjacent(tab.focused, dir, area, self.gap(), margin);
+        let wrap = if adjacent.is_empty() { tab.layout.wraparound(tab.focused, dir, area, self.gap(), margin) } else { Vec::new() };
         pick_direction(&adjacent, &wrap, self.globals.bool("WrapFocus"), &activity)
     }
 
@@ -195,5 +215,47 @@ mod tests {
         assert!(app.contains("self.step_pane("), "Action::NextPane|PrevPane use step_pane");
         let status = include_str!("toolbelt_more_ui.rs");
         assert!(status.contains("ordered_panes("), "the Status tool ordinal reads ordered_panes");
+    }
+
+    #[test]
+    fn divider_follows_iterm2() {
+        // PTYSplitView.m:102-119: a width above 0 is capped at 5 points, else 1 point.
+        assert_eq!(divider_px(0.0, 1.0), 1.0);
+        assert_eq!(divider_px(0.0, 1.5), 2.0, "1.5 rounds up");
+        assert_eq!(divider_px(3.0, 1.0), 3.0);
+        assert_eq!(divider_px(9.0, 1.0), 5.0);
+        assert_eq!(divider_px(-2.0, 1.0), 1.0);
+        assert_eq!(divider_px(2.5, 2.0), 5.0);
+        assert_eq!(divider_px(0.1, 1.0), 1.0, "never below one pixel");
+        let t = crate::palette::rgb(170, 170, 170);
+        assert_eq!(divider_rgb("#ff0000", t), crate::palette::rgb(255, 0, 0));
+        assert_eq!(divider_rgb("", t), t);
+        assert_eq!(divider_rgb("ff0000", t), t, "only a # color overrides");
+        assert_eq!(divider_rgb("#zzz", t), t);
+    }
+
+    #[test]
+    fn one_gap_for_every_reader() {
+        // S6/S7/P13: the constant is gone, so a reader that kept it does not compile.
+        let app = include_str!("mod.rs");
+        assert!(!app.contains("const GAP"), "mod.rs still defines GAP");
+        for (name, src) in [
+            ("mod.rs", app),
+            ("menu.rs", include_str!("menu.rs")),
+            ("statusbar_ui.rs", include_str!("statusbar_ui.rs")),
+            ("clippings_ui.rs", include_str!("clippings_ui.rs")),
+            ("api_requests.rs", include_str!("api_requests.rs")),
+            ("inline_chat_ui.rs", include_str!("inline_chat_ui.rs")),
+        ] {
+            let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+            let reads = src.lines().filter(|l| !l.trim_start().starts_with("//")).any(|l| {
+                l.match_indices("GAP").any(|(i, _)| !word(l[..i].chars().last()) && !word(l[i + 3..].chars().next()))
+            });
+            assert!(!reads, "{name} still reads GAP");
+        }
+        assert!(app.contains("self.gap()"), "the grab zone and dividers read gap()");
+        assert!(app.contains("divider_rgb("), "divider_color answers SplitPaneColor");
+        let settings = include_str!("mod.rs");
+        assert!(settings.contains("relayout_changed_windows"), "a settings change relays out every window");
     }
 }

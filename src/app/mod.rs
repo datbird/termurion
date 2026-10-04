@@ -44,9 +44,8 @@ use crate::settings_ui::{Edit, How, Mode, SettingsWindow};
 const FONT: &str = "Cascadia Mono";
 /// 12 pt, iTerm2's default size, at 96 dpi.
 const FONT_PX: f32 = 16.0;
-/// Space between a pane's edge and its text, and the divider width, in pixels at 100%.
+/// Space between a pane's edge and its text, in pixels at 100%.
 const PAD: f32 = 4.0;
-const GAP: f32 = 1.0;
 /// How often a fading tab bar draws while it fades (60 frames a second).
 const FLASH_FRAME: Duration = Duration::from_millis(16);
 /// How far below the pointer a tab tooltip starts, in points (the arrow pointer's height).
@@ -2929,7 +2928,8 @@ impl App {
         let prominence = self.globals.number("MinimalSplitPaneDividerProminence").map_or(0.15, |v| v as f32);
         let panes: Vec<(PaneId, crate::palette::Rgb)> = self.tabs.iter().flat_map(|t| t.layout.panes()).filter_map(|id| bg(id).map(|c| (id, c))).collect();
         let invisible = crate::tab_theme::single_other_background(&panes, current);
-        crate::tab_theme::divider_color(self.tab_style(), self.resolved_style(), decoration_bg, prominence, invisible)
+        let theme = crate::tab_theme::divider_color(self.tab_style(), self.resolved_style(), decoration_bg, prominence, invisible);
+        pane_nav_ui::divider_rgb(&self.globals.string("SplitPaneColor"), theme)
     }
 
     /// Whether a pane is drawn undimmed: the focused pane of a window that is not key while Dim
@@ -2989,7 +2989,7 @@ impl App {
     fn restart_pane(&mut self, id: PaneId) {
         let in_tab = || {
             let tab = self.tabs.iter().find(|t| t.layout.panes().contains(&id))?;
-            tab.layout.rects(self.content_area_for(tab), GAP).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r)
+            tab.layout.rects(self.content_area_for(tab), self.gap()).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r)
         };
         let Some(rect) = self.pane_rect(id).or_else(in_tab).or_else(|| self.buried.contains(id).then(|| self.content_area())) else { return };
         // Instant Replay closes first; the new shell starts live.
@@ -3398,6 +3398,8 @@ impl App {
         // Disable Transparency or a profile value may have changed the blur.
         self.sync_blur();
         self.presence_globals_changed();
+        // SplitPaneDividerWidth changes the room every pane has: every window lays out again.
+        self.relayout_changed_windows();
     }
 
     /// Starts watching and scanning the Scripts folder the settings name (`FM:236-252`).
@@ -3653,7 +3655,7 @@ impl App {
         let tab = &self.tabs[self.active];
         let target_was_active = target == tab.focused;
         let area = self.content_area();
-        let Some((_, rect)) = tab.layout.rects(area, GAP).into_iter().find(|(id, _)| *id == target) else { return };
+        let Some((_, rect)) = tab.layout.rects(area, self.gap()).into_iter().find(|(id, _)| *id == target) else { return };
         let half = match axis {
             Axis::Row => Rect { w: rect.w / 2.0, ..rect },
             Axis::Column => Rect { h: rect.h / 2.0, ..rect },
@@ -4293,7 +4295,7 @@ impl App {
             let area = self.content_area();
             let grab = 3.0 * self.scale();
             if let Some(d) = self.tabs.get(self.active).and_then(|t| {
-                t.layout.dividers(area, GAP).into_iter().find(|d| {
+                t.layout.dividers(area, self.gap()).into_iter().find(|d| {
                     Rect { x: d.rect.x - grab, y: d.rect.y - grab, w: d.rect.w + 2.0 * grab, h: d.rect.h + 2.0 * grab }.contains(x, y)
                 })
             }) {
@@ -4814,7 +4816,7 @@ impl App {
             self.draw_clippings(&mut frame, cell);
             inline_hits = self.draw_inline_chats(&mut frame, cell);
             if tab.zoomed.is_none() {
-                scene::dividers(&mut frame, &tab.layout.dividers(area, GAP), self.divider_color());
+                scene::dividers(&mut frame, &tab.layout.dividers(area, self.gap()), self.divider_color());
             }
             self.find_bar_rect = None;
             self.find_mode_rect = None;
