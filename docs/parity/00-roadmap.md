@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 190 | 108 | 16 |
-| `02-global-settings.md` | 823 | 437 | 73 | 313 |
-| `03-features-and-menus.md` | 647 | 538 | 47 | 62 |
-| Total | 1,784 | 1,165 | 228 | 391 |
+| `02-global-settings.md` | 820 | 439 | 73 | 308 |
+| `03-features-and-menus.md` | 646 | 543 | 45 | 58 |
+| Total | 1,780 | 1,172 | 226 | 382 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -301,6 +301,24 @@ and every file a model names goes through one helper that refuses Explorer-parse
 the file. Orchestration buttons show disabled until 12f; "Link Browser Session" until milestone 13.
 Every kept quirk is listed in `docs/acceptance/m12d-checklist.md` and ruled on in
 `docs/superpowers/rulings/m12d-rulings.txt`. 12c's checklist is run with this window.
+Milestone 12e built the inline AI features (02: the three codecierge rows to have, AICompletion,
+the Engage AI prompt and the chat icon prompt noted, logAITabTitleCorpus and aiGeneratedTabTitles
+to n/a; 03: Edit > Engage Artificial Intelligence, Edit > Explain Output with AI, AI features >
+Explain this output, the Codecierge tool and Composer autocomplete to have, AI-generated tab titles
+to n/a; 01: Title components noted). Win+Y asks for a plain-English request (prefilled from the
+selection or the typed command, with a skip checkbox) and puts the model's command in the large
+Composer; Win+Alt+Y opens an AI chat that explains the selection or the last command and marks the
+output with hidden notes, each reachable from a bullet link in the answer; with AI Completion on the
+Composer offers model replacements in its popup (never as ghost text; a tmux pane never asks); and
+Codecierge works through goal, suggestion and auto-run views, with iTerm2's Danger! and Privacy
+warnings, a usage warning after 10 commands, and a `write` tool that writes the file directly for
+cmd and PowerShell, only inside the session's directory, and types `cat >` for POSIX and remote
+sessions. Every request passes 12a's gate for its own host right before it is sent, and Codecierge
+stops for real when the gate closes, on End Task, or when its pane closes. AI tab titles are not
+available on Windows (ruling 7): the 4096 bit draws nothing. The chat icon waits for milestone 13's
+SVG rasterizing (ruling 11). The tables count have, partial and missing rows; n/a rows (02: 3, 03: 1)
+are left out of them. Every kept quirk is listed in `docs/acceptance/m12e-checklist.md` and ruled on
+in `docs/superpowers/rulings/m12e-rulings.txt`; 12c's and 12d's checklists are run with this window.
 Milestone 13a built Settings > Advanced as iTerm2's pane (02): the rows under iTerm2's 19
 categories in Finder order with bold, pinned headers; a search that matches every typed word in a
 row's description or category; "Show only non-default values", which keeps the row being edited
