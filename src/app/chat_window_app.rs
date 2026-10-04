@@ -1117,8 +1117,8 @@ impl App {
             ChatEvent::OpenFile(r) => self.chat_file(&r, true),
             ChatEvent::RevealFile(r) => self.chat_file(&r, false),
             ChatEvent::RevealCommand(url) => self.chat_reveal_command(&url, event_loop),
-            ChatEvent::InputChanged(text) => {
-                self.chat_input.typed(text);
+            ChatEvent::InputChanged(text, keystrokes) => {
+                self.chat_input.typed(text, keystrokes);
                 self.chat_mention_follow();
                 self.chat_window_refresh();
             }
@@ -1244,8 +1244,9 @@ impl App {
         let mime = |n: &str| crate::ai_files::upload_mime(n).to_string();
         let (parts, skipped) = chat_input::attachments(&draft.pending, &read, &list, &mime);
         let vector_store = self.chat_db.as_ref().and_then(|db| db.chat(&chat).ok().flatten()).and_then(|c| c.vector_store);
-        // The sessions picked with `@` go as the chat token each (`mention_text`), ahead of the text.
-        let text = chat_input::with_mentions(&draft.text, &draft.mentions);
+        // A picked session is already a token where the person put it; the grants are the draft's own.
+        let text = draft.text.clone();
+        let _grants = chat_input::send_grants(&draft); // Task 10's `orch_grant_mentions` takes these with the message
         let Some(content) = chat_input::message_content(&text, parts, vector_store) else { return };
         let m = Message::new(&chat, Participant::User, content, super::warnings_app::unix_now());
         // The store and the window are not held across the publish: it may deliver at once.

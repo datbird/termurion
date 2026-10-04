@@ -670,8 +670,9 @@ pub fn list_with(dir: &Path, accepts: &dyn Fn(&str) -> bool, max: usize, disk: &
 pub struct Draft {
     pub text: String,
     pub pending: Vec<Pending>,
-    /// The sessions picked with `@` in an orchestration chat, by stable id, in the order picked.
-    /// They are chips above the field and join the message as their `mention_text` when it is sent.
+    /// The grants of this draft: sessions the person picked with `@` or typed as a token by
+    /// keystrokes, by stable id. A pick is a token in the text where the query was. Text that
+    /// was pasted, dropped, offered, set by the app or restored holds tokens but grants nothing.
     pub mentions: Vec<String>,
 }
 
@@ -681,14 +682,11 @@ impl Draft {
     }
 }
 
-/// The message text to send: each picked session as the token a chat mention is sent as
-/// (`mention::mention_text`), then the typed text. Only a valid stable id is ever sent as one.
-pub fn with_mentions(text: &str, mentions: &[String]) -> String {
-    let tokens: Vec<String> = mentions.iter().filter_map(|id| crate::mention::mention_text(&crate::mention::Chip::parse(id)?)).collect();
-    if tokens.is_empty() {
-        return text.to_string();
-    }
-    format!("{} {}", tokens.join(" "), text)
+/// What a send grants the chat control of: only ids this draft's own picks or keystrokes
+/// recorded (`Draft::mentions`) that are still tokens in the text. Task 10's
+/// `orch_grant_mentions` takes this and never parses a stored message.
+pub fn send_grants(draft: &Draft) -> Vec<String> {
+    crate::mention::send_grants(&draft.text, &draft.mentions)
 }
 
 /// Unsent input kept per chat (`CVC:108-115,864-894`).
@@ -706,10 +704,12 @@ impl Drafts {
             return current;
         }
         if let Some(from) = from {
-            if current.is_empty() {
+            // A kept draft keeps its text but no grants: they were the person's act in that draft.
+            let kept = Draft { mentions: Vec::new(), ..current.clone() };
+            if kept.is_empty() {
                 self.kept.remove(from);
             } else {
-                self.kept.insert(from.to_string(), current.clone());
+                self.kept.insert(from.to_string(), kept);
             }
         }
         match to {
@@ -745,9 +745,19 @@ impl Default for InputState {
 
 impl InputState {
     /// The person typed: eligible exactly while the field is empty (`textDidChange`).
-    pub fn typed(&mut self, text: String) {
+    /// `keystrokes` is true when the edit was the person's own key presses (not a paste, an
+    /// undo or an input method's commit): a session token those keys complete is granted.
+    pub fn typed(&mut self, text: String, keystrokes: bool) {
+        let before = crate::mention::session_tokens(&self.draft.text);
         self.eligible = text.is_empty();
         self.draft.text = text;
+        if keystrokes {
+            for id in crate::mention::session_tokens(&self.draft.text) {
+                if !before.contains(&id) && !self.draft.mentions.contains(&id) {
+                    self.draft.mentions.push(id);
+                }
+            }
+        }
     }
 
     /// The app replaced the text (Edit, a fork's staged message). Eligibility is left as it
@@ -755,6 +765,7 @@ impl InputState {
     /// text until the person types (`CVC:1063-1067`).
     pub fn set(&mut self, text: &str) {
         self.draft.text = text.to_string();
+        self.draft.mentions.clear();
         self.focus += 1;
     }
 
@@ -765,6 +776,7 @@ impl InputState {
             return false;
         }
         self.draft.text = text.to_string();
+        self.draft.mentions.clear();
         self.focus += 1;
         true
     }
@@ -778,7 +790,7 @@ impl InputState {
     /// The shown chat changed: this is its draft.
     pub fn switched(&mut self, draft: Draft) {
         self.eligible = draft.text.is_empty();
-        self.draft = draft;
+        self.draft = Draft { mentions: Vec::new(), ..draft };
         self.picker = None;
         self.dismissed = None;
     }
@@ -797,7 +809,7 @@ impl InputState {
     /// `orchestrating`, with that query, and stays closed after an Escape until the target changes.
     /// A picker already open for the same query is kept, so the choice does not jump.
     pub fn follow_mention(&mut self, orchestrating: bool, world: &crate::cockpit_rows::World) {
-        let raw = crate::mention::completion_target(&self.draft.text);
+        let raw = crate::mention::open_target(&self.draft.text);
         if self.dismissed != raw {
             self.dismissed = None;
         }
@@ -822,8 +834,8 @@ impl InputState {
             p.selected = i;
         }
         let Some(crate::mention::Chip::Session { stable_id }) = p.current().map(|i| i.chip.clone()) else { return false };
-        if let Some(rest) = crate::mention::remove_target(&self.draft.text) {
-            self.draft.text = rest;
+        if let Some(text) = crate::mention::place_token(&self.draft.text, &format!("@{stable_id}")) {
+            self.draft.text = text;
         }
         if !self.draft.mentions.contains(&stable_id) {
             self.draft.mentions.push(stable_id);
@@ -835,7 +847,7 @@ impl InputState {
 
     /// Escape: the picker closes and stays closed for this "@query".
     pub fn close_mention(&mut self) {
-        self.dismissed = crate::mention::completion_target(&self.draft.text);
+        self.dismissed = crate::mention::open_target(&self.draft.text);
         self.picker = None;
     }
 
@@ -1023,11 +1035,11 @@ mod tests {
         assert!(s.offer("ls -l"));
         assert_eq!(s.draft.text, "ls -l");
         // Typing (anything, even back to empty text) decides eligibility from the text.
-        s.typed("ls -lx".into());
+        s.typed("ls -lx".into(), true);
         assert!(!s.eligible);
         assert!(!s.offer("other"), "typed text is never replaced");
         assert_eq!(s.draft.text, "ls -lx");
-        s.typed(String::new());
+        s.typed(String::new(), true);
         assert!(s.eligible, "emptied by hand, it is eligible again");
         // A second selection replaces the first for as long as nobody typed (`CVC:1063-1067`).
         assert!(s.offer("first"));
@@ -1043,7 +1055,7 @@ mod tests {
         assert_eq!((s.draft.text.as_str(), s.eligible), ("edited", true));
         assert!(s.offer("sel"));
         assert_eq!(s.draft.text, "sel");
-        s.typed("sel!".into());
+        s.typed("sel!".into(), true);
         s.set("edited again");
         assert!(!s.eligible, "typed text stays protected across a code change");
         assert!(!s.offer("nope"));
@@ -1344,7 +1356,7 @@ mod tests {
         const ID: &str = "ptys_0123456789ABW";
         let world = world_with(ID);
         let mut s = InputState::default();
-        s.typed("ask @bu".into());
+        s.typed("ask @bu".into(), true);
         // Only an orchestration chat has the picker.
         s.follow_mention(false, &world);
         assert!(s.picker.is_none());
@@ -1357,32 +1369,104 @@ mod tests {
         s.close_mention();
         s.follow_mention(true, &world);
         assert!(s.picker.is_none());
-        s.typed("ask @b".into());
+        s.typed("ask @b".into(), true);
         s.follow_mention(true, &world);
         assert!(s.picker.is_some());
         // Return commits a session: the typed query leaves the text and the id is a chip.
         assert!(s.commit_mention(None));
-        assert_eq!((s.draft.text.as_str(), s.draft.mentions.clone()), ("ask ", vec![ID.to_string()]));
+        assert_eq!((s.draft.text.as_str(), s.draft.mentions.clone()), ("ask @ptys_0123456789ABW ", vec![ID.to_string()]));
         assert!(s.picker.is_none());
         assert!(!s.draft.is_empty());
         // A window row commits nothing.
-        s.typed("@".into());
+        s.typed("@".into(), true);
         s.follow_mention(true, &world);
         assert!(!s.commit_mention(Some(0)), "item 0 is the window");
         assert_eq!(s.draft.mentions.len(), 1);
         assert!(s.commit_mention(Some(2)));
         assert_eq!(s.draft.mentions.len(), 1, "the same session is one chip");
-        // Sent as the chat token, ahead of the text; a bad id is never sent.
-        assert_eq!(with_mentions("run it", &[ID.to_string()]), "@ptys_0123456789ABW run it");
-        assert_eq!(with_mentions("run it", &["ptys_bad".to_string(), "win:x".to_string()]), "run it");
-        assert_eq!(with_mentions("hi", &[]), "hi");
         // Switching chats drops the open picker; a sent draft is clean.
-        s.typed("@x".into());
+        s.typed("@x".into(), true);
         s.follow_mention(true, &world);
         s.switched(Draft::default());
         assert!(s.picker.is_none());
         s.draft.mentions.push(ID.into());
         s.sent();
         assert!(s.draft.is_empty());
+    }
+
+    fn valid_id() -> String {
+        crate::stable_id::generate()
+    }
+
+    #[test]
+    fn pasted_text_grants_nothing() {
+        let id = valid_id();
+        let mut s = InputState::default();
+        // A paste (or a drop, an offered selection, a script-set text) holds a token, never a grant.
+        s.typed(format!("see @{id}"), false);
+        assert!(s.draft.mentions.is_empty());
+        assert!(send_grants(&s.draft).is_empty());
+        s.set(&format!("see @{id}"));
+        assert!(send_grants(&s.draft).is_empty());
+        let mut offered = InputState::default();
+        assert!(offered.offer(&format!("@{id}")));
+        assert!(send_grants(&offered.draft).is_empty());
+        s.insert(&format!("@{id}"));
+        assert!(send_grants(&s.draft).is_empty());
+        // Keystrokes that form a token do grant it; the same text pasted later does not add one.
+        let mut s = InputState::default();
+        let typed = format!("@{id}");
+        for end in 1..=typed.len() {
+            s.typed(typed[..end].to_string(), true);
+        }
+        assert_eq!(s.draft.mentions, vec![id.clone()]);
+        assert_eq!(send_grants(&s.draft), vec![id.clone()]);
+        let other = valid_id();
+        s.typed(format!("{typed} @{other}"), false);
+        assert_eq!(send_grants(&s.draft), vec![id.clone()], "a pasted token beside a typed one");
+        // Deleting the token takes the grant with it at send.
+        s.typed("gone".into(), true);
+        assert!(send_grants(&s.draft).is_empty());
+    }
+
+    #[test]
+    fn a_restored_draft_grants_nothing() {
+        let id = valid_id();
+        let draft = Draft { text: format!("run @{id}"), pending: Vec::new(), mentions: vec![id.clone()] };
+        let mut drafts = Drafts::default();
+        drafts.switch(Some("a"), draft.clone(), Some("b"));
+        let back = drafts.switch(Some("b"), Draft::default(), Some("a"));
+        assert_eq!(back.text, draft.text, "the text is kept");
+        assert!(back.mentions.is_empty());
+        assert!(send_grants(&back).is_empty());
+        let mut s = InputState::default();
+        s.switched(draft);
+        assert!(send_grants(&s.draft).is_empty());
+    }
+
+    #[test]
+    fn a_picked_mention_is_a_token_in_place() {
+        let world = world_with("ptys_0123456789ABW");
+        let id = "ptys_0123456789ABW";
+        let mut s = InputState::default();
+        s.typed("compare @bu with @x".into(), true);
+        s.follow_mention(true, &world);
+        assert_eq!(s.picker.as_ref().map(|p| p.query.as_str()), Some("bu"));
+        assert!(s.commit_mention(None));
+        // The token takes the query's place, so the sentence keeps its order and shows the grant.
+        assert_eq!(s.draft.text, format!("compare @{id} with @x"));
+        assert_eq!(s.draft.mentions, vec![id.to_string()]);
+        assert_eq!(send_grants(&s.draft), vec![id.to_string()]);
+        // The next target is the open "@x", not the token just placed.
+        s.follow_mention(true, &world);
+        assert_eq!(s.picker.as_ref().map(|p| p.query.as_str()), Some("x"));
+        // At the end of the text a space follows, so the person can go on typing.
+        let mut s = InputState::default();
+        s.typed("ask @bu".into(), true);
+        s.follow_mention(true, &world);
+        assert!(s.commit_mention(None));
+        assert_eq!(s.draft.text, format!("ask @{id} "));
+        s.follow_mention(true, &world);
+        assert!(s.picker.is_none(), "a placed token does not reopen the picker");
     }
 }

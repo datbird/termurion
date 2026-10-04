@@ -227,6 +227,11 @@ pub fn granted_ids(text: &str, source: Source) -> Vec<String> {
     if source != Source::Typed {
         return Vec::new();
     }
+    session_tokens(text)
+}
+
+/// The session tokens in `text` that could grant: "@"-signed (or "@session:") and checksum-valid.
+pub fn session_tokens(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for m in mentions(text, false) {
         if m.prefix.as_deref().is_some_and(|p| p != "session:") || !crate::stable_id::is_valid(&m.id) || out.contains(&m.id) {
@@ -235,6 +240,38 @@ pub fn granted_ids(text: &str, source: Source) -> Vec<String> {
         out.push(m.id);
     }
     out
+}
+
+/// What a send grants: the ids the person picked or typed in this draft (`drafted`) that are
+/// still tokens in the message `text`. Text that was pasted, dropped, restored or set by the
+/// app grants nothing, whatever it contains (ruling P9; the Task 5 fix round).
+pub fn send_grants(text: &str, drafted: &[String]) -> Vec<String> {
+    session_tokens(text).into_iter().filter(|id| drafted.contains(id)).collect()
+}
+
+/// `completion_target` for text that may already hold picked tokens: an "@" that starts a
+/// complete session token is not a target.
+pub fn open_target(text: &str) -> Option<(usize, String)> {
+    let tokens: Vec<usize> = mentions(text, false).into_iter().filter(|m| m.prefix.is_none() && crate::stable_id::is_valid(&m.id)).map(|m| m.range.start).collect();
+    let mut before: Option<char> = None;
+    for (i, c) in text.char_indices() {
+        if c == '@' && before.is_none_or(|b| b.is_whitespace() || b == '\u{FFFC}') && !tokens.contains(&i) {
+            let query = text[i + 1..].chars().take_while(|c| !c.is_whitespace()).collect();
+            return Some((i, query));
+        }
+        before = Some(c);
+    }
+    None
+}
+
+/// `text` with the "@query" `open_target` found replaced by `token`, and a space after it
+/// when nothing follows or a word does.
+pub fn place_token(text: &str, token: &str) -> Option<String> {
+    let (at, query) = open_target(text)?;
+    let end = at + 1 + query.len();
+    let rest = &text[end..];
+    let gap = if rest.chars().next().is_none_or(|c| !c.is_whitespace()) { " " } else { "" };
+    Some(format!("{}{token}{gap}{rest}", &text[..at]))
 }
 
 /// The pane a mention names, live or buried: only a stable id does (ruling P3). A uuid, a
@@ -429,6 +466,35 @@ mod tests {
         assert_eq!(granted_ids("@ptys_0123456789ABX", Source::Typed), Vec::<String>::new());
         // A workgroup instance is not a session.
         assert_eq!(granted_ids("@wg-3F2504E0-4F89-11D3-9A0C-0305E82C3301", Source::Typed), Vec::<String>::new());
+        // The wg- prefix is refused even in front of a valid stable id.
+        assert_eq!(granted_ids(&format!("@wg-{ID}"), Source::Typed), Vec::<String>::new());
+        assert_eq!(granted_ids(&format!("@wg-{ID} @session:{ID}"), Source::Typed), vec![ID.to_string()]);
+    }
+
+    #[test]
+    fn grants_come_only_from_the_drafts_own_picks() {
+        let ids = vec![ID.to_string()];
+        let text = format!("look at @{ID} please");
+        assert_eq!(send_grants(&text, &ids), ids);
+        // Pasted text is not in the draft's picks: nothing.
+        assert_eq!(send_grants(&text, &[]), Vec::<String>::new());
+        // A pick whose token the person deleted before sending grants nothing.
+        assert_eq!(send_grants("look", &ids), Vec::<String>::new());
+        // A pick never grants a different id the text also names.
+        let other = "ptys_0123456789ACX";
+        assert_eq!(send_grants(&format!("@{ID} @{other}"), &ids), ids);
+        // Picks of a bad id grant nothing.
+        assert_eq!(send_grants("@ptys_0123456789ABX", &["ptys_0123456789ABX".to_string()]), Vec::<String>::new());
+    }
+
+    #[test]
+    fn open_target_skips_picked_tokens() {
+        let t = format!("compare @{ID} with @b");
+        assert_eq!(open_target(&t), Some((t.rfind('@').unwrap(), "b".to_string())));
+        assert_eq!(open_target(&format!("@{ID} ")), None);
+        assert_eq!(open_target("a @x"), Some((2, "x".to_string())));
+        // A token with a bad checksum is still being typed.
+        assert_eq!(open_target("@ptys_0123456789ABX"), Some((0, "ptys_0123456789ABX".to_string())));
     }
 
     #[test]

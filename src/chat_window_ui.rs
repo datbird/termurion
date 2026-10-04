@@ -212,7 +212,8 @@ pub enum ChatEvent {
     /// A button under a message was pressed (Task 5); the app re-checks it against the store.
     Button { message: String, button: String },
     /// The input's text changed.
-    InputChanged(String),
+    /// The input's text and whether the edit was only the person's key presses (no paste, undo or IME).
+    InputChanged(String, bool),
     /// The `@` picker: Up (true) or Down (false).
     MentionMove(bool),
     /// Return, Tab or a click (its item index) on the picker.
@@ -530,6 +531,7 @@ fn input_area(ui: &mut egui::Ui, d: &ChatData, st: &mut InputUi, icons: bool, ou
     let line = ui.text_style_height(&egui::TextStyle::Body);
     let cap = line * 6.0 + 8.0;
     let mut edited = None;
+    let mut keystrokes = true;
     ui.add_enabled_ui(enabled, |ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
             let (glyph, fallback, tip, stop) = if d.input.stoppable { (chat_input::STOP_GLYPH, "Stop", "Stop", true) } else { (chat_input::SEND_GLYPH, "Send", "Send", false) };
@@ -541,6 +543,14 @@ fn input_area(ui: &mut egui::Ui, d: &ChatData, st: &mut InputUi, icons: bool, ou
                 if attach.clicked() {
                     out.push(ChatEvent::Attach(screen_pixels(ui, attach.rect.left_bottom())));
                 }
+                // Only a key press the person made grants an `@` token; a paste, an undo or an input
+                // method's commit does not.
+                keystrokes = ui.input(|i| i.events.iter().all(|e| match e {
+                    egui::Event::Text(t) => t.chars().count() <= 1,
+                    egui::Event::Key { modifiers, .. } => !modifiers.command && !modifiers.ctrl,
+                    egui::Event::Paste(_) | egui::Event::Cut | egui::Event::Ime(_) => false,
+                    _ => true,
+                }));
                 egui::ScrollArea::vertical().id_salt("chat_input_scroll").max_height(cap).auto_shrink([false, true]).show(ui, |ui| {
                     let field = egui::TextEdit::multiline(&mut st.text).id(id).hint_text(d.input.placeholder.as_str()).desired_rows(1).desired_width(f32::INFINITY).frame(egui::Frame::NONE);
                     edited = Some(field.show(ui));
@@ -550,7 +560,7 @@ fn input_area(ui: &mut egui::Ui, d: &ChatData, st: &mut InputUi, icons: bool, ou
     });
     if let Some(o) = edited {
         if o.response.changed() {
-            out.push(ChatEvent::InputChanged(st.text.clone()));
+            out.push(ChatEvent::InputChanged(st.text.clone(), keystrokes));
         }
         if let Some(p) = &d.input.picker {
             // Focus leaving the field closes the list, except for the press that picks from it.
