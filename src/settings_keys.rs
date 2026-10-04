@@ -1532,6 +1532,45 @@ pub fn profile_key_mappings(ui: &mut egui::Ui, p: &mut Profile, st: &mut KeysSta
 mod tests {
     use super::*;
 
+    /// 13j: the Advanced > Mouse rows and the three Experimental Features rows, iTerm2's text
+    /// with "Tandem" for "iTerm2"; the label is the first line of the help.
+    #[test]
+    fn mouse_rows_follow_iterm2() {
+        use crate::schema::Kind;
+        let up = "Scroll wheel up sends the specified text when in alternate screen mode.\nThe value should use Vim syntax, such as \\e for escape.";
+        let down = up.replace("wheel up", "wheel down");
+        let rows: Vec<(&str, &str, Kind, Value, String)> = vec![
+            ("AlternateMouseScrollStringForUp", "Mouse", Kind::String, Value::String(String::new()), up.into()),
+            ("AlternateMouseScrollStringForDown", "Mouse", Kind::String, Value::String(String::new()), down),
+            ("AlternateMouseScroll", "Mouse", Kind::Bool, Value::Boolean(false), "Scroll wheel sends arrow keys when in alternate screen mode.".into()),
+            ("PinchToChangeFontSizeDisabled", "Mouse", Kind::Bool, Value::Boolean(false), "Disable changing font size in response to a pinch gesture.".into()),
+            ("UseSystemCursorWhenPossible", "Mouse", Kind::Bool, Value::Boolean(true), "Use system cursor icons when possible.".into()),
+            ("AlwaysAcceptFirstMouse", "Mouse", Kind::Bool, Value::Boolean(true), "Always accept first mouse event on terminal windows.\nThis means clicks will work the same when Tandem is active as when it\u{2019}s inactive. Note that there is a separate setting for mouse reporting on first mouse.".into()),
+            ("AutodetectMouseReportingStuck", "Mouse", Kind::Bool, Value::Boolean(true), "Automatically detect when mouse reporting got stuck on?\nThis watches for parts of mouse reporting control sequences being printed to the screen".into()),
+            ("ReportOnFirstMouse", "Mouse", Kind::Bool, Value::Boolean(false), "Send mouse reports when you click in a window that isn't already frontmouse?".into()),
+            ("DoubleReportScrollWheel", "Mouse", Kind::Bool, Value::Boolean(false), "Double-report scroll wheel events to work around tmux scrolling bug.".into()),
+            ("StealKeyFocus", "Mouse", Kind::Bool, Value::Boolean(false), "When Focus Follows Mouse is enabled, steal key focus even when inactive.".into()),
+            ("AggressiveFocusFollowsMouse", "Mouse", Kind::Bool, Value::Boolean(false), "When Focus Follows Mouse is enabled, activate the window under the cursor when Tandem becomes active?".into()),
+            ("SensitiveScrollWheel", "Mouse", Kind::Bool, Value::Boolean(false), "Scroll on any scroll wheel movement, no matter how small?".into()),
+            ("ScrollWheelAcceleration", "Mouse", Kind::Float, Value::Float(1.0), "Speed up scroll gestures by this factor.".into()),
+            ("NaturalScrollingAffectsHorizontalMouseReporting", "Mouse", Kind::Bool, Value::Boolean(false), "Horizontal scrolling is reversed when \u{201c}Natural scrolling\u{201d} is enabled in Windows Settings".into()),
+            ("HorizontalScrollingSensitivity", "Mouse", Kind::Float, Value::Float(0.1), "Sensitivity of mouse wheel for horizontal scrolling.\nUse 0 to disable. Value should be between 0 and 1. Changes to this setting only affect new sessions.".into()),
+            ("ProportionalScrollWheelReporting", "Experimental Features", Kind::Bool, Value::Boolean(true), "Report multiple mouse scroll events when scrolling quickly?".into()),
+            ("UseModernScrollWheelAccumulator", "Experimental Features", Kind::Bool, Value::Boolean(true), "Use modern scroll wheel accumulator.\nThis should support wheel mice better and feel more natural.".into()),
+            ("FastTrackpad", "Experimental Features", Kind::Bool, Value::Boolean(true), "Trackpad scrolls fast?\nSet to No for legacy scrolling speed.".into()),
+        ];
+        assert_eq!(rows.len(), 18);
+        for (key, section, kind, default, help) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key} is missing"));
+            assert_eq!(s.tab, "Advanced", "{key} tab");
+            assert_eq!(s.section, section, "{key} section");
+            assert_eq!(s.kind, kind, "{key} kind");
+            assert_eq!(s.default.as_ref(), Some(&default), "{key} default");
+            assert_eq!(s.help, help, "{key} help");
+            assert_eq!(s.label, help.lines().next().unwrap(), "{key} label");
+        }
+    }
+
     #[test]
     fn paste_configurations_show_their_summary() {
         let b = Binding::new(41, r#"{"Base64":true,"RemoveControls":true,"BracketAllowed":true,"ConvertNewlines":true}"#);

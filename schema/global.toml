@@ -3487,3 +3487,167 @@ label = "Add notification area icon when excluded from taskbar?"
 type = "bool"
 default = true
 help = "Add notification area icon when excluded from taskbar?\nWhen you turn on \u201cExclude from taskbar and Alt+Tab switcher\u201d a notification area icon is added so you can switch the setting back off. Disable this to remove the icon. Doing so makes it very hard to get to Settings. You must restart Tandem after changing this setting."
+
+# Milestone 13j: Advanced > Mouse and the wheel's Experimental Features (a block of its own).
+
+[[setting]]
+key = "AlternateMouseScrollStringForUp"
+tab = "Advanced"
+section = "Mouse"
+label = "Scroll wheel up sends the specified text when in alternate screen mode."
+type = "string"
+default = ""
+help = "Scroll wheel up sends the specified text when in alternate screen mode.\nThe value should use Vim syntax, such as \\e for escape."
+
+[[setting]]
+key = "AlternateMouseScrollStringForDown"
+tab = "Advanced"
+section = "Mouse"
+label = "Scroll wheel down sends the specified text when in alternate screen mode."
+type = "string"
+default = ""
+help = "Scroll wheel down sends the specified text when in alternate screen mode.\nThe value should use Vim syntax, such as \\e for escape."
+
+[[setting]]
+key = "AlternateMouseScroll"
+tab = "Advanced"
+section = "Mouse"
+label = "Scroll wheel sends arrow keys when in alternate screen mode."
+type = "bool"
+default = false
+help = "Scroll wheel sends arrow keys when in alternate screen mode."
+
+[[setting]]
+key = "PinchToChangeFontSizeDisabled"
+tab = "Advanced"
+section = "Mouse"
+label = "Disable changing font size in response to a pinch gesture."
+type = "bool"
+default = false
+help = "Disable changing font size in response to a pinch gesture."
+
+[[setting]]
+key = "UseSystemCursorWhenPossible"
+tab = "Advanced"
+section = "Mouse"
+label = "Use system cursor icons when possible."
+type = "bool"
+default = true
+help = "Use system cursor icons when possible."
+
+[[setting]]
+key = "AlwaysAcceptFirstMouse"
+tab = "Advanced"
+section = "Mouse"
+label = "Always accept first mouse event on terminal windows."
+type = "bool"
+default = true
+help = "Always accept first mouse event on terminal windows.\nThis means clicks will work the same when Tandem is active as when it\u2019s inactive. Note that there is a separate setting for mouse reporting on first mouse."
+
+[[setting]]
+key = "AutodetectMouseReportingStuck"
+tab = "Advanced"
+section = "Mouse"
+label = "Automatically detect when mouse reporting got stuck on?"
+type = "bool"
+default = true
+help = "Automatically detect when mouse reporting got stuck on?\nThis watches for parts of mouse reporting control sequences being printed to the screen"
+
+[[setting]]
+key = "ReportOnFirstMouse"
+tab = "Advanced"
+section = "Mouse"
+label = "Send mouse reports when you click in a window that isn't already frontmouse?"
+type = "bool"
+default = false
+help = "Send mouse reports when you click in a window that isn't already frontmouse?"
+
+[[setting]]
+key = "DoubleReportScrollWheel"
+tab = "Advanced"
+section = "Mouse"
+label = "Double-report scroll wheel events to work around tmux scrolling bug."
+type = "bool"
+default = false
+help = "Double-report scroll wheel events to work around tmux scrolling bug."
+
+[[setting]]
+key = "StealKeyFocus"
+tab = "Advanced"
+section = "Mouse"
+label = "When Focus Follows Mouse is enabled, steal key focus even when inactive."
+type = "bool"
+default = false
+help = "When Focus Follows Mouse is enabled, steal key focus even when inactive."
+
+[[setting]]
+key = "AggressiveFocusFollowsMouse"
+tab = "Advanced"
+section = "Mouse"
+label = "When Focus Follows Mouse is enabled, activate the window under the cursor when Tandem becomes active?"
+type = "bool"
+default = false
+help = "When Focus Follows Mouse is enabled, activate the window under the cursor when Tandem becomes active?"
+
+[[setting]]
+key = "SensitiveScrollWheel"
+tab = "Advanced"
+section = "Mouse"
+label = "Scroll on any scroll wheel movement, no matter how small?"
+type = "bool"
+default = false
+help = "Scroll on any scroll wheel movement, no matter how small?"
+
+[[setting]]
+key = "ScrollWheelAcceleration"
+tab = "Advanced"
+section = "Mouse"
+label = "Speed up scroll gestures by this factor."
+type = "float"
+default = 1.0
+help = "Speed up scroll gestures by this factor."
+
+[[setting]]
+key = "NaturalScrollingAffectsHorizontalMouseReporting"
+tab = "Advanced"
+section = "Mouse"
+label = "Horizontal scrolling is reversed when \u201cNatural scrolling\u201d is enabled in Windows Settings"
+type = "bool"
+default = false
+help = "Horizontal scrolling is reversed when \u201cNatural scrolling\u201d is enabled in Windows Settings"
+
+[[setting]]
+key = "HorizontalScrollingSensitivity"
+tab = "Advanced"
+section = "Mouse"
+label = "Sensitivity of mouse wheel for horizontal scrolling."
+type = "float"
+default = 0.1
+help = "Sensitivity of mouse wheel for horizontal scrolling.\nUse 0 to disable. Value should be between 0 and 1. Changes to this setting only affect new sessions."
+
+[[setting]]
+key = "ProportionalScrollWheelReporting"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Report multiple mouse scroll events when scrolling quickly?"
+type = "bool"
+default = true
+help = "Report multiple mouse scroll events when scrolling quickly?"
+
+[[setting]]
+key = "UseModernScrollWheelAccumulator"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Use modern scroll wheel accumulator."
+type = "bool"
+default = true
+help = "Use modern scroll wheel accumulator.\nThis should support wheel mice better and feel more natural."
+
+[[setting]]
+key = "FastTrackpad"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Trackpad scrolls fast?"
+type = "bool"
+default = true
+help = "Trackpad scrolls fast?\nSet to No for legacy scrolling speed."

@@ -82,6 +82,15 @@ fn find_menu_item(text: &str, pointer: bool) -> Option<&'static menus::Item> {
 }
 
 impl App {
+    /// A new window with the profile of that Guid (key action 26 and the pointer action).
+    pub(super) fn new_window_with_profile(&mut self, guid: &str) {
+        if self.store.get(guid).is_some() {
+            self.pending_windows.push(super::windows_ui::NewWindow::Profile(Some(guid.to_string())));
+        } else {
+            self.banners.set("action", format!("No profile with Guid {guid}."));
+        }
+    }
+
     fn focused_pane_id(&self) -> Option<PaneId> {
         self.tabs.get(self.active).map(|t| t.focused)
     }
@@ -317,13 +326,7 @@ impl App {
             },
             1 => self.step_window(true),
             3 => self.step_window(false),
-            26 => {
-                if self.store.get(&b.text).is_some() {
-                    self.pending_windows.push(super::windows_ui::NewWindow::Profile(Some(b.text.clone())));
-                } else {
-                    self.banners.set("action", format!("No profile with Guid {}.", b.text));
-                }
-            }
+            26 => self.new_window_with_profile(&b.text),
             27 => self.open_with_profile(&b.text, None),
             36 => self.find_regex(&b.text),
             73 => self.copy_mode_commands(&b.text),
@@ -501,6 +504,10 @@ impl App {
                 let point = self.grid_point(pane, cell.0, cell.1);
                 self.copy_link_at(pane, point);
             }
+            // The app's window actions, not the clicked pane's (`nextWindowWithEvent:`).
+            "kNextWindowPointerAction" => self.step_window(true),
+            "kPrevWindowPointerAction" => self.step_window(false),
+            "kNewWindowWithProfilePointerAction" => self.new_window_with_profile(&b.argument),
             "kNextTabPointerAction" => self.step_tab(true),
             "kPrevTabPointerAction" => self.step_tab(false),
             "kSendEscapeSequencePointerAction" => self.send_to_focused(&[b"\x1b".as_slice(), b.argument.as_bytes()].concat()),

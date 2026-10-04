@@ -58,7 +58,6 @@ pub fn status(b: &PointerBinding) -> Status {
     match b.action.as_str() {
         "kOpenTargetInBackgroundPointerAction" => Status::Partial("Asks the app not to take the focus; a browser may still come to the front."),
         "kQuickLookAction" => Status::Partial("Opens the target with its default app, since Windows has no Quick Look."),
-        "kNextWindowPointerAction" | "kPrevWindowPointerAction" | "kNewWindowWithProfilePointerAction" => Status::Later(7),
         _ => Status::Done,
     }
 }
@@ -239,6 +238,17 @@ impl Clicks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_actions_are_done() {
+        use crate::commands::Status;
+        for a in ["kNextWindowPointerAction", "kPrevWindowPointerAction", "kNewWindowWithProfilePointerAction", "kMovePanePointerAction"] {
+            assert_eq!(status(&PointerBinding::new(a, "")), Status::Done, "{a}");
+        }
+        for a in ["kQuickLookAction", "kOpenTargetInBackgroundPointerAction"] {
+            assert!(matches!(status(&PointerBinding::new(a, "")), Status::Partial(_)), "{a}");
+        }
+    }
 
     #[test]
     fn status_of_move_pane() {
