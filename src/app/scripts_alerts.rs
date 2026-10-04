@@ -81,6 +81,8 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::ClaudeDisableApi => Answer::Button(0),
         // Not Now: a closed window never rewrites settings.json (P10).
         Then::ClaudeRepair => Answer::Button(1),
+        // Cancel: a closed window never turns session cookies on.
+        Then::ClaudeCookie => Answer::Button(1),
         // No, Deny, Don't Copy and Discard Local Changes.
         Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::PrefsCopyNow | Then::PrefsOverwrite => Answer::Button(1),
         _ => Answer::Button(fallback),
@@ -215,6 +217,9 @@ pub(super) enum Then {
     /// "Claude Code Integration Looks Broken": Reinstall (0) opens the setup; Not Now (1)
     /// does nothing. A closed window is Not Now, and Reinstall is never remembered (P10).
     ClaudeRepair,
+    /// "Enable Session Cookies?": Enable (0) turns them on; Cancel (1) leaves them as they are.
+    /// A closed window cancels.
+    ClaudeCookie,
 }
 
 impl Then {
@@ -491,7 +496,7 @@ impl App {
                     self.ssh_upload_confirmed(pane, files, to);
                 }
             }
-            Then::ClaudeUninstall | Then::ClaudeHooksFailed | Then::ClaudeDisableApi | Then::ClaudeRepair => self.claude_answered(&then, index),
+            Then::ClaudeUninstall | Then::ClaudeHooksFailed | Then::ClaudeDisableApi | Then::ClaudeRepair | Then::ClaudeCookie => self.claude_answered(&then, index),
         }
     }
 }
@@ -632,6 +637,11 @@ mod tests {
     fn closing_disable_the_api_leaves_it_enabled() {
         assert_eq!(on_close(&Then::ClaudeDisableApi, 1), Answer::Button(0), "Leave Enabled, not Disable");
         assert_eq!(on_close(&Then::ClaudeDisableApi, 0), Answer::Button(0));
+    }
+
+    #[test]
+    fn closing_the_cookie_question_cancels() {
+        assert_eq!(on_close(&Then::ClaudeCookie, 0), Answer::Button(1), "Cancel, not Enable");
     }
 
     #[test]

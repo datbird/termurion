@@ -296,7 +296,7 @@ mod tests {
         assert_eq!(f.enter(), Enter::Next);
         assert!(f.next(), "Close ends it");
         // With the API on there is no API step.
-        let g = Flow::new(claude_code::steps(true));
+        let g = Flow::new(claude_code::steps(true, true));
         assert_eq!(g.step(), Step::InstallHook);
         assert!(!g.back_enabled());
     }

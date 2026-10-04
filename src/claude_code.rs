@@ -103,6 +103,8 @@ pub fn hook_command(exe: &Path) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
     EnablePythonApi,
+    /// Session cookies, which cc-status needs to be heard (its own question).
+    EnableCookie,
     InstallHook,
     ShowToolbelt,
 }
@@ -111,6 +113,7 @@ impl Step {
     pub fn title(self) -> &'static str {
         match self {
             Step::EnablePythonApi => "Enable Python API",
+            Step::EnableCookie => "Enable Session Cookies",
             Step::InstallHook => "Install Hook",
             Step::ShowToolbelt => "Show Toolbelt",
         }
@@ -118,7 +121,7 @@ impl Step {
 
     pub fn button(self) -> &'static str {
         match self {
-            Step::EnablePythonApi => "Enable",
+            Step::EnablePythonApi | Step::EnableCookie => "Enable",
             Step::InstallHook => "Install",
             Step::ShowToolbelt => "Show",
         }
@@ -126,7 +129,8 @@ impl Step {
 
     pub fn description(self) -> &'static str {
         match self {
-            Step::EnablePythonApi => "The Claude Code integration relies on Tandem\u{2019}s Python API to find sessions running Claude and track their status.\n\nThe Python API is currently disabled. Setup can\u{2019}t continue until it is enabled. Click Enable to turn it on. Enable also turns on session cookies, so the hook can reach the API from new sessions.",
+            Step::EnablePythonApi => "The Claude Code integration relies on Tandem\u{2019}s Python API to find sessions running Claude and track their status.\n\nThe Python API is currently disabled. Setup can\u{2019}t continue until it is enabled. Click Enable to turn it on.",
+            Step::EnableCookie => "The hook runs in a new process that has to prove it belongs to a Tandem session. Session cookies let it do that.\n\nWith cookies on, every new session gets a secret that lets a program running in it use Tandem\u{2019}s Python API without a prompt. Click Enable and confirm to turn them on. Cancel leaves them as they are, and the hook cannot report Claude\u{2019}s status.",
             Step::InstallHook => "Install a Claude Code hook that lets Tandem detect Claude\u{2019}s state (working, waiting, idle) and display it in the Session Status tool.\n\nThis adds a hook to your Claude Code settings that runs automatically as Claude works.",
             Step::ShowToolbelt => "Show the toolbelt and enable the Session Status tool. The toolbelt appears on the right side of your terminal window.\n\nYou can toggle the toolbelt from View > Toolbelt > Show Toolbelt, or with the shortcut Win+Shift+B.",
         }
@@ -134,6 +138,47 @@ impl Step {
 }
 
 // ---- impl begin
+/// "Enable Session Cookies?": the step's own question (a closed window is Cancel).
+pub const COOKIE_HEADING: &str = "Enable Session Cookies?";
+pub const COOKIE_TEXT: &str = "New Tandem sessions will get a secret cookie that lets any program running in them use Tandem\u{2019}s Python API without asking you. The Claude Code hook needs it to report status. Cancel leaves cookies as they are.";
+pub const COOKIE_BUTTONS: [&str; 2] = ["Enable", "Cancel"];
+/// Set while the cookie setting is on because Tandem turned it on (with the person's OK).
+pub const COOKIE_BY_KEY: &str = "NoSyncClaudeCodeTurnedOnCookie";
+
+/// The cookie setting and whether Tandem is the one who turned it on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CookieState {
+    pub on: bool,
+    pub by_tandem: bool,
+}
+
+impl CookieState {
+    /// The person said Enable: on, and Tandem's own only when it was off.
+    pub fn enabled(self) -> CookieState {
+        if self.on { self } else { CookieState { on: true, by_tandem: true } }
+    }
+
+    /// Undo what Tandem did, and only that: a setting the person made is left as it is.
+    pub fn reverted(self) -> CookieState {
+        if self.by_tandem { CookieState { on: false, by_tandem: false } } else { self }
+    }
+}
+
+/// Whether two paths name the same folder: by final path when both exist (a junction, a
+/// substitute drive or a short name included), else by absolute path with the same separators,
+/// no trailing separator and no case (Windows ignores case).
+pub fn same_path(a: &Path, b: &Path) -> bool {
+    if let (Ok(x), Ok(y)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        return lexical(&x) == lexical(&y);
+    }
+    lexical(a) == lexical(b)
+}
+
+fn lexical(p: &Path) -> Vec<String> {
+    let abs = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    abs.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect()
+}
+
 /// Where Claude Code keeps its settings: `CLAUDE_CONFIG_DIR` (a leading `~` is the profile
 /// folder), else `<profile>\.claude`. Tandem has no login shell to ask, so only its own
 /// environment counts. A relative value or a network folder means nothing safe here and
@@ -367,11 +412,16 @@ pub fn menu_enabled(known: bool) -> [bool; 3] {
     [!known, known, known]
 }
 
-/// The setup's steps: the API step only while the API is off.
-pub fn steps(api_enabled: bool) -> Vec<Step> {
+/// The setup's steps: the API step only while the API is off, the cookie step only while
+/// cookies are off.
+pub fn steps(api_enabled: bool, cookie_on: bool) -> Vec<Step> {
     let mut v = Vec::new();
     if !api_enabled {
         v.push(Step::EnablePythonApi);
+    }
+    // The hook reports only with a cookie, so a setup with it off always asks.
+    if !cookie_on {
+        v.push(Step::EnableCookie);
     }
     v.extend([Step::InstallHook, Step::ShowToolbelt]);
     v
@@ -454,9 +504,9 @@ pub fn old_folder_settings(stored: &str, current: &Path) -> Option<PathBuf> {
     if !dir.is_absolute() || dir.components().any(|c| matches!(c, std::path::Component::ParentDir)) || !dir.is_dir() {
         return None;
     }
-    let old = settings_path(&dir);
-    let same = old.to_string_lossy().to_lowercase() == current.to_string_lossy().to_lowercase();
-    (!same).then_some(old)
+    // The folders are compared, never the raw text: a stored "C:/cc" is the folder "C:\cc\settings.json" is in.
+    let same = current.parent().is_some_and(|p| same_path(&dir, p));
+    (!same).then(|| settings_path(&dir))
 }
 // ---- impl end
 
@@ -703,11 +753,9 @@ mod tests {
         assert_eq!(menu_enabled(false), [true, false, false]);
         assert!(known(true, false) && known(false, true));
         assert_eq!(menu_enabled(true), [false, true, true]);
-        assert_eq!(steps(false), [Step::EnablePythonApi, Step::InstallHook, Step::ShowToolbelt]);
-        assert_eq!(steps(true), [Step::InstallHook, Step::ShowToolbelt]);
-        let titles: Vec<_> = steps(false).iter().map(|s| (s.title(), s.button())).collect();
+        let titles: Vec<_> = steps(false, true).iter().map(|s| (s.title(), s.button())).collect();
         assert_eq!(titles, [("Enable Python API", "Enable"), ("Install Hook", "Install"), ("Show Toolbelt", "Show")]);
-        assert!(Step::EnablePythonApi.description().ends_with("Enable also turns on session cookies, so the hook can reach the API from new sessions."));
+        assert!(!Step::EnablePythonApi.description().contains("cookie"), "the API step turns nothing else on");
         assert_eq!(bullets(Path::new(r"C:\c\settings.json")), "\u{2022} Tandem\u{2019}s Python API is enabled\n\u{2022} A cc-status hook is added to C:\\c\\settings.json\n\u{2022} The toolbelt is shown");
     }
 
@@ -757,5 +805,78 @@ mod tests {
         assert_eq!(HELP_URL, "https://iterm2.com/claude-code-integration.html");
         assert_eq!(EXE, "cc-status.exe");
         assert!(missing_exe(Path::new(r"C:\T\cc-status.exe")).contains(r"C:\T\cc-status.exe"));
+    }
+
+    /// Fix round 1: the cookie is its own step with its own question; the hook cannot report
+    /// without it, so setup never shows every step done while it is off.
+    #[test]
+    fn steps_follow_the_api_and_the_cookie() {
+        assert_eq!(steps(false, false), [Step::EnablePythonApi, Step::EnableCookie, Step::InstallHook, Step::ShowToolbelt]);
+        assert_eq!(steps(true, false), [Step::EnableCookie, Step::InstallHook, Step::ShowToolbelt], "API on and cookie off: the cookie is asked for");
+        assert_eq!(steps(false, true), [Step::EnablePythonApi, Step::InstallHook, Step::ShowToolbelt]);
+        assert_eq!(steps(true, true), [Step::InstallHook, Step::ShowToolbelt]);
+        assert_eq!((Step::EnableCookie.title(), Step::EnableCookie.button()), ("Enable Session Cookies", "Enable"));
+        assert!(Step::EnableCookie.description().contains("cookie") && Step::EnableCookie.description().contains("Cancel"));
+        assert_eq!((COOKIE_HEADING, COOKIE_BUTTONS), ("Enable Session Cookies?", ["Enable", "Cancel"]));
+        assert!(COOKIE_TEXT.contains("without asking") || COOKIE_TEXT.contains("any program"));
+    }
+
+    /// Fix round 1: Tandem turns the cookie on only on the person's OK, remembers that it did,
+    /// and turns it back off only if it did.
+    #[test]
+    fn the_cookie_is_turned_off_only_if_tandem_turned_it_on() {
+        let off = CookieState { on: false, by_tandem: false };
+        // Cancel does nothing: the state is simply never changed.
+        let on = off.enabled();
+        assert_eq!(on, CookieState { on: true, by_tandem: true });
+        assert_eq!(on.reverted(), off);
+        // The person's own setting is never claimed or reverted.
+        let theirs = CookieState { on: true, by_tandem: false };
+        assert_eq!(theirs.enabled(), theirs);
+        assert_eq!(theirs.reverted(), theirs);
+        // The person switched it off themselves meanwhile: the marker goes, nothing turns on.
+        assert_eq!(CookieState { on: false, by_tandem: true }.reverted(), off);
+        assert_eq!(on.enabled(), on);
+    }
+
+    /// Fix round 1: the same folder is found by normalized path, never by raw text, so an install
+    /// can never strip the hook it just wrote.
+    #[test]
+    fn the_same_folder_is_found_by_normalized_path() {
+        let dir = scratch("same");
+        let a = dir.join("a");
+        std::fs::create_dir_all(&a).unwrap();
+        let current = settings_path(&a);
+        let text = a.to_string_lossy().into_owned();
+        for spelling in [text.replace('\\', "/"), format!("{text}\\"), format!("{text}/"), text.to_uppercase(), text.to_lowercase(), format!("{text}\\.")] {
+            assert_eq!(old_folder_settings(&spelling, &current), None, "{spelling} is the folder in use");
+            assert!(same_path(Path::new(&spelling), &a), "{spelling}");
+        }
+        // And the current file spelled the other way round.
+        let slashed = PathBuf::from(current.to_string_lossy().replace('\\', "/"));
+        assert_eq!(old_folder_settings(&text, &slashed), None);
+        // A genuinely different folder is still stripped.
+        let b = dir.join("b");
+        std::fs::create_dir_all(&b).unwrap();
+        assert_eq!(old_folder_settings(&b.to_string_lossy(), &current), Some(settings_path(&b)));
+        assert!(!same_path(&a, &b));
+        assert!(!same_path(&dir.join("a2"), &a), "a longer name is not the same folder");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A junction to the folder in use is the folder in use (the final path is compared when
+    /// both exist).
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_is_the_same_folder() {
+        let dir = scratch("junction");
+        let (real, link) = (dir.join("real"), dir.join("link"));
+        std::fs::create_dir_all(&real).unwrap();
+        let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&link).arg(&real).output().map(|o| o.status.success()).unwrap_or(false);
+        assert!(made, "mklink /J");
+        assert!(same_path(&link, &real));
+        assert_eq!(old_folder_settings(&link.to_string_lossy(), &settings_path(&real)), None);
+        let _ = std::fs::remove_dir(&link);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

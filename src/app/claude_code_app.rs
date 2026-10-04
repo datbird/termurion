@@ -39,7 +39,32 @@ fn repair_ask(path: &Path) -> Ask {
     ask(cc::BROKEN_HEADING, &cc::broken_text(path), &[cc::REINSTALL, cc::NOT_NOW], Some(cc::REPAIR_ID), Kind::Permanent, Then::ClaudeRepair)
 }
 
+/// "Enable Session Cookies?": a closed window cancels.
+fn cookie_ask() -> Ask {
+    ask(cc::COOKIE_HEADING, cc::COOKIE_TEXT, &cc::COOKIE_BUTTONS, None, Kind::Persistent, Then::ClaudeCookie)
+}
+
 impl App {
+    /// The cookie setting and whether Tandem turned it on.
+    fn claude_cookie(&self) -> cc::CookieState {
+        cc::CookieState { on: self.globals.bool(super::api_ui::SET_COOKIE_KEY), by_tandem: self.globals.bool(cc::COOKIE_BY_KEY) }
+    }
+
+    fn claude_set_cookie(&mut self, state: cc::CookieState) {
+        self.globals.set(super::api_ui::SET_COOKIE_KEY, toml::Value::Boolean(state.on));
+        self.globals.set(cc::COOKIE_BY_KEY, toml::Value::Boolean(state.by_tandem));
+        self.save_globals();
+    }
+
+    /// Turns the cookie back off when Tandem is the one who turned it on (a person's own
+    /// setting is never touched): the Disable answer, and a setup closed before the hook is in.
+    fn claude_revert_cookie(&mut self) {
+        let now = self.claude_cookie();
+        if now.reverted() != now {
+            self.claude_set_cookie(now.reverted());
+        }
+    }
+
     /// Claude Code's settings.json: `CLAUDE_CONFIG_DIR` from Tandem's own environment, else the
     /// profile folder's `.claude`. (Returns the folder and the file.)
     fn claude_paths(&self) -> Result<(PathBuf, PathBuf), String> {
@@ -77,7 +102,7 @@ impl App {
             Ok((_, file)) => file,
             Err(e) => return self.ask_scripts(failed_ask(&e)),
         };
-        let steps = cc::steps(self.globals.bool(super::api_ui::ENABLE_KEY));
+        let steps = cc::steps(self.globals.bool(super::api_ui::ENABLE_KEY), self.globals.bool(super::api_ui::SET_COOKIE_KEY));
         let dark = self.dark();
         match OnboardingWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, steps, &shown, dark) {
             Ok(mut w) => {
@@ -93,9 +118,10 @@ impl App {
     /// tool showing), so a Reinstall shows them with their check mark.
     fn claude_sync_steps(&self, w: &mut OnboardingWindow) {
         let api = self.globals.bool(super::api_ui::ENABLE_KEY);
+        let cookie = self.globals.bool(super::api_ui::SET_COOKIE_KEY);
         let hook = self.globals.bool(cc::HOOKS_KEY);
         let belt = self.belt.visible && self.toolbelt_tools().contains(&ToolId::SessionStatus);
-        for (step, done) in [(Step::EnablePythonApi, api), (Step::InstallHook, hook), (Step::ShowToolbelt, belt)] {
+        for (step, done) in [(Step::EnablePythonApi, api), (Step::EnableCookie, cookie), (Step::InstallHook, hook), (Step::ShowToolbelt, belt)] {
             if done {
                 w.mark_done(step);
             }
@@ -135,6 +161,10 @@ impl App {
                 }
                 OnboardAct::Closed => {
                     self.cc_onboarding = None;
+                    // A setup left before the hook went in leaves nothing Tandem turned on.
+                    if !self.globals.bool(cc::HOOKS_KEY) {
+                        self.claude_revert_cookie();
+                    }
                     break;
                 }
             }
@@ -146,12 +176,14 @@ impl App {
     pub(super) fn claude_do_step(&mut self, step: Step) {
         match step {
             Step::EnablePythonApi => {
-                // The hook needs a cookie in new sessions (ruling 12f-1), then the forced
-                // "Enable Python API?" alert; the step is done once the API reads on.
-                self.globals.set(super::api_ui::SET_COOKIE_KEY, toml::Value::Boolean(true));
-                self.save_globals();
-                self.queue_api_alert(super::api_ui::Alert::Enable);
+                // The forced "Enable Python API?" alert, only while the API is off (iTerm2 returns
+                // early when it is on); the step is done once the API reads on.
+                if !self.globals.bool(super::api_ui::ENABLE_KEY) {
+                    self.queue_api_alert(super::api_ui::Alert::Enable);
+                }
             }
+            // The cookie has its own question; only its Enable answer turns it on.
+            Step::EnableCookie => self.ask_scripts(cookie_ask()),
             Step::InstallHook => match self.install_hook() {
                 Ok(_) => {
                     if let Some(w) = self.cc_onboarding.as_mut() {
@@ -185,7 +217,8 @@ impl App {
         }
         cc::install_to(&file, &cc::hook_command(&exe))?;
         // The folder it went into before, when it differs (best effort: the new hook is in).
-        if let Some(old) = cc::old_folder_settings(&self.globals.string(cc::DIR_KEY), &file) {
+        // (Never the file just written: `old_folder_settings` compares folders by final path.)
+        if let Some(old) = cc::old_folder_settings(&self.globals.string(cc::DIR_KEY), &file).filter(|old| !cc::same_path(old, &file)) {
             let _ = cc::uninstall_from(&old);
         }
         self.globals.set(cc::DIR_KEY, toml::Value::String(dir.to_string_lossy().into_owned()));
@@ -239,6 +272,8 @@ impl App {
     pub(super) fn claude_disable_api(&mut self) {
         self.set_api_enabled(false);
         self.sync_api_server();
+        // The cookie Tandem turned on for the hook goes with the API; the person's own stays.
+        self.claude_revert_cookie();
     }
 
     /// Whether another question shows or waits (the health monitor never stacks on one).
@@ -316,6 +351,11 @@ impl App {
             (Then::ClaudeHooksFailed, 0) => self.claude_uninstalled(),
             (Then::ClaudeDisableApi, 1) => self.claude_disable_api(),
             (Then::ClaudeRepair, 0) => self.claude_install_due = true,
+            // Enable: the one place the cookie is turned on, and only by the person's answer.
+            (Then::ClaudeCookie, 0) => {
+                let next = self.claude_cookie().enabled();
+                self.claude_set_cookie(next);
+            }
             _ => {}
         }
     }
@@ -344,6 +384,9 @@ mod tests {
         assert_eq!(closes_to(&remove_failed_ask("x")), "Cancel");
         assert_eq!(closes_to(&disable_api_ask()), "Leave Enabled");
         assert_eq!(closes_to(&repair_ask(p)), "Not Now");
+        assert_eq!(closes_to(&cookie_ask()), "Cancel");
+        let a = cookie_ask();
+        assert_eq!((a.spec.heading.as_str(), a.spec.labels.clone(), a.spec.id), ("Enable Session Cookies?", vec!["Enable".to_string(), "Cancel".to_string()], None));
     }
 
     #[test]
