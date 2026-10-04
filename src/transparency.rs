@@ -1,0 +1,304 @@
+//! Window transparency rules (pure): per-pane alpha, the window toggle, the backdrop quads,
+//! the premultiplied color, the surface alpha mode and the composited pixel.
+
+use crate::layout::Rect;
+use crate::scene::Quad;
+
+/// The arrangement key that carries a window's Use Transparency state.
+pub const USE_KEY: &str = "Use Transparency";
+/// Global: drop transparency while a window is full screen.
+pub const DISABLE_FULLSCREEN_KEY: &str = "DisableFullscreenTransparency";
+/// Global: the focused window is always opaque.
+pub const DISABLE_KEY_WINDOW_KEY: &str = "DisableTransparencyForKeyWindow";
+pub const DEFAULT_BLUR_RADIUS: f64 = 2.0;
+pub const MAX_BLUR_RADIUS: f64 = 64.0;
+pub const LARGE_RADIUS_LIMIT: f64 = 26.0;
+
+/// A pane's background alpha (PTYTextView.m:2726-2731): 1 in the key window when it is forced opaque,
+/// else `1 - transparency` while the window uses transparency, else 1. Transparency is clamped to 0..=1.
+pub fn pane_alpha(transparency: f64, window_uses: bool, key_window: bool, disable_for_key: bool) -> f32 {
+    if key_window && disable_for_key || !window_uses {
+        return 1.0;
+    }
+    (1.0 - transparency.clamp(0.0, 1.0)) as f32
+}
+
+/// A window's Use Transparency state and its full screen bookkeeping
+/// (PseudoTerminal.m useTransparency_, oldUseTransparency_, restoreUseTransparency_).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WinTransparency {
+    pub on: bool,
+    old: bool,
+    restore: bool,
+}
+
+impl WinTransparency {
+    pub fn new(initial: bool) -> Self {
+        WinTransparency { on: initial, old: false, restore: false }
+    }
+
+    /// A window restored from an arrangement: the saved key wins only when present (PT:4189-4191).
+    pub fn restored(saved: Option<bool>, initial: bool) -> Self {
+        Self::new(saved.unwrap_or(initial))
+    }
+
+    /// A full screen window restored from an arrangement (PT:3656-3659).
+    pub fn restored_fullscreen(disable_pref: bool) -> Self {
+        WinTransparency { on: !disable_pref, old: true, restore: true }
+    }
+
+    /// The menu item and Win+U: flips the state and forgets any pending restore.
+    pub fn toggle(&mut self) {
+        self.on = !self.on;
+        self.restore = false;
+    }
+
+    /// Runs before the window enters or leaves full screen (PseudoTerminal+WindowStyle.m:587-600).
+    pub fn before_fullscreen_toggle(&mut self, full_screen_now: bool, disable_pref: bool) {
+        if !full_screen_now && disable_pref {
+            self.old = self.on;
+            self.on = false;
+            self.restore = true;
+        } else if full_screen_now && self.restore {
+            self.on = self.old;
+            self.restore = false;
+        } else {
+            self.restore = false;
+        }
+    }
+}
+
+/// True when any pane draws below full opacity, so the surface must be premultiplied.
+pub fn needs_alpha(alphas: &[f32]) -> bool {
+    alphas.iter().any(|a| *a < 1.0)
+}
+
+/// The sRGB transfer function, decoding 0..=1 to linear light (the curve of `scene::srgb_to_linear`).
+pub fn linear(v: f32) -> f32 {
+    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+}
+
+/// A quad color whose pipeline blend leaves exactly premultiplied pixels in an sRGB target:
+/// `ALPHA_BLENDING` writes `linear(c * a)` in linear space, which the target stores as `c * a`.
+pub fn premultiplied(srgb: [u8; 3], alpha: f32) -> [f32; 4] {
+    let a = alpha.clamp(0.0, 1.0);
+    if a == 0.0 {
+        return [0.0; 4];
+    }
+    let c = |v: u8| linear(v as f32 / 255.0 * a) / a;
+    [c(srgb[0]), c(srgb[1]), c(srgb[2]), a]
+}
+
+/// The first layer of a see-through window: chrome strips around the content (opaque), then each pane's
+/// margin rects at the pane's color. Zero-size strips are skipped. The grid itself is drawn by the pane's
+/// own background runs, so every pixel gets exactly one background layer.
+pub fn backdrop(window: Rect, content: Rect, chrome: [f32; 4], panes: &[(Vec<Rect>, [f32; 4])]) -> Vec<Quad> {
+    let mut out = Vec::new();
+    let mut strip = |rect: Rect| {
+        if rect.w > 0.0 && rect.h > 0.0 {
+            out.push(Quad { rect, color: chrome });
+        }
+    };
+    strip(Rect { x: window.x, y: window.y, w: window.w, h: content.y - window.y });
+    strip(Rect { x: window.x, y: content.y + content.h, w: window.w, h: window.y + window.h - (content.y + content.h) });
+    strip(Rect { x: window.x, y: content.y, w: content.x - window.x, h: content.h });
+    strip(Rect { x: content.x + content.w, y: content.y, w: window.x + window.w - (content.x + content.w), h: content.h });
+    for (margins, color) in panes {
+        for m in margins {
+            if m.w > 0.0 && m.h > 0.0 {
+                out.push(Quad { rect: *m, color: *color });
+            }
+        }
+    }
+    out
+}
+
+/// The surface alpha mode: premultiplied when something is see-through and the surface offers it,
+/// opaque when nothing is; otherwise the first mode offered.
+pub fn pick_alpha_mode(modes: &[wgpu::CompositeAlphaMode], transparent: bool) -> wgpu::CompositeAlphaMode {
+    use wgpu::CompositeAlphaMode as M;
+    let want = if transparent { M::PreMultiplied } else { M::Opaque };
+    if modes.contains(&want) {
+        want
+    } else {
+        modes.first().copied().unwrap_or(M::Auto)
+    }
+}
+
+/// True when a window showing these profiles (Transparency, Blur) needs an alpha surface. Only Transparency
+/// above 0 counts: Blur alone never makes a pane see-through (pre-flight P5). The window's Use Transparency
+/// toggle is ignored so Win+U never needs a recreate.
+pub fn wants_alpha_surface(profiles: &[(f64, bool)]) -> bool {
+    profiles.iter().any(|(t, _)| *t > 0.0)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SurfaceKind {
+    #[default]
+    Opaque,
+    Alpha,
+}
+
+/// An opaque window that now needs alpha must be recreated; an alpha window never goes back
+/// (it stays on the second instance with an opaque alpha mode).
+pub fn needs_recreate(current: SurfaceKind, profiles: &[(f64, bool)]) -> bool {
+    current == SurfaceKind::Opaque && wants_alpha_surface(profiles)
+}
+
+/// The pixel at (x, y) after drawing `quads` in order over nothing with the pipelines' `ALPHA_BLENDING`.
+pub fn composite(quads: &[Quad], x: f32, y: f32) -> [f32; 4] {
+    let mut px = [0.0f32; 4];
+    for q in quads.iter().filter(|q| q.rect.contains(x, y)) {
+        let a = q.color[3];
+        for i in 0..3 {
+            px[i] = q.color[i] * a + px[i] * (1.0 - a);
+        }
+        px[3] = a + px[3] * (1.0 - a);
+    }
+    px
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::Rect;
+    use crate::scene::Quad;
+
+    fn r(x: f32, y: f32, w: f32, h: f32) -> Rect {
+        Rect { x, y, w, h }
+    }
+
+    #[test]
+    fn pane_alpha_follows_iterm2() {
+        assert!((pane_alpha(0.3, true, false, false) - 0.7).abs() < 1e-6);
+        assert_eq!(pane_alpha(0.3, true, true, true), 1.0);
+        assert!((pane_alpha(0.3, true, true, false) - 0.7).abs() < 1e-6);
+        assert_eq!(pane_alpha(0.3, false, false, false), 1.0);
+        assert_eq!(pane_alpha(0.0, true, false, false), 1.0);
+        assert_eq!(pane_alpha(1.5, true, false, false), 0.0);
+        assert_eq!(pane_alpha(-0.2, true, false, false), 1.0);
+    }
+
+    #[test]
+    fn window_toggle_follows_iterm2() {
+        let mut w = WinTransparency::new(true);
+        assert!(w.on);
+        w.toggle();
+        assert!(!w.on);
+        assert!(!WinTransparency::restored(Some(false), true).on);
+        assert!(WinTransparency::restored(None, true).on);
+        assert!(WinTransparency::restored(Some(true), false).on);
+    }
+
+    #[test]
+    fn fullscreen_restores_follow_iterm2() {
+        let mut w = WinTransparency::new(true);
+        w.before_fullscreen_toggle(false, true);
+        assert!(!w.on);
+        w.before_fullscreen_toggle(true, true);
+        assert!(w.on);
+
+        let mut w = WinTransparency::new(true);
+        w.before_fullscreen_toggle(false, true);
+        w.toggle();
+        assert!(w.on);
+        w.before_fullscreen_toggle(true, true);
+        assert!(w.on);
+
+        let mut w = WinTransparency::new(false);
+        w.before_fullscreen_toggle(false, false);
+        assert!(!w.on);
+        w.before_fullscreen_toggle(true, false);
+        assert!(!w.on);
+
+        let mut w = WinTransparency::new(false);
+        w.before_fullscreen_toggle(false, true);
+        w.before_fullscreen_toggle(true, true);
+        assert!(!w.on);
+
+        let mut w = WinTransparency::restored_fullscreen(true);
+        assert!(!w.on);
+        w.before_fullscreen_toggle(true, true);
+        assert!(w.on);
+        assert!(WinTransparency::restored_fullscreen(false).on);
+    }
+
+    #[test]
+    fn margins_surround_the_grid() {
+        let pane = r(0.0, 30.0, 350.0, 570.0);
+        let grid = r(4.0, 34.0, 340.0, 560.0);
+        let m = crate::scene::margins(pane, grid);
+        assert_eq!(m, vec![r(0.0, 30.0, 350.0, 4.0), r(0.0, 594.0, 350.0, 6.0), r(0.0, 34.0, 4.0, 560.0), r(344.0, 34.0, 6.0, 560.0)]);
+        assert!(crate::scene::margins(pane, pane).is_empty());
+    }
+
+    #[test]
+    fn backdrop_follows_iterm2() {
+        let chrome = [0.1, 0.1, 0.1, 1.0];
+        let a = [0.2, 0.2, 0.2, 0.7];
+        let b = [0.3, 0.3, 0.3, 1.0];
+        let a_margins = vec![r(0.0, 30.0, 350.0, 4.0), r(0.0, 594.0, 350.0, 6.0)];
+        let b_margins = vec![r(351.0, 30.0, 349.0, 4.0)];
+        let q = backdrop(r(0.0, 0.0, 800.0, 600.0), r(0.0, 30.0, 700.0, 570.0), chrome, &[(a_margins.clone(), a), (b_margins.clone(), b)]);
+        let want = vec![
+            Quad { rect: r(0.0, 0.0, 800.0, 30.0), color: chrome },
+            Quad { rect: r(700.0, 30.0, 100.0, 570.0), color: chrome },
+            Quad { rect: a_margins[0], color: a },
+            Quad { rect: a_margins[1], color: a },
+            Quad { rect: b_margins[0], color: b },
+        ];
+        assert_eq!(q, want);
+        let none = backdrop(r(0.0, 0.0, 800.0, 600.0), r(0.0, 0.0, 800.0, 600.0), chrome, &[]);
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn premultiplied_color_is_exact() {
+        let c = premultiplied([255, 255, 255], 0.5);
+        assert_eq!(c[3], 0.5);
+        assert!((c[0] * 0.5 - linear(0.5)).abs() < 1e-4);
+        assert_eq!(premultiplied([0, 0, 0], 0.3), [0.0, 0.0, 0.0, 0.3]);
+        let o = premultiplied([51, 102, 204], 1.0);
+        assert!((o[0] - linear(51.0 / 255.0)).abs() < 1e-6 && (o[1] - linear(102.0 / 255.0)).abs() < 1e-6 && (o[2] - linear(204.0 / 255.0)).abs() < 1e-6);
+        assert_eq!(o[3], 1.0);
+        assert_eq!(premultiplied([200, 100, 50], 0.0), [0.0; 4]);
+    }
+
+    #[test]
+    fn alpha_mode_follows_need() {
+        use wgpu::CompositeAlphaMode as M;
+        let all = [M::Auto, M::Inherit, M::Opaque, M::PostMultiplied, M::PreMultiplied];
+        assert_eq!(pick_alpha_mode(&all, true), M::PreMultiplied);
+        assert_eq!(pick_alpha_mode(&all, false), M::Opaque);
+        assert_eq!(pick_alpha_mode(&[M::Opaque], true), M::Opaque);
+        assert_eq!(pick_alpha_mode(&[M::Opaque], false), M::Opaque);
+        assert_eq!(pick_alpha_mode(&[M::Auto], true), M::Auto);
+        assert_eq!(pick_alpha_mode(&[M::Auto], false), M::Auto);
+        assert!(needs_alpha(&[1.0, 0.7]));
+        assert!(!needs_alpha(&[1.0]));
+        assert!(!needs_alpha(&[]));
+    }
+
+    #[test]
+    fn alpha_window_decision_follows_profiles() {
+        assert!(!wants_alpha_surface(&[(0.0, false)]));
+        assert!(wants_alpha_surface(&[(0.0, false), (0.3, false)]));
+        // Blur alone does not count (pre-flight P5): the tab blurs only above Transparency 0.
+        assert!(!wants_alpha_surface(&[(0.0, true)]));
+        assert!(!wants_alpha_surface(&[]));
+        assert!(needs_recreate(SurfaceKind::Opaque, &[(0.3, false)]));
+        assert!(!needs_recreate(SurfaceKind::Opaque, &[(0.0, false)]));
+        assert!(!needs_recreate(SurfaceKind::Alpha, &[(0.0, false)]));
+        assert!(!needs_recreate(SurfaceKind::Alpha, &[(0.3, true)]));
+    }
+
+    #[test]
+    fn composite_blends_like_the_pipeline() {
+        let q = |x, y, w, h, a| Quad { rect: r(x, y, w, h), color: [1.0, 0.0, 0.0, a] };
+        let one = composite(&[q(0.0, 0.0, 10.0, 10.0, 0.7)], 5.0, 5.0);
+        assert!((one[3] - 0.7).abs() < 1e-6);
+        let two = composite(&[q(0.0, 0.0, 10.0, 10.0, 0.7), q(0.0, 0.0, 10.0, 10.0, 0.7)], 5.0, 5.0);
+        assert!((two[3] - 0.91).abs() < 1e-6);
+        assert_eq!(composite(&[q(0.0, 0.0, 10.0, 10.0, 0.7)], 50.0, 5.0), [0.0; 4]);
+    }
+}

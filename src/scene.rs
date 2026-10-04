@@ -155,6 +155,22 @@ fn srgb_to_linear(c: u8) -> f32 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
+/// The strips of `rect` that lie outside `grid` (its cell grid): top, bottom, then left and right
+/// within the grid's rows. Zero-size strips are skipped.
+pub fn margins(rect: Rect, grid: Rect) -> Vec<Rect> {
+    let bottom = grid.y + grid.h;
+    let right = grid.x + grid.w;
+    [
+        Rect { x: rect.x, y: rect.y, w: rect.w, h: grid.y - rect.y },
+        Rect { x: rect.x, y: bottom, w: rect.w, h: rect.y + rect.h - bottom },
+        Rect { x: rect.x, y: grid.y, w: grid.x - rect.x, h: grid.h },
+        Rect { x: right, y: grid.y, w: rect.x + rect.w - right, h: grid.h },
+    ]
+    .into_iter()
+    .filter(|r| r.w > 0.0 && r.h > 0.0)
+    .collect()
+}
+
 /// A color for the quad shader. The target is sRGB, so the shader works in linear light.
 pub fn rgba(c: Rgb, a: f32) -> [f32; 4] {
     [srgb_to_linear(c.r), srgb_to_linear(c.g), srgb_to_linear(c.b), a]

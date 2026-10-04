@@ -404,3 +404,4 @@ pub mod secret_field;
 pub mod ai_key_ui;
 #[cfg(windows)]
 pub mod ai_engage_ui;
+pub mod transparency;
