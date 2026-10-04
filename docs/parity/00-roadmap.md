@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 189 | 108 | 17 |
-| `02-global-settings.md` | 823 | 415 | 75 | 333 |
-| `03-features-and-menus.md` | 647 | 532 | 47 | 68 |
-| Total | 1,784 | 1,136 | 230 | 418 |
+| `02-global-settings.md` | 823 | 417 | 74 | 332 |
+| `03-features-and-menus.md` | 647 | 533 | 47 | 67 |
+| Total | 1,784 | 1,139 | 229 | 416 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -427,6 +427,20 @@ failed or ended setup is dropped, as in iTerm2); EndSSH pops the conductor chain
 hop's saved state. The iTerm2 bugs met (B1 to B17) are kept or fixed one by one. Every kept quirk is
 listed in `docs/acceptance/m14b-checklist.md` and ruled on in
 `docs/superpowers/rulings/m14b-rulings.txt`.
+Milestone 14c added level 2 of SSH integration, iTerm2's framer (03: Shell > ssh > Disconnect to
+have; 02: unameCommand to have, alternateSSHIntegrationScript to n/a as a DEBUG-only setting, ruling
+8; the Clock's two SSH knobs act; the it2ssh, SendConductor, Configure SSH and shell-integration
+rows stay partial for 14d and 14e). framer.py ships byte for byte and runs through `runpython`;
+Tandem frames every write to the remote, pipelines commands, keeps the remote job list (autopoll)
+for the Job Name, the close question and the CPU graph, shows server time with a Segoe Fluent globe,
+fills the `sshIntegrationLevel`, `homeDirectory`, `shell` and `uname` variables, and Shell > ssh >
+Disconnect ends the hop. Nested ssh hops, Duplicate Session and splits reconnect through the jump
+chain, and a session survives quitting Tandem (tandem-host keeps it) and recovers after a crash
+("Recovering ssh connection\u{2026}"). Beyond iTerm2, for safety: a local command line is built
+only from a chain Tandem's own token vouched for, in-band recovery turns on only after such a
+hook, a restored conductor is never vouched, hook nesting is capped at 8, and every remote size is
+capped. Every kept quirk is listed in `docs/acceptance/m14c-checklist.md` and ruled on in
+`docs/superpowers/rulings/m14c-rulings.txt`.
 
 ## Order
 
