@@ -266,16 +266,29 @@ pub enum Run {
     Blocked(String),
 }
 
+/// The link schemes that open in the browser or mail app.
+const WEB: &[&str] = &["http", "https", "mailto", "ftp"];
+
+/// The lowercased scheme of a URL; None for a path.
+fn scheme(target: &str) -> Option<String> {
+    let s = target.split_once(':').map(|(s, _)| s).filter(|s| {
+        // A drive letter ("C:") is a path, not a scheme.
+        s.len() > 1 && s.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) && s.chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
+    })?;
+    Some(s.to_ascii_lowercase())
+}
+
+/// Whether `target` is a web or mail link: guard_open hands it to that app, never opens a path.
+pub fn web_link(target: &str) -> bool {
+    scheme(target).is_some_and(|s| WEB.contains(&s.as_str()))
+}
+
 /// What opening `target` (a URL or a path) runs. Only http, https, mailto, and ftp links
 /// open; a file: link is a path; a program or script is shown, never run.
 pub fn guard_open(target: &str, has_code: bool) -> Run {
-    let scheme = target.split_once(':').map(|(s, _)| s).filter(|s| {
-        // A drive letter ("C:") is a path, not a scheme.
-        s.len() > 1 && s.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) && s.chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
-    });
-    match scheme.map(str::to_ascii_lowercase).as_deref() {
+    match scheme(target).as_deref() {
         None => file_open(target, None, None, has_code),
-        Some("http" | "https" | "mailto" | "ftp") => Run::Open(target.to_string()),
+        Some(s) if WEB.contains(&s) => Run::Open(target.to_string()),
         Some("file") => match file_url_path(target) {
             Some(p) => file_open(&p, None, None, has_code),
             None => Run::Blocked(format!("Tandem does not open network file links: {target}")),

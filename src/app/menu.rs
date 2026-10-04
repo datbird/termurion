@@ -235,7 +235,7 @@ impl App {
         let Some(hwnd) = self.hwnd() else { return };
         let context = Menu::new();
         let mut results = Vec::new();
-        let own = |(label, item): &(String, super::semantic_ui::CtxItem)| MenuItem::with_id(item.id(), label.replace('&', "&&"), true, None);
+        let own = |(label, item): &(String, super::semantic_ui::CtxItem)| MenuItem::with_id(item.id(), label.replace('&', "&&"), item.enabled(), None);
         for slot in context_layout(extra.len(), providers.len()) {
             results.push(match slot {
                 Slot::Separator => context.append(&PredefinedMenuItem::separator()),

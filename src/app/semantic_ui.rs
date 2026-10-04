@@ -69,8 +69,18 @@ impl App {
         crate::statusbar_text::is_local_host(host, super::statusbar_content::local_names())
     }
 
+    /// P10's one guard: text in this pane may have been written by a remote host, so it never
+    /// becomes a local open, run or coprocess. True whenever a conductor frames the pane,
+    /// whatever host it reports: the remote writes that report (OSC 1337 RemoteHost, OSC 7).
+    pub(super) fn remote_text(&self, id: PaneId) -> bool {
+        self.framing(id).is_some()
+    }
+
     /// The pane's working directory from shell integration, when it is on this machine.
     pub(super) fn pane_dir(&self, id: PaneId) -> Option<std::path::PathBuf> {
+        if self.remote_text(id) {
+            return None;
+        }
         let shell = &self.panes.get(&id)?.own().shell;
         if shell.host.as_ref().is_some_and(|h| !self.host_is_this_machine(h)) {
             return None;
@@ -115,10 +125,13 @@ impl App {
     /// the click. Returns false when nothing there opens.
     pub(super) fn open_target(&mut self, id: PaneId, point: Point, background: bool) -> bool {
         let found = self.target_at(id, point);
-        // Text a remote host wrote never builds a local run (P10): only a link opens, anything
-        // else may only download.
-        let link = found.as_ref().is_some_and(|(_, t, _)| matches!(t, Target::Link(_) | Target::Url(_)));
-        if self.click_route(id, link) == ssh_files::ClickRoute::SecureCopyOnly {
+        // Text a remote host wrote never builds a local run (P10): only a web or mail link
+        // opens, anything else may only download.
+        let link = found.as_ref().and_then(|(_, t, _)| match t {
+            Target::Link(u) | Target::Url(u) => Some(u.as_str()),
+            _ => None,
+        });
+        if ssh_files::click_route(self.remote_text(id), link) == ssh_files::ClickRoute::SecureCopyOnly {
             return self.secure_copy_at(id, point);
         }
         let Some((c, target, _)) = found else { return self.secure_copy_at(id, point) };
@@ -140,12 +153,6 @@ impl App {
             }
             None => self.secure_copy_at(id, point),
         }
-    }
-
-    /// How a Win-click on this pane treats what it hits (P10).
-    fn click_route(&self, id: PaneId, link: bool) -> ssh_files::ClickRoute {
-        let host_local = self.panes.get(&id).and_then(|p| p.own().shell.host.as_deref().map(|h| self.host_is_this_machine(h)));
-        ssh_files::click_route(self.framing(id).is_some(), host_local, link)
     }
 
     /// What a Smart Selection action runs. Copy runs here and returns None.
@@ -272,9 +279,11 @@ impl App {
                 fold = Some(f);
             }
             if let Some(c) = self.clicked(id, point) {
+                // In a remote pane the actions that open or run here are greyed (P10).
+                let remote = self.remote_text(id);
                 if let Some(f) = c.found.as_ref() {
                     for (i, a) in c.rules[f.rule].actions.iter().enumerate() {
-                        extra.push((a.title.clone(), CtxItem::Action(i)));
+                        extra.push((a.title.clone(), CtxItem::Action(i, ssh_files::remote_action_allowed(remote, &a.action))));
                     }
                 }
                 if c.ctx.link.is_some() {
@@ -337,7 +346,10 @@ impl App {
             self.context_provider_picked(pend.pane, unique_id, &title);
         } else if let Some(a) = item.strip_prefix("action.").and_then(|n| n.parse::<usize>().ok()).and_then(|n| pend.actions.get(n).cloned()) {
             let cwd_path = (!pend.cwd.is_empty()).then(|| std::path::PathBuf::from(&pend.cwd));
-            if let Some(run) = self.smart_action_run(pend.pane, &a, &pend.captures, &pend.cwd) {
+            // Asked again at the pick: the pane may have started framing since the menu showed.
+            if !ssh_files::remote_action_allowed(self.remote_text(pend.pane), &a.action) {
+                self.banners.set("action", format!("{} does not run for text from a remote host.", a.title));
+            } else if let Some(run) = self.smart_action_run(pend.pane, &a, &pend.captures, &pend.cwd) {
                 self.execute(pend.pane, run, cwd_path.as_deref(), false);
             }
         }
@@ -346,8 +358,19 @@ impl App {
     }
 
     /// Opens text picked from a label: an existing file (with its line) through Semantic
-    /// History, else the text as a URL.
+    /// History, else the text as a URL. In a remote pane only a web or mail link opens; other
+    /// text may only download (P10).
     pub(super) fn open_text(&mut self, id: PaneId, text: &str) {
+        if self.remote_text(id) {
+            let link = semantic::url_like("", text);
+            match link.filter(|u| ssh_files::click_route(true, Some(u.as_str())) == ssh_files::ClickRoute::Local) {
+                Some(u) => self.execute(id, semantic::guard_open(&u, has_code()), None, false),
+                None => {
+                    self.secure_copy_text(id, Some(text));
+                }
+            }
+            return;
+        }
         let cwd = self.pane_dir(id);
         let prefs = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).map(|p| Prefs::from_value(p.get("Semantic History").as_ref())).unwrap_or_default();
         let target = match semantic::find_path("", text, cwd.as_deref()) {
@@ -377,7 +400,8 @@ impl App {
 pub(super) const CTX_ID: &str = "tandem.ctx.";
 
 pub(super) enum CtxItem {
-    Action(usize),
+    /// A Smart Selection action by index, and whether it is enabled (not in a remote pane, P10).
+    Action(usize, bool),
     CopyLink,
     Unfold,
     StopCoprocess,
@@ -387,9 +411,13 @@ pub(super) enum CtxItem {
 }
 
 impl CtxItem {
+    pub(super) fn enabled(&self) -> bool {
+        !matches!(self, CtxItem::Action(_, false))
+    }
+
     pub(super) fn id(&self) -> String {
         match self {
-            CtxItem::Action(i) => format!("{CTX_ID}action.{i}"),
+            CtxItem::Action(i, _) => format!("{CTX_ID}action.{i}"),
             CtxItem::CopyLink => format!("{CTX_ID}copylink"),
             CtxItem::Unfold => format!("{CTX_ID}unfold"),
             CtxItem::StopCoprocess => format!("{CTX_ID}stopcoprocess"),
@@ -454,4 +482,98 @@ pub(super) fn shell_open(target: &str, cwd: Option<&std::path::Path>, background
 #[cfg(not(windows))]
 pub(super) fn shell_open(target: &str, _cwd: Option<&std::path::Path>, _background: bool) -> Result<(), String> {
     Err(format!("opening {target} needs Windows"))
+}
+
+#[cfg(test)]
+mod tests {
+    /// The functions that turn text in a pane into a local open, run or coprocess: each asks the
+    /// one guard, `remote_text` (P10). Win-click and the Open Target pointer actions reach
+    /// `open_target`; the right-click menu and its pointer action `show_context_menu_at` and
+    /// `context_picked`; Open Selection and a label pick `open_text`; OSC 1337 OpenURL `open_url`.
+    const GATED: &[(&str, &str)] = &[
+        ("semantic_ui.rs", "open_target"),
+        ("semantic_ui.rs", "show_context_menu_at"),
+        ("semantic_ui.rs", "context_picked"),
+        ("semantic_ui.rs", "open_text"),
+        ("semantic_ui.rs", "pane_dir"),
+        ("prompted_ui.rs", "open_url"),
+    ];
+
+    /// Calls that open or run something on this machine.
+    const SINKS: &[&str] = &["self.execute(", "smart_action_run(", "semantic::plan(", "guard_open(", "shell_open(", "start_coprocess(", "reveal_in_explorer("];
+
+    /// Callers of a sink whose input is not text a remote host wrote, and why.
+    const NOT_PANE_TEXT: &[(&str, &str, &str)] = &[
+        ("semantic_ui.rs", "execute", "the sink itself; its callers are checked"),
+        ("semantic_ui.rs", "smart_action_run", "builds the Run; its callers are checked"),
+        ("actions.rs", "run_key_action", "the user's own key binding"),
+        ("ai_tools_app.rs", "ai_reveal_file", "reveals the AI's own new file, runs nothing"),
+        ("api_ui.rs", "open_link", "a fixed More Info page"),
+        ("builtin_ui.rs", "session_method", "a local script's request"),
+        ("chat_window_app.rs", "chat_open_url", "a link in the AI chat window, not a pane"),
+        ("chat_window_app.rs", "chat_file", "an AI chat attachment, inert types only (F19)"),
+        ("coprocess_ui.rs", "coprocess_prompt_event", "the command the user typed"),
+        ("coprocess_ui.rs", "flush_dropped", "files the user dropped"),
+        ("host_offers_ui.rs", "host_offer_bar", "a fixed help page"),
+        ("mod.rs", "window_event", "the Configure SSH help page"),
+        ("porthole_ui.rs", "open_link_target", "a Porthole document link, asked per link"),
+        ("snippets_ui.rs", "run_applied", "the user's own key binding"),
+        ("tmux_ui.rs", "tmux_bar", "a fixed help page"),
+        ("triggers_ui.rs", "trigger_request", "the user's own trigger rule"),
+    ];
+
+    /// Each `fn` in a source file with its body, up to the test module.
+    fn functions(src: &str) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for line in src.lines() {
+            if line.trim_start().starts_with("#[cfg(test)]") {
+                break;
+            }
+            let t = line.trim_start();
+            let decl = ["pub(super) fn ", "pub(crate) fn ", "pub fn ", "fn "].iter().find_map(|k| t.strip_prefix(k));
+            if let Some(rest) = decl {
+                let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                out.push((name, String::new()));
+            } else if let Some((_, body)) = out.last_mut() {
+                if !t.starts_with("//") {
+                    body.push_str(line);
+                    body.push('\n');
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_entry_point_is_gated() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("app");
+        let (mut seen, mut wrong) = (Vec::new(), Vec::new());
+        let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|e| e == "rs")).collect();
+        files.sort();
+        for path in files {
+            let file = path.file_name().unwrap().to_string_lossy().to_string();
+            let src = std::fs::read_to_string(&path).unwrap();
+            for (name, body) in functions(&src) {
+                let gated = GATED.contains(&(file.as_str(), name.as_str()));
+                if gated {
+                    if !body.contains("remote_text(") {
+                        wrong.push(format!("{file} {name} must ask remote_text (P10)"));
+                    }
+                    seen.push((file.clone(), name.clone()));
+                }
+                if let Some(sink) = SINKS.iter().find(|k| body.contains(*k)) {
+                    let exempt = NOT_PANE_TEXT.iter().any(|(f, n, _)| *f == file && *n == name);
+                    if !gated && !exempt {
+                        wrong.push(format!("{file} {name} calls {sink}: route it through remote_text (P10) or list why its input is not pane text"));
+                    }
+                }
+            }
+        }
+        for (f, n) in GATED {
+            if !seen.iter().any(|(a, b)| a == f && b == n) {
+                wrong.push(format!("{f} {n} is gone: update GATED"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
 }

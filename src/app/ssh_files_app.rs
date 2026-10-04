@@ -268,6 +268,12 @@ impl App {
         let Some(c) = self.clicked(pane, point) else { return false };
         // The first component of the match (`components.firstObject`).
         let text = c.found.as_ref().and_then(|f| c.joined.text.get(f.range.clone()));
+        self.secure_copy_text(pane, text)
+    }
+
+    /// Downloads the remote file `text` names, as the Win-click's last phase does. False when it
+    /// names none this pane's conductor can fetch.
+    pub(super) fn secure_copy_text(&mut self, pane: PaneId, text: Option<&str>) -> bool {
         let Some(to) = ssh_files::secure_copy_target(text, |t| self.scp_path_for(pane, t)) else { return false };
         if !self.transfer_pane(pane, &to) {
             return false;

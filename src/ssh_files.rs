@@ -353,15 +353,22 @@ pub enum ClickRoute {
     SecureCopyOnly,
 }
 
-/// A pane whose conductor frames and whose reported host is not this machine (no reported host
-/// is not proof of this machine) has text a remote host wrote: a click on anything but a link
-/// may only download. `host_is_local` is None when the pane reports no host.
-pub fn click_route(framing: bool, host_is_local: Option<bool>, link: bool) -> ClickRoute {
-    if framing && !link && host_is_local != Some(true) {
+/// How a click (or Open Selection, or a label pick) treats text in a pane. `remote` is the one
+/// guard, `App::remote_text`: the pane has a framing conductor, whatever host the remote reports.
+/// `link` is the URL when the target is a link or URL. Remote text may open only a web or mail
+/// link; anything else, a `file:` link included, may only download.
+pub fn click_route(remote: bool, link: Option<&str>) -> ClickRoute {
+    if remote && !link.is_some_and(crate::semantic::web_link) {
         ClickRoute::SecureCopyOnly
     } else {
         ClickRoute::Local
     }
+}
+
+/// Whether a Smart Selection action may run for a match in a pane: in a remote pane only the
+/// actions that stay in Tandem (send the text back, copy it); open, run and coprocess never do.
+pub fn remote_action_allowed(remote: bool, action: &str) -> bool {
+    !remote || matches!(action, "sendText:" | "copy:")
 }
 
 #[cfg(test)]
@@ -551,14 +558,32 @@ mod tests {
 
     #[test]
     fn remote_click_builds_no_local_run() {
-        // A framing conductor and a host that is not this machine: a path, a command word or a
-        // Smart Selection action in the text may only download (P10).
-        assert_eq!(click_route(true, Some(false), false), ClickRoute::SecureCopyOnly);
-        // No reported host is not proof of this machine.
-        assert_eq!(click_route(true, None, false), ClickRoute::SecureCopyOnly);
-        // A link opens as before; a local host, or no framing conductor, is today's click.
-        assert_eq!(click_route(true, Some(false), true), ClickRoute::Local);
-        assert_eq!(click_route(true, Some(true), false), ClickRoute::Local);
-        assert_eq!(click_route(false, Some(false), false), ClickRoute::Local);
+        // A framing conductor: a path, a command word or a Smart Selection action in the text
+        // may only download (P10). The remote writes the host report (OSC 1337 RemoteHost,
+        // OSC 7), so `localhost` or this PC's name from it changes nothing: the route never
+        // reads it.
+        assert_eq!(click_route(true, None), ClickRoute::SecureCopyOnly);
+        // A web or mail link opens as before.
+        for u in ["http://example.com/a", "HTTPS://example.com", "mailto:a@example.com", "ftp://example.com/f"] {
+            assert_eq!(click_route(true, Some(u)), ClickRoute::Local, "{u}");
+        }
+        // A link guard_open would open as a local path, or refuse, may only download.
+        for u in ["file:///C:/Users/x/a.txt", "FILE://localhost/C:/a.doc", "file://server/share/a", "C:/a.txt", "www.example.com", "ms-settings:display"] {
+            assert_eq!(click_route(true, Some(u)), ClickRoute::SecureCopyOnly, "{u}");
+        }
+        // No framing conductor is today's click.
+        assert_eq!(click_route(false, None), ClickRoute::Local);
+        assert_eq!(click_route(false, Some("file:///C:/a.txt")), ClickRoute::Local);
+    }
+
+    #[test]
+    fn remote_smart_actions_never_run_here() {
+        for a in ["openFile:", "openUrl:", "runCommand:", "runCommandInWindow:", "runCoprocess:", "someFutureAction:"] {
+            assert!(!remote_action_allowed(true, a), "{a}");
+            assert!(remote_action_allowed(false, a), "{a}");
+        }
+        for a in ["sendText:", "copy:"] {
+            assert!(remote_action_allowed(true, a), "{a}");
+        }
     }
 }

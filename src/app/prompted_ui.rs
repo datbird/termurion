@@ -254,8 +254,13 @@ impl App {
     }
 
     pub(super) fn open_url(&mut self, pane: PaneId, url: &str) {
-        // The same guard as a Win-click: web and mail links open; others are refused.
-        let run = crate::semantic::guard_open(url, false);
+        // The same guard as a Win-click: web and mail links open; others are refused. A remote
+        // pane's text never opens a local file (P10).
+        let run = if self.remote_text(pane) && !crate::semantic::web_link(url) {
+            crate::semantic::Run::Blocked(format!("Tandem does not open {url} for a remote host."))
+        } else {
+            crate::semantic::guard_open(url, false)
+        };
         self.execute(pane, run, None, false);
     }
 
