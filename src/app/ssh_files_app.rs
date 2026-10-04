@@ -25,6 +25,8 @@ pub(super) enum Waiter {
     Suggest { generation: u64, inputs: crate::ssh_files::SuggestInputs, name: String },
     /// The panel's search start of `generation`: its answer is the search id (Task 8).
     SearchStart { generation: u64 },
+    /// An acknowledgement of a result of search `id`: its answer frees a place in the window.
+    SearchAck { id: String },
 }
 
 // Used by the transfer, panel, suggestion and search tasks that follow.
@@ -89,6 +91,7 @@ impl App {
             Waiter::Panel { generation, op } => self.ssh_panel_answered(generation, op, content, status),
             Waiter::Suggest { generation, inputs, name } => self.ssh_suggested(pane, generation, inputs, &name, &content, status),
             Waiter::SearchStart { generation } => self.ssh_search_started(pane, generation, &content, status),
+            Waiter::SearchAck { id } => self.ssh_search_acked(pane, &id),
         }
     }
 
@@ -612,7 +615,9 @@ impl App {
     /// A search notification (`CD:2681-2698`): its result goes to the panel when its id is the
     /// current search's, and every one is acknowledged, or the remote stops after 16 (`F:1088`).
     /// The id the remote sent is acknowledged only when it is the current search's or one Tandem
-    /// started (P18); a result past the panel's cap is acknowledged and dropped.
+    /// started (P18); a result past the panel's cap is acknowledged and dropped. A result that
+    /// arrives with 16 acks of its search still out is dropped unacknowledged (and counted): a
+    /// conforming framer never sends it, and a flood never grows the conductor's queue.
     pub(super) fn ssh_search_notif(&mut self, pane: PaneId, text: &str) {
         let Some((id, json)) = crate::ssh_suggest::search_notif(text) else { return };
         let current = self.ssh_search.as_ref().filter(|(p, i, _)| *p == pane && !i.is_empty());
@@ -620,6 +625,9 @@ impl App {
         let current_id = current.map(|(_, i, _)| i.clone());
         let issued: Vec<String> = self.ssh_search_issued.iter().filter(|(p, _)| *p == pane).map(|(_, i)| i.clone()).collect();
         if !crate::ssh_suggest::ack_allowed(&id, current_id.as_deref(), &issued) {
+            return;
+        }
+        if !self.ssh_search_acks.entry(pane).or_default().admit(&id) {
             return;
         }
         if let (Some(g), true) = (generation, current_id.as_deref() == Some(id.as_str())) {
@@ -630,7 +638,17 @@ impl App {
                 }
             }
         }
-        self.ssh_send(pane, FileSub::Search(crate::ssh_files::SearchSub::Ack { id, count: 1 }), false, Waiter::Ignore);
+        let waiter = Waiter::SearchAck { id: id.clone() };
+        if !self.ssh_send(pane, FileSub::Search(crate::ssh_files::SearchSub::Ack { id: id.clone(), count: 1 }), false, waiter) {
+            self.ssh_search_acked(pane, &id);
+        }
+    }
+
+    /// An acknowledgement of search `id` was answered (or never sent): one place frees.
+    fn ssh_search_acked(&mut self, pane: PaneId, id: &str) {
+        if let Some(w) = self.ssh_search_acks.get_mut(&pane) {
+            w.answered(id);
+        }
     }
 
     /// The answer to a search start: the id. One for a search that was replaced or stopped
@@ -699,6 +717,7 @@ impl App {
         for id in ids {
             self.ssh_file_done(pane, id, String::new(), -1);
         }
+        self.ssh_search_acks.remove(&pane);
     }
 
     /// Fails the waiters of every pane that no longer has a framing conductor. The conductors

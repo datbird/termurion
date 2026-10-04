@@ -787,6 +787,8 @@ pub struct App {
     /// The ids of the searches Tandem started lately, by pane: results of a replaced search are
     /// still acknowledged (P18), and no other id is.
     ssh_search_issued: Vec<(PaneId, String)>,
+    /// The search acknowledgements still out, by pane: a result past 16 is dropped (P18).
+    ssh_search_acks: HashMap<PaneId, crate::ssh_suggest::AckWindow>,
     /// The transfer engine's jobs (app-wide, not in `swap_live`; 14d).
     ssh_transfers: crate::ssh_transfer::Transfers,
     /// The local side of each transfer job: its temp file and what its banner shows (Task 4).
@@ -1539,6 +1541,7 @@ pub fn run() {
         ssh_purge_at: None,
         ssh_search: None,
         ssh_search_issued: Vec::new(),
+        ssh_search_acks: HashMap::new(),
         ssh_transfers: crate::ssh_transfer::Transfers::new(),
         ssh_locals: HashMap::new(),
         ssh_unzips: Vec::new(),

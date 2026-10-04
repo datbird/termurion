@@ -95,7 +95,7 @@ impl Cache {
 pub fn inputs(line: &str, full_suffix: &str, remote_path: Option<&str>, cwd: Option<&str>, home: Option<&str>, explicit: bool) -> SuggestInputs {
     let (first, prefix) = crate::composer_suggest::word_to_complete(line);
     let directories: Vec<String> = if first {
-        let mut dirs: Vec<String> = remote_path.unwrap_or("").split(':').filter(|d| !d.is_empty()).map(str::to_string).collect();
+        let mut dirs: Vec<String> = remote_path.map(|p| p.split(':').map(str::to_string).collect()).unwrap_or_default();
         if line.contains('/') && !dirs.is_empty() {
             if let Some(cwd) = cwd {
                 dirs.insert(0, cwd.to_string());
@@ -162,6 +162,47 @@ pub fn valid_search_id(id: &str) -> bool {
 pub fn search_notif(text: &str) -> Option<(String, String)> {
     let (id, json) = text.split_once(' ')?;
     (valid_search_id(id) && json.len() <= NOTIF_MAX).then(|| (id.to_string(), json.to_string()))
+}
+
+/// The most search results left unacknowledged per search: a conforming framer stops at 16
+/// (`framer.py` `window_size`), so a remote past it is flooding (P18).
+pub const ACK_WINDOW: usize = 16;
+
+/// The search acknowledgements still out, per search id, and the results dropped for being past
+/// `ACK_WINDOW`: a remote that sends faster than it answers can never grow the queue.
+#[derive(Debug, Default)]
+pub struct AckWindow {
+    out: std::collections::HashMap<String, usize>,
+    pub dropped: u64,
+}
+
+impl AckWindow {
+    /// A result of search `id` arrived: true when it is handled and acknowledged (one more ack
+    /// out), false when `ACK_WINDOW` acks are out already and it is dropped (counted).
+    pub fn admit(&mut self, id: &str) -> bool {
+        let out = self.out.entry(id.to_string()).or_insert(0);
+        if *out >= ACK_WINDOW {
+            self.dropped += 1;
+            return false;
+        }
+        *out += 1;
+        true
+    }
+
+    /// An acknowledgement of `id` was answered (or could not be sent).
+    pub fn answered(&mut self, id: &str) {
+        if let Some(out) = self.out.get_mut(id) {
+            *out = out.saturating_sub(1);
+            if *out == 0 {
+                self.out.remove(id);
+            }
+        }
+    }
+
+    /// Acks still out for `id`.
+    pub fn out(&self, id: &str) -> usize {
+        self.out.get(id).copied().unwrap_or(0)
+    }
 }
 
 /// Whether Tandem acknowledges a result of search `id`: only the current search or one Tandem
@@ -245,8 +286,9 @@ mod tests {
         // No PATH: no directories on the first word (and "/" adds nothing to nothing).
         assert!(inputs("gi", "", None, Some("/home/u"), None, false).directories.is_empty());
         assert!(inputs("./gi", "", None, Some("/home/u"), None, false).directories.is_empty());
-        // Empty PATH items are not directories.
-        assert_eq!(inputs("gi", "", Some("/a::/b:"), None, None, false).directories, s(&["/a", "/b"]));
+        // Empty PATH items are kept, as `componentsSeparatedByString` does (the framer reads
+        // one as the working directory).
+        assert_eq!(inputs("gi", "", Some("/a::/b:"), None, None, false).directories, s(&["/a", "", "/b", ""]));
         assert_eq!(inputs("gi", "tail", None, None, None, false).full_suffix, "tail");
     }
 
@@ -305,4 +347,26 @@ mod tests {
         assert!(!ack_allowed("a b", Some("a b"), &s(&["a b"])));
         assert!(!ack_allowed("", Some(""), &[]));
     }
+
+    #[test]
+    fn search_acks_out_are_bounded() {
+        let mut w = AckWindow::default();
+        // A flood: 16 results are handled, the rest dropped and counted until acks come back.
+        let admitted = (0..100).filter(|_| w.admit("S1")).count();
+        assert_eq!((admitted, w.out("S1"), w.dropped), (ACK_WINDOW, ACK_WINDOW, 84));
+        // Another search has its own window.
+        assert!(w.admit("S2"));
+        // An answered ack frees one place.
+        w.answered("S1");
+        assert!(w.admit("S1"));
+        assert!(!w.admit("S1"));
+        // Answers past the acks sent never go below zero, and an id with none out is forgotten.
+        for _ in 0..40 {
+            w.answered("S1");
+        }
+        assert_eq!(w.out("S1"), 0);
+        assert!(w.out.get("S1").is_none());
+        assert_eq!(w.dropped, 85);
+    }
 }
+

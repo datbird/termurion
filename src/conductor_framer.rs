@@ -173,8 +173,9 @@ impl Conductor {
     fn handle_notif(&mut self, message: &str) {
         if let Some(rest) = message.strip_prefix("%notif tty ") {
             self.handle_tty_notif(rest);
-        } else if let Some(rest) = message.strip_prefix("%notif search ").filter(|r| !r.is_empty()) {
-            // `CD:2681-2698`: the id and the file, checked by the app (P18).
+        } else if let Some(rest) = message.strip_prefix("%notif search ").filter(|r| crate::ssh_suggest::search_notif(r).is_some()) {
+            // `CD:2681-2698`: the id and the file; a bad id or a payload past NOTIF_MAX never
+            // queues (P18).
             self.effects.push(Effect::SearchNotif(rest.to_string()));
         }
     }
@@ -971,6 +972,10 @@ mod tests {
         c.handle_side("%notif searchx S1 {}", NOTIF_PID, 1, 0);
         c.handle_side("%notif search ", NOTIF_PID, 1, 0);
         c.handle_side("%notif tty +echo", NOTIF_PID, 1, 0);
+        // P18 at the arm: a bad id, no file, or a payload past NOTIF_MAX never queues.
+        c.handle_side("%notif search S/1 {}", NOTIF_PID, 1, 0);
+        c.handle_side("%notif search S1", NOTIF_PID, 1, 0);
+        c.handle_side(&format!("%notif search S1 {}", "x".repeat(crate::ssh_suggest::NOTIF_MAX + 1)), NOTIF_PID, 1, 0);
         assert!(found(&mut c).is_empty());
     }
 
