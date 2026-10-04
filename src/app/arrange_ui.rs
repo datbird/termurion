@@ -584,12 +584,13 @@ impl App {
     fn restore_ssh_conductor(&mut self, id: PaneId, session: &Value) {
         let saved = saved_conductor(session);
         let Some(p) = self.panes.get_mut(&id) else { return };
-        match saved {
-            Some((json, dcs_id, tree)) => {
-                p.restore_conductor(&json, &dcs_id, &tree);
-            }
-            None if saved_ssh_session(session) => p.note_ssh_session(),
-            None => {}
+        if let Some((json, dcs_id, tree)) = saved {
+            p.restore_conductor(&json, &dcs_id, &tree);
+        }
+        // After the restore, which replaces the hook: only a pane a vouched hook made an ssh
+        // session saved the flag (F27).
+        if saved_ssh_session(session) {
+            p.note_ssh_session();
         }
         self.ssh_registry_drain(id);
     }

@@ -1980,7 +1980,7 @@ mod tests {
         assert_eq!((back.framed_pid, back.shell.as_deref(), back.uname.as_deref(), back.framer_version()), (Some(200), Some("/bin/zsh"), Some("Linux"), Some(2)));
         assert_eq!(back.setup.initial_directory.as_deref(), Some("/srv"));
         assert_eq!(back.setup.parsed, inner.setup.parsed);
-        assert_eq!((back.depth(), back.line_prefix(), back.state(), back.waiting_to_resync), (1, "", &State::Ground, true));
+        assert_eq!((back.depth(), back.line_prefix(), back.state(), back.waiting_to_resync), (1, "", &State::Ground, false));
         assert!(back.setup.vars_to_send.is_empty() && back.payloads.is_empty() && back.modified_vars.is_none());
         let parent = back.parent.as_ref().expect("the chain comes back");
         assert_eq!((parent.framed_pid, parent.home_directory.as_deref(), parent.setup.client_unique_id.as_str(), parent.depth()), (Some(100), Some("/home/u"), "A", 0));

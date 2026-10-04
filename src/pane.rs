@@ -788,12 +788,28 @@ impl Pane {
     }
 
     /// The pane is or was an ssh session (F27): an OSC 134 outside the hook may now start an
-    /// in-band recovery, and the pane saves the fact. Called when a conductor hooks, when
-    /// it2ssh begins, for a session started from an SSH profile and for a restored ssh pane;
-    /// never for a plain local one, so a hostile file cannot make Tandem type into its shell.
+    /// in-band recovery, and the pane saves the fact. Called only when a hook Tandem's origin
+    /// token vouched for hooks (`note_hook`) and for a restored pane that saved the fact; never
+    /// from output alone (the it2ssh OSC, an unvouched hook, a restored conductor), so a
+    /// hostile file cannot make Tandem type into its shell (ruling).
     pub fn note_ssh_session(&mut self) {
         self.ssh.was_ssh = true;
         self.ssh_hook.allow_recovery();
+    }
+
+    /// it2ssh announced itself (OSC 1337 it2ssh, `T:4524-4527`): input typed now waits for
+    /// the conductor.
+    /// Any program can print it, so it gives no right to recover (F27).
+    pub fn ssh_will_begin(&mut self) {
+        self.ssh.begin(crate::ssh_session::CONDUCTOR_READY);
+    }
+
+    /// A conductor hooked; `vouched` is whether its hook carried Tandem's origin token. Only
+    /// a vouched one makes the pane an ssh session (F27, ruling).
+    pub fn note_hook(&mut self, vouched: bool) {
+        if vouched {
+            self.note_ssh_session();
+        }
     }
 
     /// Whether `note_ssh_session` was called.
@@ -920,12 +936,16 @@ impl Pane {
             return;
         }
         self.own_mut().append_banner(crate::ssh_recovery::RECOVERING);
+        // The it2 state of the conductor being recovered rides the shim (`PS:20307-20336`,
+        // `adoptIT2RecoveryStateFrom:`); Tandem's is the inbox kept for 14e (ruling 3).
+        let it2 = self.conductor.as_ref().map(|c| c.it2_inbox.clone()).unwrap_or_default();
         if parent_depth < 0 {
             while self.conductor.is_some() {
                 self.ssh_unhook_conductor();
             }
         }
         let mut shim = crate::conductor::Conductor::recovery_shim(self.conductor.take());
+        shim.it2_inbox = it2;
         shim.start_recovery();
         let location = self.ssh.chain.location().unwrap_or_default().to_string();
         self.ssh.chain.push(crate::ssh_session::Hop { unique_id: shim.setup.client_unique_id.clone(), location });
@@ -954,9 +974,12 @@ impl Pane {
             }
             return false;
         };
-        let parent = self.conductor.take().and_then(|mut shim| shim.parent.take());
+        let (parent, it2) = self.conductor.take().map(|mut shim| (shim.parent.take(), std::mem::take(&mut shim.it2_inbox))).unwrap_or_default();
         self.ssh.chain.pop();
-        self.conductor = Some(Box::new(crate::conductor::Conductor::from_recovery(&finished, parent)));
+        let mut recovered = crate::conductor::Conductor::from_recovery(&finished, parent);
+        // The shim's it2 state goes on (`handleRecovery` reads it off the shim).
+        recovered.it2_inbox = it2;
+        self.conductor = Some(Box::new(recovered));
         self.adopt_recovered(&finished.dcs_id, &finished.tree());
         self.own_mut().append_banner(crate::ssh_recovery::RECOVERED);
         true
@@ -984,10 +1007,11 @@ impl Pane {
     /// re-attached to its hosted session: the conductors come from `json` (untrusted: false
     /// when it does not read), a hop and a registry entry for each framing one, the hook in
     /// recovery mode with `tree`, and the framers reset at once (Tandem's hook swap is
-    /// synchronous, so iTerm2's boundary token is not needed). False, and nothing changed but
-    /// the pane counting as an ssh session, when there is nothing usable to restore.
+    /// synchronous, so iTerm2's boundary token is not needed). False, and nothing changed, when
+    /// there is nothing usable to restore. The conductors are unvouched, so they give no right
+    /// to recover in band: only the saved "SSH Session" flag does (F27, applied by the caller
+    /// after this, since the hook is replaced here).
     pub fn restore_conductor(&mut self, json: &str, dcs_id: &str, tree: &crate::ssh_recovery::Tree) -> bool {
-        self.note_ssh_session();
         if self.conductor.is_some() || !tree.valid() || tree.is_empty() {
             return false;
         }
@@ -1008,7 +1032,6 @@ impl Pane {
         self.ssh_registry_out.extend(adds);
         self.conductor = Some(Box::new(restored));
         self.ssh_hook = crate::ssh_hook::Hook::recovering(dcs_id, tree, 0);
-        self.ssh_hook.allow_recovery();
         if let Some(c) = self.conductor.as_mut() {
             c.did_resynchronize();
         }
@@ -3607,6 +3630,61 @@ mod tests {
         assert!(p.conductor.is_none() && !p.ssh_hook.active() && p.ssh.chain.hops.is_empty());
     }
 
+    /// F27 (ruling): only a hook Tandem's origin token vouched for gives a pane the right to
+    /// recover in band. A hostile file cat'd in a local pane, with an it2ssh OSC (not
+    /// trust-gated) and a fake DCS hook before the recovery block, makes Tandem type nothing,
+    /// and the pane saves no right for after a restart; an unvouched conductor restored from a
+    /// state file gets none either.
+    #[test]
+    fn a_hostile_file_never_turns_recovery_on() {
+        use crate::conductor_parser::Token;
+        use crate::ssh_hook::Out;
+        use crate::screen::Request;
+        // As the App does: each request and token in order; the fake hook fails the token check.
+        let run = |p: &mut Pane, bytes: &[u8]| {
+            p.tmux_io().unwrap().push_output(bytes);
+            p.pump();
+            for out in p.take_ssh() {
+                match out {
+                    Out::Screen(bytes) => {
+                        p.feed_after_ssh(&bytes);
+                        for r in p.own_mut().take_requests() {
+                            if r == Request::SshWillBegin {
+                                p.ssh_will_begin();
+                            }
+                        }
+                    }
+                    Out::Ssh(Token::Init(_), _) => p.note_hook(false),
+                    Out::Ssh(Token::BeginFramerRecovery(d), _) => p.begin_framer_recovery(d),
+                    Out::Ssh(Token::RecoveryLine(line), _) => {
+                        p.framer_recovery_line(&line);
+                    }
+                    _ => {}
+                }
+            }
+        };
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        // The file arrives in two reads, so the second is scanned after the first was handled.
+        run(&mut p, &[b"\x1b]1337;it2ssh=a b c d\x07".to_vec(), crate::ssh_fixtures::dcs_hook("", "U", "NDY=", "ZXZpbA=="), b"\x1b]135;:unhook\x1b\\".to_vec()].concat());
+        run(&mut p, &stale_then_recovery(4242));
+        let typed = String::from_utf8_lossy(&p.tmux_io().unwrap().take_input()).into_owned();
+        assert!(!typed.contains("cmVjb3Zlcg=="), "no recover line is typed: {typed:?}");
+        assert!(p.conductor.is_none() && !p.ssh_hook.recovery_allowed());
+        assert!(!p.was_ssh_session(), "nothing to save for after a restart");
+        // A vouched hook does turn it on.
+        let mut v = Pane::tmux(5, 1, 3, 120, 10);
+        v.note_hook(true);
+        assert!(v.ssh_hook.recovery_allowed() && v.was_ssh_session());
+        // After a restart: a conductor restored from the state file is unvouched (it may have
+        // come from a hook a file printed), so it brings no right with it.
+        let mut c = crate::conductor::Conductor::new(crate::conductor::Setup { client_unique_id: "a".into(), dcs_id: "D0".into(), ..Default::default() }, None, "U");
+        c.framed_pid = Some(200);
+        c.framer_version = Some(2);
+        let mut r = Pane::tmux(5, 1, 3, 120, 10);
+        assert!(r.restore_conductor(&c.json(), "D0", &c.tree()));
+        assert!(!r.ssh_hook.recovery_allowed() && !r.was_ssh_session(), "the saved flag alone gives it (only a vouched pane saves it)");
+    }
+
     #[test]
     fn framer_recovery_follows_iterm2() {
         use crate::ssh_fixtures::output;
@@ -3718,14 +3796,52 @@ mod tests {
         assert_eq!(p.ssh_level(), 2);
         assert!(p.ssh_hook.owned(0) && p.ssh_hook.owned(1) && !p.ssh_hook.owned(2));
         assert_eq!(p.take_ssh_registry().len(), 2);
-        assert!(p.ssh.was_ssh, "a restored ssh pane may recover in band");
+        assert!(!p.ssh.was_ssh, "restored conductors are unvouched: only the saved flag gives the right (F27)");
         let sent = p.tmux_io().unwrap().take_input();
         assert!(sent.starts_with(b"cmVzZXQy\n"), "the outer framer is reset first: {:?}", String::from_utf8_lossy(&sent));
-        // Nothing usable: no conductor and no hook, but the pane still counts as ssh.
+        // Nothing usable: no conductor and no hook.
         let mut p = Pane::tmux(5, 1, 3, 120, 10);
         assert!(!p.restore_conductor("{}", "D1", &tree));
         assert!(p.conductor.is_none() && !p.ssh_hook.active() && p.ssh.chain.hops.is_empty());
         assert!(!p.restore_conductor(&json, "D1", &crate::ssh_recovery::Tree::default()), "no tree: nothing to parse with");
         assert!(p.conductor.is_none());
+    }
+
+    /// The it2 state of the conductor being recovered rides the shim into the recovered one
+    /// (`PS:20307-20342` `adoptIT2RecoveryStateFrom:`, `CD+IT2:485-509`): Tandem's is the
+    /// inbox kept for 14e (ruling 3: nothing reads it yet).
+    #[test]
+    fn recovery_keeps_the_it2_state() {
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        p.note_hook(true);
+        let mut old = crate::conductor::Conductor::new(crate::conductor::Setup { client_unique_id: "old".into(), ..Default::default() }, None, "U");
+        old.it2_inbox = vec!["3 open".into()];
+        p.ssh.chain.push(crate::ssh_session::Hop { unique_id: "old".into(), location: "h".into() });
+        p.conductor = Some(Box::new(old));
+        p.begin_framer_recovery(-1);
+        assert_eq!(p.conductor.as_ref().map(|c| c.it2_inbox.clone()), Some(vec!["3 open".to_string()]), "the shim carries it");
+        let first = crate::ssh_fixtures::osc134("%output 1 2 -1 0").len();
+        assert!(recover_from(&mut p, &stale_then_recovery(4242)[first..]));
+        assert_eq!(p.conductor.as_ref().map(|c| c.it2_inbox.clone()), Some(vec!["3 open".to_string()]), "and the recovered conductor");
+    }
+
+    /// iTerm2 marks a conductor waiting to resynchronize only when it is made by a recovery
+    /// (`CD:593`, `CD:1791`), never when it comes from saved JSON: after a restart of a two-hop
+    /// session the outer host's process list works as the inner one's does.
+    #[test]
+    fn a_restored_chain_lists_every_hosts_processes() {
+        use crate::conductor::{Conductor, Setup};
+        let at = |id: &str, dcs: &str| Setup { client_unique_id: id.into(), dcs_id: dcs.into(), sshargs: format!("{id}.example"), parsed: crate::ssh_args::parse(&format!("{id}.example"), "", &crate::ssh_args::NoConfig), ..Setup::default() };
+        let mut outer = Conductor::new(at("o", "D0"), None, "O");
+        outer.framed_pid = Some(100);
+        outer.framer_version = Some(2);
+        let mut inner = Conductor::new(at("a", "D1"), Some(Box::new(outer)), "U");
+        inner.framed_pid = Some(200);
+        inner.framer_version = Some(2);
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        assert!(p.restore_conductor(&inner.json(), "D1", &inner.tree()));
+        let c = p.conductor.as_mut().unwrap();
+        assert!(c.processes().is_some(), "the inner host's");
+        assert!(c.parent.as_mut().unwrap().processes().is_some(), "the outer host's too");
     }
 }

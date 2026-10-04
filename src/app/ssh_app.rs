@@ -8,7 +8,7 @@ use crate::conductor::{hook_banner, setup_for_hook, Conductor};
 use crate::conductor_parser::{Init, Token};
 use crate::screen::Request;
 use crate::ssh_hook::Out;
-use crate::ssh_session::{Hop, CONDUCTOR_READY};
+use crate::ssh_session::Hop;
 
 /// iTerm2's ssh_config search order in this user's folders (`ssh_args::config_paths`), from
 /// the environment only; a path that is relative, a network path, or reached through a link
@@ -40,11 +40,7 @@ impl App {
     pub(super) fn ssh_request(&mut self, pane: PaneId, r: Request) {
         let Some(p) = self.panes.get_mut(&pane) else { return };
         match r {
-            Request::SshWillBegin => {
-                p.ssh.begin(CONDUCTOR_READY);
-                // it2ssh runs here: a framer may need recovering later (F27).
-                p.note_ssh_session();
-            }
+            Request::SshWillBegin => p.ssh_will_begin(),
             Request::SshSendConductor(h) => p.ssh_send_conductor(&h),
             // `PS:20253-20275` (`Pane::end_ssh`, which writes END_WRITE); the banner after
             // the write, as `PS:20269` then `TD:4043-4046`.
@@ -183,13 +179,13 @@ impl App {
             None => (Default::default(), false),
         };
         let Some(p) = self.panes.get_mut(&pane) else { return false };
-        p.note_ssh_session();
         p.own_mut().append_banner(&hook_banner(&init.sshargs));
         let saved = p.own().ssh_saved();
         // resetForSSH: before the conductor starts, so its replies are not held behind setup.
         p.own_mut().soft_reset();
         // The origin token is checked before anything the remote sent is parsed.
         let local = self.ssh_secrets.lock().unwrap().check(&init.token);
+        p.note_hook(local);
         // The directory and the start (`PS:20129-20169`): the SSH profile's folder, a pending
         // jump's directory, and the jumps left to make.
         let pwd = if p.ssh.profile_ssh { p.ssh.initial_directory.clone() } else { None };

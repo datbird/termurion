@@ -1598,7 +1598,8 @@ impl Saved {
         c.uname = self.uname;
         c.discovered_hostname = self.discovered_hostname;
         c.framer_version = self.framer_version;
-        c.waiting_to_resync = true;
+        // Not waiting to resynchronize: iTerm2 sets that only for a recovery (`CD:593`,
+        // `CD:1791`), and `did_resynchronize` clears only the innermost.
         Some(c)
     }
 }
