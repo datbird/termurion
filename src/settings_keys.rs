@@ -1062,6 +1062,8 @@ pub fn row_enabled(g: &Globals, key: &str) -> bool {
         "FlashTabBarInFullscreen" => !g.bool("ShowFullScreenTabBar") || g.bool("HideTab"),
         // Enabled only under the system restore policy (`GP:3496-3506`).
         "RestoreWindowsToSameSpaces" => crate::desktops::restore_row_enabled(g.bool("OpenArrangementAtStartup"), g.bool("OpenNoWindowsAtStartup")),
+        // Narrows the first (`APV:285-290`).
+        crate::presence::REQUIRES_HOTKEYS_KEY => g.bool(crate::presence::UI_ELEMENT_KEY),
         "PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges" => g.bool("PreserveWindowSizeWhenTabBarVisibilityChanges"),
         _ => true,
     }
@@ -2844,5 +2846,26 @@ mod tests {
         assert_eq!((c.tab.as_str(), c.section.as_str(), c.kind), ("Advanced", "Experimental Features", Kind::Bool));
         assert_eq!(c.default, Some(Value::Boolean(false)));
         assert_eq!(c.label, "Aggressively keep windows on the screen they were configured to be on");
+    }
+
+    /// `APV:285-290`, `AS:520`: the presence rows.
+    #[test]
+    fn presence_rows_follow_iterm2() {
+        let rows = [
+            ("HideFromDockAndAppSwitcher", "Appearance", "Exclude from taskbar and Alt+Tab switcher"),
+            ("UIElementRequiresHotkeys", "Appearance", "\u{2026}but only if all windows are hotkey windows"),
+            ("HotkeyWindowsExcludedFromCycling", "Advanced", "Hotkey windows are excluded from Cycle Through Windows."),
+        ];
+        for (key, tab, label) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), (tab, "General", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(false)), "{key}");
+            assert_eq!(s.label, label, "{key}");
+        }
+        let mut g = Globals::empty(std::path::Path::new("presence-rows-test.toml"));
+        assert!(!row_enabled(&g, "UIElementRequiresHotkeys"));
+        g.set("HideFromDockAndAppSwitcher", Value::Boolean(true));
+        assert!(row_enabled(&g, "UIElementRequiresHotkeys"));
+        assert!(row_enabled(&g, "HideFromDockAndAppSwitcher"));
     }
 }

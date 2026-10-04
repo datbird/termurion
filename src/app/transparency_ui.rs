@@ -341,6 +341,7 @@ impl App {
         self.win_alpha_surface = SurfaceKind::Alpha;
         // The new handle has no backdrop yet.
         self.blur_applied = false;
+        self.look_seen = None;
         self.rekey_window(old_id, new_id);
         if let Some(h) = old_hwnd {
             crate::winkeys::remove_window(h);

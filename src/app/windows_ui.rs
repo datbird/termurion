@@ -69,7 +69,7 @@ pub(super) struct WinSlot {
     wheel_acc: f32,
     wheel_acc_x: f32,
     font_sig: String,
-    win_style: i64,
+    pub(super) win_style: i64,
     win_slot: Option<(String, u32)>,
     win_locks: crate::winmodel::Locks,
     win_title: Option<String>,
@@ -94,6 +94,8 @@ pub(super) struct WinSlot {
     pub(super) win_anchor: Option<usize>,
     /// DWM was last told this window's backdrop is blurred (the frame is extended).
     pub(super) blur_applied: bool,
+    /// The taskbar and Alt+Tab look `presence_tick` last applied (winit's skip is set on a change only).
+    pub(super) look_seen: Option<crate::presence::Look>,
     mru: Mru,
     mru_mods: Option<Mods>,
     laid_out: Option<crate::statusbar_layout::Room>,
@@ -184,6 +186,7 @@ impl WinSlot {
             win_follow_desktop: false,
             win_anchor: None,
             blur_applied: false,
+            look_seen: None,
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
@@ -286,6 +289,7 @@ impl App {
         swap(&mut self.win_follow_desktop, &mut s.win_follow_desktop);
         swap(&mut self.win_anchor, &mut s.win_anchor);
         swap(&mut self.blur_applied, &mut s.blur_applied);
+        swap(&mut self.look_seen, &mut s.look_seen);
         swap(&mut self.mru, &mut s.mru);
         swap(&mut self.mru_mods, &mut s.mru_mods);
         swap(&mut self.laid_out, &mut s.laid_out);
@@ -885,6 +889,7 @@ impl WinSlot {
             win_follow_desktop: false,
             win_anchor: None,
             blur_applied: false,
+            look_seen: None,
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
@@ -1040,12 +1045,12 @@ impl App {
     /// Next Window and Previous Window: by number, wrapping.
     pub(super) fn step_window(&mut self, forward: bool) {
         let Some(k) = self.windows.current() else { return };
-        // Hidden hotkey windows take no part.
+        // Hidden hotkey windows take no part, nor open ones when excluded from cycling.
         let mut at = k;
         let next = loop {
             let n = if forward { self.registry.next(at) } else { self.registry.previous(at) };
             match n {
-                Some(n) if n != k && self.hidden_hotkey_key(n) => at = n,
+                Some(n) if n != k && self.cycling_skips_key(n) => at = n,
                 other => break other,
             }
         };

@@ -3352,3 +3352,30 @@ label = "Disable Transparency for Active Window"
 type = "bool"
 default = false
 help = "Forces the focused window to be fully opaque even if its profile uses transparency (View menu)."
+
+[[setting]]
+key = "HideFromDockAndAppSwitcher"
+tab = "Appearance"
+section = "General"
+label = "Exclude from taskbar and Alt+Tab switcher"
+type = "bool"
+default = false
+help = "Tandem's windows get no taskbar button and do not appear in Alt+Tab; a notification area icon gets you back to Settings."
+
+[[setting]]
+key = "UIElementRequiresHotkeys"
+tab = "Appearance"
+section = "General"
+label = "…but only if all windows are hotkey windows"
+type = "bool"
+default = false
+help = "Leaves the taskbar and Alt+Tab only while every open window is a hotkey window."
+
+[[setting]]
+key = "HotkeyWindowsExcludedFromCycling"
+tab = "Advanced"
+section = "General"
+label = "Hotkey windows are excluded from Cycle Through Windows."
+type = "bool"
+default = false
+help = "Hotkey windows are excluded from Cycle Through Windows."

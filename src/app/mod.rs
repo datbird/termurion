@@ -101,6 +101,7 @@ mod windows_ui;
 #[cfg(windows)]
 mod chrome_ui;
 mod desktops_ui;
+mod presence_ui;
 #[cfg(windows)]
 mod sizing_ui;
 #[cfg(windows)]
@@ -452,6 +453,8 @@ pub struct App {
     win_anchor: Option<usize>,
     /// DWM was last told this window's backdrop is blurred (the frame is extended); `set_blur` runs on a change.
     blur_applied: bool,
+    /// The look `presence_tick` last applied to the current window.
+    look_seen: Option<crate::presence::Look>,
     /// The current window's toolbelt.
     belt: toolbelt_ui::Belt,
     /// Bumped when something a toolbelt tool shows changes (`tools_changed`).
@@ -843,6 +846,10 @@ pub struct App {
     switch_logged: bool,
     /// When the windows refit after a display change (`UpdateScreenParamsDelay` after the last message).
     display_due: Option<Instant>,
+    /// The setting is confirmed (the warning answered); the warning shows only while it is not.
+    ui_element_confirmed: bool,
+    /// Tandem is acting as a UI element now (`presence::is_ui_element`).
+    ui_element_now: bool,
     /// The font settings the renderer last loaded.
     font_sig: String,
     /// Cursor blink phase, and when it last flipped.
@@ -1419,6 +1426,7 @@ pub fn run() {
     let ai_discovery = crate::ai_discovery::Cache::load(&crate::ai_discovery::default_path());
     let ai_transport: Arc<dyn crate::ai_transport::Transport> = Arc::new(crate::ai_winhttp::WinHttp);
     let composer_worker = crate::composer_worker::Worker::new(notify.clone(), Arc::new(crate::composer_worker::RealFs));
+    let ui_element_confirmed = globals.bool(crate::presence::UI_ELEMENT_KEY);
     let mut app = App {
         host,
         hotkey: None,
@@ -1507,6 +1515,7 @@ pub fn run() {
         win_follow_desktop: false,
         win_anchor: None,
         blur_applied: false,
+        look_seen: None,
         belt: Default::default(),
         tool_gen: 0,
         belt_keys: Default::default(),
@@ -1698,6 +1707,8 @@ pub fn run() {
         switch_recheck: None,
         switch_logged: false,
         display_due: None,
+        ui_element_confirmed,
+        ui_element_now: false,
         font_sig: String::new(),
         profiles_win: None,
         blink_on: true,
@@ -3281,6 +3292,7 @@ impl App {
         self.apply_resizable_everywhere();
         // Disable Transparency or a profile value may have changed the blur.
         self.sync_blur();
+        self.presence_globals_changed();
     }
 
     /// Starts watching and scanning the Scripts folder the settings name (`FM:236-252`).
@@ -5167,6 +5179,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.refit_all_windows();
         }
         let desktop_due = self.desktop_tick();
+        self.presence_tick();
         if self.settings.as_mut().is_some_and(|s| s.take_space_warning()) {
             self.ask_scripts(scripts_alerts::ask(crate::desktops::SPACES_WARNING_HEADING, crate::desktops::SPACES_WARNING, &["OK"], Some(crate::desktops::SPACES_WARNING_ID), crate::warnings::Kind::Permanent, scripts_alerts::Then::Nothing));
         }

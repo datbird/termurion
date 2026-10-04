@@ -321,6 +321,7 @@ impl ChatWindow {
             .with_inner_size(winit::dpi::LogicalSize::new(tb::SIZE.0, tb::SIZE.1))
             .with_min_inner_size(winit::dpi::LogicalSize::new(tb::MIN_SIZE.0, tb::MIN_SIZE.1));
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        host.track_taskbar();
         crate::settings_keys::add_icon_font(host.ctx());
         Ok(ChatWindow { host, data: ChatData::default(), title: tb::WINDOW_TITLE.to_string(), list_visible: true, list: ListState::default(), convo: ConvoState::default(), input: InputUi::default() })
     }

@@ -136,6 +136,7 @@ impl SuppressedWindow {
             .with_inner_size(winit::dpi::LogicalSize::new(SIZE.0, SIZE.1))
             .with_min_inner_size(winit::dpi::LogicalSize::new(MIN_SIZE.0, MIN_SIZE.1));
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        host.track_taskbar();
         Ok(SuppressedWindow { host, rows, selected: BTreeSet::new(), anchor: None, show_remembered })
     }
 

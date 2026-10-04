@@ -135,8 +135,7 @@ impl App {
             }
             self.hotkey = None;
             if let (Some(hwnd), Some(g)) = (self.hwnd(), &self.gpu) {
-                use winit::platform::windows::WindowExtWindows;
-                g.window.set_skip_taskbar(false);
+                // The taskbar button comes back through `presence_tick`.
                 g.window.set_window_level(winit::window::WindowLevel::Normal);
                 g.window.set_visible(true);
                 cloak(hwnd, false);
@@ -542,6 +541,13 @@ impl App {
             return self.hotkey.as_ref().is_some_and(|h| !h.shown);
         }
         self.windows.parked().any(|(kk, s)| *kk == k && s.hotkey.as_ref().is_some_and(|h| !h.shown))
+    }
+
+    /// A window Next and Previous Window pass by: a hidden hotkey window, or an open one while
+    /// Hotkey windows are excluded from Cycle Through Windows (P6).
+    pub(super) fn cycling_skips_key(&self, k: u64) -> bool {
+        let state = if self.windows.current() == Some(k) { self.hotkey.as_ref().map(|h| h.shown) } else { self.windows.parked().find(|(kk, _)| **kk == k).and_then(|(_, s)| s.hotkey.as_ref().map(|h| h.shown)) };
+        crate::presence::cycling_skips(state, self.globals.bool(crate::presence::EXCLUDED_FROM_CYCLING_KEY))
     }
 
     /// The app hotkey: Show/hide all windows. Windows has no "hide app", so the terminal
