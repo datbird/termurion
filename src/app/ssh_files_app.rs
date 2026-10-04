@@ -18,6 +18,8 @@ pub(super) enum Waiter {
     Ignore,
     /// A step of the transfer engine's job `job`, tagged `tag` (Task 3).
     Transfer { job: u64, tag: u64 },
+    /// The remote file panel's request of generation `generation` (Task 7).
+    Panel { generation: u64, op: crate::ssh_panel::Op },
 }
 
 // Used by the transfer, panel, suggestion and search tasks that follow.
@@ -79,6 +81,7 @@ impl App {
                 let actions = self.ssh_transfers.reply(job, tag, &content, status);
                 self.ssh_transfer_apply(actions);
             }
+            Waiter::Panel { generation, op } => self.ssh_panel_answered(generation, op, content, status),
         }
     }
 
@@ -221,7 +224,7 @@ impl App {
     }
 
     /// A notification about a transfer; every remote string in it is cleaned first (P14).
-    fn ssh_notify(title: &str, body: &str) {
+    pub(super) fn ssh_notify(title: &str, body: &str) {
         let _ = crate::notify::show_with(&shown_name(title), &shown_name(body), false);
     }
 
@@ -412,7 +415,11 @@ impl App {
             Err(why) => {
                 let l = self.ssh_locals.remove(&job).unwrap();
                 let _ = std::fs::remove_file(l.place.temp());
-                Self::ssh_notify(&local::download_failed(&l.short_name), &why);
+                // A Download Files item reports to its batch, which notifies once it is over.
+                match &l.place {
+                    Place::Temp { batch, .. } => self.ssh_batch_item_ended(*batch, &l.short_name, Err(why)),
+                    Place::Downloads { .. } => Self::ssh_notify(&local::download_failed(&l.short_name), &why),
+                }
                 return;
             }
         };
@@ -430,17 +437,20 @@ impl App {
                     }
                 }
             }
-            // Download Files' batch (Task 7) moves a finished temp or reports an unzipped folder.
+            // Download Files: a file is marked and moved over its place in the batch folder
+            // (last one wins, R14de-4); a folder was unzipped there already. The batch reports.
             Place::Temp { .. } => {
                 let l = self.ssh_locals.remove(&job).unwrap();
-                if let Place::Temp { temp, dest, .. } = &l.place {
-                    if outcome == Outcome::File {
-                        if let Err(why) = local::finish(temp, dest, &l.url()) {
-                            Self::ssh_note_unremoved(&why, temp);
-                            Self::ssh_notify(&local::download_failed(&l.short_name), &why);
-                        }
-                    }
+                let Place::Temp { temp, dest, batch } = &l.place else { return };
+                let result = match outcome {
+                    Outcome::File => local::finish(temp, dest, &l.url()),
+                    Outcome::Directory => Ok(dest.clone()),
+                    _ => Err(crate::ssh_files::FileError::Internal.text().to_string()),
+                };
+                if let Err(why) = &result {
+                    Self::ssh_note_unremoved(why, temp);
                 }
+                self.ssh_batch_item_ended(*batch, &l.short_name, result);
             }
         }
     }
@@ -471,7 +481,7 @@ impl App {
     }
 
     /// A dangerous file that could not be removed: the person is told where it is.
-    fn ssh_note_unremoved(why: &str, temp: &std::path::Path) {
+    pub(super) fn ssh_note_unremoved(why: &str, temp: &std::path::Path) {
         if why == local::NOT_REMOVED {
             super::files_ui::message(&format!("{}\n\n{}", local::DANGER_HEADING, local::danger(&temp.to_string_lossy())));
         }

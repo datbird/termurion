@@ -152,6 +152,7 @@ mod builtin_ui;
 mod ssh_app;
 mod ssh_framer_app;
 mod ssh_files_app;
+mod ssh_panel_app;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -779,6 +780,11 @@ pub struct App {
     ssh_locals: HashMap<u64, crate::ssh_local::Local>,
     /// Folder unzips running on worker threads, each answering (job, result) once.
     ssh_unzips: Vec<std::sync::mpsc::Receiver<(u64, Result<(), String>)>>,
+    /// The remote file panel (Shell > ssh > Download Files) and its model; one at a time (app-wide,
+    /// not in `swap_live`; 14d).
+    ssh_panel: Option<(crate::ssh_panel_ui::SshPanelWindow, crate::ssh_panel::Panel)>,
+    /// Download Files' batches still out, by id (app-wide; 14d).
+    ssh_batches: HashMap<u64, ssh_panel_app::Batch>,
     /// The secret pipe's server, started with the first window; None when it could not start.
     ssh_secret_server: Option<crate::ssh_secret_win::Server>,
     /// The Script Console's entries: scripts, connections and the app-wide logs.
@@ -1516,6 +1522,8 @@ pub fn run() {
         ssh_transfers: crate::ssh_transfer::Transfers::new(),
         ssh_locals: HashMap::new(),
         ssh_unzips: Vec::new(),
+        ssh_panel: None,
+        ssh_batches: HashMap::new(),
         ssh_secret_server: None,
         script_history: crate::script_history::History::new(aps_logging, api_ui::unix_secs()),
         api_alerts: Vec::new(),
@@ -4987,7 +4995,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.chat_window_event(id, &event, event_loop) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

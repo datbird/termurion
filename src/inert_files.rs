@@ -44,6 +44,22 @@ pub fn is_device_name(name: &str) -> bool {
 /// The mark Windows puts on a download (`ZoneId=3`, the Internet zone).
 pub const ZONE_MARK: &str = "[ZoneTransfer]\r\nZoneId=3\r\n";
 
+/// A name the remote sent, as the person reads it (a notification, a question, a panel row):
+/// control, bidirectional formatting, line and paragraph separator and zero-width characters
+/// dropped, and at most `SHOWN_NAME` characters, the rest an ellipsis.
+pub fn shown_name(name: &str) -> String {
+    let bidi = |c: char| matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    let unseen = |c: char| matches!(c, '\u{2028}' | '\u{2029}' | '\u{200b}'..='\u{200d}' | '\u{2060}' | '\u{feff}');
+    let clean: Vec<char> = name.chars().filter(|&c| !c.is_control() && !bidi(c) && !unseen(c)).collect();
+    if clean.len() <= SHOWN_NAME {
+        return clean.into_iter().collect();
+    }
+    clean[..SHOWN_NAME].iter().chain(['\u{2026}'].iter()).collect()
+}
+
+/// The longest name shown.
+pub const SHOWN_NAME: usize = 200;
+
 /// The Zone.Identifier text for a file that came from `host_url` (`HostUrl=` is left out when
 /// there is none). A control character in the URL is dropped, so no URL can add a line: the
 /// text always has its own lines and no others.

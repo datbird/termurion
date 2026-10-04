@@ -246,6 +246,9 @@ pub mod ssh_files;
 pub mod ssh_transfer;
 pub mod ssh_local;
 pub mod remote_file;
+pub mod ssh_panel;
+#[cfg(windows)]
+pub mod ssh_panel_ui;
 pub mod conductor;
 pub mod framer_script;
 pub mod conductor_framer;

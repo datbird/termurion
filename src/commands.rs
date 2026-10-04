@@ -76,7 +76,7 @@ pub const DONE: &[&str] = &[
     "setWindowStyle:|Bottom of Screen", "setWindowStyle:|Top of Screen", "setWindowStyle:|Left of Screen",
     "setWindowStyle:|Right of Screen", "toggleToolbeltVisibility:", "setDefaultToolbeltWidth:",
     "irPrev:", "clearInstantReplay:", "exportRecording:", "loadRecording:", "openAIChats:", "openAIChat:", "toggleShowInlineChat:", "openPasswordManager:",
-    "sshDisconnect:",
+    "sshDisconnect:", "downloadFiles:",
 ];
 
 /// Commands that work with a known difference for now.
@@ -306,7 +306,7 @@ mod tests {
         assert_eq!(status(find("openAIChat:", "Open AI Chat...")), Status::Done, "12d");
         assert_eq!(status(find("toggleShowInlineChat:", "Show Inline Chat")), Status::Done, "12d");
         assert_eq!(status(find("sshDisconnect:", "Disconnect")), Status::Done, "14c");
-        assert_eq!(status(find("downloadFiles:", "Download Files...")), Status::Later(14), "14d");
+        assert_eq!(status(find("downloadFiles:", "Download Files...")), Status::Done, "14d");
         assert_eq!(
             status(find("toggleRemoteHostCanControlIterm2:", "Remote host can control iTerm2")),
             Status::Later(14),
@@ -317,6 +317,12 @@ mod tests {
         for sel in DISABLED_UNDER_UV {
             assert!(items().iter().any(|i| i.selector == *sel), "{sel} is not in the menu");
         }
+    }
+
+    #[test]
+    fn download_files_is_done() {
+        let item = items().iter().find(|i| i.selector == "downloadFiles:").expect("Download Files is in the menu");
+        assert_eq!(status(item), Status::Done);
     }
 
     #[test]

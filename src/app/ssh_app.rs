@@ -278,8 +278,12 @@ impl App {
         self.ssh_files_pane_gone(pane.id);
     }
 
-    /// The connected hosts changed; 14d refreshes Download Files and its panel here.
-    pub(super) fn ssh_hosts_changed(&mut self) {}
+    /// The connected hosts changed (R14de-7: the one place; nothing polls): Shell > ssh > Download
+    /// Files follows the registry, and an open panel's hosts follow it too.
+    pub(super) fn ssh_hosts_changed(&mut self) {
+        self.refresh_download_files_menu();
+        self.ssh_panel_hosts_changed();
+    }
 
     /// The conductors' command timers: every pane's current conductor is ticked and its
     /// effects applied. Returns the earliest deadline left.
