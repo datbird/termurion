@@ -13,3 +13,9 @@ T2-3: Decision: a restarted session keeps its stable id (Pane::keep_stable_id in
 T2-4: Decision (P12): session_state::kind finds "claude" among the ancestors with proctree::same_job and answers through ai_terminal::kind_of; normalize_job also drops ".exe" - cost if wrong: none.
 T2-5: Decision: adopt_stable_id takes the launch flag as a parameter and the saved table as a toml Value (build_tab's own type), not serde_json - cost if wrong: none.
 T2-6: Decision: WinSlot.win_title became pub(super) so cockpit_world reads a parked window's custom title - cost if wrong: none.
+
+T4-1 Row titles, tab titles, group titles, the status word, the filter labels and every detail run go through inert_files::shown_name (programs and remotes name them); bucket and filter keys stay as sent. Cost if wrong: none.
+T4-2 Glyphs (Segoe Fluent Icons, same points in MDL2): window E737, tab E7C4, session E756, buried E7B8, workgroup E716, bell E7ED, armed bell EA8F. Not seen rendered (no GUI launch). Cost if wrong: a wrong picture.
+T4-3 Shift-click chooses the run from the first chosen row to the clicked one over the visible rows that can be chosen; Ctrl toggles. Cost if wrong: selection feel only.
+T4-4 The list is rebuilt from cockpit_world every 500 ms while the window shows (a status changes with no window event). Cost if wrong: up to 0.5 s stale rows.
+T4-5 Row gains a tint field (status_tint of the session's status) so the draw needs no Status. Cost if wrong: none.

@@ -2,7 +2,7 @@
 //! keeping its frame, split and group mode.
 
 use super::*;
-use crate::cockpit::{self, Act, Frame, GroupMode, View};
+use crate::cockpit::{self, Act, Frame, GroupMode, Jump, View};
 use crate::cockpit_rows::{RowKey, SessionFact, TabFact, WindowFact, World};
 use crate::cockpit_ui::CockpitWindow;
 
@@ -42,7 +42,6 @@ impl App {
 
     /// The Cockpit's snapshot: every window by number (current or parked, as `quickly_sources`
     /// walks them), then the buried sessions. `armed` is the bell: a session's watch or a window's Notify on Status Change.
-    #[allow(dead_code)] // the rows are drawn by the next task
     pub(super) fn cockpit_world(&self) -> World {
         let mut world = World::default();
         for k in self.registry.order() {
@@ -108,8 +107,20 @@ impl App {
                 };
                 self.cockpit_view.selection_kind = kind;
                 self.cockpit_view.selection_armed = armed;
+                // The rows come from the world each redraw; the filter, expansion and selection stay
+                // in the view by key. A filter whose status vanished goes back to All.
+                let world = self.cockpit_world();
+                let patterns = self.status_patterns();
+                let view = &mut self.cockpit_view;
+                let (total, per) = crate::cockpit_rows::counts(view.mode, &world, &patterns, &view.search);
+                if view.status_filter.as_ref().is_some_and(|f| !per.iter().any(|(k, _)| k == f)) {
+                    view.status_filter = None;
+                }
+                let rows = crate::cockpit_rows::build(view.mode, &world, &patterns, &view.search, view.status_filter.as_deref());
+                view.selected = crate::cockpit_rows::keep_selection(&view.selected, &rows);
+                let items = cockpit::filter_items(total, &per);
                 let Some(w) = self.cockpit.as_mut() else { return true };
-                let acts = w.redraw(&mut self.cockpit_view);
+                let acts = w.redraw(&mut self.cockpit_view, &rows, &items);
                 self.cockpit_acts(event_loop, acts);
             }
             other => {
@@ -131,7 +142,8 @@ impl App {
                 w.request_redraw();
             }
         }
-        [self.cockpit_save_due, self.cockpit_view.tip.next_change()].into_iter().flatten().min()
+        let refresh = self.cockpit.as_mut().and_then(|w| w.refresh(now));
+        [self.cockpit_save_due, self.cockpit_view.tip.next_change(), refresh].into_iter().flatten().min()
     }
 
     /// What a redraw asked for: the window closes (the view keeps its state), or the frame or
@@ -179,8 +191,45 @@ impl App {
                     _ => {}
                 },
                 Act::Search(text) => self.cockpit_view.search = text,
+                Act::Select(keys) => {
+                    self.cockpit_view.selected = keys;
+                    self.cockpit_redraw();
+                }
+                Act::Toggle(key) => {
+                    if !self.cockpit_view.collapsed.remove(&key) {
+                        self.cockpit_view.collapsed.insert(key);
+                    }
+                    self.cockpit_redraw();
+                }
+                Act::Jump(key) => self.cockpit_jump(cockpit::jump_for(&key)),
+                Act::StatusFilter(f) => {
+                    self.cockpit_view.status_filter = f;
+                    self.cockpit_redraw();
+                }
             }
         }
+    }
+
+    fn cockpit_redraw(&self) {
+        if let Some(w) = self.cockpit.as_ref() {
+            w.request_redraw();
+        }
+    }
+
+    /// A double-click on a row (`CW:667-743`): a session is shown (a buried one is put back
+    /// first), a window shows its active tab's focused session, a tab its focused session.
+    pub(super) fn cockpit_jump(&mut self, jump: Jump) {
+        let pane = match jump {
+            Jump::Session(p) => Some(p),
+            Jump::Window(guid) => self.registry.by_guid(&guid).and_then(|k| self.window_tabs(k)).and_then(|(tabs, active)| tabs.get(active).map(|t| t.focused)),
+            Jump::Tab(id) => self.registry.order().into_iter().find_map(|k| self.window_tabs(k).and_then(|(tabs, _)| tabs.iter().find(|t| t.id == id).map(|t| t.focused))),
+            Jump::Nothing => None,
+        };
+        let Some(pane) = pane.filter(|p| self.panes.contains_key(p)) else { return };
+        if self.buried.contains(pane) {
+            self.disinter(pane);
+        }
+        self.reveal_pane(pane);
     }
 
     fn cockpit_store(&mut self, key: &str, text: String) {

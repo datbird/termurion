@@ -1,7 +1,8 @@
 //! The Cockpit's outline (`CockpitWindowController`): windows, status buckets or tabs, and
 //! sessions, built from a snapshot the app fills. Pure.
 
-use crate::cockpit::GroupMode;
+use crate::cockpit::{status_tint, GroupMode, Tint};
+use crate::inert_files::shown_name;
 use crate::layout::PaneId;
 use crate::status_tool::{priority, Pattern};
 use crate::tabstatus::Status;
@@ -78,6 +79,8 @@ pub struct Row {
     pub detail: Option<String>,
     pub status: Option<String>,
     pub armed: bool,
+    /// The status word's color (`status_tint`); secondary for rows that are not sessions.
+    pub tint: Tint,
     pub children: Vec<Row>,
 }
 
@@ -97,8 +100,28 @@ pub fn bucket_order(keys: &mut Vec<String>, patterns: &[Pattern]) {
     });
 }
 
+/// A window's title: "Window N", or "Window N: title" (`CW:2649-2661`). A title that is empty
+/// or only the prefix gives the prefix. Titles come from programs, so they are cleaned.
+pub fn window_title(number: usize, title: &str) -> String {
+    let prefix = format!("Window {number}");
+    let title = shown_name(title);
+    if title.is_empty() || title == prefix { prefix } else { format!("{prefix}: {title}") }
+}
+
+/// A tab's title, else "Tab N" by 1-based position (`CW:2732-2737`).
+pub fn tab_title(title: &str, position: usize) -> String {
+    let title = shown_name(title);
+    if title.is_empty() { format!("Tab {position}") } else { title }
+}
+
+/// A session's name, else its id (`CW:2673-2707`).
+pub fn session_title(name: &str, pane: PaneId) -> String {
+    let name = shown_name(name);
+    if name.is_empty() { pane.to_string() } else { name }
+}
+
 fn title_of(s: &SessionFact) -> String {
-    if s.name.is_empty() { s.pane.to_string() } else { s.name.clone() }
+    session_title(&s.name, s.pane)
 }
 
 fn matches(s: &SessionFact, search: &str, filter: Option<&str>) -> bool {
@@ -107,11 +130,7 @@ fn matches(s: &SessionFact, search: &str, filter: Option<&str>) -> bool {
 
 fn session_row(s: &SessionFact) -> Row {
     let key = status_key(&s.status);
-    Row { key: RowKey::Session(s.pane), title: title_of(s), detail: s.status.detail.clone(), status: (key != NO_STATUS).then_some(key), armed: s.armed, children: Vec::new() }
-}
-
-fn window_title(w: &WindowFact) -> String {
-    if w.title.is_empty() { format!("Window {}", w.number) } else { format!("Window {}: {}", w.number, w.title) }
+    Row { key: RowKey::Session(s.pane), title: title_of(s), detail: s.status.detail.clone(), status: (key != NO_STATUS).then_some(key), armed: s.armed, tint: status_tint(&s.status), children: Vec::new() }
 }
 
 /// Status buckets over `sessions`: each present bucket in order, empty ones left out.
@@ -127,13 +146,13 @@ fn buckets(scope: &str, sessions: &[&SessionFact], patterns: &[Pattern]) -> Vec<
     keys.into_iter()
         .map(|k| {
             let kids: Vec<Row> = sessions.iter().filter(|s| status_key(&s.status) == k).map(|s| session_row(s)).collect();
-            Row { key: RowKey::Group { scope: scope.to_string(), status: k.clone() }, title: format!("{k} \u{00B7} {}", kids.len()), detail: None, status: None, armed: false, children: kids }
+            Row { key: RowKey::Group { scope: scope.to_string(), status: k.clone() }, title: format!("{} \u{00B7} {}", shown_name(&k), kids.len()), detail: None, status: None, armed: false, tint: Tint::Secondary, children: kids }
         })
         .collect()
 }
 
 fn container(key: RowKey, title: String, armed: bool, children: Vec<Row>) -> Row {
-    Row { key, title, detail: None, status: None, armed, children }
+    Row { key, title, detail: None, status: None, armed, tint: Tint::Secondary, children }
 }
 
 /// The outline. Workgroup grouping is empty until milestone 13.
@@ -146,7 +165,7 @@ pub fn build(mode: GroupMode, world: &World, patterns: &[Pattern], search: &str,
             for w in &world.windows {
                 let all: Vec<&SessionFact> = w.tabs.iter().flat_map(|t| &t.sessions).filter(keep).collect();
                 if !all.is_empty() {
-                    rows.push(container(RowKey::Window(w.guid.clone()), window_title(w), w.armed, buckets(&w.guid, &all, patterns)));
+                    rows.push(container(RowKey::Window(w.guid.clone()), window_title(w.number, &w.title), w.armed, buckets(&w.guid, &all, patterns)));
                 }
             }
             let buried: Vec<&SessionFact> = world.buried.iter().filter(keep).collect();
@@ -160,12 +179,11 @@ pub fn build(mode: GroupMode, world: &World, patterns: &[Pattern], search: &str,
                 for (i, t) in w.tabs.iter().enumerate() {
                     let kids: Vec<Row> = t.sessions.iter().filter(keep).map(session_row).collect();
                     if !kids.is_empty() {
-                        let title = if t.title.is_empty() { format!("Tab {}", i + 1) } else { t.title.clone() };
-                        tabs.push(container(RowKey::Tab(t.id), title, false, kids));
+                        tabs.push(container(RowKey::Tab(t.id), tab_title(&t.title, i + 1), false, kids));
                     }
                 }
                 if !tabs.is_empty() {
-                    rows.push(container(RowKey::Window(w.guid.clone()), window_title(w), w.armed, tabs));
+                    rows.push(container(RowKey::Window(w.guid.clone()), window_title(w.number, &w.title), w.armed, tabs));
                 }
             }
             let buried: Vec<Row> = world.buried.iter().filter(keep).map(session_row).collect();
@@ -232,6 +250,22 @@ pub fn all_sessions(rows: &[Row]) -> Vec<PaneId> {
 /// A row shows its children unless collapsed; a filter expands everything.
 pub fn expanded(key: &RowKey, collapsed: &BTreeSet<RowKey>, filtering: bool) -> bool {
     filtering || !collapsed.contains(key)
+}
+
+/// The rows the list shows, top to bottom, each with its depth: a collapsed row hides its
+/// children unless `filtering`.
+pub fn flatten<'a>(rows: &'a [Row], collapsed: &BTreeSet<RowKey>, filtering: bool) -> Vec<(usize, &'a Row)> {
+    fn walk<'a>(rows: &'a [Row], depth: usize, collapsed: &BTreeSet<RowKey>, filtering: bool, out: &mut Vec<(usize, &'a Row)>) {
+        for r in rows {
+            out.push((depth, r));
+            if expanded(&r.key, collapsed, filtering) {
+                walk(&r.children, depth + 1, collapsed, filtering, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(rows, 0, collapsed, filtering, &mut out);
+    out
 }
 
 /// The selected rows that are still in the outline.
@@ -340,5 +374,37 @@ mod tests {
         assert_eq!(sessions_under(&rows, &[RowKey::Window("pty-A".into())]), vec![1, 2, 3]);
         let status = build(GroupMode::Status, &world(), &pats(), "", None);
         assert_eq!(all_sessions(&status), vec![1, 3, 2, 4, 9]);
+    }
+
+    #[test]
+    fn row_titles_follow_iterm2() {
+        assert_eq!(window_title(1, ""), "Window 1");
+        assert_eq!(window_title(1, "Window 1"), "Window 1");
+        assert_eq!(window_title(2, "Logs"), "Window 2: Logs");
+        assert_eq!(tab_title("", 3), "Tab 3");
+        assert_eq!(tab_title("build", 3), "build");
+        assert_eq!(session_title("", 42), "42");
+        assert_eq!(session_title("vim", 42), "vim");
+        // Names come from programs and remotes: shown through the one cleaning helper.
+        assert_eq!(session_title("a\u{202e}b\u{7}c", 1), "abc");
+        assert_eq!(window_title(3, "x\u{200b}y"), "Window 3: xy");
+        assert_eq!(tab_title("t\u{1b}[31mq", 1), "t[31mq");
+    }
+
+    #[test]
+    fn flatten_follows_expansion() {
+        let rows = build(GroupMode::Window, &world(), &pats(), "", None);
+        let keys = |v: &[(usize, &Row)]| v.iter().map(|(d, r)| (*d, r.key.clone())).collect::<Vec<_>>();
+        let all = flatten(&rows, &BTreeSet::new(), false);
+        assert_eq!(all.len(), 11);
+        assert_eq!(keys(&all)[0], (0, RowKey::Window("pty-A".into())));
+        assert_eq!(keys(&all)[1], (1, RowKey::Tab(11)));
+        assert_eq!(keys(&all)[2], (2, RowKey::Session(1)));
+        let collapsed: BTreeSet<RowKey> = [RowKey::Tab(11)].into();
+        let some = flatten(&rows, &collapsed, false);
+        assert!(!keys(&some).iter().any(|(_, k)| *k == RowKey::Session(1)));
+        assert!(keys(&some).iter().any(|(_, k)| *k == RowKey::Session(3)));
+        // A search expands everything.
+        assert!(keys(&flatten(&rows, &collapsed, true)).iter().any(|(_, k)| *k == RowKey::Session(1)));
     }
 }

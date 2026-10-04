@@ -6,6 +6,9 @@
 use std::time::{Duration, Instant};
 
 use crate::cockpit_rows::RowKey;
+use crate::inert_files::shown_name;
+use crate::layout::PaneId;
+use crate::tabstatus::{xterm_color, Status};
 
 /// The window's title (`CX:23`).
 pub const TITLE: &str = "Cockpit";
@@ -101,6 +104,145 @@ pub fn notify_enabled(selection: Option<&RowKey>) -> bool {
 /// The gear works in Status mode only (`CW:566-597`).
 pub fn settings_enabled(mode: GroupMode) -> bool {
     mode == GroupMode::Status
+}
+
+/// A row's height, and a session's with a detail line (`CW:1410-1419,1846-1850`).
+pub const ROW_HEIGHT: f32 = 24.0;
+pub const ROW_HEIGHT_DETAIL: f32 = 38.0;
+/// The kind glyphs, from Segoe Fluent Icons (Segoe MDL2 Assets has the same code points):
+/// a window, a tab, the command prompt, a box for buried sessions, people for a workgroup, a
+/// bell and a ringing bell.
+pub const WINDOW_GLYPH: char = '\u{E737}';
+pub const TAB_GLYPH: char = '\u{E7C4}';
+pub const SESSION_GLYPH: char = '\u{E756}';
+pub const BURIED_GLYPH: char = '\u{E7B8}';
+pub const WORKGROUP_GLYPH: char = '\u{E716}';
+pub const BELL_GLYPH: char = '\u{E7ED}';
+pub const BELL_ARMED_GLYPH: char = '\u{EA8F}';
+/// The status filter's popup is at least this wide (`CW:362-415`).
+pub const FILTER_POPUP_MIN: f32 = 160.0;
+/// Room each segment of the filter bar takes beyond its label.
+const SEGMENT_PAD: f32 = 16.0;
+
+/// The color of a status word (`CW:2618-2633`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tint {
+    Rgb(u8, u8, u8),
+    /// The secondary label color.
+    Secondary,
+}
+
+/// The status color when it parses, else the indicator when it does, else secondary.
+pub fn status_tint(st: &Status) -> Tint {
+    [st.status_color.as_deref(), st.indicator.as_deref()]
+        .into_iter()
+        .flatten()
+        .find_map(|t| xterm_color(t.trim()))
+        .map_or(Tint::Secondary, |c| Tint::Rgb(c.r, c.g, c.b))
+}
+
+/// A run of a session's detail line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Span {
+    pub text: String,
+    pub bold: bool,
+    pub italic: bool,
+    pub code: bool,
+}
+
+/// A session's detail (markdown a program sent) as one line of styled runs: line breaks and
+/// blocks become spaces, other block markup is dropped, and each run is cleaned like any name
+/// a remote sent.
+pub fn detail_spans(markdown: &str) -> Vec<Span> {
+    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+    let (mut bold, mut italic) = (0u32, 0u32);
+    let mut spans: Vec<Span> = Vec::new();
+    let mut push = |text: &str, bold: bool, italic: bool, code: bool| {
+        let text = shown_name(&text.replace(['\n', '\r', '\t'], " "));
+        if text.is_empty() {
+            return;
+        }
+        match spans.last_mut() {
+            Some(l) if (l.bold, l.italic, l.code) == (bold, italic, code) => l.text.push_str(&text),
+            _ => spans.push(Span { text, bold, italic, code }),
+        }
+    };
+    for e in Parser::new(markdown) {
+        match e {
+            Event::Start(Tag::Strong) => bold += 1,
+            Event::Start(Tag::Emphasis) => italic += 1,
+            Event::End(TagEnd::Strong) => bold = bold.saturating_sub(1),
+            Event::End(TagEnd::Emphasis) => italic = italic.saturating_sub(1),
+            Event::Text(t) => push(&t, bold > 0, italic > 0, false),
+            Event::Code(t) => push(&t, bold > 0, italic > 0, true),
+            Event::SoftBreak | Event::HardBreak => push(" ", bold > 0, italic > 0, false),
+            Event::End(TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item | TagEnd::CodeBlock | TagEnd::BlockQuote(_)) => push(" ", false, false, false),
+            _ => {}
+        }
+    }
+    if let Some(l) = spans.last_mut() {
+        l.text.truncate(l.text.trim_end().len());
+    }
+    spans.retain(|s| !s.text.is_empty());
+    spans
+}
+
+/// The filter bar's items (`CW:362-415`): All, then each present status in bucket order. The
+/// key is the status as sent (None is All); the label shows it cleaned.
+pub fn filter_items(total: usize, counts: &[(String, usize)]) -> Vec<(Option<String>, String)> {
+    std::iter::once((None, format!("All ({total})"))).chain(counts.iter().map(|(k, n)| (Some(k.clone()), format!("{} ({n})", shown_name(k))))).collect()
+}
+
+/// Whether the labels fit side by side in `width`, as a segmented row; else the bar is a popup.
+pub fn filter_fits(labels: &[String], char_px: f32, width: f32) -> bool {
+    labels.iter().map(|l| l.chars().count() as f32 * char_px + SEGMENT_PAD).sum::<f32>() <= width
+}
+
+/// What a double-click on a row does (`CW:667-743`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Jump {
+    Session(PaneId),
+    /// The window's guid: its active tab's focused session.
+    Window(String),
+    /// The tab's id: its focused session.
+    Tab(u64),
+    Nothing,
+}
+
+/// Groups and the buried root do nothing; workgroups have no leader until milestone 13.
+pub fn jump_for(key: &RowKey) -> Jump {
+    match key {
+        RowKey::Session(p) => Jump::Session(*p),
+        RowKey::Window(g) => Jump::Window(g.clone()),
+        RowKey::Tab(t) => Jump::Tab(*t),
+        RowKey::Group { .. } | RowKey::BuriedRoot | RowKey::Workgroup(_) => Jump::Nothing,
+    }
+}
+
+/// The chosen rows after a click on `clicked`. `visible` is the list top to bottom. A plain
+/// click chooses that row, Ctrl adds or removes it, Shift chooses the run from the first chosen
+/// row to it (only rows that can be chosen). A row that cannot be chosen changes nothing.
+pub fn select(visible: &[RowKey], current: &[RowKey], clicked: &RowKey, ctrl: bool, shift: bool) -> Vec<RowKey> {
+    if !clicked.selectable() {
+        return current.to_vec();
+    }
+    if shift {
+        let anchor = current.first().unwrap_or(clicked);
+        let (Some(a), Some(b)) = (visible.iter().position(|k| k == anchor), visible.iter().position(|k| k == clicked)) else { return vec![clicked.clone()] };
+        let run: Vec<RowKey> = if a <= b { visible[a..=b].to_vec() } else { visible[b..=a].iter().rev().cloned().collect() };
+        return run.into_iter().filter(RowKey::selectable).collect();
+    }
+    if ctrl {
+        let mut out = current.to_vec();
+        match out.iter().position(|k| k == clicked) {
+            Some(i) => {
+                out.remove(i);
+            }
+            None => out.push(clicked.clone()),
+        }
+        return out;
+    }
+    vec![clicked.clone()]
 }
 
 /// The window's frame in pixels: top left and content size.
@@ -250,6 +392,14 @@ pub enum Act {
     Notify,
     /// The search field's new text.
     Search(String),
+    /// A click on a row: the new chosen rows, in order.
+    Select(Vec<RowKey>),
+    /// A click on a row's disclosure triangle.
+    Toggle(RowKey),
+    /// A double-click on a row.
+    Jump(RowKey),
+    /// The filter bar's choice (None is All).
+    StatusFilter(Option<String>),
 }
 
 #[cfg(test)]
@@ -373,5 +523,92 @@ mod tests {
         assert!(tip.expire(t1 + MESSAGE_FOR));
         assert_eq!(tip.next_change(), None);
         assert!(!tip.expire(t1 + MESSAGE_FOR));
+    }
+
+    #[test]
+    fn status_color_follows_iterm2() {
+        let st = |color: Option<&str>, ind: Option<&str>| Status { status: Some("x".into()), status_color: color.map(str::to_string), indicator: ind.map(str::to_string), detail: None };
+        assert_eq!(status_tint(&st(Some("#ff9500"), None)), Tint::Rgb(255, 149, 0));
+        assert_eq!(status_tint(&st(None, Some("#5f87ff"))), Tint::Rgb(95, 135, 255));
+        assert_eq!(status_tint(&st(Some("#ff9500"), Some("#5f87ff"))), Tint::Rgb(255, 149, 0));
+        assert_eq!(status_tint(&st(None, None)), Tint::Secondary);
+        // A bad color text falls through to the next rule.
+        assert_eq!(status_tint(&st(Some("orange"), Some("#5f87ff"))), Tint::Rgb(95, 135, 255));
+        assert_eq!(status_tint(&st(Some("orange"), Some("nope"))), Tint::Secondary);
+    }
+
+    #[test]
+    fn detail_markdown_is_one_line() {
+        let sp = |text: &str, bold: bool, italic: bool, code: bool| Span { text: text.into(), bold, italic, code };
+        assert_eq!(
+            detail_spans("Allow **Bash**: `ls`\nnext"),
+            vec![sp("Allow ", false, false, false), sp("Bash", true, false, false), sp(": ", false, false, false), sp("ls", false, false, true), sp(" next", false, false, false)]
+        );
+        assert_eq!(detail_spans("*x*"), vec![sp("x", false, true, false)]);
+        assert_eq!(detail_spans("# H"), vec![sp("H", false, false, false)]);
+        assert_eq!(detail_spans(""), Vec::<Span>::new());
+        // Blocks join with a space; the text a program sent loses its control characters.
+        assert_eq!(detail_spans("one\n\ntwo"), vec![sp("one two", false, false, false)]);
+        assert_eq!(detail_spans("a\u{1b}[2Jb\u{202e}c"), vec![sp("a[2Jbc", false, false, false)]);
+    }
+
+    #[test]
+    fn filter_bar_follows_iterm2() {
+        let counts = [("Waiting".to_string(), 2), ("working".to_string(), 1), ("No status".to_string(), 1)];
+        assert_eq!(
+            filter_items(5, &counts),
+            vec![(None, "All (5)".to_string()), (Some("Waiting".to_string()), "Waiting (2)".to_string()), (Some("working".to_string()), "working (1)".to_string()), (Some("No status".to_string()), "No status (1)".to_string())]
+        );
+        assert_eq!(filter_items(0, &[]), vec![(None, "All (0)".to_string())]);
+        // A status a program sent is shown cleaned; the filter key stays as sent.
+        assert_eq!(filter_items(1, &[("a\u{7}b".to_string(), 1)])[1], (Some("a\u{7}b".to_string()), "ab (1)".to_string()));
+        let short: Vec<String> = ["All (5)", "Waiting (2)"].iter().map(|s| s.to_string()).collect();
+        assert!(filter_fits(&short, 8.0, 800.0));
+        // (7 * 10 + 16) + (11 * 10 + 16) = 212
+        assert!(filter_fits(&short, 10.0, 212.0));
+        assert!(!filter_fits(&short, 10.0, 211.0));
+        assert_eq!(FILTER_POPUP_MIN, 160.0);
+    }
+
+    #[test]
+    fn jumps_follow_iterm2() {
+        assert_eq!(jump_for(&RowKey::Session(3)), Jump::Session(3));
+        assert_eq!(jump_for(&RowKey::Window("pty-A".into())), Jump::Window("pty-A".into()));
+        assert_eq!(jump_for(&RowKey::Tab(12)), Jump::Tab(12));
+        assert_eq!(jump_for(&RowKey::Group { scope: "pty-A".into(), status: "idle".into() }), Jump::Nothing);
+        assert_eq!(jump_for(&RowKey::BuriedRoot), Jump::Nothing);
+        assert_eq!(jump_for(&RowKey::Workgroup("w".into())), Jump::Nothing);
+    }
+
+    #[test]
+    fn rows_have_iterm2_heights_and_glyphs() {
+        assert_eq!((ROW_HEIGHT, ROW_HEIGHT_DETAIL), (24.0, 38.0));
+        let glyphs = [WINDOW_GLYPH, TAB_GLYPH, SESSION_GLYPH, BURIED_GLYPH, WORKGROUP_GLYPH, BELL_GLYPH, BELL_ARMED_GLYPH];
+        for (i, g) in glyphs.iter().enumerate() {
+            assert!(('\u{E000}'..='\u{F8FF}').contains(g), "glyph {i} is in the icon range");
+            assert!(!glyphs[..i].contains(g), "glyph {i} is distinct");
+        }
+        assert_eq!(SESSION_GLYPH, '\u{E756}');
+    }
+
+    #[test]
+    fn selection_follows_clicks() {
+        use RowKey::*;
+        let w = Window("A".into());
+        let g = Group { scope: "A".into(), status: "idle".into() };
+        let visible = vec![w.clone(), g.clone(), Session(1), Session(2), Session(3), Tab(7), Session(4)];
+        // A plain click chooses one row.
+        assert_eq!(select(&visible, &[Session(1)], &Session(3), false, false), vec![Session(3)]);
+        // Ctrl adds, and removes a row already chosen.
+        assert_eq!(select(&visible, &[Session(1)], &Session(3), true, false), vec![Session(1), Session(3)]);
+        assert_eq!(select(&visible, &[Session(1), Session(3)], &Session(1), true, false), vec![Session(3)]);
+        // Shift extends from the first chosen row over the rows the list shows, skipping the
+        // ones that cannot be chosen.
+        assert_eq!(select(&visible, &[Session(1)], &Session(4), false, true), vec![Session(1), Session(2), Session(3), Tab(7), Session(4)]);
+        assert_eq!(select(&visible, &[Session(3)], &w, false, true), vec![Session(3), Session(2), Session(1), w.clone()]);
+        assert_eq!(select(&visible, &[], &Session(2), false, true), vec![Session(2)]);
+        // A row that cannot be chosen changes nothing.
+        assert_eq!(select(&visible, &[Session(1)], &g, false, false), vec![Session(1)]);
+        assert_eq!(select(&visible, &[Session(1)], &g, true, true), vec![Session(1)]);
     }
 }
