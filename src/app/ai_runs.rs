@@ -18,7 +18,6 @@ pub(super) const NOT_ENABLED: &str = "AI features are not enabled or the API key
 pub(super) enum Owner {
     Engage,
     Complete { pane: PaneId, generation: u64 },
-    #[allow(dead_code)] // Codecierge (Task 7).
     Codecierge(String),
 }
 
@@ -236,7 +235,6 @@ impl App {
     }
 
     /// A tool's result for a run that asked for one.
-    #[allow(dead_code)] // Codecierge's execute and write (Task 7).
     pub(super) fn ai_run_tool_done(&mut self, id: u64, result: ToolResult) {
         let Some(run) = self.ai_runs.get_mut(&id) else { return };
         let open = chat_gate::gate_open(&self.globals, &run.endpoint);
@@ -253,6 +251,9 @@ impl App {
     /// Polls every run. A continuation send spends a proof that the gate for the run's own
     /// endpoint is open (ruling R12cd-1), so a closed gate cancels it.
     pub(super) fn ai_runs_tick(&mut self) {
+        // The gate for Codecierge first, once per pass: a gate closed by Settings stops every
+        // session before any polled call below is routed (ruling R12e-3).
+        self.codecierge_gate_tick();
         if self.ai_runs.is_empty() {
             return;
         }
@@ -293,6 +294,7 @@ impl App {
     fn ai_run_outs(&mut self, id: u64, outs: Vec<Out>) {
         for out in outs {
             let Some(run) = self.ai_runs.get(&id) else { return };
+            let owner = run.owner.clone();
             if let Some(done) = finished(&out) {
                 if let Some(run) = self.ai_runs.remove(&id) {
                     self.ai_run_route(id, run.owner, done);
@@ -311,17 +313,21 @@ impl App {
                 let endpoint = run.endpoint.clone();
                 self.ask_ai_key(vendor, Some(&endpoint), KeyThen::Run(id));
             }
-            // A tool call comes only from a run that offers tools (Codecierge, Task 7).
+            // A tool call comes only from a run that offers tools: Codecierge's.
+            if let Out::Invoke { call, .. } = out {
+                if let Owner::Codecierge(guid) = owner {
+                    self.codecierge_invoke(&guid, id, &call.name.unwrap_or_default(), &call.arguments.unwrap_or_default());
+                }
+            }
         }
     }
 
-    /// Hands a finished run's answer to its owner. Codecierge's answers are dropped until
-    /// its task lands.
+    /// Hands a finished run's answer to its owner.
     fn ai_run_route(&mut self, id: u64, owner: Owner, done: Finished) {
         match owner {
             Owner::Engage => self.engage_done(id, done),
             Owner::Complete { pane, generation } => self.composer_ai_done(pane, generation, done),
-            Owner::Codecierge(_) => {}
+            Owner::Codecierge(guid) => self.codecierge_done(&guid, id, done),
         }
     }
 }
@@ -440,7 +446,7 @@ mod tests {
         }
         // `ai_run` is the only caller of the runner's start: the one call is inside `launch`.
         let call = concat!(".sta", "rt(");
-        for (name, source) in [("ai_runs.rs", include_str!("ai_runs.rs")), ("ai_engage_app.rs", include_str!("ai_engage_app.rs")), ("ai_explain_app.rs", include_str!("ai_explain_app.rs"))] {
+        for (name, source) in [("ai_runs.rs", include_str!("ai_runs.rs")), ("ai_engage_app.rs", include_str!("ai_engage_app.rs")), ("ai_explain_app.rs", include_str!("ai_explain_app.rs")), ("codecierge_app.rs", include_str!("codecierge_app.rs"))] {
             let production = source.split("\n#[cfg(test)]\nmod tests").next().unwrap();
             let calls = production.matches(call).count();
             assert_eq!(calls, usize::from(name == "ai_runs.rs"), "{name} starts a runner {calls} times");

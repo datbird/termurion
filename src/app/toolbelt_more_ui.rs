@@ -1690,7 +1690,7 @@ impl App {
 
     /// The gate for the default model and whether it has function calling, from the models found
     /// so far (no probe: this runs every frame while the tool shows, P2).
-    fn codecierge_gate(&self) -> (bool, bool) {
+    pub(super) fn codecierge_gate(&self) -> (bool, bool) {
         let found = self.ai_discovery.all();
         let Some(m) = crate::ai_model::configured(&self.globals, crate::ai_catalog::bundled(), &found) else { return (false, false) };
         (crate::chat_gate::gate_open(&self.globals, &crate::chat_gate::endpoint_of(&m)), crate::ai_model::has(&m, crate::ai_catalog::Feature::FunctionCalling))
@@ -1713,16 +1713,17 @@ impl App {
         self.codecierge.get_mut(&guid)
     }
 
-    /// What the tool shows now. A gate that turned off sends the session back to onboarding
-    /// (`CG:476-480`; Task 7 makes this a full stop).
+    /// What the tool shows now. A gate that turned off shows onboarding at once; the full stop
+    /// (`CG:476-480`, ruling R12e-3) is `codecierge_gate_tick`'s, once per loop pass.
     pub(super) fn codecierge_view(&mut self) -> View {
         let (admin, ai) = (self.globals.bool(crate::ai_settings::ADMIN), self.globals.bool(crate::ai_settings::ENABLE_AI));
         let (open, calling) = self.codecierge_gate();
         match self.codecierge_session() {
             Some(s) => {
                 if !open && s.stage != Stage::Onboarding {
-                    s.stage = Stage::Onboarding;
-                    s.busy = false;
+                    let mut shown = s.clone();
+                    shown.stage = Stage::Onboarding;
+                    return crate::codecierge::view(&shown, admin, ai, calling);
                 }
                 crate::codecierge::view(s, admin, ai, calling)
             }
@@ -1760,27 +1761,13 @@ impl App {
         self.redraw_all();
     }
 
-    /// Start, after the Privacy Warning (`CG:455-462`): the checkbox becomes the auto-run flag,
-    /// the view shows "Thinking..." and the session runs. Task 7 sends the first message.
-    pub(super) fn codecierge_start(&mut self, guid: &str) {
-        let Some(s) = self.codecierge.get_mut(guid) else { return };
-        s.auto = s.auto_box;
-        s.stage = Stage::Running;
-        s.transcript = crate::codecierge::THINKING.to_string();
-        s.reply.clear();
-        s.commands = 0;
-        self.belt.cc_scroll = 0.0;
-        self.tools_changed();
-        self.redraw_all();
-    }
-
-    /// End Task (`CG`): back to the goal view with the goal kept (Task 7 stops the run first).
+    /// End Task (`CG`): the run, the pending call and the queue stop (ruling R12e-3), and the
+    /// goal view shows with the goal kept.
     fn codecierge_end(&mut self, guid: &str) {
+        self.codecierge_stop(guid, Stage::GoalSetting);
         if let Some(s) = self.codecierge.get_mut(guid) {
-            s.stage = Stage::GoalSetting;
             s.transcript.clear();
             s.reply.clear();
-            s.busy = false;
         }
         self.belt.cc_guid = None;
         self.tools_changed();
@@ -1788,8 +1775,8 @@ impl App {
     }
 
     /// A reply (Enter or the send button): the "You" section is appended and the field clears
-    /// (`CG:595-602`); Task 7 sends it.
-    fn codecierge_send(&mut self, guid: &str) {
+    /// (`CG:595-602`), then the text is queued for the model.
+    fn codecierge_press_send(&mut self, guid: &str) {
         let Some(s) = self.codecierge.get_mut(guid) else { return };
         let text = s.reply.trim().to_string();
         if text.is_empty() {
@@ -1801,6 +1788,7 @@ impl App {
         self.belt.cc_scroll = 0.0;
         self.tools_changed();
         self.redraw_all();
+        self.codecierge_send(guid, text);
     }
 
     /// The Start button: the Privacy Warning unless it was accepted, then the start.
@@ -2107,7 +2095,7 @@ impl App {
                 }
                 if l.send.contains(x, y) {
                     if !reply.trim().is_empty() {
-                        self.codecierge_send(&guid);
+                        self.codecierge_press_send(&guid);
                     }
                 } else if l.reply.contains(x, y) {
                     self.codecierge_click(true, l.reply_text, x, y);
@@ -2212,7 +2200,7 @@ impl App {
             return true;
         }
         if enter && running && !mods.shift {
-            self.codecierge_send(&guid);
+            self.codecierge_press_send(&guid);
             return true;
         }
         let Some((key, ctrl, alt)) = edit_key(&ev.logical_key, ev.text.as_deref(), mods) else { return !(mods.ctrl || mods.alt || mods.cmd) };

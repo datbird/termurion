@@ -371,6 +371,12 @@ impl App {
                     self.codecierge_start(&guid);
                 }
             }
+            // Only Stop Codecierge stops, and only a session that still runs.
+            Then::CodeciergeUsage(guid) => {
+                if index == 1 && self.codecierge.get(&guid).is_some_and(|s| s.stage == crate::codecierge::Stage::Running) {
+                    self.codecierge_stop(&guid, crate::codecierge::Stage::GoalSetting);
+                }
+            }
             Then::Grant(host) => {
                 if index == 0 {
                     ai_gate::grant(&mut self.globals, &host);

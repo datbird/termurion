@@ -49,10 +49,16 @@ pub const ZONE_MARK: &str = "[ZoneTransfer]\r\nZoneId=3\r\n";
 /// unmarked.
 pub fn write_marked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, bytes)?;
+    mark(path);
+    Ok(())
+}
+
+/// The Zone.Identifier stream alone, for a writer that wrote the file through its own handle
+/// (a failure is ignored: a drive without streams keeps the file unmarked).
+pub fn mark(path: &Path) {
     let mut stream = path.as_os_str().to_os_string();
     stream.push(":Zone.Identifier");
     let _ = std::fs::write(stream, ZONE_MARK);
-    Ok(())
 }
 
 /// `write_marked` for a name someone else chose that is not yet checked: refused with an error

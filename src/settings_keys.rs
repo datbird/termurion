@@ -1942,6 +1942,30 @@ mod tests {
     }
 
     #[test]
+    fn codecierge_rows_follow_iterm2() {
+        let ghost = "You operate a terminal emulator for me. My goal is $GOAL. $CONTEXT. Ask clarifying questions as needed and run commands using the execute function when you're ready. When I've reached my goal, remind me to click the End Task button.";
+        let regular = "You help a me in a terminal emulator. My goal is $GOAL. $CONTEXT. Start by suggesting a command. Don't overwhelm me with too much information: just go one step at a time. When I've reached my goal, remind me to click the End Task button.";
+        let second = "$GOAL and $CONTEXT are replaced with the user-specified goal and info about the running environment, respectively.";
+        for (key, kind, default, label, help) in [
+            ("codeciergeGhostRidingPrompt", Kind::String, Value::String(ghost.into()), "Prompt to send to LLM for Codecierge when it is able to execute commands automatically.", Some(second)),
+            ("codeciergeCommandWarningCount", Kind::Int, Value::Integer(10), "After this many commands, make codecierge confirm that you intend to keep it enabled.", None),
+            ("codeciergeRegularPrompt", Kind::String, Value::String(regular.into()), "Prompt to send to LLM for Codecierge when it is NOT able to execute commands automatically.", Some(second)),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            // P18: iTerm2's section is "Experimental Features" (SECTION_EXPERIMENTAL).
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default.as_ref(), Some(&default), "{key}");
+            assert_eq!(row.label, label, "{key}");
+            let want = help.map_or_else(|| label.to_string(), |h| format!("{label}\n{h}"));
+            assert_eq!(row.help, want, "{key}");
+        }
+        let g = Globals::empty(std::path::Path::new("codecierge-rows-test.toml"));
+        assert_eq!(g.int("codeciergeCommandWarningCount"), 10);
+        assert_eq!(g.string("codeciergeGhostRidingPrompt"), ghost);
+    }
+
+    #[test]
     fn software_update_row_follows_iterm2() {
         let key = "NotifyOnlyForCriticalShellIntegrationUpdates";
         let row = schema::find_global(key).expect("row");

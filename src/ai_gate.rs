@@ -124,6 +124,9 @@ pub enum Then {
     CodeciergeDanger(String),
     /// The Privacy Warning before Start (`CG:455`): only OK remembers it and starts this session.
     CodeciergePrivacy(String),
+    /// The usage warning (`CG:233-266`): the second button (Stop Codecierge) stops this session;
+    /// Keep Going and a close leave it running. Remembered answers act the same way.
+    CodeciergeUsage(String),
 }
 
 /// One AI alert for `App::ask_ai`. `silence` is a permanent-silence key (the `scripts_alerts`

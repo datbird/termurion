@@ -140,6 +140,7 @@ mod settings_export_ui;
 mod ai_app;
 mod ai_runs;
 mod ai_engage_app;
+mod codecierge_app;
 mod ai_explain_app;
 mod chat_app;
 mod chat_window_app;
@@ -3341,8 +3342,10 @@ impl App {
         // AI requests that belong to the pane end with it.
         self.composer_ai_cancel(id);
         self.ai_runs_pane_gone(id);
-        // Codecierge's session for the pane goes with it (`CG:36-40`; Task 7 stops its run first).
+        // Codecierge's session for the pane stops for real (its run, its pending call, its queue)
+        // and goes with it (`CG:36-40`, ruling R12e-3).
         if let Some(guid) = self.panes.get(&id).map(|p| p.session_guid.clone()) {
+            self.codecierge_stop(&guid, crate::codecierge::Stage::Onboarding);
             self.codecierge.remove(&guid);
         }
         self.ai_annotations.retain(|_, (pane, _)| *pane != id);
