@@ -128,6 +128,12 @@ pub enum Reason {
     Link,
     /// A network location, or a link to one: never read.
     Network,
+    /// Neither a regular file nor a folder (a device, a pipe).
+    Special,
+    /// The listing stopped at its entry limit; the rest of the folder was not looked at.
+    EntryLimit,
+    /// This many more names were left out than the notice keeps.
+    More(usize),
 }
 
 impl Reason {
@@ -141,6 +147,9 @@ impl Reason {
             Reason::TooDeep => format!("more than {FOLDER_DEPTH_MAX} folders down"),
             Reason::Link => "a link that leaves the folder".to_string(),
             Reason::Network => "a network location, never read".to_string(),
+            Reason::Special => "not a regular file or folder".to_string(),
+            Reason::EntryLimit => format!("the folder holds more than {FOLDER_ENTRIES_MAX} entries, the rest were not looked at"),
+            Reason::More(n) => format!("{n} more"),
         }
     }
 }
@@ -163,16 +172,26 @@ pub struct Listing {
 /// what is left never blocks the smaller ones after it.
 #[derive(Debug, Default)]
 pub struct Budget {
-    used: u64,
+    used: std::cell::Cell<u64>,
 }
 
 impl Budget {
-    pub fn take(&mut self, n: u64, max: u64) -> bool {
-        if self.used.saturating_add(n) > max {
+    /// Whether `n` more bytes fit under `max`.
+    pub fn fits(&self, n: u64, max: u64) -> bool {
+        self.used.get().saturating_add(n) <= max
+    }
+
+    /// Counts `n` bytes when they fit.
+    pub fn take(&self, n: u64, max: u64) -> bool {
+        if !self.fits(n, max) {
             return false;
         }
-        self.used += n;
+        self.used.set(self.used.get() + n);
         true
+    }
+
+    pub fn used(&self) -> u64 {
+        self.used.get()
     }
 }
 
@@ -180,9 +199,15 @@ impl Budget {
 /// characters) with its reason, ten at most.
 pub fn skipped_notice(list: &[Skipped]) -> String {
     let one_line = |name: &str| name.chars().map(|c| if c.is_control() { '?' } else { c }).collect::<String>();
-    let mut items: Vec<String> = list.iter().take(NOTICE_NAMES_MAX).map(|s| format!("{} ({})", one_line(&s.name), s.reason.text())).collect();
-    if list.len() > NOTICE_NAMES_MAX {
-        items.push(format!("and {} more", list.len() - NOTICE_NAMES_MAX));
+    // A `More` entry stands for names a listing only counted.
+    let counted: usize = list.iter().map(|s| if let Reason::More(n) = s.reason { n } else { 0 }).sum();
+    // Why a listing stopped comes first: it is never among the names the cap cuts off.
+    let mut named: Vec<&Skipped> = list.iter().filter(|s| !matches!(s.reason, Reason::More(_))).collect();
+    named.sort_by_key(|s| s.reason != Reason::EntryLimit);
+    let mut items: Vec<String> = named.iter().take(NOTICE_NAMES_MAX).map(|s| format!("{} ({})", one_line(&s.name), s.reason.text())).collect();
+    let more = named.len().saturating_sub(NOTICE_NAMES_MAX) + counted;
+    if more > 0 {
+        items.push(format!("and {more} more"));
     }
     format!("These files were not sent to the model: {}.", items.join("; "))
 }
@@ -282,11 +307,11 @@ pub fn drop_result(action: DropAction, supported: &[PathBuf], all: &[PathBuf]) -
 /// (accepted, rejected) among paths: a folder when the model takes an upload of no known type
 /// (its files are filtered as it is read), a network path never (it is not probed as a file; a drop of one inserts its text),
 /// a file when the model accepts its MIME type.
-pub fn split_by_model(paths: &[PathBuf], is_dir: &dyn Fn(&Path) -> bool, accepts: &dyn Fn(&str) -> bool) -> (Vec<PathBuf>, Vec<PathBuf>) {
+pub fn split_by_model(paths: &[PathBuf], network: &dyn Fn(&Path) -> bool, is_dir: &dyn Fn(&Path) -> bool, accepts: &dyn Fn(&str) -> bool) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let (mut ok, mut no) = (Vec::new(), Vec::new());
     for p in paths {
         let text = p.to_string_lossy();
-        if crate::remote_prefs::is_unc(&text) {
+        if crate::remote_prefs::is_unc(&text) || network(p) {
             no.push(p.clone());
         } else if is_dir(p) {
             // A folder has no extension, and iTerm2 asks the vendor about "" (a type only an
@@ -351,10 +376,11 @@ pub fn rejected_alert(names: &[String], provider: Option<&str>) -> Alert {
 
 /// A file's bytes, only for a regular local file no larger than `FILE_BYTES_MAX` (a network
 /// path is never probed, a device or a folder is not a regular file).
-pub fn read_capped(path: &Path, max: u64, fits: &mut dyn FnMut(u64) -> bool) -> Result<Vec<u8>, Reason> {
+pub fn read_capped(path: &Path, max: u64, budget: &Budget, total_max: u64) -> Result<Vec<u8>, Reason> {
     if crate::remote_prefs::is_unc(&path.to_string_lossy()) {
         return Err(Reason::Network);
     }
+    top_link(path)?;
     let meta = std::fs::metadata(path).map_err(|_| Reason::Unreadable)?;
     if !meta.is_file() {
         return Err(Reason::Unreadable);
@@ -362,10 +388,13 @@ pub fn read_capped(path: &Path, max: u64, fits: &mut dyn FnMut(u64) -> bool) -> 
     if meta.len() > max {
         return Err(Reason::TooLarge);
     }
-    if !fits(meta.len()) {
+    if !budget.fits(meta.len(), total_max) {
         return Err(Reason::OverTotal);
     }
-    std::fs::read(path).map_err(|_| Reason::Unreadable)
+    // Counted once it is read: a file that fails to read takes nothing from the others.
+    let bytes = std::fs::read(path).map_err(|_| Reason::Unreadable)?;
+    budget.take(bytes.len() as u64, total_max);
+    Ok(bytes)
 }
 
 /// A path as comparable parts: the drive (a verbatim prefix names the same one), then each
@@ -459,71 +488,158 @@ fn check_link(link: &Path, roots: &[PathBuf]) -> Result<(), Reason> {
     Err(Reason::Link)
 }
 
+/// Whether the item a person dropped or picked may be touched at all: neither it nor a folder
+/// above it is a link (read by its own entry, nothing it names is opened) whose chain reaches
+/// a network path. Err(Network) otherwise.
+pub fn top_verdict(path: &Path, is_link: &dyn Fn(&Path) -> bool, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(), Reason> {
+    for a in path.ancestors().filter(|a| !a.as_os_str().is_empty()) {
+        if is_link(a) && crate::scripts::link_chain_end(a, read_link).is_none() {
+            return Err(Reason::Network);
+        }
+    }
+    Ok(())
+}
+
+/// `top_verdict` on the disk: each entry is asked with `symlink_metadata`, which never follows.
+pub fn top_link(path: &Path) -> Result<(), Reason> {
+    top_verdict(path, &|p| std::fs::symlink_metadata(p).is_ok_and(|m| is_link(&m)), &crate::scripts::read_link)
+}
+
+/// A dropped or picked item that is, or sits under, a link to a network location.
+pub fn links_to_network(path: &Path) -> bool {
+    top_link(path).is_err()
+}
+
 /// The regular files below `dir`, sorted by path within each folder and folders after the
 /// files beside them (`recursiveRegularFileIterator`), at most `max` of them whose name
 /// `accepts`. What is left out is named with its reason: types the model does not take, files
 /// past `max`, folders too deep, links that leave `dir`. None when `dir` is not a folder.
 pub fn list_folder(dir: &Path, accepts: &dyn Fn(&str) -> bool, max: usize) -> Option<Listing> {
-    if crate::remote_prefs::is_unc(&dir.to_string_lossy()) || !std::fs::metadata(dir).ok()?.is_dir() {
+    // The item itself first, by its own entry: a link to a network path is never followed (a send
+    // then reads it as a file and names it as one that was never read).
+    if crate::remote_prefs::is_unc(&dir.to_string_lossy()) || top_link(dir).is_err() || !std::fs::metadata(dir).ok()?.is_dir() {
         return None;
     }
+    let entries = |folder: &Path| -> std::io::Result<Vec<std::io::Result<PathBuf>>> { Ok(std::fs::read_dir(folder)?.map(|e| e.map(|e| e.path())).collect()) };
+    let kind = |path: &Path| std::fs::symlink_metadata(path).map(|m| Kind { link: is_link(&m), dir: m.is_dir(), file: m.is_file() });
+    Some(list_with(dir, accepts, max, &Disk { entries: &entries, kind: &kind }))
+}
+
+/// What an entry is, by its own record (a link is not followed to find out).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Kind {
+    pub link: bool,
+    pub dir: bool,
+    pub file: bool,
+}
+
+/// The two reads a listing makes of the disk that can fail, so a test can make each fail.
+pub struct Disk<'a> {
+    pub entries: &'a dyn Fn(&Path) -> std::io::Result<Vec<std::io::Result<PathBuf>>>,
+    pub kind: &'a dyn Fn(&Path) -> std::io::Result<Kind>,
+}
+
+/// `list_folder` over a disk.
+pub fn list_with(dir: &Path, accepts: &dyn Fn(&str) -> bool, max: usize, disk: &Disk) -> Listing {
     let mut roots = vec![dir.to_path_buf()];
     roots.extend(std::fs::canonicalize(dir).ok());
-    let rel = |p: &Path| p.strip_prefix(dir).map_or_else(|_| file_name(p), |r| r.to_string_lossy().to_string());
+    let rel = |p: &Path| {
+        let r = p.strip_prefix(dir).map_or_else(|_| file_name(p), |r| r.to_string_lossy().to_string());
+        if r.is_empty() { file_name(dir) } else { r }
+    };
     let mut listing = Listing::default();
-    let skip = |listing: &mut Listing, path: &Path, reason: Reason| {
-        if listing.skipped.len() < SKIPPED_KEPT_MAX {
-            listing.skipped.push(Skipped { name: rel(path), reason });
+    // Past the kept limit a name is only counted, in one trailing `More` entry.
+    let keep = |listing: &mut Listing, name: String, reason: Reason| {
+        let at = listing.skipped.iter().position(|s| matches!(s.reason, Reason::More(_))).unwrap_or(listing.skipped.len());
+        listing.skipped.insert(at, Skipped { name, reason });
+    };
+    let skip = |listing: &mut Listing, name: String, reason: Reason| {
+        if listing.skipped.iter().filter(|s| !matches!(s.reason, Reason::More(_))).count() < SKIPPED_KEPT_MAX {
+            keep(listing, name, reason);
+        } else if let Some(Skipped { reason: Reason::More(n), .. }) = listing.skipped.last_mut() {
+            *n += 1;
+        } else {
+            listing.skipped.push(Skipped { name: String::new(), reason: Reason::More(1) });
         }
     };
-    let (mut stack, mut seen) = (vec![(dir.to_path_buf(), 0usize)], 0usize);
-    while let Some((folder, depth)) = stack.pop() {
-        let Ok(read) = std::fs::read_dir(&folder) else { continue };
-        let mut entries: Vec<_> = read.filter_map(Result::ok).map(|e| e.path()).collect();
+    // The real place of each folder on the way down: a link back to one of them is a loop and is
+    // not entered (the same files again and again until a cap).
+    let place = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()).to_string_lossy().to_lowercase();
+    let (mut stack, mut seen) = (vec![(dir.to_path_buf(), 0usize, Vec::<String>::new())], 0usize);
+    while let Some((folder, depth, mut above)) = stack.pop() {
+        above.push(place(&folder));
+        let read = match (disk.entries)(&folder) {
+            Ok(read) => read,
+            Err(_) => {
+                skip(&mut listing, rel(&folder), Reason::Unreadable);
+                continue;
+            }
+        };
+        let (mut entries, mut errored) = (Vec::new(), 0usize);
+        for e in read {
+            match e {
+                Ok(path) => entries.push(path),
+                Err(_) => errored += 1,
+            }
+        }
+        for _ in 0..errored {
+            skip(&mut listing, format!("an entry in {}", rel(&folder)), Reason::Unreadable);
+        }
         entries.sort();
         let mut folders = Vec::new();
         for path in entries {
             seen += 1;
             if seen > FOLDER_ENTRIES_MAX {
-                skip(&mut listing, Path::new("the rest of the folder"), Reason::OverCount);
-                return Some(listing);
+                // Why the listing stopped is always told, whatever else was only counted.
+                keep(&mut listing, "the rest of the folder".to_string(), Reason::EntryLimit);
+                return listing;
             }
-            let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
-            let (is_dir, is_file) = if is_link(&meta) {
+            let meta = match (disk.kind)(&path) {
+                Ok(meta) => meta,
+                Err(_) => {
+                    skip(&mut listing, rel(&path), Reason::Unreadable);
+                    continue;
+                }
+            };
+            let (is_dir, is_file) = if meta.link {
                 if let Err(reason) = check_link(&path, &roots) {
-                    skip(&mut listing, &path, reason);
+                    skip(&mut listing, rel(&path), reason);
                     continue;
                 }
                 match std::fs::metadata(&path) {
                     Ok(m) => (m.is_dir(), m.is_file()),
                     Err(_) => {
-                        skip(&mut listing, &path, Reason::Unreadable);
+                        skip(&mut listing, rel(&path), Reason::Unreadable);
                         continue;
                     }
                 }
             } else {
-                (meta.is_dir(), meta.is_file())
+                (meta.dir, meta.file)
             };
             if is_dir {
-                if depth < FOLDER_DEPTH_MAX {
-                    folders.push((path, depth + 1));
+                if meta.link && above.contains(&place(&path)) {
+                    skip(&mut listing, rel(&path), Reason::Link);
+                } else if depth < FOLDER_DEPTH_MAX {
+                    folders.push((path, depth + 1, above.clone()));
                 } else {
-                    skip(&mut listing, &path, Reason::TooDeep);
+                    skip(&mut listing, rel(&path), Reason::TooDeep);
                 }
             } else if is_file {
                 if !accepts(&file_name(&path)) {
-                    skip(&mut listing, &path, Reason::Unsupported);
+                    skip(&mut listing, rel(&path), Reason::Unsupported);
                 } else if listing.files.len() >= max {
-                    skip(&mut listing, &path, Reason::OverCount);
+                    skip(&mut listing, rel(&path), Reason::OverCount);
                 } else {
                     listing.files.push(path);
                 }
+            } else {
+                skip(&mut listing, rel(&path), Reason::Special);
             }
         }
         // The first folder is read next.
         stack.extend(folders.into_iter().rev());
     }
-    Some(listing)
+    listing
 }
 
 /// What a chat's input holds.
@@ -789,16 +905,16 @@ mod tests {
         let is_dir = |q: &Path| q == Path::new("C:\\folder");
         let accepts = |name: &str| name.ends_with(".txt");
         let paths = [p("C:\\a.txt"), p("C:\\b.exe"), p("C:\\folder"), p("\\\\host\\share\\c.txt"), p("\\\\?\\UNC\\host\\share\\d.txt")];
-        let (ok, no) = split_by_model(&paths, &is_dir, &accepts);
+        let (ok, no) = split_by_model(&paths, &|_| false, &is_dir, &accepts);
         // A folder has no extension, and iTerm2 asks about "": only a model that takes any
         // upload takes a folder (LLMProvider.swift:165-212), so this text-only one does not.
         assert_eq!(ok, vec![p("C:\\a.txt")]);
         assert_eq!(no, vec![p("C:\\b.exe"), p("C:\\folder"), p("\\\\host\\share\\c.txt"), p("\\\\?\\UNC\\host\\share\\d.txt")]);
-        let (ok, no) = split_by_model(&[p("C:\\folder"), p("C:\\b.exe")], &is_dir, &|_| true);
+        let (ok, no) = split_by_model(&[p("C:\\folder"), p("C:\\b.exe")], &|_| false, &is_dir, &|_| true);
         assert_eq!((ok, no), (vec![p("C:\\folder"), p("C:\\b.exe")], vec![]), "a model that takes any upload takes the folder");
         // A network path is never asked whether it is a directory.
         let probing = |q: &Path| -> bool { assert!(!crate::remote_prefs::is_unc(&q.to_string_lossy()), "probed {q:?}"); false };
-        split_by_model(&paths, &probing, &accepts);
+        split_by_model(&paths, &|_| false, &probing, &accepts);
     }
 
     #[test]
@@ -884,20 +1000,20 @@ mod tests {
         assert_eq!(rel(capped), ["a.txt", "b.txt", "sub\\c.txt"], "capped");
         assert_eq!(list_folder(&root.join("a.txt"), &txt, 10), None, "a file is not a folder");
         assert_eq!(list_folder(Path::new("\\\\host\\share\\d"), &txt, 10), None, "a network path is never read");
-        let mut always = |_: u64| true;
-        assert_eq!(read_capped(&root.join("a.txt"), FILE_BYTES_MAX, &mut always), Ok(b"A".to_vec()));
-        assert_eq!(read_capped(&root, FILE_BYTES_MAX, &mut always), Err(Reason::Unreadable), "a folder has no bytes");
-        assert_eq!(read_capped(&root.join("missing.txt"), FILE_BYTES_MAX, &mut always), Err(Reason::Unreadable));
-        assert_eq!(read_capped(Path::new("\\\\host\\share\\a.txt"), FILE_BYTES_MAX, &mut always), Err(Reason::Network), "a network path is never read");
-        assert_eq!(read_capped(&root.join("a.txt"), 0, &mut always), Err(Reason::TooLarge), "over the single file limit");
-        let mut never = |_: u64| false;
-        assert_eq!(read_capped(&root.join("a.txt"), FILE_BYTES_MAX, &mut never), Err(Reason::OverTotal), "over what is left of the total");
+        let room = Budget::default();
+        let total = TOTAL_BYTES_MAX;
+        assert_eq!(read_capped(&root.join("a.txt"), FILE_BYTES_MAX, &room, total), Ok(b"A".to_vec()));
+        assert_eq!(read_capped(&root, FILE_BYTES_MAX, &room, total), Err(Reason::Unreadable), "a folder has no bytes");
+        assert_eq!(read_capped(&root.join("missing.txt"), FILE_BYTES_MAX, &room, total), Err(Reason::Unreadable));
+        assert_eq!(read_capped(Path::new("\\\\host\\share\\a.txt"), FILE_BYTES_MAX, &room, total), Err(Reason::Network), "a network path is never read");
+        assert_eq!(read_capped(&root.join("a.txt"), 0, &room, total), Err(Reason::TooLarge), "over the single file limit");
+        assert_eq!(read_capped(&root.join("a.txt"), FILE_BYTES_MAX, &room, 0), Err(Reason::OverTotal), "over what is left of the total");
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn the_total_counts_only_the_files_kept() {
-        let mut b = Budget::default();
+        let b = Budget::default();
         let max = 64 << 20;
         assert!(b.take(60 << 20, max));
         assert!(!b.take(10 << 20, max), "too big for what is left");
@@ -908,7 +1024,7 @@ mod tests {
 
     #[test]
     fn what_a_send_left_out_is_told_in_one_line_each() {
-        for r in [Reason::Unsupported, Reason::TooLarge, Reason::OverTotal, Reason::Unreadable, Reason::OverCount, Reason::TooDeep, Reason::Link, Reason::Network] {
+        for r in [Reason::Unsupported, Reason::TooLarge, Reason::OverTotal, Reason::Unreadable, Reason::OverCount, Reason::TooDeep, Reason::Link, Reason::Network, Reason::Special, Reason::EntryLimit, Reason::More(3)] {
             assert!(!r.text().is_empty());
         }
         assert!(Reason::TooLarge.text().contains("32 MiB"));
@@ -958,6 +1074,135 @@ mod tests {
         assert!(names.contains(&"to_in\\in.txt".to_string()), "a link to a folder inside is followed: {names:?}");
         assert!(!names.iter().any(|n| n.contains("out.txt")), "nothing from outside: {names:?}");
         assert!(l.skipped.contains(&Skipped { name: "to_out".into(), reason: Reason::Link }), "{:?}", l.skipped);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_dropped_item_that_links_to_a_network_path_is_never_touched() {
+        let links: std::collections::HashMap<&str, &str> = [
+            ("C:\\drop\\share", "\\\\host\\share\\x"),
+            ("C:\\drop\\hop", "C:\\drop\\share"),
+            ("C:\\up", "\\\\?\\UNC\\host\\share"),
+            ("C:\\drop\\local", "C:\\elsewhere\\f"),
+            ("C:\\drop\\loop", "C:\\drop\\loop"),
+        ]
+        .into_iter()
+        .collect();
+        let is_link = |q: &Path| links.contains_key(q.to_string_lossy().as_ref());
+        let read_link = |q: &Path| links.get(q.to_string_lossy().as_ref()).map(PathBuf::from);
+        let verdict = |t: &str| top_verdict(Path::new(t), &is_link, &read_link);
+        assert_eq!(verdict("C:\\drop\\share"), Err(Reason::Network), "the item itself is a link to a share");
+        assert_eq!(verdict("C:\\drop\\hop"), Err(Reason::Network), "a chain that ends at a share");
+        assert_eq!(verdict("C:\\up\\f.txt"), Err(Reason::Network), "a folder above it is a link to a share");
+        assert_eq!(verdict("C:\\drop\\loop"), Err(Reason::Network), "a chain that never ends is not followed");
+        assert_eq!(verdict("C:\\drop\\local"), Ok(()), "a link to a local place is the person's own choice");
+        assert_eq!(verdict("C:\\drop\\plain.txt"), Ok(()));
+        // The verdict never asks about the target's own entry beyond reading the link.
+        let asked = std::cell::RefCell::new(Vec::new());
+        let spy = |q: &Path| {
+            asked.borrow_mut().push(q.to_string_lossy().to_string());
+            is_link(q)
+        };
+        let _ = top_verdict(Path::new("C:\\drop\\share"), &spy, &read_link);
+        assert!(!asked.borrow().iter().any(|a| a.starts_with("\\\\")), "{:?}", asked.borrow());
+        // A drop sorts such an item out before it is asked whether it is a folder.
+        let paths = [p("C:\\drop\\share"), p("C:\\a.txt")];
+        let network = |q: &Path| q == Path::new("C:\\drop\\share");
+        let probing = |q: &Path| -> bool { assert_ne!(q, Path::new("C:\\drop\\share"), "probed the link"); false };
+        let (ok, no) = split_by_model(&paths, &network, &probing, &|_| true);
+        assert_eq!((ok, no), (vec![p("C:\\a.txt")], vec![p("C:\\drop\\share")]));
+    }
+
+    fn io_err() -> std::io::Error {
+        std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied")
+    }
+
+    #[test]
+    fn a_folder_names_everything_it_leaves_out() {
+        // root: ok.txt, locked (cannot be opened), a bad entry, gone (its record cannot be read), pipe (neither
+        // a file nor a folder); locked holds a hidden file nobody could see.
+        let file = Kind { link: false, dir: false, file: true };
+        let dir = Kind { link: false, dir: true, file: false };
+        let entries = |q: &Path| -> std::io::Result<Vec<std::io::Result<PathBuf>>> {
+            match q.to_string_lossy().as_ref() {
+                "C:\\d" => Ok(vec![Ok(p("C:\\d\\ok.txt")), Ok(p("C:\\d\\locked")), Err(io_err()), Ok(p("C:\\d\\gone")), Ok(p("C:\\d\\pipe"))]),
+                _ => Err(io_err()),
+            }
+        };
+        let kind = |q: &Path| -> std::io::Result<Kind> {
+            match q.to_string_lossy().as_ref() {
+                "C:\\d\\ok.txt" => Ok(file),
+                "C:\\d\\locked" => Ok(dir),
+                "C:\\d\\pipe" => Ok(Kind { link: false, dir: false, file: false }),
+                _ => Err(io_err()),
+            }
+        };
+        let l = list_with(Path::new("C:\\d"), &|_| true, 10, &Disk { entries: &entries, kind: &kind });
+        assert_eq!(l.files, vec![p("C:\\d\\ok.txt")]);
+        let named: Vec<(String, Reason)> = l.skipped.iter().map(|s| (s.name.clone(), s.reason)).collect();
+        assert!(named.contains(&("locked".to_string(), Reason::Unreadable)), "an unopenable subfolder: {named:?}");
+        assert!(named.contains(&("gone".to_string(), Reason::Unreadable)), "an entry whose record fails: {named:?}");
+        assert!(named.contains(&("pipe".to_string(), Reason::Special)), "neither file nor folder: {named:?}");
+        assert!(named.contains(&("an entry in d".to_string(), Reason::Unreadable)), "an entry that errored is named: {named:?}");
+        assert_eq!(named.len(), 4, "{named:?}");
+        // The folder itself that cannot be opened is named too.
+        let l = list_with(Path::new("C:\\nope"), &|_| true, 10, &Disk { entries: &entries, kind: &kind });
+        assert_eq!(l.skipped.len(), 1, "{:?}", l.skipped);
+    }
+
+    #[test]
+    fn the_limits_are_told_in_their_own_words_and_counted() {
+        // 1,100 files that are not taken: the notice names ten and counts every one left.
+        let many = Disk {
+            entries: &|q: &Path| Ok(if q == Path::new("C:\\d") { (0..1100).map(|i| Ok(p(&format!("C:\\d\\f{i:04}.bin")))).collect() } else { vec![] }),
+            kind: &|_: &Path| Ok(Kind { link: false, dir: false, file: true }),
+        };
+        let l = list_with(Path::new("C:\\d"), &|_| false, 10, &many);
+        let n = skipped_notice(&l.skipped);
+        assert!(n.ends_with("and 1090 more."), "{n}");
+        // More than the entry limit stops the listing with a reason about entries, not the file limit.
+        let huge = Disk {
+            entries: &|q: &Path| Ok(if q == Path::new("C:\\d") { (0..FOLDER_ENTRIES_MAX + 5).map(|i| Ok(p(&format!("C:\\d\\f{i}.bin")))).collect() } else { vec![] }),
+            kind: &|_: &Path| Ok(Kind { link: false, dir: false, file: true }),
+        };
+        let l = list_with(Path::new("C:\\d"), &|_| true, 5, &huge);
+        let stop = l.skipped.iter().find(|s| s.reason == Reason::EntryLimit).expect("the stop is named even when others were only counted");
+        assert!(stop.reason.text().contains("20000") && !stop.reason.text().contains("200 file"), "{}", stop.reason.text());
+        assert!(skipped_notice(&l.skipped).contains("rest of the folder"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_failed_read_does_not_use_up_the_total() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = std::env::temp_dir().join(format!("tandem-chat-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let locked = root.join("locked.txt");
+        std::fs::write(&locked, "0123456789").unwrap();
+        // Held with no sharing: the metadata is readable, the read fails.
+        let _hold = std::fs::OpenOptions::new().read(true).write(true).share_mode(0).open(&locked).unwrap();
+        let budget = Budget::default();
+        assert_eq!(read_capped(&locked, FILE_BYTES_MAX, &budget, TOTAL_BYTES_MAX), Err(Reason::Unreadable));
+        assert_eq!(budget.used(), 0, "a file that was not read counts for nothing");
+        drop(_hold);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_link_back_to_its_parent_is_not_followed_again() {
+        let root = std::env::temp_dir().join(format!("tandem-chat-loop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let top = root.join("d");
+        std::fs::create_dir_all(top.join("a")).unwrap();
+        std::fs::write(top.join("a\\x.txt"), "X").unwrap();
+        let ok = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(top.join("a\\loop")).arg(top.join("a")).output().map(|o| o.status.success()).unwrap_or(false);
+        assert!(ok, "mklink /J");
+        let l = list_folder(&top, &|n: &str| n.ends_with(".txt"), 200).unwrap();
+        let names: Vec<String> = l.files.iter().map(|f| f.strip_prefix(&top).unwrap().to_string_lossy().to_string()).collect();
+        assert_eq!(names, ["a\\x.txt"], "the same files are not attached again through the loop");
+        assert!(l.skipped.contains(&Skipped { name: "a\\loop".into(), reason: Reason::Link }), "{:?}", l.skipped);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

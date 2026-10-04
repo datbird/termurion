@@ -130,17 +130,31 @@ impl EguiHost {
     /// Runs one egui frame with `f` and draws it.
     pub fn paint(&mut self, f: impl FnMut(&mut egui::Ui)) {
         let mut input = self.state.take_egui_input(&self.window);
-        let probing = std::mem::take(&mut self.probe);
-        if probing {
-            input.events.push(egui::Event::Copy);
+        let mut probing = false;
+        if self.probe {
+            let real_copy = input.events.iter().any(|e| matches!(e, egui::Event::Copy | egui::Event::Cut));
+            match probe_plan(real_copy, self.ctx.memory(|m| m.focused().is_some())) {
+                ProbePlan::Run => {
+                    self.probe = false;
+                    probing = true;
+                    input.events.push(egui::Event::Copy);
+                }
+                // The real copy goes through alone; the probe asks again on the next frame.
+                ProbePlan::Wait => self.window.request_redraw(),
+                ProbePlan::Skip => {
+                    self.probe = false;
+                    self.probed = Some(String::new());
+                }
+            }
         }
         let mut out = self.ctx.run_ui(input, f);
         if probing {
             // The copy is ours: taken out of the frame's output so the clipboard is untouched.
+            // One source: the last answer (`CVC:3184-3193`), never several glued together.
             let mut found = String::new();
             out.platform_output.commands.retain(|c| match c {
                 egui::OutputCommand::CopyText(t) => {
-                    found.push_str(t);
+                    found = t.clone();
                     false
                 }
                 _ => true,
@@ -188,5 +202,41 @@ impl EguiHost {
         for id in &out.textures_delta.free {
             self.renderer.free_texture(id);
         }
+    }
+}
+
+/// What a selection probe does with a frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbePlan {
+    /// Ask the labels: inject a copy and take what they answer.
+    Run,
+    /// A real copy is in this frame: it goes through untouched and the probe waits a frame.
+    Wait,
+    /// A text field has the focus and would answer the copy with its own selection: no label
+    /// selection can be meant, the probe answers nothing.
+    Skip,
+}
+
+/// How a probe frame goes (`CVC:3184-3193` has one source, the first responder's selection).
+pub fn probe_plan(real_copy: bool, text_field_focused: bool) -> ProbePlan {
+    if real_copy {
+        ProbePlan::Wait
+    } else if text_field_focused {
+        ProbePlan::Skip
+    } else {
+        ProbePlan::Run
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_selection_probe_never_takes_a_real_copy_or_a_text_fields_selection() {
+        assert_eq!(probe_plan(false, false), ProbePlan::Run);
+        assert_eq!(probe_plan(true, false), ProbePlan::Wait, "a real Ctrl+C or a Copy click is never swallowed");
+        assert_eq!(probe_plan(true, true), ProbePlan::Wait);
+        assert_eq!(probe_plan(false, true), ProbePlan::Skip, "the focused field would answer with its own text");
     }
 }

@@ -1109,8 +1109,8 @@ impl App {
         }
         let model = self.chat_input_model(&chat);
         let accepts = |name: &str| model.as_ref().is_some_and(|m| crate::ai_model::accepts(m, crate::ai_files::upload_mime(name)));
-        let budget = std::cell::RefCell::new(chat_input::Budget::default());
-        let read = |p: &std::path::Path| chat_input::read_capped(p, chat_input::FILE_BYTES_MAX, &mut |n| budget.borrow_mut().take(n, chat_input::TOTAL_BYTES_MAX));
+        let budget = chat_input::Budget::default();
+        let read = |p: &std::path::Path| chat_input::read_capped(p, chat_input::FILE_BYTES_MAX, &budget, chat_input::TOTAL_BYTES_MAX);
         let list = |p: &std::path::Path| chat_input::list_folder(p, &accepts, chat_input::FOLDER_FILES_MAX);
         let mime = |n: &str| crate::ai_files::upload_mime(n).to_string();
         let draft = self.chat_input.draft.clone();
@@ -1162,7 +1162,7 @@ impl App {
         let Some(chat) = self.chat_shown.clone() else { return };
         let model = self.chat_input_model(&chat);
         let accepts = |name: &str| model.as_ref().is_some_and(|m| crate::ai_model::accepts(m, crate::ai_files::upload_mime(name)));
-        let (ok, no) = chat_input::split_by_model(paths, &|p| p.is_dir(), &accepts);
+        let (ok, no) = chat_input::split_by_model(paths, &chat_input::links_to_network, &|p| p.is_dir(), &accepts);
         if !no.is_empty() {
             let names: Vec<String> = no.iter().map(|p| chat_input::file_name(p)).collect();
             let provider = model.as_ref().map(|m| crate::ai_model::display_name(m));
@@ -1183,7 +1183,7 @@ impl App {
         let Some(chat) = self.chat_shown.clone() else { return false };
         let model = self.chat_input_model(&chat);
         let accepts = |name: &str| model.as_ref().is_some_and(|m| crate::ai_model::accepts(m, crate::ai_files::upload_mime(name)));
-        let (supported, _) = chat_input::split_by_model(&paths, &|p| p.is_dir(), &accepts);
+        let (supported, _) = chat_input::split_by_model(&paths, &chat_input::links_to_network, &|p| p.is_dir(), &accepts);
         if supported.is_empty() {
             self.chat_input.insert(&chat_input::inserted_paths(&paths));
             self.chat_window_refresh();

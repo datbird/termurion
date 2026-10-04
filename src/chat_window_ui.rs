@@ -246,6 +246,10 @@ struct ConvoState {
     row: RowFind,
     /// The current find match last scrolled to, so a rescan that keeps it never scrolls again.
     find_seen: Option<(String, usize, std::ops::Range<usize>)>,
+    /// A new current match is waiting for its text to be laid out, to scroll to the match itself.
+    match_due: bool,
+    /// The match itself was scrolled to this frame, so the row's centering must not override it.
+    match_scrolled: bool,
     find: FindUi,
 }
 
@@ -941,6 +945,7 @@ const INDENT_STEP: f32 = 9.0;
 /// person has not scrolled up, and each chat keeps its own position.
 fn conversation(ui: &mut egui::Ui, d: &ChatData, st: &mut ConvoState, icons: bool, out: &mut Vec<ChatEvent>) {
     st.taken = false;
+    st.match_scrolled = false;
     prune_pressed(&mut st.pressed, &d.convo);
     if st.reveal.as_ref().is_some_and(|(chat, _)| *chat != d.chat) {
         st.reveal = None;
@@ -956,10 +961,12 @@ fn conversation(ui: &mut egui::Ui, d: &ChatData, st: &mut ConvoState, icons: boo
         let id = (cur.message.clone(), cur.segment, cur.range.clone());
         if st.find_seen.as_ref() != Some(&id) {
             st.reveal = Some((d.chat.clone(), cur.message.clone()));
+            st.match_due = true;
             st.find_seen = Some(id);
         }
     } else {
         st.find_seen = None;
+        st.match_due = false;
     }
     egui::ScrollArea::vertical().id_salt(egui::Id::new(("chat_convo", &d.chat))).auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
         ui.add_space(6.0);
@@ -979,8 +986,13 @@ fn conversation(ui: &mut egui::Ui, d: &ChatData, st: &mut ConvoState, icons: boo
                 Item::Message(_) => {
                     let rect = message_row(ui, row, st, icons, dark, out);
                     if st.reveal.as_ref().is_some_and(|(_, m)| *m == row.id) {
-                        ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                        // The match itself is brought into view where its text was drawn (`CVC:3099-3101`);
+                        // the row is centered only for a reveal that has no match (a search result).
+                        if !st.match_scrolled {
+                            ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                        }
                         found = true;
+                        st.match_due = false;
                     }
                     ui.add_space(6.0);
                 }
@@ -1268,6 +1280,14 @@ fn draw_block(ui: &mut egui::Ui, block: &Block, base: usize, segment: usize, ink
         ui.painter().rect_filled(rect, 0.0, ink.code_bg);
     }
     let origin = rect.min + egui::vec2(indent + if block.code_bg { 4.0 } else { 0.0 }, 0.0);
+    if st.match_due {
+        if let Some((range, _)) = marks.iter().find(|(_, current)| *current) {
+            let text: String = block.runs.iter().map(|r| r.text.as_str()).collect();
+            ui.scroll_to_rect(match_rect(&galley, &text, range.clone(), origin), None);
+            st.match_due = false;
+            st.match_scrolled = true;
+        }
+    }
     egui::text_selection::LabelSelectionState::label_text_selection(ui, &resp, origin, galley.clone(), ink.text, egui::Stroke::NONE);
     if st.row.open && resp.clicked() {
         if let Some(p) = resp.interact_pointer_pos() {
@@ -1298,6 +1318,15 @@ fn draw_block(ui: &mut egui::Ui, block: &Block, base: usize, segment: usize, ink
         copy_button(ui, rect, &row.id, copy_slot(part, cb.first), &cb.text, ink, st, icons, out);
     }
     resp
+}
+
+/// The rectangle of a match inside a laid-out block, from its first character to its last, in
+/// the block's own coordinates shifted by `origin` (`scrollMatchRangeToVisible`, `CVC:3099-3101`).
+/// `range` is in bytes of the block's text.
+fn match_rect(galley: &egui::Galley, text: &str, range: std::ops::Range<usize>, origin: egui::Pos2) -> egui::Rect {
+    let at = |byte: usize| egui::text::CCursor::new(text[..byte.min(text.len())].chars().count());
+    let (from, to) = (galley.pos_from_cursor(at(range.start)), galley.pos_from_cursor(at(range.end)));
+    from.union(to).translate(origin.to_vec2())
 }
 
 /// The find highlight (the system's find yellow): the current match solid, the others at
@@ -1467,5 +1496,29 @@ mod tests {
         let text: Vec<char> = job.text.chars().collect();
         let shown: Vec<String> = links.iter().map(|(from, to, _)| text[*from..*to].iter().collect()).collect();
         assert_eq!(shown, ["b", "e"]);
+    }
+
+    #[test]
+    fn a_find_match_in_a_tall_message_is_what_scrolls_into_view() {
+        let text = "alpha\nbeta\ngamma\ndelta\nneedle one\nzeta\neta\ntheta\nneedle two";
+        let ctx = egui::Context::default();
+        let mut rects = Vec::new();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut job = egui::text::LayoutJob::default();
+            job.wrap.max_width = 300.0;
+            job.append(text, 0.0, egui::TextFormat::simple(egui::FontId::proportional(14.0), egui::Color32::WHITE));
+            let galley = ui.painter().layout_job(job);
+            let first = text.find("needle one").unwrap();
+            let second = text.find("needle two").unwrap();
+            let origin = egui::pos2(10.0, 100.0);
+            rects.push(match_rect(&galley, text, 0..5, origin));
+            rects.push(match_rect(&galley, text, first..first + 6, origin));
+            rects.push(match_rect(&galley, text, second..second + 6, origin));
+        });
+        out.textures_delta.clear();
+        let (a, one, two) = (rects[0], rects[1], rects[2]);
+        assert!(a.min.y >= 100.0 && a.min.y < one.min.y && one.min.y < two.min.y, "each match sits on its own row: {rects:?}");
+        assert!(one.width() > 10.0 && one.height() > 5.0, "the rectangle covers the matched characters: {one:?}");
+        assert!(two.min.y - one.min.y >= 3.0 * 14.0, "four lines apart: {rects:?}");
     }
 }
