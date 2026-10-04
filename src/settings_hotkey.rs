@@ -269,14 +269,10 @@ fn sheet(ctx: &egui::Context, sh: &mut Sheet, keys: &mut KeysState, others: &[(S
             ui.checkbox(&mut m.animates, "Animate showing and hiding");
             ui.checkbox(&mut m.floats, "Floating window");
             ui.label(egui::RichText::new("Floating windows stay above other windows.").small());
-            ui.label("On Dock icon click:");
-            ui.add_enabled_ui(false, |ui| {
-                for (v, text) in [(0, "Don't do anything special"), (1, "Show this Hotkey Window"), (2, "Show this Hotkey Window if no other window is open")] {
-                    ui.radio_value(&mut m.dock, v, text);
-                }
-            })
-            .response
-            .on_disabled_hover_text("Windows has no Dock; this setting is kept for profiles shared with iTerm2.");
+            ui.label("On notification area icon click:");
+            for (v, text) in [(0, "Don't do anything special"), (1, "Show this Hotkey Window"), (2, "Show this Hotkey Window if no other window is open")] {
+                ui.radio_value(&mut m.dock, v, text);
+            }
         });
         ui.horizontal(|ui| {
             if ui.add_enabled(m.primary.is_some(), egui::Button::new("Additional Hotkeys...")).clicked() {
@@ -606,5 +602,15 @@ mod tests {
         g.set("NoSyncSuppressAddAnotherHotkeyProfileWarning", Value::Boolean(true));
         let w = crate::settings_keys::SheetWarning::new(one, crate::settings_keys::SheetThen::CreateHotkey(vec![("G".into(), "Quake".into())]));
         assert_eq!(crate::settings_keys::sheet_preempt(&g, &w, false, 0.0), None);
+    }
+
+    /// The dock preference is the notification area icon's left click on Windows.
+    #[test]
+    fn dock_preference_follows_windows() {
+        let s = crate::schema::find("HotKey Window Dock Click Action").expect("the dock key");
+        assert!(!s.macos_only);
+        assert_eq!(s.label, "On notification area icon click:");
+        let values: Vec<Value> = s.choices.iter().map(|c| c.value.clone()).collect();
+        assert_eq!(values, vec![Value::Integer(0), Value::Integer(1), Value::Integer(2)]);
     }
 }

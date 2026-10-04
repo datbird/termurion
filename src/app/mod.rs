@@ -174,6 +174,8 @@ pub enum UserEvent {
     NotificationClicked,
     /// The monitors or a work area changed.
     DisplayChanged,
+    /// The notification area icon was clicked (true for a right click).
+    Tray(bool),
     /// A shell's foreground job changed.
     JobsChanged,
     /// A system-wide hotkey was pressed (the ids of every hotkey it matched).
@@ -850,6 +852,8 @@ pub struct App {
     ui_element_confirmed: bool,
     /// Tandem is acting as a UI element now (`presence::is_ui_element`).
     ui_element_now: bool,
+    /// The notification area icon is added (app-wide).
+    tray_on: bool,
     /// The font settings the renderer last loaded.
     font_sig: String,
     /// Cursor blink phase, and when it last flipped.
@@ -1281,6 +1285,10 @@ pub fn run() {
     crate::notify::on_click(Box::new(move || {
         let _ = clicks.lock().map(|p| p.send_event(UserEvent::NotificationClicked));
     }));
+    let trays = proxy.clone();
+    crate::notify::on_tray(Box::new(move |right| {
+        let _ = trays.lock().map(|p| p.send_event(UserEvent::Tray(right)));
+    }));
     let displays = proxy.clone();
     crate::display_watch::on_change(Box::new(move || {
         let _ = displays.lock().map(|p| p.send_event(UserEvent::DisplayChanged));
@@ -1709,6 +1717,7 @@ pub fn run() {
         display_due: None,
         ui_element_confirmed,
         ui_element_now: false,
+        tray_on: false,
         font_sig: String::new(),
         profiles_win: None,
         blink_on: true,
@@ -5179,7 +5188,8 @@ impl ApplicationHandler<UserEvent> for App {
             self.refit_all_windows();
         }
         let desktop_due = self.desktop_tick();
-        self.presence_tick();
+        let ui_element = self.presence_tick();
+        self.tray_tick(ui_element);
         if self.settings.as_mut().is_some_and(|s| s.take_space_warning()) {
             self.ask_scripts(scripts_alerts::ask(crate::desktops::SPACES_WARNING_HEADING, crate::desktops::SPACES_WARNING, &["OK"], Some(crate::desktops::SPACES_WARNING_ID), crate::warnings::Kind::Permanent, scripts_alerts::Then::Nothing));
         }
@@ -5240,6 +5250,7 @@ impl ApplicationHandler<UserEvent> for App {
                 return self.run_menu_id(&id, event_loop);
             }
             UserEvent::NotificationClicked => return self.reveal_notified(),
+            UserEvent::Tray(right) => return self.tray_clicked(right, event_loop),
             UserEvent::JobsChanged => return self.jobs_changed(),
             UserEvent::DisplayChanged => {
                 let delay = crate::placement::display_delay(self.globals.number("UpdateScreenParamsDelay").unwrap_or(1.0));

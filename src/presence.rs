@@ -54,6 +54,60 @@ pub fn cycling_skips(hotkey: Option<bool>, excluded_from_cycling: bool) -> bool 
     }
 }
 
+pub const STATUS_BAR_ICON_KEY: &str = "StatusBarIcon";
+/// The notification area icon's tip.
+pub const TRAY_TIP: &str = "Tandem";
+
+/// The icon's menu (`AD:1846-1880`): label, and the selector of the menu item it runs or the
+/// kind of submenu ("buried", "main").
+pub const TRAY_ITEMS: [(&str, &str); 6] = [
+    ("Settings", "showPrefWindow:"),
+    ("Bring All Windows to Front", "arrangeInFront:"),
+    ("Buried Sessions", "buried"),
+    ("Check For Updates", "checkForUpdatesFromMenu:"),
+    ("Main Menu", "main"),
+    ("Quit Tandem", "terminate:"),
+];
+
+/// "HotKey Window Dock Click Action" values.
+pub const DOCK_DO_NOT_SHOW: i64 = 0;
+pub const DOCK_ALWAYS_SHOW: i64 = 1;
+pub const DOCK_SHOW_IF_NONE: i64 = 2;
+
+/// Whether the notification area icon is there: always while Tandem is a UI element, whatever
+/// the Advanced setting says. iTerm2 gates it on `StatusBarIcon` (`APP:979-993`), but Tandem's
+/// windows leave the taskbar and Alt+Tab too, so the icon is the only way back (coordinator
+/// ruling).
+pub fn tray_wanted(ui_element_now: bool, _status_bar_icon: bool) -> bool {
+    ui_element_now
+}
+
+/// What a click on the icon does (`HKC:362-402`, `dockIconClicked`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DockClick {
+    /// Every open hotkey window hides.
+    HideHotkeyWindows,
+    /// These profiles' hotkey windows show.
+    Show(Vec<String>),
+    /// Nothing happened: the platform's default reopen runs (the last window comes forward,
+    /// or a new one opens).
+    Unhandled,
+}
+
+/// The dock click decision: a visible hotkey window hides them all; otherwise each profile
+/// (guid, its "HotKey Window Dock Click Action") may show its window.
+pub fn dock_click(visible_hotkey_windows: usize, profiles: &[(String, i64)], visible_terminal_windows: usize) -> DockClick {
+    if visible_hotkey_windows > 0 {
+        return DockClick::HideHotkeyWindows;
+    }
+    let show: Vec<String> = profiles.iter().filter(|(_, a)| *a == DOCK_ALWAYS_SHOW || (*a == DOCK_SHOW_IF_NONE && visible_terminal_windows == 0)).map(|(g, _)| g.clone()).collect();
+    if show.is_empty() {
+        DockClick::Unhandled
+    } else {
+        DockClick::Show(show)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +174,41 @@ mod tests {
         assert_eq!(UI_ELEMENT_KEY, "HideFromDockAndAppSwitcher");
         assert_eq!(REQUIRES_HOTKEYS_KEY, "UIElementRequiresHotkeys");
         assert_eq!(EXCLUDED_FROM_CYCLING_KEY, "HotkeyWindowsExcludedFromCycling");
+    }
+
+    /// `AD:1846-1880`.
+    #[test]
+    fn tray_items_follow_iterm2() {
+        assert_eq!(
+            TRAY_ITEMS,
+            [("Settings", "showPrefWindow:"), ("Bring All Windows to Front", "arrangeInFront:"), ("Buried Sessions", "buried"), ("Check For Updates", "checkForUpdatesFromMenu:"), ("Main Menu", "main"), ("Quit Tandem", "terminate:")]
+        );
+        for (_, sel) in TRAY_ITEMS.iter().filter(|(_, s)| s.ends_with(':')) {
+            assert!(crate::menus::items().iter().any(|i| i.selector == *sel), "{sel}");
+        }
+        assert_eq!(STATUS_BAR_ICON_KEY, "StatusBarIcon");
+        assert_eq!(TRAY_TIP, "Tandem");
+    }
+
+    /// `HKC:362-402`.
+    #[test]
+    fn dock_click_follows_iterm2() {
+        let p = |g: &str, a| (g.to_string(), a);
+        assert_eq!(dock_click(1, &[p("a", 1)], 3), DockClick::HideHotkeyWindows);
+        let three = [p("a", DOCK_DO_NOT_SHOW), p("b", DOCK_ALWAYS_SHOW), p("c", DOCK_SHOW_IF_NONE)];
+        assert_eq!(dock_click(0, &three, 1), DockClick::Show(vec!["b".into()]));
+        assert_eq!(dock_click(0, &three, 0), DockClick::Show(vec!["b".into(), "c".into()]));
+        assert_eq!(dock_click(0, &[p("a", 0)], 0), DockClick::Unhandled);
+        assert_eq!(dock_click(0, &[], 0), DockClick::Unhandled);
+    }
+
+    /// `APP:979-993`.
+    #[test]
+    fn tray_wanted_follows_iterm2() {
+        assert!(tray_wanted(true, true));
+        // The icon is the only way back, so the Advanced setting cannot remove it.
+        assert!(tray_wanted(true, false));
+        assert!(!tray_wanted(false, true));
+        assert!(!tray_wanted(false, false));
     }
 }

@@ -3379,3 +3379,12 @@ label = "Hotkey windows are excluded from Cycle Through Windows."
 type = "bool"
 default = false
 help = "Hotkey windows are excluded from Cycle Through Windows."
+
+[[setting]]
+key = "StatusBarIcon"
+tab = "Advanced"
+section = "General"
+label = "Add notification area icon when excluded from taskbar?"
+type = "bool"
+default = true
+help = "Add notification area icon when excluded from taskbar?\nWhen you turn on \u201cExclude from taskbar and Alt+Tab switcher\u201d a notification area icon is added so you can switch the setting back off. Disable this to remove the icon. Doing so makes it very hard to get to Settings. You must restart Tandem after changing this setting."

@@ -2868,4 +2868,14 @@ mod tests {
         assert!(row_enabled(&g, "UIElementRequiresHotkeys"));
         assert!(row_enabled(&g, "HideFromDockAndAppSwitcher"));
     }
+
+    /// `AS:508`, Mac words replaced.
+    #[test]
+    fn status_bar_icon_row_follows_iterm2() {
+        let s = schema::find_global("StatusBarIcon").expect("StatusBarIcon");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(true)));
+        assert_eq!(s.label, "Add notification area icon when excluded from taskbar?");
+        assert_eq!(s.help, "Add notification area icon when excluded from taskbar?\nWhen you turn on \u{201c}Exclude from taskbar and Alt+Tab switcher\u{201d} a notification area icon is added so you can switch the setting back off. Disable this to remove the icon. Doing so makes it very hard to get to Settings. You must restart Tandem after changing this setting.");
+    }
 }

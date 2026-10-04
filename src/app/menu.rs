@@ -41,7 +41,7 @@ const NUDGE: f32 = 0.05;
 
 /// Windows shows "&" as a mnemonic marker, so a literal "&" is written "&&". Mac words read
 /// as Windows ones ("Finder" is "Explorer").
-fn menu_text(item: &Item) -> String {
+pub(super) fn menu_text(item: &Item) -> String {
     let label = menus::shown_label(item.label()).replace('&', "&&");
     match item.chord().filter(menus::reaches_tandem) {
         Some(c) => format!("{label}\t{}", menus::chord_label(&c)),
@@ -241,6 +241,26 @@ impl App {
         self.sync_checks();
         // A fixed Theme forces the window's mode; the bar was attached with `Auto`.
         self.apply_theme();
+    }
+
+    /// A copy of the main menu built from `menus::items()` by the rule `install_menus` uses
+    /// (check marks are not copied): the notification area icon's Main Menu submenu.
+    pub(super) fn main_menu_tree(&self) -> Submenu {
+        let root = Submenu::new("Main Menu", true);
+        let mut subs: HashMap<Vec<String>, Submenu> = HashMap::new();
+        for item in menus::items() {
+            let (parent, entry): (&[String], Box<dyn IsMenuItem>) = if item.separator {
+                (&item.path[..], Box::new(PredefinedMenuItem::separator()))
+            } else if item.submenu {
+                let s = Submenu::new(item.label().replace('&', "&&"), true);
+                subs.insert(item.path.clone(), s.clone());
+                (&item.path[..item.path.len() - 1], Box::new(s))
+            } else {
+                (&item.path[..item.path.len() - 1], Box::new(MenuItem::with_id(item.id(), menu_text(item), Self::menu_enabled(item), None)))
+            };
+            let _ = if parent.is_empty() { root.append(entry.as_ref()) } else if let Some(s) = subs.get(parent) { s.append(entry.as_ref()) } else { continue };
+        }
+        root
     }
 
     /// iTerm2's right-click menu, after `extra` items (label, what it does) and a separator,
@@ -574,7 +594,7 @@ impl App {
         if self.tab_menu_picked(id, event_loop) {
             return;
         }
-        if self.buried_picked(id) || self.script_picked(id) {
+        if self.tray_picked(id) || self.buried_picked(id) || self.script_picked(id) {
             return;
         }
         if self.arrangement_picked(id) || self.window_list_picked(id) {

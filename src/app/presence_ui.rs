@@ -99,3 +99,126 @@ impl App {
         self.globals_changed(true);
     }
 }
+
+/// The tray menu's own id for Bring All Windows to Front (the menu bar's item focuses only the
+/// current window).
+const TRAY_BRING_ALL_ID: &str = "tray-bring-all";
+
+impl App {
+    /// Follows `presence_tick`'s value: the notification area icon is added or removed on a change.
+    pub(super) fn tray_tick(&mut self, ui_element_now: bool) {
+        let want = presence::tray_wanted(ui_element_now, self.globals.bool(presence::STATUS_BAR_ICON_KEY));
+        if want == self.tray_on {
+            return;
+        }
+        match crate::notify::set_resident(want) {
+            Ok(()) => self.tray_on = want,
+            Err(e) => {
+                self.tray_on = want;
+                self.banners.set("tray", e);
+            }
+        }
+    }
+
+    /// Terminal windows: (id, Some(shown) for a hotkey window, on screen), current first.
+    fn terminal_window_states(&self) -> Vec<(WindowId, Option<bool>, bool)> {
+        let on_screen = |w: &winit::window::Window| w.is_visible() != Some(false) && w.is_minimized() != Some(true);
+        let mut out = Vec::new();
+        if let Some(g) = &self.gpu {
+            out.push((g.window.id(), self.hotkey.as_ref().map(|h| h.shown), on_screen(&g.window)));
+        }
+        for (_, s) in self.windows.parked() {
+            if let Some(g) = &s.gpu {
+                out.push((g.window.id(), s.hotkey.as_ref().map(|h| h.shown), on_screen(&g.window)));
+            }
+        }
+        out
+    }
+
+    /// A click on the notification area icon: a right click shows its menu, a left click is the
+    /// dock click (`HKC:362-402`, `AD:946-952`).
+    pub(super) fn tray_clicked(&mut self, right: bool, event_loop: &ActiveEventLoop) {
+        if right {
+            return self.show_tray_menu();
+        }
+        let states = self.terminal_window_states();
+        let hotkeys = states.iter().filter(|(_, h, on)| *h == Some(true) && *on).count();
+        let regular = states.iter().filter(|(_, h, on)| h.is_none() && *on).count();
+        let profiles: Vec<(String, i64)> = self.store.profiles.iter().filter(|p| crate::hotkey::Prefs::from_profile(p).active()).map(|p| (p.guid(), p.int("HotKey Window Dock Click Action"))).collect();
+        let back = self.current_window();
+        match presence::dock_click(hotkeys, &profiles, regular) {
+            presence::DockClick::HideHotkeyWindows => {
+                for w in self.hotkey_windows() {
+                    self.enter(w);
+                    self.roll_out(true);
+                }
+                if let Some(b) = back {
+                    self.enter(b);
+                }
+            }
+            presence::DockClick::Show(guids) => {
+                for g in guids {
+                    self.show_hotkey_window(&g, 0);
+                }
+            }
+            // The reopen macOS runs: the last window comes forward, or a new one opens.
+            presence::DockClick::Unhandled => match self.last_window.filter(|w| states.iter().any(|(id, _, _)| id == w)) {
+                Some(w) => self.focus_terminal_window(w),
+                None if states.iter().all(|(_, _, on)| !on) => self.new_window(event_loop, None),
+                None => {}
+            },
+        }
+    }
+
+    /// Bring All Windows to Front from the tray: every window, in registry order.
+    fn tray_bring_all(&mut self) {
+        let ids: Vec<WindowId> = self.registry.order().into_iter().filter_map(|k| self.window_id_of_key(k)).collect();
+        for w in ids {
+            self.focus_terminal_window(w);
+        }
+    }
+
+    /// The icon's menu (`AD:1846-1880`) on the current terminal window (a cloaked hotkey window
+    /// still has a handle; the message-only window cannot own a popup).
+    fn show_tray_menu(&mut self) {
+        use muda::{ContextMenu, Menu, MenuItem, PredefinedMenuItem, Submenu};
+        let Some(hwnd) = self.hwnd() else { return };
+        let menu = Menu::new();
+        for (label, what) in presence::TRAY_ITEMS {
+            let appended = match what {
+                "buried" => {
+                    let sub = Submenu::new(label, true);
+                    let entries = self.buried_entries();
+                    for (id, text) in &entries {
+                        let _ = if id.0.is_empty() { sub.append(&PredefinedMenuItem::separator()) } else { sub.append(&MenuItem::with_id(id.clone(), text.replace('&', "&&"), true, None)) };
+                    }
+                    sub.set_enabled(!entries.is_empty());
+                    menu.append(&sub)
+                }
+                "main" => menu.append(&self.main_menu_tree()),
+                "arrangeInFront:" => menu.append(&MenuItem::with_id(TRAY_BRING_ALL_ID, label, true, None)),
+                selector => match crate::menus::items().iter().find(|i| i.selector == selector) {
+                    Some(item) => menu.append(&MenuItem::with_id(item.id(), label, Self::menu_enabled(item), None)),
+                    None => continue,
+                },
+            };
+            if let Err(e) = appended {
+                self.banners.set("menu", format!("Notification area menu: {e}"));
+            }
+        }
+        // A cloaked or background window still has to be foreground for the menu to close on a click away.
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd as HWND) };
+        unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        // The pick arrives after the menu closes, so the menu lives until the next one.
+        self.popup_menu = Some(menu);
+    }
+
+    /// A pick from the tray's own items. False for other ids.
+    pub(super) fn tray_picked(&mut self, id: &str) -> bool {
+        if id != TRAY_BRING_ALL_ID {
+            return false;
+        }
+        self.tray_bring_all();
+        true
+    }
+}
