@@ -77,6 +77,7 @@ pub const DONE: &[&str] = &[
     "setWindowStyle:|Right of Screen", "toggleToolbeltVisibility:", "setDefaultToolbeltWidth:",
     "irPrev:", "clearInstantReplay:", "exportRecording:", "loadRecording:", "openAIChats:", "openAIChat:", "toggleShowInlineChat:", "performNaturalLanguageQuery:", "explainOutputWithAI:", "openPasswordManager:",
     "sshDisconnect:", "downloadFiles:",
+    "installClaudeCodeIntegration:", "reinstallClaudeCodeIntegration:", "uninstallClaudeCodeIntegration:",
 ];
 
 /// Commands that work with a known difference for now.
@@ -332,6 +333,9 @@ mod tests {
         assert_eq!(status(find("openAIChat:", "Open AI Chat...")), Status::Done, "12d");
         assert_eq!(status(find("toggleShowInlineChat:", "Show Inline Chat")), Status::Done, "12d");
         assert_eq!(status(find("sshDisconnect:", "Disconnect")), Status::Done, "14c");
+        for (sel, label) in [("installClaudeCodeIntegration:", "Install Claude Code Integration"), ("reinstallClaudeCodeIntegration:", "Reinstall Claude Code Integration"), ("uninstallClaudeCodeIntegration:", "Uninstall Claude Code Integration")] {
+            assert_eq!(status(find(sel, label)), Status::Done, "12f");
+        }
         assert_eq!(status(find("downloadFiles:", "Download Files...")), Status::Done, "14d");
         assert_eq!(
             status(find("toggleRemoteHostCanControlIterm2:", "Remote host can control iTerm2")),

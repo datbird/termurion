@@ -129,6 +129,7 @@ mod api_ui;
 mod api_requests;
 mod script_ui;
 mod script_runtime_ui;
+mod claude_code_app;
 mod scripts_alerts;
 mod warnings_app;
 mod suppressed_app;
@@ -958,6 +959,13 @@ pub struct App {
     cockpit: Option<crate::cockpit_ui::CockpitWindow>,
     cockpit_view: crate::cockpit::View,
     cockpit_save_due: Option<Instant>,
+    /// The Claude Code setup window (app-wide, one at a time), whether this launch's health
+    /// check ran, whether the announcement was put off for this run ("Ask Later"), and a
+    /// setup wanted from an answer that has no event loop (the next pass opens it).
+    cc_onboarding: Option<crate::cc_onboarding_ui::OnboardingWindow>,
+    claude_health_done: bool,
+    claude_watcher_off: bool,
+    claude_install_due: bool,
     chat_sub: Option<crate::chat_broker::SubId>,
     chat_shown: Option<String>,
     /// The shown chat's input (text, pending attachments), the drafts of the chats not shown,
@@ -1660,6 +1668,10 @@ pub fn run() {
         cockpit: None,
         cockpit_view,
         cockpit_save_due: None,
+        cc_onboarding: None,
+        claude_health_done: false,
+        claude_watcher_off: false,
+        claude_install_due: false,
         chat_sub: None,
         chat_shown: None,
         chat_input: Default::default(),
@@ -4869,6 +4881,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.replay_follow_focus(event_loop);
         self.replay_panels_follow_app();
         self.cockpit_follows_app();
+        self.claude_tick(event_loop);
         let cockpit_due = self.cockpit_tick();
         // Menu checks that follow the current tab and pane (broadcast input) refresh when
         // either changes.
@@ -5089,7 +5102,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

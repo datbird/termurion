@@ -582,7 +582,7 @@ impl App {
     }
 
     /// Writes and saves "Enable Python API".
-    fn set_api_enabled(&mut self, on: bool) {
+    pub(super) fn set_api_enabled(&mut self, on: bool) {
         self.globals.set(ENABLE_KEY, toml::Value::Boolean(on));
         self.api_settings_seen.0 = on;
         self.save_globals();

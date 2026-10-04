@@ -538,6 +538,7 @@ mod tests {
         ("app/ai_tools_app.rs", "ai_reveal_file", "reveals the AI's own new file, runs nothing"),
         ("ai_actions.rs", "get_help", "PowerShell Get-Help on a name man_page_plan checked, runs no command"),
         ("app/api_ui.rs", "open_link", "a fixed More Info page"),
+        ("app/claude_code_app.rs", "cc_onboarding_event", "the fixed Learn more page (claude_code::HELP_URL)"),
         ("app/api_ui.rs", "reveal_allow_all_file", "reveals Tandem's own allow-all file"),
         ("app/builtin_ui.rs", "session_method", "a local script's request"),
         ("app/chat_window_app.rs", "chat_open_url", "a link in the AI chat window, not a pane"),

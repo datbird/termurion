@@ -65,6 +65,11 @@ impl Bars {
         self.queue.pop_front()
     }
 
+    /// Whether a bar with this identifier waits.
+    pub fn has(&self, id: &str) -> bool {
+        self.queue.iter().any(|b| b.id == id)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }

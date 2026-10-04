@@ -30,6 +30,7 @@ impl App {
         // Job Started and Job Ended triggers leave their actions as requests.
         self.take_requests();
         self.run_automatic_profile_switching();
+        self.claude_jobs_changed();
         self.redraw();
     }
 

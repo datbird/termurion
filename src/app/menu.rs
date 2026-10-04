@@ -91,6 +91,9 @@ pub(super) struct MenuBar {
     pub(super) ssh_disconnect: Option<MenuItem>,
     /// Shell > ssh > Download Files, enabled while any host is connected (`refresh_download_files_menu`, P21).
     pub(super) ssh_download_files: Option<MenuItem>,
+    /// Tandem > Install, Reinstall and Uninstall Claude Code Integration (`refresh_claude_menu`
+    /// enables them by `claude_code::menu_enabled`; muda cannot hide an item).
+    pub(super) claude_items: Option<[MenuItem; 3]>,
     /// iTerm2 > Suppressed Alerts, retitled with the count and time (`retitle_suppressed_menu`).
     pub(super) suppressed: Option<MenuItem>,
     /// The Scripts menu and its fixed items (Manage and the line), then the scripts after them.
@@ -130,6 +133,7 @@ impl App {
         let mut explain_ai = None;
         let mut ssh_disconnect = None;
         let mut ssh_download_files = None;
+        let mut claude: [Option<MenuItem>; 3] = [None, None, None];
         let mut suppressed = None;
         for item in menus::items() {
             let (parent, entry): (&[String], Box<dyn IsMenuItem>) = if item.separator {
@@ -164,6 +168,9 @@ impl App {
                     }
                     if item.selector == "downloadFiles:" {
                         ssh_download_files = Some(m.clone());
+                    }
+                    if let Some(i) = ["installClaudeCodeIntegration:", "reinstallClaudeCodeIntegration:", "uninstallClaudeCodeIntegration:"].iter().position(|s| *s == item.selector) {
+                        claude[i] = Some(m.clone());
                     }
                     if item.selector == "showSuppressedAlerts:" {
                         suppressed = Some(m.clone());
@@ -233,8 +240,9 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, explain_ai, ssh_disconnect, ssh_download_files, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
+        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, explain_ai, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
         self.runtime_menu_title();
+        self.refresh_claude_menu();
         self.retitle_suppressed_menu();
         // A new bar shows what the menu file says, so the Disconnect title is applied again.
         self.ssh_menu_shown = None;
@@ -651,6 +659,8 @@ impl App {
                 }
             }
             "downloadFiles:" => self.download_files(event_loop),
+            "installClaudeCodeIntegration:" | "reinstallClaudeCodeIntegration:" => self.install_claude_code(event_loop),
+            "uninstallClaudeCodeIntegration:" => self.uninstall_claude_code(),
             "revealScriptsInFinder:" => self.reveal_scripts_folder(),
             "newPythonScript:" => self.new_python_script(event_loop),
             "openREPL:" => self.open_repl(),
