@@ -480,6 +480,7 @@ impl App {
         let ai_allowed = self.globals.bool(crate::ai_settings::ADMIN);
         // Explain Output follows the focused pane's selection and command marks, not the gate.
         let can_explain = self.can_explain();
+        self.explain_shown = Some(can_explain);
         for bar in self.menu_bars_mut() {
             if let Some(item) = &bar.engage_ai {
                 item.set_enabled(ai_allowed);

@@ -141,13 +141,37 @@ struct Found {
     truncated: bool,
 }
 
+/// Whether the screen has a selection, without building its text (`PTA:172-174`): the item
+/// follows the selection, so this runs every pass of the event loop.
+pub(super) fn has_selection(screen: &crate::screen::Screen) -> bool {
+    screen.term().selection.as_ref().is_some_and(|s| !s.is_empty())
+}
+
+/// The enabled state to apply to the menu items now, or None when they already show it.
+pub(super) fn explain_refresh(shown: Option<bool>, now: bool) -> Option<bool> {
+    (shown != Some(now)).then_some(now)
+}
+
 impl App {
     /// Whether Explain Output is enabled: a selection or a command mark in the focused pane
     /// (`PTA:172-174`). The item is not tied to the gate.
     pub(super) fn can_explain(&self) -> bool {
         let Some(p) = self.focused_id().and_then(|id| self.panes.get(&id)) else { return false };
         let own = p.own();
-        ex::can_explain_with(own.term().selection_to_string().is_some_and(|t| !t.is_empty()), own.last_command_mark().is_some())
+        ex::can_explain_with(has_selection(own), own.last_command_mark().is_some())
+    }
+
+    /// The Explain item follows the selection as it changes (`PTA:172-174`): checked every pass
+    /// of the event loop, cheaply, and the bars are touched only on a change.
+    pub(super) fn explain_follows(&mut self) {
+        let now = self.can_explain();
+        let Some(on) = explain_refresh(self.explain_shown, now) else { return };
+        self.explain_shown = Some(on);
+        for bar in self.menu_bars_mut() {
+            if let Some(item) = &bar.explain_ai {
+                item.set_enabled(on);
+            }
+        }
     }
 
     /// The selection, else the last command's output (`PS:21211-21258`); None with neither.
@@ -354,6 +378,26 @@ mod tests {
         let whole = agent(Content::ExplanationResponse(ex::response_content(&Response::with_text(request(), "<response>m</response>", true), None, "")));
         assert_eq!(process(whole, None, &mut gone), None);
     }
+    #[test]
+    fn explain_follows_the_selection() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut screen = crate::screen::Screen::new(10, 3);
+        screen.feed(b"hello");
+        assert!(!has_selection(&screen));
+        // A click with no drag selects nothing.
+        screen.term_mut().selection = Some(Selection::new(SelectionType::Simple, Point::new(Line(0), Column(1)), Side::Left));
+        assert!(!has_selection(&screen));
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left);
+        sel.update(Point::new(Line(0), Column(3)), Side::Right);
+        screen.term_mut().selection = Some(sel);
+        assert!(has_selection(&screen));
+        // The item is touched only when its state changes.
+        assert_eq!(explain_refresh(None, false), Some(false));
+        assert_eq!(explain_refresh(Some(false), true), Some(true));
+        assert_eq!(explain_refresh(Some(true), true), None);
+    }
+
     #[test]
     fn annotations_are_placed_hidden_on_the_cells_they_name() {
         let mut screen = crate::screen::Screen::new(10, 3);

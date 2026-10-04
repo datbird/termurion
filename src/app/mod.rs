@@ -884,6 +884,8 @@ pub struct App {
     ai_runs_next: u64,
     /// Composer suggestions: the run in flight for each pane (ruling P12).
     composer_ai: HashMap<PaneId, u64>,
+    /// What the Explain Output items show now (app-wide), so a selection change refreshes them.
+    explain_shown: Option<bool>,
     /// Engage AI: the dialog showing (with the pane and what it asked), the one queued to show,
     /// the wait window (with its run), and what each Engage run was started from.
     ai_engage: Option<(crate::ai_engage_ui::EngageWindow, PaneId, crate::ai_engage::Ask)>,
@@ -1567,6 +1569,7 @@ pub fn run() {
         ai_runs: HashMap::new(),
         ai_runs_next: 0,
         composer_ai: HashMap::new(),
+        explain_shown: None,
         ai_engage: None,
         ai_engage_open: None,
         ai_wait: None,
@@ -4791,6 +4794,8 @@ impl ApplicationHandler<UserEvent> for App {
             self.checks_key = Some(key);
             self.sync_checks();
         }
+        // A selection made or cleared at an idle prompt moves Explain Output's state.
+        self.explain_follows();
         let active = hotkey_ui::tandem_in_front();
         if active && !self.app_active {
             self.hotkey_reactivated();
