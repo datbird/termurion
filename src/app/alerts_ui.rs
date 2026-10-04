@@ -101,7 +101,7 @@ impl App {
             }
         }
         self.last_status = now.into_iter().collect();
-        if !changes.is_empty() || self.status_watch.is_some() {
+        if !changes.is_empty() || !self.status_watches.is_empty() {
             self.status_changes(&changes);
         }
     }

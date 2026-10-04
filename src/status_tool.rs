@@ -4,7 +4,11 @@
 //! in `tabstatus`). The app wires rows, storage and the settings popover in
 //! `src/app/toolbelt_more_ui.rs`.
 
+use std::collections::BTreeMap;
+
 use toml::Value;
+
+use crate::layout::PaneId;
 
 /// One priority pattern: a lowercase substring to match against status text, and whether a
 /// match posts a notification (`SPS`, `StatusPriorityEntry`).
@@ -182,6 +186,48 @@ pub fn watch_text(name: &str, from: Option<&str>, to: Option<&str>) -> String {
     format!("{name} changed from \u{201c}{}\u{201d} to \u{201c}{}\u{201d}.", show(from), show(to))
 }
 
+/// What a pass of the watches decided: the alerts to show (pane, from, to), then the watches
+/// that fired or lost their session and so disarm (`NOC`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Fired {
+    pub alerts: Vec<(PaneId, Option<String>, Option<String>)>,
+    pub disarm_windows: Vec<u64>,
+    pub disarm_sessions: Vec<PaneId>,
+}
+
+/// One pass of Notify on Status Change (`NOC:31-275`). A session watch compares the status its
+/// pane has now with the one captured at arming and fires when they differ (a change back
+/// before the pass gives nothing); a pane that is gone drops the watch with no alert. A
+/// window watch (`armed_windows`: the window and its panes now, so panes made later count)
+/// fires on the first change among its own panes. One alert per pane, whichever watch saw it
+/// first; every watch that fired disarms.
+pub fn fire(
+    changes: &[(PaneId, Option<String>, Option<String>)],
+    armed_windows: &[(u64, Vec<PaneId>)],
+    sessions: &BTreeMap<PaneId, Option<String>>,
+    now: &dyn Fn(PaneId) -> Option<Option<String>>,
+) -> Fired {
+    let mut out = Fired::default();
+    for (pane, base) in sessions {
+        match now(*pane) {
+            None => out.disarm_sessions.push(*pane),
+            Some(cur) if cur != *base => {
+                out.alerts.push((*pane, base.clone(), cur));
+                out.disarm_sessions.push(*pane);
+            }
+            Some(_) => {}
+        }
+    }
+    for (window, panes) in armed_windows {
+        let Some(change) = changes.iter().find(|c| panes.contains(&c.0)) else { continue };
+        if !out.alerts.iter().any(|a| a.0 == change.0) {
+            out.alerts.push(change.clone());
+        }
+        out.disarm_windows.push(*window);
+    }
+    out
+}
+
 /// The settings popover's instructional label (`SPS`, `StatusPriority.InstructionsLabel`).
 pub const SETTINGS_TEXT: &str = "Statuses are sorted by priority. Items near the top have higher priority. Drag to reorder. Click to edit.";
 
@@ -205,6 +251,46 @@ pub const HELP_TEXT: &str = "## Session Status\n\nThe **Session Status** tool sh
 mod tests {
     use super::*;
     use crate::tabstatus::{Status, aggregate};
+
+    fn st(s: &str) -> Option<String> {
+        Some(s.to_string())
+    }
+
+    #[test]
+    fn watches_follow_iterm2() {
+        let sessions: BTreeMap<PaneId, Option<String>> = [(1, st("idle"))].into();
+        let working = |p: PaneId| (p == 1).then(|| st("working"));
+        // A session watch fires on a status that differs from the one captured at arming.
+        let f = fire(&[(1, st("idle"), st("working"))], &[], &sessions, &working);
+        assert_eq!(f, Fired { alerts: vec![(1, st("idle"), st("working"))], disarm_windows: vec![], disarm_sessions: vec![1] });
+        // A change back to the baseline before the tick gives nothing, and the watch stays.
+        let back = |p: PaneId| (p == 1).then(|| st("idle"));
+        assert_eq!(fire(&[(1, st("working"), st("idle"))], &[], &sessions, &back), Fired::default());
+        // A watched pane that is gone is dropped silently.
+        assert_eq!(fire(&[], &[], &sessions, &|_| None), Fired { alerts: vec![], disarm_windows: vec![], disarm_sessions: vec![1] });
+        // A window fires on the first change among its own panes, and only those.
+        let none = BTreeMap::new();
+        let nothing = |_: PaneId| Some(None);
+        let win = [(7, vec![1, 2])];
+        let f = fire(&[(3, None, st("working")), (2, None, st("waiting"))], &win, &none, &nothing);
+        assert_eq!(f, Fired { alerts: vec![(2, None, st("waiting"))], disarm_windows: vec![7], disarm_sessions: vec![] });
+        assert_eq!(fire(&[(3, None, st("working"))], &win, &none, &nothing), Fired::default());
+        // Armed both ways: one alert, both disarm.
+        let both: BTreeMap<PaneId, Option<String>> = [(2, None)].into();
+        let waiting = |p: PaneId| (p == 2).then(|| st("waiting"));
+        let f = fire(&[(2, None, st("waiting"))], &win, &both, &waiting);
+        assert_eq!(f, Fired { alerts: vec![(2, None, st("waiting"))], disarm_windows: vec![7], disarm_sessions: vec![2] });
+        // A pane made after arming (a change from None) fires its window.
+        let win = [(7, vec![1, 2, 4])];
+        let f = fire(&[(4, None, st("idle"))], &win, &none, &nothing);
+        assert_eq!(f.alerts, vec![(4, None, st("idle"))]);
+        assert_eq!(f.disarm_windows, vec![7]);
+        // Two windows armed over different panes each fire on their own change.
+        let wins = [(7, vec![1]), (8, vec![2])];
+        let f = fire(&[(1, None, st("a")), (2, None, st("b"))], &wins, &none, &nothing);
+        assert_eq!(f.alerts, vec![(1, None, st("a")), (2, None, st("b"))]);
+        assert_eq!(f.disarm_windows, vec![7, 8]);
+    }
 
     fn row(pane: u64, snoozed: bool, changed: u64) -> StatusRow {
         StatusRow { pane, snoozed, priority: 0, changed, name: String::new(), status: None, detail: None, shortcut: None }

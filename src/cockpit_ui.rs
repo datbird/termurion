@@ -19,6 +19,57 @@ const DIVIDER: f32 = 6.0;
 /// few passes, and `cockpit_follows_app` would otherwise see another app in front.
 const SETTLE: Duration = Duration::from_millis(600);
 
+/// The toolbar's glyphs (Segoe Fluent Icons) for iTerm2's SF Symbols: gear, bell, and one per
+/// group mode; without the font a mode shows its label.
+const GEAR: char = '\u{E713}';
+const BELL: char = '\u{E7ED}';
+const MODE_GLYPHS: [char; 3] = ['\u{E8FD}', '\u{E737}', '\u{E716}'];
+/// The toolbar row's height (`CX`: the buttons are 24 high).
+const TOOLBAR_H: f32 = 24.0;
+
+/// A toolbar button: the glyph (or `fallback` text without the icon font), `width` wide.
+fn tool_button(ui: &mut egui::Ui, glyph: char, fallback: &str, width: f32, on: bool, enabled: bool, tip: &str, a11y: &str) -> egui::Response {
+    let text = crate::settings_keys::icon_text(ui.ctx(), glyph).unwrap_or_else(|| egui::RichText::new(fallback));
+    let button = egui::Button::new(text).selected(on).min_size(egui::vec2(width, TOOLBAR_H));
+    let r = ui.add_enabled(enabled, button).on_hover_text(tip);
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, a11y));
+    r
+}
+
+/// The toolbar row: the gear, the Group control, the bell and the search field (`CX:111-148`).
+fn toolbar(ui: &mut egui::Ui, view: &mut View, acts: &mut Vec<Act>) {
+    ui.horizontal(|ui| {
+        let gear = tool_button(ui, GEAR, "Settings", cockpit::SETTINGS_W, false, cockpit::settings_enabled(view.mode), cockpit::SETTINGS_A11Y, cockpit::SETTINGS_A11Y);
+        view.gear_rect = Some((gear.rect.min.x, gear.rect.min.y, gear.rect.width(), gear.rect.height()));
+        if gear.clicked() {
+            acts.push(Act::Settings);
+        }
+        // Three toggle buttons share the Group control's width.
+        let each = cockpit::GROUP_W / 3.0;
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for (mode, glyph) in cockpit::MODES.into_iter().zip(MODE_GLYPHS) {
+            let r = tool_button(ui, glyph, mode.label(), each, view.mode == mode, true, mode.tooltip(), mode.label());
+            if r.clicked() && view.mode != mode {
+                view.mode = mode;
+                acts.push(Act::Group(mode));
+            }
+        }
+        ui.spacing_mut().item_spacing.x = ui.style().spacing.item_spacing.x;
+        let armed = view.selection_armed;
+        let a11y = if armed { cockpit::NOTIFY_ARMED_A11Y } else { cockpit::NOTIFY_A11Y };
+        let bell = tool_button(ui, BELL, "Notify", cockpit::NOTIFY_W, armed, cockpit::notify_enabled(view.selection_kind.as_ref()), cockpit::notify_tooltip(armed), a11y);
+        if bell.clicked() {
+            acts.push(Act::Notify);
+        }
+        let mut text = view.search.clone();
+        let field = egui::TextEdit::singleline(&mut text).hint_text("Search").desired_width(f32::INFINITY);
+        if ui.add(field).changed() {
+            view.search = text.clone();
+            acts.push(Act::Search(text));
+        }
+    });
+}
+
 pub struct CockpitWindow {
     host: EguiHost,
     shown: bool,
@@ -54,6 +105,7 @@ impl CockpitWindow {
             .with_min_inner_size(winit::dpi::LogicalSize::new(400.0, min_h as f64));
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         host.follow_theme(Some(dark));
+        crate::settings_keys::add_icon_font(host.ctx());
         Ok(CockpitWindow { host, shown: false, shown_at: None, reported: frame, command: String::new() })
     }
 
@@ -106,6 +158,15 @@ impl CockpitWindow {
         Frame { x: p.0, y: p.1, w: s.width as f32, h: s.height as f32 }
     }
 
+    /// Where the settings popover opens: below the gear. A popover's bottom centers on its point,
+    /// so the point is the popover's height under the gear's bottom edge (screen pixels).
+    pub fn gear_anchor(&self, view: &View) -> Option<(f64, f64)> {
+        let (x, y, w, h) = view.gear_rect?;
+        let origin = self.host.window.inner_position().ok()?;
+        let scale = self.host.window.scale_factor();
+        Some((origin.x as f64 + f64::from(x + w / 2.0) * scale, origin.y as f64 + f64::from(y + h) * scale + crate::status_popover_ui::SETTINGS_H * scale))
+    }
+
     pub fn request_redraw(&self) {
         self.host.request_redraw();
     }
@@ -134,8 +195,9 @@ impl CockpitWindow {
                 ui.label(egui::RichText::new(text).small().color(color));
             });
             egui::CentralPanel::default().show(ui, |ui| {
-                // The toolbar row comes with the toolbar (Task 3) and the filter bar with the
-                // filters (Task 4); the bar keeps its height now so the split matches iTerm2's.
+                toolbar(ui, view, &mut acts);
+                // The filter bar comes with the filters (Task 4); it keeps its height now so
+                // the split matches iTerm2's.
                 ui.allocate_space(egui::vec2(ui.available_width(), cockpit::FILTER_BAR_HEIGHT));
                 let total = ui.available_height();
                 let line = ui.text_style_height(&egui::TextStyle::Monospace);

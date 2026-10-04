@@ -246,7 +246,7 @@ impl App {
                 let on = !self.panes.get(&id).is_some_and(|p| p.own().triggers.prefs.interactive);
                 self.set_session_values(id, &[("Enable Triggers in Interactive Apps".into(), Some(toml::Value::Boolean(on)))]);
             }
-            "toggleNotifyOnStatusChange:" => self.notify_status_armed = !self.notify_status_armed,
+            "toggleNotifyOnStatusChange:" => self.status_armed = !self.status_armed,
             "enableAllTriggers:" | "disableAllTriggers:" => {
                 let on = selector == "enableAllTriggers:";
                 // In place: entries Tandem cannot read, and every other key, stay as stored.

@@ -92,7 +92,7 @@ impl App {
             "toggleCursorGuide:" => self.focused_id().is_some_and(|id| self.guide_on(id)),
             "showHideNotes:" => self.focused_id().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.own().notes.by_id.values().any(|n| !n.hidden)),
             "toggleBufferInput:" => self.focused_id().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.buffer.on),
-            "toggleNotifyOnStatusChange:" => self.notify_status_armed,
+            "toggleNotifyOnStatusChange:" => self.status_armed,
             "toggleEnableTriggersInInteractiveApps:" => self.focused_id().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.own().triggers.prefs.interactive),
             _ => false,
         }

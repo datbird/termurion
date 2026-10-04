@@ -5,6 +5,8 @@
 
 use std::time::{Duration, Instant};
 
+use crate::cockpit_rows::RowKey;
+
 /// The window's title (`CX:23`).
 pub const TITLE: &str = "Cockpit";
 /// The window's content size at first open (`CX:23`), in pixels.
@@ -71,6 +73,34 @@ impl GroupMode {
             GroupMode::Workgroup => "Show only sessions in a workgroup, grouped by workgroup.",
         }
     }
+}
+
+/// The toolbar buttons' widths (`CX:111-148`).
+pub const SETTINGS_W: f32 = 33.0;
+pub const GROUP_W: f32 = 100.0;
+pub const NOTIFY_W: f32 = 33.0;
+/// The gear's accessibility label (`CX`).
+pub const SETTINGS_A11Y: &str = "Settings";
+/// The bell's accessibility labels, unarmed and armed (`CW:604-657`).
+pub const NOTIFY_A11Y: &str = "Notify on status change";
+pub const NOTIFY_ARMED_A11Y: &str = "Notify on status change armed";
+
+pub fn notify_tooltip(armed: bool) -> &'static str {
+    if armed {
+        "Watching for a status change on the selected item. An alert will appear on the next change, then turn this off."
+    } else {
+        "Notify with an alert when the selected window or session\u{2019}s status changes."
+    }
+}
+
+/// The bell works on a window or a session row.
+pub fn notify_enabled(selection: Option<&RowKey>) -> bool {
+    matches!(selection, Some(RowKey::Window(_) | RowKey::Session(_)))
+}
+
+/// The gear works in Status mode only (`CW:566-597`).
+pub fn settings_enabled(mode: GroupMode) -> bool {
+    mode == GroupMode::Status
 }
 
 /// The window's frame in pixels: top left and content size.
@@ -198,6 +228,12 @@ pub struct View {
     pub collapsed: std::collections::BTreeSet<crate::cockpit_rows::RowKey>,
     /// The chosen rows, by key (never by index).
     pub selected: Vec<crate::cockpit_rows::RowKey>,
+    /// What the first chosen row is (the app fills it before each redraw); the bell follows it.
+    pub selection_kind: Option<RowKey>,
+    /// The chosen row's watch is armed (the app fills it before each redraw).
+    pub selection_armed: bool,
+    /// The gear's rect as last drawn, in points: x, y, w, h (the settings popover opens below it).
+    pub gear_rect: Option<(f32, f32, f32, f32)>,
 }
 
 /// What a redraw asks the app to do (later tasks add variants).
@@ -206,6 +242,14 @@ pub enum Act {
     Closed,
     Moved(Frame),
     Split(f32),
+    /// The gear: open or close Session Status' settings under it.
+    Settings,
+    /// A Group button: the new mode.
+    Group(GroupMode),
+    /// The bell: arm or disarm the selected window or session.
+    Notify,
+    /// The search field's new text.
+    Search(String),
 }
 
 #[cfg(test)]
@@ -286,6 +330,26 @@ mod tests {
         assert_eq!(split(Some(380.0), 386.0, 232.0), 276.0);
         assert_eq!(split(None, 386.0, 300.0), 100.0);
         assert_eq!(composer_height(16.0), 232.0);
+    }
+
+    #[test]
+    fn toolbar_follows_iterm2() {
+        assert_eq!(notify_tooltip(true), "Watching for a status change on the selected item. An alert will appear on the next change, then turn this off.");
+        assert_eq!(notify_tooltip(false), "Notify with an alert when the selected window or session\u{2019}s status changes.");
+        assert!(notify_enabled(Some(&RowKey::Window("pty-1".into()))));
+        assert!(notify_enabled(Some(&RowKey::Session(3))));
+        assert!(!notify_enabled(Some(&RowKey::Tab(1))));
+        assert!(!notify_enabled(Some(&RowKey::Group { scope: "pty-1".into(), status: "idle".into() })));
+        assert!(!notify_enabled(Some(&RowKey::BuriedRoot)));
+        assert!(!notify_enabled(Some(&RowKey::Workgroup("w".into()))));
+        assert!(!notify_enabled(None));
+        assert!(settings_enabled(GroupMode::Status));
+        assert!(!settings_enabled(GroupMode::Window));
+        assert!(!settings_enabled(GroupMode::Workgroup));
+        assert_eq!(SETTINGS_A11Y, "Settings");
+        assert_eq!(NOTIFY_A11Y, "Notify on status change");
+        assert_eq!(NOTIFY_ARMED_A11Y, "Notify on status change armed");
+        assert_eq!((SETTINGS_W, GROUP_W, NOTIFY_W), (33.0, 100.0, 33.0));
     }
 
     #[test]

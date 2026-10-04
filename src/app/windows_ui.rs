@@ -100,6 +100,8 @@ pub(super) struct WinSlot {
     ssh_menu_shown: Option<Option<String>>,
     /// What Shell > ssh > Download Files last showed in this window (P21).
     download_files_shown: Option<bool>,
+    /// Window > Notify on Status Change is armed for this window (`PseudoTerminal.m:1350`).
+    pub(super) status_armed: bool,
 }
 
 impl WinSlot {
@@ -178,8 +180,15 @@ impl WinSlot {
             pwm_window: None,
             ssh_menu_shown: None,
             download_files_shown: None,
+            status_armed: false,
         }
     }
+}
+
+/// The windows whose Notify on Status Change is armed: the current one (its key and arm) and
+/// each parked one (`status_changes`).
+pub(super) fn armed_windows(current: Option<(u64, bool)>, parked: &[(u64, bool)]) -> Vec<u64> {
+    current.into_iter().chain(parked.iter().copied()).filter(|(_, on)| *on).map(|(k, _)| k).collect()
 }
 
 /// The window id as the registry keys it.
@@ -274,6 +283,7 @@ impl App {
         swap(&mut self.pwm_window, &mut s.pwm_window);
         swap(&mut self.ssh_menu_shown, &mut s.ssh_menu_shown);
         swap(&mut self.download_files_shown, &mut s.download_files_shown);
+        swap(&mut self.status_armed, &mut s.status_armed);
     }
 
     /// The terminal window whose password manager is `id`, when it is parked.
@@ -840,6 +850,7 @@ impl WinSlot {
             pwm_window: None,
             ssh_menu_shown: None,
             download_files_shown: None,
+            status_armed: false,
         }
     }
 }
@@ -1523,6 +1534,19 @@ fn split_for_merge(tabs: Vec<Tab>, active: usize, stays: impl Fn(&Tab) -> bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_arm_is_per_window() {
+        // Window 1 arms; entering window 2 swaps its slot in, and its own arm is off.
+        assert_eq!(armed_windows(Some((1, true)), &[(2, false)]), vec![1]);
+        assert_eq!(armed_windows(Some((2, false)), &[(1, true)]), vec![1]);
+        // Entering window 1 again brings its arm back; the menu check reads the current slot.
+        assert_eq!(armed_windows(Some((1, true)), &[(2, false)]), vec![1]);
+        assert_eq!(armed_windows(Some((2, true)), &[(1, true), (3, false)]), vec![2, 1]);
+        assert_eq!(armed_windows(None, &[(1, false)]), Vec::<u64>::new());
+        // A new window starts unarmed.
+        assert!(!WinSlot::new_empty().status_armed);
+    }
 
     fn tab(id: u64, pane: PaneId) -> Tab {
         Tab::new(id, Layout::new(pane), pane)
