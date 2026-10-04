@@ -188,13 +188,13 @@ const STREAM_STOPPED: &str = "Terminal commands will no longer be sent to AI aut
 const STREAM_STOPPED_AUTO: &str = "Terminal commands will no longer be sent to AI automatically. Automatic sending always terminates when Tandem restarts or the current chat changes.";
 const PERMISSIONS_HELP: &str = "You can use these buttons or the info button menu at the top of the chat window to control AI permissions for this chat.";
 const ORCHESTRATION_OFFER: &str = "**Enable orchestration for this chat?**\n\n**Orchestration** lets the AI coordinate across multiple terminal sessions. It can read the contents of any session, and you grant a one-time approval before it controls a session instead of approving every call. It also runs in **auto mode**: each command the AI proposes is checked for safety by your AI provider, and anything risky is held for your review.";
-const ENABLE_ORCHESTRATION: &str = "**Enable orchestration?**\n\nOrchestration mode lets the agent read screen contents from any session. To type into a session still requires your permission.\n\nThis is a more permissive model than when an agent is linked to a single session, where there are very fine-grained permission settings.\n\nEnabling will detach any linked terminal or browser session and switch the chat to Orchestration mode.";
+pub const ENABLE_ORCHESTRATION: &str = "**Enable orchestration?**\n\nOrchestration mode lets the agent read screen contents from any session. To type into a session still requires your permission.\n\nThis is a more permissive model than when an agent is linked to a single session, where there are very fine-grained permission settings.\n\nEnabling will detach any linked terminal or browser session and switch the chat to Orchestration mode.";
 const NEEDS_BROWSER: &str = "The AI agent needs to run commands in a live web browser session, but none is attached to this chat.";
 /// The orchestration ids that pick a prompt's heading (`WorkgroupIntrospection.swift`).
-const SPAWN_ID: &str = "spawn";
-const COMMAND_APPROVAL_ID: &str = "command-approval";
-const WATCH_APPROVAL_ID: &str = "watch-approval";
-const SYNTHETIC_PREFIX: &str = "session:";
+pub const SPAWN_ID: &str = "spawn";
+pub const COMMAND_APPROVAL_ID: &str = "command-approval";
+pub const WATCH_APPROVAL_ID: &str = "watch-approval";
+pub const SYNTHETIC_PREFIX: &str = "session:";
 
 /// A field written by someone else, made running text that opens no link or span. A line
 /// break stays one, so a multi-line summary keeps its shape.
@@ -202,9 +202,9 @@ fn field(s: &str) -> String {
     s.split('\n').map(|line| consent_field(line, Field::Text)).collect::<Vec<_>>().join("\n")
 }
 
-/// `CVC:2689-2743`, the orchestration prompts iTerm2 carries as client-local actions. Their
-/// buttons are disabled until milestone 12f; the text is the same.
-fn orchestration_body(v: &serde_json::Value) -> String {
+/// `CVC:2689-2743`, the orchestration prompts iTerm2 carries as client-local actions. The one
+/// copy of their words (12f's `orch::bubble_body` calls it, ruling P4).
+pub fn orchestration_body(v: &serde_json::Value) -> String {
     let Some((kind, b)) = one_key(v) else { return String::new() };
     let text = |k: &str| b.get(k).and_then(serde_json::Value::as_str).unwrap_or_default();
     match kind {

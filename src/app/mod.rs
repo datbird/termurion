@@ -146,6 +146,7 @@ mod ai_explain_app;
 mod chat_app;
 mod chat_window_app;
 mod cockpit_app;
+mod orch_app;
 mod chat_session_app;
 mod chat_engine;
 mod ai_tools_app;
@@ -1044,6 +1045,10 @@ pub struct App {
     chat_agents: HashMap<String, crate::chat_agent::Agent>,
     /// (chat, request id) of the Get-Help running on each pane (minor m1), app-wide.
     ai_pending_tools: HashMap<PaneId, (String, String)>,
+    /// What a model said about the session it started (provenance, 12f Task 9), by pane.
+    orch_provenance: HashMap<PaneId, String>,
+    /// Orchestration requests parked on the person: request id to (chat id, call id).
+    orch_parks: crate::orch::Parks,
     /// 12b's wire log file for the chat turns' requests (app-wide).
     #[cfg(windows)]
     ai_wire_log: Arc<Mutex<crate::ai_wire_log::WireLog>>,
@@ -1712,6 +1717,8 @@ pub fn run() {
         ai_nag: crate::ai_classifier::NagGate::default(),
         chat_agents: HashMap::new(),
         ai_pending_tools: HashMap::new(),
+        orch_provenance: HashMap::new(),
+        orch_parks: HashMap::new(),
         #[cfg(windows)]
         ai_wire_log: Arc::new(Mutex::new(crate::ai_wire_log::WireLog::new())),
         script_procs: HashMap::new(),

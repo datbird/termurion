@@ -372,7 +372,7 @@ impl App {
                 .iter()
                 .zip(&row.buttons)
                 .enumerate()
-                .map(|(i, (r, btn))| (moved(*r), btn.title.as_str(), titles.get(i).copied().unwrap_or(0.0), btn.destructive, live && !crate::chat_buttons::is_orchestration(&btn.id)))
+                .map(|(i, (r, btn))| (moved(*r), btn.title.as_str(), titles.get(i).copied().unwrap_or(0.0), btn.destructive, live))
                 .collect();
             for ((r, _, _, _, on), btn) in button_rects.iter().zip(&row.buttons) {
                 if let (true, Some(c)) = (*on, clip_to(*r, v.area)) {

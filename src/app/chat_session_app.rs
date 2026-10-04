@@ -13,6 +13,7 @@ use crate::chat_message::{ClientLocal, Content, Message, Streaming, TerminalComm
 use crate::chat_routes::{self, Route};
 use crate::chat_store::Chat;
 use crate::chat_view;
+use crate::orch::OrchCommand;
 use super::chat_engine::Choice;
 use crate::scene::IndicatorKind;
 
@@ -233,6 +234,11 @@ impl App {
             Content::ClientLocal(ClientLocal::Other(v)) => {
                 let scope = crate::chat_message::one_key(v).filter(|(k, _)| *k == "orchestrationPermissionGranted").and_then(|(_, b)| b.get("scope")?.as_str());
                 f.claimed = scope.is_some_and(|s| row.is_some_and(|r| r.claimed_scopes.iter().any(|c| c == s)));
+                // A request is open while it is parked on the person for this chat.
+                f.open = crate::orch::OrchLocal::from_value(v).is_some_and(|l| match l {
+                    crate::orch::OrchLocal::PermissionRequest { request_id, .. } | crate::orch::OrchLocal::EnableRequest { request_id } => self.orch_parks.get(&request_id).is_some_and(|(c, _)| c == chat),
+                    crate::orch::OrchLocal::Granted { .. } => false,
+                });
             }
             Content::RemoteCommandRequest { .. } => f.answered = chat_buttons::answered(msgs, &m.unique_id),
             _ => {}
@@ -314,12 +320,29 @@ impl App {
             Press::Decline { request } => self.ai_session_selected(chat, &request, None),
             Press::PickSession { terminal, request } => self.start_pick(chat, terminal, PickThen::Request(request)),
             Press::Answer(a) => self.ai_answer_request(chat, message, choice_of(a)),
+            // The offer's button is the person's own switch.
+            Press::Orchestrate => {
+                if let Err(e) = self.set_orchestration(chat, true) {
+                    self.banners.set("chat_orchestration", e);
+                }
+            }
+            Press::OrchPermission { request_id, approved } => self.orch_answered(chat, OrchCommand::PermissionResponse { request_id, approved }),
+            Press::OrchEnable { request_id, approved } => self.orch_answered(chat, OrchCommand::EnableResponse { request_id, approved }),
+            Press::OrchRevoke { scope } => self.orch_answered(chat, OrchCommand::Revoke { scope }),
         }
         self.chat_state_changed();
     }
 
+    /// A button answer of an orchestration bubble: the command is published as the person's own
+    /// message for the record (12c's engine does nothing with it), then acted on here.
+    fn orch_answered(&mut self, chat: &str, command: OrchCommand) {
+        let m = Message::new(chat, crate::chat_message::Participant::User, Content::UserCommand(crate::chat_message::UserCommand::Other(command.to_value())), super::warnings_app::unix_now());
+        let _ = self.chat_publish(chat, m, false);
+        self.orch_command(chat, command);
+    }
+
     /// The chat's stored row now (never a copy read earlier).
-    fn chat_row(&self, chat: &str) -> Option<Chat> {
+    pub(super) fn chat_row(&self, chat: &str) -> Option<Chat> {
         self.chat_db.as_ref()?.chat(chat).ok().flatten()
     }
 
@@ -611,8 +634,15 @@ impl App {
             chat_menu::Action::Stream => self.toggle_stream(&chat),
             chat_menu::Action::Link => self.start_pick(&chat, true, PickThen::Link),
             chat_menu::Action::Help => self.ask_ai(chat_menu::help_alert()),
-            // Disabled until 12f and milestone 13; never a pick.
-            chat_menu::Action::Orchestration | chat_menu::Action::LinkBrowser => {}
+            // The Info menu's switch: the person's own act (Enable or Disable Orchestration).
+            chat_menu::Action::Orchestration => {
+                let on = !self.chat_row(&chat).is_some_and(|c| c.orchestration_enabled);
+                if let Err(e) = self.set_orchestration(&chat, on) {
+                    self.banners.set("chat_orchestration", e);
+                }
+            }
+            // Disabled until milestone 13; never a pick.
+            chat_menu::Action::LinkBrowser => {}
         }
         true
     }

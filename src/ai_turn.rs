@@ -749,6 +749,25 @@ impl Turn {
         self.send(messages)
     }
 
+    /// Swaps the system message and the tools for the requests still to come (the chat switched
+    /// to orchestration mid-turn, `ChatAgent.transitionToOrchestration`). The history a pending
+    /// request will carry is changed in place; a model without function calling stays without.
+    pub fn reconfigure(&mut self, system: &str, tools: Vec<ToolDecl>) {
+        let swap = |messages: &mut Vec<Message>| {
+            if let Some(m) = messages.iter_mut().find(|m| m.role == Some(Role::System)) {
+                m.body = Body::Text(system.to_string());
+            }
+        };
+        swap(&mut self.messages);
+        match &mut self.state {
+            State::AwaitingKey { messages } | State::Sent { messages, .. } | State::AwaitingTool { messages, .. } => swap(messages),
+            State::Ground => {}
+        }
+        if has(&self.model, Feature::FunctionCalling) {
+            self.tools = tools;
+        }
+    }
+
     /// Stops the turn: nothing it was waiting for is used afterwards.
     pub fn cancel(&mut self) -> Vec<Out> {
         match std::mem::replace(&mut self.state, State::Ground) {
@@ -928,6 +947,11 @@ impl Runner {
             call.cancel();
         }
         self.turn.cancel()
+    }
+
+    /// See `Turn::reconfigure`.
+    pub fn reconfigure(&mut self, system: &str, tools: Vec<ToolDecl>) {
+        self.turn.reconfigure(system, tools);
     }
 
     /// `poll_with` where every send is allowed (tests over a fake transport).
@@ -1802,6 +1826,24 @@ mod tests {
         t.http(HttpEvent::Done { body: r#"{"text":"x","id":"r9","tokens":12}"#.into(), error: None });
         assert_eq!((t.previous_response_id(), t.prompt_tokens()), (Some("r9"), Some(12)));
         assert_eq!(t.http(HttpEvent::Chunk("x".into())), [], "idle");
+    }
+
+    #[test]
+    fn reconfigure_changes_the_next_request() {
+        // The chat switched to orchestration while a tool call was out (12f): the continuation
+        // carries the new system message and tools.
+        let mut i = input(openai(), false);
+        i.messages = vec![Message::text(Role::System, "old"), Message::text(Role::User, "hi")];
+        let (t, seen) = turn_of(i);
+        let (mut r, _) = runner(t, vec![Reply::ok(&[call_event("f", "{}", Some("c1")).as_bytes()]), Reply::ok(&[text("done").as_bytes()])]);
+        assert_eq!(r.start(Some(&key("sk-a"))), [Out::WillSend]);
+        assert_eq!(r.poll(), [invoke("f", "{}", Some("c1"))]);
+        assert_eq!(last(&seen).tools, 1);
+        r.reconfigure("new", vec![tool("g"), tool("h")]);
+        assert_eq!(r.tool_done(ToolResult::Ok("42".into())), [Out::WillSend]);
+        let sent = last(&seen);
+        assert_eq!(sent.messages[0], Message::text(Role::System, "new"));
+        assert_eq!(sent.tools, 2);
     }
 
     #[test]

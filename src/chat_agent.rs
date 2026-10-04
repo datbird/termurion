@@ -327,6 +327,9 @@ pub trait TurnDriver {
     fn key_given(&mut self, key: Option<Secret>) -> Vec<Out>;
     fn tool_done(&mut self, r: ToolResult) -> Vec<Out>;
     fn cancel(&mut self) -> Vec<Out>;
+    /// The chat switched to orchestration mid-turn (12f): the turn's next request carries this
+    /// system message and these tools.
+    fn reconfigure(&mut self, system: &str, tools: Vec<crate::ai_turn::ToolDecl>);
 }
 
 /// One vector-store job (minor m4); the App's wraps 12b's `FileRunner`.
@@ -366,6 +369,11 @@ pub struct Agent {
     pub held: Option<Message>,
     /// The turn's files flow failed or was refused: the turn goes without a store.
     pub files_failed: bool,
+    /// The orchestration call the model awaits (its call id), and whether the person's answer
+    /// holds it (12f). Stop and the turn's end forget it.
+    pub orch_pending: Option<(String, bool)>,
+    /// The turn's tools are the orchestration ones.
+    pub orch_tooled: bool,
 }
 
 impl Agent {
@@ -379,7 +387,7 @@ impl Agent {
 
     /// `isAwaitingUserApproval`: a park that cleared typing (`CA:1249-1282`).
     pub fn is_awaiting_approval(&self) -> bool {
-        self.parks.iter().any(|p| p.cleared_typing)
+        self.parks.iter().any(|p| p.cleared_typing) || self.orch_pending.as_ref().is_some_and(|(_, waiting)| *waiting)
     }
 
     /// The park of `request_id`; None for an orphan (answered after Stop).
@@ -390,6 +398,7 @@ impl Agent {
 
     /// Every park, taken (Stop).
     pub fn stop(&mut self) -> Vec<Park> {
+        self.orch_pending = None;
         std::mem::take(&mut self.parks)
     }
 }

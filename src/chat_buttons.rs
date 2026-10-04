@@ -17,8 +17,6 @@ pub struct Button {
 }
 
 pub const ENABLE_ORCHESTRATION: &str = "Enable Orchestration";
-/// The tooltip of every orchestration button until milestone 12f (ruling 12d-1).
-pub const ORCHESTRATION_LATER: &str = "Orchestration comes in milestone 12f.";
 /// The picker's button (`iTermSessionSelector`).
 pub const PICK_REASON: &str = "Link this session to AI chat?";
 
@@ -77,11 +75,6 @@ fn orchestration_buttons(v: &Value) -> Vec<Button> {
     }
 }
 
-/// Whether a button is one of the orchestration ones, which show but stay disabled until 12f.
-pub fn is_orchestration(id: &str) -> bool {
-    id == ORCHESTRATE || ["workgroupPermission:", "enableOrchestration:", "revokeOrchestrationPermission:"].iter().any(|p| id.starts_with(p))
-}
-
 /// What the app knows about the live state, for one message.
 #[derive(Clone, Debug, Default)]
 pub struct EnableFacts {
@@ -95,6 +88,8 @@ pub struct EnableFacts {
     pub permissions_session_live: bool,
     pub claimed: bool,
     pub answered: bool,
+    /// An orchestration request that is still parked on the person's answer.
+    pub open: bool,
 }
 
 /// Whether the message's buttons can be pressed (`CVC:1962-2050`): the last message only,
@@ -111,6 +106,8 @@ pub fn enabled(content: &Content, f: &EnableFacts) -> bool {
             ClientLocal::Permissions { .. } => f.permissions_session_live,
             ClientLocal::Other(v) => match one_key(v) {
                 Some(("orchestrationPermissionGranted", _)) => f.claimed,
+                // A request answers only while it is still parked on the person (ruling P7).
+                Some(("workgroupPermissionRequest" | "enableOrchestrationRequest", _)) => f.is_last && f.open,
                 _ => f.is_last,
             },
             ClientLocal::Notice(_) => f.is_last,
@@ -165,14 +162,22 @@ pub enum Press {
     PickSession { terminal: bool, request: String },
     /// One of the four buttons of a request.
     Answer(Answer),
+    /// "Enable Orchestration" on an offer: the person's own switch.
+    Orchestrate,
+    /// Approve or Deny on a permission request.
+    OrchPermission { request_id: String, approved: bool },
+    /// Enable Orchestration or Not Now on the model's enable request.
+    OrchEnable { request_id: String, approved: bool },
+    /// Revoke on a grant notice.
+    OrchRevoke { scope: String },
 }
 
 /// What pressing `button` on a message does; None when the press must be ignored: the button is
-/// not one this message shows, the message's buttons are not enabled now (a stale click), or the
-/// button is an orchestration one (disabled until 12f). `enabled` is `enabled(content, facts)`
+/// not one this message shows, or the message's buttons are not enabled now (a stale click).
+/// `enabled` is `enabled(content, facts)`
 /// computed from the live state at the moment of the press.
 pub fn press(content: &Content, perm: &dyn Fn(Category) -> Permission, enabled: bool, button: &str) -> Option<Press> {
-    if !enabled || is_orchestration(button) || !buttons(content, perm).iter().any(|b| b.id == button) {
+    if !enabled || !buttons(content, perm).iter().any(|b| b.id == button) {
         return None;
     }
     match content {
@@ -180,8 +185,10 @@ pub fn press(content: &Content, perm: &dyn Fn(Category) -> Permission, enabled: 
             ClientLocal::PickingSession => Some(Press::CancelPick),
             ClientLocal::ExecutingCommand(_) => Some(Press::CancelTool),
             ClientLocal::StreamingChanged(_) => Some(Press::StopStreaming),
+            ClientLocal::OfferLink { .. } | ClientLocal::OfferOrchestration if button == ORCHESTRATE => Some(Press::Orchestrate),
             ClientLocal::OfferLink { terminal, guid, .. } => Some(Press::Link { terminal: *terminal, guid: guid.clone() }),
             ClientLocal::Permissions { .. } => Category::parse(button).map(Press::Permission),
+            ClientLocal::Other(_) => orchestration_press(button),
             _ => None,
         },
         Content::SelectSessionRequest { original, terminal } => match button {
@@ -192,6 +199,22 @@ pub fn press(content: &Content, perm: &dyn Fn(Category) -> Permission, enabled: 
         Content::RemoteCommandRequest { payload: Payload::Classic(_), .. } => answer(button).map(Press::Answer),
         _ => None,
     }
+}
+
+/// What an orchestration button id asks (the ids `orchestration_buttons` made; the caller has
+/// checked the message shows the id, so the request id is the message's own).
+fn orchestration_press(button: &str) -> Option<Press> {
+    let pair = |prefix: &str| -> Option<(String, bool)> {
+        let (verb, id) = button.strip_prefix(prefix)?.split_once(':')?;
+        Some((id.to_string(), match verb { "approve" => true, "deny" => false, _ => return None }))
+    };
+    if let Some((request_id, approved)) = pair("workgroupPermission:") {
+        return Some(Press::OrchPermission { request_id, approved });
+    }
+    if let Some((request_id, approved)) = pair("enableOrchestration:") {
+        return Some(Press::OrchEnable { request_id, approved });
+    }
+    button.strip_prefix("revokeOrchestrationPermission:").map(|scope| Press::OrchRevoke { scope: scope.to_string() })
 }
 
 /// The notice after a link (`CVC:1277-1306`): the session's name is a terminal program's to
@@ -282,13 +305,6 @@ mod tests {
         assert_eq!(other(json!({"enableOrchestrationRequest": {"requestID": "R"}})).iter().map(|x| (x.title.as_str(), x.destructive)).collect::<Vec<_>>(), [("Enable Orchestration", false), ("Not Now", true)]);
         assert_eq!(other(json!({"orchestrationPermissionGranted": {"scope": "s"}})).iter().map(|x| (x.title.as_str(), x.destructive)).collect::<Vec<_>>(), [("Revoke", true)]);
         assert_eq!(other(json!({"unknown": {}})), vec![]);
-        for x in other(json!({"workgroupPermissionRequest": {}})).into_iter().chain(other(json!({"enableOrchestrationRequest": {}}))).chain(other(json!({"orchestrationPermissionGranted": {}}))) {
-            assert!(is_orchestration(&x.id), "{} is disabled until 12f", x.title);
-        }
-        assert!(is_orchestration("orchestrate"));
-        for id in ["link", "", "allowOnce", "pickSession", "cancel", "Run Commands"] {
-            assert!(!is_orchestration(id), "{id}");
-        }
 
         for c in [
             Content::PlainText { text: "t".into(), context: None },
@@ -341,8 +357,11 @@ mod tests {
         assert!(enabled(&revoke, &EnableFacts { claimed: true, ..EnableFacts::default() }));
         assert!(!enabled(&revoke, &last()));
         let approve = local(ClientLocal::Other(json!({"workgroupPermissionRequest": {}})));
-        assert!(enabled(&approve, &last()));
-        assert!(!enabled(&approve, &EnableFacts::default()));
+        assert!(enabled(&approve, &EnableFacts { open: true, ..last() }));
+        assert!(!enabled(&approve, &last()), "a request no longer parked is moot");
+        assert!(!enabled(&approve, &EnableFacts { open: true, ..EnableFacts::default() }), "and only the last message answers");
+        let enable = local(ClientLocal::Other(json!({"enableOrchestrationRequest": {"requestID": "R"}})));
+        assert!(enabled(&enable, &EnableFacts { open: true, ..last() }) && !enabled(&enable, &last()));
 
         assert!(enabled(&request(None), &last()));
         assert!(!enabled(&request(None), &EnableFacts { answered: true, ..last() }));
@@ -365,8 +384,7 @@ mod tests {
         assert_eq!(answer("x"), None);
         assert_eq!(answer(""), None);
         assert_eq!(ENABLE_ORCHESTRATION, "Enable Orchestration");
-        assert_eq!(ORCHESTRATION_LATER, "Orchestration comes in milestone 12f.");
-        assert_eq!(PICK_REASON, "Link this session to AI chat?");
+                assert_eq!(PICK_REASON, "Link this session to AI chat?");
         assert_eq!(linked_notice(true, Some("zsh")), "This chat has been linked to terminal session \u{201C}zsh\u{201D}");
         assert_eq!(linked_notice(false, Some("x")), "This chat has been linked to web browser session \u{201C}x\u{201D}");
         assert_eq!(linked_notice(true, None), "This chat has been linked to terminal session \u{201C}(Unnamed session)\u{201D}");
@@ -399,23 +417,26 @@ mod tests {
         assert_eq!(all(&local(ClientLocal::StreamingChanged(Streaming::Stopped)), ""), None);
         let offer = ClientLocal::OfferLink { terminal: true, guid: "G".into(), name: None };
         assert_eq!(all(&local(offer.clone()), "link"), Some(Press::Link { terminal: true, guid: "G".into() }));
-        assert_eq!(all(&local(offer), "orchestrate"), None, "until 12f");
-        assert_eq!(all(&local(ClientLocal::OfferOrchestration), "orchestrate"), None);
+        assert_eq!(all(&local(offer), "orchestrate"), Some(Press::Orchestrate));
+        assert_eq!(all(&local(ClientLocal::OfferOrchestration), "orchestrate"), Some(Press::Orchestrate));
         let perms = local(ClientLocal::Permissions { terminal: true, guid: "G".into() });
         assert_eq!(all(&perms, "Run Commands"), Some(Press::Permission(Category::RunCommands)));
         assert_eq!(all(&perms, "Act in Web Browser"), None, "not a terminal category");
         assert_eq!(all(&perms, "Nonsense"), None);
         let web = local(ClientLocal::Permissions { terminal: false, guid: "G".into() });
         assert_eq!(all(&web, "Act in Web Browser"), Some(Press::Permission(Category::ActInWebBrowser)));
-        for other in [
-            json!({"workgroupPermissionRequest": {"requestID": "R"}}),
-            json!({"enableOrchestrationRequest": {"requestID": "R"}}),
-            json!({"orchestrationPermissionGranted": {"scope": "s"}}),
-        ] {
-            for x in buttons(&local(ClientLocal::Other(other.clone())), &none) {
-                assert_eq!(all(&local(ClientLocal::Other(other.clone())), &x.id), None, "{} waits for 12f", x.title);
-            }
-        }
+        let other = |v: Value, id: &str| all(&local(ClientLocal::Other(v)), id);
+        let ask = json!({"workgroupPermissionRequest": {"requestID": "R"}});
+        assert_eq!(other(ask.clone(), "workgroupPermission:approve:R"), Some(Press::OrchPermission { request_id: "R".into(), approved: true }));
+        assert_eq!(other(ask.clone(), "workgroupPermission:deny:R"), Some(Press::OrchPermission { request_id: "R".into(), approved: false }));
+        let enable = json!({"enableOrchestrationRequest": {"requestID": "R"}});
+        assert_eq!(other(enable.clone(), "enableOrchestration:approve:R"), Some(Press::OrchEnable { request_id: "R".into(), approved: true }));
+        assert_eq!(other(enable.clone(), "enableOrchestration:deny:R"), Some(Press::OrchEnable { request_id: "R".into(), approved: false }));
+        assert_eq!(other(json!({"orchestrationPermissionGranted": {"scope": "s"}}), "revokeOrchestrationPermission:s"), Some(Press::OrchRevoke { scope: "s".into() }));
+        // A button this message does not show, a forged request id, or another bubble's: nothing.
+        assert_eq!(other(enable.clone(), "enableOrchestration:approve:OTHER"), None);
+        assert_eq!(other(enable, "workgroupPermission:approve:R"), None);
+        assert_eq!(other(ask, "revokeOrchestrationPermission:s"), None);
 
         let mut original = Message::new("c", Participant::Agent, request(None), 1.0);
         original.unique_id = "REQ".into();

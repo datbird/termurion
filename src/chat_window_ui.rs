@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::ai_catalog::{Effort, ServiceTier};
-use crate::chat_buttons::{self, Button};
+use crate::chat_buttons::Button;
 use crate::chat_find::{self, Cursor, Mark, Match};
 use crate::chat_input::{self, Enter};
 use crate::chat_list::{self, Row, Selection};
@@ -971,15 +971,11 @@ enum Look {
     Live,
     /// Greyed: the message's buttons are not enabled, or were pressed a moment ago.
     Off,
-    /// Greyed with the "comes in milestone 12f" tooltip.
-    Later,
 }
 
 /// The look of `b` on `row` (`pressed` holds the messages pressed and awaiting the app).
-fn button_look(row: &RowData, pressed: &std::collections::HashSet<String>, b: &Button) -> Look {
-    if chat_buttons::is_orchestration(&b.id) {
-        Look::Later
-    } else if row.enabled && !pressed.contains(&row.id) {
+fn button_look(row: &RowData, pressed: &std::collections::HashSet<String>, _b: &Button) -> Look {
+    if row.enabled && !pressed.contains(&row.id) {
         Look::Live
     } else {
         Look::Off
@@ -1156,8 +1152,7 @@ fn row_content(ui: &mut egui::Ui, row: &RowData, ink: &Ink, st: &mut ConvoState,
 /// The buttons under a bubble's text: full-width rows of 30 points with a separator above each,
 /// destructive ones in the error color, greyed unless the row is enabled and not just pressed.
 /// A press is reported at once and greys the row until the app answers (iTerm2's optimistic
-/// disable), except in the permissions bubble, which is tapped again and again. The
-/// orchestration ones show with a tooltip that they wait for milestone 12f.
+/// disable), except in the permissions bubble, which is tapped again and again.
 fn draw_buttons(ui: &mut egui::Ui, row: &RowData, st: &mut ConvoState, out: &mut Vec<ChatEvent>) {
     if row.buttons.is_empty() {
         return;
@@ -1171,10 +1166,7 @@ fn draw_buttons(ui: &mut egui::Ui, row: &RowData, st: &mut ConvoState, out: &mut
             label = label.color(error);
         }
         let width = ui.available_width();
-        let mut r = ui.add_enabled(look == Look::Live, egui::Button::new(label).frame(false).min_size(egui::vec2(width, BUTTON_HEIGHT)));
-        if look == Look::Later {
-            r = r.on_disabled_hover_text(chat_buttons::ORCHESTRATION_LATER);
-        }
+        let r = ui.add_enabled(look == Look::Live, egui::Button::new(label).frame(false).min_size(egui::vec2(width, BUTTON_HEIGHT)));
         if look == Look::Live && r.clicked() {
             out.push(ChatEvent::Button { message: row.id.clone(), button: b.id.clone() });
             if !stays_live(row) {
@@ -1554,12 +1546,11 @@ mod tests {
         // A row the app did not enable stays off.
         let off = row("R", &[("Link", "link")], false);
         assert_eq!(button_look(&off, &pressed, &off.buttons[0]), Look::Off);
-        // The orchestration buttons show but wait for 12f, enabled row or not.
+        // The orchestration buttons live or off like any other.
         let offer = row("O", &[("Link", "link"), ("Enable Orchestration", "orchestrate")], true);
-        assert_eq!(button_look(&offer, &pressed, &offer.buttons[0]), Look::Live);
-        assert_eq!(button_look(&offer, &pressed, &offer.buttons[1]), Look::Later);
-        let revoke = row("V", &[("Revoke", "revokeOrchestrationPermission:s")], true);
-        assert_eq!(button_look(&revoke, &pressed, &revoke.buttons[0]), Look::Later);
+        assert_eq!(button_look(&offer, &pressed, &offer.buttons[1]), Look::Live);
+        let revoke = row("V", &[("Revoke", "revokeOrchestrationPermission:s")], false);
+        assert_eq!(button_look(&revoke, &pressed, &revoke.buttons[0]), Look::Off);
         // The permissions bubble is tapped again and again.
         let perms = row("P", &[("AI can Run Commands: Ask", "Run Commands"), ("AI can View Contents: Ask", "View Contents")], true);
         assert!(stays_live(&perms));

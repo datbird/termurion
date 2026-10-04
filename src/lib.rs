@@ -152,6 +152,7 @@ pub mod stable_id;
 pub mod session_state;
 pub mod cockpit_rows;
 pub mod mention;
+pub mod orch;
 pub mod mention_picker_ui;
 pub mod cockpit_ui;
 pub mod clip_add_ui;
