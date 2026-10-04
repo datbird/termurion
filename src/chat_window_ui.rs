@@ -212,7 +212,6 @@ pub enum ChatEvent {
     /// A button under a message was pressed (Task 5); the app re-checks it against the store.
     Button { message: String, button: String },
     /// The input's text changed.
-    /// The input's text and whether the edit was only the person's key presses (no paste, undo or IME).
     InputChanged(String),
     /// The `@` picker: Up (true) or Down (false).
     MentionMove(bool),

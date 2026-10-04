@@ -192,6 +192,6 @@ M1: Task 1: sub-pixel rounding saves one extra Moved frame on the first redraw.
 M2: Task 2: the App-level wiring (the in-use scan, the launch flag, the restart keep) has no test.
 M3: Task 3: the Group buttons are glyph only (check the xib labels); a window watch alerts an arbitrary pane when two change at once (HashMap order); window_arm is tested purely; the gear popover stays open when the group mode changes to Window.
 M4: Task 4: world and rows are rebuilt every redraw; markdown is re-parsed per row per redraw; the filter popup width rule differs from iTerm2; MODE_GLYPHS duplicates constants; check glyphs E7C4 and E756 at acceptance.
-M5: Task 5/6: a grant survives while the same id appears as a whole token elsewhere in the text (only ever the picked session); a stale InputChanged doc line.
-M6: Task 7: the guard comment overstates (a cookie holder can call other functions on its own session; no new power); the recorded cost omits taken-back hosted shells; a refused connection retries on [::1]; the P14 guard has no test.
+M5: Task 5/6: a grant survives while the same id appears as a whole token elsewhere in the text (only ever the picked session). (The stale InputChanged doc line is fixed in the final review fix wave.)
+M6: Task 7: the guard comment overstates (a cookie holder can call other functions on its own session; no new power); the recorded cost omits taken-back hosted shells; a refused connection retries on [::1]. (The P14 guard now has a source-check test, api_requests a_hook_acts_only_on_its_own_session.)
 M7: Task 8: the health check reads settings.json on the main thread; serde_json may normalize number spellings (1e3) in a file it rewrites (the backup keeps the original); minors 1 to 8 of the first review untouched.
