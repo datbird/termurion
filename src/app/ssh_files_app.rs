@@ -90,6 +90,10 @@ impl App {
         while let Some(action) = work.pop_front() {
             match action {
                 Action::Send { job, tag, pane, sub, high } => {
+                    // The job ended (a local failure, or a nested -1) earlier in this batch.
+                    if !self.ssh_transfers.is_live(job) {
+                        continue;
+                    }
                     if !self.ssh_send(pane, sub, high, Waiter::Transfer { job, tag }) {
                         work.extend(self.ssh_transfers.reply(job, tag, "", -1));
                     }

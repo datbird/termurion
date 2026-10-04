@@ -9,6 +9,15 @@ use crate::remote_file::{decode_fetch, RemoteFile};
 use crate::ssh_files::{check, Chunk, FileError, FileSub, GARBAGE};
 use std::collections::{HashMap, VecDeque};
 
+/// Free space a download never uses: before each write of a stream with no claimed size the
+/// drive must keep this much free after it.
+pub const RESERVE: u64 = 1 << 30;
+
+/// Whether `add` more bytes fit on a drive with `free` bytes free and still leave `RESERVE`.
+pub fn has_room(free: u64, add: u64) -> bool {
+    free.checked_sub(RESERVE).is_some_and(|f| f >= add)
+}
+
 /// A single-stream fetch asks this many bytes (`CFT:81-99`).
 pub const STREAM_CHUNK: u64 = 1024;
 /// A chunked fetch asks this many (`FT:130-306`).
@@ -137,16 +146,26 @@ impl Transfers {
     fn add(&mut self, pane: PaneId, remote: &str, host: &str, chunked: bool) -> (JobId, Vec<Action>) {
         let id = self.next_job;
         self.next_job += 1;
-        let mut job = Job { pane, path: remote.to_string(), host: host.to_string(), chunked, zip: None, fetch_path: remote.to_string(), holds_slot: false, state: State::Stat };
+        let job = Job { pane, path: remote.to_string(), host: host.to_string(), chunked, zip: None, fetch_path: remote.to_string(), holds_slot: false, state: State::Stat };
         let mut out = Vec::new();
         self.send(id, &job, FileSub::Stat { path: remote.to_string() }, &mut out);
-        job.state = State::Stat;
         self.jobs.insert(id, job);
         (id, out)
     }
 
     pub fn running(&self) -> usize {
         self.running
+    }
+
+    /// The local side could not go on (no room, a write or the mark failed): the job ends with
+    /// `reason`, its slot is freed and its remote zip removed, and the queue moves on. Replies
+    /// for it that are still on the way are ignored. A job that is not live gives `[]`.
+    pub fn fail(&mut self, job: JobId, reason: &str) -> Vec<Action> {
+        let Some(j) = self.jobs.remove(&job) else { return Vec::new() };
+        let mut out = Vec::new();
+        self.end(job, j, Err(reason.to_string()), &mut out);
+        self.pump(&mut out);
+        out
     }
 
     pub fn is_live(&self, job: JobId) -> bool {
@@ -766,5 +785,44 @@ mod tests {
         let (job, acts) = t.download(P, "/h/a");
         let acts = t.reply(job, tag_of(&acts), &json_file("/h/a", u64::MAX), 0);
         assert_eq!(acts[0], Action::Size { job, size: Some(u64::MAX) });
+    }
+
+    #[test]
+    fn a_local_failure_ends_the_job() {
+        let mut t = Transfers::new();
+        // A remote claiming u64::MAX: eight fetches out, then the local side fails the job.
+        let (a, acts) = start_chunked(&mut t, "/h/a", u64::MAX);
+        let a_tags: Vec<u64> = sends(&acts).iter().map(|(tag, _)| *tag).collect();
+        let (b, _) = start_chunked(&mut t, "/h/b", u64::MAX);
+        // A third waits for a slot.
+        let (c, acts) = t.download_chunked(P, "/h/c", "host");
+        assert_eq!(t.reply(c, tag_of(&acts), &json_file("/h/c", 10), 0), []);
+        assert_eq!(t.running(), 2);
+        let acts = t.fail(a, "Not enough space on the drive");
+        assert_eq!(acts[0], done(a, Err("Not enough space on the drive")));
+        assert_eq!(acts.len(), 3, "{acts:?}");
+        assert_eq!(acts[1], Action::Size { job: c, size: Some(10) });
+        assert_eq!(only_send(&acts).1, fetch_at("/h/c", 0), "the queued job takes the slot");
+        assert!(!t.is_live(a) && t.is_live(b) && t.is_live(c));
+        assert_eq!(t.running(), 2);
+        // Replies still on the way are ignored; a second fail is nothing.
+        for tag in a_tags {
+            assert_eq!(t.reply(a, tag, &b64n(4096, 1), 0), []);
+        }
+        assert_eq!(t.fail(a, "again"), []);
+        assert_eq!(t.fail(b, "x"), [done(b, Err("x"))]);
+        // A folder job fails with its remote zip removed first.
+        let (job, acts) = t.download_chunked(P, "/h/d", "host");
+        let tag = tag_of(&t.reply(job, tag_of(&acts), &json_folder("/h/d"), 0));
+        t.reply(job, tag, "/h/.tmpzz", 0);
+        assert_eq!(t.fail(job, "y"), [Action::Fire { pane: P, sub: rm("/h/.tmpzz") }, done(job, Err("y"))]);
+    }
+
+    #[test]
+    fn unsized_streams_are_bounded_by_free_space() {
+        assert!(has_room(RESERVE + 1024, 1024));
+        assert!(!has_room(RESERVE + 1023, 1024));
+        assert!(!has_room(RESERVE, 1));
+        assert!(!has_room(u64::MAX, u64::MAX), "no overflow");
     }
 }

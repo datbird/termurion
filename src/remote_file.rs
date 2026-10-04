@@ -183,7 +183,21 @@ pub fn size_text(size: Option<u64>) -> String {
     if t.contains('.') {
         t = t.trim_end_matches('0').trim_end_matches('.').to_string();
     }
-    format!("{t} {}", UNITS[i])
+    // The formatter uses the locale's grouping separator (en_US: a comma), which only a TB
+    // count of 1000 or more reaches.
+    let (int, frac) = t.split_once('.').map_or((t.as_str(), None), |(a, b)| (a, Some(b)));
+    let mut grouped = String::new();
+    for (k, c) in int.chars().enumerate() {
+        if k > 0 && (int.len() - k) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    if let Some(f) = frac {
+        grouped.push('.');
+        grouped.push_str(f);
+    }
+    format!("{grouped} {}", UNITS[i])
 }
 
 /// The Kind column (`FL:567-604`).
@@ -443,8 +457,8 @@ mod tests {
         assert_eq!(k("a."), "Document");
         assert_eq!(k("x.tar.gz"), "Archive");
         // The sizes stop at TB.
-        assert_eq!(size_text(Some(1_000_000_000_000_000)), "1000 TB");
-        assert_eq!(size_text(Some(u64::MAX)), "18446744.07 TB");
+        assert_eq!(size_text(Some(1_000_000_000_000_000)), "1,000 TB");
+        assert_eq!(size_text(Some(u64::MAX)), "18,446,744.07 TB");
         assert_eq!(posix_parent("/a//b"), "/a");
         assert_eq!(posix_parent("//a"), "/");
         assert_eq!(f_parent("/a//b"), Some("/a".to_string()));

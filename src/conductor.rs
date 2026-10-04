@@ -3234,7 +3234,6 @@ mod tests {
         assert!(fetch.timed_when_framed());
         assert!(!zip.timed_when_framed());
         assert!(!fetch.streams() && !zip.streams());
-        
     }
 
     #[test]
