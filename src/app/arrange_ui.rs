@@ -82,6 +82,17 @@ pub(super) enum SaveWhat {
     Tabs(WindowId, Vec<u64>),
 }
 
+/// The working folder a saved arrangement keeps for a pane. A pane whose folder came from a
+/// framing conductor (`App::remote_text`) holds a folder the remote wrote, and a restore forces
+/// the saved folder as the LOCAL start folder, so it saves none (the restored pane uses its
+/// profile's start folder); an ssh-profile pane keeps it, as its session restores remotely.
+fn saved_cwd(remote_text: bool, ssh_profile: bool, cwd: Option<&str>) -> Option<String> {
+    if remote_text && !ssh_profile {
+        return None;
+    }
+    cwd.map(arrangement::saved_folder)
+}
+
 impl App {
     pub(super) fn arrangements(&self) -> Arrangements {
         Arrangements::from_values(self.globals.get(arrangements::ARRANGEMENTS_KEY).as_ref(), self.globals.get(arrangements::DEFAULT_KEY).as_ref())
@@ -103,7 +114,8 @@ impl App {
         let grid = s.term().grid();
         let profile = self.store.get(&p.profile).map(|pr| pr.values.clone().into_iter().collect()).unwrap_or_default();
         // OSC 7 reports "/C:/x"; the arrangement keeps a folder a shell can start in.
-        let cwd = s.shell.cwd.as_deref().map(arrangement::saved_folder);
+        let ssh_profile = self.store.get(&p.profile).is_some_and(crate::profile::is_ssh);
+        let cwd = saved_cwd(self.remote_text(id), ssh_profile, s.shell.cwd.as_deref());
         let mut v = arrangement::session(grid.columns() as u16, grid.screen_lines() as u16, profile, &id.to_string(), cwd.as_deref());
         let saved = match contents {
             Contents::None => None,
@@ -939,6 +951,14 @@ mod tests {
         };
         assert_eq!(folder_notice(local(true), "/D:/gone", &record), Unavailable, "the OSC 7 form of a Windows path");
         assert_eq!(seen.borrow().as_deref(), Some(std::path::Path::new(r"D:\gone")), "probed as a Windows path");
+    }
+
+    #[test]
+    fn remote_reported_folder_is_not_saved() {
+        assert_eq!(saved_cwd(true, false, Some("/etc/evil")), None, "a framed pane's folder is remote-reported");
+        assert_eq!(saved_cwd(true, true, Some("/home/u")).as_deref(), Some("/home/u"), "an ssh-profile pane restores remotely");
+        assert_eq!(saved_cwd(false, false, Some("/C:/Users/me")).as_deref(), Some(r"C:\Users\me"), "a local pane keeps its folder");
+        assert_eq!(saved_cwd(false, false, None), None);
     }
 
     fn hosted_chain() -> crate::conductor::Conductor {
