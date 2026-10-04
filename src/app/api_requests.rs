@@ -603,7 +603,7 @@ impl App {
     /// (a split, then a swap of the two). iTerm2's order (`PT:11414-11470`): Lock Layout
     /// refuses first (a tmux pane's refusal is still no CANNOT_SPLIT), a tmux pane asks tmux,
     /// then Instant Replay refuses (`PT:11124-11129`). Focus moves to the new session, as
-    /// Split does.
+    /// Split does, when the target is the current tab's active pane (`PT:11364`).
     pub(super) fn api_split(&mut self, target: PaneId, axis: Axis, before: bool, guid: &str) -> SplitResult {
         if !self.enter_pane_window(target) {
             return SplitResult::Refused;
@@ -628,7 +628,7 @@ impl App {
         let started = self.start_pane(half, Some(guid));
         self.start_tab = None;
         let Some(id) = started else { return SplitResult::Refused };
-        let focus = super::pane_nav_ui::focus_new_split(self.globals.bool("FocusFollowsMouse"), self.globals.bool("FocusNewSplitPaneWithFocusFollowsMouse"), self.tabs[index].focused == target);
+        let focus = super::pane_nav_ui::focus_new_split(self.globals.bool("FocusFollowsMouse"), self.globals.bool("FocusNewSplitPaneWithFocusFollowsMouse"), index == self.active && self.tabs[index].focused == target);
         let tab = &mut self.tabs[index];
         tab.layout.split(target, axis, id);
         if before {

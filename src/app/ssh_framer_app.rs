@@ -187,9 +187,10 @@ mod tests {
     fn divorced_split_runs_before_the_conductor() {
         // B1: the one split path tests the divorced profile first, then the conductor.
         let src = include_str!("ssh_framer_app.rs");
-        let body = &src[src.find("fn ssh_split_profile").unwrap()..];
+        let start = src.find("fn ssh_split_profile").unwrap();
+        let body = &src[start..start + src[start..].find("fn split_current").unwrap()];
         let divorced = body.find("SplitFrom::Divorced").unwrap();
-        assert!(divorced < body.find("split_identity").map_or(usize::MAX, |_| body.find("Some(id) =>").unwrap()));
+        assert!(divorced < body.find("Some(id) =>").unwrap(), "the divorced arm comes before the conductor arm");
         assert!(body.contains("profile_for_new_session(pane)"));
     }
 

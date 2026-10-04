@@ -170,6 +170,8 @@ mod tests {
         let (app, api) = (include_str!("mod.rs"), include_str!("api_requests.rs"));
         assert!(app.contains("focus_new_split("), "split uses the rule");
         assert!(api.contains("focus_new_split("), "the API split uses the rule");
+        // PT:11364: the target must be the window's CURRENT tab's active pane, not a background tab's.
+        assert!(api.contains("index == self.active && self.tabs[index].focused == target"), "an API split of a background tab keeps its focus");
     }
 
     #[test]
