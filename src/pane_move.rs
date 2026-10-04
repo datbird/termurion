@@ -85,7 +85,7 @@ pub fn half_rect(r: Rect, half: Half) -> Option<Rect> {
 }
 
 /// `MovePaneController`: a drop on the source does nothing; a swap needs the full pane; a move
-/// splits the destination (West and East side by side, North and West first).
+/// splits the destination (West and East side by side, North and West first; no half is below).
 pub fn drop_plan(half: Half, swap: bool, same_pane: bool) -> Drop {
     if same_pane {
         return Drop::Cancel;
@@ -95,7 +95,8 @@ pub fn drop_plan(half: Half, swap: bool, same_pane: bool) -> Drop {
         (false, Half::West) => Drop::Split { axis: Axis::Row, before: true },
         (false, Half::East) => Drop::Split { axis: Axis::Row, before: false },
         (false, Half::North) => Drop::Split { axis: Axis::Column, before: true },
-        (false, Half::South) => Drop::Split { axis: Axis::Column, before: false },
+        // No half chosen: below the target (`MovePaneController.m:254-255`, `:269`, `:288`).
+        (false, Half::South | Half::None) => Drop::Split { axis: Axis::Column, before: false },
         _ => Drop::Cancel,
     }
 }
@@ -173,7 +174,9 @@ mod tests {
         assert_eq!(drop_plan(Half::North, false, false), split(Axis::Column, true));
         assert_eq!(drop_plan(Half::South, false, false), split(Axis::Column, false));
         assert_eq!(drop_plan(Half::Full, true, false), Drop::Swap);
-        assert_eq!(drop_plan(Half::None, false, false), Drop::Cancel);
+        // No half chosen: iTerm2 splits below the target (`MovePaneController.m:254-255`, `:269`, `:288`).
+        assert_eq!(drop_plan(Half::None, false, false), Drop::Split { axis: Axis::Column, before: false });
+        assert_eq!(tmux_command(1, 2, drop_plan(Half::None, false, false)).as_deref(), Some("move-pane -s \"%1\" -t \"%2\" -v"));
         assert_eq!(drop_plan(Half::Full, false, false), Drop::Cancel);
         assert_eq!(drop_plan(Half::None, true, false), Drop::Cancel);
         for half in [Half::None, Half::West, Half::East, Half::North, Half::South, Half::Full] {

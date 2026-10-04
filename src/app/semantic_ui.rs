@@ -334,22 +334,28 @@ impl App {
         let Some(item) = id.strip_prefix(CTX_ID) else { return false };
         let Some(pend) = self.ctx_pending.take() else { return true };
         let focused = self.tabs.get(self.active).map(|t| t.focused);
-        match ctx_pick(id, pend.pane, focused) {
+        let in_tab = self.tabs.get(self.active).is_some_and(|t| t.layout.panes().contains(&pend.pane));
+        match ctx_pick(id, pend.pane, focused, in_tab) {
+            CtxPick::Gone => {}
             CtxPick::Swap(pane) => self.start_pane_move(pane, false, event_loop),
             CtxPick::Provider { pane, unique_id } => {
                 let title = pend.providers.iter().find(|(_, id)| *id == unique_id).map(|(t, _)| t.clone()).unwrap_or_default();
                 self.context_provider_picked(pane, &unique_id, &title);
             }
-            CtxPick::Command { id, focus } => {
-                // The menu is for this pane, so the command acts on it: focus it first.
+            CtxPick::Command { id, focus, restore } => {
+                // The command acts on the menu's pane: it takes the focus for the command, and
+                // the pane that had it gets it back (iTerm2 never moves it, `CMH:542-547`).
                 if let (Some(pane), Some(t)) = (focus, self.tabs.get_mut(self.active)) {
-                    if t.layout.panes().contains(&pane) {
-                        t.focused = pane;
-                        self.refresh_route();
-                    }
+                    t.focused = pane;
+                    self.refresh_route();
                 }
                 if let Some(item) = crate::menus::by_id(&id) {
                     self.run_command(item, event_loop);
+                }
+                let back = self.tabs.get(self.active).and_then(|t| restore_focus(restore, pend.pane, t.focused, t.zoomed.is_some(), |p| t.layout.panes().contains(&p)));
+                if let (Some(pane), Some(t)) = (back, self.tabs.get_mut(self.active)) {
+                    t.focused = pane;
+                    self.refresh_route();
                 }
             }
             CtxPick::Other => self.context_other_picked(item, pend),
@@ -477,19 +483,33 @@ pub(super) fn ctx_extras(running_coprocess: bool) -> Vec<&'static str> {
 pub(super) enum CtxPick {
     Swap(PaneId),
     Provider { pane: PaneId, unique_id: String },
-    /// A menu command: the pane to focus first (None when it already is), then the command.
-    Command { id: String, focus: Option<PaneId> },
+    /// A menu command: the pane to focus first (None when it already is) and the pane that had
+    /// the focus, which gets it back after the command (`restore_focus`).
+    Command { id: String, focus: Option<PaneId>, restore: Option<PaneId> },
+    /// The menu's pane is gone: the pick does nothing, never falls back to the focused pane.
+    Gone,
     Other,
 }
 
-pub(super) fn ctx_pick(item: &str, pend_pane: PaneId, focused: Option<PaneId>) -> CtxPick {
+/// The pane that takes the focus back after a menu command ran on the menu's pane, as a
+/// clicked-pane pointer action leaves it (`run_pointer_action`): the command did not move the
+/// focus off the menu's pane, the tab is not maximized on it, and the old pane is still there.
+pub(super) fn restore_focus(restore: Option<PaneId>, menu_pane: PaneId, now_focused: PaneId, zoomed: bool, present: impl Fn(PaneId) -> bool) -> Option<PaneId> {
+    let prev = restore?;
+    (now_focused == menu_pane && !zoomed && present(prev)).then_some(prev)
+}
+
+pub(super) fn ctx_pick(item: &str, pend_pane: PaneId, focused: Option<PaneId>, in_tab: bool) -> CtxPick {
     let Some(item) = item.strip_prefix(CTX_ID) else { return CtxPick::Other };
-    if item == "swappane" {
+    if !in_tab && (item == "swappane" || item.starts_with("cmd.")) {
+        CtxPick::Gone
+    } else if item == "swappane" {
         CtxPick::Swap(pend_pane)
     } else if let Some(unique_id) = item.strip_prefix("provider.") {
         CtxPick::Provider { pane: pend_pane, unique_id: unique_id.to_string() }
     } else if let Some(id) = item.strip_prefix("cmd.") {
-        CtxPick::Command { id: id.to_string(), focus: (focused != Some(pend_pane)).then_some(pend_pane) }
+        let moves = focused != Some(pend_pane);
+        CtxPick::Command { id: id.to_string(), focus: moves.then_some(pend_pane), restore: focused.filter(|_| moves) }
     } else {
         CtxPick::Other
     }
@@ -577,17 +597,43 @@ mod title_menu_tests {
     fn picks_act_on_the_menus_pane() {
         let (a, b): (PaneId, PaneId) = (1, 2);
         // Menu for B while A is focused: a provider pick and a Swap reach B only.
-        assert_eq!(ctx_pick("tandem.ctx.provider.u1", b, Some(a)), CtxPick::Provider { pane: b, unique_id: "u1".into() });
-        assert_eq!(ctx_pick("tandem.ctx.swappane", b, Some(a)), CtxPick::Swap(b));
+        assert_eq!(ctx_pick("tandem.ctx.provider.u1", b, Some(a), true), CtxPick::Provider { pane: b, unique_id: "u1".into() });
+        assert_eq!(ctx_pick("tandem.ctx.swappane", b, Some(a), true), CtxPick::Swap(b));
         // Every plain command of the menu (the move group among them) focuses B first.
         for id in ["Session > Move Session > Move Session to Split Pane", "Session > Move Session > Move Session to Tab", "Session > Move Session > Move Session to Window", "Edit > Copy"] {
             let item = format!("tandem.ctx.cmd.{id}");
-            assert_eq!(ctx_pick(&item, b, Some(a)), CtxPick::Command { id: id.into(), focus: Some(b) }, "{id}");
-            // Already focused: nothing to move.
-            assert_eq!(ctx_pick(&item, b, Some(b)), CtxPick::Command { id: id.into(), focus: None });
+            assert_eq!(ctx_pick(&item, b, Some(a), true), CtxPick::Command { id: id.into(), focus: Some(b), restore: Some(a) }, "{id}");
+            // Already focused: nothing to move, nothing to give back.
+            assert_eq!(ctx_pick(&item, b, Some(b), true), CtxPick::Command { id: id.into(), focus: None, restore: None });
         }
-        assert_eq!(ctx_pick("tandem.ctx.stopcoprocess", b, Some(a)), CtxPick::Other);
+        assert_eq!(ctx_pick("tandem.ctx.stopcoprocess", b, Some(a), true), CtxPick::Other);
         assert_eq!(CtxItem::Command("Edit > Copy".into(), true).id(), "tandem.ctx.cmd.Edit > Copy");
+    }
+
+    #[test]
+    fn a_gone_menu_pane_does_nothing() {
+        let (a, b): (PaneId, PaneId) = (1, 2);
+        // The menu's pane closed before the pick arrived: no command runs on the focused pane.
+        assert_eq!(ctx_pick("tandem.ctx.cmd.Shell > Close", b, Some(a), false), CtxPick::Gone);
+        assert_eq!(ctx_pick("tandem.ctx.cmd.Edit > Paste", b, Some(a), false), CtxPick::Gone);
+        assert_eq!(ctx_pick("tandem.ctx.swappane", b, Some(a), false), CtxPick::Gone);
+        // A provider still resolves by id (P16).
+        assert_eq!(ctx_pick("tandem.ctx.provider.u1", b, Some(a), false), CtxPick::Provider { pane: b, unique_id: "u1".into() });
+    }
+
+    #[test]
+    fn commands_leave_the_focus_where_it_was() {
+        let present = |p: PaneId| p == 1 || p == 2 || p == 3;
+        // Copy or Paste on B with A focused: the command reached B, then A has the focus again.
+        assert_eq!(restore_focus(Some(1), 2, 2, false, present), Some(1));
+        // A command that moved the focus on (Split focuses the new pane) keeps it there.
+        assert_eq!(restore_focus(Some(1), 2, 3, false, present), None);
+        // Maximize on B keeps B focused: it is the one showing.
+        assert_eq!(restore_focus(Some(1), 2, 2, true, present), None);
+        // The old pane is gone (Close of A?): nothing to give back.
+        assert_eq!(restore_focus(Some(9), 2, 2, false, present), None);
+        // The menu's pane was already focused.
+        assert_eq!(restore_focus(None, 2, 2, false, present), None);
     }
 
     #[test]
