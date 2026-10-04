@@ -492,10 +492,32 @@ fn check_link(link: &Path, roots: &[PathBuf]) -> Result<(), Reason> {
 /// above it is a link (read by its own entry, nothing it names is opened) whose chain reaches
 /// a network path. Err(Network) otherwise.
 pub fn top_verdict(path: &Path, is_link: &dyn Fn(&Path) -> bool, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(), Reason> {
-    for a in path.ancestors().filter(|a| !a.as_os_str().is_empty()) {
-        if is_link(a) && crate::scripts::link_chain_end(a, read_link).is_none() {
+    verdict_from(path, is_link, read_link, 0)
+}
+
+/// Windows resolves every folder of a path when one entry is asked, so the entries are asked
+/// from the top folder DOWN and the walk stops at the first link to a network path: nothing
+/// below it is asked. A link to a local place is followed hop by hop with the same rule, so a
+/// hop whose own folder is a link to a share is refused too.
+fn verdict_from(path: &Path, is_link: &dyn Fn(&Path) -> bool, read_link: &dyn Fn(&Path) -> Option<PathBuf>, depth: usize) -> Result<(), Reason> {
+    if depth > 8 {
+        return Err(Reason::Network);
+    }
+    let mut entries: Vec<&Path> = path.ancestors().filter(|a| !a.as_os_str().is_empty()).collect();
+    entries.reverse();
+    for a in entries {
+        if !is_link(a) {
+            continue;
+        }
+        let Some(target) = read_link(a) else { continue };
+        let target = match a.parent() {
+            Some(parent) if target.is_relative() => parent.join(target),
+            _ => target,
+        };
+        if crate::scripts::is_network_path(&target.to_string_lossy()) {
             return Err(Reason::Network);
         }
+        verdict_from(&target, is_link, read_link, depth + 1)?;
     }
     Ok(())
 }
@@ -1111,6 +1133,35 @@ mod tests {
         let probing = |q: &Path| -> bool { assert_ne!(q, Path::new("C:\\drop\\share"), "probed the link"); false };
         let (ok, no) = split_by_model(&paths, &network, &probing, &|_| true);
         assert_eq!((ok, no), (vec![p("C:\\a.txt")], vec![p("C:\\drop\\share")]));
+    }
+
+    #[test]
+    fn the_folders_above_an_item_are_asked_before_it_and_every_hop_the_same_way() {
+        // Windows resolves every folder in a path, so asking about C:\up\f.txt reaches the share when
+        // C:\up is a link to it: the top folder must be asked first, and nothing below a link to a
+        // share may be asked at all.
+        let links: std::collections::HashMap<&str, &str> = [("C:\\up", "\\\\host\\share"), ("C:\\mnt", "\\\\host\\s"), ("C:\\drop\\x", "C:\\mnt\\f"), ("C:\\ok", "C:\\local")].into_iter().collect();
+        let asked = std::cell::RefCell::new(Vec::<String>::new());
+        let is_link = |q: &Path| {
+            asked.borrow_mut().push(q.to_string_lossy().to_string());
+            links.contains_key(q.to_string_lossy().as_ref())
+        };
+        let read_link = |q: &Path| {
+            asked.borrow_mut().push(format!("read {}", q.to_string_lossy()));
+            links.get(q.to_string_lossy().as_ref()).map(PathBuf::from)
+        };
+        assert_eq!(top_verdict(Path::new("C:\\up\\f.txt"), &is_link, &read_link), Err(Reason::Network));
+        let first_up = asked.borrow().iter().position(|a| a == "C:\\up").expect("C:\\up asked");
+        let below_up = asked.borrow().iter().position(|a| a.starts_with("C:\\up\\"));
+        assert!(first_up < 3 && below_up.is_none(), "nothing below a link to a share is asked: {:?}", asked.borrow());
+        asked.borrow_mut().clear();
+        // One hop to a local folder that is itself a link to a share.
+        assert_eq!(top_verdict(Path::new("C:\\drop\\x"), &is_link, &read_link), Err(Reason::Network), "the hop's own folders are walked top down");
+        let a = asked.borrow().clone();
+        let mnt = a.iter().position(|q| q == "C:\\mnt" || q == "read C:\\mnt");
+        let below = a.iter().position(|q| q.starts_with("C:\\mnt\\") || q.starts_with("read C:\\mnt\\"));
+        assert!(mnt.is_some() && below.is_none(), "C:\\mnt is read, nothing under it is: {a:?}");
+        assert_eq!(top_verdict(Path::new("C:\\ok\\y"), &is_link, &read_link), Ok(()));
     }
 
     fn io_err() -> std::io::Error {
