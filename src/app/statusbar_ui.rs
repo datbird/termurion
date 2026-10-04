@@ -203,9 +203,7 @@ pub(super) fn color_of(v: &toml::Value) -> Option<(Rgb, f32)> {
 
 /// `NSColor colorWithHue:saturation:brightness:alpha:`, as `Rgb` bytes.
 fn hsb(h: f32, s: f32, b: f32) -> Rgb {
-    let (r, g, bl) = statusbar::hsb_to_rgb(h, s, b);
-    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    crate::palette::rgb(byte(r), byte(g), byte(bl))
+    crate::hexcolor::from_hsb(h, s, b)
 }
 
 /// A bar on screen: the session whose layout it shows, and where it is.
@@ -306,25 +304,29 @@ impl App {
         self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).is_some_and(|p| p.bool(SHOW_KEY))
     }
 
-    /// A bar's height in pixels: `statusBarHeight` points (21) at the window's scale.
-    fn status_bar_height(&self) -> f32 {
-        let pt = self.globals.get("statusBarHeight").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(21.0).max(1.0);
-        (pt as f32 * self.scale()).round()
+    /// `statusBarHeight` in points (default 21).
+    pub(super) fn status_bar_pt(&self) -> f32 {
+        self.globals.get("statusBarHeight").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(21.0).max(1.0) as f32
     }
 
-    fn status_bar_position(&self) -> Position {
+    /// A bar's height in pixels: `statusBarHeight` points (21) at the window's scale.
+    pub(super) fn status_bar_height(&self) -> f32 {
+        (self.status_bar_pt() * self.scale()).round()
+    }
+
+    pub(super) fn status_bar_position(&self) -> Position {
         Position::from_code(self.globals.int("StatusBarPosition"))
     }
 
     /// Bars per pane: "Separate status bars per pane", except in a tmux tab, whose bar
     /// is always the window's (`PTYTab.m:600-608`).
-    fn per_pane_bars(&self, tab: &Tab) -> bool {
+    pub(super) fn per_pane_bars(&self, tab: &Tab) -> bool {
         self.globals.bool("SeparateStatusBarsPerPane") && !self.panes.get(&tab.focused).is_some_and(|p| p.tmux_io().is_some())
     }
 
     /// The session whose bar the window shows across the tab: the current session, when
     /// its profile shows one and bars are not per pane.
-    fn shared_bar_pane(&self, tab: &Tab) -> Option<PaneId> {
+    pub(super) fn shared_bar_pane(&self, tab: &Tab) -> Option<PaneId> {
         (!self.per_pane_bars(tab) && self.shows_status_bar(tab.focused)).then_some(tab.focused)
     }
 
@@ -335,10 +337,12 @@ impl App {
         if self.shared_bar_pane(tab).is_some() { sbl::bar_rects(area, self.status_bar_height(), self.status_bar_position()).1 } else { area }
     }
 
-    /// A pane's rectangle less its own bar, and the bar, with bars per pane.
+    /// A pane's rectangle less its title bar and its own bar, and the bar (in the title bar
+    /// when it sits at the top of a pane that shows one): one place, so ptys, hit tests and
+    /// tmux's size report agree.
     pub(super) fn pane_bar_split(&self, tab: &Tab, id: PaneId, rect: Rect) -> (Rect, Option<Rect>) {
-        let bar = (self.per_pane_bars(tab) && self.shows_status_bar(id)).then(|| (self.status_bar_height(), self.status_bar_position()));
-        sbl::pane_split(rect, bar)
+        let c = self.pane_chrome(tab, id, rect);
+        (c.rest, c.bar)
     }
 
     /// What the current window's terminals are sized for now (see `Room`).
@@ -564,6 +568,8 @@ impl App {
         let bars = self.status_bars(tab);
         let position = self.status_bar_position();
         let scale = self.scale();
+        // A per-pane bar at the top sits in its pane's title bar (P23).
+        let bare = self.per_pane_bars(tab) && position == Position::Top;
         for bar in bars {
             let p = self.place_bar(&bar);
             // Whether the git component has a place on this bar (`tick_git`'s bump when it
@@ -671,7 +677,7 @@ impl App {
                 };
                 Rect { y, h, ..bar.rect }
             });
-            let d = scene::StatusBarDraw { rect: bar.rect, background, bands: &bands, separators: &separators, separator_color, boxes: &boxes, buttons: &buttons, texts: &texts, edge, scale };
+            let d = scene::StatusBarDraw { rect: bar.rect, bare, background, bands: &bands, separators: &separators, separator_color, boxes: &boxes, buttons: &buttons, texts: &texts, edge, scale };
             scene::status_bar(frame, &d, cell);
         }
     }

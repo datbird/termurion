@@ -2562,6 +2562,24 @@ default = false
 help = "Each split pane shows its own profile's status bar; off, the window shows the current session's status bar across the tab. tmux tabs always share one bar."
 
 [[setting]]
+key = "ShowPaneTitles"
+tab = "Appearance"
+section = "Panes"
+label = "Show per-pane title bars"
+type = "bool"
+default = true
+help = "Shows a small title bar above each split pane, with the session's title, a close button and a menu. With separate status bars per pane at the top, each pane's status bar sits in its title bar."
+
+[[setting]]
+key = "ShowPaneTitlesEvenIfOnlyOnePane"
+tab = "Appearance"
+section = "Panes"
+label = "\u2026even if there is only one pane"
+type = "bool"
+default = false
+help = "Keeps the title bar on a pane that is alone in its tab."
+
+[[setting]]
 key = "statusBarHeight"
 tab = "Advanced"
 section = "General"
@@ -3334,6 +3352,87 @@ label = "Share terminal contents with AI chats automatically"
 type = "int"
 default = 0
 help = "0 asks the first time a chat wants the terminal shared automatically, 1 is Turn On, 2 is refused. Kept out of imports and Toggle Setting."
+
+[[setting]]
+key = "PaneTitleBarBackgroundColor"
+tab = "Advanced"
+section = "Windows"
+label = "Custom background color for pane title bars. Leave empty to use default color."
+type = "string"
+default = ""
+help = "Custom background color for pane title bars. Leave empty to use default color.\nThis should be an HTML-style color, like #aabbcc."
+
+[[setting]]
+key = "PaneTitleBarTextColor"
+tab = "Advanced"
+section = "Windows"
+label = "Custom text color for pane title bars. Leave empty to use default color."
+type = "string"
+default = ""
+help = "Custom text color for pane title bars. Leave empty to use default color.\nThis should be an HTML-style color, like #aabbcc."
+
+[[setting]]
+key = "RequireOptionToDragSplitPaneTitleBar"
+tab = "Advanced"
+section = "Mouse"
+label = "Require Alt to be pressed to drag a split pane by its title bar?"
+type = "bool"
+default = false
+help = "Require Alt to be pressed to drag a split pane by its title bar?\nThis helps prevent accidental drags."
+
+[[setting]]
+key = "SplitPaneSourceFillColor"
+tab = "Advanced"
+section = "Tabs"
+label = "Color of source pane fill when moving/swapping a split pane."
+type = "string"
+default = "#008000"
+help = "Color of source pane fill when moving/swapping a split pane.\nShould be a web-style color, #rrggbb. You can also use p3#rrggbb for p3 color space."
+
+[[setting]]
+key = "SplitPaneSourceBorderColor"
+tab = "Advanced"
+section = "Tabs"
+label = "Color of source pane outer border when moving/swapping a split pane."
+type = "string"
+default = "#ffffff"
+help = "Color of source pane outer border when moving/swapping a split pane.\nShould be a web-style color, #rrggbb. You can also use p3#rrggbb for p3 color space."
+
+[[setting]]
+key = "SplitPaneSourceInnerBorderColor"
+tab = "Advanced"
+section = "Tabs"
+label = "Color of source pane inner border when moving/swapping a split pane."
+type = "string"
+default = "#000000"
+help = "Color of source pane inner border when moving/swapping a split pane.\nShould be a web-style color, #rrggbb. You can also use p3#rrggbb for p3 color space."
+
+[[setting]]
+key = "SplitPaneTargetDropFillColor"
+tab = "Advanced"
+section = "Tabs"
+label = "Color of drop target fill when dragging a split pane."
+type = "string"
+default = "#800000"
+help = "Color of drop target fill when dragging a split pane.\nShould be a web-style color, #rrggbb. You can also use p3#rrggbb for p3 color space."
+
+[[setting]]
+key = "SplitPaneTargetDropBorderColor"
+tab = "Advanced"
+section = "Tabs"
+label = "Color of drop target outer border when dragging a split pane."
+type = "string"
+default = "#ffffff"
+help = "Color of drop target outer border when dragging a split pane.\nShould be a web-style color, #rrggbb. You can also use p3#rrggbb for p3 color space."
+
+[[setting]]
+key = "SplitPaneTargetDropInnerBorderColor"
+tab = "Advanced"
+section = "Tabs"
+label = "Color of drop target inner border when dragging a split pane."
+type = "string"
+default = "#000000"
+help = "Color of drop target inner border when dragging a split pane.\nShould be a web-style color, #rrggbb. You can also use p3#rrggbb for p3 color space."
 
 [[setting]]
 key = "DisableTransparencyForKeyWindow"

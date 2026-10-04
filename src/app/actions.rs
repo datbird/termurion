@@ -229,6 +229,12 @@ impl App {
             return;
         }
         match b.action {
+            // Move Pane: the Move Session to Split Pane pick (`PS:12228-12230`).
+            62 => {
+                if let Some(id) = self.focused_id().filter(|_| self.pane_move.is_none()) {
+                    self.start_pane_move(id, true, event_loop);
+                }
+            }
             35 => {
                 if let Some(id) = self.focused_id() {
                     self.start_coprocess(id, &b.text, false, crate::coprocess::Entry::KeyBinding);
@@ -468,9 +474,15 @@ impl App {
                     self.copy_selection(pane);
                 }
             }
+            // The clicked pane's session (`PTYTextView.m:8711-8713`).
+            "kMovePanePointerAction" => {
+                if self.pane_move.is_none() {
+                    self.start_pane_move(pane, true, event_loop);
+                }
+            }
             "kContextMenuPointerAction" => {
                 let point = self.grid_point(pane, cell.0, cell.1);
-                self.show_context_menu_at(Some((pane, point)));
+                self.show_context_menu_at(Some((pane, Some(point))));
             }
             "kOpenTargetPointerAction" | "kQuickLookAction" | "kOpenTargetInBackgroundPointerAction" => {
                 let point = self.grid_point(pane, cell.0, cell.1);

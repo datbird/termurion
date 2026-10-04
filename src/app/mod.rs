@@ -117,6 +117,8 @@ mod tmux_tabs_ui;
 mod tmux_dashboard_app;
 mod bury_ui;
 mod statusbar_ui;
+mod pane_title_ui;
+mod pane_move_ui;
 mod statusbar_content;
 mod metrics_ui;
 mod git_ui;
@@ -262,6 +264,9 @@ enum Drag {
     /// the empty bar, a close button, a tab Lock Layout keeps in place), where it was (pixels).
     /// It never selects or reorders; the press clicks as usual.
     Window { start: (f32, f32) },
+    /// A left press on a pane's title bar (`pane_title_ui`): the pane and where the press was
+    /// (pixels). Moving far enough drags the pane (`pane_move_ui`).
+    Title { pane: PaneId, from: (f32, f32) },
 }
 
 /// One wgpu instance with its adapter, device and queue.
@@ -356,6 +361,12 @@ pub struct App {
     /// Where the focused pane's find bar and its mode label were last drawn.
     find_bar_rect: Option<Rect>,
     find_mode_rect: Option<Rect>,
+    /// The title bars drawn last frame (pane, geometry), for clicks (per window).
+    title_bars: Vec<(PaneId, crate::pane_title::Geometry)>,
+    /// A left press on a title bar button, waiting for its release.
+    title_press: Option<pane_title_ui::TitlePress>,
+    /// Move Session to Split Pane or Swap With Session is waiting for a pane to be picked. App-wide.
+    pane_move: Option<pane_move_ui::PaneMove>,
     /// The Win-click target under the pointer while Win is held.
     hover: Option<(PaneId, crate::find::Match)>,
     /// The annotation or session note window: its pane and note (None for the session note).
@@ -1534,6 +1545,9 @@ pub fn run() {
         finds: HashMap::new(),
         find_bar_rect: None,
         find_mode_rect: None,
+        title_bars: Vec::new(),
+        title_press: None,
+        pane_move: None,
         hover: None,
         popup_menu: None,
         color_pick: None,
@@ -3395,11 +3409,13 @@ impl App {
         self.apply_border_everywhere();
         // AllowLiveResize may have changed.
         self.apply_resizable_everywhere();
+        // Title bars, the status bar's height or place, or SplitPaneDividerWidth may have
+        // changed (13h P13, P21; 13i S11): panes gain or lose room in every window, parked
+        // ones and their tmux reports too.
+        self.relayout_changed_windows();
         // Disable Transparency or a profile value may have changed the blur.
         self.sync_blur();
         self.presence_globals_changed();
-        // SplitPaneDividerWidth changes the room every pane has: every window lays out again.
-        self.relayout_changed_windows();
     }
 
     /// Starts watching and scanning the Scripts folder the settings name (`FM:236-252`).
@@ -3611,9 +3627,15 @@ impl App {
     }
 
     fn new_tab(&mut self, guid: Option<&str>) {
+        self.new_tab_as(guid, true);
+    }
+
+    /// `by_person` false is a script's or the API's tab, which leaves a pick on (P15).
+    fn new_tab_as(&mut self, guid: Option<&str>, by_person: bool) {
         if !self.tabs.is_empty() && !self.layout_allowed(crate::winmodel::LayoutOp::AddTab) {
             return;
         }
+        self.pane_move_event(pane_move_ui::PickEvent::NewSession { by_person });
         self.add_tab(guid);
     }
 
@@ -3641,6 +3663,11 @@ impl App {
     }
 
     fn split(&mut self, axis: Axis, guid: Option<&str>) {
+        self.split_as(axis, guid, true);
+    }
+
+    /// `by_person` false is a script's or the API's split, which leaves a pick on (P15).
+    fn split_as(&mut self, axis: Axis, guid: Option<&str>, by_person: bool) {
         if !self.layout_allowed(crate::winmodel::LayoutOp::Split) {
             return;
         }
@@ -3649,6 +3676,7 @@ impl App {
             return;
         }
         let Some(target) = self.tabs.get(self.active).map(|t| t.focused) else { return };
+        self.pane_move_event(pane_move_ui::PickEvent::NewSession { by_person });
         if self.tmux_split(target, axis == Axis::Row) {
             return;
         }
@@ -3677,6 +3705,8 @@ impl App {
 
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        // The source ending cancels the pick (`PS:3940-3942`).
+        self.pane_move_event(pane_move_ui::PickEvent::Ended(id));
         // Every chat linked to this session unlinks while its reference still names the pane.
         self.chat_pane_gone(id);
         // AI requests that belong to the pane end with it.
@@ -4081,6 +4111,10 @@ impl App {
     }
 
     fn key(&mut self, ev: &KeyEvent, event_loop: &ActiveEventLoop) {
+        // Esc ends a title bar drag (the drag session cancels, nothing moves).
+        if ev.state == ElementState::Pressed && ev.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) && self.title_drag_lost(pane_move_ui::DragLost::Escape) {
+            return;
+        }
         // Instant Replay takes its keys before anything else (`PS:12795-12802`).
         if self.replay_key(ev, event_loop) {
             return;
@@ -4240,6 +4274,7 @@ impl App {
         // A press starts over on the tab bar too: a bar press whose release never came (focus
         // went mid-press) must not take this press's release; a press on the bar stores itself.
         self.tab_press = None;
+        self.title_press = None;
         // A press starts over: a tmux drag whose release never came lets tmux go on.
         self.tmux_drag_cancel();
         let (x, y) = self.cursor;
@@ -4263,6 +4298,10 @@ impl App {
         }
         if let Some(hit) = self.tab_bar_hit(x, y) {
             return self.tab_bar_press(button, hit);
+        }
+        // While a pick is on, a left press is a drop or a cancel, title bars and bars included.
+        if self.pane_move_press(button, x, y, event_loop) {
+            return;
         }
         if self.status_press(button, x, y, event_loop) {
             return;
@@ -4301,6 +4340,13 @@ impl App {
             }) {
                 self.tmux_drag_start(&d.path, d.axis);
                 self.drag = Drag::Divider { path: d.path, axis: d.axis, parent: d.parent };
+                return;
+            }
+        }
+        // After the divider grab (P7), so a lower pane's title bar does not take the strip.
+        if self.title_hit_at(x, y).is_some() {
+            let clicks = self.os_clicks(button_number(button));
+            if self.title_press(button, clicks, x, y, event_loop) {
                 return;
             }
         }
@@ -4397,7 +4443,7 @@ impl App {
             // With no binding and no reporting app, a right click opens the menu (iTerm2's native behavior).
             1 => {
                 let point = self.grid_point(id, col, row);
-                self.show_context_menu_at(Some((id, point)));
+                self.show_context_menu_at(Some((id, Some(point))));
             }
             _ => {}
         }
@@ -4425,6 +4471,9 @@ impl App {
         if self.tab_bar_release(button, event_loop) {
             return;
         }
+        if self.title_release(button, event_loop) {
+            return;
+        }
         let b = button_number(button);
         if let Some(pd) = self.pointer_down.take() {
             if pd.button == b {
@@ -4448,6 +4497,9 @@ impl App {
             Drag::Belt(d) => self.toolbelt_release(d),
             Drag::Composer { pane, kind } => self.composer_release(pane, kind),
             Drag::Divider { .. } => self.tmux_drag_end(event_loop),
+            Drag::Title { pane, .. } => {
+                self.title_drag_release(pane, event_loop);
+            }
             // The width becomes every new window's (iTerm2 writes it at each move, `RTV:2264-2277`).
             Drag::SideBar { .. } => {
                 self.globals.set("LeftTabBarWidth", toml::Value::Float(self.side_bar_preferred as f64));
@@ -4505,6 +4557,7 @@ impl App {
 
     fn mouse_move(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
+        self.pane_move_hover(x, y);
         self.update_tab_hover();
         self.update_side_handle_hover();
         self.toolbelt_move(x, y);
@@ -4518,6 +4571,10 @@ impl App {
         if near != self.stamp_near {
             self.stamp_near = near;
             self.redraw();
+        }
+        // A title bar drag whose release was lost (capture taken away) ends here.
+        if matches!(self.drag, Drag::Title { .. }) && self.title_drag_lost(pane_move_ui::DragLost::Moved { left_down: { let (swapped, l, r) = crate::winkeys::mouse_buttons(); pane_move_ui::primary_down(swapped, l, r) } }) {
+            return;
         }
         match &self.drag {
             Drag::Porthole { pane, id, frame } => {
@@ -4533,6 +4590,10 @@ impl App {
             Drag::AddButton { start } => {
                 let start = *start;
                 self.add_button_drag(start, x, y);
+            }
+            Drag::Title { pane, from } => {
+                let (pane, from) = (*pane, *from);
+                self.title_drag_move(pane, from, x, y);
             }
             Drag::Select { pane } => {
                 let pane = *pane;
@@ -4835,7 +4896,10 @@ impl App {
             scene::lay_over(&mut frame, bar_layer, r, self.tab_flash.alpha(Instant::now()), palette_bg, cell.1);
         }
         self.draw_toolbelt(&mut frame, cell);
+        self.draw_title_bars(&mut frame, cell);
         self.draw_status_bars(&mut frame, cell);
+        // After the bars, so the overlay cuts their text out (P22).
+        self.draw_pane_move(&mut frame, cell);
         let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         let line = self.division_height();
         if line > 0.0 {
@@ -5515,6 +5579,8 @@ impl ApplicationHandler<UserEvent> for App {
                 // A divider drag loses its release when focus goes, and so do keys.
                 if !f {
                     self.tmux_drag_cancel();
+                    // A title bar drag ends with nothing moved.
+                    self.title_drag_lost(pane_move_ui::DragLost::FocusLost);
                     // So does a press on the tab bar (a held close button lets go).
                     if self.tab_press.take().is_some() {
                         self.redraw();

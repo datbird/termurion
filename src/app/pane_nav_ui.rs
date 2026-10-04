@@ -62,7 +62,7 @@ pub(super) fn divider_px(width_pt: f64, scale: f32) -> f32 {
 /// The divider color: a valid `#` color from SplitPaneColor overrides `theme`, the color the
 /// window's decoration control gives (`PTYSplitView.m:110-119`).
 pub(super) fn divider_rgb(custom: &str, theme: crate::palette::Rgb) -> crate::palette::Rgb {
-    crate::tab_layout::hex_color(custom.trim()).filter(|_| custom.trim().starts_with('#')).unwrap_or(theme)
+    crate::hexcolor::parse(custom.trim()).filter(|_| custom.trim().starts_with('#')).unwrap_or(theme)
 }
 
 /// Which order the key picks: reading order with NavigatePanesInReadingOrder, else last use.

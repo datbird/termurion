@@ -273,21 +273,23 @@ impl App {
 
     /// iTerm2's right-click menu, after `extra` items (label, what it does) and a separator,
     /// with the script providers' items (label, what it does) before Split Pane.
-    pub(super) fn show_context_menu_with(&mut self, extra: &[(String, super::semantic_ui::CtxItem)], providers: &[(String, super::semantic_ui::CtxItem)]) {
+    pub(super) fn show_context_menu_with(&mut self, extra: &[(String, super::semantic_ui::CtxItem)], providers: &[(String, super::semantic_ui::CtxItem)], tab_has_many: bool) {
         let Some(hwnd) = self.hwnd() else { return };
         let context = Menu::new();
         let mut results = Vec::new();
         let own = |(label, item): &(String, super::semantic_ui::CtxItem)| MenuItem::with_id(item.id(), label.replace('&', "&&"), item.enabled(), None);
-        for slot in context_layout(extra.len(), providers.len()) {
+        for slot in context_layout(extra.len(), providers.len(), tab_has_many) {
             results.push(match slot {
                 Slot::Separator => context.append(&PredefinedMenuItem::separator()),
                 Slot::Extra(i) => context.append(&own(&extra[i])),
                 Slot::Provider(i) => context.append(&own(&providers[i])),
+                Slot::Swap => context.append(&own(&(super::semantic_ui::swap_label().to_string(), super::semantic_ui::CtxItem::SwapPane))),
                 Slot::Command(id) => match menus::by_id(id) {
                     None => context.append(&PredefinedMenuItem::separator()),
                     Some(item) => {
                         let enabled = !commands::status(item).unavailable();
-                        context.append(&MenuItem::with_id(item.id(), menu_text(item), enabled, None))
+                        // Acts on the menu's pane, not the focused one (`context_picked`).
+                        context.append(&MenuItem::with_id(super::semantic_ui::CtxItem::Command(item.id().to_string(), enabled).id(), menu_text(item), enabled, None))
                     }
                 },
             });
@@ -614,7 +616,7 @@ impl App {
         if self.snippet_or_action_picked(id, event_loop) || self.toolbelt_picked(id, event_loop) {
             return;
         }
-        if self.chat_list_picked(id, event_loop) || self.chat_menu_picked(id, event_loop) || self.inline_menu_picked(id) || self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) || self.porthole_language_picked(id) || self.tab_overflow_picked(id) || self.color_picked(id) || self.status_bar_picked(id, event_loop) {
+        if self.chat_list_picked(id, event_loop) || self.chat_menu_picked(id, event_loop) || self.inline_menu_picked(id) || self.find_mode_picked(id) || self.context_picked(id, event_loop) || self.named_mark_picked(id) || self.porthole_language_picked(id) || self.tab_overflow_picked(id) || self.color_picked(id) || self.status_bar_picked(id, event_loop) {
             return;
         }
         if let Some(item) = menus::by_id(id) {
@@ -694,6 +696,14 @@ impl App {
             }
             "terminate:" => self.quit(event_loop),
             "moveTabToNewWindow:" if self.layout_allowed(crate::winmodel::LayoutOp::MoveTab) => self.move_tab_to_new_window(),
+            // Disabled while a pick is on (`PTYTextView.m:587-591`).
+            "movePane:" => {
+                if self.pane_move.is_none() {
+                    if let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) {
+                        self.start_pane_move(pane, true, event_loop);
+                    }
+                }
+            }
             "moveSessionToWindow:" if self.layout_allowed(crate::winmodel::LayoutOp::MovePane) => self.move_session_to_window(),
             "moveSessionToTab:" if self.layout_allowed(crate::winmodel::LayoutOp::MovePane) => self.move_session_to_tab(),
             "mergeAllWindows:" if self.layout_allowed(crate::winmodel::LayoutOp::MoveTab) => self.merge_all_windows(),
@@ -757,6 +767,7 @@ impl App {
                 }
             }
             "newWindow:" => {
+                self.pane_move_event(pane_move_ui::PickEvent::NewSession { by_person: true });
                 if self.tmux_new(true, true).is_none() {
                     self.new_window(event_loop, None);
                 }
@@ -964,15 +975,7 @@ impl App {
             "biggerFont:" => self.set_font_offset(self.font_offset + 1.0),
             "smallerFont:" => self.set_font_offset((self.font_offset - 1.0).max(-8.0)),
             "returnToDefaultSize:" => self.set_font_offset(0.0),
-            "maximizePane:" if self.tabs.get(self.active).is_some_and(|t| self.tmux_of(t.focused).is_some()) => {
-                let f = self.tabs[self.active].focused;
-                self.tmux_zoom(f);
-            }
-            "maximizePane:" => {
-                if let Some(t) = self.tabs.get_mut(self.active) {
-                    t.zoomed = if t.zoomed.is_some() { None } else { Some(t.focused) };
-                }
-            }
+            "maximizePane:" => self.toggle_maximize(),
             "nextTab:" | "previousTab:" => {
                 let n = self.tabs.len();
                 if n > 0 {
@@ -1104,25 +1107,40 @@ pub(super) enum Slot {
     Extra(usize),
     Provider(usize),
     Command(&'static str),
+    /// Swap With Session...
+    Swap,
     Separator,
 }
 
 /// The right-click menu's order: `extra` items and a separator, then `commands::CONTEXT` with
 /// the `providers` items and a separator after its first separator (iTerm2 puts them after
-/// its custom actions, before Split Pane, `CMH:572-580`).
-pub(super) fn context_layout(extra: usize, providers: usize) -> Vec<Slot> {
+/// its custom actions, before Split Pane, `CMH:572-580`), and the move group after its second:
+/// Move Session to Split Pane, to Tab (only when the tab has several panes), to Window, Swap
+/// With Session and a separator (`CMH:593-606`).
+pub(super) fn context_layout(extra: usize, providers: usize, tab_has_many: bool) -> Vec<Slot> {
     let mut slots: Vec<Slot> = (0..extra).map(Slot::Extra).collect();
     if extra > 0 {
         slots.push(Slot::Separator);
     }
     let mut placed = providers == 0;
+    let mut separators = 0;
     for id in commands::CONTEXT {
         if id.is_empty() {
             slots.push(Slot::Separator);
+            separators += 1;
             if !placed {
                 slots.extend((0..providers).map(Slot::Provider));
                 slots.push(Slot::Separator);
                 placed = true;
+            }
+            if separators == 2 {
+                slots.push(Slot::Command("Session > Move Session > Move Session to Split Pane"));
+                if tab_has_many {
+                    slots.push(Slot::Command("Session > Move Session > Move Session to Tab"));
+                }
+                slots.push(Slot::Command("Session > Move Session > Move Session to Window"));
+                slots.push(Slot::Swap);
+                slots.push(Slot::Separator);
             }
         } else {
             slots.push(Slot::Command(id));
@@ -1215,20 +1233,68 @@ fn choose_color(hwnd: isize, initial: Option<crate::palette::Rgb>, swatches: &[c
 mod context_tests {
     use super::*;
 
+    /// `commands::CONTEXT` with the move group (P8) after its second separator.
+    fn with_move_group(many: bool) -> Vec<Slot> {
+        use Slot::{Command, Separator, Swap};
+        let today: Vec<Slot> = commands::CONTEXT.iter().map(|id| if id.is_empty() { Separator } else { Command(id) }).collect();
+        let mut group = vec![Command("Session > Move Session > Move Session to Split Pane")];
+        if many {
+            group.push(Command("Session > Move Session > Move Session to Tab"));
+        }
+        group.extend([Command("Session > Move Session > Move Session to Window"), Swap, Separator]);
+        let mut slots = today[..6].to_vec();
+        slots.extend(group);
+        slots.extend(today[6..].iter().cloned());
+        slots
+    }
+
     #[test]
     fn context_layout_places_providers_before_split_pane() {
         use Slot::{Command, Extra, Provider, Separator};
-        let today: Vec<Slot> = commands::CONTEXT.iter().map(|id| if id.is_empty() { Separator } else { Command(id) }).collect();
-        // No providers: today's layout, the extra items and a separator first when there are some.
-        assert_eq!(context_layout(0, 0), today);
+        // No providers: today's layout (with the move group), the extra items and a separator first when there are some.
+        assert_eq!(context_layout(0, 0, true), with_move_group(true));
         let mut with_extra = vec![Extra(0), Extra(1), Separator];
-        with_extra.extend(today.iter().cloned());
-        assert_eq!(context_layout(2, 0), with_extra);
+        with_extra.extend(with_move_group(true));
+        assert_eq!(context_layout(2, 0, true), with_extra);
         // Providers go after Copy and Paste's separator, with a separator after them.
         let mut want = vec![Extra(0), Separator, Command("Edit > Copy"), Command("Edit > Paste"), Separator, Provider(0), Provider(1), Separator];
-        want.extend(today[3..].iter().cloned());
+        want.extend(with_move_group(true)[3..].iter().cloned());
         assert_eq!(want[8], Command("Shell > Split Vertically with Current Profile"));
-        assert_eq!(context_layout(1, 2), want);
+        assert_eq!(context_layout(1, 2, true), want);
+    }
+
+    #[test]
+    fn context_layout_places_move_items() {
+        use Slot::{Command, Separator, Swap};
+        let want = vec![
+            Command("Edit > Copy"),
+            Command("Edit > Paste"),
+            Separator,
+            Command("Shell > Split Vertically with Current Profile"),
+            Command("Shell > Split Horizontally with Current Profile"),
+            Separator,
+            Command("Session > Move Session > Move Session to Split Pane"),
+            Command("Session > Move Session > Move Session to Tab"),
+            Command("Session > Move Session > Move Session to Window"),
+            Swap,
+            Separator,
+            Command("View > Maximize Active Pane"),
+            Command("Edit > Select All"),
+            Command("Edit > Clear Buffer"),
+            Separator,
+            Command("Session > Edit Session..."),
+            Command("Shell > Close"),
+        ];
+        assert_eq!(context_layout(0, 0, true), want);
+        // A tab with one pane has no Move Session to Tab (`CMH:593-606`).
+        let one: Vec<Slot> = want.iter().filter(|s| **s != Command("Session > Move Session > Move Session to Tab")).cloned().collect();
+        assert_eq!(context_layout(0, 0, false), one);
+        assert_eq!(context_layout(0, 0, false), with_move_group(false));
+        for slot in &want {
+            if let Command(id) = slot {
+                assert!(crate::menus::by_id(id).is_some(), "{id}");
+            }
+        }
     }
 }
 

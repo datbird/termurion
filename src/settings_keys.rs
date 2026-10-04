@@ -1076,6 +1076,8 @@ pub fn row_enabled(g: &Globals, key: &str) -> bool {
         crate::remote_prefs::FOLDER_KEY => g.bool(crate::remote_prefs::LOAD_KEY),
         // The bar can hide in full screen: Show off, or hidden with one tab (`APV:436-441`).
         "FlashTabBarInFullscreen" => !g.bool("ShowFullScreenTabBar") || g.bool("HideTab"),
+        // The second title bar row follows the first (`APV:228-231`).
+        "ShowPaneTitlesEvenIfOnlyOnePane" => g.bool("ShowPaneTitles"),
         // Enabled only under the system restore policy (`GP:3496-3506`).
         "RestoreWindowsToSameSpaces" => crate::desktops::restore_row_enabled(g.bool("OpenArrangementAtStartup"), g.bool("OpenNoWindowsAtStartup")),
         // Narrows the first (`APV:285-290`).
@@ -1648,6 +1650,61 @@ mod tests {
         g.set("EnableAPIServer", Value::Boolean(true));
         assert!(row_enabled(&g, "API Authentication Method"));
         assert!(row_enabled(&g, "IRMemory"));
+    }
+
+    #[test]
+    fn pane_title_rows_follow_iterm2() {
+        let row = |key: &str| schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+        let link = "\nShould be a web-style color, #rrggbb. You can also use p3#rrggbb for p3 color space.";
+        let color = |label: &str| (label.to_string(), format!("{label}{link}"));
+        let mut rows: Vec<(&str, &str, &str, Kind, Value, String, Option<String>)> = vec![
+            ("ShowPaneTitles", "Appearance", "Panes", Kind::Bool, Value::Boolean(true), "Show per-pane title bars".into(), None),
+            ("ShowPaneTitlesEvenIfOnlyOnePane", "Appearance", "Panes", Kind::Bool, Value::Boolean(false), "\u{2026}even if there is only one pane".into(), None),
+            (
+                "PaneTitleBarBackgroundColor", "Advanced", "Windows", Kind::String, Value::String(String::new()),
+                "Custom background color for pane title bars. Leave empty to use default color.".into(),
+                Some("Custom background color for pane title bars. Leave empty to use default color.\nThis should be an HTML-style color, like #aabbcc.".into()),
+            ),
+            (
+                "PaneTitleBarTextColor", "Advanced", "Windows", Kind::String, Value::String(String::new()),
+                "Custom text color for pane title bars. Leave empty to use default color.".into(),
+                Some("Custom text color for pane title bars. Leave empty to use default color.\nThis should be an HTML-style color, like #aabbcc.".into()),
+            ),
+            (
+                "RequireOptionToDragSplitPaneTitleBar", "Advanced", "Mouse", Kind::Bool, Value::Boolean(false),
+                "Require Alt to be pressed to drag a split pane by its title bar?".into(),
+                Some("Require Alt to be pressed to drag a split pane by its title bar?\nThis helps prevent accidental drags.".into()),
+            ),
+        ];
+        for (key, default, what) in [
+            ("SplitPaneSourceFillColor", "#008000", "Color of source pane fill when moving/swapping a split pane."),
+            ("SplitPaneSourceBorderColor", "#ffffff", "Color of source pane outer border when moving/swapping a split pane."),
+            ("SplitPaneSourceInnerBorderColor", "#000000", "Color of source pane inner border when moving/swapping a split pane."),
+            ("SplitPaneTargetDropFillColor", "#800000", "Color of drop target fill when dragging a split pane."),
+            ("SplitPaneTargetDropBorderColor", "#ffffff", "Color of drop target outer border when dragging a split pane."),
+            ("SplitPaneTargetDropInnerBorderColor", "#000000", "Color of drop target inner border when dragging a split pane."),
+        ] {
+            let (label, help) = color(what);
+            rows.push((key, "Advanced", "Tabs", Kind::String, Value::String(default.into()), label, Some(help)));
+        }
+        assert_eq!(rows.len(), 11);
+        for (key, tab, section, kind, default, label, help) in rows {
+            let s = row(key);
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.label.as_str()), (tab, section, label.as_str()), "{key}");
+            assert_eq!(s.kind, kind, "{key}");
+            assert_eq!(s.default, Some(default), "{key}");
+            if let Some(help) = help {
+                assert_eq!(s.help, help, "{key}");
+            }
+        }
+        // Ruling R3: iTerm2's default is on (`iTermPreferences.m:827`).
+        // The second row follows the first (`APV:228-231`).
+        let mut g = Globals::empty(std::path::Path::new("pane-title-rows-test.toml"));
+        assert_eq!(g.bool("ShowPaneTitles"), true);
+        g.set("ShowPaneTitles", Value::Boolean(false));
+        assert!(!row_enabled(&g, "ShowPaneTitlesEvenIfOnlyOnePane"));
+        g.set("ShowPaneTitles", Value::Boolean(true));
+        assert!(row_enabled(&g, "ShowPaneTitlesEvenIfOnlyOnePane"));
     }
 
     #[test]

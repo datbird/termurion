@@ -354,15 +354,19 @@ impl App {
     /// Move Session to Window or to Tab on a tmux pane: tmux's break-pane moves it, and the
     /// new tmux window opens in a new Tandem window or beside its old one. True when it was
     /// a tmux pane (of a tab with other panes).
-    pub(super) fn tmux_break(&mut self, pane: PaneId, to_tab: bool) -> bool {
+    /// A new window opens at `at` when given (a title bar drop, P20), else a little right of and
+    /// below this one. `beside`: the tmux window of the destination Tandem window the tab goes
+    /// next to (a drop on another window's tab bar, `PseudoTerminal.m:8651-8659`); None keeps
+    /// the pane's own window.
+    pub(super) fn tmux_break(&mut self, pane: PaneId, to_tab: bool, at: Option<(i32, i32)>, beside: Option<u32>) -> bool {
         let Some((gw, p, window)) = self.tmux_of(pane) else { return false };
         if self.tabs.iter().find(|t| t.layout.panes().contains(&pane)).is_none_or(|t| t.layout.panes().len() < 2) {
             return false;
         }
         // A new window opens a little right of and below this one (iTerm2's +10, -10).
-        let point = (!to_tab).then(|| self.gpu.as_ref().and_then(|g| window_geometry(&g.window)).map(|g| g.0)).flatten().map(|(x, y)| (x + 10, y + 10));
+        let point = (!to_tab).then(|| at.or_else(|| self.gpu.as_ref().and_then(|g| window_geometry(&g.window)).map(|g| g.0).map(|(x, y)| (x + 10, y + 10)))).flatten();
         if let Some(t) = self.tmux.get_mut(&gw) {
-            t.ctl.break_pane(p, to_tab.then_some(window), point, &mut t.gw);
+            t.ctl.break_pane(p, to_tab.then_some(beside.unwrap_or(window)), point, &mut t.gw);
         }
         self.tmux_flush(gw);
         true
@@ -908,7 +912,19 @@ impl App {
             return;
         }
         // Each tab's own area: a tmux tab's shared status bar is already out of it.
-        let tabs: Vec<(PaneId, (u16, u16))> = self.tabs.iter().map(|t| (t.focused, self.grid_size(self.content_area_for(t)))).collect();
+        // Title bars take room from the stacked panes (`variableTmuxSize` adds each one's
+        // height, `PTYTab.m:4696-4754`): one per pane of the tallest column; widths are
+        // unchanged.
+        let (_, ch) = self.cell();
+        let tabs: Vec<(PaneId, (u16, u16))> = self
+            .tabs
+            .iter()
+            .map(|t| {
+                let area = self.content_area_for(t);
+                let stack = if self.tab_shows_titles(t) { crate::layout::max_stack(&t.layout.tree(), Axis::Column) } else { 0 };
+                (t.focused, (self.grid_size(area).0, tmux_rows(area.h, ch, PAD * self.scale(), self.title_height(), stack)))
+            })
+            .collect();
         let mut changed: Vec<PaneId> = Vec::new();
         for (focused, (cols, rows)) in tabs {
             let Some(io) = self.panes.get(&focused).and_then(|p| p.tmux_io()) else { continue };
@@ -1064,6 +1080,21 @@ impl App {
         }
         let Some(t) = self.tmux.get_mut(&gw) else { return false };
         t.ctl.swap(pa, pb, &mut t.gw);
+        self.tmux_flush(gw);
+        true
+    }
+
+    /// Move Session to Split Pane in a tmux tab: tmux moves the pane (`move-pane`, numeric ids
+    /// only), and its layout change shows it (`TC:2129-2139`). A pane of another gateway is
+    /// left alone, as `tmux_swap` does.
+    pub(super) fn tmux_move_pane(&mut self, src: PaneId, dst: PaneId, plan: crate::pane_move::Drop) -> bool {
+        let crate::pane_move::Drop::Split { axis, before } = plan else { return false };
+        let (Some((gw, ps, _)), Some((gd, pd, _))) = (self.tmux_of(src), self.tmux_of(dst)) else { return false };
+        if gw != gd {
+            return true;
+        }
+        let Some(t) = self.tmux.get_mut(&gw) else { return false };
+        t.ctl.move_pane(ps, pd, axis == Axis::Row, before, &mut t.gw);
         self.tmux_flush(gw);
         true
     }
@@ -1397,10 +1428,24 @@ pub(super) fn tmux_dir_of(p: Option<&Profile>) -> crate::tmux_edits::Dir {
     }
 }
 
+/// A tmux tab's rows: its area less the padding and `stack` title bars (0 with titles off),
+/// in cells.
+fn tmux_rows(area_h: f32, ch: f32, pad: f32, title_h: f32, stack: usize) -> u16 {
+    ((area_h - stack as f32 * title_h - 2.0 * pad) / ch).floor().max(1.0) as u16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::warnings::Kind;
+
+    /// Title bars take their height from a tmux tab's report, one per stacked pane.
+    #[test]
+    fn tmux_rows_leave_room_for_title_bars() {
+        assert_eq!(tmux_rows(600.0, 16.0, 4.0, 22.0, 2), 34, "(600 - 2 * 22 - 8) / 16");
+        assert_eq!(tmux_rows(600.0, 16.0, 4.0, 22.0, 0), 37, "titles off: today's rows");
+        assert_eq!(tmux_rows(10.0, 16.0, 4.0, 22.0, 3), 1, "never below one row");
+    }
 
     /// 13c's tab close buttons: another click on a tab whose close question waits (queued or
     /// showing) asks nothing more; another tab or the window question still asks.

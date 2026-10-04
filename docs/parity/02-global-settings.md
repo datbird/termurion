@@ -235,8 +235,8 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. I
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Show per-pane title bars | ShowPaneTitles | Shows a small title bar above each split pane. | missing |  |
-| ...even if there is only one pane | ShowPaneTitlesEvenIfOnlyOnePane | Keeps the per-pane title bar visible even when a tab has just one pane. | missing |  |
+| Show per-pane title bars | ShowPaneTitles | Shows a small title bar above each split pane. | have | Settings > Appearance > Panes; on by default as iTerm2. Windows: the glyphs are Segoe Fluent Icons and the label uses the terminal font. |
+| ...even if there is only one pane | ShowPaneTitlesEvenIfOnlyOnePane | Keeps the per-pane title bar visible even when a tab has just one pane. | have | Settings > Appearance > Panes; enabled only while the first row is on, as iTerm2. |
 | Separate background images per pane | PerPaneBackgroundImage | Lets each split pane show its own profile background image instead of one shared image spanning the window. | have | Milestone 5d. |
 
 
@@ -419,7 +419,7 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 | Toggle Mouse Reporting | KEY_ACTION_TOGGLE_MOUSE_REPORTING | Turns mouse-reporting-to-app on or off for the session. | have |  |
 | Invoke Script Function... | KEY_ACTION_INVOKE_SCRIPT_FUNCTION | Calls a registered Python API script function. | have | Milestone 11c: with a session, the session's scope, origin "Key Binding"; with none, the app's scope; the apply-mode fan-out (key action 60) runs it once per targeted session, or once in the app's scope with no session focused. |
 | Duplicate Tab | KEY_ACTION_DUPLICATE_TAB | Opens a new tab that is a copy of the current one (same profile/directory). | have |  |
-| Move to Split Pane | KEY_ACTION_MOVE_TO_SPLIT_PANE | Moves the current session into an adjacent split pane. | missing | Comes in milestone 7. |
+| Move to Split Pane | KEY_ACTION_MOVE_TO_SPLIT_PANE | Starts Move Session to Split Pane: pick a destination pane and a side. | have | Pick mode across windows; the Move Pane pointer action and this key action start the same pick. |
 | Send Snippet... | KEY_ACTION_SEND_SNIPPET | Sends a saved Snippet's text. | have | Milestone 9e: a snippet picker; the snippet's own escaping; a deleted snippet does nothing. |
 | Open Composer | KEY_ACTION_COMPOSE | Opens the Composer overlay for multi-line command editing. | have | Milestone 9l: opens the panel (or a status bar field, when the profile routes there) with the given text, appended with a newline to any text already shown; a Compose-bound key inside a focused composer counts as sending text, so it is not run by the profile key map there (matching iTerm2). |
 | Send tmux Command... | KEY_ACTION_SEND_TMUX_COMMAND | Sends a literal tmux control-mode command to the attached tmux server. | have | Milestone 8e: sends its text as a tmux command through the focused session's gateway; tmux prefix bindings become Leader bindings that run it. |
@@ -476,7 +476,7 @@ A table mapping a mouse button-plus-click-count-plus-modifiers combo, or a track
 | Previous Tab | kPrevTabPointerAction | Switches to the previous tab. | have |  |
 | Next Window | kNextWindowPointerAction | Switches to the next iTerm2 window. | missing | Comes in milestone 7. |
 | Previous Window | kPrevWindowPointerAction | Switches to the previous iTerm2 window. | missing | Comes in milestone 7. |
-| Move Pane | kMovePanePointerAction | Starts a drag to move the session into a different split pane slot. | missing | Comes in milestone 7. |
+| Move Pane | kMovePanePointerAction | Starts Move Session to Split Pane: pick a destination pane and a side. | have | Pick mode across windows. |
 | Send Escape Sequence... | kSendEscapeSequencePointerAction | Sends a literal escape sequence. | have |  |
 | Send Hex Code... | kSendHexCodePointerAction | Sends one or more literal hex byte codes. | have |  |
 | Send Text... | kSendTextPointerAction | Sends literal text. | have |  |
@@ -591,12 +591,12 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | defaultIconsUsingLetters | defaultIconsUsingLetters (bool, default YES) | Use the running command's first letter as the tab's default icon if there isn't a built in one. | have | Milestone 13d: with the profile's icon set to Built-in Icon for Current App, a job with no built-in icon shows its first character, upper-cased, bold, in a circle colored by iTerm2's DJB2 rule (brightness 0.30 to 0.50); off, no icon. Stored as DefaultIconsUsingLetters. |
 | tabCloseButtonsAlwaysVisible | tabCloseButtonsAlwaysVisible (bool, default NO) | Should tab close buttons always remain visible? | have | Milestone 13c: on, close buttons always show and the title starts after them; off, they show on hover and the title stays centered. |
 | useSequoiaStyleTabs | useSequoiaStyleTabs (bool, default NO) | Use Sequoia-style tabs in Tahoe and later? | missing |  |
-| splitPaneSourceFillColor | splitPaneSourceFillColor (string, default @"#008000") | Color of source pane fill when moving/swapping a split pane. | partial |  |
-| splitPaneSourceBorderColor | splitPaneSourceBorderColor (string, default @"#ffffff") | Color of source pane outer border when moving/swapping a split pane. | partial |  |
-| splitPaneSourceInnerBorderColor | splitPaneSourceInnerBorderColor (string, default @"#000000") | Color of source pane inner border when moving/swapping a split pane. | partial |  |
-| splitPaneTargetDropFillColor | splitPaneTargetDropFillColor (string, default @"#800000") | Color of drop target fill when dragging a split pane. | partial |  |
-| splitPaneTargetDropBorderColor | splitPaneTargetDropBorderColor (string, default @"#ffffff") | Color of drop target outer border when dragging a split pane. | partial |  |
-| splitPaneTargetDropInnerBorderColor | splitPaneTargetDropInnerBorderColor (string, default @"#000000") | Color of drop target inner border when dragging a split pane. | partial |  |
+| splitPaneSourceFillColor | splitPaneSourceFillColor (string, default @"#008000") | Color of source pane fill when moving/swapping a split pane. | have | Drawn by the pane pick and the title bar drag. |
+| splitPaneSourceBorderColor | splitPaneSourceBorderColor (string, default @"#ffffff") | Color of source pane outer border when moving/swapping a split pane. | have | Drawn by the pane pick and the title bar drag. |
+| splitPaneSourceInnerBorderColor | splitPaneSourceInnerBorderColor (string, default @"#000000") | Color of source pane inner border when moving/swapping a split pane. | have | Drawn by the pane pick and the title bar drag. |
+| splitPaneTargetDropFillColor | splitPaneTargetDropFillColor (string, default @"#800000") | Color of drop target fill when dragging a split pane. | have | Drawn by the pane pick and the title bar drag. |
+| splitPaneTargetDropBorderColor | splitPaneTargetDropBorderColor (string, default @"#ffffff") | Color of drop target outer border when dragging a split pane. | have | Drawn by the pane pick and the title bar drag. |
+| splitPaneTargetDropInnerBorderColor | splitPaneTargetDropInnerBorderColor (string, default @"#000000") | Color of drop target inner border when dragging a split pane. | have | Drawn by the pane pick and the title bar drag. |
 
 ### Mouse
 
@@ -622,7 +622,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | naturalScrollingAffectsHorizontalMouseReporting | naturalScrollingAffectsHorizontalMouseReporting (bool, default NO) | Horizontal scrolling is reversed when “Natural scrolling” is enabled in System Settings. | partial |  |
 | horizontalScrollingSensitivity | horizontalScrollingSensitivity (float, default 0.1) | Sensitivity of mouse wheel for horizontal scrolling. | partial |  |
 | useDoubleClickDelayForCommandSelection | useDoubleClickDelayForCommandSelection (bool, default NO) | Wait to be sure it's not a double click before selecting a command. | partial |  |
-| requireOptionToDragSplitPaneTitleBar | requireOptionToDragSplitPaneTitleBar (bool, default NO) | Require Option to be pressed to drag a split pane by its title bar? This helps prevent accidental drags. | partial |  |
+| requireOptionToDragSplitPaneTitleBar | requireOptionToDragSplitPaneTitleBar (bool, default NO) | Require Option to be pressed to drag a split pane by its title bar? This helps prevent accidental drags. | have | Windows: Alt takes the place of Option. |
 
 ### Terminal
 
@@ -926,8 +926,8 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | fakeNotchHeight | fakeNotchHeight (float, default 0) | Simulated notch height. | missing |  |
 | splitPaneColor | splitPaneColor (string, default @"") | Custom color for split pane dividers. | partial |  |
 | splitPaneDividerWidth | splitPaneDividerWidth (float, default 0) | Custom width for split pane dividers in points (1-5). | partial |  |
-| paneTitleBarBackgroundColor | paneTitleBarBackgroundColor (string, default @"") | Custom background color for pane title bars. | missing |  |
-| paneTitleBarTextColor | paneTitleBarTextColor (string, default @"") | Custom text color for pane title bars. | missing |  |
+| paneTitleBarBackgroundColor | paneTitleBarBackgroundColor (string, default @"") | Custom background color for pane title bars. | have | Hex color, #rgb, #rrggbb or #rrrrggggbbbb (p3# too); anything else is ignored. |
+| paneTitleBarTextColor | paneTitleBarTextColor (string, default @"") | Custom text color for pane title bars. | have | Hex color, #rgb, #rrggbb or #rrrrggggbbbb (p3# too); anything else is ignored. |
 | bordersOnlyInLightMode | bordersOnlyInLightMode (bool, default YES) | Opaque windows have a border only in light mode. | have | Milestone 13f: stored as BordersOnlyInLightMode; dark means the window's resolved theme is Dark or Dark High Contrast. |
 | allowLiveResize | allowLiveResize (bool, default YES) | Allow window resizing by dragging edges and corners? | have | Milestone 13f: stored as AllowLiveResize; off, no window (hotkey windows included) can be resized by its edges, as a size-locked one. |
 | showSecureKeyboardEntryIndicator | showSecureKeyboardEntryIndicator (bool, default YES) | Show secure keyboard entry indicator? | missing |  |

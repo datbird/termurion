@@ -220,7 +220,6 @@ impl App {
 
     /// Another window's tab bar under the screen point `screen` (the topmost window there),
     /// and the slot a tab dropped there takes; None over no other window's bar.
-    #[allow(dead_code)] // 13h reads it; drops here use `window_bar_drop` and `window_bar_point`.
     pub(super) fn window_bar_hit(&self, screen: (i32, i32)) -> Option<(u64, usize)> {
         let vertical = tab_position::vertical(self.tab_position());
         let (k, x, y) = self.window_bar_point(screen)?;
@@ -738,7 +737,7 @@ impl App {
 }
 
 /// The pointer's screen point (`GetCursorPos`).
-fn cursor_screen() -> Option<(i32, i32)> {
+pub(super) fn cursor_screen() -> Option<(i32, i32)> {
     let mut p = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
     (unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut p) } != 0).then_some((p.x, p.y))
 }

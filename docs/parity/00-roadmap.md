@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 315 | 191 | 109 | 15 |
-| `02-global-settings.md` | 819 | 450 | 76 | 293 |
-| `03-features-and-menus.md` | 644 | 550 | 47 | 47 |
-| Total | 1,778 | 1,191 | 232 | 355 |
+| `02-global-settings.md` | 819 | 463 | 69 | 287 |
+| `03-features-and-menus.md` | 644 | 551 | 47 | 46 |
+| Total | 1,778 | 1,205 | 225 | 348 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -513,6 +513,22 @@ When a custom name is set, Always) and a double click on it edits the title. The
 darkness, minimal knobs, drag strips, bar height and caption room are edited in Settings > Advanced. Nothing of 13e was checked on screen
 during the build. Context and popup menus still follow the system mode under a forced theme. Every kept quirk is
 listed in `docs/acceptance/m13e-checklist.md` and ruled on in `docs/superpowers/rulings/m13e-rulings.txt`.
+Milestone 13h built the pane title bars (02: 13 rows to have, 7 of them from partial; 03: 1 row to have, Move Session to
+Split Pane). Every pane of a split tab shows iTerm2's title bar (Show per-pane title bars, on by default; "even if there is
+only one pane" is enabled with it): a close button at the left, the pane's job or title, and a menu button at the right, in
+the tab theme's colors, tinted by the pane's tab color and dimmed in an unfocused pane (paneTitleBarBackgroundColor and
+paneTitleBarTextColor override them). With Shortcut to choose a split pane set, the title starts with its shortcut
+("Alt+1   vim"). A pane's own status bar sits in its title bar when the bars are separate and at the top. The bar takes
+its room from the pane, tmux sizes included. A click on the bar focuses the pane, a double click maximizes it, the close
+button closes it, and the menu button or a right click opens the pane's context menu (a script's context menu items reach
+only that pane, and no command of it acts on another pane). Session > Move Session > Move Session to Split Pane, Swap With
+Session, the Move Pane pointer action and the Move to Split Pane key action start iTerm2's pick: a destination pane and a
+side, in any window, with the six split pane colors. Dragging a title bar does the same with the pointer: onto another
+pane's half, onto another window's pane or tab bar, or onto the desktop for a new window; a lone pane's bar drags the window,
+and RequireOptionToDragSplitPaneTitleBar asks for Alt. Lock Layout refuses (a beep). tmux panes are moved and swapped by tmux.
+The documented gap of 11c (a per-pane title bar menu adding context menu provider items) is closed. Nothing of 13h was
+checked on screen during the build. Every kept quirk is listed in `docs/acceptance/m13h-checklist.md` and ruled on in
+`docs/superpowers/rulings/m13h-rulings.txt`.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's

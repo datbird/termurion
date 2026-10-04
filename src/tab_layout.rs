@@ -639,39 +639,12 @@ pub const DEFAULT_COLORS: [Rgb; 7] = [
 /// spaces, each word read by `NSColor colorFromHexString:`, words it cannot read skipped, and
 /// `DEFAULT_COLORS` when none is left.
 pub fn tab_colors(spec: &str) -> Vec<Rgb> {
-    let colors: Vec<Rgb> = spec.split(' ').filter_map(hex_color).collect();
+    let colors: Vec<Rgb> = spec.split(' ').filter_map(crate::hexcolor::parse).collect();
     if colors.is_empty() {
         DEFAULT_COLORS.to_vec()
     } else {
         colors
     }
-}
-
-/// `NSColor colorFromHexString:`: "#rgb", "#rrggbb" or "#rrrrggggbbbb", in sRGB, or after
-/// "p3" in Display P3 (so "p3#rrrrggggbbbb").
-pub fn hex_color(word: &str) -> Option<Rgb> {
-    let (p3, hash) = match word.strip_prefix("p3") {
-        Some(rest) if rest.starts_with('#') => (true, rest),
-        _ => (false, word),
-    };
-    let digits = hash.strip_prefix('#')?;
-    if !digits.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    // Components as fractions of the whole (`getHashColorRed:green:blue:` gives 16 bits).
-    let parse = |s: &str, max: f64| u32::from_str_radix(s, 16).ok().map(|v| v as f64 / max);
-    let (r, g, b) = match digits.len() {
-        3 => {
-            let d = |i: usize| parse(&digits[i..i + 1].repeat(2), 255.0);
-            (d(0)?, d(1)?, d(2)?)
-        }
-        6 => (parse(&digits[0..2], 255.0)?, parse(&digits[2..4], 255.0)?, parse(&digits[4..6], 255.0)?),
-        12 => (parse(&digits[0..4], 65535.0)?, parse(&digits[4..8], 65535.0)?, parse(&digits[8..12], 65535.0)?),
-        _ => return None,
-    };
-    let (r, g, b) = if p3 { crate::import::p3_to_srgb(r, g, b) } else { (r, g, b) };
-    let to8 = |c: f64| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
-    Some(rgb(to8(r), to8(g), to8(b)))
 }
 
 /// The label font's size without `UseCustomTabBarFontSize` (`YS fontSize`).
