@@ -12,7 +12,7 @@ use crate::seltools::{self, End};
 
 /// Menu items with a check mark that milestone 4c adds, by selector.
 pub(super) const CHECKED: &[&str] =
-    &["toggleSelectionRespectsSoftBoundaries:", "toggleCopyMode:", "toggleShowTimestamps:", "toggleCursorGuide:", "showHideNotes:", "editSessionNote:", "toggleBufferInput:", "toggleEnableTriggersInInteractiveApps:", "toggleNotifyOnStatusChange:", "togglePinHotkeyWindow:", "disableBroadcasting:", "enableSendInputToAllTabs:", "enableSendInputToAllPanes:", "toggleUseBackgroundPatternIndicator:", "toggleBroadcastSource:", "toggleTmuxPausePane:", "toggleAutoCommandHistory:", "toggleShowClippings:", "toggleShowInlineChat:", "toggleToolbeltVisibility:", "toggleAutoComposer:", "toggleFullScreenTabBar:", "toggleUseTransparency:", "toggleDisableTransparencyForActiveWindow:"];
+    &["toggleSelectionRespectsSoftBoundaries:", "toggleCopyMode:", "toggleShowTimestamps:", "toggleCursorGuide:", "showHideNotes:", "editSessionNote:", "toggleBufferInput:", "toggleEnableTriggersInInteractiveApps:", "toggleNotifyOnStatusChange:", "togglePinHotkeyWindow:", "disableBroadcasting:", "enableSendInputToAllTabs:", "enableSendInputToAllPanes:", "toggleUseBackgroundPatternIndicator:", "toggleBroadcastSource:", "toggleTmuxPausePane:", "toggleAutoCommandHistory:", "toggleShowClippings:", "toggleShowInlineChat:", "toggleToolbeltVisibility:", "toggleAutoComposer:", "toggleFullScreenTabBar:", "toggleUseTransparency:", "toggleDisableTransparencyForActiveWindow:", "toggleLockSplitPaneWidth:"];
 
 impl App {
     /// Edit > Copy with Styles: plain text, HTML, and RTF in the profile's font and colors.
@@ -88,6 +88,7 @@ impl App {
             "toggleUseTransparency:" | "toggleDisableTransparencyForActiveWindow:" => {
                 crate::transparency::checks(self.window_uses_transparency(), self.globals.bool(crate::transparency::DISABLE_KEY_WINDOW_KEY)).iter().any(|(s, on)| *s == selector && *on)
             }
+            "toggleLockSplitPaneWidth:" => self.width_lock_checked(),
             "toggleFullScreenTabBar:" => self.globals.bool("ShowFullScreenTabBar"),
             "toggleCopyMode:" => self.focused_id().is_some_and(|id| self.copy_modes.contains_key(&id)),
             "toggleShowTimestamps:" => self.focused_id().is_some_and(|id| self.stamps_on(id)),

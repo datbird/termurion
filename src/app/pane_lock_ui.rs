@@ -41,7 +41,52 @@ pub(super) fn close_reason_for(exited: bool, locked: bool) -> Option<&'static st
     (!exited && locked).then_some(LOCKED_REASON)
 }
 
+/// Whether Lock Split Pane Width is offered: a non-tmux pane of a tab with several panes, with a
+/// side by side split above it (`PS:21736-21754`).
+pub(super) fn width_lock_allowed(tmux: bool, tab_panes: usize, row_ancestor: bool) -> bool {
+    !tmux && tab_panes > 1 && row_ancestor
+}
+
 impl App {
+    /// The menu item: the focused pane takes its current width in points as its cap, or loses
+    /// the cap (`PS:21756-21764`). Not offered, nothing happens.
+    pub(super) fn toggle_width_lock(&mut self) {
+        let Some(id) = self.focused_id() else { return };
+        let Some(tab) = self.tabs.get(self.active) else { return };
+        let panes = tab.layout.panes();
+        let allowed = width_lock_allowed(self.tmux_of(id).is_some(), panes.len(), crate::layout::has_row_ancestor(&tab.layout.tree(), id));
+        if !allowed {
+            return;
+        }
+        let area = self.content_area_for(tab);
+        let width = tab.layout.rects(area, self.gap()).iter().find(|(p, _)| *p == id).map(|(_, r)| r.w / self.scale());
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        p.pinned_width = if p.pinned_width.is_some() { None } else { width };
+        self.redraw();
+    }
+
+    /// Whether the focused pane holds its width (the menu's check mark).
+    pub(super) fn width_lock_checked(&self) -> bool {
+        self.focused_id().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.pinned_width.is_some())
+    }
+
+    /// A window resize caps every pinned pane of every tab at its width, in layout order
+    /// (`TAB:6596-6640`, `resizeSubviewsWithOldSize:`). A pin on a pane whose parent is no longer
+    /// a side by side split does nothing; tmux panes keep tmux's sizes.
+    pub(super) fn apply_width_pins(&mut self) {
+        let (scale, gap) = (self.scale(), self.gap());
+        for ti in 0..self.tabs.len() {
+            let area = self.content_area_for(&self.tabs[ti]);
+            for id in self.tabs[ti].layout.panes() {
+                let Some(width) = self.panes.get(&id).and_then(|p| p.pinned_width) else { continue };
+                if self.tmux_of(id).is_some() {
+                    continue;
+                }
+                self.tabs[ti].layout.pin_width(id, width * scale, area, gap);
+            }
+        }
+    }
+
     /// A pane that was just created takes "Default Pane Locked" from its profile
     /// (`PS:6211-6213`, once, when its profile first loads).
     pub(super) fn apply_new_pane_defaults(&mut self, id: PaneId) {
@@ -107,5 +152,13 @@ mod tests {
         assert_eq!(close_reason_for(false, true), Some(crate::close_rules::LOCKED_REASON));
         assert_eq!(close_reason_for(true, true), None);
         assert_eq!(close_reason_for(false, false), None);
+    }
+
+    #[test]
+    fn width_lock_offers_follow_iterm2() {
+        assert!(width_lock_allowed(false, 2, true));
+        assert!(!width_lock_allowed(true, 2, true), "tmux");
+        assert!(!width_lock_allowed(false, 1, true), "solo");
+        assert!(!width_lock_allowed(false, 3, false), "no side-by-side split");
     }
 }

@@ -102,6 +102,21 @@ impl<T> Tree<T> {
     }
 }
 
+/// Whether a side by side split lies above `pane` (`PS:21736-21754`: a vertical split view
+/// somewhere up the chain), its direct parent or not.
+pub fn has_row_ancestor(tree: &Tree<PaneId>, pane: PaneId) -> bool {
+    fn go(t: &Tree<PaneId>, pane: PaneId, row: bool) -> Option<bool> {
+        match t {
+            Tree::Leaf(p) => (*p == pane).then_some(row),
+            Tree::Split { axis, a, b, .. } => {
+                let row = row || *axis == Axis::Row;
+                go(a, pane, row).or_else(|| go(b, pane, row))
+            }
+        }
+    }
+    go(tree, pane, false).unwrap_or(false)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum Node {
     Leaf(PaneId),
@@ -353,6 +368,34 @@ impl Layout {
         if let Node::Split { ratio: r, .. } = n {
             *r = ratio.clamp(0.1, 0.9);
         }
+    }
+
+    /// Caps `pane` at `width` when its direct parent is a side by side split and the pane is
+    /// wider (`TAB:6596-6640`: only a session view that is a direct child of a vertical split is
+    /// pinned). The ratio clamps like any other (0.1 to 0.9). True when the split changed.
+    pub fn pin_width(&mut self, pane: PaneId, width: f32, area: Rect, gap: f32) -> bool {
+        fn go(n: &mut Node, r: Rect, pane: PaneId, width: f32, gap: f32) -> bool {
+            let Node::Split { axis, ratio, a, b } = n else { return false };
+            let (ra, rb, _) = split_rect(r, *axis, *ratio, gap);
+            let direct_a = matches!(**a, Node::Leaf(p) if p == pane);
+            let direct_b = matches!(**b, Node::Leaf(p) if p == pane);
+            if (direct_a || direct_b) && *axis == Axis::Row {
+                let now = if direct_a { ra.w } else { rb.w };
+                if now <= width {
+                    return false;
+                }
+                let room = r.w - gap;
+                if room <= 0.0 {
+                    return false;
+                }
+                // The first side is floored, so the nudge keeps a whole width from losing a point.
+                let first = if direct_a { width } else { room - width };
+                *ratio = ((first + 0.01) / room).clamp(0.1, 0.9);
+                return true;
+            }
+            go(a, ra, pane, width, gap) || go(b, rb, pane, width, gap)
+        }
+        go(&mut self.root, area, pane, width, gap)
     }
 
     /// The panes B in `from`'s projection looking `dir` (`sessionsInProjectionOfSession:`,
@@ -714,5 +757,29 @@ mod tests {
         let t = Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(1), b: Box::new(Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(2), b: leaf(3) }) };
         assert_eq!(max_stack(&t, Axis::Column), 3);
         assert_eq!(max_stack(&t, Axis::Row), 1);
+    }
+
+    #[test]
+    fn width_pins_follow_iterm2() {
+        let leaf = |p: PaneId| Box::new(Tree::Leaf(p));
+        let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 };
+        let row = || Layout::from_tree(Tree::Split { axis: Axis::Row, ratio: 0.5, a: leaf(1), b: leaf(2) });
+        let width = |l: &Layout, id: PaneId| l.rects(area, 0.0).iter().find(|(p, _)| *p == id).unwrap().1.w;
+        let mut l = row();
+        assert!(l.pin_width(1, 120.0, area, 0.0));
+        assert_eq!(width(&l, 1), 120.0);
+        let mut l = row();
+        assert!(l.pin_width(2, 100.0, area, 0.0));
+        assert_eq!(width(&l, 2), 100.0);
+        let mut l = row();
+        assert!(!l.pin_width(1, 300.0, area, 0.0), "a pin only caps");
+        assert_eq!(width(&l, 1), 200.0);
+        let mut l = Layout::from_tree(Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(1), b: leaf(2) });
+        assert!(!l.pin_width(1, 120.0, area, 0.0));
+        let nested = Tree::Split { axis: Axis::Row, ratio: 0.5, a: leaf(1), b: Box::new(Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(2), b: leaf(3) }) };
+        let mut l = Layout::from_tree(nested.clone());
+        assert!(!l.pin_width(2, 100.0, area, 0.0), "its direct parent is a Column split");
+        assert!(has_row_ancestor(&nested, 3));
+        assert!(!has_row_ancestor(&Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(1), b: leaf(2) }, 1));
     }
 }

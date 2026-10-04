@@ -720,6 +720,7 @@ impl App {
                 }
             }
             "toggleSizeLocked:" => self.toggle_lock(false),
+            "toggleLockSplitPaneWidth:" => self.toggle_width_lock(),
             "toggleLayoutLocked:" => self.toggle_lock(true),
             "decreaseHeight:" => self.resize_window_by_cell(crate::winmodel::Resize::Height(-1)),
             "increaseHeight:" => self.resize_window_by_cell(crate::winmodel::Resize::Height(1)),

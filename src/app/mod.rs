@@ -3028,9 +3028,9 @@ impl App {
         // The session keeps its chat reference across a restart (`PTYSession.m:2403-2420`).
         let reference = self.panes.get(&id).map(|p| p.session_guid.clone());
         let stable = self.panes.get(&id).map(|p| p.stable_id.clone());
-        // Restart Session keeps the lock and the last-use stamp (B5); the new pane would otherwise
+        // Restart Session keeps the lock, the pinned width and the last-use stamp (B5); the new pane would otherwise
         // read Default Pane Locked.
-        let (locked, activity) = self.panes.get(&id).map_or((false, 0), |p| (p.locked, p.activity));
+        let (locked, activity, pinned) = self.panes.get(&id).map_or((false, 0, None), |p| (p.locked, p.activity, p.pinned_width));
         // The new shell never saw what a model typed into the old one.
         self.orch_held.remove(&id);
         if let Some(old) = self.panes.remove(&id) {
@@ -3047,6 +3047,7 @@ impl App {
             if let Some(p) = self.panes.get_mut(&id) {
                 p.locked = locked;
                 p.activity = activity;
+                p.pinned_width = pinned;
             }
             if let (Some(reference), Some(p)) = (reference.clone(), self.panes.get_mut(&id)) {
                 p.keep_reference(&reference);
@@ -5590,6 +5591,8 @@ impl ApplicationHandler<UserEvent> for App {
                     g.config.height = h;
                     g.surface.configure(g.render_device(), &g.config);
                 }
+                // Locked split pane widths hold through the resize (`TAB:6596-6640`).
+                self.apply_width_pins();
                 self.relayout();
                 self.sync_blur();
                 self.tmux_save_all_windows();
