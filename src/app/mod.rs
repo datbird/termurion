@@ -3953,14 +3953,7 @@ impl App {
             Action::NextPane | Action::PrevPane => {
                 self.step_pane(action == Action::NextPane);
             }
-            Action::Focus(dir) => {
-                let area = self.content_area();
-                if let Some(tab) = self.tabs.get_mut(self.active) {
-                    if let Some(id) = tab.layout.neighbor(tab.focused, dir, area) {
-                        tab.focused = id;
-                    }
-                }
-            }
+            Action::Focus(dir) => self.select_pane_dir(dir),
             Action::NextTab if n > 0 => self.select_tab((self.active + 1) % n),
             Action::PrevTab if n > 0 => self.select_tab((self.active + n - 1) % n),
             Action::SelectTab(i) if i < n => self.select_tab(i),

@@ -3,7 +3,7 @@
 //! last-use order (`PTYTab orderedSessions`, `setActiveSession:`).
 
 use super::{App, Tab, GAP};
-use crate::layout::{Axis, PaneId, Tree};
+use crate::layout::{most_recent, Axis, Dir, PaneId, Tree};
 use crate::pane_order;
 
 /// The stamps a focus change takes: the pane that was seen and the pane focused now both get
@@ -14,6 +14,12 @@ pub(super) fn activity_step(seen: Option<PaneId>, focused: PaneId, seq: u64) -> 
         return None;
     }
     Some([(seen.unwrap_or(focused), seq + 1), (focused, seq + 2)])
+}
+
+/// The pane a direction key picks: the most recently used adjacent pane, else with WrapFocus
+/// the most recently used pane at the far edge (`sessionAdjacentTo:`, `TAB:1541-1567`).
+pub(super) fn pick_direction(adjacent: &[PaneId], wrap: &[PaneId], wrap_focus: bool, activity: &dyn Fn(PaneId) -> u64) -> Option<PaneId> {
+    most_recent(adjacent, activity).or_else(|| if wrap_focus { most_recent(wrap, activity) } else { None })
 }
 
 /// Which order the key picks: reading order with NavigatePanesInReadingOrder, else last use.
@@ -41,6 +47,16 @@ impl App {
     /// The pane a number key picks (9 is the last pane).
     pub(super) fn pane_by_number(&self, tab: &Tab, digit: u8) -> Option<PaneId> {
         pane_order::by_number(&self.ordered_panes(tab), digit)
+    }
+
+    /// The pane in direction `dir` from the tab's focus (`sessionAdjacentTo:`): the most recent
+    /// adjacent pane, else the far edge with WrapFocus. The margin is 1 point times the scale.
+    pub(super) fn pane_in_direction(&self, tab: &Tab, dir: Dir) -> Option<PaneId> {
+        let (area, margin) = (self.content_area_for(tab), self.scale());
+        let activity = |id: PaneId| self.panes.get(&id).map_or(0, |p| p.activity);
+        let adjacent = tab.layout.adjacent(tab.focused, dir, area, GAP, margin);
+        let wrap = if adjacent.is_empty() { tab.layout.wraparound(tab.focused, dir, area, GAP, margin) } else { Vec::new() };
+        pick_direction(&adjacent, &wrap, self.globals.bool("WrapFocus"), &activity)
     }
 
     /// Stamps every focus change of this window's tabs since the last pass (every click,
@@ -76,6 +92,24 @@ impl App {
 mod tests {
     use super::*;
     use crate::pane_order::by_number;
+
+    #[test]
+    fn direction_pick_follows_iterm2() {
+        let stamps = |id: PaneId| if id == 2 { 5 } else { 9 };
+        assert_eq!(pick_direction(&[2, 3], &[1], true, &stamps), Some(3), "the adjacent pick wins");
+        assert_eq!(pick_direction(&[], &[2, 3], true, &stamps), Some(3), "wrap with WrapFocus");
+        assert_eq!(pick_direction(&[], &[2, 3], false, &stamps), None, "no wrap without it");
+        assert_eq!(pick_direction(&[], &[], true, &stamps), None);
+        let (actions, menu, builtin, app) =
+            (include_str!("actions.rs"), include_str!("menu.rs"), include_str!("builtin_ui.rs"), include_str!("mod.rs"));
+        for (name, src) in [("actions.rs", actions), ("menu.rs", menu), ("builtin_ui.rs", builtin), ("mod.rs", app)] {
+            assert!(!src.contains("layout.neighbor("), "{name} still picks by center distance");
+        }
+        assert!(actions.contains("pane_in_direction"), "select_pane_dir and swap 53..=56");
+        assert!(builtin.contains("pane_in_direction"), "the script API pick");
+        assert!(menu.contains("select_pane_dir("), "the menu shares select_pane_dir");
+        assert!(app.contains("select_pane_dir("), "Action::Focus shares select_pane_dir");
+    }
 
     #[test]
     fn ordered_panes_drive_every_path() {

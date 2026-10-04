@@ -1000,13 +1000,7 @@ impl App {
                     "selectPaneLeft:" => Dir::Left,
                     _ => Dir::Right,
                 };
-                let area = self.content_area();
-                if let Some(t) = self.tabs.get_mut(self.active) {
-                    if let Some(id) = t.layout.neighbor(t.focused, dir, area) {
-                        t.focused = id;
-                        t.zoomed = None;
-                    }
-                }
+                self.select_pane_dir(dir);
             }
             "nextPane:" | "previousPane:" => {
                 self.step_pane(item.selector == "nextPane:");
