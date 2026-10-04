@@ -206,6 +206,23 @@ impl App {
         self.codecierge_pump(guid);
     }
 
+    /// What a `write` knows of the pane's shell (final residual ruling): `ai_shell_of`'s kind
+    /// and the detector's answer, the launch program, the job tree, and whether a framing
+    /// conductor's chain was vouched for by Tandem's origin token.
+    fn codecierge_write_shell(&self, pane: PaneId) -> cc::WriteShell {
+        let (kind, host_is_local, _) = self.ai_shell_of(pane);
+        let name = self.variables_with(pane, false).session.get("shell").cloned();
+        let Some(p) = self.panes.get(&pane) else { return cc::WriteShell::unknown() };
+        let s = p.own();
+        let launch = s.shell.job_root.clone().or_else(|| Some(crate::proctree::argv0_title(&p.command).to_string()).filter(|n| !n.is_empty()));
+        let link = match (crate::conductor::level(p.conductor.as_deref()), p.conductor.as_deref()) {
+            (0, _) | (_, None) => cc::Link::None,
+            (2, Some(c)) => cc::Link::Framing { vouched: c.root_is_local() },
+            _ => cc::Link::Unframed,
+        };
+        cc::WriteShell { kind, name, launch, host_is_local, ancestors: s.shell.job_ancestors.clone(), link }
+    }
+
     /// The model called a function of run `id` (`CG:80-146`). Nothing at all happens for a call
     /// that `invoke_plan` drops: after End Task, Stop or a closed gate, or for a run that is no
     /// longer the session's request (ruling R12e-3).
@@ -221,16 +238,17 @@ impl App {
         let (open, _) = self.codecierge_gate();
         let Some(pane) = pane_for_ref(&self.panes, guid) else {
             // The session is gone: only a call that would have acted is answered.
-            let would = cc::invoke_plan(s, id, open, name, arguments, crate::ai_shell::ShellKind::Unknown);
+            let would = cc::invoke_plan(s, id, open, name, arguments, &cc::WriteShell::unknown());
             if would != Invoke::Drop {
                 self.ai_run_tool_done(id, ToolResult::Failed(cc::SESSION_GONE.to_string()));
             }
             return;
         };
-        // The one shell detector decides; a write in cmd or PowerShell refuses, local or remote.
-        let (shell, _, _) = self.ai_shell_of(pane);
+        // The one shell detector decides the kind; a write types only where Tandem knows a
+        // POSIX shell reads it (final residual ruling).
+        let shell = self.codecierge_write_shell(pane);
         let Some(s) = self.codecierge.get(guid) else { return };
-        let plan = cc::invoke_plan(s, id, open, name, arguments, shell);
+        let plan = cc::invoke_plan(s, id, open, name, arguments, &shell);
         match plan {
             Invoke::Drop => {}
             Invoke::Answer(text) => self.codecierge_answer_now(guid, id, ToolResult::Failed(text)),

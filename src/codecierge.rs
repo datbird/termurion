@@ -271,6 +271,7 @@ pub const USAGE_ID: &str = "CodeciergeCommandWarning";
 /// Why a file is not written (Tandem's, rulings R12e-4 and the final ruling on Windows shells).
 pub const WINDOWS_SHELL: &str = "Writing files is not supported in this session's shell (cmd or PowerShell).";
 pub const UNKNOWN_SHELL: &str = "Tandem cannot tell which shell this session runs, so Codecierge cannot write files in it.";
+pub const UNVOUCHED_SHELL: &str = "Writing files is not supported in this session: Codecierge writes only in a local POSIX shell or over it2ssh to a POSIX host.";
 pub const WRITE_INVALID: &str = "Codecierge cannot write a file name with characters Windows does not allow.";
 /// 12c's text for an empty name, shared so the two writers answer alike.
 const EMPTY_NAME: &str = "Error: the file name is empty.";
@@ -465,7 +466,7 @@ fn typed_text(s: &str) -> String {
 
 /// Decides what a call of run `id` does. Only a Running, auto-run session whose current request
 /// it is, with the gate open, acts at all.
-pub fn invoke_plan(s: &Session, id: u64, gate_open: bool, name: &str, arguments: &str, shell: crate::ai_shell::ShellKind) -> Invoke {
+pub fn invoke_plan(s: &Session, id: u64, gate_open: bool, name: &str, arguments: &str, shell: &WriteShell) -> Invoke {
     if s.stage != Stage::Running || !gate_open || s.request != Some(id) {
         return Invoke::Drop;
     }
@@ -494,6 +495,79 @@ pub fn invoke_plan(s: &Session, id: u64, gate_open: bool, name: &str, arguments:
 
 // ---- Writing a file (ruling R12e-4 and the final ruling on Windows shells) ----
 
+/// What Tandem knows of the shell a `write` would type into (final residual ruling).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WriteShell {
+    /// `App::ai_shell_of`'s kind: the one detector's answer, classified.
+    pub kind: crate::ai_shell::ShellKind,
+    /// The detector's answer itself, the session's `shell` variable (a framing conductor's
+    /// reported shell at level 2).
+    pub name: Option<String>,
+    /// The program the pane runs as its shell: `Shell.job_root`, else the command's argv0.
+    pub launch: Option<String>,
+    /// The session's host is this computer (`is_localhost`).
+    pub host_is_local: bool,
+    /// The foreground job and its ancestors (`Shell.job_ancestors`; the remote's under a
+    /// framing conductor).
+    pub ancestors: Vec<String>,
+    pub link: Link,
+}
+
+/// Programs that log in to another computer: one in the job tree puts typed text there.
+const REMOTE_LOGINS: &[&str] = &["ssh", "telnet", "plink", "putty", "mosh", "mosh-client", "rlogin", "rsh"];
+
+/// Whether a process or shell name (a path, any case, ".exe" or not) is a remote login.
+fn is_remote_login(name: &str) -> bool {
+    let n = name.trim();
+    let n = crate::proctree::strip_exe(n.rsplit(['\\', '/']).next().unwrap_or(n)).to_ascii_lowercase();
+    REMOTE_LOGINS.contains(&n.as_str())
+}
+
+/// Whether the session's shell runs on this computer (rulings R12e-6 and the final residual
+/// ruling): the host is local and no remote login is among the foreground job's ancestors.
+pub fn session_is_local(host_is_local: bool, ancestors: &[String]) -> bool {
+    host_is_local && !ancestors.iter().any(|a| is_remote_login(a))
+}
+
+impl WriteShell {
+    /// Whether Tandem positively knows a POSIX shell reads what is typed (final residual
+    /// ruling): a local session whose shell and launch program are no remote login, or a
+    /// framing conductor vouched for by Tandem's origin token that reports a POSIX shell. A
+    /// remote login in the job tree refuses either way.
+    pub fn known_posix(&self) -> bool {
+        use crate::ai_shell::{classify, ShellKind};
+        if self.kind != ShellKind::Posix || self.ancestors.iter().any(|a| is_remote_login(a)) {
+            return false;
+        }
+        let named = |n: &Option<String>| n.as_deref().is_some_and(|n| !n.trim().is_empty());
+        match self.link {
+            Link::None => {
+                session_is_local(self.host_is_local, &self.ancestors) && named(&self.name) && ![&self.name, &self.launch].into_iter().flatten().any(|n| is_remote_login(n))
+            }
+            Link::Framing { vouched: true } => self.name.as_deref().is_some_and(|n| {
+                let n = n.trim();
+                !is_remote_login(n) && classify(n.rsplit('/').next().unwrap_or(n)) == Some(ShellKind::Posix)
+            }),
+            Link::Framing { vouched: false } | Link::Unframed => false,
+        }
+    }
+
+    /// Nothing known: a session that is gone.
+    pub fn unknown() -> WriteShell {
+        WriteShell { kind: crate::ai_shell::ShellKind::Unknown, name: None, launch: None, host_is_local: false, ancestors: Vec::new(), link: Link::None }
+    }
+}
+
+/// The pane's current conductor, as a write sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Link {
+    None,
+    /// Level 2; `vouched` when the chain's first hook carried Tandem's origin token.
+    Framing { vouched: bool },
+    /// Level 1: no remote shell is known.
+    Unframed,
+}
+
 /// How a `write` call is carried out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WritePlan {
@@ -507,15 +581,18 @@ pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// How a `write` call is carried out in a session (ruling R12e-4, final ruling): only a POSIX
+/// How a `write` call is carried out in a session (ruling R12e-4, final rulings): only a POSIX
 /// shell types the `cat >` form. cmd and PowerShell as `App::ai_shell_of` reports them refuse,
 /// local or remote (over ssh the detector still names the local shell, and a typed `cat >` there
-/// would run each line of the file as a command); an unknown shell refuses too.
-pub fn write_plan(shell: crate::ai_shell::ShellKind, filename: &str, contents: &str) -> WritePlan {
+/// would run each line of the file as a command); an unknown shell refuses too. A POSIX kind
+/// types only when `WriteShell::known_posix`: the detector also calls a pane launched as ssh,
+/// or a remote host, POSIX, and that shell may be a Windows host's cmd.
+pub fn write_plan(shell: &WriteShell, filename: &str, contents: &str) -> WritePlan {
     use crate::ai_shell::ShellKind;
-    match shell {
+    match shell.kind {
         ShellKind::Unknown => WritePlan::Refuse(UNKNOWN_SHELL.to_string()),
         ShellKind::Cmd | ShellKind::PowerShell => WritePlan::Refuse(WINDOWS_SHELL.to_string()),
+        _ if !shell.known_posix() => WritePlan::Refuse(UNVOUCHED_SHELL.to_string()),
         _ => {
             if filename.trim().is_empty() {
                 return WritePlan::Refuse(EMPTY_NAME.to_string());
@@ -593,7 +670,7 @@ mod tests {
     }
 
     fn execute(s: &Session, id: u64) -> Invoke {
-        invoke_plan(s, id, true, "execute", "{\"command\":\"rm -rf ~\"}", ShellKind::Posix)
+        invoke_plan(s, id, true, "execute", "{\"command\":\"rm -rf ~\"}", &posix())
     }
 
     #[test]
@@ -770,11 +847,79 @@ mod tests {
         assert_eq!(error_text("timeout"), "There was an error: timeout");
     }
 
+    /// A plain local WSL bash: no conductor, no ssh anywhere in the job tree.
+    fn posix() -> WriteShell {
+        WriteShell { kind: ShellKind::Posix, name: Some("wsl".into()), launch: Some("wsl".into()), host_is_local: true, ancestors: Vec::new(), link: Link::None }
+    }
+
+    fn with(kind: ShellKind) -> WriteShell {
+        WriteShell { kind, ..posix() }
+    }
+
+    fn plan(w: WriteShell) -> WritePlan {
+        write_plan(&w, "a.bat", "del /q *")
+    }
+
+    fn typed_bat() -> WritePlan {
+        WritePlan::Typed(vec!["cat > 'a.bat'\r".into(), "del /q *\r".into(), "\u{4}".into()])
+    }
+
+    /// Final residual ruling: a pane whose command is `ssh winhost` (the detector names ssh,
+    /// which it counts as POSIX) never types a file's lines.
+    #[test]
+    fn an_ssh_pane_refuses_a_write() {
+        let refused = WritePlan::Refuse(UNVOUCHED_SHELL.into());
+        let ssh_pane = WriteShell { name: Some("ssh".into()), launch: Some("ssh".into()), ..posix() };
+        assert_eq!(plan(ssh_pane.clone()), refused, "a pane launched as ssh");
+        assert_eq!(plan(WriteShell { name: Some("bash".into()), ..ssh_pane }), refused, "ssh launched, a shell name reported from the far side");
+    }
+
+    /// Final residual ruling: WSL bash with ssh running under it refuses.
+    #[test]
+    fn wsl_bash_then_ssh_refuses_a_write() {
+        let refused = WritePlan::Refuse(UNVOUCHED_SHELL.into());
+        assert_eq!(plan(WriteShell { name: Some("bash".into()), ancestors: vec!["ssh".into(), "bash".into()], ..posix() }), refused, "WSL bash then ssh");
+        assert_eq!(plan(WriteShell { ancestors: vec!["ssh.exe".into()], ..posix() }), refused);
+    }
+
+    /// Final residual ruling: plain local WSL bash types the file.
+    #[test]
+    fn plain_local_wsl_bash_writes() {
+        assert_eq!(plan(posix()), typed_bat());
+    }
+
+    #[test]
+    fn a_typed_write_needs_a_known_posix_shell() {
+        // Final residual ruling: the file's lines are typed only where Tandem knows a POSIX
+        // shell reads them. `kind` is what `ai_shell_of` reports for each case today.
+        let refused = WritePlan::Refuse(UNVOUCHED_SHELL.into());
+        for login in ["telnet", "plink", "mosh-client"] {
+            assert_eq!(plan(WriteShell { ancestors: vec![login.into(), "bash".into()], ..posix() }), refused, "{login}");
+        }
+        // A remote host with no conductor, an unvouched or unframed conductor, no shell name.
+        assert_eq!(plan(WriteShell { name: Some("bash".into()), host_is_local: false, ..posix() }), refused, "plain ssh with shell integration");
+        let it2ssh = |vouched: bool, name: Option<&str>| WriteShell { name: name.map(str::to_string), host_is_local: false, link: Link::Framing { vouched }, ..posix() };
+        assert_eq!(plan(it2ssh(false, Some("/bin/bash"))), refused, "an unvouched conductor");
+        assert_eq!(plan(it2ssh(true, None)), refused, "no reported shell");
+        assert_eq!(plan(it2ssh(true, Some("/usr/bin/python3"))), refused, "not a POSIX shell");
+        assert_eq!(plan(WriteShell { link: Link::Unframed, ..posix() }), refused);
+        let mut nested = it2ssh(true, Some("/bin/zsh"));
+        nested.ancestors = vec!["ssh".into(), "zsh".into()];
+        assert_eq!(plan(nested), refused, "ssh run on the far side");
+        // Git Bash and a vouched it2ssh to a POSIX host type the file.
+        let typed = typed_bat();
+        assert_eq!(plan(WriteShell { name: Some("bash".into()), launch: Some("bash".into()), ancestors: vec!["vim".into()], ..posix() }), typed, "Git Bash");
+        assert_eq!(plan(it2ssh(true, Some("/bin/zsh"))), typed, "a vouched it2ssh");
+        // The Windows and unknown refusals keep their texts.
+        assert_eq!(plan(WriteShell { kind: ShellKind::Cmd, host_is_local: false, ..posix() }), WritePlan::Refuse(WINDOWS_SHELL.into()));
+        assert_eq!(plan(with(ShellKind::Unknown)), WritePlan::Refuse(UNKNOWN_SHELL.into()));
+    }
+
     #[test]
     fn write_plan_follows_the_shell() {
-        assert!(matches!(write_plan(ShellKind::Posix, "a.txt", "hi"), WritePlan::Typed(_)));
-        assert_eq!(write_plan(ShellKind::Unknown, "a.txt", "hi"), WritePlan::Refuse(UNKNOWN_SHELL.into()));
-        assert_eq!(write_plan(ShellKind::Posix, "", "hi"), WritePlan::Refuse("Error: the file name is empty.".into()));
+        assert!(matches!(write_plan(&posix(), "a.txt", "hi"), WritePlan::Typed(_)));
+        assert_eq!(write_plan(&with(ShellKind::Unknown), "a.txt", "hi"), WritePlan::Refuse(UNKNOWN_SHELL.into()));
+        assert_eq!(write_plan(&posix(), "", "hi"), WritePlan::Refuse("Error: the file name is empty.".into()));
     }
 
     #[test]
@@ -783,15 +928,15 @@ mod tests {
         // (ssh from PowerShell to a Windows host would type the file's lines as commands). The
         // plan has no local input at all, so a remote session cannot take another path.
         for kind in [ShellKind::Cmd, ShellKind::PowerShell] {
-            assert_eq!(write_plan(kind, "a.bat", "del /q *\nrd x"), WritePlan::Refuse(WINDOWS_SHELL.into()), "{kind:?}");
+            assert_eq!(write_plan(&with(kind), "a.bat", "del /q *\nrd x"), WritePlan::Refuse(WINDOWS_SHELL.into()), "{kind:?}");
             let s = busy_session();
-            assert_eq!(invoke_plan(&s, 7, true, "write", "{\"filename\":\"a.bat\",\"contents\":\"x\"}", kind), Invoke::Write(WritePlan::Refuse(WINDOWS_SHELL.into())));
+            assert_eq!(invoke_plan(&s, 7, true, "write", "{\"filename\":\"a.bat\",\"contents\":\"x\"}", &with(kind)), Invoke::Write(WritePlan::Refuse(WINDOWS_SHELL.into())));
         }
     }
 
     #[test]
     fn typed_write_follows_tandem() {
-        let typed = |name: &str, contents: &str| write_plan(ShellKind::Posix, name, contents);
+        let typed = |name: &str, contents: &str| write_plan(&posix(), name, contents);
         let parts = |a: &str, b: &str| WritePlan::Typed(vec![a.into(), b.into(), "\u{4}".into()]);
         assert_eq!(typed("a.txt", "hi"), parts("cat > 'a.txt'\r", "hi\r"));
         assert_eq!(typed("a.txt", "hi\n"), parts("cat > 'a.txt'\r", "hi\r"));
@@ -833,8 +978,8 @@ mod tests {
 
     #[test]
     fn late_execute_never_types() {
-        let exec = |s: &Session, id: u64, open: bool| invoke_plan(s, id, open, "execute", r#"{"command":"rm -rf ~"}"#, ShellKind::Posix);
-        let write = |s: &Session, id: u64, open: bool| invoke_plan(s, id, open, "write", r#"{"filename":"a.txt","contents":"x"}"#, ShellKind::Posix);
+        let exec = |s: &Session, id: u64, open: bool| invoke_plan(s, id, open, "execute", r#"{"command":"rm -rf ~"}"#, &posix());
+        let write = |s: &Session, id: u64, open: bool| invoke_plan(s, id, open, "write", r#"{"filename":"a.txt","contents":"x"}"#, &posix());
         let s = busy_session();
         assert_eq!(exec(&s, 7, true), Invoke::Type(vec!["rm -rf ~\r".into()]));
         assert_eq!(write(&s, 7, true), Invoke::Write(WritePlan::Typed(vec!["cat > 'a.txt'\r".into(), "x\r".into(), "\u{4}".into()])));
@@ -856,13 +1001,13 @@ mod tests {
         assert_eq!(write(&s, 7, true), Invoke::Answer(AUTO_OFF.into()));
         // Other names and bad arguments answer the model.
         let s = busy_session();
-        match invoke_plan(&s, 7, true, "nope", "{}", ShellKind::Posix) {
+        match invoke_plan(&s, 7, true, "nope", "{}", &posix()) {
             Invoke::Answer(t) => assert_eq!(t, crate::ai_turn::UNKNOWN_FUNCTION),
             i => panic!("{i:?}"),
         }
-        assert!(matches!(invoke_plan(&s, 7, true, "execute", "{", ShellKind::Posix), Invoke::Answer(_)));
+        assert!(matches!(invoke_plan(&s, 7, true, "execute", "{", &posix()), Invoke::Answer(_)));
         // The typed command has no unsafe control and one Enter.
-        assert_eq!(invoke_plan(&s, 7, true, "execute", "{\"command\":\"ls\\u0003\\n\"}", ShellKind::Posix), Invoke::Type(vec!["ls\r".into()]));
+        assert_eq!(invoke_plan(&s, 7, true, "execute", "{\"command\":\"ls\\u0003\\n\"}", &posix()), Invoke::Type(vec!["ls\r".into()]));
     }
 
     #[test]
