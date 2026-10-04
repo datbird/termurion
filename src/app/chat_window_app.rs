@@ -938,11 +938,17 @@ impl App {
         }
     }
 
-    /// An annotation link in an explanation response was clicked: only a link inside an agent's
-    /// explanation message, and only its reveal route, runs (ruling P9).
-    fn chat_reveal_annotation(&mut self, message: &str, url: &str, event_loop: &ActiveEventLoop) {
-        let in_explanation = self.chat_msgs.iter().any(|m| m.unique_id == message && m.author == Participant::Agent && matches!(m.content, Content::ExplanationResponse(_)));
-        if let (true, Some(route)) = (in_explanation, crate::chat_routes::from_explanation_link(url)) {
+    /// An `iterm2:` link in an explanation was clicked: only an annotation reveal inside an agent's
+    /// explanation response (ruling P9), and only the attached-content link of a person's
+    /// explanation request, exactly as the request stored it (final ruling), runs.
+    fn chat_reveal_in_app(&mut self, message: &str, url: &str, event_loop: &ActiveEventLoop) {
+        let Some(m) = self.chat_msgs.iter().find(|m| m.unique_id == message) else { return };
+        let in_app = crate::chat_window_ui::InApp::of(m);
+        let own = match &m.content {
+            Content::ExplanationRequest(v) => crate::ai_explain::parse_request_content(v).and_then(|r| r.url).as_deref() == Some(url),
+            _ => true,
+        };
+        if let (true, Some(route)) = (own, in_app.route(url)) {
             self.run_chat_route(&route, event_loop);
         }
     }
@@ -1107,7 +1113,7 @@ impl App {
             ChatEvent::DeleteMessage(id) => self.chat_delete_from(ChatView::Window, &id),
             ChatEvent::Fork(id) => self.chat_fork(ChatView::Window, &id, event_loop),
             ChatEvent::OpenUrl(url) => self.chat_open_url(&url),
-            ChatEvent::RevealAnnotation { message, url } => self.chat_reveal_annotation(&message, &url, event_loop),
+            ChatEvent::RevealInApp { message, url } => self.chat_reveal_in_app(&message, &url, event_loop),
             ChatEvent::OpenFile(r) => self.chat_file(&r, true),
             ChatEvent::RevealFile(r) => self.chat_file(&r, false),
             ChatEvent::RevealCommand(url) => self.chat_reveal_command(&url, event_loop),

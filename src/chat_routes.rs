@@ -1,7 +1,8 @@
 //! The in-app routes that replace iTerm2's `iterm2:` links for chats (`AppKit/
-//! iTermApplicationDelegate.m:2016-2135`, `PTYSession.m:237-247`). Tandem's routes are reached
-//! only from its own indicator menu and from a terminal command cell's reveal-mark link, never
-//! from text a model wrote, so they carry no token. Pure.
+//! iTermApplicationDelegate.m:2009-2135`, `PTYSession.m:237-247`). Tandem's routes are reached
+//! only from its own indicator menu, a terminal command cell's reveal-mark link, an explanation
+//! response's annotation links and an explanation request's attached-content link, each checked
+//! against the message it is in, so they carry no token. Pure.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Route {
@@ -11,6 +12,10 @@ pub enum Route {
     RevealMark { session: String, mark: String },
     /// An annotation an explanation placed (`PSS:216-234`): its id and the session's reference.
     RevealAnnotation { session: String, id: String },
+    /// The text an explanation request attached (`revealLocationFromURL:`, `iTermApplicationDelegate.
+    /// m:2182-2210`): the session's reference and the range as (x, absolute line) start and end,
+    /// the end exclusive.
+    RevealLocation { session: String, start: (usize, i64), end: (usize, i64) },
 }
 
 const SCHEME: &str = "iterm2:";
@@ -19,6 +24,7 @@ const REVEAL_CHAT: &str = "reveal-chat-for-session";
 const DISABLE: &str = "disable-streaming-session-chat";
 const REVEAL_MARK: &str = "reveal-mark";
 const ANNOTATION: &str = "annotation";
+const LOCATION: &str = "/compound-location";
 
 /// Percent-encodes everything but unreserved characters, as a query value.
 fn encode(s: &str) -> String {
@@ -59,6 +65,7 @@ pub fn format(r: &Route) -> String {
         Route::DisableStreaming(s) => format!("{SCHEME}{DISABLE}?s={}", encode(s)),
         Route::RevealMark { session, mark } => format!("{SCHEME}{REVEAL_MARK}?s={}&m={}", encode(session), encode(mark)),
         Route::RevealAnnotation { session, id } => format!("{SCHEME}{ANNOTATION}?ann={}&s={}", encode(id), encode(session)),
+        Route::RevealLocation { session, start, end } => format!("{SCHEME}{LOCATION}?session={}&sub={},{},{},{}", encode(session), start.0, start.1, end.0, end.1),
     }
 }
 
@@ -68,21 +75,31 @@ pub fn mark_url(session: &str, mark: u32) -> String {
 }
 
 /// The route a URL names; imported URLs carry a `t=` token, which is ignored. Unknown paths,
-/// a missing session, or a mark that is not a number give None.
+/// a missing session, a mark that is not a number or a range that is not four numbers give None.
 pub fn parse(url: &str) -> Option<Route> {
     let rest = url.strip_prefix(SCHEME)?;
     let (path, query) = rest.split_once('?')?;
     let mut session = None;
     let mut mark = None;
     let mut ann = None;
+    let mut location = None;
+    let mut sub = None;
     for pair in query.split('&') {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         match k {
             "s" => session = Some(decode(v)?),
             "m" => mark = Some(decode(v)?),
             "ann" => ann = Some(decode(v)?),
+            // `revealLocationFromURL:` names the session `session` and takes the first one.
+            "session" if location.is_none() => location = Some(decode(v)?),
+            "sub" if sub.is_none() => sub = Some(decode(v)?),
             _ => {}
         }
+    }
+    if path == LOCATION {
+        let session = location.filter(|s| !s.is_empty())?;
+        let (start, end) = range(&sub?)?;
+        return Some(Route::RevealLocation { session, start, end });
     }
     let session = session.filter(|s| !s.is_empty())?;
     match path {
@@ -96,6 +113,15 @@ pub fn parse(url: &str) -> Option<Route> {
         ANNOTATION => Some(Route::RevealAnnotation { session, id: ann.filter(|a| !a.is_empty())? }),
         _ => None,
     }
+}
+
+/// A compact range "x0,y0,x1,y1" (`iTermSubSelection initWithCompactString:`): columns and
+/// absolute lines, none negative.
+fn range(s: &str) -> Option<((usize, i64), (usize, i64))> {
+    let n: Vec<&str> = s.split(',').collect();
+    let [x0, y0, x1, y1] = n[..] else { return None };
+    let line = |v: &str| v.parse::<i64>().ok().filter(|l| *l >= 0);
+    Some(((x0.parse().ok()?, line(y0)?), (x1.parse().ok()?, line(y1)?)))
 }
 
 /// The indicator menu's items: the popover's link labels with what each does (`IH:380-400`).
@@ -121,6 +147,12 @@ pub fn from_command_cell(url: &str) -> Option<Route> {
 /// annotations (ruling P9); every other route, and every link in any other message, is refused.
 pub fn from_explanation_link(url: &str) -> Option<Route> {
     parse(url).filter(|r| matches!(r, Route::RevealAnnotation { .. }))
+}
+
+/// What a link inside an explanation request may run: only the reveal of the text it attached
+/// (final ruling); every other route is refused.
+pub fn from_explanation_request_link(url: &str) -> Option<Route> {
+    parse(url).filter(|r| matches!(r, Route::RevealLocation { .. }))
 }
 
 #[cfg(test)]
@@ -174,6 +206,27 @@ mod tests {
         assert_eq!(from_explanation_link("https://example.com"), None);
         // A command cell never reaches it.
         assert_eq!(from_command_cell("iterm2:annotation?ann=A1&s=G1"), None);
+    }
+
+    #[test]
+    fn an_explanation_request_link_reaches_only_reveal_location() {
+        // The attached-content link Explain writes (`PSS:262-283`) jumps to the selection, as
+        // iTerm2's `revealLocationFromURL:` (`iTermApplicationDelegate.m:2009-2011, 2182-2210`).
+        let url = crate::ai_explain::selection_url("G1", (0, 7), (3, 9));
+        assert!(parse(&url).is_some(), "{url} is a route");
+        let want = Route::RevealLocation { session: "G1".into(), start: (0, 7), end: (3, 9) };
+        assert_eq!(from_explanation_request_link(&url), Some(want.clone()));
+        assert_eq!(format(&want), url);
+        assert_eq!(parse("iterm2:/compound-location?session=G1&sub=0,7,3,9&sub=1,1,1,1"), Some(want), "the first range");
+        for bad in ["iterm2:/compound-location?sub=0,7,3,9", "iterm2:/compound-location?session=G1", "iterm2:/compound-location?session=&sub=0,7,3,9", "iterm2:/compound-location?session=G1&sub=0,7,3", "iterm2:/compound-location?session=G1&sub=0,-1,3,9", "iterm2:/compound-location?session=G1&sub=a,7,3,9", "iterm2:compound-location?session=G1&sub=0,7,3,9"] {
+            assert_eq!(parse(bad), None, "{bad}");
+        }
+        // No other route reaches it, and it reaches no other place.
+        assert_eq!(from_explanation_request_link("iterm2:annotation?ann=A1&s=G1"), None);
+        assert_eq!(from_explanation_request_link("iterm2:reveal-mark?s=G1&m=7"), None);
+        assert_eq!(from_explanation_request_link("https://example.com"), None);
+        assert_eq!(from_explanation_link(&url), None, "a response's links never reach it");
+        assert_eq!(from_command_cell(&url), None);
     }
 
     #[test]

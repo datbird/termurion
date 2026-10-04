@@ -9,7 +9,8 @@
 use std::collections::HashMap;
 
 use alacritty_terminal::grid::{Dimensions, Grid};
-use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use winit::event_loop::ActiveEventLoop;
 
@@ -18,7 +19,7 @@ use super::chat_app::pane_for_ref;
 use super::{App, PaneId};
 use crate::ai_explain::{self as ex, ExplainStep, Request, Response, Rows, Source, Update};
 use crate::ai_gate::{Alert, Then};
-use crate::api_buffer::{facts, grid_line};
+use crate::api_buffer::{facts, grid_line, Facts};
 use crate::chat_gate::endpoint_of;
 use crate::chat_message::{new_id, Content, Message, Participant};
 use crate::pane::Pane;
@@ -49,6 +50,23 @@ impl Rows for GridRows<'_> {
             .collect();
         Some((cells, row[Column(self.0.columns() - 1)].flags.contains(Flags::WRAPLINE)))
     }
+}
+
+/// The cells of an attached-content range (`iTermSubSelection initWithCompactString:`): start
+/// and end as (x, absolute line), the end exclusive, as the first and last grid point
+/// (inclusive). None once a line left the history, below the screen, or for an empty range.
+pub(super) fn location_points(f: Facts, start: (usize, i64), end: (usize, i64)) -> Option<(Point, Point)> {
+    let cols = usize::try_from(f.cols).ok().filter(|c| *c > 0)?;
+    // An end at x 0 is the end of the line before it.
+    let (end_x, end_line) = match end.0 {
+        0 => (cols - 1, end.1 - 1),
+        x => (x - 1, end.1),
+    };
+    let (first, last) = (grid_line(start.1, f)?, grid_line(end_line, f)?);
+    if (end_line, end_x) < (start.1, start.0) {
+        return None;
+    }
+    Some((Point::new(Line(first), Column(start.0.min(cols - 1))), Point::new(Line(last), Column(end_x.min(cols - 1)))))
 }
 
 /// The explanation processor (`ChatClient.swift:59-83`, `:298-437`) over one message, App-free:
@@ -305,11 +323,42 @@ impl App {
         self.open_note(pane, note, event_loop);
         self.redraw();
     }
+
+    /// The attached-content link of an explanation request (`revealLocationFromURL:`,
+    /// `iTermApplicationDelegate.m:2182-2210`): the session's pane comes forward, the range is
+    /// selected and scrolled into view. Nothing for a session that is gone or a range whose
+    /// lines left the history.
+    pub(super) fn reveal_ai_location(&mut self, session: &str, start: (usize, i64), end: (usize, i64)) {
+        let Some(pane) = self.ref_pane(session) else { return };
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        let Some((a, b)) = location_points(facts(p.own()), start, end) else { return };
+        let mut sel = Selection::new(SelectionType::Simple, a, Side::Left);
+        sel.update(b, Side::Right);
+        p.own_mut().term_mut().selection = Some(sel);
+        self.reveal_pane(pane);
+        if let Some(p) = self.panes.get_mut(&pane) {
+            super::find_ui::show_line(p, a.line.0);
+        }
+        self.redraw();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_attached_range_selects_its_cells() {
+        // 10 lines lost, 5 kept in the history, a 24 by 80 screen: absolute 10 is grid -5.
+        let f = Facts { above: 15, history: 5, rows: 24, cols: 80 };
+        let p = |line: i32, col: usize| Point::new(Line(line), Column(col));
+        assert_eq!(location_points(f, (0, 15), (3, 16)), Some((p(0, 0), p(1, 2))), "the end is exclusive");
+        assert_eq!(location_points(f, (2, 10), (0, 12)), Some((p(-5, 2), p(-4, 79))), "an end at x 0 ends the line before");
+        assert_eq!(location_points(f, (0, 9), (3, 16)), None, "a line lost from the history");
+        assert_eq!(location_points(f, (0, 15), (3, 39)), None, "below the screen");
+        assert_eq!(location_points(f, (4, 15), (4, 15)), None, "empty");
+        assert_eq!(location_points(f, (100, 15), (200, 15)), Some((p(0, 79), p(0, 79))), "columns kept on the line");
+    }
     use crate::ai_explain::{Annotation, Context, Located};
     use crate::chat_message::Content;
 
@@ -380,8 +429,6 @@ mod tests {
     }
     #[test]
     fn explain_follows_the_selection() {
-        use alacritty_terminal::index::{Column, Line, Point, Side};
-        use alacritty_terminal::selection::{Selection, SelectionType};
         let mut screen = crate::screen::Screen::new(10, 3);
         screen.feed(b"hello");
         assert!(!has_selection(&screen));

@@ -117,14 +117,45 @@ pub struct RowData {
     pub glyph: Option<char>,
     /// Changes when the content does; keys the rendered markdown.
     pub key: u64,
-    /// An agent's explanation response: its annotation links (and only those) are clickable.
-    pub explanation: bool,
+    /// The `iterm2:` links the row draws and runs (rulings P9 and the final one on the
+    /// attached-content link).
+    pub in_app: InApp,
+}
+
+/// Which `iterm2:` links a message draws as links: an agent's explanation response its
+/// annotation reveals, a person's explanation request its attached-content link, any other
+/// message none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InApp {
+    #[default]
+    None,
+    Annotations,
+    Location,
+}
+
+impl InApp {
+    pub fn of(m: &Message) -> InApp {
+        match (&m.author, &m.content) {
+            (Participant::Agent, Content::ExplanationResponse(_)) => InApp::Annotations,
+            (Participant::User, Content::ExplanationRequest(_)) => InApp::Location,
+            _ => InApp::None,
+        }
+    }
+
+    /// The route `url` runs from such a message, if any.
+    pub fn route(self, url: &str) -> Option<crate::chat_routes::Route> {
+        match self {
+            InApp::None => None,
+            InApp::Annotations => crate::chat_routes::from_explanation_link(url),
+            InApp::Location => crate::chat_routes::from_explanation_request_link(url),
+        }
+    }
 }
 
 impl RowData {
     /// A date row or the typing row.
     pub fn marker(item: Item) -> RowData {
-        RowData { item, id: String::new(), user: false, style: Style::System, body: Body::Plain(String::new()), time: String::new(), editable: false, buttons: Vec::new(), enabled: false, glyph: None, key: 0, explanation: false }
+        RowData { item, id: String::new(), user: false, style: Style::System, body: Body::Plain(String::new()), time: String::new(), editable: false, buttons: Vec::new(), enabled: false, glyph: None, key: 0, in_app: InApp::None }
     }
 }
 
@@ -164,9 +195,9 @@ pub enum ChatEvent {
     Fork(String),
     /// A markdown link was clicked; the app opens it only when `chat_view::web_link` allows.
     OpenUrl(String),
-    /// An annotation link inside an explanation response was clicked: the message and the URL;
-    /// the app re-checks both (ruling P9).
-    RevealAnnotation { message: String, url: String },
+    /// An `iterm2:` link of an explanation response (an annotation) or request (the attached
+    /// content) was clicked: the message and the URL; the app re-checks both (ruling P9).
+    RevealInApp { message: String, url: String },
     /// A file item's verbs; the string is `chat_view::file_ref(message, attachment)`.
     OpenFile(String),
     RevealFile(String),
@@ -876,7 +907,7 @@ pub fn convo_rows(messages: &[Message], typing: bool, day: &dyn Fn(f64) -> (i32,
                     editable: chat_view::editable(m),
                     glyph: chat_view::glyph(&m.content),
                     key: chat_view::body_key(&m.unique_id, &body),
-                    explanation: m.author == Participant::Agent && matches!(m.content, Content::ExplanationResponse(_)),
+                    in_app: InApp::of(m),
                     body,
                 }
             }
@@ -1274,7 +1305,7 @@ fn draw_block(ui: &mut egui::Ui, block: &Block, base: usize, segment: usize, ink
     let indent = block.indent * INDENT_STEP;
     let len: usize = block.runs.iter().map(|r| r.text.len()).sum();
     let marks = if st.row.open { chat_find::marks(&st.row.matches, st.row.current, &row.id, segment, &(base..base + len)) } else { Vec::new() };
-    let (job, links) = block_job(block, ink, (ui.available_width() - indent).max(20.0), &marks, row.explanation);
+    let (job, links) = block_job(block, ink, (ui.available_width() - indent).max(20.0), &marks, row.in_app);
     let galley = ui.painter().layout_job(job);
     let width = if block.code_bg { ui.available_width() } else { indent + galley.size().x };
     let height = galley.size().y.max(if block.code_bg { BODY_SIZE + 2.0 } else { 0.0 });
@@ -1316,8 +1347,8 @@ fn draw_block(ui: &mut egui::Ui, block: &Block, base: usize, segment: usize, ink
         }
         if resp.clicked() {
             if let Some(u) = url {
-                if row.explanation && crate::chat_routes::from_explanation_link(&u).is_some() {
-                    out.push(ChatEvent::RevealAnnotation { message: row.id.clone(), url: u });
+                if row.in_app.route(&u).is_some() {
+                    out.push(ChatEvent::RevealInApp { message: row.id.clone(), url: u });
                 } else {
                     out.push(ChatEvent::OpenUrl(u));
                 }
@@ -1349,14 +1380,15 @@ fn find_color(current: bool) -> egui::Color32 {
 /// A block's runs as one text job, and the character ranges that are links. Runs are cut at the
 /// edges of the find `marks` (bytes into the block's text) and the marked pieces get the
 /// highlight as a background.
-fn block_job(block: &Block, ink: &Ink, wrap: f32, marks: &[Mark], explanation: bool) -> (egui::text::LayoutJob, Vec<(usize, usize, String)>) {
+fn block_job(block: &Block, ink: &Ink, wrap: f32, marks: &[Mark], in_app: InApp) -> (egui::text::LayoutJob, Vec<(usize, usize, String)>) {
     let mut job = egui::text::LayoutJob::default();
     job.wrap.max_width = wrap;
     let (mut at, mut links, mut byte) = (0usize, Vec::new(), 0usize);
     let size = BODY_SIZE * block.scale;
     for run in &block.runs {
-        // An explanation's annotation links are the one `iterm2:` link a bubble draws (ruling P9).
-        let link = run.link.as_deref().and_then(|u| chat_view::web_link(u).or_else(|| if explanation && crate::chat_routes::from_explanation_link(u).is_some() { Some(u.to_string()) } else { None }));
+        // An explanation's annotation links and its request's attached-content link are the only
+        // `iterm2:` links a bubble draws (ruling P9, final ruling).
+        let link = run.link.as_deref().and_then(|u| chat_view::web_link(u).or_else(|| in_app.route(u).map(|_| u.to_string())));
         let font = match run.face {
             Face::Prose => egui::FontId::proportional(size),
             Face::Code => egui::FontId::monospace(size * 0.93),
@@ -1500,7 +1532,7 @@ mod tests {
         // Rulings F18 and m10, at the drawing: the runs of a model-written link a person could click.
         let md = "[a](file:///C:/x.exe) [b](https://ok.example/p) [c](iterm2:reveal-mark?s=1) [d](\\\\host\\share) [e](mailto:x@y.example)";
         let doc = crate::porthole::render::render(md, &Language::Markdown, &Palette::default(), true);
-        let (job, links) = block_job(&doc.blocks[0], &ink(), 300.0, &[], false);
+        let (job, links) = block_job(&doc.blocks[0], &ink(), 300.0, &[], InApp::None);
         let urls: Vec<&str> = links.iter().map(|(_, _, u)| u.as_str()).collect();
         assert_eq!(urls, ["https://ok.example/p", "mailto:x@y.example"]);
         // The ranges cover exactly the link texts.
@@ -1508,11 +1540,21 @@ mod tests {
         let shown: Vec<String> = links.iter().map(|(from, to, _)| text[*from..*to].iter().collect()).collect();
         assert_eq!(shown, ["b", "e"]);
         // An explanation response also draws its annotation links, and no other `iterm2:` one.
-        let md = "[a](iterm2:annotation?ann=A1&s=G1) [b](iterm2:reveal-mark?s=1&m=2)";
+        // An explanation request draws only its attached-content link.
+        let md = "[a](iterm2:annotation?ann=A1&s=G1) [b](iterm2:reveal-mark?s=1&m=2) [c](iterm2:/compound-location?session=G1&sub=0,7,3,9)";
         let doc = crate::porthole::render::render(md, &Language::Markdown, &Palette::default(), true);
-        let urls = |explanation: bool| block_job(&doc.blocks[0], &ink(), 300.0, &[], explanation).1.into_iter().map(|(_, _, u)| u).collect::<Vec<_>>();
-        assert!(urls(false).is_empty(), "any other message keeps them inert");
-        assert_eq!(urls(true), ["iterm2:annotation?ann=A1&s=G1"]);
+        let urls = |in_app: InApp| block_job(&doc.blocks[0], &ink(), 300.0, &[], in_app).1.into_iter().map(|(_, _, u)| u).collect::<Vec<_>>();
+        assert!(urls(InApp::None).is_empty(), "any other message keeps them inert");
+        assert_eq!(urls(InApp::Annotations), ["iterm2:annotation?ann=A1&s=G1"]);
+        assert_eq!(urls(InApp::Location), ["iterm2:/compound-location?session=G1&sub=0,7,3,9"]);
+        // Which messages draw which: by author and kind.
+        let request = crate::ai_explain::request_content(&crate::ai_explain::Request { command: None, truncated: false, original: crate::ai_explain::Located { string: String::new(), coords: vec![] }, question: String::new(), subject: "s".into(), url: None, context: crate::ai_explain::Context { session_id: "G".into(), base_offset: 0 } });
+        let m = |who: Participant, content: Content| Message::new("C", who, content, 1.0);
+        assert_eq!(InApp::of(&m(Participant::User, Content::ExplanationRequest(request.clone()))), InApp::Location);
+        assert_eq!(InApp::of(&m(Participant::Agent, Content::ExplanationRequest(request))), InApp::None, "only the person's request");
+        assert_eq!(InApp::of(&m(Participant::Agent, Content::ExplanationResponse(serde_json::json!({})))), InApp::Annotations);
+        assert_eq!(InApp::of(&m(Participant::User, Content::ExplanationResponse(serde_json::json!({})))), InApp::None);
+        assert_eq!(InApp::of(&m(Participant::User, Content::Markdown("x".into()))), InApp::None);
     }
 
     #[test]
