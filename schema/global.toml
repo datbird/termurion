@@ -608,15 +608,6 @@ choices = [ { value = 0, label = "Let Windows decide the position of new windows
 help = "Where a new window opens. Smart Window Placement puts new windows where the most free space is available. Saved frames are kept per profile."
 
 [[setting]]
-key = "DimBackgroundWindows"
-tab = "Appearance"
-section = "Windows"
-label = "Dim background windows"
-type = "bool"
-default = false
-help = "Windows that do not have the keyboard focus are dimmed. Off: only their inactive split panes dim."
-
-[[setting]]
 key = "UseBorder"
 tab = "Appearance"
 section = "Windows"
@@ -3388,3 +3379,96 @@ label = "Add notification area icon when excluded from taskbar?"
 type = "bool"
 default = true
 help = "Add notification area icon when excluded from taskbar?\nWhen you turn on \u201cExclude from taskbar and Alt+Tab switcher\u201d a notification area icon is added so you can switch the setting back off. Disable this to remove the icon. Doing so makes it very hard to get to Settings. You must restart Tandem after changing this setting."
+
+# m13i: pane navigation, dividers and dimming (kept in one block for a clean merge with 13h's rows).
+[[setting]]
+key = "DimInactiveSplitPanes"
+tab = "Appearance"
+section = "Dimming"
+label = "Dim inactive split panes"
+type = "bool"
+default = true
+help = "Split panes without the keyboard focus are dimmed."
+
+[[setting]]
+key = "DimBackgroundWindows"
+tab = "Appearance"
+section = "Dimming"
+label = "Dim background windows"
+type = "bool"
+default = false
+help = "Windows that do not have the keyboard focus are dimmed. Off: only their inactive split panes dim."
+
+[[setting]]
+key = "DimOnlyText"
+tab = "Appearance"
+section = "Dimming"
+label = "Dimming affects only text, not background."
+type = "bool"
+default = false
+help = "Dimming changes the text and colored cells, not the default background."
+
+[[setting]]
+key = "SplitPaneDimmingAmount"
+tab = "Appearance"
+section = "Dimming"
+label = "Dimming amount:"
+type = "float"
+default = 0.4
+min = 0.01
+max = 0.6
+help = "Inactive sessions get dimmed to help find the active session."
+
+[[setting]]
+key = "NavigatePanesInReadingOrder"
+tab = "Advanced"
+section = "Tabs"
+label = "Next Pane and Previous Pane commands use reading order, not the time of last use."
+type = "bool"
+default = true
+help = "Next Pane and Previous Pane commands use reading order, not the time of last use."
+
+[[setting]]
+key = "WrapFocus"
+tab = "Advanced"
+section = "General"
+label = "Should split pane navigation by direction wrap around?"
+type = "bool"
+default = true
+help = "Should split pane navigation by direction wrap around?"
+
+[[setting]]
+key = "FocusNewSplitPaneWithFocusFollowsMouse"
+tab = "Advanced"
+section = "Session"
+label = "When focus follows mouse is enabled, should new split panes automatically be focused?"
+type = "bool"
+default = true
+help = "When focus follows mouse is enabled, should new split panes automatically be focused?"
+
+[[setting]]
+key = "SplitPaneColor"
+tab = "Advanced"
+section = "Windows"
+label = "Custom color for split pane dividers. Leave empty to use default color."
+type = "string"
+default = ""
+help = "Custom color for split pane dividers. Leave empty to use default color.\nThis should be an HTML-style color, like #aabbcc."
+
+[[setting]]
+key = "SplitPaneDividerWidth"
+tab = "Advanced"
+section = "Windows"
+label = "Custom width for split pane dividers in points (1-5). Set to 0 to use default width."
+type = "float"
+default = 0.0
+help = "Custom width for split pane dividers in points (1-5). Set to 0 to use default width."
+
+[[setting]]
+key = "UseDivorcedProfileToSplit"
+tab = "Advanced"
+section = "Experimental Features"
+label = "When splitting a pane, use the profile with local modifications, not the backing profile."
+type = "bool"
+default = true
+help = "When splitting a pane, use the profile with local modifications, not the backing profile."
