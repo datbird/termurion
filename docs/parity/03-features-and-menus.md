@@ -199,7 +199,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Session > Reset Character Set | no shortcut | Resets the terminal's character set designation to default. | have |
 | Session > Move Session > Move Session to Window | no shortcut | Moves the current session/pane out into a new window. (milestone 7) | have, milestone 7a |
 | Session > Move Session > Move Session to Tab | no shortcut | Moves the current session/pane out into a new tab. (milestone 7) | have, milestone 8h |
-| Session > Move Session > Move Session to Split Pane | no shortcut | Moves the current session into a split position picked interactively. (milestone 7) | missing |
+| Session > Move Session > Move Session to Split Pane | no shortcut | Moves the current session into a split position picked interactively. Pick a destination pane (in any window) and a side. | have |
 | Session > Log > Log to File | no shortcut | Starts or stops logging session output to a file. (milestone 6) | missing |
 | Session > Log > Import Recording | no shortcut | Loads a previously exported session recording for playback. (milestone 10) | have, milestone 10a: opens a read-only tab at index 0, not restored across a restart or a saved arrangement |
 | Session > Log > Export Recording | no shortcut | Exports the session's recorded history to a file. (milestone 10) | have, milestone 10a: during a replay this menu command shows "Error encoding recording." (kept iTerm2 bug); the panel's own Export button works during a replay |
