@@ -465,6 +465,7 @@ impl App {
             return;
         }
         p.composer.replace_selection_or_all(text);
+        self.composer_ai_cancel(pane);
         let v = self.composers.entry(pane).or_default();
         v.generation += 1;
         v.ghost = None;
@@ -1027,6 +1028,7 @@ impl App {
 
     /// The dropdown appeared: it fades in and is highlighted.
     fn composer_opened(&mut self, pane: PaneId) {
+        self.composer_ai_cancel(pane);
         let v = self.composers.entry(pane).or_default();
         v.opened = Some(Instant::now());
         v.closed = None;
@@ -1042,6 +1044,8 @@ impl App {
     /// forgotten (`FC:46-50`, the dismissal resets the file cache).
     fn composer_closed(&mut self, pane: PaneId) {
         let had = self.panes.get_mut(&pane).is_some_and(|p| std::mem::take(&mut p.composer.focused));
+        // A request still running would be paid for and its answer dropped.
+        self.composer_ai_cancel(pane);
         let v = self.composers.entry(pane).or_default();
         v.closed = Some(Instant::now());
         v.ghost = None;
@@ -1375,7 +1379,8 @@ impl App {
         if changed {
             self.composer_changed(pane);
         } else if moved {
-            // A caret move ends the popup (`CTV:266-270`) and the ghost.
+            // A caret move ends the popup (`CTV:266-270`) and the ghost, and the request.
+            self.composer_ai_cancel(pane);
             if let Some(v) = self.composers.get_mut(&pane) {
                 v.popup = None;
                 v.ghost = None;
@@ -2021,6 +2026,7 @@ impl App {
         if let Some(kind) = kind {
             self.drag = Drag::Composer { pane, kind };
         }
+        self.composer_ai_cancel(pane);
         if let Some(v) = self.composers.get_mut(&pane) {
             v.generation += 1;
             v.waiting = None;
@@ -2643,5 +2649,23 @@ mod tests {
         // The layout's field (or a tool, find typing, Copy Mode) has it: not the terminal, so
         // a reveal leaves the keyboard where it is.
         assert!(!terminal_or_dropdown_has_keys(false, true));
+    }
+
+    /// Every place that drops a pending suggestion answer also cancels the request itself
+    /// (ruling P12, Task 5 review minor 1): a closed Composer, a caret move, a click, an Engage
+    /// replace and a reopen. The App has no test harness here, so the source is checked.
+    #[test]
+    fn dropping_an_answer_cancels_its_request() {
+        let src = include_str!("composer_ui.rs");
+        let body = |name: &str| {
+            let at = src.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("no {name}"));
+            let rest = &src[at..];
+            let end = rest[1..].find("\n    fn ").or_else(|| rest[1..].find("\n    pub(super) fn ")).map_or(rest.len(), |e| e + 1);
+            rest[..end].to_string()
+        };
+        for name in ["composer_closed", "composer_opened", "composer_ai_replace"] {
+            assert!(body(name).contains("composer_ai_cancel(pane)"), "{name}");
+        }
+        assert!(src.matches("self.composer_ai_cancel(pane);").count() >= 7, "caret move and press cancel too");
     }
 }

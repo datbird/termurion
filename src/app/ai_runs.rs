@@ -62,6 +62,14 @@ impl Entry {
     }
 }
 
+/// Whether a run's `NeedKey` opens the key prompt. Composer suggestions never do: iTerm2 builds
+/// their conversation with no registration provider (`AICompletion.swift:30-31`), so a missing
+/// key is an error with no sheet (`AIConversation.swift:310-323`) and the files show. A prompt
+/// per typing pause would also queue one window per pause.
+pub(super) fn asks_for_key(owner: &Owner) -> bool {
+    !matches!(owner, Owner::Complete { .. })
+}
+
 /// How a run ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Finished {
@@ -292,6 +300,14 @@ impl App {
                 return;
             }
             if let Out::NeedKey(vendor) = out {
+                if !asks_for_key(&run.owner) {
+                    // No prompt: the run ends as a refused one and the owner falls back.
+                    if let Some(mut run) = self.ai_runs.remove(&id) {
+                        run.runner.cancel();
+                        self.ai_run_route(id, run.owner, Finished::Failed(NOT_ENABLED.into()));
+                    }
+                    return;
+                }
                 let endpoint = run.endpoint.clone();
                 self.ask_ai_key(vendor, Some(&endpoint), KeyThen::Run(id));
             }
@@ -352,6 +368,13 @@ mod tests {
 
     fn key() -> Secret {
         Secret::new("sk-a".into())
+    }
+
+    #[test]
+    fn a_missing_key_never_prompts_for_suggestions() {
+        assert!(!asks_for_key(&Owner::Complete { pane: 1, generation: 1 }));
+        assert!(asks_for_key(&Owner::Engage));
+        assert!(asks_for_key(&Owner::Codecierge("G".into())));
     }
 
     #[test]
