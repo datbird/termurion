@@ -72,7 +72,7 @@ pub(super) struct WinSlot {
     win_style: i64,
     win_slot: Option<(String, u32)>,
     win_locks: crate::winmodel::Locks,
-    win_title: Option<String>,
+    pub(super) win_title: Option<String>,
     window_menu_text: (String, String),
     border_applied: Option<u32>,
     theme_applied: Option<bool>,

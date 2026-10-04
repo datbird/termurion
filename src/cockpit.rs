@@ -187,6 +187,14 @@ pub struct View {
     pub tip: Tip,
     /// Set by Window > Cockpit: the next redraw puts the caret in the command bar.
     pub focus_command: bool,
+    /// The filter bar's search text (case-insensitive substring of session titles).
+    pub search: String,
+    /// The status bucket the filter bar shows, by its exact key.
+    pub status_filter: Option<String>,
+    /// Collapsed rows; expansion lives here, keyed by row, so a rebuild keeps it.
+    pub collapsed: std::collections::BTreeSet<crate::cockpit_rows::RowKey>,
+    /// The chosen rows, by key (never by index).
+    pub selected: Vec<crate::cockpit_rows::RowKey>,
 }
 
 /// What a redraw asks the app to do (later tasks add variants).

@@ -2749,6 +2749,7 @@ impl App {
         let guid = self.panes.get(&id).map(|p| p.profile.clone());
         // The session keeps its chat reference across a restart (`PTYSession.m:2403-2420`).
         let reference = self.panes.get(&id).map(|p| p.session_guid.clone());
+        let stable = self.panes.get(&id).map(|p| p.stable_id.clone());
         if let Some(old) = self.panes.remove(&id) {
             if let Some(pid) = old.shell_pid() {
                 self.jobs.forget(pid);
@@ -2762,6 +2763,10 @@ impl App {
         if self.start_pane_as(id, rect, guid.as_deref()) {
             if let (Some(reference), Some(p)) = (reference.clone(), self.panes.get_mut(&id)) {
                 p.keep_reference(&reference);
+            }
+            // So does its stable id: a model's claim on the session outlives its shell.
+            if let (Some(sid), Some(p)) = (stable, self.panes.get_mut(&id)) {
+                p.keep_stable_id(&sid);
             }
             // The new Screen has no chat watch: a chat streaming this session goes on (`CVC:144-165`).
             self.chat_refresh();

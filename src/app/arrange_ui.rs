@@ -62,6 +62,15 @@ pub(super) fn saved_ssh_session(session: &Value) -> bool {
     session.get(crate::ssh_recovery::SESSION_KEY).and_then(|v| v.as_bool()) == Some(true)
 }
 
+/// The pane's chat reference and stable id go into a session table only when the snapshot is
+/// session restoration; a saved arrangement, a file or a duplicate carries neither.
+pub(super) fn carry_ids(t: &mut toml::Table, contents: Contents, reference: &str, stable_id: &str) {
+    if contents.restoring() {
+        arrangement::save_reference(t, reference);
+        arrangement::save_stable_id(t, stable_id);
+    }
+}
+
 impl Contents {
     /// Session restoration (not a saved arrangement, a file or a duplicate): the only snapshots
     /// that carry a pane's chat reference.
@@ -141,9 +150,7 @@ impl App {
             t.extend(self.inline_table(id));
             // Session restoration keeps the pane's chat reference, so a chat's link survives a
             // relaunch; a saved arrangement, a file or a duplicate never carries it.
-            if contents.restoring() {
-                arrangement::save_reference(t, &p.session_guid);
-            }
+            carry_ids(t, contents, &p.session_guid, &p.stable_id);
         }
         // A session that runs ssh saved without contents (an arrangement, Duplicate Tab): the
         // hops to reconnect through, each with its directory (`PS:7342-7347`), as Duplicate
@@ -555,6 +562,7 @@ impl App {
                     if let (Some(guid), Some(p)) = (saved, self.panes.get_mut(&id)) {
                         p.keep_reference(&guid);
                     }
+                    self.adopt_stable_id(id, &session, launch);
                     if launched {
                         self.restore_ssh_session(id, &session);
                     } else {
