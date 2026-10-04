@@ -30,7 +30,8 @@ pub(super) fn update_chat_in(store: &mut Store, id: &str, f: impl FnOnce(&mut Ch
 /// One broker update applied to the shown chat's kept messages; whether the rows must be built
 /// again. A chunk, an attached file or a commit (`Append`, `AppendAttachment`, `Commit`) names a
 /// stored message whose row the broker already changed, so `reload` reads that row again; a
-/// whole message replaces its old copy or joins the end; a removal drops.
+/// grown explanation response changes the row it names; a whole message replaces its old copy or
+/// joins the end; a removal drops.
 pub(super) fn apply_update(msgs: &mut Vec<Message>, u: &crate::chat_broker::Update, reload: &dyn Fn(&str) -> Option<Message>) -> bool {
     use crate::chat_broker::Update;
     match u {
@@ -42,6 +43,14 @@ pub(super) fn apply_update(msgs: &mut Vec<Message>, u: &crate::chat_broker::Upda
                 true
             }
             _ => {
+                // A grown explanation names the row it replaces (`grown`): that row changes in
+                // place, keeping its id, as iTerm2 appends to `messageID`
+                // (`ChatViewControllerModel.swift:241-245`); one for a row not kept is dropped.
+                if let Some(target) = explanation_target(message) {
+                    let Some(at) = msgs.iter().position(|m| m.unique_id == target) else { return false };
+                    msgs[at].content = message.content.clone();
+                    return true;
+                }
                 match msgs.iter().position(|m| m.unique_id == message.unique_id) {
                     Some(at) => msgs[at] = message.clone(),
                     None => msgs.push(message.clone()),
@@ -56,6 +65,15 @@ pub(super) fn apply_update(msgs: &mut Vec<Message>, u: &crate::chat_broker::Upda
         }
         Update::Typing { .. } | Update::Turn(_) => false,
     }
+}
+
+/// The row a grown explanation response replaces: its update's message id.
+fn explanation_target(m: &Message) -> Option<String> {
+    let Content::ExplanationResponse(v) = &m.content else { return None };
+    if m.author != Participant::Agent {
+        return None;
+    }
+    crate::ai_explain::parse_response_content(v)?.1?.message_id
 }
 
 /// The blobs of a fork's retained rounds (ruling F5): copied with fresh ids only when the
@@ -1650,6 +1668,34 @@ mod tests {
         fork_blobs(&mut store, "S", &fork, &gap, &ids).unwrap();
         assert!(store.blobs(&fork).unwrap().is_empty());
         assert_eq!(store.messages(&fork).unwrap()[0].first_blob_ref, None);
+    }
+
+    #[test]
+    fn a_streamed_explanation_updates_its_one_row() {
+        // The processor turns each chunk and the commit into a fresh-id message whose update
+        // names the stored row (`grown`); the view changes that row in place, as iTerm2 appends
+        // to `messageID` (`ChatViewControllerModel.swift:241-245`), and never adds a bubble.
+        use crate::ai_explain::{self as ex, Context, Located, Request, Response, Update as ExUpdate};
+        use crate::chat_broker::Update;
+        let request = Request { command: None, truncated: false, original: Located { string: "ab".into(), coords: vec![(0, 0), (1, 0)] }, question: String::new(), subject: "s".into(), url: None, context: Context { session_id: "G".into(), base_offset: 0 } };
+        let response = Response::with_text(request, "", false);
+        let content = |u: Option<&ExUpdate>, md: &str| Content::ExplanationResponse(ex::response_content(&response, u, md));
+        let row = Message::new("C", Participant::Agent, content(None, "a"), 1.0);
+        let mut msgs = vec![row.clone()];
+        for (md, last) in [("ab", false), ("abc", false), ("abc!", true)] {
+            let grown = Message::new("C", Participant::Agent, content(Some(&ExUpdate::new(last, Some(row.unique_id.clone()))), md), 2.0);
+            assert!(apply_update(&mut msgs, &Update::Delivery { message: grown.clone(), partial: !last }, &|_| None));
+            assert_eq!(msgs.len(), 1, "no extra bubble for {md}");
+            assert_eq!((msgs[0].unique_id.as_str(), &msgs[0].content), (row.unique_id.as_str(), &grown.content));
+        }
+        // One for a row this view does not keep is dropped.
+        let stray = Message::new("C", Participant::Agent, content(Some(&ExUpdate::new(false, Some("gone".into()))), "x"), 3.0);
+        assert!(!apply_update(&mut msgs, &Update::Delivery { message: stray, partial: true }, &|_| None));
+        assert_eq!(msgs.len(), 1);
+        // A whole explanation (no update) still joins the end.
+        let whole = Message::new("C", Participant::Agent, content(None, "z"), 4.0);
+        assert!(apply_update(&mut msgs, &Update::Delivery { message: whole, partial: false }, &|_| None));
+        assert_eq!(msgs.len(), 2);
     }
 
     #[test]
