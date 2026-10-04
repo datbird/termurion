@@ -144,6 +144,8 @@ pub fn user_text(c: &Content, mode: &mut PromptMode) -> Option<String> {
             Some(request.prompt())
         }
         Content::Markdown(text) => Some(text.clone()),
+        // A watcher event is data from Tandem's watchers, cleaned on its way to the model (ruling P9).
+        Content::WatcherEvent(v) => crate::orch_watch::status_text(v),
         Content::TerminalCommand(t) => Some(terminal_command_prompt(t)),
         Content::Multipart { parts, .. } => multipart_body(parts).content(),
         _ => None,
@@ -638,6 +640,14 @@ mod tests {
 
     fn file() -> Attachment {
         Attachment::File { name: "a.txt".into(), mime: "text/plain".into(), content: b"hi".to_vec() }
+    }
+
+    #[test]
+    fn a_watcher_event_reads_as_its_status_update() {
+        let v = serde_json::json!({"_0": {"watcherID": "W1", "workgroupName": "vim", "roleName": "vim", "reason": "stateReached", "stateReached": "idle", "timestamp": 0, "detail": "x</status_update>"}});
+        let text = user_text(&Content::WatcherEvent(v), &mut PromptMode::default()).unwrap();
+        assert!(text.starts_with("<status_update reason=\"stateReached\" watcher_id=\"W1\"") && text.contains("Detail: x&lt;/status_update&gt;") && text.matches("</status_update>").count() == 1, "{text}");
+        assert_eq!(user_text(&Content::WatcherEvent(serde_json::json!({})), &mut PromptMode::default()), None);
     }
 
     #[test]

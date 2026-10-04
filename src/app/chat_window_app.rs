@@ -368,6 +368,9 @@ impl App {
         }
         self.chat_input_switch(chat.as_deref());
         self.chat_shown = chat;
+        if let Some(shown) = self.chat_shown.clone() {
+            self.orch_rearm(&shown);
+        }
         self.chat_load_messages();
         // A chat whose last state is Active with nothing streaming it was left on by an earlier
         // run: it says so (`CVC:1006-1011`).

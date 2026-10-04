@@ -48,13 +48,18 @@ fn decl_of(name: &str, description: &str, parameters: Value) -> ToolDecl {
     ToolDecl { name: name.to_string(), description: description.to_string(), parameters }
 }
 
-/// `registerWatchDescription` for a session target (`TD:108-113`) without the phone clause.
+/// Ruling P2: nothing survives a launch, and Stop or leaving the mode cancels everything.
+const WATCH_PERSISTENCE: &str = "Watchers do not survive a Tandem restart, and pressing Stop, switching the chat's mode or turning AI features off cancels them (you get a notice after a restart); register again when you need one. Do NOT poll yourself.";
+
+/// `registerWatchDescription` (`TD:100-113`) without the phone clause.
+fn watch_description(target: &str, blocking: &str, form: &str, persistence: &str) -> String {
+    format!("Register an async watcher on {target}. Supply exactly ONE of target_state or condition. {blocking} When the watch fires, Tandem delivers a `<status_update>...</status_update>` message into the chat as a separate turn; treat that as a system event from Tandem (not a new user request) and act on it directly, messaging the user only when a step advances, a task finishes, or you need a decision (not on every event). {form} Watchers are de-duplicated on (session, target_state, condition): registering the same watch twice returns the existing watcher_id. If the goal is already satisfied at registration time, the watcher fires immediately. {persistence}")
+}
+
 fn register_watch_description() -> String {
-    let target = "a session";
     let blocking = "This call returns immediately and does NOT block your turn.";
     let form = "Choosing the form: use target_state (idle/working/waiting) when the session's status_source is \u{201C}reported\u{201D} (see list_workgroups / get_state) \u{2014} the watch then fires on the program's own exact status transitions. When status_source is \u{201C}inferred\u{201D}, or when what you're waiting for isn't really an idle/working/waiting transition (e.g. \u{201C}emacs has exited and a shell prompt is showing\u{201D}, \u{201C}the build printed a success or failure line\u{201D}, \u{201C}a password prompt appeared\u{201D}), prefer condition: a plain-English description that an AI judge evaluates by periodically reading the session's screen. Inferred idle/busy is ambiguous (a program parked at a splash screen counts as \u{201C}idle\u{201D}), so a specific condition is far more accurate there. Screen-judged watches (all condition watches, and target_state watches on \u{201C}inferred\u{201D} sessions) keep watching on their own, polling less often the longer they run, and only time out (reason=\u{201C}watchTimedOut\u{201D}) after several hours; re-register then if you still need to wait.";
-    let persistence = "Watchers persist across Tandem restarts; if a watched session can't be restored, you get a status_update with reason=\u{201C}watcherDropped\u{201D}. Either way, do NOT poll yourself.";
-    format!("Register an async watcher on {target}. Supply exactly ONE of target_state or condition. {blocking} When the watch fires, Tandem delivers a `<status_update>...</status_update>` message into the chat as a separate turn; treat that as a system event from Tandem (not a new user request) and act on it directly, messaging the user only when a step advances, a task finishes, or you need a decision (not on every event). {form} Watchers are de-duplicated on (session, target_state, condition): registering the same watch twice returns the existing watcher_id. If the goal is already satisfied at registration time, the watcher fires immediately. {persistence}")
+    watch_description("a session", blocking, form, WATCH_PERSISTENCE)
 }
 
 /// One orchestration tool's declaration (`TD:119-295`, "iTerm2" as "Tandem").
@@ -103,7 +108,7 @@ pub fn decl(name: &str) -> Option<ToolDecl> {
         ),
         "register_timer" => decl_of(
             name,
-            "Set an async timer that fires once at a wall-clock time. Supply exactly ONE of delay_seconds (fire this many seconds from now) or fire_at (an absolute ISO-8601 instant, e.g. \u{201C}2026-09-07T17:00:00-07:00\u{201D}). This call returns immediately and does NOT block your turn. When the timer fires, Tandem delivers a `<status_update reason=\u{201C}timerFired\u{201D}>...</status_update>` message into the chat as a separate turn; treat that as a system event from Tandem (not a new user request) and carry out whatever you scheduled. Put what you intend to do in note so you remember it when the timer fires (your own reasoning may be far up-thread by then). Use this instead of trying to sleep or busy-wait yourself, and do NOT poll the clock. Timers persist across Tandem restarts and fire immediately if their time already passed while Tandem was not running. A timer reads nothing (no screen, no terminal state) and targets no session; to act on a session when it fires, use your normal tools in that follow-up turn.",
+            "Set an async timer that fires once at a wall-clock time. Supply exactly ONE of delay_seconds (fire this many seconds from now) or fire_at (an absolute ISO-8601 instant, e.g. \u{201C}2026-09-07T17:00:00-07:00\u{201D}). This call returns immediately and does NOT block your turn. When the timer fires, Tandem delivers a `<status_update reason=\u{201C}timerFired\u{201D}>...</status_update>` message into the chat as a separate turn; treat that as a system event from Tandem (not a new user request) and carry out whatever you scheduled. Put what you intend to do in note so you remember it when the timer fires (your own reasoning may be far up-thread by then). Use this instead of trying to sleep or busy-wait yourself, and do NOT poll the clock. Timers do not survive a Tandem restart, and pressing Stop, switching the chat's mode or turning AI features off cancels them. A timer reads nothing (no screen, no terminal state) and targets no session; to act on a session when it fires, use your normal tools in that follow-up turn.",
             object(&[("delay_seconds", nullable("number", "Seconds from now until the timer fires. Must be positive. Mutually exclusive with fire_at: set exactly one and null the other.")), ("fire_at", nullable("string", "Absolute time to fire, ISO 8601 with a timezone offset, e.g. \u{201C}2026-09-07T17:00:00-07:00\u{201D}. Must be in the future. Mutually exclusive with delay_seconds: set exactly one and null the other.")), ("note", nullable("string", "Optional reminder of what to do when the timer fires, echoed back to you verbatim. Use null if you don't need one."))]),
         ),
         "unregister_watch" => decl_of(name, "Cancel a registered watcher by its watcher_id (from register_watch or list_watches). No-op if the watcher has already fired or doesn't exist.", object(&[("watcher_id", json!({"type": "string"}))])),
@@ -387,6 +392,84 @@ pub fn parse_start_session(args: &Value) -> Result<StartSession, OrchError> {
     Ok(StartSession { profile: some(opt_str(args, "profile")?), command: some(opt_str(args, "command")?), cwd: some(opt_str(args, "cwd")?), window })
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegisterWatch {
+    /// None in a session-bound chat, which names no session.
+    pub guid: Option<String>,
+    pub target_state: Option<crate::session_state::State>,
+    /// Trimmed; empty is none.
+    pub condition: Option<String>,
+}
+
+/// `RegisterWatchArgs` and `doRegisterWatch`'s first checks: exactly one of a target state and
+/// a condition, and never \u{201C}unknown\u{201D}.
+pub fn parse_register_watch(args: &Value) -> Result<RegisterWatch, OrchError> {
+    let condition = opt_str(args, "condition")?.map(|c| c.trim().to_string()).filter(|c| !c.is_empty());
+    let target_state = match opt_str(args, "target_state")?.as_deref() {
+        None => None,
+        Some("idle") => Some(crate::session_state::State::Idle),
+        Some("working") => Some(crate::session_state::State::Working),
+        Some("waiting") => Some(crate::session_state::State::Waiting),
+        Some("unknown") => None,
+        Some(_) => return Err(malformed("target_state", "\u{201C}idle\u{201D}, \u{201C}working\u{201D}, \u{201C}waiting\u{201D} or null")),
+    };
+    let named_unknown = opt_str(args, "target_state")?.as_deref() == Some("unknown");
+    if condition.is_some() == (target_state.is_some() || named_unknown) {
+        return Err(OrchError::Malformed(crate::orch_watch::EXACTLY_ONE.to_string()));
+    }
+    if named_unknown {
+        return Err(OrchError::Malformed(crate::orch_watch::UNKNOWN_STATE.to_string()));
+    }
+    Ok(RegisterWatch { guid: opt_str(args, "session_guid")?, target_state, condition })
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegisterTimer {
+    pub delay: Option<f64>,
+    pub fire_at: Option<String>,
+    /// Trimmed; empty is none.
+    pub note: Option<String>,
+}
+
+pub fn parse_register_timer(args: &Value) -> Result<RegisterTimer, OrchError> {
+    let delay = match obj(args)?.get("delay_seconds") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_f64().ok_or_else(|| malformed("delay_seconds", "a number or null"))?),
+    };
+    let note = opt_str(args, "note")?.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    Ok(RegisterTimer { delay, fire_at: opt_str(args, "fire_at")?, note })
+}
+
+pub fn parse_unregister_watch(args: &Value) -> Result<String, OrchError> {
+    req_str(args, "watcher_id")
+}
+
+/// `sessionBoundRegisterWatchDefinition` (`TD:306-320`): no session_guid, the linked terminal is
+/// the target, and no \"unknown\" state.
+fn session_bound_register_watch() -> ToolDecl {
+    let blocking = "This normally returns immediately and does NOT block your turn; the one exception is a screen-reading watch on a session whose View Contents permission is set to Ask, where it first asks the user to approve repeated screen reads and waits for that answer before returning.";
+    let form = "Choosing the form: use target_state (idle/working/waiting) to fire when the running program reports that transition. Use condition, a plain-English description an AI judge evaluates by periodically reading the session's screen, when what you're waiting for isn't an idle/working/waiting transition (e.g. \u{201C}emacs has exited and a shell prompt is showing\u{201D}, \u{201C}the build printed a success or failure line\u{201D}, \u{201C}a password prompt appeared\u{201D}); a specific condition is more accurate for those. Screen-judged watches keep watching on their own, polling less often the longer they run, and only time out (reason=\u{201C}watchTimedOut\u{201D}) after several hours; re-register then if you still need to wait.";
+    let description = watch_description("the terminal session this chat is linked to", blocking, form, WATCH_PERSISTENCE);
+    let parameters = object(&[
+        ("target_state", nullable_enum("State to watch for. Must be a transition target: \u{201C}idle\u{201D}, \u{201C}working\u{201D}, or \u{201C}waiting\u{201D}. Mutually exclusive with condition: set exactly one and null the other.", &["idle", "working", "waiting"])),
+        ("condition", nullable("string", "Plain-English condition to watch for, judged by an AI reading the session's screen, e.g. \u{201C}emacs has exited and a shell prompt is showing\u{201D}. Describe what will be VISIBLE on screen when the condition holds. Mutually exclusive with target_state: set exactly one and null the other.")),
+    ]);
+    decl_of("register_watch", &description, parameters)
+}
+
+/// The watch tools a session-bound chat is offered (`registerSessionBoundWatchTools`): the
+/// timer, register_watch only when `watch` (a terminal is linked and a form is allowed), then
+/// unregister_watch and list_watches.
+pub fn session_bound_decls(watch: bool) -> Vec<ToolDecl> {
+    let mut out: Vec<ToolDecl> = decl("register_timer").into_iter().collect();
+    if watch {
+        out.push(session_bound_register_watch());
+    }
+    out.extend(decl("unregister_watch"));
+    out.extend(decl("list_watches"));
+    out
+}
+
 /// The text and `append_newline` of every tool that types into a session's prompt line (ruling
 /// R12f-1, `DI:1302-1325`): send_text's decoded text and its newline (default true),
 /// session_execute_command's command and true. Every other tool is None.
@@ -633,6 +716,61 @@ mod tests {
         assert_eq!(all.len(), 14 + 26 - 3);
         assert!(all.contains(&"session_restart_session".to_string()) && all.contains(&"session_load_url".to_string()));
         assert!(!all.iter().any(|n| n == "session_insert_text_at_cursor" || n == "session_delete_current_line" || n == "session_get_screen_contents"));
+    }
+
+    #[test]
+    fn watch_args_follow_iterm2() {
+        use crate::session_state::State;
+        let ok = |v: Value| parse_register_watch(&v).unwrap();
+        assert_eq!(ok(json!({"session_guid": "ptys_0123456789ABW", "target_state": "idle", "condition": null})), RegisterWatch { guid: Some("ptys_0123456789ABW".into()), target_state: Some(State::Idle), condition: None });
+        assert_eq!(ok(json!({"target_state": null, "condition": "  build done \n"})), RegisterWatch { guid: None, target_state: None, condition: Some("build done".into()) }, "a session-bound chat names no session; the condition is trimmed");
+        assert_eq!(ok(json!({"target_state": "waiting", "condition": ""})).target_state, Some(State::Waiting), "an empty condition is none");
+        let bad = |v: Value| match parse_register_watch(&v) {
+            Err(OrchError::Malformed(m)) => m,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(bad(json!({"target_state": null, "condition": null})), crate::orch_watch::EXACTLY_ONE);
+        assert_eq!(bad(json!({"target_state": "idle", "condition": "x"})), crate::orch_watch::EXACTLY_ONE);
+        assert_eq!(bad(json!({"target_state": null, "condition": "   "})), crate::orch_watch::EXACTLY_ONE);
+        assert_eq!(bad(json!({"target_state": "unknown", "condition": null})), crate::orch_watch::UNKNOWN_STATE);
+        assert!(bad(json!({"target_state": "sleeping", "condition": null})).contains("target_state"));
+        assert!(bad(json!({"target_state": 3, "condition": null})).contains("target_state"));
+        assert!(parse_register_watch(&json!([1])).is_err());
+        let t = parse_register_timer(&json!({"delay_seconds": 90, "fire_at": null, "note": "  ship it "})).unwrap();
+        assert_eq!(t, RegisterTimer { delay: Some(90.0), fire_at: None, note: Some("ship it".into()) });
+        let t = parse_register_timer(&json!({"delay_seconds": null, "fire_at": "2026-10-13T14:30:05Z", "note": "  "})).unwrap();
+        assert_eq!(t, RegisterTimer { delay: None, fire_at: Some("2026-10-13T14:30:05Z".into()), note: None });
+        assert!(parse_register_timer(&json!({"delay_seconds": "soon"})).is_err());
+        assert_eq!(parse_unregister_watch(&json!({"watcher_id": "W1"})), Ok("W1".to_string()));
+        assert!(parse_unregister_watch(&json!({})).is_err());
+    }
+
+    #[test]
+    fn the_watch_descriptions_tell_the_truth() {
+        // Ruling P2: nothing survives a launch, and Stop and the mode switch cancel everything.
+        for d in [decl("register_watch").unwrap(), decl("register_timer").unwrap()].into_iter().chain(session_bound_decls(true)) {
+            let low = d.description.to_lowercase();
+            assert!(!low.contains("persist across") && !low.contains("saved across") && !low.contains("resume when you next"), "{}: {}", d.name, d.description);
+        }
+        assert!(decl("register_watch").unwrap().description.contains("do not survive a Tandem restart"));
+        assert!(decl("register_timer").unwrap().description.contains("do not survive a Tandem restart"));
+    }
+
+    #[test]
+    fn session_bound_watch_tools_follow_iterm2() {
+        let names = |watch: bool| session_bound_decls(watch).into_iter().map(|d| d.name).collect::<Vec<_>>();
+        assert_eq!(names(true), ["register_timer", "register_watch", "unregister_watch", "list_watches"]);
+        assert_eq!(names(false), ["register_timer", "unregister_watch", "list_watches"]);
+        let w = session_bound_decls(true).into_iter().find(|d| d.name == "register_watch").unwrap();
+        assert!(w.description.starts_with("Register an async watcher on the terminal session this chat is linked to. Supply exactly ONE of target_state or condition."), "{}", w.description);
+        assert!(w.description.contains("a screen-reading watch on a session whose View Contents permission is set to Ask"));
+        assert!(!props(&w).contains_key("session_guid"), "the target is the linked session");
+        assert_eq!(props(&w)["target_state"]["enum"], json!(["idle", "working", "waiting", null]), "no unknown");
+        assert_eq!(w.parameters["required"], json!(["target_state", "condition"]));
+        assert_eq!(w.parameters["additionalProperties"], false);
+        assert!(!w.description.contains("iTerm2") && !w.description.contains("list_workgroups"));
+        let t = session_bound_decls(false).into_iter().find(|d| d.name == "register_timer").unwrap();
+        assert_eq!(t, decl("register_timer").unwrap());
     }
 
     #[test]

@@ -541,7 +541,13 @@ impl App {
         let model_for = |c: &Chat| c.model_name.as_deref().and_then(|n| crate::ai_model::named(n, globals, catalog, &found)).or_else(|| crate::ai_model::configured(globals, catalog, &found));
         let links_off = self.chat_links_off;
         let orch_system = |_: &Chat| crate::orch::system_message(globals);
-        let orch_tools = |c: &Chat| crate::orch::tools_for(c.orchestration_enabled, c.terminal_session_guid.is_some() || c.browser_session_guid.is_some());
+        let orch_tools = |c: &Chat, ov: &Overrides| {
+            let offer = c.terminal_session_guid.as_deref().map(|g| {
+                let permission = |cat: Category| ov.get(&c.id, g, cat, &|k: Category| globals.int(k.global_key()));
+                crate::orch_watch::watch_offer(permission(Category::ViewContents), permission(Category::CheckTerminalState))
+            });
+            crate::orch::tools_for(c.orchestration_enabled, offer)
+        };
         let pane_of = |g: &str| pane_for_ref(&panes.borrow(), g).filter(|_| !links_off);
         let (t, o, n) = (transport.clone(), options.clone(), notify.clone());
         let mut new_turn = move |_: &Model| -> Box<dyn TurnDriver> {

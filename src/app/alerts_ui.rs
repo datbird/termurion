@@ -104,6 +104,7 @@ impl App {
         if !changes.is_empty() || !self.status_watches.is_empty() {
             self.status_changes(&changes);
         }
+        self.orch_status_changed(&changes);
     }
 
     /// The status bar's answer. False for other bars.

@@ -37,12 +37,6 @@ impl App {
             .collect()
     }
 
-    /// The tools 12f adds for `chat` (the engine gets the same answer through its `Ctx`).
-    #[allow(dead_code)] // The engine's closure calls `orch::tools_for` directly; kept as the App's name for it.
-    pub(super) fn orch_tools(&self, chat: &Chat) -> Vec<crate::ai_turn::ToolDecl> {
-        orch::tools_for(chat.orchestration_enabled, chat.terminal_session_guid.is_some() || chat.browser_session_guid.is_some())
-    }
-
     /// The trailing message of an orchestration chat's every request: the workgroups snapshot,
     /// said to be data and cut to a size (it holds text programs wrote). None for any other chat.
     pub(super) fn orch_volatile(&self, chat: &Chat) -> Option<String> {
@@ -58,6 +52,10 @@ impl App {
 
     /// One orchestration call: the enable tool here, every other tool in `orch_dispatch`.
     pub(super) fn orch_call(&mut self, chat_id: &str, call_id: &str, name: &str, args: &serde_json::Value) -> Outcome {
+        // The watch tools work in every mode (a session-bound chat has them too).
+        if orch::is_watch_tool(name) {
+            return self.orch_watch_call(chat_id, call_id, name, args);
+        }
         if name != orch::ENABLE_TOOL {
             return self.orch_dispatch(chat_id, call_id, name, args);
         }
@@ -164,6 +162,7 @@ impl App {
     /// halt answers `CancelChecks`). The checks, delayed CRs, mirrors and spawns go too.
     pub(super) fn orch_chat_ended(&mut self, chat: &str) {
         self.orch_drop_chat(chat);
+        self.orch_watch_drop_chat(chat);
         orch::drop_chat_parks(&mut self.orch_parks, chat);
         self.chat_buttons_refresh();
     }

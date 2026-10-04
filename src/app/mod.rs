@@ -148,6 +148,7 @@ mod chat_window_app;
 mod cockpit_app;
 mod orch_app;
 mod orch_dispatch;
+mod orch_watch_app;
 mod chat_session_app;
 mod chat_engine;
 mod ai_tools_app;
@@ -1065,6 +1066,12 @@ pub struct App {
     orch_spawns: Vec<orch_dispatch::Spawn>,
     /// The sessions each chat's agent started, and when (ruling P15's cap).
     orch_spawned: HashMap<String, Vec<(Instant, PaneId)>>,
+    /// Each chat's watchers and timers (Task 11); in memory only, a launch starts empty (ruling P2).
+    orch_watchers: HashMap<String, Vec<crate::orch_watch::Watcher>>,
+    /// A screen watch's poll, by watcher id.
+    orch_polls: HashMap<String, crate::orch_watch::Poll>,
+    /// The events each chat is about to receive, held for the gate and the rate.
+    orch_outbox: HashMap<String, crate::orch_watch::Outbox>,
     /// 12b's wire log file for the chat turns' requests (app-wide).
     #[cfg(windows)]
     ai_wire_log: Arc<Mutex<crate::ai_wire_log::WireLog>>,
@@ -1742,6 +1749,9 @@ pub fn run() {
         orch_checks: Vec::new(),
         orch_spawns: Vec::new(),
         orch_spawned: HashMap::new(),
+        orch_watchers: HashMap::new(),
+        orch_polls: HashMap::new(),
+        orch_outbox: HashMap::new(),
         #[cfg(windows)]
         ai_wire_log: Arc::new(Mutex::new(crate::ai_wire_log::WireLog::new())),
         script_procs: HashMap::new(),
@@ -4997,7 +5007,7 @@ impl ApplicationHandler<UserEvent> for App {
         // Orchestration's checks, mirror limits, delayed CRs and spawns (12f Task 10).
         self.orch_check_tick();
         self.orch_spawn_tick(event_loop);
-        let orch_due = self.orch_due();
+        let orch_due = [self.orch_due(), self.orch_watch_tick()].into_iter().flatten().min();
         let chat_window_due = self.chat_window_tick();
         self.open_script_dialogs(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {

@@ -61,8 +61,9 @@ pub(super) struct Ctx<'a> {
     pub explain: &'a mut dyn FnMut(&str, Message, Option<&Message>, bool) -> Explained,
     /// The orchestration system message for the chat (12f; the engine never calls an App method).
     pub orch_system: &'a dyn Fn(&Chat) -> String,
-    /// The tools 12f adds: an orchestration chat's own, or a session-bound chat's enable tool.
-    pub orch_tools: &'a dyn Fn(&Chat) -> Vec<ToolDecl>,
+    /// The tools 12f adds: an orchestration chat's own, or a session-bound chat's enable tool and
+    /// watch tools (which of them depends on the linked terminal's permissions).
+    pub orch_tools: &'a dyn Fn(&Chat, &Overrides) -> Vec<ToolDecl>,
     /// Seconds since 1970, for the messages published.
     pub now: f64,
 }
@@ -376,10 +377,10 @@ impl Engine {
         let tools = if !functions {
             Vec::new()
         } else if orchestrating {
-            (cx.orch_tools)(&row)
+            (cx.orch_tools)(&row, cx.overrides)
         } else {
             let mut t = crate::ai_tools::tool_defs(&allowed);
-            t.extend((cx.orch_tools)(&row));
+            t.extend((cx.orch_tools)(&row, cx.overrides));
             t
         };
         a.system_dirty = false;
@@ -522,7 +523,7 @@ impl Engine {
         // An orchestration chat owns the orchestration names; any chat owns the enable tool. A
         // session-bound chat's `get_screen_contents` stays 12c's.
         let orchestrating = cx.store.chat(chat).ok().flatten().is_some_and(|c| c.orchestration_enabled);
-        if name == crate::orch::ENABLE_TOOL || (orchestrating && crate::orch::orch_owns(&name)) {
+        if name == crate::orch::ENABLE_TOOL || crate::orch::is_watch_tool(&name) || (orchestrating && crate::orch::orch_owns(&name)) {
             let args = match arguments_json(call.arguments.as_deref()) {
                 Ok(args) => args,
                 Err(e) => return Self::continue_turn(cx, chat, ToolResult::Failed(e)),
@@ -714,7 +715,7 @@ impl Engine {
         let endpoint = endpoint_of(&model);
         let Some(passed) = chat_gate::pass(cx.globals, &endpoint) else { return Self::refuse(cx, chat, endpoint) };
         let row = cx.store.chat(chat).ok().flatten();
-        let retool = row.filter(|r| r.orchestration_enabled && cx.agents.get(chat).is_some_and(|a| !a.orch_tooled)).map(|r| ((cx.orch_system)(&r), (cx.orch_tools)(&r)));
+        let retool = row.filter(|r| r.orchestration_enabled && cx.agents.get(chat).is_some_and(|a| !a.orch_tooled)).map(|r| ((cx.orch_system)(&r), (cx.orch_tools)(&r, cx.overrides)));
         if let Some(a) = cx.agents.get_mut(chat) {
             if let (Some((system, tools)), Some(d)) = (retool, a.driver.as_mut()) {
                 d.reconfigure(&system, tools);
@@ -1197,9 +1198,9 @@ mod tests {
                 new_files: &mut new_files,
                 explain: &mut explain,
                 orch_system: &|_: &Chat| "O".to_string(),
-                orch_tools: &|c: &Chat| {
+                orch_tools: &|c: &Chat, _: &Overrides| {
                     let send = ToolDecl { name: "send_text".into(), description: "d".into(), parameters: serde_json::json!({}) };
-                    if c.orchestration_enabled { vec![send] } else { crate::orch::tools_for(false, c.terminal_session_guid.is_some() || c.browser_session_guid.is_some()) }
+                    if c.orchestration_enabled { vec![send] } else { crate::orch::tools_for(false, c.terminal_session_guid.as_ref().map(|_| (true, true))) }
                 },
                 now: 10.0,
             };
@@ -1818,7 +1819,7 @@ mod tests {
         let only: BTreeSet<Category> = [Category::ViewContents].into_iter().collect();
         // A session-bound chat always carries the enable tool after 12c's.
         let mut want: Vec<String> = crate::ai_tools::tool_defs(&only).into_iter().map(|t| t.name).collect();
-        want.push(crate::orch::ENABLE_TOOL.to_string());
+        want.extend([crate::orch::ENABLE_TOOL, "register_timer", "register_watch", "unregister_watch", "list_watches"].map(String::from));
         assert_eq!(second.tools, want);
         assert_ne!(first.tools, second.tools);
         assert_ne!(first.messages[0], second.messages[0], "a new system message");
@@ -2248,6 +2249,15 @@ mod tests {
     }
 
     #[test]
+    fn a_session_bound_chats_watch_call_leaves_the_engine() {
+        let mut h = H::new();
+        let chat = h.chat(Some("7"));
+        h.script(vec![invoke("register_timer", "{\"delay_seconds\":5,\"fire_at\":null,\"note\":null}", "t1")]);
+        let fx = h.say(&chat, "hi");
+        assert_eq!(fx, vec![orch_effect(&chat, "t1", "register_timer", serde_json::json!({"delay_seconds": 5, "fire_at": null, "note": null}))]);
+    }
+
+    #[test]
     fn every_chat_that_is_not_orchestrating_carries_the_enable_tool() {
         let mut h = H::new();
         let chat = h.chat(Some("7"));
@@ -2255,7 +2265,7 @@ mod tests {
         let fx = h.say(&chat, "hi");
         let allowed = h.agents[&chat].allowed.clone().unwrap();
         let mut want: Vec<String> = crate::ai_tools::tool_defs(&allowed).into_iter().map(|t| t.name).collect();
-        want.push("request_orchestration_enable".into());
+        want.extend(["request_orchestration_enable", "register_timer", "register_watch", "unregister_watch", "list_watches"].map(String::from));
         assert_eq!(h.log.borrow().inputs[0].tools, want);
         assert_eq!(fx, vec![orch_effect(&chat, "e1", "request_orchestration_enable", serde_json::json!({}))]);
         // The call parks on the person: a new message from them cancels the wedged turn.

@@ -269,7 +269,8 @@ pub fn body(content: &Content) -> Body {
         Content::RemoteCommandRequest { payload: Payload::External(v), .. } => Body::Markdown(v.get("markdownDescription").and_then(serde_json::Value::as_str).unwrap_or_default().to_string()),
         Content::RemoteCommandResponse { result: Err(e), .. } => Body::Markdown(e.message.clone()),
         Content::RemoteCommandResponse { .. } => Body::Plain(String::new()),
-        Content::WatcherEvent(v) => Body::Markdown(chat_json::watcher(v).map(|(_, detail)| detail).unwrap_or_default()),
+        // The detail is Tandem's text around a program's words: it opens no link or span.
+        Content::WatcherEvent(v) => Body::Markdown(chat_json::watcher(v).map(|(_, detail)| field(&detail)).unwrap_or_default()),
         Content::Unsupported(_) => system(UNSUPPORTED_TEXT),
         Content::SelectSessionRequest { terminal, .. } => system(if *terminal { crate::ai_permissions::NEEDS_SESSION } else { NEEDS_BROWSER }),
         Content::ClientLocal(action) => match action {

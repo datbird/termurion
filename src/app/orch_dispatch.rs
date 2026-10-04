@@ -116,6 +116,9 @@ pub(super) enum Wait {
     Claim { scope: String, name: String, args: Value, mirror_guid: Option<String> },
     /// A verdict that was not an allow, or a call that always asks.
     Approve { then: Then, reason: String, denied: bool },
+    /// A session-bound register_watch waiting for the one-time screen-read consent; once
+    /// approved it is registered again from the start with every permission re-read.
+    WatchConsent { args: Value },
 }
 
 /// A CR due after a bracketed paste; the call is answered once it is sent.
@@ -313,7 +316,7 @@ pub(super) enum After {
 
 impl App {
     /// What may stop a pane from taking typing now.
-    fn orch_pane_state(&self, pane: PaneId) -> PaneState {
+    pub(super) fn orch_pane_state(&self, pane: PaneId) -> PaneState {
         let p = self.panes.get(&pane);
         PaneState {
             exited: p.is_none_or(|p| p.exited.is_some()),
@@ -324,16 +327,16 @@ impl App {
     }
 
     /// A session's name as the person reads it, else its stable id.
-    fn orch_name(&self, pane: PaneId) -> String {
+    pub(super) fn orch_name(&self, pane: PaneId) -> String {
         let n = crate::inert_files::shown_name(&self.session_label(pane).0);
         if n.is_empty() { self.panes.get(&pane).map(|p| p.stable_id.clone()).unwrap_or_default() } else { n }
     }
 
-    fn orch_resolve(&self, guid: &str) -> Result<PaneId, OrchError> {
+    pub(super) fn orch_resolve(&self, guid: &str) -> Result<PaneId, OrchError> {
         resolve(guid, self.panes.iter().map(|(k, p)| (*k, p.stable_id.as_str())))
     }
 
-    fn orch_stable(&self, pane: PaneId) -> String {
+    pub(super) fn orch_stable(&self, pane: PaneId) -> String {
         self.panes.get(&pane).map(|p| p.stable_id.clone()).unwrap_or_default()
     }
 
@@ -433,7 +436,7 @@ impl App {
                 Err(OrchError::Unsupported(ot::not_code_review("default", &self.orch_name(pane))))
             }
             "start_session" => self.orch_start_session(chat, call_id, args),
-            "register_watch" | "register_timer" | "unregister_watch" | "list_watches" => Err(OrchError::NotImplemented(name.to_string())),
+            "register_watch" | "register_timer" | "unregister_watch" | "list_watches" => Ok(self.orch_watch_call(chat, call_id, name, args)),
             _ => Err(OrchError::UnknownTool(name.to_string())),
         }
     }
@@ -458,7 +461,7 @@ impl App {
 
     /// get_screen_contents' payload through 12c's `Screen::screen_contents` (the trailing
     /// lines on the primary screen, the grid on the alternate one).
-    fn orch_screen_value(&self, pane: PaneId, lines: Option<i64>) -> Value {
+    pub(super) fn orch_screen_value(&self, pane: PaneId, lines: Option<i64>) -> Value {
         let Some(p) = self.panes.get(&pane) else { return json!({}) };
         let s = p.own();
         let claude = s.shell.job.as_ref().is_some_and(|j| crate::proctree::same_job(&j.name, "claude")) || s.shell.job_ancestors.iter().any(|a| crate::proctree::same_job(a, "claude"));
@@ -534,7 +537,7 @@ impl App {
 
     /// Publishes a permission bubble and parks the call on it (`awaitPermission`). A bubble that
     /// cannot be shown answers as a refusal: the model always gets an answer.
-    fn orch_ask(&mut self, chat: &str, call_id: &str, workgroup_id: &str, workgroup_name: &str, summary: &str, wait: Wait) -> Outcome {
+    pub(super) fn orch_ask(&mut self, chat: &str, call_id: &str, workgroup_id: &str, workgroup_name: &str, summary: &str, wait: Wait) -> Outcome {
         let request_id = crate::chat_message::new_id();
         orch::park(&mut self.orch_parks, &request_id, chat, call_id);
         self.orch_waits.insert(request_id.clone(), wait);
@@ -555,6 +558,7 @@ impl App {
         match w {
             Wait::Claim { mirror_guid, .. } => Self::claim_refusal(mirror_guid.as_deref()),
             Wait::Approve { then: Then::Spawn(_), .. } => ot::error_json(&OrchError::PermissionDenied),
+            Wait::WatchConsent { .. } => ot::error_json(&OrchError::Unsupported(crate::orch_watch::SCREEN_DECLINED.to_string())),
             Wait::Approve { then, reason, denied } => {
                 let e = OrchError::SafetyBlocked(if *denied { reason.clone() } else { ot::DECLINED_APPROVAL.to_string() });
                 if then.mirror() { e.message() } else { ot::error_json(&e) }
@@ -612,6 +616,7 @@ impl App {
                 }
                 done(Self::declined(&w))
             }
+            (Wait::WatchConsent { args }, approved) => self.orch_watch_consent_answered(chat_id, &call_id, &args, approved),
             (Wait::Approve { then, .. }, true) => self.orch_allowed(chat_id, &call_id, then),
             (w, false) => done(Self::declined(&w)),
         };

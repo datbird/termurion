@@ -76,6 +76,11 @@ pub const TOOL_NAMES: [&str; 14] = [
     "list_watches",
 ];
 
+/// The watch tools a session-bound chat also has (they work in every mode).
+pub fn is_watch_tool(name: &str) -> bool {
+    matches!(name, "register_watch" | "register_timer" | "unregister_watch" | "list_watches")
+}
+
 /// Whether a tool name is orchestration's: the enable tool, the 14 tools or a `session_` mirror.
 pub fn orch_owns(name: &str) -> bool {
     name == ENABLE_TOOL || TOOL_NAMES.contains(&name) || name.starts_with("session_")
@@ -286,7 +291,7 @@ pub fn synthetic(f: &PaneFacts) -> WorkgroupSummary {
 }
 
 /// Keys sorted at every level (the crate keeps insertion order).
-fn sorted(v: &Value) -> Value {
+pub(crate) fn sorted(v: &Value) -> Value {
     match v {
         Value::Object(m) => {
             let mut keys: Vec<&String> = m.keys().collect();
@@ -367,12 +372,14 @@ pub fn system_message(g: &crate::globals::Globals) -> String {
 
 /// The tools 12f adds to a chat's own: an orchestration chat's 14 and the mirrors; every other chat,
 /// linked or not, carries the enable tool (`ChatService.swift:459`: every chat that is not
-/// orchestrating is session-bound). `_session_bound` is for Task 11's watch tools.
-pub fn tools_for(orchestrating: bool, _session_bound: bool) -> Vec<ToolDecl> {
+/// orchestrating is session-bound). `watch` is Task 11's: Some((view, state)) for a chat with a
+/// terminal linked, whether View Contents and Check Terminal State are not Never.
+pub fn tools_for(orchestrating: bool, watch: Option<(bool, bool)>) -> Vec<ToolDecl> {
     if orchestrating {
         crate::orch_tools::all_decls()
     } else {
-        vec![enable_decl()]
+        let offer = watch.is_some_and(|(view, state)| view || state);
+        std::iter::once(enable_decl()).chain(crate::orch_tools::session_bound_decls(offer)).collect()
     }
 }
 
@@ -559,9 +566,11 @@ mod tests {
         assert_eq!(system_message(&g), format!("A (none saved) B\n\n{DISPLAY_POLICY}"));
         g.set(key, toml::Value::String("broken \\(".into()));
         assert_eq!(system_message(&g), format!("broken \\(\n\n{DISPLAY_POLICY}"), "an error leaves the template as it stands");
-        assert_eq!(tools_for(false, true).iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), [ENABLE_TOOL]);
+        assert_eq!(tools_for(false, Some((true, true))).iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), [ENABLE_TOOL, "register_timer", "register_watch", "unregister_watch", "list_watches"]);
+        assert_eq!(tools_for(false, Some((false, true))).len(), 5, "a state watch is still possible");
+        assert_eq!(tools_for(false, Some((false, false))).iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), [ENABLE_TOOL, "register_timer", "unregister_watch", "list_watches"], "no form is allowed: no register_watch");
         // Every chat that is not orchestrating can ask (`ChatService.swift:459`), linked or not.
-        assert_eq!(tools_for(false, false).iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), [ENABLE_TOOL]);
+        assert_eq!(tools_for(false, None).iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), [ENABLE_TOOL, "register_timer", "unregister_watch", "list_watches"], "a timer needs no session");
     }
 
     /// Task 9 fix round 1: a title a program set cannot close the block or forge a tag; `<`,
