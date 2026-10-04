@@ -123,6 +123,20 @@ pub const SPACES_WARNING_HEADING: &str = "Warning";
 pub const SPACES_WARNING: &str = "To have a new window open on a specific desktop, make sure that the desktop exists in Task View (Win+Tab).";
 /// How often a following ("All Desktops") window is checked against the current desktop.
 pub const FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+/// How long after activating a window on another desktop to check that Windows switched to it
+/// (iTerm2 sleeps 0.3 s after its Ctrl+number, `MCH:55-90`).
+pub const SWITCH_RECHECK: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Whether a window follows the current desktop for a profile's Space (All Desktops only).
+pub fn follows(space: i64) -> bool {
+    space == -1
+}
+
+/// The switch failed when the window is still not on the current desktop; an unreadable
+/// answer is not counted.
+pub fn switch_failed(on_current: Option<bool>) -> bool {
+    on_current == Some(false)
+}
 
 #[cfg(windows)]
 pub mod win {
@@ -230,6 +244,18 @@ mod tests {
     use super::*;
 
     const GUID: [u8; 16] = [0x04, 0x03, 0x02, 0x01, 0x06, 0x05, 0x08, 0x07, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10];
+
+    /// iTerm2 hotkey windows show where the person is: only All Desktops (-1) keeps one following,
+    /// and a window that did not end up on the current desktop after the switch is reported.
+    #[test]
+    fn hotkey_and_switch_follow_iterm2() {
+        assert!(follows(-1));
+        assert!(!follows(0) && !follows(3));
+        assert_eq!(SWITCH_RECHECK, std::time::Duration::from_millis(300));
+        assert!(switch_failed(Some(false)));
+        assert!(!switch_failed(Some(true)));
+        assert!(!switch_failed(None), "an unreadable answer is not a failure");
+    }
 
     #[test]
     fn space_target_follows_iterm2() {

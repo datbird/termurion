@@ -837,6 +837,10 @@ pub struct App {
     space_complained: bool,
     /// When following windows are next checked against the current desktop.
     desktop_due: Option<Instant>,
+    /// A window activated on its numbered desktop, checked once `SWITCH_RECHECK` later: its HWND, the Space, when.
+    switch_recheck: Option<(isize, i64, Instant)>,
+    /// The failed switch was logged this run.
+    switch_logged: bool,
     /// When the windows refit after a display change (`UpdateScreenParamsDelay` after the last message).
     display_due: Option<Instant>,
     /// The font settings the renderer last loaded.
@@ -1691,6 +1695,8 @@ pub fn run() {
         desktops_tried: false,
         space_complained: false,
         desktop_due: None,
+        switch_recheck: None,
+        switch_logged: false,
         display_due: None,
         font_sig: String::new(),
         profiles_win: None,

@@ -54,6 +54,11 @@ impl App {
                 self.follow_now();
             }
             Target::Desktop(id) => {
+                // iTerm2 switches spaces only for windows the session launcher opens; a hotkey
+                // window shows on the current desktop (`roll_in`).
+                if self.hotkey.is_some() {
+                    return;
+                }
                 let Some(hwnd) = self.hwnd() else { return };
                 let moved = self.desktops.as_ref().is_some_and(|m| match m.move_window(hwnd, id) {
                     Ok(()) => true,
@@ -62,11 +67,11 @@ impl App {
                         false
                     }
                 });
-                // A hotkey window is shown (and focused) by its own roll in.
-                if moved && self.hotkey.is_none() {
+                if moved {
                     if let Some(w) = self.current_window() {
                         self.focus_terminal_window(w);
                     }
+                    self.switch_recheck = Some((hwnd, space, Instant::now() + crate::desktops::SWITCH_RECHECK));
                 }
             }
             Target::Missing(n) => {
@@ -94,9 +99,31 @@ impl App {
         }
     }
 
+    /// After `SWITCH_RECHECK`: the window activated on its desktop should now be on the current
+    /// one; when not, one log line per run (P18c: the window is left where it is). The time the
+    /// check is next due.
+    fn switch_recheck_tick(&mut self) -> Option<Instant> {
+        let (hwnd, space, due) = self.switch_recheck?;
+        if Instant::now() < due {
+            return Some(due);
+        }
+        self.switch_recheck = None;
+        let failed = self.desktops().is_some_and(|m| crate::desktops::switch_failed(m.on_current(hwnd)));
+        if failed && !std::mem::replace(&mut self.switch_logged, true) {
+            eprintln!("Windows did not switch to desktop {space} when its window was activated; the window stays there");
+        }
+        None
+    }
+
     /// Checks every visible following window (current or parked) against the current desktop,
     /// at most once per `FOLLOW_EVERY`. The next time it needs to run, None when no window follows.
     pub(super) fn desktop_tick(&mut self) -> Option<Instant> {
+        let recheck = self.switch_recheck_tick();
+        let follow = self.follow_tick();
+        [recheck, follow].into_iter().flatten().min()
+    }
+
+    fn follow_tick(&mut self) -> Option<Instant> {
         let visible = |g: &Gpu| g.window.is_visible() != Some(false);
         let mut hwnds: Vec<isize> = Vec::new();
         if self.win_follow_desktop {

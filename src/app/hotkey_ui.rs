@@ -271,14 +271,11 @@ impl App {
         let Some(g) = &self.gpu else { return };
         g.window.set_visible(true);
         g.window.set_minimized(false);
-        // A following window (Space All Desktops, the dedicated profile's) comes to the current
-        // desktop before it shows; the saved state does not carry the flag.
-        if self.store.get(&guid).is_some_and(|p| p.int("Space") == -1) {
-            self.win_follow_desktop = true;
-        }
-        if self.win_follow_desktop {
-            self.follow_now();
-        }
+        // A hotkey window shows on the desktop the person is on (iTerm2 opens it in the active
+        // space; its Space only matters for All Desktops). It keeps following only while the
+        // profile's Space is All Desktops; the saved state does not carry the flag.
+        self.win_follow_desktop = self.store.get(&guid).is_some_and(|p| crate::desktops::follows(p.int("Space")));
+        self.follow_now();
         let Some(g) = &self.gpu else { return };
         g.window.set_window_level(if floats { winit::window::WindowLevel::AlwaysOnTop } else { winit::window::WindowLevel::Normal });
         // The profile's Screen: the window shows on that monitor, in its style's frame there.
