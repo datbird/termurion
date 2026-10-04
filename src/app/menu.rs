@@ -281,7 +281,11 @@ impl App {
         for slot in context_layout(extra.len(), providers.len(), tab_has_many) {
             results.push(match slot {
                 Slot::Separator => context.append(&PredefinedMenuItem::separator()),
-                Slot::Extra(i) => context.append(&own(&extra[i])),
+                Slot::Extra(i) => match &extra[i] {
+                    // Lock Pane is a check item (`CMH:671-678`).
+                    (label, item @ super::semantic_ui::CtxItem::LockPane(on)) => context.append(&CheckMenuItem::with_id(item.id(), label.replace('&', "&&"), true, *on, None)),
+                    other => context.append(&own(other)),
+                },
                 Slot::Provider(i) => context.append(&own(&providers[i])),
                 Slot::Swap => context.append(&own(&(super::semantic_ui::swap_label().to_string(), super::semantic_ui::CtxItem::SwapPane))),
                 Slot::Command(id) => match menus::by_id(id) {

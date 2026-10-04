@@ -316,6 +316,14 @@ impl App {
             for label in ctx_extras(running) {
                 extra.push((label.into(), if label == "Stop Coprocess" { CtxItem::StopCoprocess } else { CtxItem::ToggleBroadcast }));
             }
+            // Lock Pane and the tab-wide items follow Toggle Broadcasting Input (`CMH:671-713`).
+            for (label, item) in self.lock_items_for(id) {
+                extra.push((label.into(), match item {
+                    super::pane_lock_ui::LockItem::Pane(on) => CtxItem::LockPane(on),
+                    super::pane_lock_ui::LockItem::All => CtxItem::LockAll,
+                    super::pane_lock_ui::LockItem::UnlockAll => CtxItem::UnlockAll,
+                }));
+            }
             pending.get_or_insert_with(|| CtxPending::for_pane(id, Vec::new()));
         }
         // The script providers' items (`CMH:898-914`), for that session.
@@ -369,6 +377,10 @@ impl App {
             self.stop_coprocess(pend.pane);
         } else if item == "togglebroadcast" {
             self.toggle_broadcast_pane(pend.pane);
+        } else if item == "lockpane" {
+            self.toggle_pane_lock(pend.pane);
+        } else if item == "lockall" || item == "unlockall" {
+            self.lock_all_in_tab(pend.pane, item == "lockall");
         } else if item == "unfold" {
             if let Some(f) = pend.fold {
                 self.unfold(pend.pane, f);
@@ -441,6 +453,10 @@ pub(super) enum CtxItem {
     ToggleBroadcast,
     /// Swap With Session...: the pick mode for a swap, from the pane the menu is for.
     SwapPane,
+    /// Lock Pane (checked while the pane is locked), Lock All and Unlock All Panes in Tab.
+    LockPane(bool),
+    LockAll,
+    UnlockAll,
     /// A script context menu provider's item, by its unique id.
     Provider(String),
     /// A menu command (by menu item id, and whether it is enabled) that acts on the menu's pane.
@@ -460,6 +476,9 @@ impl CtxItem {
             CtxItem::StopCoprocess => format!("{CTX_ID}stopcoprocess"),
             CtxItem::ToggleBroadcast => format!("{CTX_ID}togglebroadcast"),
             CtxItem::SwapPane => format!("{CTX_ID}swappane"),
+            CtxItem::LockPane(_) => format!("{CTX_ID}lockpane"),
+            CtxItem::LockAll => format!("{CTX_ID}lockall"),
+            CtxItem::UnlockAll => format!("{CTX_ID}unlockall"),
             CtxItem::Provider(id) => format!("{CTX_ID}provider.{id}"),
             CtxItem::Command(id, _) => format!("{CTX_ID}cmd.{id}"),
         }

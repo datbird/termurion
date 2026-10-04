@@ -12,24 +12,36 @@ pub enum Kind {
     Window,
 }
 
-/// What the question's body names (iTerm2's iTermCloseSubject, without pinned tabs and
-/// locked sessions, which Tandem does not have).
+/// What the question's body names (iTerm2's iTermCloseSubject, without pinned tabs, which
+/// ask through their own reason).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Subject {
     Session,
     Tab,
     MultiPaneTab,
     Window,
+    LockedSession,
+    TabLocked,
+    MultiPaneTabLocked,
+    WindowLocked,
 }
 
-pub fn subject(kind: Kind, panes: usize) -> Subject {
-    match kind {
-        Kind::Session => Subject::Session,
-        Kind::Tab if panes > 1 => Subject::MultiPaneTab,
-        Kind::Tab => Subject::Tab,
-        Kind::Window => Subject::Window,
+/// `any_locked`: a pane among those closing is locked (`PT:2165-2310`).
+pub fn subject(kind: Kind, panes: usize, any_locked: bool) -> Subject {
+    match (kind, any_locked) {
+        (Kind::Session, false) => Subject::Session,
+        (Kind::Session, true) => Subject::LockedSession,
+        (Kind::Tab, false) if panes > 1 => Subject::MultiPaneTab,
+        (Kind::Tab, false) => Subject::Tab,
+        (Kind::Tab, true) if panes > 1 => Subject::MultiPaneTabLocked,
+        (Kind::Tab, true) => Subject::TabLocked,
+        (Kind::Window, false) => Subject::Window,
+        (Kind::Window, true) => Subject::WindowLocked,
     }
 }
+
+/// A locked pane's reason to ask before closing (`iTermPromptOnCloseReason.m:237-239`).
+pub const LOCKED_REASON: &str = "This pane is locked.";
 
 /// Whether a close asks first. `running` counts sessions whose shell has not exited;
 /// `has_reason` is a Prompt Before Closing reason; `confirm_multiple` is OnlyWhenMoreTabs.
@@ -64,6 +76,10 @@ pub fn body(subject: Subject, names: &[String]) -> String {
         Subject::Tab => "This tab",
         Subject::MultiPaneTab => "This multi-pane tab",
         Subject::Window => "This window",
+        Subject::LockedSession => "This locked session",
+        Subject::TabLocked => "This tab (with a locked session)",
+        Subject::MultiPaneTabLocked => "This multi-pane tab (with locked sessions)",
+        Subject::WindowLocked => "This window (with locked sessions)",
     };
     match names.len() {
         0 => format!("{what} will be closed."),
@@ -124,7 +140,9 @@ const PROFILE_FOOTER: &str = "You can change this setting in Settings > Profiles
 
 /// A Prompt Before Closing reason's kind and priority, from its text.
 fn profile_reason(text: &str) -> Reason {
-    if text.ends_with("always requires confirmation.") {
+    if text == LOCKED_REASON {
+        Reason { priority: 75, kind: ReasonKind::Message, text: text.into() }
+    } else if text.ends_with("always requires confirmation.") {
         Reason { priority: 50, kind: ReasonKind::Always, text: text.into() }
     } else if text.starts_with("A session with profile") {
         Reason { priority: 25, kind: ReasonKind::Blocked, text: text.into() }
@@ -234,8 +252,8 @@ mod tests {
         assert!(!must_ask(Kind::Session, 3, false, true), "a session asks only for a reason");
         assert!(must_ask(Kind::Session, 1, true, false));
         assert!(must_ask(Kind::Window, 2, false, true));
-        assert_eq!(subject(Kind::Tab, 3), Subject::MultiPaneTab);
-        assert_eq!(subject(Kind::Tab, 1), Subject::Tab);
+        assert_eq!(subject(Kind::Tab, 3, false), Subject::MultiPaneTab);
+        assert_eq!(subject(Kind::Tab, 1, false), Subject::Tab);
     }
 
     #[test]
@@ -267,5 +285,23 @@ mod tests {
     fn notes_follow_the_body() {
         assert_eq!(with_notes("This tab will be closed.".into(), &[]), "This tab will be closed.");
         assert_eq!(with_notes("This tab will be closed.".into(), &["Tandem could not read the programs (x).".into()]), "This tab will be closed.\n\nTandem could not read the programs (x).");
+    }
+
+    #[test]
+    fn lock_texts_follow_iterm2() {
+        assert_eq!(subject(Kind::Session, 1, true), Subject::LockedSession);
+        assert_eq!(subject(Kind::Tab, 1, true), Subject::TabLocked);
+        assert_eq!(subject(Kind::Tab, 3, true), Subject::MultiPaneTabLocked);
+        assert_eq!(subject(Kind::Window, 4, true), Subject::WindowLocked);
+        assert_eq!(subject(Kind::Session, 1, false), Subject::Session);
+        assert_eq!(subject(Kind::Tab, 3, false), Subject::MultiPaneTab);
+        assert_eq!(subject(Kind::Window, 4, false), Subject::Window);
+        assert_eq!(body(Subject::LockedSession, &[]), "This locked session will be closed.");
+        assert_eq!(body(Subject::LockedSession, &n(&["vim"])), "This locked session is running vim.");
+        assert_eq!(body(Subject::TabLocked, &n(&["vim"])), "This tab (with a locked session) is running vim.");
+        assert_eq!(body(Subject::MultiPaneTabLocked, &n(&["a", "b"])), "This multi-pane tab (with locked sessions) is running the following jobs: a and b.");
+        assert_eq!(body(Subject::WindowLocked, &[]), "This window (with locked sessions) will be closed.");
+        let r = quit_reasons(&[LOCKED_REASON.to_string()], 1, 1, QuitPrefs { prompt_on_quit: false, even_if_no_windows: false, confirm_multiple: false }, false);
+        assert_eq!(r, vec![Reason { priority: 75, kind: ReasonKind::Message, text: "This pane is locked.".into() }]);
     }
 }

@@ -165,7 +165,7 @@ impl App {
                 custom_text: &custom_text,
                 bar_bg,
                 legibility,
-                locked: false,
+                locked: p.locked,
                 transparency_alpha: alphas.iter().find(|(a, _)| *a == id).map_or(1.0, |(_, a)| *a),
             };
             // P11: the Minimal theme's background alpha (`transparencyAlpha`, `iTermTheme.m:322-353`)
@@ -232,8 +232,7 @@ impl App {
                 }
             }
             TitleAction::Menu => self.show_context_menu_at(Some((pane, None))),
-            // 13i's `toggle_pane_lock` goes here; until it lands the lock mark is never drawn.
-            TitleAction::ToggleLock => {}
+            TitleAction::ToggleLock => self.toggle_pane_lock(pane),
             TitleAction::Maximize | TitleAction::Focus => {}
         }
         self.redraw();

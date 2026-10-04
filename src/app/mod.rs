@@ -119,6 +119,7 @@ mod bury_ui;
 mod statusbar_ui;
 mod pane_title_ui;
 mod pane_move_ui;
+mod pane_lock_ui;
 mod statusbar_content;
 mod metrics_ui;
 mod git_ui;
@@ -3027,6 +3028,9 @@ impl App {
         // The session keeps its chat reference across a restart (`PTYSession.m:2403-2420`).
         let reference = self.panes.get(&id).map(|p| p.session_guid.clone());
         let stable = self.panes.get(&id).map(|p| p.stable_id.clone());
+        // Restart Session keeps the lock and the last-use stamp (B5); the new pane would otherwise
+        // read Default Pane Locked.
+        let (locked, activity) = self.panes.get(&id).map_or((false, 0), |p| (p.locked, p.activity));
         // The new shell never saw what a model typed into the old one.
         self.orch_held.remove(&id);
         if let Some(old) = self.panes.remove(&id) {
@@ -3040,6 +3044,10 @@ impl App {
         // Its inline files went with its screen.
         self.close_inline_questions_of(id);
         if self.start_pane_as(id, rect, guid.as_deref()) {
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.locked = locked;
+                p.activity = activity;
+            }
             if let (Some(reference), Some(p)) = (reference.clone(), self.panes.get_mut(&id)) {
                 p.keep_reference(&reference);
             }
@@ -3251,6 +3259,7 @@ impl App {
             }
         }
         self.panes.insert(id, pane);
+        self.apply_new_pane_defaults(id);
     }
 
     /// Instant Replay: every pane, background tabs and tmux panes included, records a frame

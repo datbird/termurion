@@ -146,6 +146,8 @@ impl App {
             t.insert(key.into(), Value::String(text));
         }
         if let Some(t) = v.as_table_mut() {
+            // PS:1920: every session saves its lock.
+            t.insert("Locked".into(), Value::Boolean(p.locked));
             t.extend(self.clippings_table(id));
             t.extend(self.inline_table(id));
             // Session restoration keeps the pane's chat reference, so a chat's link survives a
@@ -569,6 +571,10 @@ impl App {
                         p.keep_reference(&guid);
                     }
                     self.adopt_stable_id(id, &session, launch);
+                    // PS:7325: the saved lock overrides Default Pane Locked.
+                    if let (Some(locked), Some(p)) = (session.get("Locked").and_then(|v| v.as_bool()), self.panes.get_mut(&id)) {
+                        p.locked = locked;
+                    }
                     if launched {
                         self.restore_ssh_session(id, &session);
                     } else {
