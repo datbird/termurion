@@ -8,8 +8,8 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 190 | 108 | 16 |
 | `02-global-settings.md` | 820 | 439 | 73 | 308 |
-| `03-features-and-menus.md` | 646 | 544 | 45 | 57 |
-| Total | 1,780 | 1,173 | 226 | 381 |
+| `03-features-and-menus.md` | 646 | 549 | 45 | 52 |
+| Total | 1,780 | 1,178 | 226 | 376 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -320,6 +320,32 @@ available on Windows (ruling 7): the 4096 bit draws nothing. The chat icon waits
 SVG rasterizing (ruling 11). The tables count have, partial and missing rows; n/a rows (02: 3, 03: 1)
 are left out of them. Every kept quirk is listed in `docs/acceptance/m12e-checklist.md` and ruled on
 in `docs/superpowers/rulings/m12e-rulings.txt`; 12c's and 12d's checklists are run with this window.
+Milestone 12f built the Cockpit and the Claude Code integration, and gave AI chats orchestration mode
+(03: Install, Reinstall and Uninstall Claude Code Integration, Window > Cockpit and the Orchestration
+mode row, 5 rows to have; OSC 21337, Toolbelt > Session Status and Window > Notify on Status Change
+noted; 02: the orchestration prompt noted). Window > Cockpit (Alt+Win+Shift+C) is one always-on-top
+egui panel, hidden while another app is in front, that lists every session of every window and the
+buried ones by Status or by Window (Workgroup stays empty until milestone 13), with a filter bar,
+search, a bell on a session or a window, and a command bar that types once into the selected rows or
+`@` chips (Shift+Enter; `@all`, `@working`, `@waiting`, `@idle`; it types into buried sessions as
+iTerm2 does). Sessions carry lasting stable ids (`ptys_...`, restored only at launch restoration).
+`cc-status.exe`, a console program beside tandem.exe, turns Claude Code's ten hook events into the
+session's tab status (working orange, waiting blue, idle green) through the Python API with the
+session's cookie, and `set_status` keeps `background_tasks`. The setup writes the hooks into
+`settings.json` without touching other settings (an unparsable or unreadable file is refused, a backup
+is kept, the write is atomic); setCookie turns on only when the person answers its own question;
+npm and WSL Claude Code sessions are not detected. In an AI chat the model can ask to switch
+orchestration on (only the person's press does it), then drives sessions through 14 of iTerm2's 16
+tools and 23 `session_*` mirrors: a session needs a claim (an `@` pick in the chat input grants one),
+every keystroke goes through one typed-text gate that classifies a staged or split command as one
+line, typing reaches only live, visible, non-secret panes, the safety check always runs, and watchers
+and timers die with the chat's turn and with the launch. notify and request_notification_permission
+are n/a (iPhone companion). Milestone 13's Workgroups sub-part
+(`docs/superpowers/plans/2026-10-15-m13y1-workgroups.md`) owns start_code_review, the Workgroup
+grouping, workgroup peers, role prefixes, the setup's workgroup and trigger steps, the browser
+mirrors, `ai.default_code_review_prompt` and `ai.saved_prompt_names`. Nothing of 12f was checked on
+screen during the build. Every kept quirk is listed in `docs/acceptance/m12f-checklist.md` and ruled on
+in `docs/superpowers/rulings/m12f-rulings.txt`.
 Milestone 13a built Settings > Advanced as iTerm2's pane (02): the rows under iTerm2's 19
 categories in Finder order with bold, pinned headers; a search that matches every typed word in a
 row's description or category; "Show only non-default values", which keeps the row being edited
