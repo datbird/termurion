@@ -243,6 +243,7 @@ pub mod ssh_hook;
 pub mod ssh_args;
 pub mod ssh_inject;
 pub mod ssh_files;
+pub mod remote_file;
 pub mod conductor;
 pub mod framer_script;
 pub mod conductor_framer;
