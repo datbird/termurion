@@ -132,6 +132,13 @@ pub fn follows(space: i64) -> bool {
     space == -1
 }
 
+/// Whether a profile's Space applies to a window: a hotkey window only follows All Desktops
+/// (iTerm2 never switches a hotkey window's desktop), so a numbered Space does nothing for it,
+/// not even the missing-desktop notice.
+pub fn space_applies(hotkey: bool, space: i64) -> bool {
+    space != 0 && (!hotkey || follows(space))
+}
+
 /// The switch failed when the window is still not on the current desktop; an unreadable
 /// answer is not counted.
 pub fn switch_failed(on_current: Option<bool>) -> bool {
@@ -345,5 +352,13 @@ mod tests {
         };
         assert_eq!(m.window_desktop(0), None);
         eprintln!("desktops listed: {}", m.list().len());
+    }
+
+    #[test]
+    fn hotkey_windows_skip_numbered_spaces() {
+        assert!(space_applies(false, 3));
+        assert!(space_applies(true, -1));
+        assert!(!space_applies(true, 3));
+        assert!(!space_applies(false, 0));
     }
 }

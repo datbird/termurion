@@ -199,6 +199,32 @@ pub fn move_to(r: Rect, from: Rect, to: Rect) -> Rect {
     clamp_to_monitors(Rect { x: to.x + (r.x - from.x), y: to.y + (r.y - from.y), ..r }, &[to])
 }
 
+/// After a display change a hotkey window is re-framed by its style when it stayed on its
+/// screen (`moved` false): the screen's size may have changed (`PT:5176-5190`).
+pub fn reframe_hotkey(style: i64, moved: bool) -> bool {
+    !moved && style != crate::frames::NORMAL
+}
+
+/// Where a chased window goes (`PT:5128`: a move to another screen canonicalizes again):
+/// `refit` is true when the style's frame must be applied after the move (edge, maximized).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Chased {
+    pub frame: Rect,
+    pub refit: bool,
+}
+
+/// The frame a window anchored to `to` takes, moved from `from`: a window whose style fits the
+/// screen starts at the new screen's corner at no more than its size (the style then frames it
+/// there), a centered one is centered, any other keeps its offset, clamped.
+pub fn chase_frame(style: i64, outer: Rect, from: Rect, to: Rect) -> Chased {
+    use crate::frames::{self, Refit};
+    match frames::refit(style) {
+        Refit::Fit => Chased { frame: Rect { x: to.x, y: to.y, w: outer.w.min(to.w), h: outer.h.min(to.h) }, refit: true },
+        Refit::Recenter => Chased { frame: frames::recenter(outer, to), refit: false },
+        Refit::Keep => Chased { frame: move_to(outer, from, to), refit: false },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,5 +359,28 @@ mod tests {
         assert_eq!(display_delay(0.25), Duration::from_millis(250));
         assert_eq!(display_delay(-3.0), Duration::ZERO);
         assert_eq!(display_delay(f64::NAN), Duration::from_secs(1));
+    }
+
+    /// Review of 13e: a hotkey window re-frames after a screen size change; a chase re-fits edge windows.
+    #[test]
+    fn display_refit_follows_iterm2() {
+        use crate::frames::{CENTERED, MAXIMIZED, NORMAL, TOP_PERCENT};
+        assert!(reframe_hotkey(TOP_PERCENT, false));
+        assert!(!reframe_hotkey(TOP_PERCENT, true), "a move already applied the style");
+        assert!(!reframe_hotkey(NORMAL, false));
+        let from = Rect { x: 0.0, y: 0.0, w: 1000.0, h: 800.0 };
+        let to = Rect { x: 1000.0, y: 0.0, w: 1200.0, h: 900.0 };
+        let outer = Rect { x: 100.0, y: 50.0, w: 600.0, h: 400.0 };
+        let fit = chase_frame(MAXIMIZED, outer, from, to);
+        assert!(fit.refit);
+        assert_eq!((fit.frame.x, fit.frame.y), (1000.0, 0.0));
+        let edge = chase_frame(TOP_PERCENT, outer, from, to);
+        assert!(edge.refit);
+        let centered = chase_frame(CENTERED, outer, from, to);
+        assert!(!centered.refit);
+        assert_eq!(centered.frame, Rect { x: 1300.0, y: 250.0, w: 600.0, h: 400.0 });
+        let normal = chase_frame(NORMAL, outer, from, to);
+        assert!(!normal.refit);
+        assert_eq!(normal.frame, Rect { x: 1100.0, y: 50.0, w: 600.0, h: 400.0 });
     }
 }

@@ -43,7 +43,7 @@ impl App {
     /// notifies once per run. Nothing happens without a desktop manager (P7).
     pub(super) fn apply_space(&mut self, space: i64) {
         use crate::desktops::{space_target, Target};
-        if space == 0 || self.desktops().is_none() {
+        if !crate::desktops::space_applies(self.hotkey.is_some(), space) || self.desktops().is_none() {
             return;
         }
         let list = self.desktops.as_ref().map(|m| m.list()).unwrap_or_default();

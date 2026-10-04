@@ -321,10 +321,11 @@ impl App {
 
     /// Moves the current window onto its profile's Screen (-1: the one with the pointer) and
     /// frames it there by its style.
-    pub(super) fn move_to_preferred_screen(&mut self, guid: &str) {
+    /// True when the window was moved (and so framed by its style).
+    pub(super) fn move_to_preferred_screen(&mut self, guid: &str) -> bool {
         use crate::placement;
         let monitors: Vec<Rect> = placement::primary_first(super::requests_ui::work_areas().into_iter().map(|(x, y, w, h)| Rect { x: x as f32, y: y as f32, w: w as f32, h: h as f32 }).collect());
-        let Some(g) = &self.gpu else { return };
+        let Some(g) = &self.gpu else { return false };
         let r = Self::outer_rect(g);
         let inside = |m: &Rect, x: f32, y: f32| x >= m.x && x < m.x + m.w && y >= m.y && y < m.y + m.h;
         let window_monitor = monitors.iter().position(|m| inside(m, r.x + r.w / 2.0, r.y + r.h / 2.0)).unwrap_or(0);
@@ -333,13 +334,14 @@ impl App {
         let pref = self.store.get(guid).and_then(|p| p.get("Screen")).and_then(|v| v.as_integer()).unwrap_or(-1);
         let work = placement::screen_for(pref, &monitors, window_monitor, cursor_monitor);
         if inside(&work, r.x + r.w / 2.0, r.y + r.h / 2.0) {
-            return;
+            return false;
         }
         g.window.set_outer_position(winit::dpi::PhysicalPosition::new(work.x.round() as i32, work.y.round() as i32));
         let style = self.win_style;
         if style != crate::frames::NORMAL {
             self.apply_window_style(style, false);
         }
+        true
     }
 
     /// The hidden origin to slide from or to, or None to show and hide at once.

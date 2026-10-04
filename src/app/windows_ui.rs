@@ -1381,7 +1381,12 @@ impl App {
             if let Some(h) = self.hotkey.as_ref() {
                 // A hotkey window is framed by its own style on its profile's screen.
                 let guid = h.guid.clone();
-                self.move_to_preferred_screen(&guid);
+                let moved = self.move_to_preferred_screen(&guid);
+                // Staying on its screen, its screen may still have changed size.
+                let style = self.win_style;
+                if placement::reframe_hotkey(style, moved) {
+                    self.apply_window_style(style, false);
+                }
             } else {
                 match frames::refit(self.win_style) {
                     Refit::Keep => {}
@@ -1407,8 +1412,18 @@ impl App {
                     let inside = |r: &R, x: f32, y: f32| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
                     let at = monitors.iter().position(|m| inside(m, outer.x + outer.w / 2.0, outer.y + outer.h / 2.0)).unwrap_or(0);
                     if let (Some(i), Some(from)) = (placement::chase(self.win_anchor, monitors.len(), at), monitors.get(at).copied()) {
-                        let r = placement::move_to(outer, from, monitors[i]);
-                        g.window.set_outer_position(PhysicalPosition::new(r.x.round() as i32, r.y.round() as i32));
+                        let chased = placement::chase_frame(self.win_style, outer, from, monitors[i]);
+                        let w = g.window.clone();
+                        // A maximized window is not moved by position: restore it first.
+                        if chased.refit && w.is_maximized() {
+                            w.set_maximized(false);
+                        }
+                        w.set_outer_position(PhysicalPosition::new(chased.frame.x.round() as i32, chased.frame.y.round() as i32));
+                        // The move canonicalizes again (`PT:5128`): the style frames it on the new screen.
+                        if chased.refit {
+                            let style = self.win_style;
+                            self.apply_window_style(style, false);
+                        }
                     }
                 }
             }

@@ -352,6 +352,10 @@ impl App {
         self.theme_applied = None;
         self.install_sizing();
         self.guard_theme();
+        // The display change subclass (the old handle's goes with its window).
+        if let Some(h) = menu::hwnd_of(&window) {
+            crate::display_watch::watch(h);
+        }
         self.refresh_caption_frame();
         self.apply_corners();
         self.font_sig = String::new();
@@ -427,4 +431,17 @@ fn make_alpha_gpu(event_loop: &ActiveEventLoop, window: &Arc<Window>) -> Result<
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| e.to_string())?;
     Ok(GpuHandles { instance, adapter, device, queue })
+}
+
+#[cfg(test)]
+mod watch_tests {
+    /// A window recreated for alpha gets display change notifications like every other window
+    /// (review of 13e): the recreate installs the subclass on the new handle.
+    #[test]
+    fn recreate_watches_the_new_window() {
+        let src = include_str!("transparency_ui.rs");
+        let body = src.split("fn recreate_window_for_alpha").nth(1).expect("recreate_window_for_alpha");
+        let body = body.split("\n    }\n").next().unwrap();
+        assert!(body.contains("display_watch::watch"), "the new HWND must be watched");
+    }
 }
