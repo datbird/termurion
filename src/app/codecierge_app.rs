@@ -184,7 +184,9 @@ impl App {
             Finished::Canceled => {}
             Finished::Choice(text) => {
                 if let Some((user, _)) = sent {
-                    s.messages.push(Message::text(Role::User, &user));
+                    if !user.is_empty() {
+                        s.messages.push(Message::text(Role::User, &user));
+                    }
                     s.messages.push(Message::text(Role::Assistant, &text));
                 }
                 show(s, &text);
@@ -205,7 +207,14 @@ impl App {
     /// The model called a function of run `id` (`CG:80-146`). Nothing at all happens for a call
     /// that `invoke_plan` drops: after End Task, Stop or a closed gate, or for a run that is no
     /// longer the session's request (ruling R12e-3).
-    pub(super) fn codecierge_invoke(&mut self, guid: &str, id: u64, name: &str, arguments: &str) {
+    pub(super) fn codecierge_invoke(&mut self, guid: &str, id: u64, call: crate::ai_msg::Message) {
+        let (name, arguments) = call.function_call().map(|(c, _)| (c.name.clone().unwrap_or_default(), c.arguments.clone().unwrap_or_default())).unwrap_or_default();
+        let (name, arguments) = (name.as_str(), arguments.as_str());
+        if let Some(s) = self.codecierge.get_mut(guid) {
+            if s.request == Some(id) {
+                s.call = Some(call);
+            }
+        }
         let Some(s) = self.codecierge.get(guid) else { return };
         let (open, _) = self.codecierge_gate();
         let Some(pane) = pane_for_ref(&self.panes, guid) else {
@@ -223,7 +232,7 @@ impl App {
         let plan = cc::invoke_plan(s, id, open, name, arguments, shell, local, cwd.as_deref(), &crate::profile::home());
         match plan {
             Invoke::Drop => {}
-            Invoke::Answer(text) => self.ai_run_tool_done(id, ToolResult::Failed(text)),
+            Invoke::Answer(text) => self.codecierge_answer_now(guid, id, ToolResult::Failed(text)),
             Invoke::Type(parts) => {
                 let command = argument(arguments, "command").unwrap_or_default();
                 self.codecierge_note(guid, &cc::running(&command));
@@ -235,14 +244,14 @@ impl App {
             Invoke::Write(plan) => {
                 let filename = argument(arguments, "filename").unwrap_or_default();
                 match plan {
-                    WritePlan::Refuse(text) => self.ai_run_tool_done(id, ToolResult::Failed(text)),
+                    WritePlan::Refuse(text) => self.codecierge_answer_now(guid, id, ToolResult::Failed(text)),
                     WritePlan::Direct { cwd, relative, contents } => {
                         self.codecierge_note(guid, &cc::writing(&filename));
                         let result = match cc::write_direct(&cwd, &relative, &contents) {
                             Ok(()) => ToolResult::Ok("Done".to_string()),
                             Err(text) => ToolResult::Failed(text),
                         };
-                        self.ai_run_tool_done(id, result);
+                        self.codecierge_answer_now(guid, id, result);
                     }
                     WritePlan::Typed(parts) => {
                         self.codecierge_note(guid, &cc::writing(&filename));
@@ -254,6 +263,17 @@ impl App {
                 }
             }
         }
+    }
+
+    /// A call answered at once: the exchange joins the conversation, then the answer goes.
+    fn codecierge_answer_now(&mut self, guid: &str, id: u64, result: ToolResult) {
+        let text = match &result {
+            ToolResult::Ok(t) | ToolResult::Failed(t) | ToolResult::Canceled(t) => t.clone(),
+        };
+        if let Some(s) = self.codecierge.get_mut(guid) {
+            s.answer_call(&text);
+        }
+        self.ai_run_tool_done(id, result);
     }
 
     /// Text the transcript gains as an appended section.
@@ -310,14 +330,9 @@ impl App {
         match s.pending.take() {
             Some((id, _)) => {
                 // The call's answer is the feed, or "Done" for a typed write.
-                if s.pending_done {
-                    answer = Some((id, "Done".to_string()));
-                } else {
-                    if let Some((prev, _)) = s.sent.replace((text.clone(), false)) {
-                        s.messages.push(Message::text(Role::User, &prev));
-                    }
-                    answer = Some((id, text));
-                }
+                let text = if s.pending_done { "Done".to_string() } else { text };
+                s.answer_call(&text);
+                answer = Some((id, text));
                 s.pending_done = false;
             }
             None => s.queue.push_back((text, false)),

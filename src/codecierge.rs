@@ -96,6 +96,9 @@ pub struct Session {
     pub pending_done: bool,
     /// The text the run in flight answers and whether its answer appends.
     pub sent: Option<(String, bool)>,
+    /// The model's own function call, kept until it is answered so the conversation keeps call
+    /// then result in order, as iTerm2's `AIConversation` does.
+    pub call: Option<crate::ai_msg::Message>,
 }
 
 /// The goal, the transcript and the reply are what the person and the model said: never printed.
@@ -121,7 +124,7 @@ impl std::fmt::Debug for Session {
 
 impl Session {
     pub fn new(guid: &str, allowed: bool, has_key: bool) -> Session {
-        Session { guid: guid.to_string(), stage: initial_stage(allowed, has_key), goal: String::new(), auto: true, auto_box: false, transcript: String::new(), busy: false, commands: 0, reply: String::new(), messages: Vec::new(), queue: std::collections::VecDeque::new(), request: None, pending: None, pending_done: false, sent: None }
+        Session { guid: guid.to_string(), stage: initial_stage(allowed, has_key), goal: String::new(), auto: true, auto_box: false, transcript: String::new(), busy: false, commands: 0, reply: String::new(), messages: Vec::new(), queue: std::collections::VecDeque::new(), request: None, pending: None, pending_done: false, sent: None, call: None }
     }
 }
 
@@ -373,12 +376,39 @@ pub struct Stopped {
 }
 
 impl Session {
+    /// A pending call is answered with `text` (a feed, "Done" or a refusal): the exchange that
+    /// led to it, the model's call and the result join the conversation in that order, and the
+    /// final answer keeps the request's own append flag (`ToolCodecierge.swift`: the answer goes
+    /// to the closure of the request that started the call).
+    pub fn answer_call(&mut self, text: &str) {
+        let append = self.sent.as_ref().is_some_and(|(_, a)| *a);
+        if let Some((prev, _)) = self.sent.take() {
+            if !prev.is_empty() {
+                self.messages.push(crate::ai_msg::Message::text(crate::ai_msg::Role::User, &prev));
+            }
+        }
+        if let Some(call) = self.call.take() {
+            use crate::ai_msg::{Body, Message, Role};
+            let (name, id) = match &call.body {
+                Body::FunctionCall(c, id) => (c.name.clone().unwrap_or_default(), id.clone().or_else(|| c.id.clone().map(|i| crate::ai_msg::CallId { call_id: i.clone(), item_id: i }))),
+                _ => (String::new(), None),
+            };
+            self.messages.push(call);
+            self.messages.push(Message::new(Some(Role::Function), Body::FunctionOutput { name, output: text.to_string(), id }));
+            // The result is in the conversation already: nothing more to add as a user text.
+            self.sent = Some((String::new(), append));
+        } else {
+            self.sent = Some((text.to_string(), append));
+        }
+    }
+
     /// Ends the conversation's work (ruling R12e-3): the run in flight, the pending call and the
     /// queue are taken, the session is idle and in stage `to`.
     pub fn stop(&mut self, to: Stage) -> Stopped {
         let stopped = Stopped { cancel: self.request.take(), answer: self.pending.take() };
         self.pending_done = false;
         self.sent = None;
+        self.call = None;
         self.queue.clear();
         self.busy = false;
         self.stage = to;
@@ -1125,5 +1155,24 @@ mod tests {
         assert_eq!(RESPONSE_PLACEHOLDER, "Response");
         assert_eq!((GET_STARTED, REVEAL_SETTING, THINKING), ("Get Started", "Reveal Setting", "Thinking\u{2026}"));
         assert_eq!((MIN_HEIGHT, BUSY_ALPHA), (130.0, 0.75));
+    }
+
+    /// Task 7 fix: a feed that answers a reply's `execute` keeps the reply's append flag, and
+    /// later requests carry the model's call then its result.
+    #[test]
+    fn a_feed_answer_keeps_the_append_flag_and_the_call() {
+        use crate::ai_msg::{Body, CallId, FunctionCall, Message, Role};
+        for append in [true, false] {
+            let mut s = running_session(Some(7));
+            s.sent = Some(("why?".into(), append));
+            let id = CallId { call_id: "c1".into(), item_id: "i1".into() };
+            s.call = Some(Message::new(Some(Role::Assistant), Body::FunctionCall(FunctionCall { name: Some("execute".into()), arguments: Some("{}".into()), ..Default::default() }, Some(id.clone()))));
+            s.answer_call("feed");
+            assert_eq!(s.sent, Some((String::new(), append)), "the answer keeps the request's own flag");
+            let tail: Vec<&Message> = s.messages.iter().rev().take(3).collect();
+            assert_eq!(tail[2], &Message::text(Role::User, "why?"));
+            assert!(tail[1].function_call().is_some(), "the call comes before its result");
+            assert_eq!(tail[0].body, Body::FunctionOutput { name: "execute".into(), output: "feed".into(), id: Some(id) });
+        }
     }
 }

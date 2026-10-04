@@ -314,9 +314,9 @@ impl App {
                 self.ask_ai_key(vendor, Some(&endpoint), KeyThen::Run(id));
             }
             // A tool call comes only from a run that offers tools: Codecierge's.
-            if let Out::Invoke { call, .. } = out {
+            if let Out::Invoke { call, id: call_id } = out {
                 if let Owner::Codecierge(guid) = owner {
-                    self.codecierge_invoke(&guid, id, &call.name.unwrap_or_default(), &call.arguments.unwrap_or_default());
+                    self.codecierge_invoke(&guid, id, crate::ai_msg::Message::new(Some(crate::ai_msg::Role::Assistant), crate::ai_msg::Body::FunctionCall(call, call_id)));
                 }
             }
         }
