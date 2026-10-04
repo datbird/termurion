@@ -22,17 +22,33 @@ pub fn reading_order(rects: &[(PaneId, Rect)], side_by_side_root: bool) -> Vec<P
             a1.partial_cmp(&b1).unwrap_or(Ordering::Equal)
         }
     };
-    // iTerm2's comparator is not transitive (within 1 chains), and the std
-    // sorts may panic on that, so use a stable insertion sort.
-    let mut out: Vec<(PaneId, Rect)> = Vec::with_capacity(rects.len());
-    for item in rects {
-        let mut at = out.len();
-        while at > 0 && cmp(&out[at - 1].1, &item.1) == Ordering::Greater {
-            at -= 1;
+    // iTerm2 sorts with Foundation's stable merge sort (`sortedArrayUsingComparator:`). The
+    // comparator is not transitive (within 1 chains), so this is a hand-written top-down
+    // merge sort (split at n/2, the left element wins ties): it never panics, as the std
+    // sorts may, and matches that shape. Foundation's exact algorithm was not confirmed
+    // locally.
+    fn merge_sort(items: &[(PaneId, Rect)], cmp: &dyn Fn(&Rect, &Rect) -> Ordering) -> Vec<(PaneId, Rect)> {
+        if items.len() < 2 {
+            return items.to_vec();
         }
-        out.insert(at, *item);
+        let (l, r) = items.split_at(items.len() / 2);
+        let (l, r) = (merge_sort(l, cmp), merge_sort(r, cmp));
+        let mut out = Vec::with_capacity(items.len());
+        let (mut i, mut j) = (0, 0);
+        while i < l.len() && j < r.len() {
+            if cmp(&l[i].1, &r[j].1) == Ordering::Greater {
+                out.push(r[j]);
+                j += 1;
+            } else {
+                out.push(l[i]);
+                i += 1;
+            }
+        }
+        out.extend_from_slice(&l[i..]);
+        out.extend_from_slice(&r[j..]);
+        out
     }
-    out.into_iter().map(|(id, _)| id).collect()
+    merge_sort(rects, &cmp).into_iter().map(|(id, _)| id).collect()
 }
 
 /// Panes by ascending activity stamp (last use); ties keep input order.
@@ -152,5 +168,14 @@ mod tests {
         let three: Vec<PaneId> = (1..=3).collect();
         assert_eq!(by_number(&three, 5), None);
         assert_eq!(by_number(&three, 9), Some(3));
+    }
+
+    #[test]
+    fn reading_order_is_a_top_down_merge_sort() {
+        // y 0, 0.9, 1.8 chain within 1 but A and C differ: the comparator is not transitive.
+        // A top-down merge sort (split at n/2, left wins ties) gives A, C, B; an insertion
+        // sort would give B, A, C.
+        let rects = [(1, r(5.0, 0.0, 10.0, 10.0)), (2, r(3.0, 0.9, 10.0, 10.0)), (3, r(1.0, 1.8, 10.0, 10.0))];
+        assert_eq!(reading_order(&rects, false), vec![1, 3, 2]);
     }
 }
