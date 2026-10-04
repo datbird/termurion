@@ -227,8 +227,6 @@ pub struct CockpitWindow {
     shown_at: Option<Instant>,
     /// The frame last reported, so a redraw reports only a real move or resize.
     reported: Frame,
-    /// The command bar's text.
-    command: String,
     /// When the list was last drawn: it is rebuilt every `REFRESH` while the window shows.
     painted: Instant,
     /// The query the picker was last opened for, so it is rebuilt only when the query changes.
@@ -238,15 +236,16 @@ pub struct CockpitWindow {
 }
 
 /// The picker's choice becomes a chip and the typed "@query" leaves the text.
-fn commit(view: &mut View, command: &mut String) {
-    let Some(chip) = view.picker.as_ref().and_then(|p| p.current()).map(|i| i.chip.clone()) else { return };
-    if let Some(rest) = mention::remove_target(command) {
-        *command = rest;
+fn commit(view: &mut View) -> Option<mention::Chip> {
+    let chip = view.picker.as_ref().and_then(|p| p.current()).map(|i| i.chip.clone())?;
+    if let Some(rest) = mention::remove_target(&view.text) {
+        view.text = rest;
     }
     if !view.chips.contains(&chip) {
-        view.chips.push(chip);
+        view.chips.push(chip.clone());
     }
     view.picker = None;
+    Some(chip)
 }
 
 impl CockpitWindow {
@@ -275,7 +274,7 @@ impl CockpitWindow {
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         host.follow_theme(Some(dark));
         crate::settings_keys::add_icon_font(host.ctx());
-        Ok(CockpitWindow { host, shown: false, shown_at: None, reported: frame, command: String::new(), painted: Instant::now(), last_query: None, dismissed: None })
+        Ok(CockpitWindow { host, shown: false, shown_at: None, reported: frame, painted: Instant::now(), last_query: None, dismissed: None })
     }
 
     pub fn id(&self) -> WindowId {
@@ -367,7 +366,7 @@ impl CockpitWindow {
         let mut acts = Vec::new();
         let now = Instant::now();
         self.painted = now;
-        let Self { host, command, last_query, dismissed, .. } = self;
+        let Self { host, last_query, dismissed, .. } = self;
         host.paint(|ui| {
             // Ctrl+W closes, as every other egui window of Tandem does.
             if ui.input(|i| i.key_pressed(egui::Key::W) && i.modifiers.command) {
@@ -411,12 +410,17 @@ impl CockpitWindow {
                 if !view.chips.is_empty() {
                     let shown: Vec<(mention::Chip, String)> = view.chips.iter().map(|c| (c.clone(), mention::chip_label(world, c))).collect();
                     if let Some(i) = mention_picker_ui::chip_strip(ui, &shown) {
-                        view.chips.remove(i);
+                        acts.push(Act::RemoveChip(view.chips.remove(i)));
                     }
+                }
+                // Shift+Enter sends (the minimal composer's send key), picker open or not.
+                let focused = ui.memory(|m| m.has_focus(id));
+                if focused && ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter)) {
+                    view.picker = None;
+                    acts.push(Act::Send);
                 }
                 // Keys the picker owns are taken before the editor sees them: Up and Down move, Return
                 // commits, Escape closes. With it closed Return is the editor's newline.
-                let focused = ui.memory(|m| m.has_focus(id));
                 let open = view.picker.as_ref().is_some_and(|p| !p.items.is_empty());
                 if open && focused {
                     let (up, down, enter, esc) = ui.input_mut(|i| {
@@ -431,25 +435,27 @@ impl CockpitWindow {
                         }
                     }
                     if enter {
-                        commit(view, command);
+                        if let Some(c) = commit(view) {
+                            acts.push(Act::CommitPick(c));
+                        }
                     } else if esc {
-                        *dismissed = mention::completion_target(command);
+                        *dismissed = mention::completion_target(&view.text);
                         view.picker = None;
                     }
                 }
                 // Backspace in an empty field removes the last chip.
-                if focused && command.is_empty() && !view.chips.is_empty() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)) {
-                    view.chips.pop();
+                if focused && view.text.is_empty() && !view.chips.is_empty() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)) {
+                    acts.extend(view.chips.pop().map(Act::RemoveChip));
                 }
                 let size = ui.available_size();
-                let field = egui::TextEdit::multiline(command).id(id).hint_text(cockpit::PLACEHOLDER).desired_width(f32::INFINITY).min_size(size);
+                let field = egui::TextEdit::multiline(&mut view.text).id(id).hint_text(cockpit::PLACEHOLDER).desired_width(f32::INFINITY).min_size(size);
                 let response = ui.add_sized(size, field);
                 if std::mem::take(&mut view.focus_command) {
                     ui.memory_mut(|m| m.request_focus(id));
                 }
                 // The text moves the picker: it opens under the field for the first "@" at a word
                 // start, with the query after it, and is rebuilt only when that query changes.
-                let raw = mention::completion_target(command);
+                let raw = mention::completion_target(&view.text);
                 if dismissed.as_ref() != raw.as_ref() {
                     *dismissed = None;
                 }
@@ -466,7 +472,9 @@ impl CockpitWindow {
                         if let Some(p) = view.picker.as_mut() {
                             p.selected = i;
                         }
-                        commit(view, command);
+                        if let Some(c) = commit(view) {
+                            acts.push(Act::CommitPick(c));
+                        }
                         *last_query = None;
                         ui.memory_mut(|m| m.request_focus(id));
                     }

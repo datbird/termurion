@@ -206,8 +206,22 @@ impl App {
                     _ => {}
                 },
                 Act::Search(text) => self.cockpit_view.search = text,
-                Act::Select(keys) => {
-                    self.cockpit_view.selected = keys;
+                Act::Select(keys) => self.cockpit_select(keys),
+                Act::Send => self.cockpit_send(),
+                Act::RemoveChip(chip) => {
+                    let world = self.cockpit_world();
+                    self.cockpit_view.selected = cockpit::deselect_chip(&self.cockpit_view.selected, &chip, &world);
+                    self.cockpit_redraw();
+                }
+                // A picked item chooses its row when the list shows it; the chips stay as picked.
+                Act::CommitPick(chip) => {
+                    let world = self.cockpit_world();
+                    if let Some(key) = cockpit::chip_row(&chip, &world) {
+                        let rows = self.cockpit_rows(&world);
+                        if !crate::cockpit_rows::keep_selection(std::slice::from_ref(&key), &rows).is_empty() && !self.cockpit_view.selected.contains(&key) {
+                            self.cockpit_view.selected.push(key);
+                        }
+                    }
                     self.cockpit_redraw();
                 }
                 Act::Toggle(key) => {
@@ -223,6 +237,77 @@ impl App {
                 }
             }
         }
+    }
+
+    /// The rows the list shows now (mode, search and status filter applied).
+    fn cockpit_rows(&self, world: &World) -> Vec<crate::cockpit_rows::Row> {
+        let v = &self.cockpit_view;
+        crate::cockpit_rows::build(v.mode, world, &self.status_patterns(), &v.search, v.status_filter.as_deref())
+    }
+
+    /// Chooses rows and makes their chips the command bar's targets (`CW:958-966`).
+    pub(super) fn cockpit_select(&mut self, keys: Vec<RowKey>) {
+        let world = self.cockpit_world();
+        self.cockpit_view.chips = cockpit::chips_after_send(&keys, &world);
+        self.cockpit_view.selected = keys;
+        self.cockpit_redraw();
+    }
+
+    /// The panes a chip token names: `win:` every pane of that window, `tab:` every pane of
+    /// that tab, else a session by stable id (ruling P3). The token has no "@".
+    pub(super) fn cockpit_resolve(&self, token: &str) -> Option<Vec<PaneId>> {
+        if let Some(guid) = token.strip_prefix("win:") {
+            let k = self.registry.by_guid(guid)?;
+            let (tabs, _) = self.window_tabs(k)?;
+            return Some(tabs.iter().flat_map(|t| t.layout.panes()).collect());
+        }
+        if let Some(id) = token.strip_prefix("tab:") {
+            let id: u64 = id.parse().ok()?;
+            return self.registry.order().into_iter().find_map(|k| self.window_tabs(k).and_then(|(tabs, _)| tabs.iter().find(|t| t.id == id).map(|t| t.layout.panes())));
+        }
+        self.pane_by_reference(token).map(|p| vec![p])
+    }
+
+    /// The command bar's Send. The text goes, as the person typed it, only to the panes the
+    /// person chose (chips or chosen rows) and only if live: a buried or exited pane is never
+    /// typed into (ruling P8). It is the person's own input (`SendTextLocal`, never
+    /// broadcast; ruling P17).
+    pub(super) fn cockpit_send(&mut self) {
+        let now = Instant::now();
+        self.cockpit_view.picker = None;
+        let world = self.cockpit_world();
+        let rows = self.cockpit_rows(&world);
+        let tokens: Vec<String> = self.cockpit_view.chips.iter().map(|c| format!("@{}", c.token())).collect();
+        let selected = crate::cockpit_rows::sessions_under(&rows, &self.cockpit_view.selected);
+        let shown = crate::cockpit_rows::all_sessions(&rows);
+        let state = |p: PaneId| world.session(p).map_or(crate::session_state::State::Unknown, |s| crate::session_state::keyword_state(&s.status));
+        let text = self.cockpit_view.text.clone();
+        let targets = match cockpit::plan(&tokens, &text, &selected, &shown, &state, &|t| self.cockpit_resolve(t)) {
+            Ok(None) => return,
+            Err(e) => {
+                self.cockpit_view.tip.show(&e.text(), true, now);
+                self.cockpit_redraw();
+                return;
+            }
+            Ok(Some(t)) => t,
+        };
+        let live = |p: PaneId| cockpit::typable(&world, p) && self.panes.get(&p).is_some_and(|x| x.exited.is_none()) && !self.buried.contains(p);
+        let writes = cockpit::writes(&targets, &text, &live);
+        if writes.is_empty() {
+            self.cockpit_view.tip.show(&cockpit::SendError::NoneRunning.text(), true, now);
+            self.cockpit_redraw();
+            return;
+        }
+        let n = writes.len();
+        for (pane, bytes) in writes {
+            // A pane of another window is entered first, so its broadcast domain is that window's.
+            self.enter_pane_window(pane);
+            self.user_write(pane, &bytes, crate::broadcast::Write::SendTextLocal);
+        }
+        self.cockpit_view.text.clear();
+        self.cockpit_view.chips = cockpit::chips_after_send(&self.cockpit_view.selected, &world);
+        self.cockpit_view.tip.show(&cockpit::sent_text(n), false, now);
+        self.cockpit_redraw();
     }
 
     fn cockpit_redraw(&self) {

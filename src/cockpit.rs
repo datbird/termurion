@@ -5,7 +5,9 @@
 
 use std::time::{Duration, Instant};
 
-use crate::cockpit_rows::RowKey;
+use crate::cockpit_rows::{RowKey, World};
+use crate::mention::Chip;
+use crate::session_state::State;
 use crate::inert_files::shown_name;
 use crate::layout::PaneId;
 use crate::tabstatus::{xterm_color, Status};
@@ -380,6 +382,8 @@ pub struct View {
     pub chips: Vec<crate::mention::Chip>,
     /// The `@` picker while the command text has a completion target.
     pub picker: Option<crate::mention::Picker>,
+    /// The command bar's text; only a person's Send types it (ruling P17).
+    pub text: String,
 }
 
 /// What a redraw asks the app to do (later tasks add variants).
@@ -404,6 +408,147 @@ pub enum Act {
     Jump(RowKey),
     /// The filter bar's choice (None is All).
     StatusFilter(Option<String>),
+    /// Shift+Enter in the command bar.
+    Send,
+    /// A chip was removed (its row is deselected).
+    RemoveChip(Chip),
+    /// The picker added a chip (its row is chosen when shown).
+    CommitPick(Chip),
+}
+
+/// Why a send did nothing (`CW:885-966`), in the order the checks run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SendError {
+    NothingChosen,
+    Unknown(Vec<String>),
+    NoCommand,
+    NoMatch,
+    NoneRunning,
+}
+
+impl SendError {
+    pub fn text(&self) -> String {
+        match self {
+            SendError::NothingChosen => "Type @ to pick a session, or select rows first".to_string(),
+            SendError::Unknown(tokens) => format!("Unknown target {}", tokens.join(" ")),
+            SendError::NoCommand => "Add a command after the @mention".to_string(),
+            SendError::NoMatch => "No matching sessions".to_string(),
+            SendError::NoneRunning => "No running sessions to send to".to_string(),
+        }
+    }
+}
+
+/// "Sent to <n> sessions" (iTerm2 does not singularize).
+pub fn sent_text(n: usize) -> String {
+    format!("Sent to {n} sessions")
+}
+
+fn push_new(out: &mut Vec<PaneId>, panes: impl IntoIterator<Item = PaneId>) {
+    for p in panes {
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+}
+
+/// The sessions a send reaches (`CW:885-966`). Chips are tokens with their "@"; the keywords
+/// `@all`, `@working`, `@waiting` and `@idle` (any case) range over `shown`, the rest go to
+/// `resolve` without the "@". Ok(None) is a send with nothing to do.
+pub fn plan(
+    chips: &[String],
+    text: &str,
+    selected: &[PaneId],
+    shown: &[PaneId],
+    state: &dyn Fn(PaneId) -> State,
+    resolve: &dyn Fn(&str) -> Option<Vec<PaneId>>,
+) -> Result<Option<Vec<PaneId>>, SendError> {
+    let blank = text.trim().is_empty();
+    if chips.is_empty() {
+        if blank {
+            return Ok(None);
+        }
+        if selected.is_empty() {
+            return Err(SendError::NothingChosen);
+        }
+        let mut out = Vec::new();
+        push_new(&mut out, selected.iter().copied());
+        return Ok(Some(out));
+    }
+    let mut unknown = Vec::new();
+    let mut targets = Vec::new();
+    for chip in chips {
+        let bare = chip.strip_prefix('@').unwrap_or(chip);
+        let want = match bare.to_ascii_lowercase().as_str() {
+            "all" => Some(None),
+            "working" => Some(Some(State::Working)),
+            "waiting" => Some(Some(State::Waiting)),
+            "idle" => Some(Some(State::Idle)),
+            _ => None,
+        };
+        match want {
+            Some(None) => push_new(&mut targets, shown.iter().copied()),
+            Some(Some(s)) => push_new(&mut targets, shown.iter().copied().filter(|p| state(*p) == s)),
+            None => match resolve(bare) {
+                Some(panes) => push_new(&mut targets, panes),
+                None => unknown.push(chip.clone()),
+            },
+        }
+    }
+    if !unknown.is_empty() {
+        return Err(SendError::Unknown(unknown));
+    }
+    if blank {
+        return Err(SendError::NoCommand);
+    }
+    if targets.is_empty() {
+        return Err(SendError::NoMatch);
+    }
+    Ok(Some(targets))
+}
+
+/// What is typed into each target: the text trimmed, then a CR unless it ends in CR or LF
+/// (`CW:877-883`).
+pub fn payload(text: &str) -> String {
+    let t = text.trim();
+    if t.ends_with(['\r', '\n']) {
+        t.to_string()
+    } else {
+        format!("{t}\r")
+    }
+}
+
+/// Whether the person's command may be typed into `pane`: it is in a window of the snapshot
+/// (not buried) and its program has not exited (ruling P8).
+pub fn typable(world: &World, pane: PaneId) -> bool {
+    world.windows.iter().flat_map(|w| &w.tabs).flat_map(|t| &t.sessions).any(|s| s.pane == pane && !s.exited)
+}
+
+/// The writes of a send: `payload(text)` for each target that is typable, in order.
+pub fn writes(targets: &[PaneId], text: &str, typable: &dyn Fn(PaneId) -> bool) -> Vec<(PaneId, Vec<u8>)> {
+    let bytes = payload(text).into_bytes();
+    targets.iter().copied().filter(|p| typable(*p)).map(|p| (p, bytes.clone())).collect()
+}
+
+/// After a send the chips follow the chosen rows (`CW:958-966`), not the old chips.
+pub fn chips_after_send(selected: &[RowKey], world: &World) -> Vec<Chip> {
+    crate::mention::chips_for_rows(selected, world)
+}
+
+/// The row a chip stands for.
+pub fn chip_row(chip: &Chip, world: &World) -> Option<RowKey> {
+    match chip {
+        Chip::Window { guid } => Some(RowKey::Window(guid.clone())),
+        Chip::Tab { id } => Some(RowKey::Tab(*id)),
+        Chip::Session { stable_id } => {
+            let all = world.windows.iter().flat_map(|w| &w.tabs).flat_map(|t| &t.sessions).chain(&world.buried);
+            all.into_iter().find(|s| &s.stable_id == stable_id).map(|s| RowKey::Session(s.pane))
+        }
+    }
+}
+
+/// The chosen rows after the chip is removed: every row that gave the chip goes.
+pub fn deselect_chip(selected: &[RowKey], chip: &Chip, world: &World) -> Vec<RowKey> {
+    selected.iter().filter(|k| !crate::mention::chips_for_rows(std::slice::from_ref(*k), world).contains(chip)).cloned().collect()
 }
 
 #[cfg(test)]
@@ -614,5 +759,121 @@ mod tests {
         // A row that cannot be chosen changes nothing.
         assert_eq!(select(&visible, &[Session(1)], &g, false, false), vec![Session(1)]);
         assert_eq!(select(&visible, &[Session(1)], &g, true, true), vec![Session(1)]);
+    }
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn send_plan_follows_iterm2() {
+        let idle = |_: PaneId| State::Idle;
+        let none = |_: &str| None;
+        // No chips: the text goes to the chosen rows' sessions.
+        assert_eq!(plan(&[], "ls", &[3, 1], &[1, 2, 3], &idle, &none), Ok(Some(vec![3, 1])));
+        assert_eq!(plan(&[], "", &[3], &[3], &idle, &none), Ok(None));
+        assert_eq!(plan(&[], " \n ", &[], &[], &idle, &none), Ok(None));
+        let e = plan(&[], "ls", &[], &[1], &idle, &none).unwrap_err();
+        assert_eq!(e, SendError::NothingChosen);
+        assert_eq!(e.text(), "Type @ to pick a session, or select rows first");
+        // A target that does not resolve.
+        let e = plan(&strs(&["@nope", "@ptys_X"]), "ls", &[], &[1], &idle, &none).unwrap_err();
+        assert_eq!(e, SendError::Unknown(strs(&["@nope", "@ptys_X"])));
+        assert_eq!(e.text(), "Unknown target @nope @ptys_X");
+        // Targets that resolve need a command.
+        let two = |t: &str| (t == "ptys_X").then(|| vec![2]);
+        let e = plan(&strs(&["@ptys_X"]), "  ", &[], &[1], &idle, &two).unwrap_err();
+        assert_eq!(e, SendError::NoCommand);
+        assert_eq!(e.text(), "Add a command after the @mention");
+        // A chip that names no pane.
+        let empty = |_: &str| Some(Vec::new());
+        let e = plan(&strs(&["@win:x"]), "ls", &[], &[1], &idle, &empty).unwrap_err();
+        assert_eq!(e, SendError::NoMatch);
+        assert_eq!(e.text(), "No matching sessions");
+        // The order of the errors: unknown, then no command, then no match.
+        assert_eq!(plan(&strs(&["@nope", "@ptys_X"]), "", &[], &[1], &idle, &two), Err(SendError::Unknown(strs(&["@nope"]))));
+        assert_eq!(plan(&strs(&["@ptys_X"]), "", &[], &[], &idle, &empty), Err(SendError::NoCommand));
+        // Keywords run over what the list shows, whatever the case.
+        assert_eq!(plan(&strs(&["@all"]), "ls", &[], &[1, 2, 3], &idle, &none), Ok(Some(vec![1, 2, 3])));
+        let st = |p: PaneId| match p {
+            2 => State::Idle,
+            _ => State::Working,
+        };
+        assert_eq!(plan(&strs(&["@WORKING"]), "ls", &[], &[1, 2, 3], &st, &none), Ok(Some(vec![1, 3])));
+        // keyword_state reads unknown as idle; the caller passes it, so the plan only compares.
+        let kw = |p: PaneId| if p == 4 { crate::session_state::keyword_state(&Default::default()) } else { st(p) };
+        assert_eq!(plan(&strs(&["@idle"]), "ls", &[], &[1, 2, 4], &kw, &none), Ok(Some(vec![2, 4])));
+        // A keyword plus a session chip: the union, each pane once, first seen first.
+        let waiting = |p: PaneId| if p == 3 || p == 2 { State::Waiting } else { State::Idle };
+        assert_eq!(plan(&strs(&["@waiting", "@ptys_X"]), "ls", &[], &[1, 2, 3], &waiting, &two), Ok(Some(vec![2, 3])));
+        assert_eq!(SendError::NoneRunning.text(), "No running sessions to send to");
+        assert_eq!(sent_text(3), "Sent to 3 sessions");
+        assert_eq!(sent_text(1), "Sent to 1 sessions");
+    }
+
+    #[test]
+    fn payload_follows_iterm2() {
+        assert_eq!(payload("  ls -la  "), "ls -la\r");
+        assert_eq!(payload("echo hi\n"), "echo hi\r");
+        assert_eq!(payload("a\r"), "a\r");
+        assert_eq!(payload("a\nb"), "a\nb\r");
+    }
+
+    fn session(pane: PaneId, id: &str, exited: bool) -> crate::cockpit_rows::SessionFact {
+        crate::cockpit_rows::SessionFact { pane, stable_id: id.into(), name: format!("s{pane}"), status: Default::default(), exited, alt_screen: false, ancestors: Vec::new(), armed: false }
+    }
+
+    fn world() -> World {
+        use crate::cockpit_rows::{TabFact, WindowFact};
+        World {
+            windows: vec![WindowFact { guid: "G".into(), number: 1, title: String::new(), active_tab: 0, tabs: vec![TabFact { id: 7, title: String::new(), sessions: vec![session(1, "ptys_0123456789ABW", false), session(2, "ptys_0123456789ACX", true)] }], armed: false }],
+            buried: vec![session(3, "ptys_0123456789ADY", false)],
+        }
+    }
+
+    #[test]
+    fn nothing_is_typed_into_a_buried_or_exited_pane() {
+        let w = world();
+        assert!(typable(&w, 1));
+        assert!(!typable(&w, 2), "an exited pane");
+        assert!(!typable(&w, 3), "a buried pane");
+        assert!(!typable(&w, 99), "a pane no window shows");
+        let out = writes(&[1, 2, 3, 99], "rm x", &|p| typable(&w, p));
+        assert_eq!(out, vec![(1, b"rm x\r".to_vec())]);
+        // Nothing typable: nothing written.
+        assert!(writes(&[2, 3], "ls", &|p| typable(&w, p)).is_empty());
+    }
+
+    #[test]
+    fn the_text_sent_is_exactly_the_persons_text() {
+        let all = |_: PaneId| true;
+        // Each target gets the person's text, trimmed, with one CR: no prefix, suffix or edit.
+        let out = writes(&[5, 6], "  echo \"hi\" ; ls \n", &all);
+        assert_eq!(out, vec![(5, b"echo \"hi\" ; ls\r".to_vec()), (6, b"echo \"hi\" ; ls\r".to_vec())]);
+        // A chip's token never reaches the text.
+        let out = writes(&[5], "@ptys_0123456789ABW ls", &all);
+        assert_eq!(out, vec![(5, b"@ptys_0123456789ABW ls\r".to_vec())]);
+        // Non-ASCII text is sent as typed.
+        assert_eq!(writes(&[1], "caf\u{e9}", &all)[0].1, "caf\u{e9}\r".as_bytes());
+    }
+
+    #[test]
+    fn chips_follow_selection() {
+        use RowKey::*;
+        let w = world();
+        let sel = vec![Window("G".into()), Session(1)];
+        assert_eq!(chips_after_send(&sel, &w), crate::mention::chips_for_rows(&sel, &w));
+        assert_eq!(chips_after_send(&sel, &w).len(), 2);
+        assert_eq!(chips_after_send(&[], &w), Vec::<Chip>::new());
+        // chip_row maps a chip back to its row.
+        assert_eq!(chip_row(&Chip::Window { guid: "G".into() }, &w), Some(Window("G".into())));
+        assert_eq!(chip_row(&Chip::Tab { id: 7 }, &w), Some(Tab(7)));
+        assert_eq!(chip_row(&Chip::Session { stable_id: "ptys_0123456789ABW".into() }, &w), Some(Session(1)));
+        assert_eq!(chip_row(&Chip::Session { stable_id: "ptys_0123456789ADY".into() }, &w), Some(Session(3)));
+        assert_eq!(chip_row(&Chip::Session { stable_id: "ptys_0123456789AAA".into() }, &w), None);
+        // Removing a chip deselects the rows that gave it, and only those.
+        let sel = vec![Session(1), Window("G".into())];
+        assert_eq!(deselect_chip(&sel, &Chip::Session { stable_id: "ptys_0123456789ABW".into() }, &w), vec![Window("G".into())]);
+        assert_eq!(deselect_chip(&sel, &Chip::Window { guid: "G".into() }, &w), vec![Session(1)]);
     }
 }
