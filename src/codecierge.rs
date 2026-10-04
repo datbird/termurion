@@ -126,6 +126,42 @@ impl Session {
     pub fn new(guid: &str, allowed: bool, has_key: bool) -> Session {
         Session { guid: guid.to_string(), stage: initial_stage(allowed, has_key), goal: String::new(), auto: true, auto_box: false, transcript: String::new(), busy: false, commands: 0, reply: String::new(), messages: Vec::new(), queue: std::collections::VecDeque::new(), request: None, pending: None, pending_done: false, sent: None, call: None }
     }
+
+    /// A click on "Run commands automatically" (`CG:837-850`, final ruling): unticking is at
+    /// once; ticking only asks Danger! (true) and the box stays unticked until it is answered
+    /// OK, so a Start before the answer runs without auto-run.
+    pub fn box_clicked(&mut self) -> bool {
+        if self.auto_box {
+            self.auto_box = false;
+            return false;
+        }
+        true
+    }
+
+    /// Danger! answered with the button at `index`: only OK (0) ticks the box. Cancel, a close
+    /// and Escape untick it and turn auto-run off at once for a session already running; OK
+    /// never turns it on for one (Start reads the box).
+    pub fn danger_answered(&mut self, index: usize) {
+        self.auto_box = index == 0;
+        if !self.auto_box {
+            self.auto = false;
+        }
+    }
+
+    /// Start's auto-run flag (`CG:455-457`): the ticked box, only while the model can call
+    /// functions (the box is enabled only then, `CG:795-799`).
+    pub fn begin_auto(&mut self, function_calling: bool) {
+        self.auto = self.auto_box && function_calling;
+    }
+}
+
+/// Danger!'s buttons; a close and Escape answer Cancel.
+pub const DANGER_BUTTONS: [&str; 2] = ["OK", "Cancel"];
+pub const DANGER_CLOSE: &str = "Cancel";
+
+/// Whether the Privacy Warning's answer starts the session: only OK (`CG:455`).
+pub fn privacy_starts(index: usize) -> bool {
+    index == 0
 }
 
 /// The first stage (`CG:412-418`): goal setting only with a registration, which iTerm2 has
@@ -225,6 +261,8 @@ pub const REGULAR_DEFAULT: &str = "You help a me in a terminal emulator. My goal
 
 pub const GET_STARTED_MESSAGE: &str = "Tell me how to get started.";
 pub const SESSION_GONE: &str = "The session no longer exists";
+/// The answer to a call that arrives after Danger! was refused while the session ran.
+pub const AUTO_OFF: &str = "Commands are no longer run automatically in this session. Tell the user what to run instead.";
 
 pub const USAGE_HEADING: &str = "Codecierge Usage Warning";
 pub const USAGE_TEXT: &str = "Your codecierge session has been going on for a long time. Are you still using it? If not, stop it to save money and privacy.";
@@ -439,8 +477,13 @@ fn typed_text(s: &str) -> String {
 /// it is, with the gate open, acts at all.
 #[allow(clippy::too_many_arguments)]
 pub fn invoke_plan(s: &Session, id: u64, gate_open: bool, name: &str, arguments: &str, shell: crate::ai_shell::ShellKind, local: bool, cwd: Option<&str>, home: &Path) -> Invoke {
-    if s.stage != Stage::Running || !s.auto || !gate_open || s.request != Some(id) {
+    if s.stage != Stage::Running || !gate_open || s.request != Some(id) {
         return Invoke::Drop;
+    }
+    // Auto-run was turned off while this request was out: the call is answered, never acted on,
+    // so the run does not wait for a command that never comes.
+    if !s.auto {
+        return Invoke::Answer(AUTO_OFF.to_string());
     }
     let args: serde_json::Value = match serde_json::from_str(if arguments.trim().is_empty() { "{}" } else { arguments }) {
         Ok(v) => v,
@@ -747,6 +790,89 @@ mod tests {
         assert_eq!(goal_label("deploy"), "Goal: deploy");
         s.stage = Stage::Onboarding;
         assert_eq!(view(&s, true, false, true), View::Onboarding(CodeciergeState::NeedsAi));
+    }
+
+    /// A goal-setting session with a goal, as the person sees it before Start.
+    fn goal_session() -> Session {
+        let mut s = Session::new("G", true, true);
+        s.goal = "deploy".into();
+        s
+    }
+
+    /// Start as `App::codecierge_start` does it, with the model calling functions.
+    fn start(s: &mut Session, id: u64) {
+        s.begin_auto(true);
+        s.stage = Stage::Running;
+        s.request = Some(id);
+    }
+
+    fn execute(s: &Session, id: u64) -> Invoke {
+        invoke_plan(s, id, true, "execute", "{\"command\":\"rm -rf ~\"}", ShellKind::Posix, true, None, home())
+    }
+
+    #[test]
+    fn danger_tick_then_start_runs_without_auto() {
+        // Bypass 1: tick the box, then Start before Danger! is answered.
+        let mut s = goal_session();
+        assert!(s.box_clicked(), "ticking asks Danger!");
+        assert_eq!(view(&s, true, true, true), View::Goal { goal: "deploy".into(), auto_box: false, auto_enabled: true, start_enabled: true }, "the box shows unticked while Danger! is pending");
+        start(&mut s, 7);
+        assert!(!s.auto, "Start before the answer runs without auto-run");
+        assert_eq!(execute(&s, 7), Invoke::Answer(AUTO_OFF.into()), "nothing is typed");
+    }
+
+    #[test]
+    fn danger_ok_after_start_leaves_the_running_session_alone() {
+        // Bypass 2: Start first, then OK: the running session keeps no auto-run; the box is
+        // ticked for the next Start.
+        let mut s = goal_session();
+        assert!(s.box_clicked());
+        start(&mut s, 7);
+        s.danger_answered(0);
+        assert!(!s.auto, "OK after Start does not arm the running session");
+        assert!(s.auto_box, "OK ticks the box");
+        assert_eq!(execute(&s, 7), Invoke::Answer(AUTO_OFF.into()));
+    }
+
+    #[test]
+    fn danger_cancel_after_start_turns_auto_off_at_once() {
+        // Bypass 3: auto-run on after OK, then a Cancel (or a close) arrives while it runs.
+        let close = crate::prompt_ui::close_index_with(&DANGER_BUTTONS, Some(DANGER_CLOSE));
+        assert_eq!(close, 1, "a close and Escape answer Cancel");
+        for refusal in [1, close] {
+            let mut s = goal_session();
+            assert!(s.box_clicked());
+            s.danger_answered(0);
+            start(&mut s, 7);
+            assert!(s.auto, "auto-run after OK");
+            assert_eq!(execute(&s, 7), Invoke::Type(vec!["rm -rf ~\r".into()]));
+            s.danger_answered(refusal);
+            assert!(!s.auto && !s.auto_box, "Cancel turns auto-run off for the running session");
+            assert_eq!(execute(&s, 7), Invoke::Answer(AUTO_OFF.into()), "a later call types nothing");
+        }
+    }
+
+    #[test]
+    fn danger_box_and_start_follow_the_rulings() {
+        // Unticking is at once and asks nothing.
+        let mut s = goal_session();
+        assert!(s.box_clicked());
+        s.danger_answered(0);
+        assert!(s.auto_box);
+        assert!(!s.box_clicked(), "unticking asks nothing");
+        assert!(!s.auto_box);
+        // Start needs function calling too (Task 6 minor).
+        let mut s = goal_session();
+        assert!(s.box_clicked());
+        s.danger_answered(0);
+        s.begin_auto(false);
+        assert!(!s.auto, "no function calling, no auto-run");
+        s.begin_auto(true);
+        assert!(s.auto);
+        // The Privacy Warning: only OK starts; Cancel, a close and Escape do not.
+        assert!(privacy_starts(0));
+        assert!(!privacy_starts(1));
+        assert!(!privacy_starts(crate::prompt_ui::close_index_with(&["OK", "Cancel"], None)));
     }
 
     #[test]
@@ -1099,8 +1225,8 @@ mod tests {
         assert_eq!(write(&s, 7, false), Invoke::Drop);
         let mut s = busy_session();
         s.auto = false;
-        assert_eq!(exec(&s, 7, true), Invoke::Drop, "no auto-run");
-        assert_eq!(write(&s, 7, true), Invoke::Drop);
+        assert_eq!(exec(&s, 7, true), Invoke::Answer(AUTO_OFF.into()), "no auto-run: answered, nothing typed");
+        assert_eq!(write(&s, 7, true), Invoke::Answer(AUTO_OFF.into()));
         // Other names and bad arguments answer the model.
         let s = busy_session();
         match invoke_plan(&s, 7, true, "nope", "{}", ShellKind::Posix, true, None, home()) {

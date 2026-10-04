@@ -2068,19 +2068,18 @@ impl App {
                         self.codecierge_press_start(&guid);
                     }
                 } else if (*auto_enabled || *auto_box) && check_row.contains(x, y) {
-                    let ticked = !*auto_box;
-                    if let Some(s) = self.codecierge.get_mut(&guid) {
-                        s.auto_box = ticked;
-                    }
-                    if ticked {
+                    // One Danger! per session at a time: a click while it waits asks nothing more.
+                    let then = crate::ai_gate::Then::CodeciergeDanger(guid.clone());
+                    let ask = self.codecierge.get_mut(&guid).is_some_and(|s| s.box_clicked()) && !self.ai_alert_pending(&then);
+                    if ask {
                         self.ask_ai(crate::ai_gate::Alert {
                             heading: crate::codecierge::DANGER_HEADING.to_string(),
                             text: crate::codecierge::DANGER_TEXT.to_string(),
-                            buttons: vec!["OK", "Cancel"],
+                            buttons: crate::codecierge::DANGER_BUTTONS.to_vec(),
                             silence: None,
-                            then: crate::ai_gate::Then::CodeciergeDanger(guid.clone()),
+                            then,
                             gate: false,
-                            close: None,
+                            close: Some(crate::codecierge::DANGER_CLOSE),
                         });
                     }
                     self.tools_changed();

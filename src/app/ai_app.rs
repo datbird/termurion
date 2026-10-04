@@ -96,6 +96,11 @@ impl App {
         self.ai_asks.iter().chain(self.ai_alert.as_ref().map(|(_, a)| a)).any(ai_gate::is_gate)
     }
 
+    /// Whether an alert that answers into `then` is queued or showing.
+    pub(super) fn ai_alert_pending(&self, then: &Then) -> bool {
+        self.ai_asks.iter().chain(self.ai_alert.as_ref().map(|(_, a)| a)).any(|a| a.then == *then)
+    }
+
     /// Opens the next queued AI alert when none shows.
     pub(super) fn open_ai_alert(&mut self, event_loop: &ActiveEventLoop) {
         if self.ai_alert.is_some() || self.ai_asks.is_empty() {
@@ -353,19 +358,18 @@ impl App {
             }
             // Only Attach attaches; Insert Path, a close and a stale index insert the paths.
             Then::DropChoice { chat, supported, all } => self.chat_drop_answered(&chat, &supported, &all, index),
-            // Only OK keeps the box ticked.
+            // Only OK ticks the box; any other answer unticks it and turns auto-run off at once
+            // for the session if it runs (`Session::danger_answered`).
             Then::CodeciergeDanger(guid) => {
-                if index != 0 {
-                    if let Some(s) = self.codecierge.get_mut(&guid) {
-                        s.auto_box = false;
-                    }
-                    self.tools_changed();
-                    self.redraw_all();
+                if let Some(s) = self.codecierge.get_mut(&guid) {
+                    s.danger_answered(index);
                 }
+                self.tools_changed();
+                self.redraw_all();
             }
             // Only OK remembers the warning and starts; Cancel, a close and Escape stop.
             Then::CodeciergePrivacy(guid) => {
-                if index == 0 {
+                if crate::codecierge::privacy_starts(index) {
                     self.globals.set(crate::codecierge::PRIVACY_KEY, toml::Value::Boolean(true));
                     self.save_globals();
                     self.codecierge_start(&guid);

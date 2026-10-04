@@ -58,7 +58,8 @@ impl App {
         }
     }
 
-    /// Start (`CG:62-160`, `CG:455-462`): the checkbox becomes the auto-run flag, the history
+    /// Start (`CG:62-160`, `CG:455-462`): the checkbox (ticked only after Danger! was answered
+    /// OK) with function calling becomes the auto-run flag, the history
     /// clears, the conversation is the system message built from the goal and the context, and
     /// the first message goes.
     pub(super) fn codecierge_start(&mut self, guid: &str) {
@@ -74,8 +75,9 @@ impl App {
             }
             None => (None, None),
         };
+        let (_, calling) = self.codecierge_gate();
         let Some(s) = self.codecierge.get_mut(guid) else { return };
-        s.auto = s.auto_box;
+        s.begin_auto(calling);
         let key = if s.auto { cc::GHOST_RIDING_KEY } else { cc::REGULAR_KEY };
         let template = self.globals.string(key);
         let s = self.codecierge.get_mut(guid).expect("checked");

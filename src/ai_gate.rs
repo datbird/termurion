@@ -119,8 +119,9 @@ pub enum Then {
     /// it also inserts the paths of the others in `all`. Any other answer, a close included
     /// (ruling F2), inserts every path in `all` as text. Applies only while `chat` is shown.
     DropChoice { chat: String, supported: Vec<std::path::PathBuf>, all: Vec<std::path::PathBuf> },
-    /// Danger! (`CG:795-799`): ticking "Run commands automatically" in this Codecierge session
-    /// (its guid). Only OK keeps the box ticked; Cancel, a close and Escape untick it.
+    /// Danger! (`CG:837-850`): ticking "Run commands automatically" in this Codecierge session
+    /// (its guid). Only OK ticks the box; Cancel, a close and Escape leave it unticked and turn
+    /// auto-run off at once if the session runs.
     CodeciergeDanger(String),
     /// The Privacy Warning before Start (`CG:455`): only OK remembers it and starts this session.
     CodeciergePrivacy(String),
