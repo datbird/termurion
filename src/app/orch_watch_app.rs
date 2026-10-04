@@ -40,6 +40,8 @@ fn now_secs() -> f64 {
 /// What one look at a watcher decided.
 enum Step {
     Wait,
+    /// Ends without a word (its link changed).
+    End,
     Fire(Reason, String, String),
     Drop(String),
 }
@@ -68,11 +70,12 @@ impl App {
     }
 
     pub(super) fn orch_register_timer(&mut self, chat: &str, args: &Value) -> Result<String, OrchError> {
-        self.chat_row(chat).ok_or_else(gone)?;
+        let row = self.chat_row(chat).ok_or_else(gone)?;
         let a = ot::parse_register_timer(args)?;
         let now = now_secs();
         let fire = ow::resolve_timer(a.delay, a.fire_at.as_deref(), now)?;
-        let w = Watcher::timer(&crate::chat_message::new_id(), now, fire, a.note);
+        let mut w = Watcher::timer(&crate::chat_message::new_id(), now, fire, a.note);
+        w.linked = row.terminal_session_guid;
         let d = ow::description(&w, None);
         self.orch_watch_add(chat, w)?;
         Ok(ot::result_json("watcher_registered", d))
@@ -150,6 +153,7 @@ impl App {
             fire_date: None,
             note: None,
             screen_read_consented: None,
+            linked: row.terminal_session_guid.clone(),
         };
         // The same watch is registered once, before any prompt.
         if let Some(e) = self.orch_watchers.get(chat).and_then(|l| l.iter().find(|e| e.effective_mode() != Mode::Timer && e.session_guid == w.session_guid && e.target_state == w.target_state && e.condition == w.condition)) {
@@ -246,6 +250,11 @@ impl App {
                 if !changes.iter().any(|(p, _, _)| *p == pane) {
                     continue;
                 }
+                // Made under another link: it reads nothing and ends (Task 11 fix round 1).
+                if !ow::link_holds(&w, row.terminal_session_guid.as_deref()) {
+                    self.orch_watch_remove(&chat, &w.watcher_id);
+                    continue;
+                }
                 let Some(now_state) = self.panes.get(&pane).map(|p| session_state::state(&p.own().tab_status)) else { continue };
                 if Some(now_state) != w.target_state {
                     continue;
@@ -325,6 +334,11 @@ impl App {
 
     /// One look at a session watcher: reads re-checked, then the poll or the escalation.
     fn orch_watch_step(&mut self, chat: &str, row: &Chat, w: &Watcher, pane: PaneId, now_i: Instant) -> Step {
+        // A watcher made under another link reads nothing: the permissions it was granted
+        // under are not this session's (Task 11 fix round 1).
+        if !ow::link_holds(w, row.terminal_session_guid.as_deref()) {
+            return Step::End;
+        }
         let (orch_mode, linked) = (row.orchestration_enabled, row.terminal_session_guid.is_some());
         let (view, state_perm) = (self.orch_watch_perm(chat, row, Category::ViewContents), self.orch_watch_perm(chat, row, Category::CheckTerminalState));
         let may_screen = ow::may_read_screen(orch_mode, linked, view, w.screen_read_consented);
@@ -526,11 +540,13 @@ impl App {
             for w in sessions {
                 let live = self.orch_resolve(&w.session_guid).ok().filter(|p| self.panes.get(p).is_some_and(|p| p.exited.is_none()));
                 let step = match live {
+                    None if !ow::link_holds(&w, row.terminal_session_guid.as_deref()) => Step::End,
                     // The pane closed: the watcher dies with it and the chat is told.
                     None => Step::Drop(ow::dropped(&ow::label(&w), &w.goal())),
                     Some(pane) => self.orch_watch_step(&chat, &row, &w, pane, now_i),
                 };
                 match step {
+                    Step::End => self.orch_watch_remove(&chat, &w.watcher_id),
                     Step::Wait => {
                         if let Some(p) = self.orch_polls.get(&w.watcher_id) {
                             soonest(p.next_at.saturating_duration_since(now_i), &mut wake);
@@ -599,5 +615,19 @@ mod tests {
         assert_eq!(code.matches("chat_publish(").count(), 1, "one publish, in the tick's outbox loop");
         let tick = body(code, "orch_watch_tick");
         assert!(tick.contains("release(now, open)") && tick.contains("AdminOff"), "gate-checked release and the AI-off sweep");
+    }
+
+    /// Task 11 fix round 1, ruling 3: an unlink or a relink ends the chat's watchers and
+    /// timers at once, and every read checks the link the watcher was made under.
+    #[test]
+    fn a_link_change_ends_the_watchers() {
+        let session = include_str!("chat_session_app.rs");
+        assert!(body(session, "unlink_chat").contains("self.orch_watch_drop_chat(chat);"), "unlink");
+        assert!(body(session, "link_chat").contains("self.orch_watch_drop_chat(chat);"), "relink");
+        let code = include_str!("orch_watch_app.rs");
+        assert!(body(code, "orch_register_watch_in").contains("linked: row.terminal_session_guid.clone(),"), "a watcher keeps its link");
+        assert!(body(code, "orch_register_timer").contains("linked = row.terminal_session_guid"), "so does a timer");
+        assert!(body(code, "orch_watch_step").contains("ow::link_holds(w, row.terminal_session_guid.as_deref())"), "each poll or escalation");
+        assert!(body(code, "orch_status_changed").contains("ow::link_holds(&w, row.terminal_session_guid.as_deref())"), "each state read");
     }
 }

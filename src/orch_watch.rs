@@ -57,6 +57,10 @@ pub struct Watcher {
     pub note: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_read_consented: Option<bool>,
+    /// The chat's terminal link when the watcher was made (Task 11 fix round 1): it reads
+    /// only while the chat is still linked there. Tandem's own, never stored.
+    #[serde(skip)]
+    pub linked: Option<String>,
 }
 
 impl Watcher {
@@ -95,6 +99,7 @@ impl Watcher {
             fire_date: Some(fire),
             note: note.map(|n| clean(&n, DETAIL_CAP)).filter(|n| !n.is_empty()),
             screen_read_consented: None,
+            linked: None,
         }
     }
 }
@@ -137,6 +142,16 @@ pub const POLL_LINES: usize = 150;
 pub const MAX_WATCHERS: usize = 16;
 pub const EVENTS_PER_MINUTE: usize = 6;
 pub const MAX_HELD: usize = 32;
+/// The most model turns watchers and timers start since the person's last message (Task 11
+/// fix round 1); then the chat pauses until the person writes.
+pub const MACHINE_TURNS: u32 = 20;
+pub const MACHINE_TURNS_PAUSED: &str = "Watchers and timers have started 20 turns since your last message, so they are paused. Send a message to let them continue.";
+
+/// Whether the chat's terminal link is still the one `w` was made under (Task 11 fix round 1):
+/// a watcher reads a session only under the permissions of the link it was registered with.
+pub fn link_holds(w: &Watcher, linked: Option<&str>) -> bool {
+    w.linked.as_deref() == linked
+}
 /// The longest a note, a condition or a detail line is kept (characters).
 pub const DETAIL_CAP: usize = 600;
 pub const NAME_CAP: usize = 200;
@@ -456,6 +471,7 @@ pub fn status_text(v: &Value) -> Option<String> {
         fire_date: None,
         note: None,
         screen_read_consented: None,
+        linked: None,
     };
     let at = e.get("timestamp").and_then(Value::as_f64).unwrap_or(0.0) + SWIFT_EPOCH;
     let changed = e.get("screenLastChanged").and_then(Value::as_str);
@@ -756,7 +772,23 @@ mod tests {
             fire_date: None,
             note: None,
             screen_read_consented: None,
+            linked: None,
         }
+    }
+
+    /// Task 11 fix round 1: a watcher reads only under the link it was made under, and the
+    /// link is never stored.
+    #[test]
+    fn a_watcher_reads_only_under_its_link() {
+        let a = Watcher { linked: Some("A".into()), ..w() };
+        assert!(link_holds(&a, Some("A")));
+        assert!(!link_holds(&a, Some("B")), "relinked to another session");
+        assert!(!link_holds(&a, None), "unlinked");
+        let none = Watcher { linked: None, ..w() };
+        assert!(link_holds(&none, None), "an orchestration chat's watcher with no link");
+        assert!(!link_holds(&none, Some("A")), "a link made after it");
+        assert!(!records_json(&[a.clone()]).contains("\"A\""), "Tandem's own, never stored");
+        assert_eq!(records(&records_json(&[a])), vec![w()]);
     }
 
     #[test]

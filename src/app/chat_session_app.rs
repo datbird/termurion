@@ -86,8 +86,14 @@ impl App {
             return Err(NOT_LINKED.to_string());
         }
         let stored = reference.clone();
+        let before = self.chat_row(chat).and_then(|c| c.terminal_session_guid);
         if !self.chat_update(chat, |c| c.terminal_session_guid = Some(stored)) {
             return Err(NOT_LINKED.to_string());
+        }
+        // A relink ends the chat's watchers and timers at once: they were registered under
+        // the old session's permissions (Task 11 fix round 1).
+        if before.as_deref() != Some(reference.as_str()) {
+            self.orch_watch_drop_chat(chat);
         }
         // A new session starts from no watermark: "the screen is unchanged" must not carry over
         // from the old one (ruling F34).
@@ -389,8 +395,8 @@ impl App {
     }
 
     /// Unlinks the chat's terminal (or browser) session (`unlinkTerminalSession`, `CVC:1403-1435`):
-    /// streaming ends, the notice shows and the allowed set is published again. Watchers are
-    /// 12f's.
+    /// streaming ends, the notice shows and the allowed set is published again. A terminal
+    /// unlink ends the chat's watchers and timers at once (Task 11 fix round 1).
     pub(super) fn unlink_chat(&mut self, chat: &str, terminal: bool) {
         if terminal {
             self.stop_streaming(chat);
@@ -404,6 +410,9 @@ impl App {
         });
         if !changed {
             return;
+        }
+        if terminal {
+            self.orch_watch_drop_chat(chat);
         }
         // The next link starts from no watermark (ruling F34).
         self.ai_watermarks.remove(chat);

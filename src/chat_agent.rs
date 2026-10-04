@@ -376,6 +376,10 @@ pub struct Agent {
     pub orch_pending: Option<(String, bool)>,
     /// The turn's tools are the orchestration ones.
     pub orch_tooled: bool,
+    /// Turns watchers and timers started since the person's last message (Task 11 fix round 1).
+    pub machine_turns: u32,
+    /// The machine-turn cap was reached and its notice shown.
+    pub machine_paused: bool,
 }
 
 impl Agent {

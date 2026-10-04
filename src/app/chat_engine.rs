@@ -167,6 +167,11 @@ fn classic(m: &Message) -> Option<&RemoteCommand> {
     }
 }
 
+/// A message no person wrote: a watcher's or a timer's event (12f Task 11).
+fn is_machine(c: &Content) -> bool {
+    matches!(c, Content::WatcherEvent(_))
+}
+
 impl Engine {
     /// The explanation processor over `m` (ruling P8): the stored row an append or commit
     /// targets is read as `publish_in` reads it, then the closure converts the message. Only the
@@ -238,9 +243,18 @@ impl Engine {
             Content::UserCommand(_) | Content::RemoteCommandResponse { .. } | Content::Unsupported(_) => Vec::new(),
             _ => {
                 let mut fx = Vec::new();
-                // A turn wedged on the person's answer is cancelled for the new message
-                // (`isAwaitingUserApproval`, `CA:1249-1282`); a working turn keeps it queued.
-                if cx.agents.get(chat).is_some_and(Agent::is_awaiting_approval) {
+                // A turn wedged on the person's answer is cancelled for the person's new
+                // message (`isAwaitingUserApproval`, `CA:1249-1282`); a working turn keeps it
+                // queued. A watcher's or timer's event never abandons the approval: it waits
+                // behind it (Task 11 fix round 1, iTerm2's ChatService).
+                let machine = is_machine(&m.content);
+                if !machine {
+                    if let Some(a) = cx.agents.get_mut(chat) {
+                        a.machine_turns = 0;
+                        a.machine_paused = false;
+                    }
+                }
+                if !machine && cx.agents.get(chat).is_some_and(Agent::is_awaiting_approval) {
                     fx.extend(Self::halt(cx, chat));
                 }
                 fx.extend(Self::next(cx, chat));
@@ -254,10 +268,24 @@ impl Engine {
         if cx.agents.get(chat).is_some_and(|a| a.in_turn || a.held.is_some() || a.files.is_some()) {
             return Vec::new();
         }
-        match cx.broker.next_turn(chat) {
-            Some(m) => Self::begin(cx, chat, m, true),
-            None => Vec::new(),
+        let Some(m) = cx.broker.next_turn(chat) else { return Vec::new() };
+        if is_machine(&m.content) {
+            // At most MACHINE_TURNS turns started by watchers and timers since the person's
+            // last message; past that the event stays in the log, unanswered, and one notice
+            // says the chat waits for the person (Task 11 fix round 1).
+            let a = cx.agents.entry(chat.to_string()).or_default();
+            if a.machine_turns >= crate::orch_watch::MACHINE_TURNS {
+                let first = !a.machine_paused;
+                a.machine_paused = true;
+                cx.broker.turn_done(chat);
+                if first {
+                    Self::notice(cx, chat, crate::orch_watch::MACHINE_TURNS_PAUSED);
+                }
+                return Self::next(cx, chat);
+            }
+            a.machine_turns += 1;
         }
+        Self::begin(cx, chat, m, true)
     }
 
     /// Ends the turn every way a turn ends: the reply committed, typing off, `Turn(Ended)`, the
@@ -1628,6 +1656,76 @@ mod tests {
         assert_eq!(h.run(|cx| Engine::poll(cx)), vec![]);
         assert_eq!(h.messages(&chat).len(), before, "no second write");
         assert_eq!(h.events().last(), Some(&Ev::Cancel));
+    }
+
+    fn watcher_event(id: &str) -> Content {
+        Content::WatcherEvent(serde_json::json!({"_0": {"watcherID": id, "workgroupName": "w", "roleName": "w", "reason": "timerFired", "timestamp": 0, "detail": "fired"}}))
+    }
+
+    /// Ends the running turn the way the model does when it has nothing more to say.
+    fn finish_turn(h: &mut H) {
+        h.log.borrow_mut().on_poll.push_back(vec![Out::StreamEnd]);
+        h.run(|cx| Engine::poll(cx));
+    }
+
+    /// Task 11 fix round 1, ruling 1: a turn a watcher or timer starts never abandons the
+    /// person's pending approval (iTerm2's ChatService: only a person's message does); it
+    /// queues until the approval is answered.
+    #[test]
+    fn machine_turns_never_abandon_an_approval() {
+        let mut h = H::new();
+        let chat = h.chat(Some("7"));
+        h.script(vec![screen("c1")]);
+        h.say(&chat, "first");
+        let rid = h.park_ids(&chat)[0].clone();
+        assert!(h.agents[&chat].is_awaiting_approval());
+        let fx = h.send(&chat, watcher_event("W1"));
+        assert!(!fx.contains(&EngineEffect::CancelChecks(chat.clone())), "{fx:?}");
+        assert_eq!(h.count(&Ev::Cancel), 0, "the approval stands");
+        assert_eq!(h.park_ids(&chat), vec![rid.clone()]);
+        assert!(h.agents[&chat].is_awaiting_approval() && h.in_turn(&chat));
+        assert_eq!(h.count(&Ev::Start), 1, "the event waits");
+        // Answered: the turn finishes, then the queued event starts its own turn.
+        let fx = h.run(|cx| Engine::answer_request(cx, &chat, &rid, Choice::AllowOnce));
+        assert_eq!(run_ids(&fx).len(), 1);
+        h.after_tool(vec![Out::StreamEnd]);
+        h.run(|cx| Engine::tool_finished(cx, &chat, &rid, ran("the screen", None)));
+        assert_eq!(h.count(&Ev::Start), 2);
+        let last = h.log.borrow().inputs[1].messages.last().cloned().unwrap();
+        assert!(format!("{last:?}").contains("status_update"), "{last:?}");
+        // A person's message still abandons a wedged turn (`wedged_turn_follows_iterm2`).
+    }
+
+    /// Task 11 fix round 1, ruling 2: at most 20 turns started by watchers and timers since the
+    /// person's last message; then one notice and a pause until the person writes.
+    #[test]
+    fn machine_turns_pause_after_twenty() {
+        let mut h = H::new();
+        let chat = h.chat(Some("7"));
+        for i in 0..crate::orch_watch::MACHINE_TURNS {
+            h.send(&chat, watcher_event(&format!("W{i}")));
+            finish_turn(&mut h);
+        }
+        assert_eq!(h.count(&Ev::Start), 20);
+        assert!(h.notices(&chat).is_empty());
+        h.send(&chat, watcher_event("W20"));
+        h.send(&chat, watcher_event("W21"));
+        assert_eq!(h.count(&Ev::Start), 20, "paused");
+        assert!(!h.in_turn(&chat) && !h.broker.turn_in_progress(&chat));
+        assert_eq!(h.notices(&chat), vec![crate::orch_watch::MACHINE_TURNS_PAUSED.to_string()], "one notice");
+        // The person writes: their turn runs and the count starts over.
+        h.say(&chat, "go on");
+        assert_eq!(h.count(&Ev::Start), 21);
+        finish_turn(&mut h);
+        h.send(&chat, watcher_event("W22"));
+        assert_eq!(h.count(&Ev::Start), 22, "running again");
+        finish_turn(&mut h);
+        for i in 0..crate::orch_watch::MACHINE_TURNS {
+            h.send(&chat, watcher_event(&format!("X{i}")));
+            finish_turn(&mut h);
+        }
+        assert_eq!(h.count(&Ev::Start), 41);
+        assert_eq!(h.notices(&chat).len(), 2, "a second pause, a second notice");
     }
 
     #[test]
