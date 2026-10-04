@@ -240,6 +240,72 @@ pub fn check(status: i32) -> Result<(), FileError> {
     }
 }
 
+/// An upload's destination (`SCPPath`): the remote path, host and user the pane reports.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScpPath {
+    pub path: String,
+    pub hostname: String,
+    pub username: String,
+}
+
+impl ScpPath {
+    pub fn user_at_host(&self) -> String {
+        format!("{}@{}", self.username, self.hostname)
+    }
+}
+
+/// `scpPathForFile` (`VS:741-772`): needs the line's host, user and working directory and a
+/// host that is not this machine. A name starting `/` or `~` is used as is, else it is appended
+/// to the working directory; an empty name is the working directory itself (no trailing `/`).
+pub fn scp_path(file: &str, cwd: Option<&str>, host: Option<&str>, user: Option<&str>, host_is_local: bool) -> Option<ScpPath> {
+    let (cwd, host, user) = (cwd?, host.filter(|h| !h.is_empty())?, user.filter(|u| !u.is_empty())?);
+    if host_is_local {
+        return None;
+    }
+    let path = if file.starts_with('/') || file.starts_with('~') {
+        file.to_string()
+    } else if file.is_empty() {
+        let t = cwd.trim_end_matches('/');
+        if t.is_empty() && cwd.starts_with('/') { "/".to_string() } else { t.to_string() }
+    } else {
+        crate::remote_file::posix_join(cwd, file)
+    };
+    Some(ScpPath { path, hostname: host.to_string(), username: user.to_string() })
+}
+
+/// `canTransferFilesTo` (`PS:15250-15289`): the conductor frames, the host is the identity's
+/// host, hostname or discovered hostname, and the user is the identity's (any when it has none).
+pub fn can_transfer(framing: bool, identity: &crate::ssh_args::Identity, discovered: Option<&str>, to: &ScpPath) -> bool {
+    if !framing {
+        return false;
+    }
+    let host_ok = to.hostname == identity.host || to.hostname == identity.hostname || discovered.is_some_and(|d| d == to.hostname);
+    let user_ok = identity.username.as_deref().is_none_or(|u| u == to.username);
+    host_ok && user_ok
+}
+
+/// `TV:5210-5271`: the question before an Alt-drop uploads.
+pub fn confirm_upload(files: &[String], to: &ScpPath) -> String {
+    let dest = format!("{}:{}", to.user_at_host(), to.path);
+    if files.len() == 1 {
+        format!("OK to copy\n{}\nto\n{dest}?", files[0])
+    } else {
+        format!("OK to copy the following files:\n{}\n\nto\n{dest}?", files.join(", "))
+    }
+}
+
+/// The most an Alt-drop sends (P19): each KiB is one conductor command with its own 30 s timer.
+pub const UPLOAD_MAX: u64 = 64 * 1024 * 1024;
+
+/// Why a dropped file may not be uploaded (P19): a UNC or device path (reading it would contact
+/// a share), or more than `UPLOAD_MAX` bytes. `size` is None when it is not known yet.
+pub fn upload_refused(local: &str, size: Option<u64>) -> Option<String> {
+    if crate::prompted::network_path(local) {
+        return Some("A network path cannot be uploaded.".to_string());
+    }
+    size.filter(|s| *s > UPLOAD_MAX).map(|_| "Too large to upload (the limit is 64 MiB).".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +408,62 @@ mod tests {
         // A reply past its cap is garbage, not a closed connection (P8).
         assert_eq!(check(OVERRUN_STATUS), Err(FileError::Garbage));
         assert_eq!(FileError::Garbage.text(), GARBAGE);
+    }
+
+    fn to(host: &str, user: &str) -> ScpPath {
+        ScpPath { path: "/home/u".into(), hostname: host.into(), username: user.into() }
+    }
+
+    #[test]
+    fn scp_paths_follow_iterm2() {
+        let p = |f: &str, cwd: Option<&str>| scp_path(f, cwd, Some("h"), Some("u"), false);
+        assert_eq!(p("a.txt", Some("/home/u")), Some(ScpPath { path: "/home/u/a.txt".into(), hostname: "h".into(), username: "u".into() }));
+        assert_eq!(p("/etc/x", Some("/home/u")).unwrap().path, "/etc/x");
+        assert_eq!(p("~/x", Some("/home/u")).unwrap().path, "~/x");
+        assert_eq!(p("", Some("/home/u")).unwrap().path, "/home/u");
+        assert_eq!(p("", Some("/home/u/")).unwrap().path, "/home/u");
+        assert_eq!(p("", Some("/")).unwrap().path, "/");
+        assert_eq!(p("a", None), None);
+        assert_eq!(scp_path("a", Some("/x"), None, Some("u"), false), None);
+        assert_eq!(scp_path("a", Some("/x"), Some("h"), None, false), None);
+        assert_eq!(scp_path("a", Some("/x"), Some("h"), Some("u"), true), None);
+        assert_eq!(to("h", "u").user_at_host(), "u@h");
+    }
+
+    #[test]
+    fn transfer_gate_follows_iterm2() {
+        use crate::ssh_args::Identity;
+        let id = Identity { host: "box".into(), hostname: "box.lan".into(), username: None, port: 22 };
+        assert!(can_transfer(true, &id, None, &to("box", "u")));
+        assert!(can_transfer(true, &id, None, &to("box.lan", "u")));
+        assert!(!can_transfer(true, &id, None, &to("other", "u")));
+        assert!(can_transfer(true, &id, Some("other"), &to("other", "u")));
+        assert!(!can_transfer(false, &id, None, &to("box", "u")));
+        let id = Identity { username: Some("u".into()), ..id };
+        assert!(!can_transfer(true, &id, None, &to("box", "v")));
+        assert!(can_transfer(true, &id, None, &to("box", "u")));
+    }
+
+    #[test]
+    fn upload_confirmation_follows_iterm2() {
+        assert_eq!(confirm_upload(&["C:\\a.txt".into()], &to("h", "u")), "OK to copy\nC:\\a.txt\nto\nu@h:/home/u?");
+        assert_eq!(confirm_upload(&["C:\\a.txt".into(), "C:\\b.txt".into()], &to("h", "u")), "OK to copy the following files:\nC:\\a.txt, C:\\b.txt\n\nto\nu@h:/home/u?");
+    }
+
+    #[test]
+    fn unc_drops_are_refused() {
+        for p in ["\\\\attacker\\s\\x", "//attacker/s/x", "\\\\?\\UNC\\h\\s", "\\\\.\\pipe\\x"] {
+            assert!(upload_refused(p, Some(1)).is_some(), "{p}");
+            assert!(upload_refused(p, None).is_some(), "{p}");
+        }
+        assert_eq!(upload_refused("C:\\a.txt", Some(1)), None);
+        assert_eq!(upload_refused("C:\\a.txt", None), None);
+    }
+
+    #[test]
+    fn uploads_have_a_size_cap() {
+        assert_eq!(upload_refused("C:\\a", Some(UPLOAD_MAX)), None);
+        assert!(upload_refused("C:\\a", Some(UPLOAD_MAX + 1)).is_some());
+        assert!(upload_refused("C:\\a", Some(u64::MAX)).is_some());
     }
 }

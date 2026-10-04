@@ -63,11 +63,15 @@ impl App {
         Some(Clicked { ctx, line, base, joined, found, rules, prefs, link_id: link.map(|h| h.id().to_string()) })
     }
 
+    /// Whether a reported host name is this computer (`localhost`, its name or its DNS name; P17).
+    pub(super) fn host_is_this_machine(&self, host: &str) -> bool {
+        crate::statusbar_text::is_local_host(host, super::statusbar_content::local_names())
+    }
+
     /// The pane's working directory from shell integration, when it is on this machine.
     pub(super) fn pane_dir(&self, id: PaneId) -> Option<std::path::PathBuf> {
         let shell = &self.panes.get(&id)?.own().shell;
-        let here = std::env::var("COMPUTERNAME").unwrap_or_default();
-        if shell.host.as_ref().is_some_and(|h| !h.eq_ignore_ascii_case(&here) && !h.eq_ignore_ascii_case("localhost")) {
+        if shell.host.as_ref().is_some_and(|h| !self.host_is_this_machine(h)) {
             return None;
         }
         crate::profile::local_path(shell.cwd.as_deref()?)

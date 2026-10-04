@@ -223,6 +223,11 @@ impl App {
         // The drop's own window decides where a broadcast paste goes.
         self.enter_pane_window(pane);
         let files: Vec<String> = dropped.into_iter().map(|(_, f)| f).collect();
+        // Alt held over a session that can transfer: the files are offered to the remote
+        // working directory instead (before the coprocess and the paste).
+        if self.ssh_drop(pane, files.clone()) {
+            return;
+        }
         match coprocess::drop_command(&self.globals.string("fileDropCoprocess"), &files) {
             Some(cmd) => self.start_coprocess(pane, &cmd, true, Entry::FileDrop),
             None => {

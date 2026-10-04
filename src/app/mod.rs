@@ -2934,8 +2934,7 @@ impl App {
     fn previous_dir(&self) -> Option<std::path::PathBuf> {
         let t = self.tabs.get(self.active)?;
         let shell = &self.panes.get(&t.focused)?.own().shell;
-        let here = std::env::var("COMPUTERNAME").unwrap_or_default();
-        if shell.host.as_ref().is_some_and(|h| !h.eq_ignore_ascii_case(&here) && !h.eq_ignore_ascii_case("localhost")) {
+        if shell.host.as_ref().is_some_and(|h| !self.host_is_this_machine(h)) {
             return None;
         }
         profile::local_path(shell.cwd.as_deref()?)

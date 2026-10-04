@@ -73,6 +73,8 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::SlowScan => Answer::Button(1),
         // Keep Both: a closed window never replaces a file (P9).
         Then::SshKeepOrReplace { .. } => Answer::Button(0),
+        // Cancel: a closed window never uploads the person's files (P9).
+        Then::SshUpload { .. } => Answer::Button(1),
         // No, Deny, Don't Copy and Discard Local Changes.
         Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::PrefsCopyNow | Then::PrefsOverwrite => Answer::Button(1),
         _ => Answer::Button(fallback),
@@ -191,6 +193,10 @@ pub(super) enum Then {
     /// taken: Keep Both (0) or Replace (1, never remembered). Never dropped by the queue's cap
     /// (it holds a finished temp file and a job); closed or dropped it keeps both (P9).
     SshKeepOrReplace { job: u64 },
+    /// "OK to copy ... to ...?" for an Alt-drop on `pane`: OK (0) uploads each file to the remote
+    /// directory `to`; Cancel (1) does nothing. A closed window cancels and a dropped ask is
+    /// dropped (P9: a close never sends local files). Never capped.
+    SshUpload { pane: crate::layout::PaneId, files: Vec<std::path::PathBuf>, to: crate::ssh_files::ScpPath },
 }
 
 impl Then {
@@ -460,6 +466,11 @@ impl App {
                 }
             }
             Then::SshKeepOrReplace { job } => self.ssh_keep_or_replace(job, index),
+            Then::SshUpload { pane, files, to } => {
+                if index == 0 {
+                    self.ssh_upload_confirmed(pane, files, to);
+                }
+            }
         }
     }
 }
@@ -581,5 +592,21 @@ mod tests {
         assert_eq!(queue.back().map(|q| &q.then), Some(&Then::SshKeepOrReplace { job: 7 }));
         // The cap still holds for every capped ask.
         assert!(push_capped(&mut queue, ask("H", "T", &["OK"], None, Kind::Persistent, Then::Nothing)).is_some());
+    }
+
+    /// An Alt-drop's "OK to copy" question (P9): a closed window is Cancel, never OK; the queue's
+    /// cap never drops it; a dropped ask uploads nothing.
+    #[test]
+    fn ssh_upload_close_is_cancel() {
+        use crate::warnings::Kind;
+        let to = crate::ssh_files::ScpPath { path: "/home/u".into(), hostname: "h".into(), username: "u".into() };
+        let then = Then::SshUpload { pane: 3, files: vec![std::path::PathBuf::from(r"C:\a.txt")], to };
+        // The actions window's own close answer is the first button (OK): it must not reach us.
+        assert_eq!(on_close(&then, 0), Answer::Button(1));
+        assert_eq!(on_close(&then, 1), Answer::Button(1));
+        let a = ask("", "OK to copy", &[crate::api_auth::OK, crate::api_auth::CANCEL], None, Kind::Persistent, then);
+        assert_eq!(a.spec.cancel, Some(1), "Escape is Cancel");
+        let mut queue: VecDeque<Ask> = (0..LIMIT).map(|_| ask("H", "T", &["OK"], None, Kind::Persistent, Then::Nothing)).collect();
+        assert!(push_capped(&mut queue, a).is_none());
     }
 }

@@ -26,6 +26,17 @@ pub const CHUNK: u64 = 4096;
 pub const MAX_IN_FLIGHT: usize = 8;
 /// Chunked downloads running at once (`CD:447-450`).
 pub const MAX_DOWNLOADS: usize = 2;
+/// An upload appends this many bytes per command (`FT:348-418`).
+pub const UPLOAD_CHUNK: usize = 1024;
+/// Names an upload tries for a free one: `f`, `f (2)` ... `f (100)` (`FT:348-418`).
+pub const NAME_TRIES: usize = 100;
+/// `FT:348-418`.
+pub const TOO_MANY: &str = "Too many iterations to find a valid file name on remote host for upload";
+
+/// The hidden name a file is uploaded under before it moves into place.
+pub fn upload_temp(dest: &str, uuid: &str) -> String {
+    format!("{dest}.uploading-{uuid}")
+}
 
 pub type JobId = u64;
 
@@ -96,6 +107,20 @@ enum State {
     Stream { offset: u64, size: Option<u64> },
     Chunks(Chunks),
     Unzipping,
+    /// An upload's `create` is out.
+    UpCreate,
+    /// An upload's `append` of the chunk at `offset` is out.
+    UpAppend { offset: usize },
+    /// An upload's name probe: the stat of try `n` (0 based) is out.
+    UpProbe { n: usize },
+    /// An upload's `mv` onto `name` is out.
+    UpMove { name: String },
+}
+
+/// What an upload keeps (the data is read whole; the caller caps it, P19).
+struct Upload {
+    temp: String,
+    data: Vec<u8>,
 }
 
 struct Job {
@@ -109,6 +134,7 @@ struct Job {
     fetch_path: String,
     holds_slot: bool,
     state: State,
+    up: Option<Upload>,
 }
 
 pub struct Transfers {
@@ -146,9 +172,23 @@ impl Transfers {
     fn add(&mut self, pane: PaneId, remote: &str, host: &str, chunked: bool) -> (JobId, Vec<Action>) {
         let id = self.next_job;
         self.next_job += 1;
-        let job = Job { pane, path: remote.to_string(), host: host.to_string(), chunked, zip: None, fetch_path: remote.to_string(), holds_slot: false, state: State::Stat };
+        let job = Job { pane, path: remote.to_string(), host: host.to_string(), chunked, zip: None, fetch_path: remote.to_string(), holds_slot: false, state: State::Stat, up: None };
         let mut out = Vec::new();
         self.send(id, &job, FileSub::Stat { path: remote.to_string() }, &mut out);
+        self.jobs.insert(id, job);
+        (id, out)
+    }
+
+    /// Alt-drop: `data` goes to `dest` over the conductor (`FT:348-418`): a hidden temp is
+    /// created, appended in 1024-byte chunks, a free name is probed with `stat` and the temp
+    /// moves there. Any failure removes the temp. No slot: uploads are not queued.
+    pub fn upload(&mut self, pane: PaneId, dest: &str, data: Vec<u8>, uuid: &str) -> (JobId, Vec<Action>) {
+        let id = self.next_job;
+        self.next_job += 1;
+        let temp = upload_temp(dest, uuid);
+        let job = Job { pane, path: dest.to_string(), host: String::new(), chunked: true, zip: None, fetch_path: dest.to_string(), holds_slot: false, state: State::UpCreate, up: Some(Upload { temp: temp.clone(), data }) };
+        let mut out = Vec::new();
+        self.send(id, &job, FileSub::Create { path: temp, content: Vec::new() }, &mut out);
         self.jobs.insert(id, job);
         (id, out)
     }
@@ -220,7 +260,9 @@ impl Transfers {
 
     /// Ends a job: its remote zip is removed, its tags forgotten, its slot freed. The caller pumps.
     fn end(&mut self, id: JobId, j: Job, result: Result<Outcome, String>, out: &mut Vec<Action>) {
-        let fire = j.zip.map(|z| Action::Fire { pane: j.pane, sub: FileSub::Rm { path: z, recursive: false } });
+        // A failed upload removes its hidden temp (a finished one has moved it).
+        let leftover = j.up.as_ref().filter(|_| result.is_err()).map(|u| u.temp.clone());
+        let fire = j.zip.or(leftover).map(|z| Action::Fire { pane: j.pane, sub: FileSub::Rm { path: z, recursive: false } });
         let done = Action::Done { job: id, result };
         // A chunked download removes the zip before it reports (`FT:150-172`), a stream after (`FT:338-342`).
         if j.chunked {
@@ -302,6 +344,9 @@ impl Transfers {
 
     /// Runs the step for `tag`'s reply on the job's state.
     fn step(&mut self, id: JobId, j: &mut Job, tag: u64, content: &str, status: i32, out: &mut Vec<Action>) -> Flow {
+        if j.up.is_some() {
+            return self.step_upload(id, j, status, out);
+        }
         if let Err(e) = check(status) {
             return fail(e.text());
         }
@@ -326,6 +371,71 @@ impl Transfers {
                 Flow::Keep
             }
         }
+    }
+
+    /// An upload's reply (`FT:348-418`). A stat that errors counts as free (`try?`); the `mv`
+    /// reply's content is ignored (iTerm2 parses it and uses nothing from it).
+    fn step_upload(&mut self, id: JobId, j: &mut Job, status: i32, out: &mut Vec<Action>) -> Flow {
+        let state = std::mem::replace(&mut j.state, State::Stat);
+        if let State::UpProbe { n } = state {
+            if status == 0 {
+                // Taken: the next name, or give up after `NAME_TRIES` stats.
+                if n + 1 >= NAME_TRIES {
+                    return fail(TOO_MANY);
+                }
+                return self.probe(id, j, n + 1, out);
+            }
+            let (temp, name) = (j.up.as_ref().map(|u| u.temp.clone()).unwrap_or_default(), Self::upload_name(&j.path, n));
+            j.state = State::UpMove { name: name.clone() };
+            self.send(id, j, FileSub::Mv { source: temp, dest: name }, out);
+            return Flow::Keep;
+        }
+        if let Err(e) = check(status) {
+            return fail(e.text());
+        }
+        match state {
+            State::UpCreate => self.upload_next(id, j, 0, out),
+            State::UpAppend { offset } => {
+                let len = j.up.as_ref().map_or(0, |u| UPLOAD_CHUNK.min(u.data.len() - offset));
+                out.push(Action::Sent { job: id, bytes: len as u64 });
+                self.upload_next(id, j, offset + len, out)
+            }
+            State::UpMove { name } => {
+                if let Some(u) = j.up.as_mut() {
+                    u.temp.clear();
+                }
+                Flow::End(Ok(Outcome::Uploaded { remote_name: name }))
+            }
+            other => {
+                j.state = other;
+                Flow::Keep
+            }
+        }
+    }
+
+    /// The next chunk at `offset`, or the name probe when the data is all sent.
+    fn upload_next(&mut self, id: JobId, j: &mut Job, offset: usize, out: &mut Vec<Action>) -> Flow {
+        let Some(u) = j.up.as_ref() else { return fail(FileError::Internal.text()) };
+        if offset >= u.data.len() {
+            return self.probe(id, j, 0, out);
+        }
+        let end = (offset + UPLOAD_CHUNK).min(u.data.len());
+        let sub = FileSub::Append { path: u.temp.clone(), content: u.data[offset..end].to_vec() };
+        j.state = State::UpAppend { offset };
+        self.send(id, j, sub, out);
+        Flow::Keep
+    }
+
+    /// `dest`, then `dest (2)` ... (`FT:348-418`).
+    fn upload_name(dest: &str, n: usize) -> String {
+        if n == 0 { dest.to_string() } else { format!("{dest} ({})", n + 1) }
+    }
+
+    fn probe(&mut self, id: JobId, j: &mut Job, n: usize, out: &mut Vec<Action>) -> Flow {
+        j.state = State::UpProbe { n };
+        let path = Self::upload_name(&j.path, n);
+        self.send(id, j, FileSub::Stat { path }, out);
+        Flow::Keep
     }
 
     /// The first stat (`FT:11-60`, `FT:130-172`).
@@ -824,5 +934,99 @@ mod tests {
         assert!(!has_room(RESERVE + 1023, 1024));
         assert!(!has_room(RESERVE, 1));
         assert!(!has_room(u64::MAX, u64::MAX), "no overflow");
+    }
+
+    fn append(temp: &str, n: usize) -> FileSub {
+        FileSub::Append { path: temp.into(), content: vec![b'x'; n] }
+    }
+    fn mv(source: &str, dest: &str) -> FileSub {
+        FileSub::Mv { source: source.into(), dest: dest.into() }
+    }
+
+    #[test]
+    fn upload_follows_iterm2() {
+        let mut t = Transfers::new();
+        let temp = "/tmp/f.uploading-U1";
+        let (job, acts) = t.upload(P, "/tmp/f", vec![b'x'; 2500], "U1");
+        assert_eq!(upload_temp("/tmp/f", "U1"), temp);
+        let (tag, sub) = only_send(&acts);
+        assert_eq!(sub, FileSub::Create { path: temp.into(), content: vec![] });
+        let (tag, sub) = only_send(&t.reply(job, tag, "", 0));
+        assert_eq!(sub, append(temp, 1024));
+        let acts = t.reply(job, tag, "", 0);
+        assert_eq!(acts[0], Action::Sent { job, bytes: 1024 });
+        let (tag, sub) = only_send(&acts);
+        assert_eq!(sub, append(temp, 1024));
+        let acts = t.reply(job, tag, "", 0);
+        assert_eq!(acts[0], Action::Sent { job, bytes: 1024 });
+        let (tag, sub) = only_send(&acts);
+        assert_eq!(sub, append(temp, 452));
+        let acts = t.reply(job, tag, "", 0);
+        assert_eq!(acts[0], Action::Sent { job, bytes: 452 });
+        let (tag, sub) = only_send(&acts);
+        assert_eq!(sub, stat("/tmp/f"));
+        // Taken: the next name.
+        let (tag, sub) = only_send(&t.reply(job, tag, &json_file("/tmp/f", 1), 0));
+        assert_eq!(sub, stat("/tmp/f (2)"));
+        // Free (status 2): the move.
+        let (tag, sub) = only_send(&t.reply(job, tag, "", 2));
+        assert_eq!(sub, mv(temp, "/tmp/f (2)"));
+        // The mv reply's content is ignored, junk or the framer's stat JSON.
+        let mut again = Transfers::new();
+        let (j2, a2) = again.upload(P, "/tmp/f", vec![], "U1");
+        let (tg, _) = only_send(&a2);
+        let (tg, sub) = only_send(&again.reply(j2, tg, "", 0));
+        assert_eq!(sub, stat("/tmp/f"), "an empty upload goes from create to stat");
+        let (tg, sub) = only_send(&again.reply(j2, tg, "", -1));
+        assert_eq!(sub, mv(temp, "/tmp/f"), "a stat answered -1 counts as free");
+        assert_eq!(again.reply(j2, tg, "junk", 0), [done(j2, Ok(Outcome::Uploaded { remote_name: "/tmp/f".into() }))]);
+        let json = r#"{"absolutePath":"/tmp/f (2)","kind":{"file":{"_0":{"size":2500}}}}"#;
+        assert_eq!(t.reply(job, tag, json, 0), [done(job, Ok(Outcome::Uploaded { remote_name: "/tmp/f (2)".into() }))]);
+        assert!(!t.is_live(job));
+    }
+
+    #[test]
+    fn upload_failures_follow_iterm2() {
+        let temp = "/tmp/f.uploading-U1";
+        let failed = |job, why: &str| [Action::Fire { pane: P, sub: rm(temp) }, done(job, Err(why))];
+        // Create status 1, an append -1, a mv status 1.
+        let mut t = Transfers::new();
+        let (job, acts) = t.upload(P, "/tmp/f", vec![b'x'; 10], "U1");
+        let (tag, _) = only_send(&acts);
+        assert_eq!(t.reply(job, tag, "", 1), failed(job, "File not found"));
+        let (job, acts) = t.upload(P, "/tmp/f", vec![b'x'; 10], "U1");
+        let (tag, _) = only_send(&acts);
+        let (tag, _) = only_send(&t.reply(job, tag, "", 0));
+        assert_eq!(t.reply(job, tag, "", -1), failed(job, "Connection closed"));
+        let (job, acts) = t.upload(P, "/tmp/f", vec![], "U1");
+        let (tag, _) = only_send(&acts);
+        let (tag, _) = only_send(&t.reply(job, tag, "", 0));
+        let (tag, _) = only_send(&t.reply(job, tag, "", 2));
+        assert_eq!(t.reply(job, tag, "", 1), failed(job, "File not found"));
+        // Every name taken: exactly 100 stats.
+        let (job, acts) = t.upload(P, "/tmp/f", vec![], "U1");
+        let (tag, _) = only_send(&acts);
+        let (mut tag, mut sub) = only_send(&t.reply(job, tag, "", 0));
+        let mut asked = vec![];
+        let end = loop {
+            let FileSub::Stat { path } = &sub else { panic!("{sub:?}") };
+            asked.push(path.clone());
+            let acts = t.reply(job, tag, &json_file(path, 1), 0);
+            if sends(&acts).is_empty() {
+                break acts;
+            }
+            (tag, sub) = only_send(&acts);
+        };
+        assert_eq!(asked.len(), 100);
+        assert_eq!((asked[0].as_str(), asked[1].as_str(), asked[99].as_str()), ("/tmp/f", "/tmp/f (2)", "/tmp/f (100)"));
+        assert_eq!(end, failed(job, TOO_MANY));
+        assert_eq!(TOO_MANY, "Too many iterations to find a valid file name on remote host for upload");
+    }
+
+    #[test]
+    fn a_local_failure_removes_the_upload_temp() {
+        let mut t = Transfers::new();
+        let (job, _) = t.upload(P, "/tmp/f", vec![b'x'; 10], "U1");
+        assert_eq!(t.fail(job, "x"), [Action::Fire { pane: P, sub: rm("/tmp/f.uploading-U1") }, done(job, Err("x"))]);
     }
 }

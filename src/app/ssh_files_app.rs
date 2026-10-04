@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::conductor::{Command, Conductor, Handler};
-use crate::ssh_files::FileSub;
+use crate::ssh_files::{self, FileSub, ScpPath};
 use crate::ssh_local::{self as local, Local, Place};
 use crate::ssh_transfer::{has_room, Action, Outcome};
 use super::files_ui::shown_name;
@@ -116,8 +116,7 @@ impl App {
                         work.extend(self.ssh_transfers.fail(job, &why));
                     }
                 }
-                // Uploads (Task 5).
-                Action::Sent { .. } => {}
+                Action::Sent { job, bytes } => self.ssh_sent(job, bytes),
                 Action::Unzip { job } => {
                     if let Some(why) = self.ssh_unzip(job) {
                         work.extend(self.ssh_transfers.unzipped(job, Err(why)));
@@ -161,8 +160,15 @@ impl App {
         }
         let mut f = std::fs::OpenOptions::new().append(true).open(l.place.temp()).map_err(|e| e.to_string())?;
         f.write_all(bytes).map_err(|e| e.to_string())?;
-        l.written += bytes.len() as u64;
-        // A percent step of ten, or a megabyte when there is no total.
+        self.ssh_progress(job, bytes.len() as u64);
+        Ok(())
+    }
+
+    /// `n` more bytes moved: the banner follows a percent step of ten, or a megabyte when
+    /// there is no total.
+    fn ssh_progress(&mut self, job: u64, n: u64) {
+        let Some(l) = self.ssh_locals.get_mut(&job) else { return };
+        l.written += n;
         let step = l.percent().map_or(l.written >> 20, |p| p / 10);
         if l.shown == 0 || step > l.shown - 1 {
             l.shown = step + 1;
@@ -170,7 +176,11 @@ impl App {
             self.banners.set("transfer", text);
             self.redraw();
         }
-        Ok(())
+    }
+
+    /// An upload's chunk was acknowledged (`Sent`): the banner moves.
+    fn ssh_sent(&mut self, job: u64, bytes: u64) {
+        self.ssh_progress(job, bytes);
     }
 
     /// Unzips a folder download's zip on a worker thread (P11: a remote-sized archive never
@@ -237,10 +247,139 @@ impl App {
         self.ssh_transfer_apply(actions);
     }
 
+    /// The scp path of `file` for the pane's current host, user and directory (`scpPathForFile`;
+    /// Tandem keeps no per-line host). `""` is the working directory itself. None when the pane
+    /// reports no host, user or directory, or its host is this machine.
+    pub(super) fn scp_path_for(&self, pane: PaneId, file: &str) -> Option<ScpPath> {
+        let shell = &self.panes.get(&pane)?.own().shell;
+        let local = shell.host.as_deref().is_some_and(|h| self.host_is_this_machine(h));
+        let cwd = shell.cwd.as_deref().and_then(crate::ssh_jumps::clean_directory);
+        ssh_files::scp_path(file, cwd.as_deref(), shell.host.as_deref(), shell.user.as_deref(), local)
+    }
+
+    /// Whether the pane's framing conductor can take a transfer to `to` (`canTransferFilesTo`).
+    pub(super) fn transfer_pane(&self, pane: PaneId, to: &ScpPath) -> bool {
+        self.framing(pane).is_some_and(|c| ssh_files::can_transfer(true, &c.identity(), c.discovered_hostname.as_deref(), to))
+    }
+
+    /// Alt-drop (`TV:5210-5271`): with Alt held over a session whose conductor can take the
+    /// files, asks "OK to copy ... to ...?" and uploads on OK. False when it is not an upload
+    /// (Alt up, no framing conductor, or a host the conductor is not): the paths paste as
+    /// before (iTerm2 would use scp, which Tandem does not have).
+    pub(super) fn ssh_drop(&mut self, pane: PaneId, files: Vec<String>) -> bool {
+        // The Alt read, as everywhere (`GetKeyState(0x12)`).
+        if unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x12) } >= 0 {
+            return false;
+        }
+        self.ssh_drop_asked(pane, files)
+    }
+
+    /// The drop with Alt already known to be held.
+    fn ssh_drop_asked(&mut self, pane: PaneId, files: Vec<String>) -> bool {
+        let Some(to) = self.scp_path_for(pane, "") else { return false };
+        if files.is_empty() || !self.transfer_pane(pane, &to) {
+            return false;
+        }
+        // A network path is never read (P19): it is refused now, with the others left to ask.
+        let (ok, refused): (Vec<String>, Vec<String>) = files.into_iter().partition(|f| ssh_files::upload_refused(f, None).is_none());
+        for f in &refused {
+            let name = std::path::Path::new(f).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            Self::ssh_notify(&local::upload_failed(&name), &ssh_files::upload_refused(f, None).unwrap_or_default());
+        }
+        if ok.is_empty() {
+            return true;
+        }
+        // The path, host and user are what the remote reported: cleaned before the person reads them (P14).
+        let shown = ScpPath { path: shown_name(&to.path), hostname: shown_name(&to.hostname), username: shown_name(&to.username) };
+        let names: Vec<String> = ok.iter().map(|f| shown_name(f)).collect();
+        let text = ssh_files::confirm_upload(&names, &shown);
+        let then = super::scripts_alerts::Then::SshUpload { pane, files: ok.into_iter().map(std::path::PathBuf::from).collect(), to };
+        let a = super::scripts_alerts::ask("", &text, &[crate::api_auth::OK, crate::api_auth::CANCEL], None, crate::warnings::Kind::Persistent, then);
+        self.ask_scripts(a);
+        true
+    }
+
+    /// OK on the drop question: each file is its own job, uploaded to `<to.path>/<file name>`
+    /// (iTerm2 does not chain them).
+    pub(super) fn ssh_upload_confirmed(&mut self, pane: PaneId, files: Vec<std::path::PathBuf>, to: ScpPath) {
+        for f in files {
+            let Some(name) = f.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
+            let dest = ScpPath { path: crate::remote_file::posix_join(&to.path, &name), ..to.clone() };
+            self.ssh_upload(pane, &f, &dest);
+        }
+    }
+
+    /// Uploads the local file or folder `file` to the remote path `to.path`. A folder is
+    /// packed into a gzipped tar sent to `<path>.tgz` (iTerm2's; not unpacked there). Refused,
+    /// with a notification, when it is a network path, not a regular file or folder, or over
+    /// 64 MiB (P19); the file is read only below that cap. A read error notifies at once.
+    pub(super) fn ssh_upload(&mut self, pane: PaneId, file: &std::path::Path, to: &ScpPath) {
+        use std::io::Read;
+        let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let fail = |why: &str| Self::ssh_notify(&local::upload_failed(&name), why);
+        if let Some(why) = ssh_files::upload_refused(&file.to_string_lossy(), None) {
+            return fail(&why);
+        }
+        // The pane may have changed host or lost its conductor while the question showed.
+        if !self.transfer_pane(pane, to) {
+            return fail(crate::ssh_files::FileError::ConnectionClosed.text());
+        }
+        let Some(id) = self.framing(pane).map(|c| c.identity()) else { return };
+        let host = if id.hostname.is_empty() { id.host.clone() } else { id.hostname.clone() };
+        let meta = match std::fs::symlink_metadata(file) {
+            Ok(m) => m,
+            Err(e) => return fail(&e.to_string()),
+        };
+        let too_big = || ssh_files::upload_refused("", Some(ssh_files::UPLOAD_MAX + 1)).unwrap_or_default();
+        let (data, dest) = if meta.is_dir() {
+            match local::tree_over(file, ssh_files::UPLOAD_MAX) {
+                Ok(false) => {}
+                Ok(true) => return fail(&too_big()),
+                Err(e) => return fail(&e.to_string()),
+            }
+            match crate::prompted::upload_archive(&[file.to_path_buf()]) {
+                Ok(a) if a.len() as u64 <= ssh_files::UPLOAD_MAX => (a, format!("{}.tgz", to.path)),
+                Ok(_) => return fail(&too_big()),
+                Err(e) => return fail(&e),
+            }
+        } else if meta.is_file() {
+            if let Some(why) = ssh_files::upload_refused("", Some(meta.len())) {
+                return fail(&why);
+            }
+            // Read whole, but never past the cap even if the file grew since the check.
+            let mut data = Vec::new();
+            let read = std::fs::File::open(file).and_then(|f| f.take(ssh_files::UPLOAD_MAX + 1).read_to_end(&mut data));
+            if let Err(e) = read {
+                return fail(&e.to_string());
+            }
+            if data.len() as u64 > ssh_files::UPLOAD_MAX {
+                return fail(&too_big());
+            }
+            (data, to.path.clone())
+        } else {
+            return fail("Not a regular file");
+        };
+        let mut l = Local::new(Place::Downloads { temp: std::path::PathBuf::new(), dir: std::path::PathBuf::new() }, pane, &dest, &host, id.username.as_deref());
+        l.short_name = name.clone();
+        l.upload = true;
+        l.total = Some(data.len() as u64);
+        let (job, actions) = self.ssh_transfers.upload(pane, &dest, data, &uuid::Uuid::new_v4().to_string().to_uppercase());
+        self.ssh_locals.insert(job, l);
+        self.ssh_transfer_apply(actions);
+    }
+
     /// A job ended. A failure removes its temp and notifies with the reason; a download into
     /// Downloads asks Keep Both or Replace when the plain name is taken, then finishes.
     pub(super) fn ssh_transfer_done(&mut self, job: u64, result: Result<Outcome, String>) {
         self.banners.clear("transfer");
+        if self.ssh_locals.get(&job).is_some_and(|l| l.upload) {
+            let l = self.ssh_locals.remove(&job).unwrap();
+            match result {
+                Ok(_) => Self::ssh_notify(&local::upload_finished(&l.short_name), ""),
+                Err(why) => Self::ssh_notify(&local::upload_failed(&l.short_name), &why),
+            }
+            return;
+        }
         let Some(l) = self.ssh_locals.get_mut(&job) else { return };
         let outcome = match result {
             Ok(o) => o,

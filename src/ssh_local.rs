@@ -173,6 +173,27 @@ impl Local {
     }
 }
 
+/// Whether the files under `dir` (symlinks not followed) add up to more than `cap` bytes; the
+/// walk stops as soon as they do, so a huge folder is never read through (P19).
+pub fn tree_over(dir: &Path, cap: u64) -> std::io::Result<bool> {
+    let (mut total, mut stack) = (0u64, vec![dir.to_path_buf()]);
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d)? {
+            let e = e?;
+            let m = std::fs::symlink_metadata(e.path())?;
+            if m.is_dir() {
+                stack.push(e.path());
+            } else if m.is_file() {
+                total = total.saturating_add(m.len());
+                if total > cap {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// The banner text (Tandem's): "Downloading a.txt from h: 25%", or the byte count with no total.
 pub fn progress_text(l: &Local) -> String {
     let (verb, prep) = if l.upload { ("Uploading", "to") } else { ("Downloading", "from") };
