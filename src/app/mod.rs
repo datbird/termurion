@@ -1243,6 +1243,12 @@ pub fn run() {
     // "Load settings from a custom folder or URL": the location's settings replace the local
     // ones before anything reads them; its questions and failures show with the first window.
     let (prefs_saved, prefs_startup) = prefs_ui::load_at_start(&mut globals, &mut store, &prefs_ui::curl_fetch);
+    // iTerm2 drops bindings whose profile is gone when it loads them (P11).
+    if crate::url_schemes::prune_globals(&mut globals, &store) {
+        if let Err(e) = globals.save() {
+            banners.set("globals", format!("Could not save settings: {e}"));
+        }
+    }
     let prefs_launch_folder = Some(globals.string(crate::remote_prefs::FOLDER_KEY));
     // The warnings answered automatically in earlier runs (iTerm2 reads its catalog at start).
     let suppressed = crate::warnings::Catalog::from_value(globals.get(crate::warnings::CATALOG_KEY).as_ref());
@@ -3084,7 +3090,10 @@ impl App {
                 for s in self.aps.values_mut() {
                     s.mark_dirty();
                 }
-                if matches!(edit, Edit::Imported(_)) {
+                // A deleted profile's ssh: binding goes with it, and an import's iTerm2 Guids that
+                // match nothing are dropped (P11).
+                let pruned = crate::url_schemes::prune_globals(&mut self.globals, &self.store);
+                if matches!(edit, Edit::Imported(_)) || pruned {
                     self.save_globals();
                 }
                 // Saving waits for a pause in editing, so a color drag does not write the file every frame.
@@ -5094,10 +5103,15 @@ impl ApplicationHandler<UserEvent> for App {
                     let setup = slot.as_mut().and_then(|s| s.configure_status_bar.take());
                     // Configure SSH's help button opens its page in the browser.
                     let url = slot.as_mut().and_then(|s| s.open_url.take());
+                    // Profiles > General's URL schemes menu asks before Tandem becomes the handler.
+                    let scheme_ask = slot.as_mut().and_then(|s| s.scheme_ask.take());
                     self.apply_edit(edit);
                     self.settings_warnings_answered(answered);
                     if let Some(guid) = setup {
                         self.open_status_setup(statusbar_ui::SetupTarget::Shared(guid), None, false, event_loop);
+                    }
+                    if let Some(a) = scheme_ask {
+                        self.ask_scheme(a);
                     }
                     if let Some(url) = url {
                         if let Err(e) = semantic_ui::shell_open(&url, None, false) {

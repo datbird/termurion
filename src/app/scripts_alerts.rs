@@ -74,7 +74,7 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         // Keep Both: a closed window never replaces a file (P9).
         Then::SshKeepOrReplace { .. } => Answer::Button(0),
         // Cancel: a closed window never uploads the person's files (P9).
-        Then::SshUpload { .. } => Answer::Button(1),
+        Then::SshUpload { .. } | Then::BindScheme { .. } => Answer::Button(1),
         // No, Deny, Don't Copy and Discard Local Changes.
         Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::PrefsCopyNow | Then::PrefsOverwrite => Answer::Button(1),
         _ => Answer::Button(fallback),
@@ -197,6 +197,10 @@ pub(super) enum Then {
     /// directory `to`; Cancel (1) does nothing. A closed window cancels and a dropped ask is
     /// dropped (P9: a close never sends local files). Never capped.
     SshUpload { pane: crate::layout::PaneId, files: Vec<std::path::PathBuf>, to: crate::ssh_files::ScpPath },
+    /// "Tandem is not the default handler for ssh. ...": OK (0) registers Tandem for the user
+    /// and binds the scheme to the profile `guid` once Windows reports Tandem as the handler;
+    /// Cancel (1) does nothing. A closed window cancels: a close never changes Windows.
+    BindScheme { guid: String, scheme: String },
 }
 
 impl Then {
@@ -280,6 +284,30 @@ impl App {
     /// Whether an ask that `about` picks is queued or showing.
     pub(super) fn alert_waits(&self, about: impl Fn(&Then) -> bool) -> bool {
         waits(self.scripts_alert.as_ref().map(|(_, a)| a), &self.scripts_alerts, about)
+    }
+
+    /// Queues the not-default question for a scheme the profiles' menu chose.
+    pub(super) fn ask_scheme(&mut self, a: crate::settings_ui::SchemeAsk) {
+        let ask = ask(&a.text, &a.info, &[crate::api_auth::OK, crate::api_auth::CANCEL], None, Kind::Persistent, Then::BindScheme { guid: a.guid, scheme: a.scheme });
+        self.ask_scripts(ask);
+    }
+
+    /// The question's OK: Windows is changed only here, only under HKCU, through the registry
+    /// seam; the scheme is bound only when Tandem then is the handler (else Tandem's text).
+    fn bind_scheme_confirmed(&mut self, guid: &str, scheme: &str) {
+        if self.store.get(guid).is_none() {
+            return;
+        }
+        let Ok(exe) = std::env::current_exe() else { return };
+        let mut reg = crate::url_schemes::system();
+        let mut table = self.globals.table(crate::url_schemes::HANDLERS_KEY);
+        match crate::url_schemes::register_and_bind(&mut table, reg.as_mut(), scheme, guid, &exe) {
+            Ok(()) => {
+                self.globals.set(crate::url_schemes::HANDLERS_KEY, toml::Value::Table(table));
+                self.save_globals();
+            }
+            Err(e) => self.banners.set("url-schemes", e),
+        }
     }
 
     /// Opens the next queued alert when none shows.
@@ -466,6 +494,11 @@ impl App {
                 }
             }
             Then::SshKeepOrReplace { job } => self.ssh_keep_or_replace(job, index),
+            Then::BindScheme { guid, scheme } => {
+                if index == 0 {
+                    self.bind_scheme_confirmed(&guid, &scheme);
+                }
+            }
             Then::SshUpload { pane, files, to } => {
                 if index == 0 {
                     self.ssh_upload_confirmed(pane, files, to);
