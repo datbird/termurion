@@ -355,8 +355,10 @@ impl App {
     /// new tmux window opens in a new Tandem window or beside its old one. True when it was
     /// a tmux pane (of a tab with other panes).
     /// A new window opens at `at` when given (a title bar drop, P20), else a little right of and
-    /// below this one.
-    pub(super) fn tmux_break(&mut self, pane: PaneId, to_tab: bool, at: Option<(i32, i32)>) -> bool {
+    /// below this one. `beside`: the tmux window of the destination Tandem window the tab goes
+    /// next to (a drop on another window's tab bar, `PseudoTerminal.m:8651-8659`); None keeps
+    /// the pane's own window.
+    pub(super) fn tmux_break(&mut self, pane: PaneId, to_tab: bool, at: Option<(i32, i32)>, beside: Option<u32>) -> bool {
         let Some((gw, p, window)) = self.tmux_of(pane) else { return false };
         if self.tabs.iter().find(|t| t.layout.panes().contains(&pane)).is_none_or(|t| t.layout.panes().len() < 2) {
             return false;
@@ -364,7 +366,7 @@ impl App {
         // A new window opens a little right of and below this one (iTerm2's +10, -10).
         let point = (!to_tab).then(|| at.or_else(|| self.gpu.as_ref().and_then(|g| window_geometry(&g.window)).map(|g| g.0).map(|(x, y)| (x + 10, y + 10)))).flatten();
         if let Some(t) = self.tmux.get_mut(&gw) {
-            t.ctl.break_pane(p, to_tab.then_some(window), point, &mut t.gw);
+            t.ctl.break_pane(p, to_tab.then_some(beside.unwrap_or(window)), point, &mut t.gw);
         }
         self.tmux_flush(gw);
         true

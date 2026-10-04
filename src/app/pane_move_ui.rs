@@ -50,6 +50,48 @@ pub(super) fn cancel_on(event: PickEvent, source: PaneId) -> bool {
     }
 }
 
+/// The tmux window a pane dropped on a tab bar goes next to (`PseudoTerminal.m:8651-8659`
+/// breaks it out into the destination window): the tab at the drop `index` when it belongs to
+/// tmux session `gw`, else the nearest such tab at or after it, else the nearest before.
+/// `tabs` is each destination tab's tmux session and window (None: not a tmux tab). None when
+/// the window has no tab of that session (the drop is refused).
+pub(super) fn tmux_drop_sibling(tabs: &[Option<(PaneId, u32)>], index: usize, gw: PaneId) -> Option<u32> {
+    let mine = |t: &Option<(PaneId, u32)>| t.filter(|(g, _)| *g == gw).map(|(_, w)| w);
+    let at = index.min(tabs.len());
+    tabs[at..].iter().find_map(mine).or_else(|| tabs[..at].iter().rev().find_map(mine))
+}
+
+/// What can end a title bar drag without its release (iTerm2's drag session ends on Esc and
+/// when the window resigns key; a lost mouse capture shows as a move with the button up).
+#[derive(Clone, Copy)]
+pub(super) enum DragLost {
+    FocusLost,
+    Escape,
+    Moved { left_down: bool },
+}
+
+/// Whether `event` ends a title bar drag.
+pub(super) fn drag_lost(event: DragLost) -> bool {
+    match event {
+        DragLost::FocusLost | DragLost::Escape => true,
+        DragLost::Moved { left_down } => !left_down,
+    }
+}
+
+/// Ends a title bar drag with nothing moved: the drag and its pick overlay go. True when
+/// anything was on.
+pub(super) fn end_title_drag(drag: &mut Drag, pick: &mut Option<PaneMove>) -> bool {
+    let was_drag = matches!(drag, Drag::Title { .. });
+    if was_drag {
+        *drag = Drag::None;
+    }
+    let was_pick = pick.as_ref().is_some_and(|pm| pm.drag);
+    if was_pick {
+        *pick = None;
+    }
+    was_drag || was_pick
+}
+
 /// A title bar drag begins once the pointer is this many points from the press
 /// (`SessionTitleView mouseDragged:`; the system's drag distance, scaled).
 pub(super) const DRAG_THRESHOLD: f32 = 4.0;
@@ -235,6 +277,17 @@ impl App {
             self.redraw();
             self.redraw_all();
         }
+    }
+
+    /// A title bar drag whose release will not come (`drag_lost`): the drag and every overlay
+    /// go and nothing moves. True when a drag was on.
+    pub(super) fn title_drag_lost(&mut self, event: DragLost) -> bool {
+        if !drag_lost(event) || !end_title_drag(&mut self.drag, &mut self.pane_move) {
+            return false;
+        }
+        self.redraw();
+        self.redraw_all();
+        true
     }
 
     /// An event that may end the pick (`cancel_on`): a new session by the person (P15), the
@@ -650,6 +703,39 @@ mod tests {
     use super::*;
     use crate::layout::{Layout, Tree};
     use crate::pane_move::Drop as Plan;
+
+    #[test]
+    fn tmux_drop_goes_beside_a_tab_of_its_session() {
+        // Destination tabs: a plain tab, session 7's window 3, session 9's window 4, session 7's window 5.
+        let tabs = [None, Some((7, 3)), Some((9, 4)), Some((7, 5))];
+        assert_eq!(tmux_drop_sibling(&tabs, 1, 7), Some(3), "the tab at the slot");
+        assert_eq!(tmux_drop_sibling(&tabs, 2, 7), Some(5), "the nearest after it");
+        assert_eq!(tmux_drop_sibling(&tabs, 4, 7), Some(5), "past the end: the last before");
+        assert_eq!(tmux_drop_sibling(&tabs, 0, 9), Some(4));
+        assert_eq!(tmux_drop_sibling(&tabs, 0, 8), None, "no tab of that session: refused");
+        assert_eq!(tmux_drop_sibling(&[], 0, 7), None);
+    }
+
+    #[test]
+    fn a_title_drag_ends_cleanly_when_its_release_is_lost() {
+        assert!(drag_lost(DragLost::FocusLost));
+        assert!(drag_lost(DragLost::Escape));
+        assert!(drag_lost(DragLost::Moved { left_down: false }), "capture lost: a move with the button up");
+        assert!(!drag_lost(DragLost::Moved { left_down: true }));
+        let mut drag = Drag::Title { pane: 1, from: (0.0, 0.0) };
+        let mut pick = Some(PaneMove { source: 1, swap: false, hover: Some((2, Half::East)), drag: true });
+        assert!(end_title_drag(&mut drag, &mut pick));
+        assert!(matches!(drag, Drag::None) && pick.is_none(), "no drag and no overlay left");
+        // A pick (not a drag) is not ended by it, and an idle state reports nothing.
+        let mut idle = Drag::None;
+        let mut pick = Some(PaneMove { source: 1, swap: false, hover: None, drag: false });
+        assert!(!end_title_drag(&mut idle, &mut pick));
+        assert!(pick.is_some(), "a click-pick stays");
+        // A drag that never got past the threshold has only the Drag.
+        let mut drag = Drag::Title { pane: 1, from: (0.0, 0.0) };
+        let mut none = None;
+        assert!(end_title_drag(&mut drag, &mut none) && matches!(drag, Drag::None));
+    }
 
     /// Tab A holds panes 1 and 2 side by side, tab B pane 3.
     fn window() -> Vec<Tab> {

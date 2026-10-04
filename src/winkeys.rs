@@ -263,6 +263,11 @@ fn held(vk: i32) -> bool {
     unsafe { GetAsyncKeyState(vk) as u16 & 0x8000 != 0 }
 }
 
+/// Whether the left mouse button is down right now (a drag whose capture was lost sees it up).
+pub fn left_button_down() -> bool {
+    held(0x01)
+}
+
 /// Sends a harmless key while Win is down, so Windows does not open the Start menu when
 /// Win comes up after a chord Tandem took (the pattern AutoHotkey uses).
 pub fn mask_start_menu() {

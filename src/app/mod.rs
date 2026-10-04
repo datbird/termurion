@@ -3973,6 +3973,10 @@ impl App {
     }
 
     fn key(&mut self, ev: &KeyEvent, event_loop: &ActiveEventLoop) {
+        // Esc ends a title bar drag (the drag session cancels, nothing moves).
+        if ev.state == ElementState::Pressed && ev.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) && self.title_drag_lost(pane_move_ui::DragLost::Escape) {
+            return;
+        }
         // Instant Replay takes its keys before anything else (`PS:12795-12802`).
         if self.replay_key(ev, event_loop) {
             return;
@@ -4433,6 +4437,10 @@ impl App {
         if near != self.stamp_near {
             self.stamp_near = near;
             self.redraw();
+        }
+        // A title bar drag whose release was lost (capture taken away) ends here.
+        if matches!(self.drag, Drag::Title { .. }) && self.title_drag_lost(pane_move_ui::DragLost::Moved { left_down: crate::winkeys::left_button_down() }) {
+            return;
         }
         match &self.drag {
             Drag::Porthole { pane, id, frame } => {
@@ -5374,6 +5382,8 @@ impl ApplicationHandler<UserEvent> for App {
                 // A divider drag loses its release when focus goes, and so do keys.
                 if !f {
                     self.tmux_drag_cancel();
+                    // A title bar drag ends with nothing moved.
+                    self.title_drag_lost(pane_move_ui::DragLost::FocusLost);
                     // So does a press on the tab bar (a held close button lets go).
                     if self.tab_press.take().is_some() {
                         self.redraw();

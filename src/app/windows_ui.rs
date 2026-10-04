@@ -1061,7 +1061,7 @@ impl App {
     pub(super) fn move_session_to_window(&mut self) {
         let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) else { return };
         // A loaded recording is not moved.
-        if self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) || self.tmux_break(pane, false, None) {
+        if self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) || self.tmux_break(pane, false, None, None) {
             return;
         }
         let Some(t) = self.tabs.get_mut(self.active) else { return };
@@ -1085,7 +1085,7 @@ impl App {
     /// new tab of this window (only when the tab has other panes).
     pub(super) fn move_session_to_tab(&mut self) {
         let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) else { return };
-        if self.tmux_break(pane, true, None) {
+        if self.tmux_break(pane, true, None, None) {
             return;
         }
         let Some(t) = self.tabs.get_mut(self.active) else { return };
@@ -1118,7 +1118,21 @@ impl App {
         if window != source && self.windows.parked().any(|(_, s)| s.gpu.as_ref().is_some_and(|g| g.window.id() == window) && s.locks().forbids(crate::winmodel::LayoutOp::AddTab)) {
             return;
         }
-        if self.tmux_break(pane, true, None) {
+        if self.tmux_of(pane).is_some() {
+            // The tab goes into the DESTINATION window, next to the tab the drop slot names
+            // (`PseudoTerminal.m:8651-8659`); a window with no tab of this tmux session has no
+            // place to put it, so the drop is refused.
+            let Some((gw, ..)) = self.tmux_of(pane) else { return };
+            let ids: Vec<Option<(PaneId, u32)>> = if window == source {
+                self.tabs.iter().map(|t| self.tmux_of(t.focused).map(|(g, _, w)| (g, w))).collect()
+            } else {
+                self.windows.parked().find(|(_, s)| s.gpu.as_ref().is_some_and(|g| g.window.id() == window)).map(|(_, s)| s.tabs.iter().map(|t| self.tmux_of(t.focused).map(|(g, _, w)| (g, w))).collect()).unwrap_or_default()
+            };
+            let Some(beside) = super::pane_move_ui::tmux_drop_sibling(&ids, index, gw) else {
+                super::find_ui::beep();
+                return;
+            };
+            self.tmux_break(pane, true, None, Some(beside));
             return;
         }
         self.end_replays(&[pane]);
@@ -1164,7 +1178,7 @@ impl App {
         if self.tabs[from].layout.panes().len() < 2 || self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) {
             return;
         }
-        if self.tmux_break(pane, false, Some(origin)) {
+        if self.tmux_break(pane, false, Some(origin), None) {
             return;
         }
         self.end_replays(&[pane]);
