@@ -74,4 +74,8 @@ test data) is left out. Changes:
     `shrink_columns` and `splice`. Clearing the history does not count. `Grid::dropped()` plus the
     history size numbers lines as iTerm2's API does, which a reflow cannot move below zero.
 
+16. `term/mod.rs`: DECSET 1007 starts off, as iTerm2 (`VT100Terminal.m:399`), and upstream's default
+    had it on; `Term.alternate_scroll_allowed` (default true) refuses a set, never a reset (the
+    profile's Allow Alternate Mouse Scroll).
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

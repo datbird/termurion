@@ -1006,6 +1006,17 @@ impl Screen {
         self.term.set_scrollback_with_region(on);
     }
 
+    /// Whether the profile lets a program turn DECSET 1007 on (iTerm2's Allow Alternate Mouse
+    /// Scroll); turning it off again is always allowed.
+    pub fn set_alternate_scroll_allowed(&mut self, on: bool) {
+        self.term.alternate_scroll_allowed = on;
+    }
+
+    /// Whether DECSET 1007 (alternate scroll) is on.
+    pub fn alternate_scroll_mode(&self) -> bool {
+        self.term.mode().contains(alacritty_terminal::term::TermMode::ALTERNATE_SCROLL)
+    }
+
     pub(crate) fn capture_hold_clear(&mut self) {
         self.capture_hold.clear();
     }
@@ -1529,6 +1540,48 @@ mod tests {
         p.set("Cursor Type", toml::Value::Integer(0));
         let s = Screen::with_look(80, 24, Palette::default(), Look::from_profile(&p));
         assert_eq!(s.term().renderable_content().cursor.shape, CursorShape::Underline);
+    }
+
+    #[test]
+    fn alternate_scroll_mode_follows_iterm2() {
+        // iTerm2 starts with alternate scroll off and clears it on reset (VT100Terminal.m:399, :1697).
+        let mut s = Screen::new(80, 24);
+        assert!(!s.alternate_scroll_mode());
+        s.feed(b"\x1b[?1007h");
+        assert!(s.alternate_scroll_mode());
+        s.feed(b"\x1b[?1007l");
+        assert!(!s.alternate_scroll_mode());
+        s.feed(b"\x1b[?1007h");
+        s.feed(b"\x1bc");
+        assert!(!s.alternate_scroll_mode());
+        // The profile's gate is a Term field, so a reset (RIS and DECSTR) keeps it.
+        s.set_alternate_scroll_allowed(false);
+        s.feed(b"\x1bc");
+        s.feed(b"\x1b[!p");
+        s.feed(b"\x1b[?1007h");
+        assert!(!s.alternate_scroll_mode());
+        s.set_alternate_scroll_allowed(true);
+        // DECRQM answers from the mode.
+        let ask = |s: &mut Screen| s.feed(b"\x1b[?1007$p");
+        assert_eq!(ask(&mut s), b"\x1b[?1007;2$y");
+        s.feed(b"\x1b[?1007h");
+        assert_eq!(ask(&mut s), b"\x1b[?1007;1$y");
+    }
+
+    #[test]
+    fn alternate_scroll_is_gated_by_the_profile() {
+        // VT100Terminal.m:877-881: a set needs the profile's Allow Alternate Mouse Scroll.
+        let mut s = Screen::new(80, 24);
+        s.set_alternate_scroll_allowed(false);
+        s.feed(b"\x1b[?1007h");
+        assert!(!s.alternate_scroll_mode());
+        // A reset always applies, even when the profile now refuses.
+        s.set_alternate_scroll_allowed(true);
+        s.feed(b"\x1b[?1007h");
+        assert!(s.alternate_scroll_mode());
+        s.set_alternate_scroll_allowed(false);
+        s.feed(b"\x1b[?1007l");
+        assert!(!s.alternate_scroll_mode());
     }
 
     #[test]

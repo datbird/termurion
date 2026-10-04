@@ -5878,6 +5878,7 @@ fn screen_follows_profile(screen: &mut crate::screen::Screen, p: &Profile) {
     screen.allow_title = p.bool("Allow Title Setting");
     screen.profile_unicode = crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer()));
     screen.set_scrollback_with_status_bar(p.bool("Scrollback With Status Bar"));
+    screen.set_alternate_scroll_allowed(p.bool("Allow Alternate Mouse Scroll"));
     let (list, prefs) = triggers_ui::triggers_of(p);
     screen.set_triggers(list, prefs);
 }

@@ -111,10 +111,10 @@ impl From<KeyboardModes> for TermMode {
 }
 
 impl Default for TermMode {
+    // Tandem patch: DECSET 1007 starts off, as iTerm2 (`VT100Terminal.m:399`); upstream had it on.
     fn default() -> TermMode {
         TermMode::SHOW_CURSOR
             | TermMode::LINE_WRAP
-            | TermMode::ALTERNATE_SCROLL
             | TermMode::URGENCY_HINTS
     }
 }
@@ -335,6 +335,10 @@ pub struct Term<T> {
     /// Tandem: whether DA1 claims clipboard access (`52`), as iTerm2's policy decides.
     pub da1_clipboard: bool,
 
+    /// Tandem patch: whether DECSET 1007 may be set (the profile's Allow Alternate Mouse Scroll,
+    /// `VT100Terminal.m:877-881`). A reset is always honored. Not a mode bit, so a reset keeps it.
+    pub alternate_scroll_allowed: bool,
+
     /// Tandem: whether a scroll region that starts at the top but stops above the bottom row
     /// saves the lines leaving it to scrollback (iTerm2's Scrollback With Status Bar).
     scrollback_with_region: bool,
@@ -457,6 +461,7 @@ impl<T> Term<T> {
             modify_other_keys: 0,
             emulation_level: 500,
             da1_clipboard: true,
+            alternate_scroll_allowed: true,
             scrollback_with_region: true,
             active_charset: Default::default(),
             vi_mode_cursor: Default::default(),
@@ -2084,7 +2089,12 @@ impl<T: EventListener> Handler for Term<T> {
                 self.mode.remove(TermMode::SGR_MOUSE);
                 self.mode.insert(TermMode::UTF8_MOUSE);
             },
-            NamedPrivateMode::AlternateScroll => self.mode.insert(TermMode::ALTERNATE_SCROLL),
+            // Tandem patch: refused when the profile does not allow alternate mouse scroll.
+            NamedPrivateMode::AlternateScroll => {
+                if self.alternate_scroll_allowed {
+                    self.mode.insert(TermMode::ALTERNATE_SCROLL)
+                }
+            },
             NamedPrivateMode::LineWrap => self.mode.insert(TermMode::LINE_WRAP),
             NamedPrivateMode::Origin => {
                 self.mode.insert(TermMode::ORIGIN);
