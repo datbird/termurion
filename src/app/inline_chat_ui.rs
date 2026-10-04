@@ -581,7 +581,7 @@ impl App {
         let Some(s) = self.inline.get_mut(&id) else { return false };
         let Some(v) = s.view.as_ref() else { return true };
         let max = (v.content_h - v.area.h).max(0.0);
-        s.scroll = (v.scroll - dy * ch * 3.0).clamp(0.0, max);
+        s.scroll = ic::wheel_scroll(v.scroll, dy, ch, max);
         s.unpinned = s.scroll < max - 1.0;
         self.redraw();
         true
@@ -628,10 +628,7 @@ impl App {
         if !text_edit::takes(ctrl, alt, mods.cmd, &key) {
             return false;
         }
-        let key = match key {
-            EditKey::Paste(_) => EditKey::Paste(self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()).unwrap_or_default()),
-            k => k,
-        };
+        let key = self.with_clipboard_text(key);
         self.inline_edit_key(pane, key)
     }
 
@@ -653,11 +650,7 @@ impl App {
             s.draft.text = s.edit.text.clone();
         }
         if let EditOut::Copied(text) = out {
-            if let Some(cb) = self.clipboard.as_mut() {
-                if let Err(e) = cb.set_text(text) {
-                    self.banners.set("clipboard", format!("Could not copy: {e}"));
-                }
-            }
+            self.set_clipboard_text(text);
         }
         self.redraw();
         true
@@ -986,21 +979,7 @@ impl App {
             let y_of = |i: usize| parts.text.y + (i as f32 - first as f32) * line_h;
             let text = &s.edit.text;
             let drawn: Vec<(f32, f32, String)> = lines.iter().enumerate().skip(first).take(shown).map(|(i, v)| (parts.text.x, y_of(i), text[v.start..v.end].replace('\t', "    "))).collect();
-            let mut selection = Vec::new();
-            if let Some(r) = s.edit.selection() {
-                let space = toolbelt(" ");
-                for (i, v) in lines.iter().enumerate().skip(first).take(shown) {
-                    if r.end < v.start || r.start > v.end || (r.end == v.start && v.start != v.end) {
-                        continue;
-                    }
-                    let (a, b) = (r.start.max(v.start), r.end.min(v.end));
-                    let x0 = toolbelt(&text[v.start..a]);
-                    let x1 = toolbelt(&text[v.start..b]) + if r.end > v.end && lines.get(i + 1).is_some_and(|n| n.start > v.end) { space } else { 0.0 };
-                    if x1 > x0 {
-                        selection.push(Rect { x: parts.text.x + x0, y: y_of(i), w: x1 - x0, h: line_h });
-                    }
-                }
-            }
+            let selection: Vec<Rect> = text_edit::selection_spans(s.edit.selection(), text, &lines, first..first + shown, &toolbelt).into_iter().map(|(i, x, w)| Rect { x: parts.text.x + x, y: y_of(i), w, h: line_h }).collect();
             let caret = (caret_line >= first && caret_line < first + shown).then(|| Rect { x: parts.text.x + caret_x.min((parts.text.w - 1.0).max(0.0)), y: y_of(caret_line), w: 1.0, h: line_h });
             // The strip above the input: "Copied" or the pending attachments' names.
             let has_strip = s.copied.as_ref().is_some_and(|(_, _, at)| at.elapsed() < chat_view::COPIED_FOR) || !s.draft.pending.is_empty();

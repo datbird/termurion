@@ -318,6 +318,12 @@ pub fn row_boxes(rows: &[(bool, f32, f32, usize, bool)], panel_w: f32, scale: f3
     (out, y - gap + LIST_PAD * scale)
 }
 
+/// The scroll after a wheel turn: `dy` is in lines and already carries the app's three lines
+/// a notch (`WHEEL_LINES`), so a notch moves three lines, as the ruling and Clippings say.
+pub fn wheel_scroll(scroll: f32, dy: f32, line_h: f32, max: f32) -> f32 {
+    (scroll - dy * line_h).clamp(0.0, max)
+}
+
 /// The scroll after the content or the view changed: pinned to the bottom until the person
 /// scrolls up, else kept inside the content.
 pub fn scroll_after(scroll: f32, content_h: f32, view_h: f32, pinned: bool) -> f32 {
@@ -363,6 +369,15 @@ pub fn send_state(draft: &crate::chat_input::Draft, loading: bool, typing: bool)
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_wheel_notch_scrolls_three_lines() {
+        // The app hands over dy = notches * 3 lines; one notch up from line 30 is line 27.
+        assert_eq!(wheel_scroll(300.0, 3.0, 10.0, 1000.0), 270.0);
+        assert_eq!(wheel_scroll(300.0, -3.0, 10.0, 1000.0), 330.0);
+        assert_eq!(wheel_scroll(10.0, 3.0, 10.0, 1000.0), 0.0, "clamped at the top");
+        assert_eq!(wheel_scroll(990.0, -3.0, 10.0, 1000.0), 1000.0, "clamped at the bottom");
+    }
+
     use super::*;
 
     fn r(x: f32, y: f32, w: f32, h: f32) -> Rect {
