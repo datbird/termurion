@@ -3382,6 +3382,17 @@ help = "Add notification area icon when excluded from taskbar?\nWhen you turn on
 
 # m13i: pane navigation, dividers and dimming (kept in one block for a clean merge with 13h's rows).
 [[setting]]
+key = "SplitPaneDimmingAmount"
+tab = "Appearance"
+section = "Dimming"
+label = "Dimming amount:"
+type = "float"
+default = 0.4
+min = 0.01
+max = 0.6
+help = "Inactive sessions get dimmed to help find the active session."
+
+[[setting]]
 key = "DimInactiveSplitPanes"
 tab = "Appearance"
 section = "Dimming"
@@ -3407,17 +3418,6 @@ label = "Dimming affects only text, not background."
 type = "bool"
 default = false
 help = "Dimming changes the text and colored cells, not the default background."
-
-[[setting]]
-key = "SplitPaneDimmingAmount"
-tab = "Appearance"
-section = "Dimming"
-label = "Dimming amount:"
-type = "float"
-default = 0.4
-min = 0.01
-max = 0.6
-help = "Inactive sessions get dimmed to help find the active session."
 
 [[setting]]
 key = "NavigatePanesInReadingOrder"

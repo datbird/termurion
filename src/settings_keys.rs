@@ -1731,6 +1731,9 @@ mod tests {
             assert_eq!(s.default, Some(default), "{key}");
             assert_eq!(s.label, label, "{key}");
         }
+        // iTerm2's xib order: the slider, then the three checkboxes.
+        let order: Vec<&str> = page_rows("Appearance").iter().filter(|s| s.section == "Dimming").map(|s| s.key.as_str()).collect();
+        assert_eq!(order, ["SplitPaneDimmingAmount", "DimInactiveSplitPanes", "DimBackgroundWindows", "DimOnlyText"]);
         let amount = schema::find_global("SplitPaneDimmingAmount").unwrap();
         assert_eq!((amount.min_f64(), amount.max_f64()), (Some(0.01), Some(0.6)));
         assert_eq!(amount.help, "Inactive sessions get dimmed to help find the active session.");
