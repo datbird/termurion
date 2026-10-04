@@ -1199,7 +1199,7 @@ mod tests {
                 orch_system: &|_: &Chat| "O".to_string(),
                 orch_tools: &|c: &Chat| {
                     let send = ToolDecl { name: "send_text".into(), description: "d".into(), parameters: serde_json::json!({}) };
-                    if c.orchestration_enabled { vec![send] } else if c.terminal_session_guid.is_some() || c.browser_session_guid.is_some() { vec![crate::orch::enable_decl()] } else { Vec::new() }
+                    if c.orchestration_enabled { vec![send] } else { crate::orch::tools_for(false, c.terminal_session_guid.is_some() || c.browser_session_guid.is_some()) }
                 },
                 now: 10.0,
             };
@@ -2248,7 +2248,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_bound_chat_carries_the_enable_tool_only() {
+    fn every_chat_that_is_not_orchestrating_carries_the_enable_tool() {
         let mut h = H::new();
         let chat = h.chat(Some("7"));
         h.script(vec![invoke("request_orchestration_enable", "{}", "e1")]);
@@ -2267,11 +2267,11 @@ mod tests {
         h.script(vec![invoke("send_text", "{}", "c1")]);
         let fx = h.say(&chat, "hi");
         assert!(!fx.iter().any(|e| matches!(e, EngineEffect::Orch { .. })));
-        // A plain chat with no session has no enable tool.
+        // A plain chat with no session can ask too (`ChatService.swift:459`, Task 9 fix round 1).
         let mut h = H::new();
         let chat = h.chat(None);
         h.say(&chat, "hi");
-        assert!(!h.log.borrow().inputs[0].tools.contains(&"request_orchestration_enable".to_string()));
+        assert!(h.log.borrow().inputs[0].tools.contains(&"request_orchestration_enable".to_string()));
     }
 
     #[test]

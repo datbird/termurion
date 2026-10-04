@@ -130,7 +130,7 @@ impl Step {
     pub fn description(self) -> &'static str {
         match self {
             Step::EnablePythonApi => "The Claude Code integration relies on Tandem\u{2019}s Python API to find sessions running Claude and track their status.\n\nThe Python API is currently disabled. Setup can\u{2019}t continue until it is enabled. Click Enable to turn it on.",
-            Step::EnableCookie => "The hook runs in a new process that has to prove it belongs to a Tandem session. Session cookies let it do that.\n\nWith cookies on, every new session gets a secret that lets a program running in it use Tandem\u{2019}s Python API without a prompt. Click Enable and confirm to turn them on. Cancel leaves them as they are, and the hook cannot report Claude\u{2019}s status.",
+            Step::EnableCookie => "The hook runs in a new process that has to prove it belongs to a Tandem session. Session cookies let it do that.\n\nWith cookies on, every new session gets a secret that lets a program running in it use Tandem\u{2019}s Python API without a prompt. Click Enable and confirm to turn them on. Setup cannot go on without them: Cancel leaves them as they are, and you can close setup.",
             Step::InstallHook => "Install a Claude Code hook that lets Tandem detect Claude\u{2019}s state (working, waiting, idle) and display it in the Session Status tool.\n\nThis adds a hook to your Claude Code settings that runs automatically as Claude works.",
             Step::ShowToolbelt => "Show the toolbelt and enable the Session Status tool. The toolbelt appears on the right side of your terminal window.\n\nYou can toggle the toolbelt from View > Toolbelt > Show Toolbelt, or with the shortcut Win+Shift+B.",
         }
@@ -142,7 +142,8 @@ impl Step {
 pub const COOKIE_HEADING: &str = "Enable Session Cookies?";
 pub const COOKIE_TEXT: &str = "New Tandem sessions will get a secret cookie that lets any program running in them use Tandem\u{2019}s Python API without asking you. The Claude Code hook needs it to report status. Cancel leaves cookies as they are.";
 pub const COOKIE_BUTTONS: [&str; 2] = ["Enable", "Cancel"];
-/// Set while the cookie setting is on because Tandem turned it on (with the person's OK).
+/// Set while the cookie setting is on because Tandem turned it on (with the person's OK) and
+/// nobody changed it since: any other change of the setting clears it (`Globals::set`).
 pub const COOKIE_BY_KEY: &str = "NoSyncClaudeCodeTurnedOnCookie";
 
 /// The cookie setting and whether Tandem is the one who turned it on.
@@ -837,6 +838,24 @@ mod tests {
         // The person switched it off themselves meanwhile: the marker goes, nothing turns on.
         assert_eq!(CookieState { on: false, by_tandem: true }.reverted(), off);
         assert_eq!(on.enabled(), on);
+    }
+
+    /// Task 8 fix round 2: the marker holds only while nobody else changed the setting since
+    /// Tandem set it. Switching it off and on again elsewhere makes it the person's own.
+    #[test]
+    fn a_cookie_changed_elsewhere_is_the_persons_own() {
+        let mut g = crate::globals::Globals::empty(std::path::Path::new("cookie-test.toml"));
+        let key = crate::api_profile::SET_COOKIE;
+        g.set(key, toml::Value::Boolean(true));
+        g.set(COOKIE_BY_KEY, toml::Value::Boolean(true));
+        g.set(key, toml::Value::Boolean(true));
+        assert!(g.bool(COOKIE_BY_KEY), "writing the same value changes nothing");
+        g.set(key, toml::Value::Boolean(false));
+        g.set(key, toml::Value::Boolean(true));
+        assert!(!g.bool(COOKIE_BY_KEY), "off and on again by someone else: no longer Tandem's");
+        let state = CookieState { on: g.bool(key), by_tandem: g.bool(COOKIE_BY_KEY) };
+        assert_eq!(state.reverted(), state, "Uninstall leaves the person's setting on");
+        assert!(!Step::EnableCookie.description().contains("the hook cannot report"), "Cancel does not let setup go on");
     }
 
     /// Fix round 1: the same folder is found by normalized path, never by raw text, so an install
