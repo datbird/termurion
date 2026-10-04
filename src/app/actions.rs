@@ -116,12 +116,10 @@ impl App {
         }
     }
 
-    fn step_pane(&mut self, forward: bool) {
-        if let Some(t) = self.tabs.get_mut(self.active) {
-            if let Some(id) = t.layout.next(t.focused, forward) {
-                t.focused = id;
-                t.zoomed = None;
-            }
+    pub(super) fn step_pane(&mut self, forward: bool) {
+        let next = self.tabs.get(self.active).and_then(|t| self.pane_in_order(t, if forward { 1 } else { -1 }));
+        if let Some(id) = next {
+            self.focus_quietly(self.active, id);
         }
     }
 
@@ -357,7 +355,7 @@ impl App {
                 self.swap_with(other);
             }
             67 | 68 => {
-                let other = self.tabs.get(self.active).and_then(|t| t.layout.next(t.focused, b.action == 67));
+                let other = self.tabs.get(self.active).and_then(|t| self.pane_in_order(t, if b.action == 67 { 1 } else { -1 }));
                 self.swap_with(other);
             }
             59 => {

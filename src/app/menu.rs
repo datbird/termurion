@@ -1009,13 +1009,7 @@ impl App {
                 }
             }
             "nextPane:" | "previousPane:" => {
-                if let Some(t) = self.tabs.get_mut(self.active) {
-                    let panes = t.layout.panes();
-                    let i = panes.iter().position(|p| *p == t.focused).unwrap_or(0);
-                    let step = if item.selector == "nextPane:" { 1 } else { panes.len() - 1 };
-                    t.focused = panes[(i + step) % panes.len()];
-                    t.zoomed = None;
-                }
+                self.step_pane(item.selector == "nextPane:");
             }
             "movePaneDividerUp:" | "movePaneDividerDown:" | "movePaneDividerLeft:" | "movePaneDividerRight:" => {
                 let dir = match item.selector.as_str() {

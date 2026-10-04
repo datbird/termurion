@@ -762,6 +762,7 @@ impl App {
         let mut rows = Vec::new();
         for (ti, t) in self.tabs.iter().enumerate() {
             let panes = t.layout.panes();
+            let ordered = self.ordered_panes(t);
             let facts: Vec<(u64, bool, bool, Option<String>, bool)> = panes
                 .iter()
                 .filter_map(|id| self.panes.get(id).map(|p| (*id, true, self.buried.contains(*id), p.own().tab_status.status.clone(), p.own().tab_status.indicator.is_some())))
@@ -770,7 +771,7 @@ impl App {
                 let Some(p) = self.panes.get(&id) else { continue };
                 let st = &p.own().tab_status;
                 let generation = p.own().tab_status_gen;
-                let ordinal = panes.iter().position(|x| *x == id).map_or(0, |i| i + 1);
+                let ordinal = ordered.iter().position(|x| *x == id).map_or(0, |i| i + 1);
                 rows.push(StatusRow {
                     pane: id,
                     snoozed: self.belt.snoozed.get(&id) == Some(&generation),

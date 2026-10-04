@@ -139,4 +139,18 @@ mod tests {
         assert_eq!(by_number(&twelve, 9), Some(12));
         assert_eq!(by_number(&twelve, 5), Some(5));
     }
+
+    #[test]
+    fn by_number_follows_iterm2() {
+        let eight: Vec<PaneId> = (1..=8).collect();
+        assert_eq!(by_number(&eight, 8), Some(8));
+        assert_eq!(by_number(&eight, 9), Some(8));
+        assert_eq!(by_number(&eight, 1), Some(1));
+        let ten: Vec<PaneId> = (1..=10).collect();
+        assert_eq!(by_number(&ten, 9), Some(10));
+        assert_eq!(by_number(&ten, 8), Some(8));
+        let three: Vec<PaneId> = (1..=3).collect();
+        assert_eq!(by_number(&three, 5), None);
+        assert_eq!(by_number(&three, 9), Some(3));
+    }
 }

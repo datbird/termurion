@@ -124,6 +124,7 @@ mod git_ui;
 mod toolbelt_ui;
 mod toolbelt_tools_ui;
 mod toolbelt_more_ui;
+mod pane_nav_ui;
 mod open_quickly_app;
 mod replay_ui;
 mod pwm_app;
@@ -663,6 +664,11 @@ pub struct App {
     open_quickly: Option<open_quickly_app::Quickly>,
     quickly_query: String,
     focus_order: HashMap<PaneId, u64>,
+    /// App-wide last-use sequence; each focus change takes two numbers (`activityCounter`).
+    activity_seq: u64,
+    /// The pane each tab was focused on when `sync_pane_activity` last looked, by tab id (a tab
+    /// keeps its id across windows, so this is not per window).
+    pane_seen: HashMap<u64, PaneId>,
     focus_seq: u64,
     status_prompt: Option<crate::prompt_ui::PromptWindow>,
     /// The Notes tool's global note (one for every window) and its file.
@@ -1680,6 +1686,8 @@ pub fn run() {
         open_quickly: None,
         quickly_query: String::new(),
         focus_order: HashMap::new(),
+        activity_seq: 0,
+        pane_seen: HashMap::new(),
         focus_seq: 0,
         status_prompt: None,
         global_note: crate::notes::GlobalNote::new(toolbelt_more_ui::notes_path(&std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir))),
@@ -3762,6 +3770,7 @@ impl App {
             } else {
                 let gone = self.tabs.remove(t);
                 self.mru.forget(gone.id);
+                self.pane_seen.remove(&gone.id);
                 self.api_vars.forget(crate::api_vars::Scope::Tab, &gone.id.to_string());
                 self.active = crate::close_rules::active_after_close(self.active, t, self.tabs.len(), self.globals.bool("moveLeftAfterClosingTab"));
                 // The neighbor selected may be hidden in a collapsed group.
@@ -3942,12 +3951,7 @@ impl App {
             Action::SplitRight => self.split(Axis::Row, None),
             Action::SplitDown => self.split(Axis::Column, None),
             Action::NextPane | Action::PrevPane => {
-                if let Some(tab) = self.tabs.get_mut(self.active) {
-                    let panes = tab.layout.panes();
-                    let i = panes.iter().position(|p| *p == tab.focused).unwrap_or(0);
-                    let step = if action == Action::NextPane { 1 } else { panes.len() - 1 };
-                    tab.focused = panes[(i + step) % panes.len()];
-                }
+                self.step_pane(action == Action::NextPane);
             }
             Action::Focus(dir) => {
                 let area = self.content_area();
@@ -4163,13 +4167,9 @@ impl App {
             // One window until milestone 7: window 1 is this one.
             Route::SelectWindow(d) => self.select_window_number(d),
             Route::SelectPane(d) => {
-                if let Some(t) = self.tabs.get_mut(self.active) {
-                    let panes = t.layout.panes();
-                    let i = if d == 9 { panes.len() - 1 } else { d as usize - 1 };
-                    if let Some(id) = panes.get(i) {
-                        t.focused = *id;
-                        t.zoomed = None;
-                    }
+                let pick = self.tabs.get(self.active).and_then(|t| self.pane_by_number(t, d));
+                if let Some(id) = pick {
+                    self.focus_quietly(self.active, id);
                 }
             }
             Route::SelectTab(d) => {
@@ -5152,6 +5152,7 @@ impl ApplicationHandler<UserEvent> for App {
         if let Some(w) = self.last_window {
             self.enter(w);
         }
+        self.sync_pane_activity();
         self.flush_dropped();
         self.ssh_suggest_purge();
         for w in std::mem::take(&mut self.pending_windows) {

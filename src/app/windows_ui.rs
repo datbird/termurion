@@ -371,6 +371,9 @@ impl App {
         self.swap_live(&mut live);
         let entered = self.windows.enter(k, &mut live);
         self.swap_live(&mut live);
+        if entered {
+            self.sync_pane_activity();
+        }
         entered
     }
 
