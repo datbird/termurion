@@ -237,6 +237,21 @@ mod tests {
     }
 
     #[test]
+    fn title_ordinals_follow_the_pick_order() {
+        // S1: the title bar labels the panes in the order Alt+digit picks them, with
+        // 13h's ninth-pane rule (an eighth pane is labelled 9 and digit 9 picks it).
+        let titles = include_str!("pane_title_ui.rs");
+        assert!(titles.contains("let panes = self.ordered_panes(tab);"), "title ordinals read ordered_panes");
+        let order: Vec<u64> = vec![5, 3, 8, 1, 2, 7, 4, 6];
+        let labels = crate::pane_title::ordinals(order.len());
+        assert_eq!(labels[7], 9);
+        assert_eq!(pane_order::by_number(&order, labels[7] as u8), Some(6));
+        for (i, &l) in labels.iter().enumerate().take(7) {
+            assert_eq!(pane_order::by_number(&order, l as u8), Some(order[i]));
+        }
+    }
+
+    #[test]
     fn one_gap_for_every_reader() {
         // S6/S7/P13: the constant is gone, so a reader that kept it does not compile.
         let app = include_str!("mod.rs");

@@ -143,7 +143,8 @@ impl App {
         if !self.tab_shows_titles(tab) {
             return;
         }
-        let panes = tab.layout.panes();
+        // S1: the shortcut ordinals follow the order Alt+digit picks by (`pane_by_number`).
+        let panes = self.ordered_panes(tab);
         let ordinals = pane_title::ordinals(panes.len());
         let tag = self.globals.int("SwitchPaneModifier");
         let (style, resolved) = (self.tab_style(), self.resolved_style());
