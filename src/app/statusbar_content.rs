@@ -389,8 +389,33 @@ fn best_pattern(template: &str) -> String {
 /// The Clock's text for its knobs (`CLK`): the format, through ICU when localized.
 #[cfg(windows)]
 pub(super) fn clock_text(format: &str, localize: bool) -> String {
+    clock_text_at(format, localize, &local_civil())
+}
+
+/// The Clock's format applied to a given civil time.
+#[cfg(windows)]
+fn clock_text_at(format: &str, localize: bool, civil: &sbt::Civil) -> String {
     let pattern = if localize { best_pattern(format) } else { format.to_string() };
-    sbt::format_tr35(&pattern, &local_civil())
+    sbt::format_tr35(&pattern, civil)
+}
+
+/// A session's Clock (`CLK:155-196`): its knobs, and what the remote's clock told the pane.
+/// With a reply, the server's time and zone show as the two SSH knobs (default on) allow, and
+/// the globe follows when either was used.
+#[cfg(windows)]
+pub(super) fn session_clock(knobs: &toml::Table, clock: Option<&crate::ssh_clock::Clock>) -> String {
+    use crate::statusbar_components::{SSH_OFFSET_KEY, SSH_TZ_KEY};
+    let Some(clock) = clock.filter(|c| c.offset != 0.0 || c.tz.is_some()) else { return clock_for_knobs(knobs) };
+    let knob = |key: &str| knobs.get(key).and_then(toml::Value::as_bool).unwrap_or(true);
+    let shown = crate::ssh_clock::shown(clock.offset, clock.tz.is_some(), clock.zone, knob(SSH_OFFSET_KEY), knob(SSH_TZ_KEY));
+    let format = knobs.get(FORMAT_KEY).and_then(toml::Value::as_str).unwrap_or(DEFAULT_CLOCK_FORMAT);
+    let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    let mut text = clock_text_at(format, knobs.get(LOCALIZE_KEY).and_then(toml::Value::as_bool).unwrap_or(true), &crate::ssh_clock::civil_at(unix + shown.shift, shown.zone));
+    if shown.globe {
+        text.push(' ');
+        text.push(crate::ssh_clock::GLOBE);
+    }
+    text
 }
 
 /// A Clock's text for its knob values (defaults for the missing ones): the setup
@@ -416,8 +441,8 @@ impl App {
         let shell = self.panes.get(&pane).map(|p| &p.own().shell);
         let reported_host = shell.and_then(|s| s.host.clone());
         let mut content = match kind {
-            // `CLK`: one variant; the SSH knobs wait for milestone 14.
-            Kind::Clock => Content::text(vec![clock_for_knobs(&c.knobs)]),
+            // `CLK`: one variant; a session with a remote's time shows it by the SSH knobs.
+            Kind::Clock => Content::text(vec![session_clock(&c.knobs, self.panes.get(&pane).map(|p| &p.ssh_clock))]),
             // `VAR:169-202`: the replacement alone on this computer, else the host's
             // variants. The local host name stands in before shell integration reports one.
             Kind::HostName => {
@@ -536,7 +561,7 @@ impl App {
                 if kind == Kind::TmuxLeft { Content::text(sbt::tmux_left_variants(&left)) } else { Content { right_align: true, ..Content::text(sbt::tmux_right_variants(&right)) } }
             }
             // The four graphs (`metrics_ui`).
-            Kind::Battery | Kind::Cpu | Kind::Memory | Kind::Network => self.graph_content(kind, c),
+            Kind::Battery | Kind::Cpu | Kind::Memory | Kind::Network => self.graph_content(pane, kind, c),
             // git state (`git_ui`).
             Kind::Git => self.git_content(pane, c),
         };

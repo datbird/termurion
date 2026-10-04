@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 190 | 108 | 16 |
-| `02-global-settings.md` | 823 | 435 | 74 | 314 |
-| `03-features-and-menus.md` | 647 | 537 | 47 | 63 |
-| Total | 1,784 | 1,162 | 229 | 393 |
+| `02-global-settings.md` | 823 | 437 | 73 | 313 |
+| `03-features-and-menus.md` | 647 | 538 | 47 | 62 |
+| Total | 1,784 | 1,165 | 228 | 391 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -461,6 +461,24 @@ failed or ended setup is dropped, as in iTerm2); EndSSH pops the conductor chain
 hop's saved state. The iTerm2 bugs met (B1 to B17) are kept or fixed one by one. Every kept quirk is
 listed in `docs/acceptance/m14b-checklist.md` and ruled on in
 `docs/superpowers/rulings/m14b-rulings.txt`.
+Milestone 14c added level 2 of SSH integration, iTerm2's framer (03: Shell > ssh > Disconnect to
+have; 02: unameCommand to have, alternateSSHIntegrationScript to n/a as a DEBUG-only setting, ruling
+8; the Clock's two SSH knobs act; the it2ssh, SendConductor, Configure SSH and shell-integration
+rows stay partial for 14d and 14e). framer.py ships byte for byte and runs through `runpython`;
+Tandem frames every write to the remote, pipelines commands, keeps the remote job list (autopoll)
+for the Job Name, the close question and the CPU graph, shows server time with a Segoe Fluent globe,
+fills the `sshIntegrationLevel`, `homeDirectory`, `shell` and `uname` variables, and Shell > ssh >
+Disconnect ends the hop. Nested ssh hops frame (it2ssh run on the host above); Duplicate Session,
+Duplicate Tab and arrangements reconnect through the hops Tandem's origin token vouched for (the
+first hop; a nested hop is text the host above printed, so it is never jumped through, ruling); a
+split of a session whose innermost hop is vouched opens ssh to that host directly, else the saved
+profile (iTerm2 splits to the innermost host; splits never use the jump chain); and a session survives quitting Tandem (tandem-host keeps it) and recovers after a crash
+("Recovering ssh connection\u{2026}"). Beyond iTerm2, for safety: a local command line is built
+only from a chain Tandem's own token vouched for, hops pass one validator (no option that runs a
+command or loads a configuration, every argument `%q`-quoted), in-band recovery turns on only after
+such a hook and ends with the last hop, a restored conductor is never vouched, hook nesting is capped at 8, and every remote size is
+capped. Every kept quirk is listed in `docs/acceptance/m14c-checklist.md` and ruled on in
+`docs/superpowers/rulings/m14c-rulings.txt`.
 
 ## Order
 

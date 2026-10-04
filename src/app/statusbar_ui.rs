@@ -1110,6 +1110,12 @@ impl App {
         true
     }
 
+    /// The session's bar has a Clock in it (which is when its server time is worth asking for).
+    pub(super) fn bar_has_clock(&self, pane: PaneId) -> bool {
+        let clock = Kind::Clock.class();
+        self.shows_status_bar(pane) && self.bar_layout(pane).0.components.iter().any(|c| c.class == clock)
+    }
+
     /// A bar on screen shows a Clock: a bar of the tab in front of the current window or of
     /// any other window on screen.
     pub(super) fn any_clock_shown(&self) -> bool {
@@ -1402,7 +1408,7 @@ mod tests {
         for (class, kind, size) in [(BATTERY_CLASS, Kind::Battery, 120.0), (CPU_CLASS, Kind::Cpu, 120.0), (MEMORY_CLASS, Kind::Memory, 120.0), (NETWORK_CLASS, Kind::Network, 170.0)] {
             assert_eq!(Piece::of(class), Some(Piece::Content(kind)), "{class}");
             let c = component(class, &[]);
-            let content = graph_of(kind, &c, &meters, true, None);
+            let content = graph_of(kind, &c, &meters, true, None, None);
             assert!(matches!(content.widget, Some(Widget::Graph(_))), "{class}");
             assert!(!content.empty, "{class}");
             for algorithm in [Algorithm::Stable, Algorithm::TightlyPacked] {
@@ -1418,10 +1424,27 @@ mod tests {
             let shown = Shown { index: Some(0), temporary: false, piece: Piece::Content(kind), component: c, content: Some(content), widths: Vec::new(), min_text_pt: None, text_scale: 1.0, tail: None, badge: None };
             assert_eq!(shown.copyable(), None, "{class} has no Copy");
         }
-        let no_battery = graph_of(Kind::Battery, &component(BATTERY_CLASS, &[]), &meters, false, None);
+        let no_battery = graph_of(Kind::Battery, &component(BATTERY_CLASS, &[]), &meters, false, None, None);
         assert!(no_battery.empty);
         assert_eq!(no_battery.icon, Some(sbc::NO_BATTERY_GLYPH));
-        assert_eq!(graph_of(Kind::Battery, &component(BATTERY_CLASS, &[]), &meters, true, None).icon, Some(sbc::BATTERY_GLYPH));
+        assert_eq!(graph_of(Kind::Battery, &component(BATTERY_CLASS, &[]), &meters, true, None, None).icon, Some(sbc::BATTERY_GLYPH));
+    }
+
+    /// A framing session's CPU graph draws the remote series, not the local meter's.
+    #[test]
+    fn a_remote_cpu_series_replaces_the_local_one() {
+        use super::super::metrics_ui::graph_of;
+        let mut meters = crate::statusbar_metrics::Meters::new();
+        meters.cpu.samples.push(0.9);
+        let mut remote = crate::statusbar_metrics::Series::new();
+        remote.push(0.25);
+        let c = component(crate::statusbar_components::CPU_CLASS, &[]);
+        let shown = |cpu| match graph_of(Kind::Cpu, &c, &meters, true, None, cpu).widget {
+            Some(Widget::Graph(g)) => g.left,
+            _ => unreachable!(),
+        };
+        assert_ne!(shown(None), shown(Some(&remote)));
+        assert_eq!(shown(Some(&remote)), "25%");
     }
 
     /// `GIT:136-151,240-297`, `ATXT:271-278,307-313`: git's minimum is the width of its

@@ -971,7 +971,7 @@ impl App {
         let mut changes = Vec::new();
         for (id, p) in self.panes.iter_mut() {
             let local = || p.owns_console() && p.shell_pid().is_some_and(|pid| self.jobs.password_input(pid));
-            let now = debounce.is_some() && p.exited.is_none() && p.hosted_password_input().unwrap_or_else(local);
+            let now = debounce.is_some() && p.exited.is_none() && pwm_prompt::with_conductor(p.hosted_password_input().unwrap_or_else(local), p.ssh_password_prompt());
             if now != p.password_input {
                 changes.push((*id, p.password_input, now));
                 p.password_input = now;

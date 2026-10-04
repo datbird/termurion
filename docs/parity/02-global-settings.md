@@ -862,7 +862,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | aiChatVerboseConsoleLogging | aiChatVerboseConsoleLogging (bool, default NO) | Log AI chat traffic to the system console. | have | Milestone 12b: Advanced > Debugging, stored and toggleable; milestone 12c's chat turn writes it (a line when a turn starts with its model and counts, when a tool result is sent and when a turn is canceled; never a key or message text); the entries go to the debugger output through `OutputDebugStringW` as "Tandem AI: ..." lines (DebugView shows them; Windows has no system console log a person reads). |
 | aiChatRawWireLogging | aiChatRawWireLogging (bool, default NO) | Log raw AI API requests and responses to disk. | have | Milestone 12b: Advanced > Debugging, stored and toggleable; milestone 12c's chat turn writes it; one file per launch at `%APPDATA%\Tandem\AIChatWire\aichat-wire-<UTC time>-pid<pid>.log`, with every header value except known non-secret ones (Content-Type, Accept, User-Agent, anthropic-version and similar) and every key in URLs, bodies and error records replaced by a fingerprint (iTerm2 fingerprints only its four key headers and leaves the error record unscrubbed); the help says what the code does (ruling 10). The chat turn (12c) writes it; Test Connection, discovery and file jobs do not. |
 | logAITabTitleCorpus | logAITabTitleCorpus (bool, default NO) | Log AI tab-title generations to a corpus file. | missing | n/a: AI tab titles need Apple Intelligence, which Windows lacks (ruling 7); left out of Tandem's settings (rulings R12ab-1, 12e-4). |
-| alternateSSHIntegrationScript | alternateSSHIntegrationScript (string, default @"") | Alternate SSH integration python script. | missing | Milestone 14 (SSH integration, ruling 6); iTerm2 reads it only in debug builds (ruling 8). |
+| alternateSSHIntegrationScript | alternateSSHIntegrationScript (string, default @"") | Alternate SSH integration python script. | n/a | iTerm2 reads it only in DEBUG builds (ruling 8, m14c): framer.py ships byte for byte from `resources/ssh/` and there is no local override. |
 
 ### Session
 
@@ -956,7 +956,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| unameCommand | unameCommand (string, default @"uname -s") | Command used to set the `uname` variable. | partial | Milestone 12a: stored, not editable until the milestone 13 Advanced pane; 12e's Engage AI sets `uname` from it (ruling 12a-2), and a local session reports "Windows_NT" (ruling 9). Milestone 14 owns running it on an SSH host (ruling 6). |
+| unameCommand | unameCommand (string, default @"uname -s") | Command used to set the `uname` variable. | have | Milestone 12a: stored; 12e's Engage AI sets `uname` from it (ruling 12a-2), and a local session reports "Windows_NT" (ruling 9). Milestone 14c: Settings > Advanced > SSH Integration shows its label and help; the framing sequence runs it on the remote and the `uname` variable (level 2) is its first line, sanitized. |
 | validCharactersInSSHUserNames | validCharactersInSSHUserNames (string, default @"_-+.") | Valid characters in SSH user names Alphanumerics are always valid. | missing | Milestone 14 (SSH integration, ruling 6). |
 
 ### Warnings

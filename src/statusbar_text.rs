@@ -332,6 +332,36 @@ pub struct Civil {
     pub millis: u32,
 }
 
+impl Civil {
+    /// The civil time (UTC calendar, no zone applied) of `secs` since 1970-01-01 and `millis`.
+    /// Days are converted with the proleptic Gregorian rules; a value too large for the year to
+    /// fit clamps rather than wraps.
+    pub fn from_unix(secs: i64, millis: u32) -> Civil {
+        let days = secs.div_euclid(86_400);
+        let rest = secs.rem_euclid(86_400) as u32;
+        // Howard Hinnant's civil_from_days, on i128 so no input overflows.
+        let z = i128::from(days) + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+        let month = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+        let year = (yoe + era * 400 + i128::from(month <= 2)).clamp(i128::from(i32::MIN), i128::from(i32::MAX)) as i32;
+        Civil {
+            year,
+            month,
+            day,
+            weekday: (days + 4).rem_euclid(7) as u32,
+            hour: rest / 3600,
+            minute: rest % 3600 / 60,
+            second: rest % 60,
+            millis: millis.min(999),
+        }
+    }
+}
+
 const MONTH_ABBR: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTH_FULL: [&str; 12] =
     ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -561,5 +591,18 @@ mod tests {
         assert!(is_local_host("MYCOMPUTER.LOCAL", &names));
         assert!(!is_local_host("othermachine", &names));
         assert!(!is_local_host("", &names));
+    }
+
+    #[test]
+    fn civil_from_unix_follows_the_calendar() {
+        let c = Civil::from_unix(0, 0);
+        assert_eq!((c.year, c.month, c.day, c.weekday, c.hour, c.minute, c.second, c.millis), (1970, 1, 1, 4, 0, 0, 0, 0));
+        let c = Civil::from_unix(951782400, 250);
+        assert_eq!((c.year, c.month, c.day, c.weekday, c.hour, c.minute, c.second, c.millis), (2000, 2, 29, 2, 0, 0, 0, 250));
+        let c = Civil::from_unix(-1, 0);
+        assert_eq!((c.year, c.month, c.day, c.weekday, c.hour, c.minute, c.second), (1969, 12, 31, 3, 23, 59, 59));
+        // A hostile value never panics.
+        let _ = Civil::from_unix(i64::MAX, 0);
+        let _ = Civil::from_unix(i64::MIN, 999);
     }
 }

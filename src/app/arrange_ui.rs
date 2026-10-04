@@ -21,6 +21,47 @@ pub(super) enum Contents {
     KeysOnly,
 }
 
+/// The keys `session_value` writes for a pane's conductors, with the host key (`PS:7333-7337`,
+/// `PS:7424-7425`): the innermost's JSON (its chain comes with it), its dcs id and the parser
+/// tree of the chain.
+pub(super) fn conductor_keys(c: &crate::conductor::Conductor) -> Vec<(String, Value)> {
+    use crate::ssh_recovery::{CONDUCTOR_KEY, DCS_ID_KEY, TREE_KEY};
+    let tree = serde_json::to_string(&c.tree()).unwrap_or_default();
+    vec![(CONDUCTOR_KEY.into(), Value::String(c.json())), (DCS_ID_KEY.into(), Value::String(c.setup.dcs_id.clone())), (TREE_KEY.into(), Value::String(tree))]
+}
+
+/// What a saved session gives back of its conductors: the JSON, the dcs id and the parser tree,
+/// only when the pane re-attaches to its hosted session (`attach`; a fresh restore has no ssh
+/// process any more). The saved text is untrusted: a size past the caps, an id with controls,
+/// a tree Tandem would not have saved or a conductor that does not read gives None.
+pub(super) fn conductor_restore(attach: bool, v: &Value) -> Option<(String, String, crate::ssh_recovery::Tree)> {
+    use crate::ssh_recovery::{CONDUCTOR_KEY, DCS_ID_KEY, TREE_KEY};
+    if !attach {
+        return None;
+    }
+    let json = v.get(CONDUCTOR_KEY)?.as_str()?;
+    let dcs_id = v.get(DCS_ID_KEY)?.as_str()?;
+    let tree = v.get(TREE_KEY)?.as_str()?;
+    if json.len() > crate::conductor::JSON_MAX || dcs_id.len() > 256 || dcs_id.chars().any(char::is_control) || tree.len() > 64 * 1024 {
+        return None;
+    }
+    let tree: crate::ssh_recovery::Tree = serde_json::from_str(tree).ok()?;
+    if !tree.valid() || crate::conductor::Conductor::from_json(json).is_none() {
+        return None;
+    }
+    Some((json.to_string(), dcs_id.to_string(), tree))
+}
+
+/// The conductors a session saved, for the session that re-attached to its host.
+pub(super) fn saved_conductor(session: &Value) -> Option<(String, String, crate::ssh_recovery::Tree)> {
+    conductor_restore(super::restore_ui::attach_key(session).is_some(), session)
+}
+
+/// Whether a session was saved as an ssh session (F27), which lets its reattached pane recover.
+pub(super) fn saved_ssh_session(session: &Value) -> bool {
+    session.get(crate::ssh_recovery::SESSION_KEY).and_then(|v| v.as_bool()) == Some(true)
+}
+
 impl Contents {
     /// Session restoration (not a saved arrangement, a file or a duplicate): the only snapshots
     /// that carry a pane's chat reference.
@@ -91,6 +132,15 @@ impl App {
                 arrangement::save_reference(t, &p.session_guid);
             }
         }
+        // A session that runs ssh saved without contents (an arrangement, Duplicate Tab): the
+        // hops to reconnect through, each with its directory (`PS:7342-7347`), as Duplicate
+        // Session takes them (`reconnect_hops`: vouched and validated, final review I1).
+        // Restoration with contents keeps the conductor itself instead (F16).
+        if let (Contents::None | Contents::Plain, Some(hops), Some(t)) = (contents, p.conductor.as_deref().and_then(|c| c.reconnect_hops()), v.as_table_mut()) {
+            if self.store.get(&p.profile).is_some_and(crate::profile::is_ssh) {
+                t.insert(crate::ssh_jumps::PENDING_JUMPS_KEY.into(), crate::ssh_jumps::jumps_value(&hops));
+            }
+        }
         // Session restoration: the host session, so a later launch can take the shell back.
         if let (Contents::Styled(_) | Contents::KeysOnly, Some((host_id, offset)), Some(pid), Some(t)) = (contents, p.host_session(), p.shell_pid(), v.as_table_mut()) {
             t.insert(crate::restore_state::HOST_KEY.into(), super::restore_ui::host_key_value(host_id, pid, offset));
@@ -100,6 +150,14 @@ impl App {
             // cookie only for a shell it took back; a new shell in its place gets a fresh one.
             if let Some(c) = &p.cookie {
                 t.insert(crate::session_env::REUSABLE_COOKIE_KEY.into(), Value::String(c.clone()));
+            }
+            // An ssh session keeps its conductors and the parser tree beside the host key, so
+            // the reattached pane resumes framing (F16: the same gate as the host key).
+            if let Some(c) = p.conductor.as_deref() {
+                t.extend(conductor_keys(c));
+            }
+            if p.was_ssh_session() {
+                t.insert(crate::ssh_recovery::SESSION_KEY.into(), Value::Boolean(true));
             }
         }
         v
@@ -484,6 +542,11 @@ impl App {
                     if let (Some(guid), Some(p)) = (saved, self.panes.get_mut(&id)) {
                         p.keep_reference(&guid);
                     }
+                    if launched {
+                        self.restore_ssh_session(id, &session);
+                    } else {
+                        self.restore_ssh_conductor(id, &session);
+                    }
                     if let Some(p) = self.panes.get_mut(&id) {
                         if let Some(text) = arrangement::styled_contents(&session) {
                             // Session restoration: styled text, then the banner when no job came back.
@@ -521,6 +584,7 @@ impl App {
                     if let Some(pid) = p.shell_pid() {
                         self.jobs.forget(pid);
                     }
+                    self.ssh_pane_dropped(&p);
                     self.forget_cookie(&p);
                     self.forget_session_profile(&p.profile);
                     self.pane_gone(id);
@@ -536,6 +600,39 @@ impl App {
         (tab.pinned, tab.group) = arrangement::tab_pin_group(t);
         self.next_tab_id += 1;
         Ok(tab)
+    }
+
+    /// A pane that took its hosted session back: the conductors it saved (`PS:2284-2298`) and
+    /// the right to recover in band when it was an ssh session (F25: `attach_pane` is unchanged;
+    /// its callers apply the saved keys after it returns).
+    fn restore_ssh_conductor(&mut self, id: PaneId, session: &Value) {
+        let saved = saved_conductor(session);
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        if let Some((json, dcs_id, tree)) = saved {
+            p.restore_conductor(&json, &dcs_id, &tree);
+        }
+        // After the restore, which replaces the hook: only a pane a vouched hook made an ssh
+        // session saved the flag (F27).
+        if saved_ssh_session(session) {
+            p.note_ssh_session();
+        }
+        self.ssh_registry_drain(id);
+    }
+
+    /// A restored session that runs ssh: its saved hops become its pending jumps, and the
+    /// folder the arrangement saved for it is the remote folder it starts in (iTerm2 sends the
+    /// saved one, `iTermSessionFactory.m:323-345`); the first hop's own directory still wins
+    /// when the hook runs (`hook_plan`). A saved folder counts only as a POSIX path of one line,
+    /// since a Windows folder cannot name a remote one.
+    fn restore_ssh_session(&mut self, id: PaneId, session: &Value) {
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        p.pending_jumps = crate::ssh_jumps::restored_jumps(session.get(crate::ssh_jumps::PENDING_JUMPS_KEY), p.ssh.profile_ssh);
+        if p.ssh.profile_ssh {
+            let saved = session.get("Working Directory").and_then(|v| v.as_str()).and_then(crate::ssh_jumps::saved_remote_directory);
+            if saved.is_some() {
+                p.ssh.initial_directory = saved;
+            }
+        }
     }
 
     /// A restored pane's announcements: a broken profile offers Assign Profile when there is a
@@ -842,6 +939,68 @@ mod tests {
         };
         assert_eq!(folder_notice(local(true), "/D:/gone", &record), Unavailable, "the OSC 7 form of a Windows path");
         assert_eq!(seen.borrow().as_deref(), Some(std::path::Path::new(r"D:\gone")), "probed as a Windows path");
+    }
+
+    fn hosted_chain() -> crate::conductor::Conductor {
+        use crate::conductor::{Conductor, Setup};
+        let mut outer = Conductor::new(Setup { sshargs: "h1".into(), dcs_id: "D0".into(), client_unique_id: "A".into(), ..Setup::default() }, None, "P");
+        outer.framed_pid = Some(100);
+        let mut inner = Conductor::new(Setup { sshargs: "h2".into(), dcs_id: "D1".into(), client_unique_id: "B".into(), ..Setup::default() }, Some(Box::new(outer)), "Q");
+        inner.framed_pid = Some(200);
+        inner
+    }
+
+    fn saved_table(c: &crate::conductor::Conductor) -> Value {
+        let mut t = toml::Table::new();
+        t.extend(conductor_keys(c));
+        Value::Table(t)
+    }
+
+    #[test]
+    fn fresh_restore_drops_the_conductor() {
+        use crate::ssh_recovery::{CONDUCTOR_KEY, DCS_ID_KEY, TREE_KEY};
+        let c = hosted_chain();
+        let v = saved_table(&c);
+        // What session_value writes: the conductor's JSON, the innermost's dcs id and the tree.
+        assert_eq!(v.get(CONDUCTOR_KEY).and_then(|x| x.as_str()), Some(c.json().as_str()));
+        assert_eq!(v.get(DCS_ID_KEY).and_then(|x| x.as_str()), Some("D1"));
+        assert_eq!(v.get(TREE_KEY).and_then(|x| x.as_str()), Some(serde_json::to_string(&c.tree()).unwrap().as_str()));
+        // The keys come back only when the pane re-attaches to its hosted session; a fresh
+        // restore gives none (the ssh process is gone).
+        let (json, dcs, tree) = conductor_restore(true, &v).expect("re-attached");
+        assert_eq!((json.as_str(), dcs.as_str()), (c.json().as_str(), "D1"));
+        assert_eq!(tree, c.tree());
+        assert!(crate::conductor::Conductor::from_json(&json).is_some());
+        assert_eq!(conductor_restore(false, &v), None);
+        // A missing key, a tree that is not one Tandem saved, or text of no sane size is refused.
+        for key in [CONDUCTOR_KEY, DCS_ID_KEY, TREE_KEY] {
+            let mut t = v.as_table().unwrap().clone();
+            t.remove(key);
+            assert_eq!(conductor_restore(true, &Value::Table(t)), None, "{key}");
+        }
+        let with = |key: &str, text: String| {
+            let mut t = v.as_table().unwrap().clone();
+            t.insert(key.into(), Value::String(text));
+            Value::Table(t)
+        };
+        assert_eq!(conductor_restore(true, &with(TREE_KEY, "not json".into())), None);
+        assert_eq!(conductor_restore(true, &with(TREE_KEY, r#"{"-5":["D",{}]}"#.into())), None);
+        assert_eq!(conductor_restore(true, &with(CONDUCTOR_KEY, "x".repeat(2 * 1024 * 1024))), None);
+        assert_eq!(conductor_restore(true, &with(DCS_ID_KEY, "x".repeat(1000))), None);
+        assert_eq!(conductor_restore(true, &with(DCS_ID_KEY, "a\u{7}b".into())), None);
+        assert_eq!(conductor_restore(true, &with(CONDUCTOR_KEY, "{}".into())), None, "a conductor that does not read");
+    }
+
+    #[test]
+    fn the_ssh_flag_is_saved_with_the_host_key() {
+        // F27: only a session that is or was ssh saves the flag that lets a reattached pane
+        // recover in band.
+        let mut t = toml::Table::new();
+        assert!(!saved_ssh_session(&Value::Table(t.clone())));
+        t.insert(crate::ssh_recovery::SESSION_KEY.into(), Value::Boolean(true));
+        assert!(saved_ssh_session(&Value::Table(t.clone())));
+        t.insert(crate::ssh_recovery::SESSION_KEY.into(), Value::String("true".into()));
+        assert!(!saved_ssh_session(&Value::Table(t)), "only a boolean counts");
     }
 
     #[test]

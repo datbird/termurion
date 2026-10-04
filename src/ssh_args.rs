@@ -214,7 +214,7 @@ pub fn config_paths(appdata: &Path, profile_dir: &Path, program_data: &Path) -> 
 }
 
 /// Who and where an ssh session is (`SSHIdentity.swift`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Identity {
     pub host: String,
     pub hostname: String,
@@ -232,6 +232,20 @@ impl Identity {
         }
     }
 
+    /// commandLine (`SSHIdentity.swift:51-56`): `-l <user>` with a user, `-p <port>` off port 22,
+    /// then the host name.
+    pub fn command_line(&self) -> String {
+        let mut words = Vec::new();
+        if let Some(u) = &self.username {
+            words.push(format!("-l {u}"));
+        }
+        if self.port != 22 {
+            words.push(format!("-p {}", self.port));
+        }
+        words.push(self.hostname.clone());
+        words.join(" ")
+    }
+
     /// debugDescription (`SSHIdentity.swift:24-31`).
     pub fn description(&self) -> String {
         match &self.username {
@@ -242,7 +256,7 @@ impl Identity {
 }
 
 /// ParsedSSHArguments (`PSA:10-192`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ParsedArgs {
     /// The destination as given (for an ssh:// URL, the whole URL, surprise 8).
     pub host: String,

@@ -150,6 +150,7 @@ mod script_console_app;
 mod script_deps_app;
 mod builtin_ui;
 mod ssh_app;
+mod ssh_framer_app;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -431,6 +432,9 @@ pub struct App {
     /// The command the next pane runs instead of its profile's (a git menu command's
     /// single-use window, the REPL's interpreter).
     start_command_override: Option<String>,
+    /// The hops the next pane reconnects through (Duplicate Session), moved into the new pane
+    /// by `start_pane_as`. Set and cleared around one start, so it is not per-window state.
+    start_jumps_override: Option<Vec<crate::ssh_jumps::Reconnection>>,
     /// Variables the next pane gets over its session variables (the REPL's cookie and key; a
     /// secret, never logged). Set and cleared around one `open_window`.
     start_env_override: Option<Vec<String>>,
@@ -603,6 +607,8 @@ pub struct App {
     replay_seen: Option<(u64, PaneId)>,
     /// This window's password manager (per window: `swap_live`).
     pwm_window: Option<pwm_app::PwmWin>,
+    /// What Shell > ssh > Disconnect last showed in this window (per window: `swap_live`).
+    ssh_menu_shown: Option<Option<String>>,
     /// The password manager's app-wide state: authentication, the source worker, the echo
     /// probes' passwords, broadcast rounds and questions.
     pwm: pwm_app::PwmState,
@@ -758,6 +764,9 @@ pub struct App {
     /// The origin secrets handed to it2ssh (app-wide, not in `swap_live`), shared with the
     /// secret pipe's thread; 14b's conductor hook checks them.
     pub(super) ssh_secrets: std::sync::Arc<std::sync::Mutex<crate::ssh_secret::Secrets>>,
+    /// The framed conductors of every window, by identity (app-wide, not in `swap_live`):
+    /// 14d's Download Files reads it. Only `ssh_apply` and the pane drop paths change it.
+    ssh_registry: crate::ssh_registry::Registry,
     /// The secret pipe's server, started with the first window; None when it could not start.
     ssh_secret_server: Option<crate::ssh_secret_win::Server>,
     /// The Script Console's entries: scripts, connections and the app-wide logs.
@@ -1318,6 +1327,7 @@ pub fn run() {
         menus_dirty: false,
         start_dir_override: None,
         start_command_override: None,
+        start_jumps_override: None,
         start_env_override: None,
         start_tab: None,
         single_use: HashMap::new(),
@@ -1346,6 +1356,7 @@ pub fn run() {
         replay_window: None,
         replay_seen: None,
         pwm_window: None,
+        ssh_menu_shown: None,
         pwm: Default::default(),
         replay_keys: Default::default(),
         recording_warnings: Vec::new(),
@@ -1478,6 +1489,7 @@ pub fn run() {
         api_server: None,
         api_jar: Default::default(),
         ssh_secrets: Default::default(),
+        ssh_registry: Default::default(),
         ssh_secret_server: None,
         script_history: crate::script_history::History::new(aps_logging, api_ui::unix_secs()),
         api_alerts: Vec::new(),
@@ -2637,6 +2649,7 @@ impl App {
             if let Some(pid) = old.shell_pid() {
                 self.jobs.forget(pid);
             }
+            self.ssh_pane_dropped(&old);
             // The old shell is gone for good; the new one gets its own cookie.
             self.forget_cookie(&old);
         }
@@ -2793,8 +2806,13 @@ impl App {
                 pane.cookie = cookie;
                 pane.command = cmd;
                 if self.start_command_override.is_none() {
+                    // Not an ssh session for F27 yet: its hook, vouched by the origin token,
+                    // makes it one.
                     pane.ssh.profile_ssh = profile::is_ssh(&p);
                     pane.ssh.initial_directory = profile::ssh_initial_directory(&p);
+                }
+                if let Some(jumps) = self.start_jumps_override.take() {
+                    pane.pending_jumps = jumps;
                 }
                 self.install_pane(id, pane, &p);
                 true
@@ -3326,6 +3344,7 @@ impl App {
                     c.panes.push(p);
                 }
                 _ => {
+                    self.ssh_pane_dropped(&p);
                     self.forget_cookie(&p);
                     self.forget_session_profile(&p.profile);
                     // Gone for good (a pane kept for Undo Close keeps its state).

@@ -14,6 +14,9 @@ use crate::ssh_transport::Transport;
 use crate::replay;
 use crate::screen::Screen;
 
+/// The most keystroke bytes a framed conductor may hold queued before the coprocess waits (F20).
+const COPROCESS_BACKLOG: usize = crate::conductor::PIPELINE_BYTES * 64;
+
 /// The bytes to send for a paste. Newlines become carriage returns, as a typed
 /// Enter would. Bracketed paste wraps the text so the app knows it was pasted,
 /// and removes every ESC from it, so no end marker can form inside and a paste
@@ -234,9 +237,21 @@ pub struct Pane {
     ssh_q: Vec<crate::ssh_hook::Out>,
     /// The innermost SSH conductor; its parents hang off it (iTerm2's `_conductor`).
     pub conductor: Option<Box<crate::conductor::Conductor>>,
+    /// Changes to the app-wide connected hosts, for the app to apply in order after it pumps
+    /// the pane's SSH (`App::ssh_apply`): every conductor that frames or leaves the pane.
+    ssh_registry_out: Vec<crate::ssh_registry::Change>,
+    /// Answers to script calls (`get_time_offset`) the conductors finished, for the app to
+    /// deliver by token.
+    ssh_answers: Vec<(u64, Result<crate::ssh_clock::Offset, String>)>,
+    /// The Clock's view of the remote's time (`CLK`): what the bar shows for this session.
+    pub ssh_clock: crate::ssh_clock::Clock,
     /// Session writes held while the conductor sets up (`_sshWriteQueue`, `PS:4191-4197`),
     /// sent when it unhooks.
     ssh_held: Vec<u8>,
+    /// The hops this pane still has to reconnect through (`_pendingJumps`, `PS:20139-20169`): a
+    /// hook uses up the first (its directory) and the rest start the jumping. Set for a
+    /// Duplicate Session or a restored arrangement's session.
+    pub pending_jumps: Vec<crate::ssh_jumps::Reconnection>,
     /// A screen-like TERM: italics as reverse video (iTerm2's translateFromScreenTerminal).
     pub screen_filter: Option<crate::screenterm::Filter>,
     /// A tmux gateway: its pty carries tmux commands only, so no input reaches it.
@@ -395,7 +410,7 @@ impl Pane {
     fn with(id: PaneId, pty: Option<Io>, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = pty.is_some();
-        Pane { id, session_guid: new_session_guid(), screen, pty, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() }
+        Pane { id, session_guid: new_session_guid(), screen, pty, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -405,10 +420,6 @@ impl Pane {
         while let Read::Data(chunk) = pty.try_read() {
             self.got_output = true;
             self.throughput.add(Instant::now(), chunk.len());
-            // The coprocess gets every byte, before parsing (iTerm2 tees the raw read).
-            if let Some(c) = self.coprocess.as_mut() {
-                c.write(&chunk);
-            }
             chunks.push(chunk);
         }
         let mut changed = !chunks.is_empty();
@@ -421,7 +432,9 @@ impl Pane {
             loop {
                 let Some(pty) = &self.pty else { break };
                 let budget = crate::coprocess::budget(pty.pending());
-                if budget == 0 {
+                // A framed link answers slowly: what is queued for it holds the coprocess back
+                // until replies come (F20), so its output cannot grow the queue without end.
+                if budget == 0 || self.coprocess_backlogged() {
                     break;
                 }
                 if self.co_out.is_empty() {
@@ -472,17 +485,45 @@ impl Pane {
         let (head, rest) = chunk.split_at(cut);
         for part in [head, rest].into_iter().filter(|part| !part.is_empty()) {
             if self.tmux_hook.active() && !self.ssh_hook.active() && self.ssh_q.is_empty() {
+                self.tee_raw(part);
                 let mut bytes = self.ssh_hook.take_held();
                 bytes.extend_from_slice(part);
                 self.route_output(bytes);
             } else {
-                for out in self.ssh_hook.feed(part) {
+                let outs = self.ssh_hook.feed(part);
+                // The coprocess gets the raw read while SSH integration plays no part in it
+                // (iTerm2 tees the raw read, `PK:900`); with a conductor only its depth 0
+                // output (`Out::Raw`) goes, and a level 1 session's coprocess gets nothing.
+                if outs.iter().all(|o| matches!(o, crate::ssh_hook::Out::Screen(_))) {
+                    self.tee_raw(part);
+                }
+                for out in outs {
                     match out {
+                        // At once, not behind `ssh_q`: it is the coprocess's own copy.
+                        crate::ssh_hook::Out::Raw(bytes) => self.tee_coprocess(&bytes),
                         crate::ssh_hook::Out::Screen(bytes) if self.ssh_q.is_empty() => self.route_output(bytes),
                         other => self.ssh_q.push(other),
                     }
                 }
             }
+        }
+    }
+
+    /// Whether the raw read may go to the coprocess: no conductor, no hook, nothing waiting.
+    fn coprocess_gets_raw(&self) -> bool {
+        self.conductor.is_none() && !self.ssh_hook.active() && self.ssh_q.is_empty()
+    }
+
+    fn tee_raw(&mut self, bytes: &[u8]) {
+        if self.coprocess_gets_raw() {
+            self.tee_coprocess(bytes);
+        }
+    }
+
+    /// Depth 0 output of a conductor's session reaches the coprocess only while it has one.
+    fn tee_coprocess(&mut self, bytes: &[u8]) {
+        if let Some(c) = self.coprocess.as_mut() {
+            c.write(bytes);
         }
     }
 
@@ -661,45 +702,98 @@ impl Pane {
     }
 
     /// A typed write to the session in iTerm2's order (`PS:4411-4432`, then `PS:4191-4197`):
-    /// the conductor's `send_keys` when it handles keystrokes (the app applies its effects in
-    /// `ssh_pump`), else the connecting queue, else held while the conductor sets up, else
-    /// the pty.
+    /// a conductor's `send_keys` when one sends for the session (the app applies its effects
+    /// in `ssh_pump`), else the connecting queue, else `send_routed`.
     pub fn write_session(&mut self, bytes: &[u8]) {
-        if self.ssh_route() == crate::conductor::Route::Conductor {
-            if let Some(c) = self.conductor.as_mut() {
-                c.send_keys(bytes);
-            }
-        } else if !self.ssh.queue(bytes) {
-            self.write_unless_held(bytes);
+        if self.ssh_route() == crate::conductor::Route::Conductor(0) || !self.ssh.queue(bytes) {
+            self.send_routed(bytes);
         }
     }
 
-    /// Held while the conductor sets up, else to the pty, past the connecting queue (iTerm2's
-    /// `writeTaskImpl`, `PS:4191-4197`).
-    pub fn write_unless_held(&mut self, bytes: &[u8]) {
-        if self.ssh_route() != crate::conductor::Route::Direct {
-            self.composer.probe = None;
-            self.ssh_held.extend_from_slice(bytes);
-        } else {
-            self.write_no_broadcast(bytes);
-        }
-    }
-
-    /// A coprocess's output: to the conductor's `send_keys` while the pane has one (`PK:354-361`,
-    /// `PS:4639-4642`: held during setup, framed from 14c), else to the pty as typed. False when
+    /// THE route of every byte for the session's transport but the conductors' own
+    /// (`Effect::Write`, `write_no_broadcast`): `conductor::route` picks it. Framed by the
+    /// conductor that sends for the session (the current one when it handles keystrokes, else
+    /// the nearest ancestor whose framer runs), held while the current one sets up, else to
+    /// the pty (iTerm2's `writeTaskNoBroadcast`, `PS:4276-4294`, `PS:4191-4197`). False when
     /// the pty refused it.
-    pub fn coprocess_output(&mut self, bytes: &[u8]) -> bool {
-        if let Some(c) = self.conductor.as_mut() {
-            c.send_keys(bytes);
+    pub fn send_routed(&mut self, bytes: &[u8]) -> bool {
+        use crate::conductor::Route;
+        if bytes.is_empty() {
             return true;
         }
-        if let Some(pty) = &self.pty {
-            if let Err(e) = pty.write(bytes) {
-                self.error = Some(e);
-                return false;
+        self.composer.probe = None;
+        match self.ssh_route() {
+            Route::Conductor(hops) => {
+                if let Some(c) = self.conductor.as_deref_mut().and_then(|c| c.ancestor_mut(hops)) {
+                    c.send_keys(bytes);
+                }
+                true
+            }
+            Route::Held => {
+                self.ssh_held.extend_from_slice(bytes);
+                true
+            }
+            Route::Direct => self.write_pty(bytes),
+        }
+    }
+
+    /// iTerm2's `conductorWrite` outside `write()` (a failed setup's `exec_login_shell` line):
+    /// to the pty when nothing frames; through the framer above when the conductor is still
+    /// setting up under one (its conductor.sh reads the tty that framer's child owns, which is
+    /// where iTerm2's raw write lands); otherwise held, and the abort that follows drops it (a
+    /// framing conductor has no conductor.sh to read it, an unhooked one's is gone).
+    fn write_unless_held(&mut self, bytes: &[u8]) {
+        use crate::conductor::Route;
+        let setting_up = self.conductor.as_deref().is_some_and(|c| !c.framing() && !c.unhooked());
+        let above = self.conductor.as_deref().and_then(|c| c.framing_ancestor());
+        match self.ssh_route() {
+            // Setting up under a framer that runs: the route holds typing for the setup, but
+            // this line is for the setup's own conductor.sh, which reads the tty of that
+            // framer's child: framed through it (and every framer above).
+            Route::Held if setting_up && above.is_some() => {
+                // Sent from that framer itself, which the abort that follows does not pop.
+                if let Some(c) = above.and_then(|h| self.conductor.as_deref_mut().and_then(|c| c.ancestor_mut(h))) {
+                    c.send_keys(bytes);
+                }
+            }
+            Route::Direct => {
+                self.write_pty(bytes);
+            }
+            Route::Conductor(hops) if hops >= 1 && setting_up => {
+                self.send_routed(bytes);
+            }
+            _ => {
+                self.composer.probe = None;
+                self.ssh_held.extend_from_slice(bytes);
             }
         }
-        true
+    }
+
+    /// Whether the queue of keystrokes of the conductor that sends for the session is too
+    /// long for the coprocess to add to (F20): the pump stops draining it until replies come
+    /// back.
+    pub fn coprocess_backlogged(&self) -> bool {
+        match self.ssh_route() {
+            // Setup holds the bytes here: the same limit, or a coprocess grows them without end.
+            crate::conductor::Route::Held => self.ssh_held.len() > COPROCESS_BACKLOG,
+            crate::conductor::Route::Conductor(hops) => self.conductor.as_deref().and_then(|c| c.ancestor(hops)).is_some_and(|c| c.queued_bytes() > COPROCESS_BACKLOG),
+            crate::conductor::Route::Direct => false,
+        }
+    }
+
+    /// A coprocess's output (`PK:354-361`, `PS:4639-4642`): `send_routed`, held during setup,
+    /// framed while a conductor sends for the session. False when the pty refused it.
+    pub fn coprocess_output(&mut self, bytes: &[u8]) -> bool {
+        self.send_routed(bytes)
+    }
+
+    /// The conductor bootstrap for it2ssh's `SendConductor` (`PS:20290-20300`), when the hook
+    /// exists: `writeTaskNoBroadcast`, so framed when it2ssh runs in a framed shell (`PS:4280-4285`),
+    /// never typed into framer.py's stdin.
+    pub fn ssh_send_conductor(&mut self, h: &crate::ssh_handshake::Handshake) {
+        if let Some(bytes) = crate::ssh_session::conductor_bytes(h, crate::ssh_session::CONDUCTOR_READY) {
+            self.reply(&bytes);
+        }
     }
 
     /// The writes held while the conductor set up, in order.
@@ -707,9 +801,63 @@ impl Pane {
         std::mem::take(&mut self.ssh_held)
     }
 
+    /// The pane is an ssh session (F27): an OSC 134 outside the hook may now start an in-band
+    /// recovery, and the pane saves the fact. Called only when a hook Tandem's origin token
+    /// vouched for hooks (`note_hook`) and for a restored pane that saved the fact; never from
+    /// output alone (the it2ssh OSC, an unvouched hook, a restored conductor), so a hostile
+    /// file cannot make Tandem type into a shell that never ran a vouched ssh (ruling). The
+    /// right ends when EndSSH empties the hop list (`end_ssh`, final review I2), so it does not
+    /// hold at the local prompt after ssh exits either.
+    pub fn note_ssh_session(&mut self) {
+        self.ssh.was_ssh = true;
+        self.ssh_hook.allow_recovery();
+    }
+
+    /// it2ssh announced itself (OSC 1337 it2ssh, `T:4524-4527`): input typed now waits for
+    /// the conductor.
+    /// Any program can print it, so it gives no right to recover (F27).
+    pub fn ssh_will_begin(&mut self) {
+        self.ssh.begin(crate::ssh_session::CONDUCTOR_READY);
+    }
+
+    /// A conductor hooked; `vouched` is whether its hook carried Tandem's origin token. Only
+    /// a vouched one makes the pane an ssh session (F27, ruling).
+    pub fn note_hook(&mut self, vouched: bool) {
+        if vouched {
+            self.note_ssh_session();
+        }
+    }
+
+    /// Whether `note_ssh_session` was called.
+    pub fn was_ssh_session(&self) -> bool {
+        self.ssh.was_ssh
+    }
+
     /// Leaves the conductor without an `unhook`: what follows is output again.
     pub fn unhook_ssh(&mut self) {
         self.ssh_hook.unhook();
+    }
+
+    /// The changes to the connected hosts since the last call, in order.
+    pub fn take_ssh_registry(&mut self) -> Vec<crate::ssh_registry::Change> {
+        std::mem::take(&mut self.ssh_registry_out)
+    }
+
+    /// The guids of the pane's conductors, innermost first: what leaves the connected hosts
+    /// when the pane goes.
+    pub fn ssh_guids(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut c = self.conductor.as_deref();
+        while let Some(conductor) = c {
+            out.push(conductor.guid.clone());
+            c = conductor.parent.as_deref();
+        }
+        out
+    }
+
+    /// Whether the innermost conductor's remote tty is at a password prompt (`PS:7659`).
+    pub fn ssh_password_prompt(&self) -> bool {
+        self.conductor.as_ref().is_some_and(|c| c.at_password_prompt())
     }
 
     /// The pane's SSH integration level (`conductor::level`).
@@ -717,11 +865,25 @@ impl Pane {
         crate::conductor::level(self.conductor.as_deref())
     }
 
+    /// Whether the current conductor's framer is running to answer a request. Not the level
+    /// (`ssh_level` stays 2 after the framer unhooks, as iTerm2's `sshIntegrationLevel` does):
+    /// a request queued on an unhooked conductor would wait for EndSSH.
+    pub fn ssh_frames(&self) -> bool {
+        self.conductor.as_deref().is_some_and(|c| c.frames_keys())
+    }
+
     /// unhookSSHConductor (`PS:20179-20204`) for the screen: the innermost conductor goes,
     /// its saved state is restored, and its parent becomes current. The hops are the caller's.
     /// False when there was none.
     pub fn pop_conductor(&mut self) -> bool {
         let Some(c) = crate::conductor::pop(&mut self.conductor) else { return false };
+        // The next job comes from the parent's remote or the local shell again.
+        self.ssh.jobs_dirty = true;
+        self.ssh_registry_out.push(crate::ssh_registry::Change::Remove(c.guid.clone()));
+        // Script calls it still owed an answer get one: nothing reads its effects again.
+        for token in c.abandoned_time_tokens() {
+            self.ssh_answers.push((token, Err("Failed to fetch time: the connection ended".to_string())));
+        }
         if let Some(saved) = &c.saved {
             self.own_mut().restore_ssh_saved(saved);
         }
@@ -742,6 +904,13 @@ impl Pane {
         for _ in 0..n {
             self.pop_conductor();
         }
+        // Back at the local prompt: the pane is no longer an ssh session, so output may not
+        // start a recovery there, and nothing saves the right for after a restart (final
+        // review I2, ruling). Only a new vouched hook gives it again.
+        if self.ssh.chain.hops.is_empty() {
+            self.ssh.was_ssh = false;
+            self.ssh_hook.forbid_recovery();
+        }
         if banner.is_some() {
             // Keys typed for a remote shell that is gone. A remaining conductor that still sets
             // up keeps them for its own unhook, as iTerm2 keeps `_sshWriteQueue` for
@@ -755,6 +924,169 @@ impl Pane {
         banner
     }
 
+    /// A `Token::Unhook` from the hook at `depth` (`PS:20172-20177`, which has no depth): the
+    /// conductor at that depth unhooks and the held writes go out raw. Beyond iTerm2, every
+    /// conductor deeper than `depth` is popped first, innermost first: their remote sits
+    /// behind the process that just ended, and a conductor left framing keys would type them
+    /// into the host above (`cat evil; exit` inside a deep session). An unhook for a depth
+    /// with no conductor (it is gone) is dropped, so it never unhooks a healthy shallower one.
+    pub fn unhook_conductor_at(&mut self, depth: i32) {
+        let mut popped_setup = false;
+        while let Some(c) = self.conductor.as_deref().filter(|c| c.depth() > depth) {
+            popped_setup |= c.queue_writes() && !c.handles_keystrokes();
+            self.ssh_unhook_conductor();
+        }
+        if popped_setup {
+            // Keys held for a setup that is gone were for its remote.
+            self.ssh_held.clear();
+        }
+        let Some(c) = self.conductor.as_mut().filter(|c| c.depth() == depth) else { return };
+        c.handle_unhook();
+        // Then routed as any write: to a framer above when one runs (Tandem-side guard: iTerm2's
+        // `writeData:` types them raw, `PS:20176-20180`).
+        let held = self.take_ssh_held();
+        self.send_routed(&held);
+    }
+
+    /// terminalBeginFramerRecoveryForChildOfConductorAtDepth and screenBeginFramerRecovery
+    /// (`TD:4067-4071`, `PS:20307-20342`): "Recovering ssh connection..." on the screen; a
+    /// depth below 0 unhooks every conductor first; then a shim takes the previous innermost
+    /// as its parent and asks the framer to recover. A depth the conductors do not have (the
+    /// shim would sit where the hook has no owner for it) is not started: nothing is written.
+    pub fn begin_framer_recovery(&mut self, parent_depth: i32) {
+        if parent_depth >= 0 && crate::conductor::child_depth(self.conductor.as_deref()) != parent_depth + 1 {
+            self.ssh_hook.end_recovery();
+            return;
+        }
+        self.own_mut().append_banner(crate::ssh_recovery::RECOVERING);
+        // The it2 state of the conductor being recovered rides the shim (`PS:20307-20336`,
+        // `adoptIT2RecoveryStateFrom:`); Tandem's is the inbox kept for 14e (ruling 3).
+        let it2 = self.conductor.as_ref().map(|c| c.it2_inbox.clone()).unwrap_or_default();
+        // A root-level recovery replaces every hop; the outermost one's id goes to the shim and
+        // the recovered conductor, so it2ssh's EndSSH, which names it, still ends the session
+        // whatever id the remote reports (final review I2, ruling).
+        self.ssh.recovery_replaces = None;
+        if parent_depth < 0 {
+            self.ssh.recovery_replaces = self.ssh.chain.hops.first().map(|h| h.unique_id.clone());
+            while self.conductor.is_some() {
+                self.ssh_unhook_conductor();
+            }
+        }
+        let mut shim = crate::conductor::Conductor::recovery_shim(self.conductor.take());
+        if let Some(id) = &self.ssh.recovery_replaces {
+            shim.setup.client_unique_id = id.clone();
+        }
+        shim.it2_inbox = it2;
+        shim.start_recovery();
+        let location = self.ssh.chain.location().unwrap_or_default().to_string();
+        self.ssh.chain.push(crate::ssh_session::Hop { unique_id: shim.setup.client_unique_id.clone(), location });
+        self.conductor = Some(Box::new(shim));
+        debug_assert!(self.ssh_chain_in_step(), "the hops follow the conductors");
+        self.apply_ssh_effects();
+    }
+
+    /// screenHandleFramerRecoveryString (`PS:20344-20370`): one recovery line for the shim. When
+    /// the last one finishes the recovery the shim is replaced by the recovered conductor, its
+    /// hop and registry entry, the hook follows its tree, "ssh connection recovered!" is shown
+    /// and it resynchronizes (`TD:4074-4090`); true then, and the rest of the batch is dropped
+    /// as iTerm2 drops the tokens read before the parser was replaced. A recovery that ended
+    /// without a login (the shim quit) leaves recovery mode for the hook. Only a shim in
+    /// recovery reads a line.
+    pub fn framer_recovery_line(&mut self, line: &str) -> bool {
+        use crate::conductor::State;
+        let Some(shim) = self.conductor.as_mut().filter(|c| matches!(c.state(), State::Recovery(_))) else {
+            self.ssh_hook.end_recovery();
+            return false;
+        };
+        let Some(finished) = shim.handle_recovery_line(line) else {
+            self.apply_ssh_effects();
+            if !self.conductor.as_ref().is_some_and(|c| matches!(c.state(), State::Recovery(_))) {
+                self.ssh_hook.end_recovery();
+            }
+            return false;
+        };
+        let (parent, it2) = self.conductor.take().map(|mut shim| (shim.parent.take(), std::mem::take(&mut shim.it2_inbox))).unwrap_or_default();
+        self.ssh.chain.pop();
+        let mut recovered = crate::conductor::Conductor::from_recovery(&finished, parent);
+        if let Some(id) = self.ssh.recovery_replaces.take() {
+            recovered.setup.client_unique_id = id;
+        }
+        // The shim's it2 state goes on (`handleRecovery` reads it off the shim).
+        recovered.it2_inbox = it2;
+        self.conductor = Some(Box::new(recovered));
+        self.adopt_recovered(&finished.dcs_id, &finished.tree());
+        self.own_mut().append_banner(crate::ssh_recovery::RECOVERED);
+        true
+    }
+
+    /// The conductor just made from a recovery (already the pane's innermost) gets its hop and
+    /// registry entry, the hook follows `tree` (in recovery mode), and it resynchronizes. What
+    /// was typed meanwhile goes out through it.
+    fn adopt_recovered(&mut self, dcs_id: &str, tree: &crate::ssh_recovery::Tree) {
+        let Some(c) = self.conductor.as_ref() else { return };
+        let hop = crate::ssh_session::Hop { unique_id: c.setup.client_unique_id.clone(), location: c.identity().compact(&crate::ssh_args::local_user()) };
+        self.ssh.chain.push(hop);
+        self.ssh_registry_out.push(crate::ssh_registry::Change::Add(c.guid.clone(), c.identity()));
+        self.ssh_hook.start_conductor_recovery(dcs_id, tree);
+        if let Some(c) = self.conductor.as_mut() {
+            c.did_resynchronize();
+        }
+        debug_assert!(self.ssh_chain_in_step(), "the hops follow the conductors");
+        self.apply_ssh_effects();
+        let held = self.take_ssh_held();
+        self.send_routed(&held);
+    }
+
+    /// The session's conductor chain from its saved state (`PS:2284-2298`), for a pane that
+    /// re-attached to its hosted session: the conductors come from `json` (untrusted: false
+    /// when it does not read), a hop and a registry entry for each framing one, the hook in
+    /// recovery mode with `tree`, and the framers reset at once (Tandem's hook swap is
+    /// synchronous, so iTerm2's boundary token is not needed). False, and nothing changed, when
+    /// there is nothing usable to restore. The conductors are unvouched, so they give no right
+    /// to recover in band: only the saved "SSH Session" flag does (F27, applied by the caller
+    /// after this, since the hook is replaced here).
+    pub fn restore_conductor(&mut self, json: &str, dcs_id: &str, tree: &crate::ssh_recovery::Tree) -> bool {
+        if self.conductor.is_some() || !tree.valid() || tree.is_empty() {
+            return false;
+        }
+        let Some(restored) = crate::conductor::Conductor::from_json(json) else { return false };
+        let mut hops = Vec::new();
+        let mut adds = Vec::new();
+        let mut c = Some(&restored);
+        while let Some(conductor) = c {
+            hops.push(crate::ssh_session::Hop { unique_id: conductor.setup.client_unique_id.clone(), location: conductor.identity().compact(&crate::ssh_args::local_user()) });
+            if conductor.framing() {
+                adds.push(crate::ssh_registry::Change::Add(conductor.guid.clone(), conductor.identity()));
+            }
+            c = conductor.parent.as_deref();
+        }
+        hops.reverse();
+        adds.reverse();
+        self.ssh.chain.hops = hops;
+        self.ssh_registry_out.extend(adds);
+        self.conductor = Some(Box::new(restored));
+        self.ssh_hook = crate::ssh_hook::Hook::recovering(dcs_id, tree, 0);
+        if let Some(c) = self.conductor.as_mut() {
+            c.did_resynchronize();
+        }
+        debug_assert!(self.ssh_chain_in_step(), "the hops follow the conductors");
+        self.apply_ssh_effects();
+        true
+    }
+
+    /// conductorQuit (`PS:25603-25612`): "Disconnected from <identity>" on the screen, then the
+    /// innermost conductor and its hop leave (`unhookSSHConductor`, which pops the hop too, so
+    /// the EndSSH that follows finds none and writes nothing), and the held writes are cleared.
+    fn ssh_quit(&mut self) {
+        let Some((identity, named)) = self.conductor.as_ref().map(|c| (c.identity().description(), !c.setup.parsed.hostname.is_empty())) else { return };
+        // A recovery shim that quit has no host to name.
+        if named {
+            self.own_mut().append_banner(&crate::conductor_framer::disconnected_banner(&identity));
+        }
+        self.ssh_unhook_conductor();
+        self.take_ssh_held();
+    }
+
     /// Drops the pane's innermost conductor and its hop, keeping the two chains in step:
     /// every path that drops a conductor but EndSSH comes here (`PS:20179-20204`).
     pub fn ssh_unhook_conductor(&mut self) {
@@ -765,23 +1097,70 @@ impl Pane {
     }
 
     /// conductorAbort (`PS:25587-25601`): the error, the reason and the end banner, then the
-    /// conductor and its hop go. Then Tandem's part: the DCS hook lets go, so later output
-    /// shows (ruling 14b-3, iTerm2 bugs B4 and B13); the held writes (the raw
-    /// `exec_login_shell` line among them) are dropped (iTerm2 strands them); connecting ends
-    /// and what was typed meanwhile is dropped (controller ruling: those keys were for the
-    /// remote shell, and conductor.sh may still be reading command lines). Typing after this
-    /// goes straight to the pty.
+    /// conductor and its hop go. The conductor that aborted is the outermost one `fail` marked
+    /// (a parent's abort reaches the pane through its child's effects), else the innermost;
+    /// every conductor inside it goes first, innermost first, so its saved state is what
+    /// remains. Then Tandem's part: the DCS hook that owns its depth lets go, and every hook
+    /// under it, so later output shows (ruling 14b-3, iTerm2 bugs B4 and B13), while the hooks
+    /// above keep parsing for their conductors (iTerm2 never force-unhooks the parser); the
+    /// held writes (the raw `exec_login_shell` line among them) are dropped (iTerm2 strands
+    /// them); connecting ends and what was typed meanwhile is dropped (controller ruling:
+    /// those keys were for the remote shell, and conductor.sh may still be reading command
+    /// lines). Typing after this goes straight to the pty.
     pub fn abort_ssh(&mut self, reason: &str) {
-        let location = self.conductor.as_ref().and_then(|c| c.parent.as_ref()).map(|p| p.identity().compact(&crate::ssh_args::local_user()));
+        let mut chain = Vec::new();
+        let mut c = self.conductor.as_deref();
+        while let Some(conductor) = c {
+            chain.push(conductor);
+            c = conductor.parent.as_deref();
+        }
+        let at = chain.iter().rposition(|c| c.failed()).unwrap_or(0);
+        let depth = chain.get(at).map_or(0, |c| c.depth());
+        let location = chain.get(at).and_then(|c| c.parent.as_ref()).map(|p| p.identity().compact(&crate::ssh_args::local_user()));
         let screen = self.own_mut();
         screen.print_message(crate::conductor::SETUP_ERROR);
         screen.print_message(&crate::conductor::shown(reason));
         screen.append_banner(&crate::ssh_handshake::end_banner(1, location.as_deref()));
-        self.ssh_unhook_conductor();
-        self.unhook_ssh();
+        for _ in 0..=at {
+            self.ssh_unhook_conductor();
+        }
+        if depth == 0 {
+            self.ssh_hook.unhook();
+        } else {
+            self.ssh_hook.let_go_owner(depth);
+        }
         self.ssh_held.clear();
         // Connecting ends so later typing is not queued behind a dead conductor; its queue goes.
         self.ssh.stop_queueing();
+    }
+
+    /// Whether a conductor hooked at `depth` sits at that depth in the pane's chain
+    /// (`conductor::child_depth`). When not (a hook deeper or shallower than the conductors
+    /// allow, or a second one at a framed conductor's own depth), the hook that read the init
+    /// line lets go and no conductor is made (Tandem's: iTerm2 chains it at the depth its
+    /// parent gives, and routing by depth then reaches the wrong conductor).
+    pub fn ssh_init_fits(&mut self, depth: i32) -> bool {
+        if crate::conductor::child_depth(self.conductor.as_deref()) == depth {
+            return true;
+        }
+        self.ssh_hook.let_go_owner(depth);
+        false
+    }
+
+    /// A parser at `depth` lost the remote's output or was refused more of it: every conductor
+    /// at that depth or deeper fails, innermost first, each aborting through `abort_ssh`. With
+    /// none at that depth or below (the conductor is already gone) the error is dropped, so it
+    /// never fails a healthy shallower one. True when the pane must be redrawn.
+    pub fn ssh_error(&mut self, depth: i32, reason: &str) -> bool {
+        let mut redraw = false;
+        for _ in 0..=crate::ssh_hook::MAX_DEPTH + 1 {
+            match self.conductor.as_mut() {
+                Some(c) if c.depth() >= depth => c.fail(reason),
+                _ => break,
+            }
+            redraw |= self.apply_ssh_effects();
+        }
+        redraw
     }
 
     /// Applies what the pane's conductors asked for, until they ask nothing more. True when
@@ -794,7 +1173,8 @@ impl Pane {
             if effects.is_empty() {
                 break;
             }
-            'batch: for effect in effects {
+            let mut effects = effects.into_iter();
+            while let Some(effect) = effects.next() {
                 match effect {
                     Effect::Write(bytes) => self.write_no_broadcast(&bytes),
                     Effect::SessionWrite(bytes) => self.write_unless_held(&bytes),
@@ -803,37 +1183,112 @@ impl Pane {
                     // runs, never the connecting queue. A conductor that handles keystrokes
                     // sends them framed (14c); unframed, `reply` would hand them straight back.
                     Effect::Keys(bytes) => {
-                        debug_assert!(self.ssh_route() != crate::conductor::Route::Conductor, "unframed keys from a conductor that handles keystrokes");
+                        debug_assert!(self.ssh_route() != crate::conductor::Route::Conductor(0), "unframed keys from a conductor that handles keystrokes");
                         self.reply(&bytes)
                     }
                     // `PS:25614-25617`: what was typed while connecting goes through sendKeys,
-                    // ahead of later typing; its effects are applied by the next pass.
+                    // ahead of later typing (routed: the conductor that sends for the session, or
+                    // held while the current one sets up); its effects are applied by the next pass.
                     Effect::StopQueueingInput => {
                         let queued = self.ssh.stop_queueing();
-                        if let Some(c) = self.conductor.as_mut() {
-                            c.send_keys(&queued);
-                        }
+                        self.send_routed(&queued);
                     }
                     // Decision: Tandem sends no Initial Text anywhere yet; it goes here.
                     Effect::SendInitialText => {}
                     Effect::StateChanged => redraw = true,
+                    // conductorQuit (`PS:25603-25612`): the banner, the conductor and its hop
+                    // go, and the writes it held are dropped. Its own quit was written first.
+                    Effect::Quit => {
+                        self.ssh_quit();
+                        redraw = true;
+                    }
+                    Effect::ProcessesChanged => self.ssh.jobs_dirty = true,
+                    Effect::Registered { guid, identity } => self.ssh_registry_out.push(crate::ssh_registry::Change::Add(guid, identity)),
+                    Effect::Deregistered { guid } => self.ssh_registry_out.push(crate::ssh_registry::Change::Remove(guid)),
+                    Effect::TimeOffset { token, result } => redraw |= self.time_offset(token, result),
                     Effect::Notice(text) => {
                         self.own_mut().append_banner(&text);
                         redraw = true;
                     }
                     // The rest of the batch came from the failed setup (keys for its remote,
                     // its writes) and goes with it: after the pop the route is Direct, so
-                    // applying it would send those bytes to whatever runs now. A remaining
-                    // parent's own later effects come in the next pass.
+                    // applying it would send those bytes to whatever runs now. Only the
+                    // registry changes survive: a conductor that is still here registers, and
+                    // a deregistration always applies (the parents' effects are drained ahead
+                    // of the child's, so nothing of a live conductor may be lost here).
                     Effect::Abort(reason) => {
                         self.abort_ssh(&reason);
                         redraw = true;
-                        break 'batch;
+                        let live = self.ssh_guids();
+                        for rest in effects.by_ref() {
+                            match rest {
+                                Effect::Registered { guid, identity } if live.contains(&guid) => self.ssh_registry_out.push(crate::ssh_registry::Change::Add(guid, identity)),
+                                Effect::Deregistered { guid } => self.ssh_registry_out.push(crate::ssh_registry::Change::Remove(guid)),
+                                // A script call is answered even when its batch is dropped.
+                                Effect::TimeOffset { token: Some(t), result } => self.ssh_answers.push((t, result)),
+                                _ => {}
+                            }
+                        }
                     }
                 }
             }
         }
         redraw
+    }
+
+    /// A clock reply: a script call's is kept for the app to deliver, the Clock's own sets the
+    /// pane's Clock. True when the bar's text may change.
+    fn time_offset(&mut self, token: Option<u64>, result: Result<crate::ssh_clock::Offset, String>) -> bool {
+        match token {
+            Some(t) => {
+                self.ssh_answers.push((t, result));
+                false
+            }
+            None => {
+                self.ssh_clock.set(result);
+                true
+            }
+        }
+    }
+
+    /// The script calls this pane's conductors still owe an answer (fetching, or finished
+    /// with the effect not yet taken). A pane that is dropped answers them with an error.
+    pub fn owed_answers(&self) -> Vec<u64> {
+        let mut tokens = Vec::new();
+        let mut c = self.conductor.as_deref();
+        while let Some(conductor) = c {
+            tokens.extend(conductor.abandoned_time_tokens());
+            c = conductor.parent.as_deref();
+        }
+        tokens
+    }
+
+    /// The answers to script calls the conductors finished, taken.
+    pub fn take_ssh_answers(&mut self) -> Vec<(u64, Result<crate::ssh_clock::Offset, String>)> {
+        std::mem::take(&mut self.ssh_answers)
+    }
+
+    /// Asks the pane's Clock what to do at `now` for its SSH level and host name (`CLK:52-99`)
+    /// and does it: at level 2 the current conductor fetches the remote's time. Returns what
+    /// it decided.
+    pub fn ssh_clock_tick(&mut self, now: std::time::Instant, host: Option<&str>) -> crate::ssh_clock::Refresh {
+        use crate::ssh_clock::Refresh;
+        // A framer that has unhooked answers nothing: the Clock is local, as below level 2.
+        let level = if self.ssh_frames() { i32::from(self.ssh_level()) } else { i32::from(self.ssh_level().min(1)) };
+        let refresh = self.ssh_clock.due(level, host, now);
+        if refresh == Refresh::Fetch {
+            let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+            if let Some(c) = self.conductor.as_mut() {
+                c.fetch_time_offset(wall, crate::ssh_clock::monotonic(std::time::Instant::now()), None);
+            }
+            self.apply_ssh_effects();
+        }
+        refresh
+    }
+
+    /// When the Clock next fetches (level 2 only).
+    pub fn clock_due(&self) -> Option<std::time::Instant> {
+        self.ssh_clock.next_due()
     }
 
     /// The command timer of the pane's current conductor at `now`, then its effects. True
@@ -842,6 +1297,75 @@ impl Pane {
         let Some(c) = self.conductor.as_mut() else { return false };
         c.tick(now);
         self.apply_ssh_effects()
+    }
+
+    /// The remote job and ancestors of the innermost conductor that frames, once its process
+    /// list has arrived; None shows the local watcher's values (`PS:25574-25581`).
+    pub fn remote_job(&self) -> Option<(Option<crate::proctree::Job>, Vec<String>)> {
+        self.conductor.as_deref()?.innermost_framing()?.remote_job()
+    }
+
+    /// The names of the remote programs for the close prompt (`CD:684-694`), once a process
+    /// list has arrived; None asks the local tree.
+    pub fn remote_process_names(&self) -> Option<Vec<String>> {
+        let c = self.conductor.as_deref()?.innermost_framing()?;
+        c.remote_job()?;
+        Some(c.transitive_process_names())
+    }
+
+    /// The remote CPU values of the innermost framing conductor, in place of the local meter.
+    pub fn remote_cpu(&self) -> Option<&crate::statusbar_metrics::Series> {
+        self.conductor.as_deref()?.innermost_framing()?.procs.as_ref().map(|p| &p.cpu_series)
+    }
+
+    /// A conductor hooked: the directory the pane has now is not the remote's, so only a later
+    /// change is told to the conductor.
+    pub fn note_ssh_cwd(&mut self) {
+        self.ssh.cwd_seen = self.own().shell.cwd.clone();
+    }
+
+    /// didUpdateCurrentDirectory (`PS:19373-19376`): when the shell's directory changed since
+    /// last looked at, the innermost conductor learns it as its current directory, for a later
+    /// reconnection. The remote chose the text, so a directory that is not one line is not
+    /// kept. True when the directory changed.
+    pub fn track_ssh_cwd(&mut self) -> bool {
+        let Some(conductor) = self.conductor.as_mut() else { return false };
+        let cwd = self.live.as_ref().unwrap_or(&self.screen).shell.cwd.clone();
+        if cwd == self.ssh.cwd_seen {
+            return false;
+        }
+        if let Some(dir) = cwd.as_deref().and_then(crate::ssh_jumps::clean_directory) {
+            conductor.current_directory = Some(dir);
+        }
+        self.ssh.cwd_seen = cwd;
+        true
+    }
+
+    /// Whether the job must be read again (taken).
+    pub fn take_jobs_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.ssh.jobs_dirty)
+    }
+
+    /// The once-a-second publish of every framing conductor's CPU value (making each process
+    /// list at first use), then the effects that caused. True when a value was pushed.
+    pub fn tick_procs(&mut self, now: std::time::Instant) -> bool {
+        let framing = self.conductor.as_ref().is_some_and(|c| c.frames_anywhere());
+        if !framing {
+            self.ssh.procs_due = None;
+            return false;
+        }
+        if self.ssh.procs_due.is_some_and(|due| now < due) {
+            return false;
+        }
+        self.ssh.procs_due = Some(now + std::time::Duration::from_secs(1));
+        let pushed = self.conductor.as_mut().is_some_and(|c| c.tick_processes());
+        self.apply_ssh_effects();
+        pushed
+    }
+
+    /// When the process lists next publish.
+    pub fn procs_due(&self) -> Option<std::time::Instant> {
+        self.ssh.procs_due
     }
 
     /// When the pane's current conductor times out if nothing happens first.
@@ -878,8 +1402,14 @@ impl Pane {
             return;
         }
         // While SSH integration connects, writes wait for the conductor, ahead of Buffer
-        // Input and before `writeTaskImpl`'s effects (`PS:4411-4430`).
-        if self.ssh.queue(bytes) {
+        // Input and before `writeTaskImpl`'s effects (`PS:4411-4430`) but after a conductor
+        // that handles keystrokes: a nested hop's password reaches the outer framer (F9,
+        // `PS:4418-4426`).
+        // Only the current conductor's own keys skip the queue: with a hop connecting from
+        // a level 1 host (route `Conductor(n)`, n >= 1) typing waits, as iTerm2 queues unless the
+        // current conductor handles keystrokes.
+        let routed = matches!(self.ssh_route(), crate::conductor::Route::Conductor(_));
+        if self.ssh_route() != crate::conductor::Route::Conductor(0) && self.ssh.queue(bytes) {
             return;
         }
         // Any write cancels the composer's clear probe (`PS:4154-4158`), held by Buffer
@@ -890,7 +1420,11 @@ impl Pane {
         if bytes.iter().any(|&b| b == b'\r' || b == b'\n') {
             self.last_newline = Some(std::time::Instant::now());
         }
-        if let Some(now) = self.buffer.send(bytes) {
+        // A conductor's keys go before any buffering (`PS:4417-4431`): Buffer Input never
+        // holds them.
+        if routed {
+            self.send_routed(bytes);
+        } else if let Some(now) = self.buffer.send(bytes) {
             self.send_typed(&now);
         }
     }
@@ -1011,19 +1545,13 @@ impl Pane {
     }
 
     /// What the terminal answers the program (reports), and Tandem's own writes that iTerm2
-    /// makes with `broadcastAllowed:NO` (the idle code, upload answers, tmux commands):
-    /// never held by Buffer Input nor the connecting queue (`PS:4364-4376`, `PS:4276-4294`),
-    /// but routed as `writeTaskNoBroadcast` routes them: through the conductor's `send_keys`
-    /// when it handles keystrokes, else held while it sets up (`PS:4191-4197`), else the pty.
+    /// makes with `broadcastAllowed:NO` (the idle code, upload answers, tmux commands, the
+    /// conductor bootstrap): never held by Buffer Input nor the connecting queue
+    /// (`PS:4364-4376`, `PS:4276-4294`), and routed as `writeTaskNoBroadcast` routes them
+    /// (`send_routed`).
     pub fn reply(&mut self, bytes: &[u8]) {
         self.composer.probe = None;
-        if self.ssh_route() == crate::conductor::Route::Conductor {
-            if let Some(c) = self.conductor.as_mut() {
-                c.send_keys(bytes);
-            }
-        } else {
-            self.write_unless_held(bytes);
-        }
+        self.send_routed(bytes);
     }
 
     /// Typed bytes Buffer Input let go: the session's typed route (`write_session`).
@@ -1031,16 +1559,23 @@ impl Pane {
         self.write_session(bytes);
     }
 
-    /// iTerm2's `writeTaskNoBroadcast:`: straight to the pty, past the connecting queue and
-    /// Buffer Input. The conductor's own bytes (its bootstrap, the `^C` line that ends it) go
-    /// this way.
-    pub fn write_no_broadcast(&mut self, bytes: &[u8]) {
+    /// The conductors' own bytes (`Effect::Write`: conductor.sh command lines and framer
+    /// commands, already framed by every framer they pass through): straight to the pty, past
+    /// the connecting queue, Buffer Input and `send_routed`. Nothing else writes this way.
+    fn write_no_broadcast(&mut self, bytes: &[u8]) {
         self.composer.probe = None;
+        self.write_pty(bytes);
+    }
+
+    /// The pty write itself. False when the pty refused it.
+    fn write_pty(&mut self, bytes: &[u8]) -> bool {
         if let Some(pty) = &self.pty {
             if let Err(e) = pty.write(bytes) {
                 self.error = Some(e);
+                return false;
             }
         }
+        true
     }
 
     pub fn paste(&mut self, text: &str) {
@@ -1562,6 +2097,91 @@ mod tests {
         p
     }
 
+    /// `three_hops` with every conductor framed; the registry as the app keeps it after the
+    /// pane applied what the conductors asked for.
+    fn framed_three() -> (Pane, crate::ssh_registry::Registry, Vec<String>) {
+        let mut p = three_hops();
+        let mut guids = Vec::new();
+        let mut c = p.conductor.as_deref_mut();
+        while let Some(x) = c {
+            x.setup.parsed.hostname = format!("{}.example", x.setup.client_unique_id);
+            guids.insert(0, x.guid.clone());
+            x.set_framed_pid(Some(10));
+            c = x.parent.as_deref_mut();
+        }
+        let mut registry = crate::ssh_registry::Registry::default();
+        p.apply_ssh_effects();
+        registry.apply(p.take_ssh_registry());
+        (p, registry, guids)
+    }
+
+    #[test]
+    fn every_conductor_leaves_the_registry_with_its_pane_state() {
+        // Registered comes with the conductor that framed, even from a parent's queue.
+        let (mut p, mut r, guids) = framed_three();
+        assert_eq!(r.identities().iter().map(|i| i.hostname.as_str()).collect::<Vec<_>>(), ["a.example", "b.example", "c.example"]);
+        assert_eq!(p.ssh_guids(), [guids[2].clone(), guids[1].clone(), guids[0].clone()], "innermost first");
+
+        // EndSSH for the middle hop: B and C leave.
+        p.end_ssh("b");
+        r.apply(p.take_ssh_registry());
+        assert_eq!(r.identities().len(), 1);
+        p.end_ssh("a");
+        r.apply(p.take_ssh_registry());
+        assert!(!r.any(), "the last framed conductor is gone");
+
+        // Abort: the failed conductor's Deregistered and its pop; the parents stay.
+        let (mut p, mut r, _) = framed_three();
+        p.conductor.as_mut().unwrap().fail("boom");
+        p.apply_ssh_effects();
+        r.apply(p.take_ssh_registry());
+        assert_eq!(r.identities().iter().map(|i| i.hostname.as_str()).collect::<Vec<_>>(), ["a.example", "b.example"]);
+
+        // Unhook and a plain pop.
+        p.ssh_unhook_conductor();
+        r.apply(p.take_ssh_registry());
+        assert_eq!(r.identities().len(), 1);
+        assert!(p.pop_conductor());
+        r.apply(p.take_ssh_registry());
+        assert!(!r.any());
+        assert!(p.take_ssh_registry().is_empty());
+    }
+
+    #[test]
+    fn an_abort_keeps_the_registry_changes_of_the_same_pass() {
+        // Every conductor framed in one pass and the innermost fails in that pass: the
+        // parents' Registered is applied, the failed one's is undone.
+        let mut p = three_hops();
+        let mut c = p.conductor.as_deref_mut();
+        while let Some(x) = c {
+            x.setup.parsed.hostname = format!("{}.example", x.setup.client_unique_id);
+            x.set_framed_pid(Some(10));
+            c = x.parent.as_deref_mut();
+        }
+        p.conductor.as_mut().unwrap().fail("boom");
+        p.apply_ssh_effects();
+        let mut r = crate::ssh_registry::Registry::default();
+        r.apply(p.take_ssh_registry());
+        assert_eq!(r.identities().iter().map(|i| i.hostname.as_str()).collect::<Vec<_>>(), ["a.example", "b.example"]);
+        // The outermost failing takes the whole chain: nothing stays registered.
+        let mut p = three_hops();
+        let mut c = p.conductor.as_deref_mut();
+        while let Some(x) = c {
+            x.setup.parsed.hostname = format!("{}.example", x.setup.client_unique_id);
+            x.set_framed_pid(Some(10));
+            c = x.parent.as_deref_mut();
+        }
+        let mut outer = p.conductor.as_deref_mut().unwrap();
+        while outer.parent.is_some() {
+            outer = outer.parent.as_deref_mut().unwrap();
+        }
+        outer.fail("boom");
+        p.apply_ssh_effects();
+        let mut r = crate::ssh_registry::Registry::default();
+        r.apply(p.take_ssh_registry());
+        assert!(!r.any(), "{:?}", r.identities());
+    }
+
     #[test]
     fn abort_leaves_nothing_held() {
         let mut p = hooked_setup(std::time::Instant::now(), false);
@@ -1597,6 +2217,169 @@ mod tests {
         p.abort_ssh(&"r".repeat(1 << 20));
         let shown = p.screen.all_text().matches('r').count();
         assert!(shown <= crate::conductor::MAX_SHOWN + 16, "{shown}");
+    }
+
+    /// A pane whose root hook is hooked, in a framing session (conductor "o", depth 0) with a
+    /// nested framing conductor "a" inside it (depth 1), both with their hops.
+    fn nested_framing() -> Pane {
+        use crate::conductor::{Conductor, Setup};
+        use crate::ssh_session::Hop;
+        let at = |id: &str| Setup { client_unique_id: id.into(), parsed: crate::ssh_args::ParsedArgs { hostname: format!("{id}.example"), port: 22, ..Default::default() }, ..Setup::default() };
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        p.ssh.begin(true);
+        p.tmux_io().unwrap().push_output(b"\x1bP2000pnone o YQ== - Yg==\n");
+        p.pump();
+        p.take_ssh();
+        let mut outer = Conductor::new(at("o"), None, "O");
+        outer.framed_pid = Some(100);
+        p.ssh.chain.push(Hop { unique_id: "o".into(), location: "o.example".into() });
+        let mut inner = Conductor::new(at("a"), Some(Box::new(outer)), "U");
+        inner.framed_pid = Some(200);
+        assert_eq!(inner.depth(), 1);
+        p.ssh.chain.push(Hop { unique_id: "a".into(), location: "a.example".into() });
+        p.conductor = Some(Box::new(inner));
+        p
+    }
+
+    fn still_parses(p: &mut Pane) -> bool {
+        use crate::conductor_parser::Token;
+        p.tmux_io().unwrap().push_output(&crate::ssh_fixtures::reply("9.1", &["x"], 0, 'f'));
+        p.pump();
+        p.take_ssh().iter().any(|o| matches!(o, crate::ssh_hook::Out::Ssh(Token::Begin(id), 0) if id == "9.1"))
+    }
+
+    #[test]
+    fn a_nested_abort_keeps_the_parent_hooked() {
+        // A depth 1 conductor fails: only its depth is let go, the framing parent goes on.
+        let mut p = nested_framing();
+        p.abort_ssh("boom");
+        assert_eq!(p.conductor.as_ref().map(|c| c.setup.client_unique_id.as_str()), Some("o"));
+        assert!(p.ssh_hook.active(), "the depth 0 parser is still hooked");
+        assert!(still_parses(&mut p), "and still parses the parent's replies");
+        // The outermost conductor failing lets the whole hook go, as before.
+        p.abort_ssh("boom");
+        assert!(p.conductor.is_none() && !p.ssh_hook.active());
+    }
+
+    #[test]
+    fn an_abort_fails_the_conductor_that_aborted() {
+        // The parent fails (a reply routed to it through the child): the parent and the child
+        // go, and the depth 0 hook lets go with them.
+        let mut p = nested_framing();
+        p.conductor.as_mut().unwrap().via_parent(|outer| outer.fail("boom"));
+        p.apply_ssh_effects();
+        assert!(p.conductor.is_none(), "the failed parent is gone, and its child with it");
+        assert!(p.ssh.chain.hops.is_empty());
+        assert!(!p.ssh_hook.active(), "depth 0 let go");
+        assert!(p.screen.all_text().contains("boom"));
+        // The child fails: only the child goes, depth 0 still parses.
+        let mut p = nested_framing();
+        p.conductor.as_mut().unwrap().fail("boom");
+        p.apply_ssh_effects();
+        assert_eq!(p.conductor.as_ref().map(|c| c.setup.client_unique_id.as_str()), Some("o"));
+        assert!(still_parses(&mut p));
+    }
+
+    /// Feeds `bytes` as the pane's output and returns the depths of the conductor tokens the
+    /// hook found.
+    fn ssh_depths(p: &mut Pane, bytes: &[u8]) -> Vec<i32> {
+        p.tmux_io().unwrap().push_output(bytes);
+        p.pump();
+        p.take_ssh().iter().filter_map(|o| if let crate::ssh_hook::Out::Ssh(_, d) = o { Some(*d) } else { None }).collect()
+    }
+
+    fn nested_init() -> Vec<u8> {
+        use crate::ssh_fixtures::{dcs_hook, output, pre_reply};
+        output("n", 200, -1, 0, &[dcs_hook("", "u", "YQ==", "Yg=="), pre_reply("1.1", &["sh"])].concat())
+    }
+
+    #[test]
+    fn a_conductor_takes_its_hooks_depth() {
+        use crate::ssh_fixtures::{output, pre_reply};
+        // Under the framing depth 0 conductor alone, a conductor fits at depth 1 only.
+        let mut p = nested_framing();
+        p.ssh_unhook_conductor();
+        assert_eq!(ssh_depths(&mut p, &nested_init()), [1, 1, 1, 1]);
+        assert!(!p.ssh_init_fits(2));
+        assert!(p.ssh_hook.owned(1), "a refusal at a depth nobody owns lets nothing go");
+        assert!(p.ssh_init_fits(1));
+        // Depth 0 again (the root hooked anew): it is the whole hook that lets go.
+        assert!(!p.ssh_init_fits(0));
+        assert!(!p.ssh_hook.active() && !p.ssh_hook.owned(1));
+        // Under the framing depth 1 conductor, a second depth 1 hook does not fit: it lets go,
+        // and its process's replies are plain output after it; depth 0 still parses.
+        let mut p = nested_framing();
+        assert_eq!(ssh_depths(&mut p, &nested_init()), [1, 1, 1, 1]);
+        assert!(!p.ssh_init_fits(1));
+        assert!(!p.ssh_hook.owned(1) && p.ssh_hook.owned(0));
+        assert_eq!(ssh_depths(&mut p, &output("m", 200, -1, 0, &pre_reply("1.2", &["x"]))), Vec::<i32>::new());
+        assert!(still_parses(&mut p));
+    }
+
+    #[test]
+    fn an_unhook_takes_the_deeper_conductors_first() {
+        let name = |p: &Pane| p.conductor.as_ref().map(|c| (c.setup.client_unique_id.clone(), c.unhooked()));
+        // Beyond iTerm2: an unhook at depth 0 while a depth 1 conductor frames pops that one
+        // (its keys must never go into a host that is no longer there), then unhooks depth 0.
+        let mut p = nested_framing();
+        let inner = p.conductor.as_ref().unwrap().guid.clone();
+        p.unhook_conductor_at(0);
+        assert_eq!(name(&p), Some(("o".into(), true)));
+        assert_eq!(p.ssh.chain.hops.len(), 1, "the hop of the popped conductor went with it");
+        assert!(p.take_ssh_registry().contains(&crate::ssh_registry::Change::Remove(inner)));
+        assert!(p.ssh_chain_in_step());
+        // Typing now goes straight to the pty, never framed into a gone remote.
+        assert_eq!(p.ssh_route(), crate::conductor::Route::Direct);
+        // An unhook at the innermost depth takes that conductor only.
+        let mut p = nested_framing();
+        p.unhook_conductor_at(1);
+        assert_eq!(name(&p), Some(("a".into(), true)));
+        assert_eq!(p.ssh.chain.hops.len(), 2);
+        // An unhook for a depth with no conductor (it is gone) does not unhook a healthy
+        // shallower one.
+        let mut p = nested_framing();
+        p.ssh_unhook_conductor();
+        p.unhook_conductor_at(1);
+        assert_eq!(name(&p), Some(("o".into(), false)));
+        assert!(p.conductor.as_ref().unwrap().handles_keystrokes());
+    }
+
+    #[test]
+    fn a_nested_abort_lets_its_own_hook_go() {
+        // The depth 1 conductor fails: the depth 1 hook lets go, the depth 0 one parses on.
+        let mut p = nested_framing();
+        assert_eq!(ssh_depths(&mut p, &nested_init()), [1, 1, 1, 1]);
+        p.conductor.as_mut().unwrap().fail("boom");
+        p.apply_ssh_effects();
+        assert_eq!(p.conductor.as_ref().map(|c| c.depth()), Some(0));
+        assert!(!p.ssh_hook.owned(1) && p.ssh_hook.owned(0));
+        assert!(still_parses(&mut p));
+        // The depth 0 conductor fails through its child: every hook lets go.
+        let mut p = nested_framing();
+        assert_eq!(ssh_depths(&mut p, &nested_init()), [1, 1, 1, 1]);
+        p.conductor.as_mut().unwrap().via_parent(|outer| outer.fail("boom"));
+        p.apply_ssh_effects();
+        assert!(p.conductor.is_none() && !p.ssh_hook.owned(1) && !p.ssh_hook.active());
+    }
+
+    #[test]
+    fn errors_go_to_the_conductor_at_their_depth() {
+        let name = |p: &Pane| p.conductor.as_ref().map(|c| c.setup.client_unique_id.clone());
+        // A depth 1 error fails the depth 1 conductor only.
+        let mut p = nested_framing();
+        p.ssh_error(1, "boom");
+        assert_eq!(name(&p).as_deref(), Some("o"));
+        assert!(still_parses(&mut p));
+        // A depth 1 error with no conductor at depth 1 (it is gone) is dropped: the healthy
+        // depth 0 conductor is not failed by it.
+        p.ssh_error(1, "boom");
+        assert_eq!(name(&p).as_deref(), Some("o"));
+        assert!(still_parses(&mut p));
+        // A depth 0 error ends every conductor at or below depth 0, innermost first.
+        let mut p = nested_framing();
+        p.ssh_error(0, "boom");
+        assert!(p.conductor.is_none());
+        assert!(p.ssh.chain.hops.is_empty());
     }
 
     #[test]
@@ -1738,10 +2521,12 @@ mod tests {
         let mut p = Pane::tmux(5, 1, 3, 20, 4);
         p.conductor = setting_up();
         assert!(p.coprocess_output(b"co"));
-        assert_eq!(p.conductor.as_mut().unwrap().take_effects(), [Effect::Keys(b"co".to_vec())], "sendKeys (PS:4639-4642)");
+        assert!(p.conductor.as_mut().unwrap().take_effects().is_empty());
         assert!(p.tmux_io().unwrap().take_input().is_empty());
-        assert!(p.ssh_held.is_empty());
+        assert_eq!(p.take_ssh_held(), b"co", "sendKeys (PS:4639-4642) of a conductor setting up: held");
+        // The conductor's own unframed sendKeys lands the same way.
         p.conductor.as_mut().unwrap().send_keys(b"co");
+        assert_eq!(p.conductor.as_ref().unwrap().effects, [Effect::Keys(b"co".to_vec())]);
         assert!(!p.apply_ssh_effects());
         assert_eq!(p.take_ssh_held(), b"co", "held while setup runs");
         assert!(p.tmux_io().unwrap().take_input().is_empty());
@@ -1762,13 +2547,31 @@ mod tests {
     }
 
     #[test]
+    fn coprocess_raw_tee_follows_iterm2() {
+        // PK:900: with SSH integration in play the raw read never feeds the coprocess.
+        let mut p = Pane::tmux(5, 1, 3, 20, 4);
+        assert!(p.coprocess_gets_raw(), "plain output");
+        p.hook_output(b"hello");
+        assert!(p.coprocess_gets_raw());
+        p.hook_output(b"\x1bP2000pnone 1 YQ== - Yg==\n");
+        assert!(!p.coprocess_gets_raw(), "a hook is active");
+        p.take_ssh();
+        assert!(!p.coprocess_gets_raw(), "still hooked");
+        p.ssh_hook.unhook();
+        assert!(p.coprocess_gets_raw());
+        p.conductor = setting_up();
+        assert!(!p.coprocess_gets_raw(), "a conductor (level 1 included) has no raw tee");
+    }
+
+    #[test]
     fn conductor_route_reaches_send_keys() {
         use crate::conductor::Effect;
         let mut p = Pane::tmux(5, 1, 3, 20, 4);
         p.conductor = setting_up();
         p.conductor.as_mut().unwrap().framed_pid = Some(1);
         p.write_session(b"q");
-        assert_eq!(p.conductor.as_mut().unwrap().take_effects(), [Effect::Keys(b"q".to_vec())]);
+        // Framed: a send to the framed pid, written by the conductor (never raw keys).
+        assert_eq!(p.conductor.as_mut().unwrap().take_effects(), [Effect::Write(b"c2VuZA==\nMQ==\nY1E9PQ==\n\n".to_vec())]);
         assert!(p.tmux_io().unwrap().take_input().is_empty(), "nothing written");
         assert!(p.ssh_held.is_empty(), "nothing held");
     }
@@ -1860,6 +2663,39 @@ mod tests {
         assert!(p.has_ssh());
     }
 
+    /// A framing conductor's process list gives the pane its job, close-prompt names and CPU
+    /// series once rows have arrived; the values go when the conductor does.
+    #[test]
+    fn remote_processes_belong_to_the_framing_pane() {
+        use crate::conductor::{Conductor, Setup};
+        let mut p = Pane::with(1, None, 20, 6);
+        assert!(p.remote_job().is_none() && p.remote_process_names().is_none() && p.remote_cpu().is_none());
+        let mut c = Conductor::new(Setup { client_unique_id: "A".into(), ..Setup::default() }, None, "P");
+        c.framed_pid = Some(10);
+        p.conductor = Some(Box::new(c));
+        let t0 = std::time::Instant::now();
+        // The first tick makes the process list; nothing is known until rows come.
+        assert!(!p.tick_procs(t0));
+        assert!(p.remote_job().is_none() && p.remote_process_names().is_none(), "no rows: the local values stay");
+        assert_eq!(p.procs_due(), Some(t0 + std::time::Duration::from_secs(1)));
+        let procs = p.conductor.as_mut().unwrap().processes().unwrap();
+        procs.handle("$begin ps\n+10 1 Ss Mon Sep 27 10:00:00 2026 -bash\n+11 10 S+ Mon Sep 27 10:00:01 2026 vim x\n$begin cpu\n=50\n");
+        let (job, ancestors) = p.remote_job().unwrap();
+        assert_eq!((job.unwrap().name, ancestors), ("vim".to_string(), vec!["vim".to_string()]));
+        assert_eq!(p.remote_process_names(), Some(vec!["vim".to_string()]));
+        // Once a second, and only when a value is known.
+        assert!(!p.tick_procs(t0 + std::time::Duration::from_millis(500)));
+        assert!(p.tick_procs(t0 + std::time::Duration::from_secs(1)));
+        assert_eq!(p.remote_cpu().unwrap().values(), [0.5]);
+        // The conductor going marks the job for a fresh read from the local watcher.
+        p.take_jobs_dirty();
+        assert!(p.pop_conductor());
+        assert!(p.take_jobs_dirty());
+        assert!(p.remote_job().is_none() && p.remote_cpu().is_none());
+        assert!(!p.tick_procs(t0 + std::time::Duration::from_secs(5)));
+        assert_eq!(p.procs_due(), None);
+    }
+
     #[test]
     fn tmux_panes_do_not_answer_queries() {
         let mut p = Pane::tmux(5, 1, 3, 20, 4);
@@ -1892,8 +2728,31 @@ mod tests {
     }
 
     #[test]
+    fn cwd_tracking_follows_iterm2() {
+        use crate::conductor::{Conductor, Setup};
+        let mut p = Pane::with(1, None, 80, 24);
+        p.conductor = Some(Box::new(Conductor::new(Setup::default(), None, "P")));
+        p.feed_output(b"\x1b]7;file://localhost/local/dir\x07");
+        p.note_ssh_cwd();
+        assert!(!p.track_ssh_cwd(), "the directory the pane had when the conductor hooked is not the remote's");
+        assert_eq!(p.conductor.as_ref().unwrap().current_directory, None);
+        p.feed_output(b"\x1b]7;file://h/home/u/x\x07");
+        assert!(p.track_ssh_cwd());
+        assert_eq!(p.conductor.as_ref().unwrap().current_directory.as_deref(), Some("/home/u/x"));
+        assert!(!p.track_ssh_cwd(), "once per change");
+        // A directory that is not one line of text never reaches the conductor.
+        p.feed_output(b"\x1b]7;file://h/a%0Ab\x07");
+        assert!(p.track_ssh_cwd());
+        assert_eq!(p.conductor.as_ref().unwrap().current_directory.as_deref(), Some("/home/u/x"));
+        // With no conductor there is nothing to tell.
+        p.conductor = None;
+        p.feed_output(b"\x1b]7;file://h/other\x07");
+        assert!(!p.track_ssh_cwd());
+    }
+
+    #[test]
     fn gateway_panes_take_no_input() {
-        let mut p = Pane { id: 1, session_guid: String::new(), screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
+        let mut p = Pane { id: 1, session_guid: String::new(), screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
         p.buffer.on = true;
         p.input(b"a");
         p.gateway = true;
@@ -1906,7 +2765,7 @@ mod tests {
         // During a replay iTerm2's tab shows the task-less synthetic session, so nothing
         // the user sends reaches the live shell; the live session's own writes (a
         // trigger's Send Text) still do.
-        let mut p = Pane { id: 1, session_guid: String::new(), screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
+        let mut p = Pane { id: 1, session_guid: String::new(), screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
         p.buffer.on = true;
         p.input(b"a");
         p.replay = Some(replay::Replay { decoder: None, read_only: false });
@@ -1921,7 +2780,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, session_guid: String::new(), screen: own, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_held: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
+        let mut p = Pane { id: 1, session_guid: String::new(), screen: own, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), arrangement: None, ssh: Default::default() };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);
@@ -2169,6 +3028,905 @@ mod tests {
         let after = drain(&p);
         assert_eq!(while_paused, 0, "nothing read while paused");
         assert!(after > 0, "reading resumes");
+    }
+
+    fn framing_conductor(pid: i32) -> Box<crate::conductor::Conductor> {
+        let mut c = crate::conductor::Conductor::new(Default::default(), None, "U");
+        c.framed_pid = Some(pid);
+        Box::new(c)
+    }
+
+    fn sends(p: &Pane) -> Vec<Vec<u8>> {
+        use crate::conductor::Command;
+        p.conductor.as_ref().unwrap().pending().into_iter().filter_map(|c| match c {
+            Command::FramerSend { data, pid: 4242 } => Some(data.clone()),
+            _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn framed_writes_go_through_send() {
+        let mut p = Pane::with(7, None, 80, 24);
+        p.conductor = Some(framing_conductor(4242));
+        p.live_input(b"a");
+        p.reply(b"\x1b[?1;2c");
+        assert!(p.coprocess_output(b"co"));
+        assert_eq!(sends(&p), [b"a".to_vec(), b"\x1b[?1;2c".to_vec(), b"co".to_vec()]);
+        assert!(p.take_ssh_held().is_empty(), "nothing raw is held for the session");
+
+        // A level 1 conductor (writes are not queued) sends nothing framed.
+        let mut p = Pane::with(8, None, 80, 24);
+        let mut c = crate::conductor::Conductor::new(Default::default(), None, "U");
+        c.handle_unhook();
+        p.conductor = Some(Box::new(c));
+        p.live_input(b"a");
+        p.reply(b"r");
+        assert!(p.coprocess_output(b"co"));
+        p.apply_ssh_effects();
+        assert!(sends(&p).is_empty());
+        assert!(p.take_ssh_held().is_empty(), "straight to the pty: no conductor above frames");
+    }
+
+    #[test]
+    fn connecting_input_goes_through_send() {
+        let mut p = Pane::with(7, None, 80, 24);
+        p.conductor = setting_up();
+        p.ssh.begin(true);
+        p.live_input(b"ls\r");
+        p.live_input(b"x");
+        // The framer's login command in flight: still queued, nothing sent before its reply.
+        login(&mut p);
+        p.live_input(b"y");
+        assert!(sends(&p).is_empty(), "queued while connecting, not sent before the login");
+        assert_eq!(p.ssh.connecting.as_deref(), Some(&b"ls\rxy"[..]));
+        // The login's reply (the shell's pid) frames the conductor and stops the queueing.
+        login_reply(&mut p);
+        assert_eq!(sends(&p), [b"ls\rxy".to_vec()], "one send for everything typed while connecting");
+        assert!(p.ssh.connecting.is_none());
+        // Nothing typed: nothing sent (F18).
+        let mut p = Pane::with(7, None, 80, 24);
+        p.conductor = setting_up();
+        p.ssh.begin(true);
+        login(&mut p);
+        login_reply(&mut p);
+        assert!(sends(&p).is_empty());
+        assert!(p.ssh.connecting.is_none());
+    }
+
+    /// The framer's `login` command written (`CD:1926-1929`).
+    fn login(p: &mut Pane) {
+        use crate::conductor::{Command, Handler};
+        let c = p.conductor.as_mut().unwrap();
+        c.send(Command::FramerLogin { cwd: "$HOME".into(), args: Vec::new() }, Handler::FramerLogin(Vec::new()), false);
+        c.take_effects();
+    }
+
+    /// framer.py's reply to `login`: the login shell's pid, 4242 (`CD:2398-2411`).
+    fn login_reply(p: &mut Pane) {
+        let c = p.conductor.as_mut().unwrap();
+        c.handle_begin("l", 0);
+        c.handle_line("4242", 0);
+        c.handle_end("l", "f", 0, 0);
+        assert_eq!(c.framed_pid, Some(4242));
+        p.apply_ssh_effects();
+    }
+
+    #[test]
+    fn typing_while_a_nested_hop_connects_reaches_the_outer_send() {
+        // F9: iTerm2 asks handlesKeystrokes before the connecting queue (`PS:4418-4426`).
+        let mut p = Pane::with(7, None, 80, 24);
+        p.conductor = Some(framing_conductor(4242));
+        p.ssh.begin(true);
+        p.live_input(b"secret\r");
+        assert_eq!(sends(&p), [b"secret\r".to_vec()]);
+        assert_eq!(p.ssh.connecting.as_deref(), Some(&b""[..]), "nothing waits in the connecting queue");
+    }
+
+    #[test]
+    fn a_coprocess_cannot_flood_the_queue() {
+        // F20: a slow link must not grow the queue without end.
+        let mut p = Pane::with(7, None, 80, 24);
+        let mut c = framing_conductor(4242);
+        c.send(crate::conductor::Command::FramerRun("x".into()), crate::conductor::Handler::FireAndForget, false);
+        p.conductor = Some(c);
+        assert!(!p.coprocess_backlogged());
+        for _ in 0..80 {
+            assert!(p.coprocess_output(&[b'z'; 1024]));
+        }
+        assert!(p.coprocess_backlogged(), "over 64 KiB waits");
+        // Replies come back and the queue drains into the wire.
+        let c = p.conductor.as_mut().unwrap();
+        for i in 0..200 {
+            c.handle_end("a", "f", 0, 0);
+            if !c.has_command(&|x| matches!(x, crate::conductor::Command::FramerSend { .. })) {
+                break;
+            }
+            assert!(i < 199);
+        }
+        assert!(!p.coprocess_backlogged());
+    }
+
+    // Routing under nested conductors (task 6 fix round, ruling: input never goes to the pty
+    // while any ancestor conductor frames; the nearest framing ancestor sends it).
+
+    /// A pane in a framing session: the root hook hooked, conductor "o" at depth 0 framing
+    /// pid 100 in ground, with its hop.
+    fn framing_root() -> Pane {
+        let mut p = framed_nested();
+        p.ssh_unhook_conductor();
+        assert_eq!(p.conductor.as_ref().map(|c| (c.depth(), c.framing())), Some((0, true)));
+        p
+    }
+
+    /// `nested_framing` once connecting ended (the login's StopQueueingInput).
+    fn framed_nested() -> Pane {
+        let mut p = nested_framing();
+        p.ssh.stop_queueing();
+        p
+    }
+
+    /// What the pty got once the conductors' effects are applied.
+    fn wire(p: &mut Pane) -> Vec<u8> {
+        p.apply_ssh_effects();
+        p.tmux_io().unwrap().take_input()
+    }
+
+    /// `data` framed for pid `pid` at depth 0: a `send` framer command.
+    fn sent_to(pid: i32, data: &[u8]) -> Vec<u8> {
+        use base64::Engine;
+        crate::ssh_fixtures::framer_cmd(&["send", &pid.to_string(), &base64::engine::general_purpose::STANDARD.encode(data)])
+    }
+
+    /// A conductor for `init` chained onto the pane's current one, as `App::ssh_hooked` does.
+    fn hook_child(p: &mut Pane, init: &crate::conductor_parser::Init, depth: i32) {
+        use crate::conductor::{setup_for_hook, Conductor};
+        assert!(p.ssh_init_fits(depth), "a conductor fits at depth {depth}");
+        let setup = setup_for_hook(init, false, &[], &[], None, false, &crate::ssh_args::NoConfig);
+        let mut c = Conductor::new(setup, p.conductor.take(), "E");
+        c.start();
+        p.ssh.chain.push(crate::ssh_session::Hop { unique_id: c.setup.client_unique_id.clone(), location: "x".into() });
+        p.conductor = Some(Box::new(c));
+    }
+
+    /// Feeds `bytes` as output and runs the hook's Init and Unhook tokens as `App::ssh_pump_pane`
+    /// does.
+    fn run_hook(p: &mut Pane, bytes: &[u8]) {
+        use crate::conductor_parser::Token;
+        use crate::ssh_hook::Out;
+        p.tmux_io().unwrap().push_output(bytes);
+        p.pump();
+        for out in p.take_ssh() {
+            match out {
+                Out::Ssh(Token::Init(init), d) => hook_child(p, &init, d),
+                Out::Ssh(Token::Unhook, d) => p.unhook_conductor_at(d),
+                _ => {}
+            }
+        }
+    }
+
+    /// Every way into the session, each asserted framed for `pid` with nothing raw.
+    fn every_path_is_framed(p: &mut Pane, pid: i32) {
+        every_path_is_framed_by(p, &|data| sent_to(pid, data));
+    }
+
+    /// Every way into the session, each asserted to reach the wire as `framed(data)`.
+    fn every_path_is_framed_by(p: &mut Pane, framed: &dyn Fn(&[u8]) -> Vec<u8>) {
+        wire(p);
+        p.live_input(b"k");
+        assert_eq!(wire(p), framed(b"k"), "typing");
+        p.input(b"\r");
+        assert_eq!(wire(p), framed(b"\r"), "Enter");
+        p.paste("a\nb");
+        assert_eq!(wire(p), framed(b"a\rb"), "a paste");
+        p.own_mut().feed(b"\x1b[?2004h");
+        p.paste("c");
+        assert_eq!(wire(p), framed(b"\x1b[200~c\x1b[201~"), "a bracketed paste");
+        p.own_mut().feed(b"\x1b[?2004l");
+        p.reply(b"\x1b[?1;2c");
+        assert_eq!(wire(p), framed(b"\x1b[?1;2c"), "a report");
+        p.focus_report(true);
+        assert_eq!(wire(p), framed(b"\x1b[I"), "a focus report");
+        assert!(p.coprocess_output(b"co"));
+        assert_eq!(wire(p), framed(b"co"), "coprocess output");
+        p.write_session(b"w");
+        assert_eq!(wire(p), framed(b"w"), "a session write");
+        p.set_buffering(true);
+        p.live_input(b"b");
+        assert_eq!(wire(p), framed(b"b"), "Buffer Input never holds a conductor's keys (PS:4417-4431)");
+        p.set_buffering(false);
+        assert!(p.take_ssh_held().is_empty(), "nothing held");
+    }
+
+    #[test]
+    fn a_nested_bootstrap_is_framed() {
+        // it2ssh typed in a framed shell: its bootstrap goes through the framer as
+        // writeTaskNoBroadcast does (`PS:20298-20300`, `PS:4280-4285`), never into its stdin.
+        let mut p = framing_root();
+        wire(&mut p);
+        let h = crate::ssh_handshake::Handshake { token: "a".into(), unique_id: "b".into(), encoded_ba: "c".into(), ssh_args: "d".into() };
+        p.ssh_send_conductor(&h);
+        let bytes = crate::ssh_session::conductor_bytes(&h, true).unwrap();
+        assert_eq!(wire(&mut p), sent_to(100, &bytes));
+        // With no conductor it is typed as before.
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        p.ssh_send_conductor(&h);
+        assert_eq!(p.tmux_io().unwrap().take_input(), bytes);
+    }
+
+    #[test]
+    fn a_level_1_hop_under_a_framer_is_framed_by_it() {
+        use crate::ssh_fixtures::{dcs_hook, output, pre_reply};
+        // A nested it2ssh to a host without Python 3.7: a depth 1 conductor that sets up, then
+        // unhooks for good. Its ssh runs in the framed shell of pid 100.
+        let mut p = framing_root();
+        run_hook(&mut p, &output("n", 100, -1, 0, &dcs_hook("", "u", "YQ==", "Yg==")));
+        assert_eq!(p.conductor.as_ref().map(|c| c.depth()), Some(1));
+        let setup = wire(&mut p);
+        assert!(setup.starts_with(&sent_to(100, b"\x03E\n")), "the child's setup is framed (F5)");
+        // Typed while it sets up: held for its unhook.
+        p.live_input(b"early");
+        assert_eq!(wire(&mut p), b"");
+        // conductor.sh answers and then unhooks (the login shell ran without the framer).
+        run_hook(&mut p, &output("n", 100, -1, 0, &[pre_reply("1.1", &["sh"]), crate::ssh_fixtures::osc135("unhook")].concat()));
+        assert!(p.conductor.as_ref().unwrap().unhooked() && p.conductor.as_ref().unwrap().depth() == 1);
+        assert_eq!(wire(&mut p), sent_to(100, b"early"), "the unhook's held bytes are framed");
+        every_path_is_framed(&mut p, 100);
+    }
+
+    #[test]
+    fn a_nested_exit_before_endssh_is_framed_by_the_parent() {
+        // The depth 1 framer ends (its unhook) and EndSSH has not come yet: whatever is typed
+        // meanwhile is for the depth 0 framed shell that ran that ssh.
+        let mut p = framed_nested();
+        wire(&mut p);
+        p.unhook_conductor_at(1);
+        assert_eq!(p.conductor.as_ref().map(|c| (c.depth(), c.unhooked())), Some((1, true)));
+        every_path_is_framed(&mut p, 100);
+        // EndSSH pops it; the end line goes to the same framed shell.
+        p.end_ssh("a");
+        assert_eq!(wire(&mut p), sent_to(100, crate::ssh_session::END_WRITE));
+    }
+
+    #[test]
+    fn a_catd_conductor_under_a_framer_is_framed_by_it() {
+        use crate::ssh_fixtures::{dcs_hook, osc135, output};
+        // `cat evil` in the framed shell: DCS 2000p, an init line and an unhook at depth 1.
+        let mut p = framing_root();
+        run_hook(&mut p, &output("n", 100, -1, 0, &[dcs_hook("", "evil", "YQ==", "Yg=="), osc135("unhook")].concat()));
+        assert_eq!(p.conductor.as_ref().map(|c| (c.depth(), c.unhooked())), Some((1, true)));
+        every_path_is_framed(&mut p, 100);
+    }
+
+    #[test]
+    fn a_depth_2_hop_is_framed_at_depth_1() {
+        use crate::ssh_fixtures::{dcs_hook, osc135, output};
+        // The same at depth 2: the nearest framing ancestor (depth 1, pid 200) sends, and its
+        // send is itself framed by depth 0.
+        let mut p = framed_nested();
+        assert_eq!(ssh_depths(&mut p, &nested_init()), [1, 1, 1, 1], "the depth 1 hook");
+        wire(&mut p);
+        let evil = output("k", 200, -1, 1, &[dcs_hook("", "evil", "YQ==", "Yg=="), osc135("unhook")].concat());
+        // Through the process whose output holds the depth 1 hook (`nested_init`'s).
+        run_hook(&mut p, &output("n", 200, -1, 0, &evil));
+        assert_eq!(p.conductor.as_ref().map(|c| (c.depth(), c.unhooked())), Some((2, true)));
+        wire(&mut p);
+        p.live_input(b"k");
+        let inner = sent_to(200, b"k");
+        assert_eq!(wire(&mut p), sent_to(100, &inner));
+    }
+
+    #[test]
+    fn a_failing_level_1_hop_writes_nothing_raw() {
+        // An error at depth 1 fails the level 1 conductor: its `exec_login_shell` line is never
+        // typed into the depth 0 framer.
+        let mut p = framed_nested();
+        wire(&mut p);
+        p.unhook_conductor_at(1);
+        p.ssh_error(1, "lost");
+        assert_eq!(wire(&mut p), b"");
+        assert_eq!(p.conductor.as_ref().map(|c| c.depth()), Some(0));
+    }
+
+    /// A framing conductor's clock effects: a tokenless reply is the pane's Clock, a script
+    /// call's reply is an answer for the app, and both are read only while the pane is at
+    /// level 2.
+    #[test]
+    fn time_offsets_reach_the_clock_and_the_script_tokens() {
+        use crate::conductor::{Conductor, Effect, Setup};
+        use crate::ssh_clock::{Offset, Refresh};
+        let mut p = Pane::with(1, None, 20, 6);
+        let t0 = std::time::Instant::now();
+        // No conductor: local time, once.
+        assert_eq!(p.ssh_clock_tick(t0, Some("h")), Refresh::Local);
+        assert_eq!(p.ssh_clock_tick(t0, Some("h")), Refresh::Nothing);
+        let mut c = Conductor::new(Setup { client_unique_id: "A".into(), ..Setup::default() }, None, "P");
+        c.framed_pid = Some(10);
+        p.conductor = Some(Box::new(c));
+        // Level 2: a fetch is sent (through the framer, as a runpy command), once.
+        assert_eq!(p.ssh_clock_tick(t0, Some("h")), Refresh::Fetch);
+        assert!(matches!(p.conductor.as_ref().unwrap().in_flight(), Some(crate::conductor::Command::FramerExecPythonStatements(_))));
+        assert_eq!(p.ssh_clock_tick(t0, Some("h")), Refresh::Nothing);
+        assert_eq!(p.clock_due(), Some(t0 + crate::ssh_clock::REFRESH));
+        let good = Offset { offset: 11.5, tz: "CDT".into(), zone: Some(-18000) };
+        p.conductor.as_mut().unwrap().effects.push(Effect::TimeOffset { token: None, result: Ok(good.clone()) });
+        p.conductor.as_mut().unwrap().effects.push(Effect::TimeOffset { token: Some(7), result: Ok(good.clone()) });
+        p.conductor.as_mut().unwrap().effects.push(Effect::TimeOffset { token: Some(8), result: Err("Failed to fetch time: x".into()) });
+        assert!(p.apply_ssh_effects(), "the bar shows a new time");
+        assert_eq!((p.ssh_clock.offset, p.ssh_clock.tz.as_deref(), p.ssh_clock.zone), (11.5, Some("CDT"), Some(-18000)));
+        assert_eq!(p.take_ssh_answers(), [(7, Ok(good)), (8, Err("Failed to fetch time: x".to_string()))]);
+        assert!(p.take_ssh_answers().is_empty());
+        // The conductor leaves: level 0 is local time again.
+        assert!(p.pop_conductor());
+        assert_eq!(p.ssh_clock_tick(t0, Some("h")), Refresh::Local);
+        assert_eq!((p.ssh_clock.offset, p.ssh_clock.tz.clone()), (0.0, None));
+    }
+
+    /// A script call whose conductor is dropped, or fails, is still answered.
+    #[test]
+    fn a_dropped_conductor_answers_its_time_offset_tokens() {
+        use crate::conductor::{Conductor, Setup};
+        let framing = |id: &str| {
+            let mut c = Conductor::new(Setup { client_unique_id: id.into(), ..Setup::default() }, None, "P");
+            c.framed_pid = Some(10);
+            c
+        };
+        // Popped with the fetch in flight.
+        let mut p = Pane::with(1, None, 20, 6);
+        p.conductor = Some(Box::new(framing("A")));
+        p.conductor.as_mut().unwrap().fetch_time_offset(1.0, 0.0, Some(5));
+        assert!(p.pop_conductor());
+        let answers = p.take_ssh_answers();
+        assert!(matches!(&answers[..], [(5, Err(_))]), "{answers:?}");
+        // The connection ends (unhook) and the batch is applied.
+        let mut p = Pane::with(1, None, 20, 6);
+        p.conductor = Some(Box::new(framing("A")));
+        p.conductor.as_mut().unwrap().fetch_time_offset(1.0, 0.0, Some(6));
+        p.unhook_conductor_at(0);
+        p.apply_ssh_effects();
+        let answers = p.take_ssh_answers();
+        assert!(matches!(&answers[..], [(6, Err(_))]), "{answers:?}");
+        // A failure's dropped batch still answers the token.
+        let mut p = Pane::with(1, None, 20, 6);
+        p.conductor = Some(Box::new(framing("A")));
+        p.conductor.as_mut().unwrap().fetch_time_offset(1.0, 0.0, Some(7));
+        p.conductor.as_mut().unwrap().fail("boom");
+        p.apply_ssh_effects();
+        let answers = p.take_ssh_answers();
+        assert!(matches!(&answers[..], [(7, Err(_))]), "{answers:?}");
+    }
+
+    /// A conductor chained under the pane's current one as `App::ssh_hooked` does, at `depth`
+    /// (the hook fits), framing `pid` in ground when given (a conductor whose setup is done).
+    fn chain(p: &mut Pane, id: &str, depth: i32, pid: Option<i32>) {
+        use crate::conductor::{Conductor, Setup};
+        assert!(p.ssh_init_fits(depth), "a conductor fits at depth {depth}");
+        let mut c = Conductor::new(Setup { client_unique_id: id.into(), ..Setup::default() }, p.conductor.take(), "X");
+        c.framed_pid = pid;
+        assert_eq!(c.depth(), depth);
+        p.ssh.chain.push(crate::ssh_session::Hop { unique_id: id.into(), location: "x".into() });
+        p.conductor = Some(Box::new(c));
+    }
+
+    /// A `cat`'d hook: an unframed conductor that unhooked at once.
+    fn chain_catd(p: &mut Pane, id: &str, depth: i32) {
+        chain(p, id, depth, None);
+        p.conductor.as_mut().unwrap().handle_unhook();
+    }
+
+    #[test]
+    fn a_framing_hop_under_a_catd_hook_is_framed_by_every_framer_above() {
+        use crate::ssh_fixtures::{dcs_hook, osc135, output};
+        // `cat evil` in the framed shell (pid 100) leaves an unhooked, unframed depth 1
+        // conductor; the person then runs it2ssh to a host with Python and its framer frames
+        // at depth 1. Nothing typed may reach that framer's stdin raw.
+        let mut p = framing_root();
+        run_hook(&mut p, &output("n", 100, -1, 0, &[dcs_hook("", "evil", "YQ==", "Yg=="), osc135("unhook")].concat()));
+        assert_eq!(p.conductor.as_ref().map(|c| (c.depth(), c.unhooked())), Some((1, true)));
+        chain(&mut p, "x", 1, Some(300));
+        assert_eq!(crate::conductor::route(p.conductor.as_deref()), crate::conductor::Route::Conductor(0));
+        every_path_is_framed_by(&mut p, &|d| sent_to(100, &sent_to(300, d)));
+
+        // At depth 3: framing d0 (100), d1 (200), d2 (300), a cat'd unhooked d3, then a framing
+        // hop at depth 3 (400): each send is framed by every framer above it. A fresh pane per
+        // path: nothing answers here, and four framings of a few writes fill the pipeline.
+        let deep = || {
+            let mut p = framed_nested();
+            chain(&mut p, "c", 2, Some(300));
+            chain_catd(&mut p, "evil", 3);
+            chain(&mut p, "x", 3, Some(400));
+            assert_eq!(p.conductor.as_ref().map(|c| c.depth()), Some(3));
+            wire(&mut p);
+            p
+        };
+        let framed = |d: &[u8]| sent_to(100, &sent_to(200, &sent_to(300, &sent_to(400, d))));
+        let mut p = deep();
+        p.live_input(b"k");
+        assert_eq!(wire(&mut p), framed(b"k"), "typing");
+        let mut p = deep();
+        p.paste("a\nb");
+        assert_eq!(wire(&mut p), framed(b"a\rb"), "a paste");
+        let mut p = deep();
+        p.reply(b"\x1b[?1;2c");
+        assert_eq!(wire(&mut p), framed(b"\x1b[?1;2c"), "a report");
+        let mut p = deep();
+        assert!(p.coprocess_output(b"co"));
+        assert_eq!(wire(&mut p), framed(b"co"), "coprocess output");
+    }
+
+    #[test]
+    fn a_framing_hop_after_a_hop_without_python_is_framed() {
+        use crate::ssh_fixtures::{dcs_hook, output, pre_reply};
+        // A hop without Python 3.7 (unframed, unhooked, depth 1) inside the framed session, then
+        // a further hop from that host that does frame.
+        let mut p = framing_root();
+        run_hook(&mut p, &output("n", 100, -1, 0, &dcs_hook("", "u", "YQ==", "Yg==")));
+        run_hook(&mut p, &output("n", 100, -1, 0, &[pre_reply("1.1", &["sh"]), crate::ssh_fixtures::osc135("unhook")].concat()));
+        assert!(p.conductor.as_ref().unwrap().unhooked() && p.conductor.as_ref().unwrap().depth() == 1);
+        chain(&mut p, "x", 1, Some(300));
+        every_path_is_framed_by(&mut p, &|d| sent_to(100, &sent_to(300, d)));
+    }
+
+    #[test]
+    fn typing_while_connecting_from_a_level_1_hop_waits_in_the_queue() {
+        // iTerm2 queues while connecting unless the CURRENT conductor handles keystrokes
+        // (`PS:4417-4426`); only a route through the current conductor skips the queue.
+        let mut p = framed_nested();
+        p.unhook_conductor_at(1);
+        assert_eq!(crate::conductor::route(p.conductor.as_deref()), crate::conductor::Route::Conductor(1));
+        wire(&mut p);
+        p.ssh.begin(true);
+        p.live_input(b"pass");
+        p.write_session(b"word");
+        assert_eq!(wire(&mut p), b"", "nothing is typed at the outer shell yet");
+        assert_eq!(p.ssh.connecting.as_deref(), Some(&b"password"[..]));
+        // The release goes through the route.
+        let queued = p.ssh.stop_queueing();
+        p.send_routed(&queued);
+        assert_eq!(wire(&mut p), sent_to(100, b"password"));
+    }
+
+    #[test]
+    fn a_failed_setup_under_an_unhooked_parent_reaches_its_conductor_sh() {
+        use crate::ssh_fixtures::{dcs_hook, osc135, output};
+        // The new hop's ssh runs in the framed shell; conductor.sh is still reading its tty when
+        // setup fails, so `exec_login_shell` goes through the framer to it (iTerm2 writes it
+        // to the pty, which is that tty).
+        let mut p = framing_root();
+        run_hook(&mut p, &output("n", 100, -1, 0, &[dcs_hook("", "evil", "YQ==", "Yg=="), osc135("unhook")].concat()));
+        chain(&mut p, "x", 1, None);
+        wire(&mut p);
+        p.conductor.as_mut().unwrap().fail("boom");
+        assert_eq!(wire(&mut p), sent_to(100, b"exec_login_shell\n"));
+        // A framing conductor's own failure (nothing reads a line at its end) or an unhooked
+        // one (its conductor.sh is gone) types nothing.
+        let mut p = framed_nested();
+        wire(&mut p);
+        p.conductor.as_mut().unwrap().fail("boom");
+        assert_eq!(wire(&mut p), b"");
+    }
+
+    #[test]
+    fn a_coprocess_cannot_flood_the_held_bytes_during_setup() {
+        let mut p = Pane::with(7, None, 80, 24);
+        p.conductor = setting_up();
+        assert!(!p.coprocess_backlogged());
+        for _ in 0..80 {
+            assert!(p.coprocess_output(&[b'z'; 1024]));
+        }
+        assert!(p.coprocess_backlogged(), "over 64 KiB held waits");
+        // The unhook releases them and the pump runs again.
+        p.conductor.as_mut().unwrap().handle_unhook();
+        p.take_ssh_held();
+        assert!(!p.coprocess_backlogged());
+    }
+
+    /// A pane whose root hook is hooked, with one framing conductor "o" (pid 100) and its hop,
+    /// connecting over.
+    fn framed_root() -> Pane {
+        use crate::conductor::{Conductor, Setup};
+        use crate::ssh_session::Hop;
+        let at = Setup { client_unique_id: "o".into(), parsed: crate::ssh_args::ParsedArgs { hostname: "o.example".into(), port: 22, ..Default::default() }, ..Setup::default() };
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        p.ssh.begin(true);
+        p.tmux_io().unwrap().push_output(b"\x1bP2000pnone o YQ== - Yg==\n");
+        p.pump();
+        p.take_ssh();
+        let mut c = Conductor::new(at, None, "O");
+        c.framed_pid = Some(100);
+        p.ssh.chain.push(Hop { unique_id: "o".into(), location: "o.example".into() });
+        p.conductor = Some(Box::new(c));
+        p.ssh.stop_queueing();
+        p
+    }
+
+    #[test]
+    fn disconnect_follows_iterm2() {
+        use crate::ssh_fixtures::pre_cmd;
+        // `PS:25603-25612`: the banner names the identity, the conductor and its hop go, what
+        // was held is dropped, and the write is iTerm2's pre-framer quit with the prefix.
+        let mut p = framed_root();
+        let identity = p.conductor.as_ref().unwrap().identity().description();
+        let guid = p.conductor.as_ref().unwrap().guid.clone();
+        p.ssh_held.extend_from_slice(b"held");
+        p.conductor.as_mut().unwrap().quit();
+        assert_eq!(wire(&mut p), pre_cmd("\u{3}O", &["quit"]));
+        assert_eq!(p.screen.all_text().matches(&format!("Disconnected from {identity}")).count(), 1, "{}", p.screen.all_text());
+        assert!(p.conductor.is_none() && p.ssh.chain.hops.is_empty() && p.ssh_chain_in_step());
+        assert!(p.ssh_held.is_empty(), "the write queue is cleared");
+        assert_eq!(p.take_ssh_registry(), [crate::ssh_registry::Change::Remove(guid.clone()), crate::ssh_registry::Change::Remove(guid)]);
+        // Typing after it goes straight to the pty.
+        p.write_session(b"k");
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"k");
+    }
+
+    #[test]
+    fn late_unhook_is_harmless() {
+        use crate::ssh_fixtures::{osc135, reply};
+        // `C:266-271`: the framer answers the quit and prints `unhook` after its conductor
+        // has left. The unhook finds no conductor: no second banner and no write.
+        let mut p = framed_root();
+        p.conductor.as_mut().unwrap().quit();
+        wire(&mut p);
+        let text = p.screen.all_text();
+        run_hook(&mut p, &[reply("q", &[], 0, 'r'), osc135("unhook")].concat());
+        assert!(p.conductor.is_none());
+        assert_eq!(wire(&mut p), b"");
+        assert_eq!(p.screen.all_text(), text, "no second banner");
+        assert!(!p.ssh_hook.active());
+        // A parent survives its child's late unhook: a depth 1 unhook does not touch depth 0.
+        let mut p = framed_nested();
+        p.conductor.as_mut().unwrap().quit();
+        assert_eq!(wire(&mut p), sent_to(100, &crate::ssh_fixtures::pre_cmd("\u{3}U", &["quit"])));
+        assert_eq!(p.conductor.as_ref().map(|c| c.setup.client_unique_id.as_str()), Some("o"));
+        let text = p.screen.all_text();
+        p.unhook_conductor_at(1);
+        assert_eq!(p.conductor.as_ref().map(|c| c.setup.client_unique_id.as_str()), Some("o"));
+        assert_eq!(wire(&mut p), b"");
+        assert_eq!(p.screen.all_text(), text);
+        assert!(still_parses(&mut p), "the parent's hook goes on");
+    }
+
+    #[test]
+    fn a_failed_setup_under_a_hooked_framer_is_framed() {
+        // Task 8 findings item 2: the new hop's ssh runs in the framer's shell, so its
+        // conductor.sh is waiting on that tty and `exec_login_shell` must reach it, framed
+        // (held and dropped it would leave the nested ssh sitting in conductor.sh).
+        let mut p = framed_root();
+        chain(&mut p, "x", 1, None);
+        wire(&mut p);
+        p.conductor.as_mut().unwrap().fail("boom");
+        assert_eq!(wire(&mut p), sent_to(100, b"exec_login_shell\n"));
+        assert!(p.ssh_held.is_empty());
+        assert_eq!(p.conductor.as_ref().map(|c| c.setup.client_unique_id.as_str()), Some("o"), "the abort popped the hop");
+        // Two hooked framers: the nearest one frames it, and the outer one frames that.
+        let mut p = framed_nested();
+        chain(&mut p, "y", 2, None);
+        wire(&mut p);
+        p.conductor.as_mut().unwrap().fail("boom");
+        assert_eq!(wire(&mut p), sent_to(100, &sent_to(200, b"exec_login_shell\n")));
+    }
+
+    #[test]
+    fn an_unhooked_framer_answers_the_clock_at_once() {
+        // Task 8 findings item 1: the level stays 2 after the framer unhooks, but nothing reads
+        // a fetch any more, so the Clock is local and no command waits for EndSSH.
+        let mut p = framed_root();
+        p.conductor.as_mut().unwrap().handle_unhook();
+        assert_eq!(p.ssh_level(), 2);
+        assert!(!p.ssh_frames());
+        let now = Instant::now();
+        assert_eq!(p.ssh_clock_tick(now, Some("h")), crate::ssh_clock::Refresh::Local);
+        assert_eq!(p.conductor.as_ref().unwrap().written_and_queued().count(), 0, "nothing queued");
+        // A framing conductor still fetches.
+        let mut p = framed_root();
+        assert!(p.ssh_frames());
+        assert_eq!(p.ssh_clock_tick(now, Some("h")), crate::ssh_clock::Refresh::Fetch);
+    }
+
+    /// What `App::ssh_pump_pane` does with the recovery tokens: the pane's output goes through
+    /// the hook, then each token runs. True when a recovery finished (the rest of the read is
+    /// dropped there).
+    fn recover_from(p: &mut Pane, bytes: &[u8]) -> bool {
+        use crate::conductor_parser::Token;
+        use crate::ssh_hook::Out;
+        p.tmux_io().unwrap().push_output(bytes);
+        p.pump();
+        for out in p.take_ssh() {
+            match out {
+                Out::Ssh(Token::BeginFramerRecovery(d), _) => p.begin_framer_recovery(d),
+                Out::Ssh(Token::RecoveryLine(line), _) => {
+                    if p.framer_recovery_line(&line) {
+                        return true;
+                    }
+                }
+                Out::Screen(bytes) => p.feed_after_ssh(&bytes),
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// What a live framer prints once it is told to recover: a stale block's header and end
+    /// first (Tandem restarted mid-stream), then the recovery lines.
+    fn stale_then_recovery(login: i32) -> Vec<u8> {
+        stale_then_recovery_of(login, "99")
+    }
+
+    /// `stale_then_recovery` with the framer naming `id` as its hop's clientUniqueID.
+    fn stale_then_recovery_of(login: i32, id: &str) -> Vec<u8> {
+        use crate::ssh_fixtures::{osc134, recovery};
+        let keys = [("dcsID", "D0"), ("sshargs", "-p 22 h"), ("boolArgs", "46"), ("clientUniqueID", id)];
+        [osc134("%output 1 2 -1 0"), b"stale".to_vec(), osc134("%end 1"), recovery(login, &keys, &[5000])].concat()
+    }
+
+    /// Final review I2 (ruling): the right to recover in band ends when EndSSH empties the hop
+    /// list, and nothing gives it back but a new vouched hook: a file `cat`ed at the local
+    /// prompt after ssh exited makes Tandem type nothing, and nothing is saved for a restart.
+    #[test]
+    fn the_recovery_right_ends_with_the_last_hop() {
+        let mut p = framed_root();
+        p.note_hook(true);
+        assert!(p.ssh_hook.recovery_allowed());
+        p.unhook_ssh();
+        p.end_ssh("o");
+        p.tmux_io().unwrap().take_input();
+        assert!(p.conductor.is_none() && p.ssh.chain.hops.is_empty());
+        assert!(!p.ssh_hook.recovery_allowed() && !p.was_ssh_session(), "the right is gone, and so is the saved fact");
+        assert!(!recover_from(&mut p, &stale_then_recovery(4242)));
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"", "nothing typed into the local shell");
+        assert!(p.conductor.is_none());
+        // An EndSSH that leaves a hop keeps the right.
+        let mut p = framed_root();
+        p.note_hook(true);
+        chain(&mut p, "i", 1, Some(200));
+        p.end_ssh("i");
+        assert!(p.ssh_hook.recovery_allowed() && p.was_ssh_session());
+    }
+
+    /// Final review I2 (ruling): a root-level recovery replaces the hops it pops, and the
+    /// recovered conductor takes the replaced hop's id, so it2ssh's EndSSH (which names the
+    /// original id) ends it whatever id the remote reported.
+    #[test]
+    fn a_recovered_conductor_ends_with_the_hop_it_replaced() {
+        let mut p = framed_root();
+        p.note_hook(true);
+        // The framer unhooks, then a root-level recovery naming a foreign id.
+        p.conductor.as_mut().unwrap().handle_unhook();
+        p.unhook_ssh();
+        assert!(!recover_from(&mut p, &crate::ssh_fixtures::osc134("%output 1 2 -1 0")));
+        let first = crate::ssh_fixtures::osc134("%output 1 2 -1 0").len();
+        assert!(recover_from(&mut p, &stale_then_recovery_of(4242, "evil")[first..]));
+        let c = p.conductor.as_ref().expect("recovered");
+        assert_eq!(c.setup.client_unique_id, "o", "the id of the hop it replaced");
+        assert!(p.ssh_chain_in_step());
+        p.end_ssh("o");
+        assert!(p.conductor.is_none() && p.ssh.chain.hops.is_empty(), "EndSSH of the original hop ends it");
+        // With no hop to replace, the framer's own id stands (`framer_recovery_follows_iterm2`).
+    }
+
+    #[test]
+    fn a_plain_pane_never_recovers() {
+        // F27: a hostile file cat'd in a local pane, recovery lines and all, makes Tandem type
+        // nothing into the local shell.
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        let bytes = stale_then_recovery(4242);
+        assert!(!recover_from(&mut p, &bytes));
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"", "nothing was written");
+        assert!(p.conductor.is_none() && !p.ssh_hook.active() && p.ssh.chain.hops.is_empty());
+    }
+
+    /// F27 (ruling): only a hook Tandem's origin token vouched for gives a pane the right to
+    /// recover in band. A hostile file cat'd in a local pane, with an it2ssh OSC (not
+    /// trust-gated) and a fake DCS hook before the recovery block, makes Tandem type nothing,
+    /// and the pane saves no right for after a restart; an unvouched conductor restored from a
+    /// state file gets none either.
+    #[test]
+    fn a_hostile_file_never_turns_recovery_on() {
+        use crate::conductor_parser::Token;
+        use crate::ssh_hook::Out;
+        use crate::screen::Request;
+        // As the App does: each request and token in order; the fake hook fails the token check.
+        let run = |p: &mut Pane, bytes: &[u8]| {
+            p.tmux_io().unwrap().push_output(bytes);
+            p.pump();
+            for out in p.take_ssh() {
+                match out {
+                    Out::Screen(bytes) => {
+                        p.feed_after_ssh(&bytes);
+                        for r in p.own_mut().take_requests() {
+                            if r == Request::SshWillBegin {
+                                p.ssh_will_begin();
+                            }
+                        }
+                    }
+                    Out::Ssh(Token::Init(_), _) => p.note_hook(false),
+                    Out::Ssh(Token::BeginFramerRecovery(d), _) => p.begin_framer_recovery(d),
+                    Out::Ssh(Token::RecoveryLine(line), _) => {
+                        p.framer_recovery_line(&line);
+                    }
+                    _ => {}
+                }
+            }
+        };
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        // The file arrives in two reads, so the second is scanned after the first was handled.
+        run(&mut p, &[b"\x1b]1337;it2ssh=a b c d\x07".to_vec(), crate::ssh_fixtures::dcs_hook("", "U", "NDY=", "ZXZpbA=="), b"\x1b]135;:unhook\x1b\\".to_vec()].concat());
+        run(&mut p, &stale_then_recovery(4242));
+        let typed = String::from_utf8_lossy(&p.tmux_io().unwrap().take_input()).into_owned();
+        assert!(!typed.contains("cmVjb3Zlcg=="), "no recover line is typed: {typed:?}");
+        assert!(p.conductor.is_none() && !p.ssh_hook.recovery_allowed());
+        assert!(!p.was_ssh_session(), "nothing to save for after a restart");
+        // A vouched hook does turn it on.
+        let mut v = Pane::tmux(5, 1, 3, 120, 10);
+        v.note_hook(true);
+        assert!(v.ssh_hook.recovery_allowed() && v.was_ssh_session());
+        // After a restart: a conductor restored from the state file is unvouched (it may have
+        // come from a hook a file printed), so it brings no right with it.
+        let mut c = crate::conductor::Conductor::new(crate::conductor::Setup { client_unique_id: "a".into(), dcs_id: "D0".into(), ..Default::default() }, None, "U");
+        c.framed_pid = Some(200);
+        c.framer_version = Some(2);
+        let mut r = Pane::tmux(5, 1, 3, 120, 10);
+        assert!(r.restore_conductor(&c.json(), "D0", &c.tree()));
+        assert!(!r.ssh_hook.recovery_allowed() && !r.was_ssh_session(), "the saved flag alone gives it (only a vouched pane saves it)");
+    }
+
+    #[test]
+    fn framer_recovery_follows_iterm2() {
+        use crate::ssh_fixtures::output;
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        p.note_ssh_session();
+        // The stale block starts recovery: "Recovering ssh connection..." and the recover
+        // line, with a shim in recovery.
+        assert!(!recover_from(&mut p, &crate::ssh_fixtures::osc134("%output 1 2 -1 0")));
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"\ncmVjb3Zlcg==\n\n\n");
+        assert!(matches!(p.conductor.as_ref().map(|c| c.state().clone()), Some(crate::conductor::State::Recovery(_))));
+        assert!(p.ssh_chain_in_step() && p.ssh.chain.hops.len() == 1);
+        assert!(p.own().all_text().contains(crate::ssh_recovery::RECOVERING), "{}", p.own().all_text());
+        // The lines finish it: the shim is replaced by the recovered conductor, the hook follows
+        // the tree, the framer is reset, the registry hears of it and the banner says so.
+        let first = crate::ssh_fixtures::osc134("%output 1 2 -1 0").len();
+        let bytes = [stale_then_recovery(4242)[first..].to_vec(), b"dropped".to_vec()].concat();
+        assert!(recover_from(&mut p, &bytes), "the last line finished it");
+        let c = p.conductor.as_ref().expect("recovered");
+        assert_eq!((c.framed_pid, c.depth(), c.setup.client_unique_id.as_str(), c.setup.dcs_id.as_str()), (Some(4242), 0, "99", "D0"));
+        assert!(p.ssh_chain_in_step() && p.ssh.chain.hops.len() == 1 && p.ssh.chain.hops[0].unique_id == "99");
+        assert!(p.ssh_hook.active() && p.ssh_hook.owned(0));
+        assert!(p.own().all_text().contains(crate::ssh_recovery::RECOVERED));
+        let changes = p.take_ssh_registry();
+        assert!(matches!(&changes[..], [crate::ssh_registry::Change::Add(_, _)]), "{changes:?}");
+        p.apply_ssh_effects();
+        let sent = p.tmux_io().unwrap().take_input();
+        assert!(sent.starts_with(b"cmVzZXQy\n"), "reset2 first: {:?}", String::from_utf8_lossy(&sent));
+        // Output of the framed shell renders again through the recovered hook.
+        p.tmux_io().unwrap().push_output(&output("2", 4242, -1, 0, b"hello"));
+        p.pump();
+        for o in p.take_ssh() {
+            if let crate::ssh_hook::Out::Screen(b) = o {
+                p.feed_after_ssh(&b);
+            }
+        }
+        assert!(p.own().all_text().contains("hello"));
+    }
+
+    #[test]
+    fn a_recovery_without_a_login_ends() {
+        use crate::ssh_fixtures::osc134;
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        p.note_ssh_session();
+        recover_from(&mut p, &osc134("junk"));
+        p.tmux_io().unwrap().take_input();
+        // begin, version, end: no login. The shim quits and goes; the hook stops recovering, so
+        // the next stale OSC starts one again.
+        let bytes = [osc134("begin-recovery"), osc134("recovery: version 2"), osc134("end-recovery")].concat();
+        assert!(!recover_from(&mut p, &bytes));
+        assert!(p.conductor.is_none() && p.ssh.chain.hops.is_empty(), "the shim is gone");
+        recover_from(&mut p, &osc134("junk again"));
+        assert!(p.conductor.is_some(), "a new recovery began");
+    }
+
+    #[test]
+    fn a_nested_recovery_keeps_its_parent() {
+        use crate::ssh_fixtures::{osc134, output, recovery};
+        let mut p = framing_root();
+        p.note_ssh_session();
+        assert!(p.ssh_hook.active());
+        wire(&mut p);
+        // The inner framer (a child of pid 100's shell) is found mid-stream: recovery begins for
+        // the child of the depth 0 conductor, which stays as the shim's parent.
+        assert!(!recover_from(&mut p, &output("a", 100, -1, 0, &osc134("%output 1 2 -1 0"))));
+        assert_eq!(p.conductor.as_ref().map(|c| c.depth()), Some(1));
+        assert!(p.ssh_chain_in_step() && p.ssh.chain.hops.len() == 2);
+        // The recover line went into the outer framer's shell, framed.
+        assert_eq!(wire(&mut p), sent_to(100, b"\ncmVjb3Zlcg==\n\n\n"));
+        let keys = [("dcsID", "D9"), ("sshargs", "h2"), ("boolArgs", ""), ("clientUniqueID", "77")];
+        assert!(recover_from(&mut p, &output("b", 100, -1, 0, &recovery(300, &keys, &[]))));
+        let c = p.conductor.as_ref().unwrap();
+        assert_eq!((c.framed_pid, c.depth(), c.parent.as_ref().map(|q| q.framed_pid)), (Some(300), 1, Some(Some(100))));
+        assert!(p.ssh_chain_in_step() && p.ssh.chain.hops.len() == 2);
+        assert!(p.ssh_hook.owned(0) && p.ssh_hook.owned(1) && !p.ssh_hook.owned(2), "the hook follows the tree of both");
+    }
+
+    #[test]
+    fn a_recovery_at_the_wrong_depth_is_ignored() {
+        // A remote cannot start a recovery for a depth the conductors do not have: nothing is
+        // written and the chain is left alone.
+        let mut p = framing_root();
+        p.note_ssh_session();
+        wire(&mut p);
+        p.begin_framer_recovery(5);
+        assert_eq!(wire(&mut p), b"");
+        assert_eq!(p.conductor.as_ref().map(|c| (c.depth(), c.framed_pid)), Some((0, Some(100))));
+        assert!(p.ssh_chain_in_step());
+    }
+
+    #[test]
+    fn restore_conductor_follows_iterm2() {
+        use crate::conductor::{Conductor, Setup};
+        let at = |id: &str, dcs: &str| Setup { client_unique_id: id.into(), dcs_id: dcs.into(), sshargs: format!("{id}.example"), parsed: crate::ssh_args::parse(&format!("{id}.example"), "", &crate::ssh_args::NoConfig), ..Setup::default() };
+        let mut outer = Conductor::new(at("o", "D0"), None, "O");
+        outer.framed_pid = Some(100);
+        outer.framer_version = Some(2);
+        let mut inner = Conductor::new(at("a", "D1"), Some(Box::new(outer)), "U");
+        inner.framed_pid = Some(200);
+        inner.framer_version = Some(2);
+        let (json, tree) = (inner.json(), inner.tree());
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        assert!(p.restore_conductor(&json, "D1", &tree));
+        // The chain comes back, one hop per conductor, outermost first; the hook follows the
+        // saved tree; the framers are reset and the registry hears of both.
+        let ids: Vec<&str> = p.ssh.chain.hops.iter().map(|h| h.unique_id.as_str()).collect();
+        assert_eq!(ids, ["o", "a"]);
+        assert!(p.ssh_chain_in_step());
+        assert_eq!(p.ssh_level(), 2);
+        assert!(p.ssh_hook.owned(0) && p.ssh_hook.owned(1) && !p.ssh_hook.owned(2));
+        assert_eq!(p.take_ssh_registry().len(), 2);
+        assert!(!p.ssh.was_ssh, "restored conductors are unvouched: only the saved flag gives the right (F27)");
+        let sent = p.tmux_io().unwrap().take_input();
+        assert!(sent.starts_with(b"cmVzZXQy\n"), "the outer framer is reset first: {:?}", String::from_utf8_lossy(&sent));
+        // Nothing usable: no conductor and no hook.
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        assert!(!p.restore_conductor("{}", "D1", &tree));
+        assert!(p.conductor.is_none() && !p.ssh_hook.active() && p.ssh.chain.hops.is_empty());
+        assert!(!p.restore_conductor(&json, "D1", &crate::ssh_recovery::Tree::default()), "no tree: nothing to parse with");
+        assert!(p.conductor.is_none());
+    }
+
+    /// The it2 state of the conductor being recovered rides the shim into the recovered one
+    /// (`PS:20307-20342` `adoptIT2RecoveryStateFrom:`, `CD+IT2:485-509`): Tandem's is the
+    /// inbox kept for 14e (ruling 3: nothing reads it yet).
+    #[test]
+    fn recovery_keeps_the_it2_state() {
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        p.note_hook(true);
+        let mut old = crate::conductor::Conductor::new(crate::conductor::Setup { client_unique_id: "old".into(), ..Default::default() }, None, "U");
+        old.it2_inbox = vec!["3 open".into()];
+        p.ssh.chain.push(crate::ssh_session::Hop { unique_id: "old".into(), location: "h".into() });
+        p.conductor = Some(Box::new(old));
+        p.begin_framer_recovery(-1);
+        assert_eq!(p.conductor.as_ref().map(|c| c.it2_inbox.clone()), Some(vec!["3 open".to_string()]), "the shim carries it");
+        let first = crate::ssh_fixtures::osc134("%output 1 2 -1 0").len();
+        assert!(recover_from(&mut p, &stale_then_recovery(4242)[first..]));
+        assert_eq!(p.conductor.as_ref().map(|c| c.it2_inbox.clone()), Some(vec!["3 open".to_string()]), "and the recovered conductor");
+    }
+
+    /// iTerm2 marks a conductor waiting to resynchronize only when it is made by a recovery
+    /// (`CD:593`, `CD:1791`), never when it comes from saved JSON: after a restart of a two-hop
+    /// session the outer host's process list works as the inner one's does.
+    #[test]
+    fn a_restored_chain_lists_every_hosts_processes() {
+        use crate::conductor::{Conductor, Setup};
+        let at = |id: &str, dcs: &str| Setup { client_unique_id: id.into(), dcs_id: dcs.into(), sshargs: format!("{id}.example"), parsed: crate::ssh_args::parse(&format!("{id}.example"), "", &crate::ssh_args::NoConfig), ..Setup::default() };
+        let mut outer = Conductor::new(at("o", "D0"), None, "O");
+        outer.framed_pid = Some(100);
+        outer.framer_version = Some(2);
+        let mut inner = Conductor::new(at("a", "D1"), Some(Box::new(outer)), "U");
+        inner.framed_pid = Some(200);
+        inner.framer_version = Some(2);
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        assert!(p.restore_conductor(&inner.json(), "D1", &inner.tree()));
+        let c = p.conductor.as_mut().unwrap();
+        assert!(c.processes().is_some(), "the inner host's");
+        assert!(c.parent.as_mut().unwrap().processes().is_some(), "the outer host's too");
     }
 
     #[test]

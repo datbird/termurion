@@ -127,7 +127,7 @@ impl Store {
 }
 
 /// Names whose values are numbers in iTerm2's scopes.
-pub const NUMERIC: &[&str] = &["columns", "rows", "pid", "effective_root_pid", "jobPid", "number", "selectionLength", "showingAlternateScreen", "isLocalhost", "tmuxWindow"];
+pub const NUMERIC: &[&str] = &["columns", "rows", "pid", "effective_root_pid", "jobPid", "number", "selectionLength", "showingAlternateScreen", "isLocalhost", "tmuxWindow", "sshIntegrationLevel"];
 
 /// A variable's text as iTerm2 types it: a number for the numeric names when it reads as
 /// one, a string otherwise.

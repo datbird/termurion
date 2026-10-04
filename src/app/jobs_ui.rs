@@ -16,12 +16,15 @@ impl App {
             let Some(pid) = self.panes.get(&id).and_then(|p| p.shell_pid()) else { continue };
             let now = self.jobs.job(pid);
             let Some(p) = self.panes.get_mut(&id) else { continue };
+            // A framing session's job is on its remote, never ssh.exe.
+            let remote = p.remote_job();
             let s = p.own_mut();
             if now.root.is_some() && s.shell.job_root != now.root {
                 s.shell.job_root = now.root.clone();
             }
-            if s.shell.job != now.job || s.shell.job_ancestors != now.ancestors {
-                s.set_job(now.job, now.ancestors);
+            let (job, ancestors) = pane_job(now, remote);
+            if s.shell.job != job || s.shell.job_ancestors != ancestors {
+                s.set_job(job, ancestors);
             }
         }
         // Job Started and Job Ended triggers leave their actions as requests.
@@ -98,5 +101,37 @@ impl App {
             Some(t) => t.to_string(),
             None => self.session_title(pane),
         }
+    }
+}
+
+/// The job and ancestors a session shows: a framing session's remote list wins over the
+/// local watcher's (which would name ssh.exe); with none the local one stays (`PS:25574-25581`).
+fn pane_job(local: crate::jobwatch::ShellJob, remote: Option<(Option<crate::proctree::Job>, Vec<String>)>) -> (Option<crate::proctree::Job>, Vec<String>) {
+    match remote {
+        Some(remote) => remote,
+        None => (local.job, local.ancestors),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::jobwatch::ShellJob;
+    use crate::proctree::Job;
+
+    fn job(name: &str, pid: u32) -> Job {
+        Job { name: name.into(), title: name.into(), cmdline: name.into(), pid }
+    }
+
+    #[test]
+    fn remote_jobs_follow_iterm2() {
+        let local = || ShellJob { job: Some(job("ssh", 5)), ancestors: vec!["ssh".into()], root: Some("pwsh".into()) };
+        let (j, a) = pane_job(local(), Some((Some(job("vim", 200)), vec!["vim".into()])));
+        assert_eq!((j, a), (Some(job("vim", 200)), vec!["vim".to_string()]), "the remote value wins");
+        // A remote list with no job is still the remote's answer: ssh.exe is not the job.
+        let (j, a) = pane_job(local(), Some((None, Vec::new())));
+        assert_eq!((j, a), (None, Vec::new()));
+        let (j, a) = pane_job(local(), None);
+        assert_eq!((j, a), (Some(job("ssh", 5)), vec!["ssh".to_string()]), "no remote list keeps the local one");
     }
 }

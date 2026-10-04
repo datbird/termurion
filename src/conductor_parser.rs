@@ -1,7 +1,8 @@
 //! iTerm2's VT100ConductorParser for the conductor.sh stage (milestone 14b): the init line
 //! after `ESC P 2000 p`, then OSC 134/135 replies in ground and body. Pure: bytes in, tokens
 //! out; unparsed input waits inside the parser for the next read. Milestone 14c adds the
-//! framer's payload rules and output states to these types.
+//! framer's payload rules and output states to these types. Every byte here comes from the
+//! remote host: each buffer is capped, and past a cap the parser ends with `Token::Error`.
 
 use base64::Engine;
 
@@ -19,6 +20,19 @@ pub const MAX_ID: usize = 64;
 
 /// Why a longer id ends the conductor (`Token::Error`).
 pub const ID_TOO_LONG: &str = "The remote sent a command id that is too long";
+
+/// The most one autopoll block may hold (F13: about 80 bytes a process row, so past roughly
+/// 100,000 registered processes). `%output`, `%notif` and `%it2` stop at `MAX_HELD`.
+pub const MAX_AUTOPOLL: usize = 8 * 1024 * 1024;
+
+/// Why a block past its cap ends the conductor (`Token::Error`).
+pub const OUTPUT_TOO_LONG: &str = "The remote sent more in one block than Tandem accepts";
+
+/// The pid of the autopoll block's output token (`VT100/VT100Token.h:426`).
+pub const AUTOPOLL_PID: i32 = -1000;
+
+/// The pid of a `%notif` line's output token (`VT100/VT100Token.h:427`).
+pub const NOTIF_PID: i32 = -1001;
 
 /// The init line, checked (iTerm2's parseHookSSHConductorParameter plus the base64 decode of
 /// terminalDidHookSSHConductorWithParams).
@@ -44,6 +58,19 @@ pub enum Token {
     /// A protocol error (Tandem's): the parser unhooked, and the conductor fails with this
     /// text rather than waiting for a reply that cannot come.
     Error(String),
+    /// Framed output (`SSH_OUTPUT`): the raw bytes of a `%output` block (`channel` -1 is the
+    /// login shell's screen), the autopoll block's text plus "\nEOF\n" (`AUTOPOLL_PID`) or a
+    /// `%notif` line whole (`NOTIF_PID`, channel 1).
+    Output { pid: i32, channel: i32, data: Vec<u8> },
+    /// `%terminate <pid> <rc>`: a framer process ended.
+    Terminate { pid: i32, rc: i32 },
+    /// `%it2 ...`: the text after the word, never empty.
+    It2(String),
+    /// Not from the parser but the hook (`T:2742-2759`): an OSC 134 outside a hooked parser
+    /// found a framer mid-stream. The depth is the parent's (-1: none).
+    BeginFramerRecovery(i32),
+    /// One recovery line, the OSC string after "134;" whole, its leading colon kept (F14).
+    RecoveryLine(String),
 }
 
 /// Checks the init line; the parser's id is appended as the last word first, as iTerm2 builds
@@ -230,6 +257,77 @@ enum State {
     Ground,
     /// Inside the reply to the command with this id.
     Body(String),
+    /// Inside a `%output` or `%autopoll` block, up to its `%end`.
+    Output(Builder),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Flavor {
+    Output,
+    Autopoll,
+    Notif,
+}
+
+/// A framed block being collected (iTerm2's SSHOutputTokenBuilder, `P:538-629`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Builder {
+    flavor: Flavor,
+    identifier: String,
+    pid: i32,
+    channel: i32,
+    /// The whole payload of the header (a notification's data).
+    text: String,
+    /// The bytes between the header and the end.
+    raw: Vec<u8>,
+}
+
+impl Builder {
+    /// The header's words: `%output <id> <pid> <channel> <depth>` (an Int32 pid, an Int8
+    /// channel, an integer depth), `%autopoll <id>` or `%notif ...`. None is malformed.
+    fn parse(payload: &str) -> Option<Builder> {
+        // At most five words matter; the rest of a long payload is never split.
+        let parts: Vec<&str> = payload.splitn(6, ' ').collect();
+        let (flavor, pid, channel) = match parts[0] {
+            "%output" => {
+                if parts.len() < 5 {
+                    return None;
+                }
+                parts[4].parse::<i64>().ok()?;
+                (Flavor::Output, parts[2].parse::<i32>().ok()?, i32::from(parts[3].parse::<i8>().ok()?))
+            }
+            "%autopoll" if parts.len() >= 2 => (Flavor::Autopoll, AUTOPOLL_PID, 1),
+            "%notif" if parts.len() >= 2 => (Flavor::Notif, NOTIF_PID, 1),
+            _ => return None,
+        };
+        Some(Builder { flavor, identifier: parts[1].to_string(), pid, channel, text: payload.to_string(), raw: Vec::new() })
+    }
+
+    fn cap(&self) -> usize {
+        if self.flavor == Flavor::Autopoll {
+            MAX_AUTOPOLL
+        } else {
+            MAX_HELD
+        }
+    }
+
+    /// Adds bytes; false when the block would pass its cap.
+    fn append(&mut self, bytes: &[u8]) -> bool {
+        if self.raw.len() + bytes.len() > self.cap() {
+            return false;
+        }
+        self.raw.extend_from_slice(bytes);
+        true
+    }
+
+    fn token(self) -> Token {
+        let data = match self.flavor {
+            Flavor::Output => self.raw,
+            // `String(data:encoding:) ?? ""`: text that is not UTF-8 is dropped whole.
+            Flavor::Autopoll => (String::from_utf8(self.raw).unwrap_or_default() + "\nEOF\n").into_bytes(),
+            Flavor::Notif => self.text.into_bytes(),
+        };
+        Token::Output { pid: self.pid, channel: self.channel, data }
+    }
 }
 
 pub struct Parser {
@@ -239,6 +337,8 @@ pub struct Parser {
     held: Vec<u8>,
     /// How far into `held` the last read already looked, so the next one goes on from there.
     resume: Resume,
+    /// iTerm2's recoveryMode: unknown lines are ignored until a known payload arrives.
+    recovering: bool,
 }
 
 /// Where the scan of `held` stopped.
@@ -258,12 +358,35 @@ enum Step {
 
 impl Parser {
     pub fn new(dcs_id: &str) -> Parser {
-        Parser { dcs_id: dcs_id.to_string(), state: State::Initial, held: Vec::new(), resume: Resume::Start }
+        Parser { dcs_id: dcs_id.to_string(), state: State::Initial, held: Vec::new(), resume: Resume::Start, recovering: false }
+    }
+
+    /// A parser for a framer found mid-stream (`newRecoveryModeInstance`, `P:44-49`): in
+    /// ground, ignoring unknown OSC 134 lines until the first known payload.
+    pub fn recovering(dcs_id: &str) -> Parser {
+        Parser { state: State::Ground, recovering: true, ..Parser::new(dcs_id) }
     }
 
     /// A parser whose init line was already read.
     pub fn hooked(dcs_id: &str) -> Parser {
         Parser { state: State::Ground, ..Parser::new(dcs_id) }
+    }
+
+    /// Whether the init line has been read: a parser still reading it owns no conductor, so
+    /// its unhooking is no protocol error (iTerm2 only logs a rejected init line).
+    pub fn past_init(&self) -> bool {
+        self.state != State::Initial
+    }
+
+    /// The bytes this parser holds unfinished: an unparsed init line or OSC, and the block it
+    /// is collecting. The hook counts them against its tree's budget.
+    pub fn pending_bytes(&self) -> usize {
+        self.held.len()
+            + match &self.state {
+                State::Output(b) => b.raw.len() + b.text.len() + b.identifier.len(),
+                State::Body(id) => id.len(),
+                _ => 0,
+            }
     }
 
     pub fn dcs_id(&self) -> &str {
@@ -352,6 +475,47 @@ impl Parser {
                         _ => return self.unhook(fed, rest),
                     }
                 }
+                State::Output(ref mut builder) => {
+                    if rest.is_empty() {
+                        break;
+                    }
+                    // `P:640-701`: exactly OSC 134 `%end <id>` ends the block; anything else,
+                    // an OSC or not, is data up to the next ESC (one byte when it is first).
+                    enum Act {
+                        End(usize),
+                        Wait(Scan),
+                        Data(usize),
+                    }
+                    let act = match scan_osc(rest, false, osc_resume(std::mem::take(&mut resume))) {
+                        (Osc::Osc(134, payload), n, _) if payload.strip_prefix("%end ") == Some(builder.identifier.as_str()) => Act::End(n),
+                        (Osc::Blocked, n, scan) => Act::Wait(scan.shifted(n)),
+                        _ => Act::Data(match rest.iter().position(|b| *b == ESC) {
+                            Some(0) => 1,
+                            Some(k) => k,
+                            None => rest.len(),
+                        }),
+                    };
+                    match act {
+                        Act::End(n) => {
+                            i += n;
+                            if let State::Output(done) = std::mem::replace(&mut self.state, State::Ground) {
+                                fed.tokens.push(done.token());
+                            }
+                        }
+                        Act::Wait(scan) => {
+                            self.resume = Resume::Osc(scan);
+                            break;
+                        }
+                        Act::Data(k) => {
+                            if !builder.append(&rest[..k]) {
+                                fed.tokens.push(Token::Error(OUTPUT_TOO_LONG.into()));
+                                // The overflowing chunk is output too, as when the held cap ends it.
+                                return self.unhook(fed, rest);
+                            }
+                            i += k;
+                        }
+                    }
+                }
             }
         }
         data.drain(..i);
@@ -381,17 +545,71 @@ impl Parser {
         Step::Unhook
     }
 
-    /// OSC 134 in ground (parseFramerPayload); 14c adds %output and the rest before the `%`
-    /// rule.
+    /// OSC 134 in ground (parseFramerPayload, `P:318-345`).
     fn framer_payload(&mut self, payload: &str, fed: &mut Fed) -> Step {
+        // Any payload ends recovery mode; an unknown line puts it back.
+        let was_recovering = std::mem::take(&mut self.recovering);
         if payload.starts_with("begin ") {
             return self.begin(payload, fed);
+        }
+        if payload.starts_with("%output ") || payload.starts_with("%autopoll ") || payload.starts_with("%notif ") {
+            return self.builder(payload, fed);
+        }
+        if let Some(rest) = payload.strip_prefix("%terminate ") {
+            // Two integers after the word; more words are ignored.
+            let mut words = rest.split(' ');
+            let pid = words.next().and_then(|w| w.parse::<i32>().ok());
+            let rc = words.next().and_then(|w| w.parse::<i32>().ok());
+            return match (pid, rc) {
+                (Some(pid), Some(rc)) => {
+                    fed.tokens.push(Token::Terminate { pid, rc });
+                    Step::Continue
+                }
+                _ => Step::Unhook,
+            };
+        }
+        if let Some(rest) = payload.strip_prefix("%it2 ") {
+            if rest.len() > MAX_HELD {
+                fed.tokens.push(Token::Error(OUTPUT_TOO_LONG.into()));
+                return Step::Unhook;
+            }
+            if !rest.is_empty() {
+                fed.tokens.push(Token::It2(rest.to_string()));
+            }
+            return Step::Continue;
         }
         if payload.starts_with('%') {
             // An unrecognized notification is ignored.
             return Step::Continue;
         }
+        if was_recovering {
+            self.recovering = true;
+            return Step::Continue;
+        }
         Step::Unhook
+    }
+
+    /// `%output`, `%autopoll` and `%notif` (parseFramerOutput, `P:284-303`): a notification
+    /// is a token at once, the others start collecting.
+    fn builder(&mut self, payload: &str, fed: &mut Fed) -> Step {
+        let Some(builder) = Builder::parse(payload) else {
+            return Step::Unhook;
+        };
+        // A notification's second word is a topic, not an id.
+        if builder.flavor != Flavor::Notif && builder.identifier.len() > MAX_ID {
+            fed.tokens.push(Token::Error(ID_TOO_LONG.into()));
+            return Step::Unhook;
+        }
+        if builder.flavor == Flavor::Notif {
+            if payload.len() > MAX_HELD {
+                fed.tokens.push(Token::Error(OUTPUT_TOO_LONG.into()));
+                return Step::Unhook;
+            }
+            fed.tokens.push(builder.token());
+        } else {
+            self.state = State::Output(builder);
+        }
+        Step::Continue
     }
 
     fn begin(&mut self, payload: &str, fed: &mut Fed) -> Step {
@@ -478,5 +696,165 @@ mod tests {
         }
         assert_eq!(lines, 64 * (64 * 1024 / line.len()));
         assert!(started.elapsed() < std::time::Duration::from_secs(10), "took {:?}", started.elapsed());
+    }
+
+    use crate::ssh_fixtures::*;
+
+    /// One read, and one byte at a time: the same tokens and the same rest.
+    fn both(mut make: impl FnMut() -> Parser, bytes: &[u8]) -> Fed {
+        let whole = make().feed(bytes);
+        let mut p = make();
+        let mut split = Fed::default();
+        for (i, b) in bytes.iter().enumerate() {
+            let fed = p.feed(&[*b]);
+            split.tokens.extend(fed.tokens);
+            if let Some(mut rest) = fed.rest {
+                rest.extend_from_slice(&bytes[i + 1..]);
+                split.rest = Some(rest);
+                break;
+            }
+        }
+        assert_eq!(split, whole, "byte by byte differs");
+        whole
+    }
+
+    fn hooked() -> Parser {
+        Parser::hooked("d")
+    }
+
+    fn out(pid: i32, channel: i32, data: &[u8]) -> Token {
+        Token::Output { pid, channel, data: data.to_vec() }
+    }
+
+    #[test]
+    fn framer_output_follows_iterm2() {
+        let data = b"hi \x1b[1mX\x1b]0;t\x07\r\n";
+        let fed = both(hooked, &output("7", 4242, -1, 0, data));
+        assert_eq!(fed, Fed { tokens: vec![out(4242, -1, data)], rest: None });
+        // A foreign or near-miss terminator is data: only OSC 134 exactly `%end 7` ends it.
+        let mut inner = Vec::new();
+        for o in [osc134("%end 8"), osc134("%output 9 1 1 0"), osc134("%end 7 "), osc134("%end 70")] {
+            inner.extend(o);
+        }
+        let fed = both(hooked, &output("7", 4242, -1, 0, &inner));
+        assert_eq!(fed.tokens, vec![out(4242, -1, &inner)]);
+        let two = [output("7", 1, -1, 0, b"a"), output("8", 2, 1, 0, b"b")].concat();
+        assert_eq!(both(hooked, &two).tokens, vec![out(1, -1, b"a"), out(2, 1, b"b")]);
+        // The depth word is parsed and dropped.
+        assert_eq!(both(hooked, &output("7", 4242, 2, 1, b"e")).tokens, vec![out(4242, 2, b"e")]);
+        // What follows the end is read again.
+        let mut bytes = output("7", 1, -1, 0, b"a");
+        bytes.extend(reply("5", &["4242"], 0, 'f'));
+        assert_eq!(
+            both(hooked, &bytes).tokens,
+            vec![out(1, -1, b"a"), Token::Begin("5".into()), Token::Line("4242".into()), Token::End { id: "5".into(), status: 0, kind: "f".into() }]
+        );
+    }
+
+    #[test]
+    fn framer_builders_follow_iterm2() {
+        let rows = "$begin ps\n+1 0 S Mon Sep 27 10:00:00 2026 init\n";
+        let fed = both(hooked, &autopoll("9", rows));
+        assert_eq!(fed.tokens, vec![out(AUTOPOLL_PID, 1, format!("{rows}\nEOF\n").as_bytes())]);
+        // Not UTF-8: iTerm2's `String(data:encoding:) ?? ""` keeps only the terminator.
+        let mut bad = osc134("%autopoll 9");
+        bad.extend_from_slice(b"a\xffb");
+        bad.extend(osc134("%end 9"));
+        assert_eq!(both(hooked, &bad).tokens, vec![out(AUTOPOLL_PID, 1, b"\nEOF\n")]);
+        // A notification is complete at once, and the parser is back in ground.
+        assert_eq!(both(hooked, &notif("%notif tty -echo +icanon")).tokens, vec![out(NOTIF_PID, 1, b"%notif tty -echo +icanon")]);
+        let mut p = hooked();
+        let fed = p.feed(&notif("%notif tty -echo +icanon"));
+        assert_eq!(fed.tokens, vec![out(NOTIF_PID, 1, b"%notif tty -echo +icanon")]);
+        assert_eq!(p.feed(&osc134("%ping")), Fed::default());
+        assert_eq!(p.feed(&pre_reply("1", &[])).tokens.len(), 2, "ground still reads OSC 135");
+        // Malformed builders unhook: the tokens are none and everything from the OSC on is rest.
+        for bad in ["%output 1 x -1 0", "%output 1 2 -1", "%output 1 2 300 0", "%output 1 2 3 x", "%terminate 4242", "%terminate x 0", "%terminate 4242 x"] {
+            let bytes = [osc134(bad), b"$ ".to_vec()].concat();
+            let fed = both(hooked, &bytes);
+            assert!(fed.tokens.is_empty(), "{bad}: {:?}", fed.tokens);
+            assert_eq!(fed.rest.as_deref(), Some(&bytes[osc134(bad).len()..]), "{bad}");
+        }
+        let fed = both(hooked, &terminate(4242, 0));
+        assert_eq!(fed.tokens, vec![Token::Terminate { pid: 4242, rc: 0 }]);
+        assert_eq!(both(hooked, &terminate(-3, -2)).tokens, vec![Token::Terminate { pid: -3, rc: -2 }]);
+        assert_eq!(both(hooked, &osc134("%it2 3 data aGk=")).tokens, vec![Token::It2("3 data aGk=".into())]);
+        let mut p = hooked();
+        // Without the space after the word a payload is an unknown notification (iTerm2's
+        // hasPrefix); each is ignored in one read and byte by byte.
+        for ignored in ["%it2 ", "%ping", "%wat 1", "%autopoll", "%notif", "%output"] {
+            assert_eq!(both(hooked, &osc134(ignored)), Fed::default(), "{ignored}");
+            assert_eq!(p.feed(&osc134(ignored)), Fed::default(), "{ignored}");
+        }
+        // An id longer than the cap ends the conductor, as a begin's does.
+        let long = format!("%autopoll {}", "7".repeat(MAX_ID + 1));
+        assert_eq!(hooked().feed(&osc134(&long)).tokens, vec![Token::Error(ID_TOO_LONG.into())]);
+        assert_eq!(p.feed(&reply("5", &["4242"], 0, 'f')).tokens.len(), 3, "still in ground");
+        let bytes = [osc134("hello"), b"abc".to_vec()].concat();
+        let fed = both(hooked, &bytes);
+        assert_eq!((fed.tokens.is_empty(), fed.rest.as_deref()), (true, Some(&b"abc"[..])));
+    }
+
+    #[test]
+    fn recovery_parser_follows_iterm2() {
+        let bytes = [b"xx".to_vec(), osc134("junk"), osc134("recovery: login 5")].concat();
+        let mut p = Parser::recovering("d");
+        assert_eq!(p.feed(&bytes), Fed::default());
+        let fed = p.feed(&output("1", 5, -1, 0, b"a"));
+        assert_eq!(fed.tokens, vec![out(5, -1, b"a")]);
+        let fed = p.feed(&[osc134("junk"), b"z".to_vec()].concat());
+        assert_eq!((fed.tokens.is_empty(), fed.rest.as_deref()), (true, Some(&b"z"[..])), "recovery ended");
+        // Any payload (even an ignored notification) ends recovery mode.
+        let mut p = Parser::recovering("d");
+        assert_eq!(p.feed(&osc134("%ping")), Fed::default());
+        assert!(p.feed(&osc134("junk")).rest.is_some());
+        // Byte by byte, the same.
+        let all = [bytes.clone(), output("1", 5, -1, 0, b"a")].concat();
+        assert_eq!(both(|| Parser::recovering("d"), &all).tokens, vec![out(5, -1, b"a")]);
+    }
+
+    #[test]
+    fn output_blocks_are_capped() {
+        // A %output that never ends: past the cap the parser errors and unhooks (F13, F28).
+        let mut p = hooked();
+        assert_eq!(p.feed(&osc134("%output 1 2 -1 0")), Fed::default());
+        let chunk = vec![b'a'; 64 * 1024];
+        let mut sent = 0;
+        let fed = loop {
+            let fed = p.feed(&chunk);
+            sent += chunk.len();
+            if fed.rest.is_some() || sent > 2 * 1024 * 1024 {
+                break fed;
+            }
+        };
+        assert_eq!(fed.tokens, vec![Token::Error(OUTPUT_TOO_LONG.into())]);
+        assert!(fed.rest.is_some(), "unhooked");
+        assert!(sent <= MAX_HELD + chunk.len(), "stopped after {sent} bytes");
+        // Exactly at the cap is fine.
+        let data = vec![b'a'; MAX_HELD];
+        let fed = hooked().feed(&output("1", 2, -1, 0, &data));
+        assert_eq!(fed.tokens.len(), 1);
+        assert!(fed.rest.is_none());
+        let fed = hooked().feed(&output("1", 2, -1, 0, &vec![b'a'; MAX_HELD + 1]));
+        assert_eq!(fed.tokens, vec![Token::Error(OUTPUT_TOO_LONG.into())]);
+        // An autopoll block may be 8 MiB, no more.
+        let mut p = hooked();
+        p.feed(&osc134("%autopoll 1"));
+        for _ in 0..8 {
+            assert!(p.feed(&vec![b'r'; 1024 * 1024]).rest.is_none());
+        }
+        assert_eq!(p.feed(&osc134("%end 1")).tokens.len(), 1, "8 MiB is accepted");
+        let mut p = hooked();
+        p.feed(&osc134("%autopoll 1"));
+        for _ in 0..8 {
+            p.feed(&vec![b'r'; 1024 * 1024]);
+        }
+        let fed = p.feed(b"r");
+        assert_eq!(fed.tokens, vec![Token::Error(OUTPUT_TOO_LONG.into())]);
+        // A notification or an it2 line over the cap, read whole, is refused too.
+        let long = format!("%notif {}", "a".repeat(MAX_HELD));
+        assert_eq!(hooked().feed(&osc134(&long)).tokens, vec![Token::Error(OUTPUT_TOO_LONG.into())]);
+        let long = format!("%it2 {}", "a".repeat(MAX_HELD + 1));
+        assert_eq!(hooked().feed(&osc134(&long)).tokens, vec![Token::Error(OUTPUT_TOO_LONG.into())]);
     }
 }

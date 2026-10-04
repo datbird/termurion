@@ -243,6 +243,16 @@ pub mod ssh_hook;
 pub mod ssh_args;
 pub mod ssh_inject;
 pub mod conductor;
+pub mod framer_script;
+pub mod conductor_framer;
+pub mod ssh_jumps;
+pub mod ssh_recovery;
+pub mod ssh_registry;
+pub mod ssh_procs;
+pub mod ssh_clock;
+pub mod side_channel;
+#[cfg(test)]
+pub mod ssh_fixtures;
 pub mod tmux_proto;
 pub mod tmux_gateway;
 pub mod tmux_handshake;

@@ -81,6 +81,22 @@ pub struct PaneSsh {
     /// The SSH profile's remote initial directory (`profile::ssh_initial_directory`), used
     /// only while `profile_ssh` and there is no conductor yet.
     pub initial_directory: Option<String>,
+    /// The shell directory the pane had when a conductor last took it, so only a later change
+    /// reaches the conductor (`didUpdateCurrentDirectory`, `PS:19373-19376`).
+    pub cwd_seen: Option<String>,
+    /// The remote process rows changed, or a conductor left: the job is read again once by the
+    /// app (`App::ssh_pump_pane`), however many blocks came in that pass.
+    pub jobs_dirty: bool,
+    /// When the process lists next publish their CPU value (once a second while any conductor
+    /// of the pane frames).
+    pub procs_due: Option<std::time::Instant>,
+    /// The pane is an ssh session (F27): the only kind a stray OSC 134 may start an in-band
+    /// recovery in, and what is saved with the host key so a reattached pane keeps the right.
+    /// Set by a vouched hook, cleared when EndSSH empties `chain` (final review I2).
+    pub was_ssh: bool,
+    /// The id of the outermost hop a root-level recovery replaced, which the recovered
+    /// conductor takes (final review I2: it2ssh's EndSSH names that id).
+    pub recovery_replaces: Option<String>,
 }
 
 impl PaneSsh {

@@ -3,9 +3,13 @@
 //! Pure: it talks to the app only through the `Effect`s it queues (the tmux gateway's
 //! `take_writes` pattern).
 
+use crate::conductor_framer::{Job, Purpose, TtyState, REPLY_MAX};
 use crate::conductor_parser::Init;
+use crate::ssh_jumps::Reconnection;
 use crate::ssh_args::{HostnameFinder, Identity, ParsedArgs};
+use crate::ssh_recovery::{RecoveryInfo, Tree};
 use crate::ssh_inject::{expand_local_tilde, injection_payloads, last_component, modify_remote, shell_supports_injection, tarballs, tweak_destination, Payload, Source, INTEGRATION_SUBDIR};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use base64::Engine;
@@ -119,6 +123,21 @@ impl Command {
         }
     }
 
+    /// supportsPipelining (`CD:1375-1386`): several may be written before the first answers.
+    /// 14d adds the file fetch; iTerm2's `framerIT2Send` is not built (ruling 3).
+    pub fn supports_pipelining(&self) -> bool {
+        matches!(self, Command::FramerSend { .. })
+    }
+
+    /// size (`CD:1388-1416`): about the bytes on the wire, from the base64 form. Only a
+    /// command that pipelines has a size; the others are `usize::MAX`.
+    pub fn size(&self) -> usize {
+        match self {
+            Command::FramerSend { .. } => self.string_value().chars().count() * 4 / 3,
+            _ => usize::MAX,
+        }
+    }
+
     /// isFramer (`CD:957-967`).
     pub fn is_framer(&self) -> bool {
         !matches!(
@@ -155,6 +174,9 @@ impl Command {
 /// How long a timed command may go without a begin, a line or its end (Tandem's; iTerm2
 /// waits forever, ruling 2), and how long a setup stalled in ground may wait.
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Why a recovery that never finished fails (Tandem's).
+pub const RECOVERY_TIMEOUT: &str = "The ssh connection could not be recovered: the remote did not finish answering";
 
 /// Seconds added per square MiB of a command's encoded bytes. conductor.sh reads a command
 /// one 128-character line at a time and appends each to the text so far
@@ -292,9 +314,22 @@ pub enum Effect {
     StopQueueingInput,
     SendInitialText,
     StateChanged,
+    /// The remote process rows changed: jobs, titles and triggers read them again.
+    ProcessesChanged,
     /// A message for the pane (a Files to Copy job that was skipped).
     Notice(String),
     Abort(String),
+    /// The conductor framed and joins the connected hosts (`CD:293-302`). The effect carries
+    /// its guid and identity because a parent's effects surface through its child's queue.
+    Registered { guid: String, identity: Identity },
+    /// A framed conductor failed and leaves the connected hosts (`CD:3095-3103`).
+    Deregistered { guid: String },
+    /// The remote's clock answered (or the fetch failed). Without a token it is the pane's
+    /// Clock; with one it is the answer to a script's `get_time_offset`.
+    TimeOffset { token: Option<u64>, result: Result<crate::ssh_clock::Offset, String> },
+    /// The conductor quit (Shell > ssh > Disconnect, `CD:1837-1842`): the pane says so,
+    /// unhooks it and clears what it held (`PS:25603-25612`).
+    Quit,
 }
 
 /// What an unhook restores (Decision: the remote host and the working directory).
@@ -317,6 +352,9 @@ pub struct Setup {
     pub initial_directory: Option<String>,
     pub inject: bool,
     pub parsed: ParsedArgs,
+    /// Whether the hook's origin token was Tandem's own (the first hop of a session Tandem
+    /// started): only such a chain's first hop is text the person typed.
+    pub local_origin: bool,
 }
 
 /// How a command's results are handled (`CD:1205-1221`). The reply lines a handler keeps
@@ -329,7 +367,31 @@ pub enum Handler {
     WriteOnSuccess(String),
     GetShell(Vec<String>),
     CheckForPython(Vec<String>),
+    /// A framer `run`: its reply line is the child's pid, which becomes a background job
+    /// (`CD:2259-2271`); the end, an abort and a cancel do nothing.
+    RunRemote(Purpose),
+    /// The framer's `login` reply: its lines are the shell's pid, or the failure text
+    /// (`CD:2216-2225`); the end finishes framing.
+    FramerLogin(Vec<String>),
+    /// The framer's `eval` of the jump script: answered as a login is (`CD:2225-2234`).
+    Jump(Vec<String>),
+    /// A framer `getenv`: the first line is the value of the named variable (`CD:2236-2246`).
+    /// The variable's name and the first reply line: `None` before one arrived, `Some(None)`
+    /// when it was too long to keep.
+    Getenv(String, Option<Option<String>>),
+    /// A framer command whose whole reply is text for the purpose (`Ephemeral`, `CD:2247`
+    /// and the time offset's `framerExecPythonStatements`): the lines are kept up to
+    /// `LOGIN_LIMIT` (more are dropped, and the reply is then invalid) and the end hands
+    /// them over; an abort or a cancel answers with an error.
+    Ephemeral(Purpose, Vec<String>),
+    /// The framer's `reset2` (`CD:2184-2197`): the lines it answered so far, and the code the
+    /// reply must hold. An end without the code is not this command's (a stale reply): it is
+    /// ignored, and the command stays in flight.
+    Reset { code: String, lines: Vec<String> },
 }
+
+/// The most a pipeline holds before it stops taking commands (`CD:2986-3010`).
+pub const PIPELINE_BYTES: usize = 1024;
 
 /// A command with its handler (ExecutionContext, `CD:1159-1164`).
 #[derive(Clone, Debug, PartialEq)]
@@ -366,6 +428,19 @@ pub enum State {
     Executing(Context, Vec<Context>),
     /// Not using the conductor: input and output are direct.
     Unhooked,
+    /// Reading a recovering framer's lines (`CD:1505`); the shim of `start_recovery`.
+    Recovery(RecoveryState),
+    /// A recovered conductor waiting for `did_resynchronize` (`CD:1506`): nothing is sent, and
+    /// stray ends are ignored.
+    Recovered,
+}
+
+/// What the recovery lines have built (`CD:1466-1480`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum RecoveryState {
+    /// The recover line was sent; the block has not begun.
+    Ground,
+    Building(RecoveryInfo),
 }
 
 /// What a handler is told (PartialResult, `CD:1509-1515`; side-channel lines are 14c).
@@ -434,6 +509,8 @@ pub fn python_version(output: &str) -> Option<(u32, u32)> {
 /// either limit the step fails.
 pub const GETSHELL_LIMIT: (usize, usize) = (64 * 1024, 256);
 pub const PYTHON_LIMIT: (usize, usize) = (4 * 1024, 64);
+/// The login reply is a pid, or a short failure text (Tandem's).
+pub const LOGIN_LIMIT: (usize, usize) = (REPLY_MAX, 64);
 
 /// The failure text for a reply past its limit (Tandem's).
 pub fn reply_too_long(cmd: &Command) -> String {
@@ -491,6 +568,7 @@ pub fn setup_for_hook(init: &Init, local: bool, env: &[(String, String)], env_na
         initial_directory: directory,
         inject,
         parsed: crate::ssh_args::parse(&init.sshargs, &init.bool_args, finder),
+        local_origin: local,
     }
 }
 
@@ -508,6 +586,17 @@ pub fn shown(text: &str) -> String {
     match text.char_indices().nth(MAX_SHOWN) {
         Some((at, _)) => format!("{}\u{2026}", &text[..at]),
         None => text.to_string(),
+    }
+}
+
+/// The depth of a conductor hooked while `parent` is the pane's current one (`CD:512-518`):
+/// the parent's, one more when the parent frames (an unframed parent does not wrap input
+/// for it); 0 with none.
+pub fn child_depth(parent: Option<&Conductor>) -> i32 {
+    match parent {
+        Some(p) if p.framing() => p.depth + 1,
+        Some(p) => p.depth,
+        None => 0,
     }
 }
 
@@ -535,18 +624,37 @@ pub enum Route {
     Direct,
     /// Held until the conductor unhooks (`_sshWriteQueue`).
     Held,
-    /// Through the conductor's `send_keys` (framed from milestone 14c).
-    Conductor,
+    /// Through the `send_keys` of the conductor this many parents out from the current one
+    /// (0: the current one), framed.
+    Conductor(usize),
 }
 
 /// handlesKeystrokes gives Conductor (`PS:4278-4293`, `PS:4411-4432`), queueWrites gives
-/// Held (`PS:4191-4197`), else Direct.
+/// Held (`PS:4191-4197`). Where iTerm2 then writes to the pty, Tandem first looks outward:
+/// while an ancestor's framer reads the pty (a level 1 hop inside a framed session, a nested
+/// exit before its EndSSH, a cat'd hook that unhooked, or a hop that frames under an unhooked
+/// parent), the nearest one, the current conductor first, sends the bytes (Tandem-side guard:
+/// iTerm2 types them into framer.py's stdin). Direct only with none.
 pub fn route(c: Option<&Conductor>) -> Route {
-    match c {
-        Some(c) if c.handles_keystrokes() => Route::Conductor,
-        Some(c) if c.queue_writes() => Route::Held,
-        _ => Route::Direct,
+    let Some(c) = c else { return Route::Direct };
+    if c.handles_keystrokes() {
+        return Route::Conductor(0);
     }
+    if c.queue_writes() {
+        return Route::Held;
+    }
+    // From the current conductor itself: one that frames with its parent unhooked has its
+    // own framer running, and it is the first to take the bytes.
+    let mut hops = 0;
+    let mut up = Some(c);
+    while let Some(p) = up {
+        if p.frames_keys() {
+            return Route::Conductor(hops);
+        }
+        hops += 1;
+        up = p.parent.as_deref();
+    }
+    Route::Direct
 }
 
 /// One conductor.sh (or framer.py) on the other side of an ssh (`CD`).
@@ -561,24 +669,68 @@ pub struct Conductor {
     pub shell: Option<String>,
     pub saved: Option<SavedState>,
     pub python_ok: bool,
-    line_prefix: String,
+    /// Set by `exec_framer` (14c, `conductor_framer.rs`).
+    pub(crate) framer_version: Option<u8>,
+    /// The `%it2` frames this conductor owns, the newest 16, each cut at `IT2_ENTRY_MAX`.
+    /// Nothing reads them: the it2 proxy is n/a (ruling 3) and Tandem never sends `it2listen`.
+    pub it2_inbox: Vec<String>,
+    /// The remote's `uname` output, trimmed (`CD:1912-1917`).
+    pub uname: Option<String>,
+    /// The name `hostname -f` printed, trimmed (`CD:2198-2214`).
+    pub discovered_hostname: Option<String>,
+    /// The commands running in the background on the remote, by pid (`CD:471`); not restorable.
+    pub background_jobs: BTreeMap<i32, Job>,
+    /// The bytes of output the jobs hold in all (kept in step with `background_jobs`).
+    pub(crate) job_output: usize,
+    /// The remote tty's echo and icanon, from `%notif tty` (`CD:672-679`).
+    pub tty: TtyState,
+    /// This conductor's own id in the connected hosts (iTerm2's `guid`).
+    pub guid: String,
+    /// What `getenv` learned about the remote's environment (`CD:2236-2246`).
+    pub(crate) environment_variables: BTreeMap<String, String>,
+    /// Whether framing starts the remote process list (`CD:381`, always true).
+    pub autopoll_enabled: bool,
+    /// The autopoll text so far, taken at its "EOF" piece (`CD:2600-2611`).
+    pub(crate) autopoll: String,
+    /// The remote process list, made at first use (`CD:461-470`).
+    pub(crate) procs: Option<crate::ssh_procs::Provider>,
+    /// The command whose output is the remote's `uname` (the `unameCommand` setting).
+    pub uname_command: String,
+    /// Where this hop reconnects to (`myJump`, `CD:444`): set by `start_jumping`, used up by
+    /// the framing sequence's jump.
+    pub my_jump: Option<Reconnection>,
+    /// The hops after `my_jump` (`subsequentJumps`, `CD:442`), taken by the next hop's conductor.
+    pub subsequent_jumps: Vec<Reconnection>,
+    /// The remote shell's current directory (`currentDirectory`), from the pane's tracking.
+    pub current_directory: Option<String>,
+    /// A recovered or restored conductor that has not resynchronized yet (`CD:460`): it has no
+    /// process list until it has (`CD:721`).
+    pub(crate) waiting_to_resync: bool,
+    /// The code of the next `reset2` (None: a fresh one), so a test can know it.
+    pub(crate) reset_code: Option<String>,
+    /// Every background job completion, for the tests.
+    #[cfg(test)]
+    pub(crate) completed: Vec<(Purpose, Vec<u8>, i32)>,
+    pub(crate) line_prefix: String,
     depth: i32,
-    effects: Vec<Effect>,
-    state: State,
+    /// Set by `fail`: the pane's abort takes this conductor, and every one inside it, out.
+    failed: bool,
+    pub(crate) effects: Vec<Effect>,
+    pub(crate) state: State,
     queue: Vec<Context>,
     /// Set while a handler runs and while commands are written: `send` only enqueues, and
     /// the transition's own dequeue sends it next (`CD:384-391`, `CD:2964-2969`).
     transition: bool,
     /// When the conductor last wrote a command or heard a begin, a line or an end for one.
     /// None before the first write and after a failure.
-    last_activity: Option<Instant>,
+    pub(crate) last_activity: Option<Instant>,
     /// The timeout text of the last command written, for a setup stalled in ground.
     last_written: Option<String>,
     /// The clock for tests: `now()` reads this when set.
     pub(crate) fake_now: Option<Instant>,
     /// Every handler call with the state at that moment, for the tests.
     #[cfg(test)]
-    updates: Vec<(Command, Partial, State)>,
+    pub(crate) updates: Vec<(Command, Partial, State)>,
 }
 
 impl Conductor {
@@ -586,11 +738,7 @@ impl Conductor {
     /// pre-framer line; the depth is the parent's, one more when the parent frames (an
     /// unframed parent does not wrap input for it).
     pub fn new(setup: Setup, parent: Option<Box<Conductor>>, prefix_uuid: &str) -> Conductor {
-        let depth = match &parent {
-            Some(p) if p.framing() => p.depth + 1,
-            Some(p) => p.depth,
-            None => 0,
-        };
+        let depth = child_depth(parent.as_deref());
         Conductor {
             setup,
             parent,
@@ -602,8 +750,29 @@ impl Conductor {
             shell: None,
             saved: None,
             python_ok: false,
+            framer_version: None,
+            it2_inbox: Vec::new(),
+            uname: None,
+            discovered_hostname: None,
+            background_jobs: BTreeMap::new(),
+            job_output: 0,
+            tty: TtyState::default(),
+            guid: uuid::Uuid::new_v4().hyphenated().to_string(),
+            environment_variables: BTreeMap::new(),
+            autopoll_enabled: true,
+            autopoll: String::new(),
+            procs: None,
+            uname_command: "uname -s".to_string(),
+            my_jump: None,
+            subsequent_jumps: Vec::new(),
+            current_directory: None,
+            waiting_to_resync: false,
+            reset_code: None,
+            #[cfg(test)]
+            completed: Vec::new(),
             line_prefix: format!("\u{3}{prefix_uuid}"),
             depth,
+            failed: false,
             effects: Vec::new(),
             state: State::Ground,
             queue: Vec::new(),
@@ -620,6 +789,16 @@ impl Conductor {
     /// `local_home`.
     pub fn add_path(&mut self, path: &str, destination: &str, local_home: &Path) {
         self.payloads.push(Payload { source: Source::Disk(expand_local_tilde(path, local_home)), destination: tweak_destination(destination) });
+    }
+
+    /// startJumping (`CD:1613-1618`): the first hop is this conductor's own jump, the rest
+    /// wait for the next hop's conductor. No hops is an ordinary start, and so is a list
+    /// `ssh_jumps::safe_hops` refuses (beyond iTerm2, final review I1).
+    pub fn start_jumping(&mut self, jumps: Vec<Reconnection>) {
+        let mut rest = crate::ssh_jumps::safe_hops(&jumps).unwrap_or_default().into_iter();
+        self.my_jump = rest.next();
+        self.subsequent_jumps = rest.collect();
+        self.start();
     }
 
     /// start (`CD:1606-1611`): the line prefix conductor.sh reads first, then getshell.
@@ -683,20 +862,21 @@ impl Conductor {
         self.send(Command::PythonVersion, Handler::CheckForPython(Vec::new()), false);
     }
 
-    /// The end of pythonversion's reply (`CD:2130-2161`): a usable python is ready; anything
-    /// else starts the login shell (a pending jump's eval is 14c).
+    /// The end of pythonversion's reply (`CD:2130-2161`): a usable python is ready; a python
+    /// below the minimum with a jump pending evals the jump script; anything else starts the
+    /// login shell.
     fn did_check_for_python(&mut self, lines: &[String], status: u8) {
         match python_version(&lines.join("\n")) {
             Some(version) if status == 0 && version >= MIN_PYTHON => self.python_ready(),
+            Some(_) if status == 0 && self.my_jump.is_some() => self.jump_with_eval(),
             _ => self.exec_login_shell(),
         }
     }
 
-    /// A remote python of `MIN_PYTHON` or later. 14c Task 1 replaces the login shell here
-    /// with execFramer (ruling 14b-6).
+    /// A remote python of `MIN_PYTHON` or later starts the framer (ruling 14b-6).
     fn python_ready(&mut self) {
         self.python_ok = true;
-        self.exec_login_shell();
+        self.frame();
     }
 
     /// execLoginShell (`CD:2028-2038`): input stops queueing in the connecting pane, then an
@@ -719,6 +899,11 @@ impl Conductor {
 
     pub fn depth(&self) -> i32 {
         self.depth
+    }
+
+    /// Whether this conductor failed (`fail`) and waits for the pane's abort.
+    pub fn failed(&self) -> bool {
+        self.failed
     }
 
     pub fn framing(&self) -> bool {
@@ -747,26 +932,80 @@ impl Conductor {
         !self.effects.is_empty() || self.parent.as_ref().is_some_and(|p| p.has_effects())
     }
 
-    /// sendKeys (`CD:1854-1862`), unframed: the bytes go to the session, which holds them
-    /// while setup runs. Milestone 14c adds the framed branch.
+    /// sendKeys (`CD:1854-1862`): framed, `send <pid> <base64>` fire and forget, pipelined
+    /// (`framerSend`); unframed, the bytes go to the session, which holds them while setup
+    /// runs. Nothing to send sends nothing (F18: the login's empty connecting queue).
     pub fn send_keys(&mut self, data: &[u8]) {
-        self.effects.push(Effect::Keys(data.to_vec()));
+        if data.is_empty() {
+            return;
+        }
+        match self.framed_pid {
+            Some(pid) => self.send(Command::FramerSend { data: data.to_vec(), pid }, Handler::FireAndForget, false),
+            None => self.effects.push(Effect::Keys(data.to_vec())),
+        }
     }
 
-    /// The conductor's own bytes as a parent carries them for a child's `write()`: an
-    /// unframed parent writes them raw (sendKeys with `_queueWrites` cleared, never held).
+    /// The conductor's own bytes as a parent carries them for a child's `write()`
+    /// (`CD:3039-3058`: the parent's `sendKeys`): a parent whose framer runs sends them to its
+    /// framed shell; any other hands them to its own parent, and the outermost writes them raw
+    /// (`_queueWrites` cleared, never held). iTerm2 writes them raw at the first unframed
+    /// parent, into the framer of any framing one above it (Tandem-side guard, see `route`).
     fn write_through(&mut self, bytes: Vec<u8>) {
-        self.effects.push(Effect::Write(bytes));
+        if self.frames_keys() {
+            self.send_keys(&bytes);
+        } else if self.parent.is_some() {
+            self.via_parent(|parent| parent.write_through(bytes));
+        } else {
+            self.effects.push(Effect::Write(bytes));
+        }
+    }
+
+    /// Whether this conductor's framer is running to read what it sends: framing and not
+    /// unhooked (the framer's end is its unhook).
+    pub fn frames_keys(&self) -> bool {
+        self.framing() && !self.unhooked()
+    }
+
+    /// The conductor `hops` parents out (0: this one).
+    pub fn ancestor(&self, hops: usize) -> Option<&Conductor> {
+        match hops {
+            0 => Some(self),
+            n => self.parent.as_deref()?.ancestor(n - 1),
+        }
+    }
+
+    /// The conductor `hops` parents out (0: this one); its effects surface through this one's.
+    pub fn ancestor_mut(&mut self, hops: usize) -> Option<&mut Conductor> {
+        match hops {
+            0 => Some(self),
+            n => self.parent.as_deref_mut()?.ancestor_mut(n - 1),
+        }
     }
 
     /// Runs `f` on the parent, if any, and moves what the parent queues meanwhile into this
     /// conductor's queue after its own, so the effects keep the order they were made in.
-    fn via_parent(&mut self, f: impl FnOnce(&mut Conductor)) {
+    pub(crate) fn via_parent(&mut self, f: impl FnOnce(&mut Conductor)) {
         if let Some(parent) = self.parent.as_deref_mut() {
             let before = parent.effects.len();
             f(parent);
             self.effects.extend(parent.effects.drain(before..));
         }
+    }
+
+    /// How many parents out the nearest conductor with a running framer is (`frames_keys`),
+    /// not counting this one: where a failing setup's own write is sent from, so the bytes
+    /// stay queued on a conductor that outlives the abort.
+    pub(crate) fn framing_ancestor(&self) -> Option<usize> {
+        let mut hops = 1;
+        let mut c = self.parent.as_deref();
+        while let Some(p) = c {
+            if p.frames_keys() {
+                return Some(hops);
+            }
+            hops += 1;
+            c = p.parent.as_deref();
+        }
+        None
     }
 
     /// write (`CD:3039-3058`): `text` plus `\n`, through the parent when there is one.
@@ -788,6 +1027,34 @@ impl Conductor {
         self.state == State::Unhooked
     }
 
+    /// Whether `pred` holds for the command in flight or one queued.
+    pub(crate) fn has_command(&self, pred: &dyn Fn(&Command) -> bool) -> bool {
+        self.in_flight().is_some_and(pred) || self.queue.iter().any(|c| pred(&c.command))
+    }
+
+    /// The commands written and not yet ended (a pipeline, first to last), then the queued
+    /// ones; `in_flight` is the first of them.
+    pub fn pending(&self) -> Vec<&Command> {
+        let written: Vec<&Context> = match &self.state {
+            State::WillExecute(contexts) => contexts.iter().collect(),
+            State::Executing(context, rest) => std::iter::once(context).chain(rest).collect(),
+            State::Ground | State::Unhooked | State::Recovery(_) | State::Recovered => Vec::new(),
+        };
+        written.into_iter().chain(&self.queue).map(|c| &c.command).collect()
+    }
+
+    /// The bytes of keystrokes waiting in the queue (not yet written), for a coprocess's flow
+    /// control.
+    pub fn queued_bytes(&self) -> usize {
+        self.queue
+            .iter()
+            .map(|c| match &c.command {
+                Command::FramerSend { data, .. } => data.len(),
+                _ => 0,
+            })
+            .sum()
+    }
+
     /// The command written and not yet ended, for the command timer (Task 9) and tests.
     pub fn in_flight(&self) -> Option<&Command> {
         self.in_flight_context().map(|c| &c.command)
@@ -797,7 +1064,7 @@ impl Conductor {
         match &self.state {
             State::WillExecute(contexts) => contexts.first(),
             State::Executing(context, _) => Some(context),
-            State::Ground | State::Unhooked => None,
+            State::Ground | State::Unhooked | State::Recovery(_) | State::Recovered => None,
         }
     }
 
@@ -827,12 +1094,15 @@ impl Conductor {
                 }
             }
             State::Unhooked => "unhooked".into(),
+            State::Recovery(_) => "recovering".into(),
+            State::Recovered => "recovered".into(),
         }
     }
 
     /// send (`CD:2802-2846`): enqueue (first when `high_priority`); from ground the command
-    /// is written at once. During a transition it only enqueues. In flight, iTerm2 tops up
-    /// a pipeline, which no 14b command joins (14c). Unhooked, it stays queued, unsent.
+    /// is written at once. During a transition it only enqueues. In flight, the pipeline is
+    /// topped up with what can ride along (`extend`): a keystroke need not wait for the
+    /// round trip of the one before it. Unhooked, it stays queued, unsent.
     pub fn send(&mut self, cmd: Command, handler: Handler, high_priority: bool) {
         let context = Context { command: cmd, handler, canceled: false, framed_at_write: false, timeout: COMMAND_TIMEOUT };
         if high_priority {
@@ -843,9 +1113,27 @@ impl Conductor {
         if self.transition {
             return;
         }
-        if self.state == State::Ground {
-            self.dequeue();
+        match self.state {
+            State::Ground => self.dequeue(),
+            State::WillExecute(_) | State::Executing(..) => self.extend(),
+            // Nothing is sent from here until the conductor has resynchronized (`CD:1796`).
+            State::Unhooked | State::Recovery(_) | State::Recovered => {}
         }
+    }
+
+    /// The cancels of `quit` (`CD:1822-1836`): every queued context and every context of the
+    /// pipeline in flight is canceled, the state is ground, and each handler hears
+    /// `Canceled` once it is (so a stale reply fires nothing). Written commands are not
+    /// recalled; whatever the remote answers to them meets the ground state.
+    pub fn cancel_all(&mut self) {
+        let mut canceled: Vec<Context> = self.written().cloned().collect();
+        canceled.append(&mut self.queue);
+        self.state = State::Ground;
+        self.in_transition(|c| {
+            for context in canceled {
+                c.update(&context, Partial::Canceled);
+            }
+        });
     }
 
     /// cancelEnqueuedRequests (`CD:2848-2858`): matching queued commands are dropped with
@@ -856,27 +1144,79 @@ impl Conductor {
         }
     }
 
-    /// dequeue and extendPipeline from ground (`CD:2860-2869`, `CD:2888-2960`), one context
-    /// at a time (14c pipelines): canceled contexts are dropped, the next one becomes the
-    /// state before it is written, and the dropped handlers run once the state is
-    /// consistent.
+    /// dequeue from ground (`CD:2860-2869`): a pipeline of what is queued.
     fn dequeue(&mut self) {
         debug_assert_eq!(self.state, State::Ground);
-        let mut dropped = Vec::new();
-        while self.queue.first().is_some_and(|c| c.canceled) {
-            dropped.push((self.queue.remove(0), Partial::Canceled));
+        self.extend();
+    }
+
+    /// The contexts written and not yet ended, first to last.
+    fn written(&self) -> impl Iterator<Item = &Context> {
+        let (first, rest): (Option<&Context>, &[Context]) = match &self.state {
+            State::WillExecute(contexts) => (None, contexts),
+            State::Executing(first, rest) => (Some(first), rest),
+            State::Ground | State::Unhooked | State::Recovery(_) | State::Recovered => (None, &[]),
+        };
+        first.into_iter().chain(rest)
+    }
+
+    /// The contexts written and not yet ended, then the queued ones.
+    pub(crate) fn written_and_queued(&self) -> impl Iterator<Item = &Context> {
+        self.written().chain(self.queue.iter())
+    }
+
+    /// extendPipeline (`CD:2888-2960`) and takeNextContextPipeline (`CD:2986-3010`): takes
+    /// what can ride along behind the state's written pipeline (nothing when a written command
+    /// does not pipeline; from ground, the first command whatever it is), while the total size
+    /// is under `PIPELINE_BYTES` and each next command pipelines. The taken ones join the
+    /// state's pipeline (behind an executing first, which stays executing) before anything is
+    /// written, inside the transition guard; canceled contexts are dropped and their handlers
+    /// told last, once the state is consistent.
+    fn extend(&mut self) {
+        if !self.written().all(|c| c.command.supports_pipelining()) {
+            return;
         }
-        if !self.queue.is_empty() {
+        let from_ground = self.written().next().is_none();
+        let mut size: usize = self.written().map(|c| c.command.size()).sum();
+        let mut pipeline = Vec::new();
+        let mut dropped = Vec::new();
+        let mut texts = Vec::new();
+        while size < PIPELINE_BYTES {
+            while self.queue.first().is_some_and(|c| c.canceled) {
+                dropped.push((self.queue.remove(0), Partial::Canceled));
+            }
+            let Some(next) = self.queue.first() else { break };
+            if !(from_ground && pipeline.is_empty()) && !next.command.supports_pipelining() {
+                break;
+            }
             let mut context = self.queue.remove(0);
             context.framed_at_write = self.framing();
-            self.last_activity = Some(self.now());
-            // A stall in ground after it waits COMMAND_TIMEOUT, whatever its size.
-            self.last_written = Some(timeout_text(&context.command, COMMAND_TIMEOUT));
             let text = encode(&context.command, &self.line_prefix);
             context.timeout = command_timeout(text.len());
+            // A stall in ground after it waits COMMAND_TIMEOUT, whatever its size.
+            self.last_written = Some(timeout_text(&context.command, COMMAND_TIMEOUT));
+            let pipelines = context.command.supports_pipelining();
+            if pipelines {
+                size += context.command.size();
+            }
+            pipeline.push(context);
+            texts.push(text);
+            if !pipelines {
+                break;
+            }
+        }
+        if !pipeline.is_empty() {
+            if from_ground {
+                self.last_activity = Some(self.now());
+            }
             self.in_transition(|c| {
-                c.state = State::WillExecute(vec![context]);
-                c.write(&text);
+                match &mut c.state {
+                    State::WillExecute(contexts) | State::Executing(_, contexts) => contexts.append(&mut pipeline),
+                    State::Ground | State::Unhooked | State::Recovery(_) | State::Recovered => c.state = State::WillExecute(pipeline),
+                }
+                for text in &texts {
+                    c.write(text);
+                }
             });
         }
         for (context, result) in dropped {
@@ -940,18 +1280,26 @@ impl Conductor {
         let (context, pending) = match &self.state {
             State::WillExecute(contexts) => (contexts[0].clone(), contexts[1..].to_vec()),
             State::Executing(context, pending) => (context.clone(), pending.clone()),
-            // Ground and unhooked tolerate stray input.
-            State::Ground | State::Unhooked => return,
+            // Ground and unhooked tolerate stray input, and so do the recovery states: that is
+            // how a restored session gets back on its feet (`CD:2494-2498`).
+            State::Ground | State::Unhooked | State::Recovery(_) | State::Recovered => return,
         };
         // Before the handler, so a failure it causes clears the clock.
         self.last_activity = Some(self.now());
-        self.in_transition(|c| c.update(&context, Partial::End(status)));
+        // A handler may answer "not mine" (a stale end while waiting for a reset code): the
+        // state is then left as it was (`CD:2186-2197`, `CD:2517-2519`).
+        let mut ignore = false;
+        self.in_transition(|c| ignore = c.update(&context, Partial::End(status)));
+        if ignore {
+            return;
+        }
         if pending.is_empty() {
             self.state = State::Ground;
             self.dequeue();
         } else {
-            // amendPipeline: nothing joins a 14b pipeline, so only the state changes.
+            // amendPipeline: what was behind is still written; more may ride along.
             self.state = State::WillExecute(pending);
+            self.extend();
         }
     }
 
@@ -961,7 +1309,7 @@ impl Conductor {
         let mut aborted: Vec<Context> = match std::mem::replace(&mut self.state, State::Unhooked) {
             State::WillExecute(mut contexts) => vec![contexts.remove(0)],
             State::Executing(context, _) => vec![context],
-            State::Ground | State::Unhooked => Vec::new(),
+            State::Ground | State::Unhooked | State::Recovery(_) | State::Recovered => Vec::new(),
         };
         aborted.append(&mut self.queue);
         for context in aborted {
@@ -977,32 +1325,46 @@ impl Conductor {
     /// stays unhooked (iTerm2 bug B17 fixed): iTerm2 grounds every parent, so a failed
     /// nested setup makes the unhooked level 1 parent hold typing forever.
     pub fn force_ground(&mut self) {
+        self.ground_self();
+        self.via_parent(Conductor::force_ground);
+    }
+
+    /// `force_ground` without the parents: what `reset` needs (the parent has just sent its own
+    /// reset, which grounding it again would drop with everything queued behind it).
+    pub(crate) fn ground_self(&mut self) {
+        // A clock fetch that was written is still owed its answer: it is told, though the
+        // other written commands are dropped unheard.
+        let mut aborted: Vec<Context> = self.written().filter(|c| matches!(c.handler, Handler::Ephemeral(..))).cloned().collect();
         if !self.unhooked() {
             self.state = State::Ground;
         }
-        let aborted = self.queue.clone();
+        aborted.extend(self.queue.iter().cloned());
         self.in_transition(|c| {
             for context in aborted {
                 c.update(&context, Partial::Abort);
             }
         });
         self.queue.clear();
-        self.via_parent(Conductor::force_ground);
     }
 
     /// fail (`CD:3095-3103`): back to ground, then the raw `exec_login_shell` line through
     /// the session (outside `write()`, so it is held like typing; without the line prefix,
     /// base64 or the blank line conductor.sh needs: iTerm2 bug B3, kept), then the abort.
     pub fn fail(&mut self, reason: &str) {
+        self.failed = true;
         self.force_ground();
         // Nothing more is expected of a failed conductor: no deadline, one abort.
         self.last_activity = None;
+        // A framed one leaves the connected hosts first (`CD:3095-3103`).
+        if self.framing() {
+            self.effects.push(Effect::Deregistered { guid: self.guid.clone() });
+        }
         let line = Command::ExecLoginShell(Vec::new()).string_value() + "\n";
         self.effects.push(Effect::SessionWrite(line.into_bytes()));
         self.effects.push(Effect::Abort(reason.to_string()));
     }
 
-    fn now(&self) -> Instant {
+    pub(crate) fn now(&self) -> Instant {
         self.fake_now.unwrap_or_else(Instant::now)
     }
 
@@ -1017,7 +1379,9 @@ impl Conductor {
             // A nested setup under an unhooked parent holds no writes, but the pane's DCS hook
             // still takes its output (final review Minor 1): it is timed as well.
             State::Ground => (!self.framing()).then_some(COMMAND_TIMEOUT),
-            State::Unhooked => None,
+            // Tandem's: a remote that begins a recovery and stops is failed, not waited on.
+            State::Recovery(_) => Some(COMMAND_TIMEOUT),
+            State::Unhooked | State::Recovered => None,
         };
         self.last_activity.zip(timeout).and_then(|(t, timeout)| due_at(t, timeout))
     }
@@ -1031,6 +1395,7 @@ impl Conductor {
         }
         let reason = match self.in_flight_context() {
             Some(context) => timeout_text(&context.command, context.timeout),
+            None if matches!(self.state, State::Recovery(_)) => RECOVERY_TIMEOUT.to_string(),
             None => self.last_written.clone().unwrap_or_default(),
         };
         self.fail(&reason);
@@ -1040,9 +1405,40 @@ impl Conductor {
     /// is a reference), up to the handler's limit; past it the step fails.
     fn collect_line(&mut self, line: &str) {
         let State::Executing(context, _) = &mut self.state else { return };
+        if let Handler::RunRemote(purpose) = &context.handler {
+            let (purpose, command) = (purpose.clone(), context.command.clone());
+            self.add_background_job(line, command, purpose);
+            return;
+        }
         let (lines, (max_bytes, max_lines)) = match &mut context.handler {
             Handler::GetShell(lines) => (lines, GETSHELL_LIMIT),
             Handler::CheckForPython(lines) => (lines, PYTHON_LIMIT),
+            Handler::FramerLogin(lines) | Handler::Jump(lines) => (lines, LOGIN_LIMIT),
+            // Lines that pile up past the limit are dropped: a reply that never holds the code
+            // is ignored anyway, and must not grow without end.
+            Handler::Reset { lines, .. } => {
+                let kept: usize = lines.iter().map(String::len).sum();
+                if lines.len() < LOGIN_LIMIT.1 && kept + line.len() <= LOGIN_LIMIT.0 {
+                    lines.push(line.to_string());
+                }
+                return;
+            }
+            // A reply past the limit is dropped, not a reason to fail the connection: what
+            // was kept then reads as an invalid reply.
+            Handler::Ephemeral(_, lines) => {
+                let kept: usize = lines.iter().map(String::len).sum();
+                if lines.len() < LOGIN_LIMIT.1 && kept + line.len() <= LOGIN_LIMIT.0 {
+                    lines.push(line.to_string());
+                }
+                return;
+            }
+            // Only the first line is the value; a value past the limit is not kept (F13).
+            Handler::Getenv(_, first) => {
+                if first.is_none() {
+                    *first = Some((line.len() <= REPLY_MAX).then(|| line.to_string()));
+                }
+                return;
+            }
             _ => return,
         };
         let kept: usize = lines.iter().map(String::len).sum();
@@ -1054,19 +1450,21 @@ impl Conductor {
         self.fail(&reason);
     }
 
-    /// update(executionContext:result:) (`CD:2106-2396`) for the 14b handlers.
-    fn update(&mut self, context: &Context, result: Partial) {
+    /// update(executionContext:result:) (`CD:2106-2396`) for the 14b handlers. True when the
+    /// end is not this command's and must be ignored (`IgnoreCommandError`, `CD:2186-2197`).
+    fn update(&mut self, context: &Context, result: Partial) -> bool {
         #[cfg(test)]
         self.updates.push((context.command.clone(), result.clone(), self.state.clone()));
         let status = match result {
             Partial::End(status) => status,
             // Lines are kept by `collect_line`, never through a copy of the context.
-            Partial::Line(_) => return,
+            Partial::Line(_) => return false,
             Partial::Abort | Partial::Canceled => {
                 if matches!(context.handler, Handler::CheckForPython(_)) {
                     self.exec_login_shell();
                 }
-                return;
+                self.time_offset_lost(&context.handler);
+                return false;
             }
         };
         match &context.handler {
@@ -1098,7 +1496,159 @@ impl Conductor {
                 }
             }
             Handler::CheckForPython(lines) => self.did_check_for_python(lines, status),
+            Handler::RunRemote(_) => {}
+            Handler::FramerLogin(lines) | Handler::Jump(lines) => self.finalize_framing(status, lines),
+            Handler::Getenv(name, first) => {
+                if let Some(Some(line)) = first {
+                    self.environment_variables.insert(name.clone(), line.clone());
+                }
+            }
+            Handler::Ephemeral(purpose, lines) => self.finish_ephemeral(purpose, lines, status),
+            Handler::Reset { code, lines } => return !lines.contains(code),
         }
+        false
+    }
+}
+
+/// The most a restored conductor's JSON may hold (Tandem's): the state file is read as
+/// untrusted, and one conductor's saved strings are each a few KiB at most.
+pub const JSON_MAX: usize = 1024 * 1024;
+
+/// The most conductors one saved chain may hold (a chain deeper than the hooks nest is not one
+/// Tandem saved).
+const CHAIN_MAX: usize = 16;
+
+/// A saved id (a dcs id, a client unique id) is a token, not a document.
+const SAVED_ID_MAX: usize = 256;
+
+/// A conductor's restorable state (`RestorableState`, `CD:100-225`) as JSON: identity and ids,
+/// the framed pid, what the remote told us, and the chain above it. Never the environment
+/// values, the modified variables or the Files to Copy (F26: they may be secrets, and a
+/// restored conductor is past setup), nor the state and queue (iTerm2 writes ground and an
+/// empty queue, `CD:212-213`); the depth and guid are made again.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Saved {
+    sshargs: String,
+    bool_args: String,
+    dcs_id: String,
+    client_unique_id: String,
+    initial_directory: Option<String>,
+    parsed: ParsedArgs,
+    // Never `local_origin`: a state file can be edited, so a restored conductor is unvouched
+    // (ruling) and builds no local command. An old file's field is ignored.
+    framed_pid: Option<i32>,
+    home_directory: Option<String>,
+    shell: Option<String>,
+    uname: Option<String>,
+    discovered_hostname: Option<String>,
+    framer_version: Option<u8>,
+    parent: Option<Box<Saved>>,
+}
+
+impl Saved {
+    /// Whether every value is one Tandem would have saved: text of a sane size with no control
+    /// characters, ids that are short, a pid that names a process.
+    fn sane(&self) -> bool {
+        let text = |s: &str| s.len() <= crate::ssh_recovery::VALUE_MAX && !s.chars().any(char::is_control);
+        let opt = |s: &Option<String>| s.as_deref().is_none_or(text);
+        let id = |s: &str| s.len() <= SAVED_ID_MAX && !s.chars().any(char::is_control);
+        let p = &self.parsed;
+        text(&self.sshargs)
+            && text(&self.bool_args)
+            && id(&self.dcs_id)
+            && id(&self.client_unique_id)
+            && opt(&self.initial_directory)
+            && opt(&self.home_directory)
+            && opt(&self.shell)
+            && opt(&self.uname)
+            && opt(&self.discovered_hostname)
+            && self.framed_pid.is_none_or(|pid| pid > 0)
+            && text(&p.host)
+            && text(&p.hostname)
+            && opt(&p.username)
+            && opt(&p.login_name)
+            && opt(&p.port_param)
+            && p.command_args.len() <= 1024
+            && p.command_args.iter().all(|a| text(a))
+    }
+
+    /// The conductor, its chain first. None when any of it is not sane or the chain is too long.
+    fn build(self, links: usize) -> Option<Conductor> {
+        if links >= CHAIN_MAX || !self.sane() {
+            return None;
+        }
+        let parent = match self.parent {
+            Some(p) => Some(Box::new(p.build(links + 1)?)),
+            None => None,
+        };
+        let setup = Setup {
+            sshargs: self.sshargs,
+            bool_args: self.bool_args,
+            dcs_id: self.dcs_id,
+            client_unique_id: self.client_unique_id,
+            initial_directory: self.initial_directory,
+            parsed: self.parsed,
+            ..Setup::default()
+        };
+        let mut c = Conductor::new(setup, parent, "");
+        // Its remote code predates the prefix, so it has none (`CD:484-496`).
+        c.line_prefix = String::new();
+        c.framed_pid = self.framed_pid;
+        c.home_directory = self.home_directory;
+        c.shell = self.shell;
+        c.uname = self.uname;
+        c.discovered_hostname = self.discovered_hostname;
+        c.framer_version = self.framer_version;
+        // Not waiting to resynchronize: iTerm2 sets that only for a recovery (`CD:593`,
+        // `CD:1791`), and `did_resynchronize` clears only the innermost.
+        Some(c)
+    }
+}
+
+impl Conductor {
+    fn to_saved(&self) -> Saved {
+        Saved {
+            sshargs: self.setup.sshargs.clone(),
+            bool_args: self.setup.bool_args.clone(),
+            dcs_id: self.setup.dcs_id.clone(),
+            client_unique_id: self.setup.client_unique_id.clone(),
+            initial_directory: self.setup.initial_directory.clone(),
+            parsed: self.setup.parsed.clone(),
+            framed_pid: self.framed_pid,
+            home_directory: self.home_directory.clone(),
+            shell: self.shell.clone(),
+            uname: self.uname.clone(),
+            discovered_hostname: self.discovered_hostname.clone(),
+            framer_version: self.framer_version,
+            parent: self.parent.as_ref().map(|p| Box::new(p.to_saved())),
+        }
+    }
+
+    /// The restorable state as JSON (`CD:227-260`): this conductor and the chain above it.
+    pub fn json(&self) -> String {
+        serde_json::to_string(&self.to_saved()).unwrap_or_default()
+    }
+
+    /// A conductor from its saved JSON (`newConductorWithJSON`, `CD:262-300`): state ground, an
+    /// empty queue and line prefix, a fresh guid, waiting to resynchronize. The text is
+    /// untrusted: anything of the wrong shape or size gives None.
+    pub fn from_json(s: &str) -> Option<Conductor> {
+        if s.len() > JSON_MAX {
+            return None;
+        }
+        serde_json::from_str::<Saved>(s).ok()?.build(0)
+    }
+
+    /// The parser tree of the chain down to this conductor (`CD:1551-1572`).
+    pub fn tree(&self) -> Tree {
+        crate::ssh_recovery::chain_tree(&self.links())
+    }
+
+    /// Each conductor's framed pid and dcs id, outermost first.
+    fn links(&self) -> Vec<(Option<i32>, String)> {
+        let mut links = self.parent.as_ref().map(|p| p.links()).unwrap_or_default();
+        links.push((self.framed_pid, self.setup.dcs_id.clone()));
+        links
     }
 }
 
@@ -1506,13 +2056,60 @@ mod tests {
         let mut c = root();
         assert_eq!(route(Some(&c)), Route::Held, "setting up");
         c.framed_pid = Some(1);
-        assert_eq!(route(Some(&c)), Route::Conductor, "framing with writes queued");
+        assert_eq!(route(Some(&c)), Route::Conductor(0), "framing with writes queued");
         c.handle_unhook();
         assert_eq!(route(Some(&c)), Route::Direct, "unhooked");
         let mut parent = root();
         parent.handle_unhook();
         let child = Conductor::new(setup("B"), Some(Box::new(parent)), "V");
         assert_eq!(route(Some(&child)), Route::Direct, "a child setting up under an unhooked parent");
+    }
+
+    #[test]
+    fn routes_never_bypass_a_framing_ancestor() {
+        // Tandem-side guard: while an ancestor's framer runs, the nearest one sends.
+        let framing = || {
+            let mut c = root();
+            c.framed_pid = Some(1);
+            c
+        };
+        let mut level1 = Conductor::new(setup("B"), Some(Box::new(framing())), "V");
+        assert_eq!(route(Some(&level1)), Route::Held, "a child setting up is held for its unhook");
+        level1.handle_unhook();
+        assert_eq!(route(Some(&level1)), Route::Conductor(1), "a level 1 child under a framer");
+        // Under it, an unframed child of the unhooked level 1 hop: two out.
+        let mut deeper = Conductor::new(setup("C"), Some(Box::new(level1)), "W");
+        // Setting up under an unhooked parent is not held (iTerm2's queueWrites), so it goes
+        // where the unhooked parent's writes go: the framer two out.
+        assert_eq!(route(Some(&deeper)), Route::Conductor(2));
+        deeper.handle_unhook();
+        assert_eq!(route(Some(&deeper)), Route::Conductor(2));
+        // A framer that ended (unhooked) is skipped; with none left, Direct.
+        let mut ended = framing();
+        ended.handle_unhook();
+        let mut child = Conductor::new(setup("B"), Some(Box::new(ended)), "V");
+        child.handle_unhook();
+        assert_eq!(route(Some(&child)), Route::Direct);
+        // A framing child whose framer ended, before its EndSSH.
+        let mut exited = Conductor::new(setup("B"), Some(Box::new(framing())), "V");
+        exited.framed_pid = Some(2);
+        assert_eq!(route(Some(&exited)), Route::Conductor(0));
+        exited.handle_unhook();
+        assert_eq!(route(Some(&exited)), Route::Conductor(1));
+    }
+
+    #[test]
+    fn writes_through_an_unframed_parent_reach_the_framer_above() {
+        // A child set up under an unhooked level 1 hop inside a framed session: its setup
+        // lines are the framer's sends, never raw into framer.py's stdin.
+        let mut outer = root();
+        outer.framed_pid = Some(7);
+        let mut level1 = Conductor::new(setup("B"), Some(Box::new(outer)), "V");
+        level1.handle_unhook();
+        let mut child = Conductor::new(setup("C"), Some(Box::new(level1)), "W");
+        child.write("x");
+        let fx = child.take_effects();
+        assert_eq!(fx, [Effect::Write(crate::ssh_fixtures::framer_cmd(&["send", "7", &b64(b"x\n")]))]);
     }
 
     #[test]
@@ -1889,7 +2486,7 @@ mod tests {
                     c.handle_end(&id, &kind, status, 0);
                     break;
                 }
-                Token::Init(_) | Token::Unhook | Token::Error(_) => {}
+                Token::Init(_) | Token::Unhook | Token::Error(_) | Token::Output { .. } | Token::Terminate { .. } | Token::It2(_) | Token::BeginFramerRecovery(_) | Token::RecoveryLine(_) => {}
             }
         }
         assert_eq!(c.shell.as_deref(), Some("/bin/sh"));
@@ -1991,12 +2588,14 @@ mod tests {
         reply(&mut c, &[], 0);
         goes_to_login(&mut c, "no line");
 
-        // Until 14c Task 1 adds execFramer, a usable python also goes to the login shell.
+        // A usable python launches the framer (14c Task 1), not the login shell.
+        let runpython = |c: &Conductor| c.in_flight() == Some(&Command::RunPython(crate::framer_script::framer_code(0)));
         for ok in ["Python 3.12.1", "Python 3.7"] {
             let mut c = at_python();
             reply(&mut c, &[ok], 0);
             assert!(c.python_ok, "{ok}");
-            assert_eq!(c.take_effects(), [Effect::StopQueueingInput, Effect::Write(sent(&login))], "{ok}");
+            assert!(runpython(&c), "{ok}");
+            assert!(!c.take_effects().contains(&Effect::StopQueueingInput), "{ok}");
         }
 
         // Lines are joined with "\n" before the regex (CD:2143-2145).
@@ -2212,7 +2811,7 @@ mod tests {
         let mut effects = Vec::new();
         for out in outs {
             match out {
-                Out::Screen(_) => {}
+                Out::Screen(_) | Out::Side { .. } | Out::Raw(_) => {}
                 Out::Ssh(Token::Init(init), _) => {
                     let mut c = hook(&init, current.take());
                     c.start();
@@ -2226,7 +2825,7 @@ mod tests {
                         Token::End { id, status, kind } => c.handle_end(&id, &kind, status, depth),
                         Token::Unhook => c.handle_unhook(),
                         Token::Error(reason) => c.fail(&reason),
-                        Token::Init(_) => {}
+                        Token::Init(_) | Token::Output { .. } | Token::Terminate { .. } | Token::It2(_) | Token::BeginFramerRecovery(_) | Token::RecoveryLine(_) => {}
                     }
                 }
             }
@@ -2628,5 +3227,65 @@ mod tests {
         // A write never puts its tarball on the screen, only where it goes.
         let write = Command::Write { data: vec![7; 4096], dest: "/$HOME/.config".into() };
         assert_eq!(unexpected_status(&write, 1), "write /$HOME/.config: Unepected status 1");
+    }
+
+    fn send_of(len: usize) -> Command {
+        Command::FramerSend { data: vec![b'a'; len], pid: 4242 }
+    }
+
+    fn wire_writes(c: &mut Conductor) -> usize {
+        c.take_effects().iter().filter(|e| matches!(e, Effect::Write(_))).count()
+    }
+
+    #[test]
+    fn pipeline_follows_iterm2() {
+        // 300 bytes: 400 base64 characters plus "send\n4242\n" is 410 characters, times 4 / 3.
+        let big = send_of(300);
+        assert_eq!(big.size(), 546);
+        assert!(big.supports_pipelining());
+        let run = Command::FramerRun("x".into());
+        assert!(!run.supports_pipelining());
+        assert_eq!(run.size(), usize::MAX);
+        assert_eq!(PIPELINE_BYTES, 1024);
+
+        let mut c = Conductor::new(setup("P"), None, "U");
+        c.framed_pid = Some(4242);
+        for _ in 0..3 {
+            c.send(send_of(300), Handler::FireAndForget, false);
+        }
+        // 546, then 1092 reaches the limit: two are written at once, the third waits.
+        assert_eq!(wire_writes(&mut c), 2);
+        assert_eq!(c.pending().len(), 3);
+        assert!(matches!(c.state(), State::WillExecute(v) if v.len() == 2));
+        let first = big.description();
+        assert_eq!(c.description(), format!("{first} (preparation stage) and 1 more"));
+        // The first has begun (its first line arrived).
+        c.handle_line("", 0);
+        assert_eq!(c.description(), format!("{first} and 1 more"));
+        // An end for the first tops the pipeline up: the third goes out.
+        c.handle_end("a", "f", 0, 0);
+        assert_eq!(wire_writes(&mut c), 1);
+        assert!(matches!(c.state(), State::WillExecute(v) if v.len() == 2));
+        c.handle_end("b", "f", 0, 0);
+        c.handle_end("c", "f", 0, 0);
+        assert!(c.pending().is_empty() && *c.state() == State::Ground);
+
+        // A run queued behind a pipeline is written only when the pipeline has ended.
+        for _ in 0..3 {
+            c.send(send_of(1), Handler::FireAndForget, false);
+        }
+        c.send(Command::FramerRun("x".into()), Handler::FireAndForget, false);
+        assert_eq!(wire_writes(&mut c), 3);
+        c.handle_end("a", "f", 0, 0);
+        c.handle_end("b", "f", 0, 0);
+        assert_eq!(wire_writes(&mut c), 0, "the run still waits for the last send");
+        c.handle_end("c", "f", 0, 0);
+        assert_eq!(wire_writes(&mut c), 1);
+        assert_eq!(c.in_flight(), Some(&run));
+        // A send behind a run waits for it, and a send after keystrokes joins them.
+        c.send(send_of(1), Handler::FireAndForget, false);
+        assert_eq!(wire_writes(&mut c), 0);
+        c.handle_end("d", "f", 0, 0);
+        assert_eq!(wire_writes(&mut c), 1);
     }
 }

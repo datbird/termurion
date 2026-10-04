@@ -53,7 +53,7 @@ const fn m(on: On, name: &'static str, args: &'static [(&'static str, Ty)], opti
 /// The ported built-ins (`BIF:164-183`, `PS:815`, `PTYTab.m:335`, and the objects'
 /// `objectMethodRegistry`). The session id default is `iTermVariableKeySessionID` ("id"),
 /// the tab id's `iTermVariableKeyTabID` ("id").
-static CATALOG: [Builtin; 22] = [
+static CATALOG: [Builtin; 23] = [
     f("add_clipping", &[("type", Ty::Str), ("title", Ty::Str), ("detail", Ty::Str)], &[], &[("session", "id")], Some("[add_clipping]")),
     f("archive_clippings", &[], &[], &[("session", "id")], Some("[archive_clippings]")),
     f("count", &[("array", Ty::Array)], &[], &[], None),
@@ -79,6 +79,7 @@ static CATALOG: [Builtin; 22] = [
     m(On::Session, "stop_coprocess", &[], &[], Some("[stop_coprocess]")),
     m(On::Session, "get_coprocess", &[], &[], None),
     m(On::Session, "run_coprocess", &[("commandLine", Ty::Str), ("mute", Ty::Num)], &["mute"], Some("[run_coprocess]")),
+    m(On::Session, "get_time_offset", &[], &[], None),
     m(On::Tab, "set_title", &[("title", Ty::Str)], &[], Some("[set_title]")),
     m(On::Tab, "select_pane_in_direction", &[("direction", Ty::Str)], &[], Some("[select_pane_in_direction]")),
     m(On::Window, "set_title", &[("title", Ty::Str)], &[], Some("[set_title]")),
@@ -391,7 +392,7 @@ mod tests {
         ]
         .into_iter()
         .map(|n| (On::Function, n))
-        .chain(["set_name", "run_tmux_command", "set_status_bar_component_unread_count", "stop_coprocess", "get_coprocess", "run_coprocess"].into_iter().map(|n| (On::Session, n)))
+        .chain(["set_name", "run_tmux_command", "set_status_bar_component_unread_count", "stop_coprocess", "get_coprocess", "run_coprocess", "get_time_offset"].into_iter().map(|n| (On::Session, n)))
         .chain([(On::Tab, "set_title"), (On::Tab, "select_pane_in_direction"), (On::Window, "set_title")])
         .collect();
         assert_eq!(names, want);
@@ -439,5 +440,13 @@ mod tests {
         assert_eq!(crate::script_eval::object_not_found("7"), "Object with identifier \u{201c}7\u{201d} not found");
         assert_eq!(no_method(On::Session, "7", "iterm2.x()"), "No method found on <Session id=7> with signature iterm2.x()");
         assert_eq!(no_object("7"), "No object with ID 7");
+    }
+
+    #[test]
+    fn catalog_has_get_time_offset() {
+        let b = find(On::Session, "iterm2.get_time_offset()").expect("get_time_offset");
+        assert!(b.args.is_empty() && b.placeholder.is_none() && b.defaults.is_empty());
+        assert!(find(On::Function, "iterm2.get_time_offset()").is_none(), "a session method");
+        assert_eq!(catalog().len(), 23);
     }
 }

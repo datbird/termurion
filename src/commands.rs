@@ -76,6 +76,7 @@ pub const DONE: &[&str] = &[
     "setWindowStyle:|Bottom of Screen", "setWindowStyle:|Top of Screen", "setWindowStyle:|Left of Screen",
     "setWindowStyle:|Right of Screen", "toggleToolbeltVisibility:", "setDefaultToolbeltWidth:",
     "irPrev:", "clearInstantReplay:", "exportRecording:", "loadRecording:", "openAIChats:", "openAIChat:", "toggleShowInlineChat:", "openPasswordManager:",
+    "sshDisconnect:",
 ];
 
 /// Commands that work with a known difference for now.
@@ -304,7 +305,7 @@ mod tests {
         assert_eq!(status(find("openAIChats:", "AI Chats")), Status::Done, "12d");
         assert_eq!(status(find("openAIChat:", "Open AI Chat...")), Status::Done, "12d");
         assert_eq!(status(find("toggleShowInlineChat:", "Show Inline Chat")), Status::Done, "12d");
-        assert_eq!(status(find("sshDisconnect:", "Disconnect")), Status::Later(14), "14c");
+        assert_eq!(status(find("sshDisconnect:", "Disconnect")), Status::Done, "14c");
         assert_eq!(status(find("downloadFiles:", "Download Files...")), Status::Later(14), "14d");
         assert_eq!(
             status(find("toggleRemoteHostCanControlIterm2:", "Remote host can control iTerm2")),
