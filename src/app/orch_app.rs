@@ -50,26 +50,16 @@ impl App {
     }
 
     /// The engine returned an orchestration call: run it, and answer the model at once unless it
-    /// parked on the person.
+    /// waits (on the person, a safety check or a mirror).
     pub(super) fn orch_effect(&mut self, chat: &str, call_id: &str, name: &str, args: &serde_json::Value) {
-        match self.orch_call(chat, call_id, name, args) {
-            Outcome::Parked => {
-                // The turn waits on the person: no spinner (iTerm2's typingParkOnUser), and a new
-                // message of theirs cancels the wedged turn.
-                self.chat_broker.typing(chat, false, Participant::Agent);
-                if let Some(p) = self.chat_agents.get_mut(chat).and_then(|a| a.orch_pending.as_mut()) {
-                    p.1 = true;
-                }
-            }
-            Outcome::Done(text) => self.orch_resume(chat, call_id, ToolResult::Ok(text)),
-            Outcome::Failed(e) => self.orch_resume(chat, call_id, ToolResult::Failed(e)),
-        }
+        let o = self.orch_call(chat, call_id, name, args);
+        self.orch_settle(chat, call_id, o);
     }
 
-    /// One orchestration call. Task 9 owns the enable tool; the others are Task 10's.
-    pub(super) fn orch_call(&mut self, chat_id: &str, call_id: &str, name: &str, _args: &serde_json::Value) -> Outcome {
+    /// One orchestration call: the enable tool here, every other tool in `orch_dispatch`.
+    pub(super) fn orch_call(&mut self, chat_id: &str, call_id: &str, name: &str, args: &serde_json::Value) -> Outcome {
         if name != orch::ENABLE_TOOL {
-            return Outcome::Failed(orch::UNAVAILABLE.to_string());
+            return self.orch_dispatch(chat_id, call_id, name, args);
         }
         // Asked in a chat that already orchestrates: nothing to ask.
         if self.chat_row(chat_id).is_some_and(|c| c.orchestration_enabled) {
@@ -151,14 +141,19 @@ impl App {
                 };
                 self.orch_resume(chat_id, &call_id, ToolResult::Ok(text));
             }
-            // Task 10 raises permission requests; until it does none is ever parked.
-            OrchCommand::PermissionResponse { request_id, .. } => {
-                if let Some(call_id) = orch::take_park(&mut self.orch_parks, &request_id, chat_id) {
-                    self.orch_resume(chat_id, &call_id, ToolResult::Failed(orch::UNAVAILABLE.to_string()));
-                }
-            }
+            OrchCommand::PermissionResponse { request_id, approved } => self.orch_claim_answered(chat_id, &request_id, approved),
+            // Revoke drops the claim; the next write there asks again (`revokeClaim`, `DI:1796-1814`).
             OrchCommand::Revoke { scope } => {
-                self.chat_update(chat_id, |c| c.claimed_scopes.retain(|s| *s != scope));
+                let mut removed = false;
+                self.chat_update(chat_id, |c| {
+                    let before = c.claimed_scopes.len();
+                    c.claimed_scopes.retain(|s| *s != scope);
+                    removed = c.claimed_scopes.len() != before;
+                });
+                if removed {
+                    let name = self.orch_scope_name(&scope);
+                    self.notice(chat_id, &crate::orch_tools::revoked_text(&name));
+                }
                 self.chat_buttons_refresh();
             }
         }
@@ -166,8 +161,9 @@ impl App {
 
     /// Everything orchestration parked for `chat` ends with its turn (ruling P7): Stop, Enable
     /// generative AI features off, the mode off and a deleted chat all come here (the engine's
-    /// halt answers `CancelChecks`). Task 10 adds its checks, delayed returns and mirrors.
+    /// halt answers `CancelChecks`). The checks, delayed CRs, mirrors and spawns go too.
     pub(super) fn orch_chat_ended(&mut self, chat: &str) {
+        self.orch_drop_chat(chat);
         orch::drop_chat_parks(&mut self.orch_parks, chat);
         self.chat_buttons_refresh();
     }

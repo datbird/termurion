@@ -147,6 +147,7 @@ mod chat_app;
 mod chat_window_app;
 mod cockpit_app;
 mod orch_app;
+mod orch_dispatch;
 mod chat_session_app;
 mod chat_engine;
 mod ai_tools_app;
@@ -1049,6 +1050,21 @@ pub struct App {
     orch_provenance: HashMap<PaneId, String>,
     /// Orchestration requests parked on the person: request id to (chat id, call id).
     orch_parks: crate::orch::Parks,
+    /// What each parked orchestration request runs on its answer (12f Task 10), by request id.
+    orch_waits: HashMap<String, orch_dispatch::Wait>,
+    /// Scopes the person refused per chat (asked again only once claimed), in memory.
+    orch_denied: HashMap<String, Vec<String>>,
+    /// (chat id, call id) of `session_*` mirror calls running through `ai_run_tool`, with their
+    /// pane and start; `ai_tool_finished` hands their results to `orch_resume`.
+    orch_mirrors: HashMap<(String, String), (PaneId, Instant)>,
+    /// CRs due 75 ms after an orchestration bracketed paste.
+    orch_pending_cr: Vec<orch_dispatch::PendingCr>,
+    /// Running orchestration safety checks.
+    orch_checks: Vec<orch_dispatch::Check>,
+    /// Allowed start_session calls waiting for the event loop.
+    orch_spawns: Vec<orch_dispatch::Spawn>,
+    /// The sessions each chat's agent started, and when (ruling P15's cap).
+    orch_spawned: HashMap<String, Vec<(Instant, PaneId)>>,
     /// 12b's wire log file for the chat turns' requests (app-wide).
     #[cfg(windows)]
     ai_wire_log: Arc<Mutex<crate::ai_wire_log::WireLog>>,
@@ -1719,6 +1735,13 @@ pub fn run() {
         ai_pending_tools: HashMap::new(),
         orch_provenance: HashMap::new(),
         orch_parks: HashMap::new(),
+        orch_waits: HashMap::new(),
+        orch_denied: HashMap::new(),
+        orch_mirrors: HashMap::new(),
+        orch_pending_cr: Vec::new(),
+        orch_checks: Vec::new(),
+        orch_spawns: Vec::new(),
+        orch_spawned: HashMap::new(),
         #[cfg(windows)]
         ai_wire_log: Arc::new(Mutex::new(crate::ai_wire_log::WireLog::new())),
         script_procs: HashMap::new(),
@@ -4971,6 +4994,10 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_ai_engage_windows(event_loop);
         let ai_due = self.ai_discovery_due();
         let chat_due = self.chat_tick();
+        // Orchestration's checks, mirror limits, delayed CRs and spawns (12f Task 10).
+        self.orch_check_tick();
+        self.orch_spawn_tick(event_loop);
+        let orch_due = self.orch_due();
         let chat_window_due = self.chat_window_tick();
         self.open_script_dialogs(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
@@ -4996,7 +5023,7 @@ impl ApplicationHandler<UserEvent> for App {
         let tip_due = self.tick_tab_tip();
         let flash_due = self.tick_tab_flash();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, chat_window_due, cockpit_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)

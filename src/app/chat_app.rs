@@ -638,7 +638,7 @@ impl App {
 
     /// The text already on `pane`'s prompt line: shell integration's typed command while at a
     /// prompt, and the agent's own staged typing (ruling R12cd-2).
-    fn ai_prompt_text(&self, pane: PaneId) -> (Option<String>, String) {
+    pub(super) fn ai_prompt_text(&self, pane: PaneId) -> (Option<String>, String) {
         let Some(p) = self.panes.get(&pane) else { return (None, String::new()) };
         let s = p.own();
         let typed = if s.at_prompt() == Some(true) { s.typed_command() } else { None };
@@ -661,7 +661,7 @@ impl App {
     }
 
     /// Forgets the Get-Help running for a request on `pane`; its (chat, request id).
-    fn ai_help_cancel(&mut self, pane: PaneId) -> Option<(String, String)> {
+    pub(super) fn ai_help_cancel(&mut self, pane: PaneId) -> Option<(String, String)> {
         self.ai_helps.remove(&pane);
         self.ai_pending_tools.remove(&pane)
     }
@@ -704,6 +704,10 @@ impl App {
     /// The one App-side return of every tool result (`ai_run_tool`'s answer, each finished
     /// command and Get-Help, each cancel answer): the engine stores it and answers the model.
     pub(super) fn ai_tool_finished(&mut self, chat: &str, request_id: &str, o: Outcome) {
+        // A `session_*` mirror's answer goes back to orchestration (12f Task 10).
+        if self.orch_mirror_finished(chat, request_id, &o.model) {
+            return;
+        }
         self.ai_refresh_volatile(chat);
         let fx = self.engine(|cx| Engine::tool_finished(cx, chat, request_id, o)).unwrap_or_default();
         self.chat_apply(fx);

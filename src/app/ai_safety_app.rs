@@ -105,10 +105,19 @@ pub(super) fn reply_of(outs: &[Out]) -> Option<Result<String, String>> {
 
 /// The system and user messages of a check for `line` after `entries` (already projected).
 pub(super) fn messages(entries: &[Entry], line: &str) -> Vec<WireMessage> {
+    messages_with(entries, &Entry::ToolCall { name: ai_classifier::ACTION_NAME.to_string(), input: line.to_string() })
+}
+
+/// The trailing entries a check keeps, cut to its budget.
+pub(super) fn recent_entries(entries: &[Entry]) -> Vec<Entry> {
     let recent = &entries[entries.len().saturating_sub(ai_classifier::SAFETY_TRANSCRIPT_CAP)..];
-    let recent = ai_classifier::budget(recent, ai_classifier::MAX_ENTRIES, ai_classifier::MAX_CHARS);
-    let action = Entry::ToolCall { name: ai_classifier::ACTION_NAME.to_string(), input: line.to_string() };
-    vec![WireMessage::text(Role::System, &ai_classifier::system_prompt()), WireMessage::text(Role::User, &ai_classifier::render(&recent, &action))]
+    ai_classifier::budget(recent, ai_classifier::MAX_ENTRIES, ai_classifier::MAX_CHARS)
+}
+
+/// The system and user messages of a check of any action (12f's file writes too).
+pub(super) fn messages_with(entries: &[Entry], action: &Entry) -> Vec<WireMessage> {
+    let recent = recent_entries(entries);
+    vec![WireMessage::text(Role::System, &ai_classifier::system_prompt()), WireMessage::text(Role::User, &ai_classifier::render(&recent, action))]
 }
 
 /// Starts the one-shot: non-streaming, no tools. No response cap is sent: iTerm2 passes

@@ -1246,12 +1246,14 @@ impl App {
         let vector_store = self.chat_db.as_ref().and_then(|db| db.chat(&chat).ok().flatten()).and_then(|c| c.vector_store);
         // A picked session is already a token where the person put it; the grants are the draft's own.
         let text = draft.text.clone();
-        let _grants = chat_input::send_grants(&draft); // Task 10's `orch_grant_mentions` takes these with the message
+        let grants = chat_input::send_grants(&draft);
         let Some(content) = chat_input::message_content(&text, parts, vector_store) else { return };
         let m = Message::new(&chat, Participant::User, content, super::warnings_app::unix_now());
         // The store and the window are not held across the publish: it may deliver at once.
         match self.chat_publish(&chat, m, false) {
             Ok(()) => {
+                // The person's own picks grant control (ruling P9), after the message is sent.
+                self.orch_grant_mentions(&chat, &grants);
                 match view {
                     ChatView::Window => self.chat_input.sent(),
                     ChatView::Panel(pane) => self.inline_sent(pane),

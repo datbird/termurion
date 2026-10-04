@@ -29,6 +29,8 @@ pub enum Outcome {
     Done(String),
     Failed(String),
     Parked,
+    /// Answered later without the person (a safety check, a mirror, a delayed CR).
+    Running,
 }
 
 pub const ENABLE_TOOL: &str = "request_orchestration_enable";
@@ -363,12 +365,12 @@ pub fn system_message(g: &crate::globals::Globals) -> String {
     system_prompt(&evaluated)
 }
 
-/// The tools 12f adds to a chat's own: an orchestration chat's are Task 10's; every other chat,
+/// The tools 12f adds to a chat's own: an orchestration chat's 14 and the mirrors; every other chat,
 /// linked or not, carries the enable tool (`ChatService.swift:459`: every chat that is not
 /// orchestrating is session-bound). `_session_bound` is for Task 11's watch tools.
 pub fn tools_for(orchestrating: bool, _session_bound: bool) -> Vec<ToolDecl> {
     if orchestrating {
-        Vec::new()
+        crate::orch_tools::all_decls()
     } else {
         vec![enable_decl()]
     }
