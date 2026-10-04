@@ -365,6 +365,18 @@ impl App {
         create_in(db, &mut self.chat_broker, &mut self.ai_overrides, title, terminal_guid, browser_guid, permissions, initial, model_name, &global, unix_now()).ok()
     }
 
+    /// The person's own send from a chat input (the window or the inline panel): the one
+    /// publish that marks a message as the person's (Task 11 fix round 2).
+    pub(super) fn chat_publish_by_person(&mut self, chat: &str, message: Message) -> Result<(), String> {
+        if self.chat_db().is_none() {
+            return Err(OPEN_FAILED.to_string());
+        }
+        self.ai_refresh_volatile(chat);
+        let fx = self.engine(|cx| Engine::publish_by_person(cx, chat, message)).ok_or_else(|| OPEN_FAILED.to_string())??;
+        self.chat_apply(fx);
+        Ok(())
+    }
+
     /// `ChatBroker.delete(chatID:)`: the chat's turn stops and its agent goes before it can
     /// publish again, then its rows go and the broker forgets it.
     #[allow(dead_code)] // Called by the chat window (12d).

@@ -216,19 +216,36 @@ impl Engine {
     }
 
     /// `ChatBroker.publish` and the service's hand-off (`ChatService.swift:116-178`).
+    /// Every publish but the person's own send: no message it hands the service is the
+    /// person's (Task 11 fix round 2).
     pub(super) fn publish(cx: &mut Ctx, chat: &str, m: Message, partial: bool) -> Result<Fx, String> {
+        Self::publish_as(cx, chat, m, partial, false)
+    }
+
+    /// `by_person` marks `m` (by its id) as the person's own; nothing else the hand-off brings
+    /// carries the mark.
+    fn publish_as(cx: &mut Ctx, chat: &str, m: Message, partial: bool, by_person: bool) -> Result<Fx, String> {
         Self::ensure_agent(cx, chat);
+        let id = m.unique_id.clone();
         let handoff = publish_in(cx.store, cx.broker, chat, m, partial)?;
         let mut fx = Vec::new();
         for e in handoff {
             if let Effect::ToService(m) = e {
-                fx.extend(Self::service(cx, chat, m));
+                let person = by_person && m.unique_id == id;
+                fx.extend(Self::service(cx, chat, m, person));
             }
         }
         Ok(fx)
     }
 
-    fn service(cx: &mut Ctx, chat: &str, m: Message) -> Fx {
+    /// A message the person composed and sent from a chat input (the window or the inline
+    /// panel): the only publish that carries the person-authored mark.
+    pub(super) fn publish_by_person(cx: &mut Ctx, chat: &str, m: Message) -> Result<Fx, String> {
+        Self::publish_as(cx, chat, m, false, true)
+    }
+
+    /// `by_person`: the message carries the person-authored mark (Task 11 fix round 2).
+    fn service(cx: &mut Ctx, chat: &str, m: Message, by_person: bool) -> Fx {
         match m.content {
             Content::SetPermissions(set) => {
                 // An orchestration chat's agent is 12f's.
@@ -245,16 +262,16 @@ impl Engine {
                 let mut fx = Vec::new();
                 // A turn wedged on the person's answer is cancelled for the person's new
                 // message (`isAwaitingUserApproval`, `CA:1249-1282`); a working turn keeps it
-                // queued. A watcher's or timer's event never abandons the approval: it waits
-                // behind it (Task 11 fix round 1, iTerm2's ChatService).
-                let machine = is_machine(&m.content);
-                if !machine {
+                // queued. Only the person's own send carries that mark: a watcher's or timer's
+                // event, a streamed terminal command and anything code publishes never
+                // abandon the approval or reset the machine-turn cap (Task 11 fix rounds 1-2).
+                if by_person {
                     if let Some(a) = cx.agents.get_mut(chat) {
                         a.machine_turns = 0;
                         a.machine_paused = false;
                     }
                 }
-                if !machine && cx.agents.get(chat).is_some_and(Agent::is_awaiting_approval) {
+                if by_person && cx.agents.get(chat).is_some_and(Agent::is_awaiting_approval) {
                     fx.extend(Self::halt(cx, chat));
                 }
                 fx.extend(Self::next(cx, chat));
@@ -1250,8 +1267,10 @@ mod tests {
             self.run(|cx| Engine::publish(cx, chat, m, false).unwrap())
         }
 
+        /// The person's own send from a chat input.
         fn say(&mut self, chat: &str, text: &str) -> Vec<EngineEffect> {
-            self.send(chat, Content::PlainText { text: text.into(), context: None })
+            let m = Message::new(chat, Participant::User, Content::PlainText { text: text.into(), context: None }, 5.0);
+            self.run(|cx| Engine::publish_by_person(cx, chat, m).unwrap())
         }
 
         fn set(&mut self, chat: &str, guid: &str, c: Category, p: Permission) {
@@ -1726,6 +1745,67 @@ mod tests {
         }
         assert_eq!(h.count(&Ev::Start), 41);
         assert_eq!(h.notices(&chat).len(), 2, "a second pause, a second notice");
+    }
+
+    fn streamed_command() -> Content {
+        Content::TerminalCommand(TerminalCommand { username: None, hostname: None, directory: None, command: "c".into(), output: "o".into(), exit_code: 0, url: String::new() })
+    }
+
+    /// Task 11 fix round 2: only the person's own send is the person. A streamed terminal
+    /// command (even one the model typed) or a user-role message published by code neither
+    /// abandons a pending approval nor resets the machine-turn cap.
+    #[test]
+    fn only_a_person_send_is_the_person() {
+        for content in [streamed_command(), Content::PlainText { text: "published by code".into(), context: None }] {
+            let mut h = H::new();
+            let chat = h.chat(Some("7"));
+            h.script(vec![screen("c1")]);
+            h.say(&chat, "first");
+            let rid = h.park_ids(&chat)[0].clone();
+            let fx = h.send(&chat, content.clone());
+            assert!(!fx.contains(&EngineEffect::CancelChecks(chat.clone())), "{content:?}: {fx:?}");
+            assert_eq!(h.count(&Ev::Cancel), 0, "{content:?}");
+            assert_eq!(h.park_ids(&chat), vec![rid], "{content:?}");
+            // The person's send abandons it.
+            h.say(&chat, "second");
+            assert_eq!(h.count(&Ev::Cancel), 1, "{content:?}");
+        }
+        // The cap: a streamed command does not reset it; the person's send does.
+        let mut h = H::new();
+        let chat = h.chat(Some("7"));
+        for i in 0..crate::orch_watch::MACHINE_TURNS {
+            h.send(&chat, watcher_event(&format!("W{i}")));
+            finish_turn(&mut h);
+        }
+        let started = h.count(&Ev::Start);
+        h.send(&chat, streamed_command());
+        if h.in_turn(&chat) {
+            finish_turn(&mut h);
+        }
+        let after_command = h.count(&Ev::Start);
+        h.send(&chat, watcher_event("W20"));
+        assert_eq!(h.count(&Ev::Start), after_command, "still paused after a streamed command");
+        assert!(after_command <= started + 1);
+        h.say(&chat, "go on");
+        finish_turn(&mut h);
+        let before = h.count(&Ev::Start);
+        h.send(&chat, watcher_event("W21"));
+        assert_eq!(h.count(&Ev::Start), before + 1, "the person's send resets the cap");
+    }
+
+    /// Task 11 fix round 2: the person-authored mark is set only by the chat input's own send.
+    #[test]
+    fn the_person_mark_comes_only_from_the_send_path() {
+        let srcs = [include_str!("chat_window_app.rs"), include_str!("chat_app.rs"), include_str!("chat_session_app.rs"), include_str!("orch_watch_app.rs"), include_str!("orch_dispatch.rs"), include_str!("orch_app.rs"), include_str!("ai_explain_app.rs"), include_str!("inline_chat_ui.rs")];
+        let code = |s: &'static str| s.split("#[cfg(test)]").next().unwrap();
+        let callers: usize = srcs.iter().map(|s| code(s).matches("self.chat_publish_by_person(").count()).sum();
+        assert_eq!(callers, 1, "one caller");
+        let send = code(include_str!("chat_window_app.rs"));
+        let at = send.find("fn send_input_for(").unwrap();
+        let body = &send[at..at + send[at..].find("\n    }\n").unwrap()];
+        assert!(body.contains("self.chat_publish_by_person(&chat, m)"), "the window's and the panel's Send");
+        assert!(code(include_str!("chat_app.rs")).contains("Engine::publish_by_person(cx, chat, message)"));
+        assert_eq!(code(include_str!("chat_engine.rs")).matches("Self::publish_as(cx, chat, m, false, true)").count(), 1);
     }
 
     #[test]

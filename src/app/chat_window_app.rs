@@ -1253,7 +1253,8 @@ impl App {
         let Some(content) = chat_input::message_content(&text, parts, vector_store) else { return };
         let m = Message::new(&chat, Participant::User, content, super::warnings_app::unix_now());
         // The store and the window are not held across the publish: it may deliver at once.
-        match self.chat_publish(&chat, m, false) {
+        // The one publish that carries the person's mark (Task 11 fix round 2).
+        match self.chat_publish_by_person(&chat, m) {
             Ok(()) => {
                 // The person's own picks grant control (ruling P9), after the message is sent.
                 self.orch_grant_mentions(&chat, &grants);
