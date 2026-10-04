@@ -133,6 +133,7 @@ mod scripts_alerts;
 mod warnings_app;
 mod suppressed_app;
 mod host_offers_ui;
+mod host_state_app;
 mod frustration_ui;
 mod shell_version_ui;
 mod prefs_ui;
@@ -507,6 +508,10 @@ pub struct App {
     mods: Mods,
     /// Announcement bars waiting in each pane.
     bars: HashMap<PaneId, crate::infobar::Bars>,
+    /// Each pane's host stack (m14e Task 4), per pane and not in `swap_live`.
+    host_stacks: HashMap<PaneId, crate::host_state::Stack>,
+    /// A title a pane may get back when its ssh session ended, waiting on the offer bar.
+    pending_title_restores: HashMap<PaneId, Option<String>>,
     /// RequestAttention: pane flashes and fireworks (start time, and the cursor cell).
     flashes: HashMap<PaneId, Instant>,
     fireworks: HashMap<PaneId, (Instant, (usize, usize))>,
@@ -1462,6 +1467,8 @@ pub fn run() {
         mods: Mods::default(),
         sent_keys: keyproto_ui::Held::default(),
         bars: HashMap::new(),
+        host_stacks: HashMap::new(),
+        pending_title_restores: HashMap::new(),
         pending_reads: HashMap::new(),
         pending_properties: HashMap::new(),
         pending_urls: HashMap::new(),
@@ -2884,6 +2891,8 @@ impl App {
         self.script_templates.retain(|(p, _), _| *p != id);
         self.script_components.retain(|(p, _), _| *p != id);
         self.script_titles.remove(&id);
+        self.host_stacks.remove(&id);
+        self.pending_title_restores.remove(&id);
         if self.text_popover.as_ref().is_some_and(|(p, _)| *p == id) {
             self.text_popover = None;
         }

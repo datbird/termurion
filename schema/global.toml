@@ -2398,6 +2398,15 @@ default = true
 help = "SSH URLs respect the path.\nThey run the command: ssh -t \"cd $$PATH$$; exec \\$SHELL -l\""
 
 [[setting]]
+key = "restoreKeyModeAutomaticallyOnHostChange"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Automatically restore keyboard mode when an ssh session ends?"
+type = "bool"
+default = true
+help = "Automatically restore keyboard mode when an ssh session ends?"
+
+[[setting]]
 key = "aiModernModelPrefixes"
 tab = "Advanced"
 section = "Experimental Features"

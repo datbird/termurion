@@ -255,6 +255,7 @@ pub mod framer_script;
 pub mod conductor_framer;
 pub mod ssh_jumps;
 pub mod ssh_url;
+pub mod host_state;
 pub mod url_schemes;
 pub mod url_launch;
 pub mod ssh_recovery;

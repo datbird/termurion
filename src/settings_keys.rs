@@ -1928,6 +1928,15 @@ mod tests {
     /// `SL:562-640`, `AS:444`, `AS:746`, `AS:880`: the ssh: URL rows. `SshIntegrationForURLs` is
     /// General > Experimental (tested above, built by 13a); the other three are Advanced rows.
     #[test]
+    fn restore_key_mode_row_follows_iterm2() {
+        let row = schema::find_global("restoreKeyModeAutomaticallyOnHostChange").expect("restoreKeyModeAutomaticallyOnHostChange");
+        assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "Experimental Features", Kind::Bool));
+        assert_eq!(row.default, Some(Value::Boolean(true)));
+        assert_eq!(row.label, "Automatically restore keyboard mode when an ssh session ends?");
+        assert!(page_rows("Advanced").iter().any(|s| s.key == "restoreKeyModeAutomaticallyOnHostChange"));
+    }
+
+    #[test]
     fn ssh_url_rows_follow_iterm2() {
         let ssh = schema::find_global("SshIntegrationForURLs").expect("SshIntegrationForURLs");
         assert_eq!((ssh.tab.as_str(), ssh.section.as_str(), ssh.kind), ("General", "Experimental", Kind::Bool));
