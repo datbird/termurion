@@ -222,12 +222,12 @@ impl App {
             tabs.iter().flat_map(|t| t.layout.panes()).filter_map(|id| panes.get(&id).and_then(|p| store.get(&p.profile)).map(facts_of)).collect()
         };
         let mut due: Vec<WindowId> = Vec::new();
-        if let (Some(g), true) = (&self.gpu, transparency::needs_recreate(self.win_alpha_surface, &facts(&self.tabs, &self.panes, &self.store))) {
+        if let (Some(g), true) = (&self.gpu, transparency::recreate_due(self.win_alpha_surface, &facts(&self.tabs, &self.panes, &self.store), self.win_alpha_failed)) {
             due.push(g.window.id());
         }
         for (_, s) in self.windows.parked() {
             if let Some(g) = &s.gpu {
-                if transparency::needs_recreate(s.win_alpha_surface, &facts(&s.tabs, &self.panes, &self.store)) {
+                if transparency::recreate_due(s.win_alpha_surface, &facts(&s.tabs, &self.panes, &self.store), s.win_alpha_failed) {
                     due.push(g.window.id());
                 }
             }
@@ -253,7 +253,16 @@ impl App {
             match self.recreate_window_for_alpha(event_loop) {
                 Ok(new) if back == Some(id) => back_now = Some(new),
                 Ok(_) => {}
-                Err(e) => eprintln!("transparency: could not recreate a window: {e}"),
+                Err(e) => {
+                    // This window stays opaque and is not tried again; one banner says so.
+                    eprintln!("transparency: could not recreate a window: {e}");
+                    self.win_alpha_failed = true;
+                    self.transparency_unavailable = true;
+                    if !self.transparency_banner {
+                        self.transparency_banner = true;
+                        self.banners.set("transparency", UNAVAILABLE);
+                    }
+                }
             }
         }
         if let Some(b) = back_now {
@@ -270,8 +279,10 @@ impl App {
             return Ok(old.id());
         }
         let hotkey = self.hotkey.is_some();
-        let was_focused = self.focused;
-        let was_visible = old.is_visible() != Some(false);
+        let floating_hotkey = self.hotkey.as_ref().is_some_and(|h| h.shown) && self.hotkey.as_ref().and_then(|h| self.store.get(&h.guid)).is_some_and(|p| crate::hotkey::Prefs::from_profile(p).floats);
+        let carried = transparency::carry(old.fullscreen().is_some(), self.win_style == crate::frames::ACCESSORY, floating_hotkey, old.is_visible() != Some(false), self.focused);
+        // A manager owned by the old window would be destroyed with it: close it, so it can open again.
+        self.close_pwm();
         let position = old.outer_position().ok();
         let size: PhysicalSize<u32> = old.inner_size();
         let mut attrs = Window::default_attributes()
@@ -281,6 +292,7 @@ impl App {
             .with_resizable(old.is_resizable())
             .with_maximized(old.is_maximized())
             .with_visible(false)
+            .with_active(false)
             .with_no_redirection_bitmap(true);
         if hotkey {
             attrs = attrs.with_skip_taskbar(true);
@@ -314,10 +326,16 @@ impl App {
         self.install_menus();
         self.apply_border();
         self.relayout();
-        if was_visible {
+        if carried.fullscreen {
+            window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(old.current_monitor())));
+        }
+        if carried.on_top {
+            window.set_window_level(winit::window::WindowLevel::AlwaysOnTop);
+        }
+        if carried.show {
             window.set_visible(true);
         }
-        if was_focused {
+        if carried.activate {
             window.focus_window();
         }
         window.request_redraw();

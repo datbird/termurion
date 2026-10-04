@@ -462,8 +462,8 @@ impl App {
 
     /// Closes this window's manager (`closeOrEndSheet`). Its session's focus reports stay held
     /// until the terminal window has the focus back.
-    fn close_pwm(&mut self) {
-        let Some(w) = self.pwm_window.take() else { return };
+    pub(super) fn close_pwm(&mut self) {
+        let Some(w) = crate::transparency::drop_owned(&mut self.pwm_window) else { return };
         if let Some(p) = w.hold {
             self.pwm.holds.push(p);
         }

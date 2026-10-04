@@ -441,6 +441,8 @@ pub struct App {
     win_alpha_surface: crate::transparency::SurfaceKind,
     /// The current window's Use Transparency toggle.
     win_transparency: crate::transparency::WinTransparency,
+    /// The current window failed to become an alpha window.
+    win_alpha_failed: bool,
     /// The current window's toolbelt.
     belt: toolbelt_ui::Belt,
     /// Bumped when something a toolbelt tool shows changes (`tools_changed`).
@@ -1474,6 +1476,7 @@ pub fn run() {
         zoom_restore: None,
         win_alpha_surface: Default::default(),
         win_transparency: crate::transparency::WinTransparency::new(true),
+        win_alpha_failed: false,
         belt: Default::default(),
         tool_gen: 0,
         belt_keys: Default::default(),

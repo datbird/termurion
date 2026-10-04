@@ -150,6 +150,31 @@ pub fn needs_recreate(current: SurfaceKind, profiles: &[(f64, bool)]) -> bool {
     current == SurfaceKind::Opaque && wants_alpha_surface(profiles)
 }
 
+/// An opaque window is recreated only when it needs alpha and a try has not already failed for it.
+pub fn recreate_due(current: SurfaceKind, profiles: &[(f64, bool)], failed: bool) -> bool {
+    !failed && needs_recreate(current, profiles)
+}
+
+/// What a recreated window takes over from the one it replaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Carry {
+    pub fullscreen: bool,
+    pub on_top: bool,
+    pub show: bool,
+    pub activate: bool,
+}
+
+/// Full screen and the floating level ride along; the new window shows only if the old one was shown and
+/// takes focus only if the old one had it.
+pub fn carry(fullscreen: bool, accessory: bool, floating_hotkey: bool, visible: bool, focused: bool) -> Carry {
+    Carry { fullscreen, on_top: accessory || floating_hotkey, show: visible, activate: visible && focused }
+}
+
+/// Takes a window that the old HWND owns out of its slot, so the slot is clear and it can open again.
+pub fn drop_owned<T>(slot: &mut Option<T>) -> Option<T> {
+    slot.take()
+}
+
 /// The pixel at (x, y) after drawing `quads` in order over nothing with the pipelines' `ALPHA_BLENDING`.
 pub fn composite(quads: &[Quad], x: f32, y: f32) -> [f32; 4] {
     let mut px = [0.0f32; 4];
@@ -166,6 +191,32 @@ pub fn composite(quads: &[Quad], x: f32, y: f32) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recreate_carries_the_old_window() {
+        // Full screen, floating and visibility ride along; activation only when the old window had focus.
+        assert_eq!(carry(true, false, false, true, false), Carry { fullscreen: true, on_top: false, show: true, activate: false });
+        assert_eq!(carry(false, true, false, true, true), Carry { fullscreen: false, on_top: true, show: true, activate: true });
+        assert!(carry(false, false, true, true, false).on_top, "a shown floating hotkey window");
+        let hidden = carry(false, false, false, false, true);
+        assert!(!hidden.show && !hidden.activate, "a hidden window stays hidden and never takes focus");
+    }
+
+    #[test]
+    fn failed_alpha_window_is_not_retried() {
+        let want = [(0.3, false)];
+        assert!(recreate_due(SurfaceKind::Opaque, &want, false));
+        assert!(!recreate_due(SurfaceKind::Opaque, &want, true));
+        assert!(!recreate_due(SurfaceKind::Alpha, &want, false));
+    }
+
+    #[test]
+    fn owned_windows_are_released_before_recreate() {
+        let mut slot = Some(1);
+        assert_eq!(drop_owned(&mut slot), Some(1));
+        assert!(slot.is_none(), "the slot is clear so the window can reopen");
+        assert_eq!(drop_owned(&mut slot), None);
+    }
 
     #[test]
     fn transparency_checks_follow_iterm2() {
