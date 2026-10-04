@@ -73,7 +73,7 @@ pub(super) enum Shown {
     Jobs(JobsShown),
     /// Notes and Codecierge draw with their own scene calls, not the list: no rows.
     Notes,
-    Codecierge(crate::toolbelt_tools::CodeciergeState),
+    Codecierge(crate::codecierge::View),
 }
 
 impl Shown {
@@ -346,7 +346,6 @@ impl App {
             ToolId::CapturedOutput => self.captured_extra(&mut h),
             ToolId::SessionStatus => self.status_extra(&mut h),
             ToolId::Jobs => self.jobs_extra(&mut h),
-            ToolId::Codecierge => (self.codecierge_now() as u8).hash(&mut h),
             _ => {}
         }
         h.finish()
@@ -376,7 +375,17 @@ impl App {
             let (_, month, day, ..) = crate::prompt_ui::local_time();
             month == 4 && day == 1
         };
-        let extra = self.shown_extra(tool, pane);
+        // Codecierge's view reads the session and the gate, which `shown_extra` (`&self`) cannot.
+        let cc_view = (tool == ToolId::Codecierge).then(|| self.codecierge_view());
+        let extra = match &cc_view {
+            Some(v) => {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                v.hash(&mut h);
+                h.finish()
+            }
+            None => self.shown_extra(tool, pane),
+        };
         let key = ShownKey { query, pane, host, generation: self.tool_gen, april_first, extra };
         if let Some((k, shown)) = self.belt.shown.get(&tool) {
             if *k == key {
@@ -403,7 +412,7 @@ impl App {
             ToolId::SessionStatus => self.status_shown(),
             ToolId::Jobs => self.jobs_shown(),
             ToolId::Notes => Shown::Notes,
-            ToolId::Codecierge => Shown::Codecierge(self.codecierge_now()),
+            ToolId::Codecierge => Shown::Codecierge(cc_view.unwrap_or_else(|| crate::codecierge::View::Onboarding(crate::codecierge::CodeciergeState::Ready))),
         });
         // Jobs' selection follows its processes, not its row numbers.
         if let Shown::Jobs(new) = &*shown {
@@ -1094,6 +1103,12 @@ impl App {
             self.belt_keys.press(ev.physical_key, taken);
             return taken;
         }
+        // So does Codecierge's goal and reply (`codecierge_key`).
+        if tool == ToolId::Codecierge {
+            let taken = self.codecierge_key(ev);
+            self.belt_keys.press(ev.physical_key, taken);
+            return taken;
+        }
         let mods = self.mods;
         let key = list_key(&ev.logical_key, ev.text.as_deref(), mods);
         let taken = if is_modifier(&ev.logical_key) {
@@ -1505,7 +1520,7 @@ impl App {
         let Some((tool, area)) = bl.wrappers.iter().zip(self.belt.split.tools.clone()).find_map(|(w, t)| w.content.filter(|c| c.contains(x, y)).map(|c| (t, c))) else { return };
         match tool {
             ToolId::Notes => return self.notes_wheel(dy),
-            ToolId::Codecierge => return,
+            ToolId::Codecierge => return self.codecierge_wheel(dy),
             _ => {}
         }
         let row_h = self.list_metrics().row_h;

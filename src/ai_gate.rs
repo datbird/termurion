@@ -119,6 +119,15 @@ pub enum Then {
     /// it also inserts the paths of the others in `all`. Any other answer, a close included
     /// (ruling F2), inserts every path in `all` as text. Applies only while `chat` is shown.
     DropChoice { chat: String, supported: Vec<std::path::PathBuf>, all: Vec<std::path::PathBuf> },
+    /// Danger! (`CG:837-850`): ticking "Run commands automatically" in this Codecierge session
+    /// (its guid). Only OK ticks the box; Cancel, a close and Escape leave it unticked and turn
+    /// auto-run off at once if the session runs.
+    CodeciergeDanger(String),
+    /// The Privacy Warning before Start (`CG:455`): only OK remembers it and starts this session.
+    CodeciergePrivacy(String),
+    /// The usage warning (`CG:233-266`): the second button (Stop Codecierge) stops this session;
+    /// Keep Going and a close leave it running. Remembered answers act the same way.
+    CodeciergeUsage(String),
 }
 
 /// One AI alert for `App::ask_ai`. `silence` is a permanent-silence key (the `scripts_alerts`

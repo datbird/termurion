@@ -37,6 +37,11 @@ pub enum Choice {
     AlwaysDeny,
 }
 
+/// What the explanation processor made of a message: the one to store, or None when its
+/// session is gone (iTerm2's nil, the message is dropped). Placing the annotations is the
+/// processor's work, done in the App's own fields it borrows.
+pub(super) type Explained = Option<Message>;
+
 /// What the engine borrows from the App for one call (ruling R12cd-4): the four App fields 12d
 /// reads by name, the globals, and the closures that answer what only the App knows.
 pub(super) struct Ctx<'a> {
@@ -51,6 +56,9 @@ pub(super) struct Ctx<'a> {
     pub pane_of: &'a dyn Fn(&str) -> Option<PaneId>,
     pub new_turn: &'a mut dyn FnMut(&Model) -> Box<dyn TurnDriver>,
     pub new_files: &'a mut dyn FnMut(&Model, Job) -> Box<dyn FileDriver>,
+    /// The explanation processor (ruling P8, `ChatClient.swift:59-83`): a message about to be
+    /// stored with the stored row an append or commit targets, answering what to store.
+    pub explain: &'a mut dyn FnMut(&str, Message, Option<&Message>, bool) -> Explained,
     /// Seconds since 1970, for the messages published.
     pub now: f64,
 }
@@ -152,8 +160,21 @@ fn classic(m: &Message) -> Option<&RemoteCommand> {
 }
 
 impl Engine {
+    /// The explanation processor over `m` (ruling P8): the stored row an append or commit
+    /// targets is read as `publish_in` reads it, then the closure converts the message. Only the
+    /// engine's own (agent) messages pass through it, in `put`: what `publish` takes is the
+    /// App's, and a message the processor made is never processed twice.
+    fn explained(cx: &mut Ctx, chat: &str, m: Message, partial: bool) -> Explained {
+        let target = match &m.content {
+            Content::Append { uuid, .. } | Content::AppendAttachment { uuid, .. } | Content::Commit(uuid) => cx.store.message(&cx.broker.append_target(chat, uuid)).ok().flatten().filter(|t| t.chat_id == chat),
+            _ => None,
+        };
+        (cx.explain)(chat, m, target.as_ref(), partial)
+    }
+
     /// A message published without handing it to the service (the engine's own).
     fn put(cx: &mut Ctx, chat: &str, m: Message, partial: bool) {
+        let Some(m) = Self::explained(cx, chat, m, partial) else { return };
         // iTerm2 `try?`: a failed write loses the message, never the turn.
         let _ = publish_in(cx.store, cx.broker, chat, m, partial);
     }
@@ -261,6 +282,14 @@ impl Engine {
         }
     }
 
+    /// The stored log but `user` and the messages still queued behind it: a reply and tool rows
+    /// stored while it waited are part of its history (iTerm2's `historyExcluding`,
+    /// `ChatService.swift:517-525`).
+    fn log_before(cx: &Ctx, chat: &str, user: &Message) -> Vec<Message> {
+        let queued = cx.broker.queued_ids(chat);
+        cx.store.messages(chat).unwrap_or_default().into_iter().filter(|m| m.unique_id != user.unique_id && !queued.contains(&m.unique_id)).collect()
+    }
+
     /// A turn for `user` (`CA:1323-1409`): the gate for the model's own endpoint first, the
     /// provider binding, the files' vector-store flow, then the request.
     fn begin(cx: &mut Ctx, chat: &str, user: Message, allow_files: bool) -> Fx {
@@ -269,9 +298,12 @@ impl Engine {
             cx.broker.turn_done(chat);
             return Vec::new();
         };
+        // The prompt mode after the log so far: a follow-up to an explanation is wrapped once
+        // (ruling P6). The log is read again for the history below; the mode needs it first.
+        let mut mode = chat_agent::history_mode(&Self::log_before(cx, chat, &user));
         let body = match &user.content {
             Content::Multipart { parts, .. } => Some(chat_agent::multipart_body(parts)),
-            c => chat_agent::user_text(c).map(ai_msg::Body::Text),
+            c => chat_agent::user_text(c, &mut mode).map(ai_msg::Body::Text),
         };
         let Some(body) = body else {
             // Not an LLM message here (12e and 12f add theirs): the turn closes at once.
@@ -304,8 +336,7 @@ impl Engine {
         // The whole stored log but this message and the ones still queued behind it: a reply
         // and tool rows stored while this message waited are part of its history (iTerm2's
         // `historyExcluding`, `ChatService.swift:517-525`).
-        let queued = cx.broker.queued_ids(chat);
-        let before: Vec<Message> = cx.store.messages(chat).unwrap_or_default().into_iter().filter(|m| m.unique_id != user.unique_id && !queued.contains(&m.unique_id)).collect();
+        let before = Self::log_before(cx, chat, &user);
         // `ChatProviderBinding`: a chat is bound to its first model's provider.
         match &row.model_name {
             None => {
@@ -412,7 +443,7 @@ impl Engine {
         let streaming = a.streaming_id.clone();
         let (fresh, more) = match chunk {
             Chunk::Text(text) => match &streaming {
-                None => (Some((chat_agent::reply_content(a.question.as_ref(), &text, true, ""), a.reasoning.take())), None),
+                None => (Some((Fresh::Reply(a.question.clone(), text), a.reasoning.take())), None),
                 Some(id) => (None, Some(Content::Append { text, uuid: id.clone() })),
             },
             Chunk::Attachment(att) => {
@@ -424,13 +455,18 @@ impl Engine {
                     }
                 };
                 match &streaming {
-                    None => (Some((Content::Multipart { parts: vec![Subpart::Attachment(json)], vector_store_id: None }, a.reasoning.take())), None),
+                    None => (Some((Fresh::Content(Content::Multipart { parts: vec![Subpart::Attachment(json)], vector_store_id: None }), a.reasoning.take())), None),
                     Some(id) => (None, Some(Content::AppendAttachment { attachment: json, uuid: id.clone() })),
                 }
             }
         };
-        if let Some((content, reasoning)) = fresh {
-            let m = Message { agent_reasoning: reasoning, ..Message::new(chat, Participant::Agent, content, cx.now) };
+        if let Some((fresh, reasoning)) = fresh {
+            let mut m = Message { agent_reasoning: reasoning, ..Message::new(chat, Participant::Agent, Content::Markdown(String::new()), cx.now) };
+            // A reply to an explanation names its own message in its update (ruling P6).
+            m.content = match fresh {
+                Fresh::Content(content) => content,
+                Fresh::Reply(question, text) => chat_agent::reply_content(question.as_ref(), &text, true, &m.unique_id),
+            };
             a.streaming_id = Some(m.unique_id.clone());
             Self::put(cx, chat, m, true);
         } else if let Some(content) = more {
@@ -453,8 +489,8 @@ impl Engine {
     /// A reply that did not stream.
     fn reply(cx: &mut Ctx, chat: &str, text: String) {
         let Some(a) = cx.agents.get_mut(chat) else { return };
-        let content = chat_agent::reply_content(a.question.as_ref(), &text, false, "");
-        let m = Message { agent_reasoning: a.reasoning.take(), ..Message::new(chat, Participant::Agent, content, cx.now) };
+        let mut m = Message { agent_reasoning: a.reasoning.take(), ..Message::new(chat, Participant::Agent, Content::Markdown(String::new()), cx.now) };
+        m.content = chat_agent::reply_content(a.question.as_ref(), &text, false, &m.unique_id);
         Self::put(cx, chat, m, false);
     }
 
@@ -916,6 +952,13 @@ enum Chunk {
     Attachment(Attachment),
 }
 
+/// The first message of a streamed reply: ready, or still to be built from the question once
+/// the message (and so its id) exists.
+enum Fresh {
+    Content(Content),
+    Reply(Option<Content>, String),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1029,6 +1072,8 @@ mod tests {
         model: Model,
         pinned: Model,
         live: Vec<PaneId>,
+        /// Every message the explanation processor was handed, as it came from the turn.
+        seen: Rc<RefCell<Vec<Message>>>,
     }
 
     impl H {
@@ -1046,6 +1091,7 @@ mod tests {
                 model: crate::ai_model::fixture("gpt-t", "https://api.openai.com/v1/responses", Api::Responses),
                 pinned: crate::ai_model::fixture("p", "https://pinned.test/v1/chat/completions", Api::ChatCompletions),
                 live: vec![7, 8, 9],
+                seen: Rc::new(RefCell::new(Vec::new())),
             }
         }
 
@@ -1064,6 +1110,12 @@ mod tests {
                 log.borrow_mut().jobs.push(job);
                 Box::new(FakeFiles(log.clone()))
             };
+            // The real processor over a session that is always there and has no annotations.
+            let seen = self.seen.clone();
+            let mut explain = |_: &str, m: Message, target: Option<&Message>, _: bool| -> Explained {
+                seen.borrow_mut().push(m.clone());
+                super::super::ai_explain_app::process(m, target, &mut |_, u| Some(crate::ai_explain::markdown(&[], u.is_some_and(|u| u.is_final), false, u.and_then(|u| u.main_response.as_deref()))))
+            };
             let mut cx = Ctx {
                 store: &mut self.store,
                 broker: &mut self.broker,
@@ -1074,6 +1126,7 @@ mod tests {
                 pane_of: &pane_of,
                 new_turn: &mut new_turn,
                 new_files: &mut new_files,
+                explain: &mut explain,
                 now: 10.0,
             };
             f(&mut cx)
@@ -1352,6 +1405,127 @@ mod tests {
         let fx = h.run(|cx| Engine::checked(cx, &chat, request, None, Some(true)));
         assert_eq!(run_ids(&fx).iter().map(|r| r.1).collect::<Vec<_>>(), vec![7]);
         assert!(!format!("{fx:?}").contains("pane: 8"));
+    }
+
+    #[test]
+    fn explanation_update_replaces_its_message() {
+        use crate::ai_explain::{Context, Located, Request, Response, Update};
+        let mut h = H::new();
+        let chat = h.chat(None);
+        let request = Request {
+            command: None,
+            truncated: false,
+            original: Located { string: "x".into(), coords: vec![(0, 0)] },
+            question: String::new(),
+            subject: "s".into(),
+            url: None,
+            context: Context { session_id: "G".into(), base_offset: 0 },
+        };
+        let response = Response::with_text(request, "t", false);
+        let content = |md: &str, id: Option<&str>| Content::ExplanationResponse(crate::ai_explain::response_content(&response, id.map(|i| Update::new(false, Some(i.to_string()))).as_ref(), md));
+        // The stream's first message has no update once the client processed it: it is stored.
+        let base = h.messages(&chat).len();
+        let first = Message::new(&chat, Participant::Agent, content("one", None), 6.0);
+        let id = first.unique_id.clone();
+        h.run(|cx| Engine::publish(cx, &chat, first, true)).unwrap();
+        assert_eq!(h.messages(&chat).len(), base + 1);
+        // An update naming it replaces its content and adds no row.
+        let update = Message::new(&chat, Participant::Agent, content("two", Some(&id)), 7.0);
+        h.run(|cx| Engine::publish(cx, &chat, update, true)).unwrap();
+        let rows = h.messages(&chat);
+        assert_eq!(rows.len(), base + 1);
+        assert_eq!(rows[base].content, content("two", Some(&id)));
+        // The broker's newest is the stored row, so a chunk for it still appends in place.
+        assert_eq!(h.store.newest_id(&chat).unwrap().as_deref(), Some(id.as_str()));
+        // An unknown id is dropped.
+        let lost = Message::new(&chat, Participant::Agent, content("three", Some("NOPE")), 8.0);
+        h.run(|cx| Engine::publish(cx, &chat, lost, true)).unwrap();
+        assert_eq!(h.messages(&chat).len(), base + 1);
+        assert_eq!(h.messages(&chat)[base].content, content("two", Some(&id)));
+    }
+
+    /// A streamed explanation's first message names its own id in its update; the client's
+    /// processor clears it (`CCL:75-83`), else the apply step drops it (Task 3's carry).
+    #[test]
+    fn explanation_stream_first_chunk_is_stored() {
+        use crate::ai_explain::{parse_response_content, request_content, Context, Located, Request};
+        let mut h = H::new();
+        let chat = h.chat(None);
+        let request = Request {
+            command: None,
+            truncated: false,
+            original: Located { string: "x".into(), coords: vec![(0, 0)] },
+            question: String::new(),
+            subject: "s".into(),
+            url: None,
+            context: Context { session_id: "G".into(), base_offset: 0 },
+        };
+        h.script(vec![Out::Delta("<response>Hello".into()), Out::Delta(" world</response>".into()), Out::StreamEnd]);
+        h.send(&chat, Content::ExplanationRequest(request_content(&request)));
+        let answers: Vec<Message> = h.messages(&chat).into_iter().filter(|m| m.author == Participant::Agent).collect();
+        assert_eq!(answers.len(), 1, "the first chunk is stored once and grown in place");
+        let Content::ExplanationResponse(v) = &answers[0].content else { panic!("not an explanation: {:?}", answers[0].content) };
+        let (response, update, markdown) = parse_response_content(v).unwrap();
+        assert_eq!(response.main_response.as_deref(), Some("Hello world"));
+        let update = update.expect("the commit's update");
+        assert!(update.is_final);
+        assert_eq!(update.message_id.as_deref(), Some(answers[0].unique_id.as_str()));
+        assert!(markdown.ends_with("Hello world"), "{markdown}");
+    }
+
+    fn explanation_request() -> Content {
+        use crate::ai_explain::{request_content, Context, Located, Request};
+        Content::ExplanationRequest(request_content(&Request {
+            command: None,
+            truncated: false,
+            original: Located { string: "x".into(), coords: vec![(0, 0)] },
+            question: String::new(),
+            subject: "s".into(),
+            url: None,
+            context: Context { session_id: "G".into(), base_offset: 0 },
+        }))
+    }
+
+    /// The text of the last message of turn `n`'s request.
+    fn last_body(h: &H, n: usize) -> String {
+        match h.log.borrow().inputs[n].messages.last().map(|m| m.body.clone()) {
+            Some(Body::Text(t)) => t,
+            other => panic!("not text: {other:?}"),
+        }
+    }
+
+    /// The first plain text after an explanation is wrapped once (ruling P6): the mode comes
+    /// from walking the stored log, not from a fresh one.
+    #[test]
+    fn a_follow_up_after_an_explanation_is_wrapped_once() {
+        let mut h = H::new();
+        let chat = h.chat(None);
+        h.script(vec![Out::Choice("<response>done</response>".into())]);
+        h.send(&chat, explanation_request());
+        assert!(h.messages(&chat).iter().any(|m| matches!(m.content, Content::ExplanationResponse(_))), "the answer is stored");
+        h.script(vec![Out::Choice("ok".into())]);
+        h.say(&chat, "why?");
+        assert_eq!(last_body(&h, 1), crate::ai_explain::conversational("why?"));
+        h.script(vec![Out::Choice("ok".into())]);
+        h.say(&chat, "and more?");
+        assert_eq!(last_body(&h, 2), "and more?", "wrapped once only");
+    }
+
+    /// A stream's first message names its own id in its update before the processor sees it
+    /// (ruling P6): the id is the message's real one, not the empty text.
+    #[test]
+    fn a_streamed_first_chunk_names_its_own_id() {
+        let mut h = H::new();
+        let chat = h.chat(None);
+        h.script(vec![Out::Delta("<response>a".into()), Out::StreamEnd]);
+        h.send(&chat, explanation_request());
+        let seen = h.seen.borrow();
+        let first = seen.iter().find(|m| matches!(m.content, Content::ExplanationResponse(_))).expect("the first chunk reached the processor");
+        let Content::ExplanationResponse(v) = &first.content else { unreachable!() };
+        let update = crate::ai_explain::parse_response_content(v).unwrap().1.expect("a stream's first message carries an update");
+        assert!(!first.unique_id.is_empty());
+        assert_eq!(update.message_id.as_deref(), Some(first.unique_id.as_str()));
+        assert!(!update.is_final);
     }
 
     #[test]

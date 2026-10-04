@@ -2380,6 +2380,33 @@ default = "gpt-"
 help = "AI model name substrings that use the modern 'completions' API.\nSubstrings should be space-delimited. This handles OpenRouter-style names like 'openai/gpt-4o'. Note that o1 models use a different API and have hard-coded behavior."
 
 [[setting]]
+key = "codeciergeGhostRidingPrompt"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Prompt to send to LLM for Codecierge when it is able to execute commands automatically."
+type = "string"
+default = "You operate a terminal emulator for me. My goal is $GOAL. $CONTEXT. Ask clarifying questions as needed and run commands using the execute function when you're ready. When I've reached my goal, remind me to click the End Task button."
+help = "Prompt to send to LLM for Codecierge when it is able to execute commands automatically.\n$GOAL and $CONTEXT are replaced with the user-specified goal and info about the running environment, respectively."
+
+[[setting]]
+key = "codeciergeCommandWarningCount"
+tab = "Advanced"
+section = "Experimental Features"
+label = "After this many commands, make codecierge confirm that you intend to keep it enabled."
+type = "int"
+default = 10
+help = "After this many commands, make codecierge confirm that you intend to keep it enabled."
+
+[[setting]]
+key = "codeciergeRegularPrompt"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Prompt to send to LLM for Codecierge when it is NOT able to execute commands automatically."
+type = "string"
+default = "You help a me in a terminal emulator. My goal is $GOAL. $CONTEXT. Start by suggesting a command. Don't overwhelm me with too much information: just go one step at a time. When I've reached my goal, remind me to click the End Task button."
+help = "Prompt to send to LLM for Codecierge when it is NOT able to execute commands automatically.\n$GOAL and $CONTEXT are replaced with the user-specified goal and info about the running environment, respectively."
+
+[[setting]]
 key = "aiProxy"
 tab = "Advanced"
 section = "Experimental Features"

@@ -129,6 +129,18 @@ pub(super) struct Belt {
     pub(super) note_wrap: crate::text_edit::WrapCache,
     pub(super) note_scroll: f32,
     pub(super) note_source: Option<super::toolbelt_more_ui::NoteSource>,
+    /// Codecierge's two editors (the goal view's and the suggestion view's reply), their wrapped
+    /// lines and scrolls, the session whose text they hold, the transcript's distance from its
+    /// end (0 shows the end) and its laid-out markdown with the key it was laid out for.
+    pub(super) cc_goal: crate::text_edit::TextEdit,
+    pub(super) cc_goal_wrap: crate::text_edit::WrapCache,
+    pub(super) cc_goal_scroll: f32,
+    pub(super) cc_reply: crate::text_edit::TextEdit,
+    pub(super) cc_reply_wrap: crate::text_edit::WrapCache,
+    pub(super) cc_reply_scroll: f32,
+    pub(super) cc_guid: Option<String>,
+    pub(super) cc_scroll: f32,
+    pub(super) cc_doc: Option<(u64, crate::porthole::render::Layout)>,
     /// The saved proportions were offered to this window's split (its first layout, or an
     /// arrangement's own).
     proportions_tried: bool,
@@ -146,6 +158,8 @@ pub(super) enum BeltDrag {
     Row { tool: ToolId, start_y: f32 },
     /// A selection being dragged out in the Notes editor.
     Note,
+    /// A selection being dragged out in Codecierge's editor.
+    Codecierge,
 }
 
 fn float_of(v: Option<toml::Value>) -> Option<f32> {
@@ -571,6 +585,7 @@ impl App {
             // The drop line follows the pointer.
             BeltDrag::Row { .. } => {}
             BeltDrag::Note => self.notes_drag(x, y),
+            BeltDrag::Codecierge => self.codecierge_drag(x, y),
         }
         self.redraw();
     }
@@ -585,7 +600,7 @@ impl App {
                 self.save_globals();
             }
             BeltDrag::Row { tool, start_y } => self.tool_drop(tool, start_y),
-            BeltDrag::Note => {}
+            BeltDrag::Note | BeltDrag::Codecierge => {}
         }
         self.redraw();
     }

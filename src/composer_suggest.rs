@@ -31,6 +31,11 @@ pub enum ItemKind {
     File,
     Folder,
     Command,
+    /// A model's completion of the typed text (`iTermCompletionItemKindAiSuggestion`).
+    AiSuggestion,
+    /// A model's full command that replaces the whole line (`.aiReplacement`); its item has
+    /// `replacement: true`.
+    AiReplacement,
 }
 
 /// One row the popup can show, or the source of ghost text.
@@ -174,7 +179,7 @@ pub fn files(entries: &[(String, bool)], prefix: &str, limit: usize, shell: Opti
         .collect()
 }
 
-fn longest_common_prefix(values: &[&str]) -> String {
+pub fn longest_common_prefix(values: &[&str]) -> String {
     let Some(first) = values.first() else { return String::new() };
     let mut len = first.len();
     for v in &values[1..] {

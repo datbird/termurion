@@ -338,6 +338,8 @@ pub mod session_env;
 pub mod api_server;
 pub mod ai_settings;
 pub mod ai_catalog;
+pub mod ai_complete;
+pub mod codecierge;
 pub mod ai_chat;
 pub mod ai_policy;
 pub mod ai_models;
@@ -384,6 +386,8 @@ pub mod chat_buttons;
 pub mod chat_menu;
 pub mod chat_routes;
 pub mod chat_view;
+pub mod ai_engage;
+pub mod ai_explain;
 pub mod chat_toolbar;
 pub mod chat_input;
 pub mod chat_find;
@@ -394,3 +398,5 @@ pub mod settings_ai;
 pub mod secret_field;
 #[cfg(windows)]
 pub mod ai_key_ui;
+#[cfg(windows)]
+pub mod ai_engage_ui;

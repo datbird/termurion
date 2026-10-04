@@ -625,6 +625,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn uname_has_one_writer() {
+        // `conductor_framer::session_values` owns `uname` (`PS:25624-25660`: cleared at SSH
+        // level 1), so nothing else in this file may set it.
+        let production = include_str!("prompted_ui.rs").split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        assert!(!production.contains(concat!("insert(\"un", "ame\"")));
+        assert!(production.contains("conductor_framer::session_values"));
+    }
+
+    #[test]
     fn selection_cap_follows_iterm2() {
         assert_eq!(capped_selection("abcdef", 3), ("abc".to_string(), 6));
         assert_eq!(capped_selection("abcdef", 100), ("abcdef".to_string(), 6));

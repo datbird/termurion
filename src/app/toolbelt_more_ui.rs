@@ -4,7 +4,7 @@
 //! help and settings popover), plus the pattern notifications and watches the status changes
 //! drive; Jobs (the focused session's process tree, its signals, Inspect and the termination
 //! watches), Notes (the global note in `notes.txt` and the session note, in a native editor)
-//! and Codecierge (its onboarding view until milestone 12). The pure parts are `captured`,
+//! and Codecierge (its onboarding, goal and suggestion views). The pure parts are `captured`,
 //! `status_tool`, `toolbelt_tools`, `notes` and `text_edit`; the list widget is 9j's.
 
 use std::cell::RefCell;
@@ -27,7 +27,8 @@ use crate::status_tool::{self, Pattern, StatusRow};
 use crate::text_edit::{self, EditKey, EditOut};
 use crate::tool_list::{self, Focus};
 use crate::toolbelt::ToolId;
-use crate::toolbelt_tools::{self as tt, CodeciergeState, JobRow, SignalWay};
+use crate::codecierge::{CodeciergeState, GetStarted, Stage, View};
+use crate::toolbelt_tools::{self as tt, JobRow, SignalWay};
 use crate::warnings::Preempt;
 use winit::keyboard::{Key as WKey, NamedKey};
 
@@ -274,8 +275,8 @@ const TAB_AS: &str = "    ";
 const CC_BUTTON_H: f32 = 22.0;
 const CC_BUTTON_PAD: f32 = 24.0;
 const CC_GAP: f32 = 8.0;
-const CODECIERGE_BAR: &str = "toolbelt-codecierge";
-const CODECIERGE_LATER: &str = "AI features come in milestone 12.";
+/// The suggestion view's markdown inset in its panel, points.
+const CC_DOC_PAD: f32 = 6.0;
 
 /// What Jobs shows: the shell it is rooted at, its rows, and the tree they came from (each
 /// process's creation time and command line).
@@ -410,6 +411,111 @@ fn codecierge_layout(area: Rect, lines: usize, line_h: f32, button_label_w: f32,
     let total = label_h + CC_GAP * scale + button_h;
     let top = area.y + ((area.h - total) / 2.0).max(0.0);
     (top, Rect { x: area.x + ((area.w - w) / 2.0).max(0.0), y: top + label_h + CC_GAP * scale, w: w.min(area.w), h: button_h })
+}
+
+/// Where Codecierge's goal view puts things (`CG:745-912`): the prompt's top, the field's frame
+/// and the text's room inside it, the checkbox and its label's origin, and Start.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct GoalLayout {
+    pub(super) top: f32,
+    pub(super) frame: Rect,
+    pub(super) text: Rect,
+    pub(super) check: Rect,
+    pub(super) label_x: f32,
+    pub(super) label_y: f32,
+    pub(super) start: Rect,
+}
+
+/// The goal view in `area`: the prompt's `lines` on top, Start centered at the bottom, the
+/// checkbox above it and the field filling what is between.
+pub(super) fn goal_layout(area: Rect, lines: usize, line_h: f32, start_label_w: f32, scale: f32) -> GoalLayout {
+    let pad = 4.0 * scale;
+    let gap = CC_GAP * scale;
+    let button_h = (CC_BUTTON_H * scale).max(line_h + 4.0 * scale);
+    let top = area.y + pad;
+    let start_y = (area.y + area.h - pad - button_h).max(top);
+    let w = (start_label_w + CC_BUTTON_PAD * scale).min(area.w);
+    let start = Rect { x: area.x + ((area.w - w) / 2.0).max(0.0), y: start_y, w, h: button_h };
+    let side = line_h.max(12.0 * scale);
+    let check = Rect { x: area.x + pad, y: (start_y - gap - side).max(top), w: side, h: side };
+    let field_y = top + lines as f32 * line_h + gap / 2.0;
+    let frame = Rect { x: area.x + pad, y: field_y, w: (area.w - 2.0 * pad).max(0.0), h: (check.y - gap - field_y).max(0.0) };
+    let (px, py) = (NOTE_PAD_X * scale + 1.0, NOTE_PAD_Y * scale + 1.0);
+    let text = Rect { x: frame.x + px, y: frame.y + py, w: (frame.w - 2.0 * px).max(0.0), h: (frame.h - 2.0 * py).max(0.0) };
+    GoalLayout { top, frame, text, check, label_x: check.x + side + gap / 2.0, label_y: check.y + (side - line_h) / 2.0, start }
+}
+
+/// Where the suggestion view puts things (`CG:914-1115`): the goal line's row (the spinner's
+/// box, and the label's x while it shows), the transcript's panel, the reply field and the send
+/// button inside its right end, and End Task at the bottom right.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct RunLayout {
+    pub(super) spinner: Rect,
+    pub(super) goal_x: f32,
+    pub(super) room: Rect,
+    pub(super) reply: Rect,
+    pub(super) reply_text: Rect,
+    pub(super) send: Rect,
+    pub(super) end: Rect,
+}
+
+pub(super) fn run_layout(area: Rect, line_h: f32, end_label_w: f32, scale: f32) -> RunLayout {
+    let pad = 4.0 * scale;
+    let gap = CC_GAP * scale;
+    let button_h = (CC_BUTTON_H * scale).max(line_h + 4.0 * scale);
+    let w = (end_label_w + CC_BUTTON_PAD * scale).min(area.w);
+    let end = Rect { x: area.x + area.w - pad - w, y: (area.y + area.h - pad - button_h).max(area.y), w, h: button_h };
+    let row_h = line_h + 2.0 * (NOTE_PAD_Y * scale + 1.0);
+    let reply = Rect { x: area.x + pad, y: (end.y - gap - row_h).max(area.y), w: (area.w - 2.0 * pad).max(0.0), h: row_h };
+    let send = Rect { x: reply.x + reply.w - row_h, y: reply.y, w: row_h.min(reply.w), h: row_h };
+    let (px, py) = (NOTE_PAD_X * scale + 1.0, NOTE_PAD_Y * scale + 1.0);
+    let reply_text = Rect { x: reply.x + px, y: reply.y + py, w: (send.x - reply.x - px).max(0.0), h: (reply.h - 2.0 * py).max(0.0) };
+    let spinner = Rect { x: area.x + pad, y: area.y + pad, w: line_h, h: line_h };
+    let room_y = spinner.y + line_h + gap / 2.0;
+    let room = Rect { x: area.x + pad, y: room_y, w: (area.w - 2.0 * pad).max(0.0), h: (reply.y - gap / 2.0 - room_y).max(0.0) };
+    RunLayout { spinner, goal_x: spinner.x + line_h + pad, room, reply, reply_text, send, end }
+}
+
+/// `text` cut at the tail to fit `max_w`, with an ellipsis (the goal line, `CG:914-1115`).
+fn fit_tail(text: &str, max_w: f32, width: &dyn Fn(&str) -> f32) -> String {
+    if width(text) <= max_w {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut n = chars.len();
+    while n > 0 {
+        n -= 1;
+        let cut: String = chars[..n].iter().collect::<String>().trim_end().to_string() + "\u{2026}";
+        if width(&cut) <= max_w {
+            return cut;
+        }
+    }
+    "\u{2026}".to_string()
+}
+
+/// What `codecierge_geometry` measured: the wrapped label or prompt (x, y, text), the button
+/// (Get Started, Reveal Setting, Start or End Task) with its label and whether it is enabled,
+/// and the goal or suggestion view's layout.
+struct CcGeo {
+    lines: Vec<(f32, f32, String)>,
+    button: Rect,
+    label: &'static str,
+    label_w: f32,
+    enabled: bool,
+    goal: Option<GoalLayout>,
+    run: Option<RunLayout>,
+    /// The suggestion view's goal line, cut to fit.
+    goal_text: String,
+    check_label_w: f32,
+}
+
+/// One editor's drawn parts.
+struct FieldParts {
+    clip: Rect,
+    lines: Vec<(f32, f32, String)>,
+    selection: Vec<Rect>,
+    caret: Option<Rect>,
+    thumb: Option<Rect>,
 }
 
 /// Codecierge's button for a state: its label and whether it is enabled (`CC:692-709`).
@@ -1580,69 +1686,564 @@ impl App {
         self.global_note.due()
     }
 
-    // ---- Codecierge (`CC`) ----
+    // ---- Codecierge (`CG`) ----
 
-    /// Codecierge's state: the admin switch, then "Enable generative AI features".
-    pub(super) fn codecierge_now(&self) -> CodeciergeState {
-        tt::codecierge_state(self.globals.bool(crate::ai_settings::ADMIN), self.globals.bool(crate::ai_settings::ENABLE_AI))
+    /// The gate for the default model and whether it has function calling, from the models found
+    /// so far (no probe: this runs every frame while the tool shows, P2).
+    pub(super) fn codecierge_gate(&self) -> (bool, bool) {
+        let found = self.ai_discovery.all();
+        let Some(m) = crate::ai_model::configured(&self.globals, crate::ai_catalog::bundled(), &found) else { return (false, false) };
+        (crate::chat_gate::gate_open(&self.globals, &crate::chat_gate::endpoint_of(&m)), crate::ai_model::has(&m, crate::ai_catalog::Feature::FunctionCalling))
     }
 
-    /// Codecierge laid out in `area`: its label lines (x, y, text), its button, the button's
-    /// label and width, and whether it is enabled.
-    fn codecierge_geometry(&mut self, area: Rect) -> (Vec<(f32, f32, String)>, Rect, &'static str, f32, bool) {
-        let state = match &*self.tool_shown(ToolId::Codecierge) {
-            Shown::Codecierge(s) => *s,
-            _ => self.codecierge_now(),
+    /// The focused pane's session guid.
+    fn codecierge_guid(&self) -> Option<String> {
+        self.focused_id().and_then(|id| self.panes.get(&id)).map(|p| p.session_guid.clone())
+    }
+
+    /// The focused pane's Codecierge session, created on first use (`CG:554-567`): its first
+    /// stage is goal setting only when the whole gate is open and a key is stored (`CG:412-418`).
+    pub(super) fn codecierge_session(&mut self) -> Option<&mut crate::codecierge::Session> {
+        let guid = self.codecierge_guid()?;
+        if !self.codecierge.contains_key(&guid) {
+            let (allowed, _) = self.codecierge_gate();
+            let has_key = self.ai_has_key();
+            self.codecierge.insert(guid.clone(), crate::codecierge::Session::new(&guid, allowed, has_key));
+        }
+        self.codecierge.get_mut(&guid)
+    }
+
+    /// What the tool shows now. A gate that turned off shows onboarding at once; the full stop
+    /// (`CG:476-480`, ruling R12e-3) is `codecierge_gate_tick`'s, once per loop pass.
+    pub(super) fn codecierge_view(&mut self) -> View {
+        let (admin, ai) = (self.globals.bool(crate::ai_settings::ADMIN), self.globals.bool(crate::ai_settings::ENABLE_AI));
+        let (open, calling) = self.codecierge_gate();
+        match self.codecierge_session() {
+            Some(s) => {
+                if !open && s.stage != Stage::Onboarding {
+                    let mut shown = s.clone();
+                    shown.stage = Stage::Onboarding;
+                    return crate::codecierge::view(&shown, admin, ai, calling);
+                }
+                crate::codecierge::view(s, admin, ai, calling)
+            }
+            None => View::Onboarding(crate::codecierge::onboarding(admin, ai)),
+        }
+    }
+
+    /// Get Started (ruling R12e-1): the gate for the model's own endpoint runs first (its alert
+    /// explains a refusal and the session stays), then a key is asked for only when none is
+    /// stored.
+    fn codecierge_get_started(&mut self, guid: &str) {
+        let Some(model) = self.ai_model_now() else {
+            self.ai_check_endpoint(None, false);
+            return;
         };
+        let endpoint = crate::chat_gate::endpoint_of(&model);
+        let open = self.ai_check_endpoint(Some(&endpoint), false);
+        match crate::codecierge::get_started(open, self.ai_has_key()) {
+            GetStarted::Stay => {}
+            GetStarted::AskKey => {
+                let found = self.ai_found();
+                let vendor = crate::ai_models::effective_vendor(&self.globals, crate::ai_catalog::bundled(), &found);
+                self.ask_ai_key(vendor, Some(&endpoint), super::ai_app::KeyThen::Codecierge(guid.to_string()));
+            }
+            GetStarted::Goal => self.codecierge_goal(guid),
+        }
+    }
+
+    /// The session goes to its goal view.
+    pub(super) fn codecierge_goal(&mut self, guid: &str) {
+        if let Some(s) = self.codecierge.get_mut(guid) {
+            s.stage = Stage::GoalSetting;
+        }
+        self.tools_changed();
+        self.redraw_all();
+    }
+
+    /// End Task (`CG`): the run, the pending call and the queue stop (ruling R12e-3), and the
+    /// goal view shows with the goal kept.
+    fn codecierge_end(&mut self, guid: &str) {
+        self.codecierge_stop(guid, Stage::GoalSetting);
+        if let Some(s) = self.codecierge.get_mut(guid) {
+            s.transcript.clear();
+            s.reply.clear();
+        }
+        self.belt.cc_guid = None;
+        self.tools_changed();
+        self.redraw_all();
+    }
+
+    /// A reply (Enter or the send button): the "You" section is appended and the field clears
+    /// (`CG:595-602`), then the text is queued for the model.
+    fn codecierge_press_send(&mut self, guid: &str) {
+        let Some(s) = self.codecierge.get_mut(guid) else { return };
+        let text = s.reply.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        s.transcript.push_str(&crate::codecierge::you(&text));
+        s.reply.clear();
+        self.belt.cc_reply.load("");
+        self.belt.cc_scroll = 0.0;
+        self.tools_changed();
+        self.redraw_all();
+        self.codecierge_send(guid, text);
+    }
+
+    /// The Start button: the Privacy Warning unless it was accepted, then the start.
+    fn codecierge_press_start(&mut self, guid: &str) {
+        if self.globals.bool(crate::codecierge::PRIVACY_KEY) {
+            return self.codecierge_start(guid);
+        }
+        self.ask_ai(crate::ai_gate::Alert {
+            heading: crate::codecierge::PRIVACY_HEADING.to_string(),
+            text: crate::codecierge::PRIVACY_TEXT.to_string(),
+            buttons: vec!["OK", "Cancel"],
+            silence: None,
+            then: crate::ai_gate::Then::CodeciergePrivacy(guid.to_string()),
+            gate: false,
+            close: None,
+        });
+    }
+
+    /// The editors hold the focused session's goal and reply; another session's text loads with
+    /// a fresh undo, the same session's keeps the caret unless its text changed elsewhere.
+    fn codecierge_sync(&mut self) {
+        let Some(s) = self.codecierge_session().map(|s| (s.guid.clone(), s.goal.clone(), s.reply.clone())) else { return };
+        let (guid, goal, reply) = s;
+        if self.belt.cc_guid.as_deref() != Some(guid.as_str()) {
+            self.belt.cc_guid = Some(guid);
+            self.belt.cc_goal.load(&goal);
+            self.belt.cc_reply.load(&reply);
+            self.belt.cc_goal_scroll = 0.0;
+            self.belt.cc_reply_scroll = 0.0;
+        } else {
+            self.belt.cc_goal.set_text(&goal);
+            self.belt.cc_reply.set_text(&reply);
+        }
+    }
+
+    /// The text the editors hold goes back to the session.
+    fn codecierge_edited(&mut self) {
+        let (goal, reply) = (self.belt.cc_goal.text.clone(), self.belt.cc_reply.text.clone());
+        if let Some(s) = self.codecierge_session() {
+            s.goal = goal;
+            s.reply = reply;
+        }
+        self.tools_changed();
+        self.redraw_all();
+    }
+
+    /// Whether the focused session is in its suggestion view (the reply editor), else the goal.
+    fn codecierge_running(&mut self) -> bool {
+        self.codecierge_session().is_some_and(|s| s.stage == Stage::Running)
+    }
+
+    /// The laid-out parts of Codecierge in `area` for `view`.
+    fn codecierge_geometry(&mut self, area: Rect, view: &View) -> CcGeo {
         let scale = self.scale();
         let m = self.list_metrics();
-        let (label, enabled) = codecierge_button(state);
-        let Some(g) = self.gpu.as_mut() else { return (Vec::new(), Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 }, label, 0.0, enabled) };
+        let dead = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
+        let (label, enabled) = match view {
+            View::Onboarding(s) => codecierge_button(*s),
+            View::Goal { start_enabled, .. } => (crate::codecierge::START, *start_enabled),
+            View::Running { .. } => (crate::codecierge::END_TASK, true),
+        };
+        let mut geo = CcGeo { lines: Vec::new(), button: dead, label, label_w: 0.0, enabled, goal: None, run: None, goal_text: String::new(), check_label_w: 0.0 };
+        let Some(g) = self.gpu.as_mut() else { return geo };
         let renderer = RefCell::new(&mut g.renderer);
         let width = |s: &str| renderer.borrow_mut().text_width(s, true, m.text_scale);
         let inner = Rect { x: area.x + 4.0 * scale, w: (area.w - 8.0 * scale).max(0.0), ..area };
-        let wrapped = wrap_words(tt::codecierge_text(state), inner.w, &width);
-        let label_w = width(label);
-        let (top, button) = codecierge_layout(area, wrapped.len(), m.line, label_w, scale);
-        let lines = wrapped
-            .into_iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let w = width(&t);
-                (inner.x + ((inner.w - w) / 2.0).max(0.0), top + i as f32 * m.line, t)
-            })
-            .collect();
-        (lines, button, label, label_w, enabled)
+        geo.label_w = width(label);
+        let centered = |lines: Vec<String>, top: f32| -> Vec<(f32, f32, String)> {
+            lines
+                .into_iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    let w = width(&t);
+                    (inner.x + ((inner.w - w) / 2.0).max(0.0), top + i as f32 * m.line, t)
+                })
+                .collect()
+        };
+        match view {
+            View::Onboarding(state) => {
+                let wrapped = wrap_words(crate::codecierge::codecierge_text(*state), inner.w, &width);
+                let (top, button) = codecierge_layout(area, wrapped.len(), m.line, geo.label_w, scale);
+                geo.lines = centered(wrapped, top);
+                geo.button = button;
+            }
+            View::Goal { .. } => {
+                let wrapped = wrap_words(crate::codecierge::GOAL_PROMPT, inner.w, &width);
+                let l = goal_layout(area, wrapped.len(), m.line, geo.label_w, scale);
+                geo.lines = wrapped.into_iter().enumerate().map(|(i, t)| (inner.x, l.top + i as f32 * m.line, t)).collect();
+                geo.button = l.start;
+                geo.check_label_w = width(crate::codecierge::AUTO_LABEL);
+                geo.goal = Some(l);
+            }
+            View::Running { goal, busy, .. } => {
+                let l = run_layout(area, m.line, geo.label_w, scale);
+                let x = if *busy { l.goal_x } else { l.spinner.x };
+                geo.goal_text = fit_tail(goal, (area.x + area.w - 4.0 * scale - x).max(0.0), &width);
+                geo.button = l.end;
+                geo.run = Some(l);
+            }
+        }
+        geo
+    }
+
+    /// The transcript laid out for a room, kept until the text, the width or the theme changes.
+    /// The content's height.
+    fn codecierge_doc(&mut self, transcript: &str, room: Rect) -> f32 {
+        let scale = self.scale();
+        let m = self.list_metrics();
+        let dark = self.dark();
+        let width = (room.w - 2.0 * CC_DOC_PAD * scale).max(1.0);
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (transcript, width.to_bits(), dark, m.text_scale.to_bits(), self.cell().1.to_bits()).hash(&mut h);
+        let key = h.finish();
+        if self.belt.cc_doc.as_ref().is_some_and(|(k, _)| *k == key) {
+            return self.belt.cc_doc.as_ref().map_or(0.0, |(_, l)| l.height);
+        }
+        let (text, back) = scene::codecierge_colors(dark);
+        let palette = crate::palette::Palette { fg: text, bg: back, ..crate::palette::Palette::default() };
+        let doc = crate::porthole::render::render(transcript, &crate::porthole::detect::Language::Markdown, &palette, dark);
+        let cell_h = self.cell().1 * m.text_scale;
+        let Some(g) = self.gpu.as_mut() else { return 0.0 };
+        let r = RefCell::new(&mut g.renderer);
+        let measure = |t: &str, f: crate::porthole::render::Face, s: f32| r.borrow_mut().text_width(t, f == crate::porthole::render::Face::Prose, s * m.text_scale);
+        let layout = crate::porthole::render::layout(&doc, width, cell_h, &measure, false);
+        let height = layout.height;
+        self.belt.cc_doc = Some((key, layout));
+        height
+    }
+
+    /// Where the transcript's text starts (top left) for a room and its content height, with
+    /// `cc_scroll` (distance from the end) applied and kept in range.
+    fn codecierge_origin(&mut self, room: Rect, content: f32) -> (f32, f32) {
+        let scale = self.scale();
+        let pad = CC_DOC_PAD * scale;
+        let inner_h = (room.h - 2.0 * pad).max(0.0);
+        let max = (content - inner_h).max(0.0);
+        self.belt.cc_scroll = self.belt.cc_scroll.clamp(0.0, max);
+        (room.x + pad, room.y + pad - (max - self.belt.cc_scroll))
     }
 
     pub(super) fn draw_codecierge(&mut self, frame: &mut Frame, area: Rect, cell: (f32, f32)) {
-        let (lines, button, label, label_w, enabled) = self.codecierge_geometry(area);
-        let d = scene::CodeciergeDraw { lines: &lines, clip: area, button, label, label_w, enabled, dark: self.dark() };
-        scene::codecierge(frame, &d, cell, self.list_metrics().text_scale, self.scale());
+        self.codecierge_sync();
+        let view = match &*self.tool_shown(ToolId::Codecierge) {
+            Shown::Codecierge(v) => v.clone(),
+            _ => self.codecierge_view(),
+        };
+        let geo = self.codecierge_geometry(area, &view);
+        let scale = self.scale();
+        let dark = self.dark();
+        let m = self.list_metrics();
+        let line_h = m.line.max(1.0);
+        let focused = self.belt.focus.is_some_and(|(t, _)| t == ToolId::Codecierge);
+        let mut d = scene::CodeciergeDraw { lines: &geo.lines, clip: area, button: geo.button, label: geo.label, label_w: geo.label_w, enabled: geo.enabled, dark, goal: None, run: None };
+        match &view {
+            View::Onboarding(_) => scene::codecierge(frame, &d, cell, m.text_scale, scale),
+            View::Goal { auto_box, auto_enabled, .. } => {
+                let Some(l) = &geo.goal else { return scene::codecierge(frame, &d, cell, m.text_scale, scale) };
+                let parts = self.codecierge_field_parts(false, l.frame, l.text, focused);
+                let check_label = (l.label_x, l.label_y, crate::codecierge::AUTO_LABEL);
+                let placeholder = self.belt.cc_goal.text.is_empty().then_some((l.text.x, l.text.y, crate::codecierge::GOAL_PLACEHOLDER));
+                let edit = scene::NoteDraw { segments: &[], selected: 0, frame: l.frame, clip: parts.clip, lines: &parts.lines, selection: &parts.selection, caret: parts.caret, focused, thumb: parts.thumb, dark, label_scale: m.text_scale };
+                d.goal = Some(scene::GoalDraw { field: scene::FieldDraw { edit, placeholder }, check: l.check, checked: *auto_box, check_enabled: *auto_enabled, check_label });
+                scene::codecierge(frame, &d, cell, m.text_scale, scale);
+            }
+            View::Running { transcript, busy, reply, .. } => {
+                let Some(l) = &geo.run else { return scene::codecierge(frame, &d, cell, m.text_scale, scale) };
+                let content = self.codecierge_doc(transcript, l.room);
+                let (ox, oy) = self.codecierge_origin(l.room, content);
+                let room = Rect { x: l.room.x + 1.0, y: l.room.y + 1.0, w: (l.room.w - 2.0).max(0.0), h: (l.room.h - 2.0).max(0.0) };
+                let parts = self.codecierge_field_parts(true, l.reply, l.reply_text, focused);
+                let placeholder = self.belt.cc_reply.text.is_empty().then_some((l.reply_text.x, l.reply_text.y, crate::codecierge::RESPONSE_PLACEHOLDER));
+                let edit = scene::NoteDraw { segments: &[], selected: 0, frame: l.reply, clip: parts.clip, lines: &parts.lines, selection: &parts.selection, caret: parts.caret, focused, thumb: parts.thumb, dark, label_scale: m.text_scale };
+                let lines: &[crate::porthole::render::VisualLine] = match &self.belt.cc_doc {
+                    Some((_, layout)) => layout.visible(room.y - oy, room.y + room.h - oy),
+                    None => &[],
+                };
+                let thumb = (content > room.h).then(|| {
+                    let max = content - room.h;
+                    let h = (room.h * room.h / content).max(12.0 * scale).min(room.h);
+                    Rect { x: room.x + room.w - 4.0 * scale, y: room.y + (room.h - h) * (1.0 - self.belt.cc_scroll / max), w: 3.0 * scale, h }
+                });
+                let spinner = busy.then_some((l.spinner, ((now_ms() / 100) % 8) as u32));
+                d.run = Some(scene::RunDraw {
+                    goal: (if *busy { l.goal_x } else { l.spinner.x }, l.spinner.y, &geo.goal_text),
+                    spinner,
+                    lines,
+                    origin: (ox, oy),
+                    room,
+                    band: (room.x, room.w),
+                    busy: *busy,
+                    thumb,
+                    reply: scene::FieldDraw { edit, placeholder },
+                    send: l.send,
+                    send_enabled: !reply.trim().is_empty(),
+                });
+                scene::codecierge(frame, &d, cell, m.text_scale, scale);
+            }
+        }
+        let _ = line_h;
     }
 
-    /// A press on Codecierge's button: Reveal Setting opens Settings > General > AI (`CC:741-743`
-    /// opens Settings at Enable AI); Get Started asks the gate first, then answers that the rest
-    /// of Codecierge comes later; a disabled button does nothing.
+    /// One editor's drawn parts (the Notes editor's rules): its lines, selection, caret and
+    /// scroller in `text`, inside `frame`.
+    fn codecierge_field_parts(&mut self, reply: bool, frame: Rect, text: Rect, focused: bool) -> FieldParts {
+        let scale = self.scale();
+        let line_h = self.list_metrics().line.max(1.0);
+        let clip = Rect { x: frame.x + 1.0, y: frame.y + 1.0, w: (frame.w - 2.0).max(0.0), h: (frame.h - 2.0).max(0.0) };
+        let Some(g) = self.gpu.as_mut() else { return FieldParts { clip, lines: Vec::new(), selection: Vec::new(), caret: None, thumb: None } };
+        let renderer = RefCell::new(&mut g.renderer);
+        let measure = |s: &str| renderer.borrow_mut().toolbelt_width(&s.replace('\t', TAB_AS), scale);
+        let font = renderer.borrow().toolbelt_font_key(scale);
+        let belt = &mut self.belt;
+        let (edit, wrap, scroll) = if reply { (&mut belt.cc_reply, &mut belt.cc_reply_wrap, &mut belt.cc_reply_scroll) } else { (&mut belt.cc_goal, &mut belt.cc_goal_wrap, &mut belt.cc_goal_scroll) };
+        let lines = wrap.wrap(&edit.text, text.w, font, &measure);
+        edit.page_lines = ((text.h / line_h).floor() as usize).max(1);
+        let content = lines.len() as f32 * line_h;
+        *scroll = scroll.clamp(0.0, (content - text.h).max(0.0));
+        let top = *scroll;
+        let y_of = |i: usize| text.y + i as f32 * line_h - top;
+        let src = &edit.text;
+        let shown: Vec<(f32, f32, String)> = lines
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| y_of(*i) + line_h > clip.y && y_of(*i) < clip.y + clip.h)
+            .map(|(i, v)| (text.x, y_of(i), src[v.start..v.end].replace('\t', TAB_AS)))
+            .collect();
+        let selection: Vec<Rect> = text_edit::selection_spans(edit.selection(), src, &lines, 0..lines.len(), &measure).into_iter().map(|(i, x, w)| Rect { x: text.x + x, y: y_of(i), w, h: line_h }).collect();
+        let caret = focused.then(|| {
+            let (line, x) = edit.caret_line(&lines, &measure);
+            Rect { x: text.x + x.min((text.w - 1.0).max(0.0)), y: y_of(line), w: 1.0, h: line_h }
+        });
+        let thumb = (content > text.h && text.h > 0.0).then(|| {
+            let h = (clip.h * text.h / content).max(12.0 * scale).min(clip.h);
+            let y = clip.y + (clip.h - h) * top / (content - text.h);
+            Rect { x: clip.x + clip.w - 4.0 * scale, y, w: 3.0 * scale, h }
+        });
+        FieldParts { clip, lines: shown, selection, caret, thumb }
+    }
+
+    /// A press in Codecierge: onboarding's button, the goal view's field, checkbox and Start, the
+    /// suggestion view's code blocks, reply field, send and End Task.
     pub(super) fn codecierge_press(&mut self, area: Rect, button: MouseButton, x: f32, y: f32) {
         if button != MouseButton::Left {
             return;
         }
-        let (_, rect, _, _, enabled) = self.codecierge_geometry(area);
-        if !enabled || !rect.contains(x, y) {
-            return;
-        }
-        match self.codecierge_now() {
-            CodeciergeState::NeedsAi => self.ai_reveal = Some(crate::settings_ai::SubTab::General),
-            CodeciergeState::Ready => {
-                if self.ai_check(false)
-                    && let Some(pane) = self.focused_id()
-                {
-                    self.ask(pane, CODECIERGE_BAR, CODECIERGE_LATER, &["OK"], false);
+        let view = match &*self.tool_shown(ToolId::Codecierge) {
+            Shown::Codecierge(v) => v.clone(),
+            _ => self.codecierge_view(),
+        };
+        let Some(guid) = self.codecierge_session().map(|s| s.guid.clone()) else {
+            // No session pane: only Reveal Setting works.
+            if let View::Onboarding(CodeciergeState::NeedsAi) = view {
+                let geo = self.codecierge_geometry(area, &view);
+                if geo.button.contains(x, y) {
+                    self.ai_reveal = Some(crate::settings_ai::SubTab::General);
                 }
             }
-            CodeciergeState::AdminDisabled => {}
+            return;
+        };
+        let geo = self.codecierge_geometry(area, &view);
+        match &view {
+            View::Onboarding(state) => {
+                if !geo.enabled || !geo.button.contains(x, y) {
+                    return;
+                }
+                match state {
+                    CodeciergeState::NeedsAi => self.ai_reveal = Some(crate::settings_ai::SubTab::General),
+                    CodeciergeState::Ready => self.codecierge_get_started(&guid),
+                    CodeciergeState::AdminDisabled => {}
+                }
+            }
+            View::Goal { auto_box, auto_enabled, start_enabled, .. } => {
+                let Some(l) = &geo.goal else { return };
+                let check_row = Rect { w: l.label_x + geo.check_label_w - l.check.x, ..l.check };
+                if l.start.contains(x, y) {
+                    if *start_enabled {
+                        self.codecierge_press_start(&guid);
+                    }
+                } else if (*auto_enabled || *auto_box) && check_row.contains(x, y) {
+                    // One Danger! per session at a time: a click while it waits asks nothing more.
+                    let then = crate::ai_gate::Then::CodeciergeDanger(guid.clone());
+                    let ask = self.codecierge.get_mut(&guid).is_some_and(|s| s.box_clicked()) && !self.ai_alert_pending(&then);
+                    if ask {
+                        self.ask_ai(crate::ai_gate::Alert {
+                            heading: crate::codecierge::DANGER_HEADING.to_string(),
+                            text: crate::codecierge::DANGER_TEXT.to_string(),
+                            buttons: crate::codecierge::DANGER_BUTTONS.to_vec(),
+                            silence: None,
+                            then,
+                            gate: false,
+                            close: Some(crate::codecierge::DANGER_CLOSE),
+                        });
+                    }
+                    self.tools_changed();
+                } else if l.frame.contains(x, y) {
+                    self.codecierge_click(false, l.text, x, y);
+                }
+            }
+            View::Running { transcript, reply, .. } => {
+                let Some(l) = &geo.run else { return };
+                if l.end.contains(x, y) {
+                    return self.codecierge_end(&guid);
+                }
+                if l.send.contains(x, y) {
+                    if !reply.trim().is_empty() {
+                        self.codecierge_press_send(&guid);
+                    }
+                } else if l.reply.contains(x, y) {
+                    self.codecierge_click(true, l.reply_text, x, y);
+                } else if l.room.contains(x, y) {
+                    self.codecierge_copy_block(transcript, l.room, y);
+                }
+            }
         }
+        self.redraw();
+    }
+
+    /// A click on a code block of the transcript copies it and gives the keyboard back to the
+    /// session (iTerm2's `didCopy`).
+    fn codecierge_copy_block(&mut self, transcript: &str, room: Rect, y: f32) {
+        let content = self.codecierge_doc(transcript, room);
+        let (_, oy) = self.codecierge_origin(room, content);
+        let Some((_, layout)) = &self.belt.cc_doc else { return };
+        let Some(at) = layout.lines.iter().position(|l| y >= oy + l.y && y < oy + l.y + l.h) else { return };
+        if !layout.lines[at].code_bg {
+            return;
+        }
+        let first = (0..=at).rev().take_while(|i| layout.lines[*i].code_bg).last().unwrap_or(at);
+        let last = (at..layout.lines.len()).take_while(|i| layout.lines[*i].code_bg).last().unwrap_or(at);
+        let text = (first..=last).map(|i| layout.line_text(i)).collect::<Vec<_>>().join("\n");
+        self.set_clipboard_text(text);
+        self.belt_yield_keys();
+        self.redraw();
+    }
+
+    /// The editor takes the keyboard and places the caret (Shift extends, a double-click selects
+    /// a word), and a drag selects.
+    fn codecierge_click(&mut self, reply: bool, text: Rect, x: f32, y: f32) {
+        self.belt_take_focus(ToolId::Codecierge, Focus::Field);
+        self.codecierge_sync();
+        let (at, end) = self.codecierge_index_at(reply, text, x, y);
+        let shift = self.mods.shift;
+        let edit = if reply { &mut self.belt.cc_reply } else { &mut self.belt.cc_goal };
+        edit.click(at, end, shift, now_ms(), super::clippings_ui::double_click_ms());
+        self.drag = Drag::Belt(BeltDrag::Codecierge);
+    }
+
+    fn codecierge_index_at(&mut self, reply: bool, text: Rect, x: f32, y: f32) -> (usize, bool) {
+        let line_h = self.list_metrics().line.max(1.0);
+        self.with_note_measure(|belt, measure, font| {
+            let (edit, wrap, scroll) = if reply { (&mut belt.cc_reply, &mut belt.cc_reply_wrap, belt.cc_reply_scroll) } else { (&mut belt.cc_goal, &mut belt.cc_goal_wrap, belt.cc_goal_scroll) };
+            let lines = wrap.wrap(&edit.text, text.w, font, measure);
+            let line = (((y - text.y + scroll) / line_h).floor().max(0.0) as usize).min(lines.len().saturating_sub(1));
+            let at = text_edit::index_at(&edit.text, &lines, line, x - text.x, measure);
+            (at, text_edit::ends_line(&lines, line, at))
+        })
+    }
+
+    /// A selection drag in Codecierge's editor.
+    pub(super) fn codecierge_drag(&mut self, x: f32, y: f32) {
+        let Some(area) = self.tool_area(ToolId::Codecierge) else { return };
+        let view = self.codecierge_view();
+        let geo = self.codecierge_geometry(area, &view);
+        let (reply, text) = match (&geo.goal, &geo.run) {
+            (Some(l), _) => (false, l.text),
+            (_, Some(l)) => (true, l.reply_text),
+            _ => return,
+        };
+        let (at, end) = self.codecierge_index_at(reply, text, x, y);
+        let edit = if reply { &mut self.belt.cc_reply } else { &mut self.belt.cc_goal };
+        edit.drag_to(at, end);
+    }
+
+    /// The wheel over Codecierge scrolls the transcript, `dy` lines (up shows earlier text).
+    pub(super) fn codecierge_wheel(&mut self, dy: f32) {
+        if self.codecierge_running() {
+            self.belt.cc_scroll = (self.belt.cc_scroll + dy * self.list_metrics().line).max(0.0);
+            self.redraw();
+        }
+    }
+
+    /// Keys while a Codecierge editor has the keyboard (`text_edit::takes`, as the Notes
+    /// editor): Shift+Enter in the goal presses Start, Enter in the reply sends, Esc gives the
+    /// keyboard back; other chords pass. True when taken.
+    pub(super) fn codecierge_key(&mut self, ev: &KeyEvent) -> bool {
+        let mods = self.mods;
+        if is_modifier(&ev.logical_key) {
+            return true;
+        }
+        if ev.logical_key == WKey::Named(NamedKey::Escape) && !(mods.ctrl || mods.alt || mods.cmd) {
+            self.belt.focus = None;
+            self.redraw();
+            return true;
+        }
+        let Some(area) = self.tool_area(ToolId::Codecierge) else { return true };
+        let view = self.codecierge_view();
+        let running = match &view {
+            View::Goal { .. } => false,
+            View::Running { .. } => true,
+            View::Onboarding(_) => return false,
+        };
+        let Some(guid) = self.codecierge_session().map(|s| s.guid.clone()) else { return false };
+        let enter = ev.logical_key == WKey::Named(NamedKey::Enter) && !(mods.ctrl || mods.alt || mods.cmd);
+        if enter && !running && mods.shift {
+            if let View::Goal { start_enabled: true, .. } = view {
+                self.codecierge_press_start(&guid);
+            }
+            return true;
+        }
+        if enter && running && !mods.shift {
+            self.codecierge_press_send(&guid);
+            return true;
+        }
+        let Some((key, ctrl, alt)) = edit_key(&ev.logical_key, ev.text.as_deref(), mods) else { return !(mods.ctrl || mods.alt || mods.cmd) };
+        if !text_edit::takes(ctrl, alt, mods.cmd, &key) {
+            return false;
+        }
+        let key = self.with_clipboard_text(key);
+        self.codecierge_sync();
+        let geo = self.codecierge_geometry(area, &view);
+        let text = match (&geo.goal, &geo.run) {
+            (Some(l), _) => l.text,
+            (_, Some(l)) => l.reply_text,
+            _ => return true,
+        };
+        let line_h = self.list_metrics().line.max(1.0);
+        let cut = key == EditKey::Cut;
+        let (out, caret_line) = self.with_note_measure(|belt, measure, font| {
+            let (edit, wrap, _) = if running { (&mut belt.cc_reply, &mut belt.cc_reply_wrap, ()) } else { (&mut belt.cc_goal, &mut belt.cc_goal_wrap, ()) };
+            let lines = wrap.wrap(&edit.text, text.w, font, measure);
+            edit.page_lines = ((text.h / line_h).floor() as usize).max(1);
+            let out = edit.key(key, mods.shift, &lines, measure);
+            let lines = wrap.wrap(&edit.text, text.w, font, measure);
+            (out, edit.caret_line(&lines, measure).0)
+        });
+        match out {
+            EditOut::Changed => self.codecierge_edited(),
+            EditOut::Copied(t) => {
+                self.set_clipboard_text(t);
+                if cut {
+                    self.codecierge_edited();
+                }
+            }
+            EditOut::Moved | EditOut::Kept => {}
+        }
+        // The caret stays in view.
+        let top = caret_line as f32 * line_h;
+        let scroll = if running { &mut self.belt.cc_reply_scroll } else { &mut self.belt.cc_goal_scroll };
+        if top < *scroll {
+            *scroll = top;
+        } else if top + line_h > *scroll + text.h {
+            *scroll = top + line_h - text.h;
+        }
+        self.redraw();
+        true
     }
 }
 
@@ -1821,5 +2422,42 @@ mod tests {
         assert_eq!((l.segments[0].w, l.segments[1].x, l.segments[1].w), (50.0, 60.0, 51.0));
         assert_eq!((l.frame.y, l.frame.h), (44.0, 76.0));
         assert_eq!((l.text.x, l.text.y), (16.0, 47.0));
+    }
+
+    #[test]
+    fn codecierge_views_fit_their_room() {
+        let area = Rect { x: 10.0, y: 20.0, w: 300.0, h: 260.0 };
+        let inside = |r: Rect| r.x >= area.x && r.y >= area.y && r.x + r.w <= area.x + area.w + 0.01 && r.y + r.h <= area.y + area.h + 0.01;
+        let g = goal_layout(area, 3, 15.0, 40.0, 1.0);
+        for r in [g.frame, g.text, g.check, g.start] {
+            assert!(inside(r), "{r:?}");
+        }
+        // Top to bottom: the prompt, the field, the checkbox, Start.
+        assert!(g.frame.y >= g.top + 3.0 * 15.0 && g.frame.y + g.frame.h <= g.check.y && g.check.y + g.check.h <= g.start.y);
+        // Start is centered.
+        assert!(((g.start.x + g.start.w / 2.0) - (area.x + area.w / 2.0)).abs() < 1.0);
+        let r = run_layout(area, 15.0, 50.0, 1.0);
+        for rect in [r.spinner, r.room, r.reply, r.reply_text, r.send, r.end] {
+            assert!(inside(rect), "{rect:?}");
+        }
+        // The transcript, then the reply row, then End Task at the bottom right; send sits inside
+        // the reply field's right end.
+        assert!(r.room.y + r.room.h <= r.reply.y && r.reply.y + r.reply.h <= r.end.y);
+        assert!(r.end.x + r.end.w <= area.x + area.w);
+        assert!(r.send.x + r.send.w <= r.reply.x + r.reply.w + 0.01 && r.reply_text.x + r.reply_text.w <= r.send.x);
+        // A tool at its minimum height (130 points) still lays out without negative sizes.
+        let small = Rect { h: crate::codecierge::MIN_HEIGHT, ..area };
+        let g = goal_layout(small, 3, 15.0, 40.0, 1.0);
+        assert!(g.frame.h >= 0.0 && g.text.h >= 0.0);
+        let r = run_layout(small, 15.0, 50.0, 1.0);
+        assert!(r.room.h >= 0.0 && r.reply_text.h >= 0.0);
+    }
+
+    #[test]
+    fn goal_line_is_cut_at_the_tail() {
+        let w = |s: &str| s.chars().count() as f32;
+        assert_eq!(fit_tail("Goal: deploy", 20.0, &w), "Goal: deploy");
+        assert_eq!(fit_tail("Goal: deploy the site", 10.0, &w), "Goal: dep\u{2026}");
+        assert_eq!(fit_tail("abc", 0.0, &w), "\u{2026}");
     }
 }

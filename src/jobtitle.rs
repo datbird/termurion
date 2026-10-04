@@ -15,6 +15,8 @@ pub const HOST: u32 = 1 << 8;
 pub const COMMAND_LINE: u32 = 1 << 9;
 pub const SIZE: u32 = 1 << 10;
 pub const TEMPORARY_NAME: u32 = 1 << 11;
+/// AI-generated name: accepted so imported profiles keep working, never drawn (not available on Windows).
+pub const AI: u32 = 1 << 12;
 
 /// Separates the title's parts (iTerm2 uses an em dash; Tandem's text uses none).
 const SEP: &str = " - ";
@@ -72,6 +74,8 @@ pub fn title_function_value(display_name: &str, unique_id: &str) -> toml::Value 
 
 /// The title for `components` (the profile's Title Components bits).
 pub fn title(components: u32, p: &TitleParts) -> String {
+    // The AI-generated name is not available on Windows: its bit is accepted and draws nothing.
+    let components = components & !AI;
     let explicit = p.explicit.as_deref().filter(|e| !e.is_empty());
     if components == 0 {
         return explicit.unwrap_or("Shell").to_string();
@@ -204,5 +208,15 @@ mod tests {
         assert_eq!(title(COMMAND_LINE, &p), "vim notes.md");
         assert_eq!(title(SESSION_NAME | COMMAND_LINE | JOB, &p), "Default (vim notes.md)", "Command Line wins over Job");
         assert_eq!(title(JOB, &TitleParts { job: String::new(), ..parts() }), " ");
+    }
+
+    /// Review Focus 10: the AI-generated name bit is accepted and draws nothing.
+    #[test]
+    fn ai_title_bit_is_inert() {
+        let p = parts();
+        assert_eq!(AI, 4096);
+        assert_eq!(title(JOB | AI, &p), title(JOB, &p));
+        assert_eq!(title(AI, &p), title(0, &p));
+        assert_eq!(title(AI, &p), "Shell");
     }
 }

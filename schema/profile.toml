@@ -332,7 +332,7 @@ label = "Title components"
 type = "int"
 default = 2
 default_note = "Default is iTermTitleComponentsJob (bit 1<<1 = 2)."
-help = "Bitmask popup choosing what appears in the window/tab title. Bit values: 1=Session Name, 2=Job, 4=Working Directory, 8=TTY, 16=Custom (mutually exclusive with all others), 32=Profile Name, 64=Profile+Session Name, 128=User, 256=Host, 512=Command Line, 1024=Size, 2048=Temporary Session Name, 4096=AI-generated name."
+help = "Bitmask popup choosing what appears in the window/tab title. Bit values: 1=Session Name, 2=Job, 4=Working Directory, 8=TTY, 16=Custom (mutually exclusive with all others), 32=Profile Name, 64=Profile+Session Name, 128=User, 256=Host, 512=Command Line, 1024=Size, 2048=Temporary Session Name, 4096=AI-generated name (not available on Windows: the bit is kept for imported profiles and draws nothing)."
 light_dark = false
 macos_only = false
 

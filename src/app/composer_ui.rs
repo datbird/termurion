@@ -33,7 +33,6 @@ use crate::text_edit::{self, EditKey, EditOut, VisualLine};
 /// A fade's frame interval.
 const FRAME: Duration = Duration::from_millis(16);
 /// The info bar the AI button and Win+Y show.
-const AI_BAR: &str = "composer-ai";
 /// The profile key of the dropdown's distance from the pane's top (`ITAddressBookMgr.h:384`),
 /// undeclared, read with its default 0.
 const TOP_OFFSET: &str = "Composer Top Offset";
@@ -207,7 +206,7 @@ fn glyph(kind: ItemKind) -> char {
         ItemKind::History => HISTORY_GLYPH,
         ItemKind::File => FILE_GLYPH,
         ItemKind::Folder => FOLDER_GLYPH,
-        ItemKind::Command => COMMAND_GLYPH,
+        ItemKind::Command | ItemKind::AiSuggestion | ItemKind::AiReplacement => COMMAND_GLYPH,
     }
 }
 
@@ -307,6 +306,22 @@ pub(super) struct Fetch {
     line: String,
     name: String,
     history: Vec<Item>,
+    /// What the AI request knows (`SR:49-60`) and the previous commands it is given.
+    inputs: crate::ai_complete::Inputs,
+    ai_history: Vec<String>,
+    /// The early item pinned first while the model answers (`LC:715-739`).
+    first: Option<Item>,
+    /// The listing's file items (quoted), the unquoted values the expansion uses, and the
+    /// prefix the parser compares with; set when the request is sent.
+    files: Vec<Item>,
+    expand: Vec<Item>,
+    ai_prefix: String,
+}
+
+/// Whether a model's answer is for the fetch still waiting (a newer fetch or a text change
+/// makes it stale).
+fn ai_reply_current(waiting_generation: Option<u64>, reply_generation: u64) -> bool {
+    waiting_generation == Some(reply_generation)
 }
 
 /// Per-pane composer view state (drawing, highlighting, suggestions); the text itself is the
@@ -409,7 +424,7 @@ impl App {
 
     /// `pane`'s composer takes the keyboard: every other key consumer lets it go, and the
     /// pane's find field stops typing.
-    fn composer_take_keys(&mut self, pane: PaneId) {
+    pub(super) fn composer_take_keys(&mut self, pane: PaneId) {
         self.belt.focus = None;
         self.composer_yield_keys_but(Some(pane));
         if let Some(p) = self.panes.get_mut(&pane) {
@@ -420,6 +435,45 @@ impl App {
             f.typing = false;
         }
         self.refresh_route();
+    }
+
+    /// Engage AI's answer from the terminal or the status bar: `text` goes into the large
+    /// Composer, which opens if it was hidden and takes the keyboard (`PS:21385-21399`). The
+    /// person still has to send it.
+    pub(super) fn composer_ai_place(&mut self, pane: PaneId, text: &str) {
+        let before = self.panes.get(&pane).map(|p| p.composer.shown);
+        self.set_composer_string(pane, text, true);
+        let Some(p) = self.panes.get(&pane) else { return };
+        let (shown, hidden) = (p.composer.shown, p.composer.hidden);
+        if shown != Shown::Dropdown {
+            return;
+        }
+        if before != Some(Shown::Dropdown) {
+            self.composer_opened(pane);
+        }
+        if !hidden {
+            self.composer_take_keys(pane);
+        }
+        self.redraw();
+    }
+
+    /// Engage AI's answer from the large Composer: it replaces the selection, else the whole
+    /// text after the prompt, and the Composer has the keyboard again (`LC:314-343`).
+    pub(super) fn composer_ai_replace(&mut self, pane: PaneId, text: &str) {
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        if p.composer.shown != Shown::Dropdown {
+            return;
+        }
+        p.composer.replace_selection_or_all(text);
+        self.composer_ai_cancel(pane);
+        let v = self.composers.entry(pane).or_default();
+        v.generation += 1;
+        v.ghost = None;
+        v.popup = None;
+        v.waiting = None;
+        v.highlight_due = Some(Instant::now());
+        self.composer_take_keys(pane);
+        self.redraw();
     }
 
     /// The global dropdown height (`ComposerHeight`, 135).
@@ -974,6 +1028,7 @@ impl App {
 
     /// The dropdown appeared: it fades in and is highlighted.
     fn composer_opened(&mut self, pane: PaneId) {
+        self.composer_ai_cancel(pane);
         let v = self.composers.entry(pane).or_default();
         v.opened = Some(Instant::now());
         v.closed = None;
@@ -989,6 +1044,8 @@ impl App {
     /// forgotten (`FC:46-50`, the dismissal resets the file cache).
     fn composer_closed(&mut self, pane: PaneId) {
         let had = self.panes.get_mut(&pane).is_some_and(|p| std::mem::take(&mut p.composer.focused));
+        // A request still running would be paid for and its answer dropped.
+        self.composer_ai_cancel(pane);
         let v = self.composers.entry(pane).or_default();
         v.closed = Some(Instant::now());
         v.ghost = None;
@@ -1322,7 +1379,8 @@ impl App {
         if changed {
             self.composer_changed(pane);
         } else if moved {
-            // A caret move ends the popup (`CTV:266-270`) and the ghost.
+            // A caret move ends the popup (`CTV:266-270`) and the ghost, and the request.
+            self.composer_ai_cancel(pane);
             if let Some(v) = self.composers.get_mut(&pane) {
                 v.popup = None;
                 v.ghost = None;
@@ -1356,6 +1414,8 @@ impl App {
     /// highlight is due (at most every 0.05 s, `CTV:47-48`), and suggestions are fetched
     /// unless the line before the caret is empty or the caret sits inside a word.
     fn composer_changed(&mut self, pane: PaneId) {
+        // A request for the text before this change would only be dropped (ruling P12).
+        self.composer_ai_cancel(pane);
         let now = Instant::now();
         let v = self.composers.entry(pane).or_default();
         v.generation += 1;
@@ -1382,6 +1442,13 @@ impl App {
     /// text only (`PS:24466-24479`, `LCVC:622-643`). `explicit` (Tab) shows the popup, with
     /// "Thinking..." until the listing arrives.
     pub(super) fn composer_fetch(&mut self, pane: PaneId, explicit: bool) {
+        self.composer_ai_cancel(pane);
+        let ai_history = if self.globals.bool(crate::ai_settings::AI_COMPLETIONS) {
+            let host = self.history_host_pub(pane);
+            crate::ai_complete::history_for_prompt(&self.shell_history_pub().uses(&host))
+        } else {
+            Vec::new()
+        };
         let Some(p) = self.panes.get(&pane) else { return };
         let c = &p.composer;
         let text = c.text().to_string();
@@ -1401,12 +1468,13 @@ impl App {
             v.ghost = history.first().map(|i| suggest::shown_ghost(i.value.trim_end_matches(['\r', '\n']), at_end).to_string()).filter(|g| !g.is_empty());
             return;
         }
-        let (first, prefix) = suggest::word_to_complete(&line);
+        let (on_first_word, prefix) = suggest::word_to_complete(&line);
+        let inputs = crate::ai_complete::Inputs { full_prefix: text[..caret].to_string(), full_suffix: text[caret..].to_string(), working_directory: cwd.as_ref().map(|d| d.display().to_string()), executable: on_first_word };
         let (dir_part, name) = match prefix.rfind(['\\', '/']) {
             Some(i) => (&prefix[..=i], &prefix[i + 1..]),
             None => ("", prefix),
         };
-        let fetch = Fetch { generation, explicit, line: line.clone(), name: name.to_string(), history };
+        let fetch = Fetch { generation, explicit, line: line.clone(), name: name.to_string(), history, inputs, ai_history, first: None, files: Vec::new(), expand: Vec::new(), ai_prefix: String::new() };
         v.waiting = Some(fetch);
         if name.is_empty() || crate::prompted::network_path(dir_part) {
             return self.composer_found(pane, generation, Vec::new());
@@ -1420,7 +1488,7 @@ impl App {
         let join = |d: &Path| if dir_part.is_empty() { d.to_path_buf() } else { d.join(dir_part) };
         let dirs: Vec<(PathBuf, bool)> = if Path::new(dir_part).is_absolute() {
             vec![(PathBuf::from(dir_part), false)]
-        } else if first && dir_part.is_empty() {
+        } else if on_first_word && dir_part.is_empty() {
             env_list("PATH").into_iter().map(|d| (PathBuf::from(d), true)).collect()
         } else {
             vec![(join(&base), false)]
@@ -1440,13 +1508,35 @@ impl App {
         let c = &p.composer;
         let at_end = c.edit.caret >= c.text().len();
         let shell = p.own().shell.shell.clone();
-        let Some(v) = self.composers.get_mut(&pane) else { return };
-        if v.waiting.as_ref().is_none_or(|f| f.generation != generation) {
+        if self.composers.get(&pane).and_then(|v| v.waiting.as_ref()).is_none_or(|f| f.generation != generation) {
             return;
         }
-        let Some(f) = v.waiting.take() else { return };
+        // The model is asked only while AI Completion is on, never for a tmux session (its
+        // fetch returned before this), and only past the gate (`LC:622-643`, `AC:16-95`).
+        let ai = self.globals.bool(crate::ai_settings::AI_COMPLETIONS) && self.ai_check(true);
+        let Some(v) = self.composers.get_mut(&pane) else { return };
+        let Some(mut f) = v.waiting.take() else { return };
         let limit = if f.explicit { suggest::FILES_TAB } else { suggest::FILES_TYPING };
-        let mut items = suggest::files(&entries, &f.name, limit, shell.as_deref());
+        let files = suggest::files(&entries, &f.name, limit, shell.as_deref());
+        if ai {
+            f.first = crate::ai_complete::early_item(&files, &f.history, &f.line);
+            // The early item is the ghost at once (`setEarlyResult:`).
+            v.ghost = f.first.as_ref().map(|i| suggest::shown_ghost(i.value.trim_end_matches(['\r', '\n']), at_end).to_string()).filter(|g| !g.is_empty());
+            // iTerm2 hands the model the unescaped values (the remainders after the word).
+            f.expand = files.iter().map(|i| Item { value: crate::shell_history::remainder(&i.detail, &f.name), ..i.clone() }).collect();
+            let values: Vec<String> = f.expand.iter().map(|i| i.value.clone()).collect();
+            let (text, prefix) = crate::ai_complete::prompt(&f.inputs, &f.ai_history, &values);
+            f.ai_prefix = prefix;
+            f.files = files;
+            v.waiting = Some(f);
+            // The request can answer inside this call (a closed gate), so the fetch is kept first.
+            if let Some(id) = self.ai_one_shot(text, super::ai_runs::Owner::Complete { pane, generation }) {
+                self.composer_ai.insert(pane, id);
+            }
+            self.redraw();
+            return;
+        }
+        let mut items = files;
         items.extend(f.history);
         let items = suggest::dedupe(items);
         if items.is_empty() {
@@ -1457,6 +1547,42 @@ impl App {
         }
         v.ghost = suggest::ghost(&items, !f.explicit).map(|g| suggest::shown_ghost(&g, at_end).to_string()).filter(|g| !g.is_empty());
         v.popup = f.explicit.then(|| Popup { items, typed: f.line, selected: 0 });
+        self.redraw();
+    }
+
+    /// Ends the pane's request in flight, if any (ruling P12: a new fetch, a change and a
+    /// closing pane cancel it).
+    pub(super) fn composer_ai_cancel(&mut self, pane: PaneId) {
+        if let Some(id) = self.composer_ai.remove(&pane) {
+            self.ai_run_cancel(id);
+        }
+    }
+
+    /// The model's answer for fetch `generation` (`AC:49-95`, `LC:745-803`): its items pinned
+    /// behind the early item, then the history; the popup opens while typing (suggestion-only
+    /// false). Any failure, including a closed gate, leaves the files.
+    pub(super) fn composer_ai_done(&mut self, pane: PaneId, generation: u64, finished: super::ai_runs::Finished) {
+        use super::ai_runs::Finished;
+        self.composer_ai.remove(&pane);
+        let Some(p) = self.panes.get(&pane) else { return };
+        let at_end = p.composer.edit.caret >= p.composer.text().len();
+        let Some(v) = self.composers.get_mut(&pane) else { return };
+        if !ai_reply_current(v.waiting.as_ref().map(|f| f.generation), generation) {
+            return;
+        }
+        let Some(f) = v.waiting.take() else { return };
+        let ai_items = match finished {
+            Finished::Choice(text) => crate::ai_complete::items_from_response_with(&text, &f.ai_prefix, &f.expand, &f.files),
+            Finished::Failed(_) => f.files.clone(),
+            Finished::Canceled => {
+                self.redraw();
+                return;
+            }
+        };
+        let items = crate::ai_complete::with_first(f.first, ai_items);
+        let (rows, ghost) = crate::ai_complete::shown(&items, &f.history);
+        v.ghost = ghost.map(|g| suggest::shown_ghost(&g, at_end).to_string()).filter(|g| !g.is_empty());
+        v.popup = (!rows.is_empty()).then(|| Popup { items: rows, typed: f.line, selected: 0 });
         self.redraw();
     }
 
@@ -1692,8 +1818,7 @@ impl App {
 
     /// A Win chord (`composer::chord_of`): Win+W closes a shown dropdown (never an Auto
     /// Composer, `PS:8737-8743`); with a composer that has the keyboard, Win+Shift+Up and Down
-    /// step marks (`PS:24608-24625`), Win+Alt+V sends the text to Advanced Paste, Win+Y answers
-    /// that AI comes later, Win+Shift+; opens the command history for the text before the
+    /// step marks (`PS:24608-24625`), Win+Alt+V sends the text to Advanced Paste, Win+Y engages AI, Win+Shift+; opens the command history for the text before the
     /// caret on its line. Win+F goes on to Find, which takes the keyboard. True when used.
     pub(super) fn composer_chord(&mut self, chord: &crate::menus::Chord) -> bool {
         let Some(c) = composer::chord_of(chord) else { return false };
@@ -1714,11 +1839,7 @@ impl App {
             composer::Chord::AdvancedPaste => {
                 return self.composer_advanced_paste_menu();
             }
-            composer::Chord::Ai => {
-                if self.ai_check(false) {
-                    self.ask(pane, AI_BAR, composer::AI_LATER, &["OK"], false);
-                }
-            }
+            composer::Chord::Ai => self.engage_from_composer(pane),
             composer::Chord::Find | composer::Chord::Close => return false,
             composer::Chord::History => {
                 let Some(p) = self.panes.get(&pane) else { return false };
@@ -1781,9 +1902,7 @@ impl App {
                 let origin = self.gpu.as_ref().and_then(|g| g.window.inner_position().ok()).unwrap_or_default();
                 self.composer_windows.help_at = Some((origin.x as f64 + f64::from(l.help.x + l.help.w / 2.0), origin.y as f64 + f64::from(l.help.y)));
             } else if ai && l.ai.contains(x, y) {
-                if self.ai_check(false) {
-                    self.ask(pane, AI_BAR, composer::AI_LATER, &["OK"], false);
-                }
+                self.engage_from_composer(pane);
             } else if l.handle.contains(x, y) {
                 self.drag = Drag::Composer { pane, kind: ComposerDrag::Resize { start_y: y, start_h: l.panel.h / scale } };
             } else if l.text.contains(x, y) {
@@ -1911,6 +2030,7 @@ impl App {
         if let Some(kind) = kind {
             self.drag = Drag::Composer { pane, kind };
         }
+        self.composer_ai_cancel(pane);
         if let Some(v) = self.composers.get_mut(&pane) {
             v.generation += 1;
             v.waiting = None;
@@ -2124,7 +2244,9 @@ impl App {
         let ai = self.globals.bool("GenerativeAIAllowed");
         let tip_w = composer::SEND_TIP.chars().count() as f32 * cw * SMALL;
         let auto = c.auto;
-        let tip = (!auto && composer::send_tip_shows(l.accessory.w / scale, false)).then(|| (l.accessory.x + l.accessory.w - tip_w, l.accessory.y + l.accessory.h - 6.0 * scale - 14.0 * scale + ((14.0 * scale - line_h * SMALL) / 2.0), composer::SEND_TIP));
+        let warn = crate::ai_complete::warning_shows(self.globals.bool(crate::ai_settings::AI_COMPLETIONS), ai);
+        let warning = (!auto && warn).then(|| (l.ai.x + l.ai.w + 4.0 * scale, l.accessory.y + l.accessory.h - 6.0 * scale - 14.0 * scale + ((14.0 * scale - line_h * SMALL) / 2.0), composer::AI_WARNING));
+        let tip = (!auto && composer::send_tip_shows(l.accessory.w / scale, warn)).then(|| (l.accessory.x + l.accessory.w - tip_w, l.accessory.y + l.accessory.h - 6.0 * scale - 14.0 * scale + ((14.0 * scale - line_h * SMALL) / 2.0), composer::SEND_TIP));
         let d = scene::ComposerDraw {
             panel: l.panel,
             radius: composer::RADIUS * scale,
@@ -2140,6 +2262,7 @@ impl App {
             help: l.help,
             ai: (ai && !auto).then_some(l.ai),
             tip,
+            warning,
             tooltip: (self.composer_hover == Some(pane) && open && !auto).then_some(composer::HELP_TIP),
             small: SMALL,
             line_h,
@@ -2387,6 +2510,13 @@ fn browser_name() -> Option<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn stale_ai_reply_is_dropped() {
+        assert!(ai_reply_current(Some(3), 3));
+        assert!(!ai_reply_current(Some(4), 3));
+        assert!(!ai_reply_current(None, 3));
+    }
+
     fn m(ctrl: bool, alt: bool, shift: bool, win: bool) -> CMods {
         CMods { ctrl, alt, shift, win }
     }
@@ -2523,5 +2653,23 @@ mod tests {
         // The layout's field (or a tool, find typing, Copy Mode) has it: not the terminal, so
         // a reveal leaves the keyboard where it is.
         assert!(!terminal_or_dropdown_has_keys(false, true));
+    }
+
+    /// Every place that drops a pending suggestion answer also cancels the request itself
+    /// (ruling P12, Task 5 review minor 1): a closed Composer, a caret move, a click, an Engage
+    /// replace and a reopen. The App has no test harness here, so the source is checked.
+    #[test]
+    fn dropping_an_answer_cancels_its_request() {
+        let src = include_str!("composer_ui.rs");
+        let body = |name: &str| {
+            let at = src.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("no {name}"));
+            let rest = &src[at..];
+            let end = rest[1..].find("\n    fn ").or_else(|| rest[1..].find("\n    pub(super) fn ")).map_or(rest.len(), |e| e + 1);
+            rest[..end].to_string()
+        };
+        for name in ["composer_closed", "composer_opened", "composer_ai_replace"] {
+            assert!(body(name).contains("composer_ai_cancel(pane)"), "{name}");
+        }
+        assert!(src.matches("self.composer_ai_cancel(pane);").count() >= 7, "caret move and press cancel too");
     }
 }

@@ -75,7 +75,7 @@ pub const DONE: &[&str] = &[
     "setWindowStyle:|Full-Height Left of Screen", "setWindowStyle:|Full-Height Right of Screen",
     "setWindowStyle:|Bottom of Screen", "setWindowStyle:|Top of Screen", "setWindowStyle:|Left of Screen",
     "setWindowStyle:|Right of Screen", "toggleToolbeltVisibility:", "setDefaultToolbeltWidth:",
-    "irPrev:", "clearInstantReplay:", "exportRecording:", "loadRecording:", "openAIChats:", "openAIChat:", "toggleShowInlineChat:", "openPasswordManager:",
+    "irPrev:", "clearInstantReplay:", "exportRecording:", "loadRecording:", "openAIChats:", "openAIChat:", "toggleShowInlineChat:", "performNaturalLanguageQuery:", "explainOutputWithAI:", "openPasswordManager:",
     "sshDisconnect:", "downloadFiles:",
 ];
 
@@ -196,6 +196,10 @@ mod tests {
     use super::*;
     use crate::menus::items;
 
+    fn find(sel: &str, label: &str) -> &'static Item {
+        items().iter().find(|i| i.selector == sel && i.label() == label).unwrap()
+    }
+
     #[test]
     fn every_done_entry_names_a_real_menu_command() {
         for d in DONE {
@@ -242,7 +246,8 @@ mod tests {
     #[test]
     fn a_chord_for_a_later_milestone_stays_with_windows() {
         use crate::menus::ChordKey::Char;
-        assert!(command_for_chord(&win(Char('y'), false)).is_none(), "Engage Artificial Intelligence is milestone 12");
+        // Cockpit (12f) is still a later milestone's.
+        assert_eq!(status(find("revealCockpit:", "Cockpit")), Status::Later(12));
         assert_eq!(command_for_chord(&win(Char('t'), false)).unwrap().selector, "newSession:");
     }
 
@@ -252,7 +257,22 @@ mod tests {
         let chord = |shift: bool, ctrl: bool| crate::menus::Chord { key: Char('y'), cmd: true, alt: false, shift, ctrl };
         assert_eq!(command_for_chord(&chord(true, false)).unwrap().selector, "openAIChats:");
         assert_eq!(command_for_chord(&chord(true, true)).unwrap().selector, "openAIChat:");
-        assert!(command_for_chord(&chord(false, false)).is_none(), "Win+Y stays unbound until 12e");
+        assert_eq!(command_for_chord(&chord(false, false)).unwrap().selector, "performNaturalLanguageQuery:");
+    }
+
+    #[test]
+    fn engage_is_done_and_takes_win_y() {
+        use crate::menus::ChordKey::Char;
+        assert_eq!(status(find("performNaturalLanguageQuery:", "Engage Artificial Intelligence")), Status::Done);
+        assert_eq!(command_for_chord(&win(Char('y'), false)).unwrap().selector, "performNaturalLanguageQuery:");
+    }
+
+    #[test]
+    fn explain_is_done_and_takes_win_alt_y() {
+        use crate::menus::ChordKey::Char;
+        assert_eq!(status(find("explainOutputWithAI:", "Explain Output with AI")), Status::Done);
+        let chord = crate::menus::Chord { key: Char('y'), cmd: true, alt: true, shift: false, ctrl: false };
+        assert_eq!(command_for_chord(&chord).unwrap().selector, "explainOutputWithAI:");
     }
 
     #[test]

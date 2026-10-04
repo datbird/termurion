@@ -16,8 +16,8 @@ use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 use crate::pwm::Secret;
 use crate::settings_ai::{AiRequest, SubTab};
 
-/// What a given or refused key continues (ruling 12e-1). 12e adds `Run(u64)`,
-/// `Codecierge(String)` and `Explain`, each with its arm in `App::ai_key_given`.
+/// What a given or refused key continues (ruling 12e-1): the variants 12e added each have their
+/// arm in `App::ai_key_given`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum KeyThen {
     #[allow(dead_code)] // Later callers that only store the key.
@@ -28,6 +28,12 @@ pub(crate) enum KeyThen {
     Turn(String),
     /// A chat's vector-store job (the chat id) starts again with the key (minor m4).
     Files(String),
+    /// A 12e request (the run id) continues with the key; none ends it (`ai_runs`).
+    Run(u64),
+    /// A Codecierge session (its session guid) goes on to its goal.
+    Codecierge(String),
+    /// A waiting Explain Output request continues with the key (`ai_explain_app`).
+    Explain,
 }
 
 impl App {
@@ -88,6 +94,11 @@ impl App {
     /// Whether a gate alert is queued or showing (at most one at a time).
     fn ai_gate_pending(&self) -> bool {
         self.ai_asks.iter().chain(self.ai_alert.as_ref().map(|(_, a)| a)).any(ai_gate::is_gate)
+    }
+
+    /// Whether an alert that answers into `then` is queued or showing.
+    pub(super) fn ai_alert_pending(&self, then: &Then) -> bool {
+        self.ai_asks.iter().chain(self.ai_alert.as_ref().map(|(_, a)| a)).any(|a| a.then == *then)
     }
 
     /// Opens the next queued AI alert when none shows.
@@ -203,6 +214,14 @@ impl App {
             }
             KeyThen::Turn(chat) => self.ai_turn_key(&chat, key),
             KeyThen::Files(chat) => self.ai_files_key(&chat, key),
+            KeyThen::Run(id) => self.ai_run_key(id, key),
+            KeyThen::Explain => self.explain_key_given(key),
+            // The key prompt stored the key; a given one goes on to the goal view, a refusal stays.
+            KeyThen::Codecierge(guid) => {
+                if key.is_some() {
+                    self.codecierge_goal(&guid);
+                }
+            }
         }
     }
 
@@ -339,6 +358,29 @@ impl App {
             }
             // Only Attach attaches; Insert Path, a close and a stale index insert the paths.
             Then::DropChoice { chat, supported, all } => self.chat_drop_answered(&chat, &supported, &all, index),
+            // Only OK ticks the box; any other answer unticks it and turns auto-run off at once
+            // for the session if it runs (`Session::danger_answered`).
+            Then::CodeciergeDanger(guid) => {
+                if let Some(s) = self.codecierge.get_mut(&guid) {
+                    s.danger_answered(index);
+                }
+                self.tools_changed();
+                self.redraw_all();
+            }
+            // Only OK remembers the warning and starts; Cancel, a close and Escape stop.
+            Then::CodeciergePrivacy(guid) => {
+                if crate::codecierge::privacy_starts(index) {
+                    self.globals.set(crate::codecierge::PRIVACY_KEY, toml::Value::Boolean(true));
+                    self.save_globals();
+                    self.codecierge_start(&guid);
+                }
+            }
+            // Only Stop Codecierge stops, and only a session that still runs.
+            Then::CodeciergeUsage(guid) => {
+                if index == 1 && self.codecierge.get(&guid).is_some_and(|s| s.stage == crate::codecierge::Stage::Running) {
+                    self.codecierge_stop(&guid, crate::codecierge::Stage::GoalSetting);
+                }
+            }
             Then::Grant(host) => {
                 if index == 0 {
                     ai_gate::grant(&mut self.globals, &host);

@@ -642,10 +642,13 @@ impl App {
         true
     }
 
-    /// Runs a route (minor m10). Only two inputs reach it: the indicator menu's items and a
+    /// Runs a route (minor m10). Only four inputs reach it: the indicator menu's items, a
     /// terminal command cell's reveal-mark link (`from_command_cell` refuses every other route
-    /// there); a markdown link is never parsed into one. A session that is not a live pane
-    /// exactly, by its reference, is nothing.
+    /// there), a link inside an explanation response (`from_explanation_link`: only its
+    /// annotation reveal) and the attached-content link of an explanation request
+    /// (`from_explanation_request_link`: only its location); any other markdown link is never
+    /// parsed into one. A session that is
+    /// not a live pane exactly, by its reference, is nothing.
     pub(super) fn run_chat_route(&mut self, r: &Route, event_loop: &ActiveEventLoop) {
         match r {
             Route::UnlinkSessionChat(session) => {
@@ -670,6 +673,8 @@ impl App {
                     self.stop_streaming(&chat);
                 }
             }
+            Route::RevealAnnotation { session, id } => self.reveal_ai_annotation(session, id, event_loop),
+            Route::RevealLocation { session, start, end } => self.reveal_ai_location(session, *start, *end),
             Route::RevealMark { session, mark } => {
                 let (Some(pane), Ok(mark)) = (self.ref_pane(session), mark.parse::<u32>()) else { return };
                 self.reveal_pane(pane);
