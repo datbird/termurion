@@ -206,7 +206,7 @@ fn glyph(kind: ItemKind) -> char {
         ItemKind::History => HISTORY_GLYPH,
         ItemKind::File => FILE_GLYPH,
         ItemKind::Folder => FOLDER_GLYPH,
-        ItemKind::Command => COMMAND_GLYPH,
+        ItemKind::Command | ItemKind::AiSuggestion | ItemKind::AiReplacement => COMMAND_GLYPH,
     }
 }
 
@@ -306,6 +306,22 @@ struct Fetch {
     line: String,
     name: String,
     history: Vec<Item>,
+    /// What the AI request knows (`SR:49-60`) and the previous commands it is given.
+    inputs: crate::ai_complete::Inputs,
+    ai_history: Vec<String>,
+    /// The early item pinned first while the model answers (`LC:715-739`).
+    first: Option<Item>,
+    /// The listing's file items (quoted), the unquoted values the expansion uses, and the
+    /// prefix the parser compares with; set when the request is sent.
+    files: Vec<Item>,
+    expand: Vec<Item>,
+    ai_prefix: String,
+}
+
+/// Whether a model's answer is for the fetch still waiting (a newer fetch or a text change
+/// makes it stale).
+fn ai_reply_current(waiting_generation: Option<u64>, reply_generation: u64) -> bool {
+    waiting_generation == Some(reply_generation)
 }
 
 /// Per-pane composer view state (drawing, highlighting, suggestions); the text itself is the
@@ -1393,6 +1409,8 @@ impl App {
     /// highlight is due (at most every 0.05 s, `CTV:47-48`), and suggestions are fetched
     /// unless the line before the caret is empty or the caret sits inside a word.
     fn composer_changed(&mut self, pane: PaneId) {
+        // A request for the text before this change would only be dropped (ruling P12).
+        self.composer_ai_cancel(pane);
         let now = Instant::now();
         let v = self.composers.entry(pane).or_default();
         v.generation += 1;
@@ -1419,6 +1437,13 @@ impl App {
     /// text only (`PS:24466-24479`, `LCVC:622-643`). `explicit` (Tab) shows the popup, with
     /// "Thinking..." until the listing arrives.
     fn composer_fetch(&mut self, pane: PaneId, explicit: bool) {
+        self.composer_ai_cancel(pane);
+        let ai_history = if self.globals.bool(crate::ai_settings::AI_COMPLETIONS) {
+            let host = self.history_host_pub(pane);
+            crate::ai_complete::history_for_prompt(&self.shell_history_pub().uses(&host))
+        } else {
+            Vec::new()
+        };
         let Some(p) = self.panes.get(&pane) else { return };
         let c = &p.composer;
         let text = c.text().to_string();
@@ -1438,12 +1463,13 @@ impl App {
             v.ghost = history.first().map(|i| suggest::shown_ghost(i.value.trim_end_matches(['\r', '\n']), at_end).to_string()).filter(|g| !g.is_empty());
             return;
         }
-        let (first, prefix) = suggest::word_to_complete(&line);
+        let (on_first_word, prefix) = suggest::word_to_complete(&line);
+        let inputs = crate::ai_complete::Inputs { full_prefix: text[..caret].to_string(), full_suffix: text[caret..].to_string(), working_directory: cwd.as_ref().map(|d| d.display().to_string()), executable: on_first_word };
         let (dir_part, name) = match prefix.rfind(['\\', '/']) {
             Some(i) => (&prefix[..=i], &prefix[i + 1..]),
             None => ("", prefix),
         };
-        let fetch = Fetch { generation, explicit, line: line.clone(), name: name.to_string(), history };
+        let fetch = Fetch { generation, explicit, line: line.clone(), name: name.to_string(), history, inputs, ai_history, first: None, files: Vec::new(), expand: Vec::new(), ai_prefix: String::new() };
         if name.is_empty() || crate::prompted::network_path(dir_part) {
             v.waiting = Some(fetch);
             return self.composer_found(pane, generation, Vec::new());
@@ -1452,7 +1478,7 @@ impl App {
         let join = |d: &Path| if dir_part.is_empty() { d.to_path_buf() } else { d.join(dir_part) };
         let dirs: Vec<(PathBuf, bool)> = if Path::new(dir_part).is_absolute() {
             vec![(PathBuf::from(dir_part), false)]
-        } else if first && dir_part.is_empty() {
+        } else if on_first_word && dir_part.is_empty() {
             env_list("PATH").into_iter().map(|d| (PathBuf::from(d), true)).collect()
         } else {
             vec![(join(&base), false)]
@@ -1473,13 +1499,35 @@ impl App {
         let c = &p.composer;
         let at_end = c.edit.caret >= c.text().len();
         let shell = p.own().shell.shell.clone();
-        let Some(v) = self.composers.get_mut(&pane) else { return };
-        if v.waiting.as_ref().is_none_or(|f| f.generation != generation) {
+        if self.composers.get(&pane).and_then(|v| v.waiting.as_ref()).is_none_or(|f| f.generation != generation) {
             return;
         }
-        let Some(f) = v.waiting.take() else { return };
+        // The model is asked only while AI Completion is on, never for a tmux session (its
+        // fetch returned before this), and only past the gate (`LC:622-643`, `AC:16-95`).
+        let ai = self.globals.bool(crate::ai_settings::AI_COMPLETIONS) && self.ai_check(true);
+        let Some(v) = self.composers.get_mut(&pane) else { return };
+        let Some(mut f) = v.waiting.take() else { return };
         let limit = if f.explicit { suggest::FILES_TAB } else { suggest::FILES_TYPING };
-        let mut items = suggest::files(&entries, &f.name, limit, shell.as_deref());
+        let files = suggest::files(&entries, &f.name, limit, shell.as_deref());
+        if ai {
+            f.first = crate::ai_complete::early_item(&files, &f.history, &f.line);
+            // The early item is the ghost at once (`setEarlyResult:`).
+            v.ghost = f.first.as_ref().map(|i| suggest::shown_ghost(i.value.trim_end_matches(['\r', '\n']), at_end).to_string()).filter(|g| !g.is_empty());
+            // iTerm2 hands the model the unescaped values (the remainders after the word).
+            f.expand = files.iter().map(|i| Item { value: crate::shell_history::remainder(&i.detail, &f.name), ..i.clone() }).collect();
+            let values: Vec<String> = f.expand.iter().map(|i| i.value.clone()).collect();
+            let (text, prefix) = crate::ai_complete::prompt(&f.inputs, &f.ai_history, &values);
+            f.ai_prefix = prefix;
+            f.files = files;
+            v.waiting = Some(f);
+            // The request can answer inside this call (a closed gate), so the fetch is kept first.
+            if let Some(id) = self.ai_one_shot(text, super::ai_runs::Owner::Complete { pane, generation }) {
+                self.composer_ai.insert(pane, id);
+            }
+            self.redraw();
+            return;
+        }
+        let mut items = files;
         items.extend(f.history);
         let items = suggest::dedupe(items);
         if items.is_empty() {
@@ -1490,6 +1538,42 @@ impl App {
         }
         v.ghost = suggest::ghost(&items, !f.explicit).map(|g| suggest::shown_ghost(&g, at_end).to_string()).filter(|g| !g.is_empty());
         v.popup = f.explicit.then(|| Popup { items, typed: f.line, selected: 0 });
+        self.redraw();
+    }
+
+    /// Ends the pane's request in flight, if any (ruling P12: a new fetch, a change and a
+    /// closing pane cancel it).
+    pub(super) fn composer_ai_cancel(&mut self, pane: PaneId) {
+        if let Some(id) = self.composer_ai.remove(&pane) {
+            self.ai_run_cancel(id);
+        }
+    }
+
+    /// The model's answer for fetch `generation` (`AC:49-95`, `LC:745-803`): its items pinned
+    /// behind the early item, then the history; the popup opens while typing (suggestion-only
+    /// false). Any failure, including a closed gate, leaves the files.
+    pub(super) fn composer_ai_done(&mut self, pane: PaneId, generation: u64, finished: super::ai_runs::Finished) {
+        use super::ai_runs::Finished;
+        self.composer_ai.remove(&pane);
+        let Some(p) = self.panes.get(&pane) else { return };
+        let at_end = p.composer.edit.caret >= p.composer.text().len();
+        let Some(v) = self.composers.get_mut(&pane) else { return };
+        if !ai_reply_current(v.waiting.as_ref().map(|f| f.generation), generation) {
+            return;
+        }
+        let Some(f) = v.waiting.take() else { return };
+        let ai_items = match finished {
+            Finished::Choice(text) => crate::ai_complete::items_from_response_with(&text, &f.ai_prefix, &f.expand, &f.files),
+            Finished::Failed(_) => f.files.clone(),
+            Finished::Canceled => {
+                self.redraw();
+                return;
+            }
+        };
+        let items = crate::ai_complete::with_first(f.first, ai_items);
+        let (rows, ghost) = crate::ai_complete::shown(&items, &f.history);
+        v.ghost = ghost.map(|g| suggest::shown_ghost(&g, at_end).to_string()).filter(|g| !g.is_empty());
+        v.popup = (!rows.is_empty()).then(|| Popup { items: rows, typed: f.line, selected: 0 });
         self.redraw();
     }
 
@@ -2150,7 +2234,9 @@ impl App {
         let ai = self.globals.bool("GenerativeAIAllowed");
         let tip_w = composer::SEND_TIP.chars().count() as f32 * cw * SMALL;
         let auto = c.auto;
-        let tip = (!auto && composer::send_tip_shows(l.accessory.w / scale, false)).then(|| (l.accessory.x + l.accessory.w - tip_w, l.accessory.y + l.accessory.h - 6.0 * scale - 14.0 * scale + ((14.0 * scale - line_h * SMALL) / 2.0), composer::SEND_TIP));
+        let warn = crate::ai_complete::warning_shows(self.globals.bool(crate::ai_settings::AI_COMPLETIONS), ai);
+        let warning = (!auto && warn).then(|| (l.ai.x + l.ai.w + 4.0 * scale, l.accessory.y + l.accessory.h - 6.0 * scale - 14.0 * scale + ((14.0 * scale - line_h * SMALL) / 2.0), composer::AI_WARNING));
+        let tip = (!auto && composer::send_tip_shows(l.accessory.w / scale, warn)).then(|| (l.accessory.x + l.accessory.w - tip_w, l.accessory.y + l.accessory.h - 6.0 * scale - 14.0 * scale + ((14.0 * scale - line_h * SMALL) / 2.0), composer::SEND_TIP));
         let d = scene::ComposerDraw {
             panel: l.panel,
             radius: composer::RADIUS * scale,
@@ -2166,6 +2252,7 @@ impl App {
             help: l.help,
             ai: (ai && !auto).then_some(l.ai),
             tip,
+            warning,
             tooltip: (self.composer_hover == Some(pane) && open && !auto).then_some(composer::HELP_TIP),
             small: SMALL,
             line_h,
@@ -2412,6 +2499,13 @@ fn browser_name() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_ai_reply_is_dropped() {
+        assert!(ai_reply_current(Some(3), 3));
+        assert!(!ai_reply_current(Some(4), 3));
+        assert!(!ai_reply_current(None, 3));
+    }
 
     fn m(ctrl: bool, alt: bool, shift: bool, win: bool) -> CMods {
         CMods { ctrl, alt, shift, win }

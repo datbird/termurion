@@ -2656,6 +2656,8 @@ pub struct ComposerDraw<'a> {
     pub help: Rect,
     pub ai: Option<Rect>,
     pub tip: Option<(f32, f32, &'a str)>,
+    /// The AI completion warning left of the tip (`LCXIB:98`).
+    pub warning: Option<(f32, f32, &'a str)>,
     /// The Help button's tooltip while the pointer is over it.
     pub tooltip: Option<&'a str>,
     /// The accessory row's text size against the pane's font.
@@ -2738,6 +2740,9 @@ pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) {
     if let Some(r) = d.ai {
         let w = 2.0 * cell.0 * d.small;
         frame.rows.push(TextRow { x: r.x + ((r.w - w) / 2.0).max(0.0), y: r.y + ((r.h - small_h) / 2.0).max(0.0), spans: vec![plain_span("AI".into(), under(d.fg), false)], clip: r, scale: d.small });
+    }
+    if let Some((x, y, text)) = d.warning {
+        frame.rows.push(TextRow { x, y, spans: vec![plain_span(text.to_string(), under(TAB_TEXT_DIM), false)], clip: inner, scale: d.small });
     }
     if let Some((x, y, tip)) = d.tip {
         frame.rows.push(TextRow { x, y, spans: vec![plain_span(tip.to_string(), under(TAB_TEXT_DIM), false)], clip: inner, scale: d.small });

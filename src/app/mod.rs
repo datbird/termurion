@@ -882,6 +882,8 @@ pub struct App {
     /// 12e's AI requests in flight and the next id (app-wide, never swapped; ruling R12e-1).
     ai_runs: HashMap<u64, ai_runs::Run>,
     ai_runs_next: u64,
+    /// Composer suggestions: the run in flight for each pane (ruling P12).
+    composer_ai: HashMap<PaneId, u64>,
     /// Engage AI: the dialog showing (with the pane and what it asked), the one queued to show,
     /// the wait window (with its run), and what each Engage run was started from.
     ai_engage: Option<(crate::ai_engage_ui::EngageWindow, PaneId, crate::ai_engage::Ask)>,
@@ -1564,6 +1566,7 @@ pub fn run() {
         ai_probe: None,
         ai_runs: HashMap::new(),
         ai_runs_next: 0,
+        composer_ai: HashMap::new(),
         ai_engage: None,
         ai_engage_open: None,
         ai_wait: None,
@@ -3329,6 +3332,7 @@ impl App {
         // Every chat linked to this session unlinks while its reference still names the pane.
         self.chat_pane_gone(id);
         // AI requests that belong to the pane end with it.
+        self.composer_ai_cancel(id);
         self.ai_runs_pane_gone(id);
         self.ai_annotations.retain(|_, (pane, _)| *pane != id);
         // A git command's window closed any way ends its command, as does Manage

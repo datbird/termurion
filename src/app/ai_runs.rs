@@ -299,12 +299,13 @@ impl App {
         }
     }
 
-    /// Hands a finished run's answer to its owner. Until their tasks land, a Composer
-    /// suggestion's and Codecierge's answers are dropped.
+    /// Hands a finished run's answer to its owner. Codecierge's answers are dropped until
+    /// its task lands.
     fn ai_run_route(&mut self, id: u64, owner: Owner, done: Finished) {
         match owner {
             Owner::Engage => self.engage_done(id, done),
-            Owner::Complete { .. } | Owner::Codecierge(_) => {}
+            Owner::Complete { pane, generation } => self.composer_ai_done(pane, generation, done),
+            Owner::Codecierge(_) => {}
         }
     }
 }
