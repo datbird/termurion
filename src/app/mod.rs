@@ -625,6 +625,10 @@ pub struct App {
     /// Porthole layouts by pane and id, and the portholes drawn last frame.
     porthole_views: HashMap<(PaneId, u32), porthole_ui::PView>,
     porthole_hits: Vec<porthole_ui::PortholeHit>,
+    /// The info bars, completion lists, composers and popups, toast, banner and Move Pane
+    /// pick as the last frame DREW them: the draw code records each rectangle, nothing
+    /// recomputes it, and the mouse holds exactly these back from the program (B5).
+    overlay_drawn: Vec<(mouse::Overlay, Rect)>,
     /// A link under a porthole press (opened when the button comes up without a drag), the
     /// links waiting on a bar, and the language list a popup shows.
     porthole_link: Option<(PaneId, u32, String)>,
@@ -1676,6 +1680,7 @@ pub fn run() {
         block_buttons: Vec::new(),
         porthole_views: HashMap::new(),
         porthole_hits: Vec::new(),
+        overlay_drawn: Vec::new(),
         porthole_link: None,
         porthole_link_asks: HashMap::new(),
         porthole_languages: None,
@@ -4360,18 +4365,14 @@ impl App {
         if button == MouseButton::Left && (self.info_bar_press(x, y, event_loop) || self.porthole_press(x, y) || self.block_press(x, y)) {
             return;
         }
-        if button == MouseButton::Left {
-            let area = self.content_area();
-            let grab = 3.0 * self.scale();
-            if let Some(d) = self.tabs.get(self.active).and_then(|t| {
-                t.layout.dividers(area, GAP).into_iter().find(|d| {
-                    Rect { x: d.rect.x - grab, y: d.rect.y - grab, w: d.rect.w + 2.0 * grab, h: d.rect.h + 2.0 * grab }.contains(x, y)
-                })
-            }) {
+        // A divider's grab zone is Tandem's for every button: the left drags it, the others
+        // do nothing (a program never sees a press meant for a divider).
+        if let Some(d) = self.divider_at(x, y) {
+            if button == MouseButton::Left {
                 self.tmux_drag_start(&d.path, d.axis);
                 self.drag = Drag::Divider { path: d.path, axis: d.axis, parent: d.parent };
-                return;
             }
+            return;
         }
         // After the divider grab (P7), so a lower pane's title bar does not take the strip.
         if self.title_hit_at(x, y).is_some() {
@@ -4811,6 +4812,7 @@ impl App {
         self.prepare_badges();
         self.prepare_inline_chats();
         let mut porthole_hits = Vec::new();
+        let mut overlay_drawn: Vec<(mouse::Overlay, Rect)> = Vec::new();
         let bview = self.broadcast_view();
         let stripes = self.globals.bool("Use background pattern indicator").then(|| self.stripe_tile());
         if let Some(tab) = self.tabs.get(self.active) {
@@ -4867,7 +4869,7 @@ impl App {
                 }
                 indicator_hits.extend(self.draw_coprocess_indicator(&mut frame, id, self.inner(rect), cell, (sends, receives)));
                 picker_hits.extend(self.draw_session_picker(&mut frame, id, self.inner(rect), cell));
-                self.draw_info_bar(&mut frame, id, rect, cell);
+                overlay_drawn.extend(self.draw_info_bar(&mut frame, id, rect, cell).map(|r| (mouse::Overlay::InfoBar, r)));
                 if let Some(t) = self.draw_attention(&mut frame, id, self.inner(rect), cell) {
                     attention = Some(attention.map_or(t, |a: Instant| a.min(t)));
                 }
@@ -4890,8 +4892,8 @@ impl App {
                 }
                 // The composer over the pane, then the completion list last, so everything under
                 // them is cut out.
-                self.draw_composer(&mut frame, id, rect, cell);
-                self.draw_completion(&mut frame, id, rect, cell);
+                overlay_drawn.extend(self.draw_composer(&mut frame, id, rect, cell));
+                overlay_drawn.extend(self.draw_completion(&mut frame, id, rect, cell).map(|r| (mouse::Overlay::Completion, r)));
             }
             self.draw_clippings(&mut frame, cell);
             inline_hits = self.draw_inline_chats(&mut frame, cell);
@@ -4918,7 +4920,7 @@ impl App {
         self.draw_title_bars(&mut frame, cell);
         self.draw_status_bars(&mut frame, cell);
         // After the bars, so the overlay cuts their text out (P22).
-        self.draw_pane_move(&mut frame, cell);
+        overlay_drawn.extend(self.draw_pane_move(&mut frame, cell).into_iter().map(|r| (mouse::Overlay::PaneMove, r)));
         let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         let line = self.division_height();
         if line > 0.0 {
@@ -4926,7 +4928,7 @@ impl App {
         }
         self.draw_find_cursor(&mut frame, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
         if let Some((text, _)) = self.toast.as_ref().filter(|(_, until)| Instant::now() < *until) {
-            scene::toast(&mut frame, text, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
+            overlay_drawn.push((mouse::Overlay::Toast, scene::toast(&mut frame, text, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell)));
         }
         // The tab tooltip over everything but the banner, under the pointer (a pointer's
         // height below it).
@@ -4950,8 +4952,9 @@ impl App {
         let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
         if let Some(text) = error {
             let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
-            scene::banner(&mut frame, &text, Rect { x: 0.0, y: 0.0, w, h }, cell);
+            overlay_drawn.push((mouse::Overlay::Banner, scene::banner(&mut frame, &text, Rect { x: 0.0, y: 0.0, w, h }, cell)));
         }
+        self.overlay_drawn = overlay_drawn;
         frame
     }
 

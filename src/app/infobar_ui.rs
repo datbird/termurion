@@ -16,11 +16,10 @@ impl App {
         asked
     }
 
-    /// Draws a pane's front bar.
-    pub(super) fn draw_info_bar(&self, frame: &mut Frame, pane: PaneId, rect: Rect, cell: (f32, f32)) {
-        if let Some(bar) = self.bars.get(&pane).and_then(|b| b.front()) {
-            scene::info_bar(frame, bar, &infobar::layout(bar, rect, cell), cell);
-        }
+    /// Draws a pane's front bar and returns the box it drew (the overlay the events read).
+    pub(super) fn draw_info_bar(&self, frame: &mut Frame, pane: PaneId, rect: Rect, cell: (f32, f32)) -> Option<Rect> {
+        let bar = self.bars.get(&pane).and_then(|b| b.front())?;
+        Some(scene::info_bar(frame, bar, &infobar::layout(bar, rect, cell), cell))
     }
 
     /// A click on a bar: runs its button (or closes it). True when the click was on one.

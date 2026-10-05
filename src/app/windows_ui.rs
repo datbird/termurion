@@ -62,6 +62,7 @@ pub(super) struct WinSlot {
     block_buttons: Vec<blocks_ui::BlockButton>,
     block_hover: Option<(PaneId, u32, i32, i32)>,
     porthole_hits: Vec<porthole_ui::PortholeHit>,
+    overlay_drawn: Vec<(mouse::Overlay, Rect)>,
     /// The session picker's buttons this window drew (`chat_session_app`).
     picker_hits: Vec<(PaneId, Rect)>,
     /// The inline chat panels' rectangles this window drew (`inline_chat_ui`).
@@ -166,6 +167,7 @@ impl WinSlot {
             block_buttons: Vec::new(),
             block_hover: None,
             porthole_hits: Vec::new(),
+            overlay_drawn: Vec::new(),
             picker_hits: Vec::new(),
             inline_hits: Vec::new(),
             chat_indicator_hits: Vec::new(),
@@ -277,6 +279,7 @@ impl App {
         swap(&mut self.block_buttons, &mut s.block_buttons);
         swap(&mut self.block_hover, &mut s.block_hover);
         swap(&mut self.porthole_hits, &mut s.porthole_hits);
+        swap(&mut self.overlay_drawn, &mut s.overlay_drawn);
         swap(&mut self.picker_hits, &mut s.picker_hits);
         swap(&mut self.inline_hits, &mut s.inline_hits);
         swap(&mut self.chat_indicator_hits, &mut s.chat_indicator_hits);
@@ -899,6 +902,7 @@ impl WinSlot {
             block_buttons: Vec::new(),
             block_hover: None,
             porthole_hits: Vec::new(),
+            overlay_drawn: Vec::new(),
             picker_hits: Vec::new(),
             inline_hits: Vec::new(),
             chat_indicator_hits: Vec::new(),

@@ -187,6 +187,11 @@ pub fn ffm_may_act(enter: Enter, front: Front, password_prompt: bool, approval_p
     }
 }
 
+/// A split divider's grab zone: the divider grown by `grab` on every side.
+pub fn divider_grab(d: crate::layout::Rect, grab: f32) -> crate::layout::Rect {
+    crate::layout::Rect { x: d.x - grab, y: d.y - grab, w: d.w + 2.0 * grab, h: d.h + 2.0 * grab }
+}
+
 /// What a left press leaves running after it set its selection (`PTYMouseHandler.m:778-782`,
 /// `:595-597`): the click that activated the window may place a selection but a drag never
 /// extends it, nothing is copied at once, and Alt-click never moves the cursor.
@@ -627,5 +632,16 @@ mod tests {
         assert!(!ok(Enter::Steal, Front::Elsewhere, true, false));
         assert!(!ok(Enter::Steal, Front::OtherTandem, false, false));
         assert!(!ok(Enter::Nothing, Front::Terminal, false, false));
+    }
+    /// A split divider's grab zone: the divider grown by `grab` on every side. Every button
+    /// pressed in it is Tandem's (left drags the divider; right and middle do nothing), never
+    /// the program's.
+    #[test]
+    fn divider_grab_zone_holds_every_button() {
+        let d = crate::layout::Rect { x: 100.0, y: 0.0, w: 4.0, h: 200.0 };
+        let z = divider_grab(d, 3.0);
+        assert_eq!((z.x, z.w), (97.0, 10.0));
+        assert!(z.contains(98.0, 50.0) && z.contains(106.0, 50.0));
+        assert!(!z.contains(96.0, 50.0));
     }
 }

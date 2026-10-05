@@ -347,15 +347,6 @@ impl App {
         visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), GAP)
     }
 
-    /// The rectangles the pick's looks are drawn in while a pick is on (they hold every event
-    /// from the program, whatever the button).
-    pub(super) fn pane_move_hit_rects(&self) -> Vec<Rect> {
-        if self.pane_move.is_none() {
-            return Vec::new();
-        }
-        self.pick_rects().into_iter().map(|(_, r)| r).collect()
-    }
-
     /// A press while the pick is on. Left presses are all taken: on a pane it drops with the
     /// half shown (or the half at the press), on the source it cancels. Right and middle pass.
     pub(super) fn pane_move_press(&mut self, button: MouseButton, x: f32, y: f32, event_loop: &ActiveEventLoop) -> bool {
@@ -675,11 +666,14 @@ impl App {
 
     /// The pick's overlay in the current window, over every other text (P22): the source
     /// pane with the source look and message, the hovered half of a target with the target's.
-    pub(super) fn draw_pane_move(&self, frame: &mut scene::Frame, cell: (f32, f32)) {
-        let Some(pm) = &self.pane_move else { return };
+    /// Returns the rectangles it covers: the pick holds every event over the whole session view.
+    pub(super) fn draw_pane_move(&self, frame: &mut scene::Frame, cell: (f32, f32)) -> Vec<Rect> {
+        let Some(pm) = &self.pane_move else { return Vec::new() };
         let colors = pane_move::colors(&|key| self.globals.string(key));
         let scale = self.scale();
+        let mut covered = Vec::new();
         for (id, rect) in self.pick_rects() {
+            covered.push(rect);
             if id == pm.source {
                 let text = if pm.swap { pane_move::SOURCE_SWAP } else { pane_move::SOURCE_MOVE };
                 draw_look(frame, rect, [colors.source_fill, colors.source_border, colors.source_inner], text, cell, scale);
@@ -690,6 +684,7 @@ impl App {
                 }
             }
         }
+        covered
     }
 }
 

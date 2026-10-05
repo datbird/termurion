@@ -171,34 +171,19 @@ impl App {
         }
     }
 
-    /// Every Tandem overlay inside the terminal rectangle or over the window, in ONE list (B5):
-    /// the front info bar of each visible pane, portholes, block pills, session pickers, AI
-    /// indicators, the find bar of the focused pane, the completion list, each shown composer
-    /// and its popup, the toast and the error banner. A new overlay adds its `Overlay` kind
-    /// here; `tandem_ui_at` and the report gate read only this list.
+    /// Every Tandem overlay inside the terminal rectangle or over the window, in ONE list (B5).
+    /// The info bars, completion list, composers and popups, toast, banner and Move Pane pick
+    /// are the rectangles their draw code recorded in `overlay_drawn` (never recomputed here);
+    /// portholes, block pills, session pickers, AI indicators and the focused pane's find bar
+    /// are read from the lists their draws fill. A new overlay records its rectangle from its
+    /// draw; `tandem_ui_at` and the report gate read only this list.
     fn ui_rects(&self) -> mouse::UiRects {
         use mouse::Overlay;
         let mut ui = mouse::UiRects::default();
-        let cell = self.cell();
-        if let Some(tab) = self.tabs.get(self.active) {
-            for (id, rect) in self.visible(tab) {
-                if let Some(bar) = self.bars.get(&id).and_then(|b| b.front()) {
-                    ui.push(Overlay::InfoBar, crate::infobar::layout(bar, rect, cell).bar);
-                }
-                if let Some(r) = self.completion_rect(id, rect, cell) {
-                    ui.push(Overlay::Completion, r);
-                }
-                if self.composer_shown(id) {
-                    ui.push(Overlay::Composer, self.composer_layout(id, rect).panel);
-                    if let Some(r) = self.composer_popup_rect(id, rect) {
-                        ui.push(Overlay::ComposerPopup, r);
-                    }
-                }
-            }
-        }
-        // The pick's looks are drawn inside `pick_rects`, so those are what hold the events.
-        for r in self.pane_move_hit_rects() {
-            ui.push(Overlay::PaneMove, r);
+        // The kinds the draw code records (info bar, completion, composer and popup, toast,
+        // banner, Move Pane pick): the rectangles the last frame painted, nothing recomputed.
+        for (kind, r) in &self.overlay_drawn {
+            ui.push(*kind, *r);
         }
         for h in &self.porthole_hits {
             ui.push(Overlay::Porthole, h.3);
@@ -217,16 +202,15 @@ impl App {
                 ui.push(Overlay::Find, r);
             }
         }
-        let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
-        let window = Rect { x: 0.0, y: 0.0, w: ww, h: wh };
-        // The toast and the banner are not interactive, but a click through them is not the program's either.
-        if let Some((text, _)) = self.toast.as_ref().filter(|(_, until)| Instant::now() < *until) {
-            ui.push(Overlay::Toast, scene::toast_rect(text, window, cell));
-        }
-        if self.banners.text().is_some() || self.panes.values().any(|p| p.error.is_some()) {
-            ui.push(Overlay::Banner, scene::banner_rect(window, cell));
-        }
         ui
+    }
+
+    /// The split divider whose grab zone holds the point (the zone every button's press belongs
+    /// to: the left starts a drag, the others do nothing).
+    pub(super) fn divider_at(&self, x: f32, y: f32) -> Option<crate::layout::Divider> {
+        let area = self.content_area();
+        let grab = 3.0 * self.scale();
+        self.tabs.get(self.active)?.layout.dividers(area, GAP).into_iter().find(|d| mouse::divider_grab(d.rect, grab).contains(x, y))
     }
 
     /// A button a program drew on a line of its output (Tandem acts on it, not the program).
@@ -564,7 +548,7 @@ mod tests {
     #[test]
     fn overlay_hits_are_the_drawn_rects() {
         let u = body(UI, "ui_rects");
-        assert!(u.contains("Overlay::PaneMove") && u.contains("pane_move_hit_rects"));
+        assert!(u.contains("overlay_drawn") && !u.contains("pane_move_hit_rects"));
         let c = include_str!("completion_ui.rs");
         let production = c.split("\n#[cfg(test)]").next().unwrap();
         assert!(!MOD.contains("draw_completion(&mut frame, id, self.inner(rect)"), "the draw takes the pane rect");
@@ -600,10 +584,17 @@ mod tests {
     #[test]
     fn tandem_ui_at_reads_every_overlay_list() {
         let b = body(UI, "ui_rects");
+        let recorded = [crate::mouse::Overlay::InfoBar, crate::mouse::Overlay::Completion, crate::mouse::Overlay::Composer, crate::mouse::Overlay::ComposerPopup, crate::mouse::Overlay::Toast, crate::mouse::Overlay::Banner, crate::mouse::Overlay::PaneMove];
+        let frame = body(MOD, "build_frame");
         for kind in crate::mouse::Overlay::ALL {
-            assert!(b.contains(&format!("Overlay::{kind:?}")), "{kind:?} is not pushed into the one list");
+            let name = format!("Overlay::{kind:?}");
+            if recorded.contains(&kind) {
+                assert!(frame.contains(&name) || include_str!("composer_ui.rs").contains(&name), "{kind:?} is not recorded by its draw");
+            } else {
+                assert!(b.contains(&name), "{kind:?} is not pushed into the one list");
+            }
         }
-        for needle in ["infobar::layout", "porthole_hits", "block_buttons", "picker_hits", "chat_indicator_hits", "find_bar_rect", "find_mode_rect", "completion_rect", "composer_layout", "composer_popup_rect", "toast_rect", "banner_rect"] {
+        for needle in ["overlay_drawn", "porthole_hits", "block_buttons", "picker_hits", "chat_indicator_hits", "find_bar_rect", "find_mode_rect"] {
             assert!(b.contains(needle), "{needle} is not read");
         }
         assert!(body(UI, "tandem_ui_at").contains("inline_button_at"), "inline buttons too");
@@ -727,5 +718,49 @@ mod tests {
         let m = include_str!("menu.rs");
         assert!(m.contains("\"biggerFont:\" => self.change_font_size(1)"));
         assert!(m.contains("\"smallerFont:\" => self.change_font_size(-1)"));
+    }
+    /// 13j round 3 (structural ruling): the seven overlays that used to be recomputed here are
+    /// recorded FROM THEIR DRAW CODE each frame into the window's list, and `ui_rects` reads
+    /// only recorded lists. A kind recomputed in `ui_rects` can differ from the painted frame.
+    #[test]
+    fn overlays_are_recorded_by_their_draw() {
+        let u = body(UI, "ui_rects");
+        for banned in ["infobar::layout", "completion_rect(", "composer_layout", "composer_popup_rect", "toast_rect", "banner_rect", "pane_move_hit_rects", "self.visible("] {
+            assert!(!u.contains(banned), "ui_rects recomputes {banned}");
+        }
+        assert!(u.contains("overlay_drawn"));
+        let b = body(MOD, "build_frame");
+        for kind in ["InfoBar", "Completion", "Toast", "Banner", "PaneMove"] {
+            assert!(b.contains(&format!("Overlay::{kind}")), "build_frame does not record {kind}");
+        }
+        let c = body(include_str!("composer_ui.rs"), "draw_composer");
+        assert!(c.contains("Overlay::Composer,") && c.contains("Overlay::ComposerPopup,"), "the composer draw records its panel and popup");
+        assert!(b.contains("self.draw_composer("), "build_frame stores them");
+        assert!(b.contains("self.overlay_drawn = "), "stored for the events");
+        let w = include_str!("windows_ui.rs");
+        assert!(w.contains("swap(&mut self.overlay_drawn, &mut s.overlay_drawn)"), "per window");
+        assert!(w.matches("overlay_drawn: ").count() >= 2, "WinSlot::new and new_empty");
+        assert!(MOD.contains("overlay_drawn: Vec<(mouse::Overlay, Rect)>"));
+    }
+
+    /// The draw fns hand back what they drew.
+    #[test]
+    fn draw_fns_return_their_rects() {
+        assert!(include_str!("infobar_ui.rs").contains("fn draw_info_bar(&self, frame: &mut Frame, pane: PaneId, rect: Rect, cell: (f32, f32)) -> Option<Rect>"));
+        assert!(include_str!("completion_ui.rs").contains("-> Option<Rect> {\n        let Some((rows, selected, footer, at, bounds)) = self.completion_box"));
+        assert!(include_str!("composer_ui.rs").contains("fn draw_composer(&self, frame: &mut Frame, pane: PaneId, rect: Rect, cell: (f32, f32)) -> Vec<(crate::mouse::Overlay, Rect)>"));
+        assert!(include_str!("pane_move_ui.rs").contains("fn draw_pane_move(&self, frame: &mut scene::Frame, cell: (f32, f32)) -> Vec<Rect>"));
+    }
+
+    /// A right or middle press on a divider's grab zone is Tandem's too.
+    #[test]
+    fn a_divider_press_never_reaches_the_program() {
+        let b = body(MOD, "mouse_press");
+        let grab = b.find("self.divider_at(x, y)").expect("one grab test for every button");
+        let pane = b.find("self.pane_at(x, y)").unwrap();
+        assert!(grab < pane);
+        let after = &b[grab..];
+        assert!(after.contains("button == MouseButton::Left"), "only the left button starts the drag");
+        assert!(body(UI, "divider_at").contains("divider_grab("));
     }
 }

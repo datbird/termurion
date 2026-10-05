@@ -1771,7 +1771,8 @@ pub fn background(frame: &mut Frame, pane: Rect, pieces: &[crate::bgimage::Piece
 
 /// iTerm2's announcement bar across the top of a pane: its text, buttons, and close box.
 /// The pane's text under the bar is hidden.
-pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar::Layout, cell: (f32, f32)) {
+/// Draws the bar and returns the box it drew (its hit rectangle).
+pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar::Layout, cell: (f32, f32)) -> Rect {
     let r = l.bar;
     for row in frame.rows.iter_mut() {
         if row.y < r.y + r.h && row.y + cell.1 > r.y && row.clip.x < r.x + r.w && row.clip.x + row.clip.w > r.x {
@@ -1788,6 +1789,7 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
         frame.rows.push(TextRow { x: b.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.label(i))], clip: *b, scale: 1.0 });
     }
     frame.rows.push(TextRow { x: l.close.x + cell.0 / 2.0, y: r.y + 4.0, spans: vec![span("x".into())], clip: l.close, scale: 1.0 });
+    r
 }
 
 /// The status bar's own colors when the layout sets none: the tab bar's background (no
@@ -2032,8 +2034,9 @@ pub fn completion_rect(rows: &[String], selected: usize, footer: Option<&str>, a
 
 /// The completion list at the cursor (Autocomplete, Auto Command Completion): rows with
 /// the chosen one marked, and a footer. `at`: the cell below the cursor's top-left corner.
-pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, footer: Option<&str>, at: (f32, f32), bounds: Rect, cell: (f32, f32)) {
-    let Some((r, first, shown)) = completion_rect(rows, selected, footer, at, bounds, cell) else { return };
+/// Draws the list and returns the box it drew (None when there is nothing to show).
+pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, footer: Option<&str>, at: (f32, f32), bounds: Rect, cell: (f32, f32)) -> Option<Rect> {
+    let (r, first, shown) = completion_rect(rows, selected, footer, at, bounds, cell)?;
     let visible = &rows[first..first + shown];
     let (x, y) = (r.x, r.y);
     let w = r.w;
@@ -2050,6 +2053,7 @@ pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, foot
     if let Some(f) = footer {
         frame.rows.push(TextRow { x: x + cell.0, y: y + 2.0 + visible.len() as f32 * cell.1, spans: vec![span(f.to_string())], clip: r, scale: 1.0 });
     }
+    Some(r)
 }
 
 /// The session picker's button (`SessionView.m:1203-1235`): a labelled box centered in the
@@ -2784,10 +2788,11 @@ fn plain_span(text: String, color: Rgb, bold: bool) -> Span {
 /// The minimal composer over its pane (`ComposerDraw`). The panel is a popup box: the pane's
 /// text under it is cut out and the box goes in `popups`, with the selection and the caret on
 /// it; its own text rows come after.
-pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) {
+/// Draws the composer and returns its panel (None when nothing was drawn).
+pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) -> Option<Rect> {
     let a = d.alpha.clamp(0.0, 1.0);
     if a <= 0.0 || d.panel.w <= 2.0 || d.panel.h <= 2.0 {
-        return;
+        return None;
     }
     cut_out(frame, d.panel, d.line_h);
     let inner = Rect { x: d.panel.x + 1.0, y: d.panel.y + 1.0, w: d.panel.w - 2.0, h: d.panel.h - 2.0 };
@@ -2827,7 +2832,7 @@ pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) {
         }
     }
     if d.separator.is_some() {
-        return;
+        return Some(d.panel);
     }
     let icon = |frame: &mut Frame, r: Rect, glyph: char| {
         let (w, h) = (cell.0, cell.1);
@@ -2856,6 +2861,7 @@ pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) {
         frame_lines(&mut frame.popups, r, rgba(DIVIDER, a));
         frame.rows.push(TextRow { x: r.x + cell.0 * d.small, y: r.y + 3.0, spans: vec![plain_span(t.to_string(), under(TAB_TEXT), false)], clip: r, scale: d.small });
     }
+    Some(d.panel)
 }
 
 /// What the composer's completion popup shows (`CW:199-274`): rows of (text, the bold typed
@@ -3151,7 +3157,7 @@ pub fn toast_rect(text: &str, area: Rect, cell: (f32, f32)) -> Rect {
 }
 
 /// A short message in a dark box near the bottom center of `area`.
-pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
+pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) -> Rect {
     let r = toast_rect(text, area, cell);
     // Text under the box is cut where the box starts, as under the find bar.
     for row in frame.rows.iter_mut() {
@@ -3162,6 +3168,7 @@ pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
     frame.quads.push(Quad { rect: r, color: rgba(STAMP_BG, 1.0) });
     let span = Span { text: text.to_string(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
     frame.rows.push(TextRow { x: r.x + 2.0 * cell.0, y: r.y + 6.0, spans: vec![span], clip: r, scale: 1.0 });
+    r
 }
 
 /// The error bar's box.
@@ -3171,11 +3178,12 @@ pub fn banner_rect(area: Rect, cell: (f32, f32)) -> Rect {
 
 /// A one-line error bar along the bottom of `area`. Its box goes in `quads`, so its
 /// text (in `rows`) draws on top.
-pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
+pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) -> Rect {
     let r = banner_rect(area, cell);
     frame.quads.push(Quad { rect: r, color: rgba(BANNER, 1.0) });
     let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
     frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span], clip: r, scale: 1.0 });
+    r
 }
 
 #[cfg(test)]
@@ -5305,5 +5313,68 @@ mod title_bar_tests {
         let mut f = Frame::default();
         pane_title_bar(&mut f, &bar("a\u{202e}b\r\nc", true), CELL);
         assert_eq!(f.rows.iter().find(|r| !r.spans[0].icon).unwrap().spans[0].text, "abc");
+    }
+}
+
+#[cfg(test)]
+mod drawn_overlay_tests {
+    use super::*;
+
+    const CELL: (f32, f32) = (8.0, 16.0);
+    const AREA: Rect = Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 };
+
+    /// The rect a draw returns is the one the hit test reads (13j round 3): one per kind.
+    #[test]
+    fn toast_hit_rect_is_the_drawn_rect() {
+        let mut f = Frame::default();
+        assert_eq!(toast(&mut f, "saved", AREA, CELL), toast_rect("saved", AREA, CELL));
+        assert_eq!(f.quads.last().unwrap().rect, toast_rect("saved", AREA, CELL), "and it is the quad painted");
+    }
+
+    #[test]
+    fn banner_hit_rect_is_the_drawn_rect() {
+        let mut f = Frame::default();
+        assert_eq!(banner(&mut f, "oops", AREA, CELL), banner_rect(AREA, CELL));
+        assert_eq!(f.quads.last().unwrap().rect, banner_rect(AREA, CELL));
+    }
+
+    #[test]
+    fn completion_hit_rect_is_the_drawn_rect() {
+        let rows = vec!["ls".to_string(), "lsof".to_string()];
+        let mut f = Frame::default();
+        let drawn = completion_list(&mut f, &rows, 0, None, (10.0, 20.0), AREA, CELL);
+        assert_eq!(drawn, completion_rect(&rows, 0, None, (10.0, 20.0), AREA, CELL).map(|c| c.0));
+        assert_eq!(f.popups.first().map(|q| q.rect), drawn, "the box painted");
+        assert_eq!(completion_list(&mut f, &[], 0, None, (0.0, 0.0), AREA, CELL), None, "nothing drawn, nothing held");
+    }
+
+    #[test]
+    fn info_bar_hit_rect_is_the_drawn_rect() {
+        let bar = crate::infobar::Bar { id: "x".into(), text: "hi".into(), buttons: vec!["_Yes".into()], important: true };
+        let l = crate::infobar::layout(&bar, AREA, CELL);
+        let mut f = Frame::default();
+        assert_eq!(info_bar(&mut f, &bar, &l, CELL), l.bar);
+        assert_eq!(f.quads[0].rect, l.bar);
+    }
+
+    #[test]
+    fn composer_hit_rect_is_the_drawn_rect() {
+        let panel = Rect { x: 10.0, y: 400.0, w: 500.0, h: 120.0 };
+        let z = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
+        let d = ComposerDraw { panel, radius: 6.0, alpha: 1.0, bg: rgb(0, 0, 0), under: rgb(0, 0, 0), fg: rgb(255, 255, 255), clip: panel, lines: &[], selection: &[], caret: None, close: z, help: z, ai: None, tip: None, warning: None, tooltip: None, small: 0.8, line_h: 16.0, separator: None, backs: &[] };
+        let mut f = Frame::default();
+        assert_eq!(composer(&mut f, &d, CELL), Some(panel));
+        let faded = ComposerDraw { alpha: 0.0, ..d };
+        assert_eq!(composer(&mut f, &faded, CELL), None, "a fully faded composer holds nothing");
+    }
+
+    #[test]
+    fn composer_popup_hit_rect_is_the_drawn_rect() {
+        let rows = vec![("ls".to_string(), None, 'c')];
+        let d = ComposerPopupDraw { caret: (20.0, 300.0, 316.0), bounds: AREA, rows: &rows, selected: Some(0), detail: None, placeholder: None, dark: true, scale: 1.0 };
+        let mut f = Frame::default();
+        let drawn = composer_popup(&mut f, &d, CELL);
+        let widest = (2.0 + 3.0) * CELL.0;
+        assert_eq!(drawn, composer_popup_frame(d.caret, AREA, 1, Some(0), false, widest, 1.0).0);
     }
 }

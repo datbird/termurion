@@ -54,8 +54,14 @@ impl Detector {
             let cut = self.pattern.len() - MAX_LEN;
             self.pattern.drain(..cut);
         }
-        self.deadline = Some(now + DEADLINE);
         self.carry.clear();
+        // iTerm2 sets its expectation only for a pattern past 6 characters; a short one leaves
+        // none, so the next report starts over (`PTYSession.m:14086-14099`).
+        if self.pattern.len() < MIN_LEN {
+            self.deadline = None;
+            return;
+        }
+        self.deadline = Some(now + DEADLINE);
     }
 
     /// Armed: the pattern is long enough and its deadline has not passed.
@@ -130,16 +136,25 @@ mod tests {
         let mut d = Detector::default();
         d.armed(b"\x1b[<0;1;1M", t);
         assert!(!d.is_armed(t), "six bytes do not arm");
+        // iTerm2 leaves no detector after a short report (PS:14086-14099): the next report
+        // starts fresh, so two one-digit SGR reports do not arm.
         d.armed(b"\x1b[<0;1;1m", t + ms(50));
-        assert!(d.is_armed(t + ms(50)));
-        assert_eq!(d.pattern(), b"0;1;1M0;1;1m");
-        // 40 bytes of reports keep only the last 32.
+        assert!(!d.is_armed(t + ms(50)));
+        assert_eq!(d.pattern(), b"0;1;1m");
+        // Three X10 reports (3 printable bytes each) do not arm either.
         let mut d = Detector::default();
-        for _ in 0..8 {
-            d.armed(b"\x1b[<0;1;1M", t);
+        for i in 0..3 {
+            d.armed(b"\x1b[M #!", t + ms(i));
+        }
+        assert!(!d.is_armed(t + ms(3)));
+        assert_eq!(d.pattern(), b" #!");
+        // 35 bytes of reports keep only the last 32.
+        let mut d = Detector::default();
+        for _ in 0..5 {
+            d.armed(b"\x1b[<0;12;5M", t);
         }
         assert_eq!(d.pattern().len(), 32);
-        assert!(d.pattern().ends_with(b";1;1M"));
+        assert!(d.pattern().ends_with(b";12;5M"));
         // A report after the deadline starts over.
         let mut d = Detector::default();
         d.armed(b"\x1b[<0;1;1M", t);

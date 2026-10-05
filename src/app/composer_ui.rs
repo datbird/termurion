@@ -2106,12 +2106,6 @@ impl App {
 
     /// What a point on `pane`'s popup hits: Some(Some(row)) a row, Some(None) the popup
     /// without a row (the "Thinking..." placeholder), None not the popup.
-    /// The popup's box in `pane`'s rectangle (a point on it is Tandem's).
-    pub(super) fn composer_popup_rect(&self, pane: PaneId, rect: Rect) -> Option<Rect> {
-        let (caret, rows, selected, detail, widest, _) = self.composer_popup_geometry(pane, rect)?;
-        Some(scene::composer_popup_frame(caret, rect, rows, selected, detail, widest, self.scale()).0)
-    }
-
     fn composer_popup_hit(&self, pane: PaneId, rect: Rect, x: f32, y: f32) -> Option<Option<usize>> {
         let (caret, rows, selected, detail, widest, thinking) = self.composer_popup_geometry(pane, rect)?;
         let scale = self.scale();
@@ -2160,8 +2154,10 @@ impl App {
     /// out over 0.125 s, the text in the pane's font and colors with the highlight, the ghost
     /// at half alpha after the caret, the selection as Notes draws it, the carets in the
     /// cursor color while it has the keyboard, the accessory row; then its popup.
-    pub(super) fn draw_composer(&self, frame: &mut Frame, pane: PaneId, rect: Rect, cell: (f32, f32)) {
-        let Some(p) = self.panes.get(&pane) else { return };
+    pub(super) fn draw_composer(&self, frame: &mut Frame, pane: PaneId, rect: Rect, cell: (f32, f32)) -> Vec<(crate::mouse::Overlay, Rect)> {
+        use crate::mouse::Overlay;
+        let mut out = Vec::new();
+        let Some(p) = self.panes.get(&pane) else { return out };
         let c = &p.composer;
         let v = self.composers.get(&pane);
         let now = Instant::now();
@@ -2170,7 +2166,7 @@ impl App {
         } else {
             match v.and_then(|v| v.closed) {
                 Some(t) if now.duration_since(t).as_secs_f32() < composer::FADE_OUT => 1.0 - now.duration_since(t).as_secs_f32() / composer::FADE_OUT,
-                _ => return,
+                _ => return out,
             }
         };
         let scale = self.scale();
@@ -2277,7 +2273,7 @@ impl App {
             separator: auto.then(|| (scene::mark_rgba(crate::marks::MarkColor::Success), scale.max(1.0))),
             backs: &backs,
         };
-        scene::composer(frame, &d, cell);
+        out.extend(scene::composer(frame, &d, cell).map(|r| (Overlay::Composer, r)));
         // Extra carets.
         if has_keys {
             for e in &c.edit.extra {
@@ -2289,11 +2285,11 @@ impl App {
             }
         }
         if !open {
-            return;
+            return out;
         }
         // The popup below (or above) the caret.
         let thinking = v.and_then(|v| v.waiting.as_ref()).is_some_and(|f| f.explicit);
-        let Some(caret_r) = self.composer_caret_rect(pane, rect) else { return };
+        let Some(caret_r) = self.composer_caret_rect(pane, rect) else { return out };
         let caret_at = (caret_r.x, caret_r.y, caret_r.y + caret_r.h);
         if let Some(pop) = v.and_then(|v| v.popup.as_ref()) {
             let rows: Vec<(String, Option<Range<usize>>, char)> = pop
@@ -2306,11 +2302,12 @@ impl App {
                 .collect();
             let detail = pop.items.get(pop.selected).map(|i| i.detail.as_str());
             let d = scene::ComposerPopupDraw { caret: caret_at, bounds: rect, rows: &rows, selected: Some(pop.selected), detail, placeholder: None, dark: self.dark(), scale };
-            scene::composer_popup(frame, &d, cell);
+            out.push((Overlay::ComposerPopup, scene::composer_popup(frame, &d, cell)));
         } else if thinking {
             let d = scene::ComposerPopupDraw { caret: caret_at, bounds: rect, rows: &[], selected: None, detail: None, placeholder: Some(suggest::THINKING), dark: self.dark(), scale };
-            scene::composer_popup(frame, &d, cell);
+            out.push((Overlay::ComposerPopup, scene::composer_popup(frame, &d, cell)));
         }
+        out
     }
 
     /// The composers' timers: the worker's answers, the rate-limited highlighting (checks

@@ -190,15 +190,9 @@ impl App {
         Some((rows, list.selected, footer, at, rect))
     }
 
-    /// Where the list is drawn in `pane` (its hit rectangle: a click on it is Tandem's).
-    pub(super) fn completion_rect(&self, pane: PaneId, rect: Rect, cell: (f32, f32)) -> Option<Rect> {
-        let (rows, selected, footer, at, bounds) = self.completion_box(pane, rect, cell)?;
-        scene::completion_rect(&rows, selected, footer, at, bounds, cell).map(|(r, _, _)| r)
-    }
-
-    /// Draws the list at the cursor of its pane.
-    pub(super) fn draw_completion(&self, frame: &mut Frame, pane: PaneId, rect: Rect, cell: (f32, f32)) {
-        let Some((rows, selected, footer, at, bounds)) = self.completion_box(pane, rect, cell) else { return };
-        scene::completion_list(frame, &rows, selected, footer, at, bounds, cell);
+    /// Draws the list at the cursor of its pane and returns the box it drew.
+    pub(super) fn draw_completion(&self, frame: &mut Frame, pane: PaneId, rect: Rect, cell: (f32, f32)) -> Option<Rect> {
+        let Some((rows, selected, footer, at, bounds)) = self.completion_box(pane, rect, cell) else { return None };
+        scene::completion_list(frame, &rows, selected, footer, at, bounds, cell)
     }
 }
