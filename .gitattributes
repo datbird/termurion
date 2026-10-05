@@ -1,2 +1,3 @@
 tests/fixtures/ssh/* binary
 resources/ssh/** -text
+resources/terminfo/** binary

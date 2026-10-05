@@ -383,6 +383,10 @@ pub mod api_layout;
 pub mod api_misc;
 pub mod api_notify;
 pub mod session_env;
+pub mod locale_guess;
+#[cfg(windows)]
+pub mod locale_win;
+pub mod terminfo;
 #[cfg(windows)]
 pub mod api_server;
 pub mod ai_settings;

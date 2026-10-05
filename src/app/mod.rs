@@ -544,6 +544,9 @@ pub struct App {
     /// The tab the next pane goes into once started (a split), for its `ITERM_SESSION_ID`;
     /// None is a new tab. Set and cleared around one start, so it is not per-window state.
     start_tab: Option<usize>,
+    /// Tandem's terminfo folder, written once per run on the first WSL session that needs it
+    /// (`terminfo::ensure`); app-wide.
+    terminfo_dir: Option<PathBuf>,
     /// Sessions opened for a git menu command, by pane (app-wide).
     single_use: HashMap<PaneId, git_ui::SingleUse>,
     /// Undo Close: closed things waiting, and the close being collected now.
@@ -1702,6 +1705,7 @@ pub fn run() {
         start_jumps_override: None,
         start_env_override: None,
         start_tab: None,
+        terminfo_dir: None,
         single_use: HashMap::new(),
         undo: Default::default(),
         undo_capture: None,
@@ -3179,7 +3183,7 @@ impl App {
     /// count less one once it is in the tab, `TAB:7435-7443`). The result holds a secret:
     /// never log it. A pane started on SSH transport `t` other than ConPTY is told which
     /// (`TANDEM_SSH_TRANSPORT`, for it2ssh).
-    fn session_env(&mut self, id: PaneId, p: &Profile, t: crate::ssh_transport::Transport) -> (Vec<String>, Option<String>) {
+    fn session_env(&mut self, id: PaneId, p: &Profile, t: crate::ssh_transport::Transport, cmd: &str) -> (Vec<String>, Option<String>) {
         let window = self.window_number();
         let counts: Vec<usize> = self.tabs.iter().map(|t| t.layout.panes().len()).collect();
         let holding = self.tabs.iter().position(|t| t.layout.panes().contains(&id));
@@ -3220,7 +3224,69 @@ impl App {
             ssh_path: ssh_path.as_deref(),
             ssh_transport: transport,
         };
-        (crate::session_env::overlay(crate::session_env::vars(&facts), &extra), cookie)
+        let mut env = crate::session_env::overlay(crate::session_env::vars(&facts), &extra);
+        // The POSIX variables follow, never interleaved (`PS:3284-3366`); `merge` puts them over
+        // the inherited block.
+        let posix = self.posix(p, cmd);
+        env.extend(crate::session_env::posix_vars(&posix));
+        (env, cookie)
+    }
+
+    /// The POSIX variables a session on `cmd` gets: `COLORFGBG` from the profile's palette, the
+    /// locale (`locale_guess::locale_vars`), and `TERMINFO_DIRS` for WSL (R6).
+    fn posix(&mut self, p: &Profile, cmd: &str) -> crate::session_env::Posix {
+        let palette = crate::palette::Palette::from_profile(p, self.dark());
+        let colorfgbg = crate::session_env::colorfgbg(&palette.ansi, palette.fg, palette.bg, self.globals.bool("UseColorfgbgFallback"));
+        let locale = self.locale_pairs(p);
+        // Only a WSL session wants it, and only a local `%APPDATA%` is written (P12).
+        let terminfo = (self.globals.bool("ShouldSetTerminfoDirs") && crate::session_env::is_wsl(cmd)).then(|| self.terminfo_folder()).flatten();
+        posix_for(cmd, terminfo.as_deref().map(|d| d.to_string_lossy()).as_deref(), colorfgbg, locale, std::env::var("WSLENV").ok())
+    }
+
+    /// The locale variables for the profile (`PS:3284-3331`). Until the start-time prompt
+    /// (Task 3), a suspect custom locale is used as written and a failed guess falls to
+    /// `LC_CTYPE`, iTerm2's path after "Use Minimal POSIX Locale".
+    #[cfg(windows)]
+    fn locale_pairs(&self, p: &Profile) -> Vec<(String, String)> {
+        use crate::locale_guess::{self, Outcome};
+        let encoding = p.int("Character Encoding");
+        let facts = crate::locale_win::facts(encoding, &self.globals.string("FallbackLCCType"));
+        let name = locale_guess::encoding_name(encoding);
+        let supported = |c: &str| crate::locale_win::supported(c, name);
+        let mode = locale_guess::Mode::from_value(p.int("Set Local Environment Vars"));
+        match locale_guess::locale_vars(mode, &p.string("Custom Locale"), &facts, encoding == 4, &supported) {
+            Outcome::Vars(v) => v,
+            Outcome::None => Vec::new(),
+            Outcome::SuspectCustom(l) => vec![("LANG".to_string(), l)],
+            Outcome::NeedsPrompt => locale_guess::lc_ctype(&facts, &supported).map(|v| vec![("LC_CTYPE".to_string(), v)]).unwrap_or_default(),
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn locale_pairs(&self, _p: &Profile) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    /// Tandem's terminfo folder, written on first use and kept for the run. A UNC `%APPDATA%`
+    /// is never written (none, silently); a write error leaves it out with a banner.
+    #[cfg(windows)]
+    fn terminfo_folder(&mut self) -> Option<PathBuf> {
+        if self.terminfo_dir.is_none() {
+            let appdata = crate::session_env::appdata_local()?;
+            match crate::terminfo::ensure(&appdata) {
+                Ok(dir) => {
+                    self.banners.clear("terminfo");
+                    self.terminfo_dir = Some(dir);
+                }
+                Err(e) => self.banners.set("terminfo", format!("Could not write Tandem's terminfo files: {e}")),
+            }
+        }
+        self.terminfo_dir.clone()
+    }
+
+    #[cfg(not(windows))]
+    fn terminfo_folder(&mut self) -> Option<PathBuf> {
+        None
     }
 
     /// A pane dropped for good takes its cookie out of the jar (a pane stashed for Undo Close
@@ -3289,7 +3355,7 @@ impl App {
             self.host = None;
             self.banners.set("host", "The session host stopped. New shells run inside Tandem, so they end with it.");
         }
-        let (env, cookie) = self.session_env(id, &p, transport);
+        let (env, cookie) = self.session_env(id, &p, transport, &cmd);
         let started = match &self.host {
             Some(h) => match Pane::start_hosted_transport(id, h, transport, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone()) {
                 // A host below protocol 4 cannot run this transport: the session runs inside
@@ -6276,9 +6342,39 @@ fn menu_should_hide(full_screen: bool, hide_key: bool) -> bool {
     full_screen && hide_key
 }
 
+/// The session's POSIX variables for a program started from `cmdline`: `TERMINFO_DIRS` only for
+/// a WSL session (R6: MSYS2, Git Bash, cmd and PowerShell never get it), the rest as given.
+pub(super) fn posix_for(cmdline: &str, terminfo_dir: Option<&str>, colorfgbg: Option<String>, locale: Vec<(String, String)>, inherited_wslenv: Option<String>) -> crate::session_env::Posix {
+    crate::session_env::Posix {
+        colorfgbg,
+        locale,
+        terminfo: terminfo_dir.filter(|_| crate::session_env::is_wsl(cmdline)).map(str::to_string),
+        inherited_wslenv,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminfo_is_for_wsl_only() {
+        let dir = Some(r"C:\A\Tandem\terminfo");
+        let at = |cmd: &str| posix_for(cmd, dir, Some("15;0".into()), vec![("LANG".into(), "en_US.UTF-8".into())], Some("X/p".into()));
+        assert_eq!(at("wsl.exe -d Ubuntu").terminfo.as_deref(), dir);
+        assert_eq!(at(r#""C:\Windows\System32\wsl.exe""#).terminfo.as_deref(), dir);
+        for other in ["pwsh.exe", r"C:\msys64\usr\bin\bash.exe --login", "cmd.exe", r"C:\Program Files\Git\bin\bash.exe", "ubuntu.exe"] {
+            let p = at(other);
+            assert_eq!(p.terminfo, None, "{other}");
+            // The rest is untouched for every program.
+            assert_eq!(p.colorfgbg.as_deref(), Some("15;0"));
+            assert_eq!(p.locale, vec![("LANG".to_string(), "en_US.UTF-8".to_string())]);
+            assert_eq!(p.inherited_wslenv.as_deref(), Some("X/p"));
+        }
+        assert_eq!(posix_for("wsl.exe", None, None, Vec::new(), None).terminfo, None, "no folder, no variable");
+        let line = crate::session_env::posix_vars(&at("pwsh.exe"));
+        assert!(!line.iter().any(|v| v.starts_with("TERMINFO_DIRS=") || v.contains("TERMINFO_DIRS")), "{line:?}");
+    }
 
     #[test]
     fn menu_bar_hides_in_full_screen() {
