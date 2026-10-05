@@ -369,12 +369,10 @@ mod tests {
     }
 
     #[test]
-    fn quoted_drop_names_stay_text_in_cmd() {
-        let name = crate::coprocess::cmd_safe(r"C:\d\a&echo INJECTED&%PATH%.txt");
-        let mut co = Coprocess::start(&format!("echo {name}"), false, &std::env::temp_dir(), Arc::new(|| {})).unwrap();
+    fn dropped_names_reach_cmd_as_one_argument() {
+        let line = crate::coprocess::drop_command("echo \\(filenames)", &[r"C:\d\a b.txt".to_string()]).unwrap().unwrap();
+        let mut co = Coprocess::start(&line, false, &std::env::temp_dir(), Arc::new(|| {})).unwrap();
         let out = String::from_utf8_lossy(&wait_for(&mut co, 10)).to_string();
-        // echo shows the quote marks; a program's own argument parsing joins the pieces.
-        assert!(out.contains("&echo INJECTED&") && out.contains("%\"PATH\"%") && !out.to_lowercase().contains("system32"), "{out}");
-        assert!(!out.lines().any(|l| l.trim() == "INJECTED"), "{out}");
+        assert!(out.contains(r#""C:\d\a b.txt""#), "{out}");
     }
 }

@@ -230,7 +230,9 @@ impl App {
             return;
         }
         match coprocess::drop_command(&self.globals.string("fileDropCoprocess"), &files) {
-            Some(cmd) => self.start_coprocess(pane, &cmd, true, Entry::FileDrop),
+            Some(Ok(cmd)) => self.start_coprocess(pane, &cmd, true, Entry::FileDrop),
+            // A dropped name the one cmd.exe builder refuses: nothing runs, and the banner says why.
+            Some(Err(why)) => self.banners.set("action", why),
             None => {
                 let text = files.iter().map(|f| if f.contains(char::is_whitespace) { format!("\"{f}\"") } else { f.clone() }).collect::<Vec<_>>().join(" ");
                 self.user_paste(pane, &text, crate::broadcast::Write::Drop);
