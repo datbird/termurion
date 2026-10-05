@@ -160,7 +160,7 @@ impl App {
             return;
         }
         let name = ar::auto_file_name(&crate::session_log::now_parts().0, &self.session_title(id));
-        let path = crate::session_log::join_log_path(&folder, &name, &profile::home());
+        let path = crate::session_log::join_archive_path(&folder, &name, &profile::home());
         // Two panes of one name closing in one second get two files.
         let path = match written_paths().lock() {
             Ok(mut taken) => {

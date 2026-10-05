@@ -219,18 +219,32 @@ mod tests {
         assert!(session_archived(&session), "the mark is on the session table");
     }
 
+    /// Archive On Closure's file keeps its own extension; a log still ends in .log.
+    #[test]
+    fn an_automatic_archive_name_keeps_itermarchive_and_a_log_keeps_log() {
+        let home = std::path::Path::new(r"C:\Users\u");
+        let name = auto_file_name(&parts(2026, 9, 27, 15, 4, 5), "bash");
+        let path = crate::session_log::join_archive_path(r"D:\arch", &name, home);
+        assert_eq!(path, std::path::PathBuf::from(r"D:\arch").join("9-27-26_3.04.05_PM - bash.itermarchive"));
+        let taken = [path.clone()];
+        let second = unique_path(&path, &|p| taken.contains(&p.to_path_buf()));
+        assert_eq!(second.file_name().unwrap().to_str().unwrap(), "9-27-26_3.04.05_PM - bash (2).itermarchive");
+        let log = crate::session_log::join_log_path(r"D:\l", "x.bat", home);
+        assert_eq!(log, std::path::PathBuf::from(r"D:\l").join("x.bat.log"));
+    }
+
     /// A network home folder gets no archive, a share the person typed does.
     #[test]
     fn archive_folders_follow_the_log_network_rule() {
         let home = std::path::Path::new(r"\\fileserver\home\u");
         for folder in ["", "~", "~\\arch", "~/arch"] {
-            let path = crate::session_log::join_log_path(folder, "a.itermarchive", home);
+            let path = crate::session_log::join_archive_path(folder, "a.itermarchive", home);
             assert!(network_refusal(folder, &path).is_some(), "{folder:?}");
         }
         let typed = r"\\srv\arch";
-        assert_eq!(network_refusal(typed, &crate::session_log::join_log_path(typed, "a.itermarchive", home)), None, "a share the person typed is theirs");
+        assert_eq!(network_refusal(typed, &crate::session_log::join_archive_path(typed, "a.itermarchive", home)), None, "a share the person typed is theirs");
         let local = std::path::Path::new(r"C:\Users\u");
-        assert_eq!(network_refusal("~", &crate::session_log::join_log_path("~", "a.itermarchive", local)), None);
+        assert_eq!(network_refusal("~", &crate::session_log::join_archive_path("~", "a.itermarchive", local)), None);
     }
 
     #[test]

@@ -284,5 +284,8 @@ mod tests {
         let body = &src[from..];
         let (a, l, k) = (body.find("self.finish_archives(true").unwrap(), body.find("self.close_all_logs()").unwrap(), body.find("kill_all_and_wait").unwrap());
         assert!(a < l && l < k, "archives, then logs, then the kill, which is waited for");
+        let whole = include_str!("mod.rs");
+        let at = whole.find("UserEvent::Logoff(done) =>").expect("a Logoff arm in user_event");
+        assert!(whole[at..].chars().take(200).collect::<String>().contains("logoff_now"), "UserEvent::Logoff calls logoff_now");
     }
 }

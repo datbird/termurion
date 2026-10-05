@@ -157,6 +157,16 @@ fn is_device(stem: &str) -> bool {
 /// joined with the safe file name. The caller runs the network filter (`is_network_log_path`) on
 /// the RESULT, which `auto_log_path` does.
 pub fn join_log_path(folder: &str, formatted_name: &str, home: &Path) -> PathBuf {
+    join_in_folder(folder, &log_file_name(formatted_name), home)
+}
+
+/// The same folder rules for an archive: the safe file name keeps its own ".itermarchive"
+/// (13q final fix r2: it never gets ".log").
+pub fn join_archive_path(folder: &str, formatted_name: &str, home: &Path) -> PathBuf {
+    join_in_folder(folder, &safe_file_name(formatted_name), home)
+}
+
+fn join_in_folder(folder: &str, file_name: &str, home: &Path) -> PathBuf {
     // Not trimmed: the folder is joined as it is, so the one network filter on the result sees the
     // path the join made (a leading space must not hide `\\host` from it, 13q fix round 1).
     let dir = if folder.is_empty() || folder == "~" {
@@ -166,7 +176,7 @@ pub fn join_log_path(folder: &str, formatted_name: &str, home: &Path) -> PathBuf
     } else {
         PathBuf::from(folder)
     };
-    dir.join(log_file_name(formatted_name))
+    dir.join(file_name)
 }
 
 // ---------------------------------------------------------------- cooked text
