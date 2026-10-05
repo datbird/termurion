@@ -183,7 +183,7 @@ pub fn style_of(cell: &Cell) -> pb::CellStyle {
 /// its default blank cells at the end left out: the cells' code points (a wide character's
 /// spacer and an image cell have none), code points per cell and, when asked, styles, both
 /// run-length encoded; soft or hard end. `block` is the line's block id.
-pub fn line_contents(row: &[Cell], from: usize, to: usize, wrapped: bool, styles: bool, block: Option<&str>) -> pb::LineContents {
+pub fn line_contents(row: &[Cell], from: usize, to: usize, wrapped: bool, styles: bool, block: Option<&str>, form: crate::encoding::Form) -> pb::LineContents {
     let to = to.min(row.len());
     let mut end = to;
     while end > from && row[end - 1].is_empty() {
@@ -196,10 +196,11 @@ pub fn line_contents(row: &[Cell], from: usize, to: usize, wrapped: bool, styles
         let n = if cell.image().is_some() || cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
             0
         } else {
-            text.push(cell.c);
-            let extra = cell.zerowidth().unwrap_or_default();
-            text.extend(extra);
-            1 + extra.len() as i32
+            let mut one = String::from(cell.c);
+            one.extend(cell.zerowidth().unwrap_or_default());
+            crate::encoding::normalize_in_place(&mut one, form);
+            text.push_str(&one);
+            one.chars().count() as i32
         };
         match cpps.last_mut() {
             Some(c) if c.num_code_points == Some(n) => c.repeats = Some(c.repeats.unwrap_or(0) + 1),
@@ -263,7 +264,7 @@ pub fn get_buffer(screen: &crate::screen::Screen, range: Option<&pb::LineRange>,
         let cells = &row[Column(0)..];
         let wrapped = cells.last().is_some_and(|c| c.flags.contains(Flags::WRAPLINE));
         let Some((from, to, soft)) = span(cells, y == first, y == w.end.1, wrapped, w) else { continue };
-        lines.push(line_contents(cells, from, to, soft, styles, blocks.get(&row.block()).copied()));
+        lines.push(line_contents(cells, from, to, soft, styles, blocks.get(&row.block()).copied(), screen.normalization));
     }
     let cursor = shown.cursor.point;
     Some(buffer_response(lines, w, (cursor.column.0 as i32, abs_line(cursor.line.0, f))))
@@ -416,16 +417,31 @@ mod tests {
     fn line_contents_follow_iterm2() {
         use pb::line_contents::Continuation;
         let row = sample();
-        let l = line_contents(&row, 0, row.len(), false, true, None);
+        let l = line_contents(&row, 0, row.len(), false, true, None, crate::encoding::Form::None);
         assert_eq!(l.text.as_deref(), Some("ab\u{4e2d}e\u{301}"));
         let cpps: Vec<(i32, i32)> = l.code_points_per_cell.iter().map(|c| (c.num_code_points(), c.repeats())).collect();
         assert_eq!(cpps, vec![(1, 3), (0, 1), (2, 1)]);
         assert_eq!(l.style.iter().map(|s| s.repeats()).sum::<u32>(), 5);
         assert_eq!(l.continuation, Some(Continuation::HardEol as i32));
-        let soft = line_contents(&row, 0, row.len(), true, true, None);
+        let soft = line_contents(&row, 0, row.len(), true, true, None, crate::encoding::Form::None);
         assert_eq!(soft.continuation, Some(Continuation::SoftEol as i32));
-        assert_eq!(line_contents(&row, 1, 2, false, true, None).text.as_deref(), Some("b"));
-        assert!(line_contents(&row, 0, row.len(), false, false, None).style.is_empty());
+        assert_eq!(line_contents(&row, 1, 2, false, true, None, crate::encoding::Form::None).text.as_deref(), Some("b"));
+        assert!(line_contents(&row, 0, row.len(), false, false, None, crate::encoding::Form::None).style.is_empty());
+    }
+
+    /// Text leaves the grid normalized, and the code points per cell count what was sent.
+    #[test]
+    fn line_contents_follow_the_normalization_form() {
+        use crate::encoding::Form;
+        let row = sample();
+        let nfc = line_contents(&row, 0, row.len(), false, false, None, Form::Nfc);
+        assert_eq!(nfc.text.as_deref(), Some("ab\u{4e2d}\u{e9}"));
+        let cpps: Vec<(i32, i32)> = nfc.code_points_per_cell.iter().map(|c| (c.num_code_points(), c.repeats())).collect();
+        assert_eq!(cpps, vec![(1, 3), (0, 1), (1, 1)]);
+        let precomposed = [cell('\u{e9}')];
+        let nfd = line_contents(&precomposed, 0, 1, false, false, None, Form::Nfd);
+        assert_eq!(nfd.text.as_deref(), Some("e\u{301}"));
+        assert_eq!(nfd.code_points_per_cell.iter().map(|c| (c.num_code_points(), c.repeats())).collect::<Vec<_>>(), vec![(2, 1)]);
     }
 
     fn fg(c: Color) -> Option<pb::cell_style::FgColor> {
@@ -436,7 +452,7 @@ mod tests {
     fn styles_follow_iterm2() {
         use pb::cell_style::{BgColor, FgColor};
         let bold = Cell { fg: Color::Named(NamedColor::Red), flags: Flags::BOLD, ..cell('x') };
-        let l = line_contents(&[bold.clone(), bold], 0, 2, false, true, None);
+        let l = line_contents(&[bold.clone(), bold], 0, 2, false, true, None, crate::encoding::Form::None);
         assert_eq!(l.style.len(), 1);
         assert_eq!(l.style[0].fg_color, Some(FgColor::FgStandard(1)));
         assert_eq!((l.style[0].bold, l.style[0].repeats), (Some(true), Some(2)));
@@ -468,9 +484,9 @@ mod tests {
         let plain = style_of(&cell('x'));
         assert_eq!((plain.blink, plain.guarded, plain.image), (Some(false), Some(false), Some(pb::ImagePlaceholderType::None as i32)));
         assert_eq!((plain.bold, plain.underline, plain.url.clone(), plain.underline_color), (Some(false), Some(false), None, None));
-        let blocked = line_contents(&[cell('x')], 0, 1, false, true, Some("7"));
+        let blocked = line_contents(&[cell('x')], 0, 1, false, true, Some("7"), crate::encoding::Form::None);
         assert_eq!(blocked.style[0].block_id.as_deref(), Some("7"));
-        assert_eq!(line_contents(&[cell('x')], 0, 1, false, true, None).style[0].block_id, None);
+        assert_eq!(line_contents(&[cell('x')], 0, 1, false, true, None, crate::encoding::Form::None).style[0].block_id, None);
     }
 
     #[test]

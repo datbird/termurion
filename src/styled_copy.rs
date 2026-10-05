@@ -127,6 +127,7 @@ fn runs_spans(screen: &Screen, spans: &[(i32, usize, usize)], exact_last: bool) 
             if let Some(extra) = c.zerowidth() {
                 text.extend(extra);
             }
+            crate::encoding::normalize_in_place(&mut text, screen.normalization);
             let run = Run {
                 text,
                 fg,
@@ -292,7 +293,7 @@ pub fn sgr_restorable(screen: &Screen) -> (String, (usize, usize)) {
     let top = -(g.history_size() as i32);
     let spans: Vec<_> = (top..g.screen_lines() as i32).map(|l| (l, 0, g.columns() - 1)).collect();
     let at = g.cursor.point;
-    (sgr_grid(g, &spans), (at.line.0.max(0) as usize, at.column.0))
+    (sgr_grid(g, &spans, crate::encoding::Form::None), (at.line.0.max(0) as usize, at.column.0))
 }
 
 pub fn sgr_text(screen: &Screen) -> String {
@@ -300,10 +301,12 @@ pub fn sgr_text(screen: &Screen) -> String {
 }
 
 fn sgr_over(screen: &Screen, spans: &[(i32, usize, usize)]) -> String {
-    sgr_grid(screen.term().grid(), spans)
+    sgr_grid(screen.term().grid(), spans, screen.normalization)
 }
 
-fn sgr_grid(g: &alacritty_terminal::grid::Grid<Cell>, spans: &[(i32, usize, usize)]) -> String {
+/// The cells' text in `form`: Copy with Control Sequences normalizes; session restoration (None)
+/// keeps what the program wrote.
+fn sgr_grid(g: &alacritty_terminal::grid::Grid<Cell>, spans: &[(i32, usize, usize)], form: crate::encoding::Form) -> String {
     let mut out = String::new();
     let mut last: Option<Vec<String>> = None;
     for (i, (line, from, to)) in spans.iter().enumerate() {
@@ -316,10 +319,12 @@ fn sgr_grid(g: &alacritty_terminal::grid::Grid<Cell>, spans: &[(i32, usize, usiz
                 out += &format!("\x1b[{}m", codes.join(";"));
                 last = Some(codes);
             }
-            out.push(c.c);
+            let mut text = c.c.to_string();
             if let Some(extra) = c.zerowidth() {
-                out.extend(extra);
+                text.extend(extra);
             }
+            crate::encoding::normalize_in_place(&mut text, form);
+            out.push_str(&text);
         }
         if hard_end && !more && i + 1 < spans.len() {
             out += "\x1b[0m\n";
@@ -395,6 +400,23 @@ mod tests {
 
     fn rgb(r: u8, g: u8, b: u8) -> Rgb {
         Rgb { r, g, b }
+    }
+
+    /// Copy, Copy with Styles and Copy with Control Sequences carry the profile's form, per
+    /// cell: the selection runs and the cells they cover stay the same.
+    #[test]
+    fn copies_follow_the_normalization_form() {
+        let look = crate::screen::Look { normalization: crate::encoding::Form::Nfc, ..crate::screen::Look::default() };
+        let mut s = Screen::with_look(12, 2, crate::palette::Palette::default(), look);
+        s.feed("e\u{301}x \u{5d0}\u{5d1}".as_bytes());
+        select(&mut s, (0, 0), (0, 1));
+        assert_eq!(s.selection_text().as_deref(), Some("\u{e9}x"));
+        assert_eq!(runs(&s)[0].runs[0].text, "\u{e9}x");
+        assert!(sgr_text(&s).contains("\u{e9}x"), "{:?}", sgr_text(&s));
+        // The Hebrew run after it still copies logically, and its cells are where they were.
+        select(&mut s, (0, 3), (0, 4));
+        assert_eq!(s.selection_text().as_deref(), Some("\u{5d0}\u{5d1}"));
+        assert_eq!(s.visual_col(0, 3), 4);
     }
 
     /// The display order never reaches the copy: the selection copies what the program wrote.

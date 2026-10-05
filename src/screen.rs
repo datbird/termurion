@@ -69,6 +69,8 @@ pub struct Look {
     pub disable_smcup: bool,
     /// The profile's Disable Printing: no escape-sequence print starts or is requested.
     pub disable_printing: bool,
+    /// The profile's Unicode Normalization (`encoding::Form`).
+    pub normalization: crate::encoding::Form,
 }
 
 /// How `Term::input` measures characters (milestone 13o): iTerm2's width tables for the
@@ -125,6 +127,7 @@ impl Look {
             allow_title_reporting: p.bool("Allow Title Reporting"),
             disable_smcup: p.bool("Disable Smcup Rmcup"),
             disable_printing: p.bool("Disable Printing"),
+            normalization: crate::encoding::Form::from_profile(p.int("Unicode Normalization")),
         }
     }
 }
@@ -319,6 +322,9 @@ pub struct Screen {
     /// The profile's "Unicode Version" (`osc1337::profile_unicode`), the session's version
     /// until a UnicodeVersion sequence sets one.
     pub profile_unicode: u8,
+    /// The profile's Unicode Normalization Form: applied where text leaves the grid (drawing,
+    /// copy, find, `line_text`, the API), never stored in it.
+    pub normalization: crate::encoding::Form,
     /// The profile settings last handed to `set_look`; the width rule reads them.
     look: Look,
     /// The profile's Answerback String, what ENQ answers (at most `ANSWERBACK_MAX` bytes).
@@ -593,6 +599,7 @@ impl Screen {
             exec_failed: false,
             unicode: crate::osc1337::Unicode::default(),
             profile_unicode: look.unicode_version,
+            normalization: look.normalization,
             look,
             answerback: String::new(),
             key_labels: crate::osc1337::KeyLabels::default(),
@@ -821,6 +828,7 @@ impl Screen {
         self.term.set_cursor_blink_change(look.blink_change);
         self.blink_allowed = look.blink_allowed;
         self.profile_unicode = look.unicode_version;
+        self.normalization = look.normalization;
         self.look = look;
         self.push_width_rule();
     }
@@ -1972,9 +1980,36 @@ impl Screen {
         self.tick_gen ^ (u64::from(self.term.mode().contains(TermMode::ALT_SCREEN)) << 63)
     }
 
+    /// `text` in the profile's normalization form.
+    pub fn normalized<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        crate::encoding::normalize(text, self.normalization)
+    }
+
+    /// The selected text as it leaves the grid (Copy, find, the API): normalized.
+    pub fn selection_text(&self) -> Option<String> {
+        self.term.selection_to_string().map(|mut t| {
+            crate::encoding::normalize_in_place(&mut t, self.normalization);
+            t
+        })
+    }
+
     /// Notes that the main grid's rows, marks or notes may have changed.
     pub(crate) fn bump_ticks(&mut self) {
         self.tick_gen = (self.tick_gen.wrapping_add(1)) & !(1 << 63);
+    }
+
+    /// A row's base characters as text, each cell in the profile's form (never across cells).
+    fn push_row_text(&self, out: &mut String, row: &Row<Cell>) {
+        for c in 0..self.term.columns() {
+            let ch = row[Column(c)].c;
+            if self.normalization == crate::encoding::Form::None || ch.is_ascii() {
+                out.push(ch);
+            } else {
+                let mut one = ch.to_string();
+                crate::encoding::normalize_in_place(&mut one, self.normalization);
+                out.push_str(&one);
+            }
+        }
     }
 
     /// One logical line's text starting at `line`: its row and the rows it wraps onto,
@@ -1985,7 +2020,7 @@ impl Screen {
         let mut l = line;
         while l < grid.screen_lines() as i32 {
             let row = &grid[Line(l)];
-            out.extend((0..grid.columns()).map(|c| row[Column(c)].c));
+            self.push_row_text(&mut out, row);
             let wrapped = row[Column(grid.columns() - 1)].flags.contains(alacritty_terminal::term::cell::Flags::WRAPLINE);
             if !wrapped {
                 break;
@@ -2002,7 +2037,8 @@ impl Screen {
         let mut out = String::new();
         for line in top..grid.screen_lines() as i32 {
             let row = &grid[Line(line)];
-            let text: String = (0..grid.columns()).map(|c| row[Column(c)].c).collect();
+            let mut text = String::new();
+            self.push_row_text(&mut text, row);
             out.push_str(text.trim_end());
             out.push('\n');
         }
@@ -2968,6 +3004,47 @@ mod tests {
         // A region below the top never saves.
         assert_eq!(run(true, b"\x1b[2;4r").0, 0);
         assert_eq!(run(false, b"\x1b[2;4r").0, 0);
+    }
+
+    fn normal(form: crate::encoding::Form) -> Screen {
+        Screen::with_look(20, 3, crate::palette::Palette::default(), Look { normalization: form, ..Look::default() })
+    }
+
+    /// Text leaves the grid in the profile's form; the grid keeps what the program wrote.
+    #[test]
+    fn text_leaves_the_grid_normalized() {
+        use crate::encoding::Form;
+        let mut s = normal(Form::Nfd);
+        s.feed("\u{e9}x\r\nab".as_bytes());
+        assert_eq!(s.line_text(0), "e\u{301}x");
+        assert_eq!(s.all_text(), "e\u{301}x\nab\n");
+        assert_eq!(s.term().grid()[Line(0)][Column(0)].c, '\u{e9}', "the grid is not changed");
+        assert_eq!(s.normalized("\u{e9}"), "e\u{301}");
+        let mut sel = alacritty_terminal::selection::Selection::new(alacritty_terminal::selection::SelectionType::Simple, alacritty_terminal::index::Point::new(Line(0), Column(0)), alacritty_terminal::index::Side::Left);
+        sel.update(alacritty_terminal::index::Point::new(Line(0), Column(0)), alacritty_terminal::index::Side::Right);
+        s.term_mut().selection = Some(sel);
+        assert_eq!(s.selection_text().as_deref(), Some("e\u{301}"));
+        let mut none = normal(Form::None);
+        none.feed("\u{e9}".as_bytes());
+        assert_eq!(none.line_text(0), "\u{e9}");
+        assert_eq!(none.normalized("e\u{301}"), "e\u{301}");
+    }
+
+    /// A profile edit reaches the screen through `set_look`, and `Look::from_profile` reads the
+    /// stored Unicode Normalization (HFS+ does nothing on Windows).
+    #[test]
+    fn look_carries_the_normalization_form() {
+        use crate::encoding::Form;
+        let mut p = crate::profile::Profile::stock();
+        assert_eq!(Look::from_profile(&p).normalization, Form::None);
+        for (v, want) in [(1, Form::Nfc), (2, Form::Nfd), (3, Form::None)] {
+            p.set("Unicode Normalization", toml::Value::Integer(v));
+            assert_eq!(Look::from_profile(&p).normalization, want);
+        }
+        let mut s = Screen::new(10, 2);
+        assert_eq!(s.normalization, Form::None);
+        s.set_look(Look { normalization: Form::Nfc, ..Look::default() });
+        assert_eq!(s.normalization, Form::Nfc);
     }
 
     #[test]

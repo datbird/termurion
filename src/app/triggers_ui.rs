@@ -224,7 +224,7 @@ impl App {
         let Some(id) = self.focused_id() else { return false };
         match selector {
             "addTrigger:" => {
-                let text = self.panes.get(&id).and_then(|p| p.screen.term().selection_to_string()).unwrap_or_default();
+                let text = self.panes.get(&id).and_then(|p| p.screen.selection_text()).unwrap_or_default();
                 let Some(guid) = self.panes.get(&id).map(|p| self.store.shared_guid(&p.profile)) else { return true };
                 if let Some(profile) = self.store.get_mut(&guid) {
                     let stored = profile.get("Triggers");

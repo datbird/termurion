@@ -4148,7 +4148,7 @@ impl App {
         if self.copy_porthole_selection(id, porthole_ui::CopyAs::Plain) {
             return;
         }
-        let Some(text) = self.panes.get(&id).and_then(|p| p.screen.term().selection_to_string()) else { return };
+        let Some(text) = self.panes.get(&id).and_then(|p| p.screen.selection_text()) else { return };
         self.remember_paste(&text);
         if let Some(cb) = &mut self.clipboard {
             if let Err(e) = cb.set_text(text) {
@@ -4762,7 +4762,7 @@ impl App {
             // Its press went (the tab moved away under it): the drag ends with nothing dropped.
             Drag::Tab { .. } | Drag::Chip { .. } | Drag::AddButton { .. } | Drag::Window { .. } => self.end_tab_drag(),
             Drag::Select { pane, .. } => {
-                let empty = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string()).map_or(true, |s| s.is_empty());
+                let empty = self.panes.get(&pane).and_then(|p| p.screen.selection_text()).map_or(true, |s| s.is_empty());
                 if empty {
                     if let Some(p) = self.panes.get_mut(&pane) {
                         p.screen.term_mut().selection = None;
@@ -6330,6 +6330,19 @@ mod tests {
         assert!(body.contains("for (id, (cols, rows), (cw, ch)) in sizes {"));
         assert!(body.contains("p.resize_report_if_on(rows, cols, resize_report_px(rows, cols, (cw, ch)))"), "the report reads the tuple's cell");
         assert!(!body.contains("self.cell()"), "relayout never reads the window cell");
+    }
+
+    /// Character Encoding (13o Task 8): every path that hands a pane its emulation rules (install,
+    /// refresh, settings change, tmux install) also hands it the profile's encoding, and a tmux
+    /// pane or gateway never gets one.
+    #[test]
+    fn encoding_travels_with_the_emulation_rules() {
+        let src = include_str!("emu_ui.rs");
+        let body = &src[src.find("fn apply_emu_rules").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        assert!(body.contains("\"Character Encoding\""));
+        assert!(body.contains("p.tmux_io().is_none() && !p.gateway"));
+        assert!(body.contains("p.set_encoding("));
     }
 
     #[test]

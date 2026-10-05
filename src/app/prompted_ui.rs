@@ -389,7 +389,7 @@ impl App {
         if let Some(c) = s.shell.history.last() {
             v.session.insert("lastCommand", c.command.clone());
         }
-        if let Some(sel) = selection.then(|| s.term().selection_to_string()).flatten() {
+        if let Some(sel) = selection.then(|| s.selection_text()).flatten() {
             let (capped, length) = capped_selection(&sel, self.globals.int("maximumBytesToProvideToPythonAPI"));
             v.session.insert("selectionLength", length.to_string());
             v.session.insert("selection", capped);

@@ -206,6 +206,15 @@ pub fn logical_texts_over(screen: &Screen, first: usize, last: usize) -> Vec<Str
     texts_between(screen, a, b)
 }
 
+/// One cell's text as it is shown: its characters in the profile's normalization form, so a
+/// search matches what the pane draws (never across cells, so a match still covers whole cells).
+fn cell_text(screen: &Screen, cell: &alacritty_terminal::term::cell::Cell) -> String {
+    let mut text = String::from(cell.c);
+    text.extend(cell.zerowidth().into_iter().flatten());
+    crate::encoding::normalize_in_place(&mut text, screen.normalization);
+    text
+}
+
 fn texts_between(screen: &Screen, top: i32, bottom: i32) -> Vec<String> {
     use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::{Column, Line};
@@ -221,10 +230,7 @@ fn texts_between(screen: &Screen, top: i32, bottom: i32) -> Vec<String> {
         for c in 0..end {
             let cell = &row[Column(c)];
             if !cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
-                cur.push(cell.c);
-                for z in cell.zerowidth().into_iter().flatten() {
-                    cur.push(*z);
-                }
+                cur.push_str(&cell_text(screen, cell));
             }
         }
         if !wrapped || l == bottom {
@@ -257,10 +263,7 @@ fn logical_between(screen: &Screen, top: i32, bottom: i32) -> Vec<Logical> {
                 continue;
             }
             cur.cells.push((cur.text.len(), Pos { row: r, col: c }));
-            cur.text.push(cell.c);
-            for z in cell.zerowidth().into_iter().flatten() {
-                cur.text.push(*z);
-            }
+            cur.text.push_str(&cell_text(screen, cell));
         }
         if !wrapped || l == bottom {
             let kept = cur.text.trim_end_matches(' ').len();
@@ -365,6 +368,21 @@ mod tests {
 
     fn at(row: usize, col: usize) -> Pos {
         Pos { row, col }
+    }
+
+    /// Find matches what is shown: an NFC profile finds "caf\u{e9}" in cells that hold e and a
+    /// combining acute, and the match covers those cells.
+    #[test]
+    fn find_follows_the_normalization_form() {
+        let look = |form| crate::screen::Look { normalization: form, ..crate::screen::Look::default() };
+        let mut s = Screen::with_look(20, 4, crate::palette::Palette::default(), look(crate::encoding::Form::Nfc));
+        s.feed("cafe\u{301} au lait".as_bytes());
+        let hits = find_all(&s, "caf\u{e9}").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!((hits[0].start, hits[0].end), (at(0, 0), at(0, 3)));
+        let mut plain = Screen::with_look(20, 4, crate::palette::Palette::default(), look(crate::encoding::Form::None));
+        plain.feed("cafe\u{301} au lait".as_bytes());
+        assert!(find_all(&plain, "caf\u{e9}").unwrap().is_empty());
     }
 
     #[test]

@@ -948,6 +948,9 @@ pub fn pane_with(
         }
         // No underline under a label, a picture or a spacer's missing text; a faint cell's SGR 58
         // color is faint too (`iTermMetalPerFrameState.m:1613-1620`), nothing else touches it.
+        // The cell's text in the profile's Unicode Normalization form, before anything below
+        // classifies it (S1: `cell_level`, `cell_mask`, the box-glyph and ligature tests).
+        crate::encoding::normalize_in_place(&mut text, screen.normalization);
         let (style, strike) = crate::underline::style_for(c.flags, !hover && c.hyperlink().is_some(), draw.underline_hyperlinks);
         let sgr = c.underline_color().map(|u| {
             let u = palette.color(u);
@@ -5142,6 +5145,43 @@ mod tests {
         pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
         let rows: Vec<(f32, String)> = f.rows.iter().map(|r| (r.x, r.spans.iter().map(|s| s.text.trim_end().to_string()).collect())).collect();
         assert_eq!(rows, vec![(0.0, "a b".to_string())]);
+    }
+
+    fn normal_screen(text: &str, form: crate::encoding::Form) -> Screen {
+        let mut s = Screen::with_look(80, 24, crate::palette::Palette::default(), crate::screen::Look { normalization: form, ..crate::screen::Look::default() });
+        s.feed(text.as_bytes());
+        s
+    }
+
+    /// Unicode Normalization (13o Task 8): the span text is the cell's text in the profile's
+    /// form (S1: before the ligature, box and font decisions that read it).
+    #[test]
+    fn normalization_form_reaches_the_drawn_text() {
+        use crate::encoding::Form;
+        let draw = |s: &Screen| {
+            let mut f = Frame::default();
+            pane_with(&mut f, s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+            f.rows.iter().map(|r| (r.x, r.spans.iter().map(|s| s.text.trim_end().to_string()).collect::<String>())).collect::<Vec<_>>()
+        };
+        assert_eq!(draw(&normal_screen("e\u{301}x", Form::Nfc)), vec![(0.0, "\u{e9}".to_string()), (10.0, "x".to_string())]);
+        assert_eq!(draw(&normal_screen("\u{e9}x", Form::Nfd)), vec![(0.0, "e\u{301}".to_string()), (10.0, "x".to_string())]);
+        assert_eq!(draw(&normal_screen("e\u{301}x", Form::None)), vec![(0.0, "e\u{301}".to_string()), (10.0, "x".to_string())]);
+    }
+
+    /// 13m bidi and 13j cells: the display order, the cells and the columns of a row are the
+    /// same with or without normalization; only the cell text differs.
+    #[test]
+    fn normalization_keeps_bidi_order_and_columns() {
+        use crate::encoding::Form;
+        let text = "e\u{301}b \u{5d0}\u{5d1}";
+        let xs = |form| {
+            let s = normal_screen(text, form);
+            let mut f = Frame::default();
+            pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+            (piece_x(&f, '\u{5d0}'), piece_x(&f, '\u{5d1}'), piece_x(&f, 'b'), s.visual_col(0, 3), s.visual_col(0, 4))
+        };
+        assert_eq!(xs(Form::Nfc), xs(Form::None));
+        assert_eq!(xs(Form::Nfc).0, Some(40.0));
     }
 
     fn table_prefs(non_ascii: bool, extra: &[crate::font_table::Entry]) -> DrawPrefs {

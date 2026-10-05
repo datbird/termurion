@@ -211,6 +211,10 @@ pub struct Pane {
     /// by the launch's own session restoration.
     pub stable_id: String,
     pub screen: Screen,
+    /// The session's Windows code page (0 for UTF-8, which needs no conversion).
+    pub encoding: u32,
+    /// Decodes the session's output to UTF-8 while `encoding` is set.
+    pub decoder: Option<crate::encoding::Decoder>,
     pty: Option<Io>,
     pub exited: Option<u32>,
     pub error: Option<String>,
@@ -446,7 +450,7 @@ impl Pane {
     fn with(id: PaneId, pty: Option<Io>, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = pty.is_some();
-        Pane { id, activity: 0, locked: false, pinned_width: None, session_guid: new_session_guid(), stable_id: crate::stable_id::generate(), screen, pty, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() }
+        Pane { id, activity: 0, locked: false, pinned_width: None, session_guid: new_session_guid(), stable_id: crate::stable_id::generate(), screen, encoding: 0, decoder: None, pty, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -580,6 +584,7 @@ impl Pane {
             match out {
                 crate::tmux_hook::Out::Screen(_) if dropping => {}
                 crate::tmux_hook::Out::Screen(bytes) if self.tmux_q.is_empty() => {
+                    let bytes = self.decode_output(bytes);
                     self.got_output = true;
                     if let Some(p) = self.echo_probe.as_mut() {
                         p.output(&bytes);
@@ -656,6 +661,7 @@ impl Pane {
 
     /// Output that waited behind a tmux line.
     pub fn feed_output(&mut self, bytes: &[u8]) {
+        let bytes = &self.decode_output(bytes.to_vec())[..];
         if let Some(p) = self.echo_probe.as_mut() {
             p.output(bytes);
         }
@@ -664,6 +670,29 @@ impl Pane {
         let reply = self.own_mut().feed(bytes);
         if !reply.is_empty() && self.tmux_io().is_none() {
             self.reply(&reply);
+        }
+    }
+
+    /// Output the screen is about to see, in UTF-8: decoded from the session's code page while
+    /// the profile names one. Output is decoded where the screen consumes it, in order, so a
+    /// character cut by a read waits for the next; a tmux gateway's control stream and a tmux
+    /// pane's output are always UTF-8 and never decoded (the coprocess's raw copy is taken
+    /// earlier, undecoded).
+    fn decode_output(&mut self, bytes: Vec<u8>) -> Vec<u8> {
+        if self.gateway || self.tmux_io().is_some() {
+            return bytes;
+        }
+        match self.decoder.as_mut() {
+            Some(d) => d.feed(&bytes, crate::encoding::system()),
+            None => bytes,
+        }
+    }
+
+    /// Bytes bound for the session with the text in them in the session's encoding.
+    fn encode_text<'a>(&self, bytes: &'a [u8]) -> std::borrow::Cow<'a, [u8]> {
+        match self.encoding {
+            0 => std::borrow::Cow::Borrowed(bytes),
+            cp => std::borrow::Cow::Owned(crate::encoding::encode_stream(cp, bytes, crate::encoding::system())),
         }
     }
 
@@ -1477,6 +1506,10 @@ impl Pane {
         if self.gateway {
             return;
         }
+        // Typed text, pastes and a trigger's Send Text leave in the session's encoding
+        // (iTerm2's `dataUsingEncoding:self.encoding`); reports are ASCII and pass as they are.
+        let encoded = self.encode_text(bytes).into_owned();
+        let bytes = &encoded[..];
         // While SSH integration connects, writes wait for the conductor, ahead of Buffer
         // Input and before `writeTaskImpl`'s effects (`PS:4411-4430`) but after a conductor
         // that handles keystrokes: a nested hop's password reaches the outer framer (F9,
@@ -1627,7 +1660,9 @@ impl Pane {
     /// (`send_routed`).
     pub fn reply(&mut self, bytes: &[u8]) {
         self.composer.probe = None;
-        self.send_routed(bytes);
+        // The answerback and a title report are text and take the session's encoding.
+        let bytes = self.encode_text(bytes).into_owned();
+        self.send_routed(&bytes);
     }
 
     /// Typed bytes Buffer Input let go: the session's typed route (`write_session`).
@@ -1819,6 +1854,17 @@ impl Pane {
             if let Some(t) = term {
                 screen.set_term_name(t);
             }
+        }
+    }
+
+    /// The profile's Character Encoding (iTerm2's NSStringEncoding). UTF-8, and a value the
+    /// table lacks, take no decoder: bytes reach the screen unchanged. An unchanged code page
+    /// keeps the decoder's held bytes.
+    pub fn set_encoding(&mut self, ns_encoding: i64) {
+        let cp = crate::encoding::code_page(ns_encoding).unwrap_or(0);
+        if cp != self.encoding {
+            self.encoding = cp;
+            self.decoder = (cp != 0).then(|| crate::encoding::Decoder::new(cp));
         }
     }
 
@@ -2079,6 +2125,61 @@ mod tests {
 
     fn setting_up() -> Option<Box<crate::conductor::Conductor>> {
         Some(Box::new(crate::conductor::Conductor::new(Default::default(), None, "U")))
+    }
+
+    /// Character Encoding (13o Task 8): a session's output is decoded before the screen sees
+    /// it, a character cut by a read decodes once, and UTF-8 keeps its bytes.
+    #[test]
+    fn output_is_decoded_with_the_session_encoding() {
+        let mut p = Pane::recording(1, 20, 3);
+        p.set_encoding(5);
+        p.feed_output(b"caf\xe9 \x1b[1mx");
+        assert!(p.screen.text().starts_with("caf\u{e9} x"), "{:?}", p.screen.text());
+        let mut j = Pane::recording(2, 20, 3);
+        j.set_encoding(8);
+        j.feed_output(b"a\x82");
+        j.feed_output(b"\xa0b");
+        assert!(j.screen.text().starts_with("a\u{3042} b"), "{:?}", j.screen.text());
+        let mut u = Pane::recording(3, 20, 3);
+        u.feed_output("caf\u{e9}".as_bytes());
+        assert!(u.screen.text().starts_with("caf\u{e9}"));
+        assert!(u.decoder.is_none() && u.encoding == 0);
+        // A value the table lacks, and UTF-8 (4), take no decoder.
+        u.set_encoding(9999);
+        assert!(u.decoder.is_none());
+        u.set_encoding(4);
+        assert!(u.decoder.is_none());
+        // The same code page again keeps the held half character; a new one starts over.
+        j.set_encoding(8);
+        j.feed_output(b"\x82");
+        j.set_encoding(8);
+        j.feed_output(b"\xa0");
+        assert!(j.screen.text().starts_with("a\u{3042} b\u{3042}"), "{:?}", j.screen.text());
+        j.set_encoding(5);
+        assert_eq!(j.encoding, 28591);
+    }
+
+    /// Typed text, pastes and text replies go out in the session's encoding; reports and escape
+    /// sequences are ASCII and pass unchanged; UTF-8 sessions send what they were given.
+    #[test]
+    fn input_and_text_replies_use_the_session_encoding() {
+        let mut p = Pane::tmux(5, 1, 3, 20, 4);
+        p.set_encoding(5);
+        p.input("caf\u{e9}\r".as_bytes());
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"caf\xe9\r");
+        p.paste("na\u{ef}ve");
+        let sent = p.tmux_io().unwrap().take_input();
+        assert!(sent.windows(5).any(|w| w == b"na\xefve"), "{sent:?}");
+        p.reply(b"\x1b[1;1R");
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"\x1b[1;1R");
+        // The answerback and a title report are text: they take the encoding (Task 6 carry).
+        p.screen.set_answerback("caf\u{e9}".into());
+        let reply = p.own_mut().feed(b"\x05");
+        p.reply(&reply);
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"caf\xe9");
+        let mut u = Pane::tmux(6, 1, 4, 20, 4);
+        u.input("caf\u{e9}".as_bytes());
+        assert_eq!(u.tmux_io().unwrap().take_input(), "caf\u{e9}".as_bytes());
     }
 
     #[test]
@@ -2973,7 +3074,7 @@ mod tests {
 
     #[test]
     fn gateway_panes_take_no_input() {
-        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
+        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
         p.buffer.on = true;
         p.input(b"a");
         p.gateway = true;
@@ -2986,7 +3087,7 @@ mod tests {
         // During a replay iTerm2's tab shows the task-less synthetic session, so nothing
         // the user sends reaches the live shell; the live session's own writes (a
         // trigger's Send Text) still do.
-        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
+        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
         p.buffer.on = true;
         p.input(b"a");
         p.replay = Some(replay::Replay { decoder: None, read_only: false });
@@ -3001,7 +3102,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: own, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
+        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: own, encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);

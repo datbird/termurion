@@ -736,7 +736,7 @@ impl App {
             return;
         }
         let Some(p) = self.panes.get(&pane) else { return };
-        let Some(text) = p.own().term().selection_to_string().filter(|t| !t.is_empty()) else { return };
+        let Some(text) = p.own().selection_text().filter(|t| !t.is_empty()) else { return };
         if chat_menu::short_selection(text.chars().count(), p.own().term().grid().columns()) {
             self.offer_text(&chat, &text);
         }

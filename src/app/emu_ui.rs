@@ -1,5 +1,5 @@
 //! Terminal emulation switches in the window (13o): the Advanced rules handed to every
-//! pane's screen, and the OSC 7 conflict warning.
+//! pane's screen, the profile's encoding, and the OSC 7 conflict warning.
 
 use super::*;
 use crate::emu;
@@ -30,6 +30,12 @@ impl App {
         let answerback = self.panes.get(&pane).filter(|p| p.tmux_io().is_none()).map(|p| self.store.get(&p.profile).unwrap_or_else(|| self.store.default_profile()).string("Answerback String"));
         if let (Some(text), Some(p)) = (answerback, self.panes.get_mut(&pane)) {
             p.set_answerback(&text);
+        }
+        // The profile's Character Encoding (`PS:18899`); a tmux pane's output and input are
+        // always UTF-8 (control mode), so it keeps none.
+        let encoding = self.panes.get(&pane).filter(|p| p.tmux_io().is_none() && !p.gateway).map(|p| self.store.get(&p.profile).unwrap_or_else(|| self.store.default_profile()).int("Character Encoding"));
+        if let (Some(ns), Some(p)) = (encoding, self.panes.get_mut(&pane)) {
+            p.set_encoding(if ns == 0 { crate::encoding::UTF8 } else { ns });
         }
     }
 
