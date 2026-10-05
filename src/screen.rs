@@ -3099,4 +3099,18 @@ mod tests {
         p.feed(b"\x1b]133;D;1\x07");
         assert_ne!(p.tick_digest(), running, "the command finished with a code");
     }
+
+    /// A screenshot or preview draws rows as the pane does: Bidi off stays off, and Blink
+    /// Allowed carries over.
+    #[test]
+    fn a_slice_keeps_the_bidi_and_blink_rules() {
+        let mut s = crate::screen::Screen::new(10, 3);
+        s.feed("\u{5d0}\u{5d1}".as_bytes());
+        assert!(crate::screenshot::slice(&s, 0, 3).row_order(0).is_some(), "Bidi on reorders the slice");
+        s.bidi_rules.enabled = false;
+        s.blink_allowed = true;
+        let cut = crate::screenshot::slice(&s, 0, 3);
+        assert!(cut.row_order(0).is_none(), "Bidi off stays off in the slice");
+        assert!(cut.blink_allowed);
+    }
 }

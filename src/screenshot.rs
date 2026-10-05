@@ -257,20 +257,6 @@ pub fn png(w: u32, h: u32, rgba: Vec<u8>) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
-    /// A screenshot or preview draws rows as the pane does: Bidi off stays off, and Blink
-    /// Allowed carries over.
-    #[test]
-    fn a_slice_keeps_the_bidi_and_blink_rules() {
-        let mut s = crate::screen::Screen::new(10, 3);
-        s.feed("\u{5d0}\u{5d1}".as_bytes());
-        assert!(slice(&s, 0, 3).row_order(0).is_some(), "Bidi on reorders the slice");
-        s.bidi_rules.enabled = false;
-        s.blink_allowed = true;
-        let cut = slice(&s, 0, 3);
-        assert!(cut.row_order(0).is_none(), "Bidi off stays off in the slice");
-        assert!(cut.blink_allowed);
-    }
-
     #[test]
     fn screenshots_draw_the_cursor() {
         use crate::scene::{self, Frame};
