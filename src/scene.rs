@@ -334,29 +334,46 @@ pub fn cursor_guide(frame: &mut Frame, rect: Rect, cell: (f32, f32), row: usize,
     frame.quads.push(Quad { rect: r, color });
 }
 
-/// Per-line timestamps. With no `column` each label is right-aligned on its screen row, over
-/// the text, which stops where the label starts. With a `column` (Adjacent) the labels form
-/// one block at the column's right edge, as iTerm2 draws them: every label starts at the same x,
-/// the text is never clipped, and a label equal to the one on the row above is two 1 px lines
-/// (`iTermTimestampDrawHelper.m` `drawString:...`, `rowIsRepeat:`).
-pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cell: (f32, f32), column: Option<Rect>) {
+/// Per-line timestamps, in the profile's foreground on a 0.9-alpha block of its background
+/// (`colors` is that pair), as iTerm2 draws every mode (`iTermTimestampDrawHelper.m`
+/// `drawBackgroundInFrame:`). With no `column` each label is right-aligned on its screen row,
+/// over the text, which stops where the label starts. With a `column` (Adjacent) the labels
+/// form one block ending at the column's right edge: every label starts at the same x, and a
+/// label equal to the one on the row above is two 1 px lines (`drawString:...`,
+/// `rowIsRepeat:`). A block wider than the column extends left over the text, which then stops
+/// where the block starts (`frameForStringGivenWidth:`, `x = MAX(0, maxX - w)`); it is never cut.
+pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cell: (f32, f32), column: Option<Rect>, colors: (Rgb, Rgb)) {
     let (cw, ch) = cell;
+    let (fg, bg) = colors;
+    let span = |text: &str| Span { text: text.to_string(), color: fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
+    // The pane's text on a row stops where its label's block starts.
+    let clip_text = |frame: &mut Frame, y: f32, x: f32| {
+        for r in frame.rows.iter_mut().filter(|r| r.y == y && r.clip.x + r.clip.w > x) {
+            r.clip.w = (x - r.clip.x).max(0.0);
+        }
+    };
     if let Some(col) = column {
-        let x = (col.x + col.w - crate::stamps::block_width(cw, labels)).max(col.x);
+        let right = col.x + col.w;
+        let x = (right - crate::stamps::block_width(cw, labels)).max(rect.x);
+        let over_text = x < rect.x + rect.w;
+        let clip = Rect { x, w: right - x, ..col };
         let mut prev: Option<(usize, &str)> = None;
         for (row, text) in labels {
             let y = col.y + *row as f32 * ch;
+            if over_text {
+                clip_text(frame, y, x);
+            }
+            frame.quads.push(Quad { rect: Rect { x, y, w: right - x, h: ch }, color: rgba(bg, 0.9) });
             let repeat = prev.is_some_and(|(r, t)| r + 1 == *row && t == text);
             prev = Some((*row, text));
             if repeat {
                 // The center of a repeat is 10 px into the block (`center = x + 10`).
                 for dx in [-1.0, 1.0] {
-                    frame.quads.push(Quad { rect: Rect { x: x + 10.0 + dx, y, w: 1.0, h: ch }, color: rgba(TAB_TEXT, 1.0) });
+                    frame.quads.push(Quad { rect: Rect { x: x + 10.0 + dx, y, w: 1.0, h: ch }, color: rgba(fg, 1.0) });
                 }
                 continue;
             }
-            let span = Span { text: text.clone(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-            frame.rows.push(TextRow { x, y, spans: vec![span], clip: col, scale: 1.0 });
+            frame.rows.push(TextRow { x, y, spans: vec![span(text)], clip, scale: 1.0 });
         }
         return;
     }
@@ -364,14 +381,10 @@ pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cel
     for (row, text) in labels {
         let n = text.chars().count() as f32;
         let y = rect.y + *row as f32 * ch;
-        let bg = Rect { x: right - (n + 2.0) * cw, y, w: (n + 2.0) * cw, h: ch };
-        frame.quads.push(Quad { rect: bg, color: rgba(STAMP_BG, 0.85) });
-        // The pane's text on this row stops where the label starts.
-        for r in frame.rows.iter_mut().filter(|r| r.y == y && r.clip.x + r.clip.w > bg.x) {
-            r.clip.w = (bg.x - r.clip.x).max(0.0);
-        }
-        let span = Span { text: text.clone(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-        frame.rows.push(TextRow { x: right - (n + 1.0) * cw, y, spans: vec![span], clip: rect, scale: 1.0 });
+        let bg_rect = Rect { x: right - (n + 2.0) * cw, y, w: (n + 2.0) * cw, h: ch };
+        frame.quads.push(Quad { rect: bg_rect, color: rgba(bg, 0.9) });
+        clip_text(frame, y, bg_rect.x);
+        frame.rows.push(TextRow { x: right - (n + 1.0) * cw, y, spans: vec![span(text)], clip: rect, scale: 1.0 });
     }
 }
 
@@ -6001,11 +6014,17 @@ mod tests {
     #[test]
     fn timestamps_sit_at_the_right() {
         let mut f = Frame::default();
-        timestamps(&mut f, &[(2, "14:02:09".into())], RECT, CELL, None);
+        timestamps(&mut f, &[(2, "14:02:09".into())], RECT, CELL, None, STAMP_COLORS);
         let r = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "14:02:09")).unwrap();
         assert_eq!((r.x, r.y), (800.0 - 90.0, 40.0));
         assert!(f.quads.iter().any(|q| q.rect.x < 710.0 && q.rect.x + q.rect.w == 800.0 && q.rect.y == 40.0));
+        // The profile's foreground on its background at 0.9 alpha, as in every iTerm2 mode.
+        assert_eq!(r.spans[0].color, STAMP_COLORS.0);
+        assert!(f.quads.iter().all(|q| q.color == rgba(STAMP_COLORS.1, 0.9)));
     }
+
+    /// A light profile: dark text on a white background.
+    const STAMP_COLORS: (Rgb, Rgb) = (rgb(0x10, 0x10, 0x10), rgb(0xff, 0xff, 0xff));
 
     #[test]
     fn adjacent_labels_follow_iterm2() {
@@ -6014,7 +6033,7 @@ mod tests {
         let text_row = |y: f32| TextRow { x: 0.0, y, spans: vec![], clip: Rect { x: 0.0, y, w: 800.0, h: 20.0 }, scale: 1.0 };
         let mut f = Frame::default();
         f.rows.push(text_row(40.0));
-        timestamps(&mut f, &labels, Rect { x: 0.0, y: 0.0, w: 700.0, h: 200.0 }, CELL, Some(col));
+        timestamps(&mut f, &labels, Rect { x: 0.0, y: 0.0, w: 700.0, h: 200.0 }, CELL, Some(col), STAMP_COLORS);
         // No text row is clipped, and nothing is cut out of the text.
         assert_eq!(f.rows[0].clip.w, 800.0);
         let stamp = |t: &str| f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == t));
@@ -6027,16 +6046,38 @@ mod tests {
         let lines: Vec<_> = f.quads.iter().filter(|q| q.rect.y == 60.0 && q.rect.w == 1.0 && q.rect.h == CELL.1).map(|q| q.rect.x).collect();
         assert_eq!(lines, vec![719.0, 721.0]);
         // Everything stays inside the column.
-        assert!(f.rows.iter().skip(1).all(|r| r.clip == col));
+        assert!(f.rows.iter().skip(1).all(|r| r.clip.x >= col.x && r.clip.x + r.clip.w <= col.x + col.w));
         assert!(f.quads.iter().all(|q| q.rect.x >= col.x && q.rect.x + q.rect.w <= col.x + col.w));
+        // Readable on a light profile: its foreground (the repeat lines too) on a 0.9-alpha block
+        // of its background behind every row, as iTerm2 draws every mode.
+        assert_eq!(a.spans[0].color, STAMP_COLORS.0);
+        let fill = |y: f32| f.quads.iter().find(|q| q.rect.y == y && q.color == rgba(STAMP_COLORS.1, 0.9)).map(|q| (q.rect.x, q.rect.x + q.rect.w));
+        assert_eq!([fill(40.0), fill(60.0), fill(80.0)], [Some((710.0, 800.0)); 3]);
+        assert!(f.quads.iter().filter(|q| q.rect.w == 1.0).all(|q| q.color == rgba(STAMP_COLORS.0, 1.0)));
     }
 
+    /// iTerm2 never cuts a label: a block wider than the column starts further left, over the
+    /// text (`x = MAX(0, maxX - w)`), and the text under it stops where it starts.
     #[test]
-    fn adjacent_labels_wider_than_the_column_start_at_its_edge() {
+    fn adjacent_labels_wider_than_the_column_extend_over_the_text() {
         let col = Rect { x: 700.0, y: 0.0, w: 40.0, h: 100.0 };
+        let text = Rect { x: 0.0, y: 0.0, w: 700.0, h: 100.0 };
+        let text_row = |y: f32| TextRow { x: 0.0, y, spans: vec![], clip: Rect { x: 0.0, y, w: 700.0, h: 20.0 }, scale: 1.0 };
         let mut f = Frame::default();
-        timestamps(&mut f, &[(0, "2026 Mar 7 14:02:09".into())], Rect { x: 0.0, y: 0.0, w: 700.0, h: 100.0 }, CELL, Some(col));
-        assert_eq!(f.rows[0].x, 700.0);
+        f.rows.push(text_row(0.0));
+        f.rows.push(text_row(20.0));
+        timestamps(&mut f, &[(0, "2026 Mar 7 14:02:09".into())], text, CELL, Some(col), STAMP_COLORS);
+        // 19 characters and a cell of margin: 200 px, ending at the column's right edge.
+        let label = &f.rows[2];
+        assert_eq!(label.x, 540.0);
+        assert!(label.clip.x <= 540.0 && label.clip.x + label.clip.w == 740.0, "{:?}", label.clip);
+        assert_eq!(f.rows[0].clip.w, 540.0, "the text under the label stops where it starts");
+        assert_eq!(f.rows[1].clip.w, 700.0, "a row without a label keeps its text");
+        assert!(f.quads.iter().any(|q| q.rect == Rect { x: 540.0, y: 0.0, w: 200.0, h: 20.0 } && q.color == rgba(STAMP_COLORS.1, 0.9)));
+        // A block wider than the whole pane starts at the text's left edge.
+        let mut f = Frame::default();
+        timestamps(&mut f, &[(0, "2026 Mar 7 14:02:09".into())], Rect { w: 100.0, ..text }, CELL, Some(Rect { x: 100.0, ..col }), STAMP_COLORS);
+        assert_eq!(f.rows[0].x, 0.0);
     }
 
     #[test]

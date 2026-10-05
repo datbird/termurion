@@ -88,7 +88,7 @@ impl App {
                         (t > 0).then(|| (row as usize, stamps::label(now.saturating_sub(t), &stamps::local(t))))
                     })
                     .collect();
-                scene::timestamps(frame, &labels, inner, cell, None);
+                scene::timestamps(frame, &labels, inner, cell, None, (p.screen.palette.fg, p.screen.palette.bg));
             }
         }
     }
