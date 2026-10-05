@@ -184,6 +184,28 @@ impl App {
         }
     }
 
+    /// Copy Performance Stats: the saved renderer logs go on the clipboard (counters and
+    /// timings only, `iTermPreciseTimerGetSavedLogs`).
+    pub(super) fn copy_performance_stats(&mut self) {
+        let text = self.perf.text();
+        if let Some(Err(e)) = self.clipboard.as_mut().map(|cb| cb.set_text(text).map_err(|e| e.to_string())) {
+            self.banners.set("clipboard", format!("Copy failed: {e}"));
+        }
+    }
+
+    /// GPU Renderer Availability: Tandem always draws on the GPU, so it says enabled and names
+    /// the adapter and backend this window draws on.
+    pub(super) fn gpu_renderer_availability(&mut self) {
+        use crate::perf_stats as ps;
+        let mut text = ps::GPU_ENABLED.to_string();
+        if let Some(g) = &self.gpu {
+            let info = g.render_adapter().get_info();
+            text = format!("{text}\n\n{}", ps::gpu_adapter_line(&info.name, &format!("{:?}", info.backend)));
+        }
+        let ask = super::scripts_alerts::ask(ps::GPU_TITLE, &text, &[crate::api_auth::OK], None, crate::warnings::Kind::Persistent, super::scripts_alerts::Then::Nothing);
+        self.ask_scripts(ask);
+    }
+
     /// `MetalRedrawPeriod`, in seconds (0.5 by default; 0 or less forces nothing).
     fn redraw_period(&self) -> Duration {
         let secs = self.globals.number("MetalRedrawPeriod").unwrap_or(0.5);

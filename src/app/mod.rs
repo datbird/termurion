@@ -691,6 +691,10 @@ pub struct App {
     fps: crate::perf_stats::MovingAverage,
     /// Frames drawn while the FPS meter is on (per window: `WinSlot`).
     frame_number: u64,
+    /// Saved renderer logs for Copy Performance Stats (13l Task 5; app-wide).
+    perf: crate::perf_stats::Logs,
+    /// Each window's frame counters, by window number (app-wide).
+    perf_frames: std::collections::BTreeMap<usize, crate::perf_stats::FrameStats>,
     /// The last key press in any window (iTerm2's `_lastKeystrokeTime`, `UC:90-94`).
     last_keystroke: Option<Instant>,
     /// The power line (13l Task 3): app-wide, sampled by `power_tick` at most once a second.
@@ -1750,6 +1754,8 @@ pub fn run() {
         pacer: Default::default(),
         fps: crate::perf_stats::MovingAverage::new(crate::perf_stats::FPS_ALPHA),
         frame_number: 0,
+        perf: Default::default(),
+        perf_frames: Default::default(),
         last_keystroke: None,
         power: crate::power::State { on_ac: true, battery_saver: false },
         power_due: None,
@@ -5081,9 +5087,18 @@ impl App {
         self.sync_surface_alpha(transparent);
         // Tab switches, focus, restore from minimized: the backdrop follows what this frame shows.
         self.sync_blur();
+        // Window numbers show from 1 in the saved logs (P20).
+        let window_n = self.window_number() + 1;
         let Some(gpu) = self.gpu.as_mut() else { return };
         gpu.window.set_title(&title);
-        let texture = match gpu.surface.get_current_texture() {
+        let wait_start = Instant::now();
+        let acquired = gpu.surface.get_current_texture();
+        // The renderer's timings for Copy Performance Stats: counters and milliseconds only.
+        let dropped = matches!(acquired, wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded);
+        let start_gap = before.map(|b| now.saturating_duration_since(b).as_secs_f64() * 1000.0);
+        let wait = wait_start.elapsed().as_secs_f64() * 1000.0;
+        self.perf_frames.entry(window_n).or_default().frame(start_gap, Some(wait), dropped, &mut self.perf, window_n);
+        let texture = match acquired {
             wgpu::CurrentSurfaceTexture::Success(t) => t,
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Suboptimal(_) => {

@@ -40,6 +40,121 @@ pub fn fps_text(frame: u64, period: f64) -> String {
     format!(" [Frame {frame}: {fps} fps] ")
 }
 
+/// `GPU Renderer Availability` (`iTermApplicationDelegate.m:3720-3733`).
+pub const GPU_TITLE: &str = "GPU Renderer Availability";
+pub const GPU_ENABLED: &str = "GPU rendering is enabled for the current session.";
+
+/// Tandem's second paragraph: the adapter the window draws on.
+pub fn gpu_adapter_line(name: &str, backend: &str) -> String {
+    format!("Adapter: {name} ({backend})")
+}
+
+/// A number as the histogram summary shows it: up to two decimals, no trailing zeros.
+fn num(v: f64) -> String {
+    let s = format!("{v:.2}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// iTerm2's histogram summary without the sparkline glyphs (`iTermHistogram.mm:511-528`).
+/// Percentiles interpolate linearly between ranks.
+#[derive(Clone, Debug, Default)]
+pub struct Histogram {
+    samples: Vec<f64>,
+}
+
+impl Histogram {
+    pub fn add(&mut self, v: f64) {
+        self.samples.push(v);
+    }
+
+    pub fn summary(&self) -> String {
+        if self.samples.is_empty() {
+            return "No data".to_string();
+        }
+        let mut s = self.samples.clone();
+        s.sort_by(|a, b| a.total_cmp(b));
+        let n = s.len();
+        let sum: f64 = s.iter().sum();
+        let pct = |p: f64| {
+            let r = (n - 1) as f64 * p;
+            let (lo, hi) = (r.floor() as usize, r.ceil() as usize);
+            s[lo] + (s[hi] - s[lo]) * (r - lo as f64)
+        };
+        format!(
+            "{} {}  Count={n} Mean={} p50={} p95={} Sum={}",
+            num(s[0]),
+            num(s[n - 1]),
+            num(sum / n as f64),
+            num(pct(0.5)),
+            num(pct(0.95)),
+            num(sum)
+        )
+    }
+}
+
+/// `iTermMetalDriver.m:401-409`: the share of frames not drawn, "%0.1f%%\n".
+pub fn dropped_text(dropped: u64, total: u64) -> String {
+    let pct = if total == 0 { 0.0 } else { dropped as f64 * 100.0 / total as f64 };
+    format!("{pct:.1}%\n")
+}
+
+/// iTerm2's saved precise-timer logs (`iTermPreciseTimer.m:327-346`), keyed by identifier.
+/// Holds counters and timings only.
+#[derive(Clone, Debug, Default)]
+pub struct Logs {
+    saved: std::collections::BTreeMap<String, String>,
+}
+
+impl Logs {
+    pub fn save(&mut self, id: &str, log: &str) {
+        self.saved.insert(id.to_string(), log.to_string());
+    }
+
+    /// What Copy Performance Stats puts on the clipboard.
+    pub fn text(&self) -> String {
+        let mut out = String::new();
+        for (key, log) in &self.saved {
+            let multi = log.split('\n').count() > 1;
+            out.push_str(&format!("Precise timers {key}:{}{log}\n", if multi { "\n" } else { "" }));
+        }
+        out
+    }
+}
+
+/// One window's frame counters and timings (`iTermMetalDriver.m:401-409`).
+#[derive(Clone, Debug, Default)]
+pub struct FrameStats {
+    total: u64,
+    dropped: u64,
+    start_to_start: Histogram,
+    drawable: Histogram,
+}
+
+impl FrameStats {
+    /// Counts one frame of window number `window`: `start_gap` is the milliseconds since the
+    /// window's last frame started, `drawable` the milliseconds the surface texture took, and
+    /// `dropped` is a frame that got no texture (a timeout or an occluded window). Every tenth
+    /// frame (`total % 10 == 1`) saves the logs.
+    pub fn frame(&mut self, start_gap: Option<f64>, drawable: Option<f64>, dropped: bool, logs: &mut Logs, window: usize) {
+        self.total += 1;
+        if dropped {
+            self.dropped += 1;
+        }
+        if let Some(g) = start_gap {
+            self.start_to_start.add(g);
+        }
+        if let Some(d) = drawable.filter(|_| !dropped) {
+            self.drawable.add(d);
+        }
+        if self.total % 10 == 1 {
+            let key = |what: &str| format!("Window {window}: {what}");
+            logs.save(&key("Dropped frames"), &dropped_text(self.dropped, self.total));
+            logs.save(&key("Start-to-Start Time (ms)"), &self.start_to_start.summary());
+            logs.save(&key("Current Drawable Time (ms)"), &self.drawable.summary());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,5 +171,61 @@ mod tests {
         assert_eq!(fps_text(2, 0.0), " [Frame 2: 0 fps] ");
         assert_eq!(FPS_FG, [1.0, 0.0, 1.0, 1.0]);
         assert_eq!(FPS_BG, [0.1, 0.1, 0.1, 1.0]);
+    }
+
+    /// `iTermPreciseTimer.m:336-346`: "Precise timers <key>:", a newline when the log has more
+    /// than one line, the log and a newline, per saved log. The brief's literal omits the newline
+    /// after the first colon although its own rule (and the source) put it there.
+    #[test]
+    fn perf_logs_follow_iterm2() {
+        let mut logs = Logs::default();
+        assert_eq!(logs.text(), "");
+        logs.save("Window 1: Start-to-Start Time (ms)", "No data");
+        logs.save("Window 1: Dropped frames", "0.0%\n");
+        assert_eq!(
+            logs.text(),
+            "Precise timers Window 1: Dropped frames:\n0.0%\n\nPrecise timers Window 1: Start-to-Start Time (ms):No data\n"
+        );
+        logs.save("Window 1: Dropped frames", "2.5%\n");
+        assert!(logs.text().contains("frames:\n2.5%\n\n"), "a save replaces the log under its key");
+        assert_eq!(dropped_text(1, 40), "2.5%\n");
+        assert_eq!(dropped_text(0, 0), "0.0%\n");
+        let mut h = Histogram::default();
+        assert_eq!(h.summary(), "No data");
+        for v in [1.0, 2.0, 3.0, 4.0] {
+            h.add(v);
+        }
+        assert_eq!(h.summary(), "1 4  Count=4 Mean=2.5 p50=2.5 p95=3.85 Sum=10");
+    }
+
+    /// Every tenth frame (`total % 10 == 1`) saves the three logs under the window's name;
+    /// dropped frames count in the total. Only counters and timings are kept.
+    #[test]
+    fn frame_stats_save_every_tenth_frame() {
+        let mut stats = FrameStats::default();
+        let mut logs = Logs::default();
+        stats.frame(Some(16.0), Some(0.5), false, &mut logs, 1);
+        let t = logs.text();
+        assert!(t.contains("Precise timers Window 1: Dropped frames:\n0.0%\n\n"), "{t}");
+        assert!(t.contains("Window 1: Start-to-Start Time (ms):16 16  Count=1 Mean=16 p50=16 p95=16 Sum=16\n"), "{t}");
+        assert!(t.contains("Window 1: Current Drawable Time (ms):0.5 0.5  Count=1 Mean=0.5 p50=0.5 p95=0.5 Sum=0.5\n"), "{t}");
+        for _ in 0..9 {
+            stats.frame(Some(20.0), Some(1.0), false, &mut logs, 1);
+        }
+        assert!(logs.text().contains("Count=1 "), "frames 2 to 10 do not save");
+        stats.frame(None, None, true, &mut logs, 1);
+        let t = logs.text();
+        assert!(t.contains("Count=10 "), "frame 11 saves the ten timed frames: {t}");
+        assert!(t.contains("Dropped frames:\n9.1%\n"), "1 of 11 frames dropped: {t}");
+        FrameStats::default().frame(None, None, false, &mut logs, 2);
+        assert!(logs.text().contains("Window 2: Dropped frames"), "{}", logs.text());
+    }
+
+    /// `AD:3720-3733`.
+    #[test]
+    fn gpu_availability_follows_iterm2() {
+        assert_eq!(GPU_TITLE, "GPU Renderer Availability");
+        assert_eq!(GPU_ENABLED, "GPU rendering is enabled for the current session.");
+        assert_eq!(gpu_adapter_line("Intel(R) UHD Graphics", "Dx12"), "Adapter: Intel(R) UHD Graphics (Dx12)");
     }
 }

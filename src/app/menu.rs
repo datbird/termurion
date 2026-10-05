@@ -927,6 +927,8 @@ impl App {
                 }
             }
             "clearBuffer:" => self.clear_or_reset(true),
+            "copyPerformanceStats:" => self.copy_performance_stats(),
+            "gpuRendererAvailability:" => self.gpu_renderer_availability(),
             "clearInstantReplay:" => self.clear_instant_replay(),
             "exportRecording:" => self.export_recording_menu(),
             "loadRecording:" => self.import_recording(None),
