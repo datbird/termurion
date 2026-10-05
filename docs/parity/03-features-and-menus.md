@@ -52,8 +52,8 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Shell > Close Terminal Window | Shift+Cmd+W | Closes the entire terminal window. | have, milestone 7a |
 | Shell > Close All Panes in Tab | Opt+Cmd+W | Closes every pane in the current tab. | have |
 | Shell > Undo Close | Shift+Cmd+T | Reopens the most recently closed session. (milestone 7) | have, milestone 7b |
-| Shell > Archives > Save Archive of Current Session... | no shortcut | Saves session scrollback and state as a reloadable archive file. (milestone 7) | missing |
-| Shell > Archives > Restore Archive... | no shortcut | Reloads a previously saved session archive. (milestone 7) | missing |
+| Shell > Archives > Save Archive of Current Session... | no shortcut | Saves session scrollback and state as a reloadable archive file. | have |
+| Shell > Archives > Restore Archive... | no shortcut | Reloads a previously saved session archive. | have |
 | Shell > Workgroups > Exit Workgroup | no shortcut | Leaves a linked group of peer sessions. (milestone 7) | missing |
 | Shell > Broadcast Input > Send Input to Current Session Only | Opt+Cmd+Shift+I | Turns off input broadcasting, typing goes only to the active pane. | have, milestone 7f |
 | Shell > Broadcast Input > Broadcast Input to All Panes in All Tabs | Cmd+Shift+I | Sends typed input to every pane in every tab of the window. | have, milestone 7f |
@@ -200,7 +200,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Session > Move Session > Move Session to Window | no shortcut | Moves the current session/pane out into a new window. (milestone 7) | have, milestone 7a |
 | Session > Move Session > Move Session to Tab | no shortcut | Moves the current session/pane out into a new tab. (milestone 7) | have, milestone 8h |
 | Session > Move Session > Move Session to Split Pane | no shortcut | Moves the current session into a split position picked interactively. Pick a destination pane (in any window) and a side. | have |
-| Session > Log > Log to File | no shortcut | Starts or stops logging session output to a file. (milestone 6) | missing |
+| Session > Log > Log to File | no shortcut | Starts or stops logging session output to a file. | have |
 | Session > Log > Import Recording | no shortcut | Loads a previously exported session recording for playback. (milestone 10) | have, milestone 10a: opens a read-only tab at index 0, not restored across a restart or a saved arrangement |
 | Session > Log > Export Recording | no shortcut | Exports the session's recorded history to a file. (milestone 10) | have, milestone 10a: during a replay this menu command shows "Error encoding recording." (kept iTerm2 bug); the panel's own Export button works during a replay |
 | Session > Make Screenshot... | no shortcut | Captures a screenshot of the session content. | have, milestone 5e: a frozen copy with a camera sign, the panel with minimap and line range, Redact and Highlight, blur or solid, Copy, Save, Save As, 30000 px parts |
