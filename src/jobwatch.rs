@@ -704,4 +704,23 @@ mod tests {
         assert!(!process_alive(root, tree[0].created));
         let _ = signal_process(ping.pid, Some(ping.created), SignalWay::Terminate(143), running());
     }
+
+    /// 13p S9 x 13q B7: a forgotten shell (an ended pane's) leaves the wait set at once, so no
+    /// signaled handle of a dead shell wakes every look and no reused pid is waited on.
+    #[test]
+    fn a_forgotten_shell_leaves_the_wait_set() {
+        let w = JobWatch { shared: Arc::new(Mutex::new(Shared { fast_updates: true, ..Default::default() })) };
+        w.watch(10);
+        w.watch(20);
+        {
+            let mut s = w.lock();
+            s.jobs.insert(10, job_of(10));
+            s.jobs.insert(20, job_of(21));
+        }
+        assert_eq!(wait_pids(&w.lock().jobs, true), vec![10, 21]);
+        w.forget(10);
+        assert_eq!(wait_pids(&w.lock().jobs, true), vec![21], "the ended shell is not waited on");
+        assert!(!w.lock().roots.contains(&10), "nor looked at again");
+        assert_eq!(w.job(10), ShellJob::default(), "nor reported");
+    }
 }

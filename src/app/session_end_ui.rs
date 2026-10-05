@@ -77,6 +77,12 @@ impl App {
         let mut next: Option<Instant> = None;
         for id in newly_ended(&facts) {
             let Some(p) = self.panes.get_mut(&id) else { continue };
+            // The exited shell leaves the job watcher at once, not after the drain wait: its
+            // process object is held by the pane's Io, so a signaled handle in `wait_pids` would
+            // wake every look, and once released its pid can be a stranger's (13p S9, B7).
+            if let Some(pid) = p.exit_pid() {
+                self.jobs.forget(pid);
+            }
             if p.end_ready(now) {
                 // Set first: the end is reported once, whatever happens below.
                 p.ended = true;
@@ -298,5 +304,55 @@ mod tests {
         assert!(!restartable_for(true, false, false, false));
         assert!(!restartable_for(false, true, false, false));
         assert!(restartable_for(false, false, false, false));
+    }
+
+    fn body<'a>(src: &'a str, name: &str) -> &'a str {
+        let b = &src[src.find(name).unwrap_or_else(|| panic!("{name}"))..];
+        &b[..b.find("\n    }\n").unwrap()]
+    }
+
+    /// 13p S9: the exited shell's pid leaves the job watcher when the exit is first seen, before
+    /// the drain wait (up to 250 ms) ends, so `wait_pids` never holds a dead shell's handle.
+    #[test]
+    fn an_exited_shell_leaves_the_job_watcher_before_the_drain() {
+        let me = include_str!("session_end_ui.rs");
+        let b = body(me, "pub(super) fn handle_ended(");
+        let forget = b.find("self.jobs.forget(pid);").expect("forgotten in the end pass");
+        assert!(forget < b.find("p.end_ready(now)").unwrap(), "before the drain check");
+        assert!(body(me, "pub(super) fn session_exited(").contains("self.jobs.forget(pid);"), "and again at the end (idempotent)");
+        let pane = include_str!("../pane.rs");
+        let shell = &pane[pane.find("pub fn shell_pid(").unwrap()..];
+        assert!(shell[..200].contains("if self.exited.is_some() {"), "an ended pane reports no shell pid to the watcher");
+    }
+
+    /// 13p S8 (P16, P21): Prevent Sleep counts only panes whose shell has not exited, and is
+    /// looked at on every pass, so an end, a restart (a fresh shell) and a close change it.
+    #[test]
+    fn ended_panes_stop_preventing_sleep() {
+        assert_eq!(crate::sleep_guard::requesting(&[(true, true), (true, false), (false, false)]), 1);
+        let sleep = include_str!("sleep_ui.rs");
+        assert!(body(sleep, "fn sleep_requesters(").contains("p.exited.is_some()"));
+        assert!(include_str!("mod.rs").contains("let sleep_due = self.recompute_sleep(Instant::now());"));
+    }
+
+    /// P13, P14, S4 (13p x 13q): a restart drops the old Initial Text answer before the new shell
+    /// starts, starts in the pane's own folder, reads the session start values again, and sends
+    /// the new shell's own Initial Text once after its install (an SSH profile still waits for
+    /// its login inside `send_initial_text`).
+    #[test]
+    fn a_restart_runs_13p_session_start_once() {
+        let m = include_str!("mod.rs");
+        let r = body(m, "fn restart_confirmed(");
+        let bump = r.find("self.bump_initial_text(id);").expect("old answer dropped");
+        let spawn = r.find("self.spawn_pane(id, rect, guid.as_deref(), Some(").expect("spawned with the start folder");
+        let install = r.find("self.install_pane(id, pane, &profile, true);").unwrap();
+        let send = r.find("self.send_initial_text(id, &profile);").expect("own Initial Text");
+        assert!(bump < spawn && spawn < install && install < send);
+        assert_eq!(r.matches("send_initial_text").count(), 1, "never twice");
+        assert!(r.contains("p.start_dir.clone()"));
+        let i = body(m, "    fn install_pane(");
+        let start = i.find("self.apply_session_start(id);").unwrap();
+        assert!(!i[..start].trim_end().ends_with("if !relaunch {"), "read again at a restart");
+        assert_eq!(i.matches("apply_session_start").count(), 1);
     }
 }
