@@ -20,6 +20,18 @@ pub struct Context {
 }
 
 impl Context {
+    /// The bytes of `before + after` from the first character at or after cell `a` to the last
+    /// at or before cell `b` (both ends inclusive); None when no character lies between them.
+    pub fn range_between(&self, a: Pos, b: Pos) -> Option<std::ops::Range<usize>> {
+        let first = self.cells.iter().position(|(_, p)| *p >= a)?;
+        let last = self.cells.iter().rposition(|(_, p)| *p <= b)?;
+        if last < first {
+            return None;
+        }
+        let end = self.cells.get(last + 1).map_or(self.before.len() + self.after.len(), |(o, _)| *o);
+        Some(self.cells[first].0..end)
+    }
+
     /// The cell of the character holding byte `offset` of `before + after`.
     pub fn pos_at(&self, offset: usize) -> Option<Pos> {
         let i = self.cells.partition_point(|(o, _)| *o <= offset);
@@ -119,6 +131,24 @@ mod tests {
 
     fn filename_set() -> CharSet {
         url_guess::filename(&url_guess::CharSet::default(), url_guess::DEFAULT_FILENAME_CHARS)
+    }
+
+    #[test]
+    fn a_command_range_is_a_byte_range_of_the_context() {
+        // "PS> dir x" with the click on "dir": the prompt is cells 0..4.
+        let r = rows(&["PS> dir x"]);
+        let c = build(&r, 0, 5, true, 2000);
+        let at = |col| Pos { row: 0, col };
+        assert_eq!(c.range_between(at(4), at(8)), Some(4..9));
+        assert_eq!(c.range_between(at(4), at(6)), Some(4..7));
+        // An end past the text still ends at the last character.
+        assert_eq!(c.range_between(at(4), at(39)), Some(4..9));
+        assert_eq!(c.range_between(at(9), at(39)), None);
+        assert_eq!(c.range_between(at(6), at(4)), None);
+        // A command on the next row of a wrapped prompt.
+        let r = rows(&["PS> ab\\", "cd"]);
+        let c = build(&r, 0, 4, true, 2000);
+        assert_eq!(c.range_between(Pos { row: 0, col: 4 }, Pos { row: 1, col: 1 }), Some(4..8));
     }
 
     #[test]

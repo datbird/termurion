@@ -150,6 +150,12 @@ impl App {
         // window did not rule that out (`UAF:291-297`).
         let hard = (!respect && window.is_none()).then(|| around(&p.screen, at, None, true, max));
         let link = p.screen.term().grid()[point].hyperlink();
+        // A click on a prompt's command line shows Command Info, ahead of every link (`UAF:275-286`).
+        let prompt = self.globals.bool("EnableCmdClickPromptForShowCommandInfo").then(|| {
+            let (mark, (a, b)) = p.screen.command_hit(point)?;
+            Some((mark, text.range_between(to_pos(&p.screen, a), to_pos(&p.screen, b))?))
+        });
+        let prompt = prompt.flatten();
         let urls = self.url_prefs(id);
         let filename_set = crate::url_guess::filename(&urls.chars, &self.globals.string("FilenameCharacterSet"));
         let ctx = ClickContext {
@@ -166,6 +172,7 @@ impl App {
             filename_set: Some(filename_set),
             probe: self.path_probe(),
             order: semantic::order_from(self.globals.bool("PrioritizeSmartSelectionActions"), self.globals.bool("DisableSmartSelectionActionsOnClick")),
+            prompt,
         };
         Some(Clicked { ctx, line, text, hard, joined, found, rules, prefs, link_id: link.map(|h| h.id().to_string()) })
     }
@@ -275,6 +282,13 @@ impl App {
     /// the click. Returns false when nothing there opens.
     pub(super) fn open_target(&mut self, id: PaneId, point: Point, background: bool, event_loop: &ActiveEventLoop) -> bool {
         let found = self.target_at(id, point);
+        // Command Info runs nothing and reads only the pane's own marks, so it opens in a pane whose
+        // text a remote host wrote too (B5); everything it types goes through the guard.
+        if let Some((_, Target::CommandInfo(mark), _)) = &found {
+            let mark = *mark;
+            self.show_command_info(id, mark, (self.cursor.0 as f32, self.cursor.1 as f32), event_loop);
+            return true;
+        }
         // Text a remote host wrote never builds a local run (P10): only a web or mail link
         // opens, anything else may only download.
         let link = found.as_ref().and_then(|(_, t, _)| match t {

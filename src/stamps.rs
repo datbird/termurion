@@ -99,6 +99,22 @@ pub fn short_time(p: &Parts) -> String {
     wide_text(&buf, n)
 }
 
+/// The locale's time with seconds (`GetTimeFormatEx` with no flags) of a local time.
+#[cfg(windows)]
+pub fn long_time(p: &Parts) -> String {
+    use windows_sys::Win32::Globalization::GetTimeFormatEx;
+    let (st, mut buf) = (systemtime(p), [0u16; 128]);
+    let n = unsafe { GetTimeFormatEx(std::ptr::null(), 0, &st, std::ptr::null(), buf.as_mut_ptr(), buf.len() as i32) };
+    wide_text(&buf, n)
+}
+
+/// "MMM d, yyyy" with English month names, as Command Info's date is in iTerm2.
+pub fn month_day_year(p: &Parts) -> String {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let month = MONTHS.get((p.month as usize).wrapping_sub(1)).copied().unwrap_or("?");
+    format!("{month} {}, {}", p.day, p.year)
+}
+
 /// iTerm2's right extra for Adjacent timestamps, in points (`PTYSession.m`,
 /// `desiredRightExtraForProfile:session:`).
 pub const ADJACENT_POINTS: f32 = 100.0;
@@ -140,6 +156,14 @@ pub fn block_width(cell_w: f32, labels: &[(usize, String)]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_info_dates_follow_iterm2() {
+        let p = Parts { year: 2026, month: 10, day: 1, weekday: 4, hour: 15, minute: 4, second: 5 };
+        assert_eq!(month_day_year(&p), "Oct 1, 2026");
+        assert_eq!(month_day_year(&Parts { month: 1, day: 31, year: 1999, ..p }), "Jan 31, 1999");
+        assert_eq!(month_day_year(&Parts { month: 13, ..p }), "? 1, 2026");
+    }
 
     #[test]
     fn labels_scale_with_age() {

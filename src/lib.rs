@@ -66,6 +66,8 @@ pub mod inline_file;
 pub mod sixel;
 pub mod kitty;
 pub mod stamps;
+pub mod cmdinfo;
+pub mod pathnav;
 pub mod session_log;
 pub mod archive;
 pub mod styled_copy;
@@ -261,6 +263,8 @@ pub mod note_ui;
 pub mod git_log_ui;
 #[cfg(windows)]
 pub mod status_popover_ui;
+#[cfg(windows)]
+pub mod cmdinfo_ui;
 #[cfg(windows)]
 pub mod shot_ui;
 #[cfg(windows)]

@@ -12,6 +12,9 @@ pub enum Target {
     Action { rule: usize, action: usize, text: String },
     Url(String),
     RawCommand(String),
+    /// The command line of this prompt mark: Win-click on it shows Command Info
+    /// (`UAF:275-286`, `UAF:380-399`).
+    CommandInfo(u32),
 }
 
 /// What is around a click. `before` ends at the clicked character; `after` starts at it.
@@ -41,6 +44,10 @@ pub struct ClickContext {
     pub probe: crate::netpath::Probe,
     /// The phase order (`PrioritizeSmartSelectionActions`, `DisableSmartSelectionActionsOnClick`).
     pub order: Order,
+    /// The prompt mark whose command line holds the click and that command's byte range in
+    /// `before` + `after`; None when `EnableCmdClickPromptForShowCommandInfo` is off or the
+    /// click is not on a command (`UAF:275-286`).
+    pub prompt: Option<(u32, std::ops::Range<usize>)>,
 }
 
 /// Which context a resolved range belongs to.
@@ -155,8 +162,12 @@ pub fn resolve_in(ctx: &ClickContext) -> Option<(Target, Option<std::ops::Range<
     let budget = crate::netpath::Budget::new(MAX_PROBES);
     for phase in phases(ctx.order) {
         match phase {
-            // Task 7 fills the prompt context; until then it never matches.
-            Phase::Prompt => {}
+            // The click is on a prompt's command line (`UAF:275-286`).
+            Phase::Prompt => {
+                if let Some((mark, range)) = ctx.prompt.as_ref().filter(|(_, r)| r.contains(&ctx.before.len())) {
+                    return Some((Target::CommandInfo(*mark), Some(range.clone()), Pass::Detect));
+                }
+            }
             Phase::Link => {
                 if let Some(link) = &ctx.link {
                     return Some((Target::Link(link.clone()), None, Pass::Detect));
@@ -973,7 +984,8 @@ fn fill_pieces(template: &str, values: [&str; 5]) -> Vec<CmdPiece> {
 pub fn plan(target: &Target, prefs: &Prefs, around: &Around, has_code: bool) -> Option<Run> {
     match target {
         Target::Link(u) | Target::Url(u) => Some(guard_open(u, has_code)),
-        Target::Action { .. } => None,
+        // The app shows its window; nothing runs.
+        Target::Action { .. } | Target::CommandInfo(_) => None,
         Target::RawCommand(word) => (prefs.action == "raw command").then(|| {
             fill_cmd(&prefs.text, [word, "", around.prefix, around.suffix, around.cwd]).map_or_else(|| Run::Blocked(CMD_REFUSED.into()), Run::Command)
         }),
@@ -1231,6 +1243,30 @@ mod tests {
         }
         assert_eq!(handler_plan(&format!("cmd.exe /c start \"\" {URL_TOKEN}"), "https://a/b", &[], &fake_resolve), Err(Refusal::Forwarder));
         assert_eq!(handler_plan(&format!(r#""C:\t\shell.exe" {URL_TOKEN}"#), "https://a/b", &[], &fake_resolve), spawn_of(r"C:\t\shell.exe", &["https://a/b"]), "a stem is matched whole");
+    }
+
+    #[test]
+    fn prompt_phase_follows_iterm2() {
+        let (before, after) = click("ab|cdefgh");
+        let on = ClickContext { before, after, link: Some("https://a.b/".into()), prompt: Some((7, 2..8)), ..Default::default() };
+        // Before any link.
+        assert_eq!(resolve_range(&on), Some((Target::CommandInfo(7), Some(2..8))));
+        // The first and last bytes of the range are in it, the byte after is not.
+        for (at, hit) in [(2, true), (7, true), (1, false), (8, false), (9, false)] {
+            let (before, after) = "abcdefghij".split_at(at);
+            let ctx = ClickContext { before: before.into(), after: after.into(), link: Some("https://a.b/".into()), prompt: Some((7, 2..8)), ..Default::default() };
+            let got = resolve(&ctx);
+            assert_eq!(got == Some(Target::CommandInfo(7)), hit, "offset {at}");
+            // Outside the command the next phases answer: here the link.
+            assert!(got.is_some());
+        }
+        // The key off: nothing changes.
+        assert_eq!(resolve(&ClickContext { prompt: None, ..on.clone() }), Some(Target::Link("https://a.b/".into())));
+        // With Smart Selection first the prompt still goes first (UAF:186-232: Prompt leads).
+        assert_eq!(resolve(&ClickContext { order: Order::SmartFirst, ..on.clone() }), Some(Target::CommandInfo(7)));
+        // A prompt click plans nothing to run: the app shows the window.
+        let prefs = Prefs::default();
+        assert_eq!(plan(&Target::CommandInfo(7), &prefs, &Around::default(), false), None);
     }
 
     #[test]

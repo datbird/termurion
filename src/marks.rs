@@ -57,6 +57,9 @@ pub struct Mark {
     pub output_start: Option<Anchor>,
     /// The directory at the prompt's end.
     pub directory: Option<String>,
+    /// The host and user shell integration reported at the prompt's end (Command Info's URL).
+    pub host: Option<String>,
+    pub user: Option<String>,
     /// Drawn as a line across the pane instead of a bar in the margin; decided when the
     /// prompt mark is made (`MS:3578-3641`) and never changed after.
     pub line_style: bool,
@@ -64,7 +67,7 @@ pub struct Mark {
 
 impl Mark {
     pub fn new(id: u32, kind: Kind) -> Mark {
-        Mark { id, kind, command: String::new(), code: None, start: None, end: None, aid: None, name: None, command_range: None, captured: Vec::new(), clear_count: 0, prompt_end: None, output_start: None, directory: None, line_style: false }
+        Mark { id, kind, command: String::new(), code: None, start: None, end: None, aid: None, name: None, command_range: None, captured: Vec::new(), clear_count: 0, prompt_end: None, output_start: None, directory: None, host: None, user: None, line_style: false }
     }
 }
 
@@ -820,6 +823,84 @@ impl Screen {
         Some((start, self.before(self.cursor_point())))
     }
 
+    /// The prompt mark whose command line holds `point`, and that line's range (from the end of
+    /// the prompt to where output began, `UAF:275-286`). A mark with no command text is no hit,
+    /// nor is anything while a full-screen program shows the alternate screen (P7).
+    pub fn command_hit(&self, point: Point) -> Option<(u32, (Point, Point))> {
+        if self.alt_screen() {
+            return None;
+        }
+        // The command a point can belong to is the nearest prompt mark at or above its row, so a
+        // hover never reads the whole buffer for marks.
+        let grid = self.term.primary_grid();
+        let top = -(grid.history_size() as i32);
+        let mut line = point.line.0;
+        if line < top || line >= grid.screen_lines() as i32 {
+            return None;
+        }
+        let id = loop {
+            let id = grid[Line(line)].mark();
+            if id != 0 {
+                break id;
+            }
+            if line <= top {
+                return None;
+            }
+            line -= 1;
+        };
+        let m = self.marks.records.get(&id).filter(|m| m.kind == Kind::Prompt && !m.command.trim().is_empty())?;
+        let (a, b) = m.command_range?;
+        let (start, end) = (self.resolve_from(line, a)?, self.resolve_from(line, b)?);
+        let end = self.before(end);
+        (point >= start && point <= end).then_some((id, (start, end)))
+    }
+
+    /// Prompt command `id`'s record, while its row is in the buffer.
+    pub fn command_mark(&self, id: u32) -> Option<&Mark> {
+        self.row_marks().into_iter().any(|(_, m)| m == id).then(|| self.marks.records.get(&id)).flatten()
+    }
+
+    /// Prompt command `id`'s record without looking for its row (the open window's tick: no scan of
+    /// the buffer per frame).
+    pub fn command_record(&self, id: u32) -> Option<&Mark> {
+        self.marks.records.get(&id).filter(|m| m.kind == Kind::Prompt)
+    }
+
+    /// Whether `id` is the command whose output is being printed now.
+    pub fn command_is_running(&self, id: u32) -> bool {
+        self.marks.running && self.marks.last_command == Some(id)
+    }
+
+    /// The rows of command `id`'s output: from where it began to the row before the next
+    /// prompt mark, or for the newest command to the cursor (`rangeOfOutputForCommandMark:`,
+    /// `VSS:1045-1080`). None for a command with no output start, or under the alternate screen
+    /// (the marks are the main screen's).
+    pub fn output_range_of(&self, id: u32) -> Option<(Point, Point)> {
+        if self.alt_screen() {
+            return None;
+        }
+        let rows = self.row_marks();
+        let mine = rows.iter().find(|(_, m)| *m == id)?.0;
+        let m = self.marks.records.get(&id).filter(|m| m.kind == Kind::Prompt)?;
+        let first = self.resolve_from(mine, m.output_start?)?;
+        let next = rows.iter().filter(|(l, other)| *l > mine && self.marks.records.get(other).is_some_and(|r| r.kind == Kind::Prompt)).map(|(l, _)| *l).min();
+        let last = match next {
+            Some(l) => Point::new(Line(l - 1), Column(self.term.columns() - 1)),
+            None => self.before(self.cursor_point()),
+        };
+        (last >= first).then_some((first, last))
+    }
+
+    /// Command `id`'s output as text: each row without its trailing blanks, no trailing blank
+    /// rows (what Command Info counts and copies).
+    pub fn output_text(&self, id: u32) -> Option<String> {
+        let (a, b) = self.output_range_of(id)?;
+        let text = self.term.bounds_to_string(a, b);
+        let lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches([' ', '\0', '\r'])).collect();
+        let end = lines.iter().rposition(|l| !l.is_empty()).map_or(0, |i| i + 1);
+        Some(lines[..end].join("\n"))
+    }
+
     /// The command being typed, else the last command's text (Select Current Command).
     pub fn last_command_range(&self) -> Option<(Point, Point)> {
         if self.marks.in_command {
@@ -1063,9 +1144,12 @@ impl Screen {
                 self.marks.in_command = true;
                 self.marks.command_start = self.marks.current.and_then(|c| self.anchor_here(c));
                 let (end, cwd) = (self.marks.command_start, self.shell.cwd.clone());
+                let (host, user) = (self.shell.host.clone(), self.shell.user.clone());
                 if let Some(m) = self.marks.current.and_then(|c| self.marks.records.get_mut(&c)) {
                     m.prompt_end = end;
                     m.directory = cwd;
+                    m.host = host;
+                    m.user = user;
                 }
                 self.composer_from = Some(self.abs_cursor());
                 // The prompt is captured unless its range did not change (`MS:4749-4777`).
@@ -1533,6 +1617,77 @@ mod tests {
         assert_eq!(s.term().bounds_to_string(a, b).trim_end(), "output");
         let (a, b) = s.last_command_range().unwrap();
         assert_eq!(s.term().bounds_to_string(a, b).trim_end(), "echo hi");
+    }
+
+    #[test]
+    fn command_hit_follows_iterm2() {
+        let mut s = Screen::new(40, 10);
+        s.feed(b"\x1b]133;A\x07PS> \x1b]133;B\x07dir\r\n\x1b]133;C\x07x\r\n\x1b]133;D;0\x07");
+        s.feed(b"\x1b]133;A\x07PS> \x1b]133;B\x07");
+        let at = |line: i32, col: usize| Point::new(Line(line), Column(col));
+        let id = s.marks_in_order().iter().find(|(_, m)| m.command == "dir").map(|(_, m)| m.id).unwrap();
+        // Each cell of "dir" hits the mark with the command's range.
+        for col in 4..7 {
+            let (hit, (a, b)) = s.command_hit(at(0, col)).unwrap_or_else(|| panic!("col {col}"));
+            assert_eq!(hit, id);
+            assert_eq!(a, at(0, 4));
+            assert!(b >= at(0, 6), "{b:?}");
+        }
+        // The prompt text, the output and the new prompt are not the command.
+        for p in [at(0, 0), at(0, 3), at(1, 0), at(2, 1), at(2, 5)] {
+            assert_eq!(s.command_hit(p), None, "{p:?}");
+        }
+        // A prompt with an empty command (Enter at once) is no hit.
+        let mut e = Screen::new(40, 10);
+        e.feed(b"\x1b]133;A\x07PS> \x1b]133;B\x07\r\n\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;A\x07PS> \x1b]133;B\x07");
+        for p in [at(0, 3), at(0, 4), at(0, 6), at(1, 0)] {
+            assert_eq!(e.command_hit(p), None, "{p:?}");
+        }
+        // The next command is its own mark: each point belongs to the prompt above it.
+        s.feed(b"ls\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07");
+        let second = s.command_hit(at(2, 5)).map(|(m, _)| m).unwrap();
+        assert_ne!(second, id);
+        assert_eq!(s.command_hit(at(0, 5)).map(|(m, _)| m), Some(id));
+        assert_eq!(s.command_hit(at(3, 0)), None);
+        // Not under a full-screen program (P7).
+        s.feed(b"\x1b[?1049h");
+        assert_eq!(s.command_hit(at(0, 5)), None);
+    }
+
+    #[test]
+    fn a_commands_output_is_its_rows() {
+        let mut s = Screen::new(40, 10);
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07one\r\n\x1b]133;C\x07l1\r\nl2  \r\n\r\n\x1b]133;D;0\x07");
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07two\r\n\x1b]133;C\x07partial");
+        let ids: Vec<u32> = s.marks_in_order().iter().map(|(_, m)| m.id).collect();
+        assert_eq!(ids.len(), 2);
+        // The finished command ends at the row before the next prompt; blanks are trimmed.
+        assert_eq!(s.output_text(ids[0]).as_deref(), Some("l1\nl2"));
+        assert!(!s.command_is_running(ids[0]));
+        // The newest runs to the cursor.
+        assert_eq!(s.output_text(ids[1]).as_deref(), Some("partial"));
+        assert!(s.command_is_running(ids[1]));
+        assert_eq!(s.command_mark(ids[1]).map(|m| m.command.as_str()), Some("two"));
+        assert_eq!(s.command_mark(999).map(|m| m.id), None);
+        // A command that printed nothing has no output start.
+        let mut e = Screen::new(40, 10);
+        e.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07\r\n\x1b]133;C\x07\x1b]133;D;0\x07");
+        let id = e.marks_in_order().first().map(|(_, m)| m.id);
+        assert!(id.is_none_or(|id| e.output_text(id).is_none()));
+        s.feed(b"\x1b[?1049h");
+        assert_eq!(s.output_text(ids[0]), None);
+    }
+
+    #[test]
+    fn a_command_mark_keeps_its_host_and_user() {
+        let mut s = Screen::new(40, 10);
+        s.feed(b"\x1b]1337;RemoteHost=rob@box\x07\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07\x1b]133;D;0\x07");
+        let m = s.marks_in_order().pop().unwrap().1;
+        assert_eq!((m.user.as_deref(), m.host.as_deref()), (Some("rob"), Some("box")));
+        let mut t = Screen::new(40, 10);
+        prompt(&mut t, "ls", 0);
+        let m = t.marks_in_order().pop().unwrap().1;
+        assert_eq!((m.user, m.host), (None, None));
     }
 
     #[test]
