@@ -47,6 +47,10 @@ impl App {
                 }
             }
         }
+        // The pick's looks are drawn inside `pick_rects`, so those are what hold the events.
+        for r in self.pane_move_hit_rects() {
+            ui.push(Overlay::PaneMove, r);
+        }
         for h in &self.porthole_hits {
             ui.push(Overlay::Porthole, h.3);
         }
@@ -390,6 +394,34 @@ mod tests {
         let second_bar = format!("fn {}_bar", "stuck");
         assert!(!MOD.contains(&second_bar) && !UI.contains(&second_bar));
         assert!(body(MOD, "user_event").contains("self.stuck_tick()"));
+    }
+
+    /// Fix round 2, 1: the wheel over an overlay stops before the program's wheel path (no
+    /// report and no alternate-scroll arrows), in `App::wheel` after the UI wheel handlers.
+    #[test]
+    fn the_wheel_over_an_overlay_reaches_no_program() {
+        let b = body(MOD, "wheel");
+        let ui = b.find("tandem_ui_at(").expect("wheel asks the overlay list");
+        assert!(b.find("porthole_wheel(").unwrap() < ui && ui < b.find("route_wheel(").unwrap());
+    }
+
+    /// Fix round 2, 2 and structural: the Move Pane pick joins the one list from `pick_rects`
+    /// (the rects `draw_pane_move` paints), and the completion hit uses the box the draw uses.
+    #[test]
+    fn overlay_hits_are_the_drawn_rects() {
+        let u = body(UI, "ui_rects");
+        assert!(u.contains("Overlay::PaneMove") && u.contains("pane_move_hit_rects"));
+        let c = include_str!("completion_ui.rs");
+        let production = c.split("\n#[cfg(test)]").next().unwrap();
+        assert!(!MOD.contains("draw_completion(&mut frame, id, self.inner(rect)"), "the draw takes the pane rect");
+        assert!(production.contains("self.inner(rect)"), "the shared box applies the inset once");
+    }
+
+    /// Task 6 review, Important 1 and 2: `mouse_press` follows `press_follow_up`.
+    #[test]
+    fn mouse_press_follows_press_follow_up() {
+        let b = body(MOD, "mouse_press");
+        assert!(b.contains("press_follow_up("));
     }
 
     /// Every mouse report is written through `write_mouse_report` (Task 7 arms the detector there).

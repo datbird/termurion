@@ -129,6 +129,23 @@ pub fn first_click(first_mouse: bool, cmd: bool, always_accept: bool, ffm: bool,
     (FirstClick::Normal, first_mouse)
 }
 
+/// What a left press leaves running after it set its selection (`PTYMouseHandler.m:778-782`,
+/// `:595-597`): the click that activated the window may place a selection but a drag never
+/// extends it, nothing is copied at once, and Alt-click never moves the cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PressFollow {
+    pub drag_selects: bool,
+    pub copy_now: bool,
+    pub alt_click: bool,
+}
+
+pub fn press_follow_up(first_mouse_down: bool, smart: bool, count: u8, alt_only: bool) -> PressFollow {
+    if first_mouse_down {
+        return PressFollow { drag_selects: false, copy_now: false, alt_click: false };
+    }
+    PressFollow { drag_selects: !smart, copy_now: smart, alt_click: count == 1 && alt_only }
+}
+
 /// `xtermMouseReporting` (`PTYSession.m:7020-7028`): allowed, and outside the alternate screen
 /// not restricted to it.
 pub fn reporting_on(ever_allowed: bool, alt_screen: bool, restrict: bool) -> bool {
@@ -153,10 +170,12 @@ pub enum Overlay {
     /// The toast along the bottom (a click through it would reach the program).
     Toast,
     Banner,
+    /// The Move Pane pick's looks over the session views.
+    PaneMove,
 }
 
 impl Overlay {
-    pub const ALL: [Overlay; 11] = [Overlay::InfoBar, Overlay::Porthole, Overlay::Pill, Overlay::Picker, Overlay::Indicator, Overlay::Find, Overlay::Completion, Overlay::Composer, Overlay::ComposerPopup, Overlay::Toast, Overlay::Banner];
+    pub const ALL: [Overlay; 12] = [Overlay::InfoBar, Overlay::Porthole, Overlay::Pill, Overlay::Picker, Overlay::Indicator, Overlay::Find, Overlay::Completion, Overlay::Composer, Overlay::ComposerPopup, Overlay::Toast, Overlay::Banner, Overlay::PaneMove];
 }
 
 /// Tandem's own surfaces that never lie inside a pane's terminal rectangle, so `pane_at` never
@@ -448,7 +467,7 @@ mod tests {
     /// kinds that sit outside the terminal rectangle are named with the reason.
     #[test]
     fn each_overlay_kind_is_a_tandem_hit() {
-        assert!(Overlay::ALL.len() >= 11);
+        assert!(Overlay::ALL.len() >= 12);
         for kind in Overlay::ALL {
             let mut ui = UiRects::default();
             ui.push(kind, r(0.0, 0.0));
@@ -456,7 +475,7 @@ mod tests {
             assert!(!ui.hit(50.0, 5.0), "{kind:?} outside");
         }
         assert!(!UiRects::default().hit(5.0, 5.0));
-        for want in ["InfoBar", "Porthole", "Pill", "Picker", "Indicator", "Find", "Completion", "Composer", "ComposerPopup", "Toast", "Banner"] {
+        for want in ["InfoBar", "Porthole", "Pill", "Picker", "Indicator", "Find", "Completion", "Composer", "ComposerPopup", "Toast", "Banner", "PaneMove"] {
             assert!(Overlay::ALL.iter().any(|k| format!("{k:?}") == want), "{want} is an overlay kind");
         }
         for want in ["title bar", "status bar", "inline AI panel", "clip panel", "scrollbar"] {
@@ -482,4 +501,39 @@ mod tests {
         assert!(!alt_click_may_move_cursor(SGR_ANY));
         assert!(!alt_click_may_move_cursor(Modes { tracking: Tracking::Drag, sgr: false }));
     }
+    /// Task 6 review, Important 1 and 2 (`PTYMouseHandler.m:778-782`, `:597`): the activating
+    /// click may place a selection but never extends it, copies nothing, and never moves the
+    /// cursor with Alt.
+    #[test]
+    fn the_activating_click_selects_nothing_and_copies_nothing() {
+        // (first_mouse_down, smart, count, alt_only)
+        let f = press_follow_up(true, false, 1, true);
+        assert_eq!(f, PressFollow { drag_selects: false, copy_now: false, alt_click: false });
+        let f = press_follow_up(true, true, 2, false);
+        assert_eq!(f, PressFollow { drag_selects: false, copy_now: false, alt_click: false });
+        // An ordinary click is as before.
+        assert_eq!(press_follow_up(false, false, 1, true), PressFollow { drag_selects: true, copy_now: false, alt_click: true });
+        assert_eq!(press_follow_up(false, true, 2, false), PressFollow { drag_selects: false, copy_now: true, alt_click: false });
+        assert_eq!(press_follow_up(false, false, 2, true), PressFollow { drag_selects: true, copy_now: false, alt_click: false });
+    }
+
+    /// Fix round 2: the Move Pane pick is one more kind in the one list.
+    #[test]
+    fn the_pane_move_pick_is_an_overlay_kind() {
+        assert!(Overlay::ALL.iter().any(|k| format!("{k:?}") == "PaneMove"));
+        assert_eq!(Overlay::ALL.len(), 12);
+    }
+
+    /// Fix round 2, structural: the box a completion list is drawn in is the box it holds clicks in.
+    #[test]
+    fn completion_hit_rect_is_the_drawn_rect() {
+        let bounds = crate::layout::Rect { x: 4.0, y: 4.0, w: 400.0, h: 200.0 };
+        let rows: Vec<String> = vec!["alpha".into(), "beta".into()];
+        let cell = (8.0, 16.0);
+        let hit = crate::scene::completion_rect(&rows, 0, None, (20.0, 40.0), bounds, cell).unwrap().0;
+        let mut frame = crate::scene::Frame::default();
+        crate::scene::completion_list(&mut frame, &rows, 0, None, (20.0, 40.0), bounds, cell);
+        assert!(frame.popups.iter().any(|q| q.rect == hit), "the first popup quad is the hit rect");
+    }
+
 }

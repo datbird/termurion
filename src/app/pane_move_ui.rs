@@ -347,6 +347,15 @@ impl App {
         visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), GAP)
     }
 
+    /// The rectangles the pick's looks are drawn in while a pick is on (they hold every event
+    /// from the program, whatever the button).
+    pub(super) fn pane_move_hit_rects(&self) -> Vec<Rect> {
+        if self.pane_move.is_none() {
+            return Vec::new();
+        }
+        self.pick_rects().into_iter().map(|(_, r)| r).collect()
+    }
+
     /// A press while the pick is on. Left presses are all taken: on a pane it drops with the
     /// half shown (or the half at the press), on the source it cancels. Right and middle pass.
     pub(super) fn pane_move_press(&mut self, button: MouseButton, x: f32, y: f32, event_loop: &ActiveEventLoop) -> bool {

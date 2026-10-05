@@ -4469,16 +4469,18 @@ impl App {
                 if smart || pick == input::Pick::Type(input::SelectionType::Semantic) {
                     self.clip_selection_to_dividers(id, point);
                 }
-                if smart {
+                let alt_only = mods.alt && !mods.shift && !mods.ctrl && !mods.cmd;
+                let follow = mouse::press_follow_up(self.first_mouse_down, smart, count, alt_only);
+                if follow.copy_now {
                     // iTerm2 copies a selection as soon as it is made.
                     self.copy_selection(id);
                 }
                 // A terminal selection ends any porthole's.
                 self.clear_porthole_selections();
-                // A Smart Selection is whole; moving the pointer does not reshape it.
-                self.drag = if smart { Drag::None } else { Drag::Select { pane: id } };
-                let alt_only = mods.alt && !mods.shift && !mods.ctrl && !mods.cmd;
-                self.alt_click = (count == 1 && alt_only).then_some((id, (col, row)));
+                // A Smart Selection is whole; moving the pointer does not reshape it. The
+                // click that activated the window never extends or copies one (`MH:778-782`).
+                self.drag = if follow.drag_selects { Drag::Select { pane: id } } else { Drag::None };
+                self.alt_click = follow.alt_click.then_some((id, (col, row)));
                 self.key_click = (count == 1 && !mods.shift).then_some(id);
             }
             // With no binding and no reporting app, a right click opens the menu (iTerm2's native behavior).
@@ -4710,6 +4712,10 @@ impl App {
             return;
         }
         let (x, y) = self.cursor;
+        // A wheel over a Tandem overlay is not the program's: no report and no arrows.
+        if self.tandem_ui_at(x, y) {
+            return;
+        }
         let Some((id, rect)) = self.pane_at(x, y) else { return };
         let (col, row, _) = self.cell_at(id, rect, x, y);
         self.route_wheel(id, col, row, ev);
@@ -4878,7 +4884,7 @@ impl App {
                 // The composer over the pane, then the completion list last, so everything under
                 // them is cut out.
                 self.draw_composer(&mut frame, id, rect, cell);
-                self.draw_completion(&mut frame, id, self.inner(rect), cell);
+                self.draw_completion(&mut frame, id, rect, cell);
             }
             self.draw_clippings(&mut frame, cell);
             inline_hits = self.draw_inline_chats(&mut frame, cell);
