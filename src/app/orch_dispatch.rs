@@ -499,7 +499,6 @@ impl App {
             return Err(OrchError::Unsupported(ot::no_mouse_reporting(&name, &name)));
         }
         let Some(p) = self.panes.get(&pane) else { return Err(OrchError::TargetGone(a.guid.clone())) };
-        let mode = *p.own().term().mode();
         let (cols, rows) = {
             use alacritty_terminal::grid::Dimensions;
             let g = p.own().term().grid();
@@ -507,15 +506,15 @@ impl App {
         };
         let n = a.lines.clamp(1, MAX_NOTCHES) as i32;
         let lines = if a.up { n } else { -n };
-        use alacritty_terminal::term::TermMode;
-        match crate::input::wheel(modes, crate::mouse::Mods::default(), mode.contains(TermMode::ALT_SCREEN), mode.contains(TermMode::APP_CURSOR), lines, cols / 2, rows / 2) {
-            crate::input::Wheel::Send(bytes) => {
-                self.enter_pane_window(pane);
-                self.user_write(pane, &bytes, Write::Agent);
-                Ok(())
-            }
-            crate::input::Wheel::Scroll(_) => Err(OrchError::Unsupported(format!("The scroll wheel could not be sent to {name} ({name}); mouse reporting appears to be off."))),
+        // N reports for N notches: no accumulator, profile gate, arrows or stuck detector (an
+        // agent's injected report is not a person's wheel).
+        let bytes = crate::input::wheel_reports(modes, lines, cols / 2, rows / 2);
+        if bytes.is_empty() {
+            return Err(OrchError::Unsupported(format!("The scroll wheel could not be sent to {name} ({name}); mouse reporting appears to be off.")));
         }
+        self.enter_pane_window(pane);
+        self.user_write(pane, &bytes, Write::Agent);
+        Ok(())
     }
 
     /// The claim a write needs (`ensureClaim`, `DI:1586-1660`): None when the chat holds the

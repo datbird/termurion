@@ -1669,6 +1669,15 @@ default = false
 help = "Suppress restart session confirmation alert.\nDon't ask for a confirmation when manually restarting a session."
 
 [[setting]]
+key = "NoSyncNeverAskAboutSettingAlternateMouseScroll"
+tab = "Stored"
+section = "Warnings"
+label = "Never ask whether the scroll wheel should move the cursor"
+type = "bool"
+default = false
+help = "Set by Don\u2019t Ask Again on the question \"Do you want the scroll wheel to move the cursor in interactive programs like this?\"."
+
+[[setting]]
 key = "NoSyncTmuxHung"
 tab = "Stored"
 section = "Warnings"

@@ -341,6 +341,7 @@ mod tests {
             ("NoSyncPromptBeforeLoadingPrefsFromURL", "Settings", Kind::String, text("")),
             ("HotkeyMigratedFromSingleToMulti", "Hotkey", Kind::Bool, bool(false)),
             ("NoSyncSuppressedAlertsCatalog", "Warnings", Kind::Dict, Some(toml::Value::Table(toml::Table::new()))),
+            ("NoSyncNeverAskAboutSettingAlternateMouseScroll", "Warnings", Kind::Bool, bool(false)),
             ("NoSyncAppSupportMoved", "Warnings", Kind::Bool, bool(false)),
             ("NoSyncAutoProvideConsent", "AI", Kind::Int, int(0)),
             ("DisableTransparencyForKeyWindow", "Transparency", Kind::Bool, bool(false)),

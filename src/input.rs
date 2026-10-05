@@ -1,9 +1,10 @@
-//! Pure mouse decisions: click counting, the kind of selection, and what the wheel does.
+//! Pure mouse decisions: click counting, the kind of selection, and the wheel's reports and arrows.
 
 use std::time::{Duration, Instant};
 
 pub use alacritty_terminal::selection::SelectionType;
 
+use crate::keys::{self, Key};
 use crate::mouse::{self, Action, Button, Event, Modes, Mods};
 
 /// Windows' default double-click time.
@@ -63,34 +64,33 @@ pub fn selection_type(clicks: u8, mods: Mods) -> SelectionType {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum Wheel {
-    /// Bytes for the app.
-    Send(Vec<u8>),
-    /// Lines to scroll the history (positive is up).
-    Scroll(i32),
+/// `lines` wheel reports (positive is up), one encoded report repeated `|lines|` times; empty
+/// when the program does not own the mouse (12f's scroll_wheel: N reports for N notches).
+pub fn wheel_reports(modes: Modes, lines: i32, col: u32, row: u32) -> Vec<u8> {
+    wheel_reports_with(modes, Mods::default(), lines, col, row)
 }
 
-/// What `lines` of wheel movement do (positive is up). A tracking app gets wheel
-/// events. In the alternate screen without tracking, the wheel sends arrow keys,
-/// as iTerm2 does by default. Otherwise it scrolls the history.
-pub fn wheel(modes: Modes, mods: Mods, alt_screen: bool, app_cursor: bool, lines: i32, col: u32, row: u32) -> Wheel {
-    let n = lines.unsigned_abs() as usize;
-    if lines != 0 && mouse::app_owns_mouse(modes, mods) {
-        let button = if lines > 0 { Button::WheelUp } else { Button::WheelDown };
-        let one = mouse::encode(modes, Event { button, action: Action::Press, mods, col, row }).unwrap_or_default();
-        return Wheel::Send(one.repeat(n));
+/// As `wheel_reports`, with the modifiers held (the person's wheel).
+pub fn wheel_reports_with(modes: Modes, mods: Mods, lines: i32, col: u32, row: u32) -> Vec<u8> {
+    if lines == 0 || !mouse::app_owns_mouse(modes, mods) {
+        return Vec::new();
     }
-    if lines != 0 && alt_screen {
-        let arrow: &[u8] = match (lines > 0, app_cursor) {
-            (true, true) => b"\x1bOA",
-            (true, false) => b"\x1b[A",
-            (false, true) => b"\x1bOB",
-            (false, false) => b"\x1b[B",
-        };
-        return Wheel::Send(arrow.repeat(n));
-    }
-    Wheel::Scroll(lines)
+    let button = if lines > 0 { Button::WheelUp } else { Button::WheelDown };
+    let one = mouse::encode(modes, Event { button, action: Action::Press, mods, col, row }).unwrap_or_default();
+    one.repeat(lines.unsigned_abs() as usize)
+}
+
+/// The arrows the alternate-screen wheel sends, `count` times (`PTYTextView.m:8358-8380`):
+/// vertical sends Up or Down, horizontal sends Left for a positive delta and Right otherwise,
+/// all with the event's modifiers as the xterm parameter.
+pub fn alt_arrows(up_or_left: bool, vertical: bool, mods: Mods, app_cursor: bool, count: usize) -> Vec<u8> {
+    let key = match (vertical, up_or_left) {
+        (true, true) => Key::Up,
+        (true, false) => Key::Down,
+        (false, true) => Key::Left,
+        (false, false) => Key::Right,
+    };
+    keys::encode(&key, mods, app_cursor).unwrap_or_default().repeat(count)
 }
 
 #[cfg(test)]
@@ -139,24 +139,29 @@ mod tests {
     }
 
     #[test]
-    fn wheel_goes_to_a_tracking_app() {
+    fn orch_scroll_keeps_n_reports() {
+        // 12f's scroll_wheel: N reports for N notches, nothing for a program that reports nothing.
         let modes = Modes { tracking: Tracking::Click, sgr: true };
-        assert_eq!(wheel(modes, NONE, false, false, 2, 2, 1), Wheel::Send(b"\x1b[<64;3;2M\x1b[<64;3;2M".to_vec()));
-        assert_eq!(wheel(modes, NONE, false, false, -1, 0, 0), Wheel::Send(b"\x1b[<65;1;1M".to_vec()));
+        assert_eq!(wheel_reports(modes, 3, 2, 1), b"\x1b[<64;3;2M".repeat(3));
+        assert_eq!(wheel_reports(modes, -1, 0, 0), b"\x1b[<65;1;1M".to_vec());
+        assert!(wheel_reports(Modes::default(), 3, 2, 1).is_empty());
+        assert!(wheel_reports(modes, 0, 2, 1).is_empty());
     }
 
     #[test]
-    fn wheel_sends_arrows_in_the_alternate_screen() {
-        let off = Modes::default();
-        assert_eq!(wheel(off, NONE, true, false, 2, 0, 0), Wheel::Send(b"\x1b[A\x1b[A".to_vec()));
-        assert_eq!(wheel(off, NONE, true, true, -1, 0, 0), Wheel::Send(b"\x1bOB".to_vec()));
+    fn wheel_in_the_alternate_screen_sends_arrows_only_when_asked() {
+        // R3: the arrows themselves (route_wheel decides when; wheel::alternate says No by default).
+        assert_eq!(alt_arrows(true, true, NONE, false, 2), b"\x1b[A\x1b[A".to_vec());
+        assert_eq!(alt_arrows(false, true, NONE, true, 1), b"\x1bOB".to_vec());
+        // A positive horizontal delta sends Left (PTYTextView.m:8363-8375).
+        assert_eq!(alt_arrows(true, false, NONE, false, 1), b"\x1b[D".to_vec());
+        assert_eq!(alt_arrows(false, false, NONE, false, 1), b"\x1b[C".to_vec());
+        assert!(alt_arrows(true, true, NONE, false, 0).is_empty());
     }
 
     #[test]
-    fn wheel_scrolls_history_otherwise() {
-        assert_eq!(wheel(Modes::default(), NONE, false, false, 3, 0, 0), Wheel::Scroll(3));
-        let modes = Modes { tracking: Tracking::Click, sgr: true };
-        let alt = Mods { alt: true, ..NONE };
-        assert_eq!(wheel(modes, alt, false, false, 3, 0, 0), Wheel::Scroll(3));
+    fn arrows_carry_modifiers() {
+        assert_eq!(alt_arrows(true, true, Mods { shift: true, ..NONE }, true, 1), b"\x1b[1;2A".to_vec());
+        assert_eq!(alt_arrows(true, true, Mods { ctrl: true, ..NONE }, false, 1), b"\x1b[1;5A".to_vec());
     }
 }

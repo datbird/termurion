@@ -19,7 +19,7 @@ use winit::window::{Window, WindowId};
 
 use crate::conpty::{self, Api, Source};
 use crate::globals::{self, Globals};
-use crate::input::{self, Clicks, Wheel};
+use crate::input::{self, Clicks};
 use crate::keyroute::{self, Route};
 use crate::keys::{self, Action, AltSide, Key, KeyOptions};
 use crate::keystroke;
@@ -140,6 +140,7 @@ mod suppressed_app;
 mod host_offers_ui;
 mod host_state_app;
 mod frustration_ui;
+mod mouse_ui;
 mod shell_version_ui;
 mod prefs_ui;
 mod settings_export_ui;
@@ -354,6 +355,10 @@ pub struct App {
     /// (`PTYMouseHandler.m:644-659` looks at the mouse-up).
     key_click: Option<PaneId>,
     wheel_acc_x: f32,
+    /// The alternate-scroll inferrer of each pane the wheel has scrolled (app-wide; the person's input only).
+    alt_infer: HashMap<PaneId, crate::alt_infer::Inferrer>,
+    /// The pane that had the keyboard at the last check (a move resets its inferrer).
+    alt_infer_focus: Option<PaneId>,
     /// Mark navigation: the mark each pane is at.
     mark_pos: HashMap<PaneId, u32>,
     /// Each pane's find bar and matches.
@@ -1536,6 +1541,8 @@ pub fn run() {
         alt_click: None,
         key_click: None,
         wheel_acc_x: 0.0,
+        alt_infer: HashMap::new(),
+        alt_infer_focus: None,
         mark_pos: HashMap::new(),
         finds: HashMap::new(),
         find_bar_rect: None,
@@ -3113,6 +3120,7 @@ impl App {
         self.script_components.retain(|(p, _), _| *p != id);
         self.script_titles.remove(&id);
         self.host_stacks.remove(&id);
+        self.alt_infer.remove(&id);
         self.pending_title_restores.remove(&id);
         if self.text_popover.as_ref().is_some_and(|(p, _)| *p == id) {
             self.text_popover = None;
@@ -4134,6 +4142,7 @@ impl App {
         if self.bar_key(ev, event_loop) || self.upload_key(ev) {
             return;
         }
+        self.alt_infer_key(ev);
         // Typing shows the cursor at once and restarts the blink.
         self.blink_on = true;
         self.last_blink = Instant::now();
@@ -4357,6 +4366,7 @@ impl App {
             return;
         }
         let Some((id, rect)) = self.pane_at(x, y) else { return };
+        self.alt_infer_non_scroll(id);
         let b = button_number(button);
         // A left click always focuses its pane; right and middle only when the setting says so.
         if b == 0 || self.globals.bool("FocusOnRightOrMiddleClick") {
@@ -4666,50 +4676,17 @@ impl App {
         }
         self.wheel_acc += dy;
         self.wheel_acc_x += dx;
-        self.wheel_horizontal();
         let lines = self.wheel_acc.trunc() as i32;
-        if lines == 0 {
-            return;
-        }
-        self.wheel_acc -= lines as f32;
-        let (x, y) = self.cursor;
-        let Some((id, rect)) = self.pane_at(x, y) else { return };
-        let (col, row, _) = self.cell_at(id, rect, x, y);
-        let mods = self.mods;
-        let modes = self.modes(id);
-        let p = self.panes.get_mut(&id).unwrap();
-        let mode = *p.screen.term().mode();
-        match input::wheel(modes, mods, mode.contains(TermMode::ALT_SCREEN), mode.contains(TermMode::APP_CURSOR), lines, col, row) {
-            Wheel::Send(bytes) => p.input(&bytes),
-            Wheel::Scroll(n) => p.scroll(Scroll::Delta(n)),
-        }
-        self.redraw();
-    }
-
-    /// Horizontal wheel movement goes to a mouse-reporting app as buttons 66 and 67 when
-    /// "Mouse reporting supports horizontal scrolling" is on. Otherwise it does nothing.
-    fn wheel_horizontal(&mut self) {
         let steps = self.wheel_acc_x.trunc() as i32;
-        if steps == 0 {
-            return;
-        }
+        self.wheel_acc -= lines as f32;
         self.wheel_acc_x -= steps as f32;
-        if !self.globals.bool("ReportHorizontalScrollEvents") {
+        if lines == 0 && steps == 0 {
             return;
         }
         let (x, y) = self.cursor;
         let Some((id, rect)) = self.pane_at(x, y) else { return };
         let (col, row, _) = self.cell_at(id, rect, x, y);
-        let modes = self.modes(id);
-        if !mouse::app_owns_mouse(modes, self.mods) {
-            return;
-        }
-        // Positive x moves the content right: the view scrolls left.
-        let button = if steps > 0 { Button::WheelLeft } else { Button::WheelRight };
-        let ev = mouse::Event { button, action: mouse::Action::Press, mods: self.mods, col, row };
-        if let Some(one) = mouse::encode(modes, ev) {
-            self.panes.get_mut(&id).unwrap().input(&one.repeat(steps.unsigned_abs() as usize));
-        }
+        self.route_wheel(id, col, row, lines as f64, steps as f64);
     }
 
     fn build_frame(&mut self) -> Frame {
@@ -5256,6 +5233,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.hotkey_reactivated();
         }
         self.app_active = active;
+        self.alt_infer_focus_moved();
         let hotkey_due = self.tick_hotkeys();
         let find_due = self.run_due_searches();
         let spotlight = self.tick_find_cursor();
