@@ -510,7 +510,7 @@ impl App {
         let g = s.term().grid();
         let off = g.display_offset() as i32;
         let (top_line, lines) = (-(g.history_size() as i32), g.screen_lines() as i32);
-        let inner = self.inner(rect);
+        let inner = self.text_rect(id, rect);
         let mut seen = HashSet::new();
         let mut out = Vec::new();
         for r in 0..lines {

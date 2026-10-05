@@ -198,7 +198,7 @@ impl App {
     /// text sits inside its inset): the rows, the selection, the footer, where the box goes and
     /// the bounds it is kept in. The draw and the hit rectangle both come from here.
     fn completion_box(&self, pane: PaneId, rect: Rect, cell: (f32, f32)) -> Option<(Vec<String>, usize, Option<&'static str>, (f32, f32), Rect)> {
-        let rect = self.inner(rect);
+        let rect = self.text_rect(pane, rect);
         let (p, list) = self.completion.as_ref().filter(|(p, _)| *p == pane)?;
         let s = self.panes.get(p).map(|x| x.own())?;
         let cursor = s.term().grid().cursor.point;

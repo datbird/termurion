@@ -347,7 +347,10 @@ impl App {
 
     /// What the current window's terminals are sized for now (see `Room`).
     pub(super) fn room(&self) -> sbl::Room {
-        sbl::Room { area: self.content_area(), panes: self.tabs.iter().flat_map(|t| self.visible(t)).collect(), margins: self.margins() }
+        let panes: Vec<(PaneId, Rect)> = self.tabs.iter().flat_map(|t| self.visible(t)).collect();
+        // Each pane's room at its right edge (scrollbar, timestamp column): a change of either relays out.
+        let rooms = panes.iter().map(|(id, _)| self.pane_room(*id)).collect();
+        sbl::Room { area: self.content_area(), panes, rooms, margins: self.margins() }
     }
 
     /// Lays out again, now, every window whose room changed since its last layout: a bar,

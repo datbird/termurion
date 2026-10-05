@@ -703,7 +703,7 @@ impl Renderer {
         // Underline strokes lie under the overlay (the dimming, the cursor extras); with gaps on they
         // break around the ink of the glyphs in their row, strikethrough stays whole.
         let underlines = self.gapped_underlines(frame);
-        let over = QuadPipeline::vertices(&underlines.iter().chain(&frame.strikes).chain(&frame.overlay).copied().collect::<Vec<_>>());
+        let over = QuadPipeline::vertices(&underlines.iter().chain(&frame.strikes).chain(&frame.scrollbars).chain(&frame.overlay).copied().collect::<Vec<_>>());
         let pops = QuadPipeline::vertices(&frame.popups);
         let make = |v: &[f32]| {
             self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -971,6 +971,7 @@ mod tests {
             strikes: vec![],
             gap_underlines: false,
             popups: vec![],
+            scrollbars: vec![],
             backgrounds: vec![],
         };
         r.draw(&frame, &view, w, h).unwrap();
@@ -1025,6 +1026,7 @@ mod tests {
             strikes: vec![],
             gap_underlines: false,
             popups: vec![],
+            scrollbars: vec![],
             backgrounds: vec![],
         };
         r.draw(&frame, &view, w, h).unwrap();

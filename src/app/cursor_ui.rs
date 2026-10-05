@@ -195,7 +195,7 @@ impl App {
     /// frame's pane loop borrows the tab (the loop only reads `Motion`).
     pub(super) fn prepare_cursors(&mut self) {
         let Some(tab) = self.tabs.get(self.active) else { return };
-        let panes: Vec<(PaneId, Rect)> = self.visible(tab).into_iter().map(|(id, rect)| (id, self.inner(rect))).collect();
+        let panes: Vec<(PaneId, Rect)> = self.visible(tab).into_iter().map(|(id, rect)| (id, self.text_rect(id, rect))).collect();
         self.ime_sync();
         let now = Instant::now();
         let shown: Vec<PaneId> = panes.iter().map(|(id, _)| *id).collect();

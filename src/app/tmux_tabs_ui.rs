@@ -919,14 +919,16 @@ impl App {
         // Title bars take room from the stacked panes (`variableTmuxSize` adds each one's
         // height, `PTYTab.m:4696-4754`): one per pane of the tallest column; widths are
         // unchanged.
-        let (_, ch) = self.cell();
+        let (cw, ch) = self.cell();
         let tabs: Vec<(PaneId, (u16, u16))> = self
             .tabs
             .iter()
             .map(|t| {
                 let area = self.content_area_for(t);
                 let stack = if self.tab_shows_titles(t) { crate::layout::max_stack(&t.layout.tree(), Axis::Column) } else { 0 };
-                (t.focused, (self.grid_size(area).0, tmux_rows(area.h, ch, self.margins().1, self.title_height(), stack)))
+                // The panes of the widest row each give up their room (scrollbar, timestamp column).
+                let row_room = crate::layout::widest_row_room(&t.layout.tree(), &|id| self.pane_room(id));
+                (t.focused, (crate::margins::tmux_cols(area.w, cw, self.margins().0, row_room), tmux_rows(area.h, ch, self.margins().1, self.title_height(), stack)))
             })
             .collect();
         let mut changed: Vec<PaneId> = Vec::new();

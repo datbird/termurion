@@ -53,7 +53,7 @@ impl App {
             let red = hovered.is_some_and(|(_, hn, first, last)| hn == n && (last - first + 1 >= 3 || row.fold() != 0));
             bars.push((r, row.fold() != 0, red));
         }
-        let inner = self.inner(rect);
+        let inner = self.text_rect(id, rect);
         let pad = self.margins().0;
         scene::block_bars(frame, &bars, inner, cell.1, pad, s.palette.fg, s.palette.ansi[1]);
         let Some((_, n, first, last)) = hovered else { return Vec::new() };
@@ -71,7 +71,7 @@ impl App {
         let s = &p.screen;
         let g = s.term().grid();
         let off = g.display_offset() as i32;
-        let inner = self.inner(rect);
+        let inner = self.text_rect(id, rect);
         let mut faces = Vec::new();
         for r in 0..g.screen_lines() {
             for b in s.buttons_on_line(r as i32 - off) {
@@ -122,7 +122,7 @@ impl App {
         }
         // iTerm2: a click in the left margin on a block's line folds it.
         let Some((id, rect)) = self.pane_at(x, y) else { return false };
-        if x >= self.inner(rect).x {
+        if x >= self.text_rect(id, rect).x {
             return false;
         }
         let (_, row, _) = self.cell_at(id, rect, x, y);

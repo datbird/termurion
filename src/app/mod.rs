@@ -20,6 +20,7 @@ use winit::window::{Window, WindowId};
 use crate::conpty::{self, Api, Source};
 use crate::globals::{self, Globals};
 use crate::margins;
+use crate::scrollbar;
 use crate::power;
 use crate::input::{self, Clicks};
 use crate::keyroute::{self, Route};
@@ -239,6 +240,8 @@ enum Drag {
     /// position (`Selection::set_visual_anchor`, moved with scrolling output).
     Select { pane: PaneId, anchor: Option<(i32, usize, bool)> },
     Divider { path: Vec<bool>, axis: Axis, parent: Rect },
+    /// The thumb of a pane's scrollbar, held this far below its top (pixels).
+    Scrollbar { pane: PaneId, grab: f32 },
     /// A press the program took as a mouse report: its click count and when it came, for
     /// the frustration detector's release.
     App { pane: PaneId, button: Button, clicks: u8, at: Instant },
@@ -626,6 +629,14 @@ pub struct App {
     attention_due: Option<Instant>,
     /// A short message at the bottom of the window, and when it goes away.
     toast: Option<(String, Instant)>,
+    /// The scrollbar style Windows asks for ("Always show scrollbars"), read at start and
+    /// again when Windows broadcasts a settings change. App-wide: one setting, every window.
+    scroll_style: scrollbar::Style,
+    /// Per pane: the display offset last seen, and until when an overlay scrollbar shows after
+    /// the view moved (iTerm2's overlay scroller shows for a second after a scroll).
+    scroll_seen: HashMap<PaneId, (usize, Instant)>,
+    /// The pane whose scrollbar the pointer is over.
+    scroll_hover: Option<PaneId>,
     /// The block under the pointer (pane, number, first and last line), and the drawn pill
     /// buttons.
     block_hover: Option<(PaneId, u32, i32, i32)>,
@@ -1802,6 +1813,9 @@ pub fn run() {
         upload_due: None,
         pending_background: HashMap::new(),
         toast: None,
+        scroll_style: scrollbar::current_style(),
+        scroll_seen: HashMap::new(),
+        scroll_hover: None,
         flashes: HashMap::new(),
         fireworks: HashMap::new(),
         tab_colors: HashMap::new(),
@@ -2899,12 +2913,6 @@ impl App {
         }
     }
 
-    /// The text area inside a pane rectangle.
-    fn inner(&self, rect: Rect) -> Rect {
-        let (side, vert) = self.margins();
-        rect.inset_xy(side, vert)
-    }
-
     /// The side and the top and bottom margins in pixels (`TerminalMargin`, `TerminalVMargin`,
     /// iTerm2's 5 and 2 points by default), read on every call.
     fn margins(&self) -> (f32, f32) {
@@ -2912,10 +2920,21 @@ impl App {
         (margins::px(self.globals.int("TerminalMargin"), scale), margins::px(self.globals.int("TerminalVMargin"), scale))
     }
 
-    /// The one place a pane's pixels become columns and rows, so tmux, resizes, snaps,
-    /// screenshots and hit tests agree.
+    /// The one place pixels become columns and rows, so tmux, resizes, snaps, screenshots and
+    /// hit tests agree: `rect` less the margins and `room` pixels at its right edge.
+    fn grid_size_in(&self, rect: Rect, room: f32) -> (u16, u16) {
+        margins::pane_grid((rect.w, rect.h), self.cell(), self.margins(), room)
+    }
+
+    /// The grid of an area no pane owns (the content area, a window's first pane): the legacy
+    /// scrollbar's room is out of it, as it is out of every pane's.
     fn grid_size(&self, rect: Rect) -> (u16, u16) {
-        margins::grid_size((rect.w, rect.h), self.cell(), self.margins())
+        self.grid_size_in(rect, self.scroll_room())
+    }
+
+    /// The grid of pane `id` in `rect`: its scrollbar and its Adjacent timestamp column are out.
+    fn grid_size_for(&self, id: PaneId, rect: Rect) -> (u16, u16) {
+        self.grid_size_in(rect, self.pane_room(id))
     }
 
     /// The profile with this Guid, or the default profile.
@@ -3232,8 +3251,8 @@ impl App {
     }
 
     fn start_pane_as(&mut self, id: PaneId, rect: Rect, guid: Option<&str>) -> bool {
-        let (cols, rows) = self.grid_size(rect);
         let p = self.profile(guid);
+        let (cols, rows) = self.grid_size_in(rect, self.pane_room_for(id, &p));
         let (cmd, transport) = match self.start_command_override.clone() {
             // The API's create command never takes the SSH path.
             Some(cmd) => (cmd, crate::ssh_transport::Transport::Conpty),
@@ -3518,6 +3537,7 @@ impl App {
         self.relayout_changed_windows();
         // Disable Transparency or a profile value may have changed the blur.
         self.sync_blur();
+        self.refresh_scroll_style();
         self.presence_globals_changed();
     }
 
@@ -3696,7 +3716,9 @@ impl App {
         let p = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).clone();
         let (cw, ch) = self.cell();
         let (side, vert) = self.margins();
-        let (padx, pady) = (2.0 * side, 2.0 * vert);
+        // A legacy scrollbar's strip is part of the window's room around the grid, so a new
+        // window opens with its columns.
+        let (padx, pady) = (2.0 * side + self.scroll_room(), 2.0 * vert);
         // The line under the title bar is part of the window's decoration (`PT:13235-13237`).
         let line = self.division_height() + self.caption_strip().unwrap_or(0.0);
         let Some(g) = self.gpu.as_ref() else { return };
@@ -3993,7 +4015,7 @@ impl App {
             .tabs
             .iter()
             .flat_map(|t| self.visible(t))
-            .map(|(id, rect)| (id, self.grid_size(rect)))
+            .map(|(id, rect)| (id, self.grid_size_for(id, rect)))
             .collect();
         self.tmux_report_sizes();
         let mut reframe = Vec::new();
@@ -4045,7 +4067,7 @@ impl App {
     /// The cell under (x, y) in pane `rect`, and which half of the cell it is in.
     fn cell_at(&self, id: PaneId, rect: Rect, x: f32, y: f32) -> (u32, u32, Side) {
         let (cw, ch) = self.cell();
-        let inner = self.inner(rect);
+        let inner = self.text_rect(id, rect);
         let term = self.panes[&id].screen.term();
         let (col, row) = mouse::cell_at((x - inner.x) as f64, (y - inner.y) as f64, cw as f64, ch as f64, term.columns() as u32, term.screen_lines() as u32);
         let right = (x - inner.x) - col as f32 * cw > cw / 2.0;
@@ -4062,7 +4084,7 @@ impl App {
     /// bidi conversion). Clamped to the grid like `cell_at`.
     fn report_cell(&self, id: PaneId, rect: Rect, x: f32, y: f32) -> (u32, u32) {
         let (cw, ch) = self.cell();
-        let inner = self.inner(rect);
+        let inner = self.text_rect(id, rect);
         let term = self.panes[&id].screen.term();
         mouse::cell_at((x - inner.x) as f64, (y - inner.y) as f64, cw as f64, ch as f64, term.columns() as u32, term.screen_lines() as u32)
     }
@@ -4072,7 +4094,7 @@ impl App {
     fn visual_pos(&self, id: PaneId, rect: Rect, x: f32, y: f32) -> (i32, usize, bool) {
         let (col, row) = self.report_cell(id, rect, x, y);
         let (cw, _) = self.cell();
-        let right = (x - self.inner(rect).x) - col as f32 * cw > cw / 2.0;
+        let right = (x - self.text_rect(id, rect).x) - col as f32 * cw > cw / 2.0;
         let offset = self.panes[&id].screen.term().grid().display_offset() as i32;
         (row as i32 - offset, col as usize, right)
     }
@@ -4513,6 +4535,10 @@ impl App {
         if self.tandem_ui_at(x, y) {
             return;
         }
+        // The scrollbar is the pane's own, below Tandem's overlays and before any report.
+        if self.scroll_press(button, x, y) {
+            return;
+        }
         let Some((id, rect)) = self.pane_at(x, y) else { return };
         self.alt_infer_non_scroll(id);
         let b = button_number(button);
@@ -4732,6 +4758,8 @@ impl App {
                     }
                 }
             }
+            // A scrollbar drag ends with the press; the view stays where the thumb left it.
+            Drag::Scrollbar { .. } => {}
             _ => {}
         }
         self.redraw();
@@ -4748,6 +4776,12 @@ impl App {
         self.inline_move(x, y);
         self.update_hover();
         self.update_block_hover();
+        // An overlay scrollbar widens under the pointer.
+        let over_bar = self.scrollbar_at(x, y).map(|(id, _, _)| id);
+        if over_bar != self.scroll_hover {
+            self.scroll_hover = over_bar;
+            self.redraw();
+        }
         // Hover timestamps show while the pointer is at a pane's right edge.
         let near = self.near_stamp_edge();
         if near != self.stamp_near {
@@ -4776,6 +4810,10 @@ impl App {
             Drag::Title { pane, from } => {
                 let (pane, from) = (*pane, *from);
                 self.title_drag_move(pane, from, x, y);
+            }
+            Drag::Scrollbar { pane, grab } => {
+                let (pane, grab) = (*pane, *grab);
+                self.scroll_drag_to(pane, grab, y);
             }
             Drag::Select { pane, anchor } => {
                 let (pane, visual) = (*pane, anchor.is_some());
@@ -4860,6 +4898,10 @@ impl App {
         let (x, y) = self.cursor;
         // A wheel over a Tandem overlay is not the program's: no report and no arrows.
         if self.tandem_ui_at(x, y) {
+            return;
+        }
+        // Over a scrollbar the wheel scrolls the pane, whatever the program asked for.
+        if self.scroll_wheel(dy, ev.precise) {
             return;
         }
         let Some((id, rect)) = self.pane_at(x, y) else { return };
@@ -4989,7 +5031,7 @@ impl App {
                     // The margins, one layer per pixel and the only margin painter: the pane's
                     // color, or an alternate screen's edge colors (`ExtendBackgroundColorIntoMargins`).
                     {
-                        let inner = self.inner(rect);
+                        let inner = self.text_rect(id, rect);
                         let (cols, lines) = (p.screen.term().columns(), p.screen.term().screen_lines());
                         let grid = Rect { x: inner.x, y: inner.y, w: cols as f32 * cell.0, h: lines as f32 * cell.1 };
                         let bg = p.screen.palette.bg;
@@ -4997,10 +5039,19 @@ impl App {
                         let (alt, extend) = (p.screen.alt_screen(), self.globals.bool("ExtendBackgroundColorIntoMargins"));
                         let edges = if alt && extend { p.screen.edge_backgrounds() } else { Vec::new() };
                         let fill = margins::fill(&edges, bg, extend, alt);
+                        // The strip and the stamp column are not margin: the painter takes the
+                        // pane without them, and the column gets the pane color itself.
+                        let outer = self.text_outer(id, rect);
                         if see_through {
-                            scene::margin_fill_alpha(&mut frame, rect, grid, cell.1, &fill, bg, bg_alpha, opaque_colors, has_image);
+                            scene::margin_fill_alpha(&mut frame, outer, grid, cell.1, &fill, bg, bg_alpha, opaque_colors, has_image);
                         } else {
-                            scene::margin_fill(&mut frame, rect, grid, cell.1, &fill, has_image.then_some(bg));
+                            scene::margin_fill(&mut frame, outer, grid, cell.1, &fill, has_image.then_some(bg));
+                        }
+                        if let Some(column) = self.stamp_column(id, rect).filter(|_| !has_image) {
+                            let color = if see_through { crate::transparency::premultiplied([bg.r, bg.g, bg.b], bg_alpha) } else { scene::rgba(bg, 1.0) };
+                            if see_through || color != frame.clear {
+                                frame.quads.push(scene::Quad { rect: column, color });
+                            }
                         }
                     }
                     // An Auto Composer hides the terminal cursor and the rows it covers.
@@ -5026,7 +5077,7 @@ impl App {
                             held_updates.push((id, None, p.screen.cursor_hidden_at.map(|t| t + crate::flicker::HOLD)));
                         }
                         None => {
-                            scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), &draw, Some(&hl));
+                            scene::pane_with(&mut frame, &p.screen, self.text_rect(id, rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), &draw, Some(&hl));
                             if let Some(c) = cover {
                                 composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, c);
                             }
@@ -5052,27 +5103,28 @@ impl App {
                     self.draw_active_border(&mut frame, tab, id, rect);
                     // Broadcast stripes: over the cell backgrounds, under the text.
                     if let (Some((n, px)), true) = (&stripes, receives) {
-                        let r = self.inner(rect);
+                        let r = self.text_rect(id, rect);
                         frame.images.push(scene::ImageQuad { rect: r, uv: [0.0, 0.0, r.w / *n as f32, r.h / *n as f32], key: (0x5354_5249, *n as usize), pixels: px.clone(), size: (*n, *n), repeat: true });
                     }
                     porthole_hits.extend(self.draw_portholes(&mut frame, id, rect, cell));
                 }
-                self.draw_view_extras(&mut frame, id, self.inner(rect), cell);
+                self.draw_view_extras(&mut frame, id, rect, cell);
+                self.draw_scrollbar(&mut frame, id, rect, cell);
                 if let Some((row, col, selecting)) = self.copy_cursor_on_screen(id) {
                     // Drawn where the row's display order puts the cell.
                     let col = self.panes.get(&id).map_or(col, |p| p.screen.visual_col(row, col));
-                    scene::copy_cursor(&mut frame, self.inner(rect), cell, row, col, selecting);
+                    scene::copy_cursor(&mut frame, self.text_rect(id, rect), cell, row, col, selecting);
                 }
                 if self.shot.as_ref().is_some_and(|s| s.pane == id) {
-                    scene::camera_sign(&mut frame, self.inner(rect), cell);
+                    scene::camera_sign(&mut frame, self.text_rect(id, rect), cell);
                 }
                 if self.panes.get(&id).is_some_and(|p| p.buffer.on) {
-                    scene::buffering_sign(&mut frame, self.inner(rect), cell);
+                    scene::buffering_sign(&mut frame, self.text_rect(id, rect), cell);
                 }
-                indicator_hits.extend(self.draw_coprocess_indicator(&mut frame, id, self.inner(rect), cell, (sends, receives)));
-                picker_hits.extend(self.draw_session_picker(&mut frame, id, self.inner(rect), cell));
+                indicator_hits.extend(self.draw_coprocess_indicator(&mut frame, id, self.text_rect(id, rect), cell, (sends, receives)));
+                picker_hits.extend(self.draw_session_picker(&mut frame, id, self.text_rect(id, rect), cell));
                 overlay_drawn.extend(self.draw_info_bar(&mut frame, id, rect, cell).map(|r| (mouse::Overlay::InfoBar, r)));
-                if let Some(t) = self.draw_attention(&mut frame, id, self.inner(rect), cell) {
+                if let Some(t) = self.draw_attention(&mut frame, id, self.text_rect(id, rect), cell) {
                     attention = Some(attention.map_or(t, |a: Instant| a.min(t)));
                 }
                 let show = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).is_none_or(|p| p.bool("Show Mark Indicators"));
@@ -5083,7 +5135,7 @@ impl App {
                     let g = p.screen.term().grid();
                     let off = g.display_offset() as i32;
                     let folded = |row: usize| g[alacritty_terminal::index::Line(row as i32 - off)].fold() != 0;
-                    let (cols, inner) = (g.columns(), self.inner(rect));
+                    let (cols, inner) = (g.columns(), self.text_rect(id, rect));
                     let pad = self.margins().0;
                     let mut bars: Vec<(usize, crate::marks::MarkColor)> = Vec::new();
                     for (row, m) in p.screen.visible_marks() {
@@ -5113,7 +5165,7 @@ impl App {
                 overlay_drawn.extend(self.draw_completion(&mut frame, id, rect, cell).map(|r| (mouse::Overlay::Completion, r)));
                 if id == tab.focused {
                     if let Some(text) = self.fps_overlay() {
-                        scene::fps_meter(&mut frame, &text, self.inner(rect), cell);
+                        scene::fps_meter(&mut frame, &text, self.text_rect(id, rect), cell);
                     }
                 }
             }
@@ -5545,6 +5597,7 @@ impl ApplicationHandler<UserEvent> for App {
         let animation = self.next_animation_frame();
         let sync = self.flush_due_syncs();
         let toast = self.toast_due();
+        let scrollbars = self.tick_scrollbars();
         let rotation = self.tick_rotations();
         let upload = self.feed_uploads();
         let paste_due = self.paste_tick().into_iter().chain(self.auto_command_tick()).min();
@@ -5642,7 +5695,7 @@ impl ApplicationHandler<UserEvent> for App {
         let cursor_due = self.tick_cursor();
         let frame_due = self.frame_wake();
         let flicker_due = self.flicker_tick(Instant::now());
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -5824,6 +5877,7 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             WindowEvent::ThemeChanged(_) => {
                 self.theme_applied = Some(self.dark());
+                self.refresh_scroll_style();
                 self.refresh_panes();
                 // A light or dark window may gain or lose its border (`BordersOnlyInLightMode`).
                 self.apply_border();

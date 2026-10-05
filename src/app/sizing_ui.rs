@@ -124,7 +124,8 @@ impl App {
         let outer = g.window.outer_size();
         let area = self.content_area();
         let (side, vert) = self.margins();
-        let (padx, pady) = (2.0 * side, 2.0 * vert);
+        // The strip a legacy scrollbar takes is room around the grid, counted once.
+        let (padx, pady) = (2.0 * side + self.scroll_room(), 2.0 * vert);
         Some(Snap {
             cell,
             decoration: (outer.width as f32 - area.w, outer.height as f32 - area.h),

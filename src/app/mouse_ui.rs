@@ -252,6 +252,11 @@ impl App {
         if let Some(axis) = axis {
             return Err(if axis == crate::layout::Axis::Row { Shape::ResizeH } else { Shape::ResizeV });
         }
+        // Over a scrollbar (or holding its thumb) the pointer is the arrow, a program that tracks
+        // the mouse notwithstanding.
+        if matches!(self.drag, Drag::Scrollbar { .. }) || self.scrollbar_at(x, y).is_some() {
+            return Err(Shape::Arrow);
+        }
         let mut o = Over { rect_mods: self.mods.ctrl && self.mods.alt, action_with_win: self.hover.is_some() && self.mods.cmd && !self.mods.alt, button: self.tandem_ui_at(x, y), ..Over::default() };
         if let Some((id, rect)) = self.pane_at(x, y) {
             o.terminal = true;
@@ -671,8 +676,8 @@ mod tests {
         assert!(u.contains("overlay_drawn") && !u.contains("pane_move_hit_rects"));
         let c = include_str!("completion_ui.rs");
         let production = c.split("\n#[cfg(test)]").next().unwrap();
-        assert!(!MOD.contains("draw_completion(&mut frame, id, self.inner(rect)"), "the draw takes the pane rect");
-        assert!(production.contains("self.inner(rect)"), "the shared box applies the inset once");
+        assert!(!MOD.contains("draw_completion(&mut frame, id, self.text_rect(id, rect)"), "the draw takes the pane rect");
+        assert!(production.contains("self.text_rect(pane, rect)"), "the shared box applies the inset once");
     }
 
     /// Task 6 review, Important 1 and 2: `mouse_press` follows `press_follow_up`.
@@ -759,6 +764,62 @@ mod tests {
         let b = body(MOD, "report_cell");
         assert!(b.contains("mouse::cell_at(") && !b.contains("logical_col"), "{b}");
         assert!(!MOD.contains("PTYTextView.m:7353"), "the accessibility helper is not the mouse-report path");
+    }
+
+    /// 13m Task 7 and 9 App side (B5): every pane-scoped site that draws or hit-tests the grid
+    /// takes the pane's one `text_rect`, and every pixel-to-grid conversion takes the room
+    /// through `grid_size_for`, `tmux_cols` or the window's scrollbar room: tmux, resize,
+    /// snap, screenshots and the pointer agree.
+    #[test]
+    fn one_text_rect_per_pane() {
+        for name in ["cell_at", "report_cell", "visual_pos", "build_frame"] {
+            let b = body(MOD, name);
+            assert!(!b.contains("self.inner("), "{name} insets the pane without its room");
+            assert!(b.contains("text_rect("), "{name}");
+        }
+        for src in ["badge_ui.rs", "completion_ui.rs", "porthole_ui.rs", "cursor_ui.rs", "composer_ui.rs", "ime_ui.rs", "blocks_ui.rs", "view_ui.rs"] {
+            let text = match src {
+                "badge_ui.rs" => include_str!("badge_ui.rs"),
+                "completion_ui.rs" => include_str!("completion_ui.rs"),
+                "porthole_ui.rs" => include_str!("porthole_ui.rs"),
+                "cursor_ui.rs" => include_str!("cursor_ui.rs"),
+                "composer_ui.rs" => include_str!("composer_ui.rs"),
+                "ime_ui.rs" => include_str!("ime_ui.rs"),
+                "blocks_ui.rs" => include_str!("blocks_ui.rs"),
+                _ => include_str!("view_ui.rs"),
+            };
+            let production = text.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+            assert!(!production.contains("self.inner("), "{src} insets a pane without its room");
+        }
+        assert!(body(MOD, "relayout").contains("grid_size_for("), "each pane's pty is sized by its own room");
+        assert!(body(MOD, "start_pane_as").contains("pane_room_for("), "a new pane starts with its room");
+        assert!(body(MOD, "size_window").contains("scroll_room()"), "a new window opens with its columns");
+        assert!(include_str!("sizing_ui.rs").contains("scroll_room()"), "the edge snap counts the strip once");
+        assert!(include_str!("tmux_tabs_ui.rs").contains("margins::tmux_cols("), "tmux is told the narrower width");
+        assert!(include_str!("statusbar_ui.rs").contains("rooms,"), "a window compares each pane's room before a frame");
+        assert!(body(MOD, "grid_size_in").contains("margins::pane_grid("), "the one path");
+        assert!(body(MOD, "grid_size").contains("scroll_room()"), "an area no pane owns still gives up the strip");
+    }
+
+    /// 13m Task 7: the bar is drawn per pane, routes its press, drag and wheel before the report
+    /// path, keeps the arrow over it, and follows a style change at the places Windows tells us.
+    #[test]
+    fn the_scrollbar_is_drawn_and_routed_per_pane() {
+        let frame = body(MOD, "build_frame");
+        assert!(frame.contains("draw_scrollbar("), "drawn in each pane's turn, so popups drawn later cut it");
+        let press = body(MOD, "mouse_press");
+        let (ui, bar, pane) = (press.find("self.tandem_ui_at("), press.find("self.scroll_press("), press.find("self.pane_at("));
+        assert!(ui < bar && bar < pane, "after Tandem's own overlays, before the program or the selection");
+        let wheel = body(MOD, "wheel");
+        let (ui, bar, pane) = (wheel.find("self.tandem_ui_at("), wheel.find("self.scroll_wheel("), wheel.find("self.pane_at("));
+        assert!(ui < bar && bar < pane, "the wheel over the bar scrolls the pane, never a report");
+        assert!(body(MOD, "mouse_move").contains("self.scroll_drag_to("), "the thumb follows the pointer");
+        assert!(body(MOD, "mouse_release").contains("Drag::Scrollbar"), "the drag ends with the press");
+        assert!(body(UI, "pointer_over").contains("scrollbar_at("), "the arrow shows over the bar");
+        let theme = include_str!("chrome_ui.rs");
+        assert!(body(theme, "reapply_forced_theme").contains("refresh_scroll_style("), "WM_SETTINGCHANGE re-reads the style");
+        assert!(body(MOD, "globals_changed").contains("refresh_scroll_style("), "so does a settings change");
+        assert!(MOD.contains("WindowEvent::ThemeChanged(_) => {\n                self.theme_applied = Some(self.dark());\n                self.refresh_scroll_style("), "and a light or dark change");
     }
 
     /// Review Focus 2: every pointer-to-cell path goes through `cell_at`, which maps the visual

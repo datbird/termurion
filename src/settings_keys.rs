@@ -2023,6 +2023,15 @@ mod tests {
     }
 
     #[test]
+    fn hide_scrollbar_row_follows_iterm2() {
+        let row = schema::find_global("HideScrollbar").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "Windows"));
+        assert_eq!(row.kind, Kind::Bool);
+        assert_eq!(row.default, Some(Value::Boolean(false)));
+        assert_eq!((row.label.as_str(), row.help.as_str()), ("Hide scrollbars", "Hide scrollbars"));
+    }
+
+    #[test]
     fn line_style_marks_row_follows_iterm2() {
         let row = schema::find_global("AlwaysUseLineStyleMarks").unwrap();
         assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Drawing"));

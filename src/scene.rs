@@ -78,6 +78,9 @@ pub struct Frame {
     pub gap_underlines: bool,
     /// Popup boxes over the terminal: drawn after images, before text.
     pub popups: Vec<Quad>,
+    /// Scrollbars and their ticks: no text, drawn after the strokes and before `overlay` (the
+    /// dimming covers them). `cut_quads` trims them under a popup, so popups lie over a bar.
+    pub scrollbars: Vec<Quad>,
 }
 
 /// Which frame of an animated image shows at `now_ms`.
@@ -1107,9 +1110,9 @@ pub fn scrollbar(frame: &mut Frame, g: &crate::scrollbar::Geometry, style: crate
     match style {
         Style::Legacy => {
             let scale = g.track.w / LEGACY_WIDTH;
-            frame.overlay.push(Quad { rect: g.track, color: gray(if dark { 0.13 } else { 0.96 }, 1.0) });
+            frame.scrollbars.push(Quad { rect: g.track, color: gray(if dark { 0.13 } else { 0.96 }, 1.0) });
             let edge = Rect { w: scale.max(1.0), ..g.track };
-            frame.overlay.push(Quad { rect: edge, color: gray(if dark { 0.24 } else { 0.86 }, 1.0) });
+            frame.scrollbars.push(Quad { rect: edge, color: gray(if dark { 0.24 } else { 0.86 }, 1.0) });
             if g.thumb.h < g.track.h {
                 let inset = 3.0 * scale;
                 let knob = Rect { x: g.thumb.x + inset, y: g.thumb.y + 2.0 * scale, w: g.thumb.w - 2.0 * inset, h: (g.thumb.h - 4.0 * scale).max(1.0) };
@@ -1119,7 +1122,7 @@ pub fn scrollbar(frame: &mut Frame, g: &crate::scrollbar::Geometry, style: crate
                     (true, false) => 0.42,
                     (true, true) => 0.58,
                 };
-                rounded_box(&mut frame.overlay, knob, knob.w / 2.0, gray(v, 1.0));
+                rounded_box(&mut frame.scrollbars, knob, knob.w / 2.0, gray(v, 1.0));
             }
         }
         Style::Overlay => {
@@ -1127,7 +1130,7 @@ pub fn scrollbar(frame: &mut Frame, g: &crate::scrollbar::Geometry, style: crate
             let w = if hover { g.track.w } else { 7.0 * scale };
             let thumb = Rect { x: g.track.x + g.track.w - w, w, ..g.thumb };
             let (v, a) = (if dark { 1.0 } else { 0.0 }, if hover { 0.65 } else { 0.45 });
-            rounded_box(&mut frame.overlay, thumb, w / 2.0, gray(v, a));
+            rounded_box(&mut frame.scrollbars, thumb, w / 2.0, gray(v, a));
         }
     }
 }
@@ -1145,10 +1148,10 @@ pub fn scrollbar_ticks(frame: &mut Frame, track: Rect, series: &[(crate::scrollb
             // side edges stop at the top and bottom edges so no corner draws twice.
             let o = scale.max(1.0);
             for edge in [Rect { h: o, ..t }, Rect { y: t.y + t.h - o, h: o, ..t }, Rect { y: t.y + o, h: (t.h - 2.0 * o).max(0.0), w: o, ..t }, Rect { x: t.x + t.w - o, y: t.y + o, h: (t.h - 2.0 * o).max(0.0), w: o, ..t }] {
-                frame.overlay.push(Quad { rect: edge, color: c });
+                frame.scrollbars.push(Quad { rect: edge, color: c });
             }
             let inner = Rect { x: t.x + o, y: t.y + o, w: (t.w - 2.0 * o).max(0.0), h: (t.h - 2.0 * o).max(0.0) };
-            frame.overlay.push(Quad { rect: inner, color: rgba(fill, MINIMAP_ALPHA) });
+            frame.scrollbars.push(Quad { rect: inner, color: rgba(fill, MINIMAP_ALPHA) });
         }
     }
 }
@@ -2557,7 +2560,7 @@ pub fn cut_rows_from(frame: &mut Frame, r: Rect, line_h: f32) {
 /// The underline and strikethrough strokes already in the frame stop at `r` (a popup drawn over them): each
 /// keeps the parts of it outside `r`. `cut_out` calls this, so every popup trims both.
 pub fn cut_quads(frame: &mut Frame, r: Rect) {
-    for quads in [&mut frame.underlines, &mut frame.strikes] {
+    for quads in [&mut frame.underlines, &mut frame.strikes, &mut frame.scrollbars] {
         *quads = quads.drain(..).flat_map(|q| outside(q.rect, r).into_iter().map(move |rect| Quad { rect, ..q })).collect();
     }
 }
@@ -2578,6 +2581,7 @@ pub fn lay_over(frame: &mut Frame, layer: Frame, area: Rect, alpha: f32, under: 
     let faded = |q: Quad| Quad { color: [q.color[0], q.color[1], q.color[2], q.color[3] * alpha], ..q };
     frame.popups.extend(layer.quads.into_iter().chain(layer.popups).map(faded));
     frame.overlay.extend(layer.overlay.into_iter().map(faded));
+    frame.scrollbars.extend(layer.scrollbars.into_iter().map(faded));
     frame.underlines.extend(layer.underlines.into_iter().map(faded));
     frame.strikes.extend(layer.strikes.into_iter().map(faded));
     // Pictures keep their full opacity and draw before popups (none in the bar yet).
@@ -6278,6 +6282,34 @@ mod tests {
         assert_eq!(runs[0].color, rgb(1, 2, 3));
     }
 
+    /// 13m Task 7: a popup, a toast or a find bar over a pane's right edge lies over the
+    /// scrollbar, not under it: whatever cuts the text cuts the bar and its ticks.
+    #[test]
+    fn popups_lie_over_the_scrollbar() {
+        use crate::scrollbar::{Series, Style, geometry};
+        let pane = Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 };
+        let g = geometry(pane, Style::Legacy, 1.0, 100, 50, 0).unwrap();
+        let hits = |f: &Frame, r: Rect| f.scrollbars.iter().any(|q| q.rect.x < r.x + r.w && q.rect.x + q.rect.w > r.x && q.rect.y < r.y + r.h && q.rect.y + q.rect.h > r.y);
+        let fresh = || {
+            let mut f = Frame::default();
+            scrollbar(&mut f, &g, Style::Legacy, false, false);
+            scrollbar_ticks(&mut f, g.minimap(false, 1.0), &[(Series::Search, vec![10, 40])], 150, 1.0);
+            f
+        };
+        let over = Rect { x: 700.0, y: 100.0, w: 100.0, h: 300.0 };
+        let mut f = fresh();
+        assert!(hits(&f, over), "the bar is there before the popup");
+        assert!(f.overlay.is_empty() && f.quads.is_empty(), "the bar is its own layer");
+        cut_out(&mut f, over, CELL.1);
+        assert!(!hits(&f, over), "cut_out trims the bar and its ticks");
+        assert!(hits(&f, Rect { x: 780.0, y: 0.0, w: 20.0, h: 90.0 }), "the part above the popup stays");
+        let mut f = fresh();
+        cut_rows_from(&mut f, over, CELL.1);
+        assert!(!hits(&f, over), "so does every surface that cuts rows");
+        // The renderer draws the layer (after the strokes, before the overlay): wired, not dropped.
+        assert!(include_str!("render.rs").contains("frame.scrollbars"));
+    }
+
     #[test]
     fn underlines_are_cut_out_under_popups() {
         let mut f = Frame::default();
@@ -7026,11 +7058,11 @@ mod drawn_overlay_tests {
         let mut f = Frame::default();
         scrollbar_ticks(&mut f, track, &[(Series::Search, vec![0, 99]), (Series::Error, vec![]), (Series::Manual, vec![50])], 100, 1.0);
         assert!(f.quads.is_empty() && f.rows.is_empty() && f.popups.is_empty(), "ticks hold no text and sit in the overlay");
-        assert!(f.overlay.iter().all(|q| (q.color[3] - MINIMAP_ALPHA).abs() < 1e-6));
+        assert!(f.scrollbars.iter().all(|q| (q.color[3] - MINIMAP_ALPHA).abs() < 1e-6));
         // Two search ticks and one manual tick: each is four outline edges and one fill.
-        assert_eq!(f.overlay.len(), 15, "an empty series draws nothing");
+        assert_eq!(f.scrollbars.len(), 15, "an empty series draws nothing");
         let (outline, fill) = series_colors(Series::Search);
-        let first = &f.overlay[..5];
+        let first = &f.scrollbars[..5];
         assert_eq!(first.iter().filter(|q| q.color == rgba(outline, MINIMAP_ALPHA)).count(), 4);
         let inner = first.iter().find(|q| q.color == rgba(fill, MINIMAP_ALPHA)).unwrap();
         assert_eq!(inner.rect, Rect { x: 101.0, y: 11.0, w: 13.0, h: TICK_HEIGHT - 2.0 });
@@ -7039,7 +7071,7 @@ mod drawn_overlay_tests {
         let none: &[(Series, Vec<usize>)] = &[];
         let mut g = Frame::default();
         scrollbar_ticks(&mut g, track, none, 100, 1.0);
-        assert!(g.overlay.is_empty());
+        assert!(g.scrollbars.is_empty());
     }
 
     #[test]
@@ -7049,17 +7081,17 @@ mod drawn_overlay_tests {
         let track = Rect { x: 100.0, y: 10.0, w: 30.0, h: 406.0 };
         let mut f = Frame::default();
         scrollbar_ticks(&mut f, track, &[(Series::Search, vec![0])], 100, 2.0);
-        let top = f.overlay.iter().find(|q| q.rect.y == 10.0 && q.rect.h == 2.0).expect("a 2 px top edge");
+        let top = f.scrollbars.iter().find(|q| q.rect.y == 10.0 && q.rect.h == 2.0).expect("a 2 px top edge");
         assert_eq!(top.rect.w, 30.0);
-        let fill = f.overlay.last().unwrap();
+        let fill = f.scrollbars.last().unwrap();
         assert_eq!(fill.rect, Rect { x: 102.0, y: 12.0, w: 26.0, h: 2.0 });
         // The legacy track's edge line and the knob's top and bottom padding.
         let pane = Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 };
         let g = geometry(pane, Style::Legacy, 2.0, 100, 50, 0).unwrap();
         let mut s = Frame::default();
         scrollbar(&mut s, &g, Style::Legacy, false, false);
-        assert!(s.overlay.iter().any(|q| q.rect.w == 2.0 && q.rect.x == g.track.x && q.rect.h == g.track.h), "a 2 px edge");
-        assert!(s.overlay.iter().any(|q| q.rect.y >= g.thumb.y + 3.9 && q.rect.y <= g.thumb.y + 4.1), "the knob starts 4 px in");
+        assert!(s.scrollbars.iter().any(|q| q.rect.w == 2.0 && q.rect.x == g.track.x && q.rect.h == g.track.h), "a 2 px edge");
+        assert!(s.scrollbars.iter().any(|q| q.rect.y >= g.thumb.y + 3.9 && q.rect.y <= g.thumb.y + 4.1), "the knob starts 4 px in");
     }
 
     #[test]
@@ -7070,24 +7102,24 @@ mod drawn_overlay_tests {
             let g = geometry(pane, Style::Legacy, 1.0, 100, 50, 0).unwrap();
             let mut f = Frame::default();
             scrollbar(&mut f, &g, Style::Legacy, dark, false);
-            let track = f.overlay[0];
+            let track = f.scrollbars[0];
             assert_eq!((track.rect, track.color[3]), (g.track, 1.0), "the legacy track is opaque and fills its strip");
-            let thumb = bbox(&f.overlay[2..]);
+            let thumb = bbox(&f.scrollbars[2..]);
             assert!(thumb.x > g.track.x && thumb.x + thumb.w < g.track.x + g.track.w, "the knob sits inside the track");
             assert_eq!((thumb.y, thumb.h), (g.thumb.y + 2.0, g.thumb.h - 4.0), "the knob follows the thumb");
-            assert!(f.overlay.iter().all(|q| q.rect.x >= g.track.x - 0.001), "nothing draws left of the strip");
+            assert!(f.scrollbars.iter().all(|q| q.rect.x >= g.track.x - 0.001), "nothing draws left of the strip");
             assert!(f.quads.is_empty() && f.rows.is_empty() && f.popups.is_empty());
 
             let flat = geometry(pane, Style::Legacy, 1.0, 0, 50, 0).unwrap();
             let mut f = Frame::default();
             scrollbar(&mut f, &flat, Style::Legacy, dark, false);
-            assert_eq!(f.overlay.len(), 2, "no history: the track and its edge alone");
+            assert_eq!(f.scrollbars.len(), 2, "no history: the track and its edge alone");
         }
         let (mut a, mut b) = (Frame::default(), Frame::default());
         let g = geometry(pane, Style::Legacy, 1.0, 100, 50, 0).unwrap();
         scrollbar(&mut a, &g, Style::Legacy, false, false);
         scrollbar(&mut b, &g, Style::Legacy, true, false);
-        assert_ne!(a.overlay[0].color, b.overlay[0].color, "colors follow the theme");
+        assert_ne!(a.scrollbars[0].color, b.scrollbars[0].color, "colors follow the theme");
     }
 
     #[test]
@@ -7098,14 +7130,14 @@ mod drawn_overlay_tests {
         let (mut calm, mut over) = (Frame::default(), Frame::default());
         scrollbar(&mut calm, &g, Style::Overlay, false, false);
         scrollbar(&mut over, &g, Style::Overlay, false, true);
-        let (c, o) = (bbox(&calm.overlay), bbox(&over.overlay));
+        let (c, o) = (bbox(&calm.scrollbars), bbox(&over.scrollbars));
         assert_eq!((c.w, o.w), (7.0, OVERLAY_WIDTH));
         assert_eq!((c.x + c.w, o.x + o.w), (800.0, 800.0), "both hug the pane's right edge");
         assert_eq!((c.y, c.h), (g.thumb.y, g.thumb.h));
-        assert!(calm.overlay.iter().all(|q| q.color[3] < 1.0), "no track, the thumb is translucent");
+        assert!(calm.scrollbars.iter().all(|q| q.color[3] < 1.0), "no track, the thumb is translucent");
         let mut dark = Frame::default();
         scrollbar(&mut dark, &g, Style::Overlay, true, false);
-        assert_ne!(dark.overlay[0].color[..3], calm.overlay[0].color[..3]);
-        assert!(over.overlay[0].color[3] > calm.overlay[0].color[3], "hover is stronger");
+        assert_ne!(dark.scrollbars[0].color[..3], calm.scrollbars[0].color[..3]);
+        assert!(over.scrollbars[0].color[3] > calm.scrollbars[0].color[3], "hover is stronger");
     }
 }

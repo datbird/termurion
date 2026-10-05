@@ -531,7 +531,7 @@ impl App {
         if !c.auto {
             return None;
         }
-        let grid = self.inner(rect);
+        let grid = self.text_rect(pane, rect);
         let (cw, line_h) = self.cell();
         let s = self.scale();
         let lines = composer_wrap(c, &c.edit.text, grid.w, cw);

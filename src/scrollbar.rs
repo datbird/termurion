@@ -81,6 +81,32 @@ pub fn hit(g: &Geometry, x: f32, y: f32) -> Hit {
     }
 }
 
+/// What a left press at (`x`, `y`) does to a pane's scrollbar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Press {
+    /// Not on the bar: the pane takes the press.
+    Pass,
+    /// On the bar with nothing to scroll: the press is the bar's and does nothing.
+    Swallow,
+    /// A drag of the thumb, holding it this far below its top.
+    Drag(f32),
+    /// A page up (the track above the thumb) or down (below it).
+    Page(i32),
+}
+
+/// A press on a bar with no history pages and drags nothing (the legacy thumb then fills the
+/// track, so a hit there is a `Thumb`): it only keeps the press from the pane (iTerm2's scroller
+/// is disabled when the content fits).
+pub fn press(g: &Geometry, x: f32, y: f32, history: usize) -> Press {
+    match hit(g, x, y) {
+        Hit::None => Press::Pass,
+        _ if history == 0 => Press::Swallow,
+        Hit::Thumb(grab) => Press::Drag(grab),
+        Hit::PageUp => Press::Page(1),
+        Hit::PageDown => Press::Page(-1),
+    }
+}
+
 /// The scrollback offset for a drag that holds the thumb `grab` below its top with the
 /// pointer at `y`: the thumb follows the pointer within the track.
 pub fn offset_for_drag(g: &Geometry, grab: f32, y: f32, history: usize) -> usize {
@@ -108,6 +134,14 @@ pub fn system_style() -> Style {
     let mut bytes = std::mem::size_of::<u32>() as u32;
     let rc = unsafe { RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(), &mut data as *mut u32 as *mut _, &mut bytes) };
     style_from_value((rc == 0).then_some(data))
+}
+
+/// The style now: Windows' setting where there is one, else the overlay style.
+pub fn current_style() -> Style {
+    #[cfg(windows)]
+    return system_style();
+    #[cfg(not(windows))]
+    Style::Overlay
 }
 
 /// The kinds of tick along the scrollbar.
@@ -342,5 +376,21 @@ mod tests {
         let (out, fill) = series_colors(Series::Annotation);
         assert_eq!((out, fill), (rgb(255, 255, 0), crate::tab_theme::toward_gray(rgb(255, 255, 0), 0.2, 1.0)));
         assert_eq!((TICK_HEIGHT, MINIMAP_ALPHA), (3.0, 0.62));
+    }
+
+    /// Phase B: with no history a press on the bar is swallowed (no drag, no page); with history
+    /// it drags the thumb or pages by the side it is on; off the bar it goes to the pane.
+    #[test]
+    fn a_press_without_history_drags_and_pages_nothing() {
+        let pane = Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 };
+        let flat = geometry(pane, Style::Legacy, 1.0, 0, 50, 0).unwrap();
+        assert_eq!(press(&flat, 790.0, 300.0, 0), Press::Swallow, "the full-height thumb is a hit, and does nothing");
+        assert_eq!(press(&flat, 100.0, 300.0, 0), Press::Pass);
+        let g = geometry(pane, Style::Legacy, 1.0, 100, 50, 0).unwrap();
+        assert_eq!(press(&g, 100.0, 300.0, 100), Press::Pass);
+        assert_eq!(press(&g, 790.0, g.thumb.y + 5.0, 100), Press::Drag(5.0));
+        assert_eq!(press(&g, 790.0, g.thumb.y - 5.0, 100), Press::Page(1), "above the thumb: toward older lines");
+        let up = geometry(pane, Style::Legacy, 1.0, 100, 50, 50).unwrap();
+        assert_eq!(press(&up, 790.0, up.thumb.y + up.thumb.h + 5.0, 100), Press::Page(-1));
     }
 }
