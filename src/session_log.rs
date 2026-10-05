@@ -80,35 +80,73 @@ const FALLBACK_NAME: &str = "session.log";
 /// A formatted log name made safe for Windows: iTerm2's "/" becomes "__" (`PSA:160-166`),
 /// then every character Windows forbids becomes "_", so no separator survives and the name
 /// cannot leave its folder. Beyond iTerm2: control characters become "_", trailing dots
-/// and spaces (which Windows drops) go, a name of only dots is replaced, a reserved device
-/// name (`CON`, `NUL`, `COM1`, with or without an extension) gets a leading "_", and the
-/// length is bounded.
+/// and spaces (which Windows drops) go, a name of only dots is replaced, a device name
+/// (`is_device`, with or without an extension) gets a leading "_", and the length is bounded
+/// (`cut_name`: the stem is cut, never the extension).
 pub fn safe_file_name(formatted: &str) -> String {
-    let mut name: String = formatted
+    let name: String = formatted
         .replace('/', "__")
         .chars()
         .map(|c| if matches!(c, '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() { '_' } else { c })
         .collect();
-    if name.chars().count() > MAX_NAME {
-        name = name.chars().take(MAX_NAME).collect();
-    }
     let trimmed = name.trim_end_matches(['.', ' ']);
     if trimmed.trim_start_matches(' ').is_empty() {
         return FALLBACK_NAME.to_string();
     }
-    let name = trimmed.to_string();
+    let name = cut_name(trimmed);
     let stem = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
-    let numbered = |prefix: &str| stem.strip_prefix(prefix).is_some_and(|n| matches!(n.as_bytes(), [b'1'..=b'9']));
-    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || numbered("COM") || numbered("LPT") {
+    if is_device(&stem) {
         return format!("_{name}");
     }
     name
 }
 
+/// The UTF-16 units of `s`: Windows counts file names in them.
+fn units(s: &str) -> usize {
+    s.encode_utf16().count()
+}
+
+/// A name over `MAX_NAME` units cut to fit. The extension is never what is cut: a name ending in
+/// ".log" keeps it; any other ending (an extension the program's own title could have made, ".bat",
+/// ".cmd", ".ps1") is replaced by ".log", so a cut can never leave a runnable extension. The stem
+/// takes what room is left.
+fn cut_name(name: &str) -> String {
+    if units(name) <= MAX_NAME {
+        return name.to_string();
+    }
+    let ext = name.rfind('.').map(|at| &name[at..]).filter(|e| e.eq_ignore_ascii_case(".log"));
+    let (stem, ext) = match ext {
+        Some(e) => (&name[..name.len() - e.len()], e),
+        None => (name, ".log"),
+    };
+    let mut kept = String::new();
+    for c in stem.chars() {
+        if units(&kept) + c.len_utf16() + ext.len() > MAX_NAME {
+            break;
+        }
+        kept.push(c);
+    }
+    let kept = kept.trim_end_matches(['.', ' ']);
+    format!("{}{ext}", if kept.is_empty() { "session" } else { kept })
+}
+
+/// A Windows device name as the stem of a file name (upper case, trimmed): `CON`, `PRN`, `AUX`,
+/// `NUL`, `CONIN$`, `CONOUT$`, and `COM`/`LPT` followed by 1 to 9 or a superscript 1, 2 or 3
+/// (Windows opens `COM\u{b9}` as COM1 in every folder).
+fn is_device(stem: &str) -> bool {
+    let numbered = |prefix: &str| stem.strip_prefix(prefix).is_some_and(|n| {
+        let mut chars = n.chars();
+        matches!((chars.next(), chars.next()), (Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None))
+    });
+    matches!(stem, "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || numbered("COM") || numbered("LPT")
+}
+
 /// `PSA:160-166`: the folder (empty is the home folder, a leading "~" is the home folder)
-/// joined with the safe file name.
+/// joined with the safe file name. The caller runs the network filter (`is_network_log_path`) on
+/// the RESULT, which `auto_log_path` does.
 pub fn join_log_path(folder: &str, formatted_name: &str, home: &Path) -> PathBuf {
-    let folder = folder.trim();
+    // Not trimmed: the folder is joined as it is, so the one network filter on the result sees the
+    // path the join made (a leading space must not hide `\\host` from it, 13q fix round 1).
     let dir = if folder.is_empty() || folder == "~" {
         home.to_path_buf()
     } else if let Some(rest) = folder.strip_prefix("~/").or_else(|| folder.strip_prefix("~\\")) {
@@ -300,8 +338,8 @@ impl Perform for CookState {
                 self.flush();
                 self.out.push(Cooked::Newline);
             }
-            // A tab is text in iTerm2's appended string; keep the columns readable.
-            0x09 => self.run.push('\t'),
+            // A tab is never logged: iTerm2's `appendTabAtCursor` moves the cursor and never calls
+            // `logCooked:` (`MS:2795-2860`), so no control but the line feed reaches a cooked log.
             _ => {}
         }
     }
@@ -566,6 +604,7 @@ const FLUSH_IDLE: Duration = Duration::from_millis(250);
 
 enum Msg {
     Data(Vec<u8>),
+    #[cfg(test)]
     Sync(mpsc::Sender<()>),
 }
 
@@ -587,7 +626,9 @@ pub struct FileSink {
     tx: SyncSender<Msg>,
     budget: Arc<Budget>,
     failure: Failure,
+    #[cfg(test)]
     ready: Mutex<mpsc::Receiver<Result<(), String>>>,
+    #[cfg(test)]
     ready_result: Mutex<Option<Result<(), String>>>,
     /// Answers when the writer thread has ended (it drops its end of this).
     done: mpsc::Receiver<()>,
@@ -596,6 +637,7 @@ pub struct FileSink {
 impl FileSink {
     pub fn open(path: &Path, append: bool) -> FileSink {
         let (tx, rx) = mpsc::sync_channel::<Msg>(QUEUE_CHUNKS);
+        #[cfg(test)]
         let (ready_tx, ready_rx) = mpsc::channel();
         let budget = Arc::new(Budget::new(QUEUE_BYTES));
         let failure: Failure = Arc::new(Mutex::new(None));
@@ -614,13 +656,15 @@ impl FileSink {
             });
             let file = match opened {
                 Ok(f) => {
+                    #[cfg(test)]
                     let _ = ready_tx.send(Ok(()));
                     f
                 }
                 Err(e) => {
                     let text = e.to_string();
-                    fail(&thread_failure, text.clone());
-                    let _ = ready_tx.send(Err(text));
+                    #[cfg(test)]
+                    let _ = ready_tx.send(Err(text.clone()));
+                    fail(&thread_failure, text);
                     return;
                 }
             };
@@ -634,6 +678,7 @@ impl FileSink {
                             return;
                         }
                     }
+                    #[cfg(test)]
                     Ok(Msg::Sync(done)) => {
                         if let Err(e) = out.flush() {
                             fail(&thread_failure, e.to_string());
@@ -659,7 +704,7 @@ impl FileSink {
         if let Err(e) = spawned {
             fail(&failure, e.to_string());
         }
-        FileSink { path: path.to_path_buf(), tx, budget, failure, ready: Mutex::new(ready_rx), ready_result: Mutex::new(None), done }
+        FileSink { path: path.to_path_buf(), tx, budget, failure, #[cfg(test)] ready: Mutex::new(ready_rx), #[cfg(test)] ready_result: Mutex::new(None), done }
     }
 
     /// The first error the open or a write met. Never blocks.
@@ -667,7 +712,8 @@ impl FileSink {
         self.failure.lock().ok().and_then(|s| s.clone())
     }
 
-    /// Waits for the open's answer (the tests and a caller that must know the file opened).
+    /// Waits for the open's answer. Tests only: no caller may block on the open (a hung share).
+    #[cfg(test)]
     pub fn wait_ready(&self, timeout: Duration) -> Result<(), String> {
         let mut cached = self.ready_result.lock().unwrap();
         if cached.is_none() {
@@ -680,6 +726,7 @@ impl FileSink {
     }
 
     /// Waits until everything sent so far is on disk.
+    #[cfg(test)]
     pub fn finish_for_test(&mut self) {
         let (tx, rx) = mpsc::channel();
         if self.tx.send(Msg::Sync(tx)).is_ok() {
@@ -1426,8 +1473,9 @@ mod tests {
         assert!(auto_log_path("~\\logs", "a.log", &lookup_for(&[]), net_home).is_err());
         // Typed by the person in the template, a share is theirs (13p ruling), padded or not.
         assert_eq!(auto_log_path("\\\\srv\\logs", "a.log", &lookup_for(&[]), home).unwrap(), PathBuf::from(r"\\srv\logs\a.log"));
-        let padded = auto_log_path(" \\\\srv\\logs", "a.log", &lookup_for(&[]), home).unwrap();
-        assert!(is_network_log_path(&padded), "the same filter names it a share: {padded:?}");
+        // A padded one is not a clean path: refused, and the one filter still names it a share.
+        assert!(auto_log_path(" \\\\srv\\logs", "a.log", &lookup_for(&[]), home).is_err());
+        assert!(is_network_log_path(&join_log_path(" \\\\srv\\logs", "a.log", home)));
         // A relative folder would land in Tandem's working folder.
         assert!(auto_log_path("logs", "a.log", &lookup_for(&[]), home).is_err());
         assert!(auto_log_path("D:logs", "a.log", &lookup_for(&[]), home).is_err());
@@ -1447,5 +1495,99 @@ mod tests {
         assert_eq!(style_prompt(Style::Html), "Last used: HTML");
         assert_eq!(style_prompt(Style::Raw), "Last used: Raw data");
         assert_eq!(style_prompt(Style::Asciicast), "Last used: ASCIInema");
+    }
+    /// Task 6 fix round 1, item 1: the cut keeps the extension of a long name; a title the program
+    /// chose can never become the extension (.bat, .cmd, .ps1, .hta, .url).
+    #[test]
+    fn a_cut_name_keeps_its_log_extension() {
+        let title = format!("{}.bat{}", "a".repeat(196), "x".repeat(60));
+        for ext in [".log", ".LOG"] {
+            let name = safe_file_name(&format!("{title}{ext}"));
+            assert!(name.ends_with(ext), "{name}");
+            assert!(name.encode_utf16().count() <= MAX_NAME, "{}", name.len());
+        }
+        // A name that needs the cut and ends in a program-chosen extension still ends in ".log".
+        for tail in [".bat", ".cmd", ".ps1", ".hta", ".url", ".scr"] {
+            let name = safe_file_name(&format!("{}{tail}", "b".repeat(300)));
+            assert!(name.ends_with(".log"), "{tail}: {name}");
+            assert!(name.encode_utf16().count() <= MAX_NAME);
+        }
+        // An extension longer than a log name's is not kept: the title chose it.
+        let name = safe_file_name(&format!("{}.{}", "c".repeat(150), "d".repeat(100)));
+        assert!(name.ends_with(".log") && name.encode_utf16().count() <= MAX_NAME, "{name}");
+        // UTF-16 units, not chars: a name of astral characters is cut under 255 units too.
+        let wide = safe_file_name(&format!("{}.log", "\u{1F600}".repeat(150)));
+        assert!(wide.ends_with(".log") && wide.encode_utf16().count() <= MAX_NAME, "{}", wide.encode_utf16().count());
+        // A short name is untouched.
+        assert_eq!(safe_file_name("run.bat.log"), "run.bat.log");
+    }
+
+    /// Item 2: every Windows device name, any case, with any extension, trailing dots and spaces.
+    #[test]
+    fn every_device_name_is_taken() {
+        for name in ["CONIN$", "conout$", "CONIN$.log", "ConOut$.txt", "COM\u{b9}", "com\u{b2}.log", "LPT\u{b3}", "lpt\u{b9}.txt", "COM\u{b3}.log.", "CONOUT$ .log", "PRN.", "aux .x", "COM9", "lpt1.a.b"] {
+            let safe = safe_file_name(name);
+            assert!(safe.starts_with('_'), "{name:?} -> {safe:?}");
+        }
+        // Not devices.
+        for name in ["CONIN.log", "CONOUT.log", "COM0.log", "COM.log", "COM\u{b4}.log", "LPT10", "CONIN$$.log", "xCON.log"] {
+            assert_eq!(safe_file_name(name), name, "{name:?}");
+        }
+    }
+
+    /// Item 3: the folder is not normalized by the join, so the one network filter sees what the
+    /// path really is; a share, a padded share and a network home all stay out of reach.
+    #[test]
+    fn the_joined_path_goes_through_the_network_filter() {
+        let home = Path::new(r"C:\Users\u");
+        let joined = join_log_path(" \\\\host\\share", "a.log", home);
+        assert!(joined.to_string_lossy().starts_with(' '), "the join does not trim: {joined:?}");
+        assert!(is_network_log_path(&joined));
+        for folder in ["\\\\host\\share", " \\\\host\\share", "\t//host/share", "\"\\\\host\\share\"", "\\\\?\\UNC\\host\\share", "\\\\.\\pipe\\x", "//./pipe/x"] {
+            assert!(is_network_log_path(&join_log_path(folder, "a.log", home)), "{folder:?}");
+        }
+        let net_home = Path::new(r"\\fileserver\home\u");
+        for folder in ["", "~", "~\\logs", "~/logs"] {
+            assert!(is_network_log_path(&join_log_path(folder, "a.log", net_home)), "{folder:?}");
+            assert!(auto_log_path(folder, "a.log", &|_| None, net_home).is_err(), "{folder:?}");
+        }
+        assert!(!is_network_log_path(&join_log_path("~", "a.log", home)));
+        assert!(!is_network_log_path(&join_log_path(r"D:\logs", "a.log", home)));
+        // A folder a program put in a variable never gets in, padded or not.
+        for value in [" \\\\host\\share", "\t\\\\host\\share", "//host/share", "\\\\?\\UNC\\host\\share"] {
+            let pairs = [("p", value)];
+            assert!(auto_log_path("\\(p)", "a.log", &lookup_for(&pairs), home).is_err(), "{value:?}");
+        }
+    }
+
+    /// Item 4: no public blocking wait on the open (13p-r), only in tests.
+    #[test]
+    fn the_blocking_waits_exist_only_in_tests() {
+        let src = include_str!("session_log.rs");
+        let main = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        for name in ["pub fn wait_ready(", "pub fn finish_for_test("] {
+            let at = main.find(name).unwrap_or_else(|| panic!("{name}"));
+            let before = &main[..at];
+            assert!(before.trim_end().ends_with("#[cfg(test)]"), "{name} must be cfg(test)");
+        }
+        for field in ["ready: Mutex<", "ready_result: Mutex<"] {
+            let at = main.find(field).unwrap();
+            assert!(main[..at].trim_end().ends_with("#[cfg(test)]"), "{field}");
+        }
+    }
+
+    /// Item 5: a tab never reaches the cooked log (`appendTabAtCursor` never calls `logCooked`).
+    #[test]
+    fn a_tab_is_never_cooked() {
+        let mut c = Cooker::new();
+        assert_eq!(c.feed(b"a\tb\n"), vec![Cooked::Text("ab".into(), Attr::default()), Cooked::Newline]);
+        let (sink, shared) = vec_sink();
+        let mut l = Logger::new(Style::PlainText, sink, None, None, None);
+        l.cooked(b"col1\tcol2\r\n\t\r\n", &Palette::default(), (&parts(), 0));
+        assert_eq!(text(&shared), "col1col2\n\n");
+        let (html_sink, html) = vec_sink();
+        let mut h = Logger::new(Style::Html, html_sink, None, None, None);
+        h.cooked_text("a\tb", (&parts(), 0));
+        assert!(!text(&html).contains('\t'), "{:?}", text(&html));
     }
 }
