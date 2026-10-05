@@ -15,6 +15,14 @@ pub enum What {
     Buffer,
 }
 
+/// An escape-sequence print job's text as plain rows (CR, LF and CRLF end a row).
+pub fn text_rows(text: &str, fg: alacritty_terminal::vte::ansi::Rgb, bg: alacritty_terminal::vte::ansi::Rgb) -> Vec<Row> {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    text.split('\n')
+        .map(|line| Row { runs: vec![crate::styled_copy::Run { text: line.to_string(), fg, bg, bold: false, italic: false, underline: false, link: None }], hard_end: true })
+        .collect()
+}
+
 /// The styled rows to print.
 pub fn rows(screen: &Screen, what: What) -> Vec<Row> {
     use alacritty_terminal::grid::Dimensions;
@@ -61,6 +69,16 @@ pub fn black_and_white(rows: &mut [Row]) {
 mod tests {
     use super::*;
     use alacritty_terminal::grid::Scroll;
+
+    /// 13o Task 7: a print job's text is rows.
+    #[test]
+    fn text_rows_split_on_line_ends() {
+        use alacritty_terminal::vte::ansi::Rgb;
+        let c = Rgb { r: 1, g: 2, b: 3 };
+        let rows = text_rows("bc\r\nd\re\nf", c, c);
+        let got: Vec<&str> = rows.iter().map(|r| r.runs[0].text.as_str()).collect();
+        assert_eq!(got, ["bc", "d", "e", "f"]);
+    }
     use alacritty_terminal::index::{Column, Line, Point, Side};
     use alacritty_terminal::selection::{Selection, SelectionType};
     use alacritty_terminal::vte::ansi::Rgb;

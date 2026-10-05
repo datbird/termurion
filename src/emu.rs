@@ -225,6 +225,170 @@ pub fn held_bytes(keep: Option<Vec<u8>>) -> Vec<u8> {
     out
 }
 
+/// Disable Smcup Rmcup (`T:913-980`): the DECSET list without 47, 1047, 1048 and 1049 (1048 "by
+/// analogy to xterm's titeInhibit"); None when nothing is left.
+pub fn strip_alt_screen(params: &[u16]) -> Option<Vec<u16>> {
+    let kept: Vec<u16> = params.iter().copied().filter(|p| !matches!(p, 47 | 1047 | 1048 | 1049)).collect();
+    (!kept.is_empty()).then_some(kept)
+}
+
+pub const PRINT_ID: &str = "NoSyncAllowPrinting";
+pub const PRINT_HEADING: &str = "Allow Printing?";
+pub const PRINT_TEXT: &str = "There's a lot of printing going on. Want to keep allowing it?";
+pub const PRINT_BUTTONS: [&str; 3] = ["Allow", "Disable Temporarily", "Disable Permanently"];
+
+/// What the guard says about one print.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Guard {
+    Print,
+    Refuse,
+    Ask,
+}
+
+/// iTerm2's `iTermPrintGuard` (`PG:20-75`), one per pane.
+#[derive(Clone, Debug, Default)]
+pub struct PrintGuard {
+    last: Option<std::time::Instant>,
+    disabled_until: Option<std::time::Instant>,
+    off: bool,
+}
+
+/// A second attempt within this long asks (`PG:23`).
+const RECENT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Disable Temporarily lasts this long (`PG:55`).
+const TEMPORARY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+impl PrintGuard {
+    /// Whether a print goes ahead. An attempt that will print counts, asked or not (`PG:21-25`).
+    pub fn check(&mut self, now: std::time::Instant, profile_disabled: bool, will_print: bool) -> Guard {
+        if self.off || self.disabled_until.is_some_and(|t| now < t) {
+            return Guard::Refuse;
+        }
+        self.disabled_until = None;
+        if profile_disabled {
+            return Guard::Refuse;
+        }
+        if will_print {
+            let recent = self.last.is_some_and(|last| now.saturating_duration_since(last) < RECENT);
+            self.last = Some(now);
+            if recent {
+                return Guard::Ask;
+            }
+        }
+        Guard::Print
+    }
+
+    /// The person's answer to the question: 0 Allow, 1 Disable Temporarily, 2 Disable
+    /// Permanently. True when the profile's Disable Printing must be set.
+    pub fn answer(&mut self, now: std::time::Instant, choice: usize) -> bool {
+        match choice {
+            1 => self.disabled_until = Some(now + TEMPORARY),
+            2 => {
+                self.off = true;
+                return true;
+            }
+            _ => {}
+        }
+        false
+    }
+}
+
+/// A capture older than this ends at the next output (B8).
+pub const PRINT_CAPTURE_SECS: u64 = 30;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cap {
+    Ground,
+    Esc,
+    /// After ESC and an intermediate (`ESC ( B`): one final byte ends it.
+    Inter,
+    Csi,
+    /// An OSC, DCS, SOS, PM or APC string: ends at BEL or ST.
+    Str,
+    StrEsc,
+}
+
+/// The text of an escape-sequence print job (`CSI 5 i` to `CSI 4 i`): printable text, CR and LF.
+/// Escape sequences are dropped, never executed (Decision, P8).
+#[derive(Clone, Debug)]
+pub struct PrintCapture {
+    buf: Vec<u8>,
+    state: Cap,
+    pub started: std::time::Instant,
+}
+
+impl Default for PrintCapture {
+    fn default() -> Self {
+        PrintCapture { buf: Vec::new(), state: Cap::Ground, started: std::time::Instant::now() }
+    }
+}
+
+impl PrintCapture {
+    /// Takes the bytes the program wrote. None: all taken. Some((at, esc)): the capture ends and
+    /// the parser resumes from `bytes[at..]`, after an ESC first when `esc` (a RIS whose ESC came
+    /// in an earlier read).
+    pub fn push(&mut self, bytes: &[u8], cap: usize) -> Option<(usize, bool)> {
+        for (i, &b) in bytes.iter().enumerate() {
+            // CAN and SUB end any sequence; the byte itself is dropped.
+            if b == 0x18 || b == 0x1a {
+                self.state = Cap::Ground;
+                continue;
+            }
+            loop {
+                match self.state {
+                    Cap::Ground => {
+                        match b {
+                            0x1b => self.state = Cap::Esc,
+                            b'\r' | b'\n' | 0x20..=0x7e | 0x80..=0xff => {
+                                if self.buf.len() >= cap {
+                                    return Some((i, false));
+                                }
+                                self.buf.push(b);
+                            }
+                            _ => {}
+                        }
+                    }
+                    Cap::Esc => match b {
+                        b'c' => return Some(if i == 0 { (0, true) } else { (i - 1, false) }),
+                        b'[' => self.state = Cap::Csi,
+                        b']' | b'P' | b'X' | b'^' | b'_' => self.state = Cap::Str,
+                        0x20..=0x2f => self.state = Cap::Inter,
+                        0x1b => {}
+                        _ => self.state = Cap::Ground,
+                    },
+                    Cap::Inter => match b {
+                        0x20..=0x2f => {}
+                        0x1b => self.state = Cap::Esc,
+                        _ => self.state = Cap::Ground,
+                    },
+                    Cap::Csi => match b {
+                        0x40..=0x7e => self.state = Cap::Ground,
+                        0x1b => self.state = Cap::Esc,
+                        _ => {}
+                    },
+                    Cap::Str => match b {
+                        0x07 => self.state = Cap::Ground,
+                        0x1b => self.state = Cap::StrEsc,
+                        _ => {}
+                    },
+                    Cap::StrEsc => {
+                        self.state = if b == b'\\' { Cap::Ground } else { Cap::Esc };
+                        if self.state == Cap::Esc {
+                            continue;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+        None
+    }
+
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.buf).into_owned()
+    }
+}
+
 pub const OSC7_WARNING_ID: &str = "NoSyncOSC7DisabledBreaksShellIntegration";
 pub const OSC7_HEADING: &str = "Shell Integration Setting Conflict";
 pub const OSC7_TEXT: &str = "Tandem\u{2019}s shell integration now reports your username, hostname, and current directory using OSC 7, but the \u{201c}Accept OSC 7\u{201d} advanced setting is turned off. Shell integration will not work correctly until it is turned back on.";
@@ -339,5 +503,68 @@ mod tests {
     #[test]
     fn resize_report_follows_iterm2() {
         assert_eq!(resize_report(24, 80, 400, 640), "\x1b[48;24;80;400;640t");
+    }
+
+    /// 13o Task 7 (Review Focus 6): Disable Smcup Rmcup removes only 47, 1047, 1048, 1049.
+    #[test]
+    fn smcup_switch_follows_iterm2() {
+        assert_eq!(strip_alt_screen(&[1049]), None);
+        assert_eq!(strip_alt_screen(&[1, 1049, 25]), Some(vec![1, 25]));
+        assert_eq!(strip_alt_screen(&[47, 1047, 1048]), None);
+        assert_eq!(strip_alt_screen(&[2004]), Some(vec![2004]));
+    }
+
+    /// 13o Task 7: the print guard (`PG:20-75`).
+    #[test]
+    fn print_guard_follows_iterm2() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        let mut g = PrintGuard::default();
+        assert_eq!(g.check(t0, false, true), Guard::Print);
+        assert_eq!(g.check(t0 + s(10), false, true), Guard::Ask);
+        assert!(!g.answer(t0 + s(10), 1));
+        assert_eq!(g.check(t0 + s(100), false, true), Guard::Refuse);
+        assert_eq!(g.check(t0 + s(10 + 299), false, true), Guard::Refuse);
+        assert_eq!(g.check(t0 + s(10 + 301), false, true), Guard::Print);
+        let mut g = PrintGuard::default();
+        g.check(t0, false, true);
+        assert_eq!(g.check(t0 + s(5), false, true), Guard::Ask);
+        assert!(g.answer(t0 + s(5), 2));
+        assert_eq!(g.check(t0 + s(10_000), false, true), Guard::Refuse);
+        let mut g = PrintGuard::default();
+        assert_eq!(g.check(t0, true, true), Guard::Refuse);
+        assert_eq!(g.check(t0, false, false), Guard::Print);
+        assert_eq!(g.check(t0, false, false), Guard::Print, "no attempt is counted");
+        assert_eq!(g.check(t0 + s(1), false, true), Guard::Print, "first counted attempt");
+        let mut g = PrintGuard::default();
+        g.check(t0, false, true);
+        assert!(!g.answer(t0, 0), "Allow changes nothing");
+        assert_eq!(g.check(t0 + s(31), false, true), Guard::Print, "30 s apart is not recent");
+    }
+
+    /// 13o Task 7 (B8): the capture keeps text, CR and LF, drops escape sequences, is bounded and
+    /// stops at RIS.
+    #[test]
+    fn print_capture_text_follows_iterm2() {
+        let mut c = PrintCapture::default();
+        assert_eq!(c.push(b"b\x1b[31mc\r\nd\x1b]0;t\x07e\x1bP1$qm\x1b\\f\x1b(Bg\x07\x00h", 100), None);
+        assert_eq!(c.text(), "bc\r\ndefgh");
+        // A sequence split across reads.
+        let mut c = PrintCapture::default();
+        assert_eq!(c.push(b"a\x1b[3", 100), None);
+        assert_eq!(c.push(b"1mb\x1b", 100), None);
+        assert_eq!(c.push(b"]2;x", 100), None);
+        assert_eq!(c.push(b"\x1b\\c", 100), None);
+        assert_eq!(c.text(), "abc");
+        // RIS ends it: the parser gets the ESC and what follows.
+        let mut c = PrintCapture::default();
+        assert_eq!(c.push(b"ab\x1bcxy", 100), Some((2, false)));
+        let mut c = PrintCapture::default();
+        assert_eq!(c.push(b"ab\x1b", 100), None);
+        assert_eq!(c.push(b"cxy", 100), Some((0, true)));
+        // The cap ends it too.
+        let mut c = PrintCapture::default();
+        assert_eq!(c.push(b"abcdefgh", 4), Some((4, false)));
     }
 }

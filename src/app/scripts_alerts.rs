@@ -161,6 +161,9 @@ pub(super) enum Then {
     EraseExportFirst,
     /// "Erase Everything?" or "Dry-Run Erase?": Cancel (0) or the action (1).
     EraseConfirm { dry_run: bool },
+    /// "Allow Printing?" for the pane's escape-sequence print job: Allow (0), Disable
+    /// Temporarily (1) or Disable Permanently (2); dropped, nothing prints.
+    PrintGuard { pane: crate::layout::PaneId, job: crate::screen::PrintJob },
     /// A paste's question for the pane: the button runs what the paste's bar did (Paste, Paste
     /// Without Newline, Convert tabs to spaces, Advanced..., Cancel); dropped, the paste stops.
     Paste(crate::layout::PaneId),
@@ -412,6 +415,7 @@ impl App {
             Then::Nothing | Then::ErrorRunning | Then::ExportFailed => {}
             Then::TurnOnOsc7 { was_silenced } => self.osc7_answered(was_silenced, index),
             Then::Paste(pane) => self.paste_answered(pane, Some(index)),
+            Then::PrintGuard { pane, job } => self.print_guard_answered(pane, job, index),
             Then::TmuxClose(anchor, id) => self.tmux_close_answered(anchor, &id, index),
             Then::BroadcastInput(anchor, selector) => {
                 if index == 0 {

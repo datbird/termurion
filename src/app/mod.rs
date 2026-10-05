@@ -370,6 +370,8 @@ pub struct App {
     alt_infer: HashMap<PaneId, crate::alt_infer::Inferrer>,
     /// iTerm2's once-per-process OSC 7 conflict flag (app-wide, never per window).
     osc7_latch: crate::emu::Osc7Latch,
+    /// Each pane's escape-sequence print guard (app-wide, not swapped per window).
+    print_guards: HashMap<PaneId, crate::emu::PrintGuard>,
     /// The pane that had the keyboard at the last check (a move resets its inferrer).
     alt_infer_focus: Option<PaneId>,
     /// Mark navigation: the mark each pane is at.
@@ -1617,6 +1619,7 @@ pub fn run() {
         key_click: None,
         alt_infer: HashMap::new(),
         osc7_latch: crate::emu::Osc7Latch::default(),
+        print_guards: HashMap::new(),
         alt_infer_focus: None,
         mark_pos: HashMap::new(),
         finds: HashMap::new(),
@@ -3256,6 +3259,7 @@ impl App {
         self.script_titles.remove(&id);
         self.host_stacks.remove(&id);
         self.alt_infer.remove(&id);
+        self.print_guards.remove(&id);
         self.pending_title_restores.remove(&id);
         if self.text_popover.as_ref().is_some_and(|(p, _)| *p == id) {
             self.text_popover = None;

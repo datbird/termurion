@@ -65,6 +65,10 @@ pub struct Look {
     pub unicode_version: u8,
     /// The profile's Allow Title Reporting: CSI 20 t and CSI 21 t answer with the title.
     pub allow_title_reporting: bool,
+    /// The profile's Disable Smcup Rmcup: DECSET 47, 1047, 1048 and 1049 do nothing.
+    pub disable_smcup: bool,
+    /// The profile's Disable Printing: no escape-sequence print starts or is requested.
+    pub disable_printing: bool,
 }
 
 /// How `Term::input` measures characters (milestone 13o): iTerm2's width tables for the
@@ -119,6 +123,8 @@ impl Look {
             ambiguous_wide: p.bool("Ambiguous Double Width"),
             unicode_version: crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer())),
             allow_title_reporting: p.bool("Allow Title Reporting"),
+            disable_smcup: p.bool("Disable Smcup Rmcup"),
+            disable_printing: p.bool("Disable Printing"),
         }
     }
 }
@@ -267,6 +273,9 @@ pub struct Screen {
     /// The start of an escape sequence split across reads during a capture: dropped if it
     /// turns out to be one Tandem acts on, else added to the capture.
     capture_hold: Vec<u8>,
+    /// An escape-sequence print job collecting text (`CSI 5 i` to `CSI 4 i`); bounded by
+    /// `limits.copy` and by time, ended by RIS, a prompt mark and a command end (B8).
+    pub(crate) print_capture: Option<crate::emu::PrintCapture>,
     /// OSC 1337 Block: the blocks this screen knows.
     pub blocks: crate::blocks::Blocks,
     /// OSC 1337 Button: the buttons written into the text.
@@ -360,9 +369,21 @@ pub struct Capture {
     pub cursor: (usize, usize),
 }
 
+/// What an escape-sequence print prints.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PrintJob {
+    /// The text between `CSI 5 i` and `CSI 4 i`.
+    Text(String),
+    /// The screen (`CSI i`, `CSI 0 i` and any other value).
+    Screen,
+}
+
 /// Something output asked for that the window must do.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
+    /// An escape-sequence print (`CSI 4 i` after `CSI 5 i`, or `CSI i`): the app asks the pane's
+    /// print guard, then the person's print dialog.
+    Print(PrintJob),
     /// Absolute row numbers below `below` moved down by `by` (rows spliced into the history
     /// when the alternate screen ended); the app moves the ones it holds.
     /// `api_from` is the API numbering's first on-screen line before the splice (lost plus kept
@@ -575,6 +596,7 @@ impl Screen {
             copy: crate::clipboard_osc::Copy::default(),
             capture: None,
             capture_hold: Vec::new(),
+            print_capture: None,
             color_reports: false,
             last_dark: true,
             prompt_state: Default::default(),
@@ -1089,12 +1111,56 @@ impl Screen {
         Some(one.repeat(n.max(1) as usize).into_bytes())
     }
 
+    /// Gives the bytes to a running print job. None: all taken. Some: the job ended (the bound,
+    /// its age or RIS) with nothing printed, and these bytes are for the parser.
+    fn divert_to_print(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
+        let cap = self.print_capture.as_mut()?;
+        if cap.started.elapsed().as_secs() >= crate::emu::PRINT_CAPTURE_SECS {
+            self.print_capture = None;
+            return Some(bytes.to_vec());
+        }
+        match cap.push(bytes, self.limits.copy) {
+            None => None,
+            Some((at, esc)) => {
+                self.print_capture = None;
+                let mut rest = if esc { vec![0x1b] } else { Vec::new() };
+                rest.extend_from_slice(&bytes[at..]);
+                Some(rest)
+            }
+        }
+    }
+
     /// What reaches the parser for a held sequence: its canonical bytes, a rewrite, or nothing.
     /// Later tasks add arms; until then every sequence passes as it would without being held.
     pub(crate) fn pass(&mut self, held: &crate::emu::Held) -> Option<Vec<u8>> {
         use crate::emu::{rebuild, Held};
         use crate::prompted::Decision;
+        // While a print job collects, a sequence is text to drop (Decision, P8); only the job's
+        // own end acts.
+        if self.print_capture.is_some() && !matches!(held, Held::Print(_)) {
+            return None;
+        }
         match held {
+            Held::AltScreen { params, set } if self.look.disable_smcup => {
+                crate::emu::strip_alt_screen(params).map(|params| rebuild(&Held::AltScreen { params, set: *set }))
+            }
+            Held::Print(n) => {
+                match n {
+                    5 if self.look.disable_printing || self.print_capture.is_some() => {}
+                    5 => self.print_capture = Some(crate::emu::PrintCapture::default()),
+                    4 => {
+                        if let Some(job) = self.print_capture.take() {
+                            let text = job.text();
+                            if !text.is_empty() {
+                                self.requests.push(Request::Print(PrintJob::Text(text)));
+                            }
+                        }
+                    }
+                    _ if self.look.disable_printing || self.print_capture.is_some() => {}
+                    _ => self.requests.push(Request::Print(PrintJob::Screen)),
+                }
+                None
+            }
             Held::Rep(_) if !self.rules.rep => None,
             Held::Rep(n) => Some(self.rep_cell(*n).unwrap_or_else(|| rebuild(held))),
             Held::ClearHistory => match crate::emu::clear_history_decision(self.rules.clear_history) {
@@ -1459,6 +1525,7 @@ impl Screen {
         self.term.focus_reporting_allowed = rules.focus_reporting;
         self.term.max_url_len = rules.max_url;
         self.term.save_screen_on_clear = rules.save_on_clear;
+        self.term.tabs_wrap = rules.tabs_wrap;
         self.rules = rules;
         self.push_width_rule();
     }
@@ -1751,6 +1818,19 @@ impl Screen {
     }
 
     pub(crate) fn feed_raw(&mut self, bytes: &[u8]) -> Vec<u8> {
+        // A print job collects the text and drops the sequences; what follows its end is parsed.
+        let rest;
+        let bytes = if self.print_capture.is_some() {
+            match self.divert_to_print(bytes) {
+                Some(r) => {
+                    rest = r;
+                    &rest[..]
+                }
+                None => return Vec::new(),
+            }
+        } else {
+            bytes
+        };
         self.bump_ticks();
         self.term.stamp = self.clock.unwrap_or_else(|| {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32)
@@ -3235,6 +3315,14 @@ mod tests {
     }
     use alacritty_terminal::vte::ansi::Rgb;
 
+    impl Screen {
+        fn backdate_print_capture(&mut self) {
+            if let Some(c) = &mut self.print_capture {
+                c.started -= std::time::Duration::from_secs(crate::emu::PRINT_CAPTURE_SECS + 1);
+            }
+        }
+    }
+
     fn row_text(s: &Screen, l: i32) -> String {
         (0..s.term.columns()).map(|c| s.term.grid()[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string()
     }
@@ -3722,6 +3810,110 @@ mod tests {
         assert!(!s.resize_reports());
         s.set_resize_reports(true);
         assert!(s.resize_reports());
+    }
+
+    /// 13o Task 7 (Review Focus 6): Disable Smcup Rmcup keeps the primary screen up and the other
+    /// modes of the list apply.
+    #[test]
+    fn disable_smcup_follows_iterm2() {
+        let mut s = Screen::new(20, 3);
+        s.feed(b"\x1b[?1;1049h");
+        assert!(s.alt_screen());
+        let mut s = Screen::new(20, 3);
+        s.set_look(Look { disable_smcup: true, ..Look::default() });
+        s.feed(b"\x1b[?1;1049h");
+        assert!(!s.alt_screen());
+        assert!(s.term().mode().contains(TermMode::APP_CURSOR));
+        // Padded spellings are the same sequence; the alone switch does nothing.
+        s.feed(b"\x1b[?0001049h\x1b[?47h\x1b[?1047h");
+        assert!(!s.alt_screen());
+    }
+
+    /// 13o Task 7 (B8): CSI 5 i collects text until CSI 4 i; the text never reaches the screen.
+    #[test]
+    fn print_capture_follows_iterm2() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"a\x1b[5ib\x1b[31mc\r\nd\x1b[4ie");
+        assert_eq!(row_text(&s, 0), "ae");
+        assert_eq!(s.take_requests(), vec![Request::Print(PrintJob::Text("bc\r\nd".into()))]);
+        s.feed(b"\x1b[i");
+        assert_eq!(s.take_requests(), vec![Request::Print(PrintJob::Screen)]);
+        s.feed(b"\x1b[0i\x1b[2i");
+        assert_eq!(s.take_requests(), vec![Request::Print(PrintJob::Screen), Request::Print(PrintJob::Screen)]);
+        // Split reads.
+        s.feed(b"\x1b[");
+        s.feed(b"5ixy");
+        s.feed(b"z\x1b[4");
+        s.feed(b"i");
+        assert_eq!(s.take_requests(), vec![Request::Print(PrintJob::Text("xyz".into()))]);
+        // An empty job prints nothing.
+        s.feed(b"\x1b[5i\x1b[4i");
+        assert_eq!(s.take_requests(), vec![]);
+        // Disable Printing: no capture starts, nothing is requested.
+        let mut s = Screen::new(20, 4);
+        s.set_look(Look { disable_printing: true, ..Look::default() });
+        s.take_requests();
+        s.feed(b"\x1b[5iabc\x1b[4i\x1b[i");
+        assert_eq!(row_text(&s, 0), "abc");
+        assert!(!s.take_requests().iter().any(|r| matches!(r, Request::Print(_))));
+    }
+
+    /// 13o Task 7 (B8): a capture with no end is bounded and never swallows all output.
+    #[test]
+    fn print_capture_is_bounded() {
+        let mut s = Screen::new(20, 4);
+        s.limits.copy = 64;
+        s.feed(b"\x1b[5i");
+        for _ in 0..40 {
+            s.feed(b"0123456789");
+        }
+        s.feed(b"\x1b[2J\x1b[Hshown");
+        assert_eq!(row_text(&s, 0), "shown");
+        assert_eq!(s.take_requests(), vec![], "nothing is printed");
+        assert!(s.print_capture.is_none());
+        // Time: a capture older than the bound ends at the next output.
+        s.feed(b"\x1b[5iold");
+        s.backdate_print_capture();
+        s.feed(b"\r\nnew");
+        assert_eq!(row_text(&s, 1), "new");
+        assert_eq!(s.take_requests(), vec![]);
+    }
+
+    /// 13o Task 7 (B8): RIS, a prompt mark and a command end each end the capture unprinted.
+    #[test]
+    fn print_capture_ends_at_a_prompt() {
+        for end in [&b"\x1bc"[..], b"\x1b]133;A\x07", b"\x1b]133;D;0\x07"] {
+            let mut s = Screen::new(20, 4);
+            s.feed(b"\x1b[5ihidden");
+            s.feed(end);
+            s.feed(b"visible");
+            assert_eq!(row_text(&s, 0), "visible", "{end:?}");
+            assert_eq!(s.take_requests(), vec![], "{end:?}");
+        }
+    }
+
+    /// 13o Task 7: tabs wrap only with the switch; the pending-wrap tab does nothing either way.
+    #[test]
+    fn tabs_wrap_follows_iterm2() {
+        use alacritty_terminal::term::cell::Flags;
+        let cell = |s: &Screen, l: i32, c: usize| s.term.grid()[Line(l)][Column(c)].c;
+        let mut s = Screen::new(10, 3);
+        s.feed(b"\x1b[1;10H\tx");
+        assert_eq!(cell(&s, 0, 9), 'x');
+        assert_eq!(cell(&s, 1, 8), ' ');
+        let mut s = Screen::new(10, 3);
+        s.set_rules(crate::emu::Rules { tabs_wrap: true, ..Default::default() });
+        s.feed(b"\x1b[1;10H\tx");
+        assert_eq!(cell(&s, 1, 8), 'x');
+        assert!(s.term.grid()[Line(0)][Column(9)].flags.contains(Flags::WRAPLINE), "soft wrap");
+        // Mid-line tabs are unchanged with the switch on.
+        s.feed(b"\x1b[3;1H\ty");
+        assert_eq!(cell(&s, 2, 8), 'y');
+        // A pending wrap: the tab does nothing, and the next character wraps as usual.
+        let mut s = Screen::new(10, 3);
+        s.feed(b"0123456789\tz");
+        assert_eq!(cell(&s, 0, 9), '9');
+        assert_eq!(cell(&s, 1, 0), 'z');
     }
 
     /// 13o Task 3 (Review Focus 1): CSI 3 J asks while the key is unset and the history stays.

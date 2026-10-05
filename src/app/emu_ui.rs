@@ -91,4 +91,60 @@ impl App {
             self.globals_changed(false);
         }
     }
+
+    /// An escape-sequence print (`CSI 4 i` after `CSI 5 i`, or `CSI i`): the pane's print guard
+    /// decides (`PG:20-75`); a second attempt within 30 s asks, and only the person's answer at
+    /// the print dialog prints anything.
+    pub(super) fn print_request(&mut self, pane: PaneId, job: crate::screen::PrintJob) {
+        use crate::emu::Guard;
+        let disabled = self.profile_of(pane).is_some_and(|p| p.bool("Disable Printing"));
+        let guard = self.print_guards.entry(pane).or_default().check(std::time::Instant::now(), disabled, true);
+        match guard {
+            Guard::Print => self.print_job(pane, &job),
+            Guard::Refuse => {}
+            Guard::Ask => {
+                let ask = scripts_alerts::ask(emu::PRINT_HEADING, emu::PRINT_TEXT, &emu::PRINT_BUTTONS, Some(emu::PRINT_ID), Kind::Persistent, Then::PrintGuard { pane, job });
+                self.ask_scripts(ask);
+            }
+        }
+    }
+
+    /// The answer to "Allow Printing?": Allow prints; Disable Permanently also turns the saved
+    /// profile's Disable Printing on (the original of a session copy, `PG:57-62`).
+    pub(super) fn print_guard_answered(&mut self, pane: PaneId, job: crate::screen::PrintJob, index: usize) {
+        let permanent = self.print_guards.entry(pane).or_default().answer(std::time::Instant::now(), index);
+        if permanent {
+            let guid = self.panes.get(&pane).map(|p| self.store.shared_guid(&p.profile));
+            if let Some(profile) = guid.and_then(|g| self.store.get_mut(&g)) {
+                profile.set("Disable Printing", toml::Value::Boolean(true));
+                if let Err(e) = self.store.save() {
+                    self.banners.set("print", format!("Could not save the profile: {e}"));
+                }
+                self.refresh_panes();
+            }
+        }
+        if index == 0 {
+            self.print_job(pane, &job);
+        }
+    }
+
+    /// Opens the print dialog for the job (the person cancels there or prints).
+    fn print_job(&mut self, pane: PaneId, job: &crate::screen::PrintJob) {
+        let Some(hwnd) = self.hwnd() else { return };
+        let Some(p) = self.panes.get(&pane) else { return };
+        let screen = &p.screen;
+        let mut rows = match job {
+            crate::screen::PrintJob::Screen => crate::print::rows(screen, crate::print::What::Screen),
+            crate::screen::PrintJob::Text(t) => crate::print::text_rows(t, screen.palette.fg, screen.palette.bg),
+        };
+        let cols = { use alacritty_terminal::grid::Dimensions; screen.term().columns() };
+        let title = screen.title().unwrap_or("Tandem").to_string();
+        let font = self.profile_of(pane).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0 });
+        if self.globals.bool("Print In Black And White") {
+            crate::print::black_and_white(&mut rows);
+        }
+        if let Err(e) = crate::winprint::print(hwnd as _, &mut self.print_setup, &title, &rows, cols, &font.family, font.size_pt) {
+            self.banners.set("print", format!("Printing failed: {e}"));
+        }
+    }
 }

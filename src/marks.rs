@@ -838,6 +838,13 @@ impl Screen {
     /// Acts on one shell-integration OSC at the current cursor position. A full-screen app
     /// on the alternate screen makes no marks; its cursor is not on the main screen.
     pub(crate) fn apply(&mut self, osc: Osc) {
+        // A print job drops sequences; a prompt mark or a command end ends it unprinted (B8).
+        if self.print_capture.is_some() {
+            if !matches!(osc, Osc::Prompt { .. } | Osc::CommandEnd { .. }) {
+                return;
+            }
+            self.print_capture = None;
+        }
         use crate::trigger_events::{EventFacts, EventKind};
         let before = (self.shell.cwd.clone(), self.shell.host.clone(), self.shell.user.clone());
         let was_local = self.shell.host_local;

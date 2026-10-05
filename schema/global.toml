@@ -4228,6 +4228,15 @@ default = true
 help = "Disable DECRQCRA?\nThis control sequence allows an app running in the terminal to read its contents."
 
 [[setting]]
+key = "TabsWrapAround"
+tab = "Advanced"
+section = "Terminal"
+label = "Tabs wrap around to the next line."
+type = "bool"
+default = false
+help = "Tabs wrap around to the next line.\nThis is useful for preserving tabs for later copying to the pasteboard. It breaks backward compatibility and may cause layout problems with programs that don\u2019t expect this behavior."
+
+[[setting]]
 key = "SupportREPCode"
 tab = "Advanced"
 section = "Experimental Features"

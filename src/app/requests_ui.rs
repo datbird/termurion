@@ -150,6 +150,7 @@ impl App {
             }
             Request::AskClearHistory => self.ask_clear_history(pane),
             Request::AskDecrqcra => self.ask_decrqcra(pane),
+            Request::Print(job) => self.print_request(pane, job),
             Request::HistoryRebased { below, by, api_from } => {
                 // A command the AI is running names its first row in the API numbering.
                 if let Some(run) = self.ai_execs.get_mut(&pane) {

@@ -387,6 +387,9 @@ pub struct Term<T> {
     /// after a resize; a reset (RIS, DECRST) clears it.
     pub resize_reports: bool,
 
+    /// Tandem patch: a tab at the last column wraps to the next line (iTerm2's tabsWrapAround).
+    pub tabs_wrap: bool,
+
     /// Tandem patch: the longest OSC 8 URI `set_hyperlink` accepts (iTerm2's maxURLLength).
     pub max_url_len: usize,
 
@@ -548,6 +551,7 @@ impl<T> Term<T> {
             color_report_16: true,
             focus_reporting_allowed: true,
             resize_reports: false,
+            tabs_wrap: false,
             max_url_len: 2_097_152,
             alt_scrollback: true,
             save_screen_on_clear: true,
@@ -1839,14 +1843,26 @@ impl<T: EventListener> Handler for Term<T> {
     /// Insert tab at cursor position.
     #[inline]
     fn put_tab(&mut self, mut count: u16) {
-        // A tab after the last column is the same as a linebreak.
-        if self.grid.cursor.input_needs_wrap {
-            self.wrapline();
+        // Tandem patch: a tab in the pending-wrap state does nothing (iTerm2: the next stop is
+        // not past the cursor, and `tabsWrapAround` is off by default).
+        if self.grid.cursor.input_needs_wrap && !self.tabs_wrap {
             return;
         }
 
         while self.grid.cursor.point.column < self.columns() && count != 0 {
             count -= 1;
+
+            // Tandem patch: with `tabs_wrap`, a tab where the cursor cannot advance wraps the
+            // line (soft) and goes to the first stop after column 0 (iTerm2 `appendTabAtCursor`).
+            if self.tabs_wrap
+                && (self.grid.cursor.input_needs_wrap
+                    || (self.grid.cursor.point.column + 1) == self.columns())
+                && self.mode.contains(TermMode::LINE_WRAP)
+            {
+                self.wrapline();
+            } else if self.grid.cursor.input_needs_wrap {
+                return;
+            }
 
             let c = self.grid.cursor.charsets[self.active_charset].map('\t');
             let cell = self.grid.cursor_cell();

@@ -167,5 +167,9 @@ test data) is left out. Changes:
 27. `term/mod.rs`: DEC mode 2048 (in-band resize reports), `Term.resize_reports`. DECSET and
     DECRST set and clear it (also inside a parameter list), DECRQM answers set or reset instead of
     not recognized, RIS clears it. The report itself is written by Tandem after a pty resize.
+28. `term/mod.rs`: `Term.tabs_wrap` (iTerm2's tabsWrapAround, default false) and `put_tab`. A
+    tab in the pending-wrap state does nothing (upstream wrapped the line); with `tabs_wrap` a
+    tab at the last column (or pending wrap) wraps the line softly and moves to the first tab
+    stop after column 0 (`MS:2795-2818`).
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

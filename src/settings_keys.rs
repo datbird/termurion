@@ -3375,6 +3375,17 @@ mod tests {
         }
     }
 
+    /// 13o Task 7: Tabs wrap around (`AS:443`).
+    #[test]
+    fn tabs_wrap_row_follows_iterm2() {
+        let label = "Tabs wrap around to the next line.";
+        let row = schema::find_global("TabsWrapAround").expect("TabsWrapAround missing");
+        assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "Terminal", Kind::Bool));
+        assert_eq!(row.default, Some(Value::Boolean(false)));
+        assert_eq!(row.label, label);
+        assert_eq!(row.help, format!("{label}\nThis is useful for preserving tabs for later copying to the pasteboard. It breaks backward compatibility and may cause layout problems with programs that don\u{2019}t expect this behavior."));
+    }
+
     #[test]
     fn stream_rows_follow_iterm2() {
         let url = "Maximum length for OSC 8 URLs";
