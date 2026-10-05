@@ -530,15 +530,20 @@ impl Screen {
                     param.clone()
                 } else if self.triggers.prefs.interpolated && param.contains("\\(") {
                     // A command line gets only quoted captures, or nothing (B3).
-                    let quoted = if triggers::runs_command(&self.triggers.list[i].trigger.action) { triggers::quote_groups(&groups).map(Some) } else { Some(None) };
+                                        // A command line gets only quoted captures and variables, or nothing (B3).
+                    let cmd = triggers::runs_command(&self.triggers.list[i].trigger.action);
+                    let quoted = if cmd { triggers::quote_groups(&groups).map(Some) } else { Some(None) };
+                    let bad_var = std::cell::Cell::new(false);
+                    let var = |n: &str| triggers::guard_var(self.trigger_var(n, row), cmd, &bad_var);
                     let evaluated = match &quoted {
                         None => Err(crate::semantic::CMD_REFUSED.to_string()),
-                        Some(None) => crate::interp::evaluate(&param, &|n| self.trigger_var(n, row), &groups),
+                        Some(None) => crate::interp::evaluate(&param, &var, &groups),
                         Some(Some(q)) => {
                             let refs: Vec<Option<&str>> = q.iter().map(|g| g.as_deref()).collect();
-                            crate::interp::evaluate(&param, &|n| self.trigger_var(n, row), &refs)
+                            crate::interp::evaluate(&param, &var, &refs)
                         }
                     };
+                    let evaluated = if bad_var.get() { Err(crate::semantic::CMD_REFUSED.to_string()) } else { evaluated };
                     match evaluated {
                         Ok(v) => v,
                         Err(e) => {
@@ -1232,11 +1237,11 @@ mod tests {
                 None => TriggerRequest::RunCommand(c.into()),
                 Some(silent) => TriggerRequest::Coprocess { cmd: c.into(), silent },
             };
-            // A capture is quoted, so `&` stays inside its quotes (the line runs under /s).
-            let mut s = one(r"x(\S+)", action, "run \\1", b"xfoo&calc\r\n");
-            assert_eq!(requests(&mut s), vec![want("run \"foo&calc\"")], "{action}");
+            // A capture is quoted (the line runs under /s).
+            let mut s = one(r"x(\S+)", action, "run \\1", b"xfoo\r\n");
+            assert_eq!(requests(&mut s), vec![want("run \"foo\"")], "{action}");
             // A capture that cmd.exe would expand or unquote is refused, not run.
-            for text in [&b"x%COMSPEC%\r\n"[..], b"xa\"&calc\r\n"] {
+            for text in [&b"x%COMSPEC%\r\n"[..], b"xa\"&calc\r\n", b"xfoo&calc\r\n"] {
                 let mut s = one(r"x(\S+)", action, "run \\1", text);
                 let got = requests(&mut s);
                 assert!(matches!(&got[..], [TriggerRequest::ParameterError { text, .. }] if text == crate::semantic::CMD_REFUSED), "{action}: {got:?}");
@@ -1258,8 +1263,27 @@ mod tests {
             s.feed(text);
             requests(&mut s)
         };
-        assert_eq!(run(b"xfoo&calc\r\n"), vec![TriggerRequest::RunCommand("run \"foo&calc\"".into())]);
+        assert_eq!(run(b"xfoo\r\n"), vec![TriggerRequest::RunCommand("run \"foo\"".into())]);
+        assert!(matches!(&run(b"xfoo&calc\r\n")[..], [TriggerRequest::ParameterError { .. }]));
         assert!(matches!(&run(b"x%COMSPEC%\r\n")[..], [TriggerRequest::ParameterError { .. }]));
+    }
+
+    #[test]
+    fn interpolated_variables_never_add_a_command_to_a_cmd_line() {
+        for action in ["ScriptTrigger", "CoprocessTrigger", "MuteCoprocessTrigger"] {
+            for (param, name, value) in [("run \\(session.path)", "cwd", "C:\\a&calc"), ("run \"\\(session.path)\"", "cwd", "C:\\a&calc"), ("run \\(user.x)", "x", "a|b"), ("run \\(session.path)", "cwd", "C:\\dir\\")] {
+                let mut s = Screen::with_scrollback(40, 6, 100);
+                s.set_triggers(vec![trig("go", action, param, false)], TriggerPrefs { interpolated: true, ..TriggerPrefs::default() });
+                if name == "cwd" {
+                    s.shell.cwd = Some(value.into());
+                } else {
+                    s.shell.vars.insert(name.into(), value.into());
+                }
+                s.feed(b"go\r\n");
+                let got = requests(&mut s);
+                assert!(matches!(&got[..], [TriggerRequest::ParameterError { text, .. }] if text == crate::semantic::CMD_REFUSED), "{action} {param} {value}: {got:?}");
+            }
+        }
     }
 
     #[test]

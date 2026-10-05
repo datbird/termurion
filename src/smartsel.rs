@@ -171,6 +171,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_pre_quoted_capture_is_refused_when_it_holds_a_command() {
+        let c = |t: &str| vec![t.to_string()];
+        assert!(cmd_unsafe_values("echo \"\\0\"", &c("x&calc"), "", "", ""));
+        assert!(cmd_unsafe_values("run \\0", &c("a\\"), "", "", ""), "a trailing backslash");
+        assert!(cmd_unsafe_values("run \\0", &c("a\u{ff02}b"), "", "", ""));
+        assert!(cmd_unsafe_values("run \\d", &c("x"), "C:\\Program Files (x86)", "", ""));
+        assert!(!cmd_unsafe_values("run \\0", &c("a b.txt"), "C:\\w", "h", "u"));
+    }
+
+    #[test]
     fn cmd_unsafe_values_are_found() {
         let caps = vec!["a".to_string(), "%COMSPEC%".to_string()];
         assert!(!cmd_unsafe_values("run \\0 %PATH%", &caps, "", "", ""), "the template's own text stays");

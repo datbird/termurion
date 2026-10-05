@@ -312,7 +312,7 @@ impl App {
             "openFile:" => semantic::open_file_run(&text(Escape::None), (!cwd.is_empty()).then(|| std::path::Path::new(cwd)), has_code()),
             "openUrl:" => semantic::open_url_run(&text(Escape::None), has_code()),
             "runCommand:" | "runCommandInWindow:" | "runCoprocess:" if smartsel::cmd_unsafe_values(&a.parameter, captures, cwd, &host, &user) => {
-                Run::Blocked("Tandem did not run this command: a value in it holds % or a quote that cmd.exe would read.".into())
+                Run::Blocked(semantic::CMD_REFUSED.into())
             }
             "runCommand:" | "runCommandInWindow:" => Run::Command(text(Escape::Cmd)),
             "runCoprocess:" => Run::Coprocess(text(Escape::Cmd)),

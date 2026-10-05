@@ -302,15 +302,20 @@ impl Screen {
         let value = if crate::trigger_eval::raw_parameter(&c.trigger.action) {
             param.clone()
         } else if self.triggers.prefs.interpolated && param.contains("\\(") {
-            let quoted = if triggers::runs_command(&c.trigger.action) { triggers::quote_groups(&groups).map(Some) } else { Some(None) };
+            // A command line gets only quoted captures and variables, or nothing (B3).
+            let cmd = triggers::runs_command(&c.trigger.action);
+            let quoted = if cmd { triggers::quote_groups(&groups).map(Some) } else { Some(None) };
+            let bad_var = std::cell::Cell::new(false);
+            let var = |n: &str| triggers::guard_var(self.trigger_var(n, 0), cmd, &bad_var);
             let evaluated = match &quoted {
                 None => Err(crate::semantic::CMD_REFUSED.to_string()),
-                Some(None) => crate::interp::evaluate(&param, &|n| self.trigger_var(n, 0), &groups),
+                Some(None) => crate::interp::evaluate(&param, &var, &groups),
                 Some(Some(q)) => {
                     let refs: Vec<Option<&str>> = q.iter().map(|g| g.as_deref()).collect();
-                    crate::interp::evaluate(&param, &|n| self.trigger_var(n, 0), &refs)
+                    crate::interp::evaluate(&param, &var, &refs)
                 }
             };
+            let evaluated = if bad_var.get() { Err(crate::semantic::CMD_REFUSED.to_string()) } else { evaluated };
             match evaluated {
                 Ok(v) => v,
                 Err(e) => {

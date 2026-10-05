@@ -414,10 +414,15 @@ pub enum Run {
     Blocked(String),
 }
 
-/// Whether a substituted value could be read by cmd.exe as more than text: `%` expands even
-/// inside quotes, a `"` ends the quoting, and a control character splits the line (B3).
+/// Whether a substituted value is refused on a cmd.exe command line. The rule holds whether
+/// or not the template quotes the placeholder, so it never depends on quote state: cmd.exe
+/// metacharacters (`& | < > ^ " % ! ( ) ` + "`" + `), every control character (CR, LF, NUL included),
+/// the quote lookalikes a program may fold to `"` (U+FF02, U+201C, U+201D, U+2018, U+2019), and
+/// a trailing backslash (it would escape the closing quote for the child's argument parser).
+/// Quoting stays as defence in depth.
 pub fn cmd_unsafe(v: &str) -> bool {
-    v.contains(['%', '"']) || v.chars().any(char::is_control)
+    v.ends_with('\\')
+        || v.chars().any(|c| matches!(c, '&' | '|' | '<' | '>' | '^' | '"' | '%' | '!' | '(' | ')' | '`' | '\u{ff02}' | '\u{201c}' | '\u{201d}' | '\u{2018}' | '\u{2019}') || c.is_control())
 }
 
 /// `fill` for a cmd.exe command line: every substituted value quoted, and None when any of them
@@ -446,7 +451,7 @@ pub fn cmd_command_line(line: &str) -> String {
     format!("cmd.exe {}", cmd_args(line))
 }
 
-pub const CMD_REFUSED: &str = "Tandem did not run this command: a value in it holds % or a quote that cmd.exe would read.";
+pub const CMD_REFUSED: &str = "Tandem did not run this command: a value in it holds a character cmd.exe would read as more than text (& | < > ^ \" % ! ( ) `, a control character, a quote mark, or a trailing backslash).";
 
 /// Arguments a batch file (or cmd.exe) would re-read as syntax: refused for a `.cmd` or `.bat`
 /// program (the BatchUnsafe set).
@@ -825,6 +830,28 @@ mod tests {
         assert_eq!(resolve_in(&ctx).unwrap().2, Pass::Detect);
     }
 
+    const UNSAFE_CHARS: &[char] = &['&', '|', '<', '>', '^', '"', '%', '!', '(', ')', '`', '\r', '\n', '\0', '\u{1b}', '\u{85}', '\u{ff02}', '\u{201c}', '\u{201d}', '\u{2018}', '\u{2019}'];
+
+    #[test]
+    fn cmd_unsafe_is_the_context_free_refusal_list() {
+        for c in UNSAFE_CHARS {
+            assert!(cmd_unsafe(&format!("a{c}b")), "{c:?}");
+        }
+        assert!(cmd_unsafe("C:\\dir\\") && cmd_unsafe("x\\"), "a trailing backslash");
+        assert!(!cmd_unsafe("C:\\dir\\a b-c_d.txt") && !cmd_unsafe("a\\b") && !cmd_unsafe(""));
+    }
+
+    #[test]
+    fn a_pre_quoted_placeholder_cannot_carry_a_command() {
+        let at = |prefix: &str| plan(&Target::RawCommand("w".into()), &Prefs { action: "raw command".into(), text: "echo \"\\3\"".into(), editor: String::new() }, &Around { prefix, suffix: "", cwd: "" }, false);
+        assert_eq!(at("x&calc"), Some(Run::Blocked(CMD_REFUSED.into())));
+        assert_eq!(at("x\u{ff02}&calc"), Some(Run::Blocked(CMD_REFUSED.into())));
+        assert_eq!(at("x\\"), Some(Run::Blocked(CMD_REFUSED.into())));
+        // A safe value still runs: the exact line cmd.exe is created with.
+        let Some(Run::Command(line)) = plan(&Target::RawCommand("w".into()), &Prefs { action: "raw command".into(), text: "echo \\3".into(), editor: String::new() }, &Around { prefix: "abc", suffix: "", cwd: "" }, false) else { panic!() };
+        assert_eq!(cmd_command_line(&line), "cmd.exe /d /v:off /s /c \"echo \"abc\"\"");
+    }
+
     #[test]
     fn phase_order_follows_iterm2() {
         use Phase::*;
@@ -1072,7 +1099,7 @@ mod tests {
     #[test]
     fn percent_never_reaches_cmd() {
         assert!(cmd_unsafe("a%CMDCMDLINE%b") && cmd_unsafe("a\"b") && cmd_unsafe("a\nb") && cmd_unsafe("a\u{1b}"));
-        assert!(!cmd_unsafe(r"C:\a&b\x.txt"), "inside quotes & is inert");
+        assert!(cmd_unsafe(r"C:\a&b\x.txt"), "refused whether or not the template quotes it");
         let evil = Target::File { path: PathBuf::from(r"C:\t\a%CMDCMDLINE%&calc.txt"), line: None, column: None };
         let cmd = Prefs { action: "command".into(), text: "vim \\1".into(), editor: String::new() };
         assert!(matches!(plan(&evil, &cmd, &Around::default(), false), Some(Run::Blocked(_))), "\\1");
@@ -1096,7 +1123,9 @@ mod tests {
         assert_eq!(cmd_args(r#""x.txt" y"#), r#"/d /v:off /s /c ""x.txt" y""#);
         assert_eq!(cmd_command_line("dir"), r#"cmd.exe /d /v:off /s /c "dir""#);
         // A template that starts with a substituted value: its first quote must survive.
-        let line = fill_cmd("\\1", ["foo&cd.>pwned.txt", "", "", "", ""]).unwrap();
+        assert_eq!(fill_cmd("\\1", ["foo&cd.>pwned.txt", "", "", "", ""]), None, "refused before it can reach cmd.exe");
+        // Defence in depth: even if a value got through, its quotes survive /s.
+        let line = cmd_quote("foo&cd.>pwned.txt");
         assert_eq!(cmd_args(&line), r##"/d /v:off /s /c ""foo&cd.>pwned.txt"""##);
         #[cfg(windows)]
         {

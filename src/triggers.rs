@@ -192,6 +192,20 @@ pub fn quote_groups(groups: &[Option<&str>]) -> Option<Vec<Option<String>>> {
     groups.iter().map(|g| g.map(|c| (!crate::semantic::cmd_unsafe(c)).then(|| crate::semantic::cmd_quote(c))).map_or(Some(None), |q| q.map(Some))).collect()
 }
 
+/// An interpolated variable for a parameter: on a command line quoted, and flagged in `bad`
+/// when it is `semantic::cmd_unsafe` (program text: OSC 7, user variables, job titles).
+pub fn guard_var(value: Option<String>, cmd: bool, bad: &std::cell::Cell<bool>) -> Option<String> {
+    if !cmd {
+        return value;
+    }
+    value.map(|v| {
+        if crate::semantic::cmd_unsafe(&v) {
+            bad.set(true);
+        }
+        crate::semantic::cmd_quote(&v)
+    })
+}
+
 fn substitute_with(param: &str, captures: &[Option<&str>], each: &mut dyn FnMut(&str) -> String) -> String {
     let chars: Vec<char> = param.chars().collect();
     let mut out = String::new();
@@ -350,6 +364,15 @@ pub fn escape_regex(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn command_captures_with_shell_characters_are_refused() {
+        for bad in ["foo&calc", "a|b", "a>b", "a^b", "a(b)", "a!b", "a`b", "a\\", "a\u{ff02}b"] {
+            assert_eq!(substitute_cmd("run \"\\1\"", &[Some(""), Some(bad)]), None, "{bad}");
+            assert_eq!(quote_groups(&[Some(""), Some(bad)]), None, "{bad}");
+        }
+        assert_eq!(substitute_cmd("run \\1", &[Some(""), Some("a b")]), Some("run \"a b\"".into()));
+    }
+
     use super::*;
 
     #[test]
