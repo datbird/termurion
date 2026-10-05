@@ -381,6 +381,17 @@ mod tests {
         Rgb { r, g, b }
     }
 
+    /// The display order never reaches the copy: the selection copies what the program wrote.
+    #[test]
+    fn copy_stays_logical() {
+        let mut s = Screen::new(12, 2);
+        s.feed("ab \u{5d0}\u{5d1}".as_bytes());
+        assert_eq!(s.visual_col(0, 3), 4, "the row is drawn reordered");
+        select(&mut s, (0, 3), (0, 4));
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("\u{5d0}\u{5d1}"));
+        assert_eq!(runs(&s)[0].runs[0].text, "\u{5d0}\u{5d1}");
+    }
+
     #[test]
     fn styled_runs_follow_cells() {
         let mut s = Screen::new(12, 3);

@@ -4011,8 +4011,13 @@ impl App {
         let inner = self.inner(rect);
         let term = self.panes[&id].screen.term();
         let (col, row) = mouse::cell_at((x - inner.x) as f64, (y - inner.y) as f64, cw as f64, ch as f64, term.columns() as u32, term.screen_lines() as u32);
-        let side = if (x - inner.x) - col as f32 * cw > cw / 2.0 { Side::Right } else { Side::Left };
-        (col, row, side)
+        let right = (x - inner.x) - col as f32 * cw > cw / 2.0;
+        // A right-to-left row: the pointer's visual cell is a different logical cell, and its
+        // halves turn over (the left half of the cell is the character's end). Mouse reports
+        // keep this logical column (`PTYTextView.m:7353-7365`).
+        let (logical, rtl) = self.panes[&id].screen.logical_col(row as usize, col as usize);
+        let side = if right != rtl { Side::Right } else { Side::Left };
+        (logical as u32, row, side)
     }
 
     fn grid_point(&self, id: PaneId, col: u32, row: u32) -> Point {
@@ -4928,6 +4933,8 @@ impl App {
                 }
                 self.draw_view_extras(&mut frame, id, self.inner(rect), cell);
                 if let Some((row, col, selecting)) = self.copy_cursor_on_screen(id) {
+                    // Drawn where the row's display order puts the cell.
+                    let col = self.panes.get(&id).map_or(col, |p| p.screen.visual_col(row, col));
                     scene::copy_cursor(&mut frame, self.inner(rect), cell, row, col, selecting);
                 }
                 if self.shot.as_ref().is_some_and(|s| s.pane == id) {

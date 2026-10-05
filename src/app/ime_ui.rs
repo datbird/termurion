@@ -195,9 +195,10 @@ impl App {
         let inner = self.inner(rect);
         let geometry = crate::cursor_look::Geometry::from_globals(&self.globals, scale, self.base_cell());
         let r = match self.ime_drawn(id) {
-            Some(d) => ime::caret_rect(d.caret, (inner.x, inner.y), cell, geometry.base_cell.1, p.screen.term().columns(), scale),
+            Some(d) => ime::caret_rect((d.caret.0, p.screen.visual_col(d.caret.0, d.caret.1)), (inner.x, inner.y), cell, geometry.base_cell.1, p.screen.term().columns(), scale),
             None => {
                 let (row, col) = scene::ime_cell(&p.screen);
+                let col = p.screen.visual_col(row, col);
                 let wide = scene::cursor_cell(&p.screen).is_some_and(|(_, _, w)| w);
                 crate::cursor_look::box_rect(&geometry, (inner.x, inner.y), cell, row, col, wide)
             }

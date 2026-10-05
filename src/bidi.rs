@@ -222,6 +222,34 @@ pub fn pad(o: &Order, width: usize) -> Order {
     Order { lut, inverse, rtl, mirrored, paragraph_rtl: o.paragraph_rtl }
 }
 
+/// The visual column of logical column `logical`; a row with no order (or a column past it)
+/// keeps its column.
+pub fn visual_for_logical(o: Option<&Order>, logical: usize) -> usize {
+    o.and_then(|o| o.lut.get(logical)).map_or(logical, |&v| v as usize)
+}
+
+/// The logical column drawn at visual column `visual`.
+pub fn logical_for_visual(o: Option<&Order>, visual: usize) -> usize {
+    o.and_then(|o| o.inverse.get(visual)).map_or(visual, |&l| l as usize)
+}
+
+/// The visual pieces a logical range covers, sorted, adjacent cells merged (iTerm2's
+/// `visualRange` and `enumerateLogicalRanges`): a selection or highlight over logical cells
+/// that are not contiguous on screen is several rectangles. Columns past the order keep
+/// their place.
+pub fn visual_spans(o: &Order, logical: std::ops::Range<usize>) -> Vec<std::ops::Range<usize>> {
+    let mut visual: Vec<usize> = logical.map(|l| visual_for_logical(Some(o), l)).collect();
+    visual.sort_unstable();
+    let mut spans: Vec<std::ops::Range<usize>> = Vec::new();
+    for v in visual {
+        match spans.last_mut() {
+            Some(last) if last.end == v => last.end = v + 1,
+            _ => spans.push(v..v + 1),
+        }
+    }
+    spans
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,5 +439,36 @@ mod tests {
         if let Some(o) = o {
             assert_eq!(o.lut.len(), 2000);
         }
+    }
+
+    #[test]
+    fn mapping_round_trips() {
+        let rows = ["ab \u{5d0}\u{5d1}", "\u{5d0}\u{5d1} ab", "a\u{5d0}\u{5d1}b\u{5d2}c"];
+        for text in rows {
+            for rules in [on(), detect()] {
+                let o = order(&cells(text), rules, false).unwrap();
+                for x in 0..o.lut.len() {
+                    assert_eq!(logical_for_visual(Some(&o), visual_for_logical(Some(&o), x)), x, "{text:?} {x}");
+                    assert_eq!(visual_for_logical(Some(&o), logical_for_visual(Some(&o), x)), x);
+                }
+            }
+        }
+        // Without an order, and past the end of a short one, both are the identity.
+        assert_eq!((visual_for_logical(None, 7), logical_for_visual(None, 7)), (7, 7));
+        let o = order(&cells("ab \u{5d0}\u{5d1}"), on(), false).unwrap();
+        assert_eq!((visual_for_logical(Some(&o), 9), logical_for_visual(Some(&o), 9)), (9, 9));
+        assert_eq!((visual_for_logical(Some(&o), 3), logical_for_visual(Some(&o), 4)), (4, 3));
+        assert_eq!(visual_spans(&o, 2..5), vec![2..5]);
+        assert_eq!(visual_spans(&o, 3..4), vec![4..5]);
+        assert_eq!(visual_spans(&o, 4..5), vec![3..4]);
+        assert_eq!(visual_spans(&o, 3..3), Vec::<std::ops::Range<usize>>::new());
+        // A range that is not contiguous on screen is several pieces: in "a\u{5d0}\u{5d1}b" the
+        // Hebrew run swaps, so logical 0..2 is visual 0 and 2 (the cells 0 and 2 apart).
+        let o = order(&cells("a\u{5d0}\u{5d1}b"), on(), false).unwrap();
+        assert_eq!(o.lut, vec![0, 2, 1, 3]);
+        assert_eq!(visual_spans(&o, 0..2), vec![0..1, 2..3]);
+        assert_eq!(visual_spans(&o, 1..3), vec![1..3]);
+        // Past the order's end the columns map to themselves.
+        assert_eq!(visual_spans(&o, 3..6), vec![3..6]);
     }
 }

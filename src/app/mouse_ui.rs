@@ -744,6 +744,18 @@ mod tests {
         assert!(!b.contains("fn report_gate_with"), "{b}");
     }
 
+    /// Review Focus 2: every pointer-to-cell path goes through `cell_at`, which maps the visual
+    /// cell to the logical one (and turns the cell's halves over in a right-to-left run); the
+    /// copy-mode cursor and the IME caret draw through the same order.
+    #[test]
+    fn pointer_goes_through_the_display_order() {
+        let b = body(MOD, "cell_at");
+        assert!(b.contains("screen.logical_col("), "{b}");
+        assert!(b.contains("right != rtl"), "the halves turn over in an RTL cell");
+        assert!(MOD.contains("screen.visual_col(row, col)"), "the copy-mode cursor draws at its visual cell");
+        assert!(include_str!("ime_ui.rs").contains("screen.visual_col("), "the IME area follows the order");
+    }
+
     /// R3, B6: the flag is taken at the very top of `mouse_press`, `first_click` runs only after
     /// `pane_at` (after every UI hit test), and the report gate reads `first_mouse_down`.
     #[test]

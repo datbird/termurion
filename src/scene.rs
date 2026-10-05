@@ -253,6 +253,11 @@ pub fn cursor_blinks_shown(screen: &Screen) -> bool {
     screen.cursor_blinks() && cursor_cell(screen).is_some()
 }
 
+/// The leftmost visual column of the cells `col..col + cells` of a row in display order `order`.
+fn visual_start(order: Option<&crate::bidi::Order>, col: usize, cells: usize) -> usize {
+    order.and_then(|o| crate::bidi::visual_spans(o, col..col + cells).first().map(|r| r.start)).unwrap_or(col)
+}
+
 /// Where a composition starts: the cursor's cell, whether or not a program hid the cursor
 /// (iTerm2 draws marked text regardless); the bottom-left of the visible grid when a scrolled
 /// view has the cursor off screen.
@@ -694,7 +699,9 @@ pub fn pane_with(
             let row = p.row as i32 - top;
             if row >= 0 && (row as usize) < lines {
                 let span = Span { text: label.clone(), color: LABEL_TEXT, bold: true, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-                frame.rows.push(TextRow { x: rect.x + p.col as f32 * cw, y: rect.y + row as f32 * ch, spans: vec![span], clip: rect, scale: 1.0 });
+                // The tag sits at the leftmost of the cells it covers, where the row draws them.
+                let col = visual_start(orders.get(row as usize).and_then(|o| o.as_deref()), p.col, label.chars().count());
+                frame.rows.push(TextRow { x: rect.x + col as f32 * cw, y: rect.y + row as f32 * ch, spans: vec![span], clip: rect, scale: 1.0 });
             }
         }
     }
@@ -714,13 +721,23 @@ pub fn pane_with(
                 let a = (if r == m.start.row { m.start.col } else { 0 }).min(cols - 1);
                 let b = (if r == m.end.row { m.end.col } else { cols - 1 }).min(cols - 1);
                 let y = rect.y + row as f32 * ch + ch - 3.0;
-                frame.overlay.push(Quad { rect: Rect { x: rect.x + a as f32 * cw, y, w: (b + 1 - a.min(b + 1)) as f32 * cw, h: 1.0 }, color: rgba(NOTE, 1.0) });
+                // One line per visual piece the annotated cells are drawn in.
+                let pieces = match orders.get(row as usize).and_then(|o| o.as_deref()) {
+                    Some(o) => crate::bidi::visual_spans(o, a..b + 1),
+                    None => vec![a..b + 1],
+                };
+                for piece in pieces {
+                    frame.overlay.push(Quad { rect: Rect { x: rect.x + piece.start as f32 * cw, y, w: (piece.end - piece.start) as f32 * cw, h: 1.0 }, color: rgba(NOTE, 1.0) });
+                }
             }
             // A note on show: its text in a box after the annotated text.
             let row = m.end.row as i32 - top;
             if let (Some(text), true) = (label, row >= 0 && (row as usize) < lines) {
                 let shown: String = text.lines().next().unwrap_or_default().chars().take(40).collect();
-                let x = rect.x + ((m.end.col + 2) as f32 * cw).min((rect.w - (shown.chars().count() as f32 + 1.0) * cw).max(0.0));
+                // The box follows the annotated text's rightmost visual cell.
+                let from = if m.start.row == m.end.row { m.start.col } else { 0 };
+                let end_col = orders.get(row as usize).and_then(|o| o.as_deref()).and_then(|o| crate::bidi::visual_spans(o, from.min(m.end.col)..m.end.col + 1).last().map(|r| r.end - 1)).unwrap_or(m.end.col);
+                let x = rect.x + ((end_col + 2) as f32 * cw).min((rect.w - (shown.chars().count() as f32 + 1.0) * cw).max(0.0));
                 let y = rect.y + row as f32 * ch;
                 let r = Rect { x, y, w: (shown.chars().count() as f32 + 1.0) * cw, h: ch };
                 frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
@@ -808,7 +825,10 @@ pub fn pane_with(
     // the default text color with an underline, then the caret in its color.
     if let Some(d) = ime {
         for piece in d.pieces.iter().filter(|p| p.row < lines) {
-            let r = Rect { x: rect.x + piece.col as f32 * cw, y: rect.y + piece.row as f32 * ch, w: piece.cells as f32 * cw, h: ch };
+            // On a right-to-left row the cells the composition covers are drawn where the row's
+            // order puts them: the piece starts at the first of their visual pieces.
+            let col = visual_start(orders.get(piece.row).and_then(|o| o.as_deref()), piece.col, piece.cells);
+            let r = Rect { x: rect.x + col as f32 * cw, y: rect.y + piece.row as f32 * ch, w: piece.cells as f32 * cw, h: ch };
             cut_out(frame, r, ch);
             frame.popups.push(Quad { rect: r, color: rgba(palette.bg, 1.0) });
             let span = Span { text: piece.text.clone(), color: palette.fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
@@ -817,7 +837,8 @@ pub fn pane_with(
             frame.overlay.push(Quad { rect: Rect { y: r.y + ch - line, h: line, ..r }, color: rgba(palette.fg, 1.0) });
         }
         if d.caret.0 < lines {
-            frame.overlay.push(Quad { rect: crate::ime::caret_rect(d.caret, (rect.x, rect.y), cell, look.geometry.base_cell.1, cols, look.geometry.scale), color: rgba(d.caret_color, 1.0) });
+            let caret = (d.caret.0, visual_col(d.caret.0, d.caret.1));
+            frame.overlay.push(Quad { rect: crate::ime::caret_rect(caret, (rect.x, rect.y), cell, look.geometry.base_cell.1, cols, look.geometry.scale), color: rgba(d.caret_color, 1.0) });
         }
     }
 
@@ -5760,6 +5781,69 @@ mod tests {
         assert_eq!(q.rect, Rect { x: 40.0, y: CELL.1 - 1.0, w: 40.0, h: 1.0 });
         let x = f.rows.iter().flat_map(|r| &r.spans).find(|sp| sp.text.starts_with("x.rs")).unwrap();
         assert_eq!(x.color, link);
+    }
+
+    /// The row "ab " + aleph + bet draws the aleph (logical column 3) at visual column 4 and the
+    /// bet (logical 4) at visual column 3. Everything placed by a logical column follows.
+    fn hl_with<'a>(matches: &'a [crate::find::Match], labels: &'a [(crate::find::Pos, String)], notes: &'a [(crate::find::Match, Option<String>)]) -> Highlights<'a> {
+        Highlights { matches, color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels, notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true }
+    }
+
+    fn at(col: usize) -> crate::find::Pos {
+        crate::find::Pos { row: 0, col }
+    }
+
+    #[test]
+    fn bidi_find_and_selection_follow_the_order() {
+        let mut s = screen("ab \u{5d0}\u{5d1}".as_bytes());
+        // A find match over logical 3..4 is one run at visual 3..4.
+        let m = [crate::find::Match { start: at(3), end: at(4) }];
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), Some(&hl_with(&m, &[], &[])));
+        let yellow: Vec<Rect> = f.quads.iter().filter(|q| q.color == rgba(rgb(0xff, 0xff, 0), 1.0)).map(|q| q.rect).collect();
+        assert_eq!(yellow, vec![Rect { x: 30.0, y: 0.0, w: 20.0, h: 20.0 }]);
+        // A selection of logical column 3 shades visual column 4.
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(3)), Side::Left);
+        sel.update(Point::new(Line(0), Column(3)), Side::Right);
+        s.term_mut().selection = Some(sel);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        let shade: Vec<Rect> = f.quads.iter().filter(|q| q.color == rgba(s.palette.selection, 1.0)).map(|q| q.rect).collect();
+        assert_eq!(shade, vec![Rect { x: 40.0, y: 0.0, w: 10.0, h: 20.0 }]);
+    }
+
+    #[test]
+    fn bidi_labels_notes_and_ime_follow_the_order() {
+        let s = screen("ab \u{5d0}\u{5d1}".as_bytes());
+        // A two-character label over logical 3..5 sits where its cells are, at visual 3.
+        let labels = [(at(3), "12".to_string())];
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), Some(&hl_with(&[], &labels, &[])));
+        let tag = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "12")).unwrap();
+        assert_eq!(tag.x, 30.0);
+        // A one-character label over the aleph sits at its visual column 4.
+        let labels = [(at(3), "A".to_string())];
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), Some(&hl_with(&[], &labels, &[])));
+        assert_eq!(f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "A")).unwrap().x, 40.0);
+        // A note over logical 3 underlines visual 4; over logical 0..3 it is two pieces.
+        let notes = [(crate::find::Match { start: at(3), end: at(3) }, None), (crate::find::Match { start: at(0), end: at(3) }, None)];
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), Some(&hl_with(&[], &[], &notes)));
+        let y = CELL.1 - 3.0;
+        let lines: Vec<(f32, f32)> = f.overlay.iter().filter(|q| q.color == rgba(NOTE, 1.0) && q.rect.y == y).map(|q| (q.rect.x, q.rect.w)).collect();
+        assert_eq!(lines, vec![(40.0, 10.0), (0.0, 30.0), (40.0, 10.0)], "{lines:?}");
+        // The IME composition over logical 3 draws at visual 4 and its caret at logical 4 is at visual 3.
+        use crate::ime::{Drawn, Piece};
+        let yellow = rgb(255, 255, 0);
+        let mut look = CursorLook::shown(true);
+        look.geometry.base_cell = CELL;
+        look.ime = Some(Drawn { pieces: vec![Piece { row: 0, col: 3, text: "x".to_string(), cells: 1 }], caret: (0, 4), caret_color: yellow });
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &look);
+        let bg = rgba(s.palette.bg, 1.0);
+        assert!(f.popups.iter().any(|q| q.color == bg && q.rect.x == 40.0), "{:?}", f.popups);
+        assert!(f.overlay.iter().any(|q| q.color == rgba(yellow, 1.0) && q.rect.x == 30.0), "caret: {:?}", f.overlay);
     }
 
     #[test]

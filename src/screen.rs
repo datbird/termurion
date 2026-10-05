@@ -583,6 +583,37 @@ impl Screen {
         made
     }
 
+    /// The display order of viewport row `row` (as drawn: the view's scroll offset applied),
+    /// or None when it has none or does not cover this width. The pointer, the copy-mode
+    /// cursor and the IME go through here, so they land where `scene::pane_with` drew.
+    fn viewport_order(&self, row: usize) -> Option<std::sync::Arc<crate::bidi::Order>> {
+        let grid = self.term.grid();
+        self.row_order(row as i32 - grid.display_offset() as i32).filter(|o| o.lut.len() <= grid.columns())
+    }
+
+    /// The visual column at which logical column `col` of viewport row `row` is drawn.
+    pub fn visual_col(&self, row: usize, col: usize) -> usize {
+        crate::bidi::visual_for_logical(self.viewport_order(row).as_deref(), col)
+    }
+
+    /// The logical column drawn at visual column `col` of viewport row `row`, and whether that
+    /// cell lies in a right-to-left run (a pointer on its left half is then at the character's
+    /// end).
+    pub fn logical_col(&self, row: usize, col: usize) -> (usize, bool) {
+        let order = self.viewport_order(row);
+        let logical = crate::bidi::logical_for_visual(order.as_deref(), col);
+        (logical, order.is_some_and(|o| o.rtl.get(logical).copied().unwrap_or(false)))
+    }
+
+    /// The visual pieces the logical columns `cols` of viewport row `row` are drawn in.
+    pub fn visual_runs(&self, row: usize, cols: std::ops::Range<usize>) -> Vec<std::ops::Range<usize>> {
+        match self.viewport_order(row) {
+            Some(o) => crate::bidi::visual_spans(&o, cols),
+            None if cols.is_empty() => Vec::new(),
+            None => vec![cols],
+        }
+    }
+
     pub fn set_look(&mut self, look: Look) {
         // A new profile default for CSI u applies unless the menu chose otherwise.
         if self.keys.csi_u == self.keys.profile_csi_u {
@@ -1612,6 +1643,69 @@ mod tests {
         s.bidi_rules.right_justify = false;
         let o = s.row_order(0).unwrap();
         assert_eq!(o.lut.len(), 2);
+    }
+
+    #[test]
+    fn pointer_maps_through_the_order() {
+        let mut s = Screen::new(10, 3);
+        s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
+        // Visual column 4 shows the aleph (logical 3); visual 3 shows the bet (logical 4).
+        assert_eq!(s.logical_col(0, 4), (3, true));
+        assert_eq!(s.logical_col(0, 3), (4, true));
+        assert_eq!(s.logical_col(0, 1), (1, false));
+        assert_eq!(s.visual_col(0, 3), 4);
+        assert_eq!(s.visual_col(0, 9), 9, "past the text: itself");
+        // A row with no right-to-left text maps to itself.
+        assert_eq!(s.logical_col(1, 3), (3, false));
+        assert_eq!(s.visual_col(1, 3), 3);
+        // A drag from visual column 4 to 3 (the right half of 4 to the left half of 3, as the
+        // pointer's sides turn over in a right-to-left cell) selects logical columns 3 and 4.
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let side = |right: bool, rtl: bool| if right != rtl { Side::Right } else { Side::Left };
+        let (a, a_rtl) = s.logical_col(0, 4);
+        let (b, b_rtl) = s.logical_col(0, 3);
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(a)), side(true, a_rtl));
+        sel.update(Point::new(Line(0), Column(b)), side(false, b_rtl));
+        s.term_mut().selection = Some(sel);
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("\u{5d0}\u{5d1}"), "the copy is logical, as the program wrote it");
+        // The highlight pieces of that selection cover visual 3 and 4 as one.
+        assert_eq!(s.visual_runs(0, 3..5), vec![3..5]);
+        assert_eq!(s.visual_runs(0, 3..4), vec![4..5]);
+    }
+
+    /// A click or hover on a visual cell acts on the cell shown there: its OSC 8 link, never a
+    /// neighbour's. The mouse report keeps the logical column `cell_at` returns.
+    #[test]
+    fn links_under_the_pointer_are_the_ones_shown() {
+        use alacritty_terminal::index::{Column, Line, Point};
+        let mut s = Screen::new(10, 2);
+        s.feed("ab \x1b]8;;https://one.test\x1b\\\u{5d0}\x1b]8;;\x1b\\\x1b]8;;https://two.test\x1b\\\u{5d1}\x1b]8;;\x1b\\".as_bytes());
+        let link_at = |s: &Screen, visual: usize| {
+            let (logical, _) = s.logical_col(0, visual);
+            s.term().grid()[Point::new(Line(0), Column(logical))].hyperlink().map(|h| h.uri().to_string())
+        };
+        // The aleph (link one) is drawn at visual 4, the bet (link two) at visual 3.
+        assert_eq!(link_at(&s, 4).as_deref(), Some("https://one.test"));
+        assert_eq!(link_at(&s, 3).as_deref(), Some("https://two.test"));
+        assert_eq!(s.logical_col(0, 4).0, 3, "a mouse report to a program carries the logical column");
+        assert_eq!(link_at(&s, 1), None);
+    }
+
+    #[test]
+    fn right_justify_follows_iterm2() {
+        let row = |detect: bool, justify: bool| {
+            let mut s = Screen::new(6, 2);
+            s.bidi_rules = crate::bidi::Rules { enabled: true, detect_direction: detect, right_justify: justify, off_in_alternate: false };
+            s.feed("\u{5d0}\u{5d1}".as_bytes());
+            s.row_order(0).unwrap().lut.clone()
+        };
+        // Both switches: the paragraph pads to the right edge, the fill reversed.
+        assert_eq!(row(true, true), vec![5, 4, 3, 2, 1, 0]);
+        // iTerm2 needs both: no padding with either off.
+        assert_eq!(row(true, false), vec![1, 0]);
+        // Detection off: the paragraph is left to right, so the fill follows in order and the text stays left.
+        assert_eq!(row(false, true), vec![1, 0, 2, 3, 4, 5]);
     }
 
     #[test]
