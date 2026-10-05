@@ -189,4 +189,14 @@ mod tests {
             assert!(find_global(k).is_some(), "{k} is used but not in schema/global.toml");
         }
     }
+
+    /// R3 (`01:207`): iTerm2's stock profile reports the mouse; no note, no seed row left over.
+    #[test]
+    fn mouse_reporting_defaults_on() {
+        assert_eq!(find("Mouse Reporting").unwrap().default, Some(toml::Value::Boolean(true)));
+        assert!(find("Mouse Reporting").unwrap().seed.is_none());
+        let file: toml::Value = toml::from_str(include_str!("../schema/profile.toml")).unwrap();
+        let row = file["setting"].as_array().unwrap().iter().find(|r| r["key"].as_str() == Some("Mouse Reporting")).unwrap();
+        assert!(row.get("default_note").is_none(), "the note about the old default goes");
+    }
 }

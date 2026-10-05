@@ -4081,11 +4081,15 @@ impl App {
         })
     }
 
-    /// The pane's mouse modes, or none when mouse reporting is off for it.
+    /// The pane's mouse modes, or none when mouse reporting is off for it (or restricted to the
+    /// alternate screen and the pane is not in it).
     fn modes(&self, id: PaneId) -> mouse::Modes {
-        match self.panes.get(&id) {
-            Some(p) if self.mouse_allowed(id) => p.screen.mouse_modes(),
-            _ => mouse::Modes::default(),
+        let Some(p) = self.panes.get(&id) else { return mouse::Modes::default() };
+        let restrict = self.store.get(&p.profile).is_some_and(|prof| prof.bool("Restrict Mouse Reporting to Alternate Screen Mode"));
+        if mouse::reporting_on(self.mouse_allowed(id), p.screen.term().mode().contains(TermMode::ALT_SCREEN), restrict) {
+            p.screen.mouse_modes()
+        } else {
+            mouse::Modes::default()
         }
     }
 
@@ -4363,6 +4367,10 @@ impl App {
         if button == MouseButton::Left && self.find_press(x, y) {
             return;
         }
+        // Any button on one of Tandem's overlays inside a pane is Tandem's, never the program's (B5).
+        if self.tandem_ui_at(x, y) {
+            return;
+        }
         let Some((id, rect)) = self.pane_at(x, y) else { return };
         self.alt_infer_non_scroll(id);
         let b = button_number(button);
@@ -4385,7 +4393,7 @@ impl App {
             2 => Some(Button::Middle),
             _ => None,
         };
-        let reportable = mb.is_some() && mouse::app_owns_mouse(modes, mods);
+        let reportable = mb.is_some() && self.report_gate(id, mouse::Kind::Click);
         let app_tracking = modes.tracking != Tracking::Off;
         let os = self.os_clicks(b);
         let clicks = self.pointer_clicks.press(b, os);
@@ -4414,7 +4422,7 @@ impl App {
         if let (true, Some(mb)) = (reportable, mb) {
             let ev = mouse::Event { button: mb, action: mouse::Action::Press, mods, col, row };
             if let Some(bytes) = mouse::encode(modes, ev) {
-                self.panes.get_mut(&id).unwrap().input(&bytes);
+                self.write_mouse_report(id, &bytes);
             }
             self.drag = Drag::App { pane: id, button: mb, clicks, at: Instant::now() };
             return self.redraw();
@@ -4464,7 +4472,7 @@ impl App {
     /// Alt-click moves the cursor (Pointer > Alt-click moves cursor), unless the app
     /// takes clicks or the view is scrolled back.
     fn alt_click_moves_cursor(&mut self, pane: PaneId, target: (u32, u32)) {
-        if !self.globals.bool("OptionClickMovesCursor") || self.modes(pane).tracking != Tracking::Off {
+        if !self.globals.bool("OptionClickMovesCursor") || self.report_gate_with(pane, mouse::Kind::Click, mouse::Mods::default()) {
             return;
         }
         let Some(p) = self.panes.get_mut(&pane) else { return };
@@ -4489,7 +4497,7 @@ impl App {
         if let Some(pd) = self.pointer_down.take() {
             if pd.button == b {
                 let modes = self.modes(pd.pane);
-                let reportable = b <= 2 && mouse::app_owns_mouse(modes, self.mods);
+                let reportable = b <= 2 && self.report_gate(pd.pane, mouse::Kind::Drag);
                 let map = self.globals.table("PointerActions");
                 if let Up::Perform(binding) = pointer::on_up(b, pd.clicks, self.mods, reportable, modes.tracking != Tracking::Off, &map, &self.pointer_prefs()) {
                     self.run_pointer_action(&binding, pd.pane, pd.cell, event_loop);
@@ -4541,7 +4549,7 @@ impl App {
             }
             Drag::App { pane, button, clicks, at } => {
                 // macOS counts a release as no click once the multi-click time has passed.
-                let reported = mouse::app_owns_mouse(self.modes(pane), self.mods);
+                let reported = self.report_gate(pane, mouse::Kind::Drag);
                 if button == Button::Left {
                     let clicks = if at.elapsed() > input::MULTI_CLICK { 0 } else { clicks };
                     self.frustration(pane, |d| d.mouse_up(clicks, reported));
@@ -4554,10 +4562,9 @@ impl App {
                 if let Some(rect) = self.pane_rect(pane) {
                     let (col, row, _) = self.cell_at(pane, rect, x, y);
                     let modes = self.modes(pane);
-                    let p = self.panes.get_mut(&pane).unwrap();
                     let ev = mouse::Event { button, action: mouse::Action::Release, mods: self.mods, col, row };
                     if let Some(bytes) = mouse::encode(modes, ev) {
-                        p.input(&bytes);
+                        self.write_mouse_report(pane, &bytes);
                     }
                 }
             }
@@ -4629,7 +4636,7 @@ impl App {
                 let (pane, button) = (*pane, *button);
                 // A drag counts as reported where the program asked for any clicks (iTerm2's
                 // test for drag reports), even when only motion with a button is sent.
-                let reported = mouse::app_owns_mouse(self.modes(pane), self.mods);
+                let reported = self.report_gate(pane, mouse::Kind::Drag);
                 if button == Button::Left {
                     self.frustration(pane, |d| d.mouse_dragged(reported));
                 } else {
@@ -4644,7 +4651,7 @@ impl App {
                         self.refresh_route();
                         self.redraw();
                     }
-                    if self.modes(id).tracking == Tracking::Any {
+                    if self.modes(id).tracking == Tracking::Any && self.report_gate(id, mouse::Kind::Hover) {
                         self.send_motion(id, None, x, y);
                     }
                 }
@@ -4656,10 +4663,13 @@ impl App {
         let Some(rect) = self.pane_rect(pane) else { return };
         let (col, row, _) = self.cell_at(pane, rect, x, y);
         let modes = self.modes(pane);
-        let p = self.panes.get_mut(&pane).unwrap();
+        let kind = if button.is_some() { mouse::Kind::Drag } else { mouse::Kind::Hover };
+        if !self.report_gate(pane, kind) {
+            return;
+        }
         let ev = mouse::Event { button: button.unwrap_or(Button::None), action: mouse::Action::Motion, mods: self.mods, col, row };
         if let Some(bytes) = mouse::encode(modes, ev) {
-            p.input(&bytes);
+            self.write_mouse_report(pane, &bytes);
         }
     }
 

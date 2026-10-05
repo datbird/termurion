@@ -65,6 +65,25 @@ pub fn arrow_count(delta: f64) -> usize {
     delta.abs().ceil() as usize
 }
 
+/// The delta mouse reporting uses (`PTYTextView.m:8446-8471`): under fast trackpad the lines
+/// divided by the unit (the cell height or width in points), floored when negative, else
+/// ceiled, so a notch of three lines reports one step; otherwise the lines as they are.
+pub fn report_delta(lines: f64, unit_pt: f64, fast_trackpad: bool) -> f64 {
+    if !fast_trackpad || unit_pt <= 0.0 {
+        return lines;
+    }
+    let frac = lines / unit_pt;
+    if frac < 0.0 { frac.floor() } else { frac.ceil() }
+}
+
+/// How many reports one wheel event sends (`PTYSession.m:13820-13838`): proportional gives the
+/// truncated size capped at 32, else one; a single step becomes two when the tmux workaround
+/// is on.
+pub fn report_steps(chosen: f64, proportional: bool, double: bool) -> usize {
+    let steps = if proportional { chosen.abs().min(32.0) as usize } else { 1 };
+    if steps == 1 && double { 2 } else { steps }
+}
+
 /// One wheel event in lines (`dx` positive moves the content right).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Event {
@@ -370,5 +389,30 @@ mod tests {
         assert_eq!(event_from(0.0, 0.25, None, 3.0, (8.0, 17.0)), Event { dx: 0.0, dy: 0.75, precise: true });
         assert_eq!(event_from(0.0, 0.0, Some((0.0, 34.0)), 3.0, (8.0, 17.0)), Event { dx: 0.0, dy: 2.0, precise: true });
         assert_eq!(event_from(-1.0, 0.0, None, 3.0, (8.0, 17.0)), Event { dx: -3.0, dy: 0.0, precise: false });
+    }
+
+    #[test]
+    fn report_steps_follow_iterm2() {
+        // report_steps(chosen, proportional, double): PTYSession.m:13820-13838.
+        assert_eq!(report_steps(3.0, true, false), 3);
+        assert_eq!(report_steps(40.0, true, false), 32, "capped at 32");
+        assert_eq!(report_steps(-5.0, true, false), 5);
+        assert_eq!(report_steps(0.0, true, false), 0);
+        assert_eq!(report_steps(3.0, false, false), 1);
+        assert_eq!(report_steps(1.0, true, true), 2);
+        assert_eq!(report_steps(1.0, false, true), 2);
+        assert_eq!(report_steps(3.0, true, true), 3, "only a single step doubles");
+        assert_eq!(report_steps(0.5, true, true), 0, "truncated before the doubling check");
+    }
+
+    #[test]
+    fn a_notch_reports_one_step() {
+        // report_delta(lines, unit_pt, fast_trackpad): PTYTextView.m:8446-8471.
+        assert_eq!(report_delta(3.0, 17.0, true), 1.0);
+        assert_eq!(report_delta(-3.0, 17.0, true), -1.0);
+        assert_eq!(report_delta(0.0, 17.0, true), 0.0);
+        assert_eq!(report_delta(3.0, 17.0, false), 3.0);
+        // A default notch (3 lines, fast trackpad on) reports once.
+        assert_eq!(report_steps(report_delta(3.0, 17.0, true), true, false), 1);
     }
 }

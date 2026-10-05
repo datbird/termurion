@@ -1952,13 +1952,11 @@ tab = "Terminal"
 section = "Mouse"
 label = "Report Mouse Clicks and Drags (Mouse Reporting)"
 type = "bool"
-default = false
-default_note = "iTermProfilePreferences.m's fallback default is false, but the shipped DefaultBookmark.plist sets this true for the stock Default profile."
+default = true
 help = "Enables xterm-style mouse reporting to the running program."
 light_dark = false
 macos_only = false
 
-seed = true
 [[setting]]
 key = "Mouse Reporting allow mouse wheel"
 tab = "Terminal"

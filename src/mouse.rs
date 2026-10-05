@@ -65,6 +65,68 @@ pub fn app_owns_mouse(modes: Modes, mods: Mods) -> bool {
     modes.tracking != Tracking::Off && !mods.alt
 }
 
+/// What kind of event is asking to be reported (`PTYMouseHandler.m:1432-1515`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Click,
+    Drag,
+    /// Motion with no button (DEC 1003).
+    Hover,
+    Wheel { horizontal: bool },
+}
+
+/// The profile and Tandem state that gate reports besides the program's own request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Gates {
+    /// The profile's "Mouse Reporting allow clicks and drags".
+    pub clicks: bool,
+    /// The profile's "Mouse Reporting allow mouse wheel".
+    pub wheel: bool,
+    /// ReportHorizontalScrollEvents.
+    pub horizontal: bool,
+    /// The activating click holds and ReportOnFirstMouse is off.
+    pub first_mouse_blocks: bool,
+    /// The pointer is over one of Tandem's own overlays inside the pane (B5).
+    pub ui_over: bool,
+}
+
+/// Whether an event is reported to the program (`shouldReportMouseEvent:at:`): tracking on, Alt
+/// not held, then the gate of its kind. The wheel scrolls under an overlay and passes the
+/// first-mouse hold; clicks, drags and hover do neither; hover is not a click or drag.
+pub fn should_report(modes: Modes, mods: Mods, kind: Kind, g: Gates) -> bool {
+    if !app_owns_mouse(modes, mods) {
+        return false;
+    }
+    match kind {
+        Kind::Wheel { horizontal } => g.wheel && (g.horizontal || !horizontal),
+        Kind::Click | Kind::Drag => g.clicks && !g.first_mouse_blocks && !g.ui_over,
+        Kind::Hover => !g.first_mouse_blocks && !g.ui_over,
+    }
+}
+
+/// `xtermMouseReporting` (`PTYSession.m:7020-7028`): allowed, and outside the alternate screen
+/// not restricted to it.
+pub fn reporting_on(ever_allowed: bool, alt_screen: bool, restrict: bool) -> bool {
+    ever_allowed && (alt_screen || !restrict)
+}
+
+/// Tandem's own overlays that sit inside a pane's rectangle, by kind (B5).
+#[derive(Clone, Debug, Default)]
+pub struct UiRects {
+    pub info_bars: Vec<crate::layout::Rect>,
+    pub portholes: Vec<crate::layout::Rect>,
+    pub pills: Vec<crate::layout::Rect>,
+    pub pickers: Vec<crate::layout::Rect>,
+    pub indicators: Vec<crate::layout::Rect>,
+    pub find: Vec<crate::layout::Rect>,
+}
+
+impl UiRects {
+    pub fn hit(&self, x: f32, y: f32) -> bool {
+        [&self.info_bars, &self.portholes, &self.pills, &self.pickers, &self.indicators, &self.find].into_iter().flatten().any(|r| r.contains(x, y))
+    }
+}
+
 /// Returns the bytes to send the app for `ev`, or None when the app did not ask for it.
 pub fn encode(modes: Modes, ev: Event) -> Option<Vec<u8>> {
     let wheel = matches!(ev.button, Button::WheelUp | Button::WheelDown | Button::WheelLeft | Button::WheelRight);
@@ -229,5 +291,78 @@ mod tests {
     fn cell_at_clamps_outside_the_grid() {
         assert_eq!(cell_at(-50.0, -1.0, 10.0, 20.0, 80, 24), (0, 0));
         assert_eq!(cell_at(5000.0, 9000.0, 10.0, 20.0, 80, 24), (79, 23));
+    }
+
+    const ALL: Gates = Gates { clicks: true, wheel: true, horizontal: true, first_mouse_blocks: false, ui_over: false };
+    const KINDS: [Kind; 5] = [Kind::Click, Kind::Drag, Kind::Hover, Kind::Wheel { horizontal: false }, Kind::Wheel { horizontal: true }];
+
+    #[test]
+    fn reporting_gates_follow_iterm2() {
+        let m = Mods::default();
+        for k in KINDS {
+            assert!(should_report(SGR_CLICK, m, k, ALL), "{k:?} all on");
+        }
+        let no_clicks = Gates { clicks: false, ..ALL };
+        assert!(!should_report(SGR_CLICK, m, Kind::Click, no_clicks));
+        assert!(!should_report(SGR_CLICK, m, Kind::Drag, no_clicks));
+        assert!(should_report(SGR_CLICK, m, Kind::Hover, no_clicks), "mouse moved is not in the clicks-and-drags list");
+        assert!(should_report(SGR_CLICK, m, Kind::Wheel { horizontal: false }, no_clicks));
+        let no_wheel = Gates { wheel: false, ..ALL };
+        assert!(!should_report(SGR_CLICK, m, Kind::Wheel { horizontal: false }, no_wheel));
+        assert!(should_report(SGR_CLICK, m, Kind::Click, no_wheel));
+        let no_h = Gates { horizontal: false, ..ALL };
+        assert!(!should_report(SGR_CLICK, m, Kind::Wheel { horizontal: true }, no_h));
+        assert!(should_report(SGR_CLICK, m, Kind::Wheel { horizontal: false }, no_h));
+        let alt = Mods { alt: true, ..m };
+        for k in KINDS {
+            assert!(!should_report(SGR_CLICK, alt, k, ALL), "{k:?} with Alt");
+            assert!(!should_report(Modes::default(), m, k, ALL), "{k:?} tracking off");
+        }
+        let first = Gates { first_mouse_blocks: true, ..ALL };
+        for k in [Kind::Click, Kind::Drag, Kind::Hover] {
+            assert!(!should_report(SGR_ANY, m, k, first), "{k:?} while the first-mouse click holds");
+        }
+        assert!(should_report(SGR_CLICK, m, Kind::Wheel { horizontal: false }, first), "the wheel is excepted");
+    }
+
+    #[test]
+    fn restrict_to_alternate_screen() {
+        assert!(!reporting_on(true, false, true));
+        assert!(reporting_on(true, true, true));
+        assert!(reporting_on(true, false, false));
+        assert!(!reporting_on(false, true, false));
+    }
+
+    /// B5: a program never gets a click, drag or hover meant for a Tandem overlay.
+    #[test]
+    fn overlay_clicks_are_not_reported() {
+        let m = Mods::default();
+        let over = Gates { ui_over: true, ..ALL };
+        for k in [Kind::Click, Kind::Drag, Kind::Hover] {
+            assert!(!should_report(SGR_ANY, m, k, over), "{k:?} over an overlay");
+        }
+        assert!(should_report(SGR_ANY, m, Kind::Wheel { horizontal: false }, over), "the wheel scrolls under a bar as before");
+    }
+
+    fn r(x: f32, y: f32) -> crate::layout::Rect {
+        crate::layout::Rect { x, y, w: 10.0, h: 10.0 }
+    }
+
+    /// B5: one test per overlay kind, each alone in the list, hit inside and missed outside.
+    #[test]
+    fn each_overlay_kind_is_a_tandem_hit() {
+        let kinds: [(&str, UiRects); 6] = [
+            ("info bar", UiRects { info_bars: vec![r(0.0, 0.0)], ..Default::default() }),
+            ("porthole", UiRects { portholes: vec![r(0.0, 0.0)], ..Default::default() }),
+            ("block pill", UiRects { pills: vec![r(0.0, 0.0)], ..Default::default() }),
+            ("picker", UiRects { pickers: vec![r(0.0, 0.0)], ..Default::default() }),
+            ("chat indicator", UiRects { indicators: vec![r(0.0, 0.0)], ..Default::default() }),
+            ("find bar", UiRects { find: vec![r(0.0, 0.0)], ..Default::default() }),
+        ];
+        for (name, ui) in kinds {
+            assert!(ui.hit(5.0, 5.0), "{name} inside");
+            assert!(!ui.hit(50.0, 5.0), "{name} outside");
+        }
+        assert!(!UiRects::default().hit(5.0, 5.0));
     }
 }
