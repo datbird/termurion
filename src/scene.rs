@@ -611,7 +611,10 @@ pub fn pane_with(
     } else if let Some((row, col)) = cursor {
         let origin = (rect.x, rect.y);
         let r = box_rect(&look.geometry, origin, cell, row, col, wide_cursor);
-        let solid = cursor_rect(&look.geometry, content.cursor.shape, origin, cell, row, col, wide_cursor);
+        let mut solid = cursor_rect(&look.geometry, content.cursor.shape, origin, cell, row, col, wide_cursor);
+        // A sliding bar or underline is drawn at its slid place, with its shadow and outline.
+        solid.x += look.offset.0;
+        solid.y += look.offset.1;
         let color = rgba(palette.cursor, look.alpha);
         match content.cursor.shape {
             CursorShape::Beam | CursorShape::Underline => {
@@ -4348,6 +4351,28 @@ mod tests {
         pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true));
         let a = f.rows[0].spans.iter().find(|sp| sp.text.contains('a')).unwrap();
         assert_eq!(a.color, rgb(255, 255, 255));
+    }
+
+    #[test]
+    fn a_sliding_cursor_is_drawn_at_its_offset() {
+        // The real cursor, its shadow and its outline all move with the slide (`CSA:130-155`).
+        for (shape, code) in [(CursorShape::Underline, "4"), (CursorShape::Beam, "6")] {
+            let s = screen(format!("ab\x1b[{code} q\x1b[1;2H").as_bytes());
+            let rest = CursorLook { shadow: true, outline: true, ..CursorLook::shown(true) };
+            let slid = CursorLook { offset: (-6.0, 1.5), ..rest.clone() };
+            let solid = crate::cursor_look::cursor_rect(&rest.geometry, shape, (0.0, 0.0), CELL, 0, 1, false);
+            let (mut a, mut b) = (Frame::default(), Frame::default());
+            pane(&mut a, &s, RECT, CELL, true, &rest);
+            pane(&mut b, &s, RECT, CELL, true, &slid);
+            let color = rgba(s.palette.cursor, 1.0);
+            let at = |f: &Frame| f.overlay.iter().find(|q| q.color == color).map(|q| q.rect);
+            assert_eq!(at(&a), Some(solid));
+            assert_eq!(at(&b), Some(Rect { x: solid.x - 6.0, y: solid.y + 1.5, ..solid }));
+            assert_eq!(a.overlay.len(), b.overlay.len());
+            for (qa, qb) in a.overlay.iter().zip(&b.overlay) {
+                assert_eq!((qb.rect.x, qb.rect.y), (qa.rect.x - 6.0, qa.rect.y + 1.5), "{:?} vs {:?}", qa, qb);
+            }
+        }
     }
 
     #[test]

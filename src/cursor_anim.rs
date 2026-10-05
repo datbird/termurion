@@ -177,9 +177,54 @@ impl Fade {
     }
 }
 
-/// A slide of the cursor between two cells (Task 7).
-#[derive(Clone, Debug, Default)]
-pub struct Slide {}
+/// `1 - (1 - t)^2`, the slide's easing (`iTermCursorSlideAnimator.m:258-260`).
+pub fn ease_out(t: f64) -> f64 {
+    1.0 - (1.0 - t) * (1.0 - t)
+}
+
+/// Whether a cursor moving from `from` to `to` slides (`PTYTextView.m:1555-1565`): the rows
+/// match within one pixel and the horizontal distance is more than 0 and at most
+/// `max_cells` cells plus half a cell (the source takes the absolute distance).
+pub fn should_slide(from: Rect, to: Rect, cell_w: f32, max_cells: i64) -> bool {
+    if (from.y - to.y).abs() > 1.0 {
+        return false;
+    }
+    let dx = (to.x - from.x).abs();
+    dx > 0.0 && dx <= cell_w * (max_cells as f32 + 0.5)
+}
+
+/// A slide of the cursor between two pixel rects (`iTermCursorSlideAnimator`, Metal path).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Slide {
+    pub from: Rect,
+    pub to: Rect,
+    pub start: Instant,
+}
+
+impl Slide {
+    /// How far the drawn cursor is from the end rect at `now`: None once `duration` has
+    /// passed (or when it is not positive).
+    pub fn offset(&self, now: Instant, duration: Duration) -> Option<(f32, f32)> {
+        let p = now.saturating_duration_since(self.start).as_secs_f64() / duration.as_secs_f64();
+        if !(p < 1.0) {
+            return None;
+        }
+        let left = 1.0 - ease_out(p.max(0.0)) as f32;
+        Some(((self.from.x - self.to.x) * left, (self.from.y - self.to.y) * left))
+    }
+}
+
+/// What a cursor's pixel rect depends on besides the cell it sits in. When any of it changes
+/// the cursor snaps instead of sliding from a stale rect (a zoom, a DPI change, a resize or
+/// move of the pane, a scroll).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Metrics {
+    pub cell: (f32, f32),
+    pub base: (f32, f32),
+    pub scale: f32,
+    pub pane: Rect,
+    pub scrolled: usize,
+}
 
 /// A smear of the cursor between two positions (Task 8).
 #[derive(Clone, Debug, Default)]
@@ -194,6 +239,8 @@ pub struct Motion {
     pub last_rect: Option<Rect>,
     pub slide: Option<Slide>,
     pub smear: Option<Smear>,
+    /// What `last_rect` was measured with.
+    pub metrics: Option<Metrics>,
 }
 
 impl Motion {
@@ -207,6 +254,39 @@ impl Motion {
         self.cell = Some(c);
         self.moved = Some(now);
         true
+    }
+
+    /// Notes the metrics a frame's rects are measured with. When they differ from the last
+    /// frame's, the remembered rect and any slide or smear are dropped; returns whether it did.
+    pub fn metrics_changed(&mut self, m: Metrics) -> bool {
+        let changed = self.metrics.is_some_and(|old| old != m);
+        if changed {
+            self.last_rect = None;
+            self.slide = None;
+            self.smear = None;
+        }
+        self.metrics = Some(m);
+        changed
+    }
+
+    /// Notes the cursor's pixel rect for a frame and answers the (from, to) pair of a move
+    /// that slides (`PTYTextView.m:1590-1644`): both rects fully inside `visible`, different,
+    /// a previous rect known, sliding allowed and `should_slide`. `last_rect` always becomes
+    /// `rect`.
+    pub fn moved_to(&mut self, rect: Rect, visible: Rect, slide_ok: bool, max_cells: i64, cell_w: f32, _now: Instant) -> Option<(Rect, Rect)> {
+        let inside = |r: Rect| r.x >= visible.x && r.y >= visible.y && r.x + r.w <= visible.x + visible.w && r.y + r.h <= visible.y + visible.h;
+        let prev = self.last_rect.replace(rect)?;
+        (slide_ok && prev != rect && inside(prev) && inside(rect) && should_slide(prev, rect, cell_w, max_cells)).then_some((prev, rect))
+    }
+
+    /// Starts a slide. One still running hands over where it is drawn now as the start
+    /// (`currentAnimatedPositionFrom:`).
+    pub fn begin_slide(&mut self, from: Rect, to: Rect, now: Instant, duration: Duration) {
+        let from = match self.slide.as_ref().and_then(|s| s.offset(now, duration).map(|o| (s, o))) {
+            Some((s, (dx, dy))) => Rect { x: s.to.x + dx, y: s.to.y + dy, ..s.to },
+            None => from,
+        };
+        self.slide = Some(Slide { from, to, start: now });
     }
 
     /// How long the cursor has been where it is (`Duration::MAX` when it never moved).
@@ -264,6 +344,117 @@ mod tests {
         assert!(m.note(Some((5, 4)), t0 + ms(500)));
         assert!(!m.note(Some((5, 4)), t0 + ms(900)));
         assert_eq!(m.since_moved(t0 + ms(900)), ms(400));
+    }
+
+    fn r(x: f32, y: f32) -> Rect {
+        Rect { x, y, w: 1.0, h: 20.0 }
+    }
+
+    #[test]
+    fn slide_rule_follows_iterm2() {
+        let from = Rect { x: 20.0, y: 26.0, w: 1.0, h: 20.0 };
+        assert!(should_slide(from, Rect { x: 30.0, ..from }, 10.0, 1));
+        assert!(!should_slide(from, Rect { x: 40.0, ..from }, 10.0, 1), "20 is past 15");
+        assert!(should_slide(from, Rect { x: 40.0, ..from }, 10.0, 2));
+        assert!(should_slide(from, Rect { x: 30.0, y: 27.0, ..from }, 10.0, 1), "within 1 pixel");
+        assert!(!should_slide(from, Rect { x: 30.0, y: 50.0, ..from }, 10.0, 1));
+        assert!(!should_slide(from, Rect { x: 30.0, y: 27.5, ..from }, 10.0, 1));
+        assert!(!should_slide(from, from, 10.0, 1), "no move");
+        // iTerm2 takes the absolute distance (`PTYTextView.m:1561`): a step left slides too.
+        assert!(should_slide(from, Rect { x: 10.0, ..from }, 10.0, 1));
+        assert!(!should_slide(from, Rect { x: 0.0, ..from }, 10.0, 1));
+    }
+
+    #[test]
+    fn slide_offset_follows_iterm2() {
+        let t0 = Instant::now();
+        let s = Slide { from: r(20.0, 26.0), to: r(30.0, 26.0), start: t0 };
+        let d = ms(50);
+        assert_eq!(s.offset(t0, d), Some((-10.0, 0.0)));
+        assert_eq!(s.offset(t0 + ms(25), d), Some((-2.5, 0.0)));
+        assert_eq!(s.offset(t0 + ms(50), d), None);
+        assert_eq!(s.offset(t0 + ms(80), d), None);
+        assert_eq!(s.offset(t0, Duration::ZERO), None, "a zero duration never slides");
+        assert_eq!(ease_out(0.0), 0.0);
+        assert_eq!(ease_out(0.5), 0.75);
+        assert_eq!(ease_out(1.0), 1.0);
+        // A step left, one pixel off the row.
+        let s = Slide { from: r(30.0, 27.0), to: r(20.0, 26.0), start: t0 };
+        assert_eq!(s.offset(t0, d), Some((10.0, 1.0)));
+    }
+
+    #[test]
+    fn motion_starts_a_slide() {
+        let t0 = Instant::now();
+        let visible = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        let mut m = Motion::default();
+        let a = r(20.0, 26.0);
+        let b = r(30.0, 26.0);
+        assert_eq!(m.moved_to(a, visible, true, 1, 10.0, t0), None, "the first rect has no previous one");
+        assert_eq!(m.last_rect, Some(a));
+        assert_eq!(m.moved_to(b, visible, true, 1, 10.0, t0), Some((a, b)));
+        assert_eq!(m.last_rect, Some(b));
+        // The same rect is no move.
+        assert_eq!(m.moved_to(b, visible, true, 1, 10.0, t0), None);
+        // A setting or cursor type that does not slide answers None and still records the rect.
+        assert_eq!(m.moved_to(a, visible, false, 1, 10.0, t0), None);
+        assert_eq!(m.last_rect, Some(a));
+        // A jump past the maximum does not slide.
+        assert_eq!(m.moved_to(r(60.0, 26.0), visible, true, 1, 10.0, t0), None);
+        // A rect partly outside the visible area answers None and becomes last_rect, and the
+        // move back in is not a slide either.
+        let out = r(95.0, 26.0);
+        let out = Rect { w: 10.0, ..out };
+        assert_eq!(m.moved_to(r(90.0, 26.0), visible, true, 1, 10.0, t0), None);
+        assert_eq!(m.moved_to(out, visible, true, 1, 10.0, t0), None);
+        assert_eq!(m.last_rect, Some(out));
+        assert_eq!(m.moved_to(r(90.0, 26.0), visible, true, 1, 10.0, t0), None);
+    }
+
+    #[test]
+    fn a_new_slide_continues_from_the_drawn_position() {
+        let t0 = Instant::now();
+        let d = ms(50);
+        let mut m = Motion::default();
+        m.begin_slide(r(20.0, 26.0), r(30.0, 26.0), t0, d);
+        assert_eq!(m.slide.as_ref().unwrap().offset(t0, d), Some((-10.0, 0.0)));
+        // Halfway (drawn at 27.5), the cursor moves on to 40: the new slide starts there.
+        m.begin_slide(r(30.0, 26.0), r(40.0, 26.0), t0 + ms(25), d);
+        let s = m.slide.clone().unwrap();
+        assert_eq!(s.from, r(27.5, 26.0));
+        assert_eq!(s.to, r(40.0, 26.0));
+        assert_eq!(s.start, t0 + ms(25));
+        // A finished slide does not carry over.
+        m.begin_slide(r(40.0, 26.0), r(50.0, 26.0), t0 + ms(200), d);
+        assert_eq!(m.slide.unwrap().from, r(40.0, 26.0));
+    }
+
+    #[test]
+    fn a_change_of_metrics_snaps() {
+        let t0 = Instant::now();
+        let d = ms(50);
+        let mut m = Motion::default();
+        let k = Metrics { cell: (10.0, 20.0), base: (10.0, 17.0), scale: 1.0, pane: r(0.0, 0.0), scrolled: 0 };
+        assert!(!m.metrics_changed(k), "the first frame has nothing to snap from");
+        m.last_rect = Some(r(20.0, 26.0));
+        m.begin_slide(r(20.0, 26.0), r(30.0, 26.0), t0, d);
+        assert!(!m.metrics_changed(k));
+        assert!(m.slide.is_some());
+        // A zoom, a DPI change, a resize or move of the pane, and a scroll each clear both.
+        for k2 in [
+            Metrics { cell: (12.0, 24.0), ..k },
+            Metrics { base: (12.0, 20.0), ..k },
+            Metrics { scale: 1.5, ..k },
+            Metrics { pane: Rect { x: 5.0, ..k.pane }, ..k },
+            Metrics { pane: Rect { w: 9.0, ..k.pane }, ..k },
+            Metrics { scrolled: 3, ..k },
+        ] {
+            m.metrics_changed(k);
+            m.last_rect = Some(r(20.0, 26.0));
+            m.begin_slide(r(20.0, 26.0), r(30.0, 26.0), t0, d);
+            assert!(m.metrics_changed(k2), "{k2:?}");
+            assert_eq!((m.last_rect, m.slide.is_some()), (None, false));
+        }
     }
 
     fn times() -> FadeTimes {

@@ -2,7 +2,7 @@
 //! clocks behind it.
 
 use super::*;
-use crate::cursor_anim;
+use crate::cursor_anim::{self, Metrics};
 use crate::cursor_look::{CursorLook, Geometry};
 use alacritty_terminal::grid::Dimensions;
 
@@ -26,7 +26,9 @@ impl App {
         let boost = profile.map_or(0.0, |p| p.float_for("Cursor Boost", dark).clamp(0.0, 0.8) as f32);
         let shadow = profile.is_some_and(|p| p.bool("Cursor Shadow"));
         let outline = self.globals.bool("DrawOutlineAroundCursor");
+        let offset = self.panes.get(&pane).and_then(|p| p.motion.slide.as_ref()).and_then(|s| s.offset(Instant::now(), self.slide_duration())).unwrap_or((0.0, 0.0));
         CursorLook {
+            offset,
             boost,
             shadow,
             outline,
@@ -57,11 +59,55 @@ impl App {
     /// flip, or None when nothing blinks (the loop then sleeps).
     pub(super) fn tick_cursor(&mut self) -> Option<Instant> {
         let now = Instant::now();
+        let slide = self.tick_slides(now);
+        let blink = self.tick_blink(now);
+        self.cursor_due = [slide, blink].into_iter().flatten().min();
+        self.cursor_due
+    }
+
+    /// `CursorSlideAnimationDuration` as a Duration (default 0.05 s).
+    fn slide_duration(&self) -> Duration {
+        Duration::try_from_secs_f64(self.globals.number("CursorSlideAnimationDuration").unwrap_or(0.05)).unwrap_or(Duration::ZERO)
+    }
+
+    /// Keeps frames coming while a slide runs: a frame each `FAST_GAP`, and a last one at rest
+    /// when it ends. Returns the next frame's time, None when no slide runs.
+    fn tick_slides(&mut self, now: Instant) -> Option<Instant> {
+        let duration = self.slide_duration();
+        let ids: Vec<PaneId> = self.tabs.get(self.active).map(|t| self.visible(t).into_iter().map(|(id, _)| id).collect()).unwrap_or_default();
+        let mut running = false;
+        let mut ended = false;
+        for id in ids {
+            let Some(m) = self.panes.get_mut(&id).map(|p| &mut p.motion) else { continue };
+            let Some(s) = m.slide.as_ref() else { continue };
+            if s.offset(now, duration).is_some() {
+                running = true;
+            } else {
+                m.slide = None;
+                ended = true;
+            }
+        }
+        if ended {
+            self.redraw();
+        }
+        if !running {
+            self.slide_frame = None;
+            return None;
+        }
+        let due = self.slide_frame.unwrap_or(now);
+        if now >= due {
+            self.redraw();
+            self.slide_frame = Some(now + crate::cadence::FAST_GAP);
+        }
+        self.slide_frame
+    }
+
+    /// The blink clocks: the smooth blink's, else the on/off blink's.
+    fn tick_blink(&mut self, now: Instant) -> Option<Instant> {
         if let Some(due) = self.tick_smooth_blink(now) {
-            self.cursor_due = due;
             return due;
         }
-        self.cursor_due = if self.blink_clock_needed() {
+        if self.blink_clock_needed() {
             let half = cursor_anim::half_period(self.globals.number("TimeBetweenBlinks").unwrap_or(0.5));
             let (changed, next) = self.blink.tick(now, half);
             if changed {
@@ -76,8 +122,7 @@ impl App {
             }
             self.blink.flipped = now;
             None
-        };
-        self.cursor_due
+        }
     }
 
     /// The smooth blink (`iTermCursorBlinkFadeAnimator`): None when the focused pane's profile
@@ -123,22 +168,46 @@ impl App {
     /// frame's pane loop borrows the tab (the loop only reads `Motion`).
     pub(super) fn prepare_cursors(&mut self) {
         let Some(tab) = self.tabs.get(self.active) else { return };
-        let panes: Vec<PaneId> = self.visible(tab).into_iter().map(|(id, _)| id).collect();
+        let panes: Vec<(PaneId, Rect)> = self.visible(tab).into_iter().map(|(id, rect)| (id, self.inner(rect))).collect();
         let now = Instant::now();
-        for id in panes {
-            self.note_cursor_moves(id, now);
+        for (id, inner) in panes {
+            self.note_cursor_moves(id, inner, now);
         }
     }
 
     /// Notes `pane`'s cursor for a frame. iTerm2 compares the screen-relative grid point
     /// (`PTYTextView.m:2098`, `iTermTextDrawingHelper.m:3896`), so scrolling output under a
-    /// cursor on the last row is no move; a hidden cursor leaves the stored cell alone.
-    fn note_cursor_moves(&mut self, pane: PaneId, now: Instant) {
+    /// cursor on the last row is no move; a hidden cursor leaves the stored cell alone. Then it
+    /// starts a slide for a move of the pixel rect that qualifies (`PTYTextView.m:1590-1644`).
+    fn note_cursor_moves(&mut self, pane: PaneId, inner: Rect, now: Instant) {
+        let (cell, base, scale) = (self.cell(), self.base_cell(), self.scale());
+        let focused = self.focused && self.tabs.get(self.active).is_some_and(|t| t.focused == pane);
+        let geometry = Geometry::from_globals(&self.globals, scale, base);
+        let duration = self.slide_duration();
+        let max_cells = self.globals.int("CursorSlideAnimationMaxCells");
+        let slide_on = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).is_some_and(|p| p.bool("Cursor Smooth Slide"));
+        let hide_unfocused = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).is_some_and(|p| p.bool("Cursor Hidden When Unfocused"));
+        // A cursor that just moved is solid (the blink restarts), so only a hidden one is not drawn.
+        let drawn = !(hide_unfocused && !focused);
         let Some(p) = self.panes.get_mut(&pane) else { return };
-        let cell = scene::cursor_cell(&p.screen).map(|_| {
-            let point = p.screen.term().grid().cursor.point;
-            (i64::from(point.line.0), point.column.0)
-        });
-        p.motion.note(cell, now);
+        let key_cursor = focused && p.at_password_prompt();
+        let content = p.screen.term().renderable_content();
+        let shape = content.cursor.shape;
+        let scrolled = content.display_offset;
+        let screen_cell = scene::cursor_cell(&p.screen);
+        let point = p.screen.term().grid().cursor.point;
+        let hidden_cell = screen_cell.map(|_| (i64::from(point.line.0), point.column.0));
+        p.motion.note(hidden_cell, now);
+        p.motion.metrics_changed(Metrics { cell, base, scale, pane: inner, scrolled });
+        let Some((row, col, wide)) = screen_cell else {
+            p.motion.last_rect = None;
+            return;
+        };
+        let rect = crate::cursor_look::cursor_rect(&geometry, shape, (inner.x, inner.y), cell, row, col, wide);
+        let solid_line = matches!(shape, alacritty_terminal::vte::ansi::CursorShape::Underline | alacritty_terminal::vte::ansi::CursorShape::Beam);
+        let slide_ok = slide_on && solid_line && drawn && !key_cursor;
+        if let Some((from, to)) = p.motion.moved_to(rect, inner, slide_ok, max_cells, cell.0, now) {
+            p.motion.begin_slide(from, to, now, duration);
+        }
     }
 }
