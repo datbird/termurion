@@ -545,6 +545,9 @@ pub enum Refusal {
     BatchUnsafe,
     /// The program is not on the PATH (P14): never started "as written".
     Unresolved,
+    /// The program hands its arguments to a shell, a console host or another program
+    /// (`FORWARDERS`): never a URL handler.
+    Forwarder,
 }
 
 impl Refusal {
@@ -555,6 +558,7 @@ impl Refusal {
             Refusal::ControlCharacter => "Tandem did not pass this URL to the URL handler command: it contains a control character.",
             Refusal::BatchUnsafe => "Tandem did not pass this URL to the URL handler command: a batch file or cmd.exe would read its special characters.",
             Refusal::Unresolved => HANDLER_FAILED,
+            Refusal::Forwarder => "Tandem did not run the URL handler command: its program hands its arguments to a shell or another program, so it cannot be a URL handler.",
         }
     }
 }
@@ -663,6 +667,16 @@ fn interpreter(program: &Path) -> bool {
     matches!(stem.as_str(), "powershell" | "pwsh" | "wscript" | "cscript" | "mshta" | "wsl" | "bash")
 }
 
+/// Programs that hand their arguments on to a shell, a console host or another program
+/// (forwarders, other shells, Windows' signed launchers, cmd.exe itself): never a URL handler,
+/// whatever the URL, matched by the resolved file name's stem (any folder, any extension).
+const FORWARDERS: &[&str] = &["conhost", "forfiles", "wt", "sh", "zsh", "rundll32", "regsvr32", "msiexec", "certutil", "cmd"];
+
+fn forwarder(program: &Path) -> bool {
+    let stem = program.file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    FORWARDERS.contains(&stem.as_str())
+}
+
 /// Whether `url` holds a character the program would read as syntax: `% ^ & | < > "` and any
 /// control character for a batch file or cmd.exe, and for the interpreters also semicolon, dollar, quotes, backtick, parentheses, braces and `!`.
 fn reparsed(program: &Path, url: &str) -> bool {
@@ -686,6 +700,9 @@ pub fn handler_plan(evaluated: &str, url: &str, resolve: &dyn Fn(&str) -> Option
         return Err(Refusal::UrlInProgram);
     }
     let program = resolve(first).ok_or(Refusal::Unresolved)?;
+    if forwarder(&program) {
+        return Err(Refusal::Forwarder);
+    }
     let mut held = false;
     let mut args: Vec<String> = rest
         .iter()
@@ -1140,6 +1157,29 @@ mod tests {
         }
     }
 
+    /// Programs that pass their arguments on to a shell, a console host or another program are
+    /// never URL handlers, whatever the URL, by resolved file name (any folder, any extension).
+    #[test]
+    fn handler_forwarders_are_refused() {
+        for program in [
+            r"C:\Windows\System32\conhost.exe",
+            r"C:\Windows\System32\forfiles.exe",
+            r"C:\Users\u\AppData\Local\Microsoft\WindowsApps\WT.EXE",
+            r"C:\Program Files\Git\usr\bin\sh.exe",
+            r"C:\msys64\usr\bin\zsh.exe",
+            r"C:\Windows\System32\rundll32.exe",
+            r"C:\Windows\SysWOW64\regsvr32.exe",
+            r"C:\Windows\System32\msiexec.exe",
+            r"C:\Windows\System32\certutil.exe",
+            r"C:\Windows\System32\cmd.exe",
+            r"C:\tools\Cmd.com",
+        ] {
+            assert_eq!(handler_plan(&format!(r#""{program}" {URL_TOKEN}"#), "https://a/b", &fake_resolve), Err(Refusal::Forwarder), "{program}");
+        }
+        assert_eq!(handler_plan(&format!("cmd.exe /c start \"\" {URL_TOKEN}"), "https://a/b", &fake_resolve), Err(Refusal::Forwarder));
+        assert_eq!(handler_plan(&format!(r#""C:\t\shell.exe" {URL_TOKEN}"#), "https://a/b", &fake_resolve), spawn_of(r"C:\t\shell.exe", &["https://a/b"]), "a stem is matched whole");
+    }
+
     #[test]
     fn phase_order_follows_iterm2() {
         use Phase::*;
@@ -1586,7 +1626,7 @@ mod tests {
             assert_eq!(plan(&format!("h.cmd {URL_TOKEN}"), u), Err(Refusal::BatchUnsafe), "{u}");
         }
         assert_eq!(plan(&format!("h.cmd {URL_TOKEN}"), "https://a/b"), spawn_of(r"C:\t\h.cmd", &["https://a/b"]));
-        assert_eq!(plan(&format!("cmd.exe /c start \"\" {URL_TOKEN}"), evil), Err(Refusal::BatchUnsafe));
+        assert_eq!(plan(&format!("cmd.exe /c start \"\" {URL_TOKEN}"), evil), Err(Refusal::Forwarder));
         // P13: an interpreter that re-parses its arguments gets the same refusal.
         assert_eq!(plan(&format!("pwsh -Command Start-Process {URL_TOKEN}"), "https://x/?a=1;calc"), Err(Refusal::BatchUnsafe));
         assert_eq!(plan(&format!("{URL_TOKEN} x"), "https://a/"), Err(Refusal::UrlInProgram));

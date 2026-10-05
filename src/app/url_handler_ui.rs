@@ -216,14 +216,12 @@ mod tests {
         let (r, calls) = run(r"h.cmd \(url)", evil, false, &none);
         assert!(calls.is_empty());
         assert_eq!(r, Err(semantic::Refusal::BatchUnsafe.text().to_string()));
-        // cmd.exe itself gets the batch rule.
-        let (r, calls) = run(r#"cmd.exe /c start "" \(url)"#, evil, false, &none);
-        assert!(calls.is_empty());
-        assert_eq!(r, Err(semantic::Refusal::BatchUnsafe.text().to_string()));
-        // ...and a plain URL goes through it as one argument.
-        let (r, calls) = run(r#"cmd.exe /c start "" \(url)"#, "https://a/b", false, &none);
-        assert_eq!(r, Ok(()));
-        assert_eq!(calls[0].1, vec!["/c", "start", "", "https://a/b"]);
+        // cmd.exe itself is never a handler, whatever the URL.
+        for url in [evil, "https://a/b"] {
+            let (r, calls) = run(r#"cmd.exe /c start "" \(url)"#, url, false, &none);
+            assert!(calls.is_empty());
+            assert_eq!(r, Err(semantic::Refusal::Forwarder.text().to_string()));
+        }
     }
 
     #[test]
