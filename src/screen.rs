@@ -217,6 +217,10 @@ pub const ANSWERBACK_MAX: usize = 256;
 
 pub struct Screen {
     pub(crate) term: Term<Listener>,
+    /// What the live selection is beyond alacritty's own: its mode, column window and anchor.
+    /// It travels with the screen (a Zoom or Filter view swaps both), so a view never reads
+    /// another screen's window.
+    pub sel: crate::seltext::State,
     parser: Processor,
     events: Receiver<Event>,
     pub palette: Palette,
@@ -580,6 +584,7 @@ impl Screen {
         term.width_rule = Some(width_rule(&look, &crate::emu::Rules::default(), 0));
         Self {
             term,
+            sel: Default::default(),
             blink_allowed: look.blink_allowed,
             bidi_rules: crate::bidi::Rules::default(),
             bidi_cache: Default::default(),
@@ -918,6 +923,22 @@ impl Screen {
     pub fn term_mut(&mut self) -> &mut Term<Listener> {
         self.bump_ticks();
         &mut self.term
+    }
+
+    /// Replaces the live selection (None clears it) made in `mode`. The column window and the
+    /// word or line a drag snaps around start over.
+    pub fn set_selection(&mut self, sel: Option<alacritty_terminal::selection::Selection>, mode: crate::seltext::Mode) {
+        self.sel = crate::seltext::State { live_mode: mode, ..Default::default() };
+        self.term_mut().selection = sel;
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.set_selection(None, crate::seltext::Mode::Character);
+    }
+
+    /// Reshapes the live selection a drag is extending, keeping its mode, window and anchor.
+    pub fn reshape_selection(&mut self, sel: alacritty_terminal::selection::Selection) {
+        self.term_mut().selection = Some(sel);
     }
 
     /// Instant Replay's frame (`TV:2876-2917`, `S:683-699`): None when nothing changed since

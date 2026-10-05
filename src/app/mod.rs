@@ -95,6 +95,7 @@ mod archive_ui;
 mod logout_ui;
 mod session_ui;
 mod seltools_ui;
+mod selection_ui;
 mod view_ui;
 mod marks_ui;
 mod offscreen_ui;
@@ -4474,7 +4475,7 @@ impl App {
     fn cell_at(&self, id: PaneId, rect: Rect, x: f32, y: f32) -> (u32, u32, Side) {
         let inner = self.text_rect(id, rect);
         let term = self.panes[&id].screen.term();
-        let (col, row, side) = fonts_ui::pointer_cell(self.pane_cell(id), (inner.x, inner.y), x, y, term.columns() as u32, term.screen_lines() as u32);
+        let (col, row, side) = fonts_ui::pointer_cell(self.pane_cell(id), (inner.x, inner.y), x, y, term.columns() as u32, term.screen_lines() as u32, self.neighbor_fraction());
         // A right-to-left row: the pointer's visual cell is a different logical cell, and its
         // halves turn over (the left half of the cell is the character's end). Mouse reports
         // do not use this column: iTerm2 reports the visual one (`report_cell`).
@@ -4499,7 +4500,7 @@ impl App {
     fn visual_pos(&self, id: PaneId, rect: Rect, x: f32, y: f32) -> (i32, usize, bool) {
         let (col, row) = self.report_cell(id, rect, x, y);
         let (cw, _) = self.pane_cell(id);
-        let right = (x - self.text_rect(id, rect).x) - col as f32 * cw > cw / 2.0;
+        let right = crate::seltext::side_for(((x - self.text_rect(id, rect).x) - col as f32 * cw) / cw, self.neighbor_fraction()) == Side::Right;
         let offset = self.panes[&id].screen.term().grid().display_offset() as i32;
         (row as i32 - offset, col as usize, right)
     }
@@ -5041,18 +5042,20 @@ impl App {
                 // A character drag on a bidi row is visual: remember where it began on screen.
                 let anchor = (!smart && pick == input::Pick::Type(input::SelectionType::Simple)).then(|| self.visual_pos(id, rect, x, y));
                 if !smart {
-                    let ty = match pick {
-                        input::Pick::Type(t) => t,
-                        input::Pick::Smart => input::SelectionType::Semantic,
-                    };
-                    let mut sel = Selection::new(ty, point, side);
-                    if let Some(a) = anchor {
-                        sel.set_visual_anchor(a);
+                    match pick {
+                        input::Pick::Smart | input::Pick::Word => self.select_word_at(id, point),
+                        input::Pick::Line => self.select_line_at(id, point),
+                        input::Pick::Type(ty) => {
+                            let mut sel = Selection::new(ty, point, side);
+                            if let Some(a) = anchor {
+                                sel.set_visual_anchor(a);
+                            }
+                            let mode = if ty == input::SelectionType::Block { crate::seltext::Mode::Box } else { crate::seltext::Mode::Character };
+                            self.panes.get_mut(&id).unwrap().set_selection(Some(sel), mode);
+                        }
                     }
-                    self.panes.get_mut(&id).unwrap().screen.term_mut().selection = Some(sel);
-                }
-                if smart || pick == input::Pick::Type(input::SelectionType::Semantic) {
-                    self.clip_selection_to_dividers(id, point);
+                } else {
+                    self.smart_window(id, point);
                 }
                 let alt_only = mods.alt && !mods.shift && !mods.ctrl && !mods.cmd;
                 let follow = mouse::press_follow_up(self.first_mouse_down, smart, count, alt_only);
@@ -5142,7 +5145,7 @@ impl App {
                 let empty = self.panes.get(&pane).and_then(|p| p.screen.selection_text()).map_or(true, |s| s.is_empty());
                 if empty {
                     if let Some(p) = self.panes.get_mut(&pane) {
-                        p.screen.term_mut().selection = None;
+                        p.clear_selection();
                     }
                     if let Some((p, cell)) = alt_click.filter(|(p, _)| *p == pane) {
                         self.alt_click_moves_cursor(p, cell);
@@ -5242,9 +5245,7 @@ impl App {
                 let (col, row, side) = self.cell_at(pane, rect, x, y);
                 let point = self.grid_point(pane, col, row);
                 let end = visual.then(|| self.visual_pos(pane, rect, x, y));
-                if let Some(sel) = self.panes.get_mut(&pane).and_then(|p| p.screen.term_mut().selection.as_mut()) {
-                    sel.update(point, side);
-                }
+                self.extend_live_to(pane, point, side);
                 // On a bidi row the drag is the cells swept on screen (iTerm2's live visual range).
                 if let Some(b) = end {
                     if let Some(p) = self.panes.get_mut(&pane) {

@@ -54,6 +54,8 @@ pub mod tab_menu;
 pub mod tab_position;
 pub mod status_tool;
 pub mod seltools;
+pub mod seltext;
+pub mod wordsel;
 pub mod copymode;
 pub mod fold;
 pub mod annotations;

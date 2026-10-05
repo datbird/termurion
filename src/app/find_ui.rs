@@ -231,10 +231,15 @@ fn view_bottom(screen: &crate::screen::Screen) -> Pos {
 
 /// Selects `m` and scrolls it into the middle of the view when it is off screen.
 pub(super) fn reveal(pane: &mut crate::pane::Pane, m: &Match) {
+    reveal_as(pane, m, crate::seltext::Mode::Character);
+}
+
+/// `reveal`, the selection made in `mode`.
+pub(super) fn reveal_as(pane: &mut crate::pane::Pane, m: &Match, mode: crate::seltext::Mode) {
     let (a, b) = (to_point(&pane.screen, m.start), to_point(&pane.screen, m.end));
     let mut sel = Selection::new(SelectionType::Simple, a, Side::Left);
     sel.update(b, Side::Right);
-    pane.screen.term_mut().selection = Some(sel);
+    pane.set_selection(Some(sel), mode);
     show_line(pane, a.line.0);
 }
 

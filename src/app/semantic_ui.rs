@@ -4,7 +4,7 @@
 use alacritty_terminal::index::Point;
 
 use super::*;
-use super::find_ui::{reveal, to_pos};
+use super::find_ui::{reveal_as, to_pos};
 use crate::find::{self, Logical, Match};
 use crate::semantic::{self, Around, ClickContext, Prefs, Run, Target};
 use crate::smartsel::{self, Escape};
@@ -25,7 +25,7 @@ impl App {
         let click = joined.offset_of(at)?;
         let found = smartsel::select_at(&joined.text, click, &rules)?;
         let m = Match { start: joined.pos_before(found.range.start), end: joined.pos_before(found.range.end - 1) };
-        reveal(p, &m);
+        reveal_as(p, &m, crate::seltext::Mode::Smart);
         Some(found)
     }
 

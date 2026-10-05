@@ -1,7 +1,7 @@
 //! The selection tools in the window: Replace Selection, Clear to Start of Selection,
 //! Selection Respects Soft Boundaries, and the selection endpoint moves.
 
-use alacritty_terminal::index::{Line, Point};
+use alacritty_terminal::index::Point;
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 
@@ -102,7 +102,7 @@ impl App {
         }
     }
 
-    fn selection_pos(&self, id: PaneId) -> Option<(Pos, Pos)> {
+    pub(super) fn selection_pos(&self, id: PaneId) -> Option<(Pos, Pos)> {
         let p = self.panes.get(&id)?;
         let term = p.screen.term();
         let r = term.selection.as_ref()?.to_range(term)?;
@@ -113,7 +113,7 @@ impl App {
         let Some(p) = self.panes.get_mut(&id) else { return };
         let mut sel = Selection::new(SelectionType::Simple, to_point(&p.screen, a), Side::Left);
         sel.update(to_point(&p.screen, b), Side::Right);
-        p.screen.term_mut().selection = Some(sel);
+        p.set_selection(Some(sel), crate::seltext::Mode::Character);
     }
 
     /// The selection tools' menu commands. Returns false for other selectors.
@@ -209,29 +209,6 @@ impl App {
         let top = -(p.screen.term().grid().history_size() as i32);
         if first > top {
             p.screen.splice_rows(top, first - 1, Vec::new());
-        }
-    }
-
-    /// With Selection Respects Soft Boundaries on, a one-row selection made by a double
-    /// click or Smart Selection stops at tmux and vim pane dividers.
-    pub(super) fn clip_selection_to_dividers(&mut self, id: PaneId, click: Point) {
-        if !self.globals.bool("Selection Respects Soft Boundaries") {
-            return;
-        }
-        let Some((a, b)) = self.selection_pos(id) else { return };
-        if a.row != b.row {
-            return;
-        }
-        let Some(p) = self.panes.get(&id) else { return };
-        let grid = p.screen.term().grid();
-        let (top, bottom) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
-        let line = to_point(&p.screen, a).line.0;
-        let (from, to) = ((line - seltools::DIVIDER_RUN as i32).max(top), (line + seltools::DIVIDER_RUN as i32).min(bottom));
-        let rows: Vec<Vec<char>> = (from..=to).map(|l| (0..grid.columns()).map(|c| grid[Line(l)][Column(c)].c).collect()).collect();
-        let dividers = seltools::divider_columns(&rows, (line - from) as usize);
-        let (lo, hi) = seltools::clip_to_dividers(a.col, b.col, click.column.0, &dividers);
-        if (lo, hi) != (a.col, b.col) && lo <= hi {
-            self.set_simple_selection(id, Pos { row: a.row, col: lo }, Pos { row: a.row, col: hi });
         }
     }
 

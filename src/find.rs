@@ -116,7 +116,7 @@ pub fn logical_lines(screen: &Screen) -> Vec<Logical> {
     logical_between(screen, -(grid.history_size() as i32), grid.screen_lines() as i32 - 1)
 }
 
-fn wraps(screen: &Screen, line: i32) -> bool {
+pub(crate) fn wraps(screen: &Screen, line: i32) -> bool {
     use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::{Column, Line};
     let grid = screen.term().grid();

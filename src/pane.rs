@@ -2085,6 +2085,16 @@ impl Pane {
         true
     }
 
+    /// Every write to the selection goes through here, so the live mode and the column window
+    /// stay consistent with it.
+    pub fn set_selection(&mut self, sel: Option<alacritty_terminal::selection::Selection>, mode: crate::seltext::Mode) {
+        self.screen.set_selection(sel, mode);
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.screen.clear_selection();
+    }
+
     /// iTerm2's Clear to Last Mark: clears from after the last mark above the prompt, then
     /// clears ConPTY's buffer too (keeping the cursor row), so both agree.
     pub fn clear_to_last_mark(&mut self) {
