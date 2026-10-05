@@ -6,6 +6,10 @@
 
 use super::*;
 use crate::cadence::{self, Prefs, State};
+use crate::power;
+
+/// iTerm2's power polls are slow; Windows' battery saver changes rarely (the m9i rule).
+const POWER_POLL: Duration = Duration::from_secs(1);
 
 /// What a window's decision needs from its front tab's panes.
 struct Reading {
@@ -19,9 +23,42 @@ impl App {
         Prefs::from_globals(&self.globals)
     }
 
-    /// Low Power Mode (Task 3 reads Windows battery saver here); false until then.
+    /// Low Power Mode: Windows battery saver (`power_tick` keeps `power` current).
     fn power_saving(&self) -> bool {
-        false
+        self.power.low_power_mode()
+    }
+
+    /// Samples the power line at most once a second (the m9i rule). A change of low power mode
+    /// re-paces every window: a deferred frame is recomputed on its next output, and a still
+    /// window gets a frame now so nothing waits on the old rate. Returns the next poll.
+    pub(super) fn power_tick(&mut self, now: Instant) -> Option<Instant> {
+        if self.power_due.is_some_and(|t| now < t) {
+            return self.power_due;
+        }
+        self.power_due = Some(now + POWER_POLL);
+        #[cfg(windows)]
+        if let Some(state) = power::sample() {
+            if self.set_power(state) {
+                self.repace_all();
+            }
+        }
+        self.power_due
+    }
+
+    /// Stores a sample; true when low power mode changed.
+    fn set_power(&mut self, state: power::State) -> bool {
+        let changed = self.power.low_power_mode() != state.low_power_mode();
+        self.power = state;
+        changed
+    }
+
+    /// Forgets every window's deferred frame time (computed from the old rate) and draws.
+    fn repace_all(&mut self) {
+        self.pacer = Default::default();
+        for (_, s) in self.windows.parked_mut() {
+            s.pacer = Default::default();
+        }
+        self.redraw();
     }
 
     /// Each pane's cadence state and whether a typed echo is in progress: `changed` are the

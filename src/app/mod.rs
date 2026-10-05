@@ -19,6 +19,7 @@ use winit::window::{Window, WindowId};
 
 use crate::conpty::{self, Api, Source};
 use crate::globals::{self, Globals};
+use crate::power;
 use crate::input::{self, Clicks};
 use crate::keyroute::{self, Route};
 use crate::keys::{self, Action, AltSide, Key, KeyOptions};
@@ -688,6 +689,10 @@ pub struct App {
     pacer: crate::cadence::Pacer,
     /// The last key press in any window (iTerm2's `_lastKeystrokeTime`, `UC:90-94`).
     last_keystroke: Option<Instant>,
+    /// The power line (13l Task 3): app-wide, sampled by `power_tick` at most once a second.
+    power: crate::power::State,
+    /// When `power_tick` next samples.
+    power_due: Option<Instant>,
     last_status: HashMap<PaneId, Option<String>>,
     /// The bells on sessions (Session Status', the Cockpit's): each armed session and its status
     /// when armed; the next different status shows the alert, then it disarms
@@ -1740,6 +1745,8 @@ pub fn run() {
         ime: Default::default(),
         pacer: Default::default(),
         last_keystroke: None,
+        power: crate::power::State { on_ac: true, battery_saver: false },
+        power_due: None,
         last_status: HashMap::new(),
         status_watches: Default::default(),
         status_popover: None,
@@ -5133,6 +5140,13 @@ impl ApplicationHandler<UserEvent> for App {
         if self.gpu.is_some() {
             return;
         }
+        // Disable App Nap: opt out of EcoQoS once at start (effective after a restart).
+        #[cfg(windows)]
+        if self.globals.bool("DisableAppNap") {
+            if let Err(e) = power::opt_out_of_power_throttling() {
+                eprintln!("power throttling opt-out unavailable: {e}");
+            }
+        }
         if self.snippets.broken {
             self.banners.set("snippets", format!("Could not read the snippets in {}. The file stays as it is until a snippet is added.", snippets_ui::snippets_path().display()));
         }
@@ -5165,7 +5179,8 @@ impl ApplicationHandler<UserEvent> for App {
         };
         // Every terminal window allows the IME (winit leaves it off otherwise).
         window.set_ime_allowed(true);
-        match init_gpu(window, event_loop) {
+        let prefer = power::chosen_preference(self.globals.bool("preferIntegratedGPU"));
+        match init_gpu(window, event_loop, prefer) {
             Ok(gpu) => {
                 let k = windows_ui::key(gpu.window.id());
                 self.last_window = Some(gpu.window.id());
@@ -5470,7 +5485,8 @@ impl ApplicationHandler<UserEvent> for App {
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
         let cursor_due = self.tick_cursor();
         let frame_due = self.frame_wake();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due].into_iter().flatten().min();
+        let power_due = self.power_tick(Instant::now());
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, power_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -5824,12 +5840,29 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
-fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop) -> Result<Gpu, String> {
+/// Lists the adapters once per run (name, backend, device type; P19) and records whether both
+/// kinds of GPU exist for the settings sheet.
+fn log_adapters_once(instance: &wgpu::Instance) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+        for a in &adapters {
+            let i = a.get_info();
+            eprintln!("adapter available: backend={:?} name={} device_type={:?}", i.backend, i.name, i.device_type);
+        }
+        let kinds: Vec<wgpu::DeviceType> = adapters.iter().map(|a| a.get_info().device_type).collect();
+        power::set_both_gpu_kinds(power::both_gpu_kinds(&kinds));
+    });
+}
+
+fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference: wgpu::PowerPreference) -> Result<Gpu, String> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
         event_loop.owned_display_handle(),
     )));
     let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
+    log_adapters_once(&instance);
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference,
         compatible_surface: Some(&surface),
         ..Default::default()
     }))

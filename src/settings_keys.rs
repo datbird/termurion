@@ -1089,7 +1089,14 @@ pub fn sheet_warning(ctx: &egui::Context, g: &mut Globals, w: &mut SheetWarning,
 /// (`GP:2152-2154`), the settings folder only while "Load settings from a custom folder or URL"
 /// is on (`GP:2210-2212`); every other row always.
 pub fn row_enabled(g: &Globals, key: &str) -> bool {
+    row_enabled_with(g, key, crate::power::both_gpu_kinds_known())
+}
+
+/// `row_enabled` with the one fact the settings window cannot read: "Prefer integrated" is live
+/// only when both kinds of GPU exist (`iTermAdvancedGPUSettingsViewController.m:25-34`).
+pub fn row_enabled_with(g: &Globals, key: &str, both_gpu_kinds: bool) -> bool {
     match key {
+        "preferIntegratedGPU" => both_gpu_kinds,
         "API Authentication Method" => g.bool("EnableAPIServer"),
         "CustomScriptsFolder" => g.bool("UseCustomScriptsFolder"),
         crate::remote_prefs::FOLDER_KEY => g.bool(crate::remote_prefs::LOAD_KEY),
@@ -3173,6 +3180,14 @@ mod tests {
     }
 
     /// 13l: General > "GPU Renderer" (`GP:2060-2110`): Maximize throughput and the Advanced GPU sheet's rows.
+    #[test]
+    fn prefer_integrated_row_needs_two_gpus() {
+        let g = Globals::empty(std::path::Path::new("gpu-rows-test.toml"));
+        assert!(!row_enabled_with(&g, "preferIntegratedGPU", false));
+        assert!(row_enabled_with(&g, "preferIntegratedGPU", true));
+        assert!(row_enabled_with(&g, "metalMaximizeThroughput", false));
+    }
+
     #[test]
     fn gpu_rows_follow_iterm2() {
         use crate::schema::Kind;
