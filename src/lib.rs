@@ -143,6 +143,7 @@ pub mod scene;
 pub mod alt_infer;
 pub mod input;
 pub mod keys;
+pub mod stuck_mouse;
 pub mod wheel;
 pub mod keyproto;
 pub mod reports;

@@ -130,8 +130,43 @@ impl App {
 
     /// Every mouse report goes to its pane through here.
     pub(super) fn write_mouse_report(&mut self, pane: PaneId, bytes: &[u8]) {
+        // `PS:14033-14041`: watch for the echo unless detection is off, the question is
+        // silenced, or its bar is already up.
+        let watch = self.globals.bool("AutodetectMouseReportingStuck")
+            && !self.globals.bool("NoSyncNeverAskAboutMouseReportingFrustration")
+            && !self.bars.get(&pane).is_some_and(|b| b.has(super::host_offers_ui::bar_id(super::host_offers_ui::Offer::Mouse)));
+        if let Some(p) = self.panes.get_mut(&pane) {
+            if watch {
+                p.stuck.get_or_insert_with(Default::default).armed(bytes, Instant::now());
+            }
+        }
         if let Some(p) = self.panes.get_mut(&pane) {
             p.input(bytes);
+        }
+    }
+
+    /// A pane whose output echoed a mouse report back: reporting is on for a program that has
+    /// gone (`PS:14102-14120`). The saved answer decides, else 13b's offer asks. Each notice is
+    /// taken here, and the detector is spent per match, so one occurrence asks once.
+    pub(super) fn stuck_tick(&mut self) {
+        use super::host_offers_ui::{Offer, bar_id, offer_buttons, offer_key, offer_text};
+        let seen: Vec<PaneId> = self.panes.iter_mut().filter_map(|(id, p)| std::mem::take(&mut p.stuck_seen).then_some(*id)).collect();
+        if self.globals.bool("NoSyncNeverAskAboutMouseReportingFrustration") {
+            return;
+        }
+        for id in seen {
+            if !self.mouse_allowed(id) || self.modes(id).tracking == mouse::Tracking::Off {
+                continue;
+            }
+            match crate::stuck_mouse::next(self.globals.optional_bool(offer_key(Offer::Mouse))) {
+                crate::stuck_mouse::Next::TurnOff => self.turn_off(id, Offer::Mouse),
+                crate::stuck_mouse::Next::Offer => {
+                    if !self.bars.get(&id).is_some_and(|b| b.has(bar_id(Offer::Mouse))) {
+                        self.ask(id, bar_id(Offer::Mouse), offer_text(Offer::Mouse), offer_buttons(Offer::Mouse), false);
+                    }
+                }
+                crate::stuck_mouse::Next::Nothing => {}
+            }
         }
     }
 
@@ -338,6 +373,23 @@ mod tests {
         let b = body(UI, "route_wheel");
         assert!(b.contains("report_gate("));
         assert!(!b.contains("app_owns_mouse("));
+    }
+
+    /// The stuck-reporting watch is armed in `write_mouse_report` under its two settings and the
+    /// open bar, asks through 13b's host offer (B2, no second bar), and runs after the pump.
+    #[test]
+    fn stuck_detection_is_wired_to_the_host_offer() {
+        let w = body(UI, "write_mouse_report");
+        for needle in ["AutodetectMouseReportingStuck", "NoSyncNeverAskAboutMouseReportingFrustration", "bar_id(", ".armed("] {
+            assert!(w.contains(needle), "{needle}");
+        }
+        let t = body(UI, "stuck_tick");
+        for needle in ["mouse_allowed(", "Tracking::Off", "offer_key(", "offer_text(", "self.turn_off("] {
+            assert!(t.contains(needle), "{needle}");
+        }
+        let second_bar = format!("fn {}_bar", "stuck");
+        assert!(!MOD.contains(&second_bar) && !UI.contains(&second_bar));
+        assert!(body(MOD, "user_event").contains("self.stuck_tick()"));
     }
 
     /// Every mouse report is written through `write_mouse_report` (Task 7 arms the detector there).

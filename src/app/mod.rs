@@ -5451,6 +5451,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
         changed |= self.ssh_pump();
         changed |= self.tmux_pump(event_loop);
+        self.stuck_tick();
         self.api_output(&outputs);
         self.api_session_events();
         self.record_replay_frames();
