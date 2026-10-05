@@ -157,6 +157,11 @@ impl App {
         if let (Some((key, text)), Some(t)) = (saved, v.as_table_mut()) {
             t.insert(key.into(), Value::String(text));
         }
+        // An archived pane comes back archived (13q final fix 4): the next launch never starts
+        // the shell of the profile an archive file embeds; Restart does, under the trust rules.
+        if p.archived {
+            crate::archive::mark_archived(&mut v);
+        }
         if let Some(t) = v.as_table_mut() {
             // PS:1920: every session saves its lock.
             t.insert("Locked".into(), Value::Boolean(p.locked));
@@ -582,6 +587,8 @@ impl App {
             if failed.is_some() {
                 return 0;
             }
+            // A session saved from an archived pane is one too, whatever the window says.
+            let archive = archive || crate::archive::session_archived(&session);
             let choice = arrangement::choose_profile(&session, &profiles);
             // A missing profile restores from the arrangement's own copy, even a broken one
             // (`PS:2019-2025`); only the saved profile is shared.

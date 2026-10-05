@@ -74,6 +74,23 @@ pub fn is_archive(window: &Value) -> bool {
     window.get(ARCHIVE_KEY).is_some_and(|a| a.as_table().is_some())
 }
 
+/// The session key that marks an archived pane in a saved state (13q final fix 4): session
+/// restoration brings it back as an archived pane (its text, no shell), never as a live shell
+/// running the profile the file embeds.
+pub const ARCHIVED_KEY: &str = "Archived";
+
+/// Marks the session table of an archived pane.
+pub fn mark_archived(session: &mut Value) {
+    if let Some(t) = session.as_table_mut() {
+        t.insert(ARCHIVED_KEY.into(), Value::Boolean(true));
+    }
+}
+
+/// Whether a session table is of an archived pane.
+pub fn session_archived(session: &Value) -> bool {
+    session.get(ARCHIVED_KEY).and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
 /// The recent list with `path` appended (`AMB:43-51`: duplicates kept), the oldest dropped
 /// past ten.
 pub fn add_recent(list: &[String], path: &str) -> Vec<String> {
@@ -183,6 +200,15 @@ mod tests {
             }
         }
         assert_eq!(save_name("CON"), "_CON.itermarchive", "a device name as the whole stem");
+    }
+
+    /// A saved state keeps an archived pane archived: the launch builds it with no shell.
+    #[test]
+    fn an_archived_pane_stays_archived_through_a_saved_state() {
+        let mut session = Value::Table(Default::default());
+        assert!(!session_archived(&session), "an ordinary session");
+        mark_archived(&mut session);
+        assert!(session_archived(&session), "the mark is on the session table");
     }
 
     #[test]

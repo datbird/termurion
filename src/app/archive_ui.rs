@@ -329,6 +329,9 @@ mod tests {
         assert!(shared.contains("needs_question("), "several windows of an unmarked file ask first");
         let tab = body(arrange, "    pub(super) fn build_tab(");
         assert!(tab.contains("cap_lines(") && tab.contains("MAX_TEXT_LINES"), "a restored pane's text is capped");
+        // Session restoration keeps an archived pane archived: saved with a mark, built with no shell.
+        assert!(body(arrange, "    fn session_value(").contains("mark_archived(&mut v)"), "the saved state marks it");
+        assert!(tab.contains("let archive = archive || crate::archive::session_archived(&session);"), "the launch builds it with no shell");
     }
 
     #[test]
