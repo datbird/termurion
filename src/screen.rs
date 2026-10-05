@@ -304,7 +304,7 @@ pub struct Screen {
     /// A title report was sent in this batch (one reply per `feed`, like the answerback).
     title_sent: bool,
     decrqcra_sent: u16,
-    /// OSC 72 messages answered in this batch (`DND_ANSWERS_PER_BATCH`).
+    /// OSC 72 messages that produced a reply in this batch (`DND_ANSWERS_PER_BATCH`).
     pub(crate) dnd_answered: u16,
     /// OSC 1337 Block: the blocks this screen knows.
     pub blocks: crate::blocks::Blocks,
@@ -4868,5 +4868,15 @@ mod tests {
         let mut s = Screen::new(10, 3);
         let flood = "\x1b]72;t=q\x1b\\".repeat(1000);
         assert_eq!(s.feed(flood.as_bytes()).len(), 64 * "\x1b]72;t=q\x1b\\".len());
+        // Only replies are counted: a message of 100 chunks in one read still completes, and its
+        // first and last parts are never joined with the middle skipped.
+        let mut s = Screen::new(10, 3);
+        let mut chunks = "\x1b]72;t=a:m=1;a\x1b\\".repeat(100);
+        chunks.push_str("\x1b]72;t=a:m=0;text/uri-list\x1b\\");
+        s.feed(chunks.as_bytes());
+        assert!(s.dnd.accepting(), "the m=0 chunk was not skipped");
+        // And the next batch starts clean: no leaked half message.
+        s.feed(b"\x1b]72;t=A\x1b\\");
+        assert!(!s.dnd.accepting());
     }
 }

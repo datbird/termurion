@@ -211,9 +211,19 @@ impl App {
     pub(super) fn dnd_cancel(&mut self) {
         for p in self.panes.values_mut() {
             if p.own().dnd.hovering() {
-                let replies = p.own_mut().dnd.drag_exited();
+                // A screen that lost trust since is not told anything.
+                let replies = if p.own().dnd_accepting() { p.own_mut().dnd.drag_exited() } else { Vec::new() };
+                p.own_mut().dnd.forget_hover();
                 Self::dnd_send(p, replies);
             }
+        }
+    }
+
+    /// A drop that fell back to the file-name paste ends the drag too: a pane told of it (and
+    /// since untrusted) must not stay hovered, or its next drag would report nothing.
+    pub(super) fn dnd_forget_hover(&mut self) {
+        for p in self.panes.values_mut().filter(|p| p.own().dnd.hovering()) {
+            p.own_mut().dnd.forget_hover();
         }
     }
 

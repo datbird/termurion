@@ -359,13 +359,20 @@ impl Controller {
         vec![self.position("m", cell, px, None)]
     }
 
+    /// The drag is over and the program is not told (its screen lost trust since it was).
+    pub fn forget_hover(&mut self) {
+        self.hovering = false;
+        self.last_move = None;
+    }
+
     pub fn drag_exited(&mut self) -> Vec<String> {
         if !self.accepting {
             return Vec::new();
         }
         self.hovering = false;
         self.last_move = None;
-        vec![self.send(msg(&[("t", "m".into()), ("x", "-1".into()), ("y", "-1".into())], None))]
+        // iTerm2's exit sends all five keys (`KC:1365-1381`): zero pixel and operation.
+        vec![self.send(msg(&[("t", "m".into()), ("X", "0".into()), ("Y", "0".into()), ("o", "0".into()), ("x", "-1".into()), ("y", "-1".into())], None))]
     }
 
     pub fn drop(&mut self, cell: (i64, i64), px: (i64, i64), files: Vec<PathBuf>, backing: Backing) -> Vec<String> {
@@ -402,7 +409,8 @@ impl Controller {
                 }
             })
             .collect();
-        let list: String = uris.iter().map(|u| format!("{u}\r\n")).collect();
+        // Joined with CR LF and nothing after the last (`KC:734`).
+        let list = uris.join("\r\n");
         self.drop = Some(Drop { uris: list.into_bytes(), files: data, read: backing.read, arrived: now, uri_listed: false, served: 0 });
         self.last_move = None;
         vec![self.position("M", cell, px, Some(&[MIME_URI_LIST.to_string()]))]
@@ -423,8 +431,9 @@ impl Controller {
             self.drop = None;
             return Vec::new();
         }
-        // Every key the request addressed is echoed (filtered), so a client can match the answer.
-        let addressing: Vec<(&str, String)> = ["x", "y", "Y"].iter().filter_map(|k| m.metadata.get(*k).map(|v| (*k, v.clone()))).collect();
+        // Every key the request addressed is echoed, so a client can match the answer; a value the
+        // filter would change is left out rather than echoed as a different one (`x=9<SI>7` is not `x=97`).
+        let addressing: Vec<(&str, String)> = ["x", "y", "Y"].iter().filter_map(|k| m.metadata.get(*k).filter(|v| value_echo(v) == **v).map(|v| (*k, v.clone()))).collect();
         self.expire(now);
         if has("Y") {
             return vec![self.error(&addressing, "EINVAL")];
@@ -595,14 +604,14 @@ mod tests {
         assert_eq!(entered, vec!["\x1b]72;t=m:X=30:Y=18:o=1:x=3:y=1;text/uri-list\x1b\\".to_string()]);
         assert!(c.drag_moved((3, 1), (30, 18)).is_empty(), "the same position sends nothing");
         assert_eq!(c.drag_moved((4, 1), (41, 18)), vec!["\x1b]72;t=m:X=41:Y=18:o=1:x=4:y=1\x1b\\".to_string()]);
-        assert_eq!(c.drag_exited(), vec!["\x1b]72;t=m:x=-1:y=-1\x1b\\".to_string()]);
+        assert_eq!(c.drag_exited(), vec!["\x1b]72;t=m:X=0:Y=0:o=0:x=-1:y=-1\x1b\\".to_string()], "the exit carries all five keys (KC:1365-1381)");
         assert!(c.drag_moved((4, 1), (41, 18)).len() == 1, "after an exit the next move reports again");
 
         let drop = dropped(&mut c, &["C:\\a.txt"]);
         assert_eq!(drop, vec!["\x1b]72;t=M:X=30:Y=18:o=1:x=3:y=1;text/uri-list\x1b\\".to_string()]);
         let uris = c.inbound("t=r:x=1");
         assert!(uris.iter().all(|r| r.starts_with("\x1b]72;t=r:m=") && r.contains(":x=1")), "{uris:?}");
-        assert_eq!(data_of(&uris), b"file:///C:/a.txt\r\n");
+        assert_eq!(data_of(&uris), b"file:///C:/a.txt");
         assert!(uris.last().unwrap().contains("m=0"), "the data ends with m=0");
         // A file entry of the list is served once the list was asked for.
         let file = c.inbound("t=r:x=1:y=1");
@@ -619,7 +628,7 @@ mod tests {
         let mut c = registered();
         dropped(&mut c, &["C:\\My Files\\a b.txt", "\\\\host\\share\\n.txt", "D:\\dir\\"]);
         let uris = c.inbound("t=r:x=1");
-        assert_eq!(data_of(&uris), b"file:///C:/My%20Files/a%20b.txt\r\nfile://host/share/n.txt\r\nfile:///D:/dir/\r\n");
+        assert_eq!(data_of(&uris), b"file:///C:/My%20Files/a%20b.txt\r\nfile://host/share/n.txt\r\nfile:///D:/dir/", "joined with CR LF, none after the last (KC:734)");
         assert_eq!(c.inbound("t=r:x=2"), vec!["\x1b]72;t=R:x=2;ENOENT\x1b\\".to_string()], "index out of bounds");
         assert_eq!(c.inbound("t=r:x=0"), vec!["\x1b]72;t=R:x=0;ENOENT\x1b\\".to_string()]);
         assert_eq!(c.inbound("t=r:x=1:y=4"), vec!["\x1b]72;t=R:x=1:y=4;ENOENT\x1b\\".to_string()]);
@@ -686,12 +695,12 @@ mod tests {
         c.inbound(&format!("t=a:i={hostile};text/uri-list"));
         c.drag_entered((1, 2), (3, 4), &["text/uri-list".to_string()]);
         let m = c.drag_exited();
-        assert_eq!(m, vec!["\x1b]72;t=m:i=abc:x=-1:y=-1\x1b\\".to_string()]);
+        assert_eq!(m, vec!["\x1b]72;t=m:X=0:Y=0:i=abc:o=0:x=-1:y=-1\x1b\\".to_string()]);
         // Addressing keys echoed in an error are filtered too; an odd key is not echoed at all.
         dropped(&mut c, &["C:\\a.txt"]);
         let e = c.inbound(&format!("t=r:x=9\u{f}7:\u{3}z=1:yy=2:y={hostile}"));
         assert_eq!(e.len(), 1);
-        assert!(e[0].starts_with("\x1b]72;t=R:i=abc:x=97"), "{:?}", e[0]);
+        assert_eq!(e[0], "\x1b]72;t=R:i=abc;EINVAL\x1b\\", "a value the filter changed is not echoed, so it cannot name another request");
         for r in c.inbound("t=r:x=9\u{f}") {
             assert!(r.bytes().all(|b| b == 0x1b || (0x20..0x7f).contains(&b)), "{r:?}");
         }
@@ -740,7 +749,7 @@ mod tests {
         let many: Vec<PathBuf> = (0..300).map(|i| PathBuf::from(format!("C:\\f{i}.txt"))).collect();
         c.drop((0, 0), (0, 0), many, Backing { size: |_| Some(1), read: |_| Some(vec![1]) });
         let list = String::from_utf8(data_of(&c.inbound("t=r:x=1"))).unwrap();
-        assert_eq!(list.matches("\r\n").count(), 256);
+        assert_eq!(list.matches("\r\n").count(), 255, "256 URIs, 255 separators");
         assert_eq!(c.inbound("t=r:x=1:y=257"), vec!["\x1b]72;t=R:x=1:y=257;ENOENT\x1b\\".to_string()]);
 
         // A file past 16 MiB answers EFBIG, and is never read.
@@ -828,5 +837,18 @@ mod tests {
         c.drop_at(t0, (0, 0), (0, 0), files(&["C:\\a.txt"]), backing);
         c.expire(t0 + Duration::from_secs(61));
         assert!(!c.has_drop(), "and so does a sweep");
+    }
+
+    /// 13o final review (Task 9 minor 6): a drag that ends without the controller being told
+    /// (trust lost between hover and drop) leaves nothing hovering, so the next drag reports.
+    #[test]
+    fn a_forgotten_hover_lets_the_next_drag_report() {
+        let mimes = vec!["text/uri-list".to_string()];
+        let mut c = registered();
+        assert_eq!(c.drag_entered((1, 1), (5, 5), &mimes).len(), 1);
+        assert!(c.drag_entered((1, 1), (5, 5), &mimes).is_empty(), "already hovering");
+        c.forget_hover();
+        assert!(!c.hovering());
+        assert_eq!(c.drag_entered((1, 1), (5, 5), &mimes).len(), 1, "a new drag reports again");
     }
 }

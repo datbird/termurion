@@ -1088,11 +1088,15 @@ impl Screen {
             }
             Osc::Sixel(data) => self.sixel(&data),
             Osc::Kitty(body) => self.kitty(&body),
-            // Only a trusted screen answers or registers (B7); a batch answers 64 messages at most.
+            // Only a trusted screen answers or registers (B7); a batch answers 64 messages at
+            // most. Replies are counted, not chunks: a message of many `m=1` chunks must reach
+            // its last one, or the first and last parts would join with the middle skipped.
             Osc::KittyDnd(body) => {
                 if self.trusted && self.dnd_answered < crate::screen::DND_ANSWERS_PER_BATCH {
-                    self.dnd_answered += 1;
                     let replies = self.dnd.inbound(&String::from_utf8_lossy(&body));
+                    if !replies.is_empty() {
+                        self.dnd_answered += 1;
+                    }
                     for r in replies {
                         self.replies.extend(r.into_bytes());
                     }

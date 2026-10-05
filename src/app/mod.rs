@@ -5947,6 +5947,8 @@ impl ApplicationHandler<UserEvent> for App {
                     self.dnd_dropped.push((p, path, pt));
                     return;
                 }
+                // The drag ends here: a pane told of it (trust lost since) must not stay hovered.
+                self.dnd_forget_hover();
                 let (x, y) = real.unwrap_or(self.cursor);
                 let pane = self.pane_at(x, y).map(|(p, _)| p).or_else(|| self.focused_id());
                 if let Some(p) = pane {
