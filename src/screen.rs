@@ -196,6 +196,8 @@ pub struct Screen {
     pub(crate) folds: std::collections::HashMap<u32, Vec<Row<Cell>>>,
     next_fold: u32,
     feeds: u32,
+    /// Moves with every change to the main grid's rows, marks or notes; the scrollbar's tick cache keys on it.
+    tick_gen: u64,
     /// Key reporting chosen in the menu (on top of the program's requests).
     pub keys: KeyState,
     /// False when the global disablePotentiallyInsecureEscapeSequences is on.
@@ -462,6 +464,7 @@ impl Screen {
             folds: std::collections::HashMap::new(),
             next_fold: 0,
             feeds: 0,
+            tick_gen: 0,
             keys: KeyState::new(look.csi_u),
             trusted: true,
             tab_status: crate::tabstatus::Status::default(),
@@ -705,6 +708,7 @@ impl Screen {
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
+        self.bump_ticks();
         self.term.resize(GridSize { cols, rows });
         // Reflow moved rows: triggers go on from the cursor.
         self.triggers_from_cursor();
@@ -716,6 +720,7 @@ impl Screen {
     }
 
     pub fn term_mut(&mut self) -> &mut Term<Listener> {
+        self.bump_ticks();
         &mut self.term
     }
 
@@ -804,6 +809,7 @@ impl Screen {
     /// Feeds app output. Returns the bytes the terminal must send back, such as
     /// answers to device, color, and size queries. An app that gets no answer may hang.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.bump_ticks();
         if !bytes.is_empty() && !self.triggers.list.is_empty() {
             self.events_on_output();
         }
@@ -1296,6 +1302,7 @@ impl Screen {
         if self.alt_screen() {
             return Vec::new();
         }
+        self.bump_ticks();
         self.term.selection = None;
         let removed = self.term.primary_grid_mut().splice(Line(first), Line(last), with);
         // Rows moved: triggers go on from the cursor.
@@ -1394,6 +1401,7 @@ impl Screen {
     /// Drops folds and notes whose rows left the buffer (cleared, or trimmed off the top of
     /// the scrollback), so their saved lines do not stay in memory.
     pub fn prune_tags(&mut self) {
+        self.bump_ticks();
         let grid = self.term.primary_grid();
         let top = -(grid.history_size() as i32);
         let mut folds = std::collections::HashSet::new();
@@ -1461,6 +1469,7 @@ impl Screen {
     }
 
     pub(crate) fn feed_raw(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.bump_ticks();
         self.term.stamp = self.clock.unwrap_or_else(|| {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32)
         });
@@ -1538,6 +1547,7 @@ impl Screen {
 
     /// Puts a mark id on a row (grid line: 0 is the top of the screen, negative is history).
     pub fn set_row_mark(&mut self, line: i32, id: u32) {
+        self.bump_ticks();
         let grid = self.term.primary_grid_mut();
         if line >= -(grid.history_size() as i32) && line < grid.screen_lines() as i32 {
             grid[Line(line)].set_mark(id);
@@ -1546,6 +1556,7 @@ impl Screen {
 
     /// Puts a manual mark id on a row, beside any prompt mark there.
     pub fn set_row_manual(&mut self, line: i32, id: u32) {
+        self.bump_ticks();
         let grid = self.term.primary_grid_mut();
         if line >= -(grid.history_size() as i32) && line < grid.screen_lines() as i32 {
             grid[Line(line)].set_manual(id);
@@ -1567,22 +1578,16 @@ impl Screen {
             .collect()
     }
 
-    /// A digest of what the scrollbar's mark and note ticks read: it changes when a mark or
-    /// note is added, removed or given an exit code, when rows move (scrolling, a trimmed or
-    /// cleared history, a resize) and when the screen switches. Costs a read of the records,
-    /// not of the rows.
+    /// What the scrollbar's mark and note ticks are keyed on: the grid generation (bumped by
+    /// every output batch, reset, clear, resize, fold and mark or note edit, so a row erased
+    /// or moved in place is seen too) and the screen in view.
     pub fn tick_digest(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        let g = self.term.primary_grid();
-        (g.history_size(), g.scrolled_off(), g.dropped(), g.screen_lines(), g.columns(), self.term.mode().contains(TermMode::ALT_SCREEN)).hash(&mut h);
-        for (id, m) in &self.marks.records {
-            (id, m.code).hash(&mut h);
-        }
-        for (id, n) in &self.notes.by_id {
-            (id, n.row_key).hash(&mut h);
-        }
-        h.finish()
+        self.tick_gen ^ (u64::from(self.term.mode().contains(TermMode::ALT_SCREEN)) << 63)
+    }
+
+    /// Notes that the main grid's rows, marks or notes may have changed.
+    pub(crate) fn bump_ticks(&mut self) {
+        self.tick_gen = (self.tick_gen.wrapping_add(1)) & !(1 << 63);
     }
 
     /// One logical line's text starting at `line`: its row and the rows it wraps onto,
@@ -1623,6 +1628,7 @@ impl Screen {
     /// iTerm2's Clear Scrollback Buffer (`scrollback_only`) or Clear Buffer (everything but
     /// the cursor line, which moves to the top, as iTerm2 keeps the prompt).
     pub fn clear(&mut self, scrollback_only: bool) {
+        self.bump_ticks();
         // Scrolling and clearing push lines into scrollback, so the screen goes first,
         // then the scrollback.
         if !scrollback_only {
@@ -3079,9 +3085,10 @@ mod tests {
         let base = s.tick_digest();
         assert_eq!(s.tick_digest(), base, "nothing changed");
         let mark = s.set_manual_mark(0, None);
-        assert_ne!(s.tick_digest(), base, "a mark was added");
+        let with_mark = s.tick_digest();
+        assert_ne!(with_mark, base, "a mark was added");
         assert!(s.remove_mark(mark));
-        assert_eq!(s.tick_digest(), base, "and removed");
+        assert_ne!(s.tick_digest(), with_mark, "and removed");
         s.add_note(0, 0, 0, 3, "n", false);
         let with_note = s.tick_digest();
         assert_ne!(with_note, base, "a note was added");
@@ -3089,7 +3096,10 @@ mod tests {
         assert_ne!(s.tick_digest(), with_note, "rows scrolled");
         let before = s.tick_digest();
         s.feed(b"x");
-        assert_eq!(s.tick_digest(), before, "typing on a row moves nothing");
+        assert_ne!(s.tick_digest(), before, "every output batch bumps the generation");
+        let again = s.tick_digest();
+        assert_eq!(s.tick_digest(), again, "and nothing else moves it");
+        let before = again;
         s.feed(b"\x1b[?1049h");
         assert_ne!(s.tick_digest(), before, "the alternate screen shows");
         // An exit code arriving on an existing prompt mark changes the ticks' series.
@@ -3098,6 +3108,51 @@ mod tests {
         let running = p.tick_digest();
         p.feed(b"\x1b]133;D;1\x07");
         assert_ne!(p.tick_digest(), running, "the command finished with a code");
+    }
+
+    /// The tick cache's key moves with any grid change: erasers and movers that touch no record.
+    #[test]
+    fn the_tick_generation_follows_every_grid_change() {
+        fn moves(stale: &mut Vec<String>, what: &str, setup: &[u8], act: &dyn Fn(&mut Screen)) {
+            let mut s = Screen::new(20, 6);
+            s.feed(setup);
+            s.set_manual_mark(1, None);
+            let before = s.tick_digest();
+            act(&mut s);
+            if s.tick_digest() == before {
+                stale.push(what.to_string());
+            }
+        }
+        let mut stale = Vec::new();
+        let text = b"a\r\nb\r\nc\r\nd";
+        moves(&mut stale, "ED 0", text, &|s| {
+            s.feed(b"\x1b[2;1H\x1b[J");
+        });
+        moves(&mut stale, "ED 1", text, &|s| {
+            s.feed(b"\x1b[3;1H\x1b[1J");
+        });
+        moves(&mut stale, "IL", text, &|s| {
+            s.feed(b"\x1b[2;1H\x1b[L");
+        });
+        moves(&mut stale, "DL", text, &|s| {
+            s.feed(b"\x1b[2;1H\x1b[M");
+        });
+        moves(&mut stale, "a region scroll", text, &|s| {
+            s.feed(b"\x1b[1;3r\x1b[3;1H\n");
+        });
+        moves(&mut stale, "fold", text, &|s| {
+            s.fold(0, 1);
+        });
+        moves(&mut stale, "RIS with no history", text, &|s| {
+            s.feed(b"\x1bc");
+        });
+        moves(&mut stale, "clear scrollback", text, &|s| s.clear(true));
+        moves(&mut stale, "resize", text, &|s| s.resize(10, 6));
+        moves(&mut stale, "a mark removed", text, &|s| {
+            let id = s.row_marks()[0].1;
+            s.remove_mark(id);
+        });
+        assert!(stale.is_empty(), "the ticks would go stale after: {stale:?}");
     }
 
     /// A screenshot or preview draws rows as the pane does: Bidi off stays off, and Blink

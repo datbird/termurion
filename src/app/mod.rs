@@ -3144,6 +3144,8 @@ impl App {
         }
         // Its inline files went with its screen.
         self.close_inline_questions_of(id);
+        // The id lives on: the old screen's ticks must not meet the new screen.
+        self.forget_scrollbar(id);
         if self.start_pane_as(id, rect, guid.as_deref()) {
             if let Some(p) = self.panes.get_mut(&id) {
                 p.locked = locked;

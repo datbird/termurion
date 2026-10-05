@@ -283,6 +283,7 @@ impl Screen {
     /// into history, so the screen matches ConPTY after its own clear (which keeps only the
     /// cursor row). The current prompt's mark moves onto that row when its own row went.
     pub fn clear_from(&mut self, line: i32) {
+        self.bump_ticks();
         let grid = self.term.grid();
         let top = -(grid.history_size() as i32);
         let line = line.max(top);
@@ -429,6 +430,7 @@ impl Screen {
     }
 
     pub(crate) fn new_mark(&mut self, line: i32, kind: Kind) -> u32 {
+        self.bump_ticks();
         self.marks.next_id = self.marks.next_id.wrapping_add(1).max(1);
         let id = self.marks.next_id;
         match kind {
@@ -468,6 +470,7 @@ impl Screen {
     /// Removes mark `id`, its record and its row's slot (`VT100ScreenMutableState.m:3517-3529`,
     /// `removeNamedMark:`, whatever the mark's kind). False for an unknown id.
     pub fn remove_mark(&mut self, id: u32) -> bool {
+        self.bump_ticks();
         if self.marks.records.remove(&id).is_none() {
             return false;
         }
