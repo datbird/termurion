@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 315 | 194 | 106 | 15 |
-| `02-global-settings.md` | 819 | 471 | 66 | 282 |
+| `01-profile-settings.md` | 316 | 212 | 90 | 14 |
+| `02-global-settings.md` | 819 | 483 | 66 | 270 |
 | `03-features-and-menus.md` | 644 | 552 | 47 | 45 |
-| Total | 1,778 | 1,217 | 219 | 342 |
+| Total | 1,779 | 1,247 | 203 | 329 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -541,6 +541,16 @@ of Appearance, and the active pane gets its border. Lock Pane (context menu, tit
 arrangements) makes closing ask and moving refuse; Lock Split Pane Width caps a pane's width through window resizes.
 Nothing of 13i was checked on screen during the build. Every kept quirk is listed in
 `docs/acceptance/m13i-checklist.md` and ruled on in `docs/superpowers/rulings/m13i-rulings.txt`.
+Milestone 13k built the cursor (01: 16 rows from partial to have and one from missing, Smooth blink presets, plus a new row, IME
+composition; 02: 12 rows from missing to have; HDR Cursor stays partial, Tandem renders sRGB; 1,779 rows, 1,247 have, 203 partial,
+329 missing; these counts are the branch alone, 13j's counts are added when it merges). The block cursor is spacing-free and
+centered, the bar is VerticalBarCursorWidth and the underline UnderlineCursorHeight points, FullHeightCursor fills the line.
+The blink is TimeBetweenBlinks (0.5 s), solid for half a second after the cursor moves, only in the focused pane, and programs
+change it only with Allow Change Cursor Blink (alacritty_terminal patch 17); Hide cursor when unfocused, Smooth blink with its
+six timings and five presets, Smart Cursor Color, Cursor Boost (it mutes text, backgrounds, selection and find matches),
+Cursor shadow, DrawOutlineAroundCursor, Smooth slide and Animate large movements (a smear) follow iTerm2's source, and the
+Windows IME composes at the cursor. Nothing of 13k was checked on screen during the build. Every kept quirk is listed in
+`docs/acceptance/m13k-checklist.md` and ruled on in `docs/superpowers/rulings/m13k-rulings.txt`.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's
