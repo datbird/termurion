@@ -27,19 +27,6 @@ pub(super) fn window_for(rows: &[Vec<char>], row: usize, col: usize, width: usiz
     (!dividers.is_empty()).then(|| crate::seltools::clip_to_dividers(0, width - 1, col, &dividers))
 }
 
-/// A logical line's characters whose cells lie in columns `lo..=hi`, re-offset.
-pub(super) fn restrict_columns(line: &Logical, lo: usize, hi: usize) -> Logical {
-    let mut out = Logical { text: String::new(), cells: Vec::new() };
-    for (i, (offset, pos)) in line.cells.iter().enumerate() {
-        if (lo..=hi).contains(&pos.col) {
-            let end = line.cells.get(i + 1).map_or(line.text.len(), |(o, _)| *o);
-            out.cells.push((out.text.len(), *pos));
-            out.text.push_str(&line.text[*offset..end]);
-        }
-    }
-    out
-}
-
 /// The columns between soft boundaries around `at`, when `restrict` is on.
 fn click_window(screen: &crate::screen::Screen, at: find::Pos, restrict: bool) -> Option<(usize, usize)> {
     use alacritty_terminal::grid::Dimensions;
@@ -1140,18 +1127,6 @@ mod hover_tests {
         assert_eq!(window_for(&plain, 3, 5, 7, false), None);
         let short: Vec<Vec<char>> = rows[..crate::seltools::DIVIDER_RUN - 1].to_vec();
         assert_eq!(window_for(&short, 3, 5, 7, true), None, "a divider needs its run");
-    }
-
-    #[test]
-    fn restrict_columns_cuts_a_logical_line() {
-        let line = Logical {
-            text: "ab\u{2502}cd".into(),
-            cells: vec![(0, find::Pos { row: 4, col: 0 }), (1, find::Pos { row: 4, col: 1 }), (2, find::Pos { row: 4, col: 2 }), (5, find::Pos { row: 4, col: 3 }), (6, find::Pos { row: 4, col: 4 })],
-        };
-        let cut = restrict_columns(&line, 3, 4);
-        assert_eq!(cut.text, "cd");
-        assert_eq!(cut.cells, vec![(0, find::Pos { row: 4, col: 3 }), (1, find::Pos { row: 4, col: 4 })]);
-        assert_eq!(restrict_columns(&line, 0, 1).text, "ab");
     }
 }
 
