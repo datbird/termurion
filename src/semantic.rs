@@ -370,7 +370,7 @@ pub fn cmd_command_line(line: &str) -> String {
     format!("cmd.exe {}", cmd_args(line))
 }
 
-const CMD_REFUSED: &str = "Tandem did not run this command: a value in it holds % or a quote that cmd.exe would read.";
+pub const CMD_REFUSED: &str = "Tandem did not run this command: a value in it holds % or a quote that cmd.exe would read.";
 
 /// Arguments a batch file (or cmd.exe) would re-read as syntax: refused for a `.cmd` or `.bat`
 /// program (the BatchUnsafe set).

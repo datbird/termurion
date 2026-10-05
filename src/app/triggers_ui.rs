@@ -17,10 +17,20 @@ pub(super) fn triggers_of(p: &crate::profile::Profile) -> (Vec<Trigger>, Trigger
     (list, prefs)
 }
 
+/// The arguments cmd.exe gets for Run Command: the one builder, so a captured value cannot add a command.
+fn command_args(cmd: &str) -> String {
+    crate::semantic::cmd_args(cmd)
+}
+
 /// Runs a command for Run Command: hidden, through cmd.exe, output discarded.
 fn start_command(cmd: &str) -> std::io::Result<std::process::Child> {
     let mut c = std::process::Command::new("cmd.exe");
-    c.args(["/d", "/c", cmd]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.raw_arg(command_args(cmd));
+    }
+    c.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -258,5 +268,15 @@ impl App {
         }
         self.sync_checks();
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_command_args_are_the_one_cmd_builder() {
+        assert_eq!(command_args(r#"run "foo&calc""#), r#"/d /v:off /s /c "run "foo&calc"""#);
     }
 }

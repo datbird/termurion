@@ -302,13 +302,30 @@ impl Screen {
         let value = if crate::trigger_eval::raw_parameter(&c.trigger.action) {
             param.clone()
         } else if self.triggers.prefs.interpolated && param.contains("\\(") {
-            match crate::interp::evaluate(&param, &|n| self.trigger_var(n, 0), &groups) {
+            let quoted = if triggers::runs_command(&c.trigger.action) { triggers::quote_groups(&groups).map(Some) } else { Some(None) };
+            let evaluated = match &quoted {
+                None => Err(crate::semantic::CMD_REFUSED.to_string()),
+                Some(None) => crate::interp::evaluate(&param, &|n| self.trigger_var(n, 0), &groups),
+                Some(Some(q)) => {
+                    let refs: Vec<Option<&str>> = q.iter().map(|g| g.as_deref()).collect();
+                    crate::interp::evaluate(&param, &|n| self.trigger_var(n, 0), &refs)
+                }
+            };
+            match evaluated {
                 Ok(v) => v,
                 Err(e) => {
                     if self.triggers.list[i].error.as_ref() != Some(&e) {
                         self.requests.push(crate::screen::Request::Trigger(crate::trigger_eval::TriggerRequest::ParameterError { trigger: i, text: e.clone() }));
                         self.triggers.list[i].error = Some(e);
                     }
+                    return false;
+                }
+            }
+        } else if triggers::runs_command(&c.trigger.action) {
+            match triggers::substitute_cmd(&param, &groups) {
+                Some(v) => v,
+                None => {
+                    self.refuse_command(i);
                     return false;
                 }
             }

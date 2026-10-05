@@ -164,6 +164,35 @@ pub fn action_info(class: &str) -> Option<&'static ActionInfo> {
 /// `\9` is never replaced), then `\a \b \e \n \r \t \\` and `\xHH`; any other backslash
 /// sequence stays as written. Captured text goes in as it is.
 pub fn substitute(param: &str, captures: &[Option<&str>]) -> String {
+    substitute_with(param, captures, &mut |c| c.to_string())
+}
+
+/// The actions that put text on a cmd.exe command line: Run Command, Run Coprocess and Run
+/// Silent Coprocess. Their captures are program text (output, titles, directories).
+pub fn runs_command(action: &str) -> bool {
+    matches!(action, "ScriptTrigger" | "CoprocessTrigger" | "MuteCoprocessTrigger")
+}
+
+/// `substitute` for a cmd.exe command line: each capture is quoted (`semantic::cmd_quote`),
+/// and None when a capture the parameter uses holds `%`, a quote or a control character
+/// (`semantic::cmd_unsafe`), which cmd.exe would read inside quotes. The parameter's own
+/// text is the person's and stays as written.
+pub fn substitute_cmd(param: &str, captures: &[Option<&str>]) -> Option<String> {
+    let mut bad = false;
+    let out = substitute_with(param, captures, &mut |c| {
+        bad |= crate::semantic::cmd_unsafe(c);
+        crate::semantic::cmd_quote(c)
+    });
+    (!bad).then_some(out)
+}
+
+/// The groups of an interpolated parameter (`matches`) for a cmd.exe command line: all
+/// quoted, or None when any holds `%`, a quote or a control character.
+pub fn quote_groups(groups: &[Option<&str>]) -> Option<Vec<Option<String>>> {
+    groups.iter().map(|g| g.map(|c| (!crate::semantic::cmd_unsafe(c)).then(|| crate::semantic::cmd_quote(c))).map_or(Some(None), |q| q.map(Some))).collect()
+}
+
+fn substitute_with(param: &str, captures: &[Option<&str>], each: &mut dyn FnMut(&str) -> String) -> String {
     let chars: Vec<char> = param.chars().collect();
     let mut out = String::new();
     let mut i = 0;
@@ -178,7 +207,7 @@ pub fn substitute(param: &str, captures: &[Option<&str>]) -> String {
         match n {
             '0'..='8' => {
                 let g = n as usize - '0' as usize;
-                out.push_str(captures.get(g).copied().flatten().unwrap_or(""));
+                out.push_str(&each(captures.get(g).copied().flatten().unwrap_or("")));
             }
             'a' => out.push('\x07'),
             'b' => out.push('\x08'),
