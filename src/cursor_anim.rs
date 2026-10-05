@@ -156,7 +156,7 @@ impl Fade {
         // Whole nanoseconds, so the cycle's points are exact.
         let ns = |s: f64| if s.is_finite() && s > 0.0 { (s * 1e9).round() as u64 } else { 0 };
         let (vd, fo, hd, fi) = (ns(t.visible_dwell), ns(t.fade_out), ns(t.hidden_dwell), ns(t.fade_in));
-        let period = vd + fo + hd + fi;
+        let period = vd.saturating_add(fo).saturating_add(hd).saturating_add(fi);
         if period == 0 {
             return (1.0, None);
         }
@@ -165,13 +165,13 @@ impl Fade {
         let until = |edge: u64| Some(Duration::from_nanos(edge - e));
         if e < vd {
             (1.0, until(vd))
-        } else if e < vd + fo {
+        } else if e < vd.saturating_add(fo) {
             let x = (e - vd) as f64 / fo as f64;
             ((1.0 - eased(t.out_curve, x)) as f32, Some(Duration::ZERO))
-        } else if e < vd + fo + hd {
-            (0.0, until(vd + fo + hd))
+        } else if e < vd.saturating_add(fo).saturating_add(hd) {
+            (0.0, until(vd.saturating_add(fo).saturating_add(hd)))
         } else {
-            let x = (e - vd - fo - hd) as f64 / fi as f64;
+            let x = (e - vd.saturating_add(fo).saturating_add(hd)) as f64 / fi as f64;
             (eased(t.in_curve, x) as f32, Some(Duration::ZERO))
         }
     }
@@ -328,6 +328,19 @@ fn inside(r: Rect, visible: Rect) -> bool {
     r.x >= visible.x && r.y >= visible.y && r.x + r.w <= visible.x + visible.w && r.y + r.h <= visible.y + visible.h
 }
 
+/// What `Motion::advance` found: an animation still running, one that just ended.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Advance {
+    pub running: bool,
+    pub ended: bool,
+}
+
+/// The panes a window's frame makes forget their place: its own, not shown on screen. A pane
+/// of another window is not this frame's business (that window's own frame handles it).
+pub fn to_forget<T: PartialEq + Copy>(own: &[T], shown: &[T]) -> Vec<T> {
+    own.iter().copied().filter(|id| !shown.contains(id)).collect()
+}
+
 /// What one pane remembers about its cursor from frame to frame.
 #[derive(Clone, Debug, Default)]
 pub struct Motion {
@@ -371,7 +384,7 @@ impl Motion {
     /// that slides (`PTYTextView.m:1590-1644`): both rects fully inside `visible`, different,
     /// a previous rect known, sliding allowed and `should_slide`. `last_rect` always becomes
     /// `rect`.
-    pub fn moved_to(&mut self, rect: Rect, visible: Rect, slide_ok: bool, max_cells: i64, cell_w: f32, _now: Instant) -> Option<(Rect, Rect)> {
+    pub fn moved_to(&mut self, rect: Rect, visible: Rect, slide_ok: bool, max_cells: i64, cell_w: f32) -> Option<(Rect, Rect)> {
         let prev = self.last_rect.replace(rect)?;
         let slides = slide_ok && prev != rect && inside(prev, visible) && inside(rect, visible) && should_slide(prev, rect, cell_w, max_cells);
         if !slides && prev != rect {
@@ -379,6 +392,28 @@ impl Motion {
             self.slide = None;
         }
         slides.then_some((prev, rect))
+    }
+
+    /// Ends the slide and the smear that have run their time, at `now`.
+    pub fn advance(&mut self, now: Instant, slide: Duration, smear: Duration) -> Advance {
+        let mut a = Advance::default();
+        if let Some(s) = self.slide.as_ref() {
+            if s.offset(now, slide).is_some() {
+                a.running = true;
+            } else {
+                self.slide = None;
+                a.ended = true;
+            }
+        }
+        if let Some(s) = self.smear.as_ref() {
+            if s.polygon(now, smear).is_some() {
+                a.running = true;
+            } else {
+                self.smear = None;
+                a.ended = true;
+            }
+        }
+        a
     }
 
     /// Forgets where the cursor was and any animation: a pane that is not on screen (another
@@ -394,7 +429,7 @@ impl Motion {
     /// slide wins when both apply).
     pub fn classify(&mut self, rect: Rect, visible: Rect, rule: MoveRule) -> Option<Started> {
         let prev = self.last_rect;
-        if let Some((from, to)) = self.moved_to(rect, visible, rule.slide_ok, rule.max_cells, rule.cell_w, Instant::now()) {
+        if let Some((from, to)) = self.moved_to(rect, visible, rule.slide_ok, rule.max_cells, rule.cell_w) {
             return Some(Started::Slide(from, to));
         }
         let prev = prev?;
@@ -512,30 +547,29 @@ mod tests {
 
     #[test]
     fn motion_starts_a_slide() {
-        let t0 = Instant::now();
         let visible = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
         let mut m = Motion::default();
         let a = r(20.0, 26.0);
         let b = r(30.0, 26.0);
-        assert_eq!(m.moved_to(a, visible, true, 1, 10.0, t0), None, "the first rect has no previous one");
+        assert_eq!(m.moved_to(a, visible, true, 1, 10.0), None, "the first rect has no previous one");
         assert_eq!(m.last_rect, Some(a));
-        assert_eq!(m.moved_to(b, visible, true, 1, 10.0, t0), Some((a, b)));
+        assert_eq!(m.moved_to(b, visible, true, 1, 10.0), Some((a, b)));
         assert_eq!(m.last_rect, Some(b));
         // The same rect is no move.
-        assert_eq!(m.moved_to(b, visible, true, 1, 10.0, t0), None);
+        assert_eq!(m.moved_to(b, visible, true, 1, 10.0), None);
         // A setting or cursor type that does not slide answers None and still records the rect.
-        assert_eq!(m.moved_to(a, visible, false, 1, 10.0, t0), None);
+        assert_eq!(m.moved_to(a, visible, false, 1, 10.0), None);
         assert_eq!(m.last_rect, Some(a));
         // A jump past the maximum does not slide.
-        assert_eq!(m.moved_to(r(60.0, 26.0), visible, true, 1, 10.0, t0), None);
+        assert_eq!(m.moved_to(r(60.0, 26.0), visible, true, 1, 10.0), None);
         // A rect partly outside the visible area answers None and becomes last_rect, and the
         // move back in is not a slide either.
         let out = r(95.0, 26.0);
         let out = Rect { w: 10.0, ..out };
-        assert_eq!(m.moved_to(r(90.0, 26.0), visible, true, 1, 10.0, t0), None);
-        assert_eq!(m.moved_to(out, visible, true, 1, 10.0, t0), None);
+        assert_eq!(m.moved_to(r(90.0, 26.0), visible, true, 1, 10.0), None);
+        assert_eq!(m.moved_to(out, visible, true, 1, 10.0), None);
         assert_eq!(m.last_rect, Some(out));
-        assert_eq!(m.moved_to(r(90.0, 26.0), visible, true, 1, 10.0, t0), None);
+        assert_eq!(m.moved_to(r(90.0, 26.0), visible, true, 1, 10.0), None);
     }
 
     #[test]
@@ -594,11 +628,11 @@ mod tests {
         m.begin_slide(r(20.0, 26.0), r(30.0, 26.0), t0, ms(50));
         m.last_rect = Some(r(30.0, 26.0));
         // A move that does not slide drops the old slide's offset.
-        assert_eq!(m.moved_to(r(300.0, 126.0), visible, true, 1, 10.0, t0), None);
+        assert_eq!(m.moved_to(r(300.0, 126.0), visible, true, 1, 10.0), None);
         assert!(m.slide.is_none());
         // The same rect again leaves a running slide alone.
         m.begin_slide(r(290.0, 126.0), r(300.0, 126.0), t0, ms(50));
-        assert_eq!(m.moved_to(r(300.0, 126.0), visible, true, 1, 10.0, t0), None);
+        assert_eq!(m.moved_to(r(300.0, 126.0), visible, true, 1, 10.0), None);
         assert!(m.slide.is_some());
     }
 
@@ -611,6 +645,42 @@ mod tests {
         m.begin_smear(r(20.0, 26.0), r(300.0, 26.0), t0);
         m.forget();
         assert_eq!((m.last_rect, m.slide.is_some(), m.smear.is_some()), (None, false, false));
+    }
+
+    #[test]
+    fn a_windows_frame_forgets_only_its_own_hidden_panes() {
+        // This window's panes are 1, 2, 3 and it shows 1; pane 9 is another window's.
+        assert_eq!(to_forget(&[1u64, 2, 3], &[1]), vec![2, 3]);
+        assert_eq!(to_forget(&[1u64, 2, 3], &[1, 2, 3]), Vec::<u64>::new());
+        assert!(!to_forget(&[1u64, 2, 3], &[]).contains(&9));
+    }
+
+    #[test]
+    fn a_background_slide_finishes_and_clears() {
+        let t0 = Instant::now();
+        let mut m = Motion::default();
+        m.begin_slide(r(20.0, 26.0), r(30.0, 26.0), t0, ms(50));
+        m.begin_smear(r(20.0, 26.0), r(300.0, 26.0), t0);
+        assert_eq!(m.advance(t0 + ms(10), ms(50), ms(100)), Advance { running: true, ended: false });
+        assert!(m.slide.is_some() && m.smear.is_some());
+        // The slide's time is up, the smear still runs: one ended, one running.
+        assert_eq!(m.advance(t0 + ms(60), ms(50), ms(100)), Advance { running: true, ended: true });
+        assert!(m.slide.is_none() && m.smear.is_some());
+        // Both done: it rests, and nothing is left to stick at its first-frame offset.
+        assert_eq!(m.advance(t0 + ms(200), ms(50), ms(100)), Advance { running: false, ended: true });
+        assert!(m.slide.is_none() && m.smear.is_none());
+        assert_eq!(m.advance(t0 + ms(300), ms(50), ms(100)), Advance::default());
+    }
+
+    #[test]
+    fn fade_with_absurd_times_does_not_overflow() {
+        let huge = FadeTimes { fade_in: 1e30, fade_out: 1e30, in_curve: Curve::Linear, out_curve: Curve::Linear, visible_dwell: 1e30, hidden_dwell: 1e30 };
+        let t0 = Instant::now();
+        let mut f = Fade::default();
+        let (a, _) = f.alpha(true, t0, &huge);
+        assert!((0.0..=1.0).contains(&a));
+        let (a, _) = f.alpha(true, t0 + ms(5000), &huge);
+        assert!((0.0..=1.0).contains(&a));
     }
 
     fn times() -> FadeTimes {

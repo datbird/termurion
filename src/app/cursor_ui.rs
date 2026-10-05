@@ -46,7 +46,7 @@ impl App {
     /// The terminal's own style is read, not the profile: it carries a program's change where
     /// "Allow Change Cursor Blink" lets it. 13m adds blinking text it may blink here.
     pub(super) fn blink_clock_needed(&self) -> bool {
-        self.focused && self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).is_some_and(|p| p.screen.cursor_blinks())
+        self.focused && self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).is_some_and(|p| scene::cursor_blinks_shown(&p.screen))
     }
 
     /// Whether the blink phase leaves `pane`'s cursor drawn. Only the key window's focused pane
@@ -83,38 +83,31 @@ impl App {
     fn tick_slides(&mut self, now: Instant) -> Option<Instant> {
         let duration = self.slide_duration();
         let smear_duration = self.smear_duration();
-        let ids: Vec<PaneId> = self.tabs.get(self.active).map(|t| self.visible(t).into_iter().map(|(id, _)| id).collect()).unwrap_or_default();
-        let mut running = false;
-        let mut ended = false;
-        for id in ids {
-            let Some(m) = self.panes.get_mut(&id).map(|p| &mut p.motion) else { continue };
-            if let Some(s) = m.slide.as_ref() {
-                if s.offset(now, duration).is_some() {
-                    running = true;
-                } else {
-                    m.slide = None;
-                    ended = true;
-                }
+        // Panes are shared by every window: a slide in a background window still runs out
+        // (its own window repaints for it), whichever window's clock this is.
+        let mut running: Vec<PaneId> = Vec::new();
+        let mut ended: Vec<PaneId> = Vec::new();
+        for (id, p) in self.panes.iter_mut() {
+            let a = p.motion.advance(now, duration, smear_duration);
+            if a.running {
+                running.push(*id);
             }
-            if let Some(s) = m.smear.as_ref() {
-                if s.polygon(now, smear_duration).is_some() {
-                    running = true;
-                } else {
-                    m.smear = None;
-                    ended = true;
-                }
+            if a.ended {
+                ended.push(*id);
             }
         }
-        if ended {
-            self.redraw();
+        for id in ended {
+            self.redraw_pane_window(id);
         }
-        if !running {
+        if running.is_empty() {
             self.anim_frame = None;
             return None;
         }
         let due = self.anim_frame.unwrap_or(now);
         if now >= due {
-            self.redraw();
+            for id in running {
+                self.redraw_pane_window(id);
+            }
             self.anim_frame = Some(now + crate::cadence::FAST_GAP);
         }
         self.anim_frame
@@ -129,14 +122,14 @@ impl App {
             let half = cursor_anim::half_period(self.globals.number("TimeBetweenBlinks").unwrap_or(0.5));
             let (changed, next) = self.blink.tick(now, half);
             if changed {
-                self.redraw();
+                self.redraw_here();
             }
             Some(next)
         } else {
             // Nothing blinks: the phase rests visible, and a later start begins a fresh period.
             if !self.blink.visible {
                 self.blink.visible = true;
-                self.redraw();
+                self.redraw_here();
             }
             self.blink.flipped = now;
             None
@@ -156,14 +149,18 @@ impl App {
             self.cursor_alpha = None;
             return None;
         };
-        let blinks = p.screen.cursor_blinks();
+        // The fade owns the cursor's look: the on/off phase rests visible, so turning smooth
+        // blink off never starts with the cursor hidden.
+        self.blink.visible = true;
+        self.blink.flipped = now;
+        let blinks = scene::cursor_blinks_shown(&p.screen);
         let since = p.motion.since_moved(now);
         let condition = cursor_anim::blink_condition(blinks, self.focused, since);
         let (alpha, next) = self.blink_fade.alpha(condition, now, &times);
         let changed = self.cursor_alpha != Some(alpha);
         self.cursor_alpha = Some(alpha);
         if changed {
-            self.redraw();
+            self.redraw_here();
         }
         let wake = if condition {
             next.map(|d| now + d.max(crate::cadence::FAST_GAP))
@@ -174,12 +171,6 @@ impl App {
             None
         };
         Some(wake)
-    }
-
-    /// The deadline `tick_cursor` computed, for `about_to_wait`'s `wake` minimum.
-    #[allow(dead_code)]
-    pub(super) fn cursor_wake(&self) -> Option<Instant> {
-        self.cursor_due
     }
 
     /// Feeds the cursor of every visible pane of the active tab to its `Motion`, before the
@@ -193,10 +184,12 @@ impl App {
         for (id, inner) in panes {
             self.note_cursor_moves(id, inner, now);
         }
-        // A pane that is not on screen (another tab or window) forgets its place, so showing it
-        // again never animates from a stale rect.
-        for (id, p) in self.panes.iter_mut() {
-            if !shown.contains(id) {
+        // A pane of this window that is not on screen (another tab) forgets its place, so showing
+        // it again never animates from a stale rect. Other windows' panes are left to their own
+        // frames.
+        let own: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
+        for id in cursor_anim::to_forget(&own, &shown) {
+            if let Some(p) = self.panes.get_mut(&id) {
                 p.motion.forget();
             }
         }

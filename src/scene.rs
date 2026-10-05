@@ -236,9 +236,15 @@ pub fn cursor_cell(screen: &Screen) -> Option<(usize, usize, bool)> {
     if content.cursor.shape == CursorShape::Hidden {
         return None;
     }
-    let p = point_to_viewport(content.display_offset, content.cursor.point)?;
+    let p = point_to_viewport(content.display_offset, content.cursor.point).filter(|p| p.line < term.screen_lines())?;
     let wide = term.grid()[content.cursor.point].flags.contains(Flags::WIDE_CHAR);
     Some((p.line, p.column.0, wide))
+}
+
+/// Whether the cursor blinks where someone can see it: a program that hid it (DECTCEM) or
+/// scrolled it off the view leaves nothing to blink, so no blink clock runs for it.
+pub fn cursor_blinks_shown(screen: &Screen) -> bool {
+    screen.cursor_blinks() && cursor_cell(screen).is_some()
 }
 
 /// Where a composition starts: the cursor's cell, whether or not a program hid the cursor
@@ -335,14 +341,29 @@ pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cel
     }
 }
 
+/// The tallest band `fill_polygon` fills (a smear is a cell or two; a profile's absurd values
+/// must not make a frame loop for ever).
+const POLYGON_MAX_BAND: f32 = 16384.0;
+
+/// The first and last row of pixel bands a polygon covers, None for a polygon that cannot be
+/// drawn: a point that is not finite, or a band taller than any pane.
+pub fn polygon_band(points: &[(f32, f32)]) -> Option<(f32, f32)> {
+    let top = points.iter().map(|p| p.1).fold(f32::INFINITY, f32::min).floor();
+    let bottom = points.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max).ceil();
+    if !top.is_finite() || !bottom.is_finite() || points.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) || bottom - top > POLYGON_MAX_BAND {
+        return None;
+    }
+    Some((top, bottom))
+}
+
 /// Fills a convex polygon with one-pixel horizontal bands (a path renderer is not worth it
-/// for the cursor's smear). Fewer than three points push nothing.
+/// for the cursor's smear). Fewer than three points, or points that cannot be drawn, push
+/// nothing.
 pub fn fill_polygon(quads: &mut Vec<Quad>, points: &[(f32, f32)], color: [f32; 4]) {
     if points.len() < 3 {
         return;
     }
-    let top = points.iter().map(|p| p.1).fold(f32::INFINITY, f32::min).floor();
-    let bottom = points.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max).ceil();
+    let Some((top, bottom)) = polygon_band(points) else { return };
     let mut y = top;
     while y < bottom {
         let cy = y + 0.5;
@@ -4423,7 +4444,7 @@ mod tests {
         pane(&mut f, &s, RECT, CELL, true, &smart);
         assert!(f.overlay.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0)), "{:?}", f.overlay);
         // A neighbor as bright as the text pushes the box to black (the farthest gray); the text keeps the cell background (0.9 from black, past 0.75).
-        let mut s = screen(b"\x1b[38;2;255;255;255m\x1b[48;2;230;230;230m\x1b[2J\x1b[Hab\x1b[1;2H");
+        let s = screen(b"\x1b[38;2;255;255;255m\x1b[48;2;230;230;230m\x1b[2J\x1b[Hab\x1b[1;2H");
         let mut f = Frame::default();
         pane(&mut f, &s, RECT, CELL, true, &smart);
         assert!(f.quads.iter().any(|q| q.color == rgba(rgb(0, 0, 0), 1.0) && q.rect.x == 10.0), "{:?}", f.quads);
@@ -4589,6 +4610,34 @@ mod tests {
         pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true));
         let u = f.overlay.iter().find(|q| q.color == rgba(s.palette.cursor, 1.0)).unwrap();
         assert_eq!(u.rect, Rect { x: 20.0, y: 18.0, w: 10.0, h: 2.0 });
+    }
+
+    #[test]
+    fn a_hidden_cursor_has_nothing_to_blink() {
+        let blinking = |bytes: &[u8]| {
+            let mut s = Screen::with_look(80, 24, crate::palette::Palette::default(), crate::screen::Look { cursor_blink: true, ..Default::default() });
+            s.feed(bytes);
+            s
+        };
+        assert!(cursor_blinks_shown(&blinking(b"ab")), "a blinking cursor, shown");
+        assert!(!cursor_blinks_shown(&blinking(b"ab\x1b[?25l")), "hidden by the program");
+        let mut s = blinking(&b"x\r\n".repeat(60));
+        assert!(cursor_blinks_shown(&s));
+        s.term_mut().scroll_display(alacritty_terminal::grid::Scroll::Delta(10));
+        assert!(!cursor_blinks_shown(&s), "scrolled off the view");
+    }
+
+    #[test]
+    fn fill_polygon_ignores_what_cannot_be_drawn() {
+        assert_eq!(polygon_band(&[(0.0, 0.0), (10.0, f32::NAN), (5.0, 10.0)]), None);
+        assert_eq!(polygon_band(&[(0.0, f32::INFINITY), (10.0, 0.0), (5.0, 10.0)]), None);
+        assert_eq!(polygon_band(&[(f32::NAN, 0.0), (10.0, 0.0), (5.0, 10.0)]), None);
+        assert_eq!(polygon_band(&[(0.0, 0.0), (10.0, 1.0e9), (5.0, 10.0)]), None);
+        assert_eq!(polygon_band(&[(0.0, 0.5), (10.0, 0.0), (5.0, 10.0)]), Some((0.0, 10.0)));
+        // A sane triangle still fills.
+        let mut q = Vec::new();
+        fill_polygon(&mut q, &[(0.0, 0.0), (10.0, 0.0), (5.0, 10.0)], [1.0; 4]);
+        assert!(!q.is_empty());
     }
 
     #[test]

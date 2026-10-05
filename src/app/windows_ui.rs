@@ -483,6 +483,28 @@ impl App {
         }
     }
 
+    /// Asks this window alone to draw again: a clock whose frame only this window shows must
+    /// not repaint the others (their frames would cancel its animations).
+    pub(super) fn redraw_here(&self) {
+        if let Some(g) = &self.gpu {
+            g.window.request_redraw();
+        }
+    }
+
+    /// Asks the window that holds `pane` (live or parked) to draw again, and no other.
+    pub(super) fn redraw_pane_window(&self, pane: PaneId) {
+        if self.tabs.iter().any(|t| t.layout.panes().contains(&pane)) {
+            return self.redraw_here();
+        }
+        for (_, slot) in self.windows.parked() {
+            if slot.tabs.iter().any(|t| t.layout.panes().contains(&pane)) {
+                if let Some(g) = &slot.gpu {
+                    g.window.request_redraw();
+                }
+            }
+        }
+    }
+
     /// Opens a terminal window with one tab of `guid` (the default profile when None).
     pub(super) fn open_window(&mut self, event_loop: &ActiveEventLoop, guid: Option<&str>) -> Result<WindowId, String> {
         self.open_window_with(event_loop, NewWindow::Profile(guid.map(str::to_string)))
