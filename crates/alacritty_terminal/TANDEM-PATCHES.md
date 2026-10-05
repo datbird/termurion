@@ -131,5 +131,8 @@ test data) is left out. Changes:
     gigabytes of a program's 1 MiB title. `KEYBOARD_MODE_STACK_MAX_DEPTH` keeps 4096 (it shared
     the constant). A title longer than 4096 bytes comes back cut from `CSI 23 t`. `Term::title_stack()`
     lets Tandem's tests read the stack.
+23. `term/cell.rs`: `Cell::push_zerowidth` keeps at most `MAX_ZEROWIDTH` (16) marks per cell; later
+    ones are dropped. Without it one `CSI 65535 b` after a combining mark added 65535 marks to a
+    cell (REP now repeats the whole cell, in Tandem's `pass`, but any stream of marks was unbounded).
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

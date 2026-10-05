@@ -9,6 +9,9 @@ use crate::grid::{self, GridCell};
 use crate::index::Column;
 use crate::vte::ansi::{Color, Hyperlink as VteHyperlink, NamedColor};
 
+/// Tandem patch: the most zero-width characters (combining marks) one cell keeps.
+pub const MAX_ZEROWIDTH: usize = 16;
+
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -175,6 +178,11 @@ impl Cell {
     /// Write a new zerowidth character to this cell.
     #[inline]
     pub fn push_zerowidth(&mut self, character: char) {
+        // Tandem patch: a cell holds at most `MAX_ZEROWIDTH` marks (13o, patch 23), so REP of a
+        // zero-width character, or a stream of them, cannot grow one cell without bound.
+        if self.extra.as_ref().is_some_and(|extra| extra.zerowidth.len() >= MAX_ZEROWIDTH) {
+            return;
+        }
         let extra = self.extra.get_or_insert(Default::default());
         Arc::make_mut(extra).zerowidth.push(character);
     }

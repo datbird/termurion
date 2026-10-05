@@ -966,6 +966,30 @@ impl Screen {
         reply
     }
 
+    /// REP after a character with combining marks repeats the whole cell, base and marks, as
+    /// iTerm2 does (`lastCharacter` is a cell); vte alone would repeat the last mark. The text to
+    /// feed instead, or None when the cell before the cursor has no marks (vte's repeat is then the
+    /// same).
+    fn rep_cell(&self, n: u16) -> Option<Vec<u8>> {
+        use alacritty_terminal::term::cell::Flags;
+        let g = self.term.grid();
+        let cur = g.cursor.point;
+        let mut col = cur.column.0;
+        if !g.cursor.input_needs_wrap {
+            col = col.saturating_sub(1);
+        }
+        if g[cur.line][Column(col)].flags.contains(Flags::WIDE_CHAR_SPACER) {
+            col = col.saturating_sub(1);
+        }
+        let cell = &g[cur.line][Column(col)];
+        let marks = cell.zerowidth().filter(|m| !m.is_empty())?;
+        let mut one = String::new();
+        one.push(cell.c);
+        one.extend(marks);
+        // The sequence's own bound (vte repeats at most 65535 times; 0 is once).
+        Some(one.repeat(n.max(1) as usize).into_bytes())
+    }
+
     /// What reaches the parser for a held sequence: its canonical bytes, a rewrite, or nothing.
     /// Later tasks add arms; until then every sequence passes as it would without being held.
     pub(crate) fn pass(&mut self, held: &crate::emu::Held) -> Option<Vec<u8>> {
@@ -973,6 +997,7 @@ impl Screen {
         use crate::prompted::Decision;
         match held {
             Held::Rep(_) if !self.rules.rep => None,
+            Held::Rep(n) => Some(self.rep_cell(*n).unwrap_or_else(|| rebuild(held))),
             Held::ClearHistory => match crate::emu::clear_history_decision(self.rules.clear_history) {
                 Decision::Apply => Some(rebuild(held)),
                 Decision::Deny => None,
@@ -3607,6 +3632,43 @@ mod tests {
             }
             assert!(s.term().grid().history_size() >= before, "round {round}: {stream:?} cleared history");
         }
+    }
+    /// 13o Task 2 fix 4: REP after a character with combining marks repeats the whole cell, and a
+    /// cell keeps a bounded number of marks.
+    #[test]
+    fn rep_repeats_the_whole_cell_and_marks_are_bounded() {
+        let cell = |s: &Screen, c: usize| {
+            let cell = &s.term.grid()[Line(0)][Column(c)];
+            let mut t = cell.c.to_string();
+            t.extend(cell.zerowidth().unwrap_or(&[]));
+            t
+        };
+        let mut s = Screen::new(20, 3);
+        s.feed("e\u{301}\x1b[2b".as_bytes());
+        assert_eq!((cell(&s, 0), cell(&s, 1), cell(&s, 2), cell(&s, 3)), ("e\u{301}".to_string(), "e\u{301}".to_string(), "e\u{301}".to_string(), " ".to_string()));
+        // A plain character repeats as before, and so does a wide one.
+        let mut s = Screen::new(20, 3);
+        s.feed("a\x1b[2b".as_bytes());
+        assert_eq!((cell(&s, 0), cell(&s, 1), cell(&s, 2)), ("a".into(), "a".into(), "a".into()));
+        let mut s = Screen::new(20, 3);
+        s.feed("\u{4e2d}\u{301}\x1b[1b".as_bytes());
+        assert_eq!((cell(&s, 0), cell(&s, 2)), ("\u{4e2d}\u{301}".to_string(), "\u{4e2d}\u{301}".to_string()));
+        // The switch still drops it.
+        let mut s = Screen::new(20, 3);
+        s.set_rules(crate::emu::Rules { rep: false, ..Default::default() });
+        s.feed("e\u{301}\x1b[2b".as_bytes());
+        assert_eq!(cell(&s, 1), " ");
+        // A flood adds no marks to the first cell, and no cell holds more than the cap.
+        let mut s = Screen::new(20, 3);
+        s.feed("e\u{301}\x1b[65535b\x1b[65535b".as_bytes());
+        assert_eq!(s.term.grid()[Line(0)][Column(0)].zerowidth().map(<[char]>::len).unwrap_or(0) <= 1, true);
+        let mut s = Screen::new(20, 3);
+        s.feed(format!("e{}", "\u{301}".repeat(100)).as_bytes());
+        let marks = s.term.grid()[Line(0)][Column(0)].zerowidth().map(<[char]>::len).unwrap_or(0);
+        assert_eq!(marks, alacritty_terminal::term::cell::MAX_ZEROWIDTH);
+        s.feed("\x1b[65535b".as_bytes());
+        let most = (0..3).flat_map(|l| (0..20).map(move |c| (l, c))).map(|(l, c)| s.term.grid()[Line(l)][Column(c)].zerowidth().map(<[char]>::len).unwrap_or(0)).max();
+        assert_eq!(most, Some(alacritty_terminal::term::cell::MAX_ZEROWIDTH));
     }
     /// 13o Task 2 fix 3: the title stack stays small however long the titles and however many
     /// pushes (a 1 MiB title pushed 4096 times held 4 GiB).
