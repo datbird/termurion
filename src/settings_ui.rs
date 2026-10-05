@@ -718,7 +718,11 @@ impl SettingsWindow {
                             }
                             let enabled = crate::transparency::row_enabled(&s.key, profile.float("Transparency"), profile.bool("Blur")) && profile_row_enabled(profile, &s.key, dark);
                             let mut changed = false;
-                            ui.add_enabled_ui(enabled, |ui| changed = control(ui, profile, s, dark, is_default));
+                            if s.key == "Progress Bar Height" {
+                                ui.add_enabled_ui(enabled, |ui| changed = progress_height_row(ui, profile, s, globals.int("TerminalVMargin")));
+                            } else {
+                                ui.add_enabled_ui(enabled, |ui| changed = control(ui, profile, s, dark, is_default));
+                            }
                             // The notes under Transparency and Blur Radius (PWP:157-170, 762-769).
                             if s.key == "Transparency" && profile.float("Transparency") > 0.0 {
                                 ui.label(egui::RichText::new(crate::transparency::OVERRIDE_NOTICE).small());
@@ -1124,12 +1128,43 @@ pub fn profile_row_enabled(p: &Profile, key: &str, dark: bool) -> bool {
             let option = key.replace("Directory", "Option");
             p.string("Custom Directory") == "Advanced" && p.string(&option) == "Yes"
         }
+        // The bar's height and scheme need Enable Progress Bars (`PSV:357-385`).
+        "Progress Bar Height" | "Progress Bar Color Scheme" => p.bool("Enable Progress Bars"),
         // Change Locale is for the Custom mode (`PTM:397-445`).
         "Custom Locale" => p.int("Set Local Environment Vars") == 2,
         // The swatch follows its switch (`ProfilesColorsPreferencesViewController.m:468`).
         "Underline Color" => p.bool_for("Use Underline Color", dark),
         _ => true,
     }
+}
+
+/// The line beside the Progress Bar Height field: a typed height above the top margin was cut
+/// to it (`PSV:365-371`).
+pub fn height_message(typed: f64, margin: i64) -> Option<&'static str> {
+    crate::progress::clamp_typed(typed, margin as f64).1.then_some(crate::progress::HEIGHT_TOO_TALL)
+}
+
+/// The Progress Bar Height field (`PSV:358-371`): a typed value is cut to 1 up to the top margin,
+/// and one above the margin shows `HEIGHT_TOO_TALL` beside the field until the next edit.
+/// True when a change is committed (a drag ended or a typed value was taken).
+fn progress_height_row(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, margin: i64) -> bool {
+    let id = egui::Id::new("progress_height_cut");
+    let mut commit = false;
+    ui.horizontal(|ui| {
+        ui.label(&s.label);
+        let mut height = profile.float(&s.key);
+        let r = ui.add(egui::DragValue::new(&mut height).speed(0.1).range(0.0..=1000.0));
+        if r.changed() {
+            let (value, cut) = crate::progress::clamp_typed(height, margin as f64);
+            profile.set(&s.key, Value::Float(value));
+            ui.ctx().data_mut(|d| d.insert_temp(id, cut));
+            commit = r.drag_stopped() || !r.dragged();
+        }
+        if ui.ctx().data(|d| d.get_temp::<bool>(id)).unwrap_or(false) {
+            ui.label(egui::RichText::new(crate::progress::HEIGHT_TOO_TALL.replace("**", "")).small());
+        }
+    });
+    commit
 }
 
 /// The line under "Set Locale Variables" (`PTM:397-445`): `LANG=<locale>` in the fixed font and
@@ -1862,6 +1897,23 @@ mod tests {
             p.set("Set Local Environment Vars", Value::Integer(mode));
             assert_eq!(profile_row_enabled(&p, "Custom Locale", false), on, "mode {mode}");
         }
+    }
+
+    /// 13p: the progress bar's height and color scheme need "Enable Progress Bars"
+    /// (`PSV:357-385`); the switch itself is always on offer.
+    #[test]
+    fn progress_rows_enable_as_iterm2() {
+        let mut p = Profile::default();
+        for (on, expect) in [(true, true), (false, false)] {
+            p.set("Enable Progress Bars", Value::Boolean(on));
+            assert_eq!(profile_row_enabled(&p, "Progress Bar Height", false), expect, "height, enabled {on}");
+            assert_eq!(profile_row_enabled(&p, "Progress Bar Color Scheme", false), expect, "scheme, enabled {on}");
+            assert!(profile_row_enabled(&p, "Enable Progress Bars", false));
+        }
+        // The clamp message shows beside the field only for a value above the margin.
+        assert_eq!(height_message(5.0, 2), Some(crate::progress::HEIGHT_TOO_TALL));
+        assert_eq!(height_message(2.0, 2), None);
+        assert_eq!(height_message(0.0, 2), None);
     }
 
     #[test]

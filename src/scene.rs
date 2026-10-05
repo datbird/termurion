@@ -1590,6 +1590,38 @@ pub enum ButtonFace {
     Blank,
 }
 
+/// A horizontal gradient over `rect` (`CAGradientLayer`: `colors` as sRGB floats with alpha at
+/// evenly spaced locations, left to right), cut to `clip`, in vertical slices at most 2 pixels
+/// wide in `frame.overlay` (OSC 9;4 progress bars).
+pub fn gradient_bar(frame: &mut Frame, rect: Rect, colors: &[[f32; 4]], clip: Rect) {
+    const SLICE: f32 = 2.0;
+    if colors.is_empty() || rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
+    }
+    // Locations are i / (n - 1), a single color is flat (`CAGradientLayer.locations`).
+    let color_at = |t: f32| -> [f32; 4] {
+        if colors.len() == 1 {
+            return colors[0];
+        }
+        let x = t.clamp(0.0, 1.0) * (colors.len() - 1) as f32;
+        let i = (x.floor() as usize).min(colors.len() - 2);
+        let f = x - i as f32;
+        let (a, b) = (colors[i], colors[i + 1]);
+        [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f]
+    };
+    let linear = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+    let first = ((clip.x - rect.x) / SLICE).floor().max(0.0) as usize;
+    let mut x = rect.x + first as f32 * SLICE;
+    while x < rect.x + rect.w && x < clip.x + clip.w {
+        let w = SLICE.min(rect.x + rect.w - x);
+        let c = color_at((x + w / 2.0 - rect.x) / rect.w);
+        if let Some(r) = cut(Rect { x, y: rect.y, w, h: rect.h }, clip) {
+            frame.overlay.push(Quad { rect: r, color: [linear(c[0]), linear(c[1]), linear(c[2]), c[3]] });
+        }
+        x += SLICE;
+    }
+}
+
 /// OSC 1337 inline buttons: a faint rounded box with the icon, at 40% when inert.
 pub fn inline_buttons(frame: &mut Frame, buttons: &[(Rect, ButtonFace, bool)], bg: Rgb, fg: Rgb) {
     for (r, face, valid) in buttons {
@@ -1646,6 +1678,49 @@ pub struct TabLook {
     pub hidden: bool,
     /// The session's icon (`PTYSession tabGraphic`), drawn 16 by 16 points at the tab's left.
     pub icon_image: Option<TabImage>,
+    /// OSC 9;4 in the tab's cell (`TBC:305-356`): the tab's progress, its clock, the active
+    /// pane's color scheme and whether the tab bar is dark. Set only when the cell shows one.
+    pub progress: Option<ProgressLook>,
+}
+
+/// What a progress bar draws from: the state, its animation clock, the color scheme's name, dark.
+pub type ProgressLook = (crate::progress::Progress, crate::progress::Anim, String, bool);
+
+/// The tab bar's progress bar is this many points high (`PSMTabBarProgressBarHeight`).
+pub const TAB_PROGRESS_PT: f32 = 2.0;
+
+/// One OSC 9;4 bar in `rect` (`iTermProgressBarView`), cut to `clip`: the profile's background
+/// first when `bg` is given, then by state a determinate gradient to its eased width, two copies
+/// of the bar-wide indeterminate gradient at their centers, or the error gradient pulsing toward
+/// its light colors. The clock counts in fractions of the bar (see `progress::Anim`).
+pub fn progress_bar(frame: &mut Frame, rect: Rect, look: &ProgressLook, bg: Option<Rgb>, clip: Rect, now: std::time::Instant) {
+    use crate::progress::{self, Progress};
+    let (p, anim, scheme, dark) = (look.0, &look.1, look.2.as_str(), look.3);
+    let Some(clip) = cut(rect, clip).filter(|_| p != Progress::Stopped) else { return };
+    if let Some(bg) = bg {
+        if let Some(r) = cut(rect, clip) {
+            frame.overlay.push(Quad { rect: r, color: rgba(bg, 1.0) });
+        }
+    }
+    match p {
+        Progress::Stopped => {}
+        Progress::Error => {
+            let (base, light) = progress::error_colors(dark);
+            let t = anim.pulse(now);
+            let mixed: Vec<[f32; 4]> = base.iter().zip(&light).map(|(b, l)| [b[0] + (l[0] - b[0]) * t, b[1] + (l[1] - b[1]) * t, b[2] + (l[2] - b[2]) * t, b[3] + (l[3] - b[3]) * t]).collect();
+            gradient_bar(frame, rect, &mixed, clip);
+        }
+        Progress::Indeterminate => {
+            let colors = progress::scheme_colors(scheme, dark, true);
+            for center in anim.indeterminate_offsets(rect.w, dark, now) {
+                gradient_bar(frame, Rect { x: rect.x + center - rect.w / 2.0, ..rect }, &colors, clip);
+            }
+        }
+        Progress::Success(_) | Progress::ErrorAt(_) | Progress::Warning(_) => {
+            let w = (anim.width(now) * rect.w).clamp(0.0, rect.w);
+            gradient_bar(frame, Rect { w, ..rect }, &progress::determinate_colors(p, scheme, dark), clip);
+        }
+    }
 }
 
 /// A tab's icon picture (`app::tab_groups_ui::tab_icon_for`): a decoded picture (a bundled icon
@@ -1935,6 +2010,10 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
             if let Some(fill) = colored {
                 fill_quad(frame, cell, fill);
             }
+        }
+        // OSC 9;4: the tab's bar, 2 points at the top of the cell (`PSMYosemiteTabStyle.m:266-272`).
+        if let Some(look) = &tab.progress {
+            progress_bar(frame, Rect { h: TAB_PROGRESS_PT * scale, ..cell }, look, None, clip, std::time::Instant::now());
         }
         let color = over(back, text_fill);
         // A glyph from the icon font centered in `box_`.
@@ -8151,5 +8230,130 @@ mod drawn_overlay_tests {
         scrollbar(&mut dark, &g, Style::Overlay, true, false);
         assert_ne!(dark.scrollbars[0].color[..3], calm.scrollbars[0].color[..3]);
         assert!(over.scrollbars[0].color[3] > calm.scrollbars[0].color[3], "hover is stronger");
+    }
+    /// 13p: the progress gradient is vertical slices of at most 2 pixels in `overlay`, colors
+    /// evenly spaced, alpha kept, cut to the clip.
+    #[test]
+    fn gradient_bar_follows_calayer() {
+        let lin = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+        let rect = Rect { x: 0.0, y: 4.0, w: 100.0, h: 2.0 };
+        let mut f = Frame::default();
+        gradient_bar(&mut f, rect, &[[0.0, 0.0, 0.0, 0.5], [1.0, 1.0, 1.0, 0.5]], rect);
+        assert!(f.quads.is_empty() && f.popups.is_empty() && f.rows.is_empty());
+        assert_eq!(f.overlay.len(), 50);
+        let mut x = 0.0;
+        for q in &f.overlay {
+            assert_eq!((q.rect.x, q.rect.y, q.rect.w, q.rect.h), (x, 4.0, 2.0, 2.0));
+            assert_eq!(q.color[3], 0.5);
+            x += 2.0;
+        }
+        assert!(f.overlay[0].color[0] < f.overlay[49].color[0]);
+        assert!((f.overlay[0].color[0] - lin(0.01)).abs() < 1e-4, "{:?}", f.overlay[0].color);
+        assert!((f.overlay[49].color[0] - lin(0.99)).abs() < 1e-4);
+        // Three colors sit at 0, 0.5 and 1: the middle slice is the middle color.
+        let mut g = Frame::default();
+        gradient_bar(&mut g, rect, &[[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]], rect);
+        let mid = g.overlay[24].color;
+        assert!(mid[1] > 0.9 && mid[0] < 0.05 && mid[2] < 0.05, "{mid:?}");
+        // One color fills flat; a clip cuts the slices; an odd width ends in a short slice.
+        let mut h = Frame::default();
+        gradient_bar(&mut h, Rect { x: 0.0, y: 0.0, w: 5.0, h: 2.0 }, &[[1.0, 1.0, 1.0, 1.0]], Rect { x: 0.0, y: 0.0, w: 5.0, h: 2.0 });
+        assert_eq!(h.overlay.iter().map(|q| q.rect.w).collect::<Vec<_>>(), vec![2.0, 2.0, 1.0]);
+        let mut c = Frame::default();
+        gradient_bar(&mut c, rect, &[[1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 1.0]], Rect { x: 10.0, y: 0.0, w: 20.0, h: 100.0 });
+        let spans: Vec<(f32, f32)> = c.overlay.iter().map(|q| (q.rect.x, q.rect.x + q.rect.w)).collect();
+        assert_eq!(spans.first().unwrap().0, 10.0);
+        assert_eq!(spans.last().unwrap().1, 30.0);
+        assert!(c.overlay.iter().all(|q| q.rect.h == 2.0));
+        // Nothing to draw for no colors or no width.
+        let mut e = Frame::default();
+        gradient_bar(&mut e, rect, &[], rect);
+        gradient_bar(&mut e, Rect { w: 0.0, ..rect }, &[[1.0; 4]], rect);
+        assert!(e.overlay.is_empty());
+    }
+    /// 13p: each bar state draws as iTerm2 builds it (`PBV:359-535`).
+    #[test]
+    fn progress_bar_draws_by_state() {
+        use crate::progress::{Anim, Progress};
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let rect = Rect { x: 10.0, y: 0.0, w: 100.0, h: 2.0 };
+        let look = |p: Progress| {
+            let mut a = Anim::default();
+            a.update(p, 1.0, t0);
+            (p, a, "default".to_string(), true)
+        };
+        let mut f = Frame::default();
+        progress_bar(&mut f, rect, &look(Progress::Stopped), Some(rgb(1, 2, 3)), rect, t0);
+        assert!(f.overlay.is_empty(), "a stopped bar draws nothing, not even its background");
+        // Determinate: the background, then the gradient from the left to the width.
+        let mut f = Frame::default();
+        progress_bar(&mut f, rect, &look(Progress::Success(50)), Some(rgb(1, 2, 3)), rect, t0);
+        assert_eq!(f.overlay[0], Quad { rect, color: rgba(rgb(1, 2, 3), 1.0) });
+        let right = f.overlay[1..].iter().map(|q| q.rect.x + q.rect.w).fold(0.0, f32::max);
+        assert_eq!(right, 60.0);
+        assert_eq!(f.overlay[1].rect.x, 10.0);
+        assert!(f.overlay[1].color[1] > f.overlay[1].color[0], "the dark default is green");
+        assert!(f.overlay.iter().all(|q| q.rect.h == 2.0 && q.rect.y == 0.0));
+        // Indeterminate: both copies stay inside the bar; the gradient moves with the clock.
+        let mut a = Frame::default();
+        let mut b = Frame::default();
+        let ind = look(Progress::Indeterminate);
+        progress_bar(&mut a, rect, &ind, None, rect, t0 + Duration::from_millis(300));
+        progress_bar(&mut b, rect, &ind, None, rect, t0 + Duration::from_millis(900));
+        assert!(!a.overlay.is_empty() && !b.overlay.is_empty());
+        for q in a.overlay.iter().chain(&b.overlay) {
+            assert!(q.rect.x >= 10.0 && q.rect.x + q.rect.w <= 110.0, "{:?}", q.rect);
+        }
+        assert_ne!(a.overlay, b.overlay);
+        // Error: base colors at rest, light colors at the top of the pulse.
+        let err = look(Progress::Error);
+        let (mut rest, mut top) = (Frame::default(), Frame::default());
+        progress_bar(&mut rest, rect, &err, None, rect, t0);
+        progress_bar(&mut top, rect, &err, None, rect, t0 + Duration::from_millis(800));
+        assert_eq!(rest.overlay.len(), top.overlay.len());
+        assert!(top.overlay[0].color[1] > rest.overlay[0].color[1], "{:?} {:?}", top.overlay[0].color, rest.overlay[0].color);
+        // A clip narrower than the bar cuts it.
+        let mut c = Frame::default();
+        progress_bar(&mut c, rect, &look(Progress::Success(100)), None, Rect { x: 30.0, y: 0.0, w: 20.0, h: 2.0 }, t0);
+        assert!(c.overlay.iter().all(|q| q.rect.x >= 30.0 && q.rect.x + q.rect.w <= 50.0));
+    }
+
+    /// 13p: a tab's cell draws its bar 2 points high at its top (`PSMTabBarProgressBarHeight`),
+    /// inside the cell; a tab with no progress draws none.
+    #[test]
+    fn tab_cell_draws_its_progress_bar() {
+        use crate::progress::{Anim, Progress};
+        use crate::tab_layout::{self, TabInput};
+        use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
+        let pal = palette(
+            TabStyle::Light,
+            &Inputs { system_dark: false, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 2 },
+        );
+        let mut anim = Anim::default();
+        anim.update(Progress::Success(50), 1.0, std::time::Instant::now());
+        let mut looks = vec![TabLook { title: "one".into(), number: 1, ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
+        let inputs: Vec<TabInput> = looks
+            .iter()
+            .map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
+            .collect();
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, None, &s, &six);
+        let area = Rect { x: 0.0, y: 10.0, w: 400.0, h: 24.0 };
+        let mut plain = Frame::default();
+        tab_bar(&mut plain, &looks, 0, &bar, area, 1.0, 0.1, 20.0, true, false, &pal);
+        assert!(plain.overlay.is_empty());
+        looks[1].progress = Some((Progress::Success(50), anim, "default".into(), false));
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, true, false, &pal);
+        let cell = Rect { x: area.x + bar.cells[1].2.x, y: area.y + bar.cells[1].2.y, w: bar.cells[1].2.w, h: bar.cells[1].2.h };
+        assert!(!f.overlay.is_empty());
+        for q in &f.overlay {
+            assert_eq!((q.rect.y, q.rect.h), (cell.y, TAB_PROGRESS_PT), "{:?}", q.rect);
+            assert!(q.rect.x >= cell.x && q.rect.x + q.rect.w <= cell.x + cell.w, "{:?} in {cell:?}", q.rect);
+        }
+        let right = f.overlay.iter().map(|q| q.rect.x + q.rect.w).fold(0.0, f32::max);
+        assert!((right - (cell.x + cell.w / 2.0)).abs() < 0.01, "half the cell: {right} of {cell:?}");
     }
 }

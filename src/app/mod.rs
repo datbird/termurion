@@ -93,6 +93,7 @@ mod seltools_ui;
 mod view_ui;
 mod marks_ui;
 mod offscreen_ui;
+mod progress_ui;
 mod menu;
 mod porthole_ui;
 mod prompted_ui;
@@ -973,6 +974,9 @@ pub struct App {
     cursor_due: Option<Instant>,
     /// When the running cursor slide or smear next asks for a frame.
     anim_frame: Option<Instant>,
+    /// When the next OSC 9;4 bar frame is due (`tick_progress`); panes are shared by every
+    /// window, so app-wide and not in `swap_live`.
+    progress_frame: Option<Instant>,
     /// The focused pane's smooth-blink fade, advanced by `tick_cursor`.
     blink_fade: crate::cursor_anim::Fade,
     /// The smooth blink's alpha for the key window's focused pane, stored by `tick_cursor`
@@ -1936,6 +1940,7 @@ pub fn run() {
         blink: crate::cursor_anim::Blink::new(Instant::now()),
         cursor_due: None,
         anim_frame: None,
+        progress_frame: None,
         blink_fade: crate::cursor_anim::Fade::default(),
         cursor_alpha: None,
         api_server: None,
@@ -5183,6 +5188,8 @@ impl App {
         if self.tab_press_moved() {
             self.tab_press = None;
         }
+        // The bars' clocks follow what programs reported, before the tab bar's looks read them.
+        self.update_progress_anims(Instant::now());
         if let Some(area) = self.tab_bar_rect() {
             let mut looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
             if let Some(i) = held_close(self.tab_press) {
@@ -5402,6 +5409,7 @@ impl App {
                         scene::fps_meter(&mut frame, &text, self.text_rect(id, rect), cell);
                     }
                 }
+                self.draw_inline_progress(&mut frame, id, rect);
                 for row in frame.rows[rows_from..].iter_mut().filter(|r| r.face == crate::render::DEFAULT_FACE) {
                     row.face = face;
                 }
@@ -5934,7 +5942,9 @@ impl ApplicationHandler<UserEvent> for App {
         let cursor_due = self.tick_cursor();
         let frame_due = self.frame_wake();
         let flicker_due = self.flicker_tick(Instant::now());
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due].into_iter().flatten().min();
+        self.tick_progress();
+        let progress_due = self.progress_wake();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due, progress_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),

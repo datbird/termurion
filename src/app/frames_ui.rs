@@ -67,7 +67,7 @@ impl App {
 
     /// 13k's one decision for "a pane blinking a cursor or animating", for the key window.
     fn window_active(&self) -> bool {
-        self.blink_clock_needed() || self.anim_frame.is_some()
+        self.blink_clock_needed() || self.anim_frame.is_some() || self.progress_frame.is_some()
     }
 
     /// The panes of the current window's front tab, and of its other tabs; both empty when the

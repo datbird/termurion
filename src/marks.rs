@@ -1135,14 +1135,17 @@ impl Screen {
                 self.requests.push(crate::screen::Request::Notify { title: None, message: text.clone() });
                 self.fire_event(crate::trigger_events::EventKind::NotificationPosted, &crate::trigger_events::EventFacts { value: text.clone(), ..Default::default() }, &[text]);
             }
-            Osc::Progress(p) => {
-                // 9;4;0 removes the bar; any other state shows it.
-                let shown = p.split(';').next().is_some_and(|st| st.trim() != "0");
-                if shown != self.progress_shown {
-                    self.progress_shown = shown;
-                    self.requests.push(crate::screen::Request::Progress(shown));
-                    let word = if shown { "appeared" } else { "disappeared" };
-                    self.fire_event(crate::trigger_events::EventKind::ProgressBarChanged, &crate::trigger_events::EventFacts { appeared: shown, ..Default::default() }, &[word.to_string()]);
+            Osc::Progress(body) => {
+                // 9;4 reads as iTerm2 does (`TDEL:1607-1660`): a bare 9;4 stops, a bad or
+                // out-of-range field is ignored. The event fires when the bar appears or goes.
+                if let Some(next) = crate::progress::parse(body.as_deref(), self.progress) {
+                    let (was, shown) = (self.progress.visible(), next.visible());
+                    self.progress = next;
+                    if shown != was {
+                        self.requests.push(crate::screen::Request::Progress(shown));
+                        let word = if shown { "appeared" } else { "disappeared" };
+                        self.fire_event(crate::trigger_events::EventKind::ProgressBarChanged, &crate::trigger_events::EventFacts { appeared: shown, ..Default::default() }, &[word.to_string()]);
+                    }
                 }
             }
             Osc::Sixel(data) => self.sixel(&data),

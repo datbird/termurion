@@ -316,8 +316,8 @@ pub struct Screen {
     pub triggers: crate::trigger_eval::TriggerState,
     /// Bells rung (iTerm2's bellCount).
     pub bell_count: u64,
-    /// OSC 9;4 shows a progress bar now.
-    pub progress_shown: bool,
+    /// What OSC 9;4 last reported (`VT100ScreenProgress`).
+    pub progress: crate::progress::Progress,
     /// When output last arrived (Idle and Activity After Idle event triggers).
     pub last_output: Option<std::time::Instant>,
     /// Variables the window owns, for interpolated strings (`session.name`, `tab.title`).
@@ -620,7 +620,7 @@ impl Screen {
             triggers: crate::trigger_eval::TriggerState::default(),
             app_vars: std::collections::HashMap::new(),
             bell_count: 0,
-            progress_shown: false,
+            progress: crate::progress::Progress::Stopped,
             last_output: None,
             next_porthole: 0,
             porthole_wide_default: false,
