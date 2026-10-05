@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::session_end::{self as se, EndAction, Exit, Message, Outcome, TmuxAfter};
+use super::scripts_alerts::{Ask, Then};
 
 /// The bar that lists programs an exited shell left running (13q P8; Tandem's own).
 const SURVIVORS_BAR: &str = "session-end-survivors";
@@ -30,6 +31,30 @@ pub(super) fn restartable_for(tmux: bool, read_only: bool, single_use: bool, hol
 }
 
 impl App {
+    /// The warning when an ended session is closed within `ShortLivedSessionDuration` of its start
+    /// (`terminate`, `PS:3887-3898`): measured now, keyed by the saved profile's Guid for a session
+    /// copy (`PS:3767-3772`). 13b's queue shows nothing for a silenced key.
+    pub(super) fn warn_short_lived(&mut self, id: PaneId) {
+        let Some(p) = self.panes.get(&id) else { return };
+        let facts = se::CloseFacts {
+            exited: p.exited.is_some(),
+            single_use: self.single_use.contains_key(&id),
+            tmux: p.tmux_io().is_some(),
+            read_only: p.dvr.read_only,
+            hold_open: p.hold_open,
+            // Archives restore panes that ended long ago; none is flagged yet (Task 8).
+            archived: false,
+            lived: p.created_at.elapsed(),
+            limit_seconds: self.globals.number("ShortLivedSessionDuration").unwrap_or(3.0),
+        };
+        if !se::short_lived_due(facts) {
+            return;
+        }
+        let saved = self.store.shared_guid(&p.profile);
+        let name = self.store.get(&saved).or_else(|| self.store.get(&p.profile)).map(|pr| pr.name()).unwrap_or_default();
+        self.ask_scripts(Ask::new(se::short_lived_spec(&saved, &name), Then::ShortLived));
+    }
+
     /// What the pane does when its session ends.
     pub(super) fn end_action_of(&self, id: PaneId) -> EndAction {
         let single = self.single_use.get(&id).map(|s| s.end_action);

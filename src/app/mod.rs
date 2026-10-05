@@ -3911,6 +3911,8 @@ impl App {
 
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        // An ended session closed too soon warns first (`terminate`, `PS:3887`).
+        self.warn_short_lived(id);
         // The source ending cancels the pick (`PS:3940-3942`).
         self.pane_move_event(pane_move_ui::PickEvent::Ended(id));
         // Every chat linked to this session unlinks while its reference still names the pane.

@@ -106,6 +106,9 @@ pub(super) enum Then {
     Rebuild(crate::script_launch::Request),
     /// "Error running script": OK only.
     ErrorRunning,
+    /// The short-lived session warning: OK only. A checked box was remembered by the queue under
+    /// the saved profile's key (the Settings row reads the same key); nothing more to do.
+    ShortLived,
     /// "Spaces Not Allowed": Use _ Instead of Space (0) goes on with the new name; Change Name
     /// (1) opens the save dialog again.
     Spaces(crate::script_new::Plan),
@@ -412,7 +415,7 @@ impl App {
     /// Acts on an answer: the button's place in the alert's buttons.
     pub(super) fn scripts_answered(&mut self, then: Then, index: usize) {
         match then {
-            Then::Nothing | Then::ErrorRunning | Then::ExportFailed => {}
+            Then::Nothing | Then::ErrorRunning | Then::ExportFailed | Then::ShortLived => {}
             Then::TurnOnOsc7 { was_silenced } => self.osc7_answered(was_silenced, index),
             Then::Paste(pane) => self.paste_answered(pane, Some(index)),
             Then::PrintGuard { pane, job } => self.print_guard_answered(pane, job, index),

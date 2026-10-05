@@ -1118,20 +1118,14 @@ pub const SHORT_LIVED_LABEL: &str = "Warn about short-lived sessions";
 
 /// The phony check box under "After a session ends": checked while the profile's silence key is
 /// not set, enabled only for Close (end action 1). Unchecking silences the warning for the saved
-/// profile for good (the key true, its selection 0); checking removes both. True on a change.
+/// profile for good (the key true, its selection 0); checking removes both and the silence time. True on a change.
 pub fn short_lived_row(ui: &mut egui::Ui, p: &Profile, saved_guid: &str, g: &mut Globals) -> bool {
     let key = crate::session_end::short_lived_key(saved_guid);
     let mut on = !g.bool(&key);
     let enabled = p.int(crate::session_end::END_ACTION_KEY) == 1;
     let changed = ui.add_enabled(enabled, egui::Checkbox::new(&mut on, SHORT_LIVED_LABEL)).changed();
     if changed {
-        if on {
-            g.unset(&key);
-            g.unset(&crate::session_end::short_lived_selection_key(saved_guid));
-        } else {
-            g.set(&key, Value::Boolean(true));
-            g.set(&crate::session_end::short_lived_selection_key(saved_guid), Value::Integer(0));
-        }
+        crate::session_end::set_short_lived_warning(g, saved_guid, on);
     }
     changed
 }

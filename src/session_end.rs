@@ -189,6 +189,68 @@ pub fn end_line(width: usize, text: &str, divider: &str) -> String {
     end_line_with(width, text, divider, UnicodeWidthStr::width)
 }
 
+/// The heading of the short-lived warning: none is given, so `iTermWarning`'s "Warning"
+/// (`iTermWarning.m:330`).
+pub const SHORT_LIVED_HEADING: &str = "Warning";
+
+/// Whether a session that lived `lived` ended too soon (`PS:3748`). A limit that is not a
+/// finite, positive number is 0: nothing is short-lived.
+pub fn short_lived(lived: Duration, limit_seconds: f64) -> bool {
+    let limit = if limit_seconds.is_finite() && limit_seconds > 0.0 { limit_seconds } else { 0.0 };
+    lived.as_secs_f64() < limit
+}
+
+/// The warning's text for the profile named `profile_name` (`PS:3805`).
+pub fn short_lived_text(profile_name: &str) -> String {
+    format!("A session ended very soon after starting. Check that the command in profile \u{201c}{profile_name}\u{201d} is correct.")
+}
+
+/// The warning as an alert: OK, permanently silenceable under the saved profile's key
+/// (`iTermWarning` kind permanent, so the box reads "Suppress this message permanently").
+pub fn short_lived_spec(saved_guid: &str, profile_name: &str) -> crate::warnings::Spec {
+    crate::warnings::Spec {
+        id: Some(short_lived_key(saved_guid)),
+        kind: crate::warnings::Kind::Permanent,
+        heading: SHORT_LIVED_HEADING.to_string(),
+        text: short_lived_text(profile_name),
+        labels: vec![crate::api_auth::OK.to_string()],
+        cancel: None,
+        never_remember: Vec::new(),
+    }
+}
+
+/// What the close of a pane knows when it decides to warn.
+#[derive(Clone, Copy, Debug)]
+pub struct CloseFacts {
+    pub exited: bool,
+    pub single_use: bool,
+    pub tmux: bool,
+    pub read_only: bool,
+    pub hold_open: bool,
+    pub archived: bool,
+    pub lived: Duration,
+    pub limit_seconds: f64,
+}
+
+/// Whether closing the pane warns (`PS:3748-3822`, `PS:3887-3898`): an ended session that is not
+/// single-use, tmux, a recording, a kept-open pane or an archive, and lived under the limit.
+pub fn short_lived_due(f: CloseFacts) -> bool {
+    f.exited && !f.single_use && !f.tmux && !f.read_only && !f.hold_open && !f.archived && short_lived(f.lived, f.limit_seconds)
+}
+
+/// The write of the Settings check box "Warn about short-lived sessions" (`PSV:391-446`):
+/// unchecked silences the saved profile's warning for good (key true, answer 0); checked forgets
+/// the key, its answer and its silence time (`unsilenceIdentifier:`, `warnings::clear_saved`).
+pub fn set_short_lived_warning(s: &mut dyn crate::warnings::Store, saved_guid: &str, warn: bool) {
+    let key = short_lived_key(saved_guid);
+    if warn {
+        crate::warnings::clear_saved(s, &key);
+    } else {
+        s.set(&key, toml::Value::Boolean(true));
+        s.set(&crate::warnings::selection_key(&key), toml::Value::Integer(0));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +310,83 @@ mod tests {
         assert_eq!(end_line_with(20, "Session Ended", "", wide), "\u{2500} Session Ended \u{2500}");
         let narrow = |s: &str| s.chars().count();
         assert_eq!(end_line_with(20, "Session Ended", "", narrow), "\u{2500}\u{2500} Session Ended \u{2500}\u{2500}\u{2500}");
+    }
+
+    #[derive(Default)]
+    struct MapStore(std::collections::BTreeMap<String, toml::Value>);
+    impl crate::warnings::Store for MapStore {
+        fn get(&self, key: &str) -> Option<toml::Value> {
+            self.0.get(key).cloned()
+        }
+        fn set(&mut self, key: &str, v: toml::Value) {
+            self.0.insert(key.to_string(), v);
+        }
+        fn remove(&mut self, key: &str) {
+            self.0.remove(key);
+        }
+    }
+
+    #[test]
+    fn short_lived_follows_iterm2() {
+        let s = Duration::from_secs;
+        assert!(short_lived(s(2), 3.0));
+        assert!(!short_lived(s(3), 3.0));
+        assert!(!short_lived(s(2), 0.0));
+        assert!(!short_lived(s(2), f64::NAN));
+        assert!(!short_lived(s(2), f64::INFINITY));
+        assert!(!short_lived(s(2), -1.0));
+        assert_eq!(short_lived_text("Default"), "A session ended very soon after starting. Check that the command in profile \u{201c}Default\u{201d} is correct.");
+        assert_eq!(SHORT_LIVED_HEADING, "Warning");
+    }
+
+    #[test]
+    fn short_lived_key_follows_the_saved_profile() {
+        use crate::warnings::{checkbox_label, preempt, Kind, Preempt};
+        let spec = short_lived_spec("G", "Default");
+        assert_eq!(spec.id.as_deref(), Some("NeverWarnAboutShortLivedSessions_G"));
+        assert_eq!(spec.kind, Kind::Permanent);
+        assert_eq!(spec.labels, vec!["OK".to_string()]);
+        assert_eq!(spec.cancel, None);
+        assert_eq!(spec.heading, "Warning");
+        assert_eq!(checkbox_label(&spec), Some("Suppress this message permanently"));
+        let mut store = MapStore::default();
+        assert_eq!(preempt(&spec, &store, 0.0, false), Preempt::Show);
+        use crate::warnings::Store;
+        store.set("NeverWarnAboutShortLivedSessions_G", toml::Value::Boolean(true));
+        store.set("NeverWarnAboutShortLivedSessions_G_selection", toml::Value::Integer(0));
+        assert_eq!(preempt(&spec, &store, 0.0, false), Preempt::Answer(0));
+    }
+
+    #[test]
+    fn short_lived_is_due_only_for_a_plain_ended_session() {
+        let base = CloseFacts { exited: true, single_use: false, tmux: false, read_only: false, hold_open: false, archived: false, lived: Duration::from_secs(1), limit_seconds: 3.0 };
+        assert!(short_lived_due(base));
+        assert!(!short_lived_due(CloseFacts { exited: false, ..base }));
+        assert!(!short_lived_due(CloseFacts { single_use: true, ..base }));
+        assert!(!short_lived_due(CloseFacts { tmux: true, ..base }));
+        assert!(!short_lived_due(CloseFacts { read_only: true, ..base }));
+        assert!(!short_lived_due(CloseFacts { hold_open: true, ..base }));
+        assert!(!short_lived_due(CloseFacts { archived: true, ..base }));
+        assert!(!short_lived_due(CloseFacts { lived: Duration::from_secs(3), ..base }));
+    }
+
+    #[test]
+    fn the_settings_check_box_writes_what_iterm2_does() {
+        use crate::warnings::Store;
+        use toml::Value;
+        let mut store = MapStore::default();
+        let key = "NeverWarnAboutShortLivedSessions_G";
+        set_short_lived_warning(&mut store, "G", false);
+        assert_eq!(store.get(key), Some(Value::Boolean(true)));
+        assert_eq!(store.get(&format!("{key}_selection")), Some(Value::Integer(0)));
+        // A stale silence time from an older run goes too when the box is checked again.
+        store.set(&format!("{key}_SilenceUntil"), Value::Float(9.0));
+        set_short_lived_warning(&mut store, "G", true);
+        assert!(store.0.is_empty(), "{:?}", store.0);
+        // Another profile's key is untouched.
+        store.set("NeverWarnAboutShortLivedSessions_H", Value::Boolean(true));
+        set_short_lived_warning(&mut store, "G", true);
+        assert_eq!(store.get("NeverWarnAboutShortLivedSessions_H"), Some(Value::Boolean(true)));
     }
 
     #[test]
