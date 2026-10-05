@@ -609,14 +609,16 @@ impl Pane {
         }
     }
 
-    /// The time between this pane's frames now (`cadence::frame_gap`): `visible` when it is
+    /// The time between this pane's frames now (`cadence::interval`, `prefs` and `low_power` as
+    /// the window's cadence reads them): `visible` when it is
     /// in the tab in front of a window on screen; `last_output` as the activity tracker has
     /// it (output right after a resize ignored), with output since its last tick counting
     /// as now.
-    pub fn replay_gap(&mut self, now: Instant, visible: bool, last_output: Option<Instant>) -> Duration {
+    pub fn replay_gap(&mut self, now: Instant, visible: bool, last_output: Option<Instant>, prefs: &crate::cadence::Prefs, low_power: bool) -> Duration {
         let idle = !self.got_output && last_output.is_none_or(|t| now.saturating_duration_since(t) > crate::cadence::IDLE_AFTER);
         let alt = self.own().alt_screen();
-        crate::cadence::frame_gap(visible, idle, alt, self.throughput.estimate(now))
+        let state = crate::cadence::State { active: false, idle, visible, alt_screen: alt, throughput: self.throughput.estimate(now), low_power };
+        crate::cadence::interval(state, prefs)
     }
 
     /// Records a frame of the pane's own screen, never a view (`PS:1470-1480`), when it
@@ -1971,31 +1973,33 @@ mod tests {
     /// go back in time, and a pane with no room for a frame copies nothing.
     #[test]
     fn recording_cadence_follows_iterm2() {
-        use crate::cadence::{BACKGROUND_GAP, FAST_GAP};
+        use crate::cadence::frame_gap;
+        let prefs = crate::cadence::Prefs::default();
+        let (fast, bg) = (frame_gap(true, false, false, 500), frame_gap(false, false, false, 500));
         let t0 = Instant::now();
         let mut p = Pane::tmux(5, 1, 3, 20, 4);
-        assert_eq!(p.replay_gap(t0, true, None), BACKGROUND_GAP, "no output yet is idle");
+        assert_eq!(p.replay_gap(t0, true, None, &prefs, false), bg, "no output yet is idle");
         p.tmux_io().unwrap().push_output(b"hi");
         p.pump();
         let now = Instant::now();
-        assert_eq!(p.replay_gap(now, true, None), FAST_GAP, "output since the last tick, a few bytes");
-        assert_eq!(p.replay_gap(now, false, None), BACKGROUND_GAP, "not in a visible tab");
+        assert_eq!(p.replay_gap(now, true, None, &prefs, false), fast, "output since the last tick, a few bytes");
+        assert_eq!(p.replay_gap(now, false, None, &prefs, false), bg, "not in a visible tab");
         p.got_output = false;
-        assert_eq!(p.replay_gap(now, true, Some(now)), FAST_GAP);
-        assert_eq!(p.replay_gap(now + Duration::from_secs(4), true, Some(now)), BACKGROUND_GAP, "idle 3 s");
-        assert!(p.record_frame(t0, 5_000, FAST_GAP));
+        assert_eq!(p.replay_gap(now, true, Some(now), &prefs, false), fast);
+        assert_eq!(p.replay_gap(now + Duration::from_secs(4), true, Some(now), &prefs, false), bg, "idle 3 s");
+        assert!(p.record_frame(t0, 5_000, fast));
         p.tmux_io().unwrap().push_output(b"!");
         p.pump();
-        assert!(!p.record_frame(t0 + Duration::from_millis(500), 6_000, BACKGROUND_GAP), "a background pane waits 1 s");
-        assert!(p.record_frame(t0 + BACKGROUND_GAP, 4_000, BACKGROUND_GAP), "a clock set back");
+        assert!(!p.record_frame(t0 + Duration::from_millis(500), 6_000, bg), "a background pane waits 1 s");
+        assert!(p.record_frame(t0 + bg, 4_000, bg), "a clock set back");
         assert_eq!(p.dvr.timestamps(), vec![5_000, 5_001], "timestamps never go backward");
         // No room for a frame: nothing is captured.
         p.dvr = crate::dvr::Dvr::new(capacity_for(0));
         p.tmux_io().unwrap().push_output(b"?");
         p.pump();
-        assert!(!p.record_frame(t0 + BACKGROUND_GAP * 3, 9_000, FAST_GAP));
+        assert!(!p.record_frame(t0 + bg * 3, 9_000, fast));
         assert!(p.dvr.is_empty());
-        assert_eq!(p.replay_at, Some(t0 + BACKGROUND_GAP), "no capture happened");
+        assert_eq!(p.replay_at, Some(t0 + bg), "no capture happened");
     }
 
     #[test]

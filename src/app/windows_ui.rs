@@ -11,7 +11,7 @@ use winit::window::Fullscreen;
 pub(super) struct WinSlot {
     pub(super) gpu: Option<Gpu>,
     pub(super) tabs: Vec<Tab>,
-    active: usize,
+    pub(super) active: usize,
     menu_bar: Option<menu::MenuBar>,
     cursor: (f32, f32),
     drag: Drag,
@@ -122,6 +122,8 @@ pub(super) struct WinSlot {
     pub(super) status_armed: bool,
     /// The IME's composition in this window (13k): per window, since panes are shared.
     pub(super) ime: crate::ime::State,
+    /// When this window may draw after pane output (13l: `cadence::Pacer`).
+    pub(super) pacer: crate::cadence::Pacer,
 }
 
 impl WinSlot {
@@ -212,6 +214,7 @@ impl WinSlot {
             download_files_shown: None,
             status_armed: false,
             ime: Default::default(),
+            pacer: Default::default(),
         }
     }
 }
@@ -326,6 +329,7 @@ impl App {
         swap(&mut self.download_files_shown, &mut s.download_files_shown);
         swap(&mut self.status_armed, &mut s.status_armed);
         swap(&mut self.ime, &mut s.ime);
+        swap(&mut self.pacer, &mut s.pacer);
     }
 
     /// The terminal window whose password manager is `id`, when it is parked.
@@ -976,6 +980,7 @@ impl WinSlot {
             download_files_shown: None,
             status_armed: false,
             ime: Default::default(),
+            pacer: Default::default(),
         }
     }
 }

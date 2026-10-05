@@ -74,6 +74,7 @@ mod blocks_ui;
 mod clipboard_ui;
 mod copymode_ui;
 mod cursor_ui;
+mod frames_ui;
 mod ime_ui;
 mod files_ui;
 mod find_ui;
@@ -683,6 +684,10 @@ pub struct App {
     status_armed: bool,
     /// The IME's composition for the current window (per window: `WinSlot`).
     ime: crate::ime::State,
+    /// When the current window may draw after pane output (per window: `WinSlot`).
+    pacer: crate::cadence::Pacer,
+    /// The last key press in any window (iTerm2's `_lastKeystrokeTime`, `UC:90-94`).
+    last_keystroke: Option<Instant>,
     last_status: HashMap<PaneId, Option<String>>,
     /// The bells on sessions (Session Status', the Cockpit's): each armed session and its status
     /// when armed; the next different status shows the alert, then it disarms
@@ -1733,6 +1738,8 @@ pub fn run() {
         alert_limits: crate::triggers::RateLimit::default(),
         status_armed: false,
         ime: Default::default(),
+        pacer: Default::default(),
+        last_keystroke: None,
         last_status: HashMap::new(),
         status_watches: Default::default(),
         status_popover: None,
@@ -3311,13 +3318,14 @@ impl App {
         let now = Instant::now();
         let now_us = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros() as i64);
         let visible = self.replay_visible_panes();
+        let prefs = self.cadence_prefs();
         for (id, p) in self.panes.iter_mut() {
-            // No gap is shorter than FAST_GAP: a pane that captured within it cannot record
-            // yet, so its gap is not worked out.
-            if p.replay_at.is_some_and(|t| now.saturating_duration_since(t) < crate::cadence::FAST_GAP) {
+            // No gap is shorter than 1 ms (`interval`'s floor): a pane that captured within it
+            // cannot record yet, so its gap is not worked out.
+            if p.replay_at.is_some_and(|t| now.saturating_duration_since(t) < Duration::from_millis(1)) {
                 continue;
             }
-            let gap = p.replay_gap(now, visible.contains(id), self.activity.get(id).and_then(|a| a.last_output()));
+            let gap = p.replay_gap(now, visible.contains(id), self.activity.get(id).and_then(|a| a.last_output()), &prefs, false);
             p.record_frame(now, now_us, gap);
         }
     }
@@ -3335,10 +3343,11 @@ impl App {
     fn replay_frame_due(&mut self) -> Option<Instant> {
         let now = Instant::now();
         let visible = self.replay_visible_panes();
+        let prefs = self.cadence_prefs();
         let mut due = None;
         for (id, p) in self.panes.iter_mut() {
             let Some(at) = p.replay_at.filter(|_| !p.gateway) else { continue };
-            let t = at + p.replay_gap(now, visible.contains(id), self.activity.get(id).and_then(|a| a.last_output()));
+            let t = at + p.replay_gap(now, visible.contains(id), self.activity.get(id).and_then(|a| a.last_output()), &prefs, false);
             if t > now && due.is_none_or(|d| t < d) {
                 due = Some(t);
             }
@@ -3928,7 +3937,7 @@ impl App {
         self.composer_output(outputs);
         self.check_marks();
         self.sync_checks();
-        self.redraw();
+        self.paced_redraw(outputs, now);
     }
 
     fn relayout(&mut self) {
@@ -4182,6 +4191,10 @@ impl App {
     }
 
     fn key(&mut self, ev: &KeyEvent, event_loop: &ActiveEventLoop) {
+        // iTerm2's `didHandleKeystroke`: an echo within 0.1 s of it draws at once.
+        if ev.state == ElementState::Pressed {
+            self.last_keystroke = Some(Instant::now());
+        }
         // A key press is new input: a cancel stops waiting for the stray commit of the cancelled
         // composition (before the hold below, so the Esc that cancels sets the wait again).
         if ev.state == ElementState::Pressed {
@@ -5025,6 +5038,8 @@ impl App {
     }
 
     fn render(&mut self) {
+        // Recorded first: a frame that finds no surface still ends the wait for one.
+        self.pacer.drew(Instant::now());
         // A status bar field whose bar went away gives the keyboard back before drawing.
         self.check_composer_fields();
         self.sync_menu_hidden();
@@ -5454,7 +5469,8 @@ impl ApplicationHandler<UserEvent> for App {
         let flash_due = self.tick_tab_flash();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
         let cursor_due = self.tick_cursor();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due].into_iter().flatten().min();
+        let frame_due = self.frame_wake();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
