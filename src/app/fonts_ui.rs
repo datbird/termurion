@@ -23,6 +23,8 @@ pub fn face_key_for(p: &Profile, scale: f32, offset: f32, resolve: &dyn Fn(&str)
     (key.use_bold, key.use_italic) = (p.bool("Use Bold Font"), p.bool("Use Italic Font"));
     // ASCII Ligatures and Non-ASCII Ligatures decide what the pane's text shapes with.
     (key.ascii_ligatures, key.non_ascii_ligatures) = (p.bool("ASCII Ligatures"), p.bool("Non-ASCII Ligatures"));
+    // ASCII Anti Aliased, Non-ASCII Anti Aliased and Thin Strokes decide how the pane's glyph masks are drawn.
+    (key.ascii_aa, key.non_ascii_aa, key.thin) = (p.bool("ASCII Anti Aliased"), p.bool("Non-ASCII Anti Aliased"), p.int("Thin Strokes").clamp(0, 4) as u8);
     key
 }
 
@@ -66,6 +68,8 @@ pub struct RawFont {
     bold: bool,
     italic: bool,
     ligatures: (bool, bool),
+    anti_alias: (bool, bool),
+    thin: i64,
 }
 
 impl RawFont {
@@ -79,6 +83,8 @@ impl RawFont {
             bold: p.bool("Use Bold Font"),
             italic: p.bool("Use Italic Font"),
             ligatures: (p.bool("ASCII Ligatures"), p.bool("Non-ASCII Ligatures")),
+            anti_alias: (p.bool("ASCII Anti Aliased"), p.bool("Non-ASCII Anti Aliased")),
+            thin: p.int("Thin Strokes"),
         }
     }
 }
@@ -224,6 +230,7 @@ impl App {
         let mut prefs = scene::DrawPrefs::from_globals(&self.globals, metrics, self.scale());
         if let Some(g) = self.gpu.as_ref() {
             (prefs.ligatures, prefs.alt_level) = g.renderer.face_ligatures(face, prefs.ligatures.prefer_speed);
+            prefs.masks = g.renderer.face_masks(face, prefs.masks.retina, prefs.masks.force_aa_on_retina);
         }
         prefs
     }
@@ -298,6 +305,27 @@ mod tests {
         assert_ne!(key(&off), key(&non_ascii));
         assert_ne!(RawFont::of(&off, 1.0, 0.0), RawFont::of(&ascii, 1.0, 0.0));
         assert_ne!(RawFont::of(&off, 1.0, 0.0), RawFont::of(&non_ascii, 1.0, 0.0));
+    }
+
+    #[test]
+    fn anti_alias_switches_are_part_of_the_face() {
+        let same = |s: &str| s.to_string();
+        let base = [("Normal Font", toml::Value::from("Cascadia Mono 14"))];
+        let stock = profile(&base);
+        let ascii_off = profile(&[base[0].clone(), ("ASCII Anti Aliased", false.into())]);
+        let non_ascii_off = profile(&[base[0].clone(), ("Non-ASCII Anti Aliased", false.into())]);
+        let thin_never = profile(&[base[0].clone(), ("Thin Strokes", 0.into())]);
+        let key = |p: &Profile| face_key_for(p, 1.0, 0.0, &same);
+        // The stock profile is anti-aliased with Thin Strokes at Retina only.
+        assert_eq!((key(&stock).ascii_aa, key(&stock).non_ascii_aa, key(&stock).thin), (true, true, 4));
+        assert!(!key(&ascii_off).ascii_aa && key(&ascii_off).non_ascii_aa);
+        assert!(key(&non_ascii_off).ascii_aa && !key(&non_ascii_off).non_ascii_aa);
+        assert_eq!(key(&thin_never).thin, 0);
+        for other in [&ascii_off, &non_ascii_off, &thin_never] {
+            assert_ne!(key(&stock), key(other));
+            // The per-pane key cache is keyed on RawFont: a change must change it, or a stale key is served.
+            assert_ne!(RawFont::of(&stock, 1.0, 0.0), RawFont::of(other, 1.0, 0.0));
+        }
     }
 
     #[test]

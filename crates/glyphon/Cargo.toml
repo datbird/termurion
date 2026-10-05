@@ -1,0 +1,15 @@
+[package]
+name = "glyphon"
+description = "Fast, simple 2D text rendering for wgpu"
+version = "0.12.0"
+edition = "2021"
+homepage = "https://github.com/grovesNL/glyphon.git"
+repository = "https://github.com/grovesNL/glyphon"
+license = "MIT OR Apache-2.0 OR Zlib"
+
+[dependencies]
+wgpu = { version = "30.0.0", default-features = false, features = ["wgsl"] }
+etagere = "0.3.0"
+cosmic-text = "0.19"
+lru = { version = "0.16.2", default-features = false }
+rustc-hash = "2.1.1"

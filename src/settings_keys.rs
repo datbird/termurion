@@ -2060,6 +2060,20 @@ mod tests {
     }
 
     #[test]
+    fn anti_alias_rows_follow_iterm2() {
+        let row = schema::find_global("ForceAntialiasingOnRetina").expect("a row");
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Drawing"));
+        assert_eq!(row.kind, Kind::Bool);
+        assert_eq!(row.default, Some(Value::Boolean(false)));
+        assert_eq!(row.label, "Force text to be anti-aliased on Retina displays.");
+        assert!(row.help.starts_with(&row.label) && row.help.ends_with("which sometimes looks better."), "{}", row.help);
+        // The stock profile seeds both anti-alias switches on and Thin Strokes at Retina only.
+        let stock = crate::profile::Profile::stock();
+        assert!(stock.bool("ASCII Anti Aliased") && stock.bool("Non-ASCII Anti Aliased"));
+        assert_eq!(stock.int("Thin Strokes"), 4);
+    }
+
+    #[test]
     fn scripting_rows_follow_iterm2() {
         for (key, default, help) in [
             ("pythonRuntimeDownloadURL", "https://iterm2.com/downloads/pyenv/manifest.json", "URL to check for new versions of the Python scripting runtime."),

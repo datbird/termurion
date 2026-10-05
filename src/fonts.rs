@@ -150,6 +150,142 @@ pub fn fast_path(c: char, ascii_ligatures: bool) -> bool {
     !ascii_ligatures || c.is_ascii_alphanumeric() || c == ' '
 }
 
+/// How a text mask is drawn (`iTermTextDrawingHelperShouldAntiAlias`, then thin strokes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaskMode {
+    Smooth,
+    Aliased,
+    Thin,
+}
+
+/// The `CacheKey` flag bit of an aliased span (cosmic-text keeps bits it does not know).
+pub const FLAG_ALIASED: u32 = 1 << 8;
+/// The `CacheKey` flag bit of a thin-stroke span.
+pub const FLAG_THIN: u32 = 1 << 9;
+
+impl MaskMode {
+    /// The code a `scene::Span` carries: 0 smooth, 1 aliased, 2 thin.
+    pub fn code(self) -> u8 {
+        match self {
+            MaskMode::Smooth => 0,
+            MaskMode::Aliased => 1,
+            MaskMode::Thin => 2,
+        }
+    }
+
+    pub fn from_code(code: u8) -> MaskMode {
+        match code {
+            1 => MaskMode::Aliased,
+            2 => MaskMode::Thin,
+            _ => MaskMode::Smooth,
+        }
+    }
+
+    /// The glyph cache key bits of a span in this mode: an aliased span also places whole pixels
+    /// (`PIXEL_FONT`) and keeps hinting on; a thin span has its own bit; a smooth one none.
+    pub fn flags(self) -> u32 {
+        const PIXEL_FONT: u32 = 4;
+        match self {
+            MaskMode::Smooth => 0,
+            MaskMode::Aliased => FLAG_ALIASED | PIXEL_FONT,
+            MaskMode::Thin => FLAG_THIN,
+        }
+    }
+
+    /// The mode a glyph's `CacheKey` flag bits ask for.
+    pub fn of_flags(flags: u32) -> MaskMode {
+        if flags & FLAG_ALIASED != 0 {
+            MaskMode::Aliased
+        } else if flags & FLAG_THIN != 0 {
+            MaskMode::Thin
+        } else {
+            MaskMode::Smooth
+        }
+    }
+
+    /// Whether the text is anti-aliased (smooth and thin are; aliased is not).
+    pub fn anti_aliased(self) -> bool {
+        self != MaskMode::Aliased
+    }
+}
+
+/// The mask mode of a run of text (`iTermTextDrawingHelperShouldAntiAlias`: Retina with
+/// `ForceAntialiasingOnRetina` is always anti-aliased; without a Non-ASCII Font, or for plain
+/// ASCII, the ASCII switch decides, else the Non-ASCII switch), and thin strokes when it is
+/// anti-aliased.
+pub fn mask_mode(ascii: bool, use_non_ascii_font: bool, ascii_aa: bool, non_ascii_aa: bool, retina: bool, force_aa_on_retina: bool, thin: bool) -> MaskMode {
+    let aa = if retina && force_aa_on_retina {
+        true
+    } else if !use_non_ascii_font || ascii {
+        ascii_aa
+    } else {
+        non_ascii_aa
+    };
+    match (aa, thin) {
+        (false, _) => MaskMode::Aliased,
+        (true, true) => MaskMode::Thin,
+        (true, false) => MaskMode::Smooth,
+    }
+}
+
+/// Whether the profile's Thin Strokes setting thins the text (`iTermThinStrokesSetting`): 0 never,
+/// 1 on Retina and dark backgrounds, 2 on dark backgrounds, 3 always, 4 on Retina.
+pub fn thin_strokes(setting: i64, retina: bool, dark_background: bool) -> bool {
+    match setting {
+        1 => retina && dark_background,
+        2 => dark_background,
+        3 => true,
+        4 => retina,
+        _ => false,
+    }
+}
+
+/// Rewrites a glyph's alpha mask for `mode`: aliased text has no partial coverage (0 below 128,
+/// else 255), thin strokes square the coverage (`a * a / 255`, rounded), smooth text is unchanged.
+pub fn filter_mask(mode: MaskMode, alpha: &mut [u8]) {
+    match mode {
+        MaskMode::Smooth => {}
+        MaskMode::Aliased => alpha.iter_mut().for_each(|a| *a = if *a < 128 { 0 } else { 255 }),
+        MaskMode::Thin => alpha.iter_mut().for_each(|a| *a = ((*a as u32 * *a as u32 + 127) / 255) as u8),
+    }
+}
+
+/// The profile's and the window's anti-aliasing inputs for a pane (`mask_mode`'s, with the
+/// per-character `ascii` and the pane's `dark` background left to the caller).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MaskRules {
+    pub use_non_ascii_font: bool,
+    pub ascii_aa: bool,
+    pub non_ascii_aa: bool,
+    pub retina: bool,
+    pub force_aa_on_retina: bool,
+    /// The profile's Thin Strokes setting.
+    pub thin: i64,
+}
+
+impl MaskRules {
+    /// The stock profile at 1x: both switches on, Thin Strokes on Retina only.
+    pub const STOCK: MaskRules = MaskRules { use_non_ascii_font: true, ascii_aa: true, non_ascii_aa: true, retina: false, force_aa_on_retina: false, thin: 4 };
+
+    pub fn mode(&self, ascii: bool, dark_background: bool) -> MaskMode {
+        mask_mode(ascii, self.use_non_ascii_font, self.ascii_aa, self.non_ascii_aa, self.retina, self.force_aa_on_retina, thin_strokes(self.thin, self.retina, dark_background))
+    }
+}
+
+/// How far the double strike of bold text moves right, in physical pixels
+/// (`iTermTextDrawingHelper.m:2340`, `:2661`): anti-aliased text shifts by `antiAliasedShift`
+/// (0.5 point on a Retina-class display, else 0: the second copy darkens the strokes in place),
+/// aliased text by one pixel.
+pub fn double_strike_shift(mode: MaskMode, scale: f32) -> f32 {
+    if !mode.anti_aliased() {
+        1.0
+    } else if scale >= 2.0 {
+        0.5 * scale
+    } else {
+        0.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,5 +412,64 @@ mod tests {
         assert_eq!(regular_weight(&[700, 300]), Some(300));
         assert_eq!(regular_weight(&[500, 300]), Some(300), "equal distance takes the lighter");
         assert_eq!(regular_weight(&[]), None);
+    }
+
+    #[test]
+    fn antialias_follows_iterm2() {
+        assert_eq!(mask_mode(true, true, false, true, false, false, false), MaskMode::Aliased);
+        assert_eq!(mask_mode(true, true, false, true, true, true, false), MaskMode::Smooth);
+        // Retina alone does not force it.
+        assert_eq!(mask_mode(true, true, false, true, true, false, false), MaskMode::Aliased);
+        // Non-ASCII text follows its own switch.
+        assert_eq!(mask_mode(false, true, false, true, false, false, false), MaskMode::Smooth);
+        // Without a Non-ASCII Font every character follows the ASCII switch.
+        assert_eq!(mask_mode(false, false, true, false, false, false, false), MaskMode::Smooth);
+        assert_eq!(mask_mode(false, false, false, true, false, false, false), MaskMode::Aliased);
+        // Thin strokes need anti-aliased text.
+        assert_eq!(mask_mode(true, true, true, true, false, false, true), MaskMode::Thin);
+        assert_eq!(mask_mode(true, true, false, true, false, false, true), MaskMode::Aliased);
+        assert!(thin_strokes(4, true, false));
+        assert!(!thin_strokes(4, false, true));
+        assert!(thin_strokes(1, true, true));
+        assert!(!thin_strokes(1, true, false));
+        assert!(thin_strokes(2, false, true));
+        assert!(!thin_strokes(0, true, true));
+        assert!(thin_strokes(3, false, false));
+        let mut a = [0u8, 127, 128, 255];
+        filter_mask(MaskMode::Aliased, &mut a);
+        assert_eq!(a, [0, 0, 255, 255]);
+        let mut t = [255u8, 128, 0];
+        filter_mask(MaskMode::Thin, &mut t);
+        assert_eq!(t, [255, 64, 0]);
+        let mut s = [1u8, 99, 200];
+        filter_mask(MaskMode::Smooth, &mut s);
+        assert_eq!(s, [1, 99, 200]);
+    }
+
+    #[test]
+    fn mask_modes_round_trip_through_codes_and_flags() {
+        for m in [MaskMode::Smooth, MaskMode::Aliased, MaskMode::Thin] {
+            assert_eq!(MaskMode::from_code(m.code()), m);
+            assert_eq!(MaskMode::of_flags(m.flags()), m);
+        }
+        // An aliased span places whole pixels and keeps hinting on (DISABLE_HINTING is bit 1).
+        assert_eq!(MaskMode::Aliased.flags(), FLAG_ALIASED | 4);
+        assert_eq!(MaskMode::Aliased.flags() & 2, 0);
+        assert_eq!(MaskMode::Thin.flags(), FLAG_THIN);
+        assert_eq!(MaskMode::Smooth.flags(), 0);
+        // The stock profile at 1x is smooth; thin strokes need Retina.
+        assert_eq!(MaskRules::STOCK.mode(true, true), MaskMode::Smooth);
+        assert_eq!(MaskRules { retina: true, ..MaskRules::STOCK }.mode(true, false), MaskMode::Thin);
+    }
+
+    #[test]
+    fn double_strike_shift_follows_iterm2() {
+        // Aliased text: one pixel. Anti-aliased: 0.5 point on a Retina-class scale, else none.
+        assert_eq!(double_strike_shift(MaskMode::Aliased, 1.0), 1.0);
+        assert_eq!(double_strike_shift(MaskMode::Aliased, 2.0), 1.0);
+        assert_eq!(double_strike_shift(MaskMode::Smooth, 1.0), 0.0);
+        assert_eq!(double_strike_shift(MaskMode::Thin, 1.5), 0.0);
+        assert_eq!(double_strike_shift(MaskMode::Smooth, 2.0), 1.0);
+        assert_eq!(double_strike_shift(MaskMode::Thin, 3.0), 1.5);
     }
 }

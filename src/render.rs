@@ -6,6 +6,8 @@ use glyphon::{
 };
 use wgpu::util::DeviceExt;
 
+use glyphon::cosmic_text::CacheKeyFlags;
+
 use crate::fonts;
 use crate::scene::{Frame, Quad, Span, TextRow};
 
@@ -286,11 +288,17 @@ pub struct FaceKey {
     /// another face, as with bold).
     pub ascii_ligatures: bool,
     pub non_ascii_ligatures: bool,
+    /// The profile's ASCII Anti Aliased and Non-ASCII Anti Aliased (a face that ignores a switch
+    /// is another face, as with bold).
+    pub ascii_aa: bool,
+    pub non_ascii_aa: bool,
+    /// The profile's Thin Strokes setting (0 to 4).
+    pub thin: u8,
 }
 
 impl FaceKey {
     pub fn new(family: &str, alt_family: Option<&str>, px: f32, h: f32, v: f32) -> FaceKey {
-        FaceKey { family: family.to_string(), alt_family: alt_family.map(str::to_string), px_bits: quantize_px(px).to_bits(), h_bits: h.to_bits(), v_bits: v.to_bits(), profile_bits: 0, use_bold: true, use_italic: true, ascii_ligatures: false, non_ascii_ligatures: false }
+        FaceKey { family: family.to_string(), alt_family: alt_family.map(str::to_string), px_bits: quantize_px(px).to_bits(), h_bits: h.to_bits(), v_bits: v.to_bits(), profile_bits: 0, use_bold: true, use_italic: true, ascii_ligatures: false, non_ascii_ligatures: false, ascii_aa: true, non_ascii_aa: true, thin: 4 }
     }
 
     pub fn px(&self) -> f32 {
@@ -397,6 +405,9 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, family: &str, font_px: f32) -> Renderer {
+        // Aliased and thin-stroke glyph masks are filtered in the vendored glyphon (patch 1); the
+        // filter is process-wide, so a second window's renderer sets the same function again.
+        glyphon::set_mask_filter(|flags, alpha| fonts::filter_mask(fonts::MaskMode::of_flags(flags), alpha));
         let cache = Cache::new(device);
         let viewport = Viewport::new(device, &cache);
         let mut atlas = TextAtlas::new(device, queue, &cache, format);
@@ -603,6 +614,13 @@ impl Renderer {
             self.calt = calt;
             self.buffers.clear();
         }
+    }
+
+    /// The anti-aliasing rules of face `id` for `scene::DrawPrefs`: the profile's switches and
+    /// Thin Strokes, with the window's Retina-ness and the global force switch.
+    pub fn face_masks(&self, id: u16, retina: bool, force_aa_on_retina: bool) -> fonts::MaskRules {
+        let k = &self.face_of(id).key;
+        fonts::MaskRules { use_non_ascii_font: k.alt_family.is_some(), ascii_aa: k.ascii_aa, non_ascii_aa: k.non_ascii_aa, retina, force_aa_on_retina, thin: i64::from(k.thin) }
     }
 
     /// The ligature rules of face `id` for `scene::DrawPrefs`: the profile's two switches, the
@@ -1002,17 +1020,31 @@ impl Renderer {
         use unicode_width::UnicodeWidthChar;
         let struck = |s: &Span| s.fake_bold && s.bold && !(s.icon || s.badge || s.toolbelt || s.prose);
         let blank = |text: &str| text.chars().map(|c| " ".repeat(c.width().unwrap_or(0))).collect::<String>();
-        rows.iter()
-            .filter(|row| {
-                let face = self.face_of(row.face);
-                face.use_bold && face.bold.is_none() && row.spans.iter().any(struck)
-            })
-            .map(|row| TextRow {
-                x: row.x + 1.0,
-                spans: row.spans.iter().map(|s| if struck(s) { s.clone() } else { Span { text: blank(&s.text), bold: false, italic: false, fake_bold: false, ..s.clone() } }).collect(),
-                ..row.clone()
-            })
-            .collect()
+        let mut out = Vec::new();
+        for row in rows {
+            let face = self.face_of(row.face);
+            if !(face.use_bold && face.bold.is_none() && row.spans.iter().any(struck)) {
+                continue;
+            }
+            // iTerm2 shifts an anti-aliased copy by `antiAliasedShift` and an aliased one by a
+            // pixel (`iTermTextDrawingHelper.m:2340`): one copy per shift among the row's struck spans.
+            let mut shifts: Vec<f32> = Vec::new();
+            for s in row.spans.iter().filter(|s| struck(s)) {
+                let shift = fonts::double_strike_shift(fonts::MaskMode::from_code(s.mask), self.scale);
+                if !shifts.contains(&shift) {
+                    shifts.push(shift);
+                }
+            }
+            for shift in shifts {
+                let hit = |s: &Span| struck(s) && fonts::double_strike_shift(fonts::MaskMode::from_code(s.mask), self.scale) == shift;
+                out.push(TextRow {
+                    x: row.x + shift,
+                    spans: row.spans.iter().map(|s| if hit(s) { s.clone() } else { Span { text: blank(&s.text), bold: false, italic: false, fake_bold: false, ..s.clone() } }).collect(),
+                    ..row.clone()
+                });
+            }
+        }
+        out
     }
 
     /// A row whose spans differ in ligature level, as one row per run of equal level: cosmic-text
@@ -1115,6 +1147,9 @@ impl Renderer {
                 // is one cell per piece (or a joined run of a cursive script), so it keeps the
                 // shaper's own features: nothing can ligate there and Arabic keeps its forms.
                 let start = if terminal && (s.ligatures > 0 || s.text.is_ascii()) { start.font_features(fonts::features(s.ligatures)) } else { start };
+                // Terminal text carries its mask mode in the glyph cache key (`from_bits_retain`
+                // keeps Tandem's bits), so each mode is cached apart and filtered in glyphon.
+                let start = if terminal { start.cache_key_flags(CacheKeyFlags::from_bits_retain(fonts::MaskMode::from_code(s.mask).flags())) } else { start };
                 let attrs = start
                     .color(Color::rgb(s.color.r, s.color.g, s.color.b))
                     .weight(weight)
@@ -1422,7 +1457,7 @@ mod tests {
         let block = |x: f32, y: f32, face: u16| TextRow {
             x,
             y,
-            spans: vec![Span { text: "\u{2588}".repeat(4), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 }],
+            spans: vec![Span { text: "\u{2588}".repeat(4), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0 }],
             clip: Rect { x: 0.0, y, w: w as f32, h: if face == 1 { c1.1 } else { c2.1 } },
             scale: 1.0,
             face,
@@ -1461,8 +1496,8 @@ mod tests {
         let tex = target(&device, w, h);
         let view = tex.create_view(&Default::default());
         // The pixels of "W" drawn in `face` as a bold and italic span as asked.
-        let shot = |r: &mut Renderer, face: u16, bold: bool, italic: bool| -> Vec<u8> {
-            let span = Span { text: "W".into(), color: rgb(255, 255, 255), bold, italic, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: bold, ligatures: 0 };
+        let shot = |r: &mut Renderer, face: u16, bold: bool, italic: bool, mask: u8| -> Vec<u8> {
+            let span = Span { text: "W".into(), color: rgb(255, 255, 255), bold, italic, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: bold, ligatures: 0, mask };
             let cell = r.face_cell(face);
             let row = TextRow { x: 4.0, y: 4.0, spans: vec![span], clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 }, scale: 1.0, face };
             let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows: vec![row], ..Default::default() };
@@ -1475,13 +1510,13 @@ mod tests {
         (k.use_bold, k.use_italic) = (false, false);
         let off = r.face(&k);
         assert_ne!(on, off, "a face that ignores a switch is another face");
-        let regular = shot(&mut r, on, false, false);
+        let regular = shot(&mut r, on, false, false, 0);
         // Use Bold Font off: a bold span is the regular face; on: it is not.
-        assert_eq!(shot(&mut r, off, true, false), regular, "bold with Use Bold Font off draws regular");
-        assert_ne!(shot(&mut r, on, true, false), regular, "bold with Use Bold Font on draws the bold face");
+        assert_eq!(shot(&mut r, off, true, false, 0), regular, "bold with Use Bold Font off draws regular");
+        assert_ne!(shot(&mut r, on, true, false, 0), regular, "bold with Use Bold Font on draws the bold face");
         // Use Italic Font off: italics are upright.
-        assert_eq!(shot(&mut r, off, false, true), regular, "italic with Use Italic Font off draws upright");
-        assert_ne!(shot(&mut r, on, false, true), regular, "italic with Use Italic Font on slants");
+        assert_eq!(shot(&mut r, off, false, true, 0), regular, "italic with Use Italic Font off draws upright");
+        assert_ne!(shot(&mut r, on, false, true, 0), regular, "italic with Use Italic Font on slants");
         // A family without a heavy enough bold: double-struck, one column wider.
         let Some(family) = family_without_bold(&r) else {
             println!("skip: every installed family has a bold face");
@@ -1493,8 +1528,9 @@ mod tests {
             let lit = |x: u32| (0..h).any(|y| px[((y * w + x) * 4) as usize] > 128);
             ((0..w).find(|x| lit(*x)).unwrap(), (0..w).rev().find(|x| lit(*x)).unwrap())
         };
-        let regular = shot(&mut r, plain, false, false);
-        let bold = shot(&mut r, plain, true, false);
+        // Aliased text is double-struck one pixel right (the anti-aliased shift has its own test).
+        let regular = shot(&mut r, plain, false, false, 1);
+        let bold = shot(&mut r, plain, true, false, 1);
         let (l0, r0) = cols(&regular);
         let (l1, r1) = cols(&bold);
         assert!(r1 - l1 >= r0 - l0 + 1 && l1 == l0, "{family}: regular {l0}..{r0}, bold {l1}..{r1}");
@@ -1557,7 +1593,7 @@ mod tests {
         let view = tex.create_view(&Default::default());
         let face = r.face(&key("Cascadia Code", 20.0, 1.0, 1.0));
         let cw = r.face_cell(face).0;
-        let sp = |text: &str, ligatures: u8| Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures };
+        let sp = |text: &str, ligatures: u8| Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures, mask: 0 };
         let clip = Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
         let mut shot = |rows: Vec<TextRow>| -> Vec<u8> {
             let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows, ..Default::default() };
@@ -1676,7 +1712,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 0.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 }],
+                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0 }],
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
@@ -1731,7 +1767,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 36.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 }],
+                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0 }],
                 clip: Rect { x: 32.0, y: 0.0, w: 32.0, h: 32.0 },
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
@@ -1767,7 +1803,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 0.0,
                 y: 0.0,
-                spans: vec![Span { text: " \u{2588} ".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 }],
+                spans: vec![Span { text: " \u{2588} ".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0 }],
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
@@ -1808,7 +1844,7 @@ mod tests {
         let y = (ch / 2.0).floor();
         let red = rgba(rgb(255, 0, 0), 1.0);
         let clip = Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
-        let span = |text: &str, badge: bool| Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge, toolbelt: false, fake_bold: false, ligatures: 0 };
+        let span = |text: &str, badge: bool| Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0 };
         let row = |x: f32, text: &str, badge: bool| TextRow { x, y: 0.0, spans: vec![span(text, badge)], clip, scale: 1.0, face: crate::render::DEFAULT_FACE };
         let frame = |rows: Vec<TextRow>| Frame {
             clear: rgba(rgb(0, 0, 0), 1.0),
@@ -1830,6 +1866,133 @@ mod tests {
         // A badge row with a full block over the pane's line: the pane's underline stays whole.
         let f = frame(vec![row(0.0, "\u{2588}\u{2588}\u{2588}", true), row(0.0, " ", false)]);
         assert_eq!(mid(&mut r, &f, 1.5), vec![255, 0, 0], "badge ink never cuts a pane underline");
+    }
+
+    /// A span of terminal text in `mask` mode (0 smooth, 1 aliased, 2 thin strokes).
+    fn masked(text: &str, bold: bool, mask: u8) -> Span {
+        Span { text: text.into(), color: rgb(255, 255, 255), bold, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: bold, ligatures: 0, mask }
+    }
+
+    /// Draws one row of `spans` in `face` at (4, 4) on black and reads the target back.
+    fn shoot(r: &mut Renderer, device: &wgpu::Device, queue: &wgpu::Queue, face: u16, spans: Vec<Span>, (w, h): (u32, u32)) -> Vec<u8> {
+        let tex = target(device, w, h);
+        let view = tex.create_view(&Default::default());
+        let row = TextRow { x: 4.0, y: 4.0, spans, clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 }, scale: 1.0, face };
+        let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows: vec![row], ..Default::default() };
+        r.draw(&frame, &view, w, h).unwrap();
+        read(device, queue, &tex, w, h)
+    }
+
+    /// The distinct red levels of a readback, sorted.
+    fn levels(px: &[u8]) -> Vec<u8> {
+        let mut v: Vec<u8> = px.chunks(4).map(|p| p[0]).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    /// Step 1 of 13n Task 5 (the live check, headless: an offscreen draw, no window): does text
+    /// come out smoothed today, and does an Aliased span draw exactly two alpha levels with the
+    /// vendored glyphon filter in place? Run with `-- --nocapture` for the ledger line.
+    #[test]
+    fn antialias_check_on_this_machine() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        if !r.has_family("Consolas") {
+            println!("skip: Consolas is not installed");
+            return;
+        }
+        let face = r.face(&key("Consolas", 16.0, 1.0, 1.0));
+        let size = (64u32, 40u32);
+        let smooth = levels(&shoot(&mut r, &device, &queue, face, vec![masked("W", false, 0)], size));
+        println!("AA TODAY: distinct alpha levels={}", smooth.len());
+        assert!(smooth.len() > 2, "an unfiltered span is smoothed: {smooth:?}");
+        let aliased = levels(&shoot(&mut r, &device, &queue, face, vec![masked("W", false, 1)], size));
+        assert_eq!(aliased, vec![0, 255], "an Aliased span has no partial coverage");
+        // Thin strokes square the coverage: still smoothed, but lighter.
+        let sum = |px: &[u8]| px.chunks(4).map(|p| p[0] as u32).sum::<u32>();
+        let plain = shoot(&mut r, &device, &queue, face, vec![masked("W", false, 0)], size);
+        let thin = shoot(&mut r, &device, &queue, face, vec![masked("W", false, 2)], size);
+        assert!(levels(&thin).len() > 2 && sum(&thin) < sum(&plain), "thin {} plain {}", sum(&thin), sum(&plain));
+    }
+
+    /// The 13m-o review ruling: a glyph atlas that grows re-rasterizes every cached glyph, and
+    /// the re-rasterized masks must go through the filter too.
+    #[test]
+    fn aliased_masks_survive_atlas_growth() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        if !r.has_family("Consolas") {
+            println!("skip: Consolas is not installed");
+            return;
+        }
+        let Some(cjk) = ["Microsoft YaHei", "Yu Gothic", "MS Gothic", "SimSun", "Malgun Gothic"].into_iter().find(|f| r.has_family(f)) else {
+            println!("skip: no CJK family is installed");
+            return;
+        };
+        let face = r.face(&key("Consolas", 16.0, 1.0, 1.0));
+        let size = (64u32, 40u32);
+        let both = |r: &mut Renderer| {
+            (
+                shoot(r, &device, &queue, face, vec![masked("W", false, 1)], size),
+                shoot(r, &device, &queue, face, vec![masked("W", false, 2)], size),
+            )
+        };
+        let (aliased, thin) = both(&mut r);
+        assert_eq!(levels(&aliased), vec![0, 255]);
+        let before = r.atlas.mask_size();
+        // Enough distinct large glyphs to pass the atlas's initial size: a screen of ideographs.
+        let big = r.face(&key(cjk, 64.0, 1.0, 1.0));
+        let (bw, bh) = (3584u32, 3584u32);
+        let rows: Vec<TextRow> = (0..56u32)
+            .map(|i| TextRow {
+                x: 0.0,
+                y: (i * 64) as f32,
+                spans: vec![masked(&(0..56u32).filter_map(|j| char::from_u32(0x4e00 + i * 56 + j)).collect::<String>(), false, 0)],
+                clip: Rect { x: 0.0, y: 0.0, w: bw as f32, h: bh as f32 },
+                scale: 1.0,
+                face: big,
+            })
+            .collect();
+        let tex = target(&device, bw, bh);
+        let view = tex.create_view(&Default::default());
+        r.draw(&Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows, ..Default::default() }, &view, bw, bh).unwrap();
+        let after = r.atlas.mask_size();
+        assert!(after > before, "the mask atlas grew: {before} to {after}");
+        let (aliased2, thin2) = both(&mut r);
+        assert_eq!(levels(&aliased2), vec![0, 255], "the re-rasterized aliased mask is still filtered");
+        assert_eq!(aliased2, aliased);
+        assert_eq!(thin2, thin, "the re-rasterized thin mask equals the first draw's");
+    }
+
+    /// iTerm2 shifts the second copy of fake bold by `antiAliasedShift` when anti-aliased (0.5 pt
+    /// on a Retina-class scale, else 0) and by one pixel when not (`iTermTextDrawingHelper.m:2340`).
+    #[test]
+    fn double_strike_follows_the_anti_alias_setting() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let Some(family) = family_without_bold(&r) else {
+            println!("skip: every installed family has a bold face");
+            return;
+        };
+        let plain = r.face(&key(&family, 20.0, 1.0, 1.0));
+        assert_eq!(r.face_bold(plain), None);
+        let row = |mask: u8| TextRow { x: 10.0, y: 0.0, spans: vec![masked("W", true, mask)], clip: Rect { x: 0.0, y: 0.0, w: 100.0, h: 40.0 }, scale: 1.0, face: plain };
+        let shift = |r: &Renderer, mask: u8| r.double_strikes(&[row(mask)]).iter().map(|d| d.x - 10.0).collect::<Vec<f32>>();
+        assert_eq!(shift(&r, 1), vec![1.0], "aliased: one pixel");
+        assert_eq!(shift(&r, 0), vec![0.0], "anti-aliased at 1x: the copy lands in place");
+        assert_eq!(shift(&r, 2), vec![0.0], "thin strokes are anti-aliased");
+        r.scale = 2.0;
+        assert_eq!(shift(&r, 0), vec![1.0], "anti-aliased on a Retina-class scale: 0.5 pt");
+        assert_eq!(shift(&r, 1), vec![1.0]);
+        // A row that mixes an aliased and an anti-aliased bold span strikes each at its own shift.
+        r.scale = 1.0;
+        let mixed = TextRow { spans: vec![masked("W", true, 0), masked("W", true, 1)], ..row(0) };
+        let copies = r.double_strikes(&[mixed]);
+        assert_eq!(copies.iter().map(|d| d.x - 10.0).collect::<Vec<f32>>(), vec![0.0, 1.0]);
+        // Each copy carries only its own spans; the other is blank advance.
+        assert_eq!(copies[0].spans.iter().map(|s| s.text.trim().is_empty()).collect::<Vec<_>>(), vec![false, true]);
+        assert_eq!(copies[1].spans.iter().map(|s| s.text.trim().is_empty()).collect::<Vec<_>>(), vec![true, false]);
     }
 
     fn target(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture {

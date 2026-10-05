@@ -1277,6 +1277,15 @@ default = true
 help = "Enable contextual alternates (calt) for ligature-capable fonts.\nWhen enabled, uses ligature level 2 which activates calt in addition to standard ligatures. Many coding fonts such as Monaspace, Iosevka, and Cascadia Code require this for their ligatures to work."
 
 [[setting]]
+key = "ForceAntialiasingOnRetina"
+tab = "Advanced"
+section = "Drawing"
+label = "Force text to be anti-aliased on Retina displays."
+type = "bool"
+default = false
+help = "Force text to be anti-aliased on Retina displays.\nEnable this to use non-AA text on non-retina displays, which sometimes looks better."
+
+[[setting]]
 key = "EscapeWithQuotes"
 tab = "Advanced"
 section = "Experimental Features"
