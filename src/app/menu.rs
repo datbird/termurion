@@ -64,6 +64,9 @@ pub(super) struct MenuBar {
     /// Window > Arrangements > Restore Window Arrangement and ... as Tabs, and what they list.
     pub(super) restore: Option<Submenu>,
     pub(super) restore_tabs: Option<Submenu>,
+    /// Shell > Archives and the recent archives it lists after its separator.
+    pub(super) archives: Option<Submenu>,
+    pub(super) archive_items: Vec<String>,
     pub(super) arrangement_items: Vec<(String, bool)>,
     pub(super) arrangements_filled: bool,
     /// Session > Buried Sessions and what it lists: (menu id, label); an empty id is a line.
@@ -239,7 +242,7 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, explain_ai, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
+        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string).to_vec()).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, explain_ai, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
         self.runtime_menu_title();
         self.refresh_claude_menu();
         self.retitle_suppressed_menu();
@@ -567,6 +570,7 @@ impl App {
         self.refresh_scripts_menu();
         self.refresh_arrangement_menus();
         self.refresh_buried_menu();
+        self.refresh_archives_menu();
         self.refresh_snippet_menus();
         self.sync_toolbelt_checks();
         self.refresh_window_list();
@@ -618,7 +622,7 @@ impl App {
         if self.tray_picked(id) || self.buried_picked(id) || self.script_picked(id) {
             return;
         }
-        if self.arrangement_picked(id) || self.window_list_picked(id) {
+        if self.arrangement_picked(id) || self.window_list_picked(id) || self.archive_picked(id) {
             return;
         }
         if let Some(guid) = id.strip_prefix(PROFILE_ID) {
@@ -898,6 +902,8 @@ impl App {
             }
             "toggleAutoComposer:" => self.toggle_auto_composer(),
             "startStopLogging:" => self.start_stop_logging(),
+            "saveArchive:" => self.save_archive_menu(),
+            "restoreArchive:" => self.restore_archive(None),
             "openDirectories:" => self.open_recent_dirs(event_loop),
             "openAutocomplete:" => self.open_autocomplete(),
             "toggleShowClippings:" => self.toggle_clippings(),

@@ -64,6 +64,7 @@ pub mod sixel;
 pub mod kitty;
 pub mod stamps;
 pub mod session_log;
+pub mod archive;
 pub mod styled_copy;
 pub mod bgimage;
 pub mod blocks;

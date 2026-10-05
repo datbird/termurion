@@ -90,6 +90,7 @@ mod screenshot_ui;
 mod semantic_ui;
 mod session_end_ui;
 mod log_ui;
+mod archive_ui;
 mod session_ui;
 mod seltools_ui;
 mod view_ui;
@@ -574,6 +575,8 @@ pub struct App {
     /// Undo Close: closed things waiting, and the close being collected now.
     undo: crate::undo_close::Stack<undo_ui::Undone>,
     undo_capture: Option<undo_ui::Capture>,
+    /// What the archive writers' threads report (13q Task 8), collected by `archive_tick`.
+    archive_results: archive_ui::Results,
     /// The Edit Window Title or Edit Tab Title window, and what it names.
     title_prompt: Option<(crate::prompt_ui::PromptWindow, windows_ui::TitleEdit)>,
     /// The New Tab Group or Rename Tab Group window, and what it names (app-wide, like the
@@ -1760,6 +1763,7 @@ pub fn run() {
         single_use: HashMap::new(),
         undo: Default::default(),
         undo_capture: None,
+        archive_results: Default::default(),
         pending_windows: Vec::new(),
         pending_urls_at_start,
         url_listener,
@@ -4170,6 +4174,8 @@ impl App {
 
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        // Archive On Closure writes first, while the pane still has its text (`PS:4057-4065`).
+        self.auto_archive(id);
         // An ended session closed too soon warns first (`terminate`, `PS:3887`).
         self.warn_short_lived(id);
         // The source ending cancels the pick (`PS:3940-3942`).
@@ -6103,6 +6109,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.tick_progress();
         let progress_due = self.progress_wake();
         self.log_tick();
+        self.archive_tick();
         let log_due = self.log_due();
         let sleep_due = self.recompute_sleep(Instant::now());
         let wake = [ended_due, log_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();

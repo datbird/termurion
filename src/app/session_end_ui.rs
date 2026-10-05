@@ -42,8 +42,8 @@ impl App {
             tmux: p.tmux_io().is_some(),
             read_only: p.dvr.read_only,
             hold_open: p.hold_open,
-            // Archives restore panes that ended long ago; none is flagged yet (Task 8).
-            archived: false,
+            // A restored archive's panes ended long ago.
+            archived: p.archived,
             lived: p.created_at.elapsed(),
             limit_seconds: self.globals.number("ShortLivedSessionDuration").unwrap_or(3.0),
         };

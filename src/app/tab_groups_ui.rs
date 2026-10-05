@@ -487,7 +487,7 @@ impl App {
         let guid = self.focused_guid();
         if self.new_tab_opens_window(guid.as_deref()) {
             let Some(value) = self.snapshot_tab(at) else { return };
-            match self.build_tab(&value, None, false) {
+            match self.build_tab(&value, None, false, false) {
                 Ok(mut tab) => {
                     tab.group = None;
                     self.pending_windows.push(windows_ui::NewWindow::Tab(tab));
@@ -536,7 +536,7 @@ impl App {
         let value = self.snapshot_tab(at)?;
         let tmux = self.tmux_of(self.tabs[at].focused).is_some();
         let (place, group) = duplicate_placement(at, self.tabs.len(), self.globals.bool("DuplicatedTabsOpenAdjacentToOriginal"), tmux, true, self.tabs[at].group.as_ref());
-        let tab = match self.build_tab(&value, None, false) {
+        let tab = match self.build_tab(&value, None, false, false) {
             Ok(t) => t,
             Err(e) => {
                 self.banners.set("arrangement", format!("Could not duplicate the tab: {e}"));
