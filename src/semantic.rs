@@ -536,6 +536,11 @@ pub const HANDLER_FAILED: &str = "URL Handler Command Failed";
 /// never passes through the evaluator or the splitter.
 pub const URL_TOKEN: &str = "\u{E000}tandem-url\u{E000}";
 
+/// The marker bound to the template's `n`th session variable while it is evaluated.
+pub fn var_token(n: usize) -> String {
+    format!("\u{E000}tandem-var-{n}\u{E000}")
+}
+
 /// Why a URL handler command is not run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -548,6 +553,11 @@ pub enum Refusal {
     /// The program hands its arguments to a shell, a console host or another program
     /// (`FORWARDERS`): never a URL handler.
     Forwarder,
+    /// A session variable is or starts the program token.
+    VariableInProgram,
+    /// A session variable holds what the context-free list refuses (`cmd_unsafe`), what the
+    /// program would read as syntax, or the marker character.
+    VariableUnsafe,
 }
 
 impl Refusal {
@@ -559,6 +569,8 @@ impl Refusal {
             Refusal::BatchUnsafe => "Tandem did not pass this URL to the URL handler command: a batch file or cmd.exe would read its special characters.",
             Refusal::Unresolved => HANDLER_FAILED,
             Refusal::Forwarder => "Tandem did not run the URL handler command: its program hands its arguments to a shell or another program, so it cannot be a URL handler.",
+            Refusal::VariableInProgram => "Tandem did not run the URL handler command: a session variable cannot name the program.",
+            Refusal::VariableUnsafe => "Tandem did not run the URL handler command: a session variable in it holds a quote, a control character or another character a command reader would act on.",
         }
     }
 }
@@ -687,7 +699,11 @@ fn reparsed(program: &Path, url: &str) -> bool {
 }
 
 /// The program and arguments a URL handler command starts, never through a shell (13p-r).
-pub fn handler_plan(evaluated: &str, url: &str, resolve: &dyn Fn(&str) -> Option<PathBuf>) -> Result<Run, Refusal> {
+/// `evaluated` holds `URL_TOKEN` for the URL and `var_token(n)` for `vars[n]`, the template's
+/// session variables (program text: OSC 7 folders, titles, hosts): each is put back after the
+/// split, so it is exactly one argument or part of one, never the program, and each passes
+/// the context-free list (`cmd_unsafe`) and the program's own syntax rule (`reparsed`).
+pub fn handler_plan(evaluated: &str, url: &str, vars: &[String], resolve: &dyn Fn(&str) -> Option<PathBuf>) -> Result<Run, Refusal> {
     if evaluated.trim().is_empty() {
         return Err(Refusal::Empty);
     }
@@ -699,15 +715,28 @@ pub fn handler_plan(evaluated: &str, url: &str, resolve: &dyn Fn(&str) -> Option
     if first.contains(URL_TOKEN) {
         return Err(Refusal::UrlInProgram);
     }
+    if first.contains('\u{E000}') {
+        return Err(Refusal::VariableInProgram);
+    }
+    if vars.iter().any(|v| cmd_unsafe(v) || v.contains('\u{E000}')) {
+        return Err(Refusal::VariableUnsafe);
+    }
     let program = resolve(first).ok_or(Refusal::Unresolved)?;
     if forwarder(&program) {
         return Err(Refusal::Forwarder);
+    }
+    if vars.iter().any(|v| reparsed(&program, v)) {
+        return Err(Refusal::VariableUnsafe);
     }
     let mut held = false;
     let mut args: Vec<String> = rest
         .iter()
         .map(|t| {
             held |= t.contains(URL_TOKEN);
+            let mut t = t.clone();
+            for (n, v) in vars.iter().enumerate() {
+                t = t.replace(&var_token(n), v);
+            }
             t.replace(URL_TOKEN, url)
         })
         .collect();
@@ -1159,6 +1188,24 @@ mod tests {
 
     /// Programs that pass their arguments on to a shell, a console host or another program are
     /// never URL handlers, whatever the URL, by resolved file name (any folder, any extension).
+    /// Every session variable in a handler template is exactly one argument (or part of one),
+    /// never the program, and passes the context-free list and the program's syntax rule.
+    #[test]
+    fn handler_variables_are_one_argument_each() {
+        let v = |vals: &[&str]| vals.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (t0, t1) = (var_token(0), var_token(1));
+        let url = "https://a/b";
+        assert_eq!(handler_plan(&format!("open.exe {t0} {URL_TOKEN}"), url, &v(&["My Title  with spaces"]), &fake_resolve), spawn_of(r"C:\t\open.exe", &["My Title  with spaces", url]));
+        assert_eq!(handler_plan(&format!("open.exe --t={t0} --p={t1}"), url, &v(&["a b", "C:\\x y"]), &fake_resolve), spawn_of(r"C:\t\open.exe", &["--t=a b", "--p=C:\\x y", url]));
+        for program in [format!("{t0}"), format!("{t0}\\open.exe"), format!("\"{t0}\"")] {
+            assert_eq!(handler_plan(&format!("{program} {URL_TOKEN}"), url, &v(&["C:\\t"]), &fake_resolve), Err(Refusal::VariableInProgram), "{program}");
+        }
+        for bad in ["a&calc", "a\"b", "x\n", "a\\", "a\u{E000}b"] {
+            assert_eq!(handler_plan(&format!("open.exe {t0}"), url, &v(&[bad]), &fake_resolve), Err(Refusal::VariableUnsafe), "{bad:?}");
+        }
+        assert_eq!(handler_plan(&format!("pwsh -File h.ps1 {t0}"), url, &v(&["a;b"]), &fake_resolve), Err(Refusal::VariableUnsafe), "an interpreter's syntax");
+    }
+
     #[test]
     fn handler_forwarders_are_refused() {
         for program in [
@@ -1174,10 +1221,10 @@ mod tests {
             r"C:\Windows\System32\cmd.exe",
             r"C:\tools\Cmd.com",
         ] {
-            assert_eq!(handler_plan(&format!(r#""{program}" {URL_TOKEN}"#), "https://a/b", &fake_resolve), Err(Refusal::Forwarder), "{program}");
+            assert_eq!(handler_plan(&format!(r#""{program}" {URL_TOKEN}"#), "https://a/b", &[], &fake_resolve), Err(Refusal::Forwarder), "{program}");
         }
-        assert_eq!(handler_plan(&format!("cmd.exe /c start \"\" {URL_TOKEN}"), "https://a/b", &fake_resolve), Err(Refusal::Forwarder));
-        assert_eq!(handler_plan(&format!(r#""C:\t\shell.exe" {URL_TOKEN}"#), "https://a/b", &fake_resolve), spawn_of(r"C:\t\shell.exe", &["https://a/b"]), "a stem is matched whole");
+        assert_eq!(handler_plan(&format!("cmd.exe /c start \"\" {URL_TOKEN}"), "https://a/b", &[], &fake_resolve), Err(Refusal::Forwarder));
+        assert_eq!(handler_plan(&format!(r#""C:\t\shell.exe" {URL_TOKEN}"#), "https://a/b", &[], &fake_resolve), spawn_of(r"C:\t\shell.exe", &["https://a/b"]), "a stem is matched whole");
     }
 
     #[test]
@@ -1613,7 +1660,7 @@ mod tests {
 
     #[test]
     fn url_handler_follows_iterm2() {
-        let plan = |t: &str, u: &str| handler_plan(t, u, &fake_resolve);
+        let plan = |t: &str, u: &str| handler_plan(t, u, &[], &fake_resolve);
         assert_eq!(plan(&format!("open.exe --new {URL_TOKEN}"), "https://a/?q=1%20"), spawn_of(r"C:\t\open.exe", &["--new", "https://a/?q=1%20"]));
         // No marker: the URL is appended as the last argument.
         assert_eq!(plan("open.exe", "https://a/"), spawn_of(r"C:\t\open.exe", &["https://a/"]));

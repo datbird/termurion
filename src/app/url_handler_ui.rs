@@ -10,9 +10,6 @@ use std::sync::{Arc, Mutex};
 use super::*;
 use crate::semantic::{self, Run, HANDLER_FAILED, HANDLER_TITLE, URL_TOKEN};
 
-/// The banner when a session variable in the handler template would change how the line splits.
-pub(super) const VARIABLE_REFUSED: &str = "Tandem did not run the URL handler command: a variable in it holds a quote or a control character.";
-
 /// How much of a handler's output the Script Console keeps, per stream.
 const OUTPUT_LIMIT: u64 = 64 * 1024;
 
@@ -26,25 +23,23 @@ pub(super) struct HandlerDone {
 /// The finished handlers, filled by their waiting threads and drained in `tick_triggers`.
 pub(super) type HandlerInbox = Arc<Mutex<Vec<HandlerDone>>>;
 
-/// The template evaluated with `url` bound to `URL_TOKEN` and `background` to "1" or "0"
-/// (`UAH:340-375`). A session variable the template names is refused when it holds a quote or a
-/// control character: it would add arguments or end the line.
-pub(super) fn evaluate_template(template: &str, background: bool, vars: &dyn Fn(&str) -> Option<String>, lax: bool) -> Result<String, String> {
-    let bad = std::cell::Cell::new(false);
+/// The template evaluated with `url` bound to `URL_TOKEN`, `background` to "1" or "0"
+/// (`UAH:340-375`), and each session variable it names to `var_token(n)`; the values, in
+/// order, come back beside it for `handler_plan`, which puts each back as one argument after
+/// the split and refuses what a command reader would act on.
+pub(super) fn evaluate_template(template: &str, background: bool, vars: &dyn Fn(&str) -> Option<String>, lax: bool) -> Result<(String, Vec<String>), String> {
+    let values = std::cell::RefCell::new(Vec::new());
     let lookup = |n: &str| match n {
         "url" => Some(URL_TOKEN.to_string()),
         "background" => Some(if background { "1" } else { "0" }.to_string()),
-        n => vars(n).inspect(|v| {
-            if v.contains('"') || v.chars().any(char::is_control) {
-                bad.set(true);
-            }
+        n => vars(n).map(|v| {
+            let mut values = values.borrow_mut();
+            values.push(v);
+            semantic::var_token(values.len() - 1)
         }),
     };
-    let out = crate::interp::evaluate_lax(template, &lookup, &[], lax);
-    if bad.get() {
-        return Err(VARIABLE_REFUSED.to_string());
-    }
-    out
+    let out = crate::interp::evaluate_lax(template, &lookup, &[], lax)?;
+    Ok((out, values.into_inner()))
 }
 
 /// Evaluates, plans and starts the handler through `spawn`. Err is the banner text. An empty
@@ -59,8 +54,8 @@ pub(super) fn handle(
     resolve: &dyn Fn(&str) -> Option<PathBuf>,
     spawn: &mut dyn FnMut(&Path, &[String]) -> Result<(), String>,
 ) -> Result<(), String> {
-    let evaluated = evaluate_template(template, background, vars, lax)?;
-    match semantic::handler_plan(&evaluated, url, resolve) {
+    let (evaluated, values) = evaluate_template(template, background, vars, lax)?;
+    match semantic::handler_plan(&evaluated, url, &values, resolve) {
         Ok(Run::Spawn { program, args }) => spawn(&program, &args).map_err(|_| HANDLER_FAILED.to_string()),
         Ok(_) => Err(HANDLER_FAILED.to_string()),
         Err(semantic::Refusal::Empty) => Ok(()),
@@ -246,14 +241,23 @@ mod tests {
     fn handler_variables_cannot_split_the_line() {
         let vars = |n: &str| match n {
             "path" => Some(r#"C:\a" --evil "#.to_string()),
-            "name" => Some("fine".to_string()),
+            "name" => Some("My Title  with spaces".to_string()),
+            "hostname" => Some("C:\\t".to_string()),
             _ => None,
         };
         let (r, calls) = run(r"open.exe \(path) \(url)", "https://a/", false, &vars);
         assert!(calls.is_empty());
-        assert_eq!(r, Err(VARIABLE_REFUSED.to_string()));
+        assert_eq!(r, Err(semantic::Refusal::VariableUnsafe.text().to_string()));
+        // A title with spaces stays one argument.
         let (r, calls) = run(r"open.exe \(name) \(url)", "https://a/", false, &vars);
-        assert_eq!((r, calls[0].1.clone()), (Ok(()), vec!["fine".to_string(), "https://a/".to_string()]));
+        assert_eq!(r, Ok(()));
+        assert_eq!(calls[0].1, vec!["My Title  with spaces".to_string(), "https://a/".to_string()]);
+        // A variable never names the program.
+        for t in [r"\(hostname)\open.exe \(url)", r"\(path) \(url)"] {
+            let (r, calls) = run(t, "https://a/", false, &vars);
+            assert!(calls.is_empty(), "{t}");
+            assert_eq!(r, Err(semantic::Refusal::VariableInProgram.text().to_string()), "{t}");
+        }
     }
 
     #[test]
