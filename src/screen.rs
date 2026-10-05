@@ -198,6 +198,8 @@ pub struct Screen {
     feeds: u32,
     /// Moves with every change to the main grid's rows, marks or notes; the scrollbar's tick cache keys on it.
     tick_gen: u64,
+    /// `offscreen_facts`' answer for the tick digest it was made at.
+    pub(crate) offscreen_cache: Option<(u64, Vec<crate::offscreen::PromptFacts>)>,
     /// Key reporting chosen in the menu (on top of the program's requests).
     pub keys: KeyState,
     /// False when the global disablePotentiallyInsecureEscapeSequences is on.
@@ -465,6 +467,7 @@ impl Screen {
             next_fold: 0,
             feeds: 0,
             tick_gen: 0,
+            offscreen_cache: None,
             keys: KeyState::new(look.csi_u),
             trusted: true,
             tab_status: crate::tabstatus::Status::default(),

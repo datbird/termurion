@@ -65,6 +65,8 @@ pub(super) struct WinSlot {
     overlay_drawn: Vec<(mouse::Overlay, Rect)>,
     /// The session picker's buttons this window drew (`chat_session_app`).
     picker_hits: Vec<(PaneId, Rect)>,
+    /// The offscreen command lines this window drew (`offscreen_ui`).
+    offscreen_hits: Vec<(PaneId, Rect, i32)>,
     /// The inline chat panels' rectangles this window drew (`inline_chat_ui`).
     inline_hits: Vec<inline_chat_ui::PanelHit>,
     /// The AI indicators' rectangles this window drew, for a press on them (`chat_session_app`).
@@ -181,6 +183,7 @@ impl WinSlot {
             porthole_hits: Vec::new(),
             overlay_drawn: Vec::new(),
             picker_hits: Vec::new(),
+            offscreen_hits: Vec::new(),
             inline_hits: Vec::new(),
             chat_indicator_hits: Vec::new(),
             focused: false,
@@ -300,6 +303,7 @@ impl App {
         swap(&mut self.porthole_hits, &mut s.porthole_hits);
         swap(&mut self.overlay_drawn, &mut s.overlay_drawn);
         swap(&mut self.picker_hits, &mut s.picker_hits);
+        swap(&mut self.offscreen_hits, &mut s.offscreen_hits);
         swap(&mut self.inline_hits, &mut s.inline_hits);
         swap(&mut self.chat_indicator_hits, &mut s.chat_indicator_hits);
         swap(&mut self.focused, &mut s.focused);
@@ -983,6 +987,7 @@ impl WinSlot {
             porthole_hits: Vec::new(),
             overlay_drawn: Vec::new(),
             picker_hits: Vec::new(),
+            offscreen_hits: Vec::new(),
             inline_hits: Vec::new(),
             chat_indicator_hits: Vec::new(),
             focused: false,

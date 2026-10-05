@@ -92,6 +92,7 @@ mod session_ui;
 mod seltools_ui;
 mod view_ui;
 mod marks_ui;
+mod offscreen_ui;
 mod menu;
 mod porthole_ui;
 mod prompted_ui;
@@ -1204,6 +1205,10 @@ pub struct App {
     chat_picker: Option<chat_session_app::Pick>,
     /// The picker buttons this window drew, per pane (this window's, in `WinSlot`).
     picker_hits: Vec<(PaneId, Rect)>,
+    /// The offscreen command lines this window drew: pane, band, line to reveal (13p; in `WinSlot`).
+    offscreen_hits: Vec<(PaneId, Rect, i32)>,
+    /// Each visible pane's prompt facts for this frame (`prepare_offscreen`); scratch, not swapped.
+    offscreen_prepared: HashMap<PaneId, Vec<crate::offscreen::PromptFacts>>,
     /// The inline chat panels' rectangles this window drew, for a press on them.
     inline_hits: Vec<inline_chat_ui::PanelHit>,
     /// The AI indicators this window drew (this window's, in `WinSlot`).
@@ -2039,6 +2044,8 @@ pub fn run() {
         chat_convo_dirty: true,
         chat_picker: None,
         picker_hits: Vec::new(),
+        offscreen_hits: Vec::new(),
+        offscreen_prepared: HashMap::new(),
         inline_hits: Vec::new(),
         chat_indicator_hits: Vec::new(),
         streaming_chats: std::collections::HashSet::new(),
@@ -4666,6 +4673,10 @@ impl App {
         if button == MouseButton::Left && self.picker_press(x, y) {
             return;
         }
+        // The offscreen command line scrolls to its command (`PTYTextView.m:7885-7896`).
+        if button == MouseButton::Left && self.offscreen_click(x, y) {
+            return;
+        }
         // A pane's AI indicator (linked or streaming) opens its menu.
         if button == MouseButton::Left && self.chat_indicator_press(x, y) {
             return;
@@ -5175,11 +5186,13 @@ impl App {
         let backgrounds = self.pane_backgrounds();
         let mut block_buttons = Vec::new();
         let mut picker_hits = Vec::new();
+        let mut offscreen_hits: Vec<(PaneId, Rect, i32)> = Vec::new();
         let mut indicator_hits = Vec::new();
         let mut inline_hits = Vec::new();
         self.prepare_portholes();
         self.prepare_cursors();
         self.prepare_badges();
+        self.prepare_offscreen();
         self.prepare_inline_chats();
         let mut porthole_hits = Vec::new();
         let mut overlay_drawn: Vec<(mouse::Overlay, Rect)> = Vec::new();
@@ -5277,6 +5290,9 @@ impl App {
                         let r = self.text_rect(id, rect);
                         frame.images.push(scene::ImageQuad { rect: r, uv: [0.0, 0.0, r.w / *n as f32, r.h / *n as f32], key: (0x5354_5249, *n as usize), pixels: px.clone(), size: (*n, *n), repeat: true });
                     }
+                    // After the pane's own rows and strokes (it cuts them out), before the extras
+                    // that cut it in turn (portholes, info bars, the composer, completion).
+                    offscreen_hits.extend(self.draw_offscreen(&mut frame, id, rect, cell).map(|(r, line)| (id, r, line)));
                     porthole_hits.extend(self.draw_portholes(&mut frame, id, rect, cell));
                 }
                 self.draw_view_extras(&mut frame, id, rect, cell);
@@ -5403,6 +5419,7 @@ impl App {
         self.block_buttons = block_buttons;
         self.porthole_hits = porthole_hits;
         self.picker_hits = picker_hits;
+        self.offscreen_hits = offscreen_hits;
         self.inline_hits = inline_hits;
         self.chat_indicator_hits = indicator_hits;
         let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));

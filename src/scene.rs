@@ -2924,6 +2924,69 @@ pub fn session_picker_button(frame: &mut Frame, pane: Rect, label: &str, fg: Rgb
     r
 }
 
+/// The offscreen command line (`TDH:3593-3617`): `band` is filled over the pane's top (the
+/// rows, box glyphs and strokes under it are cut out first, so nothing of row 0 shows through),
+/// outlined by a 1 pixel line at its top and bottom, and the command's cells on `line` are
+/// drawn in it from `text_origin`. The box goes in `popups` and the text in `rows`, never in
+/// `overlay`, which draws over text. `colors` is `offscreen::band_colors` (sRGB).
+pub fn offscreen_band(frame: &mut Frame, screen: &Screen, band: Rect, text_origin: (f32, f32), cell: (f32, f32), line: i32, colors: ([f32; 4], [f32; 4]), face: u16) {
+    let lin = |c: [f32; 4]| [srgb_to_linear((c[0] * 255.0).round() as u8), srgb_to_linear((c[1] * 255.0).round() as u8), srgb_to_linear((c[2] * 255.0).round() as u8), c[3]];
+    cut_out(frame, band, cell.1);
+    frame.popups.push(Quad { rect: band, color: lin(colors.0) });
+    frame.popups.push(Quad { rect: Rect { h: 1.0, ..band }, color: lin(colors.1) });
+    frame.popups.push(Quad { rect: Rect { y: band.y + band.h - 1.0, h: 1.0, ..band }, color: lin(colors.1) });
+    if face != crate::render::DEFAULT_FACE && !frame.face_heights.iter().any(|(f, _)| *f == face) {
+        frame.face_heights.push((face, cell.1));
+    }
+    let grid = screen.term().grid();
+    if line < -(grid.history_size() as i32) || line >= grid.screen_lines() as i32 {
+        return;
+    }
+    // The line's cells as the pane draws them: an ASCII run is one piece, any other character
+    // its own piece at its cell (fallback fonts are not monospace). Box glyphs stay text here.
+    let row = &grid[alacritty_terminal::index::Line(line)];
+    let palette = &screen.palette;
+    let mut piece: Option<(usize, Vec<Span>)> = None;
+    let mut pieces: Vec<(usize, Vec<Span>)> = Vec::new();
+    for col in 0..grid.columns() {
+        let c = &row[alacritty_terminal::index::Column(col)];
+        if c.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+            continue;
+        }
+        let mut text = c.c.to_string();
+        if let Some(extra) = c.zerowidth() {
+            text.extend(extra);
+        }
+        let ascii = text.is_ascii();
+        let fg = if c.flags.contains(Flags::HIDDEN) { palette.cell(c.fg, c.bg, c.flags).1 } else { palette.cell(c.fg, c.bg, c.flags).0 };
+        let (bold, italic) = (c.flags.contains(Flags::BOLD), c.flags.contains(Flags::ITALIC));
+        let span = |text: String| Span { text, color: fg, bold, italic, alt_font: !ascii, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: bold, ligatures: 0, mask: 0, font: 0 };
+        if !ascii {
+            pieces.extend(piece.take());
+            pieces.push((col, vec![span(text)]));
+            continue;
+        }
+        let (_, spans) = piece.get_or_insert_with(|| (col, Vec::new()));
+        match spans.last_mut() {
+            Some(l) if l.color == fg && l.bold == bold && l.italic == italic => l.text.push_str(&text),
+            _ => spans.push(span(text)),
+        }
+    }
+    pieces.extend(piece);
+    for (col, mut spans) in pieces {
+        while spans.last().is_some_and(|s| s.text.trim_end().is_empty()) {
+            spans.pop();
+        }
+        if let Some(l) = spans.last_mut() {
+            l.text.truncate(l.text.trim_end().len());
+        }
+        if spans.is_empty() {
+            continue;
+        }
+        frame.rows.push(TextRow { x: text_origin.0 + col as f32 * cell.0, y: text_origin.1, spans, clip: band, scale: 1.0, face });
+    }
+}
+
 /// A tab's tooltip (`PT tabView:toolTipForTabViewItem:`): a framed box at `at` (under the
 /// pointer) with one text row per line of `text`, moved left and up as far as it must to stay
 /// inside `area` (the window).
@@ -7599,6 +7662,49 @@ mod tests {
         assert!(key_row(&plain).is_none());
         assert!(plain.quads.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0)), "the cursor otherwise");
     }
+    #[test]
+    fn offscreen_band_draws_the_command() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"ls -R\r\nnext");
+        let mut f = Frame::default();
+        let pane = Rect { x: 0.0, y: 0.0, w: 160.0, h: 64.0 };
+        pane_with(&mut f, &s, pane, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        let (before, overlay) = (f.rows.len(), f.overlay.len());
+        let band = Rect { x: 0.0, y: 0.0, w: 160.0, h: 32.0 };
+        let colors = ([0.105, 0.105, 0.105, 0.5], [0.5, 0.5, 0.5, 1.0]);
+        offscreen_band(&mut f, &s, band, (0.0, 8.0), CELL, 0, colors, 3);
+        let lin = |c: [f32; 4]| [srgb_to_linear((c[0] * 255.0).round() as u8), srgb_to_linear((c[1] * 255.0).round() as u8), srgb_to_linear((c[2] * 255.0).round() as u8), c[3]];
+        assert!(f.popups.iter().any(|q| q.rect == band && q.color == lin(colors.0)), "{:?}", f.popups);
+        assert!(f.popups.iter().any(|q| q.rect == Rect { h: 1.0, ..band } && q.color == lin(colors.1)));
+        assert!(f.popups.iter().any(|q| q.rect == Rect { y: 31.0, h: 1.0, ..band } && q.color == lin(colors.1)));
+        assert!(f.overlay.len() == overlay && f.quads.iter().all(|q| q.rect != band), "the box is a popup");
+        let row = f.rows.last().unwrap();
+        assert!(f.rows.len() > before);
+        assert_eq!(row.spans.iter().map(|s| s.text.as_str()).collect::<String>(), "ls -R");
+        assert_eq!((row.clip, row.face, row.y), (band, 3, 8.0));
+    }
+
+    #[test]
+    fn offscreen_band_covers_row_zero() {
+        // Row 0 is underlined, struck and box drawn; nothing of it shows inside the band.
+        let mut s = Screen::new(20, 4);
+        s.feed("\x1b[4;9m\u{2500}\u{2502}abc\x1b[0m\r\n\x1b[4mxyz".as_bytes());
+        let mut f = Frame::default();
+        let pane = Rect { x: 0.0, y: 0.0, w: 160.0, h: 64.0 };
+        pane_with(&mut f, &s, pane, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        assert!(!f.glyphs.is_empty() && !f.underlines.is_empty() && !f.strikes.is_empty(), "the fixture draws all three");
+        let band = Rect { x: 0.0, y: 0.0, w: 160.0, h: 32.0 };
+        let under = f.rows.len();
+        offscreen_band(&mut f, &s, band, (0.0, 8.0), CELL, 0, ([0.1, 0.1, 0.1, 0.5], [0.5, 0.5, 0.5, 1.0]), crate::render::DEFAULT_FACE);
+        let hit = |r: Rect| r.x < band.x + band.w && r.x + r.w > band.x && r.y < band.y + band.h && r.y + r.h > band.y;
+        assert!(f.underlines.iter().chain(&f.strikes).all(|q| !hit(q.rect)), "strokes: {:?}", f.underlines);
+        assert!(f.glyphs.iter().all(|g| {
+            let c = g.clip;
+            !(hit(g.rect) && c.w > 0.0 && c.h > 0.0 && hit(c))
+        }), "glyphs: {:?}", f.glyphs);
+        assert!(f.rows.iter().enumerate().all(|(i, r)| i >= under || r.clip.w <= 0.0 || !hit(Rect { x: r.clip.x, y: r.y, w: r.clip.w, h: 16.0 })), "rows: {:?}", f.rows.iter().map(|r| (r.y, r.clip, r.spans.iter().map(|s| s.text.clone()).collect::<String>())).collect::<Vec<_>>());
+    }
+
     #[test]
     fn picker_hits_follow_iterm2() {
         let cell = (10.0, 20.0);

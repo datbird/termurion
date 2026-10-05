@@ -385,6 +385,7 @@ pub mod api_notify;
 pub mod session_env;
 pub mod start_dir;
 pub mod shell_inject;
+pub mod offscreen;
 pub mod locale_guess;
 #[cfg(windows)]
 pub mod locale_win;
