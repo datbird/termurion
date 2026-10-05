@@ -706,7 +706,11 @@ pub fn pane_with(
         }
         // The text and background the cell ended with, for the later choices; `own` while the
         // text is still the cell's own color.
+        // The text a match or a hovered link chose, before any adjusting, so a selection over
+        // the cell adjusts it against the selection color that draws (iTerm2 adjusts against the
+        // background actually drawn).
         let (mut under, mut own) = (raw_bg, true);
+        let mut raw_choice: Option<Rgb> = None;
         let mut hover = false;
         if let Some(h) = highlights {
             let at = crate::find::Pos { row: (indexed.point.line.0 + history) as usize, col };
@@ -715,10 +719,12 @@ pub fn pane_with(
                 // The match colors are muted by Cursor Boost like every other background and text.
                 (fg, bg) = (crate::cursor_look::mute(adjust(match_text(h.color), h.color), palette.bg, look.boost), crate::cursor_look::mute(h.color, palette.bg, look.boost));
                 (under, own) = (h.color, false);
+                raw_choice = Some(match_text(h.color));
             }
             if h.hover.is_some_and(|m| m.start <= at && at <= m.end) {
                 fg = adjust(h.link, under);
                 own = false;
+                raw_choice = Some(h.link);
                 hover = true;
                 hovered.push((row, visual_col(row, col)));
             }
@@ -729,6 +735,7 @@ pub fn pane_with(
             if h.labels.iter().any(|(p, l)| p.row == at_row && col >= p.col && col < p.col + l.chars().count()) {
                 (fg, bg) = (LABEL_TEXT, LABEL_BG);
                 own = false;
+                raw_choice = None;
                 hidden = true;
             }
         }
@@ -739,7 +746,11 @@ pub fn pane_with(
             fg = match palette.selected_text {
                 Some(t) => crate::cursor_look::mute(adjust(t, palette.selection), palette.bg, look.boost),
                 None if own => own_text(palette.selection),
-                None => fg,
+                // Hover text is not muted (the hover ruling); a match's is.
+                None => raw_choice.map_or(fg, |t| {
+                    let a = adjust(t, palette.selection);
+                    if hover { a } else { crate::cursor_look::mute(a, palette.bg, look.boost) }
+                }),
             };
             bg = crate::cursor_look::mute(palette.selection, palette.bg, look.boost);
             selected = true;
@@ -5234,6 +5245,58 @@ mod tests {
         let sel_text = span_color(&f, "he").unwrap();
         assert_ne!(sel_text, rgb(100, 100, 100), "selected text is adjusted against the selection color");
         assert_eq!(sel_text, crate::contrast::apply(rgb(100, 100, 100), rgb(100, 100, 100), 0.5));
+    }
+
+    /// 13m final 3: a cell both find-matched (or hovered) and selected adjusts its text against
+    /// the selection color that draws, not against the match color.
+    #[test]
+    fn a_matched_selected_cell_contrasts_against_the_selection() {
+        let mut s = screen(b"hello");
+        s.palette.selection = rgb(0, 0, 0);
+        s.palette.selected_text = None;
+        with_min_contrast(&mut s, 1.0);
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left);
+        sel.update(Point::new(Line(0), Column(0)), Side::Right);
+        s.term_mut().selection = Some(sel);
+        // A white match color makes the match text black; against the black selection that is
+        // unreadable until it is adjusted against the selection.
+        let m = [crate::find::Match { start: crate::find::Pos { row: 0, col: 0 }, end: crate::find::Pos { row: 0, col: 0 } }];
+        let hl = Highlights { matches: &m, color: rgb(255, 255, 255), ..see_through(1.0, false) };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
+        let c = span_color(&f, "h").unwrap();
+        assert_ne!(c, rgb(0, 0, 0), "black text on the black selection");
+        assert_eq!(c, crate::contrast::apply(rgb(0, 0, 0), rgb(0, 0, 0), 1.0));
+        // A hovered link over the selection does the same.
+        let hl = Highlights { hover: Some(crate::find::Match { start: crate::find::Pos { row: 0, col: 0 }, end: crate::find::Pos { row: 0, col: 0 } }), link: rgb(0, 0, 0), ..see_through(1.0, false) };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
+        assert_eq!(span_color(&f, "h"), Some(crate::contrast::apply(rgb(0, 0, 0), rgb(0, 0, 0), 1.0)));
+    }
+
+    /// An explicit Selected Text Color is adjusted against the selection color too.
+    #[test]
+    fn an_explicit_selected_text_color_is_adjusted() {
+        let mut s = screen(b"hello");
+        s.palette.selection = rgb(100, 100, 100);
+        s.palette.selected_text = Some(rgb(100, 100, 100));
+        with_min_contrast(&mut s, 0.5);
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left);
+        sel.update(Point::new(Line(0), Column(1)), Side::Right);
+        s.term_mut().selection = Some(sel);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false));
+        assert_eq!(span_color(&f, "he"), Some(crate::contrast::apply(rgb(100, 100, 100), rgb(100, 100, 100), 0.5)));
+    }
+
+    /// A hidden (SGR 8) cell keeps its color whatever the minimum contrast.
+    #[test]
+    fn hidden_cells_are_exempt_from_contrast() {
+        let mut s = screen(b"\x1b[8;38;2;128;128;128m\x1b[48;2;128;128;128mab");
+        with_min_contrast(&mut s, 1.0);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        assert!(f.rows.iter().flat_map(|r| &r.spans).all(|sp| sp.color == rgb(128, 128, 128) || sp.text.trim().is_empty()), "{:?}", f.rows);
     }
 
     #[test]

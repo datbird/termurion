@@ -20,7 +20,7 @@ display scale. Mark each line pass or fail.
 | 1 | Settings > Profiles > Colors: Minimum Contrast at 0.5, then run `printf '\e[90;100mgray on gray\e[0m\n'`: the text is readable (shifted toward black or white). At 0 it is hard to read. | |
 | 2 | Minimum Contrast at 1.0 (and at 0.97): the row shows "Black & White Text Only" in Settings; below 0.97 it does not. Text is plain black or white. | |
 | 3 | Minimum Contrast at 0.5 and 1.0 with a selection over low-contrast text: the selected text stays readable against the selection color. With an explicit Selected Text Color set, that color is used (adjusted against the selection). | |
-| 4 | Minimum Contrast at 0.5 with Find open on low-contrast text: matched text is readable against the find color. A cell both matched and selected keeps its match color (ruled, final-wave item). | |
+| 4 | Minimum Contrast at 0.5 with Find open on low-contrast text: matched text is readable against the find color. A cell both matched and selected: its text is adjusted against the selection color, not the match color. | |
 | 5 | Minimum Contrast: the block cursor's text, a box-drawing or block character (`printf '\u2588\u2593'`), hidden text (SGR 8) and Find labels are not adjusted. Faint text (SGR 2) is adjusted after its fade. | |
 | 6 | Harmonize 256 Colors with a light theme: `for i in $(seq 16 255); do printf "\e[48;5;${i}m  "; done; printf '\e[0m\n'` changes (cube and grays follow the theme). Off restores the standard cube. | |
 | 7 | Use Theme Mark Colors on: prompt marks in the margin and on the scrollbar use ANSI blue (success), yellow, red (error). Off: the fixed colors. | |
