@@ -4924,7 +4924,7 @@ impl App {
 
     fn wheel(&mut self, delta: MouseScrollDelta) {
         // A line of the wheel is a cell of the pane under the pointer.
-        let (cw, ch) = self.pane_at(self.cursor.0, self.cursor.1).map_or_else(|| self.focused_cell(), |(id, _)| self.pane_cell(id));
+        let (cw, ch) = self.pointer_pane_cell();
         let scale = self.scale() as f64;
         let cell_pt = (cw as f64 / scale, ch as f64 / scale);
         let ev = match delta {

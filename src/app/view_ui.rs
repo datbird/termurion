@@ -248,7 +248,8 @@ impl App {
         let (x, y) = self.cursor;
         let Some((id, _, _)) = self.scrollbar_at(x, y) else { return false };
         let prefs = crate::wheel::Prefs::from_globals(&self.globals);
-        let ch = self.cell().1 as f64 / self.scale() as f64;
+        // The pane's own line height (its face, 13n).
+        let ch = self.pane_cell(id).1 as f64 / self.scale() as f64;
         if let Some(p) = self.panes.get_mut(&id) {
             let lines = p.wheel.scroll.take(dy as f64, precise, ch, &prefs);
             if lines != 0.0 {

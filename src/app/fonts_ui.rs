@@ -204,6 +204,11 @@ impl App {
         self.tabs.get(self.active).map_or_else(|| self.cell(), |t| self.pane_cell(t.focused))
     }
 
+    /// The cell of the pane under the pointer, else the focused pane's: a line of the wheel.
+    pub(super) fn pointer_pane_cell(&self) -> (f32, f32) {
+        self.pane_at(self.cursor.0, self.cursor.1).map_or_else(|| self.focused_cell(), |(id, _)| self.pane_cell(id))
+    }
+
     fn tab_focused_cell(&self, pane: PaneId) -> Option<(f32, f32)> {
         let tab = self.tabs.iter().find(|t| t.layout.panes().contains(&pane))?;
         self.pane_faces.cell(tab.focused)
