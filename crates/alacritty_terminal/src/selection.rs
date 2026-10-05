@@ -147,6 +147,21 @@ impl Selection {
         self.runs = runs;
     }
 
+    // Tandem patch: the buffer's oldest line moved (a scroll pushed a line out of history, or
+    // the alternate screen, which keeps none, lost its top row). Runs above `topmost` are
+    // dropped and the visual anchor is clamped into the buffer as the hull's start is (column
+    // 0, left side). Returns false when the selection was visual and nothing of it is left.
+    pub fn drop_above(&mut self, topmost: Line) -> bool {
+        let had_runs = !self.runs.is_empty();
+        self.runs.retain(|(a, _)| a.line >= topmost);
+        if let Some((p, right)) = self.visual_anchor.as_mut().filter(|(p, _)| p.line < topmost) {
+            *p = Point::new(topmost, Column(0));
+            *right = false;
+        }
+        !(had_runs && self.runs.is_empty())
+    }
+
+    // Tandem patch: the visual drag anchor.
     /// Where a visual drag began: a grid line, a visual column and whether the press was in
     /// that cell's right half.
     pub fn set_visual_anchor(&mut self, (line, column, right): (i32, usize, bool)) {
@@ -195,11 +210,22 @@ impl Selection {
             }
             runs.push((Point::new(line, a.column), Point::new(line, b.column)));
         }
+        let all_gone = !self.runs.is_empty() && runs.is_empty();
         self.runs = runs;
-        if let Some((p, _)) = self.visual_anchor.as_mut().filter(|(p, _)| moves(p.line)) {
-            // A full-screen scroll sends the line into history, which has no bound here.
+        if all_gone {
+            return None;
+        }
+        if let Some((p, right)) = self.visual_anchor.as_mut().filter(|(p, _)| moves(p.line)) {
+            // A full-screen scroll sends the line into history, which `drop_above` bounds once
+            // the grid has scrolled.
             let line = min(min(p.line - delta, range_bottom - 1), bottommost_line);
-            p.line = if range_top == 0 { line } else { line.max(range_top) };
+            if range_top != 0 && line < range_top {
+                // Clamped to the region's start as the hull is: column 0, left side.
+                *p = Point::new(range_top, Column(0));
+                *right = false;
+            } else {
+                p.line = line;
+            }
         }
 
         let (mut start, mut end) = (&mut self.region.start, &mut self.region.end);

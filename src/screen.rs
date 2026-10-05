@@ -1779,6 +1779,42 @@ mod tests {
     }
 
     #[test]
+    fn visual_runs_leave_with_the_oldest_line() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let drag = |s: &mut Screen, to: (i32, usize, bool)| {
+            s.term_mut().selection = Some(Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left));
+            s.term_mut().selection.as_mut().unwrap().set_visual_anchor((0, 0, false));
+            assert!(s.drag_visual_to(to));
+        };
+        // The alternate screen keeps no history: a row scrolled off its top is gone, and so
+        // are the runs and the anchor on it. Nothing indexes a line that does not exist.
+        let mut s = Screen::new(10, 3);
+        s.feed(b"\x1b[?1049h");
+        s.feed("ab \u{5d0}\u{5d1}".as_bytes());
+        drag(&mut s, (0, 3, true));
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("ab \u{5d1}"));
+        s.feed(b"\r\n\r\n\r\n\r\n");
+        assert_eq!(s.term().selection_to_string(), None, "no row is copied that nobody selected");
+        assert!(s.term().selection.is_none());
+        assert_eq!(s.visual_anchor(), None);
+        // A full scrollback drops its oldest line on every scroll: of two selected rows only
+        // the one still in the buffer is copied and highlighted.
+        let mut s = Screen::with_scrollback(10, 3, 1);
+        s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
+        drag(&mut s, (1, 2, true));
+        s.feed(b"\r\n\r\n\r\n");
+        let sel = s.term().selection.as_ref().expect("row 1 is still in the buffer");
+        assert!(sel.runs.iter().all(|(a, _)| a.line.0 >= -1), "{:?}", sel.runs);
+        assert!(!sel.covers(Point::new(Line(2), Column(0))), "the newest rows are not highlighted");
+        let copy = s.term().selection_to_string().unwrap();
+        assert!(copy.starts_with("pl") || copy.starts_with("pla"), "{copy:?}");
+        assert!(!copy.contains('\u{5d0}'), "{copy:?}");
+        let (line, _, _) = s.visual_anchor().unwrap_or((-1, 0, false));
+        assert!(line >= -1, "the anchor never leaves the buffer: {line}");
+    }
+
+    #[test]
     fn pointer_maps_through_the_order() {
         let mut s = Screen::new(10, 3);
         s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());

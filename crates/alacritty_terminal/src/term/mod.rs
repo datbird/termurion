@@ -571,7 +571,8 @@ impl<T> Term<T> {
         if let Some(sel) = self.selection.as_ref().filter(|s| !s.runs.is_empty()) {
             let mut res = String::new();
             let mut prev: Option<Line> = None;
-            for (a, b) in &sel.runs {
+            // Tandem patch: never index a line above the buffer.
+            for (a, b) in sel.runs.iter().filter(|(a, _)| a.line >= self.topmost_line()) {
                 if let Some(p) = prev.filter(|p| *p != a.line) {
                     let last = self.last_column();
                     let wrapped = self.grid[p][last].flags.contains(Flags::WRAPLINE);
@@ -880,6 +881,16 @@ impl<T> Term<T> {
             self.grid.scroll_up_in_place(&region, lines);
         } else {
             self.grid.scroll_up(&region, lines);
+        }
+
+        // Tandem patch: the scroll may have pushed the oldest history line out (a full
+        // scrollback), or the alternate screen has none: visual runs and the drag anchor above
+        // the buffer are dropped.
+        let topmost = self.topmost_line();
+        if let Some(sel) = self.selection.as_mut() {
+            if !sel.drop_above(topmost) {
+                self.selection = None;
+            }
         }
 
         // Scroll vi mode cursor.

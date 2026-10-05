@@ -97,5 +97,8 @@ test data) is left out. Changes:
     `set_visual_anchor`/`visual_anchor`, a grid line plus visual column) with the content and
     drops the runs that scroll out of the region. Tandem's visual character selection on
     bidirectional rows uses it (iTerm2's live visual range, `iTermSelection.m:409`).
+    `Selection::drop_above` (called after `scroll_up_relative` scrolls the grid) drops runs
+    above the oldest buffer line (alternate screen, full scrollback) and clamps the anchor;
+    `selection_to_string` skips such runs; `rotate` returns None when every run was dropped.
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

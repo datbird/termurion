@@ -43,7 +43,8 @@ pub fn selection_spans(screen: &Screen) -> (Vec<(i32, usize, usize)>, bool) {
 fn spans(screen: &Screen) -> Vec<(i32, usize, usize)> {
     let term = screen.term();
     if let Some(sel) = term.selection.as_ref().filter(|s| !s.runs.is_empty()) {
-        return sel.runs.iter().map(|(a, b)| (a.line.0, a.column.0, b.column.0)).collect();
+        let top = term.topmost_line().0;
+        return sel.runs.iter().filter(|(a, _)| a.line.0 >= top).map(|(a, b)| (a.line.0, a.column.0, b.column.0)).collect();
     }
     let Some(r) = term.selection.as_ref().and_then(|s| s.to_range(term)) else { return Vec::new() };
     let last_col = term.columns() - 1;
