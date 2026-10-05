@@ -156,9 +156,10 @@ test data) is left out. Changes:
     stays), and stays narrow when it is off. A regional indicator right after a cell holding a
     lone regional indicator joins it as a zero-width mark (one cluster) and the pair is always
     two cells: it widens a one-cell first indicator the same way (iTerm2 `StringToScreenChars`).
-    A skin tone modifier (`is_modifier`) joins the cell before it as a mark and widens a narrow
-    VS16 base under the same switches as U+FE0F; a pictograph (`is_pictograph`) right after a ZWJ
-    in a pictograph's cell joins it too, so a ZWJ sequence is as wide as its first emoji.
+    A skin tone modifier keeps its own cell, as in iTerm2 with its default
+    AggressiveBaseCharacterDetection (CharsetTests.swift:453-515); a pictograph (`is_pictograph`)
+    right after a ZWJ in a pictograph's (or a skin tone's) cell joins it, so a ZWJ sequence is as
+    wide as its first emoji.
 26. `term/mod.rs`: ED 2 in the alternate screen first scrolls the screen into its history when
     `alt_scrollback` is on (iTerm2 `MS:1712-1720`; patch 24 did it for ED 0 at home only).
     `Term.history_splices` and `take_history_splices`: leaving the alternate screen records

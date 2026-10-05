@@ -4486,38 +4486,27 @@ mod tests {
     /// Task 5 fix round 1: a skin tone modifier joins its base, and a ZWJ sequence is one cell
     /// run as wide as its first emoji (iTerm2: grapheme clusters, `StringToScreenChars`).
     #[test]
-    fn skin_tones_and_zwj_join_their_base() {
-        use alacritty_terminal::term::cell::Flags;
+    fn skin_tones_keep_their_own_cells_and_zwj_joins() {
         let x_at = |text: &str, prefix: &str| {
             let mut s = Screen::new(12, 3);
             s.feed(format!("{prefix}{text}x").as_bytes());
             column_of(&s, 0, 'x')
         };
-        // A narrow base that takes VS16 (victory hand) widens, as with FE0F; a wide base stays two.
-        assert_eq!(x_at("\u{270C}\u{1F3FD}", ""), Some(2));
-        assert_eq!(x_at("\u{1F44D}\u{1F3FD}", ""), Some(2));
-        assert_eq!(x_at("\u{1F44D}\u{1F3FB}", ""), Some(2));
-        assert_eq!(x_at("\u{1F44D}\u{1F3FF}", ""), Some(2));
-        // Alternate screen, VS16 off there: the narrow base stays narrow, the modifier rides on it.
-        assert_eq!(x_at("\u{270C}\u{1F3FD}", "\x1b[?1049h"), Some(1));
-        assert_eq!(x_at("\u{1F44D}\u{1F3FD}", "\x1b[?1049h"), Some(2));
-        // With the switch on in the alternate screen too.
-        let mut s = Screen::new(12, 3);
-        s.set_rules(crate::emu::Rules { vs16_all: true, ..crate::emu::Rules::default() });
-        s.feed("\x1b[?1049h\u{270C}\u{1F3FD}x".as_bytes());
-        assert_eq!(column_of(&s, 0, 'x'), Some(2));
-        // The modifier is a mark of the cell, and the spacer stays.
-        let mut s = Screen::new(12, 3);
-        s.feed("\u{1F44D}\u{1F3FD}x".as_bytes());
-        assert_eq!(width_cell(&s, 0, 0).zerowidth(), Some(&['\u{1F3FD}'][..]));
-        assert!(width_cell(&s, 0, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
-        // Alone at the start of a line it has no base and keeps its own cells.
+        // iTerm2 (AggressiveBaseCharacterDetection, default on): a skin tone takes its own cells
+        // (CharsetTests.swift:453-515): victory hand 1 + 2, thumbs up 2 + 2, a tone alone 2.
+        assert_eq!(x_at("\u{270C}\u{1F3FD}", ""), Some(3));
+        assert_eq!(x_at("\u{1F44D}\u{1F3FD}", ""), Some(4));
+        assert_eq!(x_at("\u{1F44D}\u{1F3FB}", ""), Some(4));
+        assert_eq!(x_at("\u{270C}\u{1F3FD}", "\x1b[?1049h"), Some(3));
+        assert_eq!(x_at("a\u{1F3FD}", ""), Some(3));
         assert_eq!(x_at("\u{1F3FD}", ""), Some(2));
-        // ZWJ sequences: a family is two cells, a letter before a ZWJ does not join a pictograph.
+        // ZWJ sequences: a family is two cells; a tone after a ZWJ joins the pictograph before it.
         assert_eq!(x_at("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}", ""), Some(2));
-        assert_eq!(x_at("\u{1F468}\u{1F3FD}\u{200D}\u{1F469}\u{1F3FD}", ""), Some(2));
+        assert_eq!(x_at("\u{1F468}\u{1F3FD}\u{200D}\u{1F469}\u{1F3FD}", ""), Some(6), "man | tone ZWJ woman | tone");
         assert_eq!(x_at("a\u{200D}\u{1F469}", ""), Some(3));
         assert_eq!(x_at("\u{2764}\u{FE0F}\u{200D}\u{1F525}", ""), Some(2), "heart on fire");
+        // Extended_Pictographic is the exact table: a check mark and a cross are not pictographs.
+        assert_eq!(x_at("\u{2713}\u{200D}\u{2717}", ""), Some(2));
     }
 
     #[test]

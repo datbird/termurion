@@ -283,7 +283,7 @@ pub struct WidthRule {
     pub vs16: bool,
     pub vs16_primary: bool,
     pub accepts_vs16: fn(char) -> bool,
-    /// An emoji skin tone modifier: it joins the cell before it.
+    /// An emoji skin tone modifier: it keeps its own cell, and a ZWJ pictograph after it joins.
     pub is_modifier: fn(char) -> bool,
     /// Extended_Pictographic: it joins the cell before it when a ZWJ and a pictograph precede.
     pub is_pictograph: fn(char) -> bool,
@@ -1474,26 +1474,19 @@ impl<T: EventListener> Handler for Term<T> {
             }
         }
 
-        // Tandem patch: a skin tone modifier, or a pictograph after a ZWJ, joins the cell before it
-        // (grapheme clusters, iTerm2 `StringToScreenChars`). A narrow base that takes VS16 widens
-        // for a modifier as it does for U+FE0F.
+        // Tandem patch: a pictograph after a ZWJ joins the cell before it (grapheme clusters,
+        // iTerm2 `StringToScreenChars`; `enumerateComposedCharacters` never splits a code point
+        // preceded by a ZWJ). A skin tone modifier keeps its own cell (iTerm2's default
+        // AggressiveBaseCharacterDetection), and the pictograph after a ZWJ that follows one
+        // joins that cell.
         if let Some(rule) = rule {
-            let modifier = (rule.is_modifier)(c);
-            if modifier || (rule.is_pictograph)(c) {
+            if (rule.is_pictograph)(c) {
                 if let Some(column) = self.previous_cell_column() {
                     let line = self.grid.cursor.point.line;
                     let cell = &self.grid[line][column];
-                    let joins = cell.c != ' ' && cell.c != '\0' && cell.zerowidth().is_some_and(|z| z.last() == Some(&'\u{200D}'));
-                    if modifier && cell.c != ' ' && cell.c != '\0' || joins && (rule.is_pictograph)(cell.c) {
-                        let narrow = !cell.flags.contains(Flags::WIDE_CHAR);
-                        let widen = modifier && narrow && (rule.accepts_vs16)(cell.c) && {
-                            let alt = self.mode.contains(TermMode::ALT_SCREEN);
-                            rule.vs16 || (rule.vs16_primary && !alt)
-                        };
+                    let joins = cell.zerowidth().is_some_and(|z| z.last() == Some(&'\u{200D}'));
+                    if joins && ((rule.is_pictograph)(cell.c) || (rule.is_modifier)(cell.c)) {
                         self.grid[line][column].push_zerowidth(c);
-                        if widen {
-                            self.widen_previous();
-                        }
                         return;
                     }
                 }
