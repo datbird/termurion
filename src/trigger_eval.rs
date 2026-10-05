@@ -351,25 +351,26 @@ impl Screen {
     pub fn append_end_message(&mut self, text: &str, divider: &str) {
         // The scanner may sit inside a string the program left open; it would swallow the bytes.
         self.restart_scanner();
-        self.feed_quiet(b"\x1b[?1049l");
+        self.feed_message(b"\x1b[?1049l");
         let (row, col) = {
             let c = self.term.grid().cursor.point;
             (c.line.0.max(0) + 1, c.column.0 + 1)
         };
         // DECSTBM homes the cursor, so it is put back.
-        self.feed_quiet(format!("\x1b[0m\x1b(B\x0f\x1b]8;;\x1b\\\x1b[r\x1b[?6l\x1b[?7h\x1b[4l\x1b[{row};{col}H").as_bytes());
+        self.feed_message(format!("\x1b[0m\x1b(B\x0f\x1b]8;;\x1b\\\x1b[r\x1b[?6l\x1b[?7h\x1b[4l\x1b[{row};{col}H").as_bytes());
         let grid = self.term.grid();
         if grid.cursor.point.line.0 == 0 && grid.cursor.point.column.0 == 0 && grid.history_size() == 0 {
             let rows = grid.screen_lines();
-            self.feed_quiet("\n".repeat(rows).as_bytes());
+            self.feed_message("\n".repeat(rows).as_bytes());
         }
         if self.term.grid().cursor.point.column.0 != 0 {
-            self.feed_quiet(b"\r\n");
+            self.feed_message(b"\r\n");
         }
         let (r, g, b) = crate::session_end::DIVIDER_RGB;
         let text = crate::arrangement::inert_text(text).replace(['\r', '\n'], " ");
-        let line = crate::session_end::end_line(self.term.columns(), &text, &crate::arrangement::inert_text(divider));
-        self.feed_quiet(format!("\x1b[38;2;{r};{g};{b}m\x1b[49m{line}\x1b[39;49m\r\n").as_bytes());
+        let divider = crate::arrangement::inert_text(divider);
+        let line = crate::session_end::end_line_with(self.term.columns(), &text, &divider, |t| self.text_width(t));
+        self.feed_message(format!("\x1b[38;2;{r};{g};{b}m\x1b[49m{line}\x1b[39;49m\r\n").as_bytes());
     }
 
     /// Session restoration's contents (SGR-safe styled text) and the optional banner
@@ -411,6 +412,17 @@ impl Screen {
         let next = self.triggers.next;
         self.triggers.skip.retain(|r| r.end > next);
         self.triggers.skip.push(first..self.cursor_row());
+    }
+
+    /// `feed_quiet` straight to the parser, as `soft_reset` does: Literal Controls would print
+    /// the message's own escapes as carets (iTerm2 writes the cells directly).
+    fn feed_message(&mut self, bytes: &[u8]) {
+        let list = std::mem::take(&mut self.triggers.list);
+        let queued = self.requests.len();
+        let _ = self.feed_raw(bytes);
+        self.requests.truncate(queued);
+        self.triggers.list = list;
+        self.triggers.next = self.triggers.next.max(self.cursor_row());
     }
 
     /// Output that is not the program's: no triggers see it, no request it makes is kept,
@@ -1547,6 +1559,34 @@ mod tests {
         assert!(all.contains("== Session Ended ==="), "{all:?}");
         assert!(all.contains("keep"), "{all:?}");
         assert!(!all.contains("printing"), "the print job is closed, not shown: {all:?}");
+    }
+
+    #[test]
+    fn end_message_under_literal_controls() {
+        // Review fix 1: Literal Controls prints the program's escapes as carets, never the end
+        // message's own reset and colors.
+        let mut s = Screen::new(20, 4);
+        s.feed(b"ab");
+        s.keys.literal = true;
+        s.append_end_message("Session Ended", "=");
+        let all = s.all_text();
+        assert!(all.contains("== Session Ended ==="), "{all:?}");
+        assert!(!all.contains('^') && !all.contains("[0m") && !all.contains("38;2"), "{all:?}");
+    }
+
+    #[test]
+    fn end_message_fits_one_line_with_ambiguous_wide() {
+        // Review fix 2: the default divider U+2500 is East Asian Ambiguous; the line is measured
+        // with the grid's own rule, so it is one line with the setting on or off.
+        for adw in [false, true] {
+            let look = crate::screen::Look { ambiguous_wide: adw, ..Default::default() };
+            let mut s = Screen::with_look(20, 4, crate::palette::Palette::default(), look);
+            s.append_end_message("Session Ended", "");
+            let lines: Vec<String> = s.all_text().lines().map(str::to_string).collect();
+            let with: Vec<&String> = lines.iter().filter(|l| l.contains('\u{2500}')).collect();
+            assert_eq!(with.len(), 1, "adw={adw}: {lines:?}");
+            assert!(with[0].contains(" Session Ended "), "adw={adw}: {lines:?}");
+        }
     }
 
 }

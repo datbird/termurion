@@ -125,11 +125,12 @@ pub const NEVER: &str = "Never";
 pub const RESTART_BAR: &str = "session-end-restart";
 pub const TMUX_CLOSE_BAR: &str = "session-end-tmux-close";
 
-/// The words of the end message: the custom text (Advanced) for an ended session, `finished`
-/// (the Advanced "finished" text) for a single-use one.
+/// The words of the end message: the custom text (Advanced) when set, for every message as
+/// iTerm2 does (`appendBrokenPipeMessage:`, `PS:4525`); else the message's own words, `finished`
+/// being the Advanced "finished" text.
 pub fn message_text(m: Message, globals_custom_end: &str, finished: &str) -> String {
     match m {
-        Message::Ended if !globals_custom_end.is_empty() => globals_custom_end.to_string(),
+        _ if !globals_custom_end.is_empty() => globals_custom_end.to_string(),
         Message::Ended => SESSION_ENDED.to_string(),
         Message::Finished => finished.to_string(),
         Message::TmuxDetached => TMUX_DETACHED.to_string(),
@@ -138,15 +139,20 @@ pub fn message_text(m: Message, globals_custom_end: &str, finished: &str) -> Str
 
 /// The whole divider line for a pane `width` cells wide: a run of `divider`, " text ", a run
 /// that fills the line (`PS:4514-4596`). A divider's width is at least 1; an empty one is U+2500.
-pub fn end_line(width: usize, text: &str, divider: &str) -> String {
+pub fn end_line_with(width: usize, text: &str, divider: &str, measure: impl Fn(&str) -> usize) -> String {
     let divider = if divider.is_empty() { DEFAULT_DIVIDER } else { divider };
     let padded = format!(" {text} ");
-    let text_w = padded.width();
-    let div_w = divider.width().max(1);
+    let text_w = measure(&padded);
+    let div_w = measure(divider).max(1);
     let left = (width.saturating_sub(text_w) / 2) / div_w;
     let used = left * div_w + text_w;
     let right = if width == 0 { 0 } else { ((width - used % width) % width) / div_w };
     format!("{}{padded}{}", divider.repeat(left), divider.repeat(right))
+}
+
+/// `end_line` measured by Unicode widths (the grid measures with its own rule: `end_line_with`).
+pub fn end_line(width: usize, text: &str, divider: &str) -> String {
+    end_line_with(width, text, divider, UnicodeWidthStr::width)
 }
 
 #[cfg(test)]
@@ -187,12 +193,26 @@ mod tests {
     fn end_line_follows_iterm2() {
         assert_eq!(message_text(Message::Ended, "", "Finished"), "Session Ended");
         assert_eq!(message_text(Message::Ended, "Bye", "Finished"), "Bye");
-        assert_eq!(message_text(Message::Finished, "Bye", "Done"), "Done");
-        assert_eq!(message_text(Message::TmuxDetached, "Bye", "Done"), "tmux detached");
+        // iTerm2 applies the custom text inside appendBrokenPipeMessage: (PS:4525), so it
+        // replaces every message; empty, each message has its own words.
+        assert_eq!(message_text(Message::Finished, "Bye", "Done"), "Bye");
+        assert_eq!(message_text(Message::TmuxDetached, "Bye", "Done"), "Bye");
+        assert_eq!(message_text(Message::Finished, "", "Done"), "Done");
+        assert_eq!(message_text(Message::TmuxDetached, "", "Done"), "tmux detached");
         assert_eq!(end_line(20, "Session Ended", "="), "== Session Ended ===");
         assert_eq!(end_line(20, "Session Ended", ""), "\u{2500}\u{2500} Session Ended \u{2500}\u{2500}\u{2500}");
         assert_eq!(end_line(20, "Session Ended", "\u{ff1d}"), "\u{ff1d} Session Ended \u{ff1d}");
         assert_eq!(end_line(10, "Session Ended", "="), " Session Ended =====");
         assert_eq!(end_line(15, "Session Ended", "="), " Session Ended ");
+    }
+
+    #[test]
+    fn end_line_follows_the_grid_width() {
+        // With Ambiguous Double Width each U+2500 takes two cells: 20 cells hold 2 + 3 copies
+        // of a 2-cell divider around the 15-cell message, not 5 + 5 cells.
+        let wide = |s: &str| s.chars().map(|c| if c == '\u{2500}' { 2 } else { 1 }).sum::<usize>();
+        assert_eq!(end_line_with(20, "Session Ended", "", wide), "\u{2500} Session Ended \u{2500}");
+        let narrow = |s: &str| s.chars().count();
+        assert_eq!(end_line_with(20, "Session Ended", "", narrow), "\u{2500}\u{2500} Session Ended \u{2500}\u{2500}\u{2500}");
     }
 }
