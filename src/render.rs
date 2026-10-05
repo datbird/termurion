@@ -341,6 +341,11 @@ impl FaceKey {
     pub fn px(&self) -> f32 {
         f32::from_bits(self.px_bits)
     }
+
+    /// Whether `other` is this key at another size (every other input equal).
+    fn same_but_size(&self, other: &FaceKey) -> bool {
+        FaceKey { px_bits: other.px_bits, ..self.clone() } == *other
+    }
 }
 
 /// A pixel size to 1/64 pixel: faces re-measured after a scale change land on the keys the app
@@ -373,7 +378,7 @@ pub struct Face {
     pub alt_blacklisted: bool,
     /// The profile's Special Font Config, and the font each of its entries draws in (same order).
     pub table: Option<std::sync::Arc<crate::font_table::Config>>,
-    pub table_fonts: Vec<TableFont>,
+    pub table_fonts: std::sync::Arc<[TableFont]>,
 }
 
 /// One Special Font Config entry's font, resolved once when the face is built.
@@ -454,6 +459,8 @@ pub struct Renderer {
     blank: Buffer,
     /// The face cap was reached and logged.
     capped: bool,
+    /// How many faces the table holds (`MAX_FACES`; tests lower it).
+    face_cap: usize,
 }
 
 impl Renderer {
@@ -512,6 +519,7 @@ impl Renderer {
             custom: CustomIds::default(),
             blank,
             capped: false,
+            face_cap: MAX_FACES,
         };
         r.prose_family = if r.has_family("Segoe UI Variable") { "Segoe UI Variable" } else { "Segoe UI" }.to_string();
         r.icon_family = if r.has_family("Segoe Fluent Icons") { "Segoe Fluent Icons" } else { "Segoe MDL2 Assets" }.to_string();
@@ -646,7 +654,7 @@ impl Renderer {
         let blacklisted = self.family_blacklisted(&key.family);
         let alt_blacklisted = key.alt_family.as_deref().map_or(blacklisted, |f| self.family_blacklisted(f));
         let (table, table_fonts) = self.table_of(key);
-        Face { key: key.clone(), cell, base, baseline: ul.baseline, ul, px, bold: self.bold_face(&key.family), use_bold: key.use_bold, use_italic: key.use_italic, blacklisted, alt_blacklisted, table, table_fonts }
+        Face { key: key.clone(), cell, base, baseline: ul.baseline, ul, px, bold: self.bold_face(&key.family), use_bold: key.use_bold, use_italic: key.use_italic, blacklisted, alt_blacklisted, table, table_fonts: table_fonts.into() }
     }
 
     /// The Special Font Config a key carries and the font of each entry: every name is resolved
@@ -731,7 +739,7 @@ impl Renderer {
         let mut key = FaceKey::new(&self.family, self.alt_family.as_deref(), self.font_px, self.h_spacing, self.v_spacing);
         key.profile_bits = 0;
         let ul = self.ul_metrics.unwrap_or(crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 });
-        let face = Face { key: key.clone(), cell: self.cell, base: self.base_cell, baseline: ul.baseline, ul, px: self.font_px, bold: self.default_bold, use_bold: key.use_bold, use_italic: key.use_italic, blacklisted: false, alt_blacklisted: false, table: None, table_fonts: Vec::new() };
+        let face = Face { key: key.clone(), cell: self.cell, base: self.base_cell, baseline: ul.baseline, ul, px: self.font_px, bold: self.default_bold, use_bold: key.use_bold, use_italic: key.use_italic, blacklisted: false, alt_blacklisted: false, table: None, table_fonts: Default::default() };
         if self.faces.is_empty() {
             self.faces.push(face);
         } else {
@@ -931,18 +939,20 @@ impl Renderer {
     }
 
     /// The id of the face for `key`, measured on first use (the GPU thread; never per frame).
-    /// Past `MAX_FACES` a new key gets the existing face of its family nearest in size (the
-    /// table never shrinks and never renumbers, so an id held in a slice stays valid).
+    /// Past `MAX_FACES` a new key gets the existing face that differs from it in size alone (same
+    /// fonts, spacings, switches and table) nearest in size, else the default face: never another
+    /// profile's Special Exceptions or switches. The table never shrinks and never renumbers, so
+    /// an id held in a slice stays valid.
     pub fn face(&mut self, key: &FaceKey) -> u16 {
         if let Some(id) = self.face_ids.get(key) {
             return *id;
         }
-        if self.faces.len() >= MAX_FACES {
+        if self.faces.len() >= self.face_cap {
             if !std::mem::replace(&mut self.capped, true) {
                 crate::host::log("fonts: too many faces; new sizes use the nearest one");
             }
             let nearest = (0..self.faces.len())
-                .filter(|i| self.faces[*i].key.family == key.family)
+                .filter(|i| self.faces[*i].key.same_but_size(key))
                 .min_by(|a, b| (self.faces[*a].px - key.px()).abs().total_cmp(&(self.faces[*b].px - key.px()).abs()));
             return nearest.unwrap_or(0) as u16;
         }
@@ -1237,7 +1247,7 @@ impl Renderer {
             let ((cw, ch), px) = (face.cell, face.px);
             let (family, alt_family) = (face.key.family.clone(), face.key.alt_family.clone());
             let (bold_weight, use_bold, use_italic) = (face.bold, face.use_bold, face.use_italic);
-            let table_fonts = if row.spans.iter().any(|s| s.font != 0) { face.table_fonts.clone() } else { Vec::new() };
+            let table_fonts = if row.spans.iter().any(|s| s.font != 0) { face.table_fonts.clone() } else { Default::default() };
             let metrics = Metrics::new(px * row.scale, ch * row.scale);
             buffer.set_metrics_and_size(metrics, Some(row.clip.w + cw * row.scale), Some(ch * row.scale));
             buffer.set_wrap(Wrap::None);
@@ -2347,6 +2357,36 @@ mod tests {
         // Each copy carries only its own spans; the other is blank advance.
         assert_eq!(copies[0].spans.iter().map(|s| s.text.trim().is_empty()).collect::<Vec<_>>(), vec![false, true]);
         assert_eq!(copies[1].spans.iter().map(|s| s.text.trim().is_empty()).collect::<Vec<_>>(), vec![true, false]);
+    }
+
+    /// 13n final 5: the vendored glyphon README keeps no emoji (the repo's writing rule).
+    #[test]
+    fn the_vendored_glyphon_readme_is_ascii() {
+        let readme = include_str!("../crates/glyphon/README.md");
+        assert!(readme.is_ascii(), "{:?}", readme.lines().find(|l| !l.is_ascii()));
+    }
+
+    /// 13n final 5: past the face cap a new key borrows the nearest SIZE of the same face (same
+    /// fonts, switches and table), and a key that matches none draws in the default face instead
+    /// of another profile's Special Exceptions or switches.
+    #[test]
+    fn the_face_cap_never_borrows_another_profiles_switches() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let a = r.face(&key("Cascadia Mono", 20.0, 1.0, 1.0));
+        let table = std::sync::Arc::<str>::from(r#"{"entries":[{"start":57344,"count":16,"fontName":"Consolas"}],"version":2}"#);
+        let with_table = r.face(&FaceKey { table: Some(table.clone()), ..key("Cascadia Mono", 30.0, 1.0, 1.0) });
+        assert_ne!(a, with_table);
+        r.face_cap = r.faces.len();
+        // Another size of A's face: the nearest size of the same face.
+        assert_eq!(r.face(&key("Cascadia Mono", 21.0, 1.0, 1.0)), a);
+        assert_eq!(r.face(&FaceKey { table: Some(table.clone()), ..key("Cascadia Mono", 29.0, 1.0, 1.0) }), with_table, "and the table's face for the table's key");
+        // Switches or a table no face has: the default face, not the family's nearest size.
+        let no_bold = FaceKey { use_bold: false, ..key("Cascadia Mono", 30.0, 1.0, 1.0) };
+        assert_eq!(r.face(&no_bold), DEFAULT_FACE, "a face with other switches is never borrowed");
+        let other_table = FaceKey { table: Some(std::sync::Arc::from(r#"{"entries":[{"start":57344,"count":16,"fontName":"Meiryo"}],"version":2}"#)), ..key("Cascadia Mono", 30.0, 1.0, 1.0) };
+        assert_eq!(r.face(&other_table), DEFAULT_FACE, "nor another table");
+        assert!(r.capped);
     }
 
     /// 13n final 5: a row that mixes ligature levels keeps its own slot (its first run); the other
