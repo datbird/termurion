@@ -545,6 +545,17 @@ pub struct App {
     /// The tab the next pane goes into once started (a split), for its `ITERM_SESSION_ID`;
     /// None is a new tab. Set and cleared around one start, so it is not per-window state.
     start_tab: Option<usize>,
+    /// What the next session is for, which picks its Advanced working directory (`start_dir`):
+    /// a Tab unless `split_as`, `api_split` or `open_window_with` set it around one start.
+    start_object: crate::start_dir::Object,
+    /// The pane a split comes from (its folder and its variables feed the new session's
+    /// directory); None is the current tab's focused pane. Set around one start with
+    /// `start_object` Pane.
+    start_from: Option<PaneId>,
+    /// A new window's first session comes from the previously current window's focused
+    /// pane: its folder and the pane itself (R3), taken before the empty window swaps in.
+    window_previous_dir: Option<PathBuf>,
+    window_previous_pane: Option<PaneId>,
     /// Tandem's terminfo folder, written once per run on the first WSL session that needs it
     /// (`terminfo::ensure`); app-wide.
     terminfo_dir: Option<PathBuf>,
@@ -1710,6 +1721,10 @@ pub fn run() {
         start_jumps_override: None,
         start_env_override: None,
         start_tab: None,
+        start_object: crate::start_dir::Object::Tab,
+        start_from: None,
+        window_previous_dir: None,
+        window_previous_pane: None,
         terminfo_dir: None,
         single_use: HashMap::new(),
         undo: Default::default(),
@@ -3356,7 +3371,7 @@ impl App {
         };
         // A restored arrangement names each session's folder.
         let (cwd, warning) = match &self.start_dir_override {
-            Some(crate::arrangement::Folder::Forced(d)) if std::path::Path::new(d).is_dir() => (PathBuf::from(d), None),
+            Some(crate::arrangement::Folder::Forced(d)) if crate::start_dir::probe_ok(std::path::Path::new(d), &|d| d.is_dir()) => (PathBuf::from(d), None),
             // A git command's window runs only in its folder, never the profile's.
             Some(crate::arrangement::Folder::Forced(d)) if self.start_command_override.is_some() => {
                 self.banners.set("start", format!("The folder {d} no longer exists, so git did not run."));
@@ -3367,7 +3382,7 @@ impl App {
                 (c, Some(format!("The folder {d} from the arrangement does not exist; the profile's folder is used.")))
             }
             Some(crate::arrangement::Folder::Previous(d)) => profile::start_dir_with(&p, Some(std::path::Path::new(d))),
-            _ => profile::start_dir_with(&p, self.previous_dir().as_deref()),
+            _ => self.profile_start_dir(&p),
         };
         match warning {
             Some(w) => self.banners.set("directory", w),
@@ -3499,6 +3514,38 @@ impl App {
             }
         }
         due
+    }
+
+    /// The folder and the variables' pane a new session's profile directory comes from. A new
+    /// window reads the previously current window's focused pane (captured before the empty
+    /// window swapped in, R3); a split reads the pane it splits; a tab the focused pane.
+    fn start_source(&self) -> (Option<PathBuf>, Option<PaneId>) {
+        use crate::start_dir::Object;
+        let object = self.start_object;
+        let scope = match object {
+            Object::Window => self.window_previous_pane,
+            Object::Pane => self.start_from.or_else(|| self.focused_id()),
+            Object::Tab => self.focused_id(),
+        };
+        let here = match object {
+            Object::Window => None,
+            _ => scope.and_then(|id| self.pane_dir(id)),
+        };
+        (crate::start_dir::previous_for(object, here, self.window_previous_dir.clone()), scope)
+    }
+
+    /// The directory a profile starts a session in (`start_dir::resolve`). The custom text is
+    /// interpolated in the source pane's scope only when that pane is local: a remote pane's
+    /// variables are set by its program, so they are never an expansion scope (B4).
+    fn profile_start_dir(&self, p: &Profile) -> (PathBuf, Option<String>) {
+        let (previous, scope) = self.start_source();
+        let local = scope.filter(|id| self.panes.contains_key(id) && !self.remote_text(*id));
+        let expand = |text: &str| match local {
+            Some(id) => self.evaluate_for(id, text).unwrap_or_else(|_| text.to_string()),
+            None => text.to_string(),
+        };
+        let mode = crate::start_dir::mode(p, self.start_object);
+        crate::start_dir::resolve(&mode, previous.as_deref(), &profile::home(), &expand, &|d| d.is_dir())
     }
 
     /// The focused session's directory, from shell integration, when it is on this machine
@@ -3914,7 +3961,9 @@ impl App {
             Axis::Column => Rect { h: rect.h / 2.0, ..rect },
         };
         self.start_tab = Some(self.active);
+        (self.start_object, self.start_from) = (crate::start_dir::Object::Pane, Some(target));
         let started = self.start_pane(half, guid);
+        (self.start_object, self.start_from) = (crate::start_dir::Object::Tab, None);
         self.start_tab = None;
         if let Some(id) = started {
             let tab = &mut self.tabs[self.active];

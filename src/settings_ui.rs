@@ -1116,6 +1116,14 @@ pub fn profile_row_enabled(p: &Profile, key: &str, dark: bool) -> bool {
         | "Cursor Blink Visible Dwell"
         | "Cursor Blink Hidden Dwell" => p.bool("Blinking Cursor") && p.bool("Cursor Smooth Blink"),
         "Animate Movement Only in Interactive Apps" => p.bool("Animate Movement"),
+        // The directory rows follow Initial working directory (`AWD:60-86`, `ID:19-62`): the custom
+        // path is for Custom, the six Advanced rows for Advanced, and each path needs its option on Custom.
+        "Working Directory" => p.string("Custom Directory") == "Yes",
+        "AWDS Window Option" | "AWDS Tab Option" | "AWDS Pane Option" => p.string("Custom Directory") == "Advanced",
+        "AWDS Window Directory" | "AWDS Tab Directory" | "AWDS Pane Directory" => {
+            let option = key.replace("Directory", "Option");
+            p.string("Custom Directory") == "Advanced" && p.string(&option) == "Yes"
+        }
         // Change Locale is for the Custom mode (`PTM:397-445`).
         "Custom Locale" => p.int("Set Local Environment Vars") == 2,
         // The swatch follows its switch (`ProfilesColorsPreferencesViewController.m:468`).
@@ -1711,6 +1719,38 @@ mod tests {
         assert_eq!(crate::cursor_anim::preset_matching(&crate::cursor_anim::FadeTimes::from_profile(&p)), Some(1));
         apply_blink_preset(&mut p, 99);
         assert_eq!(crate::cursor_anim::preset_matching(&crate::cursor_anim::FadeTimes::from_profile(&p)), Some(1));
+    }
+
+    #[test]
+    fn awds_rows_enable_as_iterm2() {
+        let on = |p: &Profile, key: &str| profile_row_enabled(p, key, false);
+        let s = |v: &str| Value::String(v.into());
+        let rows = ["Window", "Tab", "Pane"];
+        let mut p = Profile::default();
+        for r in rows {
+            assert!(!on(&p, &format!("AWDS {r} Option")) && !on(&p, &format!("AWDS {r} Directory")), "{r}");
+        }
+        assert!(!on(&p, "Working Directory"));
+        p.set("Custom Directory", s("Yes"));
+        assert!(on(&p, "Working Directory"));
+        for r in rows {
+            assert!(!on(&p, &format!("AWDS {r} Option")), "{r}");
+        }
+        p.set("Custom Directory", s("Advanced"));
+        assert!(!on(&p, "Working Directory"));
+        for r in rows {
+            assert!(on(&p, &format!("AWDS {r} Option")), "{r}");
+            assert!(!on(&p, &format!("AWDS {r} Directory")), "{r}: option No");
+            p.set(&format!("AWDS {r} Option"), s("Recycle"));
+            assert!(!on(&p, &format!("AWDS {r} Directory")), "{r}: option Recycle");
+            p.set(&format!("AWDS {r} Option"), s("Yes"));
+            assert!(on(&p, &format!("AWDS {r} Directory")), "{r}: option Yes");
+        }
+        // Each option offers exactly No, Yes and Recycle (`AWD:60-86`).
+        for r in rows {
+            let values: Vec<_> = crate::schema::find(&format!("AWDS {r} Option")).unwrap().choices.iter().filter_map(|c| c.value.as_str()).collect();
+            assert_eq!(values, ["No", "Yes", "Recycle"]);
+        }
     }
 
     #[test]

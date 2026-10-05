@@ -383,6 +383,7 @@ pub mod api_layout;
 pub mod api_misc;
 pub mod api_notify;
 pub mod session_env;
+pub mod start_dir;
 pub mod locale_guess;
 #[cfg(windows)]
 pub mod locale_win;

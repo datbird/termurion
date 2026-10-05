@@ -541,6 +541,19 @@ impl App {
         self.win_title = crate::wintitle::custom_window_format(profile.bool("Use Custom Window Title"), &profile.string("Custom Window Title"));
     }
 
+    /// A new window's first session is for a Window object, with the pane it comes from.
+    fn begin_window_start(&mut self, pane: Option<PaneId>, dir: Option<std::path::PathBuf>) {
+        self.start_object = crate::start_dir::Object::Window;
+        self.window_previous_pane = pane;
+        self.window_previous_dir = dir;
+    }
+
+    fn end_window_start(&mut self) {
+        self.start_object = crate::start_dir::Object::Tab;
+        self.window_previous_pane = None;
+        self.window_previous_dir = None;
+    }
+
     fn open_window_with(&mut self, event_loop: &ActiveEventLoop, first: NewWindow) -> Result<WindowId, String> {
         let hotkey = matches!(first, NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..));
         let mut attrs = Window::default_attributes().with_title("Tandem").with_inner_size(LogicalSize::new(1000.0, 650.0));
@@ -585,6 +598,10 @@ impl App {
             }
         };
         let previous = self.current_window();
+        // "Reuse previous session's directory" for a new window reads the focused pane of the
+        // window that was current; the swap below puts an empty window in its place (R3).
+        let from_pane = self.focused_id();
+        let from_dir = self.previous_dir();
         let id = gpu.window.id();
         let mut slot = WinSlot::new(gpu);
         slot.win_alpha_surface = kind;
@@ -631,7 +648,11 @@ impl App {
             _ => None,
         };
         match first {
-            NewWindow::Profile(guid) => self.new_tab(guid.as_deref()),
+            NewWindow::Profile(guid) => {
+                self.begin_window_start(from_pane, from_dir);
+                self.new_tab(guid.as_deref());
+                self.end_window_start();
+            }
             NewWindow::Tab(tab) | NewWindow::TornOff(tab, _) => {
                 self.tabs.push(tab);
                 self.active = 0;
@@ -655,7 +676,9 @@ impl App {
             }
             NewWindow::Orphans(sessions) => self.adopt_orphans(&sessions),
             NewWindow::Hotkey(guid, previous) => {
+                self.begin_window_start(from_pane, from_dir);
                 self.new_tab(Some(&guid));
+                self.end_window_start();
                 let mut h = super::hotkey_ui::HotkeyWin::new(guid);
                 h.previous = previous;
                 self.hotkey = Some(h);
