@@ -124,6 +124,9 @@ pub(super) struct WinSlot {
     pub(super) ime: crate::ime::State,
     /// When this window may draw after pane output (13l: `cadence::Pacer`).
     pub(super) pacer: crate::cadence::Pacer,
+    /// The FPS meter's average and frame count for this window (13l).
+    pub(super) fps: crate::perf_stats::MovingAverage,
+    pub(super) frame_number: u64,
 }
 
 impl WinSlot {
@@ -215,6 +218,8 @@ impl WinSlot {
             status_armed: false,
             ime: Default::default(),
             pacer: Default::default(),
+            fps: crate::perf_stats::MovingAverage::new(crate::perf_stats::FPS_ALPHA),
+            frame_number: 0,
         }
     }
 }
@@ -330,6 +335,8 @@ impl App {
         swap(&mut self.status_armed, &mut s.status_armed);
         swap(&mut self.ime, &mut s.ime);
         swap(&mut self.pacer, &mut s.pacer);
+        swap(&mut self.fps, &mut s.fps);
+        swap(&mut self.frame_number, &mut s.frame_number);
     }
 
     /// The terminal window whose password manager is `id`, when it is parked.
@@ -981,6 +988,8 @@ impl WinSlot {
             status_armed: false,
             ime: Default::default(),
             pacer: Default::default(),
+            fps: crate::perf_stats::MovingAverage::new(crate::perf_stats::FPS_ALPHA),
+            frame_number: 0,
         }
     }
 }

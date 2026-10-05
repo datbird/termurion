@@ -148,6 +148,11 @@ impl Pacer {
         self.due
     }
 
+    /// When the last frame was drawn.
+    pub fn last(&self) -> Option<Instant> {
+        self.last
+    }
+
     /// True once, at or after the due time.
     pub fn take_due(&mut self, now: Instant) -> bool {
         if self.due.is_some_and(|d| now >= d) {
@@ -156,6 +161,17 @@ impl Pacer {
         }
         false
     }
+}
+
+/// The next forced frame (`iTermMTKView.swift:58-91`): a GPU view redraws at least every
+/// `MetalRedrawPeriod`, so a window that last drew at `last` is due at `last + period`; one
+/// that never drew is due now. None when the period is not positive (nothing is forced, so
+/// an idle window is never woken).
+pub fn period_due(last: Option<Instant>, period: Duration, now: Instant) -> Option<Instant> {
+    if period.is_zero() {
+        return None;
+    }
+    Some(last.map_or(now, |l| l + period))
 }
 
 /// iTerm2's `iTermThroughputEstimator` as the token executor makes it
@@ -323,6 +339,22 @@ mod tests {
         assert_eq!(us(window_interval(&[busy, quiet], &p)), 32_333);
         assert_eq!(us(window_interval(&[busy, state()], &p)), 15_667);
         assert_eq!(us(window_interval(&[], &p)), 999_000, "no visible pane: background");
+    }
+
+    /// `iTermMTKView.swift:58-91`: a view redraws at least every `MetalRedrawPeriod`.
+    #[test]
+    fn redraw_period_follows_iterm2() {
+        let t = Instant::now();
+        let ms = Duration::from_millis;
+        assert_eq!(period_due(Some(t), ms(500), t + ms(100)), Some(t + ms(500)));
+        assert_eq!(period_due(None, ms(500), t), Some(t), "never drawn: draw");
+        assert_eq!(period_due(Some(t), ms(0), t + ms(100)), None, "a period of 0 never forces a frame");
+        assert_eq!(period_due(Some(t), Duration::ZERO, t), None);
+        // The pacer's last frame feeds it.
+        let mut p = Pacer::default();
+        assert_eq!(p.last(), None);
+        p.drew(t);
+        assert_eq!(p.last(), Some(t));
     }
 
     #[test]

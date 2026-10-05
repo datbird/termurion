@@ -23,6 +23,7 @@ pub mod replay;
 pub mod replay_panel;
 pub mod recording;
 pub mod cadence;
+pub mod perf_stats;
 pub mod power;
 pub mod osc;
 pub mod osc1337;

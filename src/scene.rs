@@ -3336,9 +3336,38 @@ pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) -> Re
     r
 }
 
+/// The FPS meter (`iTermMetalPerFrameState.m:2531-2552`): `text` right-aligned on row 0 of the
+/// pane's text area, one cell per character, magenta on near black. Its box goes in `popups`
+/// with the pane's text under it cut out, so the meter replaces that row's cells there.
+pub fn fps_meter(frame: &mut Frame, text: &str, pane_inner: Rect, cell: (f32, f32)) {
+    let chars = text.chars().count();
+    let w = (chars as f32 * cell.0).min(pane_inner.w);
+    let r = Rect { x: pane_inner.x + pane_inner.w - w, y: pane_inner.y, w, h: cell.1 };
+    if r.w <= 0.0 {
+        return;
+    }
+    let to_rgb = |c: [f32; 4]| rgb((c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8);
+    cut_out(frame, r, cell.1);
+    frame.popups.push(Quad { rect: r, color: rgba(to_rgb(crate::perf_stats::FPS_BG), 1.0) });
+    let span = Span { text: text.to_string(), color: to_rgb(crate::perf_stats::FPS_FG), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
+    frame.rows.push(TextRow { x: r.x, y: r.y, spans: vec![span], clip: r, scale: 1.0 });
+}
+
 #[cfg(test)]
 mod broadcast_tests {
     use super::*;
+
+    #[test]
+    fn fps_meter_sits_right_aligned_on_row_zero() {
+        let mut f = Frame::default();
+        let pane = Rect { x: 10.0, y: 20.0, w: 400.0, h: 300.0 };
+        let text = " [Frame 7: 63 fps] ";
+        fps_meter(&mut f, text, pane, (8.0, 16.0));
+        let w = text.chars().count() as f32 * 8.0;
+        assert_eq!(f.popups.len(), 1);
+        assert_eq!(f.popups[0].rect, Rect { x: 410.0 - w, y: 20.0, w, h: 16.0 });
+        assert_eq!((f.rows.len(), f.rows[0].spans[0].color), (1, rgb(255, 0, 255)));
+    }
 
     #[test]
     fn stripe_tile_matches_iterm2() {

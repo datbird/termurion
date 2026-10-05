@@ -687,6 +687,10 @@ pub struct App {
     ime: crate::ime::State,
     /// When the current window may draw after pane output (per window: `WinSlot`).
     pacer: crate::cadence::Pacer,
+    /// The FPS meter's moving average of frame periods (per window: `WinSlot`).
+    fps: crate::perf_stats::MovingAverage,
+    /// Frames drawn while the FPS meter is on (per window: `WinSlot`).
+    frame_number: u64,
     /// The last key press in any window (iTerm2's `_lastKeystrokeTime`, `UC:90-94`).
     last_keystroke: Option<Instant>,
     /// The power line (13l Task 3): app-wide, sampled by `power_tick` at most once a second.
@@ -1744,6 +1748,8 @@ pub fn run() {
         status_armed: false,
         ime: Default::default(),
         pacer: Default::default(),
+        fps: crate::perf_stats::MovingAverage::new(crate::perf_stats::FPS_ALPHA),
+        frame_number: 0,
         last_keystroke: None,
         power: crate::power::State { on_ac: true, battery_saver: false },
         power_due: None,
@@ -4980,6 +4986,11 @@ impl App {
                 // them is cut out.
                 overlay_drawn.extend(self.draw_composer(&mut frame, id, rect, cell));
                 overlay_drawn.extend(self.draw_completion(&mut frame, id, rect, cell).map(|r| (mouse::Overlay::Completion, r)));
+                if id == tab.focused {
+                    if let Some(text) = self.fps_overlay() {
+                        scene::fps_meter(&mut frame, &text, self.inner(rect), cell);
+                    }
+                }
             }
             self.draw_clippings(&mut frame, cell);
             inline_hits = self.draw_inline_chats(&mut frame, cell);
@@ -5046,7 +5057,10 @@ impl App {
 
     fn render(&mut self) {
         // Recorded first: a frame that finds no surface still ends the wait for one.
-        self.pacer.drew(Instant::now());
+        let now = Instant::now();
+        let before = self.pacer.last();
+        self.pacer.drew(now);
+        self.note_frame(before, now);
         // A status bar field whose bar went away gives the keyboard back before drawing.
         self.check_composer_fields();
         self.sync_menu_hidden();

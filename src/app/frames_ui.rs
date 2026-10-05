@@ -172,15 +172,49 @@ impl App {
         }
     }
 
-    /// The earliest time a window's deferred frame is due. At or past a due time that window is
-    /// asked to draw (and the time cleared), so a pending frame is never left until some other
-    /// event. None when nothing is waiting: the loop then sleeps.
+    /// `MetalRedrawPeriod`, in seconds (0.5 by default; 0 or less forces nothing).
+    fn redraw_period(&self) -> Duration {
+        let secs = self.globals.number("MetalRedrawPeriod").unwrap_or(0.5);
+        if secs.is_finite() && secs > 0.0 { Duration::from_secs_f64(secs) } else { Duration::ZERO }
+    }
+
+    /// Whether the FPS meter is on (`ShowMetalFPSmeter`).
+    fn fps_meter_on(&self) -> bool {
+        self.globals.bool("ShowMetalFPSmeter")
+    }
+
+    /// The meter's text for this window, None while the meter is off.
+    pub(super) fn fps_overlay(&self) -> Option<String> {
+        self.fps_meter_on().then(|| crate::perf_stats::fps_text(self.frame_number, self.fps.value()))
+    }
+
+    /// Called by `render` for each frame: while the meter is on it adds the time since the
+    /// window's last frame to the average and counts the frame. Off, it costs nothing.
+    pub(super) fn note_frame(&mut self, before: Option<Instant>, now: Instant) {
+        if !self.fps_meter_on() {
+            return;
+        }
+        if let Some(b) = before {
+            self.fps.add(now.saturating_duration_since(b).as_secs_f64());
+        }
+        self.frame_number += 1;
+    }
+
+    /// The earliest time a window needs a frame: its deferred output frame, or the minimum
+    /// redraw period (`MetalRedrawPeriod`) after its last one. At or past a due time that
+    /// window (and only it) is asked to draw. Hidden or minimized windows are never forced;
+    /// with a period of 0 nothing is forced and an idle app sleeps. None when nothing waits.
     pub(super) fn frame_wake(&mut self) -> Option<Instant> {
         let now = Instant::now();
+        let period = self.redraw_period();
+        let on_screen = |w: &Window| w.is_visible() != Some(false) && w.is_minimized() != Some(true);
         if self.pacer.take_due(now) {
             self.redraw_here();
         }
         let mut due = self.pacer.due();
+        if self.gpu.as_ref().is_some_and(|g| on_screen(&g.window)) {
+            due = [due, forced_frame(self.pacer.last(), period, now, || self.redraw_here())].into_iter().flatten().min();
+        }
         for (_, s) in self.windows.parked_mut() {
             if s.pacer.take_due(now) {
                 if let Some(g) = &s.gpu {
@@ -188,9 +222,23 @@ impl App {
                 }
             }
             due = [due, s.pacer.due()].into_iter().flatten().min();
+            if let Some(g) = s.gpu.as_ref().filter(|g| on_screen(&g.window)) {
+                due = [due, forced_frame(s.pacer.last(), period, now, || g.window.request_redraw())].into_iter().flatten().min();
+            }
         }
         due
     }
+}
+
+/// One window's minimum-period frame: asks for it when due and returns the next wake (a frame
+/// asked for now is next due a period on, so the loop does not spin until it is drawn).
+fn forced_frame(last: Option<Instant>, period: Duration, now: Instant, draw: impl FnOnce()) -> Option<Instant> {
+    let next = cadence::period_due(last, period, now)?;
+    if next > now {
+        return Some(next);
+    }
+    draw();
+    Some(now + period)
 }
 
 #[cfg(test)]
@@ -209,6 +257,21 @@ mod tests {
         assert_eq!((r.front, r.back), (Vec::new(), vec![4]));
         let r = route_output(&[9], &front, &back);
         assert_eq!((r.front, r.back), (Vec::new(), Vec::new()));
+    }
+
+    /// A still window is drawn once its period has passed, and not before; a zero period never
+    /// forces a frame and never sets a wake (an idle app sleeps).
+    #[test]
+    fn forced_frame_waits_for_the_period() {
+        let (t, p) = (Instant::now(), Duration::from_millis(500));
+        let mut asked = 0;
+        assert_eq!(forced_frame(Some(t), p, t + Duration::from_millis(100), || asked += 1), Some(t + p));
+        assert_eq!(asked, 0);
+        let now = t + p;
+        assert_eq!(forced_frame(Some(t), p, now, || asked += 1), Some(now + p));
+        assert_eq!(asked, 1);
+        assert_eq!(forced_frame(Some(t), Duration::ZERO, now, || asked += 1), None);
+        assert_eq!(asked, 1);
     }
 
     /// A burst of output wakes inside one frame draws once; the rest wait for the due time.
