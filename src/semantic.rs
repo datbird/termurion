@@ -491,7 +491,8 @@ fn file_url_path(url: &str) -> Option<String> {
         Some(p) if p.as_bytes().get(1) == Some(&b':') => p.to_string(),
         _ => path,
     };
-    (!path.starts_with("//")).then(|| path.replace('/', "\\"))
+    let path = path.replace('/', "\\");
+    (!crate::scripts::is_network_path(&path)).then_some(path)
 }
 
 /// VS Code's `-g` argument: file:line:column.
@@ -980,6 +981,13 @@ mod tests {
         let ctx = ClickContext { before, after, cwd: Some(d), ..Default::default() };
         assert!(matches!(resolve(&ctx), Some(Target::File { .. })));
         assert_eq!(resolve(&ClickContext { no_probe: true, ..ctx }), None);
+    }
+
+    #[test]
+    fn file_links_decode_to_no_share() {
+        for u in ["file:///%5C%5Cevil/x", "file:////evil/x", "file://%5Cevil/x"] {
+            assert!(matches!(guard_open(u, false), Run::Blocked(_)), "{u}");
+        }
     }
 
     #[test]

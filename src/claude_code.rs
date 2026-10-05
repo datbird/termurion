@@ -199,7 +199,7 @@ pub fn config_dir(env_value: Option<&str>, userprofile: &Path) -> PathBuf {
 
 /// A `\\host` or `//host` path: never probed, never written to.
 fn is_network(path: &str) -> bool {
-    path.starts_with("\\\\") || path.starts_with("//")
+    crate::scripts::is_network_path(path)
 }
 
 pub fn settings_path(dir: &Path) -> PathBuf {
@@ -513,6 +513,14 @@ pub fn old_folder_settings(stored: &str, current: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn network_paths_follow_the_one_rule() {
+        for p in [r"\\h\s", "//h/s", r"\/h/s", r"/\h\s", r"\\?\UNC\h\s"] {
+            assert!(super::is_network(p), "{p}");
+        }
+        assert!(!super::is_network(r"C:\a\b"));
+    }
+
     use super::*;
     use std::io::ErrorKind;
 

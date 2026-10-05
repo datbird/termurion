@@ -82,7 +82,8 @@ fn bad_file() -> String {
 /// name, deleted after reading.
 fn read_file(raw: &[u8], temporary: bool) -> Option<Vec<u8>> {
     let path = std::str::from_utf8(raw).ok()?;
-    if path.starts_with("\\\\") || path.starts_with("//") {
+    // The one network rule (13p's filter), and no link out to a share.
+    if crate::scripts::is_network_path(path) || !crate::scripts::stays_local(std::path::Path::new(path)) {
         return None;
     }
     let meta = std::fs::metadata(path).ok()?;
@@ -496,5 +497,15 @@ mod tests {
             s.feed(format!("\x1b]1337;FilePart={chunk}\x07").as_bytes());
         }
         assert!(s.multipart.is_none());
+    }
+
+    #[test]
+    fn program_chosen_share_paths_are_never_read() {
+        // Every spelling of a share, none probed (a dead address takes about 21 s to answer).
+        let t = std::time::Instant::now();
+        for p in [r"\\10.255.255.1\x\y", "//10.255.255.1/x", r"\/10.255.255.1/x", r"/\10.255.255.1\x", r"\\?\UNC\10.255.255.1\x"] {
+            assert_eq!(read_file(p.as_bytes(), false), None, "{p}");
+        }
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
     }
 }

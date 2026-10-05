@@ -239,8 +239,7 @@ pub fn is_wsl(cmdline: &str) -> bool {
 /// Whether `path` is a UNC or device path (`\\host\share`, `//host`): never probed or written
 /// from the UI thread.
 pub fn is_unc(path: &str) -> bool {
-    let p = path.trim_start();
-    p.starts_with("\\\\") || p.starts_with("//")
+    crate::scripts::is_network_path(path.trim_start())
 }
 
 /// The roaming application data folder (`%APPDATA%`), or `None` when it is not set or is a
@@ -454,6 +453,7 @@ mod tests {
             assert_eq!(appdata_local_from(no), None, "{no:?}");
         }
         assert!(is_unc(r"\\h\s") && !is_unc(r"C:\h"));
+        assert!(is_unc(r"\/h/s") && is_unc(r"/\h\s") && is_unc(r"\\?\UNC\h\s"));
     }
 
     #[test]
