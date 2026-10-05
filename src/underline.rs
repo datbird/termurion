@@ -204,6 +204,15 @@ pub fn cut_gaps(stroke: (f32, f32, f32, f32), inks: &[(f32, f32, f32, f32)], pad
     out
 }
 
+/// Adds `band` to `bands`: a band over the same rows and columns (another piece of the same
+/// line) shares one entry, so a stroke gaps around the ink of every piece of its line.
+pub fn merge_band(bands: &mut Vec<Band>, band: Band) {
+    match bands.iter_mut().find(|b| (b.top, b.bottom, b.left, b.right) == (band.top, band.bottom, band.left, band.right)) {
+        Some(b) => b.inks.extend(band.inks),
+        None => bands.push(band),
+    }
+}
+
 /// Cuts each quad around the inks of the band that holds it (the band whose rows and columns
 /// contain the quad); a quad in no band stays whole.
 pub fn cut_quads_around(quads: &[crate::scene::Quad], bands: &[Band], pad: f32) -> Vec<crate::scene::Quad> {
@@ -246,6 +255,17 @@ mod tests {
         // An ink touching the stroke's top edge from above, or starting at its bottom edge, does not cross.
         assert_eq!(cut_gaps(stroke, &[(5.0, 0.0, 4.0, 16.0)], 1.0), vec![stroke]);
         assert_eq!(cut_gaps(stroke, &[(5.0, 17.0, 4.0, 3.0)], 1.0), vec![stroke]);
+    }
+
+    #[test]
+    fn pieces_of_one_line_share_a_band() {
+        let band = |ink: f32| Band { top: 0.0, bottom: 20.0, left: 0.0, right: 100.0, inks: vec![(ink, 4.0, 4.0, 14.0)] };
+        let mut bands = Vec::new();
+        merge_band(&mut bands, band(0.0));
+        merge_band(&mut bands, band(30.0));
+        merge_band(&mut bands, Band { top: 20.0, ..band(5.0) });
+        assert_eq!(bands.len(), 2);
+        assert_eq!(bands[0].inks.len(), 2);
     }
 
     #[test]

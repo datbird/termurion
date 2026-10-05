@@ -600,6 +600,10 @@ impl Renderer {
         let ch = self.cell.1;
         let mut bands = Vec::new();
         for (slot, row) in self.buffers.iter().zip(&frame.rows) {
+            // A badge is drawn behind the text; iTerm2's mask never sees it.
+            if row.spans.iter().any(|s| s.badge) {
+                continue;
+            }
             let (top, bottom) = (row.y, row.y + ch * row.scale);
             let (left, right) = (row.clip.x, row.clip.x + row.clip.w);
             let holds = |q: &Quad| q.rect.y >= top - 0.5 && q.rect.y + q.rect.h <= bottom + 0.5 && q.rect.x < right && q.rect.x + q.rect.w > left;
@@ -621,7 +625,7 @@ impl Renderer {
                     }
                 }
             }
-            bands.push(crate::underline::Band { top, bottom, left, right, inks });
+            crate::underline::merge_band(&mut bands, crate::underline::Band { top, bottom, left, right, inks });
         }
         crate::underline::cut_quads_around(&frame.underlines, &bands, 1.0)
     }
@@ -1071,6 +1075,44 @@ mod tests {
         // SolidUnderlines: whole.
         let (_, mid, _, _) = look(&mut r, &frame(false));
         assert_eq!(mid, vec![255, 0, 0]);
+    }
+
+    /// A stroke gaps around the glyphs of its own line: every piece of the line counts (a
+    /// non-ASCII character splits a line into rows), and a badge's rows, drawn behind the text,
+    /// never cut a pane's underline.
+    #[test]
+    fn underline_gaps_use_the_whole_line_and_never_a_badge() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 24.0);
+        let (cw, ch) = r.cell;
+        let (w, h) = (((cw * 3.0).ceil() as u32 + 2).next_multiple_of(64), ch.ceil() as u32 + 2);
+        let tex = target(&device, w, h);
+        let view = tex.create_view(&Default::default());
+        let y = (ch / 2.0).floor();
+        let red = rgba(rgb(255, 0, 0), 1.0);
+        let clip = Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
+        let span = |text: &str, badge: bool| Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge, toolbelt: false };
+        let row = |x: f32, text: &str, badge: bool| TextRow { x, y: 0.0, spans: vec![span(text, badge)], clip, scale: 1.0 };
+        let frame = |rows: Vec<TextRow>| Frame {
+            clear: rgba(rgb(0, 0, 0), 1.0),
+            rows,
+            underlines: vec![Quad { rect: Rect { x: 0.0, y, w: cw * 3.0, h: 1.0 }, color: red }],
+            gap_underlines: true,
+            ..Default::default()
+        };
+        let mid = |r: &mut Renderer, f: &Frame, col: f32| {
+            r.draw(f, &view, w, h).unwrap();
+            let px = read(&device, &queue, &tex, w, h);
+            let i = ((y as u32 * w + (cw * col) as u32) * 4) as usize;
+            px[i..i + 3].to_vec()
+        };
+        // A blank first piece, then the block two cells in as its own row: the third cell gaps.
+        let f = frame(vec![row(0.0, " ", false), row(cw * 2.0, "\u{2588}", false)]);
+        assert_eq!(mid(&mut r, &f, 2.5), vec![255, 255, 255], "ink in a later piece of the line gaps the stroke");
+        assert_eq!(mid(&mut r, &f, 0.5), vec![255, 0, 0], "the blank cell keeps its line");
+        // A badge row with a full block over the pane's line: the pane's underline stays whole.
+        let f = frame(vec![row(0.0, "\u{2588}\u{2588}\u{2588}", true), row(0.0, " ", false)]);
+        assert_eq!(mid(&mut r, &f, 1.5), vec![255, 0, 0], "badge ink never cuts a pane underline");
     }
 
     fn target(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture {
