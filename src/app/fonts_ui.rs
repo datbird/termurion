@@ -21,6 +21,8 @@ pub fn face_key_for(p: &Profile, scale: f32, offset: f32, resolve: &dyn Fn(&str)
     let mut key = FaceKey::new(&resolve(&normal.family), alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
     // Use Bold Font and Use Italic Font (`ASB:773-778`): a face that ignores a switch is its own face.
     (key.use_bold, key.use_italic) = (p.bool("Use Bold Font"), p.bool("Use Italic Font"));
+    // ASCII Ligatures and Non-ASCII Ligatures decide what the pane's text shapes with.
+    (key.ascii_ligatures, key.non_ascii_ligatures) = (p.bool("ASCII Ligatures"), p.bool("Non-ASCII Ligatures"));
     key
 }
 
@@ -63,6 +65,7 @@ pub struct RawFont {
     offset: u32,
     bold: bool,
     italic: bool,
+    ligatures: (bool, bool),
 }
 
 impl RawFont {
@@ -75,6 +78,7 @@ impl RawFont {
             offset: offset.to_bits(),
             bold: p.bool("Use Bold Font"),
             italic: p.bool("Use Italic Font"),
+            ligatures: (p.bool("ASCII Ligatures"), p.bool("Non-ASCII Ligatures")),
         }
     }
 }
@@ -217,7 +221,11 @@ impl App {
     /// The underline numbers and scale of a pane's face for `scene::pane_with`.
     pub(super) fn draw_prefs_for(&self, face: u16) -> scene::DrawPrefs {
         let metrics = self.gpu.as_ref().map(|g| g.renderer.face_underline(face)).unwrap_or(scene::DrawPrefs::default().metrics);
-        scene::DrawPrefs::from_globals(&self.globals, metrics, self.scale())
+        let mut prefs = scene::DrawPrefs::from_globals(&self.globals, metrics, self.scale());
+        if let Some(g) = self.gpu.as_ref() {
+            (prefs.ligatures, prefs.alt_level) = g.renderer.face_ligatures(face, prefs.ligatures.prefer_speed);
+        }
+        prefs
     }
 }
 
@@ -273,6 +281,23 @@ mod tests {
         // The per-pane cache is keyed on RawFont: a switch change must change it, or a stale key is served.
         assert_ne!(RawFont::of(&on, 1.0, 0.0), RawFont::of(&no_bold, 1.0, 0.0));
         assert_ne!(RawFont::of(&on, 1.0, 0.0), RawFont::of(&no_italic, 1.0, 0.0));
+    }
+
+    #[test]
+    fn ligature_switches_make_a_new_key() {
+        let same = |s: &str| s.to_string();
+        let base = [("Normal Font", toml::Value::from("Cascadia Code 14"))];
+        let off = profile(&base);
+        let ascii = profile(&[base[0].clone(), ("ASCII Ligatures", true.into())]);
+        let non_ascii = profile(&[base[0].clone(), ("Non-ASCII Ligatures", true.into())]);
+        let key = |p: &Profile| face_key_for(p, 1.0, 0.0, &same);
+        assert!(!key(&off).ascii_ligatures && !key(&off).non_ascii_ligatures, "iTerm2's defaults are off");
+        assert!(key(&ascii).ascii_ligatures && !key(&ascii).non_ascii_ligatures);
+        assert!(!key(&non_ascii).ascii_ligatures && key(&non_ascii).non_ascii_ligatures);
+        assert_ne!(key(&off), key(&ascii));
+        assert_ne!(key(&off), key(&non_ascii));
+        assert_ne!(RawFont::of(&off, 1.0, 0.0), RawFont::of(&ascii, 1.0, 0.0));
+        assert_ne!(RawFont::of(&off, 1.0, 0.0), RawFont::of(&non_ascii, 1.0, 0.0));
     }
 
     #[test]

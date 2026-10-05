@@ -72,6 +72,84 @@ pub fn bold_weight(regular_css: u16, available: &[u16], min_difference: i32) -> 
     available.iter().copied().filter(|w| ns_weight(*w) >= need).min()
 }
 
+/// Whether a font's PostScript name is on iTerm2's ligature blacklist (`PTYFontInfo.m`
+/// `it_fontIsOnLigatureBlacklist`): system fonts that never have ligatures. Prefix match, with
+/// `MenloNF` and any name containing "Ligaturized" exempt.
+pub fn blacklisted(postscript: &str) -> bool {
+    const LIST: [&str; 9] = ["AndaleMono", "Courier", "LetterGothicStd", "Monaco", "OCRAStd", "OratorStd", "Osaka", "PTMono", "SFMono"];
+    if postscript.starts_with("MenloNF") || postscript.contains("Ligaturized") {
+        return false;
+    }
+    LIST.iter().any(|prefix| postscript.starts_with(prefix))
+}
+
+/// The ligature level of a font (`it_ligatureLevel`): 0 blacklisted, 2 with contextual
+/// alternates (`EnableContextualAlternates`), else 1.
+pub fn ligature_level(blacklisted: bool, calt: bool) -> u8 {
+    if blacklisted {
+        0
+    } else if calt {
+        2
+    } else {
+        1
+    }
+}
+
+/// The OpenType features that make `level` happen: 0 turns `liga`, `clig`, `calt` and `dlig` off,
+/// 1 turns `liga` and `clig` on and `calt` off, 2 turns `liga`, `clig` and `calt` on.
+pub fn features(level: u8) -> glyphon::cosmic_text::FontFeatures {
+    use glyphon::cosmic_text::{FeatureTag as T, FontFeatures};
+    let mut f = FontFeatures::new();
+    match level {
+        0 => {
+            f.disable(T::STANDARD_LIGATURES).disable(T::CONTEXTUAL_LIGATURES).disable(T::CONTEXTUAL_ALTERNATES).disable(T::DISCRETIONARY_LIGATURES);
+        }
+        1 => {
+            f.enable(T::STANDARD_LIGATURES).enable(T::CONTEXTUAL_LIGATURES).disable(T::CONTEXTUAL_ALTERNATES);
+        }
+        _ => {
+            f.enable(T::STANDARD_LIGATURES).enable(T::CONTEXTUAL_LIGATURES).enable(T::CONTEXTUAL_ALTERNATES);
+        }
+    }
+    f
+}
+
+/// What a pane's profile and the font say about ligatures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LigatureRules {
+    /// The profile's ASCII Ligatures.
+    pub ascii: bool,
+    /// The profile's Non-ASCII Ligatures.
+    pub non_ascii: bool,
+    /// `PreferSpeedToFullLigatureSupport`.
+    pub prefer_speed: bool,
+    /// The font's `ligature_level`.
+    pub level: u8,
+}
+
+/// The ligature level of a run (`iTermAttributedStringBuilder.m:780-792`, with R3: nothing forms
+/// unless the profile asks for that kind of text).
+pub fn span_level(text_is_ascii: bool, fast_path: bool, r: LigatureRules) -> u8 {
+    if text_is_ascii {
+        // With speed preferred, the characters iTerm2 draws without shaping never join.
+        if !r.ascii || (r.prefer_speed && fast_path) {
+            return 0;
+        }
+    } else if !r.non_ascii {
+        return 0;
+    }
+    r.level
+}
+
+/// Whether iTerm2 draws `c` without shaping when preferring speed (`iTermCharacterSupportsFastPath`).
+pub fn fast_path(c: char, ascii_ligatures: bool) -> bool {
+    if !c.is_ascii() {
+        return false;
+    }
+    // With ASCII ligatures available only letters, digits and space skip shaping.
+    !ascii_ligatures || c.is_ascii_alphanumeric() || c == ' '
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,6 +174,59 @@ mod tests {
         assert_eq!(c.1, (17.0f32 * 1.25).ceil());
         // At least one pixel each way.
         assert_eq!(cell_size(Metrics { ascent: 0.0, descent: 0.0, leading: 0.0, advance_w: 0.0 }, false, 1.0, 1.0).1, (1.0, 1.0));
+    }
+
+    #[test]
+    fn ligature_features_follow_iterm2() {
+        assert!(blacklisted("Monaco"));
+        assert!(!blacklisted("MenloNF-Regular"));
+        assert!(!blacklisted("MonacoLigaturizedNFM"));
+        assert!(blacklisted("SFMono-Regular"));
+        assert!(!blacklisted("CascadiaCode-Regular"));
+        assert!(blacklisted("Courier"));
+        assert!(blacklisted("CourierNewPSMT"));
+        assert!(!blacklisted("Menlo-Regular"));
+        assert_eq!(ligature_level(false, true), 2);
+        assert_eq!(ligature_level(false, false), 1);
+        assert_eq!(ligature_level(true, true), 0);
+        assert_eq!(ligature_level(true, false), 0);
+        use glyphon::cosmic_text::FeatureTag as T;
+        let value = |level: u8, tag: T| features(level).features.iter().rev().find(|f| f.tag == tag).map(|f| f.value);
+        for tag in [T::STANDARD_LIGATURES, T::CONTEXTUAL_LIGATURES, T::CONTEXTUAL_ALTERNATES, T::DISCRETIONARY_LIGATURES] {
+            assert_eq!(value(0, tag), Some(0), "level 0 turns {tag:?} off");
+        }
+        assert_eq!((value(1, T::STANDARD_LIGATURES), value(1, T::CONTEXTUAL_LIGATURES), value(1, T::CONTEXTUAL_ALTERNATES)), (Some(1), Some(1), Some(0)));
+        assert_eq!((value(2, T::STANDARD_LIGATURES), value(2, T::CONTEXTUAL_LIGATURES), value(2, T::CONTEXTUAL_ALTERNATES)), (Some(1), Some(1), Some(1)));
+    }
+
+    #[test]
+    fn ligature_runs_follow_iterm2() {
+        assert!(fast_path('a', true));
+        assert!(fast_path('7', true));
+        assert!(fast_path(' ', true));
+        assert!(!fast_path('-', true));
+        assert!(fast_path('-', false));
+        assert!(!fast_path('\u{e9}', true));
+        assert!(!fast_path('\u{e9}', false));
+        let r = |ascii, non_ascii, prefer_speed| LigatureRules { ascii, non_ascii, prefer_speed, level: 2 };
+        // R3: the stock profile draws no ligatures, whatever the run.
+        for (is_ascii, fast) in [(true, true), (true, false), (false, false)] {
+            assert_eq!(span_level(is_ascii, fast, r(false, false, true)), 0);
+            assert_eq!(span_level(is_ascii, fast, r(false, false, false)), 0);
+        }
+        // ASCII Ligatures on, speed preferred: punctuation ligates, letters do not.
+        assert_eq!(span_level(true, fast_path('-', true), r(true, false, true)), 2);
+        assert_eq!(span_level(true, fast_path('a', true), r(true, false, true)), 0);
+        // Not preferring speed: both ligate.
+        assert_eq!(span_level(true, fast_path('-', true), r(true, false, false)), 2);
+        assert_eq!(span_level(true, fast_path('a', true), r(true, false, false)), 2);
+        // A non-ASCII run is 0 unless Non-ASCII Ligatures.
+        assert_eq!(span_level(false, false, r(true, false, true)), 0);
+        assert_eq!(span_level(false, false, r(true, false, false)), 0);
+        assert_eq!(span_level(false, false, r(false, true, true)), 2);
+        // A font at level 1 or 0 passes its level through.
+        assert_eq!(span_level(true, false, LigatureRules { level: 1, ..r(true, false, true) }), 1);
+        assert_eq!(span_level(true, false, LigatureRules { level: 0, ..r(true, false, true) }), 0);
     }
 
     #[test]

@@ -282,11 +282,15 @@ pub struct FaceKey {
     /// The profile's Use Bold Font and Use Italic Font (a face that ignores a switch is another face).
     pub use_bold: bool,
     pub use_italic: bool,
+    /// The profile's ASCII Ligatures and Non-ASCII Ligatures (a face that ignores a switch is
+    /// another face, as with bold).
+    pub ascii_ligatures: bool,
+    pub non_ascii_ligatures: bool,
 }
 
 impl FaceKey {
     pub fn new(family: &str, alt_family: Option<&str>, px: f32, h: f32, v: f32) -> FaceKey {
-        FaceKey { family: family.to_string(), alt_family: alt_family.map(str::to_string), px_bits: quantize_px(px).to_bits(), h_bits: h.to_bits(), v_bits: v.to_bits(), profile_bits: 0, use_bold: true, use_italic: true }
+        FaceKey { family: family.to_string(), alt_family: alt_family.map(str::to_string), px_bits: quantize_px(px).to_bits(), h_bits: h.to_bits(), v_bits: v.to_bits(), profile_bits: 0, use_bold: true, use_italic: true, ascii_ligatures: false, non_ascii_ligatures: false }
     }
 
     pub fn px(&self) -> f32 {
@@ -318,6 +322,10 @@ pub struct Face {
     pub bold: Option<u16>,
     pub use_bold: bool,
     pub use_italic: bool,
+    /// The Normal Font's and the Non-ASCII Font's PostScript names are on iTerm2's ligature
+    /// blacklist (`fonts::blacklisted`).
+    pub blacklisted: bool,
+    pub alt_blacklisted: bool,
 }
 
 pub struct Renderer {
@@ -363,6 +371,10 @@ pub struct Renderer {
     generous_list: String,
     /// `MinimumWeightDifferenceForBoldFont`, read when faces are built.
     bold_difference: i32,
+    /// `EnableContextualAlternates`: ligature level 2 instead of 1.
+    calt: bool,
+    /// Whether each family's PostScript name is on the ligature blacklist, looked up once.
+    blacklist: std::cell::RefCell<std::collections::HashMap<String, bool>>,
     /// The default face's bold weight (`bold_face`).
     default_bold: Option<u16>,
     /// The weights each family's regular-style faces have (a variable face counts every 100-step
@@ -421,6 +433,8 @@ impl Renderer {
             base_cell: (0.0, 0.0),
             generous_list: "consolas".into(),
             bold_difference: 4,
+            calt: true,
+            blacklist: Default::default(),
             default_bold: None,
             weights: Default::default(),
             faces: Vec::new(),
@@ -561,7 +575,43 @@ impl Renderer {
         let px = key.px();
         let (cell, base, ul) = self.measure(&key.family, px, f32::from_bits(key.h_bits), f32::from_bits(key.v_bits));
         let ul = ul.unwrap_or(crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 });
-        Face { key: key.clone(), cell, base, baseline: ul.baseline, ul, px, bold: self.bold_face(&key.family), use_bold: key.use_bold, use_italic: key.use_italic }
+        let blacklisted = self.family_blacklisted(&key.family);
+        let alt_blacklisted = key.alt_family.as_deref().map_or(blacklisted, |f| self.family_blacklisted(f));
+        Face { key: key.clone(), cell, base, baseline: ul.baseline, ul, px, bold: self.bold_face(&key.family), use_bold: key.use_bold, use_italic: key.use_italic, blacklisted, alt_blacklisted }
+    }
+
+    /// Whether the family's regular face (the one nearest weight 400) has a PostScript name on
+    /// iTerm2's ligature blacklist; looked up once per family.
+    fn family_blacklisted(&self, family: &str) -> bool {
+        if let Some(b) = self.blacklist.borrow().get(family) {
+            return *b;
+        }
+        let db = self.font_system.db();
+        let name = db
+            .faces()
+            .filter(|f| f.style == glyphon::fontdb::Style::Normal && f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(family)))
+            .min_by_key(|f| ((f.weight.0 as i32 - 400).abs(), f.weight.0))
+            .map(|f| f.post_script_name.clone());
+        let b = name.is_some_and(|n| fonts::blacklisted(&n));
+        self.blacklist.borrow_mut().insert(family.to_string(), b);
+        b
+    }
+
+    /// `EnableContextualAlternates` changed: faces keep their ids, rows shape again.
+    pub fn set_contextual_alternates(&mut self, calt: bool) {
+        if calt != self.calt {
+            self.calt = calt;
+            self.buffers.clear();
+        }
+    }
+
+    /// The ligature rules of face `id` for `scene::DrawPrefs`: the profile's two switches, the
+    /// font's level, and the Non-ASCII Font's level.
+    pub fn face_ligatures(&self, id: u16, prefer_speed: bool) -> (fonts::LigatureRules, u8) {
+        let f = self.face_of(id);
+        let level = fonts::ligature_level(f.blacklisted, self.calt);
+        let alt = fonts::ligature_level(f.alt_blacklisted, self.calt);
+        (fonts::LigatureRules { ascii: f.key.ascii_ligatures, non_ascii: f.key.non_ascii_ligatures, prefer_speed, level }, alt)
     }
 
     /// Face 0 is the default fonts, kept in step with the fields `set_font_px` fills.
@@ -569,7 +619,7 @@ impl Renderer {
         let mut key = FaceKey::new(&self.family, self.alt_family.as_deref(), self.font_px, self.h_spacing, self.v_spacing);
         key.profile_bits = 0;
         let ul = self.ul_metrics.unwrap_or(crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 });
-        let face = Face { key: key.clone(), cell: self.cell, base: self.base_cell, baseline: ul.baseline, ul, px: self.font_px, bold: self.default_bold, use_bold: key.use_bold, use_italic: key.use_italic };
+        let face = Face { key: key.clone(), cell: self.cell, base: self.base_cell, baseline: ul.baseline, ul, px: self.font_px, bold: self.default_bold, use_bold: key.use_bold, use_italic: key.use_italic, blacklisted: false, alt_blacklisted: false };
         if self.faces.is_empty() {
             self.faces.push(face);
         } else {
@@ -903,7 +953,7 @@ impl Renderer {
     /// `frame.underlines` cut around the ink of the glyphs in their row (`SolidUnderlines` off). Only
     /// rows that carry a stroke are measured, and each glyph's ink placement is looked up once and
     /// kept in `ink_cache`, so a steady screen costs a hash lookup per glyph, not a rasterization.
-    fn gapped_underlines(&mut self, frame: &Frame) -> Vec<Quad> {
+    fn gapped_underlines(&mut self, frame: &Frame, rows: &[TextRow]) -> Vec<Quad> {
         if !frame.gap_underlines || frame.underlines.is_empty() {
             return frame.underlines.clone();
         }
@@ -911,7 +961,7 @@ impl Renderer {
             self.ink_cache.clear();
         }
         let mut bands = Vec::new();
-        for (slot, row) in self.buffers.iter().zip(&frame.rows) {
+        for (slot, row) in self.buffers.iter().zip(rows) {
             let ch = self.faces.get(row.face as usize).unwrap_or(&self.faces[0]).cell.1;
             // A badge is drawn behind the text; iTerm2's mask never sees it.
             if row.spans.iter().any(|s| s.badge) {
@@ -965,11 +1015,48 @@ impl Renderer {
             .collect()
     }
 
+    /// A row whose spans differ in ligature level, as one row per run of equal level: cosmic-text
+    /// shapes a whole word with the features of its first span, so a run at another level must
+    /// be shaped on its own. Each run sits at its cell (the width of the text before it, in
+    /// cells), and a row of one level is left as it is.
+    fn split_levels(&self, rows: &[TextRow]) -> Vec<TextRow> {
+        use unicode_width::UnicodeWidthChar;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            if row.spans.windows(2).all(|w| w[0].ligatures == w[1].ligatures) {
+                out.push(row.clone());
+                continue;
+            }
+            let cw = self.face_of(row.face).cell.0 * row.scale;
+            let mut at = 0.0;
+            let mut run: Vec<Span> = Vec::new();
+            let mut start = 0.0;
+            for s in &row.spans {
+                if run.last().is_some_and(|l| l.ligatures != s.ligatures) {
+                    out.push(TextRow { x: row.x + start, spans: std::mem::take(&mut run), ..row.clone() });
+                    start = at;
+                }
+                run.push(s.clone());
+                at += s.text.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>() as f32 * cw;
+            }
+            out.push(TextRow { x: row.x + start, spans: run, ..row.clone() });
+        }
+        out
+    }
+
     pub fn draw(&mut self, frame: &Frame, view: &wgpu::TextureView, width: u32, height: u32) -> Result<(), String> {
         let (_, ch) = self.cell;
         let metrics = Metrics::new(self.font_px, ch);
-        let doubles = self.double_strikes(&frame.rows);
-        let all_rows: Vec<&TextRow> = frame.rows.iter().chain(&doubles).collect();
+        let mixed = frame.rows.iter().any(|r| r.spans.windows(2).any(|w| w[0].ligatures != w[1].ligatures));
+        let split;
+        let rows: &[TextRow] = if mixed {
+            split = self.split_levels(&frame.rows);
+            &split
+        } else {
+            &frame.rows
+        };
+        let doubles = self.double_strikes(rows);
+        let all_rows: Vec<&TextRow> = rows.iter().chain(&doubles).collect();
         while self.buffers.len() < all_rows.len() {
             self.buffers.push((Buffer::new(&mut self.font_system, metrics), Vec::new(), 0.0, 1.0, DEFAULT_FACE));
         }
@@ -1024,6 +1111,10 @@ impl Renderer {
                     Weight::BOLD
                 };
                 let slant = s.italic && (use_italic || !terminal);
+                // Terminal text shapes with its ligature level's features. Non-ASCII text at level 0
+                // is one cell per piece (or a joined run of a cursive script), so it keeps the
+                // shaper's own features: nothing can ligate there and Arabic keeps its forms.
+                let start = if terminal && (s.ligatures > 0 || s.text.is_ascii()) { start.font_features(fonts::features(s.ligatures)) } else { start };
                 let attrs = start
                     .color(Color::rgb(s.color.r, s.color.g, s.color.b))
                     .weight(weight)
@@ -1061,7 +1152,7 @@ impl Renderer {
         let under = QuadPipeline::vertices(&frame.quads);
         // Underline strokes lie under the overlay (the dimming, the cursor extras); with gaps on they
         // break around the ink of the glyphs in their row, strikethrough stays whole.
-        let underlines = self.gapped_underlines(frame);
+        let underlines = self.gapped_underlines(frame, rows);
         let over = QuadPipeline::vertices(&underlines.iter().chain(&frame.strikes).chain(&frame.overlay).copied().collect::<Vec<_>>());
         let pops = QuadPipeline::vertices(&frame.popups);
         let make = |v: &[f32]| {
@@ -1331,7 +1422,7 @@ mod tests {
         let block = |x: f32, y: f32, face: u16| TextRow {
             x,
             y,
-            spans: vec![Span { text: "\u{2588}".repeat(4), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false }],
+            spans: vec![Span { text: "\u{2588}".repeat(4), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 }],
             clip: Rect { x: 0.0, y, w: w as f32, h: if face == 1 { c1.1 } else { c2.1 } },
             scale: 1.0,
             face,
@@ -1371,7 +1462,7 @@ mod tests {
         let view = tex.create_view(&Default::default());
         // The pixels of "W" drawn in `face` as a bold and italic span as asked.
         let shot = |r: &mut Renderer, face: u16, bold: bool, italic: bool| -> Vec<u8> {
-            let span = Span { text: "W".into(), color: rgb(255, 255, 255), bold, italic, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: bold };
+            let span = Span { text: "W".into(), color: rgb(255, 255, 255), bold, italic, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: bold, ligatures: 0 };
             let cell = r.face_cell(face);
             let row = TextRow { x: 4.0, y: 4.0, spans: vec![span], clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 }, scale: 1.0, face };
             let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows: vec![row], ..Default::default() };
@@ -1407,6 +1498,82 @@ mod tests {
         let (l0, r0) = cols(&regular);
         let (l1, r1) = cols(&bold);
         assert!(r1 - l1 >= r0 - l0 + 1 && l1 == l0, "{family}: regular {l0}..{r0}, bold {l1}..{r1}");
+    }
+
+    /// The glyph ids `text` shapes to in `family` with `features` (None: the attributes the
+    /// renderer used before this task, no features at all). A ligature font may keep two glyphs
+    /// per pair (Cascadia Code's calt swaps each for a joined half), so a ligature is told by
+    /// the ids changing, not by the count.
+    fn glyph_ids(fs: &mut FontSystem, family: &str, text: &str, features: Option<glyphon::cosmic_text::FontFeatures>) -> Vec<u16> {
+        let mut b = Buffer::new(fs, Metrics::new(20.0, 24.0));
+        b.set_size(None, None);
+        b.set_wrap(Wrap::None);
+        let mut attrs = Attrs::new().family(Family::Name(family));
+        if let Some(f) = features {
+            attrs = attrs.font_features(f);
+        }
+        b.set_rich_text([(text, attrs.clone())], &attrs, Shaping::Advanced, None);
+        b.shape_until_scroll(fs, false);
+        b.layout_runs().flat_map(|r| r.glyphs.iter().map(|g| g.glyph_id).collect::<Vec<_>>()).collect()
+    }
+
+    /// Step 1 of 13n Task 4 (the live check, headless): do "->" and "!=" form ligatures in an
+    /// installed ligature font with today's attributes, and does `features(0)` switch them off?
+    #[test]
+    fn ligature_check_on_this_machine() {
+        let mut fs = FontSystem::new();
+        let installed = |fs: &FontSystem, n: &str| fs.db().faces().any(|f| f.families.iter().any(|(m, _)| m.eq_ignore_ascii_case(n)));
+        let Some(family) = ["Cascadia Code", "Fira Code", "JetBrains Mono"].into_iter().find(|n| installed(&fs, n)) else {
+            println!("LIGATURES TODAY: no ligature font installed");
+            return;
+        };
+        let mut shape = |f: Option<glyphon::cosmic_text::FontFeatures>| -> Vec<Vec<u16>> { ["->", "!=", "a->b"].iter().map(|t| glyph_ids(&mut fs, family, t, f.clone())).collect() };
+        let today = shape(None);
+        let off = shape(Some(fonts::features(0)));
+        let (l1, l2) = (shape(Some(fonts::features(1))), shape(Some(fonts::features(2))));
+        // Each character alone: what "no ligature" means.
+        let alone: Vec<Vec<u16>> = ["->", "!=", "a->b"].iter().map(|t| t.chars().flat_map(|c| glyph_ids(&mut fs, family, &c.to_string(), Some(fonts::features(0)))).collect()).collect();
+        let report = |label: &str, v: &[Vec<u16>]| {
+            println!("{label}: {family} -> glyphs={} != glyphs={} a->b glyphs={} ids {:?} ligated={}", v[0].len(), v[1].len(), v[2].len(), v, v != alone.as_slice());
+        };
+        report("LIGATURES TODAY", &today);
+        report("LIGATURES level 1", &l1);
+        report("LIGATURES level 2", &l2);
+        report("LIGATURES level 0", &off);
+        assert_eq!(off, alone, "features(0) must shape each character as it does alone in {family}");
+        assert!(off.iter().take(2).all(|v| v.len() == 2), "each pair is two glyphs with features(0) in {family}");
+    }
+
+    #[test]
+    fn ligature_levels_draw_per_span() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        if !["Cascadia Code"].iter().all(|n| r.has_family(n)) {
+            println!("skip: Cascadia Code is not installed");
+            return;
+        }
+        let (w, h) = (256u32, 40u32);
+        let tex = target(&device, w, h);
+        let view = tex.create_view(&Default::default());
+        let face = r.face(&key("Cascadia Code", 20.0, 1.0, 1.0));
+        let cw = r.face_cell(face).0;
+        let sp = |text: &str, ligatures: u8| Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures };
+        let clip = Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
+        let mut shot = |rows: Vec<TextRow>| -> Vec<u8> {
+            let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows, ..Default::default() };
+            r.draw(&frame, &view, w, h).unwrap();
+            read(&device, &queue, &tex, w, h)
+        };
+        let row = |x: f32, spans: Vec<Span>| TextRow { x, y: 4.0, spans, clip, scale: 1.0, face };
+        let flat = shot(vec![row(4.0, vec![sp("a->b", 0)])]);
+        let joined = shot(vec![row(4.0, vec![sp("a->b", 2)])]);
+        assert_ne!(flat, joined, "level 2 joins the arrow in Cascadia Code, level 0 does not");
+        // A mixed row draws as its runs side by side, each at its cell: the arrow joins even
+        // though the letters around it are at level 0.
+        let mixed = shot(vec![row(4.0, vec![sp("a", 0), sp("->", 2), sp("b", 0)])]);
+        let apart = shot(vec![row(4.0, vec![sp("a", 0)]), row(4.0 + cw, vec![sp("->", 2)]), row(4.0 + 3.0 * cw, vec![sp("b", 0)])]);
+        assert_eq!(mixed, apart, "the runs of a mixed row draw where their cells are");
+        assert_ne!(mixed, flat, "the arrow in the mixed row is joined");
     }
 
     #[test]
@@ -1509,7 +1676,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 0.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false }],
+                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 }],
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
@@ -1564,7 +1731,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 36.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false }],
+                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 }],
                 clip: Rect { x: 32.0, y: 0.0, w: 32.0, h: 32.0 },
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
@@ -1600,7 +1767,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 0.0,
                 y: 0.0,
-                spans: vec![Span { text: " \u{2588} ".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false }],
+                spans: vec![Span { text: " \u{2588} ".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 }],
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
@@ -1641,7 +1808,7 @@ mod tests {
         let y = (ch / 2.0).floor();
         let red = rgba(rgb(255, 0, 0), 1.0);
         let clip = Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
-        let span = |text: &str, badge: bool| Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge, toolbelt: false, fake_bold: false };
+        let span = |text: &str, badge: bool| Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge, toolbelt: false, fake_bold: false, ligatures: 0 };
         let row = |x: f32, text: &str, badge: bool| TextRow { x, y: 0.0, spans: vec![span(text, badge)], clip, scale: 1.0, face: crate::render::DEFAULT_FACE };
         let frame = |rows: Vec<TextRow>| Frame {
             clear: rgba(rgb(0, 0, 0), 1.0),

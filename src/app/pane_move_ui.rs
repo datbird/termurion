@@ -713,7 +713,7 @@ fn draw_look(frame: &mut scene::Frame, rect: Rect, [fill, border, inner]: [crate
     let (w, line_h) = (at_one * k, cell.1 * k);
     let x = rect.x + ((rect.w - w) / 2.0).max(0.0);
     let y = (rect.y + rect.h / 3.0 - line_h).max(rect.y);
-    let span = |color| scene::Span { text: text.to_string(), color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false };
+    let span = |color| scene::Span { text: text.to_string(), color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
     frame.rows.push(scene::TextRow { x: x + 2.0 * t, y: y + 2.0 * t, spans: vec![span(rgb(0, 0, 0))], clip: rect, scale: k, face: crate::render::DEFAULT_FACE });
     frame.rows.push(scene::TextRow { x, y, spans: vec![span(rgb(255, 255, 255))], clip: rect, scale: k, face: crate::render::DEFAULT_FACE });
 }

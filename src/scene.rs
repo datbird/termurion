@@ -37,6 +37,10 @@ pub struct Span {
     /// renderer double-strikes it (a second copy one pixel right, iTerm2's `fakeBold`). Chrome
     /// text never sets it, so it is never struck twice.
     pub fake_bold: bool,
+    /// The ligature level the renderer shapes the span at (`fonts::features`): 0 none, 1 standard,
+    /// 2 standard plus contextual alternates. `pane_with` sets it from the profile's switches;
+    /// spans of different levels never merge.
+    pub ligatures: u8,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -272,19 +276,26 @@ pub struct DrawPrefs {
     pub solid_underlines: bool,
     pub metrics: crate::underline::Metrics,
     pub scale: f32,
+    /// What the pane's profile and font say about ligatures (`fonts::span_level`).
+    pub ligatures: crate::fonts::LigatureRules,
+    /// The ligature level of the Non-ASCII Font (`fonts::ligature_level` of that font).
+    pub alt_level: u8,
 }
 
 impl Default for DrawPrefs {
     fn default() -> Self {
-        DrawPrefs { underline_hyperlinks: true, solid_underlines: false, metrics: crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 }, scale: 1.0 }
+        DrawPrefs { underline_hyperlinks: true, solid_underlines: false, metrics: crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 }, scale: 1.0, ligatures: STOCK_LIGATURES, alt_level: 2 }
     }
 }
+
+/// The stock profile's ligature rules: both switches off, speed preferred, a font at level 2.
+pub const STOCK_LIGATURES: crate::fonts::LigatureRules = crate::fonts::LigatureRules { ascii: false, non_ascii: false, prefer_speed: true, level: 2 };
 
 impl DrawPrefs {
     /// The prefs the live frame and a screenshot both draw with: the two Advanced switches from
     /// `globals`, the renderer's face metrics and the window's scale.
     pub fn from_globals(globals: &crate::globals::Globals, metrics: crate::underline::Metrics, scale: f32) -> DrawPrefs {
-        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale }
+        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale, ligatures: crate::fonts::LigatureRules { prefer_speed: globals.bool("PreferSpeedToFullLigatureSupport"), ..STOCK_LIGATURES }, alt_level: STOCK_LIGATURES.level }
     }
 
     /// The metrics to draw with in a cell of height `ch`: the face's, or (none measured) an
@@ -356,6 +367,38 @@ struct CellLook {
     italic: bool,
     /// The background comes from the selection or the cursor.
     selected: bool,
+    /// The ligature level the cell's text is shaped at (`fonts::span_level`).
+    level: u8,
+    /// The cursor is on this cell: a ligature never joins it to a neighbor.
+    cursor: bool,
+}
+
+/// The ligature level of a cell's text under the pane's rules (`fonts::span_level`): the font
+/// the text draws in is the Non-ASCII Font for anything outside ASCII.
+fn cell_level(text: &str, draw: &DrawPrefs) -> u8 {
+    let ascii = text.is_ascii();
+    let c = text.chars().next().unwrap_or(' ');
+    let rules = if ascii { draw.ligatures } else { crate::fonts::LigatureRules { level: draw.alt_level, ..draw.ligatures } };
+    crate::fonts::span_level(ascii, crate::fonts::fast_path(c, draw.ligatures.ascii), rules)
+}
+
+/// Explicit bidi controls never take part in a ligature piece (13m strips them from the text).
+fn bidi_control(c: char) -> bool {
+    matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
+/// A one-column non-ASCII cell that Non-ASCII Ligatures may group with its neighbors (P7): wide
+/// characters and emoji keep their own piece, and so do bidi controls.
+fn groupable(text: &str) -> bool {
+    use unicode_width::UnicodeWidthStr;
+    !text.is_ascii() && text.width() == 1 && !text.chars().any(bidi_control)
+}
+
+/// Whether a ligature must not join `prev` and `next`, two neighboring cells: only when one of
+/// them is shaped with ligatures, a color change, the cursor or the selection edge ends the run
+/// (iTerm2 builds its attributed string per color and per cursor and selection state).
+fn ligature_break(prev: &CellLook, next: &CellLook) -> bool {
+    (prev.level > 0 || next.level > 0) && (prev.fg != next.fg || prev.cursor != next.cursor || prev.selected != next.selected || prev.bold != next.bold || prev.italic != next.italic)
 }
 
 /// Find matches to mark in a pane.
@@ -444,7 +487,7 @@ pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) 
         bar.query.chars().skip(n.saturating_sub(FIELD - 1)).collect()
     };
     let field = format!("{shown}_");
-    let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false };
+    let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
     let y = r.y + 4.0;
     let query_color = if bar.error { FIND_ERROR } else { TAB_TEXT };
     frame.rows.push(TextRow {
@@ -502,7 +545,7 @@ pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cel
             r.clip.w = (bg.x - r.clip.x).max(0.0);
         }
         cut_quads(frame, Rect { w: right - bg.x + 1.0e6, ..bg });
-        let span = Span { text: text.clone(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false };
+        let span = Span { text: text.clone(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
         frame.rows.push(TextRow { x: right - (n + 1.0) * cw, y, spans: vec![span], clip: rect, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
 }
@@ -629,7 +672,7 @@ pub fn pane_with(
     let cursor_box = smart_box.map_or(palette.cursor, |(b, _)| b);
     let cursor_text = smart_box.map_or(palette.cursor_text, |(_, t)| t);
 
-    let blank = || CellLook { ul: None, text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false };
+    let blank = || CellLook { ul: None, text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false, level: cell_level(" ", draw), cursor: false };
     let mut grid: Vec<Vec<CellLook>> = (0..lines).map(|_| (0..cols).map(|_| blank()).collect()).collect();
     for indexed in content.display_iter {
         let Some(vp) = point_to_viewport(content.display_offset, indexed.point) else { continue };
@@ -703,6 +746,7 @@ pub fn pane_with(
             if c.flags.contains(Flags::DIM) { blend(palette.cell(c.fg, c.bg, c.flags - Flags::DIM).1, u, palette.faint_alpha) } else { u }
         });
         let ul = (!hidden && c.image().is_none()).then_some(Ul { style, strike, sgr });
+        let level = cell_level(&text, draw);
         grid[row][col] = CellLook {
             ul,
             text,
@@ -711,6 +755,8 @@ pub fn pane_with(
             bold: c.flags.contains(Flags::BOLD),
             italic: c.flags.contains(Flags::ITALIC),
             selected,
+            level,
+            cursor: cursor == Some((row, col)),
         };
     }
 
@@ -753,23 +799,33 @@ pub fn pane_with(
                 }
             }
         };
+        // With Non-ASCII Ligatures a run of one-column non-ASCII cells shares a piece too (P7).
+        let group = draw.ligatures.non_ascii;
         let mut piece: Option<(usize, Vec<Span>)> = None;
+        let mut before: Option<usize> = None;
         for (col, c) in cells.iter().enumerate() {
             if c.text.is_empty() {
                 continue;
             }
             let ascii = c.text.is_ascii();
-            if !ascii {
+            let joinable = group && groupable(&c.text);
+            // The previous cell, when it is the one right before (a wide character's spacer is empty).
+            let prev = before.filter(|b| *b + 1 == col).map(|b| &cells[b]);
+            let continues = prev.is_some_and(|p| !ligature_break(p, c) && if ascii { p.text.is_ascii() } else { joinable && groupable(&p.text) });
+            if !continues {
                 flush(&mut piece, frame);
             }
             let (_, spans) = piece.get_or_insert_with(|| (col, Vec::new()));
             match spans.last_mut() {
-                Some(s) if s.color == c.fg && s.bold == c.bold && s.italic == c.italic => s.text.push_str(&c.text),
-                _ => spans.push(Span { text: c.text.clone(), color: c.fg, bold: c.bold, italic: c.italic, alt_font: !ascii, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: c.bold }),
+                Some(s) if s.color == c.fg && s.bold == c.bold && s.italic == c.italic && s.ligatures == c.level => s.text.push_str(&c.text),
+                _ => spans.push(Span { text: c.text.clone(), color: c.fg, bold: c.bold, italic: c.italic, alt_font: !ascii, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: c.bold, ligatures: c.level }),
             }
-            if !ascii {
+            // Any other non-ASCII character gets its own piece at its cell's x, because fallback
+            // fonts (CJK, emoji) are not monospace.
+            if !ascii && !joinable {
                 flush(&mut piece, frame);
             }
+            before = Some(col);
         }
         flush(&mut piece, frame);
         for run in underline_runs(cells, palette.underline_color) {
@@ -782,7 +838,7 @@ pub fn pane_with(
         for (p, label) in h.labels {
             let row = p.row as i32 - top;
             if row >= 0 && (row as usize) < lines {
-                let span = Span { text: label.clone(), color: LABEL_TEXT, bold: true, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false };
+                let span = Span { text: label.clone(), color: LABEL_TEXT, bold: true, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
                 frame.rows.push(TextRow { x: rect.x + p.col as f32 * cw, y: rect.y + row as f32 * ch, spans: vec![span], clip: rect, scale: 1.0, face });
             }
         }
@@ -813,7 +869,7 @@ pub fn pane_with(
                 let y = rect.y + row as f32 * ch;
                 let r = Rect { x, y, w: (shown.chars().count() as f32 + 1.0) * cw, h: ch };
                 frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
-                let span = Span { text: shown, color: rgb(0, 0, 0), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false };
+                let span = Span { text: shown, color: rgb(0, 0, 0), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
                 frame.rows.push(TextRow { x: x + cw * 0.5, y, spans: vec![span], clip: rect, scale: 1.0, face });
             }
         }
@@ -840,7 +896,7 @@ pub fn pane_with(
         let r = Rect { x: rect.x + col as f32 * cw, y: rect.y + row as f32 * ch, w: cw, h: ch };
         let bg = grid.get(row).and_then(|l| l.get(col)).map_or(palette.bg, |c| c.bg);
         let scale = (cw * 1.2 / ch.max(1.0)).min(1.0);
-        let span = Span { text: crate::pwm_prompt::KEY_GLYPH.to_string(), color: match_text(bg), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false };
+        let span = Span { text: crate::pwm_prompt::KEY_GLYPH.to_string(), color: match_text(bg), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
         frame.rows.push(TextRow { x: r.x, y: r.y + (ch - ch * scale) / 2.0, spans: vec![span], clip: r, scale, face });
     } else if let Some((row, col)) = cursor {
         let origin = (rect.x, rect.y);
@@ -892,7 +948,7 @@ pub fn pane_with(
             let r = Rect { x: rect.x + piece.col as f32 * cw, y: rect.y + piece.row as f32 * ch, w: piece.cells as f32 * cw, h: ch };
             cut_out(frame, r, ch);
             frame.popups.push(Quad { rect: r, color: rgba(palette.bg, 1.0) });
-            let span = Span { text: piece.text.clone(), color: palette.fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false };
+            let span = Span { text: piece.text.clone(), color: palette.fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
             frame.rows.push(TextRow { x: r.x, y: r.y, spans: vec![span], clip: Rect { w: rect.x + rect.w - r.x, ..r }, scale: 1.0, face });
             let line = look.geometry.scale.max(1.0).round();
             frame.overlay.push(Quad { rect: Rect { y: r.y + ch - line, h: line, ..r }, color: rgba(palette.fg, 1.0) });
@@ -1056,7 +1112,7 @@ pub fn doc_lines(frame: &mut Frame, origin: (f32, f32), lines: &[crate::porthole
         let spans = l
             .runs
             .iter()
-            .map(|r| Span { text: r.text.clone(), color: r.color, bold: r.bold, italic: r.italic, alt_font: false, icon: false, prose: r.face == crate::porthole::render::Face::Prose, badge: false, toolbelt: false, fake_bold: false })
+            .map(|r| Span { text: r.text.clone(), color: r.color, bold: r.bold, italic: r.italic, alt_font: false, icon: false, prose: r.face == crate::porthole::render::Face::Prose, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 })
             .collect();
         frame.rows.push(TextRow { x: ox + l.x, y, spans, clip: area, scale: l.scale, face: crate::render::DEFAULT_FACE });
     }
@@ -1082,7 +1138,7 @@ pub fn porthole(frame: &mut Frame, rect: Rect, clip: Rect, lines: &[crate::porth
     let language = Rect { x: close.x - 4.0 - lw, y: close.y, w: lw, h: s };
     let ww = 8.0 * cell.0;
     let wide = Rect { x: language.x - 2.0 - ww, y: close.y, w: ww, h: s };
-    let text = |t: String, color: Rgb, icon: bool| Span { text: t, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false, toolbelt: false, fake_bold: false };
+    let text = |t: String, color: Rgb, icon: bool| Span { text: t, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
     if let Some(c) = cut(close, clip) {
         frame.rows.push(TextRow { x: close.x + (s - cell.0) / 2.0, y: close.y, spans: vec![text("\u{E711}".into(), blend(bg, fg, 0.5), true)], clip: c, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
@@ -1112,7 +1168,7 @@ pub fn badge(frame: &mut Frame, pane: Rect, l: &crate::badge::BadgeLayout, color
         for (i, (text, w)) in l.lines.iter().zip(&l.widths).enumerate() {
             let x = pane.x + l.rect.x + l.rect.w - w + dx;
             let y = pane.y + l.rect.y + i as f32 * line_h + dy;
-            let span = Span { text: text.clone(), color: c, bold: true, italic: false, alt_font: false, icon: false, prose: false, badge: true, toolbelt: false, fake_bold: false };
+            let span = Span { text: text.clone(), color: c, bold: true, italic: false, alt_font: false, icon: false, prose: false, badge: true, toolbelt: false, fake_bold: false, ligatures: 0 };
             frame.rows.push(TextRow { x, y, spans: vec![span], clip: pane, scale, face: crate::render::DEFAULT_FACE });
         }
     }
@@ -1148,7 +1204,7 @@ pub fn inline_buttons(frame: &mut Frame, buttons: &[(Rect, ButtonFace, bool)], b
             }
             ButtonFace::Icon(c) => {
                 frame.quads.push(Quad { rect: *r, color: rgba(mix(0.15 * a), 1.0) });
-                let span = Span { text: c.to_string(), color: mix(a), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false };
+                let span = Span { text: c.to_string(), color: mix(a), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
                 frame.rows.push(TextRow { x: r.x + r.w / 4.0, y: r.y, spans: vec![span], clip: *r, scale: 1.0, face: crate::render::DEFAULT_FACE });
             }
         }
@@ -1339,7 +1395,7 @@ pub fn top_right_indicators(frame: &mut Frame, pane: Rect, glyphs: &[char], colo
     let mut hits = Vec::new();
     for (i, g) in glyphs.iter().enumerate() {
         let x = pane.x + pane.w - (i as f32 + 1.0) * step;
-        let span = Span { text: g.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false };
+        let span = Span { text: g.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
         frame.rows.push(TextRow { x, y: pane.y + 4.0, spans: vec![span], clip: pane, scale: 1.0, face: crate::render::DEFAULT_FACE });
         hits.push(Rect { x, y: pane.y + 4.0, w: cell.0 * 2.0, h: cell.1 });
     }
@@ -1430,7 +1486,7 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
     // The selected tab's cell, effective fill and brightness (`tabColorBrightness`, `YOS:776-797`),
     // for what is drawn over the lines.
     let mut selected_deco: Option<(usize, Rect, Rgb, f32)> = None;
-    let span = |text: String, color: Rgb, bold: bool, italic: bool, icon: bool| Span { text, color, bold, italic, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false, fake_bold: false };
+    let span = |text: String, color: Rgb, bold: bool, italic: bool, icon: bool| Span { text, color, bold, italic, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
     for (k, (i, c, r)) in bar.cells.iter().enumerate() {
         let Some(tab) = tabs.get(*i) else { continue };
         let cell = px(*r);
@@ -1854,7 +1910,7 @@ pub fn caption_buttons(frame: &mut Frame, buttons: &[(crate::caption::Button, Re
             Button::Maximize => MAXIMIZE_GLYPH,
             Button::Close => CLOSE_GLYPH,
         };
-        let span = Span { text: glyph.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false };
+        let span = Span { text: glyph.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
         let x = rect.x + ((rect.w - em) / 2.0).floor();
         let y = rect.y + ((rect.h - line * s) / 2.0).floor();
         frame.rows.push(TextRow { x, y, spans: vec![span], clip: *rect, scale: s, face: crate::render::DEFAULT_FACE });
@@ -1866,7 +1922,7 @@ pub fn caption_menu_button(frame: &mut Frame, rect: Rect, pal: &crate::tab_theme
     let ink = crate::tab_theme::over(pal.bar, pal.text_selected);
     let s = CAPTION_GLYPH_PT * font_scale;
     let em = CAPTION_GLYPH_PT * scale;
-    let span = Span { text: crate::caption::MENU_GLYPH.to_string(), color: ink, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false };
+    let span = Span { text: crate::caption::MENU_GLYPH.to_string(), color: ink, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
     let x = rect.x + ((rect.w - em) / 2.0).floor();
     let y = rect.y + ((rect.h - line * s) / 2.0).floor();
     frame.rows.push(TextRow { x, y, spans: vec![span], clip: rect, scale: s, face: crate::render::DEFAULT_FACE });
@@ -1876,7 +1932,7 @@ pub fn caption_menu_button(frame: &mut Frame, rect: Rect, pal: &crate::tab_theme
 #[allow(clippy::too_many_arguments)]
 fn caption_row(frame: &mut Frame, text: &str, x: f32, rect: Rect, color: Rgb, pal: &crate::tab_theme::TabPalette, font_scale: f32, line: f32) {
     let s = pal.font_pt * font_scale;
-    let span = Span { text: text.to_string(), color, bold: false, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false, fake_bold: false };
+    let span = Span { text: text.to_string(), color, bold: false, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
     let y = rect.y + ((rect.h - line * s) / 2.0).floor();
     frame.rows.push(TextRow { x, y, spans: vec![span], clip: rect, scale: s, face: crate::render::DEFAULT_FACE });
 }
@@ -1967,7 +2023,7 @@ fn group_runs(frame: &mut Frame, tabs: &[TabLook], bar: &crate::tab_layout::Bar,
         if !t.label.is_empty() {
             let x = sp.x + GROUP_NAME_PAD * scale;
             let y = sp.y + ((sp.h - name_h) / 2.0).floor();
-            let span = Span { text: t.label.clone(), color: text, bold: true, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false, fake_bold: false };
+            let span = Span { text: t.label.clone(), color: text, bold: true, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
             frame.rows.push(TextRow { x, y, spans: vec![span], clip: clip_rect(sp, tabs_area), scale: name_scale, face: crate::render::DEFAULT_FACE });
         }
         if t.collapsed && union.is_none() {
@@ -1976,7 +2032,7 @@ fn group_runs(frame: &mut Frame, tabs: &[TabLook], bar: &crate::tab_layout::Bar,
             let cx = b.x + b.w - (GROUP_NAME_PAD + GROUP_CHEVRON / 2.0) * scale;
             let x = (cx - GROUP_CHEVRON_PT * scale / 2.0).floor();
             let y = b.y + ((b.h - line * s) / 2.0).floor();
-            let span = Span { text: GROUP_CHEVRON_GLYPH.to_string(), color: text, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false };
+            let span = Span { text: GROUP_CHEVRON_GLYPH.to_string(), color: text, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
             frame.rows.push(TextRow { x, y, spans: vec![span], clip: clip_rect(b, tabs_area), scale: s, face: crate::render::DEFAULT_FACE });
         }
         // The squared outline.
@@ -2019,7 +2075,7 @@ fn tab_graphic(frame: &mut Frame, image: &TabImage, g: Rect, alpha: f32, back: R
             let s = LETTER_PT * font_scale;
             let x = circle.x + (circle.w - letter_w * scale) / 2.0;
             let y = circle.y + (circle.h - line * s) / 2.0;
-            let span = Span { text: letter.clone(), color: back, bold: true, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false, fake_bold: false };
+            let span = Span { text: letter.clone(), color: back, bold: true, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
             frame.rows.push(TextRow { x, y, spans: vec![span], clip, scale: s, face: crate::render::DEFAULT_FACE });
         }
     }
@@ -2101,7 +2157,7 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
     }
     cut_quads(frame, r);
     frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
-    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false };
+    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
     let text_end = l.buttons.first().map_or(l.close.x, |b| b.x);
     let clip = Rect { w: (text_end - r.x).max(0.0), ..r };
     frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.shown_text())], clip, scale: 1.0, face: crate::render::DEFAULT_FACE });
@@ -2204,7 +2260,7 @@ pub fn pane_title_bar(frame: &mut Frame, bar: &TitleBar, cell: (f32, f32)) {
     }
     let text = blend(back, look.text.0, look.text.1);
     let menu = blend(back, look.menu.0, look.menu.1);
-    let span = |text: String, color: Rgb, icon: bool| Span { text, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false, toolbelt: false, fake_bold: false };
+    let span = |text: String, color: Rgb, icon: bool| Span { text, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
     // The usable height centers the label above the line.
     let usable = if look.line.is_some() { g.line.y - g.bar.y } else { g.bar.h };
     if bar.show_label && g.label.w > 0.0 && cell.0 > 0.0 {
@@ -2257,7 +2313,7 @@ pub fn status_bar(frame: &mut Frame, d: &StatusBarDraw, cell: (f32, f32)) {
     for t in d.texts {
         let line_h = cell.1 * t.scale;
         let y = r.y + ((r.h - line_h) / 2.0).round() + t.dy;
-        let span = Span { text: t.text.clone(), color: t.color, bold: false, italic: false, alt_font: false, icon: t.icon, prose: !t.icon, badge: false, toolbelt: false, fake_bold: false };
+        let span = Span { text: t.text.clone(), color: t.color, bold: false, italic: false, alt_font: false, icon: t.icon, prose: !t.icon, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
         frame.rows.push(TextRow { x: t.x, y, spans: vec![span], clip: t.clip, scale: t.scale, face: crate::render::DEFAULT_FACE });
     }
     if let Some(e) = d.edge.filter(|_| !d.bare) {
@@ -2397,7 +2453,7 @@ pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, foot
     let w = r.w;
     cut_out(frame, r, cell.1);
     frame.popups.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
-    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false };
+    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
     for (i, text) in visible.iter().enumerate() {
         let ry = y + 2.0 + i as f32 * cell.1;
         if first + i == selected {
@@ -2423,7 +2479,7 @@ pub fn session_picker_button(frame: &mut Frame, pane: Rect, label: &str, fg: Rgb
     cut_out(frame, r, cell.1);
     frame.popups.push(Quad { rect: r, color: rgba(blend(bg, fg, 0.18), 1.0) });
     frame_lines(&mut frame.popups, r, rgba(blend(bg, fg, 0.6), 1.0));
-    let span = Span { text: label.to_string(), color: fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false };
+    let span = Span { text: label.to_string(), color: fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
     frame.rows.push(TextRow { x: r.x + pad.min(r.w / 2.0), y: r.y + (h - cell.1) / 2.0, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     r
 }
@@ -2470,7 +2526,7 @@ const CLIP_SELECTED: Rgb = rgb(0x2f, 0x5f, 0xa8);
 const CLIP_DISABLED: Rgb = rgb(0x5a, 0x5a, 0x5a);
 
 fn clip_span(text: String, color: Rgb, bold: bool, icon: bool) -> Span {
-    Span { text, color, bold, italic: false, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false, fake_bold: false }
+    Span { text, color, bold, italic: false, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 }
 }
 
 /// The Clippings panel at the right of a session: the rows, the button strip, the status.
@@ -2735,7 +2791,7 @@ pub const BELT_CLOSE_GLYPH: char = '\u{E711}';
 pub const BELT_MENU_GLYPH: char = '\u{E712}';
 
 fn belt_span(text: String, color: Rgb, icon: bool) -> Span {
-    Span { text, color, bold: false, italic: false, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false, fake_bold: false }
+    Span { text, color, bold: false, italic: false, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 }
 }
 
 /// The toolbelt at the right of a window: the background, the dividers between wrappers, each
@@ -2887,7 +2943,7 @@ const POPUP_GLYPH: char = '\u{E70D}';
 
 fn list_span(text: String, color: Rgb, bold: bool, font: u8) -> Span {
     // font: 0 the toolbelt font, 1 the prose font, 2 the icon font.
-    Span { text, color, bold, italic: false, alt_font: false, icon: font == 2, prose: font == 1, badge: false, toolbelt: font == 0, fake_bold: false }
+    Span { text, color, bold, italic: false, alt_font: false, icon: font == 2, prose: font == 1, badge: false, toolbelt: font == 0, fake_bold: false, ligatures: 0 }
 }
 
 /// A 1 pixel frame inside `r`.
@@ -3137,7 +3193,7 @@ pub const COMPOSER_HELP_GLYPH: char = '\u{E897}';
 
 
 fn plain_span(text: String, color: Rgb, bold: bool) -> Span {
-    Span { text, color, bold, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false }
+    Span { text, color, bold, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 }
 }
 
 /// The minimal composer over its pane (`ComposerDraw`). The panel is a popup box: the pane's
@@ -3191,7 +3247,7 @@ pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) -> Option
     }
     let icon = |frame: &mut Frame, r: Rect, glyph: char| {
         let (w, h) = (cell.0, cell.1);
-        let span = Span { text: glyph.to_string(), color: under(d.fg), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false };
+        let span = Span { text: glyph.to_string(), color: under(d.fg), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
         frame.rows.push(TextRow { x: r.x + ((r.w - w) / 2.0).max(0.0), y: r.y + ((r.h - h) / 2.0).max(0.0), spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     };
     icon(frame, d.close, COMPOSER_CLOSE_GLYPH);
@@ -3298,7 +3354,7 @@ pub fn composer_popup(frame: &mut Frame, d: &ComposerPopupDraw, cell: (f32, f32)
             let sel = Rect { x: r.x + 4.0 * scale, y: ry, w: r.w - 8.0 * scale, h: row_h };
             rounded_box(&mut frame.popups, sel, 4.0 * scale, rgba(LIST_SELECTED, 1.0));
         }
-        let icon = Span { text: glyph.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false };
+        let icon = Span { text: glyph.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
         frame.rows.push(TextRow { x: r.x + 8.0 * scale, y: text_y(ry), spans: vec![icon], clip: list, scale: 1.0, face: crate::render::DEFAULT_FACE });
         let mut spans = Vec::new();
         match bold.clone().filter(|b| b.end <= t.len() && t.is_char_boundary(b.end)) {
@@ -3517,7 +3573,7 @@ pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) -> Rec
     // Text under the box is cut where the box starts, as under the find bar.
     cut_rows_from(frame, r, cell.1);
     frame.quads.push(Quad { rect: r, color: rgba(STAMP_BG, 1.0) });
-    let span = Span { text: text.to_string(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false };
+    let span = Span { text: text.to_string(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
     frame.rows.push(TextRow { x: r.x + 2.0 * cell.0, y: r.y + 6.0, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     r
 }
@@ -3534,7 +3590,7 @@ pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) -> Re
     // The pane's text and strokes under the bar go, as under every surface.
     cut_out(frame, r, cell.1);
     frame.quads.push(Quad { rect: r, color: rgba(BANNER, 1.0) });
-    let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false };
+    let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
     frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     r
 }
@@ -3552,7 +3608,7 @@ pub fn fps_meter(frame: &mut Frame, text: &str, pane_inner: Rect, cell: (f32, f3
     let to_rgb = |c: [f32; 4]| rgb((c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8);
     cut_out(frame, r, cell.1);
     frame.popups.push(Quad { rect: r, color: rgba(to_rgb(crate::perf_stats::FPS_BG), 1.0) });
-    let span = Span { text: text.to_string(), color: to_rgb(crate::perf_stats::FPS_FG), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false };
+    let span = Span { text: text.to_string(), color: to_rgb(crate::perf_stats::FPS_FG), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
     frame.rows.push(TextRow { x: r.x, y: r.y, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
 }
 
@@ -4185,7 +4241,7 @@ mod tests {
         use super::*;
         let pane = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
         let bar = Rect { x: 0.0, y: 0.0, w: 100.0, h: 20.0 };
-        let span = |color: Rgb| Span { text: "a".into(), color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false };
+        let span = |color: Rgb| Span { text: "a".into(), color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
         let base = || {
             let mut f = Frame::default();
             f.quads.push(Quad { rect: pane, color: rgba(rgb(0, 0, 0), 1.0) });
@@ -4404,7 +4460,7 @@ mod tests {
         // Overlay quads draw after all text, so a popup's box must not be one: the terminal
         // text under the box is cut out instead, and the popup's own text shows.
         let mut f = Frame::default();
-        let span = Span { text: "terminal".into(), color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false };
+        let span = Span { text: "terminal".into(), color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
         let under = Rect { x: 0.0, y: 0.0, w: 400.0, h: 16.0 };
         f.rows.push(TextRow { x: 0.0, y: 0.0, spans: vec![span], clip: under, scale: 1.0, face: crate::render::DEFAULT_FACE });
         let bounds = Rect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 };
@@ -4455,7 +4511,7 @@ mod tests {
         let mut f = Frame::default();
         let pane = Rect { x: 0.0, y: 0.0, w: 400.0, h: 160.0 };
         for i in 0..10 {
-            let span = Span { text: format!("line {i}"), color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false };
+            let span = Span { text: format!("line {i}"), color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0 };
             f.rows.push(TextRow { x: 0.0, y: i as f32 * 16.0, spans: vec![span], clip: pane, scale: 1.0, face: crate::render::DEFAULT_FACE });
         }
         completion_list(&mut f, &["one".into(), "two".into()], 0, None, (100.0, 64.0), pane, (8.0, 16.0));
@@ -4494,6 +4550,68 @@ mod tests {
 
     fn row_text(f: &Frame, i: usize) -> String {
         f.rows[i].spans.iter().map(|s| s.text.as_str()).collect::<String>()
+    }
+
+    #[test]
+    fn ligature_runs_split_the_row_as_iterm2() {
+        use crate::fonts::LigatureRules;
+        let s = screen(b"a->b");
+        let on = DrawPrefs { ligatures: LigatureRules { ascii: true, non_ascii: false, prefer_speed: true, level: 2 }, ..DrawPrefs::default() };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &on, None, crate::render::DEFAULT_FACE);
+        let spans: Vec<(&str, u8)> = f.rows[0].spans.iter().map(|s| (s.text.trim_end(), s.ligatures)).collect();
+        assert_eq!(spans, vec![("a", 0), ("->", 2), ("b", 0)], "letters take the fast path, punctuation runs ligate");
+        // Without preferring speed the whole row is one span at the font's level.
+        let full = DrawPrefs { ligatures: LigatureRules { prefer_speed: false, ..on.ligatures }, ..on };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &full, None, crate::render::DEFAULT_FACE);
+        assert_eq!(f.rows[0].spans.iter().map(|s| (s.text.trim_end(), s.ligatures)).collect::<Vec<_>>(), vec![("a->b", 2)]);
+        // The stock profile draws no ligatures (R3).
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        assert!(f.rows[0].spans.iter().all(|s| s.ligatures == 0), "{:?}", f.rows[0].spans);
+    }
+
+    #[test]
+    fn ligature_runs_break_at_colors_the_cursor_and_the_selection() {
+        use crate::fonts::LigatureRules;
+        let on = DrawPrefs { ligatures: LigatureRules { ascii: true, non_ascii: false, prefer_speed: false, level: 2 }, ..DrawPrefs::default() };
+        let rows = |bytes: &[u8], look: &CursorLook| {
+            let s = screen(bytes);
+            let mut f = Frame::default();
+            pane_with(&mut f, &s, RECT, CELL, true, look, &on, None, crate::render::DEFAULT_FACE);
+            f.rows.iter().map(|r| (r.x, r.spans.iter().map(|s| (s.text.trim_end().to_string(), s.ligatures)).collect::<Vec<_>>())).collect::<Vec<_>>()
+        };
+        // A color change inside a ligature splits its span.
+        let r = rows(b"-\x1b[31m>\x1b[0m", &CursorLook::shown(false));
+        assert_eq!(r.iter().map(|(_, s)| s.len()).sum::<usize>(), 2, "{r:?}");
+        // The cursor cell is its own piece: the arrow before it cannot join it.
+        let r = rows(b"->=\x1b[1D", &CursorLook::shown(true));
+        assert!(r.len() >= 2 && r.iter().any(|(x, s)| *x == 20.0 && s[0].0 == "="), "{r:?}");
+    }
+
+    #[test]
+    fn non_ascii_ligatures_group_narrow_cells_as_iterm2() {
+        use crate::fonts::LigatureRules;
+        let rules = |non_ascii| DrawPrefs { ligatures: LigatureRules { ascii: false, non_ascii, prefer_speed: true, level: 2 }, ..DrawPrefs::default() };
+        let pieces = |bytes: &[u8], prefs: &DrawPrefs| {
+            let s = screen(bytes);
+            let mut f = Frame::default();
+            pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), prefs, None, crate::render::DEFAULT_FACE);
+            f.rows.iter().map(|r| (r.x, r.spans.iter().map(|s| (s.text.trim_end().to_string(), s.ligatures)).collect::<Vec<_>>())).collect::<Vec<_>>()
+        };
+        let text = "\u{e0b0}\u{e0b1}\u{e0b2}".as_bytes();
+        // Off (the stock profile): one piece per cell, level 0.
+        assert_eq!(pieces(text, &rules(false)).len(), 3);
+        // On: the three one-column cells share a piece at level 2 (a Nerd Font sequence can join).
+        let on = pieces(text, &rules(true));
+        assert_eq!(on, vec![(0.0, vec![("\u{e0b0}\u{e0b1}\u{e0b2}".to_string(), 2)])]);
+        // A wide character keeps its own piece, and so does a bidi control.
+        let wide = pieces("\u{e0b0}\u{4e2d}\u{e0b1}".as_bytes(), &rules(true));
+        assert_eq!(wide.len(), 3, "{wide:?}");
+        // The control rides in its base cell as a zero-width mark: that cell never groups.
+        let bidi = pieces("\u{e0b0}\u{200f}\u{e0b1}".as_bytes(), &rules(true));
+        assert_eq!(bidi, vec![(0.0, vec![("\u{e0b0}\u{200f}".to_string(), 2)]), (10.0, vec![("\u{e0b1}".to_string(), 2)])]);
     }
 
     #[test]
@@ -5748,7 +5866,7 @@ mod tests {
         assert_eq!(find(&f, 0.0), Some(red));
         assert_eq!(find(&f, 10.0), Some(rgba(green, 1.0)));
         // The default color is the cell's final text color: a selected cell's.
-        let runs = underline_runs(&[CellLook { ul: Some(Ul { style: crate::underline::Style::Single, strike: false, sgr: None }), text: "a".into(), fg: rgb(1, 2, 3), bg: rgb(0, 0, 0), bold: false, italic: false, selected: false }], None);
+        let runs = underline_runs(&[CellLook { ul: Some(Ul { style: crate::underline::Style::Single, strike: false, sgr: None }), text: "a".into(), fg: rgb(1, 2, 3), bg: rgb(0, 0, 0), bold: false, italic: false, selected: false, level: 0, cursor: false }], None);
         assert_eq!(runs[0].color, rgb(1, 2, 3));
     }
 
@@ -6153,7 +6271,7 @@ mod tests {
         // FNV-1a over the frame's quads and rows.
         // The rows' `face` and the spans' `fake_bold` fields are 13n's; the digest is of the fields
         // the porthole drew before them.
-        let text = format!("{:?}{:?}", f.quads, f.rows).replace(", face: 0", "").replace(", fake_bold: false", "");
+        let text = format!("{:?}{:?}", f.quads, f.rows).replace(", face: 0", "").replace(", fake_bold: false", "").replace(", ligatures: 0", "");
         text.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3))
     }
 

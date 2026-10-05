@@ -2043,6 +2043,23 @@ mod tests {
     }
 
     #[test]
+    fn ligature_rows_follow_iterm2() {
+        for (key, label) in [
+            ("PreferSpeedToFullLigatureSupport", "Improves drawing performance at the expense of disallowing alphanumeric characters to belong to ligatures."),
+            ("EnableContextualAlternates", "Enable contextual alternates (calt) for ligature-capable fonts."),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} has a row"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Drawing"), "{key}");
+            assert_eq!(row.kind, Kind::Bool, "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(true)), "{key}");
+            assert_eq!(row.label, label, "{key}");
+            assert!(row.help.starts_with(label), "{key}: {}", row.help);
+        }
+        let calt = schema::find_global("EnableContextualAlternates").unwrap();
+        assert!(calt.help.contains("Many coding fonts such as Monaspace, Iosevka, and Cascadia Code require this for their ligatures to work."), "{}", calt.help);
+    }
+
+    #[test]
     fn scripting_rows_follow_iterm2() {
         for (key, default, help) in [
             ("pythonRuntimeDownloadURL", "https://iterm2.com/downloads/pyenv/manifest.json", "URL to check for new versions of the Python scripting runtime."),
