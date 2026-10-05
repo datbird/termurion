@@ -705,9 +705,10 @@ pub fn pane_with(
     let cursor_box = smart_box.map_or(palette.cursor, |(b, _)| b);
     let cursor_text = smart_box.map_or(palette.cursor_text, |(_, t)| t);
 
-    // A dark pane background decides Thin Strokes on Dark Backgrounds (the palette's perceived brightness).
-    let dark = crate::tab_theme::hsp(palette.bg) < 0.5;
-    let blank = || CellLook { ul: None, text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false, level: cell_level(" ", draw), mask: cell_mask(" ", draw, dark), cursor: false };
+    // Thin Strokes on Dark Backgrounds is decided per cell: the cell's background is darker than
+    // its text (`iTermTextDrawingHelper.m:3045`, `iTermMetalPerFrameState.m:2186`).
+    let dark = |fg: Rgb, bg: Rgb| crate::tab_theme::hsp(bg) < crate::tab_theme::hsp(fg);
+    let blank = || CellLook { ul: None, text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false, level: cell_level(" ", draw), mask: cell_mask(" ", draw, dark(palette.fg, palette.bg)), cursor: false };
     let mut grid: Vec<Vec<CellLook>> = (0..lines).map(|_| (0..cols).map(|_| blank()).collect()).collect();
     for indexed in content.display_iter {
         let Some(vp) = point_to_viewport(content.display_offset, indexed.point) else { continue };
@@ -782,7 +783,7 @@ pub fn pane_with(
         });
         let ul = (!hidden && c.image().is_none()).then_some(Ul { style, strike, sgr });
         let level = cell_level(&text, draw);
-        let mask = cell_mask(&text, draw, dark);
+        let mask = cell_mask(&text, draw, dark(fg, bg));
         grid[row][col] = CellLook {
             ul,
             text,
@@ -4795,6 +4796,29 @@ mod tests {
         assert_eq!(over.glyphs.len(), 2, "an opaque bar hides the glyph behind it and brings its own");
         assert!(over.glyphs.iter().any(|g| g.rect.y == 40.0));
         assert!(over.glyphs.iter().any(|g| g.rect.y == 0.0 && g.color == rgb(1, 2, 3)), "full alpha keeps the layer's color");
+    }
+
+    /// Task 5 fix 1: Thin Strokes on dark backgrounds is decided per cell, as iTerm2 does (the
+    /// cell's background against its text, `iTermTextDrawingHelper.m:3045`), not once per pane.
+    #[test]
+    fn thin_strokes_follow_each_cells_colors() {
+        use crate::fonts::{MaskMode, MaskRules};
+        let prefs = DrawPrefs { masks: MaskRules { thin: 2, retina: false, ..MaskRules::STOCK }, ..DrawPrefs::default() };
+        let thin = MaskMode::Thin.code();
+        let mask_of = |s: &Screen, text: &str| {
+            let mut f = Frame::default();
+            pane_with(&mut f, s, RECT, CELL, false, &CursorLook::shown(false), &prefs, None, crate::render::DEFAULT_FACE);
+            f.rows.iter().flat_map(|r| r.spans.iter()).find(|sp| sp.text.trim_end() == text).map(|sp| sp.mask).unwrap_or(255)
+        };
+        // A dark pane: its own text is lighter than its background, so it thins; black text on a
+        // white cell is darker than its cell, so it does not.
+        let dark = screen(b"a\x1b[30;47mb");
+        assert_eq!((mask_of(&dark, "a"), mask_of(&dark, "b")), (thin, MaskMode::Smooth.code()));
+        // A light pane: dark text on light does not thin; white text on a blue cell does.
+        let mut light = screen(b"a\x1b[97;44mb");
+        light.palette.bg = rgb(255, 255, 255);
+        light.palette.fg = rgb(0, 0, 0);
+        assert_eq!((mask_of(&light, "a"), mask_of(&light, "b")), (MaskMode::Smooth.code(), thin));
     }
 
     #[test]

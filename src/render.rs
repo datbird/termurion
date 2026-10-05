@@ -1996,7 +1996,9 @@ mod tests {
     }
 
     /// The 13m-o review ruling: a glyph atlas that grows re-rasterizes every cached glyph, and
-    /// the re-rasterized masks must go through the filter too.
+    /// the re-rasterized masks must go through the filter too. glyphon evicts the glyphs not in
+    /// use before it grows, so the aliased and thin "W"s are in the growth frame itself: they are
+    /// in use when the atlas grows, and their pixels in that frame are the re-rasterized masks.
     #[test]
     fn aliased_masks_survive_atlas_growth() {
         let (device, queue) = device();
@@ -2020,28 +2022,41 @@ mod tests {
         let (aliased, thin) = both(&mut r);
         assert_eq!(levels(&aliased), vec![0, 255]);
         let before = r.atlas.mask_size();
-        // Enough distinct large glyphs to pass the atlas's initial size: a screen of ideographs.
+        // Enough distinct large glyphs to pass the atlas's initial size: a screen of ideographs,
+        // with the aliased and thin "W"s drawn in the same frame, in the free right-hand strip (48
+        // columns of 64 pixels leave it clear even for a family whose ideographs run wide).
         let big = r.face(&key(cjk, 64.0, 1.0, 1.0));
         let (bw, bh) = (3584u32, 3584u32);
-        let rows: Vec<TextRow> = (0..56u32)
+        let clip = Rect { x: 0.0, y: 0.0, w: bw as f32, h: bh as f32 };
+        let ideographs: Vec<TextRow> = (0..56u32)
             .map(|i| TextRow {
                 x: 0.0,
                 y: (i * 64) as f32,
-                spans: vec![masked(&(0..56u32).filter_map(|j| char::from_u32(0x4e00 + i * 56 + j)).collect::<String>(), false, 0)],
-                clip: Rect { x: 0.0, y: 0.0, w: bw as f32, h: bh as f32 },
+                spans: vec![masked(&(0..48u32).filter_map(|j| char::from_u32(0x4e00 + i * 56 + j)).collect::<String>(), false, 0)],
+                clip,
                 scale: 1.0,
                 face: big,
             })
             .collect();
+        // The same rows `shoot` draws, moved 3456 right so their 64 by 40 crops are comparable, and
+        // first in the frame: they are prepared (in use) before the ideographs make the atlas grow.
+        let mut rows: Vec<TextRow> = [(100.0, 1u8), (300.0, 2u8)].into_iter().map(|(y, mask)| TextRow { x: 3460.0, y, spans: vec![masked("W", false, mask)], clip, scale: 1.0, face }).collect();
+        rows.extend(ideographs);
         let tex = target(&device, bw, bh);
         let view = tex.create_view(&Default::default());
         r.draw(&Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows, ..Default::default() }, &view, bw, bh).unwrap();
         let after = r.atlas.mask_size();
         assert!(after > before, "the mask atlas grew: {before} to {after}");
+        let px = read(&device, &queue, &tex, bw, bh);
+        let crop = |top: u32| -> Vec<u8> {
+            (0..size.1).flat_map(|y| px[(((top + y) * bw + 3456) * 4) as usize..(((top + y) * bw + 3456 + size.0) * 4) as usize].to_vec()).collect()
+        };
+        assert_eq!(levels(&crop(96)), vec![0, 255], "an aliased glyph in use while the atlas grew is still filtered");
+        assert_eq!(crop(96), aliased, "its re-rasterized mask equals the first draw's");
+        assert_eq!(crop(296), thin, "and so does the thin one");
         let (aliased2, thin2) = both(&mut r);
-        assert_eq!(levels(&aliased2), vec![0, 255], "the re-rasterized aliased mask is still filtered");
         assert_eq!(aliased2, aliased);
-        assert_eq!(thin2, thin, "the re-rasterized thin mask equals the first draw's");
+        assert_eq!(thin2, thin);
     }
 
     #[test]
