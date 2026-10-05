@@ -283,15 +283,11 @@ fn prefix_runs(c: &composer::Composer) -> Vec<(Range<usize>, Rgb, bool, Rgb)> {
 /// are skipped. A quad reaching past them (the dimming over the whole pane) stays.
 pub(super) fn skip_covered(overlay: &mut Vec<scene::Quad>, from: usize, underlines: &mut Vec<scene::Quad>, underline_from: usize, strikes: &mut Vec<scene::Quad>, strike_from: usize, cover: Rect) {
     for (quads, from) in [(overlay, from), (underlines, underline_from), (strikes, strike_from)] {
-        let mut i = from;
-        while i < quads.len() {
-            let r = quads[i].rect;
-            if r.y >= cover.y - 0.5 && r.y + r.h <= cover.y + cover.h + 0.5 {
-                quads.remove(i);
-            } else {
-                i += 1;
-            }
-        }
+        let tail = quads.split_off(from.min(quads.len()));
+        quads.extend(tail.into_iter().filter(|q| {
+            let r = q.rect;
+            !(r.y >= cover.y - 0.5 && r.y + r.h <= cover.y + cover.h + 0.5)
+        }));
     }
 }
 
@@ -2586,6 +2582,18 @@ mod tests {
         assert!(composer_takes(m(false, true, true, false), &CKey::Edit(EditKey::Enter), false));
         // AltGr typing is typing.
         assert!(composer_takes(m(true, true, false, false), &text("@"), false));
+    }
+
+    /// Final review 4: covering a screen of dotted underline is one pass, not a `remove` per quad.
+    #[test]
+    fn skip_covered_is_linear_in_the_quads() {
+        let q = |y: f32| scene::Quad { rect: Rect { x: 0.0, y, w: 1.0, h: 1.0 }, color: [1.0; 4] };
+        let mut underlines: Vec<scene::Quad> = (0..120_000).map(|i| q(if i % 10 == 0 { 500.0 } else { 45.0 })).collect();
+        let (mut overlay, mut strikes) = (Vec::new(), Vec::new());
+        let t = std::time::Instant::now();
+        skip_covered(&mut overlay, 0, &mut underlines, 0, &mut strikes, 0, Rect { x: 0.0, y: 40.0, w: 100.0, h: 30.0 });
+        assert_eq!(underlines.len(), 12_000);
+        assert!(t.elapsed() < std::time::Duration::from_millis(300), "took {:?}", t.elapsed());
     }
 
     #[test]

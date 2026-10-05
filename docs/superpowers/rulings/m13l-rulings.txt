@@ -92,7 +92,7 @@ Task 2 fix r1 and r2: Decision: output reaches a window only through the pacer (
 Task 3: Decision: the not-yet-sampled power state is on AC with no saver - cost if wrong: the first second at full rate.
 Task 3: Decision: repace_all resets pacers and redraws on a Low Power Mode change - cost if wrong: one extra frame on a change.
 Task 3: Decision: chosen_preference takes the globals value on its first call only; a later edit applies on restart - cost if wrong: none (GPU_RESTART banner shows).
-Task 3: Decision: power_tick has no unit test (needs a live App); the pure parts are tested - cost if wrong: a wiring slip is seen on screen only.
+Task 3: Decision: the power sampling has no App-level test (needs a live App); the pure parts are tested (power::Poll since the final fix) - cost if wrong: a wiring slip is seen on screen only.
 Task 4: Decision: the default period 0.5 s means a visible window redraws twice a second even idle; MetalRedrawPeriod 0 stops it; hidden and minimized windows never wake - cost if wrong: a 2 Hz idle wake by default.
 Task 4: Decision: the meter's box is a popup, so a cursor quad in row 0 at the right edge draws over it - cost if wrong: the cursor shows over the meter.
 Task 4: Decision: FPS_BG is converted to 8-bit (26) then sRGB to linear for the quad - cost if wrong: a slightly different near black.
@@ -120,18 +120,24 @@ Task 8 fix r1: Ruling: a margin edit changes Room (it carries the margins in pix
 Task 9: Decision: Held carries underlines and strikes (B3, P16) - cost if wrong: strokes vanish during a hold.
 Task 9: Decision: the margin fill is drawn live, not held; IME composition popups are not held - cost if wrong: the composition preview is absent for at most 0.2 s during a hold.
 Task 9: Decision: a pane with no stored slice yet draws live and stores it; Held.since is the capture time and the hold length comes from cursor_hidden_at - cost if wrong: none.
+Final fix: Ruling: a Reduce Flicker release redraws each released pane's own window (redraw_pane_window), so a parked window never keeps a stale picture, also with MetalRedrawPeriod 0 - cost if wrong: a held picture stays on a parked window until its next output.
+Final fix: Ruling: the held slice carries its pane rect and alt-screen flag and is shown only when both match and it was drawn no more than 1 s (the longest frame period) before the cursor was hidden; a resize, split, divider drag or alt screen switch ends the hold at once (iTerm2 resets the saved grid there), and Held.since is read - cost if wrong: a hold ends early after a resize (a live frame, never a stale one).
+Final fix: Ruling: the Auto Composer cover trims a held slice too (overlay, underlines, strikes); the held cursor is the old one for at most 0.2 s - cost if wrong: an old cursor under a composer for 0.2 s.
+Final fix: Decision: the build_frame hold decision is pinned by flicker::release_holds and Held::usable tests; there is no App test harness for build_frame itself - cost if wrong: a wiring slip, checked on screen (checklist 46-48, 52).
 
 Deferred minors (final triage; each with its cost)
-Deferred: the Kind::Int arm in global_control draws unlabelled drag values for IRMemory, TmuxDashboardLimit and TmuxPauseModeAgeLimit and ignores IRMemory's bounds; one Int arm across 13j, 13k and 13l at merge - cost if wrong: three settings rows with a bare drag value.
-Deferred: a 1 s idle power poll wake (power_tick) - cost if wrong: one wake a second (it is the m9i pattern, and 0 CPU is measured against it in the checklist).
+Final fix: Ruling: only TerminalMargin and TerminalVMargin draw the Int drag value (bounded by the schema when it has bounds); IRMemory, TmuxDashboardLimit, TmuxPauseModeAgeLimit and the AI token limits draw nothing, as before 13l; one Int arm across 13j, 13k and 13l at merge - cost if wrong: those rows stay without a control until a later milestone.
+Final fix: Ruling: the power line is sampled lazily by the output path (power::Poll, at most once a second) and has no wake, so an idle app sleeps; a battery saver change shows on the next output, the only place the cap applies - cost if wrong: the first frame after a change uses the old rate.
 Deferred: the low-power cap applies only on the output path; iTerm2 also caps the view's maximum rate - cost if wrong: a timer-driven redraw can exceed the cap.
 Deferred: the EcoQoS opt-out does not touch timer resolution - cost if wrong: timers may still coalesce.
 Deferred: a doc comment and a global-flag test for the both-GPU-kinds flag - cost if wrong: none.
 Deferred: occluded windows are not kept warm at 1 s - cost if wrong: an occluded window draws only when asked (iTerm2 keeps a 1 s tick).
 Deferred: the meter's stats count only while the meter is shown - cost if wrong: the first seconds after turning it on read low.
-Deferred: about 60k quads for a full screen of dotted underline (time it on EXTREME); skip_covered removes quads one by one instead of retain - cost if wrong: a slow frame on a full screen of SGR 4:4.
+Final fix: Ruling: skip_covered filters in one pass. Deferred: about 60k quads for a full screen of dotted underline; gapped_underlines scans every quad per row and cut_gaps walks every ink of the row per quad (time it on EXTREME, checklist row 53; if it shows, cut the solid run before dashing or sort the inks and binary-search) - cost if wrong: a slow frame on a full screen of SGR 4:4.
 Deferred: the fallback metrics baseline (no renderer) is approximate - cost if wrong: a preview underline a pixel off.
 Deferred: per-row indexing in the gap pass and hover or annotation gap parity (hover and note underlines do not gap) - cost if wrong: a hover line does not break at descenders.
 Deferred: IME composition popups are not held during a Reduce Flicker hold - cost if wrong: the composition preview is absent for at most 0.2 s.
 Deferred: the default MetalRedrawPeriod 0.5 s (iTerm2's) keeps an idle visible window waking twice a second - cost if wrong: idle CPU is not zero until MetalRedrawPeriod is 0.
+Deferred: SSH framer recovery (ssh_app.rs RecoveryLine) redraws every window per recovered line, unpaced; a state change, not output, coalesced by winit per window - cost if wrong: a few extra frames during a recovery.
+Ruling: OSC 1337 inline buttons and portholes draw in quads under the pane's own text and strokes (as before 13l), so the parity line that every Tandem surface over a pane cuts underlines does not cover them - cost if wrong: none.
 Final review gaps: a Task 2 fix r1 and r2 test list covers pure decisions only; the tick and Wake wiring is checked on screen - cost if wrong: a wiring slip.

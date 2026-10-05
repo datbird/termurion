@@ -8,9 +8,6 @@ use super::*;
 use crate::cadence::{self, Prefs, State};
 use crate::power;
 
-/// iTerm2's power polls are slow; Windows' battery saver changes rarely (the m9i rule).
-const POWER_POLL: Duration = Duration::from_secs(1);
-
 /// What a window's decision needs from its front tab's panes.
 struct Reading {
     states: Vec<State>,
@@ -43,48 +40,16 @@ impl App {
         Prefs::from_globals(&self.globals)
     }
 
-    /// Low Power Mode: Windows battery saver (`power_tick` keeps `power` current).
-    fn power_saving(&self) -> bool {
-        self.power.low_power_mode()
-    }
-
-    /// Samples the power line at most once a second (the m9i rule). A change of low power mode
-    /// re-paces every window: a deferred frame is recomputed on its next output, and a still
-    /// window gets a frame now so nothing waits on the old rate. Returns the next poll.
-    pub(super) fn power_tick(&mut self, now: Instant) -> Option<Instant> {
-        if self.power_due.is_some_and(|t| now < t) {
-            return self.power_due;
-        }
-        self.power_due = Some(now + POWER_POLL);
-        #[cfg(windows)]
-        if let Some(state) = power::sample() {
-            if self.set_power(state) {
-                self.repace_all();
-            }
-        }
-        self.power_due
-    }
-
-    /// Stores a sample; true when low power mode changed.
-    fn set_power(&mut self, state: power::State) -> bool {
-        let changed = self.power.low_power_mode() != state.low_power_mode();
-        self.power = state;
-        changed
-    }
-
-    /// Forgets every window's deferred frame time (computed from the old rate) and draws.
-    fn repace_all(&mut self) {
-        self.pacer = Default::default();
-        for (_, s) in self.windows.parked_mut() {
-            s.pacer = Default::default();
-        }
-        self.redraw();
+    /// Low Power Mode: Windows battery saver, sampled when asked (at most once a second; no
+    /// timer wakes an idle app for it).
+    fn power_saving(&mut self, now: Instant) -> bool {
+        self.power.low_power_mode(now, power::sample)
     }
 
     /// Each pane's cadence state and whether a typed echo is in progress: `changed` are the
     /// panes that just got output. `Throughput::estimate` mutates, so it runs once per pane.
     fn read_panes(&mut self, panes: &[PaneId], changed: &[PaneId], active: bool, now: Instant, with_output: bool) -> Reading {
-        let low_power = self.power_saving();
+        let low_power = self.power_saving(now);
         let last_key = self.last_keystroke;
         let mut reading = Reading { states: Vec::new(), typing: false };
         for id in panes {
@@ -269,18 +234,13 @@ impl App {
         self.panes.values().filter_map(|p| p.held_until).min()
     }
 
-    /// Releases the holds that have ended: the pane draws live again, and its window is asked
-    /// for a frame. Every hold is at most `flicker::HOLD` long, so none can outlast it.
+    /// Releases the holds that have ended: each pane draws live again, and its own window (it
+    /// may be a parked one) is asked for a frame. Every hold is at most `flicker::HOLD` long,
+    /// so none can outlast it.
     pub(super) fn flicker_tick(&mut self, now: Instant) -> Option<Instant> {
-        let mut released = false;
-        for p in self.panes.values_mut() {
-            if p.held_until.is_some_and(|t| t <= now) {
-                p.held_until = None;
-                released = true;
-            }
-        }
-        if released {
-            self.redraw_here();
+        let released = crate::flicker::release_holds(self.panes.iter_mut().map(|(id, p)| (*id, &mut p.held_until)), now);
+        for id in released {
+            self.redraw_pane_window(id);
         }
         self.flicker_wake()
     }

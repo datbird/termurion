@@ -96,7 +96,7 @@ Fill the pane with SGR 4 and 9 spaces first: `for i in $(seq 1 60); do printf '\
 |---|---|---|
 | 46 | Profile Reduce Flicker on with `vim`: scrolling and redraws show no half-drawn frames (a program that hides the cursor while redrawing, such as a redraw loop `while :; do printf '\e[?25l\e[H...'; printf '\e[?25h'; done`). | |
 | 47 | A program that hides the cursor for good: the screen still updates after 0.2 s, never frozen. Switch off: no change. Underlined text stays underlined during a hold. | |
-| 48 | Window idle with the switch on: no CPU wakes from the hold. An IME composition during a hold may be missing for up to 0.2 s (kept). | |
+| 48 | Window idle with the switch on, MetalRedrawPeriod 0, every window hidden: no CPU wakes at all (the power line has no timer either). Idle with the switch on: no CPU wakes from the hold. An IME composition during a hold may be missing for up to 0.2 s (kept). | |
 
 ## Known quirks (kept or deferred, each ruled on in m13l-rulings.txt)
 
@@ -104,7 +104,7 @@ Fill the pane with SGR 4 and 9 spaces first: `for i in $(seq 1 60); do printf '\
 |---|---|---|
 | 49 | The default MetalRedrawPeriod 0.5 s means a visible idle window wakes twice a second (row 9 turns it off). | |
 | 50 | The low-power cap applies to output only; a timer-driven redraw can exceed it. | |
-| 51 | Settings with the Int drag value (TerminalMargin and TerminalVMargin) draw it; Instant Replay memory and the tmux limits may show a bare drag value until the three-way merge fixes the arm. | |
-| 52 | A resize during a Reduce Flicker hold shows the old picture until the hold ends (at most 0.2 s). | |
+| 51 | Settings > Appearance > Panes: TerminalMargin and TerminalVMargin draw one labeled drag value each; General > tmux, Instant Replay and AI pages show no new bare drag values. | |
+| 52 | A resize, split or divider drag during a Reduce Flicker hold ends the hold at once (a live frame); a program that hides the cursor in a window on another tab or a parked window releases to a fresh frame within 0.2 s, even with MetalRedrawPeriod 0. | |
 | 53 | A full screen of dotted underline (SGR 4:4 across a 200x60 window) scrolls without a visible stall (about 60k quads; time it). | |
 | 54 | Copy Performance Stats numbers are Tandem's own and are not comparable with iTerm2's. | |

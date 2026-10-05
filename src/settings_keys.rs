@@ -733,12 +733,17 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
                 .inner
                 .into()
             }
-            // An integer is a drag value; iTerm2 bounds none of the margins (13l).
-            Kind::Int => {
+            // The margins are drag values; iTerm2 bounds neither (13l). Other Int rows stay as
+            // they were (undrawn or drawn elsewhere): a later milestone gives them a control.
+            Kind::Int if matches!(s.key.as_str(), "TerminalMargin" | "TerminalVMargin") => {
                 ui.horizontal(|ui| {
                     ui.label(&s.label);
                     let mut v = g.int(&s.key);
-                    let r = ui.add(egui::DragValue::new(&mut v));
+                    let drag = egui::DragValue::new(&mut v);
+                    let r = ui.add(match (s.min_f64(), s.max_f64()) {
+                        (Some(lo), Some(hi)) => drag.range(lo as i64..=hi as i64),
+                        _ => drag,
+                    });
                     if r.changed() {
                         g.set(&s.key, Value::Integer(v));
                         changed = true;
@@ -3242,5 +3247,23 @@ mod tests {
         out.textures_delta.clear();
         assert!(drawn > 0.0, "the Int row drew nothing");
         assert_eq!(g.int("TerminalMargin"), 5);
+    }
+
+    /// Final review 5: only the margin rows draw a drag value; an Int row such as IRMemory
+    /// (bounded 0..=1000) is not given an unbounded one.
+    #[test]
+    fn other_int_rows_draw_no_unbounded_drag_value() {
+        let ctx = egui::Context::default();
+        let mut g = Globals::empty(std::path::Path::new("int-row-test.toml"));
+        let s = schema::find_global("IRMemory").unwrap();
+        assert_eq!(s.kind, Kind::Int);
+        let mut drawn = 0.0;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let before = ui.min_rect().height();
+            global_control(ui, &mut g, s, true);
+            drawn = ui.min_rect().height() - before;
+        });
+        out.textures_delta.clear();
+        assert_eq!(drawn, 0.0, "IRMemory drew an Int control");
     }
 }

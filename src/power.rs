@@ -23,6 +23,36 @@ pub fn from_status(ac_line: u8, status_flag: u8) -> State {
     State { on_ac: ac_line != 0, battery_saver: status_flag == 1 }
 }
 
+/// How long a sample of the power line stays current (the m9i rule: battery saver changes rarely).
+pub const POLL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The power line, sampled lazily: only a reader asks, so an idle app never wakes for it. A
+/// change of low power mode shows on the next output, the one place the cap applies.
+#[derive(Debug)]
+pub struct Poll {
+    state: State,
+    next: Option<std::time::Instant>,
+}
+
+impl Default for Poll {
+    fn default() -> Self {
+        Poll { state: State { on_ac: true, battery_saver: false }, next: None }
+    }
+}
+
+impl Poll {
+    /// Low Power Mode now; `sample` is called at most once per `POLL`.
+    pub fn low_power_mode(&mut self, now: std::time::Instant, sample: impl FnOnce() -> Option<State>) -> bool {
+        if self.next.is_none_or(|t| now >= t) {
+            self.next = Some(now + POLL);
+            if let Some(s) = sample() {
+                self.state = s;
+            }
+        }
+        self.state.low_power_mode()
+    }
+}
+
 /// `SessionView.m:862-895`: Prefer integrated takes the low-power device, else the system default.
 pub fn adapter_preference(prefer_integrated: bool) -> wgpu::PowerPreference {
     if prefer_integrated { wgpu::PowerPreference::LowPower } else { wgpu::PowerPreference::None }
@@ -71,6 +101,12 @@ pub fn sample() -> Option<State> {
     (unsafe { GetSystemPowerStatus(&mut s) } != 0).then(|| from_status(s.ACLineStatus, s.SystemStatusFlag))
 }
 
+/// `sample` where Windows can answer; elsewhere nothing (tests and non-Windows builds).
+#[cfg(not(windows))]
+pub fn sample() -> Option<State> {
+    None
+}
+
 /// Disable App Nap: opts the process out of EcoQoS execution-speed throttling. Where the call is
 /// unavailable (Windows before 1709) the error is returned and the caller carries on quietly.
 #[cfg(windows)]
@@ -87,6 +123,7 @@ pub fn opt_out_of_power_throttling() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
     use wgpu::DeviceType::{Cpu, DiscreteGpu, IntegratedGpu};
 
     /// Review Focus 3: the AC line and battery saver come from `SYSTEM_POWER_STATUS`; iTerm2's
@@ -122,6 +159,19 @@ mod tests {
         let cell = std::sync::OnceLock::new();
         assert_eq!(chosen_preference_in(&cell, false), wgpu::PowerPreference::None);
         assert_eq!(chosen_preference_in(&cell, true), wgpu::PowerPreference::None);
+    }
+
+    /// Final review 6: the power line is read lazily and at most once a second.
+    #[test]
+    fn the_power_line_is_sampled_lazily_once_a_second() {
+        let t = Instant::now();
+        let (mut poll, mut calls) = (Poll::default(), 0);
+        let saver = |on: bool| move || Some(State { on_ac: !on, battery_saver: on });
+        assert!(!poll.low_power_mode(t, || { calls += 1; saver(false)() }));
+        assert!(!poll.low_power_mode(t + Duration::from_millis(900), || { calls += 1; saver(true)() }), "still the first sample");
+        assert!(poll.low_power_mode(t + POLL, || { calls += 1; saver(true)() }), "a second on, sampled again");
+        assert_eq!(calls, 2);
+        assert!(poll.low_power_mode(t + POLL * 2, || None), "an unreadable line keeps the last answer");
     }
 
     #[test]

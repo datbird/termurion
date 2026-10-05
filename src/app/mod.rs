@@ -698,10 +698,8 @@ pub struct App {
     perf_frames: std::collections::BTreeMap<usize, crate::perf_stats::FrameStats>,
     /// The last key press in any window (iTerm2's `_lastKeystrokeTime`, `UC:90-94`).
     last_keystroke: Option<Instant>,
-    /// The power line (13l Task 3): app-wide, sampled by `power_tick` at most once a second.
-    power: crate::power::State,
-    /// When `power_tick` next samples.
-    power_due: Option<Instant>,
+    /// The power line (13l Task 3): app-wide, sampled when the output path asks, at most once a second.
+    power: crate::power::Poll,
     last_status: HashMap<PaneId, Option<String>>,
     /// The bells on sessions (Session Status', the Cockpit's): each armed session and its status
     /// when armed; the next different status shows the alert, then it disarms
@@ -1758,8 +1756,7 @@ pub fn run() {
         perf: Default::default(),
         perf_frames: Default::default(),
         last_keystroke: None,
-        power: crate::power::State { on_ac: true, battery_saver: false },
-        power_due: None,
+        power: crate::power::Poll::default(),
         last_status: HashMap::new(),
         status_watches: Default::default(),
         status_popover: None,
@@ -4970,7 +4967,8 @@ impl App {
                     // live picture stands in for the one it is drawing.
                     let reduce = self.store.get(&p.profile).is_some_and(|pr| pr.bool("Reduce Flicker"));
                     let hold = crate::flicker::holding(reduce, p.screen.cursor_hidden_at, Instant::now());
-                    match p.held.as_ref().filter(|_| hold) {
+                    let alt = p.screen.alt_screen();
+                    match p.held.as_ref().filter(|h| hold && h.usable(rect, alt, p.screen.cursor_hidden_at)) {
                         Some(h) => {
                             frame.quads.extend(h.quads.iter().copied());
                             frame.images.extend(h.images.iter().cloned());
@@ -4978,6 +4976,9 @@ impl App {
                             frame.overlay.extend(h.overlay.iter().copied());
                             frame.underlines.extend(h.underlines.iter().copied());
                             frame.strikes.extend(h.strikes.iter().copied());
+                            if let Some(c) = cover {
+                                composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, c);
+                            }
                             held_updates.push((id, None, p.screen.cursor_hidden_at.map(|t| t + crate::flicker::HOLD)));
                         }
                         None => {
@@ -4988,6 +4989,8 @@ impl App {
                             // Kept for the next hold; dropped when the switch is off.
                             let held = reduce.then(|| crate::flicker::Held {
                                 since: Instant::now(),
+                                rect,
+                                alt_screen: alt,
                                 quads: frame.quads[quad_from..].to_vec(),
                                 images: frame.images[image_from..].to_vec(),
                                 rows: frame.rows[row_from..].to_vec(),
@@ -5578,8 +5581,7 @@ impl ApplicationHandler<UserEvent> for App {
         let cursor_due = self.tick_cursor();
         let frame_due = self.frame_wake();
         let flicker_due = self.flicker_tick(Instant::now());
-        let power_due = self.power_tick(Instant::now());
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due, power_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
