@@ -420,7 +420,8 @@ pub fn pane_with(
             let at = crate::find::Pos { row: (indexed.point.line.0 + history) as usize, col };
             let i = h.matches.partition_point(|m| m.end < at);
             if h.matches.get(i).is_some_and(|m| m.start <= at) {
-                (fg, bg) = (match_text(h.color), h.color);
+                // The match colors are muted by Cursor Boost like every other background and text.
+                (fg, bg) = (crate::cursor_look::mute(match_text(h.color), palette.bg, look.boost), crate::cursor_look::mute(h.color, palette.bg, look.boost));
             }
             if h.hover.is_some_and(|m| m.start <= at && at <= m.end) {
                 fg = h.link;
@@ -441,7 +442,7 @@ pub fn pane_with(
         }
         let mut selected = false;
         if content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) {
-            (fg, bg) = (palette.selected_text.unwrap_or(fg), palette.selection);
+            (fg, bg) = (crate::cursor_look::mute(palette.selected_text.unwrap_or(fg), palette.bg, look.boost), crate::cursor_look::mute(palette.selection, palette.bg, look.boost));
             selected = true;
         }
         if block_cursor && cursor == Some((row, col)) {
@@ -4351,6 +4352,31 @@ mod tests {
         pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true));
         let a = f.rows[0].spans.iter().find(|sp| sp.text.contains('a')).unwrap();
         assert_eq!(a.color, rgb(255, 255, 255));
+    }
+
+    #[test]
+    fn boost_mutes_the_selection_and_find_matches() {
+        // iTerm2 runs the selection and match backgrounds and the text through the muting too
+        // (`iTermMetalPerFrameState.m:2191`, `iTermColorMap.m:327-350`, `:514-525`).
+        let mut s = screen(b"hello ab");
+        s.palette.bg = rgb(0, 0, 0);
+        s.palette.selection = rgb(200, 100, 0);
+        s.palette.selected_text = Some(rgb(100, 200, 100));
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left);
+        sel.update(Point::new(Line(0), Column(1)), Side::Right);
+        s.term_mut().selection = Some(sel);
+        let m = crate::find::find_all(&s, "ab").unwrap();
+        let mut f = Frame::default();
+        let yellow = rgb(200, 200, 0);
+        let hl = Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook { boost: 0.5, ..CursorLook::shown(false) }, Some(&hl));
+        let quad = |c: Rgb, x: f32| f.quads.iter().any(|q| q.color == rgba(c, 1.0) && q.rect.x == x);
+        assert!(quad(rgb(100, 50, 0), 0.0), "selection background halfway to black: {:?}", f.quads);
+        assert!(quad(rgb(100, 100, 0), 60.0), "match background halfway to black: {:?}", f.quads);
+        let text = |t: &str| f.rows[0].spans.iter().find(|sp| sp.text.contains(t)).map(|sp| sp.color);
+        assert_eq!(text("he"), Some(rgb(50, 100, 50)), "selected text is muted");
+        // The match's own text color (black on this light yellow) is muted toward black too.
+        assert_eq!(text("ab"), Some(crate::cursor_look::mute(match_text(yellow), s.palette.bg, 0.5)));
     }
 
     #[test]

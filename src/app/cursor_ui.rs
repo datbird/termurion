@@ -4,7 +4,6 @@
 use super::*;
 use crate::cursor_anim::{self, Metrics};
 use crate::cursor_look::{CursorLook, Geometry};
-use alacritty_terminal::grid::Dimensions;
 
 impl App {
     /// How the cursor of `pane` is drawn. `visible` is whether it is shown at all (an Auto
