@@ -155,6 +155,46 @@ pub fn country_name(code: &str) -> Option<String> {
     info(&locale.replace('_', "-"), LOCALE_SLOCALIZEDCOUNTRYNAME)
 }
 
+/// The Terminal tab's locale line: the locale shown after `LANG=` (Custom and Automatic) and
+/// the text (its title, or the status).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Status {
+    pub lang: Option<String>,
+    pub text: String,
+}
+
+/// The status for a profile's mode value, custom locale, encoding and `FallbackLCCType`.
+pub fn status(mode: i64, custom: &str, ns_encoding: i64, fallback: &str) -> Status {
+    let f = facts(ns_encoding, fallback);
+    let name = locale_guess::encoding_name(ns_encoding);
+    let supported = |c: &str| supported(c, name);
+    let mode = locale_guess::Mode::from_value(mode);
+    let custom = if custom.is_empty() || locale_guess::is_plain(custom) { custom } else { "" };
+    let title = |l: &str| locale_guess::title(l, &language_name, &country_name);
+    Status { lang: locale_guess::status_locale(mode, custom, &f, &supported), text: locale_guess::status(mode, custom, &f, &supported, &title) }
+}
+
+/// Localized language and country names for the locales (`ll_CC`) of a list, each read once:
+/// (language code, name) and (country code, name).
+pub fn names_for(locales: &[String]) -> (std::collections::HashMap<String, String>, std::collections::HashMap<String, String>) {
+    let mut languages = std::collections::HashMap::new();
+    let mut countries = std::collections::HashMap::new();
+    for l in locales {
+        let Some((lang, cc)) = l.split_once('_') else { continue };
+        if !languages.contains_key(lang) {
+            if let Some(n) = language_name(lang) {
+                languages.insert(lang.to_string(), n);
+            }
+        }
+        if !countries.contains_key(cc) && plain_code(cc) {
+            if let Some(n) = info(&l.replace('_', "-"), LOCALE_SLOCALIZEDCOUNTRYNAME) {
+                countries.insert(cc.to_string(), n);
+            }
+        }
+    }
+    (languages, countries)
+}
+
 /// A language or country code as locale names have it: letters, digits and `-` only.
 fn plain_code(code: &str) -> bool {
     !code.is_empty() && code.len() <= 16 && code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
@@ -189,5 +229,18 @@ mod tests {
         let with = facts(4, "C.UTF-8");
         assert_eq!(with.fallback_lc_ctype, "C.UTF-8");
         assert_eq!(facts(999, "").encoding, None);
+    }
+
+    #[test]
+    fn windows_names_and_status_resolve() {
+        let (languages, countries) = names_for(&["en_US".to_string(), "de_DE".to_string()]);
+        assert!(languages.get("en").is_some_and(|n| !n.is_empty()));
+        assert!(countries.get("DE").is_some_and(|n| !n.is_empty()));
+        let custom = status(2, "de_DE.UTF-8", 4, "");
+        assert_eq!(custom.lang.as_deref(), Some("de_DE.UTF-8"));
+        assert!(custom.text.ends_with(", UTF-8"), "{}", custom.text);
+        assert_eq!(status(0, "", 4, "").text, locale_guess::STATUS_NOT_SET);
+        assert_eq!(status(2, "", 4, "").text, locale_guess::STATUS_NO_LOCALE_SELECTED);
+        assert_eq!(status(3, "", 4, "").text, "LC_CTYPE=UTF-8");
     }
 }

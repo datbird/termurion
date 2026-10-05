@@ -141,6 +141,7 @@ mod script_ui;
 mod script_runtime_ui;
 mod claude_code_app;
 mod scripts_alerts;
+mod locale_ui;
 mod warnings_app;
 mod special_exceptions_app;
 mod suppressed_app;
@@ -1085,6 +1086,10 @@ pub struct App {
     /// The alerts (iTerm2's warnings shown as windows) waiting to show, and the one showing.
     scripts_alerts: VecDeque<scripts_alerts::Ask>,
     scripts_alert: Option<(crate::prompt_ui::ConfirmWindow, scripts_alerts::Ask)>,
+    /// Locale questions waiting for the picker: the start-time prompts, and Settings' Change
+    /// Locale requests (`locale_ui`).
+    locale_asks: VecDeque<locale_ui::Ask>,
+    locale_window: Option<locale_ui::PickerWindow>,
     /// iTerm2's suppressed alerts (app-wide): the catalog of warnings answered automatically,
     /// "Always show alerts with remembered selections" (not saved, as iTerm2's process global),
     /// and when the catalog's write is due.
@@ -1959,6 +1964,8 @@ pub fn run() {
         uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
         scripts_alerts: VecDeque::new(),
         scripts_alert: None,
+        locale_asks: VecDeque::new(),
+        locale_window: None,
         suppressed,
         show_remembered: false,
         catalog_due: None,
@@ -3243,27 +3250,42 @@ impl App {
         posix_for(cmd, terminfo.as_deref().map(|d| d.to_string_lossy()).as_deref(), colorfgbg, locale, std::env::var("WSLENV").ok())
     }
 
-    /// The locale variables for the profile (`PS:3284-3331`). Until the start-time prompt
-    /// (Task 3), a suspect custom locale is used as written and a failed guess falls to
-    /// `LC_CTYPE`, iTerm2's path after "Use Minimal POSIX Locale".
+    /// The locale variables for the profile (`PS:3284-3331`). The start-time prompt and the
+    /// wrong-encoding warning do not hold the shell (Decisions "Locale on Windows"): a suspect
+    /// custom locale is used as written and the warning is asked, a failed guess falls to
+    /// `LC_CTYPE` (iTerm2's path after "Use Minimal POSIX Locale") and the prompt is queued. An
+    /// override launch (a git window, a script, an orchestrated command) never asks.
     #[cfg(windows)]
-    fn locale_pairs(&self, p: &Profile) -> Vec<(String, String)> {
+    fn locale_pairs(&mut self, p: &Profile) -> Vec<(String, String)> {
         use crate::locale_guess::{self, Outcome};
         let encoding = p.int("Character Encoding");
         let facts = crate::locale_win::facts(encoding, &self.globals.string("FallbackLCCType"));
         let name = locale_guess::encoding_name(encoding);
         let supported = |c: &str| crate::locale_win::supported(c, name);
         let mode = locale_guess::Mode::from_value(p.int("Set Local Environment Vars"));
+        let asks = self.start_command_override.is_none() && self.start_env_override.is_none();
         match locale_guess::locale_vars(mode, &p.string("Custom Locale"), &facts, encoding == 4, &supported) {
             Outcome::Vars(v) => v,
             Outcome::None => Vec::new(),
-            Outcome::SuspectCustom(l) => vec![("LANG".to_string(), l)],
-            Outcome::NeedsPrompt => locale_guess::lc_ctype(&facts, &supported).map(|v| vec![("LC_CTYPE".to_string(), v)]).unwrap_or_default(),
+            Outcome::SuspectCustom(l) => {
+                if asks {
+                    let guid = self.store.shared_guid(&p.guid());
+                    self.ask_locale_mismatch(guid, l.clone(), false);
+                }
+                vec![("LANG".to_string(), l)]
+            }
+            Outcome::NeedsPrompt => {
+                if asks {
+                    let guid = self.store.shared_guid(&p.guid());
+                    self.queue_locale_prompt(guid, p.name(), !p.bool("Is Dynamic Profile"));
+                }
+                locale_guess::lc_ctype(&facts, &supported).map(|v| vec![("LC_CTYPE".to_string(), v)]).unwrap_or_default()
+            }
         }
     }
 
     #[cfg(not(windows))]
-    fn locale_pairs(&self, _p: &Profile) -> Vec<(String, String)> {
+    fn locale_pairs(&mut self, _p: &Profile) -> Vec<(String, String)> {
         Vec::new()
     }
 
@@ -5723,6 +5745,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.suppressed_tick();
         self.open_script_alerts(event_loop);
         self.open_scripts_alerts(event_loop);
+        self.open_locale_asks(event_loop);
         self.open_ai_alert(event_loop);
         self.open_ai_key_window(event_loop);
         self.open_ai_reveal(event_loop);
@@ -5891,7 +5914,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) {
             return;
         }
         for profiles in [false, true] {
@@ -5923,6 +5946,8 @@ impl ApplicationHandler<UserEvent> for App {
                     let scheme_ask = slot.as_mut().and_then(|s| s.scheme_ask.take());
                     // Profiles > Text's "Manage Special Exceptions" opens its window.
                     let special = slot.as_mut().and_then(|s| s.special_exceptions.take());
+                    // Profiles > Terminal's "Change Locale" opens the picker.
+                    let locale = slot.as_mut().and_then(|s| s.locale_pick.take());
                     self.apply_edit(edit);
                     self.settings_warnings_answered(answered);
                     if let Some(guid) = setup {
@@ -5933,6 +5958,9 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     if let Some(guid) = special {
                         self.open_special_exceptions(guid, event_loop);
+                    }
+                    if let Some(guid) = locale {
+                        self.open_locale_settings(guid);
                     }
                     if let Some(url) = url {
                         if let Err(e) = semantic_ui::shell_open(&url, None, false) {

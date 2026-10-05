@@ -117,6 +117,9 @@ pub struct SettingsWindow {
     /// Profiles > Session's "Configure Status Bar" was pressed for this profile Guid: the
     /// status bar setup window opens for it (the app takes it after each frame).
     pub configure_status_bar: Option<String>,
+    /// Profiles > Terminal's "Change Locale\u{2026}" was pressed for this profile Guid: the locale
+    /// picker opens for it (the app takes it after each frame).
+    pub locale_pick: Option<String>,
     /// Profiles > General's Configure SSH sheet.
     ssh_sheet: Option<crate::settings_ssh::Sheet>,
     /// A page to open in the browser (the Configure SSH help button); the app takes it after
@@ -263,6 +266,7 @@ impl SettingsWindow {
             shortcuts: Default::default(),
             hotkeys: Default::default(),
             configure_status_bar: None,
+            locale_pick: None,
             ssh_sheet: None,
             open_url: None,
             scheme_ask: None,
@@ -357,6 +361,7 @@ impl SettingsWindow {
         settings_keys::set_indicate_non_default(globals.bool("NoSyncHideDefaultValuedSettings"));
         let hk = &mut self.hotkeys;
         let configure_status_bar = &mut self.configure_status_bar;
+        let locale_pick = &mut self.locale_pick;
         let ssh_sheet = &mut self.ssh_sheet;
         let open_url = &mut self.open_url;
         let scheme_ask = &mut self.scheme_ask;
@@ -633,6 +638,15 @@ impl SettingsWindow {
                                 }
                                 continue;
                             }
+                            // The locale's status line under the mode (`PTM:397-445`) and the Change
+                            // Locale button, shown only for the Custom mode; the button is the only
+                            // way to set the locale, as in iTerm2.
+                            if s.key == "Custom Locale" {
+                                if profile.int("Set Local Environment Vars") == 2 && ui.button("Change Locale\u{2026}").on_hover_text(&s.help).clicked() {
+                                    *locale_pick = Some(selected.clone());
+                                }
+                                continue;
+                            }
                             if s.key == crate::ssh_config::KEY {
                                 if crate::settings_ssh::row(ui, &selected, profile, ssh_sheet, open_url, &home) {
                                     edit = Edit::Changed(selected.clone());
@@ -716,6 +730,9 @@ impl SettingsWindow {
                                     }
                                     ui.label(egui::RichText::new(crate::transparency::LARGE_RADIUS).small());
                                 });
+                            }
+                            if s.key == "Set Local Environment Vars" {
+                                locale_status_line(ui, profile, &globals.string("FallbackLCCType"));
                             }
                             if changed {
                                 // Choosing Meta for either Option key warns (`PK:554-559`).
@@ -1099,11 +1116,42 @@ pub fn profile_row_enabled(p: &Profile, key: &str, dark: bool) -> bool {
         | "Cursor Blink Visible Dwell"
         | "Cursor Blink Hidden Dwell" => p.bool("Blinking Cursor") && p.bool("Cursor Smooth Blink"),
         "Animate Movement Only in Interactive Apps" => p.bool("Animate Movement"),
+        // Change Locale is for the Custom mode (`PTM:397-445`).
+        "Custom Locale" => p.int("Set Local Environment Vars") == 2,
         // The swatch follows its switch (`ProfilesColorsPreferencesViewController.m:468`).
         "Underline Color" => p.bool_for("Use Underline Color", dark),
         _ => true,
     }
 }
+
+/// The line under "Set Locale Variables" (`PTM:397-445`): `LANG=<locale>` in the fixed font and
+/// the locale's title in gray after three en spaces, or the plain status text.
+#[cfg(windows)]
+fn locale_status_line(ui: &mut egui::Ui, profile: &Profile, fallback: &str) {
+    let key = (profile.int("Set Local Environment Vars"), profile.string("Custom Locale"), profile.int("Character Encoding"), fallback.to_string());
+    let id = egui::Id::new("locale_status");
+    // Windows answers are read once per change, not every frame.
+    let cached: Option<((i64, String, i64, String), crate::locale_win::Status)> = ui.ctx().data(|d| d.get_temp(id));
+    let status = match cached {
+        Some((k, v)) if k == key => v,
+        _ => {
+            let v = crate::locale_win::status(key.0, &key.1, key.2, &key.3);
+            ui.ctx().data_mut(|d| d.insert_temp(id, (key, v.clone())));
+            v
+        }
+    };
+    ui.horizontal_wrapped(|ui| {
+        if let Some(lang) = &status.lang {
+            ui.label(egui::RichText::new(format!("LANG={lang}")).monospace());
+            ui.label(egui::RichText::new(format!("\u{2002}\u{2002}\u{2002}{}", status.text)).color(ui.visuals().weak_text_color()));
+        } else {
+            ui.label(egui::RichText::new(&status.text).color(ui.visuals().weak_text_color()));
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn locale_status_line(_ui: &mut egui::Ui, _profile: &Profile, _fallback: &str) {}
 
 /// The title of the smooth-blink presets pull-down (`PreferencePanel.xib:11312`).
 pub const PRESETS_TITLE: &str = "Presets";
@@ -1764,6 +1812,16 @@ mod tests {
         assert!(profile_row_enabled(&p, "Underline Color", false));
         // Reduce Flicker has no rule.
         assert!(profile_row_enabled(&Profile::default(), "Reduce Flicker", false));
+    }
+
+    /// 13p (P5): the "Change Locale" row is for the Custom mode only (`PTM:397-445`).
+    #[test]
+    fn change_locale_row_needs_custom() {
+        let mut p = Profile::default();
+        for (mode, on) in [(0, false), (1, false), (2, true), (3, false)] {
+            p.set("Set Local Environment Vars", Value::Integer(mode));
+            assert_eq!(profile_row_enabled(&p, "Custom Locale", false), on, "mode {mode}");
+        }
     }
 
     #[test]
