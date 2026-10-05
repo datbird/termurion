@@ -112,25 +112,109 @@ pub fn has_ignored_prefix(path: &str, ignore: &[String]) -> bool {
     })
 }
 
-/// Whether a path may be probed on disk. Never a network path or one reached through a link
-/// to one (the repo's one rule); then, unless network mounts are allowed (`NFM:20-23`), not
-/// under an ignored folder and not on a mapped network drive (`NFM:17-37`).
-pub fn may_probe(path: &str, p: &Probe) -> bool {
-    if !crate::scripts::stays_local(Path::new(path)) {
+/// What one click may spend on probing: the shared count of `exists` calls and link reads, and
+/// the folders already found to stay local (each folder's link is read once per click).
+pub struct Budget {
+    left: std::cell::Cell<usize>,
+    verified: std::cell::RefCell<std::collections::HashSet<std::path::PathBuf>>,
+}
+
+impl Budget {
+    pub fn new(n: usize) -> Budget {
+        Budget { left: std::cell::Cell::new(n), verified: Default::default() }
+    }
+
+    pub fn left(&self) -> usize {
+        self.left.get()
+    }
+
+    /// Takes one probe; false when none is left.
+    pub fn spend(&self) -> bool {
+        match self.left.get() {
+            0 => false,
+            n => {
+                self.left.set(n - 1);
+                #[cfg(test)]
+                crate::semantic::count_probe();
+                true
+            }
+        }
+    }
+}
+
+/// `p` without a long-path prefix (`\\?\` or `\??\`, either separator) before a drive letter, so
+/// the ignore list and the drive check read `Z:\...` however it was spelled.
+fn without_long_prefix(p: &str) -> &str {
+    let b = p.as_bytes();
+    let sep = |c: u8| c == b'\\' || c == b'/';
+    if b.len() >= 6 && sep(b[0]) && (sep(b[1]) || b[1] == b'?') && b[2] == b'?' && sep(b[3]) && b[4].is_ascii_alphabetic() && b[5] == b':' {
+        &p[4..]
+    } else {
+        p
+    }
+}
+
+/// The cheap lexical checks, no I/O: not a network path, and (unless network mounts are
+/// allowed, `NFM:20-23`) not under an ignored folder and not on a mapped network drive
+/// (`NFM:17-37`).
+fn lexically_local(path: &str, p: &Probe) -> bool {
+    if crate::scripts::is_network_path(path) {
         return false;
     }
     if p.allow_network {
         return true;
     }
+    let path = without_long_prefix(path);
     if has_ignored_prefix(path, &p.ignore) {
         return false;
     }
     let b = path.as_bytes();
-    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
-        return !p.drives.is_remote(&format!("{}:\\", b[0] as char));
+    !(b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && p.drives.is_remote(&format!("{}:\\", b[0] as char)))
+}
+
+/// Whether a path may be probed on disk. Never a network path or one reached through a link
+/// to one (the repo's one rule). The lexical checks run first, with no I/O; then the folders
+/// are read root-first, each one's link before anything below it, every hop checked the same
+/// way, and every read taken from `budget` (B2: a folder that is a link to a share).
+pub fn may_probe_with(path: &str, p: &Probe, read_link: &dyn Fn(&Path) -> Option<std::path::PathBuf>, budget: &Budget) -> bool {
+    local_chain(Path::new(path), p, read_link, budget, 0)
+}
+
+fn local_chain(path: &Path, p: &Probe, read_link: &dyn Fn(&Path) -> Option<std::path::PathBuf>, budget: &Budget, depth: usize) -> bool {
+    const HOPS: usize = 8;
+    if depth > HOPS || !lexically_local(&path.to_string_lossy(), p) {
+        return false;
+    }
+    let mut chain: Vec<&Path> = path.ancestors().filter(|a| !a.as_os_str().is_empty()).collect();
+    chain.reverse();
+    for at in chain {
+        if budget.verified.borrow().contains(at) {
+            continue;
+        }
+        if !budget.spend() {
+            return false;
+        }
+        if let Some(target) = read_link(at) {
+            let target = match at.parent() {
+                Some(parent) if target.is_relative() => parent.join(target),
+                _ => target,
+            };
+            if !local_chain(&target, p, read_link, budget, depth + 1) {
+                return false;
+            }
+        }
+        budget.verified.borrow_mut().insert(at.to_path_buf());
     }
     true
 }
+
+/// `may_probe_with` over the real links with a budget of its own.
+pub fn may_probe(path: &str, p: &Probe) -> bool {
+    may_probe_with(path, p, &crate::scripts::read_link, &Budget::new(PROBE_LIMIT))
+}
+
+/// Reads a lone caller (no click budget) may spend on one path.
+const PROBE_LIMIT: usize = 64;
 
 #[cfg(test)]
 mod tests {
@@ -180,6 +264,72 @@ mod tests {
         let ignoring = Probe::from_settings(r"C:\ign", true, local());
         assert!(may_probe(r"C:\ign\a.txt", &ignoring));
         assert!(!may_probe(r"C:\ign\a.txt", &Probe::from_settings(r"C:\ign", false, local())));
+    }
+
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+
+    /// Links by path (lower case, `\`); every read is recorded.
+    fn links<'a>(map: &'static [(&'static str, &'static str)], seen: &'a RefCell<Vec<String>>) -> impl Fn(&Path) -> Option<PathBuf> + 'a {
+        move |p: &Path| {
+            let key = p.to_string_lossy().to_lowercase();
+            seen.borrow_mut().push(key.clone());
+            map.iter().find(|(k, _)| *k == key).map(|(_, v)| PathBuf::from(v))
+        }
+    }
+
+    #[test]
+    fn the_cheap_checks_run_before_any_link_read() {
+        let seen = RefCell::new(Vec::new());
+        let rl = links(&[], &seen);
+        let p = Probe::from_settings(r"C:\ign", false, Arc::new(FakeDrives));
+        let b = Budget::new(50);
+        assert!(!may_probe_with(r"C:\ign\a.txt", &p, &rl, &b));
+        assert!(!may_probe_with(r"Z:\x\y.txt", &p, &rl, &b));
+        assert!(!may_probe_with(r"\\srv\s\f", &p, &rl, &b));
+        assert!(seen.borrow().is_empty(), "no link was read: {:?}", seen.borrow());
+        assert_eq!(b.left(), 50);
+    }
+
+    #[test]
+    fn long_path_spellings_get_the_same_checks() {
+        let p = Probe::from_settings(r"C:\ign", false, Arc::new(FakeDrives));
+        for path in [r"\\?\Z:\share\f.txt", r"\??\Z:\share\f.txt", r"//?/z:/share/f.txt", r"\\?\C:\ign\a.txt", r"\??\c:\IGN\a.txt"] {
+            assert!(!may_probe(path, &p), "{path}");
+        }
+        assert!(may_probe(r"\\?\C:\f.txt", &p));
+        assert!(may_probe(r"\\?\Z:\share\f.txt", &Probe { allow_network: true, ..p }));
+    }
+
+    #[test]
+    fn ancestor_links_are_followed_root_first_and_checked() {
+        let p = Probe { drives: Arc::new(FakeDrives), ..Probe::default() };
+        let map: &'static [(&str, &str)] = &[(r"c:\proj\unc", r"\\srv\s"), (r"c:\proj\mapped", r"Z:\"), (r"c:\proj\ok", r"C:\other"), (r"c:\proj\rel", "ok")];
+        let seen = RefCell::new(Vec::new());
+        let rl = links(map, &seen);
+        assert!(!may_probe_with(r"C:\proj\unc\x.txt", &p, &rl, &Budget::new(50)));
+        assert!(!seen.borrow().iter().any(|s| s.ends_with("x.txt")), "the leaf was read under a link: {:?}", seen.borrow());
+        assert!(!may_probe_with(r"C:\proj\mapped\sub\x.txt", &p, &rl, &Budget::new(50)));
+        assert!(may_probe_with(r"C:\proj\ok\x.txt", &p, &rl, &Budget::new(50)));
+        assert!(may_probe_with(r"C:\proj\rel\x.txt", &p, &rl, &Budget::new(50)));
+        // The leaf itself may be the link.
+        assert!(!may_probe_with(r"C:\proj\mapped", &p, &rl, &Budget::new(50)));
+    }
+
+    #[test]
+    fn link_reads_count_toward_the_budget() {
+        let seen = RefCell::new(Vec::new());
+        let rl = links(&[], &seen);
+        let p = Probe::default();
+        let b = Budget::new(3);
+        assert!(!may_probe_with(r"C:\a\b\c\d\e.txt", &p, &rl, &b), "six folders and files, three reads");
+        assert_eq!(seen.borrow().len(), 3);
+        // Folders already found local are not read again.
+        let b = Budget::new(10);
+        assert!(may_probe_with(r"C:\a\b\x.txt", &p, &rl, &b));
+        let before = b.left();
+        assert!(may_probe_with(r"C:\a\b\y.txt", &p, &rl, &b));
+        assert_eq!(before - b.left(), 1, "only the new file is read");
     }
 
     #[cfg(windows)]

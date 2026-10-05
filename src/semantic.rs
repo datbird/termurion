@@ -152,7 +152,7 @@ pub fn resolve_in(ctx: &ClickContext) -> Option<(Target, Option<std::ops::Range<
         }
     };
     // P1: at most this many probes per click, across both passes.
-    let budget = std::cell::Cell::new(MAX_PROBES);
+    let budget = crate::netpath::Budget::new(MAX_PROBES);
     for phase in phases(ctx.order) {
         match phase {
             // Task 7 fills the prompt context; until then it never matches.
@@ -280,8 +280,14 @@ thread_local! {
     static PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// Counts one probe (an `exists` call or a link read) for the budget test.
+#[cfg(test)]
+pub(crate) fn count_probe() {
+    PROBES.with(|n| n.set(n.get() + 1));
+}
+
 /// The existing file or folder `text` names, relative to `cwd`.
-fn existing(text: &str, cwd: Option<&Path>, probe: &crate::netpath::Probe, budget: &std::cell::Cell<usize>) -> Option<PathBuf> {
+fn existing(text: &str, cwd: Option<&Path>, probe: &crate::netpath::Probe, budget: &crate::netpath::Budget) -> Option<PathBuf> {
     let text = text.replace("\\ ", " ");
     let mut tries = vec![text.clone()];
     for prefix in ["a/", "b/", "i/", "w/", "c/", "o/"] {
@@ -303,12 +309,9 @@ fn existing(text: &str, cwd: Option<&Path>, probe: &crate::netpath::Probe, budge
         // folder that may not be probed hides every relative candidate under it), and only
         // through folders and links that stay local, outside ignored folders and mapped
         // drives (`netpath::may_probe`, `IPF:fileExistsAtPathLocally`). Never a probe first.
-        if budget.get() == 0 || !crate::netpath::may_probe(&p.to_string_lossy(), probe) {
+        if budget.left() == 0 || !crate::netpath::may_probe_with(&p.to_string_lossy(), probe, &crate::scripts::read_link, budget) || !budget.spend() {
             return None;
         }
-        budget.set(budget.get() - 1);
-        #[cfg(test)]
-        PROBES.with(|n| n.set(n.get() + 1));
         p.exists().then_some(p)
     })
 }
@@ -316,7 +319,7 @@ fn existing(text: &str, cwd: Option<&Path>, probe: &crate::netpath::Probe, budge
 /// An existing file or folder around the click, with a line and column when the text
 /// after it gives them.
 pub fn find_path(before: &str, after: &str, cwd: Option<&Path>, probe: &crate::netpath::Probe) -> Option<(PathBuf, Option<u32>, Option<u32>)> {
-    path_in(before, after, cwd, &default_filename_set(), probe, &std::cell::Cell::new(MAX_PROBES)).map(|(p, l, c, _)| (p, l, c))
+    path_in(before, after, cwd, &default_filename_set(), probe, &crate::netpath::Budget::new(MAX_PROBES)).map(|(p, l, c, _)| (p, l, c))
 }
 
 type PathHit = (PathBuf, Option<u32>, Option<u32>, std::ops::Range<usize>);
@@ -327,7 +330,7 @@ fn default_filename_set() -> crate::url_guess::CharSet {
 }
 
 /// The path hit's range is in the coordinates of `before` + `after` as given.
-fn path_in(before: &str, after: &str, cwd: Option<&Path>, set: &crate::url_guess::CharSet, probe: &crate::netpath::Probe, budget: &std::cell::Cell<usize>) -> Option<PathHit> {
+fn path_in(before: &str, after: &str, cwd: Option<&Path>, set: &crate::url_guess::CharSet, probe: &crate::netpath::Probe, budget: &crate::netpath::Budget) -> Option<PathHit> {
     // Only the filename characters around the click are candidates (`UAF:437-452`).
     let (b, a) = crate::sh_context::filename_parts(before, after, set);
     let shift = before.len() - b.len();
@@ -1017,7 +1020,7 @@ mod tests {
         PROBES.with(|n| n.set(0));
         assert_eq!(find_path(&b, &a, Some(&d), &Probe::default()), None);
         let probed = PROBES.with(|n| n.get());
-        assert!(probed > 100 && probed <= 120, "{probed}");
+        assert!(probed > 100 && probed <= 120, "{probed}: exists calls and link reads together");
     }
 
     #[test]
