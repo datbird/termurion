@@ -842,6 +842,8 @@ mod tests {
         let d = body(view, "draw_scrollbar");
         assert!(d.contains("scene::scrollbar_ticks(") && d.contains(".minimap(") && d.contains("scrollbar_series("), "{d}");
         assert!(!d.contains("globals.bool(\"Show"), "the keys are read at pane start");
+        assert!(b.contains("scroll_series") && b.contains("tick_digest()") && b.contains("ALT_SCREEN"), "the walk is cached, and the alternate screen shows no marks: {b}");
+        assert!(body(view, "forget_scrollbar").contains("scroll_ticks.remove(") && body(MOD, "close_pane").contains("forget_scrollbar("), "a closed pane's entries go");
         let s = body(MOD, "install_pane");
         assert!(s.contains("scroll_ticks.insert(") && s.contains("ShowLocationsInScrollbar") && s.contains("ShowMarksInScrollbar"), "{s}");
     }

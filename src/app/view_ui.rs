@@ -129,21 +129,46 @@ impl App {
     /// The ticks along pane `id`'s bar (buffer lines, 0 the oldest): the open find bar's matches,
     /// then the buffer's marks by exit code, then the notes (`scrollbar::collect`). The two keys
     /// are the ones read when the pane started.
-    fn scrollbar_series(&self, id: PaneId) -> Vec<(scrollbar::Series, Vec<usize>)> {
-        let Some(p) = self.panes.get(&id) else { return Vec::new() };
+    ///
+    /// Cached per pane: the buffer is walked only when the key changes (the find matches, the
+    /// marks, notes, scrollback or screen: `Screen::tick_digest`), not on every frame.
+    fn scrollbar_series(&self, id: PaneId) -> std::rc::Rc<scrollbar::Ticks> {
+        let Some(p) = self.panes.get(&id) else { return Default::default() };
         let (locations, show_marks) = self.scroll_ticks.get(&id).copied().unwrap_or_else(|| (self.globals.bool("ShowLocationsInScrollbar"), self.globals.bool("ShowMarksInScrollbar")));
         if !locations {
-            return Vec::new();
+            return Default::default();
         }
-        let history = p.screen.term().primary_grid().history_size() as i32;
-        let search: Vec<usize> = self.finds.get(&id).filter(|f| f.open).map(|f| f.results.matches.iter().map(|m| m.start.row).collect()).unwrap_or_default();
-        let (marks, notes) = if show_marks {
-            let marks = p.screen.row_marks().into_iter().filter_map(|(line, mid)| Some((scrollbar::series_of_mark(p.screen.mark_code(mid)?), (line + history).max(0) as usize))).collect();
-            (marks, self.note_cells(id).into_iter().map(|(m, _, _)| m.start.row).collect())
-        } else {
-            (Vec::new(), Vec::new())
+        // Marks and notes belong to the main screen: a full-screen app's screen shows none (and
+        // its line count is not theirs).
+        let alt = p.screen.term().mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
+        let found = self.finds.get(&id).filter(|f| f.open).map(|f| &f.results.matches[..]).unwrap_or_default();
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (locations, show_marks, alt, p.screen.tick_digest(), found.len()).hash(&mut h);
+            for m in found {
+                m.start.row.hash(&mut h);
+            }
+            h.finish()
         };
-        scrollbar::collect(locations, show_marks, &search, &marks, &notes)
+        self.scroll_series.borrow_mut().entry(id).or_default().get(key, || {
+            let history = p.screen.term().primary_grid().history_size() as i32;
+            let search: Vec<usize> = found.iter().map(|m| m.start.row).collect();
+            let (marks, notes) = if show_marks && !alt {
+                let marks = p.screen.row_marks().into_iter().filter_map(|(line, mid)| Some((scrollbar::series_of_mark(p.screen.mark_code(mid)?), (line + history).max(0) as usize))).collect();
+                (marks, self.note_cells(id).into_iter().map(|(m, _, _)| m.start.row).collect())
+            } else {
+                (Vec::new(), Vec::new())
+            };
+            scrollbar::collect(locations, show_marks, &search, &marks, &notes)
+        })
+    }
+
+    /// Drops a closed pane's scrollbar bookkeeping.
+    pub(super) fn forget_scrollbar(&mut self, id: PaneId) {
+        self.scroll_ticks.remove(&id);
+        self.scroll_seen.remove(&id);
+        self.scroll_series.get_mut().remove(&id);
     }
 
     /// Draws pane `id`'s scrollbar at the right edge of `rect`, in its own layer (popups drawn

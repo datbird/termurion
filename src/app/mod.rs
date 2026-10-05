@@ -639,6 +639,9 @@ pub struct App {
     scroll_hover: Option<PaneId>,
     /// Per pane: ShowLocationsInScrollbar and ShowMarksInScrollbar as they were when it started.
     scroll_ticks: HashMap<PaneId, (bool, bool)>,
+    /// Per pane: the scrollbar's ticks and the key they were built for, so the buffer is not
+    /// walked every frame (`scrollbar_series`). A RefCell: drawing reads the app by `&self`.
+    scroll_series: std::cell::RefCell<HashMap<PaneId, scrollbar::TickCache>>,
     /// The block under the pointer (pane, number, first and last line), and the drawn pill
     /// buttons.
     block_hover: Option<(PaneId, u32, i32, i32)>,
@@ -1819,6 +1822,7 @@ pub fn run() {
         scroll_seen: HashMap::new(),
         scroll_hover: None,
         scroll_ticks: HashMap::new(),
+        scroll_series: Default::default(),
         flashes: HashMap::new(),
         fireworks: HashMap::new(),
         tab_colors: HashMap::new(),
@@ -3880,6 +3884,7 @@ impl App {
         self.tmux_pane_closed(id);
         self.aps.remove(&id);
         self.focus_order.remove(&id);
+        self.forget_scrollbar(id);
         if let Some(p) = self.panes.remove(&id) {
             // Its file requests will never be answered: they fail now, and its waiters go.
             self.ssh_files_pane_gone(id);

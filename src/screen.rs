@@ -1567,6 +1567,24 @@ impl Screen {
             .collect()
     }
 
+    /// A digest of what the scrollbar's mark and note ticks read: it changes when a mark or
+    /// note is added, removed or given an exit code, when rows move (scrolling, a trimmed or
+    /// cleared history, a resize) and when the screen switches. Costs a read of the records,
+    /// not of the rows.
+    pub fn tick_digest(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let g = self.term.primary_grid();
+        (g.history_size(), g.scrolled_off(), g.dropped(), g.screen_lines(), g.columns(), self.term.mode().contains(TermMode::ALT_SCREEN)).hash(&mut h);
+        for (id, m) in &self.marks.records {
+            (id, m.code).hash(&mut h);
+        }
+        for (id, n) in &self.notes.by_id {
+            (id, n.row_key).hash(&mut h);
+        }
+        h.finish()
+    }
+
     /// One logical line's text starting at `line`: its row and the rows it wraps onto,
     /// trailing spaces trimmed.
     pub fn line_text(&self, line: i32) -> String {
@@ -3053,5 +3071,32 @@ mod tests {
         s.feed(b"\x1b[>4;2m");
         s.set_look(Look { app_key_modes: false, ..Look::default() });
         assert_eq!(s.keyboard().mode, KeyMode::Standard);
+    }
+
+    #[test]
+    fn the_tick_digest_follows_marks_notes_and_rows() {
+        let mut s = Screen::new(20, 4);
+        let base = s.tick_digest();
+        assert_eq!(s.tick_digest(), base, "nothing changed");
+        let mark = s.set_manual_mark(0, None);
+        assert_ne!(s.tick_digest(), base, "a mark was added");
+        assert!(s.remove_mark(mark));
+        assert_eq!(s.tick_digest(), base, "and removed");
+        s.add_note(0, 0, 0, 3, "n", false);
+        let with_note = s.tick_digest();
+        assert_ne!(with_note, base, "a note was added");
+        s.feed(b"1\r\n2\r\n3\r\n4\r\n5\r\n");
+        assert_ne!(s.tick_digest(), with_note, "rows scrolled");
+        let before = s.tick_digest();
+        s.feed(b"x");
+        assert_eq!(s.tick_digest(), before, "typing on a row moves nothing");
+        s.feed(b"\x1b[?1049h");
+        assert_ne!(s.tick_digest(), before, "the alternate screen shows");
+        // An exit code arriving on an existing prompt mark changes the ticks' series.
+        let mut p = Screen::new(20, 4);
+        p.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07");
+        let running = p.tick_digest();
+        p.feed(b"\x1b]133;D;1\x07");
+        assert_ne!(p.tick_digest(), running, "the command finished with a code");
     }
 }

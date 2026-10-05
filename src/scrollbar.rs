@@ -202,6 +202,30 @@ pub fn collect(locations: bool, show_marks: bool, search: &[usize], marks: &[(Se
 /// memory the track height, whatever the history; the order of `lines` does not matter.
 /// `style_narrow` is the overlay scroller's narrow state: 11 wide, 5 in (`SV:2626-2629`).
 /// The height, the merge distance and the narrow values are points: times `scale`.
+/// The ticks along one pane's bar: each series with its buffer lines.
+pub type Ticks = Vec<(Series, Vec<usize>)>;
+
+/// One pane's ticks and the key they were built for. The bar is drawn every frame, the
+/// buffer walk behind the ticks is not: it reruns only when the key changes.
+#[derive(Default)]
+pub struct TickCache {
+    slot: Option<(u64, std::rc::Rc<Ticks>)>,
+}
+
+impl TickCache {
+    /// The ticks for `key`, built by `build` when the key is not the one last built for.
+    pub fn get(&mut self, key: u64, build: impl FnOnce() -> Ticks) -> std::rc::Rc<Ticks> {
+        if let Some((k, ticks)) = &self.slot {
+            if *k == key {
+                return ticks.clone();
+            }
+        }
+        let ticks = std::rc::Rc::new(build());
+        self.slot = Some((key, ticks.clone()));
+        ticks
+    }
+}
+
 pub fn ticks(track: Rect, lines: &[usize], total: usize, style_narrow: bool, scale: f32) -> Vec<Rect> {
     if total == 0 || lines.is_empty() || track.h <= 0.0 {
         return Vec::new();
@@ -259,6 +283,20 @@ mod tests {
     use super::*;
 
     const PANE: Rect = Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 };
+
+    #[test]
+    fn the_tick_cache_builds_only_when_the_key_changes() {
+        let mut cache = TickCache::default();
+        let mut builds = 0;
+        for key in [7, 7, 7, 8, 8, 7] {
+            let t = cache.get(key, || {
+                builds += 1;
+                vec![(Series::Search, vec![key as usize])]
+            });
+            assert_eq!(t[0].1, vec![key as usize], "the ticks are the ones for the key");
+        }
+        assert_eq!(builds, 3, "7, then 8, then 7 again: three builds for six frames");
+    }
 
     #[test]
     fn scrollbar_geometry_follows_iterm2() {
