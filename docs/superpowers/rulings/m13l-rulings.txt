@@ -6,3 +6,132 @@ Task 7 (R2): `UseMultiPassUnderlineRenderer` is stored and shown and does nothin
 Task 8 fix round 1: tmux_rows(600, 16, 2, 22, 2) is 34 (iTerm2 truncates (h - 2 * topBottomMargins) / lineHeight, PTYSession.m:2779); the brief's 35 was an arithmetic slip, the test uses 608 for 35.
 Task 8 fix round 1: a row whose edge cell has the default background paints the pane's DEFAULT background in its side margins (iTerm2 regularVerticalColor, iTermMetalPerFrameState.m:907-909; DH:618-641), not the dominant color: brief-vs-source, the source wins. Only the strips above and below take the dominant color.
 Task 8 fix round 1: a margin edit changes `Room` (it carries the margins in pixels), so every window relays out its ptys and tmux size. A pane with a background image draws no margin strip in its own color, so the image shows in its margins.
+
+Milestone decisions (brief; each with its cost)
+Decision: Tandem is iTerm2's GPU path for every cadence rule (Maximize throughput decides adaptivity; MetalSlowFrameRate; ActiveUpdateCadence in the alternate screen); slowFrameRate stays n/a - cost if wrong: the non-Metal keys do nothing.
+Decision: only pane output is paced; keys, the mouse, resizes, bars, timers and the cursor redraw at once, as iTerm2's other setNeedsDisplay paths do - cost if wrong: a busy pane redrawn by a timer can draw faster than its cadence.
+Decision: a window's interval is the smallest over its front tab's visible panes - cost if wrong: a quiet pane beside a busy one follows the busy one (one surface per window; iTerm2 has one view per session).
+Decision: Windows battery saver (SystemStatusFlag 1, which Windows 11's Energy saver also sets) is iTerm2's Low Power Mode; being on battery alone is not - cost if wrong: a laptop on battery without the saver draws at full rate.
+Decision: disableMetalWhenUnplugged and disableMetalInLowPowerMode are stored and inert and 02:151 is partial: Tandem has no CPU renderer to fall back to, and the frame caps already save power - cost if wrong: settings that do nothing.
+Decision: cursor redraws are not paced; frame_wake joins cursor_due in about_to_wait's wake array and cursor_due passes through unchanged (there is no cursor_wake, P2) - cost if wrong: none.
+Decision: preferIntegratedGPU's enabling uses a process-wide flag set once by init_gpu (the settings window has no App) - cost if wrong: before the first window's GPU starts the row reads disabled.
+Decision: the underline color lives in Palette (which knows light or dark), not in the terminal Look - cost if wrong: none.
+Decision: preferIntegratedGPU maps to PowerPreference::LowPower, chosen once per run and read by both the opaque and the see-through instance - cost if wrong: a machine whose integrated GPU is weak gets it by default, as iTerm2's users do.
+Decision: DisableAppNap maps to opting out of EcoQoS (SetProcessInformation), applied at start only - cost if wrong: the rest of Windows' power management still applies; a change needs a restart.
+Decision: the FPS meter draws over the focused pane's first row, where iTerm2 draws one per session view - cost if wrong: other panes show no meter.
+Decision: Copy Performance Stats copies Tandem's renderer timings (start-to-start, surface wait, dropped frames) under iTerm2's text format; the histogram summary drops the sparkline glyphs and percentiles interpolate linearly between ranks - cost if wrong: numbers are not comparable with iTerm2's.
+Decision: GPU Renderer Availability always says enabled (not available for a window with no GPU) and adds the adapter name and backend on a second paragraph - cost if wrong: none.
+Decision: underline geometry uses the primary face's swash metrics (offset, stroke size, x-height, baseline from cosmic-text's line layout) in iTerm2's clamping formulas; macOS's typesetter offset is not available - cost if wrong: underlines may sit a pixel away from iTerm2's for the same font.
+Decision: strikethrough uses the underline color rules (SGR 58, then the profile's Underline Color, then the text color), as iTerm2's descriptor does - cost if wrong: none (kept quirk).
+Decision: margins below 0 count as 0; iTerm2 does not bound them - cost if wrong: none.
+Decision: Reduce Flicker holds the pane's last drawn picture (its slice of the frame), not a grid snapshot drawn again - cost if wrong: a resize during a hold shows the old picture until it ends (at most 0.2 s).
+Decision: the OSC 8 dash moves from the cell bottom to the underline position with iTerm2's 4-on, 3-off pattern (R3) - cost if wrong: links look different from Tandem's past.
+Decision: parity rows are found by title; two new 03 rows (SGR underline styles with SGR 58, Strikethrough) own what no row did - cost if wrong: a row count off by two.
+
+Ruling R2 keys (stored, shown, inert)
+Ruling: UseAdaptiveFrameRate and DisableAdaptiveFrameRateInInteractiveApps are read by iTerm2 only without the GPU renderer, so they are stored and inert (02 rows "have", noted) - cost if wrong: two switches that do nothing.
+Ruling: UseLowPowerGPUWhenUnplugged picks a device nothing uses (iTerm2 64791fc, DP:66-99); stored and inert - cost if wrong: a switch that does nothing.
+Ruling: the stale 02 partial rows (metalSlowFrameRate, useLowPowerGPUWhenUnplugged, useMultiPassUnderlineRenderer, showMetalFPSmeter, metalRedrawPeriod) read have and the research's "missing" for 02:151's Maximize throughput is a live switch - cost if wrong: a parity count off by five.
+
+R3 fixes (each default mismatch fixed to iTerm2 in its own step with its own test)
+R3 Task 2: the display was drawn at every vsync for every output; it is now paced by iTerm2's cadence (30 fps over 10000 bytes a second, 60 below, 1 s idle or hidden) - cost if wrong: heavy output draws at 30 fps instead of 60.
+R3 Task 2: the alternate screen's rate is ActiveUpdateCadence, not MaximumFrameRate - cost if wrong: equal only at the defaults.
+R3 Task 3: the integrated GPU is preferred (preferIntegratedGPU on by default) - cost if wrong: a dual-GPU laptop moves Tandem to the weaker GPU (checklist: dual-GPU line).
+R3 Task 8: margins are 5 side and 2 top and bottom points (Tandem used 4 px) - cost if wrong: text sits a pixel or two differently, and the default window grows.
+R3 Task 6: OSC 8 dashes follow iTerm2's 4-on, 3-off at the underline position - cost if wrong: links look different from Tandem's past.
+
+Pre-flight fixes B1 to B4 (accepted, override the plan text)
+Pre-flight B1: Ruling: scene::margin_fill is the ONLY margin painter for every pane; in a see-through window it replaces that pane's margin_panes entry (margin_fill_alpha, one layer per pixel, alpha = the pane's bg_alpha, opaque for a non-default side color with opaque_colors) and backdrop keeps only chrome strips; in an opaque window it draws a strip only where its color differs from frame.clear - cost if wrong: a 0.7 pane composes to 0.91 in its margins, or an opaque window shows the first pane's color in another pane's margins.
+Pre-flight B2: Ruling: PAD is replaced by App::margins() (side, top/bottom, px) at the eight terminal sites (inner, size_window, mark bars, block_bars, screenshots, Snap, windows chrome, tmux_rows with the vertical margin); the two side_width calls take SIDE_TAB_MARGIN 4.0 (the side tab bar's own margin) - cost if wrong: tmux reports the wrong rows, or the side tab bar width moves with the terminal margin.
+Pre-flight B3: Ruling: Frame.underlines draws right before Frame.overlay; skip_covered, lay_over and a new scene::cut_quads (called by cut_out, so every popup) filter it; Task 7 adds Frame.strikes under the same filters - cost if wrong: underlines draw through an Auto Composer, a flashing tab bar or a popup.
+Pre-flight B4: Ruling: Double is y 16/14 (1x) and 32/28 (2x); Curly 15.5/14.5 (1x) and 31/29 (2x) as the source gives (STC:121-137), and strokes snap to whole device pixels (Curly 16/15 at 1x), where iTerm2 anti-aliases the half pixel - cost if wrong: Curly half a pixel from iTerm2's on a 1x display.
+
+Pre-flight rulings P1 to P20 (P9 corrected: Curly 2x is 31/29; tmux_rows(600,16,2,22,2) is 34, iTerm2 rounds down)
+P1: Ruling: scene::pane_with takes draw: &DrawPrefs between look and highlights; all call sites by exact edits; DrawPrefs::default() has zero metrics and the cell gives the geometry, so previews and tests need no renderer - cost if wrong: a preview draws an underline a pixel off the live pane.
+P2: Ruling: there is no cursor_wake; frame_wake joins cursor_due in the one wake array and cursor_due passes through unchanged - cost if wrong: none.
+P3: Ruling: State.active for a window is blink_clock_needed() or a running slide or smear, read for the key window only - cost if wrong: a blinking-text pane in a background window is paced as idle (1 s).
+P4: Ruling: profile_row_enabled gets one arm, "Underline Color" follows "Use Underline Color" (light and dark) - cost if wrong: the swatch stays enabled in the dark variant.
+P5: Ruling: one Kind::Int arm (a DragValue, no bounds) in global_control for TerminalMargin and TerminalVMargin - cost if wrong: the margin rows draw nothing; as built it also draws unlabelled values for other Int rows (see the deferred minor below).
+P6: Ruling: PAD deleted; SIDE_TAB_MARGIN 4.0 keeps the two side_width calls - cost if wrong: the side tab bar width moves by 1 px when the terminal margin changes.
+P7: Ruling: GPU Renderer Availability uses scripts_alerts::ask with Kind::Persistent through ask_scripts, never silenced - cost if wrong: Then::Nothing is capped (dropped when 16 queue), a lost sheet under a flood.
+P8: Ruling: adapter_preference applies in init_gpu AND make_alpha_gpu, fixed once per run by a OnceLock; set_both_gpu_kinds is fed from init_gpu only; the adapter is logged - cost if wrong: transparent windows on another GPU than opaque ones.
+P9: Ruling (corrected): geometry tests pin the source values (B4) and strokes snap y and h to whole device pixels; 1x Curly lands at 16/15 and 2x Curly stays 31/29 (whole pixels already); Double is 16/14 and 32/28 - cost if wrong: Curly one pixel off at 2x.
+P10: Ruling: per cell the SGR style wins, else the link dash (when UnderlineHyperlinks), strikethrough added to either - cost if wrong: a link with SGR 21 loses its dash.
+P11: Ruling: the SGR 58 color and the profile Underline Color are blended by faint alpha only for DIM cells and are untouched by Cursor Boost, Dim Only Text, selection and Minimum Contrast - cost if wrong: a faint cell keeps a bright custom underline, or a dimmed pane keeps full red squiggles (iTerm2 does too).
+P12: Ruling: underline runs resolve after the cell loop from CellLook.ul and the final fg; a cell hidden by a label, a blink-off phase (13m) or an image draws none - cost if wrong: an underline stays the raw text color on a selected or contrast-adjusted cell.
+P13: Ruling: margins read the globals on each call, negative as 0, scaled - cost if wrong: two hash lookups per call.
+P14: Ruling: a margin edit relays out every window through relayout_changed_windows and reports tmux sizes after; size_window and snap use 2 * side and 2 * vertical - cost if wrong: a stale pty size in a background window.
+P15: Ruling: program-set underline state is bounded and reset (SGR 24, 0, 59, RIS, erase), with the underline_state_is_bounded_and_reset test and the SGR 58 colon and semicolon forms pinned - cost if wrong: a program leaves the terminal drawing colored squiggles for good.
+P16: Ruling: Reduce Flicker stores each live frame's slice (quads, images, rows, overlay, underlines, strikes) in Pane.held for panes whose profile has the switch on, and the hold reuses it; dropped when the switch is off - cost if wrong: a hold with no stored picture shows nothing.
+P17: Ruling: Frame.underlines draws immediately before Frame.overlay, so 13i's gray quad and 13k's cursor extras lie over underlines - cost if wrong: an underline brighter than its dimmed pane.
+P18: Ruling: the forced MetalRedrawPeriod frame asks only that window (redraw_here), skips hidden, minimized and cloaked windows, and the pacer's due time is cleared in drew - cost if wrong: every window redraws twice a second per window.
+P19: Ruling: init_gpu logs the adapter list once (name, backend, device type) to stderr before applying adapter_preference; the checklist has the dual-GPU line - cost if wrong: a weak integrated GPU chosen by default with no trace.
+P20: Ruling: "Window {n}" in Copy Performance Stats is the registry window number plus 1; keys sort by string - cost if wrong: log order differs from iTerm2's dictionary order.
+
+Controller rulings (progress.md)
+Ruling: B1 to B4 and P1 to P20 of the pre-flight are accepted and override the plan text - cost if wrong: a task built on the plan text does not compile or draws the wrong geometry.
+Ruling: 13l lands first; 13m's phase B waits on 13l's Task 6 and Task 8 - cost if wrong: two branches paint margins and underlines at once.
+Ruling: the FPS meter shows for the focused pane only (one per window) - cost if wrong: with several panes one rate shows.
+Ruling: tmux and ssh panes' activity icons through tick_activity are intended (iTerm2 shows activity for every session) - cost if wrong: a tmux or ssh tab in the background shows the new-output icon the user did not expect.
+Ruling: badges are not cut: iTerm2 draws over its badge, so a program's underline still draws under badge letters (the badge's ink never gaps a pane underline either) - cost if wrong: an underline shows through a badge.
+Ruling: the Copy Performance Stats text puts a newline after the first colon of a multi-line log ("Precise timers Window 1: Dropped frames:\n0.0%\n\n..."), following iTerm2's source (iTermPreciseTimer.m:342-345) over the brief's literal - cost if wrong: one newline.
+Ruling: the margin tmux case is tmux_rows(600,16,2,22,2) = 34 (iTerm2 truncates, PTYSession.m:2779); the test uses 608 for 35 - cost if wrong: none.
+
+Task decisions (task-1 to task-9 reports)
+Task 1: Decision: the GPU Renderer block sits before Bidi in General, not at the tail (a test keeps Experimental last) - cost if wrong: a trivial merge hunk with 13m in global.toml.
+Task 1: Decision: the Int arm lays out the label then a DragValue, like the Float slider - cost if wrong: cosmetic.
+Task 1: Decision: the restart banner under Prefer integrated GPU is a small weak label, persistent per window once the row changes - cost if wrong: cosmetic.
+Task 1: Decision: the "Underline Color" help is unchanged (the brief gives no text) - cost if wrong: a one-line edit.
+Task 2: Decision: State.active is blink_clock_needed() or a running animation for the key window only, false for parked windows (P3) - cost if wrong: a blinking pane in a background window is paced at 1 s only if otherwise idle.
+Task 2: Decision: the low-power state started as a stub (false) until Task 3 filled it - cost if wrong: none after Task 3.
+Task 2: Decision: record_replay_frames' shortcut is 1 ms (the interval floor) instead of FAST_GAP, since rates can exceed 60 - cost if wrong: one more cheap gap computation per pane per call.
+Task 2: Decision: typing is any changed pane of the window with typing_now (under 1024 bytes a second, key under 100 ms ago) - cost if wrong: none visible.
+Task 2: Decision: Prefs.maximize_throughput reads metalMaximizeThroughput with a true fallback - cost if wrong: none (schema default is true).
+Task 2: Decision: 13p's idle_after has not landed; cadence::IDLE_AFTER is still used - cost if wrong: 13p retunes it.
+Task 2 fix r1 and r2: Decision: output reaches a window only through the pacer (tick_activity, ssh and tmux pumps, back-tab output, spinners); an empty after_output draws nothing; a seen flip changes the tab bar only if the indicator was up before - cost if wrong: a tab bar change waits up to one frame interval.
+Task 3: Decision: the not-yet-sampled power state is on AC with no saver - cost if wrong: the first second at full rate.
+Task 3: Decision: repace_all resets pacers and redraws on a Low Power Mode change - cost if wrong: one extra frame on a change.
+Task 3: Decision: chosen_preference takes the globals value on its first call only; a later edit applies on restart - cost if wrong: none (GPU_RESTART banner shows).
+Task 3: Decision: power_tick has no unit test (needs a live App); the pure parts are tested - cost if wrong: a wiring slip is seen on screen only.
+Task 4: Decision: the default period 0.5 s means a visible window redraws twice a second even idle; MetalRedrawPeriod 0 stops it; hidden and minimized windows never wake - cost if wrong: a 2 Hz idle wake by default.
+Task 4: Decision: the meter's box is a popup, so a cursor quad in row 0 at the right edge draws over it - cost if wrong: the cursor shows over the meter.
+Task 4: Decision: FPS_BG is converted to 8-bit (26) then sRGB to linear for the quad - cost if wrong: a slightly different near black.
+Task 4: Decision: the first frame after turning the meter on adds a long gap to the average - cost if wrong: the number settles in a few frames.
+Task 4 fix r1: Decision: cloaked hotkey windows are neither forced a frame nor drawn for output (window_on_screen) - cost if wrong: a cloaked window shows stale output on reveal until the next frame.
+Task 5: Decision: "Window {n}" is the 0-based registry number plus 1 (P20); the alert reads the adapter from the window's render adapter (name and backend only); dropped frames count in the total and add no drawable sample; frames that return on Outdated or Lost are not counted; summary numbers have up to 2 decimals with trailing zeros trimmed - cost if wrong: numbers differ in format from iTerm2's.
+Task 5: Decision: the copied text holds only counters, millisecond timings and "Window n" keys, no adapter name and no screen contents - cost if wrong: none.
+Task 5 fix r1: Decision: the Histogram is bounded like iTerm2's (a 100-value reservoir plus exact count, sum, min and max); a closed window's stats are forgotten; a window with no GPU says GPU rendering is not available - cost if wrong: percentiles are estimates over long runs.
+Task 6: Decision: patterns_follow_iterm2 pins raw_strokes to the source and strokes snaps; at 2x Curly 31/29 are whole pixels, so P9's 32/30 was dropped (see P9) - cost if wrong: Curly one pixel off at 2x.
+Task 6: Decision: functions take pixel metrics and use scale only as the rounding grid, so the half-point minimum thickness and retinaRound apply to pixel values - cost if wrong: a thickness a pixel off from iTerm2 at fractional scales.
+Task 6: Decision: swash underline_offset sign is undocumented, so abs() is used and the 0.4 to 0.5 x-height clamp governs - cost if wrong: the wrong side only if a font reports it upward.
+Task 6: Decision: the dash phase is x from the pane's left edge, so moving a pane does not shift the pattern - cost if wrong: a different phase from iTerm2 after a move.
+Task 6: Decision: cut_out itself calls cut_quads, so all popups, the meter and the tab-bar lay_over trim underlines - cost if wrong: none.
+Task 6: Decision: strikethrough is a solid snapped line at strike_y with the underline thickness, in the underline color - cost if wrong: a pixel off at fractional scales.
+Task 6: Decision: hover, note and IME underlines stay in overlay, so a dimmed pane's gray quad covers them as before and cut_quads does not trim them - cost if wrong: a hover line shows through a popup.
+Task 6 fix r1 and r2: Ruling: every surface that cuts pane text also cuts the stroke quads (toast, error banner, find bar, announcement bar, per-line timestamps, every cut_out popup), by rect including blank rows, through scene::cut_rows_from and scene::cut_out; the banner now also cuts pane text; the live frame and Make Screenshot share App::draw_prefs() - cost if wrong: a program's SGR 4 or 9 line draws through Tandem's own messages, or a screenshot differs from the screen.
+Task 7: Decision: strikethrough goes in a parallel Frame.strikes (not a per-quad flag), kept in every filter - cost if wrong: a second vec to keep in sync.
+Task 7: Decision: ink placement comes from swash's uncached rasterizer once per distinct glyph, with a bounded cache of 16384 - cost if wrong: one extra rasterization per distinct glyph at first sight.
+Task 7: Decision: a quad belongs to the row band that holds it; a line's pieces share one band (merge_band) and a row with a badge span never claims a pane's underline - cost if wrong: a stroke gaps around the wrong ink.
+Task 7: Decision: gaps use the ink bounding box widened 1 pixel, so a glyph with ink at one side leaves a wider gap than iTerm2's mask - cost if wrong: gaps look wider than iTerm2's.
+Task 8: Decision: "not default" edge means resolved bg differs from the palette bg - cost if wrong: none (same pixels).
+Task 8: Decision: in an opaque window strips equal to frame.clear are skipped; in a see-through window every strip is a layer; scene::margins (13g) is kept for its tests - cost if wrong: dead code.
+Task 8 fix r1: Ruling: a row whose edge cell has the default background paints the pane's default background in its side margin (iTerm2 regularVerticalColor), not the dominant color; only the strips above and below take the dominant color - cost if wrong: a default row's side margin takes a wrong color.
+Task 8 fix r1: Ruling: a margin edit changes Room (it carries the margins in pixels), so every window relays out; a pane with a background image draws no margin strip in its own color so the image shows - cost if wrong: a stale size in a background window, or an opaque band over an image.
+Task 9: Decision: Held carries underlines and strikes (B3, P16) - cost if wrong: strokes vanish during a hold.
+Task 9: Decision: the margin fill is drawn live, not held; IME composition popups are not held - cost if wrong: the composition preview is absent for at most 0.2 s during a hold.
+Task 9: Decision: a pane with no stored slice yet draws live and stores it; Held.since is the capture time and the hold length comes from cursor_hidden_at - cost if wrong: none.
+
+Deferred minors (final triage; each with its cost)
+Deferred: the Kind::Int arm in global_control draws unlabelled drag values for IRMemory, TmuxDashboardLimit and TmuxPauseModeAgeLimit and ignores IRMemory's bounds; one Int arm across 13j, 13k and 13l at merge - cost if wrong: three settings rows with a bare drag value.
+Deferred: a 1 s idle power poll wake (power_tick) - cost if wrong: one wake a second (it is the m9i pattern, and 0 CPU is measured against it in the checklist).
+Deferred: the low-power cap applies only on the output path; iTerm2 also caps the view's maximum rate - cost if wrong: a timer-driven redraw can exceed the cap.
+Deferred: the EcoQoS opt-out does not touch timer resolution - cost if wrong: timers may still coalesce.
+Deferred: a doc comment and a global-flag test for the both-GPU-kinds flag - cost if wrong: none.
+Deferred: occluded windows are not kept warm at 1 s - cost if wrong: an occluded window draws only when asked (iTerm2 keeps a 1 s tick).
+Deferred: the meter's stats count only while the meter is shown - cost if wrong: the first seconds after turning it on read low.
+Deferred: about 60k quads for a full screen of dotted underline (time it on EXTREME); skip_covered removes quads one by one instead of retain - cost if wrong: a slow frame on a full screen of SGR 4:4.
+Deferred: the fallback metrics baseline (no renderer) is approximate - cost if wrong: a preview underline a pixel off.
+Deferred: per-row indexing in the gap pass and hover or annotation gap parity (hover and note underlines do not gap) - cost if wrong: a hover line does not break at descenders.
+Deferred: IME composition popups are not held during a Reduce Flicker hold - cost if wrong: the composition preview is absent for at most 0.2 s.
+Deferred: the default MetalRedrawPeriod 0.5 s (iTerm2's) keeps an idle visible window waking twice a second - cost if wrong: idle CPU is not zero until MetalRedrawPeriod is 0.
+Final review gaps: a Task 2 fix r1 and r2 test list covers pure decisions only; the tick and Wake wiring is checked on screen - cost if wrong: a wiring slip.
