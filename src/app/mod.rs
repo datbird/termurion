@@ -3248,7 +3248,9 @@ impl App {
                 self.panes.insert(id, old);
             }
         }
-        let (fresh, profile) = match self.spawn_pane(id, rect, guid.as_deref()) {
+        let start_dir = self.panes.get(&id).and_then(|p| p.start_dir.clone());
+        // No folder recorded (a pane from before 13q's start) reads as a gone folder: the profile's rule.
+        let (fresh, profile) = match self.spawn_pane(id, rect, guid.as_deref(), Some(start_dir.as_deref().unwrap_or(std::path::Path::new("")))) {
             Ok(started) => started,
             Err(e) => {
                 self.restart_failed(id, &e);
@@ -3274,6 +3276,12 @@ impl App {
         // The id lives on: the old screen's ticks must not meet the new screen.
         self.forget_scrollbar(id);
         self.install_pane(id, pane, &profile, true);
+        // The restarted shell types its own Initial Text once, as iTerm2's start does
+        // (`PS:3589-3600`, P14): the old start's answer was dropped above, an SSH profile still
+        // waits for its conductor's login, and an override launch (none restarts) never types it.
+        if self.start_command_override.is_none() && self.start_env_override.is_none() {
+            self.send_initial_text(id, &profile);
+        }
         // The new Screen has no chat watch: a chat streaming this session goes on (`CVC:144-165`).
         self.chat_refresh();
     }
@@ -3472,7 +3480,7 @@ impl App {
     }
 
     fn start_pane_as(&mut self, id: PaneId, rect: Rect, guid: Option<&str>) -> bool {
-        match self.spawn_pane(id, rect, guid) {
+        match self.spawn_pane(id, rect, guid, None) {
             Ok((pane, p)) => {
                 self.install_pane(id, pane, &p, false);
                 // iTerm2 blanks Initial Text for single-use and URL launches (`iTermController.m:1872`,
@@ -3495,7 +3503,9 @@ impl App {
     /// Starts the shell of pane `id` at `rect` with profile `guid`: the pane, not yet installed,
     /// and its profile; or why it did not start (the caller says so: a new pane sets the "start"
     /// banner, a restart shows a bar).
-    fn spawn_pane(&mut self, id: PaneId, rect: Rect, guid: Option<&str>) -> Result<(Pane, Profile), String> {
+    /// `restart_dir` is a restarted pane's original folder (P13): used while it is still a local
+    /// folder, else the profile's rule without the focused pane.
+    fn spawn_pane(&mut self, id: PaneId, rect: Rect, guid: Option<&str>, restart_dir: Option<&std::path::Path>) -> Result<(Pane, Profile), String> {
         // The new pane's grid comes from its own profile's face, measured now, less its room.
         let p = self.profile(guid);
         let cell = self.profile_cell(&p);
@@ -3517,6 +3527,9 @@ impl App {
                 (c, Some(format!("The folder {d} from the arrangement does not exist; the profile's folder is used.")))
             }
             Some(crate::arrangement::Folder::Previous(d)) => profile::start_dir_with(&p, Some(std::path::Path::new(d))),
+            // A restart reuses the folder the shell first started in, never OSC 7 or the focused
+            // pane (`PS:4890-4896`, P13).
+            _ if restart_dir.is_some() => crate::session_end::restart_dir(restart_dir, &p, &|d| d.is_dir()),
             _ => self.profile_start_dir(&p),
         };
         match warning {
@@ -3548,6 +3561,7 @@ impl App {
             Ok(mut pane) => {
                 pane.cookie = cookie;
                 pane.command = cmd;
+                pane.start_dir = Some(cwd);
                 if self.start_command_override.is_none() {
                     // Not an ssh session for F27 yet: its hook, vouched by the origin token,
                     // makes it one.

@@ -307,6 +307,16 @@ pub fn restart_survivors_spec(names: &[String]) -> crate::warnings::Spec {
     }
 }
 
+/// The folder a restarted shell starts in (P13): the folder it first started in while that is
+/// still a local folder (13p's probe: never a network path), else the profile's rule with no
+/// previous session (a restart never reads OSC 7 or the focused pane; Recycle then is home).
+pub fn restart_dir(start_dir: Option<&std::path::Path>, p: &crate::profile::Profile, is_dir: &dyn Fn(&std::path::Path) -> bool) -> (std::path::PathBuf, Option<String>) {
+    match start_dir.filter(|d| crate::start_dir::probe_ok(d, is_dir)) {
+        Some(d) => (d.to_path_buf(), None),
+        None => crate::profile::start_dir_probing(p, None, is_dir),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,5 +516,27 @@ mod tests {
         assert_eq!(restarted_text("", "Back"), "Back");
         assert_eq!(restarted_text("", ""), "Session Restarted");
         assert_eq!(restarted_text("Bye", "Back"), "Bye");
+    }
+    /// P13 (13p seam S3): a restart reuses the pane's own start folder, never another pane's,
+    /// and a gone or network folder falls back to the profile's rule without a previous session.
+    #[test]
+    fn restart_reuses_the_start_folder() {
+        use std::path::{Path, PathBuf};
+        let mut p = crate::profile::Profile::default();
+        p.set("Custom Directory", toml::Value::String("Recycle".into()));
+        let all = |_: &Path| true;
+        assert_eq!(restart_dir(Some(Path::new("D:\\work")), &p, &all).0, PathBuf::from("D:\\work"));
+        let home = crate::profile::home();
+        assert_eq!(restart_dir(Some(Path::new("\\\\host\\share")), &p, &all).0, home, "a network folder is never probed or used");
+        assert_eq!(restart_dir(Some(Path::new("D:\\gone")), &p, &|_| false).0, home, "a gone folder: Recycle with no previous session is home");
+        assert_eq!(restart_dir(None, &p, &all).0, home);
+        p.set("Custom Directory", toml::Value::String("Yes".into()));
+        p.set("Working Directory", toml::Value::String("D:\\proj".into()));
+        assert_eq!(restart_dir(Some(Path::new("D:\\gone")), &p, &|d| d == Path::new("D:\\proj")).0, PathBuf::from("D:\\proj"));
+        let src = include_str!("app/mod.rs");
+        let spawn = &src[src.find("    fn spawn_pane(").unwrap()..];
+        let spawn = &spawn[..spawn.find("\n    }\n").unwrap()];
+        assert!(spawn.contains("pane.start_dir = Some(cwd);"), "every spawned shell records its folder");
+        assert!(spawn.contains("_ if restart_dir.is_some() => crate::session_end::restart_dir(restart_dir"), "a restart never reads the focused pane");
     }
 }
