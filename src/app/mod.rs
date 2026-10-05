@@ -3232,7 +3232,7 @@ impl App {
         };
         let mut env = crate::session_env::overlay(crate::session_env::vars(&facts), &extra);
         // TERM is the profile's Terminal Type, only when nothing else names it (`PS:3253-3255`).
-        env.extend(crate::session_env::term_var(&env, std::env::var_os("TERM").is_some(), &p.string("Terminal Type")));
+        env.extend(crate::session_env::term_var(&env, std::env::var_os("TERM").is_some(), &p.terminal_type()));
         (env, cookie)
     }
 

@@ -21,7 +21,7 @@ impl App {
         let term = if p.tmux_io().is_some() {
             None
         } else {
-            Some(self.store.get(&p.profile).unwrap_or_else(|| self.store.default_profile()).string("Terminal Type"))
+            Some(self.store.get(&p.profile).unwrap_or_else(|| self.store.default_profile()).terminal_type())
         };
         if let Some(p) = self.panes.get_mut(&pane) {
             p.set_emu(rules, term.as_deref());
@@ -31,7 +31,9 @@ impl App {
     /// OSC 7 with a machine id arrived while Accept OSC 7 is off (`PS:15534-15558`): asked once
     /// a run, however many panes send it.
     pub(super) fn osc7_disabled(&mut self) {
-        if !self.osc7_latch.first() {
+        // A warning queued before the key was turned back on does not spend the latch
+        // (`MS:4646-4653` re-checks when it is shown).
+        if self.emu_rules().accept_osc7 || !self.osc7_latch.first() {
             return;
         }
         let was_silenced = crate::warnings::is_silenced(&self.globals, emu::OSC7_WARNING_ID, super::warnings_app::unix_now());

@@ -460,6 +460,7 @@ impl<T> Term<T> {
         let grid = Grid::new(num_lines, num_cols, history_size);
         let inactive_grid = Grid::new(num_lines, num_cols, 0);
 
+        // Tandem patch: the stop spacing is a parameter (`Term.tab_width`).
         let tabs = TabStops::new(grid.columns(), INITIAL_TABSTOPS);
 
         let scroll_region = Line(0)..Line(grid.screen_lines() as i32);
@@ -807,6 +808,7 @@ impl<T> Term<T> {
             self.selection = None;
 
             // Recreate tabs list.
+            // Tandem patch: with the configured spacing.
             self.tabs.resize(num_cols, self.tab_width);
         } else if let Some(selection) = self.selection.take() {
             // Tandem patch: every line moved by `delta`, and the ones now outside the buffer
@@ -2046,6 +2048,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.grid.reset();
         self.inactive_grid.reset();
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
+        // Tandem patch: a reset restores the configured spacing.
         self.tabs = TabStops::new(self.columns(), self.tab_width);
         self.title_stack = Vec::new();
         self.title = None;
@@ -2573,6 +2576,7 @@ impl TabStops {
     }
 
     /// Increase tabstop capacity.
+    // Tandem patch: `width` is the stop spacing (at least 1).
     #[inline]
     fn resize(&mut self, columns: usize, width: usize) {
         let width = width.max(1);

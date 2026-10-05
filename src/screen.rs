@@ -196,6 +196,8 @@ pub struct Screen {
     pub(crate) folds: std::collections::HashMap<u32, Vec<Row<Cell>>>,
     next_fold: u32,
     feeds: u32,
+    /// Whether any byte has been fed: iTerm2's tab width applies to a new session only.
+    fed: bool,
     /// The Advanced emulation rules this screen follows (`set_rules`).
     pub(crate) rules: crate::emu::Rules,
     /// The profile's Terminal Type (`set_term_name`).
@@ -473,6 +475,7 @@ impl Screen {
             folds: std::collections::HashMap::new(),
             next_fold: 0,
             feeds: 0,
+            fed: false,
             rules: crate::emu::Rules::default(),
             term_name: "xterm-256color".to_string(),
             saw_location_code: false,
@@ -1262,13 +1265,11 @@ impl Screen {
         self.term.set_scrollback_with_region(on);
     }
 
-    /// Whether the profile lets a program turn DECSET 1007 on (iTerm2's Allow Alternate Mouse
-    /// Scroll); turning it off again is always allowed.
     /// The Advanced emulation rules (`emu::Rules`): the Term's own knobs follow them. The tab
     /// width is iTerm2's "for new sessions": it resets every stop, so it is taken only while
     /// the screen has fed no byte.
     pub fn set_rules(&mut self, rules: crate::emu::Rules) {
-        if self.feeds == 0 {
+        if !self.fed {
             self.term.set_tab_width(rules.tab_width);
         }
         self.term.xterm_version = rules.xterm_version;
@@ -1291,6 +1292,8 @@ impl Screen {
         &self.term_name
     }
 
+    /// Whether the profile lets a program turn DECSET 1007 on (iTerm2's Allow Alternate Mouse
+    /// Scroll); turning it off again is always allowed.
     pub fn set_alternate_scroll_allowed(&mut self, on: bool) {
         self.term.alternate_scroll_allowed = on;
     }
@@ -1567,6 +1570,7 @@ impl Screen {
         }
         // Now and then, forget folds and notes whose rows scrolled out of the buffer.
         self.feeds = self.feeds.wrapping_add(1);
+        self.fed = true;
         if self.feeds % 256 == 0 && (!self.folds.is_empty() || !self.notes.by_id.is_empty() || !self.images.by_id.is_empty() || !self.portholes.is_empty()) {
             self.prune_tags();
         }
