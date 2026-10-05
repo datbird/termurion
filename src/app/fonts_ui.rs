@@ -40,13 +40,44 @@ pub fn pointer_cell(cell: (f32, f32), origin: (f32, f32), x: f32, y: f32, cols: 
 /// reads it, so a new pane is sized at its own cell before it ever draws.
 #[derive(Default)]
 pub struct PaneFaces {
+    /// The raw profile values each pane's key was built from, with the key: a pane whose values
+    /// are unchanged keeps its key (no font parse, no lookup) on the frame's second call.
+    raw: HashMap<PaneId, (RawFont, FaceKey)>,
     by_pane: HashMap<PaneId, (FaceKey, u16, (f32, f32))>,
     /// The cell each pane's grid was last sized at (`mark_laid`): a pane whose cell moved since
     /// (a font edit in its profile, a scale change) needs its grid again (`stale`).
     laid: HashMap<PaneId, (f32, f32)>,
 }
 
+/// What a face key is built from, as the profile stores it, plus the window's scale and the
+/// shared offset (`face_key_for`'s inputs).
+#[derive(Clone, PartialEq)]
+pub struct RawFont {
+    normal: String,
+    alt: Option<String>,
+    spacing: (u64, u64),
+    scale: u32,
+    offset: u32,
+}
+
+impl RawFont {
+    fn of(p: &Profile, scale: f32, offset: f32) -> RawFont {
+        RawFont {
+            normal: p.string("Normal Font"),
+            alt: p.bool("Use Non-ASCII Font").then(|| p.string("Non Ascii Font")),
+            spacing: (p.float("Horizontal Spacing").to_bits(), p.float("Vertical Spacing").to_bits()),
+            scale: scale.to_bits(),
+            offset: offset.to_bits(),
+        }
+    }
+}
+
 impl PaneFaces {
+    /// The key cached for `pane` when its raw values are still `raw`.
+    fn cached(&self, pane: PaneId, raw: &RawFont) -> Option<FaceKey> {
+        self.raw.get(&pane).filter(|(r, _)| r == raw).map(|(_, k)| k.clone())
+    }
+
     /// Measures the face of each pane in `panes` (on first use only: the renderer remembers a
     /// key), refreshes the cells (a scale change re-measures in place) and forgets the rest.
     pub fn ensure(&mut self, renderer: &mut Renderer, panes: impl IntoIterator<Item = (PaneId, FaceKey)>) {
@@ -62,6 +93,7 @@ impl PaneFaces {
             }
         }
         self.by_pane.retain(|p, _| seen.contains(p));
+        self.raw.retain(|p, _| seen.contains(p));
         self.laid.retain(|p, _| seen.contains(p));
     }
 
@@ -92,8 +124,12 @@ impl App {
     }
 
     /// The face key of the profile `pane` runs (the default profile when it is gone).
-    fn pane_face_key(&self, pane: &Pane) -> FaceKey {
-        self.face_key(self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile()))
+    /// Returns the raw values with it, and reuses the cached key while they are unchanged.
+    fn pane_face_key(&self, id: PaneId, pane: &Pane) -> (RawFont, FaceKey) {
+        let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
+        let raw = RawFont::of(p, self.scale(), self.font_offset);
+        let key = self.pane_faces.cached(id, &raw).unwrap_or_else(|| self.face_key(p));
+        (raw, key)
     }
 
     /// Measures the face of every pane of this window, at the window's scale. Called at the top
@@ -104,12 +140,20 @@ impl App {
             return;
         }
         let scale = self.scale();
-        let keys: Vec<(PaneId, FaceKey)> = self
+        let built: Vec<(PaneId, RawFont, FaceKey)> = self
             .tabs
             .iter()
             .flat_map(|t| t.layout.panes())
-            .filter_map(|id| Some((id, self.pane_face_key(self.panes.get(&id)?))))
+            .filter_map(|id| {
+                let (raw, key) = self.pane_face_key(id, self.panes.get(&id)?);
+                Some((id, raw, key))
+            })
             .collect();
+        let mut keys = Vec::with_capacity(built.len());
+        for (id, raw, key) in built {
+            self.pane_faces.raw.insert(id, (raw, key.clone()));
+            keys.push((id, key));
+        }
         let Some(g) = self.gpu.as_mut() else { return };
         g.renderer.set_scale(scale);
         self.pane_faces.ensure(&mut g.renderer, keys);

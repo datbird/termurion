@@ -3633,6 +3633,11 @@ impl App {
             return;
         }
         self.font_sig = sig;
+        // A held slice (Reduce Flicker) was drawn at the old cells: it never outlives a font or scale change.
+        for p in self.panes.values_mut() {
+            p.held = None;
+            p.held_until = None;
+        }
         if let Some(g) = self.gpu.as_ref() {
             normal.family = g.renderer.resolve_family(&normal.family);
             alt = alt.map(|a| g.renderer.resolve_family(&a));

@@ -3609,7 +3609,7 @@ mod broadcast_tests {
 #[cfg(test)]
 mod tests {
     /// (quads, rows, digest) of the porthole frame in `doc_lines_draw_as_the_porthole_did`, taken from `porthole` before `doc_lines` was extracted from it (retaken when `TextRow` gained `face`: the digest reads the rows' Debug text, and the 10 quads and 15 rows are unchanged).
-    const GOLDEN: (usize, usize, u64) = (10, 15, 12293229994081336650);
+    const GOLDEN: (usize, usize, u64) = (10, 15, 10881690239227710009);
 
     /// The palette the tab bar had before themes: one flat dark bar, a lighter selected tab, the
     /// two greys for text and no lines. The layout tests below draw with it.
@@ -6147,7 +6147,8 @@ mod tests {
 
     fn digest(f: &Frame) -> u64 {
         // FNV-1a over the frame's quads and rows.
-        let text = format!("{:?}{:?}", f.quads, f.rows);
+        // The rows' `face` field is 13n's; the digest is of the fields the porthole drew before it.
+        let text = format!("{:?}{:?}", f.quads, f.rows).replace(", face: 0", "");
         text.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3))
     }
 
