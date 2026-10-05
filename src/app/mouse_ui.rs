@@ -26,7 +26,8 @@ impl App {
     /// font offset moves one step (clamped as the menu always did; `apply_fonts` holds the
     /// upper clamp). The caller lays out. 13k reads the font metrics this changes.
     pub(super) fn change_font_size(&mut self, dir: i32) {
-        let offset = if dir > 0 { self.font_offset + 1.0 } else { (self.font_offset - 1.0).max(-8.0) };
+        let base = self.store.default_profile().font("Normal Font").size_pt as f32;
+        let offset = wheel::clamp_font_offset(base, self.font_offset + dir.signum() as f32);
         self.set_font_offset(offset);
     }
 
@@ -52,6 +53,7 @@ impl App {
     /// Tandem dialog, a password prompt or a waiting approval, and never for a hidden hotkey
     /// window. The pane under the pointer is focused by `mouse_move` as before.
     pub(super) fn ffm_enter(&mut self) {
+        self.ffm_entered = false;
         let ffm = self.globals.bool("FocusFollowsMouse");
         if !ffm || !matches!(self.drag, Drag::None) {
             return;
@@ -68,7 +70,7 @@ impl App {
         if front == hwnd || self.windows.current().is_some_and(|k| self.hidden_hotkey_key(k)) {
             return;
         }
-        if !mouse::ffm_may_act(enter, self.ffm_front(front), self.focused_password_prompt(), !self.orch_waits.is_empty()) {
+        if !mouse::ffm_may_act(enter, self.ffm_front(front), self.focused_password_prompt(), !self.orch_waits.is_empty(), self.ffm_composing()) {
             return;
         }
         match enter {
@@ -86,8 +88,17 @@ impl App {
         }
     }
 
+    /// 13k seam: true while an IME composition is open (Tandem has none yet).
+    fn ffm_composing(&self) -> bool {
+        false
+    }
+
     /// Plain focus follows mouse inside a window: the pane under the pointer takes focus.
-    pub(super) fn ffm_pane_focus(&mut self, id: PaneId) {
+    /// Never over one of Tandem's overlays (the one list), never while composing (13k).
+    pub(super) fn ffm_pane_focus(&mut self, id: PaneId, at: (f32, f32)) {
+        if self.ffm_composing() || self.tandem_ui_at(at.0, at.1) {
+            return;
+        }
         if self.globals.bool("FocusFollowsMouse") && self.tabs.get(self.active).is_some_and(|t| t.focused != id) {
             self.tabs[self.active].focused = id;
             self.refresh_route();
@@ -121,6 +132,10 @@ impl App {
         let Some((id, hwnd)) = self.terminal_window_under(now) else { return };
         if hwnd != front {
             self.focus_terminal_window(id);
+        }
+        // The pane is resolved in the window under the pointer, whichever was current.
+        if !self.enter(id) {
+            return;
         }
         self.focus_pane_at_screen(hwnd, now);
     }
@@ -167,7 +182,7 @@ impl App {
             return;
         }
         if let Some((id, _)) = self.pane_at(p.x as f32, p.y as f32) {
-            self.ffm_pane_focus(id);
+            self.ffm_pane_focus(id, (p.x as f32, p.y as f32));
         }
     }
 
@@ -277,6 +292,9 @@ impl App {
     pub(super) fn divider_at(&self, x: f32, y: f32) -> Option<crate::layout::Divider> {
         let area = self.content_area();
         let grab = 3.0 * self.scale();
+        if self.tabs.get(self.active)?.zoomed.is_some() {
+            return None;
+        }
         self.tabs.get(self.active)?.layout.dividers(area, GAP).into_iter().find(|d| mouse::divider_grab(d.rect, grab).contains(x, y))
     }
 
@@ -807,6 +825,46 @@ mod tests {
         let act = body(UI, "ffm_became_active");
         assert!(act.contains("ffm_on_activate(") && act.contains("AggressiveFocusFollowsMouse"));
         assert!(!body(MOD, "mouse_move").contains("self.tabs[self.active].focused = id"), "the pane focus moved into one helper");
+    }
+
+    /// 13j task 8 round 1: focus follows mouse reacts to a pointer over a terminal pane with no
+    /// overlay on it, never to the window's chrome (iTerm2's text view tracking area).
+    #[test]
+    fn focus_follows_mouse_acts_over_a_terminal_only() {
+        let arm = MOD.split("WindowEvent::CursorEntered").nth(1).unwrap().split("WindowEvent::CursorLeft").next().unwrap();
+        assert!(!arm.contains("self.ffm_enter()"), "the entry only arms the decision");
+        assert!(arm.contains("ffm_entered = true"));
+        let mv = body(MOD, "mouse_move");
+        let at = mv.find("self.ffm_enter()").expect("mouse_move decides");
+        assert!(mv[..at].contains("pane_at(x, y)") && mv[..at].contains("tandem_ui_at(x, y)") && mv[..at].contains("ffm_entered"));
+        assert!(body(UI, "ffm_enter").contains("self.ffm_entered = false"), "one decision per entry");
+    }
+
+    #[test]
+    fn hovering_an_overlay_never_moves_focus() {
+        let b = body(UI, "ffm_pane_focus");
+        assert!(b.contains("tandem_ui_at("), "the one overlay list");
+        assert!(b.contains("ffm_composing()"), "the 13k seam");
+        assert!(body(UI, "focus_pane_at_screen").contains("ffm_pane_focus(id, "));
+    }
+
+    #[test]
+    fn activation_enters_the_window_before_resolving_its_pane() {
+        let b = body(UI, "ffm_became_active");
+        let (enter, focus) = (b.find("self.enter(id)").expect("enters the window"), b.find("focus_pane_at_screen(").unwrap());
+        assert!(enter < focus, "the pane is resolved in the right window");
+    }
+
+    #[test]
+    fn the_font_offset_is_clamped_to_the_drawn_range() {
+        let b = body(UI, "change_font_size");
+        assert!(b.contains("clamp_font_offset("));
+        assert!(!b.contains("max(-8.0)"));
+    }
+
+    #[test]
+    fn dividers_follow_the_zoom() {
+        assert!(body(UI, "divider_at").contains("zoomed"), "a zoomed tab hides its dividers");
     }
 
     /// The menu's bigger and smaller text use `change_font_size`, one clamp.

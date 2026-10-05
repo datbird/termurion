@@ -176,8 +176,9 @@ pub enum Front {
 /// Whether focus follows mouse may act on `enter` now. It never takes focus from a Tandem
 /// dialog (modal prompt, 12f approval window), from a password prompt, or while an approval is
 /// waiting; it takes it from another app only as the steal switch (`Enter::Steal`) says.
-pub fn ffm_may_act(enter: Enter, front: Front, password_prompt: bool, approval_pending: bool) -> bool {
-    if password_prompt || approval_pending {
+pub fn ffm_may_act(enter: Enter, front: Front, password_prompt: bool, approval_pending: bool, composing: bool) -> bool {
+    // An IME composition holds focus where it is (13k wires the flag).
+    if password_prompt || approval_pending || composing {
         return false;
     }
     match enter {
@@ -622,7 +623,7 @@ mod tests {
     /// approval, or (without the opt-in) another app.
     #[test]
     fn focus_follows_mouse_never_steals_from_a_prompt() {
-        let ok = |e, front, pw, ap| ffm_may_act(e, front, pw, ap);
+        let ok = |e, front, pw, ap| ffm_may_act(e, front, pw, ap, false);
         assert!(ok(Enter::MakeKey, Front::Terminal, false, false));
         assert!(!ok(Enter::MakeKey, Front::OtherTandem, false, false), "a dialog, settings or chat window is in front");
         assert!(!ok(Enter::MakeKey, Front::Terminal, true, false), "a password prompt holds focus");
@@ -633,6 +634,15 @@ mod tests {
         assert!(!ok(Enter::Steal, Front::OtherTandem, false, false));
         assert!(!ok(Enter::Nothing, Front::Terminal, false, false));
     }
+    /// 13k seam: an IME composition holds focus follows mouse back whatever the enter says.
+    #[test]
+    fn focus_follows_mouse_waits_for_a_composition() {
+        for e in [Enter::MakeKey, Enter::Steal] {
+            assert!(!ffm_may_act(e, Front::Terminal, false, false, true));
+        }
+        assert!(ffm_may_act(Enter::MakeKey, Front::Terminal, false, false, false));
+    }
+
     /// A split divider's grab zone: the divider grown by `grab` on every side. Every button
     /// pressed in it is Tandem's (left drags the divider; right and middle do nothing), never
     /// the program's.

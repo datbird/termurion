@@ -633,6 +633,8 @@ pub struct App {
     overlay_drawn: Vec<(mouse::Overlay, Rect)>,
     /// The drawn I-beam cursors, built once in `resumed` and shared by every window.
     cursors: Option<crate::pointer_shape::Cursors>,
+    /// The pointer entered a window and has not yet reached a terminal pane there.
+    ffm_entered: bool,
     /// A link under a porthole press (opened when the button comes up without a drag), the
     /// links waiting on a bar, and the language list a popup shows.
     porthole_link: Option<(PaneId, u32, String)>,
@@ -1686,6 +1688,7 @@ pub fn run() {
         porthole_hits: Vec::new(),
         overlay_drawn: Vec::new(),
         cursors: None,
+        ffm_entered: false,
         porthole_link: None,
         porthole_link_asks: HashMap::new(),
         porthole_languages: None,
@@ -4677,7 +4680,12 @@ impl App {
             }
             Drag::None => {
                 if let Some((id, _)) = self.pane_at(x, y) {
-                    self.ffm_pane_focus(id);
+                    // The pointer reached a terminal pane (not chrome, not an overlay) after
+                    // entering the window: the one moment focus follows mouse decides.
+                    if self.ffm_entered && !self.tandem_ui_at(x, y) {
+                        self.ffm_enter();
+                    }
+                    self.ffm_pane_focus(id, (x, y));
                     if self.modes(id).tracking == Tracking::Any && self.report_gate(id, mouse::Kind::Hover) {
                         self.send_motion(id, None, x, y);
                     }
@@ -5697,10 +5705,12 @@ impl ApplicationHandler<UserEvent> for App {
                     self.frustration(id, |d| d.key());
                 }
             }
-            // The pointer left the window: no Help tooltip stays up.
-            // The pointer entered this window: focus follows mouse may make it key.
-            WindowEvent::CursorEntered { .. } => self.ffm_enter(),
+            // The pointer entered this window: focus follows mouse decides when it first
+            // reaches a terminal pane (`mouse_move`), not over the chrome.
+            WindowEvent::CursorEntered { .. } => self.ffm_entered = true,
             WindowEvent::CursorLeft { .. } => {
+                // The pointer left the window: no Help tooltip stays up.
+                self.ffm_entered = false;
                 let composer = self.composer_hover.take().is_some();
                 let tab = self.tab_hover.take().is_some();
                 self.tab_tip = None;
