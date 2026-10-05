@@ -30,6 +30,22 @@ pub struct ClickContext {
     pub urls: crate::url_guess::UrlPrefs,
     /// Probe no path on disk (a pane whose text a remote host wrote, hover).
     pub no_probe: bool,
+    /// The detection context used a column window (`UAH:86`): hard newlines were not respected.
+    pub windowed: bool,
+    /// The same click with hard newlines respected, for the file phase's second pass
+    /// (`UAF:291-297`); None when the first context already respected them.
+    pub respecting: Option<(String, String)>,
+    /// The filename characters (`FilenameCharacterSet`); None is iTerm2's default.
+    pub filename_set: Option<crate::url_guess::CharSet>,
+}
+
+/// Which context a resolved range belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pass {
+    /// `before` and `after`.
+    Detect,
+    /// `respecting`.
+    Respecting,
 }
 
 /// `MaxSemanticHistoryPrefixOrSuffix`'s default: iTerm2 looks this far each way from the click.
@@ -62,23 +78,44 @@ fn shown_preview(text: &str) -> String {
 /// Like `resolve`, with the target's byte range in `before` + `after`. The range is None
 /// for a link or a Smart Selection action, whose extent the caller knows.
 pub fn resolve_range(ctx: &ClickContext) -> Option<(Target, Option<std::ops::Range<usize>>)> {
+    resolve_in(ctx).map(|(t, r, _)| (t, r))
+}
+
+/// Like `resolve_range`, with the context the range belongs to.
+pub fn resolve_in(ctx: &ClickContext) -> Option<(Target, Option<std::ops::Range<usize>>, Pass)> {
     if let Some(link) = &ctx.link {
-        return Some((Target::Link(link.clone()), None));
+        return Some((Target::Link(link.clone()), None, Pass::Detect));
     }
-    if let Some((path, line, column, range)) = path_in(&ctx.before, &ctx.after, ctx.cwd.as_deref()).filter(|_| !ctx.no_probe) {
-        return Some((Target::File { path, line, column }, Some(range)));
+    let default_set;
+    let set = match &ctx.filename_set {
+        Some(s) => s,
+        None => {
+            default_set = default_filename_set();
+            &default_set
+        }
+    };
+    if !ctx.no_probe {
+        if let Some((path, line, column, range)) = path_in(&ctx.before, &ctx.after, ctx.cwd.as_deref(), set) {
+            return Some((Target::File { path, line, column }, Some(range), Pass::Detect));
+        }
+        // ExistingFileRespectingHardNewlines (`UAF:291-297`).
+        if let Some((b, a)) = &ctx.respecting {
+            if let Some((path, line, column, range)) = path_in(b, a, ctx.cwd.as_deref(), set) {
+                return Some((Target::File { path, line, column }, Some(range), Pass::Respecting));
+            }
+        }
     }
     if let Some((rule, action, text)) = &ctx.smart {
-        return Some((Target::Action { rule: *rule, action: *action, text: text.clone() }, None));
+        return Some((Target::Action { rule: *rule, action: *action, text: text.clone() }, None, Pass::Detect));
     }
     if ctx.raw_command {
         let range = word_range(&ctx.before, &ctx.after);
         if !range.is_empty() {
             let word = format!("{}{}", ctx.before, ctx.after)[range.clone()].to_string();
-            return Some((Target::RawCommand(word), Some(range)));
+            return Some((Target::RawCommand(word), Some(range), Pass::Detect));
         }
     }
-    crate::url_guess::guess(&ctx.before, &ctx.after, &ctx.urls).map(|(u, r)| (Target::Url(u), Some(r)))
+    crate::url_guess::guess(&ctx.before, &ctx.after, &ctx.urls).map(|(u, r)| (Target::Url(u), Some(r), Pass::Detect))
 }
 
 pub fn resolve(ctx: &ClickContext) -> Option<Target> {
@@ -182,31 +219,43 @@ fn existing(text: &str, cwd: Option<&Path>) -> Option<PathBuf> {
 /// An existing file or folder around the click, with a line and column when the text
 /// after it gives them.
 pub fn find_path(before: &str, after: &str, cwd: Option<&Path>) -> Option<(PathBuf, Option<u32>, Option<u32>)> {
-    path_in(before, after, cwd).map(|(p, l, c, _)| (p, l, c))
+    path_in(before, after, cwd, &default_filename_set()).map(|(p, l, c, _)| (p, l, c))
 }
 
 type PathHit = (PathBuf, Option<u32>, Option<u32>, std::ops::Range<usize>);
 
-fn path_in(before: &str, after: &str, cwd: Option<&Path>) -> Option<PathHit> {
+/// iTerm2's default filename characters.
+fn default_filename_set() -> crate::url_guess::CharSet {
+    crate::url_guess::filename(&crate::url_guess::CharSet::default(), crate::url_guess::DEFAULT_FILENAME_CHARS)
+}
+
+/// The path hit's range is in the coordinates of `before` + `after` as given.
+fn path_in(before: &str, after: &str, cwd: Option<&Path>, set: &crate::url_guess::CharSet) -> Option<PathHit> {
+    // Only the filename characters around the click are candidates (`UAF:437-452`).
+    let (b, a) = crate::sh_context::filename_parts(before, after, set);
+    let shift = before.len() - b.len();
+    let whole = format!("{before}{after}");
+    let (before, after) = (b.as_str(), a.as_str());
     let (starts, ends) = chunk_bounds(before, after);
     // The longest candidate that exists wins, so a path with spaces beats its last word.
-    let mut best: Option<(std::ops::Range<usize>, PathBuf, String)> = None;
+    let mut best: Option<(std::ops::Range<usize>, PathBuf)> = None;
     for &s in &starts {
         for &e in &ends {
             let joined = format!("{}{}", &before[s..], &after[..e]);
             let (l, r) = clean_range(&joined);
-            if l >= r || best.as_ref().is_some_and(|(range, _, _)| range.len() >= r - l) {
+            if l >= r || best.as_ref().is_some_and(|(range, _)| range.len() >= r - l) {
                 continue;
             }
             if let Some(p) = existing(&joined[l..r], cwd) {
-                // The text after the kept path, for its line and column.
-                let rest = format!("{}{}", &joined[r..], &after[e..]);
-                best = Some((s + l..s + r, p, rest));
+                best = Some((s + l..s + r, p));
             }
         }
     }
-    best.map(|(range, p, rest)| {
-        let (line, column) = line_and_column(&rest);
+    best.map(|(range, p)| {
+        let range = range.start + shift..range.end + shift;
+        // The line and column come from the text as given (msvc's "(7,3)" is not a filename
+        // character; iTerm2 reads it from the narrowed suffix only).
+        let (line, column) = line_and_column(&whole[range.end..]);
         (p, line, column, range)
     })
 }
@@ -557,6 +606,34 @@ mod tests {
         assert_eq!(url_like(&b, &a, true), None);
         let (b, a) = click("version 1.2|.3");
         assert_eq!(url_like(&b, &a, true), None);
+    }
+
+    #[test]
+    fn path_uses_filename_parts() {
+        let d = dir("fnparts", &["x.txt"]);
+        assert_eq!(find_path("see <", "x.txt>", Some(&d)).map(|(p, _, _)| p), Some(d.join("x.txt")));
+        assert_eq!(find_path("a|b ", "x.txt", Some(&d)).map(|(p, _, _)| p), Some(d.join("x.txt")));
+        // The range stays in the coordinates of the text given.
+        let (before, after) = ("see <x".to_string(), ".txt>".to_string());
+        let ctx = ClickContext { before: before.clone(), after: after.clone(), cwd: Some(d.clone()), ..Default::default() };
+        let (_, range) = resolve_range(&ctx).unwrap();
+        assert_eq!(&format!("{before}{after}")[range.unwrap()], "x.txt");
+    }
+
+    #[test]
+    fn second_pass_respects_hard_newlines() {
+        let d = dir("respect", &["b.txt"]);
+        // Two rows joined (a hard newline between "see a" and "b.txt"): no file. The logical
+        // line alone holds b.txt.
+        let ctx = ClickContext { before: "see a".into(), after: "b.txt".into(), cwd: Some(d.clone()), ..Default::default() };
+        assert_eq!(resolve_in(&ctx), None);
+        let ctx = ClickContext { respecting: Some((String::new(), "b.txt".into())), ..ctx };
+        let (t, range, pass) = resolve_in(&ctx).unwrap();
+        assert!(matches!(t, Target::File { .. }));
+        assert_eq!((range, pass), (Some(0..5), Pass::Respecting));
+        // The first pass wins when it finds something.
+        let ctx = ClickContext { before: String::new(), after: "b.txt".into(), cwd: Some(d), respecting: Some((String::new(), "b.txt".into())), ..Default::default() };
+        assert_eq!(resolve_in(&ctx).unwrap().2, Pass::Detect);
     }
 
     #[test]

@@ -6,6 +6,7 @@ use alacritty_terminal::index::Point;
 use super::*;
 use super::find_ui::{reveal, to_pos};
 use crate::find::{self, Logical, Match};
+use crate::sh_context;
 use crate::semantic::{self, Around, ClickContext, Prefs, Run, Target};
 use crate::smartsel::{self, Escape};
 use crate::ssh_files;
@@ -16,9 +17,51 @@ pub(super) fn hover_cells(target_cells: Match, underline: bool) -> Option<Match>
     underline.then_some(target_cells)
 }
 
-/// The byte window around a click in its line: `max` each way, clamped to the line.
-pub(super) fn context_bounds(line_len: usize, offset: usize, max: usize) -> (usize, usize) {
-    (offset.saturating_sub(max), offset.saturating_add(max).min(line_len))
+/// The columns between soft boundaries (the vertical dividers apps draw) around a click, when
+/// `restrict` is on and a divider stands in the click's row (`UAH:86`, `UAH:401-430`).
+pub(super) fn window_for(rows: &[Vec<char>], row: usize, col: usize, width: usize, restrict: bool) -> Option<(usize, usize)> {
+    if !restrict || width == 0 {
+        return None;
+    }
+    let dividers = crate::seltools::divider_columns(rows, row);
+    (!dividers.is_empty()).then(|| crate::seltools::clip_to_dividers(0, width - 1, col, &dividers))
+}
+
+/// A logical line's characters whose cells lie in columns `lo..=hi`, re-offset.
+pub(super) fn restrict_columns(line: &Logical, lo: usize, hi: usize) -> Logical {
+    let mut out = Logical { text: String::new(), cells: Vec::new() };
+    for (i, (offset, pos)) in line.cells.iter().enumerate() {
+        if (lo..=hi).contains(&pos.col) {
+            let end = line.cells.get(i + 1).map_or(line.text.len(), |(o, _)| *o);
+            out.cells.push((out.text.len(), *pos));
+            out.text.push_str(&line.text[*offset..end]);
+        }
+    }
+    out
+}
+
+/// The columns between soft boundaries around `at`, when `restrict` is on.
+fn click_window(screen: &crate::screen::Screen, at: find::Pos, restrict: bool) -> Option<(usize, usize)> {
+    use alacritty_terminal::grid::Dimensions;
+    let grid = screen.term().grid();
+    let line = at.row as i32 - grid.history_size() as i32;
+    let reach = crate::seltools::DIVIDER_RUN as i32 - 1;
+    let rows = find::cell_rows(screen, line - reach, line + reach);
+    let row = (line - (line - reach).max(-(grid.history_size() as i32))) as usize;
+    window_for(&rows, row, at.col, grid.columns(), restrict)
+}
+
+/// The text around `at` through `sh_context`: rows enough for the byte limit, in the window.
+fn around(screen: &crate::screen::Screen, at: find::Pos, window: Option<(usize, usize)>, respect: bool, max: usize) -> sh_context::Context {
+    use alacritty_terminal::grid::Dimensions;
+    let grid = screen.term().grid();
+    let top = -(grid.history_size() as i32);
+    let line = at.row as i32 + top;
+    // Each cell holds at least one byte, so this many rows hold `max` bytes.
+    let n = (sh_context::ROW_CLAMP.max(max / grid.columns().max(1) + 2)).min(200) as i32;
+    let first = (line - n).max(top);
+    let rows = find::rows_text(screen, first, line + n, window);
+    sh_context::build(&rows, (line - first) as usize, at.col, respect, max)
 }
 
 /// What `update_hover` compares to skip work: the pane, the cell and both hover keys.
@@ -57,31 +100,52 @@ impl App {
         let at = to_pos(&p.screen, point);
         let (lines, i) = find::logical_lines_around(&p.screen, at.row, RADIUS);
         let line = lines.get(i)?.clone_line();
-        let o = line.offset_of(at)?;
+        line.offset_of(at)?;
+        // Detection stays between soft boundaries (`UAH:86`), Smart Selection included (P12).
+        let window = click_window(&p.screen, at, true);
+        let lines: Vec<Logical> = match window {
+            Some((lo, hi)) => lines.iter().map(|l| restrict_columns(l, lo, hi)).collect(),
+            None => lines,
+        };
         let joined = Logical::join(&lines, "\n");
         let found = joined.offset_of(at).and_then(|click| smartsel::select_at(&joined.text, click, &rules));
         let smart = found.as_ref().filter(|f| !rules[f.rule].actions.is_empty()).map(|f| (f.rule, 0, joined.text[f.range.clone()].to_string()));
-        // At most `MaxSemanticHistoryPrefixOrSuffix` each way, cut on character boundaries.
         let max = self.globals.int("MaxSemanticHistoryPrefixOrSuffix").max(0) as usize;
-        let (mut base, mut end) = context_bounds(line.text.len(), o, max);
-        while !line.text.is_char_boundary(base) {
-            base += 1;
-        }
-        while !line.text.is_char_boundary(end) {
-            end -= 1;
-        }
+        let ignore = self.globals.bool("IgnoreHardNewlinesInURLs");
+        let respect = sh_context::respect_hard(ignore, p.screen.alt_screen(), window.is_some());
+        let text = around(&p.screen, at, window, respect, max);
+        // The file phase's second pass, when the first did not respect hard newlines and a
+        // window did not rule that out (`UAF:291-297`).
+        let hard = (!respect && window.is_none()).then(|| around(&p.screen, at, None, true, max));
         let link = p.screen.term().grid()[point].hyperlink();
+        let urls = self.url_prefs(id);
+        let filename_set = crate::url_guess::filename(&urls.chars, &self.globals.string("FilenameCharacterSet"));
         let ctx = ClickContext {
-            before: line.text[base..o].to_string(),
-            after: line.text[o..end].to_string(),
+            before: text.before.clone(),
+            after: text.after.clone(),
             link: link.as_ref().map(|h| h.uri().to_string()),
             cwd: self.pane_dir(id),
             smart,
             raw_command: prefs.action == "raw command",
-            urls: self.url_prefs(id),
+            urls,
             no_probe: self.remote_text(id),
+            windowed: window.is_some(),
+            respecting: hard.as_ref().map(|h| (h.before.clone(), h.after.clone())),
+            filename_set: Some(filename_set),
         };
-        Some(Clicked { ctx, line, base, joined, found, rules, prefs, link_id: link.map(|h| h.id().to_string()) })
+        Some(Clicked { ctx, line, text, hard, joined, found, rules, prefs, link_id: link.map(|h| h.id().to_string()) })
+    }
+
+    /// The text for `\3` and `\4`: restricted to the soft-boundary window only with
+    /// `RestrictSemanticHistoryPrefixAndSuffixToLogicalWindow` (R3), blank cells as spaces.
+    fn action_context(&self, id: PaneId, point: Point) -> Option<(String, String)> {
+        let p = self.panes.get(&id)?;
+        let at = to_pos(&p.screen, point);
+        let window = click_window(&p.screen, at, self.globals.bool("RestrictSemanticHistoryPrefixAndSuffixToLogicalWindow"));
+        let respect = sh_context::respect_hard(self.globals.bool("IgnoreHardNewlinesInURLs"), p.screen.alt_screen(), window.is_some());
+        let max = self.globals.int("MaxSemanticHistoryPrefixOrSuffix").max(0) as usize;
+        let c = around(&p.screen, at, window, respect, max);
+        (!c.cells.is_empty()).then_some((c.before, c.after))
     }
 
     /// The URL guessing settings for a pane: the Advanced keys plus whether its working
@@ -133,9 +197,12 @@ impl App {
     /// The Win-click target at a point and the cells it covers.
     pub(super) fn target_at(&self, id: PaneId, point: Point) -> Option<(Clicked, Target, Match)> {
         let c = self.clicked(id, point)?;
-        let (target, range) = semantic::resolve_range(&c.ctx)?;
+        let (target, range, pass) = semantic::resolve_in(&c.ctx)?;
         let cells = match (&target, range) {
-            (_, Some(r)) => Match { start: c.line.pos_before(c.base + r.start), end: c.line.pos_before(c.base + r.end - 1) },
+            (_, Some(r)) => {
+                let t = if pass == semantic::Pass::Respecting { c.hard.as_ref()? } else { &c.text };
+                Match { start: t.pos_at(r.start)?, end: t.pos_at(r.end - 1)? }
+            }
             (Target::Action { .. }, None) => {
                 let f = c.found.as_ref()?;
                 Match { start: c.joined.pos_before(f.range.start), end: c.joined.pos_before(f.range.end - 1) }
@@ -192,7 +259,9 @@ impl App {
                 self.smart_action_run(id, a, &f.captures, &cwd)
             }
             _ => {
-                let around = Around { prefix: &c.ctx.before, suffix: &c.ctx.after, cwd: &cwd };
+                // \3 and \4 come from a fresh context (`UAH:401-430`).
+                let (prefix, suffix) = self.action_context(id, point).unwrap_or_else(|| (c.ctx.before.clone(), c.ctx.after.clone()));
+                let around = Around { prefix: &prefix, suffix: &suffix, cwd: &cwd };
                 semantic::plan(&target, &c.prefs, &around, has_code())
             }
         };
@@ -642,9 +711,11 @@ impl CtxPending {
 
 pub(super) struct Clicked {
     pub(super) ctx: ClickContext,
-    /// The clicked logical line, and where `ctx.before` starts in it.
+    /// The clicked logical line.
     line: Logical,
-    base: usize,
+    /// The cells of `ctx.before + ctx.after` and of `ctx.respecting`.
+    text: sh_context::Context,
+    hard: Option<sh_context::Context>,
     /// The lines Smart Selection looked at, and its match.
     pub(super) joined: Logical,
     pub(super) found: Option<smartsel::Found>,
@@ -974,10 +1045,38 @@ mod hover_tests {
 
     #[test]
     fn context_size_follows_the_key() {
-        assert_eq!(context_bounds(5000, 2500, 2000), (500, 4500));
-        assert_eq!(context_bounds(100, 50, 10), (40, 60));
-        assert_eq!(context_bounds(100, 5, 10), (0, 15), "clamped at the start");
-        assert_eq!(context_bounds(100, 95, 10), (85, 100), "clamped at the end");
-        assert_eq!(context_bounds(100, 50, 0), (50, 50));
+        let row = |t: &str| crate::find::RowText { text: t.into(), cells: t.char_indices().enumerate().map(|(c, (o, _))| (o, find::Pos { row: 0, col: c })).collect(), wraps: false };
+        let rows = [row(&"x".repeat(5000))];
+        let c = sh_context::build(&rows, 0, 2500, true, 2000);
+        assert_eq!((c.before.len(), c.after.len()), (2000, 2000));
+        let c = sh_context::build(&rows, 0, 5, true, 10);
+        assert_eq!((c.before.len(), c.after.len()), (5, 10), "clamped at the start");
+        let c = sh_context::build(&rows, 0, 50, true, 0);
+        assert_eq!((c.before.len(), c.after.len()), (0, 0));
+    }
+
+    #[test]
+    fn prefix_suffix_respect_soft_boundaries() {
+        let rows: Vec<Vec<char>> = (0..crate::seltools::DIVIDER_RUN).map(|_| "abc\u{2502}def".chars().collect()).collect();
+        assert_eq!(window_for(&rows, 3, 5, 7, true), Some((4, 6)));
+        assert_eq!(window_for(&rows, 3, 5, 7, false), None);
+        assert_eq!(window_for(&rows, 3, 1, 7, true), Some((0, 2)));
+        let plain: Vec<Vec<char>> = (0..crate::seltools::DIVIDER_RUN).map(|_| "abcdefg".chars().collect()).collect();
+        assert_eq!(window_for(&plain, 3, 5, 7, true), None);
+        assert_eq!(window_for(&plain, 3, 5, 7, false), None);
+        let short: Vec<Vec<char>> = rows[..crate::seltools::DIVIDER_RUN - 1].to_vec();
+        assert_eq!(window_for(&short, 3, 5, 7, true), None, "a divider needs its run");
+    }
+
+    #[test]
+    fn restrict_columns_cuts_a_logical_line() {
+        let line = Logical {
+            text: "ab\u{2502}cd".into(),
+            cells: vec![(0, find::Pos { row: 4, col: 0 }), (1, find::Pos { row: 4, col: 1 }), (2, find::Pos { row: 4, col: 2 }), (5, find::Pos { row: 4, col: 3 }), (6, find::Pos { row: 4, col: 4 })],
+        };
+        let cut = restrict_columns(&line, 3, 4);
+        assert_eq!(cut.text, "cd");
+        assert_eq!(cut.cells, vec![(0, find::Pos { row: 4, col: 3 }), (1, find::Pos { row: 4, col: 4 })]);
+        assert_eq!(restrict_columns(&line, 0, 1).text, "ab");
     }
 }

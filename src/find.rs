@@ -281,6 +281,54 @@ fn logical_between(screen: &Screen, top: i32, bottom: i32) -> Vec<Logical> {
     out
 }
 
+/// One screen row's text for the Semantic History context: its characters inside the column
+/// window with their cells, and whether the row wraps into the next.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowText {
+    pub text: String,
+    pub cells: Vec<(usize, Pos)>,
+    pub wraps: bool,
+}
+
+/// The rows over grid lines `first..=last` (clamped to the buffer), each limited to the columns
+/// of `window` (inclusive) when given, trailing blank cells dropped.
+pub fn rows_text(screen: &Screen, first: i32, last: i32, window: Option<(usize, usize)>) -> Vec<RowText> {
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line};
+    use alacritty_terminal::term::cell::Flags;
+    let grid = screen.term().grid();
+    let (top, bottom) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
+    let history = grid.history_size() as i32;
+    let cols = grid.columns();
+    let (from, to) = window.map_or((0, cols - 1), |(a, b)| (a.min(cols - 1), b.min(cols - 1)));
+    let mut out = Vec::new();
+    for l in first.max(top)..=last.min(bottom) {
+        let row = &grid[Line(l)];
+        let wraps = row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+        let end = if wraps { to + 1 } else { (from..=to).rev().find(|&c| row[Column(c)].c != ' ').map_or(from, |c| c + 1) };
+        let mut r = RowText { text: String::new(), cells: Vec::new(), wraps };
+        for c in from..end {
+            let cell = &row[Column(c)];
+            if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+                continue;
+            }
+            r.cells.push((r.text.len(), Pos { row: (l + history) as usize, col: c }));
+            push_cell_text(&mut r.text, screen, cell);
+        }
+        out.push(r);
+    }
+    out
+}
+
+/// Every cell's character over grid lines `first..=last` (clamped), for finding dividers.
+pub fn cell_rows(screen: &Screen, first: i32, last: i32) -> Vec<Vec<char>> {
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line};
+    let grid = screen.term().grid();
+    let (top, bottom) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
+    (first.max(top)..=last.min(bottom)).map(|l| (0..grid.columns()).map(|c| grid[Line(l)][Column(c)].c).collect()).collect()
+}
+
 /// Every match of `pattern` in the buffer, top to bottom. Matches do not cross logical
 /// lines, and a match of no text is skipped.
 pub fn find_all(screen: &Screen, pattern: &str) -> Result<Vec<Match>, String> {
@@ -539,6 +587,27 @@ mod tests {
         r.update(vec![m(2), m(3), m(4), m(8)], Some(at_pos(3, 0)));
         assert_eq!(r.current, Some(1));
         assert_eq!(r.label(), "3/4");
+    }
+
+    #[test]
+    fn rows_text_follows_the_window_and_wrap() {
+        let mut s = Screen::with_scrollback(10, 4, 100);
+        s.feed(b"abcdefghij");
+        s.feed(b"klm\r\nxy|zw  \r\n");
+        let history = 0usize;
+        let rows = rows_text(&s, 0, 3, None);
+        assert_eq!(rows.len(), 4);
+        assert_eq!((rows[0].text.as_str(), rows[0].wraps), ("abcdefghij", true));
+        assert_eq!((rows[1].text.as_str(), rows[1].wraps), ("klm", false));
+        assert_eq!(rows[2].text, "xy|zw", "trailing blanks dropped");
+        assert_eq!(rows[2].cells[3], (3, at(history + 2, 3)));
+        let win = rows_text(&s, 2, 2, Some((3, 4)));
+        assert_eq!((win[0].text.as_str(), win[0].cells.clone()), ("zw", vec![(0, at(2, 3)), (1, at(2, 4))]));
+        let chars = cell_rows(&s, 1, 2);
+        assert_eq!(chars.len(), 2);
+        assert_eq!(chars[1][2], '|');
+        assert_eq!(chars[1].len(), 10);
+        assert_eq!(rows_text(&s, -5, 99, None).len(), 4, "clamped to the buffer");
     }
 
     #[test]
