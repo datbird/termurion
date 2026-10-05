@@ -276,6 +276,10 @@ pub struct Screen {
     /// An escape-sequence print job collecting text (`CSI 5 i` to `CSI 4 i`); bounded by
     /// `limits.copy` and by time, ended by RIS, a prompt mark and a command end (B8).
     pub(crate) print_capture: Option<crate::emu::PrintCapture>,
+    /// Reports answered in the current `feed` (a batch): at most one answerback, and DECRQCRA
+    /// replies up to `DECRQCRA_PER_BATCH`, so a hostile file cannot flood the input queue.
+    answerback_sent: bool,
+    decrqcra_sent: u16,
     /// OSC 1337 Block: the blocks this screen knows.
     pub blocks: crate::blocks::Blocks,
     /// OSC 1337 Button: the buttons written into the text.
@@ -368,6 +372,9 @@ pub struct Capture {
     pub clean: Vec<bool>,
     pub cursor: (usize, usize),
 }
+
+/// DECRQCRA replies answered in one `feed` (the rest get none).
+const DECRQCRA_PER_BATCH: u16 = 64;
 
 /// What an escape-sequence print prints.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -597,6 +604,8 @@ impl Screen {
             capture: None,
             capture_hold: Vec::new(),
             print_capture: None,
+            answerback_sent: false,
+            decrqcra_sent: 0,
             color_reports: false,
             last_dark: true,
             prompt_state: Default::default(),
@@ -937,6 +946,8 @@ impl Screen {
     /// Feeds app output. Returns the bytes the terminal must send back, such as
     /// answers to device, color, and size queries. An app that gets no answer may hang.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.answerback_sent = false;
+        self.decrqcra_sent = 0;
         self.bump_ticks();
         if !bytes.is_empty() && !self.triggers.list.is_empty() {
             self.events_on_output();
@@ -1178,7 +1189,9 @@ impl Screen {
                 // iTerm2: only at VT400 and up, only when trusted, then the key (`T:2109-2124`).
                 if self.level() >= 400 && self.trusted {
                     match self.rules.decrqcra_off {
+                        Some(false) if self.decrqcra_sent >= DECRQCRA_PER_BATCH => {}
                         Some(false) => {
+                            self.decrqcra_sent += 1;
                             let params: Vec<i64> = p.iter().map(|v| i64::from(*v)).collect();
                             let sum = crate::emu::decrqcra_rect(&params, self.term.columns(), self.term.screen_lines()).map_or(0, |r| self.checksum_in(r));
                             self.replies.extend(crate::emu::checksum_reply(params.first().copied().unwrap_or(0), sum).into_bytes());
@@ -1201,6 +1214,8 @@ impl Screen {
                 }
                 None
             }
+            // ENQs in one batch coalesce: one answerback (a flood would queue 256 bytes each).
+            Held::Enq if std::mem::replace(&mut self.answerback_sent, true) => None,
             Held::Enq => {
                 self.replies.extend_from_slice(self.answerback.as_bytes());
                 None
@@ -3810,6 +3825,23 @@ mod tests {
         assert!(!s.resize_reports());
         s.set_resize_reports(true);
         assert!(s.resize_reports());
+    }
+
+    /// 13o Task 6 fix: ENQs in one output batch coalesce and DECRQCRA replies are bounded.
+    #[test]
+    fn report_floods_are_bounded() {
+        use crate::emu::Rules;
+        let mut s = Screen::new(20, 3);
+        s.set_answerback("hi".into());
+        assert_eq!(s.feed(&b"\x05".repeat(1000)), b"hi", "one answerback per batch");
+        assert_eq!(s.feed(b"\x05\x05"), b"hi", "the next batch answers again");
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { decrqcra_off: Some(false), ..Default::default() });
+        s.set_level(500);
+        s.trusted = true;
+        let one = b"\x1b[1;1;1;1;1;1*y";
+        let reply = s.feed(&one.repeat(1000));
+        assert_eq!(reply.len(), 64 * b"\x1bP1!~0000\x1b\\".len(), "64 replies a batch");
     }
 
     /// 13o Task 7 (Review Focus 6): Disable Smcup Rmcup keeps the primary screen up and the other

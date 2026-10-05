@@ -1659,14 +1659,14 @@ impl Pane {
         self.input(&bytes);
     }
 
-    /// Resizes the screen and the pty. A pane squeezed to nothing keeps 2x1. True when the
-    /// size changed.
     /// DEC mode 2048's report for a resize just done, when the program asked for one and the
     /// pane's size is ours to report (a tmux pane's is tmux's). The caller writes it.
     pub fn resize_report_if_on(&mut self, rows: u16, cols: u16, px: (u32, u32)) -> Option<Vec<u8>> {
-        resize_report_bytes(self.screen.resize_reports(), self.tmux_io().is_some(), rows, cols, px)
+        resize_report_bytes(self.own().resize_reports(), self.tmux_io().is_some(), rows, cols, px)
     }
 
+    /// Resizes the screen and the pty. A pane squeezed to nothing keeps 2x1. True when the
+    /// size changed.
     pub fn resize(&mut self, cols: u16, rows: u16) -> bool {
         let (cols, rows) = self.tmux_size.unwrap_or((cols, rows));
         let (cols, rows) = (cols.max(2), rows.max(1));
@@ -2922,6 +2922,22 @@ mod tests {
         assert_eq!(p.resize_report_if_on(4, 20, (64, 160)), None);
         p.screen.feed(b"\x1b[?2048h");
         assert_eq!(p.resize_report_if_on(4, 20, (64, 160)), Some(b"\x1b[48;4;20;64;160t".to_vec()));
+    }
+
+    /// 13o Task 6 fix: the report follows the session's own screen while a view or a freeze is up.
+    #[test]
+    fn resize_reports_follow_the_own_screen_during_a_view() {
+        let mut p = Pane::with(1, None, 20, 4);
+        p.screen.feed(b"\x1b[?2048h");
+        p.show_view(Screen::new(20, 4));
+        assert_eq!(p.resize_report_if_on(4, 20, (64, 160)), Some(b"\x1b[48;4;20;64;160t".to_vec()), "view");
+        p.freeze(Screen::new(20, 4));
+        assert_eq!(p.resize_report_if_on(4, 20, (64, 160)), Some(b"\x1b[48;4;20;64;160t".to_vec()), "freeze");
+        p.thaw();
+        let mut p = Pane::with(1, None, 20, 4);
+        p.show_view(Screen::new(20, 4));
+        p.screen.feed(b"\x1b[?2048h");
+        assert_eq!(p.resize_report_if_on(4, 20, (64, 160)), None, "the view's own mode is not the program's");
     }
 
     /// An echoed mouse report sets `stuck_seen` once per arming; output before any report does not.

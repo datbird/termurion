@@ -21,6 +21,11 @@ pub fn valid(key: &str, json: &serde_json::Value) -> Option<Value> {
     if key == crate::profile::GUID || key == crate::session_profile::ORIGINAL_GUID {
         return None;
     }
+    // Stricter than iTerm2: the Answerback String is typed back into the input on ENQ, so only
+    // the person's own profile may set it, never a program (13o Task 6 review).
+    if key == "Answerback String" {
+        return None;
+    }
     let s = schema::find(key)?;
     Some(match (&s.kind, json) {
         (Kind::Bool, J::Bool(b)) => Value::Boolean(*b),
@@ -522,6 +527,13 @@ mod tests {
         assert_eq!(UPLOAD_CANCEL, b"\x03");
         assert_eq!(UPLOAD_OK, b"ok\n");
     }
+    /// 13o Task 6 fix: a program can never set the Answerback String.
+    #[test]
+    fn a_program_cannot_set_the_answerback() {
+        assert_eq!(valid("Answerback String", &serde_json::json!("rm -rf ~\r")), None);
+        assert!(valid("Name", &serde_json::json!("x")).is_some(), "other string keys still apply");
+    }
+
     #[test]
     fn network_paths_are_refused() {
         assert!(local_path_ok("C:\\Users\\me\\bg.png"));
