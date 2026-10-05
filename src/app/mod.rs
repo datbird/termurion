@@ -5569,10 +5569,17 @@ impl ApplicationHandler<UserEvent> for App {
         }
         changed |= self.ssh_pump();
         changed |= self.tmux_pump(event_loop);
+        // Panes a tmux or ssh pump fed got output too (`feed_output`); they draw through the pacer.
+        for (id, p) in self.panes.iter() {
+            if p.got_output && !outputs.contains(id) {
+                outputs.push(*id);
+            }
+        }
         self.stuck_tick();
         self.api_output(&outputs);
         self.api_session_events();
         self.record_replay_frames();
+        let exited_now = exited.clone();
         for id in exited {
             // A git command's short-lived window ends without an alert.
             let short_lived = self.short_lived(id);
@@ -5596,6 +5603,12 @@ impl ApplicationHandler<UserEvent> for App {
         }
         self.check_coprocesses();
         if changed {
+            // An exit shows in the tab bar: a held pane's end draws through the pacer too.
+            for id in exited_now {
+                if !outputs.contains(&id) {
+                    outputs.push(id);
+                }
+            }
             self.after_output(&outputs, now);
         }
     }

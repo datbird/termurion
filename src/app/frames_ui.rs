@@ -83,16 +83,17 @@ impl App {
 
     /// Each pane's cadence state and whether a typed echo is in progress: `changed` are the
     /// panes that just got output. `Throughput::estimate` mutates, so it runs once per pane.
-    fn read_panes(&mut self, panes: &[PaneId], changed: &[PaneId], active: bool, now: Instant) -> Reading {
+    fn read_panes(&mut self, panes: &[PaneId], changed: &[PaneId], active: bool, now: Instant, with_output: bool) -> Reading {
         let low_power = self.power_saving();
         let last_key = self.last_keystroke;
         let mut reading = Reading { states: Vec::new(), typing: false };
         for id in panes {
             let last_output = self.activity.get(id).and_then(|a| a.last_output());
             let Some(p) = self.panes.get_mut(id) else { continue };
-            let output = changed.contains(id);
+            let output = with_output && changed.contains(id);
             let idle = !output && !p.got_output && last_output.is_none_or(|t| now.saturating_duration_since(t) > cadence::IDLE_AFTER);
-            let throughput = p.throughput.estimate(now);
+            // A tick with no new output does not run the estimator again (it mutates).
+            let throughput = if with_output { p.throughput.estimate(now) } else { 0 };
             reading.typing |= output && cadence::typing_now(throughput, last_key, now);
             reading.states.push(State { active, idle, visible: true, alt_screen: p.own().alt_screen(), throughput, low_power });
         }
@@ -117,14 +118,14 @@ impl App {
     /// One window's decision after `outputs`: None when none of them is in the window, else the
     /// frame interval over its front panes plus the panes that got output in its other tabs (the
     /// tab bar shows their title, new-output icon and exit state) and whether a typed echo is in.
-    fn output_decision(&mut self, front: &[PaneId], back: &[PaneId], outputs: &[PaneId], active: bool, now: Instant) -> Option<(Duration, bool)> {
+    fn output_decision(&mut self, front: &[PaneId], back: &[PaneId], outputs: &[PaneId], active: bool, now: Instant, with_output: bool) -> Option<(Duration, bool)> {
         let routed = route_output(outputs, front, back);
         if routed.front.is_empty() && routed.back.is_empty() {
             return None;
         }
         let changed: Vec<PaneId> = routed.front.iter().chain(&routed.back).copied().collect();
         let considered: Vec<PaneId> = front.iter().chain(&routed.back).copied().collect();
-        let reading = self.read_panes(&considered, &changed, active, now);
+        let reading = self.read_panes(&considered, &changed, active, now, with_output);
         Some((cadence::window_interval(&reading.states, &self.cadence_prefs()), reading.typing))
     }
 
@@ -132,14 +133,25 @@ impl App {
     /// draws at once when its frame is due or a typed echo is in, else at the due time
     /// (`frame_wake`). A window that is hidden or minimized is not asked at all.
     pub(super) fn paced_redraw(&mut self, outputs: &[PaneId], now: Instant) {
-        // Not pane output (an exit, an API call with nothing fed): draws at once.
+        self.paced_draw(outputs, now, true);
+    }
+
+    /// The same for a state change in `panes` that is not new output (a spinner turning, a tab
+    /// indicator going away, an activity event): the pacer decides, the estimator is not run.
+    pub(super) fn paced_redraw_state(&mut self, panes: &[PaneId], now: Instant) {
+        self.paced_draw(panes, now, false);
+    }
+
+    fn paced_draw(&mut self, outputs: &[PaneId], now: Instant, with_output: bool) {
+        // Nothing fed, nothing changed (an empty tmux or ssh pump): nothing to draw. Every
+        // real state change draws through its own `redraw` call.
         if outputs.is_empty() {
-            return self.redraw();
+            return;
         }
         let mut drew = false;
         let (front, back) = self.tab_panes_here();
         let active = self.window_active();
-        if let Some((gap, typing)) = self.output_decision(&front, &back, outputs, active, now) {
+        if let Some((gap, typing)) = self.output_decision(&front, &back, outputs, active, now, with_output) {
             if self.pacer.output(now, gap, typing) {
                 self.redraw_here();
                 drew = true;
@@ -156,7 +168,7 @@ impl App {
             })
             .collect();
         for (key, front, back) in parked {
-            let Some((gap, typing)) = self.output_decision(&front, &back, outputs, false, now) else { continue };
+            let Some((gap, typing)) = self.output_decision(&front, &back, outputs, false, now, with_output) else { continue };
             if let Some((_, s)) = self.windows.parked_mut().find(|(k, _)| **k == key) {
                 if s.pacer.output(now, gap, typing) {
                     if let Some(g) = &s.gpu {
