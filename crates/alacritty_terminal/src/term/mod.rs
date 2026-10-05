@@ -679,12 +679,12 @@ impl<T> Term<T> {
         &self.scroll_region
     }
 
-    /// Tandem: sets whether a top scroll region above the bottom row saves to scrollback.
     /// Tandem patch: while off, programs change the cursor's shape but not its blink.
     pub fn set_cursor_blink_change(&mut self, on: bool) {
         self.cursor_blink_change = on;
     }
 
+    /// Tandem: sets whether a top scroll region above the bottom row saves to scrollback.
     pub fn set_scrollback_with_region(&mut self, on: bool) {
         self.scrollback_with_region = on;
     }

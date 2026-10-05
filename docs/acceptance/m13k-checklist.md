@@ -107,7 +107,7 @@ Japanese IME and a Chinese Pinyin IME added in Windows language settings. Mark e
 | 54 | Settings, tool and other egui windows: the IME still types into their text fields. | |
 | 55 | Open a second window and recreate one for transparency (13g Transparency change): the IME still works in it. | |
 | 56 | With Find (Edit > Find) open and its field focused, compose and commit Japanese text: it goes into the Find field, not the shell. | |
-| 57 | Compose, then press Esc, lose focus (Alt+Tab) or switch pane, then (if the IME still offers it) commit: the text is dropped, nothing is typed anywhere. Another window repainting during a composition does not cancel it. | |
+| 57 | Compose, then press Esc, lose focus (Alt+Tab) or switch pane: the composition is dropped and the IME's stray commit for it (if it sends one) types nothing anywhere. Another window repainting during a composition does not cancel it. | |
 | 58 | Run `printf '\e[?25l'` (hide the cursor) and compose: the composition still draws at the cursor cell with its caret and the candidate window sits there. Scroll back and compose: it draws at the cursor cell, or at the bottom left if the cursor is off view, and keys are not swallowed once the composition is gone. Committed text scrolls the view to the bottom like typing. | |
 
 ## Kept quirks and rulings a person can see
@@ -118,3 +118,17 @@ Japanese IME and a Chinese Pinyin IME added in Windows language settings. Mark e
 | 60 | Negative Vertical Spacing with FullHeightCursor: the cursor overflows into the next row and may be painted over (listed in the rulings as a deferred minor). | |
 | 61 | The Alt+click arrow write bypasses the IME hold, so a click during a composition can write one stray arrow (kept, rare). | |
 | 62 | A cursor never glides after a tab switch even if its pane's cursor moved while hidden; a pane's first sighting counts as a move and is solid for half a second. | |
+
+## Final review additions
+
+| # | Check | Result |
+|---|---|---|
+| 63 | Two terminal windows, one tailing a log: in the other, a bar or underline cursor with Smooth slide on slides, and a block with Animate large movements smears, without being cut short; a smooth blink fade in one window does not repaint the other (watch idle CPU in Task Manager). | |
+| 64 | Auto Composer: compose and commit Japanese text into its dropdown and into a composer status bar field: it lands there, not in the shell. If the field has let go, the text goes to the shell as a typed key would. | |
+| 65 | Toolbelt: with the keyboard in a tool's search field (Profiles, Snippets, Jobs and the rest), in Notes and in Codecierge's goal and reply, compose and commit: the text lands in that field. With a tool's list focused it is dropped, as a typed letter does nothing. | |
+| 66 | Inline chat panel with its input focused: composing and committing types into the input. | |
+| 67 | Chinese Pinyin: compose, press Esc (nothing is typed), then type a comma or period in Chinese mode: the full-width punctuation types. Press Win+. (emoji panel) after an Esc and pick an emoji: it types. Japanese: Esc during a composition, then nothing is typed. | |
+| 68 | Korean IME: type two Hangul words, then Space, digits and arrows between syllables: no key is lost. (If Space is lost, hold only the `Process` presses instead of every press.) | |
+| 69 | A program that hides the cursor (a pager, htop) with Blinking Cursor and Smooth blink on: idle CPU stays at rest (no frames at 60 Hz for a cursor nobody sees). | |
+| 70 | Switch Smooth blink off while a blinking cursor is mid fade: the cursor shows at once and then blinks, never starting hidden. | |
+| 71 | Recreate a window for alpha (13g) while a composition is idle: the next composition's candidate window sits at the caret at once. | |

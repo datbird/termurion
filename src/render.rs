@@ -761,6 +761,11 @@ impl WidthCache {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::layout::Rect;
+    use crate::palette::rgb;
+    use crate::scene::{Quad, Span, TextRow, rgba};
+
     #[test]
     fn cell_metrics_keep_the_spacing_free_cell() {
         let close = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 1e-4 && (a.1 - b.1).abs() < 1e-4;
@@ -769,11 +774,6 @@ mod tests {
         let (cell, base) = cell_metrics(9.6, 16.0, 1.2, 1.25);
         assert!(close(cell, (11.52, 24.0)) && close(base, (9.6, 19.0)), "{cell:?} {base:?}");
     }
-
-    use super::*;
-    use crate::layout::Rect;
-    use crate::palette::rgb;
-    use crate::scene::{Quad, Span, TextRow, rgba};
 
     fn device() -> (wgpu::Device, wgpu::Queue) {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
