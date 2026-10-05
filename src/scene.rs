@@ -756,7 +756,8 @@ pub fn pane_with(
             }
         }
         // Blinking text hides in the off phase when the profile allows it
-        // (`iTermMetalPerFrameState.m:1691`); the background and any underline keep drawing.
+        // (`iTermMetalPerFrameState.m:1691`); the background keeps drawing, and so do the
+        // neighbors' lines, but the cell's own underline and strikethrough go with its glyph.
         let blink_off = screen.blink_allowed && c.flags.contains(Flags::BLINK) && !highlights.is_none_or(|h| h.text_blink_on);
         let mut text = String::new();
         if hidden || blink_off {
@@ -774,7 +775,7 @@ pub fn pane_with(
             let u = palette.color(u);
             if c.flags.contains(Flags::DIM) { blend(palette.cell(c.fg, c.bg, c.flags - Flags::DIM).1, u, palette.faint_alpha) } else { u }
         });
-        let ul = (!hidden && c.image().is_none()).then_some(Ul { style, strike, sgr });
+        let ul = (!hidden && !blink_off && c.image().is_none()).then_some(Ul { style, strike, sgr });
         grid[row][col] = CellLook {
             ul,
             text,
@@ -5029,6 +5030,55 @@ mod tests {
         assert_eq!(row_text(&f, 0).trim_end(), "ab");
     }
 
+    /// Phase B (13l's ruling, from `iTermMetalPerFrameState.m`): a blinking cell in its off phase
+    /// draws no underline and no strikethrough either; its neighbors keep theirs.
+    #[test]
+    fn blink_off_draws_no_underline_or_strike() {
+        let mut s = screen(b"\x1b[4;9;5ma\x1b[0;4mb");
+        s.blink_allowed = true;
+        let draw = |s: &Screen, on: bool| {
+            let mut f = Frame::default();
+            let hl = Highlights { text_blink_on: on, ..see_through(1.0, false) };
+            pane_with(&mut f, s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
+            f
+        };
+        let at = |qs: &[Quad], x: f32| qs.iter().any(|q| q.rect.x >= x && q.rect.x < x + 10.0);
+        let f = draw(&s, false);
+        assert!(!at(&f.underlines, 0.0), "no underline under the hidden glyph {:?}", f.underlines);
+        assert!(!at(&f.strikes, 0.0), "no strikethrough through it {:?}", f.strikes);
+        assert!(at(&f.underlines, 10.0), "the neighbor keeps its underline");
+        let f = draw(&s, true);
+        assert!(at(&f.underlines, 0.0) && at(&f.strikes, 0.0), "on phase draws both");
+        // Not allowed: the off phase hides nothing, so the runs stay.
+        s.blink_allowed = false;
+        let f = draw(&s, false);
+        assert!(at(&f.underlines, 0.0) && at(&f.strikes, 0.0));
+    }
+
+    /// Phase B: underline, strikethrough and OSC 8 runs on a right-to-left row sit under the
+    /// cells where they draw (the display order), and a logical run that is not contiguous on
+    /// screen is several runs.
+    #[test]
+    fn underline_runs_follow_the_display_order() {
+        // Logical aleph bet gimel; underline the aleph and the gimel, strike the bet. A hebrew
+        // row draws gimel bet aleph from the left, so the underlines are at columns 0 and 2.
+        let s = screen("\x1b[4m\u{5d0}\x1b[0;9m\u{5d1}\x1b[0;4m\u{5d2}".as_bytes());
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        let xs = |qs: &[Quad]| -> Vec<(f32, f32)> { qs.iter().map(|q| (q.rect.x, q.rect.x + q.rect.w)).collect() };
+        let u = xs(&f.underlines);
+        assert!(u.iter().all(|&(a, b)| (a >= 0.0 && b <= 10.0) || (a >= 20.0 && b <= 30.0)), "{u:?}");
+        assert!(u.iter().any(|&(a, _)| a == 0.0) && u.iter().any(|&(_, b)| b == 30.0), "{u:?}");
+        assert_eq!(xs(&f.strikes), vec![(10.0, 20.0)], "the bet is the middle cell");
+        // An OSC 8 link over the logical cells 3 and 4 of "ab " + aleph bet draws over visual
+        // columns 3 and 4 (the pair swapped), one run.
+        let s = screen("ab \x1b]8;;http://x\x07\u{5d0}\u{5d1}\x1b]8;;\x07".as_bytes());
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        let u = xs(&f.underlines);
+        assert!(u.iter().all(|&(a, b)| a >= 30.0 && b <= 50.0) && !u.is_empty(), "{u:?}");
+    }
+
     /// The x of the first text piece holding `ch`.
     fn piece_x(f: &Frame, ch: char) -> Option<f32> {
         f.rows.iter().find(|r| r.spans.iter().any(|sp| sp.text.contains(ch))).map(|r| r.x)
@@ -5136,6 +5186,16 @@ mod tests {
         let mut f = Frame::default();
         pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
         assert_eq!(span_color(&f, "ab"), Some(rgb(128, 128, 128)));
+        // 13l seam S1: a default-colored underline follows the adjusted text color; an SGR 58
+        // color is left alone.
+        let mut s = screen(b"\x1b[4;38;2;100;100;100m\x1b[48;2;100;100;100ma\x1b[58;2;0;255;0mb");
+        with_min_contrast(&mut s, 0.5);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        let adjusted = crate::contrast::apply(rgb(100, 100, 100), rgb(100, 100, 100), 0.5);
+        let ul = |x: f32| f.underlines.iter().find(|q| q.rect.x == x).map(|q| q.color);
+        assert_eq!(ul(0.0), Some(rgba(adjusted, 1.0)), "follows the adjusted fg");
+        assert_eq!(ul(10.0), Some(rgba(rgb(0, 255, 0), 1.0)), "SGR 58 does not");
     }
 
     #[test]
