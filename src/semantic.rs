@@ -191,6 +191,12 @@ fn home() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many candidates `existing` probed on this thread (tests).
+    static PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The existing file or folder `text` names, relative to `cwd`.
 fn existing(text: &str, cwd: Option<&Path>) -> Option<PathBuf> {
     let text = text.replace("\\ ", " ");
@@ -212,6 +218,8 @@ fn existing(text: &str, cwd: Option<&Path>) -> Option<PathBuf> {
         };
         // After the join, so a network home or working folder cannot slip in, and only
         // through folders and links that stay local.
+        #[cfg(test)]
+        PROBES.with(|n| n.set(n.get() + 1));
         (crate::scripts::stays_local(&p) && p.exists()).then_some(p)
     })
 }
@@ -972,5 +980,18 @@ mod tests {
         let ctx = ClickContext { before, after, cwd: Some(d), ..Default::default() };
         assert!(matches!(resolve(&ctx), Some(Target::File { .. })));
         assert_eq!(resolve(&ClickContext { no_probe: true, ..ctx }), None);
+    }
+
+    #[test]
+    fn remote_pane_probes_nothing() {
+        let d = dir("remote", &["a.txt"]);
+        let (before, after) = click("open a.|txt");
+        let ctx = ClickContext { before, after, cwd: Some(d), no_probe: true, respecting: Some((String::new(), "a.txt".into())), ..Default::default() };
+        let before_count = PROBES.with(|n| n.get());
+        assert!(resolve_in(&ctx).is_none_or(|(t, _, _)| !matches!(t, Target::File { .. })));
+        assert_eq!(PROBES.with(|n| n.get()), before_count, "no candidate was probed, in either pass");
+        let live = ClickContext { no_probe: false, ..ctx };
+        assert!(matches!(resolve(&live), Some(Target::File { .. })));
+        assert!(PROBES.with(|n| n.get()) > before_count, "the counter sees real probes");
     }
 }
