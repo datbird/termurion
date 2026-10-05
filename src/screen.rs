@@ -5037,4 +5037,17 @@ mod tests {
         s.feed(b"\x1b]72;t=A\x1b\\");
         assert!(!s.dnd.accepting());
     }
+
+    /// 13p S8 x 13q P4: the dead program's OSC 9;4 bar goes when it ends (and so before a
+    /// restart's relaunch), and the window is asked to redraw.
+    #[test]
+    fn program_ended_clears_the_progress_bar() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"\x1b]9;4;1;40\x07");
+        assert!(s.progress.visible());
+        let _ = s.take_requests();
+        s.program_ended();
+        assert!(!s.progress.visible());
+        assert!(s.take_requests().iter().any(|r| matches!(r, Request::Progress(false))));
+    }
 }

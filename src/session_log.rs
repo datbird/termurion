@@ -1231,4 +1231,17 @@ mod tests {
         assert!(e.try_add(500));
         assert!(!e.try_add(1));
     }
+
+    /// 13p seam for Task 7: the log folder and name keys are among the keys 13p's one network
+    /// filter scrubs at every non-Settings ingress (`start_dir::scrub_map`), and that filter
+    /// refuses a quoted or space-led UNC; Task 7's callers use `start_dir::network_value` for any
+    /// folder taken from elsewhere.
+    #[test]
+    fn log_keys_go_through_the_13p_network_filter() {
+        for key in ["Log Directory", "Log Filename Format", "Archive Directory"] {
+            assert!(crate::start_dir::PATH_KEYS.contains(&key), "{key}");
+            assert!(crate::start_dir::network_value(key, " \"\\\\host\\share\""), "{key}");
+            assert!(!crate::start_dir::network_value(key, "D:\\logs"), "{key}");
+        }
+    }
 }
