@@ -1133,7 +1133,7 @@ impl App {
         true
     }
 
-    fn tool_field_key(&mut self, tool: ToolId, key: ListKey, event_loop: &ActiveEventLoop) {
+    pub(super) fn tool_field_key(&mut self, tool: ToolId, key: ListKey, event_loop: &ActiveEventLoop) {
         let Mods { alt, shift, .. } = self.mods;
         let (esc_clears, arrows) = field_rules(tool);
         let out = if key == ListKey::Paste {

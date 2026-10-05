@@ -31,7 +31,9 @@ pub struct Drawn {
 /// What the app does with one `WindowEvent::Ime`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
-    Ignore,
+    /// A new entry begins (Windows sends `Enabled` only at the start of a composition): a cancel
+    /// no longer waits for a stray commit.
+    Begin,
     /// The IME went away: a composition in progress is dropped, nothing is sent.
     Clear,
     /// The composition ended with nothing to draw (an empty Preedit; its Commit may follow).
@@ -47,7 +49,7 @@ pub enum Step {
 pub fn step(ime: &winit::event::Ime) -> Step {
     use winit::event::Ime;
     match ime {
-        Ime::Enabled => Step::Ignore,
+        Ime::Enabled => Step::Begin,
         Ime::Disabled => Step::Clear,
         Ime::Preedit(text, _) if text.is_empty() => Step::End,
         Ime::Preedit(text, cursor) => Step::Store(Preedit { text: text.clone(), cursor: cursor.map(|(start, _)| start) }),
@@ -73,7 +75,10 @@ pub struct State {
     /// ends the composition with an empty Preedit, since its Commit follows.
     owner: Option<(u64, u64)>,
     generation: u64,
-    /// A cancel is waiting for the stray Commit it may provoke; the next one is dropped.
+    /// A cancel is waiting for the stray Commit it may provoke: the commit of the cancelled
+    /// composition is dropped. It ends at the first sign of new input (a key press, `Enabled`, a
+    /// non-empty preedit), so a commit with no composition before it (a Pinyin comma, the emoji
+    /// panel) typed after an Esc is delivered.
     dropping: bool,
     /// The candidate window's area `ime_area` last gave the system, to set it only on a change.
     pub area: Option<[i32; 4]>,
@@ -94,6 +99,21 @@ impl State {
         self.owner = Some((pane, self.generation));
         self.dropping = false;
         self.preedit = Some(p);
+    }
+
+    /// A new entry begins (`Ime::Enabled`).
+    pub fn begin(&mut self) {
+        self.dropping = false;
+    }
+
+    /// A key press reached the app: whatever the IME sends next is new input.
+    pub fn input_started(&mut self) {
+        self.dropping = false;
+    }
+
+    /// The system IME context was reset or its window replaced: it has no candidate area yet.
+    pub fn system_reset(&mut self) {
+        self.area = None;
     }
 
     /// The IME ended the composition (an empty Preedit): nothing is drawn, a Commit may follow.
@@ -138,15 +158,23 @@ impl State {
 /// Who has the keyboard: a commit goes where a typed key would (`App::key`'s order).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Owners {
-    /// The find bar is being typed in.
-    pub find: bool,
+    /// A toolbelt tool's text entry has the keyboard: the Notes editor, Codecierge's goal and
+    /// reply, or a tool's search field.
+    pub tool: bool,
+    /// A toolbelt tool has the keyboard with no text entry (a list): it takes the key.
+    pub belt: bool,
     /// A Composer dropdown has the keyboard.
     pub composer: bool,
     /// A Composer status bar field has the keyboard.
     pub field: bool,
-    /// A toolbelt tool, Copy Mode, the completion list, the shortcut labels, a panel or a bar:
-    /// owners with no text entry for a commit.
-    pub other: bool,
+    /// An inline chat panel's input has the keyboard.
+    pub inline: bool,
+    /// The shortcut labels: any key puts them away.
+    pub shortcuts: bool,
+    /// The find bar is being typed in.
+    pub find: bool,
+    /// Copy Mode takes every key.
+    pub copy_mode: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,20 +183,40 @@ pub enum Dest {
     Find,
     Composer,
     Field,
+    Tool,
+    Inline,
     Drop,
 }
 
 pub fn dest(o: &Owners) -> Dest {
-    if o.other {
+    if o.tool {
+        Dest::Tool
+    } else if o.belt {
         Dest::Drop
     } else if o.composer {
         Dest::Composer
     } else if o.field {
         Dest::Field
+    } else if o.inline {
+        Dest::Inline
+    } else if o.shortcuts {
+        Dest::Drop
     } else if o.find {
         Dest::Find
+    } else if o.copy_mode {
+        Dest::Drop
     } else {
         Dest::Terminal
+    }
+}
+
+/// An owner that has no text entry for the commit right now (a composer that let go, a
+/// Codecierge still onboarding) leaves it to the next owner, as its key would pass: the
+/// terminal. Find and Drop are final.
+pub fn after_refusal(d: Dest, taken: bool) -> Dest {
+    match d {
+        Dest::Composer | Dest::Field | Dest::Tool | Dest::Inline if !taken => Dest::Terminal,
+        d => d,
     }
 }
 
@@ -262,7 +310,7 @@ mod tests {
     #[test]
     fn ime_events_become_steps() {
         use winit::event::Ime;
-        assert_eq!(step(&Ime::Enabled), Step::Ignore);
+        assert_eq!(step(&Ime::Enabled), Step::Begin);
         assert_eq!(step(&Ime::Disabled), Step::Clear);
         // An empty preedit ends a composition; it is not drawn as an empty one.
         assert_eq!(step(&Ime::Preedit(String::new(), None)), Step::End);
@@ -337,8 +385,73 @@ mod tests {
         assert_eq!(dest(&Owners { find: true, ..none }), Dest::Find);
         assert_eq!(dest(&Owners { composer: true, ..none }), Dest::Composer);
         assert_eq!(dest(&Owners { field: true, ..none }), Dest::Field);
-        // A toolbelt tool, Copy Mode and the like have no text entry here: the text is dropped.
-        assert_eq!(dest(&Owners { other: true, ..none }), Dest::Drop);
-        assert_eq!(dest(&Owners { other: true, find: true, ..none }), Dest::Drop);
+        // The toolbelt's text entries and the inline chat input take typed text, so they take a commit.
+        assert_eq!(dest(&Owners { tool: true, ..none }), Dest::Tool);
+        assert_eq!(dest(&Owners { inline: true, ..none }), Dest::Inline);
+        // A tool list, the shortcut labels and Copy Mode take the key and have no text entry.
+        assert_eq!(dest(&Owners { belt: true, ..none }), Dest::Drop);
+        assert_eq!(dest(&Owners { shortcuts: true, ..none }), Dest::Drop);
+        assert_eq!(dest(&Owners { copy_mode: true, ..none }), Dest::Drop);
+        // `key`'s order: a tool, then the composer, then the inline input, the labels, find, Copy Mode.
+        assert_eq!(dest(&Owners { tool: true, composer: true, find: true, ..none }), Dest::Tool);
+        assert_eq!(dest(&Owners { belt: true, tool: false, composer: true, ..none }), Dest::Drop);
+        assert_eq!(dest(&Owners { composer: true, inline: true, ..none }), Dest::Composer);
+        assert_eq!(dest(&Owners { inline: true, shortcuts: true, find: true, ..none }), Dest::Inline);
+        assert_eq!(dest(&Owners { shortcuts: true, find: true, ..none }), Dest::Drop);
+        assert_eq!(dest(&Owners { find: true, copy_mode: true, ..none }), Dest::Find);
+    }
+
+    #[test]
+    fn an_owner_that_let_go_leaves_the_commit_to_the_terminal() {
+        for d in [Dest::Composer, Dest::Field, Dest::Tool, Dest::Inline] {
+            assert_eq!(after_refusal(d, false), Dest::Terminal, "{d:?} had no text entry");
+            assert_eq!(after_refusal(d, true), d);
+        }
+        assert_eq!(after_refusal(Dest::Drop, false), Dest::Drop);
+        assert_eq!(after_refusal(Dest::Find, false), Dest::Find);
+    }
+
+    #[test]
+    fn a_commit_after_the_next_key_is_delivered() {
+        let mut s = State::default();
+        s.store(7, pre("a", None));
+        s.cancel();
+        // The person types again (a Pinyin comma): the next key press is new input.
+        s.input_started();
+        assert_eq!(s.commit(Some(7), true), Some(7));
+    }
+
+    #[test]
+    fn a_commit_after_a_new_entry_begins_is_delivered() {
+        let mut s = State::default();
+        s.store(7, pre("a", None));
+        s.cancel();
+        // Windows sends Enabled only when a new composition starts (emoji panel, voice typing).
+        s.begin();
+        assert_eq!(s.commit(Some(7), true), Some(7));
+    }
+
+    #[test]
+    fn the_stray_commit_of_a_cancelled_composition_is_still_dropped() {
+        let mut s = State::default();
+        s.store(7, pre("a", None));
+        s.cancel();
+        // Preedit(""), Commit, Disabled: nothing new began in between.
+        s.end();
+        assert_eq!(s.commit(Some(7), true), None);
+        // A non-empty preedit is new input too.
+        let mut s = State::default();
+        s.store(7, pre("a", None));
+        s.cancel();
+        s.store(7, pre("b", None));
+        assert_eq!(s.commit(Some(7), true), Some(7));
+    }
+
+    #[test]
+    fn a_reset_ime_has_no_candidate_area() {
+        let mut s = State::default();
+        s.area = Some([1, 2, 3, 4]);
+        s.system_reset();
+        assert_eq!(s.area, None);
     }
 }

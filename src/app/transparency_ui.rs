@@ -350,6 +350,8 @@ impl App {
         // The new handle has no backdrop yet.
         self.blur_applied = false;
         self.look_seen = None;
+        // The new handle's IME has been given no candidate area yet.
+        self.ime.system_reset();
         self.rekey_window(old_id, new_id);
         if let Some(h) = old_hwnd {
             crate::winkeys::remove_window(h);

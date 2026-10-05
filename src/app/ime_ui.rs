@@ -8,13 +8,18 @@ use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::Ime;
 
 use crate::ime::{self, Dest, Owners, Step};
+use crate::text_edit::EditKey;
+use crate::tool_list::{Focus, ListKey};
+use crate::toolbelt::ToolId;
 
 impl App {
     /// One `WindowEvent::Ime`. A composition is the focused pane's; a commit is typed input.
-    pub(super) fn ime_event(&mut self, ime: Ime) {
+    pub(super) fn ime_event(&mut self, ime: Ime, event_loop: &ActiveEventLoop) {
         let Some(id) = self.focused_id() else { return };
         match ime::step(&ime) {
-            Step::Ignore => {}
+            // Windows sends Enabled only when a new entry begins: a cancel stops waiting for
+            // the stray commit of the composition it cancelled.
+            Step::Begin => self.ime.begin(),
             Step::Clear => {
                 if self.ime.preedit.is_some() {
                     self.ime.cancel();
@@ -33,33 +38,82 @@ impl App {
                 // Only to the pane that owns the composition, while it is still this window's
                 // focused pane; after a cancel or a pane switch the text is dropped.
                 if self.ime.commit(Some(id), self.focused) == Some(id) {
-                    self.ime_type(id, &text);
+                    self.ime_type(id, &text, event_loop);
                 }
                 self.redraw();
             }
         }
     }
 
-    /// Committed text is typed text: it goes to whatever owns the keyboard, in `key`'s order,
-    /// else to the terminal as `to_terminal` writes a key (the view returns to the bottom, a
-    /// Filter or Zoom view ends, a frozen or replaying pane takes nothing).
-    fn ime_type(&mut self, id: PaneId, text: &str) {
+    /// Whether a toolbelt tool has the keyboard, as (a text entry, no text entry): the Notes
+    /// editor, Codecierge's goal and reply and a tool's search field take typed text; a tool's
+    /// list takes the key and does nothing with text. A tool that let go owns nothing.
+    fn ime_belt_owner(&self) -> (bool, bool) {
+        let Some((tool, focus)) = self.belt.focus else { return (false, false) };
+        if !self.belt.visible || !self.belt.split.expanded(tool) {
+            return (false, false);
+        }
+        let text = matches!(tool, ToolId::Notes | ToolId::Codecierge) || focus == Focus::Field;
+        (text, !text)
+    }
+
+    /// Text into the toolbelt tool that has the keyboard, as its typed `Text` key. False when it
+    /// has no text entry now.
+    fn ime_tool_text(&mut self, text: &str, event_loop: &ActiveEventLoop) -> bool {
+        let Some((tool, _)) = self.belt.focus else { return false };
+        match tool {
+            ToolId::Notes => self.notes_edit_key(EditKey::Text(text.to_string())),
+            ToolId::Codecierge => self.codecierge_edit_key(EditKey::Text(text.to_string())),
+            // A search field is one line, as a paste into it is.
+            _ => {
+                self.tool_field_key(tool, ListKey::Text(text.replace(['\r', '\n'], " ")), event_loop);
+                self.redraw();
+                true
+            }
+        }
+    }
+
+    /// Committed text is typed text: it goes to whatever owns the keyboard, in `key`'s order; an
+    /// owner with no text entry right now (a composer that let go) leaves it to the terminal, as
+    /// `to_terminal` writes a key (the view returns to the bottom, a Filter or Zoom view ends, a
+    /// frozen or replaying pane takes nothing).
+    fn ime_type(&mut self, id: PaneId, text: &str, event_loop: &ActiveEventLoop) {
         let (composer, field) = self.composer_keys_owner();
-        let other = self.belt.focus.is_some()
-            || self.copy_modes.contains_key(&id)
-            || self.completion.is_some()
-            || self.shortcuts.is_some()
-            || self.chat_picker.is_some()
-            || self.clips.get(&id).is_some_and(|c| c.keys && c.model.visible)
-            || self.inline.get(&id).is_some_and(|s| s.keys && s.binding.visible);
-        let owners = Owners { find: self.typing_in_find().is_some(), composer, field, other };
-        match ime::dest(&owners) {
+        let (tool, belt) = self.ime_belt_owner();
+        let owners = Owners {
+            tool,
+            belt,
+            composer,
+            field,
+            inline: self.inline_has_keys(id),
+            shortcuts: self.shortcuts.is_some(),
+            find: self.typing_in_find().is_some(),
+            copy_mode: self.copy_modes.contains_key(&id),
+        };
+        let first = ime::dest(&owners);
+        let taken = match first {
+            Dest::Tool => self.ime_tool_text(text, event_loop),
+            Dest::Inline => self.inline_edit_key(id, EditKey::Text(text.to_string())),
+            Dest::Composer | Dest::Field => self.composer_type_text(text),
+            _ => false,
+        };
+        if taken {
+            return;
+        }
+        // An owner that had no text entry after all hands the text to the terminal, as its key would.
+        // The key would reach Clippings next: any other key gives the panel's keyboard back.
+        if !owners.belt {
+            if let Some(c) = self.clips.get_mut(&id).filter(|c| c.keys && c.model.visible) {
+                c.keys = false;
+                c.preview = false;
+                self.redraw();
+            }
+        }
+        match ime::after_refusal(first, false) {
             Dest::Drop => {}
             Dest::Find => self.find_type_text(id, text),
-            Dest::Composer | Dest::Field => {
-                self.composer_type_text(text);
-            }
-            Dest::Terminal => {
+            _ => {
+                self.completion_typed_text();
                 if self.terminal_refuses_keys() {
                     return;
                 }
@@ -83,7 +137,8 @@ impl App {
         self.redraw();
     }
 
-    fn ime_reset_system(&self) {
+    fn ime_reset_system(&mut self) {
+        self.ime.system_reset();
         if let Some(g) = &self.gpu {
             g.window.set_ime_allowed(false);
             g.window.set_ime_allowed(true);

@@ -52,7 +52,6 @@ const FLASH_FRAME: Duration = Duration::from_millis(16);
 const TIP_POINTER_PT: f32 = 20.0;
 /// Lines scrolled per wheel notch.
 const WHEEL_LINES: f32 = 3.0;
-/// Half a cursor blink cycle.
 /// How long after the last settings edit the file is written.
 const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -4158,6 +4157,11 @@ impl App {
     }
 
     fn key(&mut self, ev: &KeyEvent, event_loop: &ActiveEventLoop) {
+        // A key press is new input: a cancel stops waiting for the stray commit of the cancelled
+        // composition (before the hold below, so the Esc that cancels sets the wait again).
+        if ev.state == ElementState::Pressed {
+            self.ime.input_started();
+        }
         // While the focused pane has a composition its keys are the IME's, not the session's;
         // Esc cancels the composition first.
         if self.ime_holds_key(ev) {
@@ -4277,7 +4281,6 @@ impl App {
         self.relayout();
     }
 
-    /// A key with no binding: the Windows extras, movement-key scrolling, else the pane.
     /// A pane showing a frozen screenshot copy takes no keys until its panel closes, nor
     /// a replaying pane (the replay view has no shell).
     pub(super) fn terminal_refuses_keys(&self) -> bool {
@@ -4291,6 +4294,7 @@ impl App {
         true
     }
 
+    /// A key with no binding: the Windows extras, movement-key scrolling, else the pane.
     fn to_terminal(&mut self, key: &Key, base: Option<&Key>, bytes: Option<Vec<u8>>, event_loop: &ActiveEventLoop) {
         if let Some(action) = base.and_then(|b| keys::shortcut(b, self.mods)) {
             return self.action(action, event_loop);
@@ -5763,7 +5767,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             // The IME's composition and commits; the Settings and tool windows (egui) keep
             // egui-winit's own handling.
-            WindowEvent::Ime(ime) => self.ime_event(ime),
+            WindowEvent::Ime(ime) => self.ime_event(ime, event_loop),
             _ => {}
         }
     }
