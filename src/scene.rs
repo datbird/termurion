@@ -33,6 +33,22 @@ pub struct Span {
     pub badge: bool,
     /// Draw with the toolbelt font (`toolbeltFont`, else Consolas).
     pub toolbelt: bool,
+    /// A bold span of a terminal cell: when its face has no bold weight heavy enough, the
+    /// renderer double-strikes it (a second copy one pixel right, iTerm2's `fakeBold`). Chrome
+    /// text never sets it, so it is never struck twice.
+    pub fake_bold: bool,
+    /// The ligature level the renderer shapes the span at (`fonts::features`): 0 none, 1 standard,
+    /// 2 standard plus contextual alternates. `pane_with` sets it from the profile's switches;
+    /// spans of different levels never merge.
+    pub ligatures: u8,
+    /// The mask mode the renderer draws the span's glyphs in (`fonts::MaskMode::code`): 0 smooth,
+    /// 1 aliased, 2 thin strokes. `pane_with` sets it from the profile; spans of different modes
+    /// never merge, and each mode is cached apart in the glyph atlas.
+    pub mask: u8,
+    /// The Special Font Config entry that draws the span, as 1 plus its index in the face's table
+    /// (`render::Face::table`); 0 draws in the face's own fonts. `pane_with` sets it; spans of
+    /// different entries never merge, and a tabled span's text is the code points to draw.
+    pub font: u16,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -43,6 +59,9 @@ pub struct TextRow {
     pub clip: Rect,
     /// Text size against the terminal font (a porthole's headings).
     pub scale: f32,
+    /// The renderer's face the row is shaped and sized with (`render::Renderer::face`): a pane's
+    /// rows carry their profile's face, every other row the default one.
+    pub face: u16,
 }
 
 /// A piece of an inline image: where it goes, which part of the picture (u0, v0, u1, v1),
@@ -58,6 +77,21 @@ pub struct ImageQuad {
     pub repeat: bool,
 }
 
+/// A character Tandem draws itself to fill its cell (`boxdraw`): a box line, a block, a sextant.
+/// It draws with the text, so it is cut, covered and held exactly like a row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CellGlyph {
+    pub c: char,
+    /// The cell (or cells) the character fills.
+    pub rect: Rect,
+    pub color: Rgb,
+    /// The renderer face of the pane the cell is in.
+    pub face: u16,
+    /// Where it may draw: the pane's text rectangle, narrowed where a popup covers it. It also
+    /// groups a pane's glyphs into one `TextArea`.
+    pub clip: Rect,
+}
+
 /// Draw order: `quads`, then `images`, then `rows`, then `underlines` and `strikes`, then `overlay`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Frame {
@@ -67,6 +101,8 @@ pub struct Frame {
     pub quads: Vec<Quad>,
     pub images: Vec<ImageQuad>,
     pub rows: Vec<TextRow>,
+    /// Box and block characters Tandem draws itself, drawn with the rows.
+    pub glyphs: Vec<CellGlyph>,
     pub overlay: Vec<Quad>,
     /// Underline and strikethrough strokes: drawn after the text, right before `overlay`, so
     /// the dimming and the cursor extras lie over them. Trimmed under popups by `cut_quads`.
@@ -81,6 +117,17 @@ pub struct Frame {
     /// Scrollbars and their ticks: no text, drawn after the strokes and before `overlay` (the
     /// dimming covers them). `cut_quads` trims them under a popup, so popups lie over a bar.
     pub scrollbars: Vec<Quad>,
+    /// The line height of each non-default face a pane drew rows in (`pane_with` records it):
+    /// what `cut_out` and `cut_rows_from` measure a pane row by, since a zoomed pane's rows are
+    /// taller than the chrome's line.
+    pub face_heights: Vec<(u16, f32)>,
+}
+
+/// A row's height for the cuts: its own face's line (times its scale) for a pane's row, else the
+/// caller's `line_h`.
+fn row_height_in(heights: &[(u16, f32)], row: &TextRow, line_h: f32) -> f32 {
+    let base = heights.iter().find(|(f, _)| *f == row.face).map_or(line_h, |(_, h)| *h);
+    base * row.scale.max(1.0)
 }
 
 /// Which frame of an animated image shows at `now_ms`.
@@ -260,7 +307,7 @@ struct Ul {
 
 /// How the app draws underlines: the two Advanced switches, the face's metrics and the
 /// window's scale. The default derives geometry from the cell (previews, tests).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DrawPrefs {
     /// `UnderlineHyperlinks`: OSC 8 links get iTerm2's dashes.
     pub underline_hyperlinks: bool,
@@ -268,19 +315,39 @@ pub struct DrawPrefs {
     pub solid_underlines: bool,
     pub metrics: crate::underline::Metrics,
     pub scale: f32,
+    /// What the pane's profile and font say about ligatures (`fonts::span_level`).
+    pub ligatures: crate::fonts::LigatureRules,
+    /// The ligature level of the Non-ASCII Font (`fonts::ligature_level` of that font).
+    pub alt_level: u8,
+    /// What the pane's profile and the window say about anti-aliasing and thin strokes.
+    pub masks: crate::fonts::MaskRules,
+    /// Tandem draws box and block characters itself (`DisableCustomBoxDrawing` off).
+    pub custom_boxes: bool,
+    /// The pane's profile draws Powerline symbols itself (Draw Powerline Glyphs).
+    pub powerline: bool,
+    /// `SupportPowerlineExtendedSymbols`.
+    pub powerline_extended: bool,
+    /// `MakeSomePowerlineSymbolsWide`.
+    pub powerline_wide: bool,
+    /// The pane's Special Font Config (`render::Renderer::face_table`): the code points it
+    /// covers draw in its fonts, remapped when an entry has a destination.
+    pub table: Option<std::sync::Arc<crate::font_table::Config>>,
 }
 
 impl Default for DrawPrefs {
     fn default() -> Self {
-        DrawPrefs { underline_hyperlinks: true, solid_underlines: false, metrics: crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 }, scale: 1.0 }
+        DrawPrefs { underline_hyperlinks: true, solid_underlines: false, metrics: crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 }, scale: 1.0, ligatures: STOCK_LIGATURES, alt_level: 2, masks: crate::fonts::MaskRules::STOCK, custom_boxes: true, powerline: false, powerline_extended: true, powerline_wide: true, table: None }
     }
 }
+
+/// The stock profile's ligature rules: both switches off, speed preferred, a font at level 2.
+pub const STOCK_LIGATURES: crate::fonts::LigatureRules = crate::fonts::LigatureRules { ascii: false, non_ascii: false, prefer_speed: true, level: 2 };
 
 impl DrawPrefs {
     /// The prefs the live frame and a screenshot both draw with: the two Advanced switches from
     /// `globals`, the renderer's face metrics and the window's scale.
     pub fn from_globals(globals: &crate::globals::Globals, metrics: crate::underline::Metrics, scale: f32) -> DrawPrefs {
-        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale }
+        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale, ligatures: crate::fonts::LigatureRules { prefer_speed: globals.bool("PreferSpeedToFullLigatureSupport"), ..STOCK_LIGATURES }, alt_level: STOCK_LIGATURES.level, masks: crate::fonts::MaskRules { retina: scale >= 2.0, force_aa_on_retina: globals.bool("ForceAntialiasingOnRetina"), ..crate::fonts::MaskRules::STOCK }, custom_boxes: !globals.bool("DisableCustomBoxDrawing"), powerline: false, powerline_extended: globals.bool("SupportPowerlineExtendedSymbols"), powerline_wide: globals.bool("MakeSomePowerlineSymbolsWide"), table: None }
     }
 
     /// The metrics to draw with in a cell of height `ch`: the face's, or (none measured) an
@@ -352,9 +419,88 @@ struct CellLook {
     italic: bool,
     /// The background comes from the selection or the cursor.
     selected: bool,
+    /// The ligature level the cell's text is shaped at (`fonts::span_level`).
+    level: u8,
+    /// The mask mode of the cell's text (`fonts::MaskMode::code`).
+    mask: u8,
+    /// The cursor is on this cell: a ligature never joins it to a neighbor.
+    cursor: bool,
     /// The cell joins its neighbors when drawn (an Arabic letter in a right-to-left run): its
     /// run is one text piece, so the font can pick the joining forms.
     joins: bool,
+    /// The Special Font Config entry that draws the cell (1 plus its index) and the code point
+    /// it draws in place of the first one.
+    table: Option<(u16, char)>,
+}
+
+/// The ligature level of a cell's text under the pane's rules (`fonts::span_level`): the font
+/// the text draws in is the Non-ASCII Font for anything outside ASCII.
+fn cell_level(text: &str, draw: &DrawPrefs) -> u8 {
+    let ascii = text.is_ascii();
+    let c = text.chars().next().unwrap_or(' ');
+    let rules = if ascii { draw.ligatures } else { crate::fonts::LigatureRules { level: draw.alt_level, ..draw.ligatures } };
+    crate::fonts::span_level(ascii, crate::fonts::fast_path(c, draw.ligatures.ascii), rules)
+}
+
+/// The mask mode code of a cell's text under the pane's rules (`fonts::MaskRules::mode`): plain
+/// ASCII follows the ASCII switch, anything else the Non-ASCII switch.
+fn cell_mask(text: &str, draw: &DrawPrefs, dark: bool) -> u8 {
+    draw.masks.mode(text.is_ascii(), dark).code()
+}
+
+/// Explicit bidi controls never take part in a ligature piece (13m strips them from the text).
+fn bidi_control(c: char) -> bool {
+    matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
+/// A one-column non-ASCII cell that Non-ASCII Ligatures may group with its neighbors (P7): wide
+/// characters and emoji keep their own piece, and so do bidi controls.
+fn groupable(text: &str) -> bool {
+    use unicode_width::UnicodeWidthStr;
+    !text.is_ascii() && text.width() == 1 && !text.chars().any(bidi_control)
+}
+
+/// The Special Font Config entry (1 plus its index) that draws a cell, and the code point it
+/// draws in place of the cell's first one. ASCII never has an entry; a code point the table sends
+/// to something that is not a character draws as it was sent.
+fn table_cell(table: &crate::font_table::Config, text: &str) -> Option<(u16, char)> {
+    let first = text.chars().next().filter(|c| !c.is_ascii())?;
+    let (i, drawn) = table.find(u32::from(first))?;
+    Some((u16::try_from(i + 1).ok()?, char::from_u32(drawn)?))
+}
+
+/// The text a cell draws: its own, with the first code point the table's when an entry remaps it.
+fn shown_text(c: &CellLook) -> std::borrow::Cow<'_, str> {
+    match c.table {
+        Some((_, drawn)) => {
+            let first = c.text.chars().next().map_or(0, char::len_utf8);
+            std::borrow::Cow::Owned(format!("{drawn}{}", &c.text[first..]))
+        }
+        None => std::borrow::Cow::Borrowed(c.text.as_str()),
+    }
+}
+
+/// The one rule for whether `next` continues the text piece `prev` is in, two neighboring
+/// cells of a row in display order (S3). A joined Arabic run (13m, `CellLook.joins`) is one
+/// piece and is never split; nothing else joins it (bidi controls are stripped from it, P9). Any
+/// other cell continues only within its font (ASCII, or grouped one-column non-ASCII under
+/// Non-ASCII Ligatures, P7) and when no ligature boundary falls between (`ligature_break`).
+fn piece_continues(prev: &CellLook, next: &CellLook, group: bool) -> bool {
+    // A Special Font Config range boundary ends a piece: a font cannot join across fonts (P7).
+    if prev.table.map(|t| t.0) != next.table.map(|t| t.0) {
+        return false;
+    }
+    if prev.joins || next.joins {
+        return prev.joins && next.joins;
+    }
+    !ligature_break(prev, next) && if next.text.is_ascii() { prev.text.is_ascii() } else { group && groupable(&next.text) && groupable(&prev.text) }
+}
+
+/// Whether a ligature must not join `prev` and `next`, two neighboring cells: only when one of
+/// them is shaped with ligatures, a color change, the cursor or the selection edge ends the run
+/// (iTerm2 builds its attributed string per color and per cursor and selection state).
+fn ligature_break(prev: &CellLook, next: &CellLook) -> bool {
+    (prev.level > 0 || next.level > 0) && (prev.fg != next.fg || prev.cursor != next.cursor || prev.selected != next.selected || prev.bold != next.bold || prev.italic != next.italic)
 }
 
 /// Find matches to mark in a pane.
@@ -395,7 +541,7 @@ pub struct FindBar<'a> {
 /// Draws one pane's visible screen into `rect`.
 /// `look` says how the cursor is drawn; `look.visible` false hides it (the blink phase).
 pub fn pane(frame: &mut Frame, screen: &Screen, rect: Rect, cell: (f32, f32), focused: bool, look: &CursorLook) {
-    pane_with(frame, screen, rect, cell, focused, look, &DrawPrefs::default(), None)
+    pane_with(frame, screen, rect, cell, focused, look, &DrawPrefs::default(), None, crate::render::DEFAULT_FACE)
 }
 
 /// The cursor's screen row and column, and whether it sits on a wide character; None when
@@ -451,7 +597,7 @@ pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) 
         bar.query.chars().skip(n.saturating_sub(FIELD - 1)).collect()
     };
     let field = format!("{shown}_");
-    let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
+    let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
     let y = r.y + 4.0;
     let query_color = if bar.error { FIND_ERROR } else { TAB_TEXT };
     frame.rows.push(TextRow {
@@ -460,10 +606,11 @@ pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) 
         spans: vec![span(format!("{field:<FIELD$}  {}", bar.count), query_color)],
         clip: r,
         scale: 1.0,
+        face: crate::render::DEFAULT_FACE,
     });
     let mode_x = r.x + (1 + FIELD + 2 + bar.count.chars().count() + 2) as f32 * cw;
     let mode_rect = Rect { x: mode_x, y: r.y, w: mode.chars().count() as f32 * cw, h: r.h };
-    frame.rows.push(TextRow { x: mode_x, y, spans: vec![span(mode, TAB_TEXT_DIM)], clip: r, scale: 1.0 });
+    frame.rows.push(TextRow { x: mode_x, y, spans: vec![span(mode, TAB_TEXT_DIM)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     mode_rect
 }
 
@@ -505,13 +652,15 @@ pub fn cursor_guide(frame: &mut Frame, rect: Rect, cell: (f32, f32), row: usize,
 pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cell: (f32, f32), column: Option<Rect>, colors: (Rgb, Rgb)) {
     let (cw, ch) = cell;
     let (fg, bg) = colors;
-    let span = |text: &str| Span { text: text.to_string(), color: fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
+    let span = |text: &str| Span { text: text.to_string(), color: fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
     // The pane's text on a row, and its underlines and strikes, stop where its label's block starts.
     let clip_text = |frame: &mut Frame, y: f32, x: f32| {
         for r in frame.rows.iter_mut().filter(|r| r.y == y && r.clip.x + r.clip.w > x) {
             r.clip.w = (x - r.clip.x).max(0.0);
         }
-        cut_quads(frame, Rect { x, y, w: 1.0e6, h: ch });
+        let band = Rect { x, y, w: 1.0e6, h: ch };
+        cut_quads(frame, band);
+        cut_glyphs(frame, band);
     };
     if let Some(col) = column {
         let right = col.x + col.w;
@@ -534,7 +683,7 @@ pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cel
                 }
                 continue;
             }
-            frame.rows.push(TextRow { x, y, spans: vec![span(text)], clip, scale: 1.0 });
+            frame.rows.push(TextRow { x, y, spans: vec![span(text)], clip, scale: 1.0, face: crate::render::DEFAULT_FACE });
         }
         return;
     }
@@ -545,7 +694,7 @@ pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cel
         let bg_rect = Rect { x: right - (n + 2.0) * cw, y, w: (n + 2.0) * cw, h: ch };
         frame.quads.push(Quad { rect: bg_rect, color: rgba(bg, 0.9) });
         clip_text(frame, y, bg_rect.x);
-        frame.rows.push(TextRow { x: right - (n + 1.0) * cw, y, spans: vec![span(text)], clip: rect, scale: 1.0 });
+        frame.rows.push(TextRow { x: right - (n + 1.0) * cw, y, spans: vec![span(text)], clip: rect, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
 }
 
@@ -629,12 +778,16 @@ pub fn pane_with(
     look: &CursorLook,
     draw: &DrawPrefs,
     highlights: Option<&Highlights>,
+    face: u16,
 ) {
     let history = screen.term().grid().history_size() as i32;
     // Underlines and strikethrough come from the cells' flags (`CellLook.ul`); the Win-click
     // target under the pointer gets a solid line in the link color.
     let mut hovered: Vec<(usize, usize)> = Vec::new();
     let (cw, ch) = cell;
+    if face != crate::render::DEFAULT_FACE && !frame.face_heights.iter().any(|(f, _)| *f == face) {
+        frame.face_heights.push((face, ch));
+    }
     let palette = &screen.palette;
     let term = screen.term();
     let (cols, lines) = (term.columns(), term.screen_lines());
@@ -671,13 +824,16 @@ pub fn pane_with(
     let cursor_box = smart_box.map_or(palette.cursor, |(b, _)| b);
     let cursor_text = smart_box.map_or(palette.cursor_text, |(_, t)| t);
 
+    // Thin Strokes on Dark Backgrounds is decided per cell: the cell's background is darker than
+    // its text (`iTermTextDrawingHelper.m:3045`, `iTermMetalPerFrameState.m:2186`).
+    let dark = |fg: Rgb, bg: Rgb| crate::tab_theme::hsp(bg) < crate::tab_theme::hsp(fg);
     // Each row's display order (right-to-left text); None draws it as it is. A row is its own
     // line of program output: nothing here moves a cell to another row.
     let display_offset = content.display_offset as i32;
     let orders: Vec<Option<std::sync::Arc<crate::bidi::Order>>> = (0..lines).map(|row| screen.row_order(row as i32 - display_offset).filter(|o| o.lut.len() <= cols)).collect();
     let visual_col = |row: usize, col: usize| orders.get(row).and_then(|o| o.as_ref()).and_then(|o| o.lut.get(col)).map_or(col, |&v| v as usize);
     let cursor = cursor_at.map(|(row, col)| (row, visual_col(row, col)));
-    let blank = || CellLook { ul: None, text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false, joins: false };
+    let blank = || CellLook { ul: None, text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false, level: cell_level(" ", draw), mask: cell_mask(" ", draw, dark(palette.fg, palette.bg)), cursor: false, joins: false, table: None };
     let mut grid: Vec<Vec<CellLook>> = (0..lines).map(|_| (0..cols).map(|_| blank()).collect()).collect();
     for indexed in content.display_iter {
         let Some(vp) = point_to_viewport(content.display_offset, indexed.point) else { continue };
@@ -790,6 +946,8 @@ pub fn pane_with(
             if c.flags.contains(Flags::DIM) { blend(palette.cell(c.fg, c.bg, c.flags - Flags::DIM).1, u, palette.faint_alpha) } else { u }
         });
         let ul = (!hidden && !blink_off && c.image().is_none()).then_some(Ul { style, strike, sgr });
+        let level = cell_level(&text, draw);
+        let mask = cell_mask(&text, draw, dark(fg, bg));
         grid[row][col] = CellLook {
             ul,
             text,
@@ -798,7 +956,12 @@ pub fn pane_with(
             bold: c.flags.contains(Flags::BOLD),
             italic: c.flags.contains(Flags::ITALIC),
             selected,
+            level,
+            mask,
+            // The logical cursor cell (the row is not in display order yet); only a block cursor breaks a ligature.
+            cursor: block_cursor && cursor_at == Some((row, col)),
             joins: false,
+            table: None,
         };
     }
 
@@ -825,6 +988,14 @@ pub fn pane_with(
             cell.joins = o.rtl[logical] && first.is_some_and(crate::bidi::joins);
         }
         grid[row] = new;
+    }
+
+    // Special Font Config: each cell a table entry covers takes its entry (after the display
+    // order, so a mirrored character is the one looked up).
+    if let Some(table) = draw.table.as_deref().filter(|t| !t.entries.is_empty()) {
+        for cell in grid.iter_mut().flatten() {
+            cell.table = table_cell(table, &cell.text);
+        }
     }
 
     for (row, cells) in grid.iter().enumerate() {
@@ -862,11 +1033,14 @@ pub fn pane_with(
                     spans.pop();
                 }
                 if !spans.is_empty() {
-                    frame.rows.push(TextRow { x: rect.x + start as f32 * cw, y, spans, clip: rect, scale: 1.0 });
+                    frame.rows.push(TextRow { x: rect.x + start as f32 * cw, y, spans, clip: rect, scale: 1.0, face });
                 }
             }
         };
+        // With Non-ASCII Ligatures a run of one-column non-ASCII cells shares a piece too (P7).
+        let group = draw.ligatures.non_ascii;
         let mut piece: Option<(usize, Vec<Span>)> = None;
+        let mut before: Option<usize> = None;
         let mut col = 0;
         while col < cells.len() {
             let c = &cells[col];
@@ -874,40 +1048,60 @@ pub fn pane_with(
                 col += 1;
                 continue;
             }
-            if c.joins {
-                // An Arabic run is one piece at its visual start, in logical order (the cells
-                // read right to left on screen), so the font joins the letters.
-                flush(&mut piece, frame);
-                let end = (col..cells.len()).find(|&k| !cells[k].joins).unwrap_or(cells.len());
-                let mut spans: Vec<Span> = Vec::new();
-                for c in cells[col..end].iter().rev() {
-                    // The shaper runs its own bidi over the piece: explicit controls riding on a
-                    // cell must not reach it (P9).
-                    let text: String = c.text.chars().filter(|&ch| !crate::bidi::is_explicit_control(ch)).collect();
-                    match spans.last_mut() {
-                        Some(s) if s.color == c.fg && s.bold == c.bold && s.italic == c.italic => s.text.push_str(&text),
-                        _ => spans.push(Span { text, color: c.fg, bold: c.bold, italic: c.italic, alt_font: true, icon: false, prose: false, badge: false, toolbelt: false }),
-                    }
-                }
-                piece = Some((col, spans));
-                flush(&mut piece, frame);
-                col = end;
-                continue;
-            }
             let at = col;
             col += 1;
+            // A box or block character is drawn by Tandem to fill its cell (iTerm2 does the
+            // same): it leaves the text, ends the piece around it, and takes the cell's color.
+            // The row is in display order here, so `at` is the VISUAL column and the character
+            // is the mirrored one on a right-to-left row (S4); `c.fg` is the color after minimum
+            // contrast, blocks exempt (S2); a blinked-out or hidden cell's text is a space (S7).
+            let mut chars = c.text.chars();
+            if let (true, Some(drawn), None) = (draw.custom_boxes, chars.next(), chars.next()) {
+                if crate::boxdraw::drawn_with(drawn, draw.powerline, draw.powerline_extended, false) {
+                    flush(&mut piece, frame);
+                    // A wide Powerline symbol draws over the next cell too; the grid keeps one cell
+                    // (the next cell's text still lays out at its own column), as in iTerm2.
+                    let span = if draw.powerline && crate::powerline::wide(u32::from(drawn), draw.powerline_wide) { 2.0 } else { 1.0 };
+                    frame.glyphs.push(CellGlyph { c: drawn, rect: Rect { x: rect.x + at as f32 * cw, y, w: cw * span, h: ch }, color: c.fg, face, clip: rect });
+                    before = None;
+                    continue;
+                }
+            }
             let ascii = c.text.is_ascii();
-            if !ascii {
+            let joinable = group && groupable(&c.text);
+            // What the cell draws: the table's code point in place of the sent one.
+            let shown = shown_text(c);
+            // The previous cell, when it is the one right before (a wide character's spacer is empty).
+            let prev = before.filter(|b| *b + 1 == at).map(|b| &cells[b]);
+            if !prev.is_some_and(|p| piece_continues(p, c, group)) {
                 flush(&mut piece, frame);
             }
             let (_, spans) = piece.get_or_insert_with(|| (at, Vec::new()));
-            match spans.last_mut() {
-                Some(s) if s.color == c.fg && s.bold == c.bold && s.italic == c.italic => s.text.push_str(&c.text),
-                _ => spans.push(Span { text: c.text.clone(), color: c.fg, bold: c.bold, italic: c.italic, alt_font: !ascii, icon: false, prose: false, badge: false, toolbelt: false }),
+            let font = c.table.map_or(0, |t| t.0);
+            let same = |s: &Span| s.color == c.fg && s.bold == c.bold && s.italic == c.italic && s.ligatures == c.level && s.mask == c.mask && s.font == font;
+            let span = |text: String| Span { text, color: c.fg, bold: c.bold, italic: c.italic, alt_font: !ascii, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: c.bold, ligatures: c.level, mask: c.mask, font: c.table.map_or(0, |t| t.0) };
+            if c.joins {
+                // An Arabic run is one piece at its visual start, in logical order (the cells
+                // read right to left on screen), so the font joins the letters: each cell goes
+                // in front. The shaper runs its own bidi over the piece: explicit controls
+                // riding on a cell must not reach it (P9).
+                let text: String = shown.chars().filter(|&ch| !crate::bidi::is_explicit_control(ch)).collect();
+                match spans.first_mut() {
+                    Some(s) if same(s) => s.text.insert_str(0, &text),
+                    _ => spans.insert(0, span(text)),
+                }
+            } else {
+                match spans.last_mut() {
+                    Some(s) if same(s) => s.text.push_str(&shown),
+                    _ => spans.push(span(shown.to_string())),
+                }
+                // Any other non-ASCII character gets its own piece at its cell's x, because
+                // fallback fonts (CJK, emoji) are not monospace.
+                if !ascii && !joinable {
+                    flush(&mut piece, frame);
+                }
             }
-            if !ascii {
-                flush(&mut piece, frame);
-            }
+            before = Some(at);
         }
         flush(&mut piece, frame);
         for run in underline_runs(cells, palette.underline_color) {
@@ -920,10 +1114,10 @@ pub fn pane_with(
         for (p, label) in h.labels {
             let row = p.row as i32 - top;
             if row >= 0 && (row as usize) < lines {
-                let span = Span { text: label.clone(), color: LABEL_TEXT, bold: true, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
+                let span = Span { text: label.clone(), color: LABEL_TEXT, bold: true, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
                 // The tag sits at the leftmost of the cells it covers, where the row draws them.
                 let col = visual_start(orders.get(row as usize).and_then(|o| o.as_deref()), p.col, label.chars().count());
-                frame.rows.push(TextRow { x: rect.x + col as f32 * cw, y: rect.y + row as f32 * ch, spans: vec![span], clip: rect, scale: 1.0 });
+                frame.rows.push(TextRow { x: rect.x + col as f32 * cw, y: rect.y + row as f32 * ch, spans: vec![span], clip: rect, scale: 1.0, face });
             }
         }
     }
@@ -963,8 +1157,8 @@ pub fn pane_with(
                 let y = rect.y + row as f32 * ch;
                 let r = Rect { x, y, w: (shown.chars().count() as f32 + 1.0) * cw, h: ch };
                 frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
-                let span = Span { text: shown, color: rgb(0, 0, 0), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-                frame.rows.push(TextRow { x: x + cw * 0.5, y, spans: vec![span], clip: rect, scale: 1.0 });
+                let span = Span { text: shown, color: rgb(0, 0, 0), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+                frame.rows.push(TextRow { x: x + cw * 0.5, y, spans: vec![span], clip: rect, scale: 1.0, face });
             }
         }
     }
@@ -992,8 +1186,8 @@ pub fn pane_with(
         let r = Rect { x: rect.x + col as f32 * cw, y: rect.y + row as f32 * ch, w: cw, h: ch };
         let bg = grid.get(row).and_then(|l| l.get(col)).map_or(palette.bg, |c| c.bg);
         let scale = (cw * 1.2 / ch.max(1.0)).min(1.0);
-        let span = Span { text: crate::pwm_prompt::KEY_GLYPH.to_string(), color: match_text(bg), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
-        frame.rows.push(TextRow { x: r.x, y: r.y + (ch - ch * scale) / 2.0, spans: vec![span], clip: r, scale });
+        let span = Span { text: crate::pwm_prompt::KEY_GLYPH.to_string(), color: match_text(bg), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+        frame.rows.push(TextRow { x: r.x, y: r.y + (ch - ch * scale) / 2.0, spans: vec![span], clip: r, scale, face });
     } else if let Some((row, col)) = cursor {
         let origin = (rect.x, rect.y);
         let r = box_rect(&look.geometry, origin, cell, row, col, wide_cursor);
@@ -1047,8 +1241,8 @@ pub fn pane_with(
             let r = Rect { x: rect.x + col as f32 * cw, y: rect.y + piece.row as f32 * ch, w: piece.cells as f32 * cw, h: ch };
             cut_out(frame, r, ch);
             frame.popups.push(Quad { rect: r, color: rgba(palette.bg, 1.0) });
-            let span = Span { text: piece.text.clone(), color: palette.fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-            frame.rows.push(TextRow { x: r.x, y: r.y, spans: vec![span], clip: Rect { w: rect.x + rect.w - r.x, ..r }, scale: 1.0 });
+            let span = Span { text: piece.text.clone(), color: palette.fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+            frame.rows.push(TextRow { x: r.x, y: r.y, spans: vec![span], clip: Rect { w: rect.x + rect.w - r.x, ..r }, scale: 1.0, face });
             let line = look.geometry.scale.max(1.0).round();
             frame.overlay.push(Quad { rect: Rect { y: r.y + ch - line, h: line, ..r }, color: rgba(palette.fg, 1.0) });
         }
@@ -1313,9 +1507,9 @@ pub fn doc_lines(frame: &mut Frame, origin: (f32, f32), lines: &[crate::porthole
         let spans = l
             .runs
             .iter()
-            .map(|r| Span { text: r.text.clone(), color: r.color, bold: r.bold, italic: r.italic, alt_font: false, icon: false, prose: r.face == crate::porthole::render::Face::Prose, badge: false, toolbelt: false })
+            .map(|r| Span { text: r.text.clone(), color: r.color, bold: r.bold, italic: r.italic, alt_font: false, icon: false, prose: r.face == crate::porthole::render::Face::Prose, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 })
             .collect();
-        frame.rows.push(TextRow { x: ox + l.x, y, spans, clip: area, scale: l.scale });
+        frame.rows.push(TextRow { x: ox + l.x, y, spans, clip: area, scale: l.scale, face: crate::render::DEFAULT_FACE });
     }
 }
 
@@ -1339,17 +1533,17 @@ pub fn porthole(frame: &mut Frame, rect: Rect, clip: Rect, lines: &[crate::porth
     let language = Rect { x: close.x - 4.0 - lw, y: close.y, w: lw, h: s };
     let ww = 8.0 * cell.0;
     let wide = Rect { x: language.x - 2.0 - ww, y: close.y, w: ww, h: s };
-    let text = |t: String, color: Rgb, icon: bool| Span { text: t, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false, toolbelt: false };
+    let text = |t: String, color: Rgb, icon: bool| Span { text: t, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
     if let Some(c) = cut(close, clip) {
-        frame.rows.push(TextRow { x: close.x + (s - cell.0) / 2.0, y: close.y, spans: vec![text("\u{E711}".into(), blend(bg, fg, 0.5), true)], clip: c, scale: 1.0 });
+        frame.rows.push(TextRow { x: close.x + (s - cell.0) / 2.0, y: close.y, spans: vec![text("\u{E711}".into(), blend(bg, fg, 0.5), true)], clip: c, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     if let Some(c) = cut(language, clip) {
         frame.quads.push(Quad { rect: c, color: rgba(blend(back, fg, 0.12), 1.0) });
-        frame.rows.push(TextRow { x: language.x + cell.0, y: language.y, spans: vec![text(chrome.language.to_string(), fg, false)], clip: c, scale: 1.0 });
+        frame.rows.push(TextRow { x: language.x + cell.0, y: language.y, spans: vec![text(chrome.language.to_string(), fg, false)], clip: c, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     if let Some(c) = cut(wide, clip) {
         let label = if chrome.wide { "[x] Wide" } else { "[ ] Wide" };
-        frame.rows.push(TextRow { x: wide.x, y: wide.y, spans: vec![text(label.into(), fg, false)], clip: c, scale: 1.0 });
+        frame.rows.push(TextRow { x: wide.x, y: wide.y, spans: vec![text(label.into(), fg, false)], clip: c, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     let inner = Rect { x: rect.x + 4.0, y: rect.y + 4.0 + s, w: rect.w - 8.0, h: rect.h - 8.0 - s };
     let Some(area) = cut(inner, clip) else { return PortholeControls { close, language, wide } };
@@ -1369,8 +1563,8 @@ pub fn badge(frame: &mut Frame, pane: Rect, l: &crate::badge::BadgeLayout, color
         for (i, (text, w)) in l.lines.iter().zip(&l.widths).enumerate() {
             let x = pane.x + l.rect.x + l.rect.w - w + dx;
             let y = pane.y + l.rect.y + i as f32 * line_h + dy;
-            let span = Span { text: text.clone(), color: c, bold: true, italic: false, alt_font: false, icon: false, prose: false, badge: true, toolbelt: false };
-            frame.rows.push(TextRow { x, y, spans: vec![span], clip: pane, scale });
+            let span = Span { text: text.clone(), color: c, bold: true, italic: false, alt_font: false, icon: false, prose: false, badge: true, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+            frame.rows.push(TextRow { x, y, spans: vec![span], clip: pane, scale, face: crate::render::DEFAULT_FACE });
         }
     }
 }
@@ -1405,8 +1599,8 @@ pub fn inline_buttons(frame: &mut Frame, buttons: &[(Rect, ButtonFace, bool)], b
             }
             ButtonFace::Icon(c) => {
                 frame.quads.push(Quad { rect: *r, color: rgba(mix(0.15 * a), 1.0) });
-                let span = Span { text: c.to_string(), color: mix(a), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
-                frame.rows.push(TextRow { x: r.x + r.w / 4.0, y: r.y, spans: vec![span], clip: *r, scale: 1.0 });
+                let span = Span { text: c.to_string(), color: mix(a), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+                frame.rows.push(TextRow { x: r.x + r.w / 4.0, y: r.y, spans: vec![span], clip: *r, scale: 1.0, face: crate::render::DEFAULT_FACE });
             }
         }
     }
@@ -1596,8 +1790,8 @@ pub fn top_right_indicators(frame: &mut Frame, pane: Rect, glyphs: &[char], colo
     let mut hits = Vec::new();
     for (i, g) in glyphs.iter().enumerate() {
         let x = pane.x + pane.w - (i as f32 + 1.0) * step;
-        let span = Span { text: g.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
-        frame.rows.push(TextRow { x, y: pane.y + 4.0, spans: vec![span], clip: pane, scale: 1.0 });
+        let span = Span { text: g.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+        frame.rows.push(TextRow { x, y: pane.y + 4.0, spans: vec![span], clip: pane, scale: 1.0, face: crate::render::DEFAULT_FACE });
         hits.push(Rect { x, y: pane.y + 4.0, w: cell.0 * 2.0, h: cell.1 });
     }
     hits
@@ -1687,7 +1881,7 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
     // The selected tab's cell, effective fill and brightness (`tabColorBrightness`, `YOS:776-797`),
     // for what is drawn over the lines.
     let mut selected_deco: Option<(usize, Rect, Rgb, f32)> = None;
-    let span = |text: String, color: Rgb, bold: bool, italic: bool, icon: bool| Span { text, color, bold, italic, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false };
+    let span = |text: String, color: Rgb, bold: bool, italic: bool, icon: bool| Span { text, color, bold, italic, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
     for (k, (i, c, r)) in bar.cells.iter().enumerate() {
         let Some(tab) = tabs.get(*i) else { continue };
         let cell = px(*r);
@@ -1737,7 +1931,7 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
             let em = TAB_GLYPH_PT * scale;
             let x = box_.x + ((box_.w - em) / 2.0).floor();
             let y = box_.y + ((box_.h - line * s) / 2.0).floor();
-            frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, false, false, true)], clip, scale: s });
+            frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, false, false, true)], clip, scale: s, face: crate::render::DEFAULT_FACE });
         };
         // `YS drawInteriorWithTabCell:`: the close button at its alpha, halved in a window that
         // is not key.
@@ -1785,7 +1979,7 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
         if let Some(cr) = c.counter.map(at).filter(|_| !text.counter.is_empty()) {
             let x = cr.x + ((cr.w - text.counter_width * scale) / 2.0).floor();
             let y = cr.y + ((cr.h - title_h) / 2.0).floor();
-            frame.rows.push(TextRow { x, y, spans: vec![span(text.counter.clone(), color, false, false, false)], clip, scale: title_scale });
+            frame.rows.push(TextRow { x, y, spans: vec![span(text.counter.clone(), color, false, false, false)], clip, scale: title_scale, face: crate::render::DEFAULT_FACE });
         }
         let subtitle = bar.subtitles.get(k).filter(|s| !s.is_empty());
         let offset = if subtitle.is_some() { TITLE_OFFSET_WITH_SUBTITLE * scale } else { 0.0 };
@@ -1805,14 +1999,14 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
         }
         let spans: Vec<Span> = text.runs.iter().map(|(r, _)| span(r.text.clone(), color, r.bold, r.italic, false)).collect();
         if !spans.is_empty() {
-            frame.rows.push(TextRow { x, y, spans, clip, scale: title_scale });
+            frame.rows.push(TextRow { x, y, spans, clip, scale: title_scale, face: crate::render::DEFAULT_FACE });
         }
         if let Some(sub) = subtitle {
             let sl = at(text.subtitle_label);
             let sw = text.subtitle_width * scale;
             let x = if text.subtitle_truncate { sl.x } else { sl.x + (sl.w - sw) / 2.0 };
             let y = cell.y + ((cell.h - sub_h) / 2.0).floor() + offset + title_h + SUBTITLE_OFFSET * scale;
-            frame.rows.push(TextRow { x, y, spans: vec![span(sub.clone(), color, false, false, false)], clip, scale: sub_scale });
+            frame.rows.push(TextRow { x, y, spans: vec![span(sub.clone(), color, false, false, false)], clip, scale: sub_scale, face: crate::render::DEFAULT_FACE });
         }
     }
     // Minimal: the bar's room before the first tab is drawn as an unselected tab, or as the selected
@@ -2002,7 +2196,7 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
         let y = rect.y + ((rect.h - line * s) / 2.0).floor();
         let xs: &[f32] = if gap > 0.0 { &[x, x + gap] } else { &[x] };
         for &x in xs {
-            frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, false, false, true)], clip: clip_rect(rect, area), scale: s });
+            frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, false, false, true)], clip: clip_rect(rect, area), scale: s, face: crate::render::DEFAULT_FACE });
         }
     }
 }
@@ -2111,10 +2305,10 @@ pub fn caption_buttons(frame: &mut Frame, buttons: &[(crate::caption::Button, Re
             Button::Maximize => MAXIMIZE_GLYPH,
             Button::Close => CLOSE_GLYPH,
         };
-        let span = Span { text: glyph.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
+        let span = Span { text: glyph.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
         let x = rect.x + ((rect.w - em) / 2.0).floor();
         let y = rect.y + ((rect.h - line * s) / 2.0).floor();
-        frame.rows.push(TextRow { x, y, spans: vec![span], clip: *rect, scale: s });
+        frame.rows.push(TextRow { x, y, spans: vec![span], clip: *rect, scale: s, face: crate::render::DEFAULT_FACE });
     }
 }
 
@@ -2123,19 +2317,19 @@ pub fn caption_menu_button(frame: &mut Frame, rect: Rect, pal: &crate::tab_theme
     let ink = crate::tab_theme::over(pal.bar, pal.text_selected);
     let s = CAPTION_GLYPH_PT * font_scale;
     let em = CAPTION_GLYPH_PT * scale;
-    let span = Span { text: crate::caption::MENU_GLYPH.to_string(), color: ink, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
+    let span = Span { text: crate::caption::MENU_GLYPH.to_string(), color: ink, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
     let x = rect.x + ((rect.w - em) / 2.0).floor();
     let y = rect.y + ((rect.h - line * s) / 2.0).floor();
-    frame.rows.push(TextRow { x, y, spans: vec![span], clip: rect, scale: s });
+    frame.rows.push(TextRow { x, y, spans: vec![span], clip: rect, scale: s, face: crate::render::DEFAULT_FACE });
 }
 
 /// A caption text row in the bar's prose font, `width` pixels wide, at `x`.
 #[allow(clippy::too_many_arguments)]
 fn caption_row(frame: &mut Frame, text: &str, x: f32, rect: Rect, color: Rgb, pal: &crate::tab_theme::TabPalette, font_scale: f32, line: f32) {
     let s = pal.font_pt * font_scale;
-    let span = Span { text: text.to_string(), color, bold: false, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false };
+    let span = Span { text: text.to_string(), color, bold: false, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
     let y = rect.y + ((rect.h - line * s) / 2.0).floor();
-    frame.rows.push(TextRow { x, y, spans: vec![span], clip: rect, scale: s });
+    frame.rows.push(TextRow { x, y, spans: vec![span], clip: rect, scale: s, face: crate::render::DEFAULT_FACE });
 }
 
 /// The window's title in the caption where no tab bar shows: centered in `rect` (left-aligned and
@@ -2224,8 +2418,8 @@ fn group_runs(frame: &mut Frame, tabs: &[TabLook], bar: &crate::tab_layout::Bar,
         if !t.label.is_empty() {
             let x = sp.x + GROUP_NAME_PAD * scale;
             let y = sp.y + ((sp.h - name_h) / 2.0).floor();
-            let span = Span { text: t.label.clone(), color: text, bold: true, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false };
-            frame.rows.push(TextRow { x, y, spans: vec![span], clip: clip_rect(sp, tabs_area), scale: name_scale });
+            let span = Span { text: t.label.clone(), color: text, bold: true, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+            frame.rows.push(TextRow { x, y, spans: vec![span], clip: clip_rect(sp, tabs_area), scale: name_scale, face: crate::render::DEFAULT_FACE });
         }
         if t.collapsed && union.is_none() {
             // The chevron, centered in its room at the block's end (`YS:1482-1494`).
@@ -2233,8 +2427,8 @@ fn group_runs(frame: &mut Frame, tabs: &[TabLook], bar: &crate::tab_layout::Bar,
             let cx = b.x + b.w - (GROUP_NAME_PAD + GROUP_CHEVRON / 2.0) * scale;
             let x = (cx - GROUP_CHEVRON_PT * scale / 2.0).floor();
             let y = b.y + ((b.h - line * s) / 2.0).floor();
-            let span = Span { text: GROUP_CHEVRON_GLYPH.to_string(), color: text, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
-            frame.rows.push(TextRow { x, y, spans: vec![span], clip: clip_rect(b, tabs_area), scale: s });
+            let span = Span { text: GROUP_CHEVRON_GLYPH.to_string(), color: text, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+            frame.rows.push(TextRow { x, y, spans: vec![span], clip: clip_rect(b, tabs_area), scale: s, face: crate::render::DEFAULT_FACE });
         }
         // The squared outline.
         frame_edges(frame, b, stroke, color);
@@ -2276,8 +2470,8 @@ fn tab_graphic(frame: &mut Frame, image: &TabImage, g: Rect, alpha: f32, back: R
             let s = LETTER_PT * font_scale;
             let x = circle.x + (circle.w - letter_w * scale) / 2.0;
             let y = circle.y + (circle.h - line * s) / 2.0;
-            let span = Span { text: letter.clone(), color: back, bold: true, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false };
-            frame.rows.push(TextRow { x, y, spans: vec![span], clip, scale: s });
+            let span = Span { text: letter.clone(), color: back, bold: true, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+            frame.rows.push(TextRow { x, y, spans: vec![span], clip, scale: s, face: crate::render::DEFAULT_FACE });
         }
     }
 }
@@ -2357,16 +2551,17 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
         }
     }
     cut_quads(frame, r);
+    cut_glyphs(frame, r);
     frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
-    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
+    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
     let text_end = l.buttons.first().map_or(l.close.x, |b| b.x);
     let clip = Rect { w: (text_end - r.x).max(0.0), ..r };
-    frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.shown_text())], clip, scale: 1.0 });
+    frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.shown_text())], clip, scale: 1.0, face: crate::render::DEFAULT_FACE });
     for (i, b) in l.buttons.iter().enumerate() {
         frame.quads.push(Quad { rect: *b, color: rgba(BAR_BUTTON, 1.0) });
-        frame.rows.push(TextRow { x: b.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.label(i))], clip: *b, scale: 1.0 });
+        frame.rows.push(TextRow { x: b.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.label(i))], clip: *b, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
-    frame.rows.push(TextRow { x: l.close.x + cell.0 / 2.0, y: r.y + 4.0, spans: vec![span("x".into())], clip: l.close, scale: 1.0 });
+    frame.rows.push(TextRow { x: l.close.x + cell.0 / 2.0, y: r.y + 4.0, spans: vec![span("x".into())], clip: l.close, scale: 1.0, face: crate::render::DEFAULT_FACE });
     r
 }
 
@@ -2461,14 +2656,14 @@ pub fn pane_title_bar(frame: &mut Frame, bar: &TitleBar, cell: (f32, f32)) {
     }
     let text = blend(back, look.text.0, look.text.1);
     let menu = blend(back, look.menu.0, look.menu.1);
-    let span = |text: String, color: Rgb, icon: bool| Span { text, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false, toolbelt: false };
+    let span = |text: String, color: Rgb, icon: bool| Span { text, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
     // The usable height centers the label above the line.
     let usable = if look.line.is_some() { g.line.y - g.bar.y } else { g.bar.h };
     if bar.show_label && g.label.w > 0.0 && cell.0 > 0.0 {
         let label = crate::pane_title::fit_label(bar.text, (g.label.w / cell.0) as usize);
         if !label.is_empty() {
             let y = g.bar.y + ((usable - cell.1) / 2.0).floor();
-            frame.rows.push(TextRow { x: g.label.x, y, spans: vec![span(label, text, false)], clip: g.label, scale: 1.0 });
+            frame.rows.push(TextRow { x: g.label.x, y, spans: vec![span(label, text, false)], clip: g.label, scale: 1.0, face: crate::render::DEFAULT_FACE });
         }
     }
     let mut glyph = |ch: char, r: Rect, color: Rgb| {
@@ -2476,7 +2671,7 @@ pub fn pane_title_bar(frame: &mut Frame, bar: &TitleBar, cell: (f32, f32)) {
         let s = em / cell.1.max(1.0);
         let x = r.x + ((r.w - em) / 2.0).floor();
         let y = r.y + ((r.h - cell.1 * s) / 2.0).floor();
-        frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, true)], clip: r, scale: s });
+        frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, true)], clip: r, scale: s, face: crate::render::DEFAULT_FACE });
     };
     glyph('\u{E711}', g.close, text);
     glyph('\u{E712}', g.menu, menu);
@@ -2514,8 +2709,8 @@ pub fn status_bar(frame: &mut Frame, d: &StatusBarDraw, cell: (f32, f32)) {
     for t in d.texts {
         let line_h = cell.1 * t.scale;
         let y = r.y + ((r.h - line_h) / 2.0).round() + t.dy;
-        let span = Span { text: t.text.clone(), color: t.color, bold: false, italic: false, alt_font: false, icon: t.icon, prose: !t.icon, badge: false, toolbelt: false };
-        frame.rows.push(TextRow { x: t.x, y, spans: vec![span], clip: t.clip, scale: t.scale });
+        let span = Span { text: t.text.clone(), color: t.color, bold: false, italic: false, alt_font: false, icon: t.icon, prose: !t.icon, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+        frame.rows.push(TextRow { x: t.x, y, spans: vec![span], clip: t.clip, scale: t.scale, face: crate::render::DEFAULT_FACE });
     }
     if let Some(e) = d.edge.filter(|_| !d.bare) {
         frame.quads.push(Quad { rect: e, color: rgba(STATUS_BAR_EDGE, 1.0) });
@@ -2528,9 +2723,10 @@ pub fn status_bar(frame: &mut Frame, d: &StatusBarDraw, cell: (f32, f32)) {
 /// goes in `popups`, which draw after images and before text.
 pub fn cut_out(frame: &mut Frame, r: Rect, line_h: f32) {
     let mut extra = Vec::new();
+    let heights = &frame.face_heights;
     for row in frame.rows.iter_mut() {
         let c = row.clip;
-        let line_h = line_h * row.scale.max(1.0);
+        let line_h = row_height_in(heights, row, line_h);
         if row.y >= r.y + r.h || row.y + line_h <= r.y || c.y >= r.y + r.h || c.y + c.h <= r.y || c.x >= r.x + r.w || c.x + c.w <= r.x {
             continue;
         }
@@ -2544,6 +2740,7 @@ pub fn cut_out(frame: &mut Frame, r: Rect, line_h: f32) {
     }
     frame.rows.extend(extra);
     cut_quads(frame, r);
+    cut_glyphs(frame, r);
 }
 
 /// A box drawn over the pane's rows: the text of the rows it touches stops where the box
@@ -2554,10 +2751,12 @@ pub fn cut_rows_from(frame: &mut Frame, r: Rect, line_h: f32) {
     // spaces pushes no text row).
     cut_quads(frame, r);
     let mut bands: Vec<Rect> = Vec::new();
+    let heights = &frame.face_heights;
     for row in frame.rows.iter_mut() {
-        if row.y < r.y + r.h && row.y + line_h > r.y && row.clip.x + row.clip.w > r.x {
+        let h = row_height_in(heights, row, line_h);
+        if row.y < r.y + r.h && row.y + h > r.y && row.clip.x + row.clip.w > r.x {
             row.clip.w = (r.x - row.clip.x).max(0.0);
-            let band = Rect { x: r.x, y: row.y, w: 1.0e6, h: line_h * row.scale.max(1.0) };
+            let band = Rect { x: r.x, y: row.y, w: 1.0e6, h };
             if !bands.iter().any(|b| b.y == band.y) {
                 bands.push(band);
             }
@@ -2566,6 +2765,8 @@ pub fn cut_rows_from(frame: &mut Frame, r: Rect, line_h: f32) {
     for b in bands {
         cut_quads(frame, b);
     }
+    // The glyphs in the rows the box touches stop at its left edge, whole rows like the text.
+    trim_glyphs(&mut frame.glyphs, |g| (g.rect.y < r.y + r.h && g.rect.y + g.rect.h > r.y).then_some(Rect { x: r.x, y: g.rect.y, w: 1.0e6, h: g.rect.h }));
 }
 
 /// The underline and strikethrough strokes already in the frame stop at `r` (a popup drawn over them): each
@@ -2574,6 +2775,39 @@ pub fn cut_quads(frame: &mut Frame, r: Rect) {
     for quads in [&mut frame.underlines, &mut frame.strikes, &mut frame.scrollbars] {
         *quads = quads.drain(..).flat_map(|q| outside(q.rect, r).into_iter().map(move |rect| Quad { rect, ..q })).collect();
     }
+}
+
+/// Box and block glyphs already in the frame stop at `r` (a popup drawn over them): each keeps the
+/// parts of its visible area outside `r`, as `cut_out` does for a row. A glyph wholly under `r`
+/// goes; one straddling it keeps a clip narrowed to what is outside (two glyphs when `r` is
+/// inside it, as `cut_out` copies a row). Each piece keeps its cell, so its mask is unchanged.
+pub fn cut_glyphs(frame: &mut Frame, r: Rect) {
+    trim_glyphs(&mut frame.glyphs, |_| Some(r));
+}
+
+/// Applies a hole to every glyph: `hole` names the part of the frame a glyph must not draw in.
+fn trim_glyphs(glyphs: &mut Vec<CellGlyph>, hole: impl Fn(&CellGlyph) -> Option<Rect>) {
+    let mut kept = Vec::with_capacity(glyphs.len());
+    for g in glyphs.drain(..) {
+        let Some(hole) = hole(&g) else {
+            kept.push(g);
+            continue;
+        };
+        // What shows of the glyph: its cell inside its clip.
+        let (x0, x1) = (g.rect.x.max(g.clip.x), (g.rect.x + g.rect.w).min(g.clip.x + g.clip.w));
+        let (y0, y1) = (g.rect.y.max(g.clip.y), (g.rect.y + g.rect.h).min(g.clip.y + g.clip.h));
+        if x1 <= x0 || y1 <= y0 {
+            continue;
+        }
+        let visible = Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+        let parts = outside(visible, hole);
+        if parts.len() == 1 && parts[0] == visible {
+            kept.push(g);
+            continue;
+        }
+        kept.extend(parts.into_iter().map(|clip| CellGlyph { clip, ..g.clone() }));
+    }
+    *glyphs = kept;
 }
 
 /// Lays `layer` (a flashing tab bar drawn apart) over what the frame has, at opacity
@@ -2597,6 +2831,10 @@ pub fn lay_over(frame: &mut Frame, layer: Frame, area: Rect, alpha: f32, under: 
     frame.strikes.extend(layer.strikes.into_iter().map(faded));
     // Pictures keep their full opacity and draw before popups (none in the bar yet).
     frame.images.extend(layer.images);
+    frame.glyphs.extend(layer.glyphs.into_iter().map(|mut g| {
+        g.color = blend(under, g.color, alpha);
+        g
+    }));
     frame.rows.extend(layer.rows.into_iter().map(|mut row| {
         for s in &mut row.spans {
             s.color = blend(under, s.color, alpha);
@@ -2655,16 +2893,16 @@ pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, foot
     let w = r.w;
     cut_out(frame, r, cell.1);
     frame.popups.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
-    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
+    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
     for (i, text) in visible.iter().enumerate() {
         let ry = y + 2.0 + i as f32 * cell.1;
         if first + i == selected {
             frame.popups.push(Quad { rect: Rect { x, y: ry, w, h: cell.1 }, color: rgba(BAR_BUTTON, 1.0) });
         }
-        frame.rows.push(TextRow { x: x + cell.0, y: ry, spans: vec![span(text.clone())], clip: r, scale: 1.0 });
+        frame.rows.push(TextRow { x: x + cell.0, y: ry, spans: vec![span(text.clone())], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     if let Some(f) = footer {
-        frame.rows.push(TextRow { x: x + cell.0, y: y + 2.0 + visible.len() as f32 * cell.1, spans: vec![span(f.to_string())], clip: r, scale: 1.0 });
+        frame.rows.push(TextRow { x: x + cell.0, y: y + 2.0 + visible.len() as f32 * cell.1, spans: vec![span(f.to_string())], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     Some(r)
 }
@@ -2681,8 +2919,8 @@ pub fn session_picker_button(frame: &mut Frame, pane: Rect, label: &str, fg: Rgb
     cut_out(frame, r, cell.1);
     frame.popups.push(Quad { rect: r, color: rgba(blend(bg, fg, 0.18), 1.0) });
     frame_lines(&mut frame.popups, r, rgba(blend(bg, fg, 0.6), 1.0));
-    let span = Span { text: label.to_string(), color: fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-    frame.rows.push(TextRow { x: r.x + pad.min(r.w / 2.0), y: r.y + (h - cell.1) / 2.0, spans: vec![span], clip: r, scale: 1.0 });
+    let span = Span { text: label.to_string(), color: fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+    frame.rows.push(TextRow { x: r.x + pad.min(r.w / 2.0), y: r.y + (h - cell.1) / 2.0, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     r
 }
 
@@ -2700,7 +2938,7 @@ pub fn tab_tooltip(frame: &mut Frame, text: &str, at: (f32, f32), area: Rect, ce
     frame.popups.push(Quad { rect: r, color: rgba(FIND_BAR, 1.0) });
     frame_lines(&mut frame.popups, r, rgba(DIVIDER, 1.0));
     for (i, line) in lines.iter().enumerate() {
-        frame.rows.push(TextRow { x: x + cell.0, y: y + 2.0 + i as f32 * cell.1, spans: vec![plain_span(line.to_string(), TAB_TEXT, false)], clip: r, scale: 1.0 });
+        frame.rows.push(TextRow { x: x + cell.0, y: y + 2.0 + i as f32 * cell.1, spans: vec![plain_span(line.to_string(), TAB_TEXT, false)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
 }
 
@@ -2728,7 +2966,7 @@ const CLIP_SELECTED: Rgb = rgb(0x2f, 0x5f, 0xa8);
 const CLIP_DISABLED: Rgb = rgb(0x5a, 0x5a, 0x5a);
 
 fn clip_span(text: String, color: Rgb, bold: bool, icon: bool) -> Span {
-    Span { text, color, bold, italic: false, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false }
+    Span { text, color, bold, italic: false, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }
 }
 
 /// The Clippings panel at the right of a session: the rows, the button strip, the status.
@@ -2752,10 +2990,10 @@ pub fn clippings_panel(frame: &mut Frame, d: &ClipDraw, cell: (f32, f32), scale:
             frame.quads.push(Quad { rect: Rect { x: r.x, y: line_y, w: r.w, h: 1.0 }, color: rgba(DIVIDER, 0.6) });
         }
         let x = r.x + 10.0 * scale;
-        frame.rows.push(TextRow { x, y: r.y + pad, spans: vec![clip_span(row.title.clone(), TAB_TEXT, true, false)], clip, scale: 1.0 });
+        frame.rows.push(TextRow { x, y: r.y + pad, spans: vec![clip_span(row.title.clone(), TAB_TEXT, true, false)], clip, scale: 1.0, face: crate::render::DEFAULT_FACE });
         for (k, line) in row.detail.iter().enumerate() {
             let y = r.y + pad + cell.1 + 2.0 * scale + k as f32 * cell.1;
-            frame.rows.push(TextRow { x, y, spans: vec![clip_span(line.clone(), TAB_TEXT_DIM, false, false)], clip, scale: 1.0 });
+            frame.rows.push(TextRow { x, y, spans: vec![clip_span(line.clone(), TAB_TEXT_DIM, false, false)], clip, scale: 1.0, face: crate::render::DEFAULT_FACE });
         }
     }
     if let Some(y) = d.drop_y {
@@ -2775,11 +3013,11 @@ pub fn clippings_panel(frame: &mut Frame, d: &ClipDraw, cell: (f32, f32), scale:
         };
         frame.quads.push(Quad { rect: *r, color: rgba(TAB_ACTIVE, 1.0) });
         let color = if on { TAB_TEXT } else { CLIP_DISABLED };
-        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(glyph.to_string(), color, false, true)], clip: *r, scale: 1.0 });
+        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(glyph.to_string(), color, false, true)], clip: *r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     if let Some(text) = d.status {
         let r = l.status;
-        frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(text.to_string(), TAB_TEXT_DIM, false, false)], clip: r, scale: 1.0 });
+        frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(text.to_string(), TAB_TEXT_DIM, false, false)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
 }
 
@@ -2806,11 +3044,11 @@ pub fn inline_chat_panel(frame: &mut Frame, d: &InlineDraw, cell: (f32, f32), sc
         if d.hover == Some(b) {
             frame.quads.push(Quad { rect: r, color: rgba(TAB_ACTIVE, 1.0) });
         }
-        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(b.glyph().to_string(), TAB_TEXT, false, true)], clip: r, scale: 1.0 });
+        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(b.glyph().to_string(), TAB_TEXT, false, true)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     let text_w = d.title.chars().count() as f32 * cell.0;
     let t = l.title;
-    frame.rows.push(TextRow { x: t.x + ((t.w - text_w) / 2.0).max(0.0), y: t.y + (t.h - cell.1) / 2.0, spans: vec![clip_span(d.title.to_string(), TAB_TEXT, true, false)], clip: t, scale: 1.0 });
+    frame.rows.push(TextRow { x: t.x + ((t.w - text_w) / 2.0).max(0.0), y: t.y + (t.h - cell.1) / 2.0, spans: vec![clip_span(d.title.to_string(), TAB_TEXT, true, false)], clip: t, scale: 1.0, face: crate::render::DEFAULT_FACE });
 }
 
 /// One conversation row of the inline panel, placed in pixels already: its bubble (zero width for
@@ -2875,7 +3113,7 @@ pub fn inline_chat_body(frame: &mut Frame, d: &InlineBodyDraw, cell: (f32, f32),
         if let Some(label) = row.date {
             if let Some(c) = cut(row.text, d.area) {
                 let w = label.chars().count() as f32 * cell.0 * 0.9;
-                frame.rows.push(TextRow { x: row.text.x + ((row.text.w - w) / 2.0).max(0.0), y: row.text.y, spans: vec![clip_span(label.to_string(), TAB_TEXT_DIM, false, false)], clip: c, scale: 0.85 });
+                frame.rows.push(TextRow { x: row.text.x + ((row.text.w - w) / 2.0).max(0.0), y: row.text.y, spans: vec![clip_span(label.to_string(), TAB_TEXT_DIM, false, false)], clip: c, scale: 0.85, face: crate::render::DEFAULT_FACE });
             }
             continue;
         }
@@ -2900,12 +3138,12 @@ pub fn inline_chat_body(frame: &mut Frame, d: &InlineBodyDraw, cell: (f32, f32),
         for r in &row.copies {
             if let Some(c) = cut(*r, d.area) {
                 frame.quads.push(Quad { rect: c, color: rgba(blend(back, fg, 0.15), 1.0) });
-                frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(crate::chat_view::COPY_GLYPH.to_string(), fg, false, true)], clip: c, scale: 1.0 });
+                frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(crate::chat_view::COPY_GLYPH.to_string(), fg, false, true)], clip: c, scale: 1.0, face: crate::render::DEFAULT_FACE });
             }
         }
         if let Some(r) = row.copied {
             if let Some(c) = cut(r, d.area) {
-                frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(crate::chat_view::COPIED.to_string(), blend(back, fg, 0.6), false, false)], clip: c, scale: 0.85 });
+                frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(crate::chat_view::COPIED.to_string(), blend(back, fg, 0.6), false, false)], clip: c, scale: 0.85, face: crate::render::DEFAULT_FACE });
             }
         }
         for (r, title, title_w, destructive, enabled) in &row.buttons {
@@ -2915,11 +3153,11 @@ pub fn inline_chat_body(frame: &mut Frame, d: &InlineBodyDraw, cell: (f32, f32),
             // The separator above the button, then its title centered.
             frame.quads.push(Quad { rect: Rect { h: 1.0, ..c }, color: rgba(color, 0.35 * alpha) });
             frame_lines(&mut frame.quads, c, rgba(color, 0.25 * alpha));
-            frame.rows.push(TextRow { x: r.x + ((r.w - title_w) / 2.0).max(0.0), y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span((*title).to_string(), blend(back, color, alpha), false, false)], clip: c, scale: 1.0 });
+            frame.rows.push(TextRow { x: r.x + ((r.w - title_w) / 2.0).max(0.0), y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span((*title).to_string(), blend(back, color, alpha), false, false)], clip: c, scale: 1.0, face: crate::render::DEFAULT_FACE });
         }
     }
     if let Some((r, text)) = d.strip {
-        frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(text.to_string(), TAB_TEXT_DIM, false, false)], clip: r, scale: 0.85 });
+        frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(text.to_string(), TAB_TEXT_DIM, false, false)], clip: r, scale: 0.85, face: crate::render::DEFAULT_FACE });
     }
     let i = &d.input;
     frame.quads.push(Quad { rect: i.rect, color: rgba(FIELD_BG_DARK, 1.0) });
@@ -2932,18 +3170,18 @@ pub fn inline_chat_body(frame: &mut Frame, d: &InlineBodyDraw, cell: (f32, f32),
     }
     for (x, y, line) in i.lines {
         if !line.is_empty() {
-            frame.rows.push(TextRow { x: *x, y: *y, spans: vec![list_span(line.clone(), TAB_TEXT, false, 0)], clip: i.clip, scale: i.text_scale });
+            frame.rows.push(TextRow { x: *x, y: *y, spans: vec![list_span(line.clone(), TAB_TEXT, false, 0)], clip: i.clip, scale: i.text_scale, face: crate::render::DEFAULT_FACE });
         }
     }
     if let (Some(text), true) = (i.placeholder, i.lines.iter().all(|l| l.2.is_empty())) {
-        frame.rows.push(TextRow { x: i.clip.x, y: i.clip.y, spans: vec![list_span(text.to_string(), TAB_TEXT_DIM, false, 0)], clip: i.clip, scale: i.text_scale });
+        frame.rows.push(TextRow { x: i.clip.x, y: i.clip.y, spans: vec![list_span(text.to_string(), TAB_TEXT_DIM, false, 0)], clip: i.clip, scale: i.text_scale, face: crate::render::DEFAULT_FACE });
     }
     if let Some(c) = i.caret.map(|c| clip_rect(c, i.clip)).filter(|c| c.h > 0.0) {
         frame.quads.push(Quad { rect: Rect { w: scale.max(1.0), ..c }, color: rgba(TAB_TEXT, 1.0) });
     }
     for (r, glyph, on) in [(i.attach, '\u{E710}', true), (i.send, i.send_glyph, i.send_enabled)] {
         let color = if on { TAB_TEXT } else { TAB_TEXT_DIM };
-        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(glyph.to_string(), color, false, true)], clip: r, scale: 1.0 });
+        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(glyph.to_string(), color, false, true)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
 }
 
@@ -2956,13 +3194,13 @@ pub fn clip_preview(frame: &mut Frame, area: Rect, title: &str, lines: &[String]
     frame.popups.push(Quad { rect: r, color: rgba(CLIP_BG, 1.0) });
     let x = r.x + 12.0 * scale;
     let mut y = r.y + 8.0 * scale;
-    frame.rows.push(TextRow { x, y, spans: vec![clip_span(title.to_string(), TAB_TEXT, true, false)], clip: r, scale: 1.0 });
+    frame.rows.push(TextRow { x, y, spans: vec![clip_span(title.to_string(), TAB_TEXT, true, false)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     y += cell.1 * 1.5;
     for line in lines {
         if y + cell.1 > r.y + r.h {
             break;
         }
-        frame.rows.push(TextRow { x, y, spans: vec![clip_span(line.clone(), TAB_TEXT, false, false)], clip: r, scale: 1.0 });
+        frame.rows.push(TextRow { x, y, spans: vec![clip_span(line.clone(), TAB_TEXT, false, false)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
         y += cell.1;
     }
 }
@@ -2993,7 +3231,7 @@ pub const BELT_CLOSE_GLYPH: char = '\u{E711}';
 pub const BELT_MENU_GLYPH: char = '\u{E712}';
 
 fn belt_span(text: String, color: Rgb, icon: bool) -> Span {
-    Span { text, color, bold: false, italic: false, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false }
+    Span { text, color, bold: false, italic: false, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }
 }
 
 /// The toolbelt at the right of a window: the background, the dividers between wrappers, each
@@ -3012,7 +3250,7 @@ pub fn toolbelt(frame: &mut Frame, d: &BeltDraw, cell: (f32, f32), scale: f32) {
     // Glyph width: the font's size, a line being 1.2 of it.
     let glyph_w = line_h / 1.2;
     let glyph = |frame: &mut Frame, r: Rect, c: char| {
-        frame.rows.push(TextRow { x: r.x + (r.w - glyph_w) / 2.0, y: r.y + (r.h - line_h) / 2.0, spans: vec![belt_span(c.to_string(), icon, true)], clip: r, scale: d.text_scale });
+        frame.rows.push(TextRow { x: r.x + (r.w - glyph_w) / 2.0, y: r.y + (r.h - line_h) / 2.0, spans: vec![belt_span(c.to_string(), icon, true)], clip: r, scale: d.text_scale, face: crate::render::DEFAULT_FACE });
     };
     for (i, w) in l.wrappers.iter().enumerate() {
         glyph(frame, w.close, BELT_CLOSE_GLYPH);
@@ -3023,7 +3261,7 @@ pub fn toolbelt(frame: &mut Frame, d: &BeltDraw, cell: (f32, f32), scale: f32) {
         }
         let x = r.x + ((r.w - width) / 2.0).max(0.0);
         let clip = Rect { y: w.frame.y, h: w.frame.h.min(r.y - w.frame.y + r.h.max(line_h)), ..r };
-        frame.rows.push(TextRow { x, y: r.y + (r.h - line_h) / 2.0, spans: vec![belt_span(title.to_string(), text, false)], clip, scale: d.text_scale });
+        frame.rows.push(TextRow { x, y: r.y + (r.h - line_h) / 2.0, spans: vec![belt_span(title.to_string(), text, false)], clip, scale: d.text_scale, face: crate::render::DEFAULT_FACE });
     }
     glyph(frame, l.hamburger, BELT_MENU_GLYPH);
     if let Some(r) = l.empty_label {
@@ -3034,7 +3272,7 @@ pub fn toolbelt(frame: &mut Frame, d: &BeltDraw, cell: (f32, f32), scale: f32) {
             let mut y = r.y + (r.h - h) / 2.0;
             for (line, width) in d.empty {
                 let x = r.x + ((r.w - width) / 2.0).max(0.0);
-                frame.rows.push(TextRow { x, y, spans: vec![belt_span(line.clone(), text, false)], clip: r, scale: d.text_scale });
+                frame.rows.push(TextRow { x, y, spans: vec![belt_span(line.clone(), text, false)], clip: r, scale: d.text_scale, face: crate::render::DEFAULT_FACE });
                 y += line_h;
             }
         }
@@ -3145,7 +3383,7 @@ const POPUP_GLYPH: char = '\u{E70D}';
 
 fn list_span(text: String, color: Rgb, bold: bool, font: u8) -> Span {
     // font: 0 the toolbelt font, 1 the prose font, 2 the icon font.
-    Span { text, color, bold, italic: false, alt_font: false, icon: font == 2, prose: font == 1, badge: false, toolbelt: font == 0 }
+    Span { text, color, bold, italic: false, alt_font: false, icon: font == 2, prose: font == 1, badge: false, toolbelt: font == 0, fake_bold: false, ligatures: 0, mask: 0, font: 0 }
 }
 
 /// A 1 pixel frame inside `r`.
@@ -3175,7 +3413,7 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
         let y = r.y + (r.h - line_h) / 2.0;
         let clip = Rect { x: r.x + 1.0, w: (r.w - 2.0).max(0.0), ..r };
         if !shown.is_empty() {
-            frame.rows.push(TextRow { x, y, spans: vec![list_span(shown.to_string(), text, false, 0)], clip, scale: text_scale });
+            frame.rows.push(TextRow { x, y, spans: vec![list_span(shown.to_string(), text, false, 0)], clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
         }
         if focused {
             let cx = (x + width).min(r.x + r.w - 2.0);
@@ -3212,25 +3450,25 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
             let (slot, gap, size) = if c == STATUS_DOT { (DOT_SLOT, DOT_GAP, DOT_PT) } else { (LEAD_SLOT, LEAD_GAP, LEAD_PT) };
             let s = size * scale * 1.2 / cell.1.max(1.0);
             let gh = cell.1 * s;
-            frame.rows.push(TextRow { x: x + (slot * scale - gh / 1.2) / 2.0, y: y + (line_h - gh) / 2.0, spans: vec![list_span(c.to_string(), color, false, 2)], clip, scale: s });
+            frame.rows.push(TextRow { x: x + (slot * scale - gh / 1.2) / 2.0, y: y + (line_h - gh) / 2.0, spans: vec![list_span(c.to_string(), color, false, 2)], clip, scale: s, face: crate::render::DEFAULT_FACE });
             x += (slot + gap) * scale;
         }
         if let Some((right, w)) = &row.right {
             // The tertiary color; on the selection, white at 0.7 (`updateShortcutColor`).
             let color = if selected { blend(rgb(0xff, 0xff, 0xff), LIST_SELECTED, 0.3) } else { soft(blend(dim, bg, 0.35)) };
-            frame.rows.push(TextRow { x: (r.x + r.w - inset - w).max(x), y, spans: vec![list_span(right.clone(), color, false, 0)], clip, scale: text_scale });
+            frame.rows.push(TextRow { x: (r.x + r.w - inset - w).max(x), y, spans: vec![list_span(right.clone(), color, false, 0)], clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
         }
         if let Some(c) = row.disclosure {
-            frame.rows.push(TextRow { x, y, spans: vec![list_span(c.to_string(), fg2, false, 2)], clip, scale: text_scale });
+            frame.rows.push(TextRow { x, y, spans: vec![list_span(c.to_string(), fg2, false, 2)], clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
             x += glyph_w + 2.0 * scale;
         }
         if let Some((c, color)) = row.icon {
-            frame.rows.push(TextRow { x, y, spans: vec![list_span(c.to_string(), if selected { fg } else { color }, false, 2)], clip, scale: text_scale });
+            frame.rows.push(TextRow { x, y, spans: vec![list_span(c.to_string(), if selected { fg } else { color }, false, 2)], clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
             x += glyph_w + 4.0 * scale;
         }
-        frame.rows.push(TextRow { x, y, spans: vec![list_span(row.text.clone(), fg, row.bold, 0)], clip, scale: text_scale });
+        frame.rows.push(TextRow { x, y, spans: vec![list_span(row.text.clone(), fg, row.bold, 0)], clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
         if let Some(second) = &row.second {
-            frame.rows.push(TextRow { x, y: y + line_h, spans: vec![list_span(second.clone(), fg2, false, 1)], clip, scale: text_scale * d.second_scale });
+            frame.rows.push(TextRow { x, y: y + line_h, spans: vec![list_span(second.clone(), fg2, false, 1)], clip, scale: text_scale * d.second_scale, face: crate::render::DEFAULT_FACE });
         }
         let mut ly = y + line_h;
         for (k, line) in row.lines.iter().enumerate() {
@@ -3244,7 +3482,7 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
                 Some(_) => (x + row.lines_indent * scale, fg2),
                 None => (x + row.lines_indent * scale, fg),
             };
-            frame.rows.push(TextRow { x: lx, y: ly, spans: vec![list_span(line.clone(), color, false, 0)], clip, scale: text_scale });
+            frame.rows.push(TextRow { x: lx, y: ly, spans: vec![list_span(line.clone(), color, false, 0)], clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
             ly += line_h;
         }
         let mut cx = x;
@@ -3252,7 +3490,7 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
             let chip = Rect { x: cx, y: y + line_h, w: *w, h: line_h * CHIP_SCALE };
             let shown = Rect { w: chip.w.min((clip.x + clip.w - cx).max(0.0)), ..chip };
             frame.quads.push(Quad { rect: shown, color: rgba(CHIP_BG, 1.0) });
-            frame.rows.push(TextRow { x: cx, y: chip.y, spans: vec![list_span(tag.clone(), rgb(0xff, 0xff, 0xff), false, 0)], clip, scale: text_scale * CHIP_SCALE });
+            frame.rows.push(TextRow { x: cx, y: chip.y, spans: vec![list_span(tag.clone(), rgb(0xff, 0xff, 0xff), false, 0)], clip, scale: text_scale * CHIP_SCALE, face: crate::render::DEFAULT_FACE });
             cx += w + CHIP_GAP * scale;
         }
     }
@@ -3270,7 +3508,7 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
         } else {
             dim
         };
-        frame.rows.push(TextRow { x: r.x + (r.w - glyph_w) / 2.0, y: r.y + (r.h - line_h) / 2.0, spans: vec![list_span(b.glyph().to_string(), color, false, 2)], clip: *r, scale: text_scale });
+        frame.rows.push(TextRow { x: r.x + (r.w - glyph_w) / 2.0, y: r.y + (r.h - line_h) / 2.0, spans: vec![list_span(b.glyph().to_string(), color, false, 2)], clip: *r, scale: text_scale, face: crate::render::DEFAULT_FACE });
     }
 
     if let (Some(r), Some((label, on))) = (l.popup, d.popup) {
@@ -3280,8 +3518,8 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
         let y = r.y + (r.h - line_h) / 2.0;
         let glyph_x = r.x + r.w - glyph_w - 6.0 * scale;
         let clip = Rect { w: (glyph_x - r.x).max(0.0), ..r };
-        frame.rows.push(TextRow { x: r.x + 6.0 * scale, y, spans: vec![list_span(label.to_string(), color, false, 1)], clip, scale: text_scale });
-        frame.rows.push(TextRow { x: glyph_x, y, spans: vec![list_span(POPUP_GLYPH.to_string(), color, false, 2)], clip: r, scale: text_scale });
+        frame.rows.push(TextRow { x: r.x + 6.0 * scale, y, spans: vec![list_span(label.to_string(), color, false, 1)], clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
+        frame.rows.push(TextRow { x: glyph_x, y, spans: vec![list_span(POPUP_GLYPH.to_string(), color, false, 2)], clip: r, scale: text_scale, face: crate::render::DEFAULT_FACE });
     }
 }
 
@@ -3328,7 +3566,7 @@ pub fn note_editor(frame: &mut Frame, d: &NoteDraw, cell: (f32, f32), text_scale
         frame.quads.push(Quad { rect: *r, color: rgba(if on { LIST_SELECTED } else { field_bg }, 1.0) });
         frame_lines(&mut frame.quads, *r, edge);
         let color = if on { rgb(0xff, 0xff, 0xff) } else { text };
-        frame.rows.push(TextRow { x: r.x + ((r.w - w) / 2.0).max(0.0), y: r.y + (r.h - label_h) / 2.0, spans: vec![list_span(label.to_string(), color, false, 1)], clip: *r, scale: d.label_scale });
+        frame.rows.push(TextRow { x: r.x + ((r.w - w) / 2.0).max(0.0), y: r.y + (r.h - label_h) / 2.0, spans: vec![list_span(label.to_string(), color, false, 1)], clip: *r, scale: d.label_scale, face: crate::render::DEFAULT_FACE });
     }
     frame.quads.push(Quad { rect: d.frame, color: rgba(field_bg, 1.0) });
     frame_lines(&mut frame.quads, d.frame, if d.focused { rgba(LIST_SELECTED, 1.0) } else { edge });
@@ -3340,7 +3578,7 @@ pub fn note_editor(frame: &mut Frame, d: &NoteDraw, cell: (f32, f32), text_scale
     }
     for (x, y, line) in d.lines {
         if !line.is_empty() {
-            frame.rows.push(TextRow { x: *x, y: *y, spans: vec![list_span(line.clone(), text, false, 0)], clip: d.clip, scale: text_scale });
+            frame.rows.push(TextRow { x: *x, y: *y, spans: vec![list_span(line.clone(), text, false, 0)], clip: d.clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
         }
     }
     if let Some(c) = d.caret.map(|c| clip_rect(c, d.clip)).filter(|c| c.h > 0.0) {
@@ -3395,7 +3633,7 @@ pub const COMPOSER_HELP_GLYPH: char = '\u{E897}';
 
 
 fn plain_span(text: String, color: Rgb, bold: bool) -> Span {
-    Span { text, color, bold, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false }
+    Span { text, color, bold, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }
 }
 
 /// The minimal composer over its pane (`ComposerDraw`). The panel is a popup box: the pane's
@@ -3441,7 +3679,7 @@ pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) -> Option
     for (x, y, runs) in d.lines {
         let spans: Vec<Span> = runs.iter().filter(|(t, _, _)| !t.is_empty()).map(|(t, c, b)| plain_span(t.clone(), under(*c), *b)).collect();
         if !spans.is_empty() {
-            frame.rows.push(TextRow { x: *x, y: *y, spans, clip: d.clip, scale: 1.0 });
+            frame.rows.push(TextRow { x: *x, y: *y, spans, clip: d.clip, scale: 1.0, face: crate::render::DEFAULT_FACE });
         }
     }
     if d.separator.is_some() {
@@ -3449,21 +3687,21 @@ pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) -> Option
     }
     let icon = |frame: &mut Frame, r: Rect, glyph: char| {
         let (w, h) = (cell.0, cell.1);
-        let span = Span { text: glyph.to_string(), color: under(d.fg), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
-        frame.rows.push(TextRow { x: r.x + ((r.w - w) / 2.0).max(0.0), y: r.y + ((r.h - h) / 2.0).max(0.0), spans: vec![span], clip: r, scale: 1.0 });
+        let span = Span { text: glyph.to_string(), color: under(d.fg), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+        frame.rows.push(TextRow { x: r.x + ((r.w - w) / 2.0).max(0.0), y: r.y + ((r.h - h) / 2.0).max(0.0), spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     };
     icon(frame, d.close, COMPOSER_CLOSE_GLYPH);
     icon(frame, d.help, COMPOSER_HELP_GLYPH);
     let small_h = cell.1 * d.small;
     if let Some(r) = d.ai {
         let w = 2.0 * cell.0 * d.small;
-        frame.rows.push(TextRow { x: r.x + ((r.w - w) / 2.0).max(0.0), y: r.y + ((r.h - small_h) / 2.0).max(0.0), spans: vec![plain_span("AI".into(), under(d.fg), false)], clip: r, scale: d.small });
+        frame.rows.push(TextRow { x: r.x + ((r.w - w) / 2.0).max(0.0), y: r.y + ((r.h - small_h) / 2.0).max(0.0), spans: vec![plain_span("AI".into(), under(d.fg), false)], clip: r, scale: d.small, face: crate::render::DEFAULT_FACE });
     }
     if let Some((x, y, text)) = d.warning {
-        frame.rows.push(TextRow { x, y, spans: vec![plain_span(text.to_string(), under(TAB_TEXT_DIM), false)], clip: inner, scale: d.small });
+        frame.rows.push(TextRow { x, y, spans: vec![plain_span(text.to_string(), under(TAB_TEXT_DIM), false)], clip: inner, scale: d.small, face: crate::render::DEFAULT_FACE });
     }
     if let Some((x, y, tip)) = d.tip {
-        frame.rows.push(TextRow { x, y, spans: vec![plain_span(tip.to_string(), under(TAB_TEXT_DIM), false)], clip: inner, scale: d.small });
+        frame.rows.push(TextRow { x, y, spans: vec![plain_span(tip.to_string(), under(TAB_TEXT_DIM), false)], clip: inner, scale: d.small, face: crate::render::DEFAULT_FACE });
     }
     // The tooltip above the Help button, a small box of its own over the text.
     if let Some(t) = d.tooltip {
@@ -3472,7 +3710,7 @@ pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) -> Option
         cut_out(frame, r, d.line_h);
         frame.popups.push(Quad { rect: r, color: rgba(FIND_BAR, a) });
         frame_lines(&mut frame.popups, r, rgba(DIVIDER, a));
-        frame.rows.push(TextRow { x: r.x + cell.0 * d.small, y: r.y + 3.0, spans: vec![plain_span(t.to_string(), under(TAB_TEXT), false)], clip: r, scale: d.small });
+        frame.rows.push(TextRow { x: r.x + cell.0 * d.small, y: r.y + 3.0, spans: vec![plain_span(t.to_string(), under(TAB_TEXT), false)], clip: r, scale: d.small, face: crate::render::DEFAULT_FACE });
     }
     Some(d.panel)
 }
@@ -3540,7 +3778,7 @@ pub fn composer_popup(frame: &mut Frame, d: &ComposerPopupDraw, cell: (f32, f32)
     let text_y = |ry: f32| ry + ((row_h - cell.1) / 2.0).max(0.0);
     if let Some(p) = d.placeholder {
         let ry = r.y + POPUP_SPACING * scale;
-        frame.rows.push(TextRow { x: r.x + 8.0 * scale, y: text_y(ry), spans: vec![plain_span(p.to_string(), TAB_TEXT_DIM, false)], clip: inner, scale: 1.0 });
+        frame.rows.push(TextRow { x: r.x + 8.0 * scale, y: text_y(ry), spans: vec![plain_span(p.to_string(), TAB_TEXT_DIM, false)], clip: inner, scale: 1.0, face: crate::render::DEFAULT_FACE });
         return r;
     }
     let strip = if d.detail.is_some() { POPUP_DETAIL * scale } else { 0.0 };
@@ -3556,8 +3794,8 @@ pub fn composer_popup(frame: &mut Frame, d: &ComposerPopupDraw, cell: (f32, f32)
             let sel = Rect { x: r.x + 4.0 * scale, y: ry, w: r.w - 8.0 * scale, h: row_h };
             rounded_box(&mut frame.popups, sel, 4.0 * scale, rgba(LIST_SELECTED, 1.0));
         }
-        let icon = Span { text: glyph.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
-        frame.rows.push(TextRow { x: r.x + 8.0 * scale, y: text_y(ry), spans: vec![icon], clip: list, scale: 1.0 });
+        let icon = Span { text: glyph.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+        frame.rows.push(TextRow { x: r.x + 8.0 * scale, y: text_y(ry), spans: vec![icon], clip: list, scale: 1.0, face: crate::render::DEFAULT_FACE });
         let mut spans = Vec::new();
         match bold.clone().filter(|b| b.end <= t.len() && t.is_char_boundary(b.end)) {
             Some(b) => {
@@ -3567,12 +3805,12 @@ pub fn composer_popup(frame: &mut Frame, d: &ComposerPopupDraw, cell: (f32, f32)
             None => spans.push(plain_span(t.clone(), color, false)),
         }
         spans.retain(|s| !s.text.is_empty());
-        frame.rows.push(TextRow { x: r.x + 8.0 * scale + 2.0 * cell.0, y: text_y(ry), spans, clip: list, scale: 1.0 });
+        frame.rows.push(TextRow { x: r.x + 8.0 * scale + 2.0 * cell.0, y: text_y(ry), spans, clip: list, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     if let Some(detail) = d.detail {
         let sy = r.y + r.h - strip;
         frame.popups.push(Quad { rect: Rect { x: inner.x, y: sy, w: inner.w, h: 1.0 }, color: rgba(DIVIDER, 1.0) });
-        frame.rows.push(TextRow { x: r.x + 8.0 * scale, y: sy + ((strip - cell.1) / 2.0).max(0.0), spans: vec![plain_span(detail.to_string(), TAB_TEXT_DIM, false)], clip: inner, scale: 1.0 });
+        frame.rows.push(TextRow { x: r.x + 8.0 * scale, y: sy + ((strip - cell.1) / 2.0).max(0.0), spans: vec![plain_span(detail.to_string(), TAB_TEXT_DIM, false)], clip: inner, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     r
 }
@@ -3642,7 +3880,7 @@ fn codecierge_field(frame: &mut Frame, f: &FieldDraw, cell: (f32, f32), text_sca
     note_editor(frame, &f.edit, cell, text_scale, scale);
     if let Some((x, y, t)) = f.placeholder {
         let dim = if f.edit.dark { TAB_TEXT_DIM } else { LIST_DISABLED_LIGHT };
-        frame.rows.push(TextRow { x, y, spans: vec![list_span(t.to_string(), dim, false, 0)], clip: f.edit.clip, scale: text_scale });
+        frame.rows.push(TextRow { x, y, spans: vec![list_span(t.to_string(), dim, false, 0)], clip: f.edit.clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
     }
 }
 
@@ -3651,7 +3889,7 @@ pub fn codecierge(frame: &mut Frame, d: &CodeciergeDraw, cell: (f32, f32), text_
     let (text, disabled, field_bg) = if d.dark { (TAB_TEXT, LIST_DISABLED_DARK, FIELD_BG_DARK) } else { (BELT_TEXT_LIGHT, LIST_DISABLED_LIGHT, FIELD_BG_LIGHT) };
     let line_h = cell.1 * text_scale;
     for (x, y, line) in d.lines {
-        frame.rows.push(TextRow { x: *x, y: *y, spans: vec![list_span(line.clone(), text, false, 1)], clip: d.clip, scale: text_scale });
+        frame.rows.push(TextRow { x: *x, y: *y, spans: vec![list_span(line.clone(), text, false, 1)], clip: d.clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
     }
     if let Some(g) = &d.goal {
         codecierge_field(frame, &g.field, cell, text_scale, scale);
@@ -3660,14 +3898,14 @@ pub fn codecierge(frame: &mut Frame, d: &CodeciergeDraw, cell: (f32, f32), text_
         frame_lines(&mut frame.quads, g.check, if g.check_enabled { edge } else { rgba(disabled, 1.0) });
         if g.checked {
             let span = list_span(CHECK_GLYPH.to_string(), if g.check_enabled { text } else { disabled }, false, 2);
-            frame.rows.push(TextRow { x: g.check.x + 1.0, y: g.check.y + (g.check.h - line_h) / 2.0, spans: vec![span], clip: g.check, scale: text_scale });
+            frame.rows.push(TextRow { x: g.check.x + 1.0, y: g.check.y + (g.check.h - line_h) / 2.0, spans: vec![span], clip: g.check, scale: text_scale, face: crate::render::DEFAULT_FACE });
         }
         let (x, y, t) = g.check_label;
-        frame.rows.push(TextRow { x, y, spans: vec![list_span(t.to_string(), if g.check_enabled { text } else { disabled }, false, 1)], clip: d.clip, scale: text_scale });
+        frame.rows.push(TextRow { x, y, spans: vec![list_span(t.to_string(), if g.check_enabled { text } else { disabled }, false, 1)], clip: d.clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
     }
     if let Some(r) = &d.run {
         let (x, y, t) = r.goal;
-        frame.rows.push(TextRow { x, y, spans: vec![list_span(t.to_string(), text, false, 1)], clip: d.clip, scale: text_scale });
+        frame.rows.push(TextRow { x, y, spans: vec![list_span(t.to_string(), text, false, 1)], clip: d.clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
         if let Some((b, phase)) = r.spinner {
             // Eight dots round a circle, one lit, turning with `phase`.
             let dot = (b.w / 6.0).max(1.5);
@@ -3703,14 +3941,14 @@ pub fn codecierge(frame: &mut Frame, d: &CodeciergeDraw, cell: (f32, f32), text_
         let s = r.send;
         let color = if r.send_enabled { text } else { disabled };
         let span = list_span(SEND_GLYPH.to_string(), color, false, 2);
-        frame.rows.push(TextRow { x: s.x + (s.w - line_h) / 2.0, y: s.y + (s.h - line_h) / 2.0, spans: vec![span], clip: s, scale: text_scale });
+        frame.rows.push(TextRow { x: s.x + (s.w - line_h) / 2.0, y: s.y + (s.h - line_h) / 2.0, spans: vec![span], clip: s, scale: text_scale, face: crate::render::DEFAULT_FACE });
     }
     let b = d.button;
     rounded_box(&mut frame.quads, b, 4.0 * scale, rgba(DIVIDER, if d.dark { 1.0 } else { 0.4 }));
     let inner = Rect { x: b.x + 1.0, y: b.y + 1.0, w: (b.w - 2.0).max(0.0), h: (b.h - 2.0).max(0.0) };
     rounded_box(&mut frame.quads, inner, 3.0 * scale, rgba(field_bg, 1.0));
     let color = if d.enabled { text } else { disabled };
-    frame.rows.push(TextRow { x: b.x + ((b.w - d.label_w) / 2.0).max(0.0), y: b.y + (b.h - line_h) / 2.0, spans: vec![list_span(d.label.to_string(), color, false, 1)], clip: clip_rect(b, d.clip), scale: text_scale });
+    frame.rows.push(TextRow { x: b.x + ((b.w - d.label_w) / 2.0).max(0.0), y: b.y + (b.h - line_h) / 2.0, spans: vec![list_span(d.label.to_string(), color, false, 1)], clip: clip_rect(b, d.clip), scale: text_scale, face: crate::render::DEFAULT_FACE });
 }
 
 /// Make Screenshot's sign at the pane's top right while the pane shows the frozen copy: a
@@ -3775,8 +4013,8 @@ pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) -> Rec
     // Text under the box is cut where the box starts, as under the find bar.
     cut_rows_from(frame, r, cell.1);
     frame.quads.push(Quad { rect: r, color: rgba(STAMP_BG, 1.0) });
-    let span = Span { text: text.to_string(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-    frame.rows.push(TextRow { x: r.x + 2.0 * cell.0, y: r.y + 6.0, spans: vec![span], clip: r, scale: 1.0 });
+    let span = Span { text: text.to_string(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+    frame.rows.push(TextRow { x: r.x + 2.0 * cell.0, y: r.y + 6.0, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     r
 }
 
@@ -3792,8 +4030,8 @@ pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) -> Re
     // The pane's text and strokes under the bar go, as under every surface.
     cut_out(frame, r, cell.1);
     frame.quads.push(Quad { rect: r, color: rgba(BANNER, 1.0) });
-    let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-    frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span], clip: r, scale: 1.0 });
+    let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+    frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     r
 }
 
@@ -3810,8 +4048,8 @@ pub fn fps_meter(frame: &mut Frame, text: &str, pane_inner: Rect, cell: (f32, f3
     let to_rgb = |c: [f32; 4]| rgb((c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8);
     cut_out(frame, r, cell.1);
     frame.popups.push(Quad { rect: r, color: rgba(to_rgb(crate::perf_stats::FPS_BG), 1.0) });
-    let span = Span { text: text.to_string(), color: to_rgb(crate::perf_stats::FPS_FG), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-    frame.rows.push(TextRow { x: r.x, y: r.y, spans: vec![span], clip: r, scale: 1.0 });
+    let span = Span { text: text.to_string(), color: to_rgb(crate::perf_stats::FPS_FG), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+    frame.rows.push(TextRow { x: r.x, y: r.y, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
 }
 
 #[cfg(test)]
@@ -3870,7 +4108,7 @@ mod broadcast_tests {
 
 #[cfg(test)]
 mod tests {
-    /// (quads, rows, digest) of the porthole frame in `doc_lines_draw_as_the_porthole_did`, taken from `porthole` before `doc_lines` was extracted from it.
+    /// (quads, rows, digest) of the porthole frame in `doc_lines_draw_as_the_porthole_did`, taken from `porthole` before `doc_lines` was extracted from it (retaken when `TextRow` gained `face`: the digest reads the rows' Debug text, and the 10 quads and 15 rows are unchanged).
     const GOLDEN: (usize, usize, u64) = (10, 15, 10881690239227710009);
 
     /// The palette the tab bar had before themes: one flat dark bar, a lighter selected tab, the
@@ -4443,11 +4681,11 @@ mod tests {
         use super::*;
         let pane = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
         let bar = Rect { x: 0.0, y: 0.0, w: 100.0, h: 20.0 };
-        let span = |color: Rgb| Span { text: "a".into(), color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
+        let span = |color: Rgb| Span { text: "a".into(), color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
         let base = || {
             let mut f = Frame::default();
             f.quads.push(Quad { rect: pane, color: rgba(rgb(0, 0, 0), 1.0) });
-            f.rows.push(TextRow { x: 0.0, y: 0.0, spans: vec![span(rgb(9, 9, 9))], clip: pane, scale: 1.0 });
+            f.rows.push(TextRow { x: 0.0, y: 0.0, spans: vec![span(rgb(9, 9, 9))], clip: pane, scale: 1.0, face: crate::render::DEFAULT_FACE });
             // The sessions' overlay: a divider through the bar, an unfocused pane's dim, a
             // beam cursor on the top row, and a link underline below the bar.
             for rect in [
@@ -4463,7 +4701,7 @@ mod tests {
         let layer = || {
             let mut l = Frame::default();
             l.quads.push(Quad { rect: bar, color: rgba(rgb(50, 50, 50), 1.0) });
-            l.rows.push(TextRow { x: 4.0, y: 2.0, spans: vec![span(rgb(200, 100, 0))], clip: bar, scale: 1.0 });
+            l.rows.push(TextRow { x: 4.0, y: 2.0, spans: vec![span(rgb(200, 100, 0))], clip: bar, scale: 1.0, face: crate::render::DEFAULT_FACE });
             l
         };
         let mut f = base();
@@ -4662,9 +4900,9 @@ mod tests {
         // Overlay quads draw after all text, so a popup's box must not be one: the terminal
         // text under the box is cut out instead, and the popup's own text shows.
         let mut f = Frame::default();
-        let span = Span { text: "terminal".into(), color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
+        let span = Span { text: "terminal".into(), color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
         let under = Rect { x: 0.0, y: 0.0, w: 400.0, h: 16.0 };
-        f.rows.push(TextRow { x: 0.0, y: 0.0, spans: vec![span], clip: under, scale: 1.0 });
+        f.rows.push(TextRow { x: 0.0, y: 0.0, spans: vec![span], clip: under, scale: 1.0, face: crate::render::DEFAULT_FACE });
         let bounds = Rect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 };
         completion_list(&mut f, &["one".into(), "two".into()], 0, None, (100.0, 0.0), bounds, (8.0, 16.0));
         assert!(f.overlay.is_empty());
@@ -4683,7 +4921,7 @@ mod tests {
         // Terminal text under the tip is cut out; the tip is a popup box, not an overlay.
         let mut f = Frame::default();
         let span = plain_span("terminal".into(), LABEL_TEXT, false);
-        f.rows.push(TextRow { x: 0.0, y: 40.0, spans: vec![span], clip: Rect { x: 0.0, y: 40.0, w: 400.0, h: 16.0 }, scale: 1.0 });
+        f.rows.push(TextRow { x: 0.0, y: 40.0, spans: vec![span], clip: Rect { x: 0.0, y: 40.0, w: 400.0, h: 16.0 }, scale: 1.0, face: crate::render::DEFAULT_FACE });
         tab_tooltip(&mut f, "Name: zsh\nProfile: Default\nCommand: None", (100.0, 40.0), window, cell);
         assert!(f.overlay.is_empty() && f.quads.is_empty());
         let b = f.popups[0].rect;
@@ -4713,8 +4951,8 @@ mod tests {
         let mut f = Frame::default();
         let pane = Rect { x: 0.0, y: 0.0, w: 400.0, h: 160.0 };
         for i in 0..10 {
-            let span = Span { text: format!("line {i}"), color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-            f.rows.push(TextRow { x: 0.0, y: i as f32 * 16.0, spans: vec![span], clip: pane, scale: 1.0 });
+            let span = Span { text: format!("line {i}"), color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+            f.rows.push(TextRow { x: 0.0, y: i as f32 * 16.0, spans: vec![span], clip: pane, scale: 1.0, face: crate::render::DEFAULT_FACE });
         }
         completion_list(&mut f, &["one".into(), "two".into()], 0, None, (100.0, 64.0), pane, (8.0, 16.0));
         let b = f.popups[0].rect;
@@ -4796,6 +5034,333 @@ mod tests {
     }
 
     #[test]
+    fn ligature_runs_split_the_row_as_iterm2() {
+        use crate::fonts::LigatureRules;
+        let s = screen(b"a->b");
+        let on = DrawPrefs { ligatures: LigatureRules { ascii: true, non_ascii: false, prefer_speed: true, level: 2 }, ..DrawPrefs::default() };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &on, None, crate::render::DEFAULT_FACE);
+        let spans: Vec<(&str, u8)> = f.rows[0].spans.iter().map(|s| (s.text.trim_end(), s.ligatures)).collect();
+        assert_eq!(spans, vec![("a", 0), ("->", 2), ("b", 0)], "letters take the fast path, punctuation runs ligate");
+        // Without preferring speed the whole row is one span at the font's level.
+        let full = DrawPrefs { ligatures: LigatureRules { prefer_speed: false, ..on.ligatures }, ..on };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &full, None, crate::render::DEFAULT_FACE);
+        assert_eq!(f.rows[0].spans.iter().map(|s| (s.text.trim_end(), s.ligatures)).collect::<Vec<_>>(), vec![("a->b", 2)]);
+        // The stock profile draws no ligatures (R3).
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        assert!(f.rows[0].spans.iter().all(|s| s.ligatures == 0), "{:?}", f.rows[0].spans);
+    }
+
+    #[test]
+    fn ligature_runs_break_at_colors_the_cursor_and_the_selection() {
+        use crate::fonts::LigatureRules;
+        let on = DrawPrefs { ligatures: LigatureRules { ascii: true, non_ascii: false, prefer_speed: false, level: 2 }, ..DrawPrefs::default() };
+        let rows = |bytes: &[u8], look: &CursorLook| {
+            let s = screen(bytes);
+            let mut f = Frame::default();
+            pane_with(&mut f, &s, RECT, CELL, true, look, &on, None, crate::render::DEFAULT_FACE);
+            f.rows.iter().map(|r| (r.x, r.spans.iter().map(|s| (s.text.trim_end().to_string(), s.ligatures)).collect::<Vec<_>>())).collect::<Vec<_>>()
+        };
+        // A color change inside a ligature splits its span.
+        let r = rows(b"-\x1b[31m>\x1b[0m", &CursorLook::shown(false));
+        assert_eq!(r.iter().map(|(_, s)| s.len()).sum::<usize>(), 2, "{r:?}");
+        // The cursor cell is its own piece: the arrow before it cannot join it.
+        let r = rows(b"->=\x1b[1D", &CursorLook::shown(true));
+        assert!(r.len() >= 2 && r.iter().any(|(x, s)| *x == 20.0 && s[0].0 == "="), "{r:?}");
+        // 13n final 5: only a block cursor breaks the run (iTerm2); a bar or an underline cursor
+        // leaves the ligature whole.
+        for shape in [&b"\x1b[6 q"[..], b"\x1b[4 q"] {
+            let bytes = [&b"->="[..], shape, b"\x1b[1D"].concat();
+            let r = rows(&bytes, &CursorLook::shown(true));
+            assert_eq!(r.iter().map(|(_, s)| s.len()).sum::<usize>(), 1, "a non-block cursor does not split the ligature: {r:?}");
+        }
+    }
+
+    #[test]
+    fn non_ascii_ligatures_group_narrow_cells_as_iterm2() {
+        use crate::fonts::LigatureRules;
+        let rules = |non_ascii| DrawPrefs { ligatures: LigatureRules { ascii: false, non_ascii, prefer_speed: true, level: 2 }, ..DrawPrefs::default() };
+        let pieces = |bytes: &[u8], prefs: &DrawPrefs| {
+            let s = screen(bytes);
+            let mut f = Frame::default();
+            pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), prefs, None, crate::render::DEFAULT_FACE);
+            f.rows.iter().map(|r| (r.x, r.spans.iter().map(|s| (s.text.trim_end().to_string(), s.ligatures)).collect::<Vec<_>>())).collect::<Vec<_>>()
+        };
+        let text = "\u{e0b0}\u{e0b1}\u{e0b2}".as_bytes();
+        // Off (the stock profile): one piece per cell, level 0.
+        assert_eq!(pieces(text, &rules(false)).len(), 3);
+        // On: the three one-column cells share a piece at level 2 (a Nerd Font sequence can join).
+        let on = pieces(text, &rules(true));
+        assert_eq!(on, vec![(0.0, vec![("\u{e0b0}\u{e0b1}\u{e0b2}".to_string(), 2)])]);
+        // A wide character keeps its own piece, and so does a bidi control.
+        let wide = pieces("\u{e0b0}\u{4e2d}\u{e0b1}".as_bytes(), &rules(true));
+        assert_eq!(wide.len(), 3, "{wide:?}");
+        // The control rides in its base cell as a zero-width mark: that cell never groups.
+        let bidi = pieces("\u{e0b0}\u{200f}\u{e0b1}".as_bytes(), &rules(true));
+        assert_eq!(bidi, vec![(0.0, vec![("\u{e0b0}\u{200f}".to_string(), 2)]), (10.0, vec![("\u{e0b1}".to_string(), 2)])]);
+    }
+
+    fn table_prefs(non_ascii: bool, extra: &[crate::font_table::Entry]) -> DrawPrefs {
+        use crate::font_table::{Config, Entry};
+        let mut entries = vec![
+            Entry { start: 0x41, count: 26, destination: Some(0x10000), font_name: "Consolas".into(), point_size: None },
+            Entry { start: 0xE000, count: 0x100, destination: None, font_name: "Symbols".into(), point_size: Some(9.0) },
+        ];
+        entries.extend_from_slice(extra);
+        DrawPrefs {
+            ligatures: crate::fonts::LigatureRules { ascii: false, non_ascii, prefer_speed: true, level: 2 },
+            table: Some(std::sync::Arc::new(Config::with_entries(entries))),
+            ..DrawPrefs::default()
+        }
+    }
+
+    /// The pieces of a screen as (x, [(text, font)]).
+    fn table_pieces(text: &str, prefs: &DrawPrefs) -> Vec<(f32, Vec<(String, u16)>)> {
+        let s = screen(text.as_bytes());
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), prefs, None, crate::render::DEFAULT_FACE);
+        f.rows.iter().map(|r| (r.x, r.spans.iter().map(|s| (s.text.trim_end().to_string(), s.font)).collect())).collect()
+    }
+
+    /// Special Font Config (Task 9): a table range is its own piece in its own font, the code
+    /// points an entry remaps are the ones drawn, and a range boundary ends a piece even when
+    /// Non-ASCII Ligatures groups the neighbors (a font cannot join across fonts, P7).
+    #[test]
+    fn table_ranges_split_pieces_and_remap() {
+        // Entries sort by the code points the program sends: 1 is the 0xE000 range, 2 sends 0x10000.. and draws 0x41.. of Consolas.
+        let off = table_prefs(false, &[]);
+        let p = table_pieces("a\u{10000}\u{10005}b\u{e0b0}\u{e0b1}c\u{3a9}", &off);
+        assert_eq!(
+            p,
+            vec![
+                (0.0, vec![("a".to_string(), 0)]),
+                (10.0, vec![("A".to_string(), 2)]),
+                (20.0, vec![("F".to_string(), 2)]),
+                (30.0, vec![("b".to_string(), 0)]),
+                (40.0, vec![("\u{e0b0}".to_string(), 1)]),
+                (50.0, vec![("\u{e0b1}".to_string(), 1)]),
+                (60.0, vec![("c".to_string(), 0)]),
+                (70.0, vec![("\u{3a9}".to_string(), 0)]),
+            ],
+            "{p:?}"
+        );
+        // Grouping on: neighbors of one entry share a piece, neighbors of two entries never do.
+        let on = table_prefs(true, &[]);
+        let p = table_pieces("\u{10000}\u{10005}\u{e0b0}\u{e0b1}\u{3a9}", &on);
+        assert_eq!(
+            p,
+            vec![(0.0, vec![("AF".to_string(), 2)]), (20.0, vec![("\u{e0b0}\u{e0b1}".to_string(), 1)]), (40.0, vec![("\u{3a9}".to_string(), 0)])],
+            "{p:?}"
+        );
+        let edge = table_pieces("\u{10019}\u{e000}", &on);
+        assert_eq!(edge, vec![(0.0, vec![("Z".to_string(), 2)]), (10.0, vec![("\u{e000}".to_string(), 1)])], "{edge:?}");
+        // No table: every character is as it was.
+        let none = table_pieces("\u{10000}\u{e0b0}", &DrawPrefs::default());
+        assert!(none.iter().all(|(_, spans)| spans.iter().all(|(_, font)| *font == 0)), "{none:?}");
+        assert_eq!(none[0].1[0].0, "\u{10000}");
+        // A combining mark rides on the remapped base.
+        let combined = table_pieces("\u{10000}\u{301}", &off);
+        assert_eq!(combined, vec![(0.0, vec![("A\u{301}".to_string(), 2)])], "{combined:?}");
+        // A cell the table sends to a code point that is not a character draws as it was sent.
+        let bad = crate::font_table::Entry { start: 0xD7FF, count: 3, destination: Some(0x20000), font_name: "Consolas".into(), point_size: None };
+        let odd = table_pieces("\u{20001}", &table_prefs(false, &[bad]));
+        assert_eq!(odd.len(), 1, "{odd:?}");
+    }
+
+    /// Powerline and box glyphs Tandem draws never go through the table (the preflight's T7 to
+    /// T9 seam): the glyph is chosen from the character, the table only picks text fonts.
+    #[test]
+    fn table_never_overrides_drawn_glyphs() {
+        let on = DrawPrefs { powerline: true, ..table_prefs(false, &[]) };
+        let draw = |text: &str, prefs: &DrawPrefs| {
+            let s = screen(text.as_bytes());
+            let mut f = Frame::default();
+            pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), prefs, None, crate::render::DEFAULT_FACE);
+            f
+        };
+        let f = draw("\u{e0b0}", &on);
+        assert_eq!((f.glyphs.len(), f.rows.len()), (1, 0), "the Powerline arrow is Tandem's");
+        // With Draw Powerline Glyphs off the character is text, in the table's font.
+        let f = draw("\u{e0b0}", &table_prefs(false, &[]));
+        assert_eq!((f.glyphs.len(), f.rows.len()), (0, 1));
+        assert_eq!(f.rows[0].spans[0].font, 1);
+        // A box character inside a range stays a glyph.
+        let boxes = crate::font_table::Entry { start: 0x2500, count: 0x80, destination: None, font_name: "Consolas".into(), point_size: None };
+        let f = draw("\u{2500}", &table_prefs(false, &[boxes.clone()]));
+        assert_eq!((f.glyphs.len(), f.rows.len()), (1, 0));
+        // With the font drawing boxes (DisableCustomBoxDrawing) it is text in the table's font.
+        let f = draw("\u{2500}", &DrawPrefs { custom_boxes: false, ..table_prefs(false, &[boxes]) });
+        assert_eq!((f.glyphs.len(), f.rows.len()), (0, 1));
+        assert!(f.rows[0].spans[0].font >= 1);
+    }
+
+    /// What is drawn is the table's code point; what the screen holds, and so what is selected and
+    /// copied, is what the program sent (S9).
+    #[test]
+    fn copy_ignores_the_table_remap() {
+        let s = screen("\u{10000}\u{10005}".as_bytes());
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &table_prefs(false, &[]), None, crate::render::DEFAULT_FACE);
+        assert_eq!(f.rows.iter().map(|r| r.spans[0].text.clone()).collect::<Vec<_>>(), vec!["A", "F"]);
+        assert_eq!(s.line_text(0).trim_end(), "\u{10000}\u{10005}");
+    }
+
+    fn box_glyph(x: f32, y: f32, w: f32) -> CellGlyph {
+        CellGlyph { c: '\u{2500}', rect: Rect { x, y, w, h: 20.0 }, color: rgb(1, 2, 3), face: 0, clip: RECT }
+    }
+
+    /// What of each glyph shows: its cell clipped to its clip, sorted left to right.
+    fn shown(f: &Frame) -> Vec<(f32, f32, f32, f32)> {
+        let mut v: Vec<(f32, f32, f32, f32)> = f
+            .glyphs
+            .iter()
+            .map(|g| {
+                let (x0, x1) = (g.rect.x.max(g.clip.x), (g.rect.x + g.rect.w).min(g.clip.x + g.clip.w));
+                let (y0, y1) = (g.rect.y.max(g.clip.y), (g.rect.y + g.rect.h).min(g.clip.y + g.clip.h));
+                (x0, y0, x1 - x0, y1 - y0)
+            })
+            .collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v
+    }
+
+    /// Review Focus 4: Tandem draws the box and block characters (a glyph each, out of the text),
+    /// unless `DisableCustomBoxDrawing` leaves them to the font.
+    #[test]
+    fn box_drawing_switch_follows_iterm2() {
+        let s = screen("\u{2500}\u{2500}a".as_bytes());
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        assert_eq!(f.glyphs.len(), 2, "{:?}", f.glyphs);
+        assert_eq!(f.glyphs[0].rect, Rect { x: 0.0, y: 0.0, w: 10.0, h: 20.0 });
+        assert_eq!(f.glyphs[1].rect, Rect { x: 10.0, y: 0.0, w: 10.0, h: 20.0 });
+        assert_eq!((f.glyphs[0].c, f.glyphs[0].color, f.glyphs[0].clip, f.glyphs[0].face), ('\u{2500}', s.palette.fg, RECT, crate::render::DEFAULT_FACE));
+        assert_eq!(f.rows.len(), 1, "only the letter is text");
+        assert_eq!((row_text(&f, 0).trim_end(), f.rows[0].x), ("a", 20.0));
+        // With the switch on the font draws all three.
+        let off = DrawPrefs { custom_boxes: false, ..DrawPrefs::default() };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &off, None, crate::render::DEFAULT_FACE);
+        assert!(f.glyphs.is_empty());
+        assert_eq!((0..f.rows.len()).map(|i| row_text(&f, i).trim_end().to_string()).collect::<String>(), "\u{2500}\u{2500}a");
+    }
+
+    #[test]
+    fn a_box_cell_ends_the_text_piece_around_it() {
+        let s = screen("ab\u{2502}cd".as_bytes());
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        assert_eq!((0..f.rows.len()).map(|i| (f.rows[i].x, row_text(&f, i).trim_end().to_string())).collect::<Vec<_>>(), vec![(0.0, "ab".to_string()), (30.0, "cd".to_string())]);
+        assert_eq!(f.glyphs.len(), 1);
+        assert_eq!(f.glyphs[0].rect.x, 20.0);
+        // The glyph takes the cell's own color.
+        let s = screen("\x1b[31m\u{2588}".as_bytes());
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        assert_eq!(f.glyphs[0].color, s.palette.ansi[1]);
+    }
+
+    /// B1(a): a popup over box glyphs cuts them like text: whole, partly, or in two.
+    #[test]
+    fn glyphs_are_cut_under_popups() {
+        let mut f = Frame::default();
+        f.glyphs = vec![box_glyph(0.0, 0.0, 10.0), box_glyph(10.0, 0.0, 10.0), box_glyph(20.0, 0.0, 10.0), box_glyph(40.0, 0.0, 10.0), box_glyph(100.0, 0.0, 60.0), box_glyph(0.0, 60.0, 10.0)];
+        // A popup from x 15 to 45 over the first row, and one from x 120 to 140 inside the wide glyph.
+        cut_out(&mut f, Rect { x: 15.0, y: 0.0, w: 30.0, h: 20.0 }, 20.0);
+        cut_out(&mut f, Rect { x: 120.0, y: 0.0, w: 20.0, h: 20.0 }, 20.0);
+        assert_eq!(
+            shown(&f),
+            vec![(0.0, 0.0, 10.0, 20.0), (0.0, 60.0, 10.0, 20.0), (10.0, 0.0, 5.0, 20.0), (45.0, 0.0, 5.0, 20.0), (100.0, 0.0, 20.0, 20.0), (140.0, 0.0, 20.0, 20.0)],
+            "the third cell is gone, the second and fourth lose their covered part, the wide one splits"
+        );
+        // Every piece keeps its cell, so its mask stays the same.
+        assert!(f.glyphs.iter().filter(|g| g.rect.w == 60.0).count() == 2);
+        // A box drawn over rows (find bar, toast) cuts everything from its left edge on, in the rows it touches.
+        let mut f = Frame::default();
+        f.glyphs = vec![box_glyph(0.0, 0.0, 10.0), box_glyph(30.0, 0.0, 10.0), box_glyph(30.0, 60.0, 10.0), box_glyph(5.0, 20.0, 10.0)];
+        cut_rows_from(&mut f, Rect { x: 20.0, y: 0.0, w: 50.0, h: 30.0 }, 20.0);
+        assert_eq!(shown(&f), vec![(0.0, 0.0, 10.0, 20.0), (5.0, 20.0, 10.0, 20.0), (30.0, 60.0, 10.0, 20.0)]);
+    }
+
+    /// B1(a), task 6 review: a timestamp label cuts the box glyphs under it as it cuts text, in both
+    /// modes (right-aligned over the text, and the Adjacent block).
+    #[test]
+    fn timestamps_cut_box_glyphs() {
+        // Row 3 is y 60; the label block is 100 px wide at the right edge of RECT (800 px).
+        let glyphs = || vec![box_glyph(100.0, 60.0, 10.0), box_glyph(695.0, 60.0, 10.0), box_glyph(750.0, 60.0, 10.0), box_glyph(750.0, 0.0, 10.0)];
+        let mut f = Frame::default();
+        f.glyphs = glyphs();
+        timestamps(&mut f, &[(3, "12:00:00".to_string())], RECT, CELL, None, STAMP_COLORS);
+        assert_eq!(shown(&f), vec![(100.0, 60.0, 10.0, 20.0), (695.0, 60.0, 5.0, 20.0), (750.0, 0.0, 10.0, 20.0)], "the label's block covers the glyphs under it, nothing else");
+        // Adjacent: the block starts at the same x on every labelled row and covers what is under it.
+        let col = Rect { x: 700.0, y: 0.0, w: 100.0, h: 200.0 };
+        let mut f = Frame::default();
+        f.glyphs = glyphs();
+        // A block wider than the column extends left over the text, which stops where it starts.
+        timestamps(&mut f, &[(3, "2026-10-05 12:00:00 CDT".to_string())], Rect { x: 0.0, y: 0.0, w: 700.0, h: 200.0 }, CELL, Some(col), STAMP_COLORS);
+        let x = f.quads.iter().find(|q| q.rect.y == 60.0).map(|q| q.rect.x).expect("the label block");
+        assert!(x < 695.0, "the block is wider than the column: {x}");
+        let seen = shown(&f);
+        assert!(seen.iter().all(|g| g.1 != 60.0 || g.0 + g.2 <= x), "no glyph shows under the block at x {x}: {seen:?}");
+        assert!(seen.contains(&(100.0, 60.0, 10.0, 20.0)) && seen.contains(&(750.0, 0.0, 10.0, 20.0)));
+        assert!(!seen.iter().any(|g| g.0 == 695.0 && g.1 == 60.0 && g.2 == 10.0), "the glyph at 695 is cut: {seen:?}");
+    }
+
+    /// B1(a), task 6 review: the announcement bar hides the box glyphs under it as it hides text.
+    #[test]
+    fn info_bar_cuts_box_glyphs() {
+        let bar = crate::infobar::Bar { id: "x".into(), text: "hi".into(), buttons: vec!["_Yes".into()], important: true };
+        let l = crate::infobar::layout(&bar, RECT, CELL);
+        let mut f = Frame::default();
+        f.glyphs = vec![box_glyph(l.bar.x + 20.0, l.bar.y, 10.0), box_glyph(l.bar.x + 20.0, l.bar.y + l.bar.h + 40.0, 10.0)];
+        info_bar(&mut f, &bar, &l, CELL);
+        assert_eq!(shown(&f), vec![(l.bar.x + 20.0, l.bar.y + l.bar.h + 40.0, 10.0, 20.0)], "the glyph under the bar is gone, the one below stays");
+    }
+
+    #[test]
+    fn lay_over_clips_glyphs() {
+        let mut f = Frame::default();
+        f.glyphs = vec![box_glyph(0.0, 0.0, 10.0), box_glyph(0.0, 40.0, 10.0)];
+        let mut layer = Frame::default();
+        layer.glyphs = vec![box_glyph(0.0, 0.0, 10.0)];
+        let area = Rect { x: 0.0, y: 0.0, w: 100.0, h: 20.0 };
+        let under = rgb(0, 0, 0);
+        let mut over = f.clone();
+        lay_over(&mut over, layer.clone(), area, 0.25, under, 20.0);
+        assert_eq!(over.glyphs.len(), 3, "a faint bar leaves the sessions' glyphs");
+        let mut over = f;
+        lay_over(&mut over, layer, area, 1.0, under, 20.0);
+        assert_eq!(over.glyphs.len(), 2, "an opaque bar hides the glyph behind it and brings its own");
+        assert!(over.glyphs.iter().any(|g| g.rect.y == 40.0));
+        assert!(over.glyphs.iter().any(|g| g.rect.y == 0.0 && g.color == rgb(1, 2, 3)), "full alpha keeps the layer's color");
+    }
+
+    /// Task 5 fix 1: Thin Strokes on dark backgrounds is decided per cell, as iTerm2 does (the
+    /// cell's background against its text, `iTermTextDrawingHelper.m:3045`), not once per pane.
+    #[test]
+    fn thin_strokes_follow_each_cells_colors() {
+        use crate::fonts::{MaskMode, MaskRules};
+        let prefs = DrawPrefs { masks: MaskRules { thin: 2, retina: false, ..MaskRules::STOCK }, ..DrawPrefs::default() };
+        let thin = MaskMode::Thin.code();
+        let mask_of = |s: &Screen, text: &str| {
+            let mut f = Frame::default();
+            pane_with(&mut f, s, RECT, CELL, false, &CursorLook::shown(false), &prefs, None, crate::render::DEFAULT_FACE);
+            f.rows.iter().flat_map(|r| r.spans.iter()).find(|sp| sp.text.trim_end() == text).map(|sp| sp.mask).unwrap_or(255)
+        };
+        // A dark pane: its own text is lighter than its background, so it thins; black text on a
+        // white cell is darker than its cell, so it does not.
+        let dark = screen(b"a\x1b[30;47mb");
+        assert_eq!((mask_of(&dark, "a"), mask_of(&dark, "b")), (thin, MaskMode::Smooth.code()));
+        // A light pane: dark text on light does not thin; white text on a blue cell does.
+        let mut light = screen(b"a\x1b[97;44mb");
+        light.palette.bg = rgb(255, 255, 255);
+        light.palette.fg = rgb(0, 0, 0);
+        assert_eq!((mask_of(&light, "a"), mask_of(&light, "b")), (MaskMode::Smooth.code(), thin));
+    }
+
+    #[test]
     fn a_red_background_makes_a_quad() {
         let s = screen(b"\x1b[41mX");
         let mut f = Frame::default();
@@ -4870,10 +5435,25 @@ mod tests {
     }
 
     #[test]
+    fn a_pane_draws_every_row_in_its_face() {
+        // The pane's text rows, a find label and a note all take the face `pane_with` is given.
+        let mut s = Screen::new(10, 3);
+        s.feed(b"hello \xe4\xb8\xad world");
+        let mut f = Frame::default();
+        let hl = Highlights { matches: &[], color: rgb(255, 255, 0), hover: None, link: rgb(0, 0, 255), labels: &[(crate::find::Pos { row: 0, col: 1 }, "a".to_string())], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl), 7);
+        assert!(f.rows.len() >= 3, "{:?}", f.rows);
+        assert!(f.rows.iter().all(|r| r.face == 7), "{:?}", f.rows.iter().map(|r| r.face).collect::<Vec<_>>());
+        let mut g = Frame::default();
+        pane(&mut g, &s, RECT, CELL, true, &CursorLook::shown(true));
+        assert!(!g.rows.is_empty() && g.rows.iter().all(|r| r.face == crate::render::DEFAULT_FACE), "pane() is the default face");
+    }
+
+    #[test]
     fn cell_backgrounds_take_the_alpha() {
         let s = red_selected_default();
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(0.7, false)));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(0.7, false)), crate::render::DEFAULT_FACE);
         assert_eq!(quad_alpha_at(&f, 5.0, 10.0), vec![0.7], "{:?}", f.quads);
         assert_eq!(quad_alpha_at(&f, 15.0, 10.0), vec![0.7], "{:?}", f.quads);
     }
@@ -4882,7 +5462,7 @@ mod tests {
     fn opaque_colors_keep_cells_solid() {
         let s = red_selected_default();
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(0.7, true)));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(0.7, true)), crate::render::DEFAULT_FACE);
         assert_eq!(quad_alpha_at(&f, 5.0, 10.0), vec![1.0], "{:?}", f.quads);
         assert_eq!(quad_alpha_at(&f, 15.0, 10.0), vec![1.0], "{:?}", f.quads);
         assert_eq!(quad_alpha_at(&f, 25.0, 10.0), vec![0.7], "{:?}", f.quads);
@@ -4892,7 +5472,7 @@ mod tests {
     fn cursor_stays_opaque() {
         let s = screen(b"");
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&see_through(0.5, false)));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&see_through(0.5, false)), crate::render::DEFAULT_FACE);
         let top = f.quads.iter().rev().find(|q| q.rect.contains(5.0, 10.0)).unwrap();
         assert_eq!(top.color, rgba(s.palette.cursor, 1.0), "{:?}", f.quads);
     }
@@ -4901,7 +5481,7 @@ mod tests {
     fn block_cursor_in_a_see_through_pane_keeps_the_cell_background_alpha() {
         let s = screen(b"");
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&see_through(0.5, false)));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&see_through(0.5, false)), crate::render::DEFAULT_FACE);
         assert_eq!(quad_alpha_at(&f, 5.0, 10.0), vec![0.5, 1.0], "{:?}", f.quads);
     }
 
@@ -5024,7 +5604,7 @@ mod tests {
         let draw = |s: &Screen, on: bool| {
             let mut f = Frame::default();
             let hl = Highlights { text_blink_on: on, ..see_through(1.0, false) };
-            pane_with(&mut f, s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
+            pane_with(&mut f, s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
             f
         };
         let red = rgba(s.palette.ansi[1], 1.0);
@@ -5041,7 +5621,7 @@ mod tests {
         assert_eq!(row_text(&f, 0).trim_end(), "ab");
         // No highlights (previews, screenshots): drawn.
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None);
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
         assert_eq!(row_text(&f, 0).trim_end(), "ab");
     }
 
@@ -5054,7 +5634,7 @@ mod tests {
         let draw = |s: &Screen, on: bool| {
             let mut f = Frame::default();
             let hl = Highlights { text_blink_on: on, ..see_through(1.0, false) };
-            pane_with(&mut f, s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
+            pane_with(&mut f, s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
             f
         };
         let at = |qs: &[Quad], x: f32| qs.iter().any(|q| q.rect.x >= x && q.rect.x < x + 10.0);
@@ -5196,6 +5776,117 @@ mod tests {
         assert_eq!(piece.x, 20.0);
     }
 
+    /// Seam S2 (13m x 13n): a box line Tandem draws takes the cell's color AFTER minimum
+    /// contrast, as text does; a block character is exempt (`contrastIneligible`,
+    /// `iTermAttributedStringBuilder.m:755`) and keeps its own color.
+    #[test]
+    fn box_glyph_follows_minimum_contrast() {
+        // Gray box line and gray full block on the same gray.
+        let gray = rgb(100, 100, 100);
+        let mut s = screen("\x1b[38;2;100;100;100m\x1b[48;2;100;100;100m\u{2500}\u{2588}".as_bytes());
+        with_min_contrast(&mut s, 0.5);
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        let color = |c: char| f.glyphs.iter().find(|g| g.c == c).map(|g| g.color);
+        let adjusted = crate::contrast::apply(gray, gray, 0.5);
+        assert_ne!(adjusted, gray, "the rule moves gray on gray");
+        assert_eq!(color('\u{2500}'), Some(adjusted), "{:?}", f.glyphs);
+        assert_eq!(color('\u{2588}'), Some(gray), "a block keeps its color");
+    }
+
+    /// Seam S4 (13m x 13n): a box glyph on a right-to-left row draws at its VISUAL column, with
+    /// the row's display order, right justification included.
+    #[test]
+    fn box_glyphs_follow_the_display_order() {
+        // ab, space, aleph, box line, bet, gimel: the right-to-left run 3..=6 reverses, so the
+        // box line (logical 4) draws at column 5.
+        let s = screen("ab \u{5d0}\u{2502}\u{5d1}\u{5d2}".as_bytes());
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        assert_eq!(s.visual_col(0, 4), 5);
+        assert_eq!(f.glyphs.iter().map(|g| (g.c, g.rect.x)).collect::<Vec<_>>(), vec![('\u{2502}', 50.0)]);
+        // A right-to-left paragraph sits at the right edge; its box glyph moves with it.
+        let mut s2 = screen("\u{5d0}\u{2502}\u{5d1}".as_bytes());
+        s2.bidi_rules.detect_direction = true;
+        s2.bidi_rules.right_justify = true;
+        let visual = s2.visual_col(0, 1);
+        assert!(visual > 2, "right-justified: {visual}");
+        let mut f = Frame::default();
+        pane(&mut f, &s2, RECT, CELL, false, &CursorLook::shown(false));
+        assert_eq!(f.glyphs.iter().map(|g| g.rect.x).collect::<Vec<_>>(), vec![visual as f32 * CELL.0]);
+    }
+
+    /// Task 7: a wide Powerline symbol is one glyph two cells wide; the grid keeps one cell.
+    #[test]
+    fn powerline_glyphs_follow_iterm2() {
+        let on = DrawPrefs { powerline: true, powerline_wide: true, powerline_extended: true, ..DrawPrefs::default() };
+        let draw = |s: &Screen, prefs: &DrawPrefs| {
+            let mut f = Frame::default();
+            pane_with(&mut f, s, RECT, CELL, false, &CursorLook::shown(false), prefs, None, crate::render::DEFAULT_FACE);
+            f
+        };
+        let s = screen("\u{E0B8}x".as_bytes());
+        let f = draw(&s, &on);
+        assert_eq!(f.glyphs.iter().map(|g| (g.c, g.rect.x, g.rect.w)).collect::<Vec<_>>(), vec![('\u{E0B8}', 0.0, 2.0 * CELL.0)], "two cells wide at column 0");
+        assert_eq!(f.rows.iter().map(|r| (r.x, r.spans.iter().map(|s| s.text.as_str()).collect::<String>().trim_end().to_string())).collect::<Vec<_>>(), vec![(CELL.0, "x".to_string())], "x stays at column 1");
+        // The wide key off: one cell. The profile switch off: no glyph, the font draws it.
+        let narrow = draw(&s, &DrawPrefs { powerline_wide: false, ..on.clone() });
+        assert_eq!(narrow.glyphs.iter().map(|g| g.rect.w).collect::<Vec<_>>(), vec![CELL.0]);
+        assert!(draw(&s, &DrawPrefs { powerline: false, ..on.clone() }).glyphs.is_empty());
+        // An extended symbol only with the extended key; a core one always.
+        let s2 = screen("\u{E0C0}\u{E0B0}".as_bytes());
+        assert_eq!(draw(&s2, &on).glyphs.len(), 2);
+        let core_only = draw(&s2, &DrawPrefs { powerline_extended: false, ..on.clone() });
+        assert_eq!(core_only.glyphs.iter().map(|g| g.c).collect::<Vec<_>>(), vec!['\u{E0B0}']);
+        // The symbol takes the cell's color and ends the text piece around it.
+        let s3 = screen("a\u{E0B0}b".as_bytes());
+        let f = draw(&s3, &on);
+        assert_eq!(f.glyphs.len(), 1);
+        assert_eq!(f.rows.len(), 2, "a and b are separate pieces");
+    }
+
+    /// Seam S4 (13m x 13n), Task 7: a wide Powerline glyph on a right-to-left row sits at the
+    /// visual column of its cell, two cells wide, and the grid width is unchanged.
+    #[test]
+    fn powerline_wide_in_rtl_row() {
+        let on = DrawPrefs { powerline: true, ..DrawPrefs::default() };
+        // A right-to-left paragraph of aleph, bet, the symbol and x: the symbol and x are one
+        // left-to-right run to the left of the Hebrew, so the symbol (logical 2) is not at column 2.
+        let mut s = screen("\u{5d0}\u{5d1}\u{E0B8}x".as_bytes());
+        s.bidi_rules.detect_direction = true;
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &on, None, crate::render::DEFAULT_FACE);
+        let visual = s.visual_col(0, 2);
+        assert_ne!(visual, 2, "the display order moved the symbol");
+        assert_eq!(f.glyphs.iter().map(|g| (g.c, g.rect.x, g.rect.w)).collect::<Vec<_>>(), vec![('\u{E0B8}', visual as f32 * CELL.0, 2.0 * CELL.0)]);
+        // A right-to-left paragraph sits at the right edge; the glyph moves with it.
+        let mut s2 = screen("\u{5d0}\u{E0B8}\u{5d1}".as_bytes());
+        s2.bidi_rules.detect_direction = true;
+        s2.bidi_rules.right_justify = true;
+        let visual = s2.visual_col(0, 1);
+        assert!(visual > 2, "right-justified: {visual}");
+        let mut f = Frame::default();
+        pane_with(&mut f, &s2, RECT, CELL, false, &CursorLook::shown(false), &on, None, crate::render::DEFAULT_FACE);
+        assert_eq!(f.glyphs.iter().map(|g| (g.rect.x, g.rect.w)).collect::<Vec<_>>(), vec![(visual as f32 * CELL.0, 2.0 * CELL.0)]);
+    }
+
+    /// Seam S7 (13m x 13n): a blinking box line blinks with the text, and a cell under a label
+    /// draws no box glyph.
+    #[test]
+    fn blinking_box_glyph_follows_the_phase() {
+        let mut s = screen("\x1b[5m\u{2500}\x1b[0m\u{2502}".as_bytes());
+        s.blink_allowed = true;
+        let draw = |hl: &Highlights| {
+            let mut f = Frame::default();
+            pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(hl), crate::render::DEFAULT_FACE);
+            f.glyphs.iter().map(|g| (g.c, g.rect.x)).collect::<Vec<_>>()
+        };
+        assert_eq!(draw(&Highlights { text_blink_on: true, ..see_through(1.0, false) }), vec![('\u{2500}', 0.0), ('\u{2502}', 10.0)]);
+        assert_eq!(draw(&Highlights { text_blink_on: false, ..see_through(1.0, false) }), vec![('\u{2502}', 10.0)], "the off phase hides the blinking one only");
+        let labels = [(crate::find::Pos { row: 0, col: 1 }, "x".to_string())];
+        assert_eq!(draw(&Highlights { labels: &labels, ..see_through(1.0, false) }), vec![('\u{2500}', 0.0)], "a label hides the glyph under it");
+    }
+
     #[test]
     fn contrast_applies_per_cell() {
         // Gray on the same gray: unreadable until minimum contrast moves it.
@@ -5263,14 +5954,14 @@ mod tests {
         let m = [crate::find::Match { start: crate::find::Pos { row: 0, col: 0 }, end: crate::find::Pos { row: 0, col: 0 } }];
         let hl = Highlights { matches: &m, color: rgb(255, 255, 255), ..see_through(1.0, false) };
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         let c = span_color(&f, "h").unwrap();
         assert_ne!(c, rgb(0, 0, 0), "black text on the black selection");
         assert_eq!(c, crate::contrast::apply(rgb(0, 0, 0), rgb(0, 0, 0), 1.0));
         // A hovered link over the selection does the same.
         let hl = Highlights { hover: Some(crate::find::Match { start: crate::find::Pos { row: 0, col: 0 }, end: crate::find::Pos { row: 0, col: 0 } }), link: rgb(0, 0, 0), ..see_through(1.0, false) };
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         assert_eq!(span_color(&f, "h"), Some(crate::contrast::apply(rgb(0, 0, 0), rgb(0, 0, 0), 1.0)));
     }
 
@@ -5330,9 +6021,10 @@ mod tests {
         with_min_contrast(&mut s, 1.0);
         let mut f = Frame::default();
         pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
-        let block = f.rows.iter().flat_map(|r| &r.spans).find(|sp| sp.text.contains('\u{2588}')).unwrap();
+        // Both are drawn by Tandem (13n), so their colors are the glyphs'.
+        let block = f.glyphs.iter().find(|g| g.c == '\u{2588}').unwrap();
         assert_eq!(block.color, rgb(128, 128, 128), "a block character keeps its foreground");
-        let line = f.rows.iter().flat_map(|r| &r.spans).find(|sp| sp.text.contains('\u{2500}')).unwrap();
+        let line = f.glyphs.iter().find(|g| g.c == '\u{2500}').unwrap();
         assert_ne!(line.color, rgb(128, 128, 128), "a box line is adjusted");
     }
 
@@ -5371,7 +6063,7 @@ mod tests {
         let mut f = Frame::default();
         let yellow = rgb(200, 200, 0);
         let hl = Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook { boost: 0.5, ..CursorLook::shown(false) }, &DrawPrefs::default(), Some(&hl));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook { boost: 0.5, ..CursorLook::shown(false) }, &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         let quad = |c: Rgb, x: f32| f.quads.iter().any(|q| q.color == rgba(c, 1.0) && q.rect.x == x);
         assert!(quad(rgb(100, 50, 0), 0.0), "selection background halfway to black: {:?}", f.quads);
         assert!(quad(rgb(100, 100, 0), 60.0), "match background halfway to black: {:?}", f.quads);
@@ -5544,7 +6236,7 @@ mod tests {
     fn default_background_is_not_a_cell_quad() {
         let s = screen(b"abc");
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(1.0, false)));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(1.0, false)), crate::render::DEFAULT_FACE);
         assert!(f.quads.is_empty(), "{:?}", f.quads);
     }
 
@@ -5628,7 +6320,7 @@ mod tests {
         let build = |opaque: bool| {
             let mut f = Frame::default();
             margin_fill_alpha(&mut f, pane, grid, CELL.1, &crate::margins::fill(&[], bg, false, false), bg, 0.7, false, false);
-            pane_with(&mut f, &s, grid, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(0.7, opaque)));
+            pane_with(&mut f, &s, grid, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(0.7, opaque)), crate::render::DEFAULT_FACE);
             f
         };
         let a = |f: &Frame, x: f32, y: f32| crate::transparency::composite(&f.quads, x, y)[3];
@@ -5775,7 +6467,7 @@ mod tests {
         let s = screen(b"a\x1b[41mb\x1b[0m");
         let mut f = Frame::default();
         background(&mut f, pane, &pieces, &img, s.palette.bg, 0.25);
-        pane_with(&mut f, &s, pane, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None);
+        pane_with(&mut f, &s, pane, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
         assert_eq!(f.backgrounds.len(), 1);
         assert_eq!((f.backgrounds[0].key, f.backgrounds[0].repeat), ((7, 0), false));
         assert_eq!(f.quads[0], Quad { rect: pane, color: rgba(s.palette.bg, 0.75) }, "the default background veils the image");
@@ -6285,7 +6977,7 @@ mod tests {
         let m = crate::find::find_all(&s, "ab").unwrap();
         let mut f = Frame::default();
         let yellow = rgb(0xff, 0xff, 0x00);
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true }));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true }), crate::render::DEFAULT_FACE);
         let y = rgba(yellow, 1.0);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 30.0, y: 0.0, w: 20.0, h: 20.0 }), "{:?}", f.quads);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 60.0, y: 0.0, w: 20.0, h: 20.0 }));
@@ -6322,7 +7014,7 @@ mod tests {
         assert!(f.underlines.iter().all(|q| q.rect.h == 1.0));
         assert!(f.overlay.is_empty(), "the old overlay dashes are gone");
         let mut off = Frame::default();
-        pane_with(&mut off, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs { underline_hyperlinks: false, ..DrawPrefs::default() }, None);
+        pane_with(&mut off, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs { underline_hyperlinks: false, ..DrawPrefs::default() }, None, crate::render::DEFAULT_FACE);
         assert!(off.underlines.is_empty());
     }
 
@@ -6359,8 +7051,40 @@ mod tests {
         assert_eq!(find(&f, 0.0), Some(red));
         assert_eq!(find(&f, 10.0), Some(rgba(green, 1.0)));
         // The default color is the cell's final text color: a selected cell's.
-        let runs = underline_runs(&[CellLook { ul: Some(Ul { style: crate::underline::Style::Single, strike: false, sgr: None }), text: "a".into(), fg: rgb(1, 2, 3), bg: rgb(0, 0, 0), bold: false, italic: false, selected: false, joins: false }], None);
+        let runs = underline_runs(&[CellLook { ul: Some(Ul { style: crate::underline::Style::Single, strike: false, sgr: None }), text: "a".into(), fg: rgb(1, 2, 3), bg: rgb(0, 0, 0), bold: false, italic: false, selected: false, level: 0, mask: 0, cursor: false, joins: false, table: None }], None);
         assert_eq!(runs[0].color, rgb(1, 2, 3));
+    }
+
+    /// 13n final review 1: a zoomed pane's rows are taller than the chrome's line, so a popup cuts
+    /// a row by that row's own height (a row whose top is a default line above the popup still
+    /// reaches into it), and a smaller-font pane's row that ends above the popup is left alone.
+    #[test]
+    fn popups_cut_pane_rows_by_their_own_height() {
+        let mut s = Screen::new(10, 4);
+        s.feed(b"line0\r\nline1\r\nline2");
+        let rows_at = |f: &Frame, y: f32| f.rows.iter().filter(|r| r.y == y).map(|r| (r.clip.x, r.clip.w)).collect::<Vec<_>>();
+        // Whether a piece of the row at `y` draws in the popup's columns.
+        let reaches = |f: &Frame, y: f32, p: Rect| rows_at(f, y).iter().any(|&(x, w)| x < p.x + p.w && x + w > p.x);
+        // A 2x pane: rows 40 tall. Row 1 spans y 40..80; the popup starts at y 70 (30 px below its top).
+        let popup = Rect { x: 0.0, y: 70.0, w: 50.0, h: 20.0 };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, (10.0, 40.0), false, &CursorLook::shown(false), &DrawPrefs::default(), None, 7);
+        assert!(!rows_at(&f, 40.0).is_empty());
+        let mut g = f.clone();
+        cut_out(&mut g, popup, 20.0);
+        assert!(!reaches(&g, 40.0, popup), "row 1 (y 40..80) reaches the popup at y 70 and is cut: {:?}", rows_at(&g, 40.0));
+        let mut g = f.clone();
+        cut_rows_from(&mut g, popup, 20.0);
+        assert!(!reaches(&g, 40.0, popup), "cut_rows_from by the row's height too: {:?}", rows_at(&g, 40.0));
+        // A small-font pane: rows 10 tall. Row 1 is y 10..20, ending above the popup at y 70 (a 20 px chrome line would not reach either) and row 6 (y 60..70) just ends at the popup.
+        let mut small = Screen::new(10, 8);
+        small.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng");
+        let mut f = Frame::default();
+        pane_with(&mut f, &small, RECT, (5.0, 10.0), false, &CursorLook::shown(false), &DrawPrefs::default(), None, 7);
+        let before = rows_at(&f, 60.0);
+        let mut g = f.clone();
+        cut_out(&mut g, Rect { x: 0.0, y: 75.0, w: 50.0, h: 20.0 }, 20.0);
+        assert_eq!(rows_at(&g, 60.0), before, "the row at y 60..70 ends above the popup: left whole");
     }
 
     /// 13m Task 7: a popup, a toast or a find bar over a pane's right edge lies over the
@@ -6506,7 +7230,7 @@ mod tests {
         let link = rgb(0x06, 0x45, 0xad);
         let hover = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
         let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         let q = f.overlay.iter().find(|q| q.color == rgba(link, 1.0)).unwrap();
         assert_eq!(q.rect, Rect { x: 40.0, y: CELL.1 - 1.0, w: 40.0, h: 1.0 });
         let x = f.rows.iter().flat_map(|r| &r.spans).find(|sp| sp.text.starts_with("x.rs")).unwrap();
@@ -6529,7 +7253,7 @@ mod tests {
         // A find match over logical 3..4 is one run at visual 3..4.
         let m = [crate::find::Match { start: at(3), end: at(4) }];
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl_with(&m, &[], &[])));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl_with(&m, &[], &[])), crate::render::DEFAULT_FACE);
         let yellow: Vec<Rect> = f.quads.iter().filter(|q| q.color == rgba(rgb(0xff, 0xff, 0), 1.0)).map(|q| q.rect).collect();
         assert_eq!(yellow, vec![Rect { x: 30.0, y: 0.0, w: 20.0, h: 20.0 }]);
         // A selection of logical column 3 shades visual column 4.
@@ -6548,18 +7272,18 @@ mod tests {
         // A two-character label over logical 3..5 sits where its cells are, at visual 3.
         let labels = [(at(3), "12".to_string())];
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl_with(&[], &labels, &[])));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl_with(&[], &labels, &[])), crate::render::DEFAULT_FACE);
         let tag = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "12")).unwrap();
         assert_eq!(tag.x, 30.0);
         // A one-character label over the aleph sits at its visual column 4.
         let labels = [(at(3), "A".to_string())];
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl_with(&[], &labels, &[])));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl_with(&[], &labels, &[])), crate::render::DEFAULT_FACE);
         assert_eq!(f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "A")).unwrap().x, 40.0);
         // A note over logical 3 underlines visual 4; over logical 0..3 it is two pieces.
         let notes = [(crate::find::Match { start: at(3), end: at(3) }, None), (crate::find::Match { start: at(0), end: at(3) }, None)];
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl_with(&[], &[], &notes)));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl_with(&[], &[], &notes)), crate::render::DEFAULT_FACE);
         let y = CELL.1 - 3.0;
         let lines: Vec<(f32, f32)> = f.overlay.iter().filter(|q| q.color == rgba(NOTE, 1.0) && q.rect.y == y).map(|q| (q.rect.x, q.rect.w)).collect();
         assert_eq!(lines, vec![(40.0, 10.0), (0.0, 30.0), (40.0, 10.0)], "{lines:?}");
@@ -6582,7 +7306,7 @@ mod tests {
         let mut f = Frame::default();
         let labels = [(crate::find::Pos { row: 0, col: 4 }, "1".to_string())];
         let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &labels, notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         let texts: Vec<String> = f.rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
         assert!(texts.iter().any(|t| t.starts_with("see  ttps")), "{texts:?}");
         let tag = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "1")).unwrap();
@@ -6614,7 +7338,7 @@ mod tests {
         let m = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
         let notes = [(m, Some("a file".to_string()))];
         let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         assert!(f.overlay.iter().any(|q| q.color == rgba(NOTE, 1.0) && q.rect == Rect { x: 40.0, y: CELL.1 - 3.0, w: 40.0, h: 1.0 }), "{:?}", f.overlay);
         assert!(f.rows.iter().any(|r| r.spans.iter().any(|s| s.text == "a file")));
     }
@@ -6647,7 +7371,7 @@ mod tests {
     fn adjacent_labels_follow_iterm2() {
         let col = Rect { x: 700.0, y: 0.0, w: 100.0, h: 200.0 };
         let labels: Vec<(usize, String)> = vec![(2, "14:02:09".into()), (3, "14:02:09".into()), (4, "14:02:10".into())];
-        let text_row = |y: f32| TextRow { x: 0.0, y, spans: vec![], clip: Rect { x: 0.0, y, w: 800.0, h: 20.0 }, scale: 1.0 };
+        let text_row = |y: f32| TextRow { x: 0.0, y, spans: vec![], clip: Rect { x: 0.0, y, w: 800.0, h: 20.0 }, scale: 1.0, face: crate::render::DEFAULT_FACE };
         let mut f = Frame::default();
         f.rows.push(text_row(40.0));
         timestamps(&mut f, &labels, Rect { x: 0.0, y: 0.0, w: 700.0, h: 200.0 }, CELL, Some(col), STAMP_COLORS);
@@ -6679,7 +7403,7 @@ mod tests {
     fn adjacent_labels_wider_than_the_column_extend_over_the_text() {
         let col = Rect { x: 700.0, y: 0.0, w: 40.0, h: 100.0 };
         let text = Rect { x: 0.0, y: 0.0, w: 700.0, h: 100.0 };
-        let text_row = |y: f32| TextRow { x: 0.0, y, spans: vec![], clip: Rect { x: 0.0, y, w: 700.0, h: 20.0 }, scale: 1.0 };
+        let text_row = |y: f32| TextRow { x: 0.0, y, spans: vec![], clip: Rect { x: 0.0, y, w: 700.0, h: 20.0 }, scale: 1.0, face: crate::render::DEFAULT_FACE };
         let mut f = Frame::default();
         f.rows.push(text_row(0.0));
         f.rows.push(text_row(20.0));
@@ -6719,7 +7443,7 @@ mod tests {
         let notes = [(m, Some("n".to_string()))];
         let rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 80.0 };
         let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
-        pane_with(&mut f, &s, rect, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
+        pane_with(&mut f, &s, rect, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         assert!(f.overlay.iter().all(|q| q.rect.x + q.rect.w <= rect.w + 0.01 && q.rect.y + q.rect.h <= rect.h + 0.01), "{:?}", f.overlay);
         assert!(f.overlay.len() < 50);
     }
@@ -6805,7 +7529,7 @@ mod tests {
         let s = screen(b"ab");
         let hl = Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::NONE, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         assert!(!f.overlay.iter().any(|q| q.rect == RECT), "the key pane of a background window keeps its brightness");
         assert!(!f.quads.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0)), "its cursor is hollow");
     }
@@ -6817,18 +7541,18 @@ mod tests {
         let whole = |f: &Frame| f.overlay.iter().any(|q| q.rect == RECT);
         // The render loop lays the gray quad over the whole pane; pane_with draws none with highlights.
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(crate::dim::Dim::NONE)));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(crate::dim::Dim::NONE)), crate::render::DEFAULT_FACE);
         assert!(!whole(&f));
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(crate::dim::Dim { amount: 0.4, only_text: false })));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(crate::dim::Dim { amount: 0.4, only_text: false })), crate::render::DEFAULT_FACE);
         assert!(!whole(&f), "the app draws the gray quad, not pane_with");
         // Dim Only Text: no quad, the text itself carries the dimmed color.
         let first = |f: &Frame| f.rows.iter().flat_map(|r| r.spans.iter()).find(|sp| sp.text.contains('a')).map(|sp| sp.color);
         let mut plain = Frame::default();
-        pane_with(&mut plain, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(crate::dim::Dim::NONE)));
+        pane_with(&mut plain, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(crate::dim::Dim::NONE)), crate::render::DEFAULT_FACE);
         let only_text = crate::dim::Dim { amount: 0.4, only_text: true };
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(only_text)));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(only_text)), crate::render::DEFAULT_FACE);
         assert!(!whole(&f));
         let fg = s.palette.fg;
         assert_eq!(first(&plain), Some(fg));
@@ -6836,10 +7560,10 @@ mod tests {
         assert_ne!(first(&f), first(&plain));
         // No highlights and not focused: today's quad (the screenshot path).
         let mut g = Frame::default();
-        pane_with(&mut g, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), None);
+        pane_with(&mut g, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
         assert!(g.overlay.iter().any(|q| q.rect == RECT && q.color == rgba(s.palette.bg, 0.4)));
         let mut g = Frame::default();
-        pane_with(&mut g, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), None);
+        pane_with(&mut g, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
         assert!(!whole(&g));
     }
 
@@ -6851,27 +7575,27 @@ mod tests {
         let mut s = screen(b"ab");
         s.palette.bg = rgb(0, 0, 0);
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(true)));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(true)), crate::render::DEFAULT_FACE);
         let row = key_row(&f).expect("the key is drawn");
         assert_eq!((row.clip.x, row.clip.y), (20.0, 0.0), "in the cursor's cell");
         assert_eq!(row.spans[0].color, rgb(0xff, 0xff, 0xff), "light on a dark background");
         assert!(!f.quads.iter().chain(&f.overlay).any(|q| q.color == rgba(s.palette.cursor, 1.0)), "no cursor shape");
         s.palette.bg = rgb(0xff, 0xff, 0xff);
         let mut light = Frame::default();
-        pane_with(&mut light, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(true)));
+        pane_with(&mut light, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(true)), crate::render::DEFAULT_FACE);
         assert_eq!(key_row(&light).map(|r| r.spans[0].color), Some(rgb(0, 0, 0)), "dark on a light background");
         let mut blink = Frame::default();
-        pane_with(&mut blink, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl(true)));
+        pane_with(&mut blink, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl(true)), crate::render::DEFAULT_FACE);
         assert!(key_row(&blink).is_none(), "it blinks with the cursor");
         // Over the cell: the character under the cursor is still drawn.
         let on_c = screen(b"abc\x1b[D");
         let mut over = Frame::default();
-        pane_with(&mut over, &on_c, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(true)));
+        pane_with(&mut over, &on_c, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(true)), crate::render::DEFAULT_FACE);
         assert!(key_row(&over).is_some_and(|r| r.clip.x == 20.0));
         assert_eq!(row_text(&over, 0).trim_end(), "abc", "the key does not blank the cell");
         let s = screen(b"ab");
         let mut plain = Frame::default();
-        pane_with(&mut plain, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(false)));
+        pane_with(&mut plain, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(false)), crate::render::DEFAULT_FACE);
         assert!(key_row(&plain).is_none());
         assert!(plain.quads.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0)), "the cursor otherwise");
     }
@@ -6913,7 +7637,9 @@ mod tests {
 
     fn digest(f: &Frame) -> u64 {
         // FNV-1a over the frame's quads and rows.
-        let text = format!("{:?}{:?}", f.quads, f.rows);
+        // The rows' `face` and the spans' `fake_bold` fields are 13n's; the digest is of the fields
+        // the porthole drew before them.
+        let text = format!("{:?}{:?}", f.quads, f.rows).replace(", face: 0", "").replace(", fake_bold: false", "").replace(", ligatures: 0", "").replace(", mask: 0", "").replace(", font: 0", "");
         text.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3))
     }
 

@@ -22,15 +22,6 @@ impl App {
         }
     }
 
-    /// Make Text Bigger (1) and Make Text Smaller (-1): the menu and the pinch. The shared
-    /// font offset moves one step (clamped as the menu always did; `apply_fonts` holds the
-    /// upper clamp). The caller lays out. 13k reads the font metrics this changes.
-    pub(super) fn change_font_size(&mut self, dir: i32) {
-        let base = self.store.default_profile().font("Normal Font").size_pt as f32;
-        let offset = wheel::clamp_font_offset(base, self.font_offset + dir.signum() as f32);
-        self.set_font_offset(offset);
-    }
-
     /// Ctrl+wheel as the pinch gesture (`PseudoTerminal.m:1751-1773`): true when the event was
     /// the pinch's. One notch is one font step. Only `wheel` calls it, after every UI wheel
     /// handler and the overlay hold, over a pane (P15).
@@ -40,8 +31,7 @@ impl App {
         }
         let step = self.magnifier.add(wheel::pinch_amount(ev.dy, WHEEL_LINES as f64), Instant::now());
         if step != 0 {
-            self.change_font_size(step);
-            self.relayout();
+            self.adjust_font_size(step);
             self.redraw();
         }
         true
@@ -436,7 +426,7 @@ impl App {
         let prefs = wheel::Prefs::from_globals(&self.globals);
         let affects = self.globals.bool("NaturalScrollingAffectsHorizontalMouseReporting");
         let (proportional, double) = (self.globals.bool("ProportionalScrollWheelReporting"), self.globals.bool("DoubleReportScrollWheel"));
-        let (cw, ch) = self.cell();
+        let (cw, ch) = self.pane_cell(id);
         let scale = self.scale() as f64;
         let cell_pt = (cw as f64 / scale, ch as f64 / scale);
         let Some(p) = self.panes.get_mut(&id) else { return };
@@ -816,7 +806,21 @@ mod tests {
         assert!(include_str!("tmux_tabs_ui.rs").contains("margins::tmux_cols("), "tmux is told the narrower width");
         assert!(include_str!("statusbar_ui.rs").contains("rooms,"), "a window compares each pane's room before a frame");
         assert!(body(MOD, "grid_size_in").contains("margins::pane_grid("), "the one path");
-        assert!(body(MOD, "grid_size").contains("scroll_room()"), "an area no pane owns still gives up the strip");
+    }
+
+    /// 13n final 2: a restored or replayed pane starts at the grid its room leaves (13m's scrollbar
+    /// strip and timestamp column), or its first layout resizes the shell (a second SIGWINCH and
+    /// a reflow). Every pixel-to-grid conversion goes through `grid_size_in`, never `grid_for`.
+    #[test]
+    fn restored_and_replayed_panes_start_at_their_room() {
+        let restore = body(include_str!("restore_ui.rs"), "attach_pane");
+        assert!(restore.contains("grid_size_in(") && restore.contains("pane_room_for("), "a restored shell starts less its room");
+        let replay = body(include_str!("replay_ui.rs"), "import_recording");
+        assert!(replay.contains("grid_size_in(") && replay.contains("pane_room_for("), "a replayed recording starts less its room");
+        for (name, text) in [("mod.rs", MOD), ("restore_ui.rs", include_str!("restore_ui.rs")), ("replay_ui.rs", include_str!("replay_ui.rs")), ("sizing_ui.rs", include_str!("sizing_ui.rs")), ("windows_ui.rs", include_str!("windows_ui.rs")), ("tmux_tabs_ui.rs", include_str!("tmux_tabs_ui.rs"))] {
+            let production = text.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+            assert!(!production.contains("grid_for("), "{name} sizes a grid without the room");
+        }
     }
 
     /// 13m Task 7: the bar is drawn per pane, routes its press, drag and wheel before the report
@@ -997,8 +1001,10 @@ mod tests {
         assert!(ui < pinch && held < pinch, "never over a bar or an overlay");
         assert!(pane < pinch, "only over a pane");
         assert!(body(UI, "pinch").contains("is_pinch(") && body(UI, "pinch").contains("PinchToChangeFontSizeDisabled"), "Ctrl alone and the Advanced switch");
-        assert!(body(UI, "pinch").contains("change_font_size("), "the existing zoom path");
-        assert!(body(UI, "change_font_size").contains("set_font_offset("));
+        assert!(body(UI, "pinch").contains("adjust_font_size("), "the menu's command on the pane and its broadcast group");
+        let fonts = include_str!("fonts_ui.rs");
+        assert!(body(fonts, "adjust_font_size").contains("self.resize_text(") && body(fonts, "resize_text").contains("self.change_font_size("), "adjust -> change");
+        assert!(body(fonts, "write_font_size").contains("self.store.set_session("), "change -> the pane's session copy");
     }
 
     /// B3: the activation edge is the existing `app_active` edge; no second field, no Focused
@@ -1075,24 +1081,20 @@ mod tests {
         assert!(enter < focus, "the pane is resolved in the right window");
     }
 
-    /// 13k merge (seam S11): a Ctrl+wheel or pinch font change reaches the renderer's cell
-    /// (`set_font_offset` -> `apply_fonts` -> `set_fonts` -> `set_font_px`), and 13k's cursor
-    /// frame compares the cell, base cell and scale every frame, so a zoom snaps the text cursor
-    /// (no slide or smear from a stale pixel rect).
+    /// 13k merge (seam S11), per pane (13n, P3): a Ctrl+wheel or menu font change writes the pane's
+    /// own profile copy, `refresh_panes` measures its face (`ensure_faces`), and 13k's cursor frame
+    /// compares the pane's cell, base cell and scale every frame, so a zoom snaps that pane's text
+    /// cursor (no slide or smear from a stale pixel rect) and no other pane's.
     #[test]
-    fn a_font_change_snaps_the_text_cursor() {
-        assert!(body(MOD, "set_font_offset").contains("self.apply_fonts()"));
-        assert!(body(MOD, "apply_fonts").contains("set_fonts("));
-        assert!(body(include_str!("../render.rs"), "set_fonts").contains("self.set_font_px("));
+    fn a_font_change_snaps_only_that_panes_cursor() {
+        let fonts = include_str!("fonts_ui.rs");
+        assert!(body(fonts, "resize_text").contains("self.refresh_panes()"));
+        assert!(body(MOD, "refresh_panes").contains("self.ensure_faces()"));
+        assert!(body(fonts, "pane_base_cell").contains("face_base("), "the pane's own face");
         let frame = include_str!("cursor_ui.rs");
+        assert!(frame.contains("(self.pane_cell(pane), self.pane_base_cell(pane), self.scale())"), "the pane's metrics");
         assert!(frame.contains("metrics_changed(Metrics { cell, base, scale,"), "the snap reads the live metrics");
-    }
-
-    #[test]
-    fn the_font_offset_is_clamped_to_the_drawn_range() {
-        let b = body(UI, "change_font_size");
-        assert!(b.contains("clamp_font_offset("));
-        assert!(!b.contains("max(-8.0)"));
+        assert!(!MOD.contains("font_offset"), "no app-wide font offset is left");
     }
 
     #[test]
@@ -1100,13 +1102,15 @@ mod tests {
         assert!(body(UI, "divider_at").contains("zoomed"), "a zoomed tab hides its dividers");
     }
 
-    /// The menu's bigger and smaller text use `change_font_size`, one clamp.
+    /// The menu's bigger, smaller and normal text use the one chain: `adjust_font_size`.
     #[test]
-    fn menu_font_arms_use_change_font_size() {
+    fn menu_font_arms_use_adjust_font_size() {
         let m = include_str!("menu.rs");
-        assert!(m.contains("\"biggerFont:\" => self.change_font_size(1)"));
-        assert!(m.contains("\"smallerFont:\" => self.change_font_size(-1)"));
+        assert!(m.contains("\"biggerFont:\" => self.adjust_font_size(1)"));
+        assert!(m.contains("\"smallerFont:\" => self.adjust_font_size(-1)"));
+        assert!(m.contains("\"returnToDefaultSize:\" => self.return_to_default_size()"));
     }
+
     /// 13j round 3 (structural ruling): the seven overlays that used to be recomputed here are
     /// recorded FROM THEIR DRAW CODE each frame into the window's list, and `ui_rects` reads
     /// only recorded lists. A kind recomputed in `ui_rects` can differ from the painted frame.

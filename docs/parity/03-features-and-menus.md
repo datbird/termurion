@@ -170,11 +170,11 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | View > Auto Composer | Opt+Shift+Cmd+. | Toggles automatically opening the Composer for multi-line input. (milestone 9) | have | Milestone 9l: Opt+Shift+Win+.; replaces the shell prompt at the next OSC 133 prompt with a borderless composer covering the prompt row downward, growing upward when the pane runs out of room below; does nothing the first time until shell command history has ever been used (kept iTerm2 bug); turning it off leaves a shown one up until the next prompt (kept iTerm2 bug). |
 | View > Open Quickly | Shift+Cmd+O | Opens a fuzzy search palette to jump to any window, tab, session, profile, or command. (milestone 9k) | have |
 | View > Maximize Active Pane | no shortcut | Temporarily expands the focused pane to fill the tab, hiding siblings. | have |
-| View > Make Text Bigger | Cmd++ | Increases the session font size. Tandem: Changes every pane, since all panes share one font until per-pane fonts arrive. | partial |
+| View > Make Text Bigger | Cmd++ | Increases the session font size. Tandem (13n, R3): changes the focused pane only; with FontChangeAffectsBroadcastingSessions on and the pane receiving broadcast input, every receiving pane; a tmux pane reaches its tmux window; the window fits the grid (AdjustWindowForFontSizeChange). Steps stop at 4 and 128 pt. | have |
 | View > Make Text Normal Size | Cmd+0 | Resets the font size to the profile default. | have |
-| View > Restore Text and Session Size | Opt+Cmd+0 | Resets both font size and window dimensions to profile defaults. | have |
-| View > Make Text Smaller | Cmd+- | Decreases the session font size. Tandem: Changes every pane, since all panes share one font until per-pane fonts arrive. | partial |
-| View > Size Changes Update Profile | no shortcut | Toggles whether font size changes are saved back to the profile. (milestone 7) | missing |
+| View > Restore Text and Session Size | Opt+Cmd+0 | Resets both font size and window dimensions to profile defaults. Tandem (13n): acts as Make Text Normal Size until window sizing restores Columns and Rows. | have |
+| View > Make Text Smaller | Cmd+- | Decreases the session font size. Tandem (13n, R3): as Make Text Bigger. | have |
+| View > Size Changes Update Profile | no shortcut | Toggles whether font size changes are saved back to the profile. (milestone 7) Tandem (13n): iTerm2's key is "Size Changes Affect Profile"; the menu says Update. Checked in the menu; with it on, text size changes are written to the saved profile. | have |
 | View > Start Instant Replay | Opt+Cmd+B | Opens Instant Replay, a scrubber for rewinding the screen's visual history. (milestone 10) | have, milestone 10a: Win+Alt+B, key action 15; the floating panel, slider, ticks, and Left/Right/Shift stepping |
 
 ### Session menu

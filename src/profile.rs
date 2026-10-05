@@ -34,6 +34,21 @@ pub fn parse_font(s: &str) -> FontSpec {
     }
 }
 
+/// `value` ("<family> <size>") with its size grown by `delta` points (`NSFont+iTerm.m` `fontWithSize:`
+/// takes the integer part of size plus delta). Kept between 4 and 128, the range `Profile::font`
+/// draws, so no step is hidden (iTerm2 keeps 2 to 200).
+pub fn grow_font_value(value: &str, delta: f32) -> String {
+    let f = parse_font(value);
+    // The size is first seen as drawn (4 to 128), as `Profile::font` reads it.
+    let size = (f.size_pt.clamp(4.0, 128.0) + delta).trunc().clamp(4.0, 128.0);
+    format!("{} {}", f.family, size as u32)
+}
+
+/// How many points `current` is bigger than `original` (what an Automatic Profile Switch keeps).
+pub fn font_delta(current: &str, original: &str) -> f32 {
+    parse_font(current).size_pt - parse_font(original).size_pt
+}
+
 pub fn color_value(c: Rgb) -> Value {
     let mut t = toml::Table::new();
     t.insert("r".into(), Value::Float(c.r as f64 / 255.0));
@@ -112,6 +127,14 @@ impl Profile {
 
     pub fn string(&self, key: &str) -> String {
         self.get(key).and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
+    }
+
+    /// `string` borrowed: the profile's own text or the schema default's, no copy (a font table
+    /// can be 256 KiB, and a frame reads it for every pane).
+    pub fn str_ref(&self, key: &str) -> &str {
+        let own = self.values.get(key);
+        let stock = || schema::find(key).and_then(|s| s.default.as_ref());
+        own.or_else(stock).and_then(|v| v.as_str()).unwrap_or("")
     }
 
     pub fn color(&self, key: &str) -> Rgb {
@@ -303,6 +326,22 @@ pub fn start_dir_probing(p: &Profile, previous: Option<&std::path::Path>, is_dir
 mod tests {
     use super::*;
     use crate::palette::rgb;
+
+    /// `NSFont+iTerm.m:32-47` with Tandem's drawn range (pre-flight P2: 4 to 128, not 2 to 200).
+    #[test]
+    fn grown_fonts_follow_iterm2() {
+        assert_eq!(grow_font_value("Consolas 12", 1.0), "Consolas 13");
+        assert_eq!(grow_font_value("Consolas 12.5", 1.0), "Consolas 13");
+        assert_eq!(grow_font_value("Consolas 12.5", -1.0), "Consolas 11");
+        assert_eq!(grow_font_value("Cascadia Mono 12", 2.0), "Cascadia Mono 14");
+        assert_eq!(grow_font_value("Consolas 4", -1.0), "Consolas 4");
+        assert_eq!(grow_font_value("Consolas 128", 1.0), "Consolas 128");
+        // A stored size outside the drawn range is first seen as drawn, so a step always acts.
+        assert_eq!(grow_font_value("Consolas 2", 1.0), "Consolas 5");
+        assert_eq!(grow_font_value("Consolas 200", -1.0), "Consolas 127");
+        assert_eq!(font_delta("Consolas 14", "Consolas 12"), 2.0);
+        assert_eq!(font_delta("Consolas 10", "Consolas 12.5"), -2.5);
+    }
 
     #[test]
     fn recycle_uses_the_previous_directory() {

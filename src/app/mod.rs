@@ -77,6 +77,7 @@ mod blocks_ui;
 mod clipboard_ui;
 mod copymode_ui;
 mod cursor_ui;
+mod fonts_ui;
 mod frames_ui;
 mod ime_ui;
 mod files_ui;
@@ -142,6 +143,7 @@ mod script_runtime_ui;
 mod claude_code_app;
 mod scripts_alerts;
 mod warnings_app;
+mod special_exceptions_app;
 mod suppressed_app;
 mod host_offers_ui;
 mod host_state_app;
@@ -338,8 +340,6 @@ pub struct App {
     jobs: crate::jobwatch::JobWatch,
     proxy: Arc<Mutex<EventLoopProxy<UserEvent>>>,
     menu_bar: Option<menu::MenuBar>,
-    /// Make Text Bigger and Smaller, in points, on top of the profile font size.
-    font_offset: f32,
     /// Keys > Remap Modifiers, read by the keyboard hook's thread.
     remap_tags: Arc<std::sync::RwLock<crate::remap::Tags>>,
     /// What the keyboard hook needs to decide which Win chords Tandem takes.
@@ -945,6 +945,8 @@ pub struct App {
     tray_on: bool,
     /// The font settings the renderer last loaded.
     font_sig: String,
+    /// The faces of this window's panes (`fonts_ui::PaneFaces`; per window like the renderer).
+    pane_faces: fonts_ui::PaneFaces,
     /// The blink phase (iTerm2's `blinkingItemsVisible`), shared by the cursor and blinking
     /// text; app-wide, so not in `swap_live`.
     blink: crate::cursor_anim::Blink,
@@ -1096,6 +1098,8 @@ pub struct App {
     /// The Suppressed Alerts window (one per app) and when the menu title's "ago" is next
     /// refreshed (while something is suppressed).
     suppressed_window: Option<crate::suppressed_alerts_ui::SuppressedWindow>,
+    /// The Manage Special Exceptions window (app-wide, one at a time).
+    special_exceptions: Option<special_exceptions_app::Open>,
     suppressed_retitle_due: Option<Instant>,
     /// The AI alert queue (ruling 12c-7), the alert showing, and the Settings > General > AI
     /// sub-tab an answer asked to reveal.
@@ -1601,7 +1605,6 @@ pub fn run() {
         jobs,
         proxy,
         menu_bar: None,
-        font_offset: 0.0,
         remap_tags: Arc::new(std::sync::RwLock::new(crate::remap::Tags::from_globals(&globals))),
         route_snapshot: Arc::new(std::sync::RwLock::new(keyroute::Snapshot::default())),
         exempt_map: Arc::new(std::sync::RwLock::new(toml::Table::new())),
@@ -1893,6 +1896,7 @@ pub fn run() {
         ui_element_now: false,
         tray_on: false,
         font_sig: String::new(),
+        pane_faces: Default::default(),
         profiles_win: None,
         blink: crate::cursor_anim::Blink::new(Instant::now()),
         cursor_due: None,
@@ -1963,6 +1967,7 @@ pub fn run() {
         catalog_due: None,
         inline_asking: false,
         suppressed_window: None,
+        special_exceptions: None,
         suppressed_retitle_due: None,
         ai_asks: VecDeque::new(),
         ai_alert: None,
@@ -2938,20 +2943,9 @@ impl App {
     }
 
     /// The one place pixels become columns and rows, so tmux, resizes, snaps, screenshots and
-    /// hit tests agree: `rect` less the margins and `room` pixels at its right edge.
-    fn grid_size_in(&self, rect: Rect, room: f32) -> (u16, u16) {
-        margins::pane_grid((rect.w, rect.h), self.cell(), self.margins(), room)
-    }
-
-    /// The grid of an area no pane owns (the content area, a window's first pane): the legacy
-    /// scrollbar's room is out of it, as it is out of every pane's.
-    fn grid_size(&self, rect: Rect) -> (u16, u16) {
-        self.grid_size_in(rect, self.scroll_room())
-    }
-
-    /// The grid of pane `id` in `rect`: its scrollbar and its Adjacent timestamp column are out.
-    fn grid_size_for(&self, id: PaneId, rect: Rect) -> (u16, u16) {
-        self.grid_size_in(rect, self.pane_room(id))
+    /// hit tests agree: `rect` less the margins and `room` pixels at its right edge, at `cell`.
+    fn grid_size_in(&self, rect: Rect, cell: (f32, f32), room: f32) -> (u16, u16) {
+        margins::pane_grid((rect.w, rect.h), cell, self.margins(), room)
     }
 
     /// The profile with this Guid, or the default profile.
@@ -3274,8 +3268,10 @@ impl App {
     }
 
     fn start_pane_as(&mut self, id: PaneId, rect: Rect, guid: Option<&str>) -> bool {
+        // The new pane's grid comes from its own profile's face, measured now, less its room.
         let p = self.profile(guid);
-        let (cols, rows) = self.grid_size_in(rect, self.pane_room_for(id, &p));
+        let cell = self.profile_cell(&p);
+        let (cols, rows) = self.grid_size_in(rect, cell, self.pane_room_for(id, &p));
         let (cmd, transport) = match self.start_command_override.clone() {
             // The API's create command never takes the SSH path.
             Some(cmd) => (cmd, crate::ssh_transport::Transport::Conpty),
@@ -3654,6 +3650,8 @@ impl App {
         self.tmux_save_tab_colors();
         // "Status bar enabled" may have changed for a tmux tab.
         self.tmux_watch_status_all();
+        // A profile edit may have changed a pane's fonts: its face is measured now.
+        self.ensure_faces();
         // A profile edit may make a window need an alpha surface.
         self.check_alpha_surfaces();
         self.sync_blur();
@@ -3678,20 +3676,32 @@ impl App {
         let p = self.store.default_profile().clone();
         let mut normal = p.font("Normal Font");
         let mut alt = p.bool("Use Non-ASCII Font").then(|| p.font("Non Ascii Font").family);
-        normal.size_pt = (normal.size_pt + self.font_offset).clamp(4.0, 128.0);
         // Re-measuring the font re-shapes all text, so only do it when a font setting changed.
         // The settings are compared before the font names are looked up (every frame asks).
-        let sig = format!("{normal:?} {alt:?} {} {} {} {}", p.float("Horizontal Spacing"), p.float("Vertical Spacing"), self.scale(), p.font("Badge Font").family);
+        let sig = format!("{normal:?} {alt:?} {} {} {} {} {} {} {}", p.float("Horizontal Spacing"), p.float("Vertical Spacing"), self.scale(), p.font("Badge Font").family, self.globals.string("FontsForGenerousRounding"), self.globals.int("MinimumWeightDifferenceForBoldFont"), self.globals.bool("EnableContextualAlternates"));
         if sig == self.font_sig {
             return;
         }
         self.font_sig = sig;
+        // A held slice (Reduce Flicker) was drawn at the old cells: it never outlives a font or scale change.
+        for p in self.panes.values_mut() {
+            p.held = None;
+            p.held_until = None;
+        }
         if let Some(g) = self.gpu.as_ref() {
             normal.family = g.renderer.resolve_family(&normal.family);
             alt = alt.map(|a| g.renderer.resolve_family(&a));
         }
+        let generous = self.globals.string("FontsForGenerousRounding");
+        let bold_difference = self.globals.int("MinimumWeightDifferenceForBoldFont") as i32;
+        let calt = self.globals.bool("EnableContextualAlternates");
         let Some(g) = self.gpu.as_mut() else { return };
         let px = normal.size_pt * 4.0 / 3.0 * g.window.scale_factor() as f32;
+        // The other panes' faces re-measure in place at a new scale (their ids stay valid).
+        g.renderer.set_scale(g.window.scale_factor() as f32);
+        g.renderer.set_generous_list(&generous);
+        g.renderer.set_bold_difference(bold_difference);
+        g.renderer.set_contextual_alternates(calt);
         g.renderer.set_fonts(&normal.family, alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
         let badge = p.font("Badge Font").family;
         g.renderer.set_badge_family(if badge.is_empty() { "Helvetica" } else { &badge });
@@ -3705,23 +3715,7 @@ impl App {
         } else {
             self.banners.set("font", format!("Font not installed: {}. Text uses a fallback font.", missing.join(", ")));
         }
-    }
-
-    /// Make Text Bigger, Make Text Smaller and Make Text Normal Size: the shared font offset
-    /// becomes `offset`. With `AdjustWindowForFontSizeChange`, a window that may change size
-    /// (`window_can_fit`: a Normal or No Title Bar window that is not full screen, maximized,
-    /// minimized, snapped, size-locked or a hotkey window) then keeps its
-    /// tab's grid at the new cell (`reallyChangeSessionFontSize:adjustWindow:`,
-    /// `TAB:2189-2205`); else the panes refit the window as it is, and a tmux tab tells tmux
-    /// through the size report. The caller lays out. 13n's `change_font_size` takes this over.
-    fn set_font_offset(&mut self, offset: f32) {
-        let grid = self.grid_size(self.content_area());
-        self.font_offset = offset;
-        let sig = self.font_sig.clone();
-        self.apply_fonts();
-        if sig != self.font_sig && self.globals.bool("AdjustWindowForFontSizeChange") && self.window_can_fit() {
-            self.fit_window_to_grid(grid);
-        }
+        self.ensure_faces();
     }
 
     /// Resizes the current window so its tab shows `grid` at the current cell, the top-left
@@ -4045,19 +4039,19 @@ impl App {
         }
         self.stamp_focus();
         self.refresh_route();
-        let area = self.content_area();
-        let (cw, ch) = self.cell();
-        let _ = area;
-        let sizes: Vec<(PaneId, (u16, u16))> = self
+        // Each pane's grid comes from its own cell: the faces are measured first.
+        self.ensure_faces();
+        let sizes: Vec<(PaneId, (u16, u16), (f32, f32))> = self
             .tabs
             .iter()
             .flat_map(|t| self.visible(t))
-            .map(|(id, rect)| (id, self.grid_size_for(id, rect)))
+            .map(|(id, rect)| (id, self.grid_size_for(id, rect), self.pane_cell(id)))
             .collect();
+        self.pane_faces.mark_laid();
         self.tmux_report_sizes();
         let mut reframe = Vec::new();
         let mut resize_reports = Vec::new();
-        for (id, (cols, rows)) in sizes {
+        for (id, (cols, rows), (cw, ch)) in sizes {
             if let Some(p) = self.panes.get_mut(&id) {
                 if p.resize(cols, rows) {
                     self.activity.entry(id).or_default().resized(Instant::now());
@@ -4113,14 +4107,13 @@ impl App {
 
     /// The cell under (x, y) in pane `rect`, and which half of the cell it is in.
     fn cell_at(&self, id: PaneId, rect: Rect, x: f32, y: f32) -> (u32, u32, Side) {
-        let (cw, ch) = self.cell();
         let inner = self.text_rect(id, rect);
         let term = self.panes[&id].screen.term();
-        let (col, row) = mouse::cell_at((x - inner.x) as f64, (y - inner.y) as f64, cw as f64, ch as f64, term.columns() as u32, term.screen_lines() as u32);
-        let right = (x - inner.x) - col as f32 * cw > cw / 2.0;
+        let (col, row, side) = fonts_ui::pointer_cell(self.pane_cell(id), (inner.x, inner.y), x, y, term.columns() as u32, term.screen_lines() as u32);
         // A right-to-left row: the pointer's visual cell is a different logical cell, and its
         // halves turn over (the left half of the cell is the character's end). Mouse reports
         // do not use this column: iTerm2 reports the visual one (`report_cell`).
+        let right = side == Side::Right;
         let (logical, rtl) = self.panes[&id].screen.logical_col(row as usize, col as usize);
         let side = if right != rtl { Side::Right } else { Side::Left };
         (logical as u32, row, side)
@@ -4130,7 +4123,7 @@ impl App {
     /// (`PTYMouseHandler.m:1404`, `mouseHandlerCoordForPointInView`: plain pixel division, no
     /// bidi conversion). Clamped to the grid like `cell_at`.
     fn report_cell(&self, id: PaneId, rect: Rect, x: f32, y: f32) -> (u32, u32) {
-        let (cw, ch) = self.cell();
+        let (cw, ch) = self.pane_cell(id);
         let inner = self.text_rect(id, rect);
         let term = self.panes[&id].screen.term();
         mouse::cell_at((x - inner.x) as f64, (y - inner.y) as f64, cw as f64, ch as f64, term.columns() as u32, term.screen_lines() as u32)
@@ -4140,7 +4133,7 @@ impl App {
     /// whether it is in the right half of that cell.
     fn visual_pos(&self, id: PaneId, rect: Rect, x: f32, y: f32) -> (i32, usize, bool) {
         let (col, row) = self.report_cell(id, rect, x, y);
-        let (cw, _) = self.cell();
+        let (cw, _) = self.pane_cell(id);
         let right = (x - self.text_rect(id, rect).x) - col as f32 * cw > cw / 2.0;
         let offset = self.panes[&id].screen.term().grid().display_offset() as i32;
         (row as i32 - offset, col as usize, right)
@@ -4935,7 +4928,8 @@ impl App {
     }
 
     fn wheel(&mut self, delta: MouseScrollDelta) {
-        let (cw, ch) = self.cell();
+        // A line of the wheel is a cell of the pane under the pointer.
+        let (cw, ch) = self.pointer_pane_cell();
         let scale = self.scale() as f64;
         let cell_pt = (cw as f64 / scale, ch as f64 / scale);
         let ev = match delta {
@@ -4973,6 +4967,8 @@ impl App {
 
     fn build_frame(&mut self) -> Frame {
         let mut attention: Option<Instant> = None;
+        // Every pane's face is measured before the frame (`pane_cell` only reads).
+        self.ensure_faces();
         let cell = self.cell();
         let draw = self.draw_prefs();
         let palette_bg = self.panes.values().next().map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
@@ -5061,12 +5057,20 @@ impl App {
         let stripes = self.globals.bool("Use background pattern indicator").then(|| self.stripe_tile());
         if let Some(tab) = self.tabs.get(self.active) {
             for (id, rect) in self.visible(tab) {
+                // Everything a pane's iteration draws lays out in its own cell and shapes in its own
+                // face; the window's chrome (after the loop) keeps the default cell and face.
+                let cell = self.pane_cell(id);
+                let face = self.pane_faces.face(id).unwrap_or(crate::render::DEFAULT_FACE);
+                let draw = self.draw_prefs_for(face);
                 let receives = self.broadcast.receives(&bview, id);
                 let sends = self.broadcast.sends(&bview, id);
                 if let Some(b) = backgrounds.iter().find(|b| b.pane == id) {
                     scene::background(&mut frame, b.rect, &b.pieces, &b.image, b.bg, b.blend);
                 }
                 self.draw_badge(&mut frame, id, rect);
+                // The badge sizes itself in pixels against the default font and keeps the default
+                // face; the rows from here on are laid out in the pane's cell and take its face.
+                let rows_from = frame.rows.len();
                 if let Some(p) = self.panes.get(&id) {
                     let shortcuts = self.shortcuts.as_ref().filter(|s| s.pane == id);
                     let labeled: Vec<crate::find::Match> = shortcuts.map(|s| s.items.iter().map(|(_, m, _)| *m).collect()).unwrap_or_default();
@@ -5107,43 +5111,28 @@ impl App {
                     }
                     // An Auto Composer hides the terminal cursor and the rows it covers.
                     let cover = self.auto_composer_cover(id, rect);
-                    let (quad_from, image_from, row_from) = (frame.quads.len(), frame.images.len(), frame.rows.len());
-                    let (overlay_from, underline_from, strike_from) = (frame.overlay.len(), frame.underlines.len(), frame.strikes.len());
+                    let marks = crate::flicker::Marks::of(&frame);
+                    let (overlay_from, underline_from, strike_from, glyph_from) = (frame.overlay.len(), frame.underlines.len(), frame.strikes.len(), frame.glyphs.len());
                     // Reduce Flicker: while the program has the cursor hidden, the pane's last
                     // live picture stands in for the one it is drawing.
                     let reduce = self.store.get(&p.profile).is_some_and(|pr| pr.bool("Reduce Flicker"));
                     let hold = crate::flicker::holding(reduce, p.screen.cursor_hidden_at, Instant::now());
                     let alt = p.screen.alt_screen();
-                    match p.held.as_ref().filter(|h| hold && h.usable(rect, alt, p.screen.cursor_hidden_at)) {
+                    match p.held.as_ref().filter(|h| hold && h.usable(rect, alt, face, cell, p.screen.cursor_hidden_at)) {
                         Some(h) => {
-                            frame.quads.extend(h.quads.iter().copied());
-                            frame.images.extend(h.images.iter().cloned());
-                            frame.rows.extend(h.rows.iter().cloned());
-                            frame.overlay.extend(h.overlay.iter().copied());
-                            frame.underlines.extend(h.underlines.iter().copied());
-                            frame.strikes.extend(h.strikes.iter().copied());
+                            h.replay(&mut frame);
                             if let Some(c) = cover {
-                                composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, c);
+                                composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, &mut frame.glyphs, glyph_from, c);
                             }
                             held_updates.push((id, None, p.screen.cursor_hidden_at.map(|t| t + crate::flicker::HOLD)));
                         }
                         None => {
-                            scene::pane_with(&mut frame, &p.screen, self.text_rect(id, rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), &draw, Some(&hl));
+                            scene::pane_with(&mut frame, &p.screen, self.text_rect(id, rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), &draw, Some(&hl), face);
                             if let Some(c) = cover {
-                                composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, c);
+                                composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, &mut frame.glyphs, glyph_from, c);
                             }
                             // Kept for the next hold; dropped when the switch is off.
-                            let held = reduce.then(|| crate::flicker::Held {
-                                since: Instant::now(),
-                                rect,
-                                alt_screen: alt,
-                                quads: frame.quads[quad_from..].to_vec(),
-                                images: frame.images[image_from..].to_vec(),
-                                rows: frame.rows[row_from..].to_vec(),
-                                overlay: frame.overlay[overlay_from..].to_vec(),
-                                underlines: frame.underlines[underline_from..].to_vec(),
-                                strikes: frame.strikes[strike_from..].to_vec(),
-                            });
+                            let held = reduce.then(|| crate::flicker::Held::slice(&frame, &marks, Instant::now(), rect, alt, face, cell));
                             held_updates.push((id, held, None));
                         }
                     }
@@ -5218,6 +5207,9 @@ impl App {
                     if let Some(text) = self.fps_overlay() {
                         scene::fps_meter(&mut frame, &text, self.text_rect(id, rect), cell);
                     }
+                }
+                for row in frame.rows[rows_from..].iter_mut().filter(|r| r.face == crate::render::DEFAULT_FACE) {
+                    row.face = face;
                 }
             }
             self.draw_clippings(&mut frame, cell);
@@ -5864,7 +5856,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) {
             return;
         }
         for profiles in [false, true] {
@@ -5894,6 +5886,8 @@ impl ApplicationHandler<UserEvent> for App {
                     let url = slot.as_mut().and_then(|s| s.open_url.take());
                     // Profiles > General's URL schemes menu asks before Tandem becomes the handler.
                     let scheme_ask = slot.as_mut().and_then(|s| s.scheme_ask.take());
+                    // Profiles > Text's "Manage Special Exceptions" opens its window.
+                    let special = slot.as_mut().and_then(|s| s.special_exceptions.take());
                     self.apply_edit(edit);
                     self.settings_warnings_answered(answered);
                     if let Some(guid) = setup {
@@ -5901,6 +5895,9 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     if let Some(a) = scheme_ask {
                         self.ask_scheme(a);
+                    }
+                    if let Some(guid) = special {
+                        self.open_special_exceptions(guid, event_loop);
                     }
                     if let Some(url) = url {
                         if let Err(e) = semantic_ui::shell_open(&url, None, false) {
@@ -6103,7 +6100,9 @@ impl ApplicationHandler<UserEvent> for App {
                 // A font change, a banner or a status bar (shared or per pane) that came,
                 // went or changed height while another window was current reaches this one
                 // now: the room its terminals were sized for is compared whole.
-                if sig != self.font_sig || self.laid_out.as_ref() != Some(&self.room()) {
+                // A pane whose profile changed its font has a new cell and needs its grid again.
+                self.ensure_faces();
+                if sig != self.font_sig || self.pane_faces.stale() || self.laid_out.as_ref() != Some(&self.room()) {
                     self.relayout();
                 }
                 self.render();

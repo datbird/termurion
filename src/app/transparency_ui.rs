@@ -372,6 +372,7 @@ impl App {
         self.refresh_caption_frame();
         self.apply_corners();
         self.font_sig = String::new();
+        self.pane_faces = Default::default();
         self.apply_fonts();
         self.install_menus();
         self.relayout();

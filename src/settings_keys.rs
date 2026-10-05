@@ -2023,6 +2023,83 @@ mod tests {
     }
 
     #[test]
+    fn generous_row_follows_iterm2() {
+        let row = schema::find_global("FontsForGenerousRounding").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"));
+        assert_eq!(row.kind, Kind::String);
+        assert_eq!(row.default, Some(Value::String("consolas".into())));
+        assert_eq!(row.label, "List of fonts to use alternate rounding algorithm for line height calculation.");
+        assert!(row.help.starts_with(&row.label) && row.help.contains("Terminal.app\u{2019}s behavior"), "{}", row.help);
+    }
+
+    #[test]
+    fn bold_row_follows_iterm2() {
+        let row = schema::find_global("MinimumWeightDifferenceForBoldFont").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Drawing"));
+        assert_eq!(row.kind, Kind::Int);
+        assert_eq!(row.default, Some(Value::Integer(4)));
+        assert_eq!(row.label, "Minimum weight difference between regular and bold font.");
+        assert!(row.help.starts_with(&row.label) && row.help.contains("double-struck with a small offset."), "{}", row.help);
+    }
+
+    #[test]
+    fn ligature_rows_follow_iterm2() {
+        for (key, label) in [
+            ("PreferSpeedToFullLigatureSupport", "Improves drawing performance at the expense of disallowing alphanumeric characters to belong to ligatures."),
+            ("EnableContextualAlternates", "Enable contextual alternates (calt) for ligature-capable fonts."),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} has a row"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Drawing"), "{key}");
+            assert_eq!(row.kind, Kind::Bool, "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(true)), "{key}");
+            assert_eq!(row.label, label, "{key}");
+            assert!(row.help.starts_with(label), "{key}: {}", row.help);
+        }
+        let calt = schema::find_global("EnableContextualAlternates").unwrap();
+        assert!(calt.help.contains("Many coding fonts such as Monaspace, Iosevka, and Cascadia Code require this for their ligatures to work."), "{}", calt.help);
+    }
+
+    #[test]
+    fn box_drawing_row_follows_iterm2() {
+        let row = schema::find_global("DisableCustomBoxDrawing").expect("a row");
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Drawing"));
+        assert_eq!(row.kind, Kind::Bool);
+        assert_eq!(row.default, Some(Value::Boolean(false)));
+        assert_eq!(row.label, "Use your typeface\u{2019}s box-drawing characters instead of Tandem\u{2019}s custom drawing code.");
+        assert_eq!(row.help, format!("{}\nYou must restart Tandem after changing this setting.", row.label));
+    }
+
+    #[test]
+    fn powerline_rows_follow_iterm2() {
+        let wide = schema::find_global("MakeSomePowerlineSymbolsWide").expect("a row");
+        assert_eq!((wide.tab.as_str(), wide.section.as_str()), ("Advanced", "Drawing"));
+        assert_eq!(wide.kind, Kind::Bool);
+        assert_eq!(wide.default, Some(Value::Boolean(true)));
+        assert_eq!(wide.label, "Draw certain Powerline symbols double-width?");
+        assert_eq!(wide.help, "Draw certain Powerline symbols double-width?\nThis matches how most \u{201c}nerd\u{201d} fonts render them, but your favorite one might not do this. An example code point that is affected is U+E0B8.");
+        let ext = schema::find_global("SupportPowerlineExtendedSymbols").expect("a row");
+        assert_eq!((ext.tab.as_str(), ext.section.as_str()), ("Advanced", "Drawing"));
+        assert_eq!(ext.kind, Kind::Bool);
+        assert_eq!(ext.default, Some(Value::Boolean(true)));
+        assert_eq!(ext.label, "Include extended symbols when drawing Powerline natively.");
+        assert_eq!(ext.help, ext.label);
+    }
+
+    #[test]
+    fn anti_alias_rows_follow_iterm2() {
+        let row = schema::find_global("ForceAntialiasingOnRetina").expect("a row");
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Drawing"));
+        assert_eq!(row.kind, Kind::Bool);
+        assert_eq!(row.default, Some(Value::Boolean(false)));
+        assert_eq!(row.label, "Force text to be anti-aliased on Retina displays.");
+        assert!(row.help.starts_with(&row.label) && row.help.ends_with("which sometimes looks better."), "{}", row.help);
+        // The stock profile seeds both anti-alias switches on and Thin Strokes at Retina only.
+        let stock = crate::profile::Profile::stock();
+        assert!(stock.bool("ASCII Anti Aliased") && stock.bool("Non-ASCII Anti Aliased"));
+        assert_eq!(stock.int("Thin Strokes"), 4);
+    }
+
+    #[test]
     fn scrollbar_tick_rows_follow_iterm2() {
         let locations = "Show search result and prompt locations in scroll bar.\nChanging this setting will not affect existing sessions until you restart.";
         let marks = "Show prompt locations in scroll bar?\nChanging this setting will not affect existing sessions until you restart. You must also enable \u{201c}Show search result and prompt locations in scroll bar\u{201d} for this to take effect.";
@@ -2209,6 +2286,25 @@ mod tests {
         assert!(indicate_non_default());
         set_indicate_non_default(false);
         assert!(!indicate_non_default());
+    }
+
+    /// `AS:695`, `AS:670`, `iTermPreferences.m:219`: the text size rows (Task 8).
+    #[test]
+    fn size_rows_follow_iterm2() {
+        let label = "Should growing or shrinking the font in a session that's broadcasting input affect all session that broadcast input?";
+        let row = schema::find_global("FontChangeAffectsBroadcastingSessions").expect("FontChangeAffectsBroadcastingSessions");
+        assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "Windows", Kind::Bool));
+        assert_eq!(row.default, Some(Value::Boolean(false)));
+        // The help is the whole DEFINE text (`AS:695`, with no closing period); the label its first line.
+        assert_eq!((row.label.as_str(), row.help.as_str()), (label, format!("{label}\nThis only applies to changing the font size with Make Text Bigger, Make Text Normal Size, and Make Text Smaller").as_str()));
+        let help = "Preserve font zoom level when Automatic Profile Switching changes profiles.";
+        let row = schema::find_global("preserveFontSizeOnAutomaticProfileSwitch").expect("preserveFontSizeOnAutomaticProfileSwitch");
+        assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "Session", Kind::Bool));
+        assert_eq!(row.default, Some(Value::Boolean(true)));
+        assert_eq!((row.label.as_str(), row.help.as_str()), (help, help));
+        let row = schema::find_global("Size Changes Affect Profile").expect("Size Changes Affect Profile");
+        assert_eq!((row.tab.as_str(), row.kind), (crate::advanced_pane::STORED_TAB, Kind::Bool));
+        assert_eq!(row.default, Some(Value::Boolean(false)));
     }
 
     /// `XIB:8708-8750`, `GP:2559-2566`, `PREF:105-106`, `PREF:757-758`: General > Experimental.

@@ -120,7 +120,8 @@ impl App {
             return None;
         }
         let (snap_w, snap_h) = chrome::snap_axes(self.win_style, self.globals.bool("DisableWindowSizeSnap"), false, maximized, full_screen, locked, true, true);
-        let cell = self.cell();
+        // The focused pane's cell: the grid the window holds is that pane's (P14).
+        let cell = self.focused_cell();
         let outer = g.window.outer_size();
         let area = self.content_area();
         let (side, vert) = self.margins();

@@ -112,6 +112,32 @@ impl Store {
         self.sessions.iter().find(|s| s.profile.guid() == guid).map_or_else(|| guid.to_string(), |s| s.original_guid())
     }
 
+    /// The Guid of the private copy of `guid`'s profile: `guid` itself when it already is one,
+    /// else a new copy of the saved profile (the default profile when it is gone).
+    pub fn divorce(&mut self, guid: &str) -> String {
+        if self.sessions.iter().any(|s| s.profile.guid() == guid) {
+            return guid.to_string();
+        }
+        let shared = self.get(guid).cloned().unwrap_or_else(|| self.default_profile().clone());
+        let copy = crate::session_profile::divorce(&shared, uuid::Uuid::new_v4().to_string().to_uppercase());
+        let new_guid = copy.profile.guid();
+        self.sessions.push(copy);
+        new_guid
+    }
+
+    /// Whether `guid` is a session's private copy.
+    pub fn is_session(&self, guid: &str) -> bool {
+        self.sessions.iter().any(|s| s.profile.guid() == guid)
+    }
+
+    /// Sets or removes (None) values on the session copy `guid` and works out what it overrides.
+    pub fn set_session(&mut self, guid: &str, values: &[(String, Option<Value>)]) {
+        let Some(i) = self.sessions.iter().position(|s| s.profile.guid() == guid) else { return };
+        let original = self.sessions[i].original_guid();
+        let shared = self.profiles.iter().find(|p| p.guid() == original).cloned().unwrap_or_else(|| self.default_profile().clone());
+        self.sessions[i].set(values, &shared);
+    }
+
     /// After a saved profile changed: its session copies follow it where they did not
     /// override a key. Copies whose profile is gone keep their values.
     pub fn merge_sessions(&mut self) {

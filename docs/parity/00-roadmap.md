@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 316 | 229 | 75 | 12 |
-| `02-global-settings.md` | 820 | 529 | 55 | 236 |
-| `03-features-and-menus.md` | 647 | 558 | 45 | 44 |
-| Total | 1,783 | 1,316 | 175 | 292 |
+| `01-profile-settings.md` | 316 | 238 | 66 | 12 |
+| `02-global-settings.md` | 820 | 540 | 53 | 227 |
+| `03-features-and-menus.md` | 647 | 561 | 43 | 43 |
+| Total | 1,783 | 1,339 | 162 | 282 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -601,6 +601,24 @@ and Find ticks, and Adjacent timestamps get their own column through one per-pan
 Highlights.selections (13s), the selected-command-region skip for line marks, OSC 12 and OSC 112 cursor colors. Nothing of 13m was
 checked on screen during the build. Every kept quirk is listed in `docs/acceptance/m13m-checklist.md` and ruled on in
 `docs/superpowers/rulings/m13m-rulings.txt`.
+Milestone 13n built fonts (01: 9 rows from partial to have: Special Font Config, Use Bold Font, Use Italic Font, Thin Strokes, both
+Anti Aliased switches, both Ligatures switches, Draw Powerline Glyphs; 02: 11 rows to have, 2 from partial and 9 from missing:
+disableCustomBoxDrawing, minimumWeightDifferenceForBoldFont, preferSpeedToFullLigatureSupport, enableContextualAlternates,
+forceAntialiasingOnRetina, makeSomePowerlineSymbolsWide, supportPowerlineExtendedSymbols, fontsForGenerousRounding, SizeChangesAffectProfile,
+and from partial preserveFontSizeOnAutomaticProfileSwitch and fontChangeAffectsBroadcastingSessions; 03: Make Text Bigger, Make Text Smaller
+from partial and Size Changes Update Profile from missing to have; 1,783 rows, 1,339 have, 162 partial, 282 missing). Every pane draws
+with its own profile's fonts through renderer faces, and window chrome keeps the default profile's face. Line height comes from the font's
+ascent, descent and leading (R3, was 1.2 times the size), with iTerm2's generous rounding for Consolas; bold and italic faces follow iTerm2's
+weight rule with a one pixel double strike when no face is heavy enough; ligatures form only when the profile asks (R3), through OpenType
+features and one buffer row per ligature level; ASCII and Non-ASCII Anti Aliased and Thin Strokes filter the glyph mask in a vendored
+glyphon (crates/glyphon, patch 1); box drawing, block elements and every Powerline shape are drawn by Tandem as custom glyphs with zeno
+(Powerline hand-drawn from geometry, nothing converted from iTerm2's images; the shades U+2591 to U+2593 stay with the font, as in iTerm2);
+Make Text Bigger and Smaller change the focused pane, its broadcast group (FontChangeAffectsBroadcastingSessions) or, with Size Changes
+Update Profile, the saved profile (R3, was every pane); an Automatic Profile Switch keeps the zoom; Special Font Config has iTerm2's
+Special Exceptions window with Import and Export. Deferred: the Nerd Font bundle download (not offered), Restore Text and Session Size
+restoring Columns and Rows (13f's window sizing), a "Font not installed" banner for a non-default profile. Nothing of 13n was checked on
+screen during the build. Every kept quirk is listed in `docs/acceptance/m13n-checklist.md` and ruled on in
+`docs/superpowers/rulings/m13n-rulings.txt`.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's

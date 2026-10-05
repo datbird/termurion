@@ -125,6 +125,9 @@ pub struct SettingsWindow {
     /// Profiles > General's "URL schemes:" menu chose a scheme Tandem does not handle yet: the
     /// not-default question to ask (the app takes it after each frame).
     pub scheme_ask: Option<SchemeAsk>,
+    /// Profiles > Text's "Manage Special Exceptions" was pressed for this profile Guid: the
+    /// window opens for it (the app takes it after each frame).
+    pub special_exceptions: Option<String>,
     /// The window was opened from a tmux session (iTerm2's `_tmuxSession`, set by how the
     /// panel opened, `PreferencePanel.m:725-766`): its status bar controls are disabled.
     tmux_session: bool,
@@ -263,6 +266,7 @@ impl SettingsWindow {
             ssh_sheet: None,
             open_url: None,
             scheme_ask: None,
+            special_exceptions: None,
             tmux_session: false,
             open_editor: None,
             title_providers: Vec::new(),
@@ -356,6 +360,7 @@ impl SettingsWindow {
         let ssh_sheet = &mut self.ssh_sheet;
         let open_url = &mut self.open_url;
         let scheme_ask = &mut self.scheme_ask;
+        let special_exceptions = &mut self.special_exceptions;
         let home = std::env::var("USERPROFILE").unwrap_or_default();
         let tmux_session = self.tmux_session;
         let title_providers = &self.title_providers;
@@ -657,6 +662,13 @@ impl SettingsWindow {
                             if s.key == "Title Function" {
                                 if title_function_row(ui, profile, s, title_providers) {
                                     edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
+                            // iTerm2's "Manage Special Exceptions" button (the table is its own window).
+                            if s.key == crate::font_table::KEY {
+                                if ui.button(&s.label).on_hover_text(&s.help).clicked() {
+                                    *special_exceptions = Some(selected.clone());
                                 }
                                 continue;
                             }
