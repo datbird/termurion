@@ -341,6 +341,37 @@ impl Screen {
         self.feed_quiet(format!("{text}\r\n").as_bytes());
     }
 
+    /// The end message of a session (iTerm2's `appendBrokenPipeMessage:`, `PS:4514-4596`): a
+    /// divider line with `text` centered in it, in iTerm2's blue, on a new line. What the dead
+    /// program left behind goes first (the alternate screen, colors and attributes, a drawing
+    /// charset, an open hyperlink, a scroll region, origin mode, a half-read sequence), so the
+    /// line is plain text in the main grid. An empty session (cursor home, no history) gets
+    /// one screen of line feeds first, so the message sits below where output would have gone.
+    /// Triggers and requests never see it.
+    pub fn append_end_message(&mut self, text: &str, divider: &str) {
+        // The scanner may sit inside a string the program left open; it would swallow the bytes.
+        self.restart_scanner();
+        self.feed_quiet(b"\x1b[?1049l");
+        let (row, col) = {
+            let c = self.term.grid().cursor.point;
+            (c.line.0.max(0) + 1, c.column.0 + 1)
+        };
+        // DECSTBM homes the cursor, so it is put back.
+        self.feed_quiet(format!("\x1b[0m\x1b(B\x0f\x1b]8;;\x1b\\\x1b[r\x1b[?6l\x1b[?7h\x1b[4l\x1b[{row};{col}H").as_bytes());
+        let grid = self.term.grid();
+        if grid.cursor.point.line.0 == 0 && grid.cursor.point.column.0 == 0 && grid.history_size() == 0 {
+            let rows = grid.screen_lines();
+            self.feed_quiet("\n".repeat(rows).as_bytes());
+        }
+        if self.term.grid().cursor.point.column.0 != 0 {
+            self.feed_quiet(b"\r\n");
+        }
+        let (r, g, b) = crate::session_end::DIVIDER_RGB;
+        let text = crate::arrangement::inert_text(text).replace(['\r', '\n'], " ");
+        let line = crate::session_end::end_line(self.term.columns(), &text, &crate::arrangement::inert_text(divider));
+        self.feed_quiet(format!("\x1b[38;2;{r};{g};{b}m\x1b[49m{line}\x1b[39;49m\r\n").as_bytes());
+    }
+
     /// Session restoration's contents (SGR-safe styled text) and the optional banner
     /// (text, (background gray, text gray)): real cells, a full-width bar on its own line.
     pub fn feed_restored(&mut self, text: &str, cursor: Option<(usize, usize)>, banner: Option<(&str, (u8, u8))>) {
@@ -1444,4 +1475,64 @@ mod tests {
         assert_eq!(captured[2].line, "error: a error: b");
         assert_eq!(captured[2].values, vec!["error: a".to_string(), "a".to_string()], "the first match only");
     }
+    #[test]
+    fn end_message_is_drawn_as_iterm2() {
+        use alacritty_terminal::index::{Column, Line};
+        use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
+        let row = |s: &Screen, l: i32| -> String { (0..20).map(|c| s.term().grid()[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string() };
+        let cursor = |s: &Screen| (s.term().grid().cursor.point.line.0, s.term().grid().cursor.point.column.0);
+        let mut s = Screen::new(20, 4);
+        s.feed(b"ab");
+        s.append_end_message("Session Ended", "=");
+        assert_eq!((row(&s, 0), row(&s, 1)), ("ab".to_string(), "== Session Ended ===".to_string()));
+        assert_eq!(cursor(&s), (2, 0));
+        for c in 0..20 {
+            let cell = &s.term().grid()[Line(1)][Column(c)];
+            assert_eq!(cell.fg, Color::Spec(Rgb { r: 70, g: 83, b: 246 }), "column {c}");
+            assert_eq!(cell.bg, Color::Named(NamedColor::Background), "column {c}");
+        }
+        // An empty session: one screen of line feeds first.
+        let mut s = Screen::new(20, 4);
+        s.append_end_message("Session Ended", "=");
+        assert_eq!(s.term().grid().history_size(), 2);
+        assert_eq!((row(&s, 2), cursor(&s)), ("== Session Ended ===".to_string(), (3, 0)));
+        // Triggers never see the message line.
+        let mut s = Screen::new(20, 4);
+        s.set_triggers(vec![trig("Session", "AlertTrigger", "x", false)], TriggerPrefs::default());
+        s.feed(b"ab\r\n");
+        s.append_end_message("Session Ended", "=");
+        s.feed(b"cd\r\n");
+        assert_eq!(alerts(&mut s), 0);
+        assert!(s.take_requests().is_empty());
+    }
+
+    #[test]
+    fn end_message_after_dirty_state() {
+        use alacritty_terminal::index::{Column, Line};
+        use alacritty_terminal::term::cell::Flags;
+        let mut s = Screen::new(20, 4);
+        // Bold, reverse, strike, the drawing charset, an open hyperlink, the alternate screen,
+        // and half an OSC string the scanner is still inside.
+        s.feed(b"main\r\n\x1b[1;7;9m\x1b(0\x1b]8;;http://x\x1b\\\x1b[?1049h\x1b[2Jtui\x1b]0;half");
+        s.append_end_message("Session Ended", "=");
+        let g = s.term().grid();
+        let mut found = None;
+        for l in 0..4 {
+            let t: String = (0..20).map(|c| g[Line(l)][Column(c)].c).collect();
+            if t.contains("Session Ended") {
+                found = Some(l);
+            }
+        }
+        let l = found.expect("the message is in the main grid");
+        let text: String = (0..20).map(|c| g[Line(l)][Column(c)].c).collect();
+        assert_eq!(text.trim_end(), "== Session Ended ===");
+        for c in 0..20 {
+            let cell = &g[Line(l)][Column(c)];
+            assert!(!cell.flags.intersects(Flags::BOLD | Flags::INVERSE | Flags::STRIKEOUT | Flags::UNDERLINE), "column {c}");
+            assert!(cell.hyperlink().is_none(), "column {c}");
+        }
+        assert!(!s.term().mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN));
+        assert!((0..4).any(|l| (0..20).map(|c| g[Line(l)][Column(c)].c).collect::<String>().starts_with("main")), "the main grid is kept");
+    }
+
 }

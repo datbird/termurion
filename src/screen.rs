@@ -2150,6 +2150,13 @@ impl Screen {
         self.keys = KeyState { literal: self.keys.literal, ..KeyState::new(self.keys.profile_csi_u) };
     }
 
+    /// The scanner leaves a string the program left open (an OSC or DCS cut short by its end).
+    pub(crate) fn restart_scanner(&mut self) {
+        if self.osc.pending.is_some() {
+            self.osc.restart();
+        }
+    }
+
     /// What an SSH conductor restores when it unhooks (iTerm2's savedState, Decision: the
     /// remote host and the working directory).
     pub fn ssh_saved(&self) -> crate::conductor::SavedState {
