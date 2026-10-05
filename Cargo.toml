@@ -90,3 +90,5 @@ windows-sys = { version = "0.59", features = [
 # alacritty_terminal with row marks (crates/alacritty_terminal/TANDEM-PATCHES.md).
 [patch.crates-io]
 alacritty_terminal = { path = "crates/alacritty_terminal" }
+# vte with a readable parser state (crates/vte/TANDEM-PATCHES.md).
+vte = { path = "crates/vte" }

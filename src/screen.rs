@@ -911,9 +911,8 @@ impl Screen {
                     crate::emu::Held::Drop => Vec::new(),
                     crate::emu::Held::CancelString => vec![0x18],
                     _ => {
-                        let began_here = matches!(held, crate::emu::Held::Enq) || bytes.get(start) == Some(&0x1b) || start > 0;
                         let keep = self.pass(held);
-                        crate::emu::held_bytes(&bytes[start..end], began_here, keep)
+                        crate::emu::held_bytes(keep)
                     }
                 };
                 reply.extend(self.feed_raw(&fed));
@@ -3360,10 +3359,9 @@ mod tests {
         s.feed(b"3b");
         s.feed(b"c");
         assert_eq!(row_text(&s, 0), "ac");
-        assert_eq!(held_bytes(b"b", false, None), vec![0x18]);
-        assert!(held_bytes(b"\x1b[3J", true, None).is_empty());
-        assert_eq!(held_bytes(b"\x1b[5b", true, Some(b"\x1b[5b".to_vec())), b"\x1b[5b");
-        assert_eq!(held_bytes(b"b", false, Some(b"\x1b[5b".to_vec())), b"\x18\x1b[5b");
+        // A CAN goes first whatever happens to the sequence, so the parser is in the ground state.
+        assert_eq!(held_bytes(None), vec![0x18]);
+        assert_eq!(held_bytes(Some(b"\x1b[5b".to_vec())), b"\x18\x1b[5b");
     }
 
     /// 13o Task 2: the REP switch, and REP read by number.
@@ -3503,4 +3501,111 @@ mod tests {
         assert_eq!(s.title(), Some("ok"));
     }
 
+    /// Every spelling vte takes as CSI 3 J is gated, including a C0 byte, DEL or a byte of 0x80 or
+    /// more between the ESC and the `[` (vte stays in Escape through them) and C0 bytes inside the
+    /// sequence (13o Task 2 fix, B1).
+    #[test]
+    fn every_vte_spelling_of_csi_3j_is_gated() {
+        use crate::emu::Rules;
+        let forms: Vec<Vec<u8>> = vec![
+            b"\x1b[3J".to_vec(),
+            b"\x1b\x00[3J".to_vec(),
+            b"\x1b\x07[3J".to_vec(),
+            b"\x1b\r[3J".to_vec(),
+            b"\x1b\x7f[3J".to_vec(),
+            b"\x1b\xc3[3J".to_vec(),
+            b"\x1b\x9b[3J".to_vec(),
+            b"\x1b\x00\x7f\xff[3J".to_vec(),
+            b"\x1b[\x003J".to_vec(),
+            b"\x1b[3\rJ".to_vec(),
+            b"\x1b[3\x7fJ".to_vec(),
+            b"\x1b[0003J".to_vec(),
+            b"\x1b[3:1J".to_vec(),
+            b"\x1b\x1b[3J".to_vec(),
+            b"\x1b[1\x1b[3J".to_vec(),
+        ];
+        for form in forms {
+            let mut s = Screen::with_scrollback(20, 3, 100);
+            for i in 0..52 {
+                s.feed(format!("line{i}\r\n").as_bytes());
+            }
+            s.take_requests();
+            let before = s.term().grid().history_size();
+            s.feed(&form);
+            s.feed(b"after");
+            assert_eq!(s.term().grid().history_size(), before, "{form:?} cleared history");
+            assert_eq!(s.take_requests(), vec![Request::AskClearHistory], "{form:?} did not ask");
+            assert!((0..3).any(|l| row_text(&s, l).contains("after")), "{form:?} left the parser mid-sequence");
+            // The same spelling split at every byte.
+            for cut in 1..form.len() {
+                let mut s = Screen::with_scrollback(20, 3, 100);
+                for i in 0..52 {
+                    s.feed(format!("line{i}\r\n").as_bytes());
+                }
+                s.take_requests();
+                s.feed(&form[..cut]);
+                s.feed(&form[cut..]);
+                s.feed(b"after");
+                assert_eq!(s.term().grid().history_size(), before, "{form:?} split at {cut} cleared history");
+                assert!((0..3).any(|l| row_text(&s, l).contains("after")), "{form:?} split at {cut} swallowed text");
+            }
+            // With the key set to allow, the same spelling clears.
+            let mut s = Screen::with_scrollback(20, 3, 100);
+            s.set_rules(Rules { clear_history: Some(false), ..Default::default() });
+            for i in 0..52 {
+                s.feed(format!("line{i}\r\n").as_bytes());
+            }
+            s.feed(&form);
+            assert_eq!(s.term().grid().history_size(), 0, "{form:?} should clear when allowed");
+        }
+    }
+
+    /// The REP switch and the OSC cut see the same forms vte does.
+    #[test]
+    fn other_gates_see_vte_spellings() {
+        use crate::emu::Rules;
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { rep: false, ..Default::default() });
+        s.feed(b"a\x1b\x00[3b\x1b\x7f[3b\x1b[\x003b");
+        assert_eq!(row_text(&s, 0), "a");
+        let mut s = Screen::new(20, 3);
+        let mut big = b"\x1b\x00]0;".to_vec();
+        big.extend(std::iter::repeat_n(b'A', (1 << 20) + 10));
+        big.extend(b"\x07z");
+        s.feed(&big);
+        assert_eq!(row_text(&s, 0), "z");
+        assert!(s.title().is_some_and(|t| t.len() <= 1 << 20), "the string is cut at the cap");
+    }
+
+    /// Random streams of the bytes that matter never clear history while the key is unset: what
+    /// the scanner holds is what vte (alacritty) would run, whatever the spelling or the splits.
+    #[test]
+    fn random_streams_never_clear_history_unasked() {
+        const ALPHABET: &[u8] = b"\x1b\x1b\x1b\x1b[[[3333JJJ;:0\x00\x07\r\x7f\x18\x1a\xc3\x9b\\]P_X^?q";
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for round in 0..3000 {
+            let mut s = Screen::with_scrollback(20, 3, 100);
+            for i in 0..52 {
+                s.feed(format!("line{i}\r\n").as_bytes());
+            }
+            s.take_requests();
+            let before = s.term().grid().history_size();
+            let len = 4 + (next() % 20) as usize;
+            let stream: Vec<u8> = (0..len).map(|_| ALPHABET[(next() % ALPHABET.len() as u64) as usize]).collect();
+            let mut at = 0;
+            while at < stream.len() {
+                let n = 1 + (next() % 7) as usize;
+                let end = (at + n).min(stream.len());
+                s.feed(&stream[at..end]);
+                at = end;
+            }
+            assert!(s.term().grid().history_size() >= before, "round {round}: {stream:?} cleared history");
+        }
+    }
 }

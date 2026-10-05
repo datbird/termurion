@@ -153,11 +153,12 @@ pub fn rebuild(h: &Held) -> Vec<u8> {
     }
 }
 
-/// The bytes to feed the parser for a held event. `keep` is what survives (None: nothing). When
-/// the sequence began in an earlier read its start is already in the parser, so a CAN goes first
-/// to return it to the ground state.
-pub fn held_bytes(_original: &[u8], began_here: bool, keep: Option<Vec<u8>>) -> Vec<u8> {
-    let mut out = if began_here { Vec::new() } else { vec![0x18] };
+/// The bytes to feed the parser for a held event. `keep` is what survives (None: nothing). A CAN
+/// always goes first: the parser may hold the start of a sequence fed in an earlier read, or the
+/// partial start of a chain of escapes (`ESC ESC [ 3 J`, `ESC [ 1 ESC [ 3 J`), and CAN returns it
+/// to the ground state from any state, where it is invisible (alacritty ignores it there).
+pub fn held_bytes(keep: Option<Vec<u8>>) -> Vec<u8> {
+    let mut out = vec![0x18];
     out.extend(keep.unwrap_or_default());
     out
 }
