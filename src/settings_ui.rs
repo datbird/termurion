@@ -139,6 +139,8 @@ pub struct SettingsWindow {
     /// The registered session title providers as (display name, unique id), for the Title
     /// Function popup; the app sets them when the window opens and when they change.
     pub title_providers: Vec<(String, String)>,
+    /// Session > Prevent Sleep's gray line (`PSV:465-482`), set by the app.
+    pub sleep_status: String,
     /// Settings > Advanced: the search, the non-default filter and the field being edited.
     advanced: crate::settings_advanced_pane::AdvancedState,
     /// Settings > General > AI: its sub-tab and whether it was just revealed.
@@ -274,6 +276,7 @@ impl SettingsWindow {
             tmux_session: false,
             open_editor: None,
             title_providers: Vec::new(),
+            sleep_status: String::new(),
             advanced: Default::default(),
             ai: Default::default(),
             sheet: None,
@@ -369,6 +372,7 @@ impl SettingsWindow {
         let home = std::env::var("USERPROFILE").unwrap_or_default();
         let tmux_session = self.tmux_session;
         let title_providers = &self.title_providers;
+        let sleep_status = &self.sleep_status;
         let advanced = &mut self.advanced;
         let ai = &mut self.ai;
         let sheet = &mut self.sheet;
@@ -734,6 +738,9 @@ impl SettingsWindow {
                                     }
                                     ui.label(egui::RichText::new(crate::transparency::LARGE_RADIUS).small());
                                 });
+                            }
+                            if s.key == "Prevent Sleep" && !sleep_status.is_empty() {
+                                ui.label(egui::RichText::new(sleep_status).small().color(ui.visuals().weak_text_color()));
                             }
                             if s.key == "Set Local Environment Vars" {
                                 locale_status_line(ui, profile, &globals.string("FallbackLCCType"));

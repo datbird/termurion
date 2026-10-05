@@ -389,6 +389,7 @@ pub mod api_notify;
 pub mod session_env;
 pub mod start_dir;
 pub mod shell_inject;
+pub mod sleep_guard;
 pub mod offscreen;
 pub mod progress;
 pub mod locale_guess;

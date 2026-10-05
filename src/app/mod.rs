@@ -94,6 +94,7 @@ mod view_ui;
 mod marks_ui;
 mod offscreen_ui;
 mod progress_ui;
+mod sleep_ui;
 mod menu;
 mod porthole_ui;
 mod prompted_ui;
@@ -977,6 +978,10 @@ pub struct App {
     /// When the next OSC 9;4 bar frame is due (`tick_progress`); panes are shared by every
     /// window, so app-wide and not in `swap_live`.
     progress_frame: Option<Instant>,
+    /// Prevent Sleep (13p): the one request, what the last look saw, and the Session tab's line.
+    sleep: crate::sleep_guard::Guard,
+    sleep_tracker: crate::sleep_guard::Tracker,
+    sleep_status: String,
     /// The focused pane's smooth-blink fade, advanced by `tick_cursor`.
     blink_fade: crate::cursor_anim::Fade,
     /// The smooth blink's alpha for the key window's focused pane, stored by `tick_cursor`
@@ -1941,6 +1946,9 @@ pub fn run() {
         cursor_due: None,
         anim_frame: None,
         progress_frame: None,
+        sleep: Default::default(),
+        sleep_tracker: Default::default(),
+        sleep_status: crate::sleep_guard::status_text(0, 0),
         blink_fade: crate::cursor_anim::Fade::default(),
         cursor_alpha: None,
         api_server: None,
@@ -3657,6 +3665,7 @@ impl App {
                 // Hotkeys that failed to register show in the sheet.
                 s.hotkeys.errors = self.hotkey_errors.clone();
                 s.title_providers = self.title_provider_items();
+                s.sleep_status = self.sleep_status.clone();
                 s.ai.found = self.ai_discovery.all();
                 match mode {
                     Mode::Settings => self.settings = Some(s),
@@ -5965,7 +5974,8 @@ impl ApplicationHandler<UserEvent> for App {
         let flicker_due = self.flicker_tick(Instant::now());
         self.tick_progress();
         let progress_due = self.progress_wake();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due, progress_due].into_iter().flatten().min();
+        let sleep_due = self.recompute_sleep(Instant::now());
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),

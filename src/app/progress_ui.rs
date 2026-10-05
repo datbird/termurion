@@ -99,7 +99,7 @@ mod tests {
         assert!(anims < looks, "clocks first");
         assert!(m.contains("self.draw_inline_progress(&mut frame, id, rect);"));
         assert!(m.contains("let progress_due = self.progress_wake();"));
-        assert!(m.contains("cursor_due, frame_due, flicker_due, progress_due]"), "folded into the one wake array");
+        assert!(m.contains("cursor_due, frame_due, flicker_due, progress_due, sleep_due]"), "folded into the one wake array");
         assert!(m.contains("progress_frame: Option<Instant>,") && m.contains("progress_frame: None,"));
         let me = include_str!("progress_ui.rs").split("#[cfg(test)]").next().unwrap();
         assert!(me.contains("self.progress_frame = None;"), "a still bar lets the loop sleep");
