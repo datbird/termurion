@@ -147,5 +147,14 @@ test data) is left out. Changes:
     `Term.save_screen_on_clear`: ED 0 from the home cell of the alternate screen calls it first
     (iTerm2's saveScrollBufferWhenClearing; the main screen never does, zsh issue 8822).
     `Term.printed` counts characters written, for "has the program drawn anything since".
+25. `term/mod.rs`: `WidthRule` and `Term.width_rule: Option<WidthRule>` (None keeps upstream's
+    `c.width()`). `input` takes the cells of a character from the rule's `width` function
+    (Tandem's: iTerm2's tables, U+200B by `zwsp_advances`). A U+FE0F after a narrow cell whose
+    base `accepts_vs16`, with `vs16` or (`vs16_primary` and not in the alternate screen), widens
+    that cell (`widen_previous`): the spacer is written and the cursor moves one more column; a
+    cell in the last column moves to the next row first when line wrap is on (a leading spacer
+    stays), and stays narrow when it is off. A regional indicator right after a cell holding a
+    lone regional indicator joins it as a zero-width mark (one cluster) and the pair is always
+    two cells: it widens a one-cell first indicator the same way (iTerm2 `StringToScreenChars`).
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

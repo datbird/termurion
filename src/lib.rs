@@ -76,6 +76,7 @@ pub mod porthole;
 pub mod triggers;
 pub mod expr;
 pub mod emu;
+pub mod widths;
 pub mod interp;
 pub mod script_fn;
 pub mod script_eval;

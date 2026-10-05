@@ -195,10 +195,10 @@ pub fn profile_unicode(value: Option<i64>) -> u8 {
 
 /// A session's features, iTerm2's one `capabilities` behind both `TERM_FEATURES` and the
 /// `Capabilities` reply (`PS:3349`, `:18361-18386`): the clipboard setting, ambiguous width
-/// narrow, and the session's Unicode version (the one a `UnicodeVersion` sequence set, else
+/// as the profile says, and the session's Unicode version (the one a `UnicodeVersion` sequence set, else
 /// the profile's).
-pub fn session_features(clipboard_writable: bool, set_version: u8, profile_version: u8) -> Features {
-    Features { clipboard_writable, ambiguous_wide: false, unicode_version: if set_version == 0 { profile_version } else { set_version } }
+pub fn session_features(clipboard_writable: bool, set_version: u8, profile_version: u8, ambiguous_wide: bool) -> Features {
+    Features { clipboard_writable, ambiguous_wide, unicode_version: if set_version == 0 { profile_version } else { set_version } }
 }
 
 /// `Capabilities=` codes in iTerm2's order, for Tandem's features.
@@ -365,10 +365,10 @@ mod tests {
         assert_eq!(profile_unicode(Some(8)), 8);
         assert_eq!(profile_unicode(Some(9)), 9);
         assert_eq!(profile_unicode(Some(12)), 9, "only iTerm2's two versions");
-        assert_eq!(session_features(true, 0, 8), Features { clipboard_writable: true, ambiguous_wide: false, unicode_version: 8 }, "the profile's until a sequence sets one");
-        assert_eq!(session_features(false, 9, 8).unicode_version, 9, "a set version wins");
-        assert_eq!(session_features(false, 8, 9).unicode_version, 8);
-        assert_eq!(session_features(false, 0, 9).unicode_version, 9);
+        assert_eq!(session_features(true, 0, 8, false), Features { clipboard_writable: true, ambiguous_wide: false, unicode_version: 8 }, "the profile's until a sequence sets one");
+        assert_eq!(session_features(false, 9, 8, false).unicode_version, 9, "a set version wins");
+        assert_eq!(session_features(false, 8, 9, false).unicode_version, 8);
+        assert_eq!(session_features(false, 0, 9, false).unicode_version, 9);
     }
 
     #[test]
@@ -382,7 +382,7 @@ mod tests {
         // The reply and TERM_FEATURES agree: the profile's version until a sequence sets one.
         s.profile_unicode = 8;
         s.clipboard_allowed = true;
-        let want = |v: u8| format!("\x1b]1337;Capabilities={}\x07", capabilities(session_features(true, v, 8)));
+        let want = |v: u8| format!("\x1b]1337;Capabilities={}\x07", capabilities(session_features(true, v, 8, false)));
         assert_eq!(String::from_utf8(s.feed(b"\x1b]1337;Capabilities\x07")).unwrap(), want(0));
         assert!(want(0).contains("Uw8"));
         s.feed(b"\x1b]1337;UnicodeVersion=9\x07");

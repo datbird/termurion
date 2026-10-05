@@ -1226,7 +1226,10 @@ impl Screen {
                         }
                     }
                 }
-                "UnicodeVersion" => self.unicode.apply(&value),
+                "UnicodeVersion" => {
+                    self.unicode.apply(&value);
+                    self.push_width_rule();
+                }
                 "SetProfile" if self.trusted => self.requests.push(Request::SetProfile(value)),
                 "SetProfileProperty" if self.trusted => {
                     let pairs: Vec<(String, String)> =
@@ -1259,7 +1262,7 @@ impl Screen {
                     }
                 }
                 "Capabilities" if self.trusted => {
-                    let f = crate::osc1337::session_features(self.clipboard_allowed, self.unicode.version, self.profile_unicode);
+                    let f = crate::osc1337::session_features(self.clipboard_allowed, self.unicode.version, self.profile_unicode, self.ambiguous_wide());
                     let reply = format!("\x1b]1337;Capabilities={}\x07", crate::osc1337::capabilities(f));
                     self.replies.extend(reply.into_bytes());
                 }

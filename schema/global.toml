@@ -4235,3 +4235,48 @@ label = "Reset colors at shell prompt?"
 type = "bool"
 default = true
 help = "Reset colors at shell prompt?\nUses shell integration to detect a shell prompt and, if enabled, resets colors to their defaults."
+
+[[setting]]
+key = "ZeroWidthSpaceAdvancesCursor"
+tab = "Advanced"
+section = "Terminal"
+label = "Zero-Width Space (U+200B) advances cursor?"
+type = "bool"
+default = true
+help = "Zero-Width Space (U+200B) advances cursor?\nWhile a zero-width space should not advance the cursor per the Unicode spec, both Terminal.app and Konsole do this, and Weechat depends on it. You must restart Tandem after changing this setting."
+
+[[setting]]
+key = "Vs16Supported"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Support variation selector 16 making emoji fullwidth in all modes?"
+type = "bool"
+default = false
+help = "Support variation selector 16 making emoji fullwidth in all modes?"
+
+[[setting]]
+key = "Vs16SupportedInPrimaryScreen"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Support variation selector 16 making emoji fullwidth outside of alternate screen mode?"
+type = "bool"
+default = true
+help = "Support variation selector 16 making emoji fullwidth outside of alternate screen mode?"
+
+[[setting]]
+key = "FullWidthFlags"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Lone regional indicators render full-width."
+type = "bool"
+default = true
+help = "Lone regional indicators render full-width.\nA complete flag is always two columns, which is the width wcwidth reports for the pair."
+
+[[setting]]
+key = "AggressiveBaseCharacterDetection"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Detect base unicode characters with lookup table."
+type = "bool"
+default = true
+help = "Detect base unicode characters with lookup table.\nThe system’s algorithm for segmenting composed characters makes bad choices, such as for Tamil. Enable this to reduce text overlapping."

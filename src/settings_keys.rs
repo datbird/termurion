@@ -3393,6 +3393,41 @@ mod tests {
         }
     }
 
+    /// 13o Task 5: the character-width rows.
+    #[test]
+    fn width_rows_follow_iterm2() {
+        let zw = "Zero-Width Space (U+200B) advances cursor?";
+        let a = "Support variation selector 16 making emoji fullwidth in all modes?";
+        let b = "Support variation selector 16 making emoji fullwidth outside of alternate screen mode?";
+        let fw = "Lone regional indicators render full-width.";
+        let ag = "Detect base unicode characters with lookup table.";
+        let rows: [(&str, &str, bool, &str, String); 5] = [
+            ("ZeroWidthSpaceAdvancesCursor", "Terminal", true, zw, format!("{zw}\nWhile a zero-width space should not advance the cursor per the Unicode spec, both Terminal.app and Konsole do this, and Weechat depends on it. You must restart Tandem after changing this setting.")),
+            ("Vs16Supported", "Experimental Features", false, a, a.to_string()),
+            ("Vs16SupportedInPrimaryScreen", "Experimental Features", true, b, b.to_string()),
+            ("FullWidthFlags", "Experimental Features", true, fw, format!("{fw}\nA complete flag is always two columns, which is the width wcwidth reports for the pair.")),
+            ("AggressiveBaseCharacterDetection", "Experimental Features", true, ag, format!("{ag}\nThe system\u{2019}s algorithm for segmenting composed characters makes bad choices, such as for Tamil. Enable this to reduce text overlapping.")),
+        ];
+        for (key, section, default, label, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", section, Kind::Bool), "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(default)), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+        }
+        let uv = schema::find("Unicode Version").unwrap();
+        let choices: Vec<(Value, &str)> = uv.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
+        assert_eq!(choices, [(Value::Integer(8), "Unicode 8"), (Value::Integer(9), "Unicode 9+")]);
+        assert_eq!(uv.default, Some(Value::Integer(9)));
+        // The rules read them under iTerm2's names.
+        let mut g = Globals::empty(std::path::Path::new("width-rows-test.toml"));
+        let d = crate::emu::Rules::from_globals(&g);
+        assert!(d.zwsp_advances && !d.vs16_all && d.vs16_primary && d.full_width_flags);
+        g.set("Vs16Supported", Value::Boolean(true));
+        g.set("FullWidthFlags", Value::Boolean(false));
+        let r = crate::emu::Rules::from_globals(&g);
+        assert!(r.vs16_all && !r.full_width_flags);
+    }
+
     /// 13o Task 3: the CSI 3 J row.
     #[test]
     fn clear_history_row_follows_iterm2() {

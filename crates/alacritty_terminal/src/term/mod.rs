@@ -270,6 +270,26 @@ impl TermDamageState {
     }
 }
 
+/// Tandem patch: how `Term::input` measures a character (iTerm2's width rules). `width` gives
+/// the cells a character takes (None writes nothing, 0 rides on the previous cell); the rest
+/// are the switches `input` itself needs for U+200B, VS16 and regional indicator pairs.
+#[derive(Clone, Copy, Debug)]
+pub struct WidthRule {
+    pub width: fn(char, &WidthRule) -> Option<usize>,
+    pub ambiguous_wide: bool,
+    pub unicode_version: u8,
+    pub full_width_flags: bool,
+    pub zwsp_advances: bool,
+    pub vs16: bool,
+    pub vs16_primary: bool,
+    pub accepts_vs16: fn(char) -> bool,
+}
+
+/// A regional indicator symbol (U+1F1E6 to U+1F1FF).
+fn is_regional_indicator(c: char) -> bool {
+    ('\u{1F1E6}'..='\u{1F1FF}').contains(&c)
+}
+
 pub struct Term<T> {
     /// Terminal focus controlling the cursor shape.
     pub is_focused: bool,
@@ -370,6 +390,9 @@ pub struct Term<T> {
     /// Tandem patch: whether ED 0 from the home cell in the alternate screen first scrolls the
     /// screen into history (iTerm2's saveScrollBufferWhenClearing).
     pub save_screen_on_clear: bool,
+
+    /// Tandem patch: the width rule `input` follows (None keeps upstream's `c.width()`).
+    pub width_rule: Option<WidthRule>,
 
     /// Tandem patch: characters written to the screen, ever. Tandem compares it between two
     /// points in the output ("has the program drawn anything since").
@@ -515,6 +538,7 @@ impl<T> Term<T> {
             max_url_len: 2_097_152,
             alt_scrollback: true,
             save_screen_on_clear: true,
+            width_rule: None,
             printed: 0,
             scrollback_with_region: true,
             cursor_blink_change: true,
@@ -1249,6 +1273,94 @@ impl<T> Term<T> {
         cursor_cell.extra = extra;
     }
 
+    /// Tandem patch: the column of the cell just before the cursor (the first half when that is
+    /// a wide character), None when the cursor sits at the left edge with nothing pending.
+    fn previous_cell_column(&self) -> Option<Column> {
+        let point = self.grid.cursor.point;
+        let mut column = point.column.0;
+        if !self.grid.cursor.input_needs_wrap {
+            column = column.checked_sub(1)?;
+        }
+        if self.grid[point.line][Column(column)].flags.contains(Flags::WIDE_CHAR_SPACER) {
+            column = column.checked_sub(1)?;
+        }
+        Some(Column(column))
+    }
+
+    /// Tandem patch: with insert mode on, shifts the cells from the cursor right by `width`.
+    fn insert_shift(&mut self, width: usize) {
+        let columns = self.columns();
+        if self.mode.contains(TermMode::INSERT) && self.grid.cursor.point.column + width < columns {
+            let line = self.grid.cursor.point.line;
+            let col = self.grid.cursor.point.column;
+            let row = &mut self.grid[line][..];
+            for col in (col.0..(columns - width)).rev() {
+                row.swap(col + width, col);
+            }
+        }
+    }
+
+    /// Tandem patch: makes the narrow cell before the cursor two cells wide, as writing a wide
+    /// character there would: its spacer is written and the cursor moves one more column. A
+    /// cell in the last column moves to the next row first when line wrap is on, and stays
+    /// narrow when it is off.
+    fn widen_previous(&mut self)
+    where
+        T: EventListener,
+    {
+        let columns = self.columns();
+        if columns < 2 {
+            return;
+        }
+        let Some(base) = self.previous_cell_column() else { return };
+        let line = self.grid.cursor.point.line;
+        let flags = self.grid[line][base].flags;
+        if flags.intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+            return;
+        }
+
+        let in_place = !self.grid.cursor.input_needs_wrap;
+        if !in_place {
+            // The base sits in the last column: it goes to the next row as a wide character.
+            if !self.mode.contains(TermMode::LINE_WRAP) {
+                return;
+            }
+            let old = self.grid[line][base].clone();
+            self.grid.cursor.input_needs_wrap = false;
+            self.grid.cursor.template.flags.insert(Flags::LEADING_WIDE_CHAR_SPACER);
+            self.write_at_cursor(' ');
+            self.grid.cursor.template.flags.remove(Flags::LEADING_WIDE_CHAR_SPACER);
+            self.wrapline();
+            self.insert_shift(2);
+            self.grid.cursor.template.flags.insert(Flags::WIDE_CHAR);
+            self.write_at_cursor(old.c);
+            self.grid.cursor.template.flags.remove(Flags::WIDE_CHAR);
+            let cell = self.grid.cursor_cell();
+            cell.fg = old.fg;
+            cell.bg = old.bg;
+            cell.flags = (old.flags - Flags::WRAPLINE) | Flags::WIDE_CHAR;
+            cell.extra = old.extra.clone();
+        } else {
+            self.insert_shift(1);
+        }
+
+        if !in_place {
+            self.grid.cursor.point.column += 1;
+        }
+        self.grid.cursor.template.flags.insert(Flags::WIDE_CHAR_SPACER);
+        self.write_at_cursor(' ');
+        self.grid.cursor.template.flags.remove(Flags::WIDE_CHAR_SPACER);
+        if in_place {
+            // After the spacer: writing it clears whatever wide character it landed on.
+            self.grid[line][base].flags.insert(Flags::WIDE_CHAR);
+        }
+        if self.grid.cursor.point.column + 1 < columns {
+            self.grid.cursor.point.column += 1;
+        } else {
+            self.grid.cursor.input_needs_wrap = true;
+        }
+    }
+
     #[inline]
     fn damage_cursor(&mut self) {
         // The normal cursor coordinates are always in viewport.
@@ -1293,12 +1405,35 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline(never)]
     fn input(&mut self, c: char) {
         // Number of cells the char will occupy.
-        let width = match c.width() {
+        // Tandem patch: a width rule measures it (iTerm2's tables, U+200B, ambiguous width).
+        let rule = self.width_rule;
+        let width = match rule {
+            Some(rule) => (rule.width)(c, &rule),
+            None => c.width(),
+        };
+        let width = match width {
             Some(width) => width,
             None => return,
         };
         // Tandem patch: one more character written.
         self.printed = self.printed.wrapping_add(1);
+
+        // Tandem patch: the second regional indicator of a flag joins the first one's cell,
+        // and the pair is always two cells (iTerm2 `StringToScreenChars`).
+        if rule.is_some() && is_regional_indicator(c) {
+            if let Some(column) = self.previous_cell_column() {
+                let line = self.grid.cursor.point.line;
+                let cell = &self.grid[line][column];
+                if is_regional_indicator(cell.c) && cell.zerowidth().is_none_or(|z| z.is_empty()) {
+                    let wide = cell.flags.contains(Flags::WIDE_CHAR);
+                    self.grid[line][column].push_zerowidth(c);
+                    if !wide {
+                        self.widen_previous();
+                    }
+                    return;
+                }
+            }
+        }
 
         // Handle zero-width characters.
         if width == 0 {
@@ -1315,6 +1450,22 @@ impl<T: EventListener> Handler for Term<T> {
             }
 
             self.grid[line][column].push_zerowidth(c);
+
+            // Tandem patch: VS16 after a narrow emoji base widens it (iTerm2's Vs16Supported and
+            // Vs16SupportedInPrimaryScreen; the primary-screen rule reads the screen itself).
+            if c == '\u{FE0F}' {
+                if let Some(rule) = rule {
+                    let alt = self.mode.contains(TermMode::ALT_SCREEN);
+                    if rule.vs16 || (rule.vs16_primary && !alt) {
+                        if let Some(column) = self.previous_cell_column() {
+                            let cell = &self.grid[line][column];
+                            if !cell.flags.contains(Flags::WIDE_CHAR) && (rule.accepts_vs16)(cell.c) {
+                                self.widen_previous();
+                            }
+                        }
+                    }
+                }
+            }
             return;
         }
 

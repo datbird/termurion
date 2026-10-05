@@ -3206,7 +3206,7 @@ impl App {
         let id = id.to_string();
         // The session starts with the profile's Unicode version, as its Capabilities reply does.
         let version = crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer()));
-        let term_features = crate::osc1337::capabilities(crate::osc1337::session_features(self.globals.bool("AllowClipboardAccess"), 0, version));
+        let term_features = crate::osc1337::capabilities(crate::osc1337::session_features(self.globals.bool("AllowClipboardAccess"), 0, version, p.bool("Ambiguous Double Width")));
         let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
         let path = self
             .utilities
@@ -6281,7 +6281,7 @@ fn tab_click_count(last: (Instant, Option<usize>, u8), now: Instant, hit: tab_la
 fn screen_follows_profile(screen: &mut crate::screen::Screen, p: &Profile) {
     screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
     screen.allow_title = p.bool("Allow Title Setting");
-    screen.profile_unicode = crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer()));
+    screen.set_profile_unicode(crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer())));
     screen.set_scrollback_with_status_bar(p.bool("Scrollback With Status Bar"));
     screen.set_alternate_scroll_allowed(p.bool("Allow Alternate Mouse Scroll"));
     let (list, prefs) = triggers_ui::triggers_of(p);

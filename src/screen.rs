@@ -58,6 +58,40 @@ pub struct Look {
     /// The profile's Scrollback in Alternate Screen: lines that scroll off the alternate
     /// screen are kept as history.
     pub alt_scrollback: bool,
+    /// The profile's Ambiguous Double Width: East Asian ambiguous characters take two cells.
+    pub ambiguous_wide: bool,
+    /// The profile's "Unicode Version" (8 or 9, `osc1337::profile_unicode`): which width table
+    /// applies until an OSC 1337 UnicodeVersion sets one.
+    pub unicode_version: u8,
+}
+
+/// How `Term::input` measures characters (milestone 13o): iTerm2's width tables for the
+/// session's Unicode version (`version_override` is the one an OSC 1337 UnicodeVersion set,
+/// 0 for the profile's), ambiguous width from the profile, and the Advanced switches in `rules`.
+pub fn width_rule(look: &Look, rules: &crate::emu::Rules, version_override: u8) -> alacritty_terminal::term::WidthRule {
+    alacritty_terminal::term::WidthRule {
+        width: rule_width,
+        ambiguous_wide: look.ambiguous_wide,
+        unicode_version: if version_override == 0 { look.unicode_version } else { version_override },
+        full_width_flags: rules.full_width_flags,
+        zwsp_advances: rules.zwsp_advances,
+        vs16: rules.vs16_all,
+        vs16_primary: rules.vs16_primary,
+        accepts_vs16: |c| crate::widths::accepts_vs16(c as u32),
+    }
+}
+
+/// iTerm2's `StringToScreenChars` width of one character: U+200B by its switch, two cells by
+/// the tables, else one (or zero for marks), whatever the Unicode data in unicode-width says.
+fn rule_width(c: char, rule: &alacritty_terminal::term::WidthRule) -> Option<usize> {
+    use unicode_width::UnicodeWidthChar;
+    if c == '\u{200B}' {
+        return Some(usize::from(rule.zwsp_advances));
+    }
+    if crate::widths::is_double_width(c as u32, rule.ambiguous_wide, rule.unicode_version, rule.full_width_flags) {
+        return Some(2);
+    }
+    c.width().map(|w| w.min(1))
 }
 
 impl Look {
@@ -78,6 +112,8 @@ impl Look {
             csi_u: p.bool("Use libtickit protocol"),
             blink_allowed: p.bool("Blink Allowed"),
             alt_scrollback: p.bool("Scrollback in Alternate Screen"),
+            ambiguous_wide: p.bool("Ambiguous Double Width"),
+            unicode_version: crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer())),
         }
     }
 }
@@ -262,6 +298,8 @@ pub struct Screen {
     /// The profile's "Unicode Version" (`osc1337::profile_unicode`), the session's version
     /// until a UnicodeVersion sequence sets one.
     pub profile_unicode: u8,
+    /// The profile settings last handed to `set_look`; the width rule reads them.
+    look: Look,
     pub key_labels: crate::osc1337::KeyLabels,
     /// SetColors changes, reapplied over a new profile palette.
     pub(crate) color_sets: Vec<(String, crate::osc1337::Color)>,
@@ -452,6 +490,7 @@ impl Screen {
         let mut term = Term::new(config(look), &GridSize { cols, rows }, Listener(tx));
         term.set_cursor_blink_change(look.blink_change);
         term.set_alt_scrollback(look.alt_scrollback);
+        term.width_rule = Some(width_rule(&look, &crate::emu::Rules::default(), 0));
         Self {
             term,
             blink_allowed: look.blink_allowed,
@@ -508,7 +547,8 @@ impl Screen {
             ssh_flags: None,
             exec_failed: false,
             unicode: crate::osc1337::Unicode::default(),
-            profile_unicode: 9,
+            profile_unicode: look.unicode_version,
+            look,
             key_labels: crate::osc1337::KeyLabels::default(),
             color_sets: Vec::new(),
             clipboard_allowed: false,
@@ -731,6 +771,28 @@ impl Screen {
         self.term.set_options(config(look));
         self.term.set_cursor_blink_change(look.blink_change);
         self.blink_allowed = look.blink_allowed;
+        self.profile_unicode = look.unicode_version;
+        self.look = look;
+        self.push_width_rule();
+    }
+
+    /// Hands the `Term` the width rule for the profile's settings, the Advanced rules and the
+    /// session's Unicode version. Runs on every change of any of them; cells already written
+    /// keep their widths, as in iTerm2.
+    pub(crate) fn push_width_rule(&mut self) {
+        self.term.width_rule = Some(width_rule(&self.look, &self.rules, self.unicode.version));
+    }
+
+    /// The profile's Unicode version, from a profile edit (`screen_follows_profile`).
+    pub fn set_profile_unicode(&mut self, version: u8) {
+        self.profile_unicode = version;
+        self.look.unicode_version = version;
+        self.push_width_rule();
+    }
+
+    /// Whether the profile makes ambiguous-width characters two cells.
+    pub fn ambiguous_wide(&self) -> bool {
+        self.look.ambiguous_wide
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
@@ -1335,6 +1397,7 @@ impl Screen {
         self.term.max_url_len = rules.max_url;
         self.term.save_screen_on_clear = rules.save_on_clear;
         self.rules = rules;
+        self.push_width_rule();
     }
 
     pub fn rules(&self) -> crate::emu::Rules {
@@ -3904,5 +3967,212 @@ mod tests {
         let mut s = start(Rules::default());
         s.feed(b"\x1b]133;C\x07\x1b[?1049h\x1b[H\x1b[?1049l");
         assert_eq!(history_texts(s.term().grid()), Vec::<String>::new());
+    }
+
+    // ---- 13o Task 5: character widths ----
+
+    fn width_cell(s: &Screen, line: i32, col: usize) -> Cell {
+        s.term().grid()[alacritty_terminal::index::Point::new(Line(line), Column(col))].clone()
+    }
+
+    /// The column of the first cell holding `ch` on `line`.
+    fn column_of(s: &Screen, line: i32, ch: char) -> Option<usize> {
+        (0..s.term().columns()).find(|&c| width_cell(s, line, c).c == ch)
+    }
+
+    fn wide_look() -> Look {
+        Look::default()
+    }
+
+    #[test]
+    fn widths_follow_iterm2() {
+        use alacritty_terminal::term::cell::Flags;
+        // U+200B advances the cursor by default and takes a cell of its own (R3).
+        let mut s = Screen::new(10, 3);
+        s.feed("a\u{200B}b".as_bytes());
+        assert_eq!(column_of(&s, 0, 'a'), Some(0));
+        assert_eq!(width_cell(&s, 0, 1).c, '\u{200B}');
+        assert_eq!(column_of(&s, 0, 'b'), Some(2));
+        // With the switch off it rides on the previous cell.
+        let mut s = Screen::new(10, 3);
+        s.set_rules(crate::emu::Rules { zwsp_advances: false, ..crate::emu::Rules::default() });
+        s.feed("a\u{200B}b".as_bytes());
+        assert_eq!(column_of(&s, 0, 'b'), Some(1));
+        assert_eq!(width_cell(&s, 0, 0).zerowidth(), Some(&['\u{200B}'][..]));
+        // Ambiguous characters widen only with the profile switch.
+        let mut s = Screen::new(10, 3);
+        s.feed("\u{00A7}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+        let mut s = Screen::with_look(10, 3, Palette::default(), Look { ambiguous_wide: true, ..wide_look() });
+        s.feed("\u{00A7}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        assert!(width_cell(&s, 0, 0).flags.contains(Flags::WIDE_CHAR));
+        assert!(width_cell(&s, 0, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
+        // Emoji are two cells from Unicode 9, one before.
+        let mut s = Screen::with_look(10, 3, Palette::default(), Look { unicode_version: 8, ..wide_look() });
+        s.feed("\u{1F600}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+        let mut s = Screen::with_look(10, 3, Palette::default(), Look { unicode_version: 9, ..wide_look() });
+        s.feed("\u{1F600}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        // A CJK character is two cells in both.
+        let mut s = Screen::with_look(10, 3, Palette::default(), Look { unicode_version: 8, ..wide_look() });
+        s.feed("\u{4E00}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        // OSC 1337 UnicodeVersion changes the table, and a pop restores the profile's.
+        let mut s = Screen::new(10, 3);
+        s.feed(b"\x1b]1337;UnicodeVersion=8\x07");
+        s.feed("\u{1F600}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+        s.feed(b"\r\n\x1b]1337;UnicodeVersion=0\x07");
+        s.feed("\u{1F600}y".as_bytes());
+        assert_eq!(column_of(&s, 1, 'y'), Some(2));
+        // A later profile edit re-sends the rule.
+        let mut s = Screen::new(10, 3);
+        s.set_look(Look { ambiguous_wide: true, ..wide_look() });
+        s.feed("\u{00A7}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        let mut s = Screen::new(10, 3);
+        s.set_profile_unicode(8);
+        s.feed("\u{1F600}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+    }
+
+    #[test]
+    fn vs16_widens_in_place() {
+        use alacritty_terminal::term::cell::Flags;
+        let heart = "\u{2764}\u{FE0F}";
+        // The primary screen widens by default (R3).
+        let mut s = Screen::new(10, 3);
+        s.feed(format!("{heart}x").as_bytes());
+        assert!(width_cell(&s, 0, 0).flags.contains(Flags::WIDE_CHAR));
+        assert!(width_cell(&s, 0, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        assert_eq!(width_cell(&s, 0, 0).zerowidth(), Some(&['\u{FE0F}'][..]), "the mark stays");
+        // The alternate screen leaves it narrow, unless vs16_all.
+        let mut s = Screen::new(10, 3);
+        s.feed(format!("\x1b[?1049h{heart}x").as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+        let mut s = Screen::new(10, 3);
+        s.set_rules(crate::emu::Rules { vs16_all: true, ..crate::emu::Rules::default() });
+        s.feed(format!("\x1b[?1049h{heart}x").as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        // The primary switch off: narrow there too.
+        let mut s = Screen::new(10, 3);
+        s.set_rules(crate::emu::Rules { vs16_primary: false, ..crate::emu::Rules::default() });
+        s.feed(format!("{heart}x").as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+        // A base that does not take VS16 stays narrow.
+        let mut s = Screen::new(10, 3);
+        s.feed("A\u{FE0F}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+        // In the last column the widening wraps the heart as a wide character written there would.
+        let mut s = Screen::new(10, 3);
+        s.feed(format!("123456789{heart}x").as_bytes());
+        assert!(width_cell(&s, 0, 9).flags.contains(Flags::LEADING_WIDE_CHAR_SPACER));
+        assert_eq!(width_cell(&s, 1, 0).c, '\u{2764}');
+        assert!(width_cell(&s, 1, 0).flags.contains(Flags::WIDE_CHAR));
+        assert!(width_cell(&s, 1, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
+        assert_eq!(column_of(&s, 1, 'x'), Some(2));
+        assert_eq!(width_cell(&s, 1, 0).zerowidth(), Some(&['\u{FE0F}'][..]), "the mark moved with it");
+        // With line wrap off it stays narrow.
+        let mut s = Screen::new(10, 3);
+        s.feed(format!("\x1b[?7l123456789{heart}").as_bytes());
+        assert!(!width_cell(&s, 0, 9).flags.contains(Flags::WIDE_CHAR));
+        assert_eq!(width_cell(&s, 0, 9).c, '\u{2764}');
+        // A base that is already wide is left as it is.
+        let mut s = Screen::new(10, 3);
+        s.feed(format!("{heart}\u{FE0F}x").as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        // Insert mode shifts the text to the right of the widened cell.
+        let mut s = Screen::new(10, 3);
+        s.feed(format!("Q\x1b[1G\x1b[4h{heart}").as_bytes());
+        assert!(width_cell(&s, 0, 0).flags.contains(Flags::WIDE_CHAR));
+        assert!(width_cell(&s, 0, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
+        assert_eq!(width_cell(&s, 0, 2).c, 'Q');
+        // The first half of a wide character to its right loses its spacer.
+        let mut s = Screen::new(10, 3);
+        s.feed("a\u{4E00}\x1b[1G".as_bytes());
+        s.feed(heart.as_bytes());
+        assert!(width_cell(&s, 0, 0).flags.contains(Flags::WIDE_CHAR));
+        assert!(width_cell(&s, 0, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
+        assert!(!width_cell(&s, 0, 1).flags.contains(Flags::WIDE_CHAR));
+        assert!(!width_cell(&s, 0, 2).flags.contains(Flags::WIDE_CHAR_SPACER), "no stray spacer");
+        // At the left edge with nothing before it, nothing widens.
+        let mut s = Screen::new(10, 3);
+        s.feed("\u{FE0F}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(0));
+    }
+
+    #[test]
+    fn flags_stay_two_cells() {
+        use alacritty_terminal::term::cell::Flags;
+        let us = "\u{1F1FA}\u{1F1F8}";
+        let off = crate::emu::Rules { full_width_flags: false, ..crate::emu::Rules::default() };
+        // A pair is two cells with the switch on and off, and one cluster.
+        for rules in [crate::emu::Rules::default(), off] {
+            let mut s = Screen::new(10, 3);
+            s.set_rules(rules);
+            s.feed(format!("{us}x").as_bytes());
+            assert_eq!(column_of(&s, 0, 'x'), Some(2), "{rules:?}");
+            assert!(width_cell(&s, 0, 0).flags.contains(Flags::WIDE_CHAR));
+            assert!(width_cell(&s, 0, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
+            assert_eq!(width_cell(&s, 0, 0).zerowidth(), Some(&['\u{1F1F8}'][..]));
+        }
+        // A lone indicator is two cells with the switch on (R3), one with it off.
+        let mut s = Screen::new(10, 3);
+        s.feed("\u{1F1FA}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        let mut s = Screen::new(10, 3);
+        s.set_rules(off);
+        s.feed("\u{1F1FA}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+        // With the switch off a pair starting in the last column wraps as a wide character.
+        let mut s = Screen::new(10, 3);
+        s.set_rules(off);
+        s.feed(format!("123456789{us}x").as_bytes());
+        assert!(width_cell(&s, 0, 9).flags.contains(Flags::LEADING_WIDE_CHAR_SPACER));
+        assert_eq!(width_cell(&s, 1, 0).c, '\u{1F1FA}');
+        assert!(width_cell(&s, 1, 0).flags.contains(Flags::WIDE_CHAR));
+        assert_eq!(column_of(&s, 1, 'x'), Some(2));
+        // With it on the first indicator wraps itself and the second joins.
+        let mut s = Screen::new(10, 3);
+        s.feed(format!("123456789{us}x").as_bytes());
+        assert_eq!(width_cell(&s, 1, 0).c, '\u{1F1FA}');
+        assert_eq!(column_of(&s, 1, 'x'), Some(2));
+        // A third indicator starts a new cell.
+        let mut s = Screen::new(10, 3);
+        s.feed("\u{1F1FA}\u{1F1F8}\u{1F1E6}x".as_bytes());
+        assert_eq!(width_cell(&s, 0, 2).c, '\u{1F1E6}');
+        assert_eq!(column_of(&s, 0, 'x'), Some(4));
+    }
+
+    #[test]
+    fn unicode_version_defaults_to_9() {
+        assert_eq!(Look::default().unicode_version, 9);
+        assert_eq!(Look::from_profile(&crate::profile::Profile::stock()).unicode_version, 9);
+        let mut s = Screen::new(10, 3);
+        s.feed("\u{1F600}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        let mut p = crate::profile::Profile::stock();
+        p.values.insert("Unicode Version".into(), toml::Value::Integer(8));
+        let look = Look::from_profile(&p);
+        assert_eq!(look.unicode_version, 8);
+        let mut s = Screen::with_look(10, 3, Palette::default(), look);
+        s.feed("\u{1F600}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+        let row = crate::schema::find("Unicode Version").unwrap();
+        assert_eq!(row.default, Some(toml::Value::Integer(9)));
+    }
+
+    #[test]
+    fn capabilities_report_ambiguous_width() {
+        let mut s = Screen::with_look(10, 3, Palette::default(), Look { ambiguous_wide: true, ..wide_look() });
+        s.clipboard_allowed = true;
+        let reply = String::from_utf8(s.feed(b"\x1b]1337;Capabilities\x07")).unwrap();
+        assert!(reply.contains("Aw") && reply.contains("Uw9"), "{reply}");
+        let mut s = Screen::new(10, 3);
+        let reply = String::from_utf8(s.feed(b"\x1b]1337;Capabilities\x07")).unwrap();
+        assert!(!reply.contains("Aw") && reply.contains("Uw9"), "{reply}");
     }
 }

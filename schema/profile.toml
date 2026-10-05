@@ -1480,9 +1480,9 @@ tab = "Text"
 section = "Text"
 label = "Use Unicode version 9+ widths"
 type = "enum"
-default = 8
-choices = [ { value = 8, label = "Unicode 8 (legacy emoji widths)" }, { value = 9, label = "Unicode 9+ (narrow emoji)" } ]
-help = "Toggles the character-width table between Unicode 8 and Unicode 9+, which narrowed most emoji from 2 cells to 1. UI is a single checkbox."
+default = 9
+choices = [ { value = 8, label = "Unicode 8" }, { value = 9, label = "Unicode 9+" } ]
+help = "Toggles the character-width table between Unicode 8 and Unicode 9+, which made most emoji two cells wide. UI is a single checkbox."
 light_dark = false
 macos_only = false
 
