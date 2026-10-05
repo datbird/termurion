@@ -18,11 +18,14 @@ const MAX_FILE: u64 = font_table::MAX_TEXT as u64;
 pub const EXPLANATION: &str = "Special Exceptions override fonts for specific Unicode ranges or scripts.";
 pub const TITLE: &str = "Manage Special Exceptions";
 pub const SHEET_TITLE: &str = "Edit Special Exception";
+pub const UNREADABLE_NOTICE: &str = "The stored Special Font Config could not be read; it is kept unchanged until you edit it.";
 pub const ADD_PRESET: &str = "Add Preset\u{2026}";
 pub const INSTALL_NERD: &str = "Install Nerd Font Bundle\u{2026}";
 
 pub enum Outcome {
     Ok(Config),
+    /// OK on a stored value the window could not read, with nothing edited: the stored text stays.
+    Keep,
     Cancel,
 }
 
@@ -127,12 +130,36 @@ pub struct Window {
     sheet: Option<Sheet>,
     /// A problem to show (the heading is `font_table::IMPORT_HEADING`).
     message: Option<String>,
+    /// The stored value could not be read (the table shown is empty, not the stored one).
+    unreadable: bool,
+    /// An explicit edit (add, edit, delete, import, preset) was made.
+    edited: bool,
 }
 
 impl Window {
     /// The window for `config`; `fonts` is the installed families, listed once here.
     pub fn open(config: Config, fonts: Vec<String>) -> Window {
-        Window { config, fonts: font_list(fonts), selected: None, sheet: None, message: None }
+        Window { config, fonts: font_list(fonts), selected: None, sheet: None, message: None, unreadable: false, edited: false }
+    }
+
+    /// The window for a stored value that does not parse: an empty table and a notice, and the
+    /// stored text is kept unless the person edits.
+    pub fn open_unreadable(fonts: Vec<String>) -> Window {
+        Window { unreadable: true, ..Window::open(Config::with_entries(Vec::new()), fonts) }
+    }
+
+    /// The notice shown over an unreadable stored value, until the person edits.
+    pub fn notice(&self) -> Option<&'static str> {
+        (self.unreadable && !self.edited).then_some(UNREADABLE_NOTICE)
+    }
+
+    /// What OK does: keeps an unreadable stored value that was not edited, else hands back the table.
+    pub fn finish(&self) -> Outcome {
+        if self.unreadable && !self.edited {
+            Outcome::Keep
+        } else {
+            Outcome::Ok(self.config.clone())
+        }
     }
 
     pub fn config(&self) -> &Config {
@@ -196,6 +223,7 @@ impl Window {
         self.config = Config::with_entries(entries);
         self.selected = None;
         self.sheet = None;
+        self.edited = true;
         true
     }
 
@@ -207,6 +235,7 @@ impl Window {
     pub fn delete_selected(&mut self) {
         if let Some(row) = self.selected.filter(|r| *r < self.config.entries.len()) {
             self.config.entries.remove(row);
+            self.edited = true;
         }
         self.selected = None;
     }
@@ -220,6 +249,7 @@ impl Window {
                 self.config = config;
                 self.selected = None;
                 self.message = None;
+                self.edited = true;
             }
             Err(e) => self.message = Some(e),
         }
@@ -257,6 +287,9 @@ impl Window {
         egui::CentralPanel::default().show(ui, |ui| {
             ui.add_enabled_ui(!modal, |ui| {
                 ui.label(egui::RichText::new(EXPLANATION).small());
+                if let Some(notice) = self.notice() {
+                    ui.colored_label(ui.visuals().warn_fg_color, notice);
+                }
                 ui.add_space(4.0);
                 let room = (ui.available_height() - 84.0).max(80.0);
                 let mut edit = false;
@@ -323,7 +356,7 @@ impl Window {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     if ui.button("OK").clicked() {
-                        out = Some(Outcome::Ok(self.config.clone()));
+                        out = Some(self.finish());
                     }
                     if ui.button("Cancel").clicked() {
                         out = Some(Outcome::Cancel);
@@ -587,6 +620,30 @@ mod tests {
         w.delete_selected();
         assert_eq!(w.config().entries.len(), 2);
         assert_eq!(Config::parse(&w.config().string()).map(|c| c.entries.len()), Some(2));
+    }
+
+    /// 13n final residual: a stored value the editor cannot read opens with a notice, and OK
+    /// with no edit keeps it; an explicit edit replaces it.
+    #[test]
+    fn an_unreadable_stored_value_is_kept_until_edited() {
+        let mut w = Window::open_unreadable(fonts());
+        assert_eq!(w.notice(), Some(UNREADABLE_NOTICE));
+        assert!(matches!(w.finish(), Outcome::Keep), "OK with no edit keeps the stored text");
+        // A refused sheet is not an edit.
+        w.begin_add();
+        assert!(!w.accept_sheet());
+        assert!(matches!(w.finish(), Outcome::Keep));
+        // An accepted add replaces the stored value.
+        typed(&mut w, "U+4e00", "U+9fff", "Meiryo");
+        assert!(w.accept_sheet());
+        assert!(w.notice().is_none());
+        assert!(matches!(w.finish(), Outcome::Ok(c) if c.entries.len() == 1));
+        // An import also counts as an edit.
+        let mut w = Window::open_unreadable(fonts());
+        w.import_text(r#"{"entries":[{"start":57344,"count":16,"fontName":"Consolas"}],"version":2}"#);
+        assert!(matches!(w.finish(), Outcome::Ok(c) if c.entries.len() == 1));
+        // A readable (or empty) stored table always hands back its table.
+        assert!(matches!(Window::open(Config::with_entries(Vec::new()), fonts()).finish(), Outcome::Ok(_)));
     }
 
     #[test]

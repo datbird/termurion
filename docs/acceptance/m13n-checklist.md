@@ -109,3 +109,4 @@ and 200% display scale. Mark each line pass or fail.
 | 53 | Restore a window whose pane had a scrollbar and timestamps on: the shell is not resized right after attaching (no second prompt redraw). | |
 | 54 | Reduce Flicker on, zoom the pane while a TUI hides the cursor: no flash of old-size text. | |
 | 55 | U+E0A1 (LN) has hard edges (no gray pixels); U+E0A0 keeps its smooth edges. | |
+| 56 | With a malformed stored Special Font Config (set through the API or a bad import), the window opens empty with the notice "The stored Special Font Config could not be read; it is kept unchanged until you edit it"; OK with no edit leaves the stored value unchanged; one add replaces it. | |

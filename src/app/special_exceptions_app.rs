@@ -36,6 +36,24 @@ pub fn store_config(store: &mut Store, guid: &str, config: &Config) -> bool {
     true
 }
 
+/// The window for a profile's stored value: an unreadable non-empty text opens with a notice and
+/// is kept until an edit.
+pub fn window_for(stored: &str, fonts: Vec<String>) -> Window {
+    match Config::parse(stored) {
+        Some(config) => Window::open(config, fonts),
+        None if stored.trim().is_empty() => Window::open(Config::with_entries(Vec::new()), fonts),
+        None => Window::open_unreadable(fonts),
+    }
+}
+
+/// Applies the window's OK: false when nothing is written (a kept value, or the profile is gone).
+pub fn apply_outcome(store: &mut Store, guid: &str, outcome: &Outcome) -> bool {
+    match outcome {
+        Outcome::Ok(config) => store_config(store, guid, config),
+        _ => false,
+    }
+}
+
 impl App {
     /// The Text tab's "Manage Special Exceptions": opens the window on profile `guid`'s table
     /// (the session's own copy when it is a session's), or brings the open one forward.
@@ -44,13 +62,12 @@ impl App {
             return o.host.focus();
         }
         let Some(profile) = self.store.get(&guid) else { return };
-        // A table that does not parse (a hand-edited or API-set value) opens as an empty one.
-        let config = Config::parse(&profile.string(KEY)).unwrap_or_else(|| Config::with_entries(Vec::new()));
+        let stored = profile.string(KEY);
         let Some(g) = self.gpu.as_ref() else { return };
         // The installed fonts are listed once, here.
         let fonts = g.renderer.installed_families();
         match EguiHost::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, crate::special_exceptions_ui::TITLE, 560.0, 440.0) {
-            Ok(host) => self.special_exceptions = Some(Open { host, win: Window::open(config, fonts), guid }),
+            Ok(host) => self.special_exceptions = Some(Open { host, win: window_for(&stored, fonts), guid }),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
     }
@@ -75,9 +92,9 @@ impl App {
         match outcome {
             None => {}
             Some(Outcome::Cancel) => self.special_exceptions = None,
-            Some(Outcome::Ok(config)) => {
+            Some(outcome) => {
                 if let Some(o) = self.special_exceptions.take() {
-                    if store_config(&mut self.store, &o.guid, &config) {
+                    if apply_outcome(&mut self.store, &o.guid, &outcome) {
                         self.apply_edit(Edit::Changed(o.guid));
                     }
                 }
@@ -116,6 +133,33 @@ mod tests {
     }
 
     /// The Text tab's button opens the window, and the window's OK reaches the profile.
+    /// 13n final residual: OK on an unreadable stored value with no edit leaves it byte for byte.
+    #[test]
+    fn ok_without_an_edit_leaves_an_unreadable_value_untouched() {
+        let mut store = Store::fresh(std::path::Path::new("none.toml"));
+        let p = Profile::new("Work");
+        let guid = p.guid();
+        store.add(p);
+        let broken = r#"{"entries":[{"start":-5,"count":16,"fontName":"X"}],"version":2}"#;
+        store.get_mut(&guid).unwrap().set(KEY, toml::Value::String(broken.into()));
+        let mut w = window_for(&store.get(&guid).unwrap().string(KEY), vec!["Meiryo".into()]);
+        assert!(w.notice().is_some());
+        assert!(!apply_outcome(&mut store, &guid, &w.finish()));
+        assert_eq!(store.get(&guid).unwrap().string(KEY), broken, "kept byte for byte");
+        // An edit replaces it.
+        w.begin_add();
+        let s = w.sheet_mut().unwrap();
+        s.start = "U+4e00".into();
+        s.end = "U+9fff".into();
+        s.font = "Meiryo".into();
+        assert!(w.accept_sheet());
+        assert!(apply_outcome(&mut store, &guid, &w.finish()));
+        assert_ne!(store.get(&guid).unwrap().string(KEY), broken);
+        assert_eq!(Config::parse(&store.get(&guid).unwrap().string(KEY)).map(|c| c.entries.len()), Some(1));
+        // An empty stored value is not unreadable.
+        assert!(window_for("", Vec::new()).notice().is_none());
+    }
+
     #[test]
     fn the_text_tab_button_opens_the_window() {
         let settings = include_str!("../settings_ui.rs");
