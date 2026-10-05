@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 316 | 261 | 43 | 12 |
-| `02-global-settings.md` | 820 | 565 | 52 | 203 |
-| `03-features-and-menus.md` | 647 | 563 | 43 | 41 |
-| Total | 1,783 | 1,389 | 138 | 256 |
+| `01-profile-settings.md` | 316 | 269 | 36 | 11 |
+| `02-global-settings.md` | 820 | 579 | 51 | 190 |
+| `03-features-and-menus.md` | 647 | 566 | 43 | 38 |
+| Total | 1,783 | 1,414 | 130 | 239 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -658,6 +658,35 @@ runs at every non-Settings ingress for the twelve path-valued profile keys (arra
 doubles every PowerShell quote character. Deferred: bash, zsh and fish injection in WSL or MSYS2 (milestone 14). Nothing of 13p was checked on
 screen during the build. Every kept quirk is listed in `docs/acceptance/m13p-checklist.md` and ruled on in
 `docs/superpowers/rulings/m13p-rulings.txt`.
+On the m13q branch, main (13p) merged into 13q's Tasks 1-6 (2026-10-05): 13q changes no parity row before its docs task, so
+the union is 13p's (01: 316 rows, 261 have, 43 partial, 12 missing; 02: 820, 565, 52, 203; 03: 647, 563, 43, 41; 1,783 rows,
+1,389 have, 138 partial, 256 missing). Seams wired at the merge: a restart starts in the pane's own start folder (P13), drops the
+old start's late Initial Text and types the new shell's own once (P14; an SSH profile still waits for its login), reads the
+session start values again (idle time), and clears the dead program's progress bar; an exited shell leaves the job watcher when
+its exit is first seen (no dead handle in the wait set); Prevent Sleep stops counting an exited shell.
+Milestone 13q built session end, logging and archives (01: 8 rows to have, 7 from partial and 1 from missing: Close or restart session on end,
+Warn about short-lived sessions, Automatically Log, Log Directory, Log Filename Format, Logging style, Archive On Closure, Archive Directory;
+02: 15 rows, 14 to have and 1 to partial: suppressRestartAnnouncement, autoLogFormat, autologAppends, logTimestampFormat,
+logTimestampsWithPlainText, sessionEndMessageText, sessionEndMessageDividerCharacter, sessionRestartedMessageText, sessionFinishedMessageText,
+shortLivedSessionDuration and killSessionsOnLogout from missing, tmuxWindowsShouldCloseAfterDetach and smartLoggingWithAutoComposer from
+partial, multiserver from missing to have and useNewContentFormat from missing to partial (both stored and shown, inert, R5); 03: Save Archive of
+Current Session, Restore Archive and Log to File from missing to have; 1,783 rows, 1,414 have, 130 partial, 239 missing). A pane whose
+shell ends now follows "After a session ends" (R3: it was always closed): No Action keeps the pane with a blue divider and a restart offer,
+Close closes (with a warning under three seconds), Restart restarts in the same pane with its history kept, git windows stay with "Finished", and a
+detached tmux window asks whether to close. Sessions log in four styles (raw, plain text, HTML, asciinema), automatically or from the Session
+menu, and archive on closure or by Shell > Archives; Restore Archive opens a saved window read-only and Restart makes it live. Security fixes
+found by the reviews: a pane never ends a program its shell left running without asking (close, every restart route including the API and AI tool),
+log names and folders cannot be steered by a program's title, a downloaded archive asks before it opens and is bounded (512 MB, 64 windows,
+10,000,000 lines a pane), and logs and archives are written out before Tandem exits (and at logoff), a Restart session answer is only for the shell it was asked about, an archived pane never revives as a live shell at launch, and every automatic log name ends in .log. Deferred: the minors listed in
+`docs/superpowers/rulings/m13q-rulings.txt`. Nothing of 13q was checked on screen during the build. Every kept quirk is listed in
+`docs/acceptance/m13q-checklist.md` and ruled on in that file.
+On the m13r branch, main (13q) merged into 13r's Tasks 1-6 (2026-10-05): 13r changes no parity row before its docs task, so
+the union is 13q's (01: 316 rows, 269 have, 36 partial, 11 missing; 02: 820, 579, 51, 190; 03: 647, 566, 43, 38; 1,783 rows,
+1,414 have, 130 partial, 239 missing). Seams wired at the merge: a Run Command in Window pane is a single-use window that
+follows the default profile's "After a session ends" and is never restarted; every restart route refuses a pane with nothing
+of its own to start before it asks anything (no "Restart session?" whose OK does nothing); Send Text and Run Coprocess on an
+ended pane say "The session has ended."; the log and archive network check is the one network rule; 13q added no command
+line or open, so the one cmd.exe builder and guard_open still cover every route.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's

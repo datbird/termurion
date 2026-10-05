@@ -431,7 +431,8 @@ impl App {
     /// Run Command in Window: a new single-use window of the default profile runs `command`
     /// (`IC:2139-2200`), in the pane's folder when that is a local folder. The pane is
     /// registered as single-use so a session end or close clears its record; it is not
-    /// short-lived: its end follows the profile (P20, the end action lands with 13q).
+    /// short-lived, its end follows the default profile's end action and no restart route
+    /// restarts it (P20, `run_window_single_use`).
     fn run_in_new_window(&mut self, owner: PaneId, command: String, cwd: Option<&std::path::Path>, event_loop: &ActiveEventLoop) {
         let probe = self.path_probe();
         let dir = cwd
@@ -439,7 +440,8 @@ impl App {
             .filter(|d| d.as_bytes().get(1) == Some(&b':') && crate::netpath::may_probe(d, &probe) && std::path::Path::new(d).is_dir());
         match self.open_single_use_window(event_loop, command, dir) {
             Some(new) => {
-                self.single_use.insert(new, super::git_ui::SingleUse { owner, short_lived: false });
+                let end = self.store.default_profile().int(crate::session_end::END_ACTION_KEY);
+                self.single_use.insert(new, super::git_ui::run_window_single_use(owner, end));
             }
             None => self.banners.set("action", "Tandem could not open a window for this command."),
         }

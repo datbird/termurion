@@ -532,6 +532,11 @@ impl KeyState {
 /// The tick behind `Screen::tab_status_gen`.
 static TAB_STATUS_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// What a program's end (and a restart's end message) writes to the parser before the cursor is
+/// put back: SGR, charset, an open hyperlink, the scroll region, origin mode, wrap, insert mode,
+/// and a synchronized update or color scheme reports the program left on (13q B9).
+pub(crate) const END_RESET: &str = "\x1b[0m\x1b(B\x0f\x1b]8;;\x1b\\\x1b[r\x1b[?6l\x1b[?7h\x1b[4l\x1b[?2026l\x1b[?2031l";
+
 impl Screen {
     /// Applies OSC 21337 or Set Tab Status fields (`tabstatus::Status::apply`); a change moves
     /// `tab_status_gen`. True when something changed.
@@ -885,6 +890,15 @@ impl Screen {
         self.profile_unicode = version;
         self.look.unicode_version = version;
         self.push_width_rule();
+    }
+
+    /// The cells `text` takes under this screen's width rule (the profile's Ambiguous Double
+    /// Width, Unicode version and the Advanced switches), as the grid draws it.
+    pub(crate) fn text_width(&self, text: &str) -> usize {
+        match &self.term.width_rule {
+            Some(rule) => text.chars().map(|c| (rule.width)(c, rule).unwrap_or(0)).sum(),
+            None => unicode_width::UnicodeWidthStr::width(text),
+        }
     }
 
     /// Whether the profile makes ambiguous-width characters two cells.
@@ -2152,14 +2166,66 @@ impl Screen {
         const DECSTR: &[u8] = b"\x1b[?25h\x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\
             \x1b[?2004l\x1b[?1004l\x1b[?1007l\x1b[4l\x1b[0m\x1b[r\x1b[?6l\x1b[?7h\x1b[?2048l\x1b(B";
         // Straight to the parser: Literal Controls would print the sequence instead.
+        // DECSTBM (the `r`) homes the cursor; a soft reset leaves it where it was.
+        let c = self.term.grid().cursor.point;
         let reply = self.feed_raw(DECSTR);
         self.replies.extend(reply);
+        let _ = self.feed_raw(format!("\x1b[{};{}H", c.line.0.max(0) + 1, c.column.0 + 1).as_bytes());
         // The ESC in it cancelled any sequence the program left open; the scanner follows (it
         // reads the program's bytes only, so it would still be inside that sequence).
+        self.restart_scanner();
+        // Key reporting goes back to the profile's: no program flags, no menu choices.
+        self.term.clear_keyboard_modes();
+        self.keys = KeyState { literal: self.keys.literal, ..KeyState::new(self.keys.profile_csi_u) };
+    }
+
+    /// The scanner leaves a string the program left open (an OSC or DCS cut short by its end).
+    pub(crate) fn restart_scanner(&mut self) {
         if self.osc.pending.is_some() {
             self.osc.restart();
         }
-        // Key reporting goes back to the profile's: no program flags, no menu choices.
+    }
+
+    /// The program on this screen has ended (an exit, before a restart): everything bound to it
+    /// goes (held output, an inline file's question, captures, transfers in progress, drop
+    /// registrations, status, host and user the shell reported, an open command mark) and the
+    /// terminal leaves what it left on (13q B3, B9): the alternate screen, SGR, charset, an
+    /// open hyperlink, the scroll region, origin mode, wrap, insert mode, key reporting, and a
+    /// string the scanner was inside. The text, scrollback, marks and images stay.
+    pub fn program_ended(&mut self) {
+        self.held_output.clear();
+        self.inline_hold = None;
+        self.multipart = None;
+        self.capture = None;
+        self.capture_hold.clear();
+        self.print_capture = None;
+        self.copy = Default::default();
+        self.dnd = Default::default();
+        self.kitty.pending = None;
+        self.tab_status = Default::default();
+        // A dead program's OSC 9;4 bar goes with it (13p seam S8, P21), through the one setter so
+        // the window redraws.
+        self.set_progress(crate::progress::Progress::Stopped);
+        self.unicode = Default::default();
+        self.exec_failed = false;
+        self.color_sets.clear();
+        self.key_labels = Default::default();
+        self.shell.host = None;
+        self.shell.user = None;
+        self.shell.host_local = None;
+        self.marks.program_ended();
+        self.restart_scanner();
+        // The reset reaches the parser itself (the answers to it are not wanted).
+        let _ = self.feed_raw(b"\x1b[?1049l");
+        let (row, col) = {
+            let c = self.term.grid().cursor.point;
+            (c.line.0.max(0) + 1, c.column.0 + 1)
+        };
+        // DECSTBM homes the cursor, so it is put back: the text stays where it was.
+        let _ = self.feed_raw(format!("{END_RESET}\x1b[{row};{col}H").as_bytes());
+        // The parser has no mode 2031; the scanner's own flag goes off here.
+        self.set_color_scheme_reports(false);
+        self.restart_scanner();
         self.term.clear_keyboard_modes();
         self.keys = KeyState { literal: self.keys.literal, ..KeyState::new(self.keys.profile_csi_u) };
     }
@@ -3211,6 +3277,22 @@ mod tests {
         s.shell.user = None;
         s.restore_ssh_saved(&saved);
         assert_eq!((s.shell.cwd.as_deref(), s.shell.host.as_deref(), s.shell.user.as_deref()), (Some("/home/me"), Some("laptop"), Some("me")));
+    }
+
+    #[test]
+    fn soft_reset_and_program_ended_leave_the_cursor() {
+        // DECSTBM inside the reset homes the cursor; a restart must write under the old text.
+        for ended in [false, true] {
+            let mut s = Screen::new(20, 5);
+            s.feed(b"one\r\ntwo\r\n");
+            let before = s.term().grid().cursor.point;
+            if ended {
+                s.program_ended();
+            } else {
+                s.soft_reset();
+            }
+            assert_eq!(s.term().grid().cursor.point, before, "ended={ended}");
+        }
     }
 
     #[test]
@@ -4962,5 +5044,46 @@ mod tests {
         // And the next batch starts clean: no leaked half message.
         s.feed(b"\x1b]72;t=A\x1b\\");
         assert!(!s.dnd.accepting());
+    }
+
+    /// 13p S8 x 13q P4: the dead program's OSC 9;4 bar goes when it ends (and so before a
+    /// restart's relaunch), and the window is asked to redraw.
+    #[test]
+    fn program_ended_clears_the_progress_bar() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"\x1b]9;4;1;40\x07");
+        assert!(s.progress.visible());
+        let _ = s.take_requests();
+        s.program_ended();
+        assert!(!s.progress.visible());
+        assert!(s.take_requests().iter().any(|r| matches!(r, Request::Progress(false))));
+    }
+
+    /// A program that ended mid synchronized update, or with color reports on, leaves neither
+    /// behind, through either reset (one string, item 20).
+    #[test]
+    fn the_end_reset_clears_sync_and_color_reports() {
+        for ended in [true, false] {
+            let mut s = Screen::new(20, 4);
+            s.feed(b"\x1b[?2031h\x1b[?2026hheld");
+            assert!(s.sync_deadline().is_some() && s.color_reports, "set up");
+            if ended {
+                s.program_ended();
+            } else {
+                s.append_end_message("Session Ended", "-");
+            }
+            assert_eq!(s.sync_deadline(), None, "ended={ended}: the synchronized update is over");
+            assert!(!s.color_reports, "ended={ended}: color reports are off");
+        }
+    }
+
+    /// A soft reset leaves a string the program left open, as the scanner restart does.
+    #[test]
+    fn a_soft_reset_restarts_the_scanner() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"\x1b]0;half a title");
+        s.soft_reset();
+        s.feed(b"ok");
+        assert!(s.all_text().contains("ok"), "{:?}", s.all_text());
     }
 }

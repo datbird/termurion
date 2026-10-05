@@ -127,6 +127,18 @@ impl TmuxIo {
     }
 }
 
+// Test-only: how many times this thread reached a pty (a write, a resize or a clear), so a
+// test can prove an ended pane touches its dead console never (13q B8).
+#[cfg(test)]
+thread_local! {
+    pub static PTY_TOUCHES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn touched() {
+    PTY_TOUCHES.with(|c| c.set(c.get() + 1));
+}
+
 impl Io {
     pub fn try_read(&self) -> Read {
         match self {
@@ -140,6 +152,8 @@ impl Io {
     }
 
     pub fn write(&self, bytes: &[u8]) -> Result<(), String> {
+        #[cfg(test)]
+        touched();
         match self {
             Io::Local(p) => p.write(bytes),
             Io::Hosted(p) => p.write(bytes),
@@ -151,6 +165,8 @@ impl Io {
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
+        #[cfg(test)]
+        touched();
         match self {
             Io::Local(p) => p.resize(cols, rows),
             Io::Hosted(p) => p.resize(cols, rows),
@@ -160,6 +176,8 @@ impl Io {
     }
 
     pub fn clear(&self) -> Result<(), String> {
+        #[cfg(test)]
+        touched();
         match self {
             Io::Local(p) => p.clear(),
             Io::Hosted(p) => p.clear(),
@@ -203,6 +221,11 @@ impl Io {
         }
     }
 }
+
+/// How long after an exit its end waits for the output to drain (13q P6).
+const END_DRAIN: Duration = Duration::from_millis(50);
+/// The most the end waits beyond that for a stream that will not stop.
+const END_DRAIN_CAP: Duration = Duration::from_millis(200);
 
 /// The most `%notif search` texts a pane holds between two passes of the app.
 const SEARCH_QUEUE_MAX: usize = 1024;
@@ -353,6 +376,51 @@ pub struct Pane {
     pub ssh: crate::ssh_session::PaneSsh,
     /// The cursor's motion between frames (13k): where it was, and when it moved.
     pub motion: crate::cursor_anim::Motion,
+    /// The session ended and its end was handled (the divider is drawn, the end action ran): the
+    /// pane stays, as iTerm2's does, and takes no input (13q R3, `PS:5214`). The one flag for
+    /// every kept-open pane, a REPL's included.
+    pub ended: bool,
+    /// When the session was created (`_creationDate`): the clock of the short-lived warning, the
+    /// log file name's `creationTimeString`; a restart keeps it.
+    pub created: std::time::SystemTime,
+    pub created_at: Instant,
+    /// A random number for the log file name's `autoLogId` (`PS:885-897`); a restart keeps it.
+    pub auto_log_id: u32,
+    /// A REPL window or a dependency run: it stays when its program ends, and is never offered a
+    /// restart (iTerm2 gives them no CloseOnTermination, `IC:2189-2191`).
+    pub hold_open: bool,
+    /// Programs the shell left running when it exited, as (pid, creation time): they stay
+    /// attached to the console, and closing the pane ends them (13q B7).
+    pub survivors: Vec<(u32, u64)>,
+    /// When the exit was first seen: the end is handled once the output has drained.
+    exit_seen: Option<Instant>,
+    /// The shell's pid at its exit, for the survivor survey only (`shell_pid` is None then).
+    exit_pid: Option<u32>,
+    /// The local folder the shell started in (it passed 13p's start-folder rules and network
+    /// filter): a restart starts there again (P13, `PS:4890-4896`). None for a pane with no
+    /// local shell (tmux, a test).
+    pub start_dir: Option<std::path::PathBuf>,
+    /// The session's log (13q Task 7): written from `pump` (raw reads and cooked screen text),
+    /// stopped when the session ends or the pane closes. A restart starts its own.
+    pub log: Option<crate::session_log::Logger>,
+    /// When logging started: asciicast's clock.
+    pub log_started: Option<Instant>,
+    /// `smartLoggingWithAutoComposer` and View > Auto Composer, set by the app before each pump
+    /// (`PS:15607-15616`).
+    pub log_compact: (bool, bool),
+    /// A restored archive's pane (13q Task 8): no shell, the saved text; Restart makes it live.
+    pub archived: bool,
+    /// Which shell the pane holds: bumped when the shell exits (or is ended) and again when a
+    /// restart gives the pane a new one, so a question asked about one shell is never answered
+    /// for another (13q final fix 2).
+    pub shell_gen: u64,
+}
+
+/// A random u32 for a session's `autoLogId`.
+fn new_auto_log_id() -> u32 {
+    let mut b = [0u8; 4];
+    let _ = getrandom::fill(&mut b);
+    u32::from_le_bytes(b)
 }
 
 /// A fresh session reference for a pane.
@@ -361,6 +429,70 @@ pub fn new_session_guid() -> String {
 }
 
 impl Pane {
+    /// The pane's inline file question is gone with its program: reading is no longer paused.
+    pub fn inline_paused_off(&mut self) {
+        self.inline_paused = false;
+    }
+
+    /// The session ended: every SSH conductor goes (the hop list stays, so a restart reconnects
+    /// through the profile), what was held for a setup is dropped, and registry changes not yet
+    /// applied are discarded (13q P5).
+    pub fn drop_ssh_at_exit(&mut self) {
+        for _ in 0..16 {
+            if self.conductor.is_none() {
+                break;
+            }
+            self.ssh_unhook_conductor();
+        }
+        self.ssh_hook.unhook();
+        self.ssh_held.clear();
+        self.ssh_registry_out.clear();
+    }
+
+    /// A restart in place (13q Task 4, `resetForRelaunch`, `PS:6734-6741`): `fresh` is a new
+    /// pane for the same id with a new shell. The pane that comes back is `fresh`, so every
+    /// field of the shell (its pty, cookie, SSH and decoder state, coprocess, held input, the
+    /// profile's flags) is new by construction; the screen and what belongs to the session
+    /// itself move in from `old`: the text, scrollback and marks, the lock, pinned width, last
+    /// use, references, note, arrangement, Instant Replay's recording, the composer, the wheel
+    /// and the creation time and log id (a restart keeps them, `PS:846`, `PS:892-897`). The old
+    /// shell goes with `old`'s pty. The caller has dropped the app-wide state of the old shell
+    /// (jobs, cookie, SSH registry).
+    pub fn relaunch(mut old: Pane, mut fresh: Pane) -> Pane {
+        fresh.shell_gen = old.shell_gen + 1;
+        // A Filter or Zoom view or a frozen copy gives way to the pane's own screen.
+        old.frozen = false;
+        old.end_view();
+        old.replay = None;
+        // The program is gone: its modes, its open strings and its state go; the text stays.
+        old.screen.program_ended();
+        old.screen.soft_reset();
+        let want = (fresh.screen.term().columns() as u16, fresh.screen.term().screen_lines() as u16);
+        std::mem::swap(&mut fresh.screen, &mut old.screen);
+        fresh.screen.pty_backed = true;
+        fresh.session_note = std::mem::take(&mut old.session_note);
+        fresh.locked = old.locked;
+        fresh.pinned_width = old.pinned_width;
+        fresh.activity = old.activity;
+        fresh.session_guid = std::mem::take(&mut old.session_guid);
+        fresh.stable_id = std::mem::take(&mut old.stable_id);
+        fresh.arrangement = old.arrangement.take();
+        std::mem::swap(&mut fresh.dvr, &mut old.dvr);
+        fresh.replay_at = old.replay_at;
+        fresh.held = old.held.take();
+        fresh.held_until = old.held_until;
+        std::mem::swap(&mut fresh.composer, &mut old.composer);
+        fresh.composer.probe = None;
+        std::mem::swap(&mut fresh.wheel, &mut old.wheel);
+        fresh.motion = std::mem::take(&mut old.motion);
+        fresh.created = old.created;
+        fresh.created_at = old.created_at;
+        fresh.auto_log_id = old.auto_log_id;
+        // The shell started at the size the layout gives now; the kept screen follows it.
+        fresh.resize(want.0, want.1);
+        fresh
+    }
+
     /// Takes `guid` as the pane's reference: a restored pane keeps the one it saved, and a
     /// restarted session keeps its own (iTerm2 keeps a session's guid, `PTYSession.m:2403-2420`).
     pub fn keep_reference(&mut self, guid: &str) {
@@ -445,6 +577,9 @@ impl Pane {
     /// A forced repaint: the pty one column wider, then back (a reattach whose output was
     /// cut short, or an adopted orphan).
     pub fn jiggle(&mut self) {
+        if self.exited.is_some() {
+            return;
+        }
         let (cols, rows) = (self.screen.term().columns() as u16, self.screen.term().screen_lines() as u16);
         if let Some(io) = &self.pty {
             for (c, r) in crate::reattach::jiggle(cols, rows) {
@@ -470,6 +605,15 @@ impl Pane {
         Pane::with(id, None, cols.max(2), rows.max(1))
     }
 
+    /// A restored archive's pane (`PS:3577-3580`): no shell, ended with status 0, the saved text.
+    pub fn archived(id: PaneId, cols: u16, rows: u16) -> Pane {
+        let mut p = Pane::with(id, None, cols.max(2), rows.max(1));
+        p.exited = Some(0);
+        p.ended = true;
+        p.archived = true;
+        p
+    }
+
     fn with_io(id: PaneId, io: Io, cols: u16, rows: u16) -> Pane {
         Pane::with(id, Some(io), cols, rows)
     }
@@ -477,7 +621,7 @@ impl Pane {
     fn with(id: PaneId, pty: Option<Io>, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = pty.is_some();
-        Pane { id, activity: 0, locked: false, pinned_width: None, session_guid: new_session_guid(), stable_id: crate::stable_id::generate(), screen, encoding: 0, decoder: None, pty, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, progress_anim: Default::default(), #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() }
+        Pane { id, activity: 0, locked: false, pinned_width: None, session_guid: new_session_guid(), stable_id: crate::stable_id::generate(), screen, encoding: 0, decoder: None, pty, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, progress_anim: Default::default(), #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default(), ended: false, created: std::time::SystemTime::now(), created_at: Instant::now(), auto_log_id: new_auto_log_id(), hold_open: false, survivors: Vec::new(), exit_seen: None, exit_pid: None, start_dir: None, log: None, log_started: None, log_compact: (false, false), archived: false, shell_gen: 0 }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -492,6 +636,7 @@ impl Pane {
         let mut changed = !chunks.is_empty();
         // SSH integration, then tmux control mode, are found before anything can drop output.
         for chunk in chunks {
+            self.log_raw(&chunk);
             self.hook_output(&chunk);
         }
         if self.coprocess.is_some() {
@@ -527,6 +672,12 @@ impl Pane {
         if self.exited.is_none() {
             if let Some(code) = pty.exit_code() {
                 self.exited = Some(code);
+                self.shell_gen += 1;
+                self.exit_pid = pty.pid();
+                self.exit_seen = Some(Instant::now());
+                // What the shell left running is taken now, not when the end is handled: a close or
+                // a restart inside the drain wait must still count it (13q B7).
+                self.survey_survivors();
                 changed = true;
             }
         }
@@ -612,6 +763,7 @@ impl Pane {
                 crate::tmux_hook::Out::Screen(_) if dropping => {}
                 crate::tmux_hook::Out::Screen(bytes) if self.tmux_q.is_empty() => {
                     let bytes = self.decode_output(bytes);
+                    self.log_cooked(&bytes);
                     self.got_output = true;
                     if let Some(p) = self.echo_probe.as_mut() {
                         p.output(&bytes);
@@ -689,6 +841,7 @@ impl Pane {
     /// Output that waited behind a tmux line.
     pub fn feed_output(&mut self, bytes: &[u8]) {
         let bytes = &self.decode_output(bytes.to_vec())[..];
+        self.log_cooked(bytes);
         if let Some(p) = self.echo_probe.as_mut() {
             p.output(bytes);
         }
@@ -814,6 +967,9 @@ impl Pane {
     /// a conductor's `send_keys` when one sends for the session (the app applies its effects
     /// in `ssh_pump`), else the connecting queue, else `send_routed`.
     pub fn write_session(&mut self, bytes: &[u8]) {
+        if self.exited.is_some() {
+            return;
+        }
         if self.ssh_route() == crate::conductor::Route::Conductor(0) || !self.ssh.queue(bytes) {
             self.send_routed(bytes);
         }
@@ -827,7 +983,9 @@ impl Pane {
     /// the pty refused it.
     pub fn send_routed(&mut self, bytes: &[u8]) -> bool {
         use crate::conductor::Route;
-        if bytes.is_empty() {
+        // An ended session takes nothing: its console is dead, and `ssh_held` would only grow
+        // (13q B8).
+        if bytes.is_empty() || self.exited.is_some() {
             return true;
         }
         self.composer.probe = None;
@@ -853,6 +1011,9 @@ impl Pane {
     /// framing conductor has no conductor.sh to read it, an unhooked one's is gone).
     fn write_unless_held(&mut self, bytes: &[u8]) {
         use crate::conductor::Route;
+        if self.exited.is_some() {
+            return;
+        }
         let setting_up = self.conductor.as_deref().is_some_and(|c| !c.framing() && !c.unhooked());
         let above = self.conductor.as_deref().and_then(|c| c.framing_ancestor());
         match self.ssh_route() {
@@ -1560,7 +1721,8 @@ impl Pane {
     /// What the live session itself sends (a trigger's Send Text, an upload its program
     /// asked for): a replay view does not stop it, as the live session keeps running.
     pub fn live_input(&mut self, bytes: &[u8]) {
-        if self.gateway {
+        // An ended session takes no input (`insertText:` returns when exited, `PS:5214`).
+        if self.gateway || self.exited.is_some() {
             return;
         }
         // Typed text, pastes and a trigger's Send Text leave in the session's encoding
@@ -1652,6 +1814,62 @@ impl Pane {
         Ok(())
     }
 
+    /// What the program wrote, as read: Raw and asciicast logs take it (`TK:888-893`). A tmux
+    /// client's reads are `%output` and only a Raw log takes them (`PS:10983-10985`).
+    fn log_raw(&mut self, bytes: &[u8]) {
+        let tmux = self.tmux_io().is_some();
+        let (Some(log), Some(started)) = (self.log.as_mut(), self.log_started) else { return };
+        if tmux && log.style() != crate::session_log::Style::Raw {
+            return;
+        }
+        log.raw(bytes, started.elapsed().as_secs_f64());
+    }
+
+    /// Text the screen is about to take, for plain text and HTML logs (`logCooked:`, `PS:15592`):
+    /// never a tmux gateway's, and with compact logging none at the prompt while the Auto
+    /// Composer is on.
+    fn log_cooked(&mut self, bytes: &[u8]) {
+        if self.gateway || self.log.is_none() {
+            return;
+        }
+        let at_prompt = self.own().at_prompt() == Some(true);
+        let (smart, auto) = self.log_compact;
+        if crate::session_log::skip_compact(smart, auto, at_prompt) {
+            return;
+        }
+        let (parts, millis) = crate::session_log::now_parts();
+        // The pane's own palette, not a Filter or Zoom view's.
+        let own_palette = self.own().palette.clone();
+        if let Some(log) = self.log.as_mut() {
+            log.cooked(bytes, &own_palette, (&parts, millis));
+        }
+    }
+
+    /// Compact logging's own text (the revealed prompt, a sent command): plain text and HTML only.
+    pub fn log_text(&mut self, text: &str) {
+        let own_palette = self.own().palette.clone();
+        let Some(log) = self.log.as_mut() else { return };
+        let (parts, millis) = crate::session_log::now_parts();
+        log.cooked_text(text, &own_palette, (&parts, millis));
+    }
+
+    /// Ends the log: nothing is written after this (`PS:4728`, the close). What was queued still
+    /// reaches the file on the writer's thread.
+    pub fn stop_log(&mut self) {
+        if let Some(mut log) = self.log.take() {
+            log.stop();
+        }
+        self.log_started = None;
+    }
+
+    /// `stop_log` at quit: waits up to `wait` for the queued bytes to reach the file.
+    pub fn close_log(&mut self, wait: Duration) {
+        if let Some(mut log) = self.log.take() {
+            log.close(wait);
+        }
+        self.log_started = None;
+    }
+
     /// Session > Stop Coprocess (and pane close, through Drop).
     pub fn stop_coprocess(&mut self) {
         if let Some(mut c) = self.coprocess.take() {
@@ -1705,9 +1923,77 @@ impl Pane {
         }
     }
 
-    /// The shell's process id, while it has a pty.
+    /// The shell's process id, while it runs: None once it exited, since Windows reuses pids and
+    /// the job watcher, the close prompt and the process waits would read a stranger's tree
+    /// (13q B7).
     pub fn shell_pid(&self) -> Option<u32> {
+        if self.exited.is_some() {
+            return None;
+        }
         self.pty.as_ref().and_then(|p| p.pid())
+    }
+
+    /// A restart over a live shell ends it first (`PS:3863-3871`): its console goes (the shell and
+    /// what it runs end, which the person confirmed) and the pane is an ended one, so a failed
+    /// start leaves an ended pane.
+    pub fn end_live_shell(&mut self) {
+        if self.exited.is_some() {
+            return;
+        }
+        self.pty = None;
+        self.exited = Some(0);
+        self.shell_gen += 1;
+        self.ended = true;
+        self.survivors.clear();
+    }
+
+    /// The pid the shell had when it exited, for the survivor survey only.
+    pub fn exit_pid(&self) -> Option<u32> {
+        self.exit_pid
+    }
+
+    /// Takes the survey of what the exited shell left running (once, at the end), by process id
+    /// and creation time: the creation time guards against a reused pid (13q B7).
+    pub fn survey_survivors(&mut self) {
+        let Some(pid) = self.exit_pid.filter(|_| self.owns_console() || self.host_session().is_some()) else { return };
+        if let Ok(left) = crate::jobwatch::orphans_of(pid) {
+            self.survivors = left.into_iter().filter(|p| !p.gui).map(|p| (p.pid, p.created)).filter(|(_, made)| *made != 0).collect();
+        }
+    }
+
+    /// What a restart question asks about now: this shell and the programs it left running.
+    pub fn restart_subject(&self) -> crate::session_end::AskedAbout {
+        crate::session_end::AskedAbout { generation: self.shell_gen, survivors: if self.exited.is_some() { self.live_survivors() } else { Vec::new() } }
+    }
+
+    /// The names of the programs the exited shell left that still run; they end when the pane
+    /// closes (the console goes), so the close asks.
+    pub fn live_survivors(&self) -> Vec<String> {
+        if self.survivors.is_empty() {
+            return Vec::new();
+        }
+        crate::jobwatch::still_running(&self.survivors)
+    }
+
+    /// When the end of an exited session is due: once its output has drained (a short wait after
+    /// the exit is seen, `P6`); None when it is handled or running.
+    pub fn end_due_at(&self) -> Option<Instant> {
+        if self.exited.is_none() || self.ended {
+            return None;
+        }
+        self.exit_seen.map(|t| t + END_DRAIN)
+    }
+
+    /// Whether the end may be handled at `now`: the drain wait has passed and the output is
+    /// quiet, or the hard cap passed.
+    pub fn end_ready(&mut self, now: Instant) -> bool {
+        let Some(due) = self.end_due_at() else { return false };
+        if now < due {
+            return false;
+        }
+        // One more read: output still arriving holds the end back, up to the cap.
+        let more = self.pump();
+        !more || now >= due + END_DRAIN_CAP
     }
 
     /// What the terminal answers the program (reports), and Tandem's own writes that iTerm2
@@ -1716,6 +2002,9 @@ impl Pane {
     /// (`PS:4364-4376`, `PS:4276-4294`), and routed as `writeTaskNoBroadcast` routes them
     /// (`send_routed`).
     pub fn reply(&mut self, bytes: &[u8]) {
+        if self.exited.is_some() {
+            return;
+        }
         self.composer.probe = None;
         // Replies are raw: a report, a title report (UTF-8, `PTYSession.m:18338`), a tmux command,
         // a key the SSH queue already encoded. Only typed text, pastes and the answerback take
@@ -1732,12 +2021,19 @@ impl Pane {
     /// commands, already framed by every framer they pass through): straight to the pty, past
     /// the connecting queue, Buffer Input and `send_routed`. Nothing else writes this way.
     fn write_no_broadcast(&mut self, bytes: &[u8]) {
+        // A dead console takes nothing, and the probe is about bytes that were really sent.
+        if self.exited.is_some() {
+            return;
+        }
         self.composer.probe = None;
         self.write_pty(bytes);
     }
 
     /// The pty write itself. False when the pty refused it.
     fn write_pty(&mut self, bytes: &[u8]) -> bool {
+        if self.exited.is_some() {
+            return true;
+        }
         if let Some(pty) = &self.pty {
             if let Err(e) = pty.write(bytes) {
                 self.error = Some(e);
@@ -1778,10 +2074,13 @@ impl Pane {
         if let Some(live) = &mut self.live {
             live.resize(cols as usize, rows as usize);
         }
-        if let Some(pty) = &self.pty {
+        if let Some(pty) = self.pty.as_ref().filter(|_| self.exited.is_none()) {
             if let Err(e) = pty.resize(cols, rows) {
                 self.error = Some(e);
             }
+        }
+        if let (Some(log), Some(started)) = (self.log.as_mut(), self.log_started) {
+            log.resize(cols, rows, started.elapsed().as_secs_f64());
         }
         true
     }
@@ -1795,7 +2094,7 @@ impl Pane {
         let start = crate::marks::clear_start(&lines, self.screen.current_prompt_line(), cursor);
         self.screen.clear_from(start);
         self.screen.term_mut().selection = None;
-        if let Some(pty) = &self.pty {
+        if let Some(pty) = self.pty.as_ref().filter(|_| self.exited.is_none()) {
             if let Err(e) = pty.clear() {
                 self.error = Some(e);
             }
@@ -1834,7 +2133,8 @@ impl Pane {
     pub fn clear(&mut self) {
         self.end_view();
         self.screen.clear(false);
-        if let Some(pty) = &self.pty {
+        // A dead console has nothing to clear (13q B8).
+        if let Some(pty) = self.pty.as_ref().filter(|_| self.exited.is_none()) {
             if let Err(e) = pty.clear() {
                 self.error = Some(e);
             }
@@ -3255,7 +3555,7 @@ mod tests {
 
     #[test]
     fn gateway_panes_take_no_input() {
-        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, progress_anim: Default::default(), #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
+        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, progress_anim: Default::default(), #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default(), ended: false, created: std::time::SystemTime::UNIX_EPOCH, created_at: Instant::now(), auto_log_id: 0, hold_open: false, survivors: Vec::new(), exit_seen: None, exit_pid: None, start_dir: None, log: None, log_started: None, log_compact: (false, false), archived: false, shell_gen: 0 };
         p.buffer.on = true;
         p.input(b"a");
         p.gateway = true;
@@ -3268,7 +3568,7 @@ mod tests {
         // During a replay iTerm2's tab shows the task-less synthetic session, so nothing
         // the user sends reaches the live shell; the live session's own writes (a
         // trigger's Send Text) still do.
-        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, progress_anim: Default::default(), #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
+        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, progress_anim: Default::default(), #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default(), ended: false, created: std::time::SystemTime::UNIX_EPOCH, created_at: Instant::now(), auto_log_id: 0, hold_open: false, survivors: Vec::new(), exit_seen: None, exit_pid: None, start_dir: None, log: None, log_started: None, log_compact: (false, false), archived: false, shell_gen: 0 };
         p.buffer.on = true;
         p.input(b"a");
         p.replay = Some(replay::Replay { decoder: None, read_only: false });
@@ -3283,7 +3583,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: own, encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, progress_anim: Default::default(), #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
+        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: own, encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, progress_anim: Default::default(), #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default(), ended: false, created: std::time::SystemTime::UNIX_EPOCH, created_at: Instant::now(), auto_log_id: 0, hold_open: false, survivors: Vec::new(), exit_seen: None, exit_pid: None, start_dir: None, log: None, log_started: None, log_compact: (false, false), archived: false, shell_gen: 0 };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);
@@ -3324,6 +3624,284 @@ mod tests {
         assert!(p.resizes_for_test.is_empty(), "off: no resize");
         clear_then_jiggle(&mut p, true);
         assert_eq!(p.resizes_for_test, vec![(81, 24), (80, 24)]);
+    }
+
+    #[test]
+    fn ended_pane_keeps_its_screen() {
+        let mut p = start("cmd.exe /c echo tandem-end");
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
+        // The rest of the output may still be on its way.
+        assert!(pump_until(&mut p, |p| p.screen.all_text().contains("tandem-end")), "{:?}", p.screen.all_text());
+        assert_eq!(p.exited, Some(0));
+        p.own_mut().append_end_message("Session Ended", "");
+        let text = p.screen.all_text();
+        assert!(text.contains("tandem-end"), "{text:?}");
+        assert!(text.contains(" Session Ended "), "{text:?}");
+    }
+
+    #[test]
+    fn relaunch_keeps_the_screen() {
+        let mut a = start("cmd.exe /c echo first-run");
+        assert!(pump_until(&mut a, |p| p.exited.is_some()), "no exit");
+        assert!(pump_until(&mut a, |p| p.screen.all_text().contains("first-run")), "{:?}", a.screen.all_text());
+        a.ended = true;
+        a.own_mut().feed(b"\x1b[?1000h");
+        assert_ne!(a.screen.mouse_modes().tracking, crate::mouse::Tracking::Off);
+        let b = start("cmd.exe /c echo second-run");
+        let mut a = Pane::relaunch(a, b);
+        assert_eq!(a.exited, None);
+        assert!(!a.ended);
+        assert!(a.screen.pty_backed);
+        assert_eq!(a.screen.mouse_modes().tracking, crate::mouse::Tracking::Off, "a restart resets the modes");
+        assert!(pump_until(&mut a, |p| p.exited.is_some() && p.screen.all_text().contains("second-run")), "{:?}", a.screen.all_text());
+        let text = a.screen.all_text();
+        assert!(text.contains("first-run") && text.contains("second-run"), "{text:?}");
+    }
+
+    /// The shell generation moves with every exit and every restart (a question asked about one
+    /// shell is not answered for another).
+    #[test]
+    fn the_shell_generation_moves_with_exit_and_restart() {
+        let mut a = start("cmd.exe /c echo gen");
+        let first = a.shell_gen;
+        assert!(pump_until(&mut a, |p| p.exited.is_some()), "no exit");
+        let ended = a.shell_gen;
+        assert!(ended > first, "an exit is a new state of the pane");
+        let b = start("cmd.exe /q /k");
+        let mut c = Pane::relaunch(a, b);
+        assert!(c.shell_gen > ended, "a restart is a new shell");
+        let live = c.shell_gen;
+        c.end_live_shell();
+        assert!(c.shell_gen > live, "ending a live shell is an exit");
+    }
+
+    /// Item 17: an ended pane's screen still resizes and clears, but nothing reaches its dead
+    /// console (B8's ruling counts resizes).
+    #[test]
+    fn an_ended_pane_resizes_its_screen_not_its_console() {
+        let mut p = start("cmd.exe /c exit 0");
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
+        let before = touches();
+        assert!(p.resize(40, 9), "the size changed");
+        assert_eq!((p.own().term().columns(), p.own().term().screen_lines()), (40, 9), "the screen followed");
+        p.clear_to_last_mark();
+        assert_eq!(touches(), before, "no resize or clear reaches a dead console");
+        assert!(p.error.is_none(), "{:?}", p.error);
+    }
+
+    /// Item 22: a write that a dead pane refuses leaves the composer's probe alone.
+    #[test]
+    fn a_refused_write_keeps_the_composer_probe() {
+        let mut p = start("cmd.exe /c exit 0");
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
+        p.composer.probe = crate::prompt_state::ClearProbe::start(b"\x08", Instant::now());
+        assert!(p.composer.probe.is_some());
+        p.write_no_broadcast(b"x");
+        assert!(p.composer.probe.is_some(), "the guard comes before the probe is cleared");
+    }
+
+    /// Every field of a Pane is classified here: a new field fails to compile until it is named,
+    /// and the test says which pane it comes from after a relaunch.
+    #[test]
+    fn relaunch_takes_every_shell_field_from_the_fresh_pane() {
+        fn classify(p: &Pane) {
+            let Pane { id: _, activity: _, locked: _, pinned_width: _, session_guid: _, stable_id: _, screen: _, encoding: _, decoder: _, pty: _, exited: _, error: _, profile: _, command: _, live: _, session_note: _, buffer: _, frozen: _, suppress_output: _, got_output: _, coprocess: _, co_out: _, co_end: _, tmux_hook: _, tmux_q: _, ssh_hook: _, ssh_q: _, conductor: _, ssh_registry_out: _, ssh_answers: _, ssh_files_out: _, ssh_search_out: _, ssh_clock: _, ssh_held: _, pending_jumps: _, screen_filter: _, gateway: _, tmux_size: _, last_newline: _, composer: _, dvr: _, replay_at: _, throughput: _, held: _, held_until: _, replay: _, echo_probe: _, stuck: _, stuck_seen: _, no_focus_reports: _, password_input: _, cookie: _, inline_paused: _, frustration: _, wheel: _, arrangement: _, ssh: _, motion: _, ended: _, created: _, created_at: _, auto_log_id: _, hold_open: _, survivors: _, exit_seen: _, exit_pid: _,
+                // 13p, all from the fresh pane (the merge's classification): Initial Text's state (a
+                // restarted SSH shell types once after its own login, S2), the idle time (read
+                // again by apply_session_start, S4), the progress bar's animation (a restart
+                // clears the bar, S8), the test-only resize log, and the start folder (the fresh
+                // shell was started in the old one's, P13).
+                initial_text_due: _, initial_text_sent: _, idle_time: _, progress_anim: _, resizes_for_test: _, start_dir: _,
+                // 13q Task 7: a restart starts its own log (the old one stopped at the exit).
+                log: _, log_started: _, log_compact: _,
+                // 13q Task 8: a restart makes the archived pane live, so the fresh pane's flag.
+                archived: _,
+                // 13q final fix 2: the new shell's generation is set from the old pane's.
+                shell_gen: _ } = p;
+        }
+        let mut old = Pane::recording(1, 10, 3);
+        classify(&old);
+        old.own_mut().feed(b"kept text");
+        old.locked = true;
+        old.activity = 7;
+        old.pinned_width = Some(120.0);
+        old.session_guid = "OLD-GUID".into();
+        old.stable_id = "old-stable".into();
+        old.session_note = "note".into();
+        old.arrangement = Some(("arr".into(), "sess".into()));
+        old.created = std::time::SystemTime::UNIX_EPOCH;
+        let old_created_at = Instant::now().checked_sub(Duration::from_secs(5)).unwrap();
+        old.created_at = old_created_at;
+        old.auto_log_id = 99;
+        old.composer.probe = crate::prompt_state::ClearProbe::start(b"\x08", Instant::now());
+        // The dead shell's state.
+        old.exited = Some(3);
+        old.ended = true;
+        old.error = Some("boom".into());
+        old.password_input = true;
+        old.cookie = Some("old-cookie".into());
+        old.ssh_held = b"queued".to_vec();
+        old.pending_jumps = Vec::new();
+        old.co_end = Some(("c".into(), "e".into()));
+        old.encoding = 932;
+        old.gateway = true;
+        old.echo_probe = None;
+        old.hold_open = true;
+        // 13p's per-shell state of the dead shell.
+        (old.initial_text_due, old.initial_text_sent) = (true, true);
+        old.idle_time = std::time::Duration::from_secs(99);
+        old.start_dir = Some("C:\\old".into());
+        old.own_mut().feed(b"\x1b]9;4;1;40\x07");
+        assert!(old.screen.progress.visible(), "the dead program left a bar");
+        let mut fresh = Pane::recording(1, 10, 3);
+        fresh.cookie = Some("new-cookie".into());
+        fresh.session_guid = "NEW-GUID".into();
+        fresh.start_dir = Some("C:\\fresh".into());
+        let new = Pane::relaunch(old, fresh);
+        assert!(!new.initial_text_due && !new.initial_text_sent, "a restarted shell gets its own Initial Text once (P14, S2)");
+        assert_eq!(new.idle_time, crate::activity::DEFAULT_IDLE, "the idle time is read again for the new session (S4)");
+        assert_eq!(new.start_dir.as_deref(), Some(std::path::Path::new("C:\\fresh")), "the fresh shell carries the folder it started in");
+        assert!(!new.screen.progress.visible(), "a restart clears the dead program's progress bar (S8)");
+        // From the old pane.
+        assert!(new.screen.all_text().contains("kept text"));
+        assert!(new.locked);
+        assert_eq!(new.activity, 7);
+        assert_eq!(new.pinned_width, Some(120.0));
+        assert_eq!(new.session_guid, "OLD-GUID");
+        assert_eq!(new.stable_id, "old-stable");
+        assert_eq!(new.session_note, "note");
+        assert_eq!(new.arrangement, Some(("arr".into(), "sess".into())));
+        assert_eq!(new.created, std::time::SystemTime::UNIX_EPOCH, "a restart keeps the creation time (B6)");
+        assert_eq!(new.created_at, old_created_at, "and the clock of the short-lived warning");
+        assert_eq!(new.auto_log_id, 99);
+        assert!(new.composer.probe.is_none());
+        // From the fresh one.
+        assert_eq!(new.exited, None);
+        assert!(!new.ended);
+        assert_eq!(new.error, None);
+        assert!(!new.password_input);
+        assert_eq!(new.cookie.as_deref(), Some("new-cookie"));
+        assert!(new.ssh_held.is_empty());
+        assert!(new.co_end.is_none());
+        assert_eq!(new.encoding, 0);
+        assert!(!new.gateway);
+        assert!(!new.hold_open);
+        assert!(new.screen.pty_backed);
+    }
+
+    fn touches() -> u32 {
+        PTY_TOUCHES.with(|c| c.get())
+    }
+
+    #[test]
+    fn archived_pane_has_no_shell() {
+        let mut p = Pane::archived(1, 80, 24);
+        assert_eq!(p.shell_pid(), None);
+        assert_eq!(p.exited, Some(0));
+        assert!(p.ended && p.archived);
+        assert!(p.pty.is_none() && !p.screen.pty_backed);
+        let before = p.screen.all_text();
+        p.input(b"x");
+        p.paste("y");
+        assert!(!p.pump(), "nothing to read");
+        assert_eq!(p.screen.all_text(), before, "input is ignored");
+        assert!(p.log.is_none() && p.error.is_none());
+        let live = Pane::recording(2, 80, 24);
+        assert!(!live.archived && live.exited.is_none() && !live.ended, "only an archive starts ended");
+    }
+
+    #[test]
+    fn ended_pane_takes_no_input() {
+        let mut p = start("cmd.exe /c exit 0");
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
+        // Buffer Input holds what is typed: an ended pane holds nothing.
+        p.buffer.on = true;
+        let before = touches();
+        p.input(b"x");
+        p.paste("y");
+        p.reply(b"z");
+        assert!(p.send_routed(b"w"));
+        p.write_no_broadcast(b"v");
+        p.write_unless_held(b"u");
+        p.write_session(b"t");
+        p.live_input(b"s");
+        p.buffer.on = false;
+        p.input(b"r");
+        // The routes of a trigger's Send Text, a broadcast, the API's text, a report and the
+        // composer all end in these.
+        p.own_mut().feed(b"\x1b[?1000h\x1b[?1006h");
+        p.reply(b"\x1b[<0;1;1M");
+        p.send_routed(b"q");
+        assert!(p.error.is_none(), "{:?}", p.error);
+        assert!(p.ssh_held.is_empty(), "nothing queues for a dead console");
+        assert!(p.buffer.release().is_empty());
+        assert_eq!(touches(), before, "no byte reaches a dead console");
+    }
+
+    #[test]
+    fn ended_pane_has_no_shell_pid() {
+        let mut p = start("cmd.exe /c exit 0");
+        assert!(p.shell_pid().is_some(), "a running shell has its pid");
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
+        assert_eq!(p.shell_pid(), None, "Windows reuses pids");
+        assert!(p.exit_pid().is_some(), "kept for the survivor survey only");
+    }
+
+    #[test]
+    fn close_asks_for_survivors_of_an_ended_pane() {
+        // `start /b` leaves ping running and attached to the console after cmd exits.
+        let mut p = start("cmd.exe /c start /b ping -n 30 127.0.0.1");
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
+        p.survey_survivors();
+        let names = p.live_survivors();
+        let pids: Vec<u32> = p.survivors.iter().map(|(pid, _)| *pid).collect();
+        assert!(names.iter().any(|n| n.eq_ignore_ascii_case("ping")), "{names:?} {:?}", p.survivors);
+        // Only what this test started is stopped.
+        for pid in pids {
+            let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).output();
+        }
+        let end = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < end && !p.live_survivors().is_empty() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(p.live_survivors().is_empty(), "a stopped program is no survivor");
+    }
+
+    #[test]
+    fn clear_buffer_skips_an_ended_pane() {
+        let mut p = start("cmd.exe /c echo gone");
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
+        let before = touches();
+        p.clear();
+        p.jiggle();
+        assert!(p.error.is_none(), "{:?}", p.error);
+        assert_eq!(touches(), before, "Clear Buffer's resize and clear never reach a dead console");
+    }
+
+    #[test]
+    fn a_live_shell_ends_before_its_restart() {
+        let mut p = start("cmd.exe /q /k");
+        assert!(p.pty.is_some() && p.exited.is_none(), "a running shell");
+        p.end_live_shell();
+        assert!(p.exited.is_some(), "the pane is ended");
+        assert!(p.ended, "its end is handled: nothing reports it again");
+        assert!(p.pty.is_none(), "its console is gone");
+    }
+
+    #[test]
+    fn survivors_are_taken_at_the_exit() {
+        // A close or restart before the end is handled (the drain wait) still sees what the
+        // shell left running; so does the pid kept for the job watcher.
+        let mut p = start("cmd.exe /c start /b ping -n 30 127.0.0.1");
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
+        assert!(!p.ended, "the end is not handled yet");
+        let names = p.live_survivors();
+        let pids: Vec<u32> = p.survivors.iter().map(|(pid, _)| *pid).collect();
+        assert!(names.iter().any(|n| n.eq_ignore_ascii_case("ping")), "{names:?} {:?}", p.survivors);
+        assert!(p.exit_pid().is_some());
+        for pid in pids {
+            let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).output();
+        }
     }
 
     #[test]
@@ -4520,5 +5098,91 @@ mod tests {
         assert_eq!(p.wheel.scroll.delta(0.4, true, &prefs), 0.0);
         p.scroll(Scroll::Bottom);
         assert_eq!(p.wheel.scroll.delta(0.7, true, &prefs), 0.0, "the 0.4 was dropped, 0.7 alone is not a line");
+    }
+    struct MemSink(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl crate::session_log::Sink for MemSink {
+        fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(())
+        }
+    }
+
+    fn logged(p: &mut Pane, style: crate::session_log::Style) -> Arc<std::sync::Mutex<Vec<u8>>> {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        p.log = Some(crate::session_log::Logger::new(style, Box::new(MemSink(seen.clone())), None, None, None));
+        p.log_started = Some(Instant::now());
+        seen
+    }
+
+    fn text(seen: &Arc<std::sync::Mutex<Vec<u8>>>) -> String {
+        String::from_utf8_lossy(&seen.lock().unwrap()).into_owned()
+    }
+
+    #[test]
+    fn a_log_takes_what_the_screen_takes() {
+        // Plain text: the cooked text of what reaches the screen; Raw: the bytes as read.
+        let mut p = Pane::recording(1, 20, 4);
+        let plain = logged(&mut p, crate::session_log::Style::PlainText);
+        p.feed_output(b"\x1b[31mred\x1b[0m line\r\nnext\r\n");
+        assert_eq!(text(&plain), "red line\nnext\n");
+        let mut q = Pane::recording(2, 20, 4);
+        let raw = logged(&mut q, crate::session_log::Style::Raw);
+        q.log_raw(b"\x1b[31mred\x1b[0m");
+        q.feed_output(b"not logged twice");
+        assert_eq!(text(&raw), "\x1b[31mred\x1b[0m", "raw takes the read, not the screen text");
+    }
+
+    #[test]
+    fn a_tmux_pane_logs_raw_only_and_a_gateway_never_cooked() {
+        let mut t = Pane::tmux(1, 9, 0, 20, 4);
+        let ascii = logged(&mut t, crate::session_log::Style::Asciicast);
+        t.log_raw(b"%output text");
+        assert_eq!(text(&ascii), "", "asciicast takes no tmux pane output (PS:10983-10985)");
+        let mut r = Pane::tmux(2, 9, 1, 20, 4);
+        let raw = logged(&mut r, crate::session_log::Style::Raw);
+        r.log_raw(b"abc");
+        assert_eq!(text(&raw), "abc");
+        let mut g = Pane::recording(3, 20, 4);
+        g.gateway = true;
+        let plain = logged(&mut g, crate::session_log::Style::PlainText);
+        g.feed_output(b"control stream\r\n");
+        assert_eq!(text(&plain), "", "a tmux gateway is never cooked-logged (PS:15592)");
+    }
+
+    #[test]
+    fn a_stopped_log_writes_nothing_more() {
+        let mut p = Pane::recording(1, 20, 4);
+        let seen = logged(&mut p, crate::session_log::Style::PlainText);
+        p.feed_output(b"before\r\n");
+        p.stop_log();
+        p.feed_output(b"after\r\n");
+        p.log_text("after too");
+        assert!(p.log.is_none() && p.log_started.is_none());
+        assert_eq!(text(&seen), "before\n");
+    }
+
+    #[test]
+    fn compact_logging_logs_its_own_text_and_skips_only_at_the_prompt() {
+        let mut p = Pane::recording(1, 20, 4);
+        p.log_compact = (true, true);
+        let seen = logged(&mut p, crate::session_log::Style::PlainText);
+        // No shell integration: not at a prompt, so output is logged.
+        p.feed_output(b"output\r\n");
+        p.log_text("$ ");
+        p.log_text("ls -l");
+        assert_eq!(text(&seen), "output\n$ ls -l");
+        // Raw takes no compact text.
+        let mut q = Pane::recording(2, 20, 4);
+        let raw = logged(&mut q, crate::session_log::Style::Raw);
+        q.log_text("$ ");
+        assert_eq!(text(&raw), "");
+    }
+
+    #[test]
+    fn a_resize_is_an_asciicast_record() {
+        let mut p = Pane::recording(1, 20, 4);
+        let seen = logged(&mut p, crate::session_log::Style::Asciicast);
+        p.resize(30, 6);
+        assert!(text(&seen).contains("\"r\"") && text(&seen).contains("30x6"), "{:?}", text(&seen));
     }
 }

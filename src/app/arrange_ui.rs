@@ -19,7 +19,14 @@ pub(super) enum Contents {
     Styled(usize),
     /// No text, but the host session (restoration with contents off).
     KeysOnly,
+    /// A session archive (13q Task 8): every line of styled text up to `ARCHIVE_LINES`, no host
+    /// session, cookie, conductor or chat reference (`PT:4636-4682`).
+    Archive,
 }
+
+/// The most lines a session archive keeps: the restoration cap (13q P10), so a huge history
+/// cannot freeze the UI at the close.
+pub(super) const ARCHIVE_LINES: usize = 10_000_000;
 
 /// The keys `session_value` writes for a pane's conductors, with the host key (`PS:7333-7337`,
 /// `PS:7424-7425`): the innermost's JSON (its chain comes with it), its dcs id and the parser
@@ -127,10 +134,15 @@ impl App {
         let ssh_profile = self.store.get(&p.profile).is_some_and(crate::profile::is_ssh);
         let cwd = saved_cwd(self.remote_text(id), ssh_profile, s.shell.cwd.as_deref());
         let mut v = arrangement::session(grid.columns() as u16, grid.screen_lines() as u16, profile, &id.to_string(), cwd.as_deref());
+        // The folder the shell first started in, which a restored pane's restart reuses (P9).
+        if let (Some(start), Some(t)) = (arrangement::saved_start(p.start_dir.as_deref(), self.remote_text(id)), v.as_table_mut()) {
+            t.insert(arrangement::START_KEY.into(), Value::String(start));
+        }
         let saved = match contents {
             Contents::None => None,
             Contents::Plain => Some((arrangement::CONTENTS_KEY, crate::restore_state::cap_lines(&s.all_text(), CONTENT_LINES).to_string())),
-            Contents::Styled(n) => {
+            Contents::Styled(_) | Contents::Archive => {
+                let n = if let Contents::Styled(n) = contents { n } else { ARCHIVE_LINES };
                 let (text, (row, col)) = crate::styled_copy::sgr_restorable(s);
                 if let Some(t) = v.as_table_mut() {
                     let mut c = toml::Table::new();
@@ -144,6 +156,11 @@ impl App {
         };
         if let (Some((key, text)), Some(t)) = (saved, v.as_table_mut()) {
             t.insert(key.into(), Value::String(text));
+        }
+        // An archived pane comes back archived (13q final fix 4): the next launch never starts
+        // the shell of the profile an archive file embeds; Restart does, under the trust rules.
+        if p.archived {
+            crate::archive::mark_archived(&mut v);
         }
         if let Some(t) = v.as_table_mut() {
             // PS:1920: every session saves its lock.
@@ -164,7 +181,7 @@ impl App {
             }
         }
         // Session restoration: the host session, so a later launch can take the shell back.
-        if let (Contents::Styled(_) | Contents::KeysOnly, Some((host_id, offset)), Some(pid), Some(t)) = (contents, p.host_session(), p.shell_pid(), v.as_table_mut()) {
+        if let (Contents::Styled(_) | Contents::KeysOnly, Some((host_id, offset)), Some(pid), Some(t)) = (contents, p.host_session().filter(|_| p.exited.is_none()), p.shell_pid(), v.as_table_mut()) {
             t.insert(crate::restore_state::HOST_KEY.into(), super::restore_ui::host_key_value(host_id, pid, offset));
             // The shell's cookie, so it still works when the shell is taken back (`PS:7395-7396`).
             // Decision (Task 6): saved only under this gate (session restoration of a hosted
@@ -231,12 +248,18 @@ impl App {
         // The selected tab, or the first kept one when it was a recording's.
         let selected = kept.iter().position(|(i, _, _)| *i == self.active).unwrap_or(0);
         let tabs: Vec<Value> = kept.iter().enumerate().map(|(n, (_, t, tree))| self.tab_value(t, tree, contents, n == selected)).collect();
+        let first = kept[0].2.leaves().first().map(|p| **p);
+        Some(self.window_table(tabs, selected, first))
+    }
+
+    /// The current window's table around `tabs`: its frame, style, title, locks and the rest.
+    /// `first` is the pane whose profile gives the window's size units.
+    fn window_table(&self, tabs: Vec<Value>, selected: usize, first: Option<PaneId>) -> Value {
         let (x, y, w, h) = self.gpu.as_ref().map_or((0.0, 0.0, 0.0, 0.0), |g| {
             let p = g.window.outer_position().unwrap_or_default();
             let s = g.window.outer_size();
             arrangement::saved_frame((p.x, p.y), (s.width, s.height), g.window.is_minimized().unwrap_or(false))
         });
-        let first = kept[0].2.leaves().first().map(|p| **p);
         let profile = first.and_then(|id| self.panes.get(&id)).and_then(|p| self.store.get(&p.profile)).unwrap_or_else(|| self.store.default_profile());
         let facts = WindowFacts {
             x,
@@ -265,7 +288,24 @@ impl App {
             t.insert(arrangement::HOTKEY_WINDOW_KEY.into(), Value::Boolean(true));
             t.insert(arrangement::HOTKEY_GUID_KEY.into(), Value::String(h.guid.clone()));
         }
-        Some(w)
+        w
+    }
+
+    /// One session as an archive's window table (`PT:4636-4682`, the arrangement of a single
+    /// session): a window with one tab holding the pane alone, its whole history styled, no host
+    /// session. None when the pane is gone or a loaded recording's.
+    pub(super) fn snapshot_session(&self, id: PaneId) -> Option<Value> {
+        let p = self.panes.get(&id).filter(|p| !p.dvr.read_only)?;
+        let tab = Tab::new(0, Layout::new(id), id);
+        let tree = crate::layout::Tree::Leaf(id);
+        let tabs = vec![self.tab_value(&tab, &tree, Contents::Archive, true)];
+        let term = p.own().term();
+        let (cols, rows) = (term.columns() as u16, term.screen_lines() as u16);
+        let mut window = self.window_table(tabs, 0, Some(id));
+        if let Some(t) = window.as_table_mut() {
+            t.remove(arrangement::HOTKEY_GUID_KEY);
+        }
+        Some(crate::archive::archive_window(window, cols, rows))
     }
 
     /// Every window, by number. `state` is the saved state for restoration: each window table then
@@ -518,11 +558,25 @@ impl App {
         guid
     }
 
+    /// A restored archive's pane (`PS:3577-3580`): no shell starts; the pane is ended with the
+    /// saved text, at the size its profile and the layout give.
+    fn archived_pane(&mut self, rect: Rect, guid: Option<&str>) -> Option<PaneId> {
+        let p = self.profile(guid);
+        let cell = self.profile_cell(&p);
+        let id = self.next_id;
+        let (cols, rows) = self.grid_size_in(rect, cell, self.pane_room_for(id, &p));
+        self.install_pane(id, Pane::archived(id, cols, rows), &p, false);
+        self.next_id += 1;
+        Some(id)
+    }
+
     /// Builds one tab of an arrangement in the current window: a pane per session. `name`
     /// is the saved arrangement's (None for window restoration, a file, Duplicate Window or
     /// Duplicate Tab). `launch` is true only for the launch's own restoration of the saved
-    /// state: only then may a pane adopt the chat reference its table holds.
-    pub(super) fn build_tab(&mut self, t: &Value, name: Option<&str>, launch: bool) -> Result<Tab, String> {
+    /// state: only then may a pane adopt the chat reference its table holds. `archive` is a
+    /// restored session archive (13q Task 8): its panes have no shell, they hold the saved text
+    /// under the "Archive Restored" banner.
+    pub(super) fn build_tab(&mut self, t: &Value, name: Option<&str>, launch: bool, archive: bool) -> Result<Tab, String> {
         let root = t.get("Root").ok_or("a tab in the arrangement has no panes")?;
         let tree = arrangement::tree_of(root)?;
         let profiles = self.profile_list();
@@ -533,6 +587,8 @@ impl App {
             if failed.is_some() {
                 return 0;
             }
+            // A session saved from an archived pane is one too, whatever the window says.
+            let archive = archive || crate::archive::session_archived(&session);
             let choice = arrangement::choose_profile(&session, &profiles);
             // A missing profile restores from the arrangement's own copy, even a broken one
             // (`PS:2019-2025`); only the saved profile is shared.
@@ -546,13 +602,18 @@ impl App {
             // A local launch whose folder is missing starts in home (`iTermSessionFactory.m:340-358`).
             let ssh = crate::profile::is_ssh(&self.profile(guid.as_deref()));
             let folder = session.get("Working Directory").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-            let notice = folder_notice(Launch { launched: true, named: name.is_some(), ssh }, &folder, &|p| p.is_dir());
+            // An archive starts no shell, so its folder is never checked.
+            let notice = if archive { FolderNotice::Nothing } else { folder_notice(Launch { launched: true, named: name.is_some(), ssh }, &folder, &|p| p.is_dir()) };
             self.start_dir_override = Some(match notice {
                 FolderNotice::Unavailable => arrangement::Folder::Forced(crate::profile::home().to_string_lossy().into_owned()),
                 _ => arrangement::folder_for(&session, ssh),
             });
             let mut launched = true;
-            let id = match super::restore_ui::attach_key(&session) {
+            let id = if archive {
+                launched = false;
+                self.archived_pane(area, guid.as_deref())
+            } else {
+                match super::restore_ui::attach_key(&session) {
                 Some((host_id, pid, since)) => match self.attach_pane(area, guid.as_deref(), host_id, pid, since, super::restore_ui::saved_cookie(&session)) {
                     Ok(id) => {
                         launched = false;
@@ -564,6 +625,7 @@ impl App {
                     }
                 },
                 None => self.start_pane(area, guid.as_deref()),
+                }
             };
             self.start_dir_override = None;
             match id {
@@ -576,16 +638,28 @@ impl App {
                     }
                     self.adopt_stable_id(id, &session, launch);
                     // PS:7325: the saved lock overrides Default Pane Locked.
+                    // A restored pane keeps the folder its shell first started in (P9), not the
+                    // current folder it was saved in.
+                    if let (Some(dir), Some(p)) = (arrangement::start_folder(&session), self.panes.get_mut(&id)) {
+                        p.start_dir = Some(dir);
+                    }
                     if let (Some(locked), Some(p)) = (session.get("Locked").and_then(|v| v.as_bool()), self.panes.get_mut(&id)) {
                         p.locked = locked;
                     }
-                    if launched {
+                    if archive {
+                        // No shell, no conductor, nothing to take back.
+                    } else if launched {
                         self.restore_ssh_session(id, &session);
                     } else {
                         self.restore_ssh_conductor(id, &session);
                     }
                     if let Some(p) = self.panes.get_mut(&id) {
-                        if let Some(text) = arrangement::styled_contents(&session) {
+                        if archive {
+                            // The saved text, then the banner, whatever the text holds (`MS:6580-6581`).
+                            let grays = crate::restore_state::banner_grays(p.screen.palette.bg);
+                            let text = crate::restore_state::cap_lines(arrangement::styled_contents(&session).unwrap_or(""), crate::archive::MAX_TEXT_LINES);
+                            p.screen.feed_restored(text, arrangement::saved_cursor(&session), Some((crate::archive::RESTORED_BANNER, grays)));
+                        } else if let Some(text) = arrangement::styled_contents(&session) {
                             // Session restoration: styled text, then the banner when no job came back.
                             let banner = session.get(arrangement::BANNER_KEY).and_then(|b| b.as_str());
                             let grays = crate::restore_state::banner_grays(p.screen.palette.bg);
@@ -619,7 +693,7 @@ impl App {
                 self.bars.remove(&id);
                 self.forget_scrollbar(id);
                 if let Some(p) = self.panes.remove(&id) {
-                    if let Some(pid) = p.shell_pid() {
+                    if let Some(pid) = p.shell_pid().or(p.exit_pid()) {
                         self.jobs.forget(pid);
                     }
                     self.ssh_pane_dropped(&p);
@@ -755,8 +829,10 @@ impl App {
     /// tab, title, locks, style, and frame.
     pub(super) fn apply_arrangement_window(&mut self, w: &Value, name: Option<&str>, launch: bool) -> Result<(), String> {
         let tabs = w.get("Tabs").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+        // An archive's window marks its sessions as archives (`PT:4329-4335`).
+        let archive = crate::archive::is_archive(w);
         for t in &tabs {
-            let tab = self.build_tab(t, name, launch)?;
+            let tab = self.build_tab(t, name, launch, archive)?;
             self.tabs.push(tab);
         }
         // The restored sessions' profiles may want alpha (a window made for them already has it).
@@ -812,7 +888,7 @@ impl App {
         if as_tabs {
             for w in &windows {
                 for t in w.get("Tabs").and_then(|t| t.as_array()).cloned().unwrap_or_default() {
-                    match self.build_tab(&t, Some(name), false) {
+                    match self.build_tab(&t, Some(name), false, crate::archive::is_archive(w)) {
                         Ok(tab) => {
                             self.tabs.push(tab);
                             self.active = self.tabs.len() - 1;
@@ -891,19 +967,33 @@ impl App {
                 return self.redraw();
             }
         };
-        if arrangement::has_mark_of_the_web(&path) {
-            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            let text = arrangement::trust_text(&name, &windows);
-            if !yes_no(self.hwnd(), "Open Arrangement?", &text) {
-                return;
-            }
+        self.open_arrangement_windows(&path, windows, "Open Arrangement?");
+    }
+
+    /// Opens each window of a file as a new window. A downloaded file (Mark of the Web) asks
+    /// first, naming what its profiles would run (`arrangement::trust_text`); an arrangement and
+    /// an archive share this one gate (13q B10). The profiles' network paths are dropped as each
+    /// session is built (`arrangement_copy`). False when the person said no.
+    pub(super) fn open_arrangement_windows(&mut self, path: &std::path::Path, windows: Vec<Value>, title: &str) -> bool {
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let hwnd = self.hwnd();
+        let text = arrangement::trust_text(&name, &windows);
+        let text = if title.starts_with("Restore") { text.replacen("Open the arrangement", "Restore the archive", 1) } else { text };
+        if !trusted(crate::archive::needs_question(arrangement::has_mark_of_the_web(path), windows.len(), title.starts_with("Restore")), || yes_no(hwnd, title, &text)) {
+            return false;
         }
         for w in windows {
             self.pending_windows.push(super::windows_ui::NewWindow::Arrangement(w, None));
         }
         self.banners.clear("arrangement");
         self.redraw();
+        true
     }
+}
+
+/// Whether a file may open: a file with no mark always, a downloaded one when `ask` says yes.
+fn trusted(marked: bool, ask: impl FnOnce() -> bool) -> bool {
+    !marked || ask()
 }
 
 #[cfg(test)]
@@ -911,6 +1001,26 @@ mod tests {
     use super::*;
     use crate::arrangement::{self, Value};
     use crate::tab_groups::{self, TabGroup};
+
+    #[test]
+    fn restored_panes_keep_their_start_folder() {
+        let src = include_str!("arrange_ui.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(src.contains("arrangement::saved_start(p.start_dir.as_deref(), self.remote_text(id))"), "a saved session records the folder its shell started in");
+        assert!(src.contains("arrangement::start_folder(&session)"), "a restored pane reads it back, attached or archived or started");
+        assert!(src.contains("p.start_dir = Some(dir)"));
+    }
+
+    #[test]
+    fn a_downloaded_file_asks_before_it_opens() {
+        let asked = std::cell::Cell::new(0);
+        let ask = |yes| {
+            asked.set(asked.get() + 1);
+            yes
+        };
+        assert!(trusted(false, || ask(false)) && asked.get() == 0, "an unmarked file opens without a question");
+        assert!(trusted(true, || ask(true)) && asked.get() == 1);
+        assert!(!trusted(true, || ask(false)) && asked.get() == 2, "No opens nothing");
+    }
 
     #[test]
     fn arrangement_keeps_pins_and_groups() {

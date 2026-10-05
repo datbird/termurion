@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 pub const COPIED: &str = "Copied";
 pub const DONE: &str = "Done";
 pub const RESTARTING: &str = "The session is being restarted.";
+/// A restart that asked the person first (programs the ended shell left running).
+pub const WAITING: &str = "The person was asked to confirm the restart; it has not happened yet.";
 pub const NOT_RESTARTABLE: &str = "This session cannot be restarted.";
 
 /// What `insert_text_at_cursor` answers, and what the chat shows, for a text holding a line

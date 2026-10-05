@@ -43,28 +43,6 @@ pub(super) fn first_line(p: &Path) -> Option<String> {
     (!line.is_empty()).then(|| String::from_utf8_lossy(&line).into_owned())
 }
 
-/// What the output pump does with a pane whose program ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum OnExit {
-    /// Closed (every pane but those held open).
-    Close,
-    /// Held open with its output (the REPL's window, iTerm2's Default end action): its end is
-    /// reported once and it stays until the person closes it.
-    Keep,
-    /// Held open and already reported: nothing more.
-    Handled,
-}
-
-/// A pane's end by whether it is held open (`held`: None when it is not; else whether its
-/// end was already reported).
-pub(super) fn on_exit(held: Option<bool>) -> OnExit {
-    match held {
-        None => OnExit::Close,
-        Some(false) => OnExit::Keep,
-        Some(true) => OnExit::Handled,
-    }
-}
-
 /// Menu ids of the Scripts menu's scripts: the prefix, then the script's full path (iTerm2's
 /// item identifier, `M:1559-1566`).
 pub(super) const SCRIPT_ID: &str = "script:";
@@ -995,8 +973,10 @@ impl App {
         let pane = made.ok().and_then(|_| self.tabs.get(self.active).map(|t| t.focused));
         if let Some(p) = pane {
             // Held open when the interpreter ends (no CloseOnTermination,
-            // `iTermController.m:2189-2191`).
-            self.held_on_exit.insert(p, false);
+            // `iTermController.m:2189-2191`): it ends as No Action and is never restarted.
+            if let Some(pane) = self.panes.get_mut(&p) {
+                pane.hold_open = true;
+            }
         }
         match pane.and_then(|p| self.panes.get_mut(&p)) {
             Some(p) => p.feed_output(sa::repl_banner().as_bytes()),
@@ -1475,15 +1455,6 @@ mod tests {
         std::fs::hard_link(staging.join(r"tool\tool\tool.py"), outside.join("other.py")).unwrap();
         assert_eq!(sa::unsafe_entry(&staging, &stage_entries), Some(staging.join(r"tool\tool\tool.py")));
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn repl_window_stays_open() {
-        // `iTermController.m:2189-2191`: the REPL has no CloseOnTermination, so its session
-        // stays with its output; every other pane closes as before.
-        assert_eq!(on_exit(None), OnExit::Close);
-        assert_eq!(on_exit(Some(false)), OnExit::Keep);
-        assert_eq!(on_exit(Some(true)), OnExit::Handled);
     }
 
     fn script(path: &str, full: bool) -> Node {

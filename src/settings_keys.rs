@@ -3649,4 +3649,48 @@ mod tests {
         assert_eq!(nav.label, "Click on a path in a shell prompt to open Navigator");
         assert_eq!(nav.help, "Whether clicking path in prompt opens file navigator");
     }
+
+    /// 13q Task 1 (`AS:661-682`, `AS:733`, `AS:769`, `AS:853-896`): the session-end Advanced
+    /// rows with iTerm2's sections, kinds, defaults and texts; the label is the help's first line.
+    #[test]
+    fn session_rows_follow_iterm2() {
+        let auto_log = "\\(creationTimeString).\\(profileName).\\(termid).\\(iterm2.pid).\\(autoLogId).log";
+        let divider = "Character to use for divider lines in session end messages. Leave empty to use secure default (BrokenPipeDivider image). Examples: \u{2501} \u{2500} \u{2550} \u{254c} \u{2504}";
+        let tmux = "Close tmux windows after detaching?\nThis only takes effect when \u{201c}Settings > Profiles > Session > After a session ends\u{201d} is set to \u{201c}No Action\u{201d}.";
+        let b = |v: bool| Some(Value::Boolean(v));
+        let t = |v: &str| Some(Value::String(v.to_string()));
+        let rows: Vec<(&str, &str, Kind, Option<Value>, String)> = vec![
+            ("SuppressRestartAnnouncement", "Session", Kind::Bool, b(false), "Suppress the Restart Session offer.\nWhen a session terminates, it will offer to restart itself. Turn this on to suppress the offer permanently.".into()),
+            ("AutoLogFormat", "Session", Kind::String, t(auto_log), "Format for automatic session log filenames.\nSee the Badges documentation for supported substitutions.".into()),
+            ("AutologAppends", "Session", Kind::Bool, b(true), "Automatic session logging appends to existing files.\nWhen set to No, the file will be overwritten instead.".into()),
+            ("LogTimestampFormat", "Session", Kind::String, t("yyyy-MM-dd hh.mm.ss.SSS"), "Format for log timestamps. See Unicode TR 35-31 for syntax.\nYou must restart Tandem for changes to this setting to take effect.".into()),
+            ("LogTimestampsWithPlainText", "Session", Kind::Bool, b(true), "When logging plain text, include timestamps for each line?".into()),
+            ("sessionEndMessageText", "Session", Kind::String, t(""), "Text displayed when a session ends. Leave empty to use default.".into()),
+            ("SessionEndMessageDividerCharacter", "Session", Kind::String, t(""), divider.into()),
+            ("SessionRestartedMessageText", "Session", Kind::String, t("Session Restarted"), "Text displayed when a session is restarted.".into()),
+            ("SessionFinishedMessageText", "Session", Kind::String, t("Finished"), "Text displayed when a short-lived session finishes.".into()),
+            ("TmuxWindowsShouldCloseAfterDetach", "Tmux Integration", Kind::Bool, None, tmux.into()),
+            ("ShortLivedSessionDuration", "Warnings", Kind::Float, Some(Value::Float(3.0)), "Warn about short-lived sessions that live less than this many seconds.".into()),
+            ("KillSessionsOnLogout", "Experimental Features", Kind::Bool, b(false), "Kill sessions on logout.\nA possible fix for issue 4147.".into()),
+            ("Multiserver", "Experimental Features", Kind::Bool, b(true), "Enable multi-server daemon.\nA new implementation of session restoration that combines daemon processes.".into()),
+            ("UseNewContentFormat", "Experimental Features", Kind::Bool, b(true), "Save unlimited amount of window contents.\nThis is going to be slow unless you enable SQLite-based window restoration too.".into()),
+        ];
+        for (key, section, kind, default, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, default, "{key}");
+            assert_eq!(row.label, help.lines().next().unwrap(), "{key}");
+            assert_eq!(row.help, help, "{key}");
+        }
+        assert!(schema::find_global("TmuxWindowsShouldCloseAfterDetach").unwrap().optional_bool());
+        for key in ["SuppressRestartAnnouncement", "KillSessionsOnLogout"] {
+            assert!(!schema::find_global(key).unwrap().optional_bool(), "{key}");
+        }
+        // The text moved to Session once (13a); nothing of it is left in Notifications.
+        assert_eq!(schema::global().iter().filter(|s| s.key == "sessionEndMessageText").count(), 1);
+        assert_ne!(schema::find_global("sessionEndMessageText").unwrap().section, "Notifications");
+        let smart = schema::find_global("smartLoggingWithAutoComposer").unwrap();
+        assert_eq!((smart.tab.as_str(), smart.kind, smart.default.clone()), ("Advanced", Kind::Bool, b(false)));
+    }
 }

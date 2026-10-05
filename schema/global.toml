@@ -4462,6 +4462,124 @@ type = "bool"
 default = true
 help = "Enable low-latency updates of the current foreground job"
 
+# 13q: session end (Advanced > Session, Tmux Integration, Warnings, Experimental Features).
+
+[[setting]]
+key = "SuppressRestartAnnouncement"
+tab = "Advanced"
+section = "Session"
+label = "Suppress the Restart Session offer."
+type = "bool"
+default = false
+help = "Suppress the Restart Session offer.\nWhen a session terminates, it will offer to restart itself. Turn this on to suppress the offer permanently."
+
+[[setting]]
+key = "AutoLogFormat"
+tab = "Advanced"
+section = "Session"
+label = "Format for automatic session log filenames."
+type = "string"
+default = "\\(creationTimeString).\\(profileName).\\(termid).\\(iterm2.pid).\\(autoLogId).log"
+help = "Format for automatic session log filenames.\nSee the Badges documentation for supported substitutions."
+
+[[setting]]
+key = "AutologAppends"
+tab = "Advanced"
+section = "Session"
+label = "Automatic session logging appends to existing files."
+type = "bool"
+default = true
+help = "Automatic session logging appends to existing files.\nWhen set to No, the file will be overwritten instead."
+
+[[setting]]
+key = "LogTimestampFormat"
+tab = "Advanced"
+section = "Session"
+label = "Format for log timestamps. See Unicode TR 35-31 for syntax."
+type = "string"
+default = "yyyy-MM-dd hh.mm.ss.SSS"
+help = "Format for log timestamps. See Unicode TR 35-31 for syntax.\nYou must restart Tandem for changes to this setting to take effect."
+
+[[setting]]
+key = "LogTimestampsWithPlainText"
+tab = "Advanced"
+section = "Session"
+label = "When logging plain text, include timestamps for each line?"
+type = "bool"
+default = true
+help = "When logging plain text, include timestamps for each line?"
+
+[[setting]]
+key = "SessionEndMessageDividerCharacter"
+tab = "Advanced"
+section = "Session"
+label = "Character to use for divider lines in session end messages. Leave empty to use secure default (BrokenPipeDivider image). Examples: \u2501 \u2500 \u2550 \u254c \u2504"
+type = "string"
+default = ""
+help = "Character to use for divider lines in session end messages. Leave empty to use secure default (BrokenPipeDivider image). Examples: \u2501 \u2500 \u2550 \u254c \u2504"
+
+[[setting]]
+key = "SessionRestartedMessageText"
+tab = "Advanced"
+section = "Session"
+label = "Text displayed when a session is restarted."
+type = "string"
+default = "Session Restarted"
+help = "Text displayed when a session is restarted."
+
+[[setting]]
+key = "SessionFinishedMessageText"
+tab = "Advanced"
+section = "Session"
+label = "Text displayed when a short-lived session finishes."
+type = "string"
+default = "Finished"
+help = "Text displayed when a short-lived session finishes."
+
+[[setting]]
+key = "TmuxWindowsShouldCloseAfterDetach"
+tab = "Advanced"
+section = "Tmux Integration"
+label = "Close tmux windows after detaching?"
+type = "bool"
+help = "Close tmux windows after detaching?\nThis only takes effect when \u201cSettings > Profiles > Session > After a session ends\u201d is set to \u201cNo Action\u201d."
+
+[[setting]]
+key = "ShortLivedSessionDuration"
+tab = "Advanced"
+section = "Warnings"
+label = "Warn about short-lived sessions that live less than this many seconds."
+type = "float"
+default = 3.0
+help = "Warn about short-lived sessions that live less than this many seconds."
+
+[[setting]]
+key = "KillSessionsOnLogout"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Kill sessions on logout."
+type = "bool"
+default = false
+help = "Kill sessions on logout.\nA possible fix for issue 4147."
+
+[[setting]]
+key = "Multiserver"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Enable multi-server daemon."
+type = "bool"
+default = true
+help = "Enable multi-server daemon.\nA new implementation of session restoration that combines daemon processes."
+
+[[setting]]
+key = "UseNewContentFormat"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Save unlimited amount of window contents."
+type = "bool"
+default = true
+help = "Save unlimited amount of window contents.\nThis is going to be slow unless you enable SQLite-based window restoration too."
+
 # Semantic history (13r)
 
 [[setting]]

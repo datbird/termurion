@@ -187,6 +187,31 @@ pub fn session(cols: u16, rows: u16, profile: Table, guid: &str, cwd: Option<&st
     Value::Table(t)
 }
 
+/// The key a saved session keeps its start folder under (P9): the folder the shell first
+/// started in, which a restart reuses (`PS:4890-4896`), never OSC 7's current folder.
+pub const START_KEY: &str = "Start Directory";
+
+/// The start folder a session table saves: a local drive folder only. A pane whose text came
+/// through a framing conductor (`remote`), a network or device path and anything that is not a
+/// drive path save none, so a restore never starts a shell in a folder somebody else named.
+pub fn saved_start(start: Option<&std::path::Path>, remote: bool) -> Option<String> {
+    let text = start?.to_string_lossy();
+    (!remote && local_drive_folder(&text)).then(|| text.into_owned())
+}
+
+/// `X:\...` or `X:/...`, and not a network or device path.
+fn local_drive_folder(text: &str) -> bool {
+    let b = text.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/') && !crate::start_dir::network_folder(text)
+}
+
+/// A restored pane's start folder (P9): the saved one while it is a local drive folder, else
+/// None (the profile's rule decides at a restart). Never probed here.
+pub fn start_folder(session: &Value) -> Option<std::path::PathBuf> {
+    let text = session.get(START_KEY)?.as_str()?;
+    local_drive_folder(text).then(|| std::path::PathBuf::from(text))
+}
+
 /// A session's profile: its Guid, its Name, and the whole table.
 pub fn profile_of(session: &Value) -> Option<(String, String, &Table)> {
     let b = session.get("Bookmark")?.as_table()?;
@@ -614,6 +639,17 @@ pub fn trust_text(name: &str, windows: &[Value]) -> String {
                 if !without_network_folders(&mut shown).is_empty() {
                     lines.push(format!("Profile \u{201c}{pname}\u{201d} names a network path (a folder, icon, image or ssh file); Tandem ignores it."));
                 }
+                // Where the profile would write raw shell output and a saved archive (an unset
+                // folder is the home folder).
+                let on = |k: &str| prof.get(k).is_some_and(|v| v.as_bool().unwrap_or_else(|| v.as_str().is_some_and(|t| t == "Yes")));
+                let folder = |k: &str| Some(get(k)).filter(|f| !f.is_empty()).unwrap_or_else(|| "your home folder".to_string());
+                if on("Automatically Log") {
+                    let name = Some(get("Log Filename Format")).filter(|f| !f.is_empty()).unwrap_or_else(|| "the automatic log name".to_string());
+                    lines.push(format!("Profile \u{201c}{pname}\u{201d} writes a log of the session to: {} (named {name}, always ending in .log).", folder("Log Directory")));
+                }
+                if on("Archive On Closure") {
+                    lines.push(format!("Profile \u{201c}{pname}\u{201d} archives the session when it closes, to: {}.", folder("Archive Directory")));
+                }
                 if prof.get("Triggers").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty()) {
                     lines.push(format!("Profile \u{201c}{pname}\u{201d} has triggers."));
                 }
@@ -663,6 +699,26 @@ pub fn change_profile(windows: &mut [Value], profile: &Table) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn start_folder_is_saved_and_restored_locally() {
+        use std::path::{Path, PathBuf};
+        let mut table = toml::Table::new();
+        assert_eq!(start_folder(&Value::Table(table.clone())), None);
+        let saved = saved_start(Some(Path::new(r"C:\work\app")), false).unwrap();
+        assert_eq!(saved, r"C:\work\app");
+        table.insert(START_KEY.into(), Value::String(saved));
+        assert_eq!(start_folder(&Value::Table(table.clone())), Some(PathBuf::from(r"C:\work\app")));
+        assert_eq!(saved_start(None, false), None);
+        assert_eq!(saved_start(Some(Path::new(r"C:\x")), true), None, "a framed pane saves no start folder");
+        for bad in [r"\\host\share\x", "//host/share", r"\\?\C:\x", r"..\x", "rel", "/etc", ""] {
+            assert_eq!(saved_start(Some(Path::new(bad)), false), None, "{bad} is never saved");
+            table.insert(START_KEY.into(), Value::String(bad.into()));
+            assert_eq!(start_folder(&Value::Table(table.clone())), None, "{bad} is never restored");
+        }
+        table.insert(START_KEY.into(), Value::String("D:/logs".into()));
+        assert_eq!(start_folder(&Value::Table(table)), Some(PathBuf::from("D:/logs")), "a slash form of a drive path is local");
+    }
+
     use super::*;
 
     #[test]
@@ -988,6 +1044,23 @@ mod tests {
         let body = src[i..].split("\n    }\n").next().unwrap();
         assert!(body.contains("arrangement::without_network_folders(&mut table);"));
         assert!(body.find("without_network_folders").unwrap() < body.find("copy.set(").unwrap());
+    }
+
+    /// The question names the log and archive folders an embedded profile would write to (13q
+    /// final fix 5).
+    #[test]
+    fn trust_text_names_log_and_archive_targets() {
+        let mut p = Table::new();
+        p.insert("Name".into(), Value::String("Ops".into()));
+        p.insert("Automatically Log".into(), Value::Boolean(true));
+        p.insert("Log Directory".into(), Value::String(r"C:\Users\u\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup".into()));
+        p.insert("Log Filename Format".into(), Value::String("x.bat".into()));
+        p.insert("Archive On Closure".into(), Value::Boolean(true));
+        p.insert("Archive Directory".into(), Value::String(r"D:\arch".into()));
+        let t = trust_text("x.itermarchive", &one_window(p));
+        assert!(t.contains("Startup") && t.contains("x.bat") && t.contains("D:\\arch"), "{t}");
+        let quiet = Table::new();
+        assert!(!trust_text("x", &one_window(quiet)).contains("log of the session"), "a profile that does not log says nothing");
     }
 
     #[test]

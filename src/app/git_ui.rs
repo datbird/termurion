@@ -54,6 +54,23 @@ const WRAPPER: &str = "tandem-git.exe";
 pub(super) struct SingleUse {
     pub(super) owner: PaneId,
     pub(super) short_lived: bool,
+    /// What the window does when its command ends. A git window follows no profile: iTerm2
+    /// opens it with only `iTermSingleUseWindowOptionsShortLived`, so its end action is the
+    /// default, No Action (`IC:2186-2188`): it stays and shows "Finished".
+    pub(super) end_action: crate::session_end::EndAction,
+}
+
+/// The single-use record of a git menu command's window (R3: git windows stay at their end).
+pub(super) fn git_single_use(owner: PaneId, short_lived: bool) -> SingleUse {
+    SingleUse { owner, short_lived, end_action: crate::session_end::EndAction::NoAction }
+}
+
+/// The single-use record of a Run Command in Window pane (13r P20): never short-lived, owned by
+/// the clicked pane, and its end follows the default profile's "After a session ends"
+/// (`profile_end_value`, the window is of that profile). Being single-use, it is never restarted
+/// (iTerm2's `isRestartable`): a restart would run the profile's shell, not the command.
+pub(super) fn run_window_single_use(owner: PaneId, profile_end_value: i64) -> SingleUse {
+    SingleUse { owner, short_lived: false, end_action: crate::session_end::EndAction::from_int(profile_end_value) }
 }
 
 /// What a git info bar's button does.
@@ -821,7 +838,7 @@ impl App {
             }
             return self.redraw_all();
         };
-        self.single_use.insert(new, SingleUse { owner: pane, short_lived: true });
+        self.single_use.insert(new, git_single_use(pane, true));
         if let Some(gp) = self.git.get_mut(&pane) {
             gp.command_pane = Some(new);
         }
@@ -847,15 +864,26 @@ impl App {
         made.ok().and_then(|_| self.tabs.get(self.active).map(|t| t.focused))
     }
 
-    /// A single-use session ended or closed (its completion, `GIT:628-631`): its owner's
-    /// status clears and the owner polls. Once per session.
-    pub(super) fn single_use_ended(&mut self, id: PaneId) {
-        let Some(su) = self.single_use.remove(&id) else { return };
+    /// A git command's session ended (its completion, `GIT:628-631`): its owner's status clears
+    /// and the owner polls. The window stays (R3), so its single-use record stays too: it is
+    /// still a git window that shows "Finished" and never restarts. Once per session.
+    pub(super) fn git_command_ended(&mut self, id: PaneId) {
+        let Some(su) = self.single_use.get(&id).copied() else { return };
         if let Some(gp) = self.git.get_mut(&su.owner).filter(|g| g.command_pane == Some(id)) {
             gp.status = None;
             gp.command_pane = None;
         }
         self.git_bump(su.owner, false);
+    }
+
+    /// A single-use session closed: its command ends if it had not (the exit already did, once),
+    /// and its record goes.
+    pub(super) fn single_use_ended(&mut self, id: PaneId) {
+        let pending = self.single_use.get(&id).is_some_and(|su| self.git.get(&su.owner).is_some_and(|g| g.command_pane == Some(id)));
+        if pending {
+            self.git_command_ended(id);
+        }
+        self.single_use.remove(&id);
     }
 
     /// A single-use session that must not leave an alert or an Undo Close.
@@ -951,6 +979,16 @@ mod tests {
             let out: &[u8] = if args.iter().any(|a| a == "status") { b"# branch.oid 0123\0# branch.head main\0" } else { b"" };
             RunResult::Exit { code: if out.is_empty() { 1 } else { 0 }, stdout: out.to_vec(), capped: false }
         }
+    }
+
+    #[test]
+    fn git_windows_take_no_action_at_end() {
+        use crate::session_end::{after_exit, EndAction, Exit, Message, Outcome};
+        for short in [true, false] {
+            assert_eq!(git_single_use(7, short).end_action, EndAction::NoAction);
+        }
+        let exit = Exit { action: git_single_use(7, true).end_action, restartable: true, short_lived_single_use: true };
+        assert_eq!(after_exit(exit, false), (Message::Finished, Outcome::Finished { close: false }));
     }
 
     fn repos(name: &str, n: usize) -> Vec<String> {

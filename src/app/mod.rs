@@ -89,6 +89,11 @@ mod labels_ui;
 mod screenshot_ui;
 mod semantic_ui;
 mod url_handler_ui;
+mod session_end_ui;
+mod log_ui;
+mod archive_ui;
+#[cfg(windows)]
+mod logout_ui;
 mod session_ui;
 mod seltools_ui;
 mod view_ui;
@@ -209,6 +214,9 @@ pub enum UserEvent {
     Caption(isize, crate::caption::Event),
     /// An ssh: URL came from outside (the URL pipe): `ssh_url_app::receive_url`.
     OpenUrl(String),
+    /// Windows is logging off: flush the logs and archives and end the hosted shells, then set
+    /// the flag the window procedure is waiting on (`logout_ui`).
+    Logoff(Arc<std::sync::atomic::AtomicBool>),
 }
 
 #[derive(Clone)]
@@ -577,6 +585,8 @@ pub struct App {
     /// Undo Close: closed things waiting, and the close being collected now.
     undo: crate::undo_close::Stack<undo_ui::Undone>,
     undo_capture: Option<undo_ui::Capture>,
+    /// What the archive writers' threads report (13q Task 8), collected by `archive_tick`.
+    archive_results: archive_ui::Results,
     /// The Edit Window Title or Edit Tab Title window, and what it names.
     title_prompt: Option<(crate::prompt_ui::PromptWindow, windows_ui::TitleEdit)>,
     /// The New Tab Group or Rename Tab Group window, and what it names (app-wide, like the
@@ -946,6 +956,8 @@ pub struct App {
     profiles_win: Option<SettingsWindow>,
     /// When unsaved settings edits are due to be written.
     save_due: Option<Instant>,
+    /// The logoff watch is on (`logout_ui`): one setting for every window.
+    logout_armed: bool,
     /// Session restoration: when to save the windows, whether saving is over (quit, or the
     /// last window closed), and a focus loss waiting to be saved.
     state_debounce: crate::restore_state::Debounce,
@@ -1303,6 +1315,11 @@ pub struct App {
     /// What the agent submitted into each pane since its last prompt, so a split command is
     /// classified whole (Task 10 fix round 1).
     orch_held: HashMap<PaneId, crate::orch_gate::Held>,
+    /// Panes whose Restart end action restarts them at the given time (13q); app-wide, a pane
+    /// closed meanwhile is dropped in `close_pane`.
+    pending_restarts: HashMap<PaneId, Instant>,
+    /// When each pane was last restarted by its end action (the bound of `session_end::restart_allowed`).
+    restart_history: HashMap<PaneId, Vec<Instant>>,
     /// A screen watch's poll, by watcher id.
     orch_polls: HashMap<String, crate::orch_watch::Poll>,
     /// The events each chat is about to receive, held for the gate and the rate.
@@ -1323,9 +1340,6 @@ pub struct App {
     /// window opens on the next loop pass (which has the event loop).
     repl_after_enable: Option<PathBuf>,
     repl_pending: Option<PathBuf>,
-    /// Panes that stay open with their output when their program ends (the REPL's), each
-    /// with whether its end was already reported (`scripts_app::on_exit`).
-    held_on_exit: HashMap<PaneId, bool>,
     /// The import under way (one at a time, iTerm2's `sInstallingScript`) and the files
     /// waiting behind it (iTerm2's serial install queue), each with whether it is an archive
     /// found in the Scripts folder (recycled once installed) and whether it is imported with
@@ -1765,6 +1779,7 @@ pub fn run() {
         single_use: HashMap::new(),
         undo: Default::default(),
         undo_capture: None,
+        archive_results: Default::default(),
         pending_windows: Vec::new(),
         pending_urls_at_start,
         url_listener,
@@ -1937,6 +1952,7 @@ pub fn run() {
         store,
         settings: None,
         save_due: None,
+        logout_armed: false,
         state_debounce: Default::default(),
         state_frozen: second_copy,
         focus_lost: false,
@@ -2115,6 +2131,8 @@ pub fn run() {
         orch_spawned: HashMap::new(),
         orch_watchers: HashMap::new(),
         orch_held: HashMap::new(),
+        pending_restarts: HashMap::new(),
+        restart_history: HashMap::new(),
         orch_polls: HashMap::new(),
         orch_outbox: HashMap::new(),
         #[cfg(windows)]
@@ -2124,7 +2142,6 @@ pub fn run() {
         script_after_enable: Vec::new(),
         repl_after_enable: None,
         repl_pending: None,
-        held_on_exit: HashMap::new(),
         importing: None,
         import_queue: VecDeque::new(),
         archives_asked: std::collections::HashSet::new(),
@@ -3177,72 +3194,165 @@ impl App {
         started.then_some(id)
     }
 
-    /// Restart Session: a new shell in the same pane, with the same profile. The pane is in
-    /// the current window (in any tab, shown or not) or buried; a buried one starts at the
-    /// content area's size and takes its tab's size when it comes back. The menu always
-    /// passes the focused, shown pane (its rect); the tab and buried fallbacks are for the
-    /// API's RestartSession, which may name a background tab's or a buried session.
+    /// Restart Session (`restartSession`, `PS:3846-3872`): a new shell in the same pane, with the
+    /// same profile, and the pane keeps its contents (R3). A running shell is reset and gets
+    /// "Session Restarted" written under its text, then ends; an ended pane is reset only. The
+    /// pane is in the current window (in any tab, shown or not) or buried; a buried one starts at
+    /// the content area's size and takes its tab's size when it comes back. The menu always
+    /// passes the focused, shown pane (its rect); the tab and buried fallbacks are for the API's
+    /// RestartSession, which may name a background tab's or a buried session. A running shell ends before the
+    /// new one starts (`PS:3863-3871`), so a shell that fails to start leaves an ended pane with
+    /// "Session failed to start.".
     fn restart_pane(&mut self, id: PaneId) {
+        // The safety net: no caller ends the programs an ended shell left without the question.
+        if self.panes.get(&id).is_some_and(|p| p.exited.is_some() && !p.live_survivors().is_empty()) {
+            return;
+        }
+        self.restart_confirmed(id);
+    }
+
+    /// A restart asked for by `via` (13q B7): what it does first follows `restart_step`. A running
+    /// shell's question is the menu's only (the API never asks); programs an ended shell left ask
+    /// on every route, and the timer shows the offer instead. Returns what it did first, so a caller
+    /// can tell a restart from a question that is waiting for the person.
+    pub(super) fn restart_via(&mut self, id: PaneId, via: crate::session_end::Via) -> crate::session_end::RestartStep {
+        use crate::session_end::{restart_step, RestartStep};
+        let Some(p) = self.panes.get(&id) else { return RestartStep::Offer };
+        let left = if p.exited.is_some() { p.live_survivors() } else { Vec::new() };
+        let step = restart_step(via, p.exited.is_some(), left.len());
+        match step {
+            RestartStep::Now => self.restart_pane(id),
+            RestartStep::AskRunningJobs => {
+                if !self.alert_waits(|then| matches!(then, scripts_alerts::Then::Restart(p, _) if *p == id)) {
+                    let about = self.panes.get(&id).map(|p| p.restart_subject()).unwrap_or_default();
+                    self.ask_scripts(scripts_alerts::Ask::new(menu::restart_spec(), scripts_alerts::Then::Restart(id, about)));
+                }
+            }
+            RestartStep::AskSurvivors => {
+                if !self.alert_waits(|then| matches!(then, scripts_alerts::Then::Restart(p, _) if *p == id)) {
+                    let about = crate::session_end::AskedAbout { generation: self.panes.get(&id).map_or(0, |p| p.shell_gen), survivors: left };
+                    self.ask_scripts(scripts_alerts::Ask::new(crate::session_end::restart_survivors_spec(&about.survivors), scripts_alerts::Then::Restart(id, about)));
+                }
+            }
+            RestartStep::Offer => self.offer_restart(id),
+        }
+        step
+    }
+
+    /// The restart itself, after whatever question it needed was answered.
+    fn restart_confirmed(&mut self, id: PaneId) {
+        if !self.restartable(id) {
+            return;
+        }
         let in_tab = || {
             let tab = self.tabs.iter().find(|t| t.layout.panes().contains(&id))?;
             tab.layout.rects(self.content_area_for(tab), self.gap()).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r)
         };
         let Some(rect) = self.pane_rect(id).or_else(in_tab).or_else(|| self.buried.contains(id).then(|| self.content_area())) else { return };
+        // A timer for this pane is stale now (`maybeReplaceTerminatedShellWithNewInstance` checks `_exited`).
+        self.pending_restarts.remove(&id);
         // Instant Replay closes first; the new shell starts live.
         self.end_replays(&[id]);
         let guid = self.panes.get(&id).map(|p| p.profile.clone());
-        // The session keeps its chat reference across a restart (`PTYSession.m:2403-2420`).
-        let reference = self.panes.get(&id).map(|p| p.session_guid.clone());
-        let stable = self.panes.get(&id).map(|p| p.stable_id.clone());
-        // Restart Session keeps the lock, the pinned width and the last-use stamp (B5); the new pane would otherwise
-        // read Default Pane Locked.
-        let (locked, activity, pinned) = self.panes.get(&id).map_or((false, 0, None), |p| (p.locked, p.activity, p.pinned_width));
         // The new shell never saw what a model typed into the old one.
         self.orch_held.remove(&id);
-        // A slow Initial Text of the old shell must not type into the new one.
+        // A slow Initial Text of the old shell must not type into the new one (13p); the new
+        // shell sends its own once it is installed (P14).
         self.bump_initial_text(id);
-        if let Some(old) = self.panes.remove(&id) {
-            if let Some(pid) = old.shell_pid() {
+        // A live shell ends first, as iTerm2's does (`PS:3863-3871`), with the words under its
+        // text; a start that then fails leaves an ended pane.
+        if self.panes.get(&id).is_some_and(|p| p.exited.is_none()) {
+            let custom = self.globals.string("sessionEndMessageText");
+            let text = crate::session_end::restarted_text(&custom, &self.globals.string("SessionRestartedMessageText"));
+            let divider = self.globals.string("SessionEndMessageDividerCharacter");
+            if let Some(pid) = self.panes.get(&id).and_then(|p| p.shell_pid()) {
                 self.jobs.forget(pid);
             }
-            self.ssh_pane_dropped(&old);
-            // The old shell is gone for good; the new one gets its own cookie.
-            self.forget_cookie(&old);
+            if let Some(mut old) = self.panes.remove(&id) {
+                self.ssh_pane_dropped(&old);
+                self.forget_cookie(&old);
+                old.own_mut().append_end_message(&text, &divider);
+                // A start that then fails leaves a whole ended pane: its log written out, its
+                // program's state (progress bar, drops, held output) gone. Decision: the failure
+                // fires no SessionEnded; the person asked for the restart.
+                old.stop_log();
+                old.own_mut().program_ended();
+                old.end_live_shell();
+                self.panes.insert(id, old);
+            }
         }
+        let start_dir = self.panes.get(&id).and_then(|p| p.start_dir.clone());
+        // No folder recorded (a pane from before 13q's start) reads as a gone folder: the profile's rule.
+        let (fresh, profile) = match self.spawn_pane(id, rect, guid.as_deref(), Some(start_dir.as_deref().unwrap_or(std::path::Path::new("")))) {
+            Ok(started) => started,
+            Err(e) => {
+                self.restart_failed(id, &e);
+                return;
+            }
+        };
+        let Some(mut old) = self.panes.remove(&id) else { return };
+        // The old log stops and is written out before the new shell's opens the same file (a
+        // restart appends to it): two writers on one file would interleave.
+        old.stop_log();
+        crate::session_log::wait_for_writers(Duration::from_millis(500));
+        // The offer and the tmux question are about the shell that is gone (`willRecycleSession`).
+        if let Some(b) = self.bars.get_mut(&id) {
+            b.retain(|x| ![crate::session_end::RESTART_BAR, crate::session_end::STORM_BAR, crate::session_end::TMUX_CLOSE_BAR, session_end_ui::SURVIVORS_BAR].contains(&x.id.as_str()));
+        }
+        // The pid is reusable once the shell is gone: the watcher forgets the one the pane has or had.
+        if let Some(pid) = old.shell_pid().or(old.exit_pid()) {
+            self.jobs.forget(pid);
+        }
+        self.ssh_pane_dropped(&old);
+        // The old shell is gone for good; the new one has its own cookie.
+        self.forget_cookie(&old);
+        // The old pane's pty drops here, which ends its shell.
+        let pane = Pane::relaunch(old, fresh);
         // Its inline files went with its screen.
         self.close_inline_questions_of(id);
         // The id lives on: the old screen's ticks must not meet the new screen.
         self.forget_scrollbar(id);
-        if self.start_pane_as(id, rect, guid.as_deref()) {
-            if let Some(p) = self.panes.get_mut(&id) {
-                p.locked = locked;
-                p.activity = activity;
-                p.pinned_width = pinned;
-            }
-            if let (Some(reference), Some(p)) = (reference.clone(), self.panes.get_mut(&id)) {
-                p.keep_reference(&reference);
-            }
-            // So does its stable id: a model's claim on the session outlives its shell.
-            if let (Some(sid), Some(p)) = (stable, self.panes.get_mut(&id)) {
-                p.keep_stable_id(&sid);
-            }
-            // The new Screen has no chat watch: a chat streaming this session goes on (`CVC:144-165`).
-            self.chat_refresh();
-        } else if let Some(reference) = reference {
-            // The old pane is gone and no new one started: its chats unlink with the notice and
-            // stop streaming, as if the pane had closed.
-            self.chat_reference_gone(id, &reference);
+        self.install_pane(id, pane, &profile, true);
+        // The restarted shell types its own Initial Text once, as iTerm2's start does
+        // (`PS:3589-3600`, P14): the old start's answer was dropped above, an SSH profile still
+        // waits for its conductor's login, and an override launch (none restarts) never types it.
+        if self.start_command_override.is_none() && self.start_env_override.is_none() {
+            self.send_initial_text(id, &profile);
         }
+        // The new Screen has no chat watch: a chat streaming this session goes on (`CVC:144-165`).
+        self.chat_refresh();
     }
 
-    /// "Restart session?" answered OK: the pane restarts in its own window (gone: nothing
-    /// happens).
-    pub(super) fn restart_answered(&mut self, id: PaneId) {
-        if !self.panes.contains_key(&id) {
-            return;
+    /// A restart whose shell did not start: the pane is an ended one (a live shell ended first). It writes the
+    /// error as its end message (`taskDiedWithError`, `PS:4686-4688`) and both show "Session
+    /// failed to start." with no buttons (`NC:318-327`). The "start" banner is not set.
+    fn restart_failed(&mut self, id: PaneId, error: &str) {
+        let ended = self.panes.get(&id).is_some_and(|p| p.exited.is_some());
+        if ended {
+            let divider = self.globals.string("SessionEndMessageDividerCharacter");
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.own_mut().append_end_message(error, &divider);
+            }
         }
+        if let Some(b) = self.bars.get_mut(&id) {
+            b.retain(|x| x.id != crate::session_end::RESTART_BAR && x.id != crate::session_end::STORM_BAR);
+        }
+        self.ask(id, crate::session_end::RESTART_BAR, crate::session_end::FAILED_TO_START, &[], true);
+    }
+
+    /// "Restart session?" answered OK (running jobs or left-over programs): the pane restarts in
+    /// its own window (gone: nothing happens). Only the shell the question named restarts: if it
+    /// exited and was restarted since, or left other programs, the answer is not for the pane as
+    /// it is now, and the restart asks again about that (never ending a new shell unasked).
+    pub(super) fn restart_answered(&mut self, id: PaneId, asked: &crate::session_end::AskedAbout) {
+        let Some(now) = self.panes.get(&id).map(|p| p.restart_subject()) else { return };
         self.enter_pane_window(id);
-        self.restart_pane(id);
+        match crate::session_end::answer_step(asked, &now) {
+            crate::session_end::AnswerStep::Restart => self.restart_confirmed(id),
+            crate::session_end::AnswerStep::AskAgain => {
+                self.restart_via(id, crate::session_end::Via::Menu);
+            }
+        }
     }
 
     /// The session variables for pane `id`, about to start with profile `p` (`PS:3246-3350`),
@@ -3391,7 +3501,6 @@ impl App {
         self.api_session_subs.forget_session(id);
         // The shell a model's held text was typed into is gone (Task 10 fix round 2).
         self.orch_held.remove(&id);
-        self.held_on_exit.remove(&id);
         self.unread_session_counts.retain(|(p, _), _| *p != id);
         self.script_templates.retain(|(p, _), _| *p != id);
         self.script_components.retain(|(p, _), _| *p != id);
@@ -3413,6 +3522,32 @@ impl App {
     }
 
     fn start_pane_as(&mut self, id: PaneId, rect: Rect, guid: Option<&str>) -> bool {
+        match self.spawn_pane(id, rect, guid, None) {
+            Ok((pane, p)) => {
+                self.install_pane(id, pane, &p, false);
+                // iTerm2 blanks Initial Text for single-use and URL launches (`iTermController.m:1872`,
+                // `:2188`): a git window, an orchestrated or scripted command and an ssh: URL's
+                // copy never type the profile's text (B2). The API's CreateTab with custom
+                // properties starts the base profile's own shell with the text, as iTerm2's does
+                // (the API is authenticated; its command is a profile property, not an override).
+                if self.start_command_override.is_none() && self.start_env_override.is_none() {
+                    self.send_initial_text(id, &p);
+                }
+                true
+            }
+            Err(e) => {
+                self.banners.set("start", e);
+                false
+            }
+        }
+    }
+
+    /// Starts the shell of pane `id` at `rect` with profile `guid`: the pane, not yet installed,
+    /// and its profile; or why it did not start (the caller says so: a new pane sets the "start"
+    /// banner, a restart shows a bar).
+    /// `restart_dir` is a restarted pane's original folder (P13): used while it is still a local
+    /// folder, else the profile's rule without the focused pane.
+    fn spawn_pane(&mut self, id: PaneId, rect: Rect, guid: Option<&str>, restart_dir: Option<&std::path::Path>) -> Result<(Pane, Profile), String> {
         // The new pane's grid comes from its own profile's face, measured now, less its room.
         let p = self.profile(guid);
         let cell = self.profile_cell(&p);
@@ -3427,14 +3562,16 @@ impl App {
             Some(crate::arrangement::Folder::Forced(d)) if crate::start_dir::probe_ok(std::path::Path::new(d), &|d| d.is_dir()) => (PathBuf::from(d), None),
             // A git command's window runs only in its folder, never the profile's.
             Some(crate::arrangement::Folder::Forced(d)) if self.start_command_override.is_some() => {
-                self.banners.set("start", format!("The folder {d} no longer exists, so git did not run."));
-                return false;
+                return Err(format!("The folder {d} no longer exists, so git did not run."));
             }
             Some(crate::arrangement::Folder::Forced(d)) => {
                 let (c, _) = profile::start_dir_with(&p, None);
                 (c, Some(format!("The folder {d} from the arrangement does not exist; the profile's folder is used.")))
             }
             Some(crate::arrangement::Folder::Previous(d)) => profile::start_dir_with(&p, Some(std::path::Path::new(d))),
+            // A restart reuses the folder the shell first started in, never OSC 7 or the focused
+            // pane (`PS:4890-4896`, P13).
+            _ if restart_dir.is_some() => crate::session_end::restart_dir(restart_dir, &p, &|d| d.is_dir()),
             _ => self.profile_start_dir(&p),
         };
         match warning {
@@ -3466,6 +3603,7 @@ impl App {
             Ok(mut pane) => {
                 pane.cookie = cookie;
                 pane.command = cmd;
+                pane.start_dir = Some(cwd);
                 if self.start_command_override.is_none() {
                     // Not an ssh session for F27 yet: its hook, vouched by the origin token,
                     // makes it one.
@@ -3475,21 +3613,11 @@ impl App {
                 if let Some(jumps) = self.start_jumps_override.take() {
                     pane.pending_jumps = jumps;
                 }
-                self.install_pane(id, pane, &p);
-                // iTerm2 blanks Initial Text for single-use and URL launches (`iTermController.m:1872`,
-                // `:2188`): a git window, an orchestrated or scripted command and an ssh: URL's
-                // copy never type the profile's text (B2). The API's CreateTab with custom
-                // properties starts the base profile's own shell with the text, as iTerm2's does
-                // (the API is authenticated; its command is a profile property, not an override).
-                if self.start_command_override.is_none() && self.start_env_override.is_none() {
-                    self.send_initial_text(id, &p);
-                }
-                true
+                Ok((pane, p))
             }
             Err(e) => {
                 self.forget_cookie_text(cookie.as_deref());
-                self.banners.set("start", format!("Could not start {cmd}: {e}"));
-                false
+                Err(format!("Could not start {cmd}: {e}"))
             }
         }
     }
@@ -3529,17 +3657,20 @@ impl App {
     }
 
     /// A started pane takes its profile's look, triggers, and input settings.
-    fn install_pane(&mut self, id: PaneId, mut pane: Pane, p: &Profile) {
+    /// A restarted pane (`relaunch`) keeps its Instant Replay recording and its scroll accumulators.
+    fn install_pane(&mut self, id: PaneId, mut pane: Pane, p: &Profile, relaunch: bool) {
         pane.restyle(Palette::from_profile(p, self.dark()), Look::from_profile(p));
         pane.set_bidi_rules(crate::bidi::Rules::from_globals(&self.globals));
         screen_follows_profile(&mut pane.screen, p);
         pane.screen.set_path_probe(self.path_probe());
         pane.profile = p.guid();
         pane.set_buffering(p.bool("Buffer Input by Default"));
-        // `IRMemory` is read once per session (`S:121-122`).
-        pane.dvr = crate::dvr::Dvr::new(crate::pane::capacity_for(self.globals.int("IRMemory")));
-        // Read once per session ("Changes to this setting only affect new sessions").
-        pane.wheel = crate::wheel::PaneWheel::new(self.globals.number("HorizontalScrollingSensitivity").unwrap_or(0.1));
+        if !relaunch {
+            // `IRMemory` is read once per session (`S:121-122`).
+            pane.dvr = crate::dvr::Dvr::new(crate::pane::capacity_for(self.globals.int("IRMemory")));
+            // Read once per session ("Changes to this setting only affect new sessions").
+            pane.wheel = crate::wheel::PaneWheel::new(self.globals.number("HorizontalScrollingSensitivity").unwrap_or(0.1));
+        }
         if let Some(pid) = pane.shell_pid() {
             self.jobs.watch(pid);
             if let Some(paused) = pane.console_pause_flag() {
@@ -3550,8 +3681,14 @@ impl App {
         self.scroll_ticks.insert(id, (self.globals.bool("ShowLocationsInScrollbar"), self.globals.bool("ShowMarksInScrollbar")));
         self.panes.insert(id, pane);
         self.apply_emu_rules(id);
-        self.apply_new_pane_defaults(id);
+        // "Default Pane Locked" is read when a session first loads its profile, not at a restart.
+        if !relaunch {
+            self.apply_new_pane_defaults(id);
+        }
+        // Idle time and the other per-session start reads: a restarted shell is a new session (S4, P21).
         self.apply_session_start(id);
+        // Automatic logging at the start, the restart and a restore (`PS:3549-3560`).
+        self.start_auto_log(id);
     }
 
     /// Instant Replay: every pane, background tabs and tmux panes included, records a frame
@@ -4080,6 +4217,13 @@ impl App {
 
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        // The pane's own window is current for all that follows: an archive of a pane closed in
+        // a background window is built from that window's frame, style and title.
+        self.enter_pane_window(id);
+        // Archive On Closure writes first, while the pane still has its text (`PS:4057-4065`).
+        self.auto_archive(id);
+        // An ended session closed too soon warns first (`terminate`, `PS:3887`).
+        self.warn_short_lived(id);
         // The source ending cancels the pick (`PS:3940-3942`).
         self.pane_move_event(pane_move_ui::PickEvent::Ended(id));
         // Every chat linked to this session unlinks while its reference still names the pane.
@@ -4098,6 +4242,9 @@ impl App {
         // Dependencies' pip command.
         self.single_use_ended(id);
         self.deps_command_ended(id);
+        // A timed restart of a pane that is gone must not fire.
+        self.pending_restarts.remove(&id);
+        self.restart_history.remove(&id);
         // A buried session that ends leaves the Buried Sessions menu.
         if self.buried.take(id).is_some() {
             self.menus_dirty = true;
@@ -4122,10 +4269,15 @@ impl App {
         self.aps.remove(&id);
         self.focus_order.remove(&id);
         self.forget_scrollbar(id);
-        if let Some(p) = self.panes.remove(&id) {
+        if let Some(mut p) = self.panes.remove(&id) {
+            // Nothing is logged after the person closed the pane (`PS:4728`); a pane kept for Undo
+            // Close below logs nothing either while it is paused, and keeps its log (P15).
+            if self.undo_capture.is_none() || p.exited.is_some() || p.tmux_io().is_some() || p.dvr.read_only {
+                p.stop_log();
+            }
             // Its file requests will never be answered: they fail now, and its waiters go.
             self.ssh_files_pane_gone(id);
-            if let Some(pid) = p.shell_pid() {
+            if let Some(pid) = p.shell_pid().or(p.exit_pid()) {
                 self.jobs.forget(pid);
             }
             // A close the person made keeps a running shell for Undo Close.
@@ -4202,7 +4354,18 @@ impl App {
                 self.save_pending_settings();
                 self.save_empty_state();
                 self.flush_notes();
-                // The last window closed: its shells end (iTerm2), and the host hears it.
+                // The last window closed: its logs are written out, its shells end (iTerm2), and the
+                // host hears it.
+                // Panes held for Undo Close (the stack, and this close's own capture) release their
+                // logs too: nothing else would wait for their writers.
+                self.clear_undo();
+                if let Some(c) = self.undo_capture.as_mut() {
+                    for p in &mut c.panes {
+                        p.stop_log();
+                    }
+                }
+                self.finish_archives(false, std::time::Duration::from_secs(5));
+                self.close_all_logs();
                 self.leave_host(false);
                 if self.save_due.is_some() {
                     self.save_now();
@@ -5930,6 +6093,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_recording_windows(event_loop);
         self.open_git_log(event_loop);
         let pwm_due = self.tick_pwm();
+        #[cfg(windows)]
+        self.tick_logout();
         self.open_pwm_windows(event_loop);
         self.api_tick(event_loop);
         self.api_notify_tick();
@@ -6007,10 +6172,14 @@ impl ApplicationHandler<UserEvent> for App {
         let cursor_due = self.tick_cursor();
         let frame_due = self.frame_wake();
         let flicker_due = self.flicker_tick(Instant::now());
+        let ended_due = self.tick_ended(event_loop);
+        let restart_due = self.tick_restarts();
         self.tick_progress();
         let progress_due = self.progress_wake();
+        self.log_tick();
+        self.archive_tick();
         let sleep_due = self.recompute_sleep(Instant::now());
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let wake = [ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -6054,10 +6223,16 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::ThemeReset => return self.reapply_forced_theme(),
             UserEvent::Caption(hwnd, e) => return self.caption_event(hwnd, e, event_loop),
             UserEvent::OpenUrl(url) => return self.receive_url(url),
+            UserEvent::Logoff(done) => {
+                #[cfg(windows)]
+                self.logoff_now(&done);
+                #[cfg(not(windows))]
+                done.store(true, std::sync::atomic::Ordering::Release);
+                return;
+            }
             UserEvent::Wake => {}
         }
         let mut changed = false;
-        let mut exited = Vec::new();
         let mut outputs = Vec::new();
         let now = Instant::now();
         self.sync_output_policy();
@@ -6065,9 +6240,11 @@ impl ApplicationHandler<UserEvent> for App {
         // The prompt state machine follows View > Auto Composer before it reads output (the
         // Task 3 contract: every pane, new ones included).
         let auto_composer = self.globals.bool("AutoComposer");
+        let smart_logging = self.globals.bool("smartLoggingWithAutoComposer");
         let always_line_marks = self.globals.bool("AlwaysUseLineStyleMarks");
         for (id, p) in self.panes.iter_mut() {
             p.own_mut().prompt_state.enabled = auto_composer;
+            p.log_compact = (smart_logging, auto_composer);
             // New prompt marks are line-style with Auto Composer or AlwaysUseLineStyleMarks
             // (`S:18934`); marks already made keep their style.
             p.screen.line_style_marks = auto_composer || always_line_marks;
@@ -6076,10 +6253,6 @@ impl ApplicationHandler<UserEvent> for App {
                 outputs.push(*id);
             }
             changed |= got;
-            // A held pane's end is reported once.
-            if p.exited.is_some() && self.held_on_exit.get(id) != Some(&true) {
-                exited.push(*id);
-            }
         }
         changed |= self.ssh_pump();
         changed |= self.tmux_pump(event_loop);
@@ -6093,28 +6266,9 @@ impl ApplicationHandler<UserEvent> for App {
         self.api_output(&outputs);
         self.api_session_events();
         self.record_replay_frames();
-        let exited_now = exited.clone();
-        for id in exited {
-            // A git command's short-lived window ends without an alert.
-            let short_lived = self.short_lived(id);
-            self.single_use_ended(id);
-            self.deps_command_ended(id);
-            if !short_lived {
-                self.session_ended(id);
-            }
-            if let Some(p) = self.panes.get_mut(&id) {
-                p.own_mut().fire_event(crate::trigger_events::EventKind::SessionEnded, &Default::default(), &[]);
-            }
-            self.take_requests();
-            match scripts_app::on_exit(self.held_on_exit.get(&id).copied()) {
-                scripts_app::OnExit::Close => self.close_pane(id, event_loop),
-                scripts_app::OnExit::Keep => {
-                    self.held_on_exit.insert(id, true);
-                    changed = true;
-                }
-                scripts_app::OnExit::Handled => {}
-            }
-        }
+        // A pane whose shell exited stays and follows its end action, once its output drained.
+        let (exited_now, _) = self.handle_ended(event_loop);
+        changed |= !exited_now.is_empty();
         self.check_coprocesses();
         if changed {
             // An exit shows in the tab bar: a held pane's end draws through the pacer too.

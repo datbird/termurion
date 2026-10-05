@@ -589,6 +589,7 @@ impl SettingsWindow {
                 });
                 ui.separator();
                 let is_default = selected == store.default_guid;
+                let saved_guid = store.shared_guid(&selected);
                 let Some(profile) = store.get_mut(&selected) else { return };
                 let separate = profile.bool("Use Separate Colors for Light and Dark Mode");
                 if separate && schema::TABS[tab] == "Colors" {
@@ -738,6 +739,9 @@ impl SettingsWindow {
                                     }
                                     ui.label(egui::RichText::new(crate::transparency::LARGE_RADIUS).small());
                                 });
+                            }
+                            if s.key == crate::session_end::END_ACTION_KEY && short_lived_row(ui, profile, &saved_guid, globals) {
+                                edit = Edit::GlobalsChanged;
                             }
                             if s.key == "Prevent Sleep" && !sleep_status.is_empty() {
                                 ui.label(egui::RichText::new(sleep_status).small().color(ui.visuals().weak_text_color()));
@@ -1141,8 +1145,29 @@ pub fn profile_row_enabled(p: &Profile, key: &str, dark: bool) -> bool {
         "Custom Locale" => p.int("Set Local Environment Vars") == 2,
         // The swatch follows its switch (`ProfilesColorsPreferencesViewController.m:468`).
         "Underline Color" => p.bool_for("Use Underline Color", dark),
+        // The logging rows follow "Automatically Log", the archive folder "Archive On Closure"
+        // (`ProfilesSessionPreferencesViewController.m:187-213`).
+        "Log Directory" | "Log Filename Format" | "Plain Text Logging" => p.bool("Automatically Log"),
+        "Archive Directory" => p.bool("Archive On Closure"),
         _ => true,
     }
+}
+
+/// The label of the "Warn about short-lived sessions" check box (`PSV:391-446`).
+pub const SHORT_LIVED_LABEL: &str = "Warn about short-lived sessions";
+
+/// The phony check box under "After a session ends": checked while the profile's silence key is
+/// not set, enabled only for Close (end action 1). Unchecking silences the warning for the saved
+/// profile for good (the key true, its selection 0); checking removes both and the silence time. True on a change.
+pub fn short_lived_row(ui: &mut egui::Ui, p: &Profile, saved_guid: &str, g: &mut Globals) -> bool {
+    let key = crate::session_end::short_lived_key(saved_guid);
+    let mut on = !g.bool(&key);
+    let enabled = p.int(crate::session_end::END_ACTION_KEY) == 1;
+    let changed = ui.add_enabled(enabled, egui::Checkbox::new(&mut on, SHORT_LIVED_LABEL)).changed();
+    if changed {
+        crate::session_end::set_short_lived_warning(g, saved_guid, on);
+    }
+    changed
 }
 
 /// The line beside the Progress Bar Height field: a typed height above the top margin was cut
@@ -1928,5 +1953,45 @@ mod tests {
         let help = |k: &str| crate::schema::find(k).unwrap().help.clone();
         assert_eq!(help("Use Underline Color"), "Draws underlines in the Underline Color instead of the text color (an app's SGR 58 color still wins).");
         assert_eq!(help("Reduce Flicker"), "While a program hides the cursor, keep showing the screen as it was for up to 0.2 seconds so half-drawn updates are not seen.");
+    }
+
+    /// 13q Task 1 (`AB:414-418`, `PP:1216`, `DB:1038`, `IPR:1326-1328`): "Close Sessions On End"
+    /// reads No Action when missing, a new profile starts with Close, and the silence keys are
+    /// per saved profile.
+    #[test]
+    fn end_action_row_follows_iterm2() {
+        use crate::session_end::{short_lived_key, short_lived_selection_key, END_ACTION_KEY};
+        let row = schema::find(END_ACTION_KEY).expect("end action row");
+        assert_eq!(row.kind, Kind::Enum);
+        assert_eq!(row.default, Some(Value::Integer(0)));
+        assert_eq!(row.seed, Some(Value::Integer(1)));
+        assert_eq!(row.label, "Close or restart session on end");
+        let choices: Vec<(Value, &str)> = row.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
+        assert_eq!(choices, vec![(Value::Integer(0), "No Action"), (Value::Integer(1), "Close"), (Value::Integer(2), "Restart")]);
+        assert_eq!(Profile::stock().int(END_ACTION_KEY), 1);
+        assert_eq!(Profile::default().int(END_ACTION_KEY), 0);
+        assert_eq!(short_lived_key("ABC"), "NeverWarnAboutShortLivedSessions_ABC");
+        assert_eq!(short_lived_selection_key("ABC"), "NeverWarnAboutShortLivedSessions_ABC_selection");
+    }
+
+    /// 13q Task 1 (`PSV:187-213`): the logging rows follow "Automatically Log", the archive
+    /// folder follows "Archive On Closure".
+    #[test]
+    fn session_profile_rows_enable_as_iterm2() {
+        let on = |p: &Profile, key: &str| profile_row_enabled(p, key, false);
+        let mut p = Profile::stock();
+        let logging = ["Log Directory", "Log Filename Format", "Plain Text Logging"];
+        for k in logging {
+            assert!(!on(&p, k), "{k}");
+        }
+        assert!(!on(&p, "Archive Directory"));
+        p.set("Automatically Log", Value::Boolean(true));
+        for k in logging {
+            assert!(on(&p, k), "{k}");
+        }
+        assert!(!on(&p, "Archive Directory"));
+        p.set("Archive On Closure", Value::Boolean(true));
+        assert!(on(&p, "Archive Directory"));
+        assert!(on(&p, "Columns"));
     }
 }

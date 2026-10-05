@@ -64,6 +64,9 @@ pub(super) struct MenuBar {
     /// Window > Arrangements > Restore Window Arrangement and ... as Tabs, and what they list.
     pub(super) restore: Option<Submenu>,
     pub(super) restore_tabs: Option<Submenu>,
+    /// Shell > Archives and the recent archives it lists after its separator.
+    pub(super) archives: Option<Submenu>,
+    pub(super) archive_items: Vec<String>,
     pub(super) arrangement_items: Vec<(String, bool)>,
     pub(super) arrangements_filled: bool,
     /// Session > Buried Sessions and what it lists: (menu id, label); an empty id is a line.
@@ -145,7 +148,7 @@ impl App {
                 // Disconnect is enabled by `refresh_ssh_menu`, for a session that has a conductor.
                 let enabled = Self::menu_enabled(item) && item.selector != "sshDisconnect:" && item.selector != "explainOutputWithAI:" && (item.selector != "downloadFiles:" || self.download_files_enabled()) && (item.selector != "performNaturalLanguageQuery:" || self.globals.bool(crate::ai_settings::ADMIN));
                 let parent = &item.path[..item.path.len() - 1];
-                let alert_check = super::marks_ui::CHECKS.iter().any(|(s, _)| *s == item.selector) || super::seltools_ui::CHECKED.contains(&item.selector.as_str()) || matches!(item.selector.as_str(), "toggleMultiLinePasteWarning:" | "promptToConvertTabsToSpacesWhenPasting:" | "toggleSizeChangesAffectProfile:");
+                let alert_check = super::marks_ui::CHECKS.iter().any(|(s, _)| *s == item.selector) || super::seltools_ui::CHECKED.contains(&item.selector.as_str()) || matches!(item.selector.as_str(), "toggleMultiLinePasteWarning:" | "promptToConvertTabsToSpacesWhenPasting:" | "toggleSizeChangesAffectProfile:" | "startStopLogging:");
                 let state_check = parent.iter().any(|p| p == "Terminal State") && item.label() != "Reset";
                 if alert_check || state_check {
                     let c = CheckMenuItem::with_id(item.id(), menu_text(item), enabled, false, None);
@@ -239,7 +242,7 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, explain_ai, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
+        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string).to_vec()).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, explain_ai, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
         self.runtime_menu_title();
         self.refresh_claude_menu();
         self.retitle_suppressed_menu();
@@ -554,6 +557,12 @@ impl App {
         }
         check("Literal Controls", screen.is_some_and(|s| s.keys.literal));
         check("Size Changes Update Profile", self.globals.bool(fonts_ui::SIZE_CHANGES_AFFECT_PROFILE));
+        // Log to File: disabled with no session or an ended one, checked while logging.
+        let (log_enabled, log_on) = super::log_ui::log_menu_state(self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).map(|p| (p.ended || p.exited.is_some(), p.log.is_some())));
+        if let Some(c) = bar.checks.get("Log to File") {
+            c.set_enabled(log_enabled);
+        }
+        check("Log to File", log_on);
         let alert_next = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).is_some_and(|p| p.own().marks.alert_next);
         let action = self.globals.string("Mark Alert Action");
         self.refresh_named_marks();
@@ -561,6 +570,7 @@ impl App {
         self.refresh_scripts_menu();
         self.refresh_arrangement_menus();
         self.refresh_buried_menu();
+        self.refresh_archives_menu();
         self.refresh_snippet_menus();
         self.sync_toolbelt_checks();
         self.refresh_window_list();
@@ -612,7 +622,7 @@ impl App {
         if self.tray_picked(id) || self.buried_picked(id) || self.script_picked(id) {
             return;
         }
-        if self.arrangement_picked(id) || self.window_list_picked(id) {
+        if self.arrangement_picked(id) || self.window_list_picked(id) || self.archive_picked(id) {
             return;
         }
         if let Some(guid) = id.strip_prefix(PROFILE_ID) {
@@ -838,19 +848,14 @@ impl App {
             "saveCurrentWindowAsArrangement:" => self.open_save_arrangement(event_loop, false),
             "importWindowArrangement:" => self.load_arrangement_file(),
             "changeProfileInArrangement:" => self.open_settings_page(event_loop, crate::settings_ui::Page::Arrangements),
-            // A session whose shell has exited restarts at once; a running one asks first
+            // A session whose shell has exited restarts at once (asking first when it left programs
+            // running; `restart_step`); a running one asks first
             // (`restartSessionWithConfirmation:`), once: iTerm2's question is modal, so a
             // second pick while the pane's question waits does nothing. The API's
             // RestartSession never asks.
             "restartSession:" => {
                 if let Some(id) = self.focused_id() {
-                    if restart_asks(self.panes.get(&id).is_some_and(|p| p.exited.is_some())) {
-                        if !self.alert_waits(|then| *then == super::scripts_alerts::Then::Restart(id)) {
-                            self.ask_scripts(super::scripts_alerts::Ask::new(restart_spec(), super::scripts_alerts::Then::Restart(id)));
-                        }
-                    } else {
-                        self.restart_pane(id);
-                    }
+                    self.restart_via(id, crate::session_end::Via::Menu);
                 }
             }
             "copy:" => {
@@ -896,6 +901,9 @@ impl App {
                 }
             }
             "toggleAutoComposer:" => self.toggle_auto_composer(),
+            "startStopLogging:" => self.start_stop_logging(),
+            "saveArchive:" => self.save_archive_menu(),
+            "restoreArchive:" => self.restore_archive(None),
             "openDirectories:" => self.open_recent_dirs(event_loop),
             "openAutocomplete:" => self.open_autocomplete(),
             "toggleShowClippings:" => self.toggle_clippings(),
@@ -1098,6 +1106,9 @@ impl App {
         if self.save_due.is_some() {
             self.save_now();
         }
+        // Logs are written out while the panes still hold them: `leave_host` empties the panes.
+        self.finish_archives(!keep, std::time::Duration::from_secs(5));
+        self.close_all_logs();
         self.leave_host(keep);
         self.panes.clear();
         self.focus_order.clear();
@@ -1528,11 +1539,6 @@ pub(super) fn info_box(text: &str) {
     unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Tandem").as_ptr(), MB_OK | MB_ICONINFORMATION) };
 }
 
-/// Whether Restart Session asks first: only while the session's shell runs (`PT:2851`).
-pub(super) fn restart_asks(exited: bool) -> bool {
-    !exited
-}
-
 /// The Window menu's window list (`PT:3069-3084`): (registry key, text, checked) for each
 /// window by number. `entries` are (registry key, window number, the window's title as the
 /// OS shows it without the label, its title without the number); `focused` is checked.
@@ -1592,8 +1598,6 @@ mod tests {
         assert!(s.never_remember.is_empty());
         assert!(s.rememberable(1), "Cancel may be remembered");
         assert_eq!(checkbox_label(&s), Some("Remember my choice"));
-        assert!(!super::restart_asks(true), "an exited session restarts at once");
-        assert!(super::restart_asks(false));
     }
 
     /// The Window menu's window list (`PT:3069-3084`): by window number, the current one

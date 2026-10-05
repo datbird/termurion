@@ -457,7 +457,7 @@ impl App {
         };
         let id = self.next_id;
         self.next_id += 1;
-        self.install_pane(id, Pane::recording(id, cols, rows), &profile);
+        self.install_pane(id, Pane::recording(id, cols, rows), &profile, false);
         if let Some(p) = self.panes.get_mut(&id) {
             p.dvr = dvr;
         }

@@ -99,6 +99,18 @@ pub struct HostedPty {
     detached: bool,
 }
 
+/// Waits until nothing is queued for the host, at most `wait`; true when it is empty.
+fn wait_drained(queued: &AtomicUsize, wait: Duration) -> bool {
+    let end = std::time::Instant::now() + wait;
+    while queued.load(Ordering::Relaxed) > 0 {
+        if std::time::Instant::now() >= end {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    true
+}
+
 impl Inner {
     fn send(&self, m: &Msg) -> Result<(), String> {
         if self.lost.load(Ordering::Acquire) {
@@ -394,11 +406,15 @@ impl Client {
 
     /// Leaves the host: the sessions keep running there. Waits (briefly) for queued frames.
     pub fn close(&self) {
-        let end = std::time::Instant::now() + Duration::from_secs(2);
-        while self.inner.queued.load(Ordering::Relaxed) > 0 && std::time::Instant::now() < end {
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        wait_drained(&self.inner.queued, Duration::from_secs(2));
         self.inner.pipe.shutdown();
+    }
+
+    /// Ends every session and waits, at most `wait`, for the request to be written to the host
+    /// (logoff: the process may end as soon as the handler returns). False when it was not.
+    pub fn kill_all_and_wait(&self, wait: Duration) -> bool {
+        self.kill_all();
+        wait_drained(&self.inner.queued, wait)
     }
 }
 
@@ -552,6 +568,24 @@ mod tests {
         client.watch_prompts(None);
         assert!(!pty.password_input(), "turning detection off clears it too");
         client.kill_all();
+    }
+
+    /// A logoff waits for the kill request to be written: the queue empties while it waits, and a
+    /// queue that never empties costs the wait once and reports it.
+    #[test]
+    fn a_wait_for_the_host_lasts_until_the_queue_is_empty() {
+        let q = Arc::new(AtomicUsize::new(7));
+        let l = q.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            l.store(0, Ordering::Relaxed);
+        });
+        assert!(super::wait_drained(&q, Duration::from_secs(5)), "the queue emptied");
+        assert_eq!(q.load(Ordering::Relaxed), 0, "it waited for the write");
+        let stuck = AtomicUsize::new(3);
+        let t = std::time::Instant::now();
+        assert!(!super::wait_drained(&stuck, Duration::from_millis(200)), "a stuck queue is reported");
+        assert!(t.elapsed() >= Duration::from_millis(190), "and waited the whole time");
     }
 
     /// A host from an older Tandem that speaks up to `speaks`: it refuses each higher version

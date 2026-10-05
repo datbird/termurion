@@ -1311,7 +1311,8 @@ mod tests {
     /// string handed to the start is injected.
     #[test]
     fn pane_command_is_the_profile_line() {
-        let start = body("fn start_pane_as(");
+        // 13q split the start: the spawn half holds the command and the launch.
+        let start = body("fn spawn_pane(");
         assert!(start.contains("pane.command = cmd;"), "the pane's command is the profile's line");
         assert!(start.contains("format!(\"Could not start {cmd}: {e}\")"), "the banner names the profile's line");
         assert!(start.contains("let launch = injected.as_deref().unwrap_or(&cmd);"));
@@ -1708,7 +1709,7 @@ mod tests {
         let body = src[src.find("fn send_initial_text(").unwrap()..].split("\n    }\n").next().unwrap();
         assert!(body.find("bump_initial_text").unwrap() < body.find("initial_text_blocked(").unwrap(), "every start takes a generation, even one that sends nothing");
         let restart = include_str!("mod.rs");
-        let restart = &restart[restart.find("fn restart_pane(").unwrap()..];
+        let restart = &restart[restart.find("fn restart_confirmed(").unwrap()..];
         assert!(restart.split("\n    }\n").next().unwrap().contains("bump_initial_text"), "a restart that sends nothing still drops the old answer");
     }
 
@@ -1723,7 +1724,7 @@ mod tests {
         assert!(answer.contains("p.input(&bytes)"), "{answer}");
         assert!(!answer.contains("reply(") && !answer.contains("write("), "no raw write skips the encoder");
         let start = include_str!("mod.rs");
-        let start = &start[start.find("self.install_pane(id, pane, &p);").unwrap()..];
+        let start = &start[start.find("self.install_pane(id, pane, &p, false);").unwrap()..];
         assert!(start[..1200].contains("self.send_initial_text(id, &p)"), "the launch sends right after the install");
         let install = include_str!("mod.rs");
         let install = &install[install.find("    fn install_pane(").unwrap()..];

@@ -285,6 +285,14 @@ pub fn toggle_off(label: &str) -> &'static [u8] {
     TOGGLES.iter().find(|t| t.0 == label).map_or(&[], |t| t.2.as_bytes())
 }
 
+impl Marks {
+    /// The program ended: no command is typed or running any more (13q).
+    pub(crate) fn program_ended(&mut self) {
+        self.in_command = false;
+        self.running = false;
+    }
+}
+
 impl Screen {
     /// The probe rules the prompt path sniff reads (`App::path_probe`).
     pub fn set_path_probe(&mut self, p: crate::netpath::Probe) {

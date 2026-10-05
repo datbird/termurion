@@ -799,7 +799,7 @@ mod tests {
             assert!(!production.contains("self.inner("), "{src} insets a pane without its room");
         }
         assert!(body(MOD, "relayout").contains("grid_size_for("), "each pane's pty is sized by its own room");
-        assert!(body(MOD, "start_pane_as").contains("pane_room_for("), "a new pane starts with its room");
+        assert!(body(MOD, "spawn_pane").contains("pane_room_for("), "a new pane starts with its room");
         assert!(body(MOD, "size_window").contains("scroll_room()"), "a new window opens with its columns");
         assert!(include_str!("sizing_ui.rs").contains("scroll_room()"), "the edge snap counts the strip once");
         assert!(body(include_str!("windows_ui.rs"), "apply_window_style").contains("scroll_room()"), "a styled window opens with its columns beside the bar");
@@ -890,7 +890,7 @@ mod tests {
         assert!(!d.contains("globals.bool(\"Show"), "the keys are read at pane start");
         assert!(b.contains("scroll_series") && b.contains("tick_digest()") && b.contains("ALT_SCREEN"), "the walk is cached, and the alternate screen shows no marks: {b}");
         assert!(include_str!("windows_ui.rs").contains("swap(&mut self.text_blinking, &mut s.text_blinking)"), "text_blinking is per window: swap_live");
-        assert!(body(MOD, "restart_pane").contains("forget_scrollbar("), "Restart Session reuses the id: the old ticks go");
+        assert!(body(MOD, "restart_confirmed").contains("forget_scrollbar("), "Restart Session reuses the id: the old ticks go");
         assert!(body(view, "forget_scrollbar").contains("scroll_ticks.remove(") && body(MOD, "close_pane").contains("forget_scrollbar("), "a closed pane's entries go");
         let s = body(MOD, "install_pane");
         assert!(s.contains("scroll_ticks.insert(") && s.contains("ShowLocationsInScrollbar") && s.contains("ShowMarksInScrollbar"), "{s}");
