@@ -3270,24 +3270,27 @@ impl App {
             ssh_transport: transport,
         };
         let mut env = crate::session_env::overlay(crate::session_env::vars(&facts), &extra);
+        // TERM is the profile's Terminal Type, only when nothing else names it (`PS:3253-3255`).
+        // Decided before the POSIX variables (which never name TERM) so a WSL session's
+        // `WSLENV` can list it (P17); the entry still goes last.
+        let term = crate::session_env::term_var(&env, std::env::var_os("TERM").is_some(), &p.terminal_type());
         // The POSIX variables follow, never interleaved (`PS:3284-3366`); `merge` puts them over
         // the inherited block.
-        let posix = self.posix(p, cmd);
+        let posix = self.posix(p, cmd, term.is_some());
         env.extend(crate::session_env::posix_vars(&posix));
-        // TERM is the profile's Terminal Type, only when nothing else names it (`PS:3253-3255`).
-        env.extend(crate::session_env::term_var(&env, std::env::var_os("TERM").is_some(), &p.terminal_type()));
+        env.extend(term);
         (env, cookie)
     }
 
     /// The POSIX variables a session on `cmd` gets: `COLORFGBG` from the profile's palette, the
     /// locale (`locale_guess::locale_vars`), and `TERMINFO_DIRS` for WSL (R6).
-    fn posix(&mut self, p: &Profile, cmd: &str) -> crate::session_env::Posix {
+    fn posix(&mut self, p: &Profile, cmd: &str, term_set: bool) -> crate::session_env::Posix {
         let palette = crate::palette::Palette::from_profile(p, self.dark());
         let colorfgbg = crate::session_env::colorfgbg(&palette.ansi, palette.fg, palette.bg, self.globals.bool("UseColorfgbgFallback"));
         let locale = self.locale_pairs(p);
         // Only a WSL session wants it, and only a local `%APPDATA%` is written (P12).
         let terminfo = (self.globals.bool("ShouldSetTerminfoDirs") && crate::session_env::is_wsl(cmd)).then(|| self.terminfo_folder()).flatten();
-        posix_for(cmd, terminfo.as_deref().map(|d| d.to_string_lossy()).as_deref(), colorfgbg, locale, std::env::var("WSLENV").ok())
+        posix_for(cmd, terminfo.as_deref().map(|d| d.to_string_lossy()).as_deref(), colorfgbg, locale, std::env::var("WSLENV").ok(), term_set)
     }
 
     /// The locale variables for the profile (`PS:3284-3331`). The start-time prompt and the
@@ -6521,12 +6524,16 @@ fn menu_should_hide(full_screen: bool, hide_key: bool) -> bool {
 
 /// The session's POSIX variables for a program started from `cmdline`: `TERMINFO_DIRS` only for
 /// a WSL session (R6: MSYS2, Git Bash, cmd and PowerShell never get it), the rest as given.
-pub(super) fn posix_for(cmdline: &str, terminfo_dir: Option<&str>, colorfgbg: Option<String>, locale: Vec<(String, String)>, inherited_wslenv: Option<String>) -> crate::session_env::Posix {
+/// `term_set` says 13o's `term_var` gave the session a `TERM`; a WSL session then lists it in
+/// `WSLENV` so the profile's Terminal Type reaches the distribution (P17).
+pub(super) fn posix_for(cmdline: &str, terminfo_dir: Option<&str>, colorfgbg: Option<String>, locale: Vec<(String, String)>, inherited_wslenv: Option<String>, term_set: bool) -> crate::session_env::Posix {
+    let wsl = crate::session_env::is_wsl(cmdline);
     crate::session_env::Posix {
         colorfgbg,
         locale,
-        terminfo: terminfo_dir.filter(|_| crate::session_env::is_wsl(cmdline)).map(str::to_string),
+        terminfo: terminfo_dir.filter(|_| wsl).map(str::to_string),
         inherited_wslenv,
+        wsl_term: term_set && wsl,
     }
 }
 
@@ -6587,7 +6594,7 @@ mod tests {
     #[test]
     fn terminfo_is_for_wsl_only() {
         let dir = Some(r"C:\A\Tandem\terminfo");
-        let at = |cmd: &str| posix_for(cmd, dir, Some("15;0".into()), vec![("LANG".into(), "en_US.UTF-8".into())], Some("X/p".into()));
+        let at = |cmd: &str| posix_for(cmd, dir, Some("15;0".into()), vec![("LANG".into(), "en_US.UTF-8".into())], Some("X/p".into()), true);
         assert_eq!(at("wsl.exe -d Ubuntu").terminfo.as_deref(), dir);
         assert_eq!(at(r#""C:\Windows\System32\wsl.exe""#).terminfo.as_deref(), dir);
         for other in ["pwsh.exe", r"C:\msys64\usr\bin\bash.exe --login", "cmd.exe", r"C:\Program Files\Git\bin\bash.exe", "ubuntu.exe"] {
@@ -6598,9 +6605,29 @@ mod tests {
             assert_eq!(p.locale, vec![("LANG".to_string(), "en_US.UTF-8".to_string())]);
             assert_eq!(p.inherited_wslenv.as_deref(), Some("X/p"));
         }
-        assert_eq!(posix_for("wsl.exe", None, None, Vec::new(), None).terminfo, None, "no folder, no variable");
+        assert_eq!(posix_for("wsl.exe", None, None, Vec::new(), None, false).terminfo, None, "no folder, no variable");
         let line = crate::session_env::posix_vars(&at("pwsh.exe"));
         assert!(!line.iter().any(|v| v.starts_with("TERMINFO_DIRS=") || v.contains("TERMINFO_DIRS")), "{line:?}");
+    }
+
+    /// P17: 13o's `TERM` reaches a WSL session through `WSLENV`, only when `term_var` set it
+    /// (a TERM in Tandem's own environment or a profile's own `TERM=` entry wins and is not
+    /// listed), never for another program; the `TERM=` entry goes after the POSIX block.
+    #[test]
+    fn term_reaches_wsl_through_wslenv() {
+        let at = |cmd: &str, set: bool| crate::session_env::posix_vars(&posix_for(cmd, None, None, Vec::new(), None, set));
+        assert_eq!(at("wsl.exe -d Ubuntu", true), ["WSLENV=TERM"]);
+        assert_eq!(at(r#""C:\Windows\System32\wsl.exe""#, true), ["WSLENV=TERM"]);
+        assert!(at("wsl.exe", false).is_empty(), "no TERM set, nothing listed");
+        for other in ["pwsh.exe", "cmd.exe", r"C:\msys64\usr\bin\bash.exe --login", "ubuntu.exe"] {
+            assert!(at(other, true).is_empty(), "{other}");
+        }
+        let src = include_str!("mod.rs");
+        let body = &src[src.find("    fn session_env(").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        let term = body.find("let term = crate::session_env::term_var(").expect("TERM is decided first");
+        assert!(term < body.find("self.posix(p, cmd, term.is_some())").unwrap());
+        assert!(body.find("posix_vars(&posix)").unwrap() < body.find("env.extend(term)").unwrap(), "TERM= still goes last");
     }
 
     #[test]

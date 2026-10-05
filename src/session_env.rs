@@ -176,6 +176,10 @@ pub struct Posix {
     pub terminfo: Option<String>,
     /// Tandem's own `WSLENV`, kept so a user's setup is not lost.
     pub inherited_wslenv: Option<String>,
+    /// A WSL session that gets 13o's `TERM` (the profile's Terminal Type): `WSLENV` names it, as
+    /// WSL imports no Windows variable it does not list (P17). The `TERM=` entry itself is
+    /// `term_var`'s.
+    pub wsl_term: bool,
 }
 
 /// `WSLENV` with `add`'s `(name, flags)` entries appended after `inherited`'s; a name already
@@ -208,6 +212,9 @@ pub fn posix_vars(p: &Posix) -> Vec<String> {
         out.push(format!("TERMINFO_DIRS={t}"));
         // `/p`: WSL translates the Windows path to its own.
         added.push(("TERMINFO_DIRS", "p"));
+    }
+    if p.wsl_term {
+        added.push(("TERM", ""));
     }
     if !added.is_empty() {
         out.push(format!("WSLENV={}", wslenv(p.inherited_wslenv.as_deref(), &added)));
@@ -384,6 +391,7 @@ mod tests {
             locale: vec![("LANG".into(), "en_US.UTF-8".into())],
             terminfo: Some(r"C:\A\Tandem\terminfo".into()),
             inherited_wslenv: None,
+            wsl_term: false,
         };
         assert_eq!(posix_vars(&full), ["COLORFGBG=15;0", "LANG=en_US.UTF-8", r"TERMINFO_DIRS=C:\A\Tandem\terminfo", "WSLENV=COLORFGBG:LANG:TERMINFO_DIRS/p"]);
         assert_eq!(posix_vars(&Posix::default()), Vec::<String>::new());
@@ -397,6 +405,25 @@ mod tests {
         for no in ["pwsh.exe", r"C:\msys64\usr\bin\bash.exe --login", "cmd.exe", "ubuntu.exe", "", "wsl2.exe", r"C:\x\notwsl.exe", r"C:\wsl.exe\cmd.exe"] {
             assert!(!is_wsl(no), "{no}");
         }
+    }
+
+    /// P17: a WSL session given 13o's `TERM` lists it in `WSLENV` (no flag: a name, not a
+    /// path), after Tandem's own entries and once even when the inherited value names it.
+    #[test]
+    fn wslenv_lists_term_for_wsl() {
+        let full = Posix {
+            colorfgbg: Some("15;0".into()),
+            locale: vec![("LANG".into(), "en_US.UTF-8".into())],
+            terminfo: Some(r"C:\A\Tandem\terminfo".into()),
+            inherited_wslenv: None,
+            wsl_term: true,
+        };
+        assert_eq!(posix_vars(&full).last().map(String::as_str), Some("WSLENV=COLORFGBG:LANG:TERMINFO_DIRS/p:TERM"));
+        let only = Posix { wsl_term: true, ..Posix::default() };
+        assert_eq!(posix_vars(&only), ["WSLENV=TERM"], "TERM alone still needs WSLENV");
+        let kept = Posix { wsl_term: true, inherited_wslenv: Some("term/u:X".into()), ..Posix::default() };
+        assert_eq!(posix_vars(&kept), ["WSLENV=term/u:X"], "a user's own TERM entry is kept as written");
+        assert!(!posix_vars(&Posix::default()).iter().any(|v| v.contains("TERM")));
     }
 
     #[test]
