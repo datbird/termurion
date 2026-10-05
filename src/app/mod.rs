@@ -46,7 +46,7 @@ use crate::settings_ui::{Edit, How, Mode, SettingsWindow};
 const FONT: &str = "Cascadia Mono";
 /// 12 pt, iTerm2's default size, at 96 dpi.
 const FONT_PX: f32 = 16.0;
-/// Space between a pane's edge and its text, in pixels at 100%.
+/// The side tab bar's own margin, in pixels at 100% (not the terminal margin).
 const SIDE_TAB_MARGIN: f32 = 4.0;
 /// How often a fading tab bar draws while it fades (60 frames a second).
 const FLASH_FRAME: Duration = Duration::from_millis(16);
@@ -4952,13 +4952,14 @@ impl App {
                         let (cols, lines) = (p.screen.term().columns(), p.screen.term().screen_lines());
                         let grid = Rect { x: inner.x, y: inner.y, w: cols as f32 * cell.0, h: lines as f32 * cell.1 };
                         let bg = p.screen.palette.bg;
+                        let has_image = backgrounds.iter().any(|b| b.pane == id);
                         let (alt, extend) = (p.screen.alt_screen(), self.globals.bool("ExtendBackgroundColorIntoMargins"));
                         let edges = if alt && extend { p.screen.edge_backgrounds() } else { Vec::new() };
                         let fill = margins::fill(&edges, bg, extend, alt);
                         if see_through {
-                            scene::margin_fill_alpha(&mut frame, rect, grid, cell.1, &fill, bg, bg_alpha, opaque_colors);
+                            scene::margin_fill_alpha(&mut frame, rect, grid, cell.1, &fill, bg, bg_alpha, opaque_colors, has_image);
                         } else {
-                            scene::margin_fill(&mut frame, rect, grid, cell.1, &fill);
+                            scene::margin_fill(&mut frame, rect, grid, cell.1, &fill, has_image.then_some(bg));
                         }
                     }
                     // An Auto Composer hides the terminal cursor and the rows it covers.

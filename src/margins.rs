@@ -45,14 +45,14 @@ pub struct Fill {
 /// The pane's margin colors. `edges` is each visible row's first and last cell background when
 /// not default; only an alternate screen with `extend` takes colors from them: the strips
 /// above and below take the color 80% of the edge cells share, and each row's sides take that
-/// row's own edge color when it has one (`iTermTextDrawingHelper.m:619-647`).
+/// row's own edge color when it has one, else the pane's default background (`iTermTextDrawingHelper.m:619-647`).
 pub fn fill(edges: &[(Option<Rgb>, Option<Rgb>)], pane_bg: Rgb, extend: bool, alt_screen: bool) -> Fill {
     if !(extend && alt_screen) {
         return Fill { default: pane_bg, rows: vec![(pane_bg, pane_bg); edges.len()] };
     }
     let values: Vec<Option<Rgb>> = edges.iter().flat_map(|(l, r)| [*l, *r]).collect();
     let default = dominant(&values, 0.8).flatten().unwrap_or(pane_bg);
-    Fill { default, rows: edges.iter().map(|(l, r)| (l.unwrap_or(default), r.unwrap_or(default))).collect() }
+    Fill { default, rows: edges.iter().map(|(l, r)| (l.unwrap_or(pane_bg), r.unwrap_or(pane_bg))).collect() }
 }
 
 /// The columns and rows `rect` (width, height) holds past the margins `(side, top/bottom)`:
@@ -101,10 +101,10 @@ mod tests {
         // The strips above and below take the dominant color of the first and last cells.
         let both: Vec<(Option<Rgb>, Option<Rgb>)> = (0..10).map(|_| (Some(BLUE), Some(BLUE))).collect();
         assert_eq!(fill(&both, BLACK, true, true).default, BLUE);
-        // A row whose last cell is default takes the dominant color there.
+        // A row whose last cell is default takes the pane's default background there.
         let mut edges: Vec<(Option<Rgb>, Option<Rgb>)> = (0..10).map(|_| (Some(BLUE), Some(BLUE))).collect();
         edges[1] = (Some(RED), None);
-        assert_eq!(fill(&edges, BLACK, true, true).rows[1], (RED, BLUE));
+        assert_eq!(fill(&edges, BLACK, true, true).rows[1], (RED, BLACK), "a default edge cell is the pane's default background (iTerm2: regularVerticalColor), not the dominant color");
         // Main screen, or the setting off: the pane color everywhere.
         for (extend, alt) in [(true, false), (false, true), (false, false)] {
             let f = fill(&both, BLACK, extend, alt);

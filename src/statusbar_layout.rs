@@ -611,6 +611,8 @@ pub fn pane_split(rect: Rect, bar: Option<(f32, Position)>) -> (Rect, Option<Rec
 pub struct Room {
     pub area: Rect,
     pub panes: Vec<(u64, Rect)>,
+    /// The terminal margins in pixels (side, top/bottom): a margin edit changes the grids.
+    pub margins: (f32, f32),
 }
 
 #[cfg(test)]
@@ -757,12 +759,23 @@ mod tests {
         assert_eq!(Position::from_code(7), Position::Top);
     }
     #[test]
+    fn a_margin_edit_changes_the_room() {
+        let area = Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 };
+        let room = |m: (f32, f32)| Room { area, panes: vec![(1, area)], margins: m };
+        assert_eq!(room((5.0, 2.0)), room((5.0, 2.0)));
+        assert_ne!(room((5.0, 2.0)), room((6.0, 2.0)), "a window compares the room, so it must differ");
+        assert_ne!(room((5.0, 2.0)), room((5.0, 3.0)));
+        // The window's own room reads the margins, so every window relays out on an edit.
+        assert!(include_str!("app/statusbar_ui.rs").contains("margins: self.margins()"));
+    }
+
+    #[test]
     fn a_per_pane_bar_changes_the_room() {
         // Two panes side by side; the room a window compares before each frame.
         let area = Rect { x: 0.0, y: 30.0, w: 800.0, h: 570.0 };
         let left = Rect { w: 399.0, ..area };
         let right = Rect { x: 401.0, w: 399.0, ..area };
-        let room = |bars: [Option<(f32, Position)>; 2]| Room { area, panes: vec![(1, pane_split(left, bars[0]).0), (2, pane_split(right, bars[1]).0)] };
+        let room = |bars: [Option<(f32, Position)>; 2]| Room { area, panes: vec![(1, pane_split(left, bars[0]).0), (2, pane_split(right, bars[1]).0)], margins: (5.0, 2.0) };
         let none = room([None, None]);
         assert_eq!(none, room([None, None]));
         assert_eq!(none.panes[0].1, left);
