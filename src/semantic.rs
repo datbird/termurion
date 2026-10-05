@@ -39,6 +39,8 @@ pub struct ClickContext {
     pub filename_set: Option<crate::url_guess::CharSet>,
     /// Ignored folders and mapped drives (`App::path_probe`, P19).
     pub probe: crate::netpath::Probe,
+    /// The phase order (`PrioritizeSmartSelectionActions`, `DisableSmartSelectionActionsOnClick`).
+    pub order: Order,
 }
 
 /// Which context a resolved range belongs to.
@@ -83,11 +85,64 @@ pub fn resolve_range(ctx: &ClickContext) -> Option<(Target, Option<std::ops::Ran
     resolve_in(ctx).map(|(t, r, _)| (t, r))
 }
 
+/// The order the click phases run in (`UAF:186-232`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Order {
+    #[default]
+    Default,
+    /// `PrioritizeSmartSelectionActions`: Smart Selection right after the link.
+    SmartFirst,
+    /// `DisableSmartSelectionActionsOnClick`: Smart Selection never runs on a click.
+    NoSmart,
+}
+
+/// One step of resolving a click (`UAF:31-40`; the respecting pass belongs to `File`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Prompt,
+    Link,
+    File,
+    SmartAction,
+    RawCommand,
+    UrlLike,
+}
+
+/// The order for the two keys; disabling wins (`UAF:186-231`).
+pub fn order_from(prioritize: bool, disable: bool) -> Order {
+    if disable {
+        Order::NoSmart
+    } else if prioritize {
+        Order::SmartFirst
+    } else {
+        Order::Default
+    }
+}
+
+/// The phases a click runs, in order.
+pub fn phases(order: Order) -> &'static [Phase] {
+    use Phase::*;
+    match order {
+        Order::Default => &[Prompt, Link, File, SmartAction, RawCommand, UrlLike],
+        Order::SmartFirst => &[Prompt, Link, SmartAction, File, RawCommand, UrlLike],
+        Order::NoSmart => &[Prompt, Link, File, RawCommand, UrlLike],
+    }
+}
+
+/// Whether a Win-click acts as a click on its target (`MH:278-295`): a click that was not the
+/// window's first acts (when the pane was not focused, the plain press focuses it first and
+/// the click still acts); a first click that brought the window forward only activates it
+/// unless the pane was already focused and `CmdClickWhenInactiveInvokesSemanticHistory` is on.
+pub fn win_click_acts(first_mouse: bool, pane_was_focused: bool, when_inactive: bool) -> bool {
+    !first_mouse || (pane_was_focused && when_inactive)
+}
+
+/// Whether the Win-hover underline may show (`TVA:466-472`): the window is key or the key is on.
+pub fn hover_allowed(window_focused: bool, when_inactive: bool) -> bool {
+    window_focused || when_inactive
+}
+
 /// Like `resolve_range`, with the context the range belongs to.
 pub fn resolve_in(ctx: &ClickContext) -> Option<(Target, Option<std::ops::Range<usize>>, Pass)> {
-    if let Some(link) = &ctx.link {
-        return Some((Target::Link(link.clone()), None, Pass::Detect));
-    }
     let default_set;
     let set = match &ctx.filename_set {
         Some(s) => s,
@@ -98,28 +153,49 @@ pub fn resolve_in(ctx: &ClickContext) -> Option<(Target, Option<std::ops::Range<
     };
     // P1: at most this many probes per click, across both passes.
     let budget = std::cell::Cell::new(MAX_PROBES);
-    if !ctx.no_probe {
-        if let Some((path, line, column, range)) = path_in(&ctx.before, &ctx.after, ctx.cwd.as_deref(), set, &ctx.probe, &budget) {
-            return Some((Target::File { path, line, column }, Some(range), Pass::Detect));
-        }
-        // ExistingFileRespectingHardNewlines (`UAF:291-297`).
-        if let Some((b, a)) = &ctx.respecting {
-            if let Some((path, line, column, range)) = path_in(b, a, ctx.cwd.as_deref(), set, &ctx.probe, &budget) {
-                return Some((Target::File { path, line, column }, Some(range), Pass::Respecting));
+    for phase in phases(ctx.order) {
+        match phase {
+            // Task 7 fills the prompt context; until then it never matches.
+            Phase::Prompt => {}
+            Phase::Link => {
+                if let Some(link) = &ctx.link {
+                    return Some((Target::Link(link.clone()), None, Pass::Detect));
+                }
+            }
+            Phase::File if !ctx.no_probe => {
+                if let Some((path, line, column, range)) = path_in(&ctx.before, &ctx.after, ctx.cwd.as_deref(), set, &ctx.probe, &budget) {
+                    return Some((Target::File { path, line, column }, Some(range), Pass::Detect));
+                }
+                // ExistingFileRespectingHardNewlines (`UAF:291-297`).
+                if let Some((b, a)) = &ctx.respecting {
+                    if let Some((path, line, column, range)) = path_in(b, a, ctx.cwd.as_deref(), set, &ctx.probe, &budget) {
+                        return Some((Target::File { path, line, column }, Some(range), Pass::Respecting));
+                    }
+                }
+            }
+            Phase::File => {}
+            Phase::SmartAction => {
+                if let Some((rule, action, text)) = &ctx.smart {
+                    return Some((Target::Action { rule: *rule, action: *action, text: text.clone() }, None, Pass::Detect));
+                }
+            }
+            Phase::RawCommand => {
+                if ctx.raw_command {
+                    let range = word_range(&ctx.before, &ctx.after);
+                    if !range.is_empty() {
+                        let word = format!("{}{}", ctx.before, ctx.after)[range.clone()].to_string();
+                        return Some((Target::RawCommand(word), Some(range), Pass::Detect));
+                    }
+                }
+            }
+            Phase::UrlLike => {
+                if let Some((u, r)) = crate::url_guess::guess(&ctx.before, &ctx.after, &ctx.urls) {
+                    return Some((Target::Url(u), Some(r), Pass::Detect));
+                }
             }
         }
     }
-    if let Some((rule, action, text)) = &ctx.smart {
-        return Some((Target::Action { rule: *rule, action: *action, text: text.clone() }, None, Pass::Detect));
-    }
-    if ctx.raw_command {
-        let range = word_range(&ctx.before, &ctx.after);
-        if !range.is_empty() {
-            let word = format!("{}{}", ctx.before, ctx.after)[range.clone()].to_string();
-            return Some((Target::RawCommand(word), Some(range), Pass::Detect));
-        }
-    }
-    crate::url_guess::guess(&ctx.before, &ctx.after, &ctx.urls).map(|(u, r)| (Target::Url(u), Some(r), Pass::Detect))
+    None
 }
 
 pub fn resolve(ctx: &ClickContext) -> Option<Target> {
@@ -747,6 +823,45 @@ mod tests {
         // The first pass wins when it finds something.
         let ctx = ClickContext { before: String::new(), after: "b.txt".into(), cwd: Some(d), respecting: Some((String::new(), "b.txt".into())), ..Default::default() };
         assert_eq!(resolve_in(&ctx).unwrap().2, Pass::Detect);
+    }
+
+    #[test]
+    fn phase_order_follows_iterm2() {
+        use Phase::*;
+        assert_eq!(phases(Order::Default), &[Prompt, Link, File, SmartAction, RawCommand, UrlLike]);
+        assert_eq!(phases(Order::SmartFirst), &[Prompt, Link, SmartAction, File, RawCommand, UrlLike]);
+        assert_eq!(phases(Order::NoSmart), &[Prompt, Link, File, RawCommand, UrlLike]);
+        assert_eq!(order_from(true, true), Order::NoSmart);
+        assert_eq!(order_from(false, true), Order::NoSmart);
+        assert_eq!(order_from(true, false), Order::SmartFirst);
+        assert_eq!(order_from(false, false), Order::Default);
+        // A file and an action: the action first only with SmartFirst.
+        let d = dir("order5", &["example.com"]);
+        let (before, after) = click("exam|ple.com");
+        let mut ctx = ClickContext { before, after, cwd: Some(d), ..Default::default() };
+        ctx.smart = Some((1, 0, "example.com".into()));
+        assert!(matches!(resolve(&ctx), Some(Target::File { .. })));
+        ctx.order = Order::SmartFirst;
+        assert_eq!(resolve(&ctx), Some(Target::Action { rule: 1, action: 0, text: "example.com".into() }));
+        // An action and URL-like text: NoSmart gives the URL.
+        let (before, after) = click("see http://exa|mple.com/x");
+        let mut ctx = ClickContext { before, after, ..Default::default() };
+        ctx.smart = Some((1, 0, "http://example.com/x".into()));
+        assert!(matches!(resolve(&ctx), Some(Target::Action { .. })));
+        ctx.order = Order::NoSmart;
+        assert_eq!(resolve(&ctx), Some(Target::Url("http://example.com/x".into())));
+    }
+
+    #[test]
+    fn inactive_win_click_follows_iterm2() {
+        assert!(win_click_acts(false, true, false));
+        assert!(!win_click_acts(true, false, false));
+        assert!(!win_click_acts(true, false, true));
+        assert!(!win_click_acts(true, true, false));
+        assert!(win_click_acts(true, true, true));
+        assert!(hover_allowed(true, false));
+        assert!(!hover_allowed(false, false));
+        assert!(hover_allowed(false, true));
     }
 
     #[test]

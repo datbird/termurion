@@ -4814,6 +4814,8 @@ impl App {
         let b = button_number(button);
         // The click that activated the window (`mouseDownImpl:`): only now, so a divider, title
         // bar or status bar press is never swallowed and never counts as first mouse.
+        // Captured before the press focuses the pane (`MH:278-295`).
+        let was_focused = self.focused_id() == Some(id);
         let (kind, counts) = mouse::first_click(first, self.mods.cmd, self.globals.bool("AlwaysAcceptFirstMouse"), self.globals.bool("FocusFollowsMouse"), self.focused_id() == Some(id));
         self.first_mouse_down = counts;
         match kind {
@@ -4861,7 +4863,9 @@ impl App {
         }
         // Win-click opens the file or URL under the pointer (Semantic History). Windows
         // would open the Start menu when Win comes up, so that is masked.
-        if b == 0 && mods.cmd && !mods.ctrl && self.globals.bool("CommandSelection") {
+        // A click that only brought the window forward is a plain click (`MH:278-295`).
+        let acts = crate::semantic::win_click_acts(self.first_mouse_down, was_focused, self.globals.bool("CmdClickWhenInactiveInvokesSemanticHistory"));
+        if b == 0 && mods.cmd && !mods.ctrl && acts && self.globals.bool("CommandSelection") {
             #[cfg(windows)]
             crate::winkeys::mask_start_menu();
             let point = self.grid_point(id, col, row);
@@ -5879,6 +5883,7 @@ impl ApplicationHandler<UserEvent> for App {
         // A selection made or cleared at an idle prompt moves Explain Output's state.
         self.explain_follows();
         let active = hotkey_ui::tandem_in_front();
+        let edge = active != self.app_active;
         if active && !self.app_active {
             self.hotkey_reactivated();
             self.ffm_became_active();
@@ -5886,6 +5891,10 @@ impl ApplicationHandler<UserEvent> for App {
             self.ffm_became_inactive();
         }
         self.app_active = active;
+        // The Win-hover underline follows the window's key state (`TVA:466-472`).
+        if edge {
+            self.update_hover();
+        }
         // Again after 13j's edge (S9): a pane focused by aggressive focus follows mouse stamps in
         // this pass, and the inferrer's focus check runs inside it (P20).
         self.sync_pane_activity();

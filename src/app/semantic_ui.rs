@@ -154,6 +154,7 @@ impl App {
             respecting: hard.as_ref().map(|h| (h.before.clone(), h.after.clone())),
             filename_set: Some(filename_set),
             probe: self.path_probe(),
+            order: semantic::order_from(self.globals.bool("PrioritizeSmartSelectionActions"), self.globals.bool("DisableSmartSelectionActionsOnClick")),
         };
         Some(Clicked { ctx, line, text, hard, joined, found, rules, prefs, link_id: link.map(|h| h.id().to_string()) })
     }
@@ -455,7 +456,8 @@ impl App {
     pub(super) fn update_hover(&mut self) {
         let (x, y) = self.cursor;
         let (underline, preview) = self.hover_wanted();
-        let want = self.mods.cmd && !self.mods.ctrl && self.globals.bool("CommandSelection") && matches!(self.drag, Drag::None);
+        let window_key = semantic::hover_allowed(self.focused && self.app_active, self.globals.bool("CmdClickWhenInactiveInvokesSemanticHistory"));
+        let want = window_key && self.mods.cmd && !self.mods.ctrl && self.globals.bool("CommandSelection") && matches!(self.drag, Drag::None);
         let at = want.then(|| self.pane_at(x, y)).flatten().map(|(id, rect)| {
             let (col, row, _) = self.cell_at(id, rect, x, y);
             (id, self.grid_point(id, col, row))
