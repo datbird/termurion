@@ -150,7 +150,7 @@ impl App {
                     return Some(done(ai_actions::NOT_RESTARTABLE, "AI tried to restart the session but it is not restartable."));
                 }
                 self.enter_pane_window(pane);
-                self.restart_pane(pane);
+                self.restart_via(pane, crate::session_end::Via::Api);
                 self.ai_staged.remove(&pane);
                 self.redraw();
                 done(ai_actions::RESTARTING, "Session restarted by AI.")

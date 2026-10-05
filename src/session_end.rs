@@ -251,6 +251,62 @@ pub fn set_short_lived_warning(s: &mut dyn crate::warnings::Store, saved_guid: &
     }
 }
 
+/// How a restart was asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Via {
+    /// Session > Restart Session.
+    Menu,
+    /// The offer bar's Restart button.
+    Bar,
+    /// The Restart end action's timer.
+    Timer,
+    /// The object API's RestartSession and the AI tool.
+    Api,
+}
+
+/// What a restart does first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RestartStep {
+    /// Restart now.
+    Now,
+    /// A running shell: "Restart session?" (`PT:2855`).
+    AskRunningJobs,
+    /// Programs the ended shell left still run, and the restart would end them: ask, naming them.
+    AskSurvivors,
+    /// The timer never ends them unasked: show the restart offer instead of restarting.
+    Offer,
+}
+
+/// The first step of a restart (13q B7, P8: a restart never silently ends running programs).
+pub fn restart_step(via: Via, exited: bool, survivors: usize) -> RestartStep {
+    if !exited {
+        return if via == Via::Menu { RestartStep::AskRunningJobs } else { RestartStep::Now };
+    }
+    match (survivors, via) {
+        (0, _) => RestartStep::Now,
+        (_, Via::Timer) => RestartStep::Offer,
+        _ => RestartStep::AskSurvivors,
+    }
+}
+
+/// The question asked before a restart ends the programs an ended shell left. Never silenceable.
+pub fn restart_survivors_spec(names: &[String]) -> crate::warnings::Spec {
+    let text = if names.len() == 1 {
+        format!("1 program is still running: {}. Restarting ends it.", names[0])
+    } else {
+        format!("{} programs are still running: {}. Restarting ends them.", names.len(), names.join(", "))
+    };
+    crate::warnings::Spec {
+        id: None,
+        kind: crate::warnings::Kind::Persistent,
+        heading: "Restart session?".to_string(),
+        text,
+        labels: vec![crate::api_auth::OK.to_string(), crate::api_auth::CANCEL.to_string()],
+        cancel: None,
+        never_remember: Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,6 +443,35 @@ mod tests {
         store.set("NeverWarnAboutShortLivedSessions_H", Value::Boolean(true));
         set_short_lived_warning(&mut store, "G", true);
         assert_eq!(store.get("NeverWarnAboutShortLivedSessions_H"), Some(Value::Boolean(true)));
+    }
+
+    #[test]
+    fn every_restart_route_counts_the_survivors() {
+        use RestartStep::*;
+        use Via::*;
+        // Nothing left: an ended pane restarts at once; a running shell asks from the menu only.
+        for via in [Menu, Bar, Timer, Api] {
+            assert_eq!(restart_step(via, true, 0), Now, "{via:?}");
+        }
+        assert_eq!(restart_step(Menu, false, 0), AskRunningJobs);
+        assert_eq!(restart_step(Api, false, 0), Now);
+        // Programs left: every route asks, except the timer, which shows the offer.
+        assert_eq!(restart_step(Menu, true, 2), AskSurvivors);
+        assert_eq!(restart_step(Bar, true, 1), AskSurvivors);
+        assert_eq!(restart_step(Api, true, 1), AskSurvivors);
+        assert_eq!(restart_step(Timer, true, 1), Offer);
+    }
+
+    #[test]
+    fn the_survivors_question_cannot_be_silenced() {
+        use crate::warnings::{checkbox_label, Kind};
+        let spec = restart_survivors_spec(&["a.exe".to_string(), "b.exe".to_string()]);
+        assert_eq!(spec.heading, "Restart session?");
+        assert_eq!(spec.text, "2 programs are still running: a.exe, b.exe. Restarting ends them.");
+        assert_eq!(spec.labels, vec!["OK".to_string(), "Cancel".to_string()]);
+        assert_eq!((spec.id.clone(), spec.kind), (None, Kind::Persistent));
+        assert_eq!(checkbox_label(&spec), None);
+        assert_eq!(restart_survivors_spec(&["a.exe".to_string()]).text, "1 program is still running: a.exe. Restarting ends it.");
     }
 
     #[test]

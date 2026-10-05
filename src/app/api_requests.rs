@@ -1015,7 +1015,7 @@ impl App {
         let status = api_layout::restart_status(pane.is_some(), restartable, r.only_if_exited.unwrap_or(false), exited);
         if let (Status::Ok, Some(p)) = (status, pane) {
             self.enter_pane_window(p);
-            self.restart_pane(p);
+            self.restart_via(p, crate::session_end::Via::Api);
             self.redraw();
         }
         status

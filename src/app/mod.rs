@@ -3127,9 +3127,42 @@ impl App {
     /// pane is in the current window (in any tab, shown or not) or buried; a buried one starts at
     /// the content area's size and takes its tab's size when it comes back. The menu always
     /// passes the focused, shown pane (its rect); the tab and buried fallbacks are for the API's
-    /// RestartSession, which may name a background tab's or a buried session. A shell that
-    /// fails to start leaves the pane as it was with "Session failed to start.".
+    /// RestartSession, which may name a background tab's or a buried session. A running shell ends before the
+    /// new one starts (`PS:3863-3871`), so a shell that fails to start leaves an ended pane with
+    /// "Session failed to start.".
     fn restart_pane(&mut self, id: PaneId) {
+        // The safety net: no caller ends the programs an ended shell left without the question.
+        if self.panes.get(&id).is_some_and(|p| p.exited.is_some() && !p.live_survivors().is_empty()) {
+            return;
+        }
+        self.restart_confirmed(id);
+    }
+
+    /// A restart asked for by `via` (13q B7): what it does first follows `restart_step`. A running
+    /// shell's question is the menu's only (the API never asks); programs an ended shell left ask
+    /// on every route, and the timer shows the offer instead.
+    pub(super) fn restart_via(&mut self, id: PaneId, via: crate::session_end::Via) {
+        use crate::session_end::{restart_step, RestartStep};
+        let Some(p) = self.panes.get(&id) else { return };
+        let left = if p.exited.is_some() { p.live_survivors() } else { Vec::new() };
+        match restart_step(via, p.exited.is_some(), left.len()) {
+            RestartStep::Now => self.restart_pane(id),
+            RestartStep::AskRunningJobs => {
+                if !self.alert_waits(|then| *then == scripts_alerts::Then::Restart(id)) {
+                    self.ask_scripts(scripts_alerts::Ask::new(menu::restart_spec(), scripts_alerts::Then::Restart(id)));
+                }
+            }
+            RestartStep::AskSurvivors => {
+                if !self.alert_waits(|then| *then == scripts_alerts::Then::Restart(id)) {
+                    self.ask_scripts(scripts_alerts::Ask::new(crate::session_end::restart_survivors_spec(&left), scripts_alerts::Then::Restart(id)));
+                }
+            }
+            RestartStep::Offer => self.offer_restart(id),
+        }
+    }
+
+    /// The restart itself, after whatever question it needed was answered.
+    fn restart_confirmed(&mut self, id: PaneId) {
         if !self.restartable(id) {
             return;
         }
@@ -3145,6 +3178,23 @@ impl App {
         let guid = self.panes.get(&id).map(|p| p.profile.clone());
         // The new shell never saw what a model typed into the old one.
         self.orch_held.remove(&id);
+        // A live shell ends first, as iTerm2's does (`PS:3863-3871`), with the words under its
+        // text; a start that then fails leaves an ended pane.
+        if self.panes.get(&id).is_some_and(|p| p.exited.is_none()) {
+            let custom = self.globals.string("sessionEndMessageText");
+            let text = crate::session_end::restarted_text(&custom, &self.globals.string("SessionRestartedMessageText"));
+            let divider = self.globals.string("SessionEndMessageDividerCharacter");
+            if let Some(pid) = self.panes.get(&id).and_then(|p| p.shell_pid()) {
+                self.jobs.forget(pid);
+            }
+            if let Some(mut old) = self.panes.remove(&id) {
+                self.ssh_pane_dropped(&old);
+                self.forget_cookie(&old);
+                old.own_mut().append_end_message(&text, &divider);
+                old.end_live_shell();
+                self.panes.insert(id, old);
+            }
+        }
         let (fresh, profile) = match self.spawn_pane(id, rect, guid.as_deref()) {
             Ok(started) => started,
             Err(e) => {
@@ -3152,16 +3202,10 @@ impl App {
                 return;
             }
         };
-        let Some(mut old) = self.panes.remove(&id) else { return };
+        let Some(old) = self.panes.remove(&id) else { return };
         // The offer and the tmux question are about the shell that is gone (`willRecycleSession`).
         if let Some(b) = self.bars.get_mut(&id) {
             b.retain(|x| x.id != crate::session_end::RESTART_BAR && x.id != crate::session_end::TMUX_CLOSE_BAR);
-        }
-        if old.exited.is_none() {
-            // A live shell ends with the words under its text (`PS:4775-4783`).
-            let custom = self.globals.string("sessionEndMessageText");
-            let text = crate::session_end::restarted_text(&custom, &self.globals.string("SessionRestartedMessageText"));
-            old.own_mut().append_end_message(&text, &self.globals.string("SessionEndMessageDividerCharacter"));
         }
         // The pid is reusable once the shell is gone: the watcher forgets the one the pane has or had.
         if let Some(pid) = old.shell_pid().or(old.exit_pid()) {
@@ -3181,7 +3225,7 @@ impl App {
         self.chat_refresh();
     }
 
-    /// A restart whose shell did not start: the pane stays as it was; an ended pane writes the
+    /// A restart whose shell did not start: the pane is an ended one (a live shell ended first). It writes the
     /// error as its end message (`taskDiedWithError`, `PS:4686-4688`) and both show "Session
     /// failed to start." with no buttons (`NC:318-327`). The "start" banner is not set.
     fn restart_failed(&mut self, id: PaneId, error: &str) {
@@ -3198,14 +3242,14 @@ impl App {
         self.ask(id, crate::session_end::RESTART_BAR, crate::session_end::FAILED_TO_START, &[], true);
     }
 
-    /// "Restart session?" answered OK: the pane restarts in its own window (gone: nothing
-    /// happens).
+    /// "Restart session?" answered OK (running jobs or left-over programs): the pane restarts in
+    /// its own window (gone: nothing happens).
     pub(super) fn restart_answered(&mut self, id: PaneId) {
         if !self.panes.contains_key(&id) {
             return;
         }
         self.enter_pane_window(id);
-        self.restart_pane(id);
+        self.restart_confirmed(id);
     }
 
     /// The session variables for pane `id`, about to start with profile `p` (`PS:3246-3350`),

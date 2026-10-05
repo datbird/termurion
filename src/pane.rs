@@ -1790,6 +1790,19 @@ impl Pane {
         self.pty.as_ref().and_then(|p| p.pid())
     }
 
+    /// A restart over a live shell ends it first (`PS:3863-3871`): its console goes (the shell and
+    /// what it runs end, which the person confirmed) and the pane is an ended one, so a failed
+    /// start leaves an ended pane.
+    pub fn end_live_shell(&mut self) {
+        if self.exited.is_some() {
+            return;
+        }
+        self.pty = None;
+        self.exited = Some(0);
+        self.ended = true;
+        self.survivors.clear();
+    }
+
     /// The pid the shell had when it exited, for the survivor survey only.
     pub fn exit_pid(&self) -> Option<u32> {
         self.exit_pid
@@ -3564,6 +3577,16 @@ mod tests {
         p.jiggle();
         assert!(p.error.is_none(), "{:?}", p.error);
         assert_eq!(touches(), before, "Clear Buffer's resize and clear never reach a dead console");
+    }
+
+    #[test]
+    fn a_live_shell_ends_before_its_restart() {
+        let mut p = Pane::recording(1, 10, 3);
+        p.exited = None;
+        p.end_live_shell();
+        assert!(p.exited.is_some(), "the pane is ended");
+        assert!(p.ended, "its end is handled: nothing reports it again");
+        assert!(p.pty.is_none(), "its console is gone");
     }
 
     #[test]

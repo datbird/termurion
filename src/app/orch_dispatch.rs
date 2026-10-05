@@ -1405,7 +1405,7 @@ mod tests {
         assert!(apply.contains("self.orch_chat_ended(&chat);"), "a halt (and so a closed gate) ends the chat");
         assert!(fn_body(include_str!("orch_app.rs"), "fn orch_chat_ended(").contains("self.orch_drop_chat(chat);"));
         assert!(fn_body(include_str!("mod.rs"), "fn pane_gone(").contains("self.orch_held.remove(&id);"), "a pane closed for good");
-        assert!(fn_body(include_str!("mod.rs"), "fn restart_pane(").contains("self.orch_held.remove(&id);"), "a restarted pane runs a new shell");
+        assert!(fn_body(include_str!("mod.rs"), "fn restart_confirmed(").contains("self.orch_held.remove(&id);"), "a restarted pane runs a new shell");
         let write = fn_body(include_str!("broadcast_ui.rs"), "fn user_write(");
         assert!(write.contains("crate::orch_gate::person_writes(what)") && write.contains("self.orch_held.remove(&t);"), "the person's typing and pastes");
     }

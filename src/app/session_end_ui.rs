@@ -170,6 +170,9 @@ impl App {
                     self.offer_restart(id);
                 }
             }
+            // Programs the shell left running: the timer never ends them unasked, so the
+            // offer shows instead and its Restart button asks (B7).
+            Outcome::RestartAfter(_) if !left.is_empty() => self.offer_restart(id),
             Outcome::RestartAfter(delay) => {
                 // A pane that keeps ending stops restarting and offers instead (P11).
                 let now = Instant::now();
@@ -208,7 +211,7 @@ impl App {
             self.pending_restarts.remove(&id);
             if self.panes.get(&id).is_some_and(|p| p.ended) && self.restartable(id) {
                 self.enter_pane_window(id);
-                self.restart_pane(id);
+                self.restart_via(id, se::Via::Timer);
                 self.redraw();
             }
         }
@@ -228,7 +231,12 @@ impl App {
             SURVIVORS_BAR => true,
             se::RESTART_BAR => {
                 match button {
-                    Some(b) if b == se::RESTART => self.restart_answered(pane),
+                    Some(b) if b == se::RESTART => {
+                        if self.panes.contains_key(&pane) {
+                            self.enter_pane_window(pane);
+                            self.restart_via(pane, se::Via::Bar);
+                        }
+                    }
                     Some(b) if b == se::DONT_ASK_AGAIN => {
                         self.globals.set("SuppressRestartAnnouncement", toml::Value::Boolean(true));
                         self.save_globals();

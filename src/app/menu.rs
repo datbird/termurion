@@ -838,19 +838,14 @@ impl App {
             "saveCurrentWindowAsArrangement:" => self.open_save_arrangement(event_loop, false),
             "importWindowArrangement:" => self.load_arrangement_file(),
             "changeProfileInArrangement:" => self.open_settings_page(event_loop, crate::settings_ui::Page::Arrangements),
-            // A session whose shell has exited restarts at once; a running one asks first
+            // A session whose shell has exited restarts at once (asking first when it left programs
+            // running; `restart_step`); a running one asks first
             // (`restartSessionWithConfirmation:`), once: iTerm2's question is modal, so a
             // second pick while the pane's question waits does nothing. The API's
             // RestartSession never asks.
             "restartSession:" => {
                 if let Some(id) = self.focused_id() {
-                    if restart_asks(self.panes.get(&id).is_some_and(|p| p.exited.is_some())) {
-                        if !self.alert_waits(|then| *then == super::scripts_alerts::Then::Restart(id)) {
-                            self.ask_scripts(super::scripts_alerts::Ask::new(restart_spec(), super::scripts_alerts::Then::Restart(id)));
-                        }
-                    } else {
-                        self.restart_pane(id);
-                    }
+                    self.restart_via(id, crate::session_end::Via::Menu);
                 }
             }
             "copy:" => {
@@ -1507,11 +1502,6 @@ pub(super) fn info_box(text: &str) {
     unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Tandem").as_ptr(), MB_OK | MB_ICONINFORMATION) };
 }
 
-/// Whether Restart Session asks first: only while the session's shell runs (`PT:2851`).
-pub(super) fn restart_asks(exited: bool) -> bool {
-    !exited
-}
-
 /// The Window menu's window list (`PT:3069-3084`): (registry key, text, checked) for each
 /// window by number. `entries` are (registry key, window number, the window's title as the
 /// OS shows it without the label, its title without the number); `focused` is checked.
@@ -1571,8 +1561,6 @@ mod tests {
         assert!(s.never_remember.is_empty());
         assert!(s.rememberable(1), "Cancel may be remembered");
         assert_eq!(checkbox_label(&s), Some("Remember my choice"));
-        assert!(!super::restart_asks(true), "an exited session restarts at once");
-        assert!(super::restart_asks(false));
     }
 
     /// The Window menu's window list (`PT:3069-3084`): by window number, the current one
