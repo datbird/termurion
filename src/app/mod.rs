@@ -5256,6 +5256,7 @@ impl App {
         let area = self.content_area();
         let backgrounds = self.pane_backgrounds();
         let mut block_buttons = Vec::new();
+        let mut fps_rect: Option<Rect> = None;
         let mut picker_hits = Vec::new();
         let mut offscreen_hits: Vec<(PaneId, Rect, i32)> = Vec::new();
         let mut band_jobs: Vec<(PaneId, Rect, (f32, f32))> = Vec::new();
@@ -5423,7 +5424,7 @@ impl App {
                 overlay_drawn.extend(self.draw_completion(&mut frame, id, rect, cell).map(|r| (mouse::Overlay::Completion, r)));
                 if id == tab.focused {
                     if let Some(text) = self.fps_overlay() {
-                        scene::fps_meter(&mut frame, &text, self.text_rect(id, rect), cell);
+                        fps_rect = scene::fps_meter(&mut frame, &text, self.text_rect(id, rect), cell);
                     }
                 }
                 self.draw_inline_progress(&mut frame, id, rect);
@@ -5466,6 +5467,7 @@ impl App {
         // After the bars, so the overlay cuts their text out (P22).
         overlay_drawn.extend(self.draw_pane_move(&mut frame, cell).into_iter().map(|r| (mouse::Overlay::PaneMove, r)));
         let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
+        let mut tip_rect: Option<Rect> = None;
         let line = self.division_height();
         if line > 0.0 {
             scene::division_line(&mut frame, ww, line, crate::chrome::division_color(self.resolved_style(), self.focused));
@@ -5478,7 +5480,7 @@ impl App {
         // height below it).
         if let Some(text) = self.tab_tip_shown().and_then(|i| self.tab_tip_text(i)) {
             let (x, y) = self.cursor;
-            scene::tab_tooltip(&mut frame, &text, (x, y + TIP_POINTER_PT * self.scale()), Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
+            tip_rect = Some(scene::tab_tooltip(&mut frame, &text, (x, y + TIP_POINTER_PT * self.scale()), Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell));
         }
         if see_through {
             let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
@@ -5508,6 +5510,11 @@ impl App {
         holes.extend(self.picker_hits.iter().map(|h| h.1));
         holes.extend(self.chat_indicator_hits.iter().map(|h| h.1));
         holes.extend(self.find_bar_rect.into_iter().chain(self.find_mode_rect));
+        // The tab tooltip, the fps meter, the clippings panels and preview and the inline chat
+        // panels are drawn over a pane too (Task 6 review, r1).
+        holes.extend(tip_rect.into_iter().chain(fps_rect));
+        holes.extend(self.clip_holes());
+        holes.extend(self.inline_hits.iter().filter_map(|h| if let inline_chat_ui::PanelHit::Body(_, r) = h { Some(*r) } else { None }));
         for (id, rect, cell) in band_jobs {
             offscreen_hits.extend(self.draw_offscreen(&mut frame, id, rect, cell, &holes).into_iter().map(|(r, line)| (id, r, line)));
         }

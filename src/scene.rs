@@ -3095,7 +3095,7 @@ pub fn offscreen_band(frame: &mut Frame, screen: &Screen, band: Rect, text_origi
 /// A tab's tooltip (`PT tabView:toolTipForTabViewItem:`): a framed box at `at` (under the
 /// pointer) with one text row per line of `text`, moved left and up as far as it must to stay
 /// inside `area` (the window).
-pub fn tab_tooltip(frame: &mut Frame, text: &str, at: (f32, f32), area: Rect, cell: (f32, f32)) {
+pub fn tab_tooltip(frame: &mut Frame, text: &str, at: (f32, f32), area: Rect, cell: (f32, f32)) -> Rect {
     let lines: Vec<&str> = text.lines().collect();
     let widest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
     let (w, h) = ((widest + 2) as f32 * cell.0, lines.len() as f32 * cell.1 + 4.0);
@@ -3108,6 +3108,7 @@ pub fn tab_tooltip(frame: &mut Frame, text: &str, at: (f32, f32), area: Rect, ce
     for (i, line) in lines.iter().enumerate() {
         frame.rows.push(TextRow { x: x + cell.0, y: y + 2.0 + i as f32 * cell.1, spans: vec![plain_span(line.to_string(), TAB_TEXT, false)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
+    r
 }
 
 /// One clipping as the panel draws it: its title and its detail's lines.
@@ -4206,18 +4207,19 @@ pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) -> Re
 /// The FPS meter (`iTermMetalPerFrameState.m:2531-2552`): `text` right-aligned on row 0 of the
 /// pane's text area, one cell per character, magenta on near black. Its box goes in `popups`
 /// with the pane's text under it cut out, so the meter replaces that row's cells there.
-pub fn fps_meter(frame: &mut Frame, text: &str, pane_inner: Rect, cell: (f32, f32)) {
+pub fn fps_meter(frame: &mut Frame, text: &str, pane_inner: Rect, cell: (f32, f32)) -> Option<Rect> {
     let chars = text.chars().count();
     let w = (chars as f32 * cell.0).min(pane_inner.w);
     let r = Rect { x: pane_inner.x + pane_inner.w - w, y: pane_inner.y, w, h: cell.1 };
     if r.w <= 0.0 {
-        return;
+        return None;
     }
     let to_rgb = |c: [f32; 4]| rgb((c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8);
     cut_out(frame, r, cell.1);
     frame.popups.push(Quad { rect: r, color: rgba(to_rgb(crate::perf_stats::FPS_BG), 1.0) });
     let span = Span { text: text.to_string(), color: to_rgb(crate::perf_stats::FPS_FG), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
     frame.rows.push(TextRow { x: r.x, y: r.y, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    Some(r)
 }
 
 #[cfg(test)]
@@ -5101,6 +5103,12 @@ mod tests {
         assert!(rows.windows(2).all(|w| w[1].y == w[0].y + cell.1));
         // The widest line and a cell each side: "Profile: Default" is 16 characters.
         assert_eq!(b.w, 18.0 * cell.0);
+        // The rectangle it answers is the box (the offscreen band leaves it alone).
+        let mut g = Frame::default();
+        assert_eq!(tab_tooltip(&mut g, "Name: zsh", (100.0, 40.0), window, cell), g.popups[0].rect);
+        let mut g = Frame::default();
+        assert_eq!(fps_meter(&mut g, "60 fps", Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, cell), Some(g.popups[0].rect));
+        assert_eq!(fps_meter(&mut g, "60 fps", Rect { x: 0.0, y: 0.0, w: 0.0, h: 100.0 }, cell), None);
         // A tip that would pass the right edge moves left to fit; past the bottom, up.
         let mut f = Frame::default();
         tab_tooltip(&mut f, "Name: zsh\nProfile: Default\nCommand: None", (390.0, 290.0), window, cell);

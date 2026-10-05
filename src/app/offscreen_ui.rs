@@ -153,6 +153,12 @@ mod tests {
             assert!(build.find(before).unwrap_or_else(|| panic!("{before} missing")) < band, "{before} is drawn before the band");
         }
         assert!(band < build.find("self.overlay_drawn = overlay_drawn;").unwrap());
+        // Review of Task 6 (r1): the tab tooltip, the fps meter, the clippings panels and preview and
+        // the inline chat panels sit over a pane too, so each one's rectangle is a hole.
+        let holes = &build[build.find("let mut holes: Vec<Rect>").unwrap()..band];
+        for hole in ["tip_rect", "fps_rect", "self.clip_holes(", "PanelHit::Body"] {
+            assert!(holes.contains(hole), "{hole} is a hole in the band");
+        }
         assert!(m.contains("let cell = self.pane_cell(id);"));
         let me = include_str!("offscreen_ui.rs").split("#[cfg(test)]").next().unwrap();
         assert!(me.contains("self.pane_faces.face(id)") && me.contains("self.text_outer(id, rect)") && !me.contains("marks_in_order"));
