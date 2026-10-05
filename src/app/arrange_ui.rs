@@ -972,7 +972,7 @@ impl App {
         let hwnd = self.hwnd();
         let text = arrangement::trust_text(&name, &windows);
         let text = if title.starts_with("Restore") { text.replacen("Open the arrangement", "Restore the archive", 1) } else { text };
-        if !trusted(crate::archive::needs_question(arrangement::has_mark_of_the_web(path), windows.len()), || yes_no(hwnd, title, &text)) {
+        if !trusted(crate::archive::needs_question(arrangement::has_mark_of_the_web(path), windows.len(), title.starts_with("Restore")), || yes_no(hwnd, title, &text)) {
             return false;
         }
         for w in windows {

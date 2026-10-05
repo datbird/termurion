@@ -93,6 +93,12 @@ fn written_paths() -> &'static Mutex<std::collections::HashSet<PathBuf>> {
 /// Reads a file of at most `limit` bytes; a larger one is an error naming the limit.
 fn read_bounded(path: &std::path::Path, limit: u64) -> Result<Vec<u8>, String> {
     use std::io::Read;
+    // The size comes from a stat first: a file that is too large is never read on the UI thread.
+    let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+    if let Some(why) = ar::size_refusal(len).filter(|_| limit == ar::MAX_FILE_BYTES).or_else(|| (len > limit).then(|| format!("the file is larger than {limit} bytes"))) {
+        return Err(why);
+    }
+    // `take` still guards against a file that grows between the stat and the read.
     let mut bytes = Vec::new();
     std::fs::File::open(path).map_err(|e| e.to_string())?.take(limit + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
     match ar::size_refusal(bytes.len() as u64).filter(|_| limit == ar::MAX_FILE_BYTES).or_else(|| (bytes.len() as u64 > limit).then(|| format!("the file is larger than {limit} bytes"))) {
@@ -175,15 +181,15 @@ impl App {
 
     /// Quit and the last window's close: the sessions that end with Tandem are archived when
     /// `all` (iTerm2 saves archives synchronously on app quit, `PTYSession.swift:1709`), then
-    /// the exit waits, bounded, for the writer.
-    pub(super) fn finish_archives(&mut self, all: bool) {
+    /// the exit waits, at most `wait`, for the writer.
+    pub(super) fn finish_archives(&mut self, all: bool, wait: Duration) {
         if all {
             let ids: Vec<PaneId> = self.panes.keys().copied().collect();
             for id in ids {
                 self.auto_archive(id);
             }
         }
-        wait_for_archives(Duration::from_secs(5));
+        wait_for_archives(wait);
     }
 
     /// The writers' outcomes: a saved archive joins the recents, a failure is notified.
@@ -291,10 +297,10 @@ mod tests {
         let m = include_str!("mod.rs");
         let menu = include_str!("menu.rs");
         let quit = body(menu, "pub(super) fn quit_confirmed(");
-        assert!(quit.contains("self.finish_archives(!keep);"), "Quit archives the sessions that end with it (iTerm2 saves archives on app quit)");
+        assert!(quit.contains("self.finish_archives(!keep, std::time::Duration::from_secs(5));"), "Quit archives the sessions that end with it (iTerm2 saves archives on app quit)");
         assert!(quit.find("self.finish_archives(").unwrap() < quit.find("self.leave_host(keep);").unwrap(), "before leave_host empties the panes");
         let last = body(m, "    fn close_pane(");
-        assert!(last.find("self.finish_archives(false);").unwrap() < last.find("self.leave_host(false);").unwrap(), "the last close waits for its archive");
+        assert!(last.find("self.finish_archives(false, std::time::Duration::from_secs(5));").unwrap() < last.find("self.leave_host(false);").unwrap(), "the last close waits for its archive");
         let fin = body(production(), "    pub(super) fn finish_archives(");
         assert!(fin.contains("wait_for_archives("));
     }
@@ -309,6 +315,14 @@ mod tests {
         std::fs::write(&f, b"0123456789").unwrap();
         assert_eq!(super::read_bounded(&f, 10).unwrap(), b"0123456789");
         assert!(super::read_bounded(&f, 9).unwrap_err().contains("larger"), "a file past the limit is refused");
+        // A file past the limit is refused by its size, before anything is read: one that cannot
+        // be opened at all (another process holds it exclusively) still gets the size answer.
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let held = std::fs::OpenOptions::new().read(true).share_mode(0).open(&f).unwrap();
+            assert!(super::read_bounded(&f, 9).unwrap_err().contains("larger"), "the size is checked with a stat, not a read");
+            drop(held);
+        }
         let _ = std::fs::remove_dir_all(&dir);
         let arrange = include_str!("arrange_ui.rs");
         let shared = body(arrange, "    pub(super) fn open_arrangement_windows(");

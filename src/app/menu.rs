@@ -1107,7 +1107,7 @@ impl App {
             self.save_now();
         }
         // Logs are written out while the panes still hold them: `leave_host` empties the panes.
-        self.finish_archives(!keep);
+        self.finish_archives(!keep, std::time::Duration::from_secs(5));
         self.close_all_logs();
         self.leave_host(keep);
         self.panes.clear();

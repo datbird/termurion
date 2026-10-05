@@ -123,10 +123,10 @@ pub fn count_refusal(windows: &[Value]) -> Option<String> {
     windows.iter().any(|w| tabs(w) > MAX_TABS).then(|| format!("a window in the file holds more than {MAX_TABS} tabs"))
 }
 
-/// Whether opening the windows of a file asks first: a downloaded file always, and a file with
-/// no mark that opens more than one window.
-pub fn needs_question(marked: bool, windows: usize) -> bool {
-    marked || windows > 1
+/// Whether opening the windows of a file asks first: a downloaded file always, and an archive
+/// with no mark that opens more than one window. A Load Arrangement keeps its own trust rules.
+pub fn needs_question(marked: bool, windows: usize, archive: bool) -> bool {
+    marked || (archive && windows > 1)
 }
 
 /// The path an automatic archive is written to: `path` when this run has not written it yet,
@@ -241,10 +241,11 @@ mod tests {
 
     #[test]
     fn many_windows_ask_first() {
-        assert!(needs_question(true, 1), "a downloaded file");
-        assert!(needs_question(true, 0));
-        assert!(!needs_question(false, 1), "one window of a local file opens without a question");
-        assert!(needs_question(false, 2), "an unmarked file that opens several windows asks");
+        assert!(needs_question(true, 1, true), "a downloaded file");
+        assert!(needs_question(true, 0, false));
+        assert!(!needs_question(false, 1, true), "one window of a local file opens without a question");
+        assert!(needs_question(false, 2, true), "an unmarked archive that opens several windows asks");
+        assert!(!needs_question(false, 2, false), "a Load Arrangement of an unmarked file asks nothing");
     }
 
     #[test]

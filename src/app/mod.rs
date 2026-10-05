@@ -213,6 +213,9 @@ pub enum UserEvent {
     Caption(isize, crate::caption::Event),
     /// An ssh: URL came from outside (the URL pipe): `ssh_url_app::receive_url`.
     OpenUrl(String),
+    /// Windows is logging off: flush the logs and archives and end the hosted shells, then set
+    /// the flag the window procedure is waiting on (`logout_ui`).
+    Logoff(Arc<std::sync::atomic::AtomicBool>),
 }
 
 #[derive(Clone)]
@@ -946,6 +949,8 @@ pub struct App {
     profiles_win: Option<SettingsWindow>,
     /// When unsaved settings edits are due to be written.
     save_due: Option<Instant>,
+    /// The logoff watch is on (`logout_ui`): one setting for every window.
+    logout_armed: bool,
     /// Session restoration: when to save the windows, whether saving is over (quit, or the
     /// last window closed), and a focus loss waiting to be saved.
     state_debounce: crate::restore_state::Debounce,
@@ -1937,6 +1942,7 @@ pub fn run() {
         store,
         settings: None,
         save_due: None,
+        logout_armed: false,
         state_debounce: Default::default(),
         state_frozen: second_copy,
         focus_lost: false,
@@ -4316,7 +4322,7 @@ impl App {
                 self.flush_notes();
                 // The last window closed: its logs are written out, its shells end (iTerm2), and the
                 // host hears it.
-                self.finish_archives(false);
+                self.finish_archives(false, std::time::Duration::from_secs(5));
                 self.close_all_logs();
                 self.leave_host(false);
                 if self.save_due.is_some() {
@@ -6167,6 +6173,13 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::ThemeReset => return self.reapply_forced_theme(),
             UserEvent::Caption(hwnd, e) => return self.caption_event(hwnd, e, event_loop),
             UserEvent::OpenUrl(url) => return self.receive_url(url),
+            UserEvent::Logoff(done) => {
+                #[cfg(windows)]
+                self.logoff_now(&done);
+                #[cfg(not(windows))]
+                done.store(true, std::sync::atomic::Ordering::Release);
+                return;
+            }
             UserEvent::Wake => {}
         }
         let mut changed = false;

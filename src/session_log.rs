@@ -995,14 +995,20 @@ pub fn auto_log_path(raw_dir: &str, name_template: &str, lookup: &dyn Fn(&str) -
     crate::interp::check(name_template)?;
     // Every substituted value is one path segment, whoever set it.
     let segment = |n: &str| lookup(n).map(|v| path_segment(&v, OWN_VALUES.contains(&n.strip_prefix("session.").unwrap_or(n))));
-    // A share is the person's only when the template names it in plain text, and then it is
-    // used as written (the parser would read the `\\` of `\\host` as an escape).
+    // A share is the person's only when the template names it in plain text.
     let typed = !raw_dir.contains("\\(") && crate::start_dir::network_folder(raw_dir);
-    // As 13p's working directory reads a Custom folder (`start_dir::resolve`): text with no `\(`
-    // is used as written, so `C:\temp\new` keeps its backslashes (the parser would read `\t` and
-    // `\n` as a tab and a line feed); only a template with `\(` is evaluated.
+    // The folder is 13p's working-directory rule itself (`start_dir::resolve`: trim, no control
+    // characters, text with no `\(` used as written, an expanded value held to a local drive
+    // path or `~`, never a network or device path). Whether the folder exists is the log's own
+    // question (`folder_action`), so every folder counts as one here, and a refusal is an
+    // error instead of a fallback to home.
+    let expand = |t: &str| crate::interp::evaluate(t, &segment, &[]).unwrap_or_else(|_| t.to_string());
+    let (dir, refused) = crate::start_dir::resolve(&crate::start_dir::Mode::Custom(raw_dir.to_string()), None, home, &expand, &|_| true);
+    if refused.is_some() {
+        return Err("the log folder is not a local folder".to_string());
+    }
+    let dir = dir.to_string_lossy().into_owned();
     let plain = |t: &str| !t.contains("\\(");
-    let dir = if plain(raw_dir) { raw_dir.to_string() } else { crate::interp::evaluate(raw_dir, &segment, &[])? };
     let name = if plain(name_template) { name_template.to_string() } else { crate::interp::evaluate(name_template, &segment, &[])? };
     let joined = join_log_path(&dir, &name, home);
     if is_network_log_path(&joined) && !typed {
@@ -1496,8 +1502,10 @@ mod tests {
         assert!(auto_log_path("~\\logs", "a.log", &lookup_for(&[]), net_home).is_err());
         // Typed by the person in the template, a share is theirs (13p ruling), padded or not.
         assert_eq!(auto_log_path("\\\\srv\\logs", "a.log", &lookup_for(&[]), home).unwrap(), PathBuf::from(r"\\srv\logs\a.log"));
-        // A padded one is not a clean path: refused, and the one filter still names it a share.
-        assert!(auto_log_path(" \\\\srv\\logs", "a.log", &lookup_for(&[]), home).is_err());
+        // A padded one is trimmed as 13p's working directory trims it, so it is the person's
+        // share too; the join alone still does not trim, and the one filter names it a share.
+        assert_eq!(auto_log_path(" \\\\srv\\logs ", "a.log", &lookup_for(&[]), home).unwrap(), PathBuf::from(r"\\srv\logs\a.log"));
+        assert!(auto_log_path(" \\(path)", "a.log", &lookup_for(&[("path", "x\u{1}y")]), home).is_err(), "a control character in an expanded folder is refused");
         assert!(is_network_log_path(&join_log_path(" \\\\srv\\logs", "a.log", home)));
         // A relative folder would land in Tandem's working folder.
         assert!(auto_log_path("logs", "a.log", &lookup_for(&[]), home).is_err());
