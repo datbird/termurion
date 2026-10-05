@@ -18,7 +18,10 @@ pub fn face_key_for(p: &Profile, scale: f32, offset: f32, resolve: &dyn Fn(&str)
     normal.size_pt = (normal.size_pt + offset).clamp(4.0, 128.0);
     let alt = p.bool("Use Non-ASCII Font").then(|| resolve(&p.font("Non Ascii Font").family));
     let px = normal.size_pt * 4.0 / 3.0 * scale;
-    FaceKey::new(&resolve(&normal.family), alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32)
+    let mut key = FaceKey::new(&resolve(&normal.family), alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
+    // Use Bold Font and Use Italic Font (`ASB:773-778`): a face that ignores a switch is its own face.
+    (key.use_bold, key.use_italic) = (p.bool("Use Bold Font"), p.bool("Use Italic Font"));
+    key
 }
 
 /// The columns and rows `rect` (width, height) holds at `cell`, with the margins taken out
@@ -51,13 +54,15 @@ pub struct PaneFaces {
 
 /// What a face key is built from, as the profile stores it, plus the window's scale and the
 /// shared offset (`face_key_for`'s inputs).
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RawFont {
     normal: String,
     alt: Option<String>,
     spacing: (u64, u64),
     scale: u32,
     offset: u32,
+    bold: bool,
+    italic: bool,
 }
 
 impl RawFont {
@@ -68,6 +73,8 @@ impl RawFont {
             spacing: (p.float("Horizontal Spacing").to_bits(), p.float("Vertical Spacing").to_bits()),
             scale: scale.to_bits(),
             offset: offset.to_bits(),
+            bold: p.bool("Use Bold Font"),
+            italic: p.bool("Use Italic Font"),
         }
     }
 }
@@ -249,6 +256,23 @@ mod tests {
         // Names go through the resolver.
         let up = |s: &str| s.to_uppercase();
         assert_eq!(face_key_for(&p, 1.0, 0.0, &up).family, "CASCADIA MONO");
+    }
+
+    #[test]
+    fn bold_and_italic_switches_make_a_new_key() {
+        let same = |s: &str| s.to_string();
+        let on = profile(&[("Normal Font", "Cascadia Mono 14".into())]);
+        let no_bold = profile(&[("Normal Font", "Cascadia Mono 14".into()), ("Use Bold Font", false.into())]);
+        let no_italic = profile(&[("Normal Font", "Cascadia Mono 14".into()), ("Use Italic Font", false.into())]);
+        let key = |p: &Profile| face_key_for(p, 1.0, 0.0, &same);
+        assert!(key(&on).use_bold && key(&on).use_italic, "iTerm2's defaults are on");
+        assert!(!key(&no_bold).use_bold && key(&no_bold).use_italic);
+        assert!(key(&no_italic).use_bold && !key(&no_italic).use_italic);
+        assert_ne!(key(&on), key(&no_bold));
+        assert_ne!(key(&on), key(&no_italic));
+        // The per-pane cache is keyed on RawFont: a switch change must change it, or a stale key is served.
+        assert_ne!(RawFont::of(&on, 1.0, 0.0), RawFont::of(&no_bold, 1.0, 0.0));
+        assert_ne!(RawFont::of(&on, 1.0, 0.0), RawFont::of(&no_italic, 1.0, 0.0));
     }
 
     #[test]

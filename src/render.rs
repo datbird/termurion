@@ -7,7 +7,7 @@ use glyphon::{
 use wgpu::util::DeviceExt;
 
 use crate::fonts;
-use crate::scene::{Frame, Quad, Span};
+use crate::scene::{Frame, Quad, Span, TextRow};
 
 /// Rectangles: two triangles each, position and color per vertex.
 struct QuadPipeline {
@@ -279,11 +279,14 @@ pub struct FaceKey {
     pub h_bits: u32,
     pub v_bits: u32,
     pub profile_bits: u64,
+    /// The profile's Use Bold Font and Use Italic Font (a face that ignores a switch is another face).
+    pub use_bold: bool,
+    pub use_italic: bool,
 }
 
 impl FaceKey {
     pub fn new(family: &str, alt_family: Option<&str>, px: f32, h: f32, v: f32) -> FaceKey {
-        FaceKey { family: family.to_string(), alt_family: alt_family.map(str::to_string), px_bits: quantize_px(px).to_bits(), h_bits: h.to_bits(), v_bits: v.to_bits(), profile_bits: 0 }
+        FaceKey { family: family.to_string(), alt_family: alt_family.map(str::to_string), px_bits: quantize_px(px).to_bits(), h_bits: h.to_bits(), v_bits: v.to_bits(), profile_bits: 0, use_bold: true, use_italic: true }
     }
 
     pub fn px(&self) -> f32 {
@@ -310,6 +313,11 @@ pub struct Face {
     /// The baseline's distance from the cell top (`ul.baseline`).
     pub baseline: f32,
     pub px: f32,
+    /// The weight of the bold face the family has for this regular face (`fonts::bold_weight`);
+    /// None when no weight is heavy enough and bold is double-struck.
+    pub bold: Option<u16>,
+    pub use_bold: bool,
+    pub use_italic: bool,
 }
 
 pub struct Renderer {
@@ -353,6 +361,13 @@ pub struct Renderer {
     base_cell: (f32, f32),
     /// `FontsForGenerousRounding`: the families that get the generous line height.
     generous_list: String,
+    /// `MinimumWeightDifferenceForBoldFont`, read when faces are built.
+    bold_difference: i32,
+    /// The default face's bold weight (`bold_face`).
+    default_bold: Option<u16>,
+    /// The weights each family's regular-style faces have (a variable face counts every 100-step
+    /// of its range), looked up once per family.
+    weights: std::cell::RefCell<std::collections::HashMap<String, Vec<u16>>>,
     /// The texture format the pipelines draw into.
     format: wgpu::TextureFormat,
     /// The faces, by id; id 0 is the default face `set_fonts` makes.
@@ -405,6 +420,9 @@ impl Renderer {
             ul_metrics: None,
             base_cell: (0.0, 0.0),
             generous_list: "consolas".into(),
+            bold_difference: 4,
+            default_bold: None,
+            weights: Default::default(),
             faces: Vec::new(),
             face_ids: std::collections::HashMap::new(),
             resolved: Default::default(),
@@ -428,6 +446,7 @@ impl Renderer {
         let family = self.family.clone();
         let (cell, base, ul) = self.measure(&family, px, self.h_spacing, self.v_spacing);
         (self.cell, self.base_cell, self.ul_metrics) = (cell, base, ul);
+        self.default_bold = self.bold_face(&family);
         self.sync_default_face();
         self.buffers.clear();
         self.widths.clear();
@@ -486,12 +505,63 @@ impl Renderer {
         self.widths.clear();
     }
 
+    /// A new `MinimumWeightDifferenceForBoldFont`: every face picks its bold weight again in
+    /// place (ids stay valid).
+    pub fn set_bold_difference(&mut self, difference: i32) {
+        if difference == self.bold_difference {
+            return;
+        }
+        self.bold_difference = difference;
+        self.default_bold = self.bold_face(&self.family.clone());
+        for i in 0..self.faces.len() {
+            let family = self.faces[i].key.family.clone();
+            self.faces[i].bold = self.bold_face(&family);
+        }
+        self.buffers.clear();
+    }
+
+    /// The weights of `family`'s regular-style faces, sorted (looked up once per family).
+    fn family_weights(&mut self, family: &str) -> Vec<u16> {
+        if let Some(w) = self.weights.borrow().get(family) {
+            return w.clone();
+        }
+        let db = self.font_system.db();
+        let found: Vec<(glyphon::fontdb::ID, u16)> = db
+            .faces()
+            .filter(|f| f.style == glyphon::fontdb::Style::Normal && f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(family)))
+            .map(|f| (f.id, f.weight.0))
+            .collect();
+        let mut out = Vec::new();
+        for (id, weight) in found {
+            // A variable face has one entry in the database and every weight of its axis.
+            let range = self.font_system.get_font(id, glyphon::fontdb::Weight(weight)).and_then(|font| {
+                let wght = u32::from_be_bytes(*b"wght");
+                font.as_swash().variations().find(|v| v.tag() == wght).map(|v| (v.min_value(), v.max_value()))
+            });
+            match range {
+                Some((lo, hi)) if hi > lo => out.extend(fonts::range_weights(lo.max(0.0) as u16, hi.min(1000.0) as u16)),
+                _ => out.push(weight),
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        self.weights.borrow_mut().insert(family.to_string(), out.clone());
+        out
+    }
+
+    /// The bold weight `family` has for its regular face, None when it needs the double strike.
+    fn bold_face(&mut self, family: &str) -> Option<u16> {
+        let weights = self.family_weights(family);
+        let regular = fonts::regular_weight(&weights)?;
+        fonts::bold_weight(regular, &weights, self.bold_difference)
+    }
+
     /// The face a key describes, measured now.
     fn build_face(&mut self, key: &FaceKey) -> Face {
         let px = key.px();
         let (cell, base, ul) = self.measure(&key.family, px, f32::from_bits(key.h_bits), f32::from_bits(key.v_bits));
         let ul = ul.unwrap_or(crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 });
-        Face { key: key.clone(), cell, base, baseline: ul.baseline, ul, px }
+        Face { key: key.clone(), cell, base, baseline: ul.baseline, ul, px, bold: self.bold_face(&key.family), use_bold: key.use_bold, use_italic: key.use_italic }
     }
 
     /// Face 0 is the default fonts, kept in step with the fields `set_font_px` fills.
@@ -499,7 +569,7 @@ impl Renderer {
         let mut key = FaceKey::new(&self.family, self.alt_family.as_deref(), self.font_px, self.h_spacing, self.v_spacing);
         key.profile_bits = 0;
         let ul = self.ul_metrics.unwrap_or(crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 });
-        let face = Face { key: key.clone(), cell: self.cell, base: self.base_cell, baseline: ul.baseline, ul, px: self.font_px };
+        let face = Face { key: key.clone(), cell: self.cell, base: self.base_cell, baseline: ul.baseline, ul, px: self.font_px, bold: self.default_bold, use_bold: key.use_bold, use_italic: key.use_italic };
         if self.faces.is_empty() {
             self.faces.push(face);
         } else {
@@ -726,6 +796,11 @@ impl Renderer {
         self.face_of(id).base
     }
 
+    /// The bold weight of face `id` (None: bold is double-struck).
+    pub fn face_bold(&self, id: u16) -> Option<u16> {
+        self.face_of(id).bold
+    }
+
     /// The underline numbers of face `id` (all zero when it did not load).
     pub fn face_underline(&self, id: u16) -> crate::underline::Metrics {
         self.face_of(id).ul
@@ -868,13 +943,37 @@ impl Renderer {
         crate::underline::cut_quads_around(&frame.underlines, &bands, 1.0)
     }
 
+    /// The second copies of bold terminal text whose face has no bold weight (iTerm2's `fakeBold`
+    /// double strike): one row per such row, one physical pixel to the right, carrying only the
+    /// bold spans (every other span is blank advance of the same width, so nothing else is
+    /// struck twice). They come after `frame.rows`, which keeps the row indexes the underline
+    /// gaps read (`gapped_underlines`) and never take part in those gaps.
+    fn double_strikes(&self, rows: &[TextRow]) -> Vec<TextRow> {
+        use unicode_width::UnicodeWidthChar;
+        let struck = |s: &Span| s.fake_bold && s.bold && !(s.icon || s.badge || s.toolbelt || s.prose);
+        let blank = |text: &str| text.chars().map(|c| " ".repeat(c.width().unwrap_or(0))).collect::<String>();
+        rows.iter()
+            .filter(|row| {
+                let face = self.face_of(row.face);
+                face.use_bold && face.bold.is_none() && row.spans.iter().any(struck)
+            })
+            .map(|row| TextRow {
+                x: row.x + 1.0,
+                spans: row.spans.iter().map(|s| if struck(s) { s.clone() } else { Span { text: blank(&s.text), bold: false, italic: false, fake_bold: false, ..s.clone() } }).collect(),
+                ..row.clone()
+            })
+            .collect()
+    }
+
     pub fn draw(&mut self, frame: &Frame, view: &wgpu::TextureView, width: u32, height: u32) -> Result<(), String> {
         let (_, ch) = self.cell;
         let metrics = Metrics::new(self.font_px, ch);
-        while self.buffers.len() < frame.rows.len() {
+        let doubles = self.double_strikes(&frame.rows);
+        let all_rows: Vec<&TextRow> = frame.rows.iter().chain(&doubles).collect();
+        while self.buffers.len() < all_rows.len() {
             self.buffers.push((Buffer::new(&mut self.font_system, metrics), Vec::new(), 0.0, 1.0, DEFAULT_FACE));
         }
-        for (slot, row) in self.buffers.iter_mut().zip(&frame.rows) {
+        for (slot, row) in self.buffers.iter_mut().zip(all_rows.iter().copied()) {
             let (buffer, last, last_w, last_scale, last_face) = slot;
             if *last == row.spans && *last_w == row.clip.w && *last_scale == row.scale && *last_face == row.face {
                 continue;
@@ -884,6 +983,7 @@ impl Renderer {
             let face = self.faces.get(row.face as usize).unwrap_or(&self.faces[0]);
             let ((cw, ch), px) = (face.cell, face.px);
             let (family, alt_family) = (face.key.family.clone(), face.key.alt_family.clone());
+            let (bold_weight, use_bold, use_italic) = (face.bold, face.use_bold, face.use_italic);
             let metrics = Metrics::new(px * row.scale, ch * row.scale);
             buffer.set_metrics_and_size(metrics, Some(row.clip.w + cw * row.scale), Some(ch * row.scale));
             buffer.set_wrap(Wrap::None);
@@ -909,10 +1009,25 @@ impl Renderer {
                 } else {
                     base.clone()
                 };
+                // Terminal text follows its profile's switches (Use Bold Font, Use Italic Font);
+                // chrome and prose never do. A terminal bold span draws in the face's bold weight,
+                // or in the regular one when none is heavy enough (the double strike is a second row).
+                let terminal = !(s.icon || s.badge || s.toolbelt || s.prose);
+                let weight = if !s.bold {
+                    Weight::NORMAL
+                } else if s.fake_bold && terminal {
+                    match (use_bold, bold_weight) {
+                        (false, _) | (true, None) => Weight::NORMAL,
+                        (true, Some(w)) => Weight(w),
+                    }
+                } else {
+                    Weight::BOLD
+                };
+                let slant = s.italic && (use_italic || !terminal);
                 let attrs = start
                     .color(Color::rgb(s.color.r, s.color.g, s.color.b))
-                    .weight(if s.bold { Weight::BOLD } else { Weight::NORMAL })
-                    .style(if s.italic { Style::Italic } else { Style::Normal });
+                    .weight(weight)
+                    .style(if slant { Style::Italic } else { Style::Normal });
                 (s.text.as_str(), attrs)
             });
             buffer.set_rich_text(spans, &base, Shaping::Advanced, None);
@@ -924,7 +1039,7 @@ impl Renderer {
         }
 
         self.viewport.update(&self.queue, Resolution { width, height });
-        let areas = self.buffers.iter().zip(&frame.rows).map(|((buffer, _, _, _, _), row)| TextArea {
+        let areas = self.buffers.iter().zip(all_rows.iter().copied()).map(|((buffer, _, _, _, _), row)| TextArea {
             buffer,
             left: row.x,
             top: row.y,
@@ -1077,7 +1192,7 @@ mod tests {
     use super::*;
     use crate::layout::Rect;
     use crate::palette::rgb;
-    use crate::scene::{Quad, Span, TextRow, rgba};
+    use crate::scene::{Quad, Span, rgba};
 
     #[test]
     fn cell_metrics_keep_the_spacing_free_cell() {
@@ -1216,7 +1331,7 @@ mod tests {
         let block = |x: f32, y: f32, face: u16| TextRow {
             x,
             y,
-            spans: vec![Span { text: "\u{2588}".repeat(4), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false }],
+            spans: vec![Span { text: "\u{2588}".repeat(4), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false }],
             clip: Rect { x: 0.0, y, w: w as f32, h: if face == 1 { c1.1 } else { c2.1 } },
             scale: 1.0,
             face,
@@ -1232,6 +1347,66 @@ mod tests {
         assert!((one - 4.0 * c1.0).abs() < c1.0 / 2.0, "face 1 ends at {one}, its cells at {}", 4.0 * c1.0);
         assert!((two - 4.0 * c2.0).abs() < c2.0 / 2.0, "face 2 ends at {two}, its cells at {}", 4.0 * c2.0);
         assert!(two > one + 2.0, "the larger face is wider: {one} {two}");
+    }
+
+    /// The installed families that have a Normal face and no weight that `bold_weight` accepts
+    /// at the default difference, found from the font database (tests).
+    fn family_without_bold(r: &Renderer) -> Option<String> {
+        let db = r.font_system.db();
+        let mut names: Vec<String> = db.faces().flat_map(|f| f.families.iter().map(|(n, _)| n.clone())).collect();
+        names.sort();
+        names.dedup();
+        names.into_iter().find(|n| {
+            let w: Vec<u16> = db.faces().filter(|f| f.style == glyphon::fontdb::Style::Normal && f.families.iter().any(|(m, _)| m == n)).map(|f| f.weight.0).collect();
+            !w.is_empty() && w.iter().all(|w| *w < 600) && w.contains(&400) && db.faces().filter(|f| f.families.iter().any(|(m, _)| m == n)).all(|f| f.weight.0 < 600)
+        })
+    }
+
+    #[test]
+    fn bold_and_italic_switches_follow_iterm2() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let (w, h) = (128u32, 40u32);
+        let tex = target(&device, w, h);
+        let view = tex.create_view(&Default::default());
+        // The pixels of "W" drawn in `face` as a bold and italic span as asked.
+        let shot = |r: &mut Renderer, face: u16, bold: bool, italic: bool| -> Vec<u8> {
+            let span = Span { text: "W".into(), color: rgb(255, 255, 255), bold, italic, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: bold };
+            let cell = r.face_cell(face);
+            let row = TextRow { x: 4.0, y: 4.0, spans: vec![span], clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 }, scale: 1.0, face };
+            let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows: vec![row], ..Default::default() };
+            r.draw(&frame, &view, w, h).unwrap();
+            let _ = cell;
+            read(&device, &queue, &tex, w, h)
+        };
+        let on = r.face(&key("Cascadia Mono", 20.0, 1.0, 1.0));
+        let mut k = key("Cascadia Mono", 20.0, 1.0, 1.0);
+        (k.use_bold, k.use_italic) = (false, false);
+        let off = r.face(&k);
+        assert_ne!(on, off, "a face that ignores a switch is another face");
+        let regular = shot(&mut r, on, false, false);
+        // Use Bold Font off: a bold span is the regular face; on: it is not.
+        assert_eq!(shot(&mut r, off, true, false), regular, "bold with Use Bold Font off draws regular");
+        assert_ne!(shot(&mut r, on, true, false), regular, "bold with Use Bold Font on draws the bold face");
+        // Use Italic Font off: italics are upright.
+        assert_eq!(shot(&mut r, off, false, true), regular, "italic with Use Italic Font off draws upright");
+        assert_ne!(shot(&mut r, on, false, true), regular, "italic with Use Italic Font on slants");
+        // A family without a heavy enough bold: double-struck, one column wider.
+        let Some(family) = family_without_bold(&r) else {
+            println!("skip: every installed family has a bold face");
+            return;
+        };
+        let plain = r.face(&key(&family, 20.0, 1.0, 1.0));
+        assert_eq!(r.face_bold(plain), None, "{family} has no bold weight");
+        let cols = |px: &[u8]| -> (u32, u32) {
+            let lit = |x: u32| (0..h).any(|y| px[((y * w + x) * 4) as usize] > 128);
+            ((0..w).find(|x| lit(*x)).unwrap(), (0..w).rev().find(|x| lit(*x)).unwrap())
+        };
+        let regular = shot(&mut r, plain, false, false);
+        let bold = shot(&mut r, plain, true, false);
+        let (l0, r0) = cols(&regular);
+        let (l1, r1) = cols(&bold);
+        assert!(r1 - l1 >= r0 - l0 + 1 && l1 == l0, "{family}: regular {l0}..{r0}, bold {l1}..{r1}");
     }
 
     #[test]
@@ -1334,7 +1509,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 0.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false }],
+                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false }],
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
@@ -1389,7 +1564,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 36.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false }],
+                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false }],
                 clip: Rect { x: 32.0, y: 0.0, w: 32.0, h: 32.0 },
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
@@ -1425,7 +1600,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 0.0,
                 y: 0.0,
-                spans: vec![Span { text: " \u{2588} ".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false }],
+                spans: vec![Span { text: " \u{2588} ".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false }],
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
@@ -1466,7 +1641,7 @@ mod tests {
         let y = (ch / 2.0).floor();
         let red = rgba(rgb(255, 0, 0), 1.0);
         let clip = Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
-        let span = |text: &str, badge: bool| Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge, toolbelt: false };
+        let span = |text: &str, badge: bool| Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge, toolbelt: false, fake_bold: false };
         let row = |x: f32, text: &str, badge: bool| TextRow { x, y: 0.0, spans: vec![span(text, badge)], clip, scale: 1.0, face: crate::render::DEFAULT_FACE };
         let frame = |rows: Vec<TextRow>| Frame {
             clear: rgba(rgb(0, 0, 0), 1.0),

@@ -8,3 +8,9 @@ R3: line height comes from the font's ascent, descent and leading (was: 1.2 time
 Task 2: the cell width stays the unrounded shaped advance of "W" (iTerm2 rounds it). Cost if wrong: a cell may be a fraction of a pixel narrower than iTerm2's.
 Task 2 (P9): cosmic-text centers the glyphs in the line and has no baseline setter, so `fonts::baseline` only fills the underline baseline (the same centering); glyph placement is cosmic-text's own. Cost if wrong: glyphs sit up to half a pixel off iTerm2's baseline in a row that uses a fallback font.
 Task 2: a changed FontsForGenerousRounding re-measures every face in place (`Renderer::set_generous_list`, read in `apply_fonts`). Cost if wrong: none.
+
+Task 3 (bold and italic faces)
+- Decision: a face stores the bold weight chosen by fonts::bold_weight over the weights of its family's regular-style faces (a variable face counts every 100-step of its wght range), with MinimumWeightDifferenceForBoldFont read when faces are built and re-applied in place on a change. Cost if wrong: a family with unusual weights may pick a different bold than on macOS.
+- Decision: Use Bold Font and Use Italic Font are plain fields of FaceKey and of the per-pane RawFont cache (a face that ignores a switch is its own face). Cost if wrong: none.
+- Decision: only spans pane_with marks fake_bold (terminal bold cells) follow Use Bold Font, the bold weight and the double strike; chrome, prose, icon, badge and toolbelt spans keep Weight::BOLD (P11 without a TextRow.terminal field). Cost if wrong: a pane-owned non-cell row (composer, info bar) keeps bold when Use Bold Font is off.
+- Decision: the double strike is a second TextRow per row, appended after frame.rows (so underline gap indexes are unchanged and the copy never takes part in gaps), one physical pixel right, carrying only the bold spans; every other span is blank advance by character width. Cost if wrong: none known.

@@ -36,6 +36,42 @@ pub fn baseline(m: Metrics, cell_h: f32) -> f32 {
     (cell_h - (m.ascent + m.descent)) / 2.0 + m.ascent
 }
 
+/// A weight on NSFontManager's scale (`PTYFontInfo.m` `boldVersionOfFont:` counts in these
+/// classes): CSS 100 is 2, 200 is 3, 300 is 4, 400 is 5, 500 is 6, 600 is 8, 700 is 9, 800 is 10
+/// and 900 is 11; a weight between two classes takes the lower one.
+pub fn ns_weight(css: u16) -> i32 {
+    match css {
+        0..=199 => 2,
+        200..=299 => 3,
+        300..=399 => 4,
+        400..=499 => 5,
+        500..=599 => 6,
+        600..=699 => 8,
+        700..=799 => 9,
+        800..=899 => 10,
+        _ => 11,
+    }
+}
+
+/// Every weight a variable face covers: the 100-steps inside `min..=max`.
+pub fn range_weights(min: u16, max: u16) -> Vec<u16> {
+    (1..=9).map(|n| n * 100).filter(|w| *w >= min && *w <= max).collect()
+}
+
+/// The weight the "regular" face of a family has: the one nearest 400, the lighter on a tie.
+pub fn regular_weight(available: &[u16]) -> Option<u16> {
+    available.iter().copied().min_by_key(|w| ((*w as i32 - 400).abs(), *w))
+}
+
+/// The bold weight for a regular face (`boldVersionOfFont:`): the lightest of `available` whose
+/// class is at least the regular's class plus `min_difference`
+/// (`MinimumWeightDifferenceForBoldFont`). None means no face is heavy enough and the regular
+/// face is double-struck.
+pub fn bold_weight(regular_css: u16, available: &[u16], min_difference: i32) -> Option<u16> {
+    let need = ns_weight(regular_css) + min_difference;
+    available.iter().copied().filter(|w| ns_weight(*w) >= need).min()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +113,37 @@ mod tests {
     fn baseline_centers_the_glyphs() {
         assert!((baseline(M, 16.0) - 12.6).abs() < 1e-4);
         assert!((baseline(M, 17.0) - 13.1).abs() < 1e-4);
+    }
+
+    #[test]
+    fn bold_face_follows_iterm2() {
+        assert_eq!(bold_weight(400, &[400, 700], 4), Some(700));
+        // 600 is class 8, below 5 + 4.
+        assert_eq!(bold_weight(400, &[400, 500, 600], 4), None);
+        assert_eq!(bold_weight(400, &[400, 600], 3), Some(600));
+        assert_eq!(bold_weight(300, &[300, 400, 700], 4), Some(700));
+        assert_eq!(bold_weight(500, &[500, 700, 800], 4), Some(800));
+        // The lightest weight that is heavy enough, whatever the order.
+        assert_eq!(bold_weight(400, &[900, 700, 400], 4), Some(700));
+        assert_eq!(bold_weight(400, &[], 4), None);
+        assert_eq!(ns_weight(650), 8);
+        for (css, ns) in [(100, 2), (200, 3), (300, 4), (400, 5), (500, 6), (600, 8), (700, 9), (800, 10), (900, 11), (450, 5), (950, 11)] {
+            assert_eq!(ns_weight(css), ns, "css {css}");
+        }
+    }
+
+    #[test]
+    fn weights_of_a_variable_face_cover_its_range() {
+        assert_eq!(range_weights(300, 700), vec![300, 400, 500, 600, 700]);
+        assert_eq!(range_weights(350, 650), vec![400, 500, 600]);
+        assert_eq!(range_weights(700, 300), Vec::<u16>::new());
+    }
+
+    #[test]
+    fn the_regular_face_is_the_one_nearest_400() {
+        assert_eq!(regular_weight(&[300, 400, 700]), Some(400));
+        assert_eq!(regular_weight(&[700, 300]), Some(300));
+        assert_eq!(regular_weight(&[500, 300]), Some(300), "equal distance takes the lighter");
+        assert_eq!(regular_weight(&[]), None);
     }
 }

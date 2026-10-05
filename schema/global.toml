@@ -1250,6 +1250,15 @@ default = "consolas"
 help = "List of fonts to use alternate rounding algorithm for line height calculation.\nThis fixes consolas and emulates Terminal.app\u2019s behavior on macOS 10.15. This is a comma-delimited list of font family substrings."
 
 [[setting]]
+key = "MinimumWeightDifferenceForBoldFont"
+tab = "Advanced"
+section = "Drawing"
+label = "Minimum weight difference between regular and bold font."
+type = "int"
+default = 4
+help = "Minimum weight difference between regular and bold font.\nThis affects selection of the bold version of a font. Font weights go from 0 to 9. If no font can be found that has a high enough weight then the regular font will be double-struck with a small offset."
+
+[[setting]]
 key = "EscapeWithQuotes"
 tab = "Advanced"
 section = "Experimental Features"
