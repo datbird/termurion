@@ -6,6 +6,25 @@ use std::time::{Duration, Instant};
 use super::*;
 use crate::activity::ActivityEvent;
 
+/// What the activity tick asks of the display.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TabDraw {
+    Nothing,
+    Now,
+    Paced,
+}
+
+/// A state change (seen, an event) draws at once; a turning spinner draws at the cadence.
+pub(super) fn tab_draw(state_changed: bool, spinning: bool) -> TabDraw {
+    if state_changed {
+        TabDraw::Now
+    } else if spinning {
+        TabDraw::Paced
+    } else {
+        TabDraw::Nothing
+    }
+}
+
 impl App {
     /// Whether any of these panes shows the new-output or the idle indicator.
     pub(super) fn activity_icons(&self, panes: &[PaneId]) -> (bool, bool) {
@@ -33,7 +52,9 @@ impl App {
     pub(super) fn tick_activity(&mut self) -> Option<Instant> {
         let now = Instant::now();
         let got: Vec<PaneId> = self.panes.iter_mut().filter_map(|(id, p)| std::mem::take(&mut p.got_output).then_some(*id)).collect();
-        let mut changed = !got.is_empty();
+        // Output alone draws through the pacer (`after_output`), never from here: only a change of
+        // state (seen, an event) draws at once.
+        let mut changed = false;
         for id in got {
             self.activity.entry(id).or_default().output(now);
         }
@@ -56,8 +77,13 @@ impl App {
         }
         // A spinner turns at each tick while a session is processing.
         let spinning = !self.globals.bool("HideActivityIndicator") && self.activity.values().any(|a| a.is_processing(now));
-        if changed || spinning {
-            self.redraw();
+        match tab_draw(changed, spinning) {
+            TabDraw::Nothing => {}
+            TabDraw::Now => self.redraw(),
+            TabDraw::Paced => {
+                let turning: Vec<PaneId> = self.activity.iter().filter(|(_, a)| a.is_processing(now)).map(|(id, _)| *id).collect();
+                self.paced_redraw(&turning, now);
+            }
         }
         waiting.then(|| now + Duration::from_millis(500))
     }
@@ -92,7 +118,17 @@ pub(super) fn tab_processing(any_processing: bool, foreground: bool, hide: bool)
 
 #[cfg(test)]
 mod tests {
-    use super::tab_processing;
+    use super::{tab_draw, tab_processing, TabDraw};
+
+    /// 13l review, Critical 1: output alone never asks for a draw here (the pacer owns it);
+    /// a state change draws at once, and a spinning indicator draws on the pacer's schedule.
+    #[test]
+    fn output_alone_does_not_draw_from_the_activity_tick() {
+        assert_eq!(tab_draw(false, false), TabDraw::Nothing);
+        assert_eq!(tab_draw(true, false), TabDraw::Now);
+        assert_eq!(tab_draw(true, true), TabDraw::Now);
+        assert_eq!(tab_draw(false, true), TabDraw::Paced);
+    }
 
     #[test]
     fn processing_is_apart_from_new_output() {

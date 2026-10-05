@@ -1976,6 +1976,8 @@ mod tests {
         use crate::cadence::frame_gap;
         let prefs = crate::cadence::Prefs::default();
         let (fast, bg) = (frame_gap(true, false, false, 500), frame_gap(false, false, false, 500));
+        let us = |d: Duration| (d.as_secs_f64() * 1e6).round() as u64;
+        assert_eq!((us(fast), us(bg)), (15_667, 999_000), "UC:239-243: 1/60 s and 1 s, a millisecond off each");
         let t0 = Instant::now();
         let mut p = Pane::tmux(5, 1, 3, 20, 4);
         assert_eq!(p.replay_gap(t0, true, None, &prefs, false), bg, "no output yet is idle");
