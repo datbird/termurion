@@ -378,15 +378,21 @@ pub fn batch_unsafe(arg: &str) -> bool {
     arg.contains(['%', '^', '&', '|', '<', '>', '"']) || arg.chars().any(char::is_control)
 }
 
-/// The program `name` names: as given when it has a folder, else the first of `name`, `.exe`,
-/// `.cmd` found on `path`.
+/// The program `name` names: as given when it has a folder, else the first of `.com`, `.exe`,
+/// `.bat`, `.cmd` (PATHEXT's order) found on `path`; a name with its own extension is tried as
+/// written. An extensionless file is no program (VS Code's `code` is a shell script beside
+/// `code.cmd`), and a PATH entry that is a network path is never looked in.
 pub fn resolve_program(name: &Path, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     if name.components().count() > 1 || name.is_absolute() {
         return Some(name.to_path_buf());
     }
     let path = path?;
     std::env::split_paths(path).find_map(|d| {
-        ["", ".exe", ".cmd"].iter().map(|ext| d.join(format!("{}{ext}", name.to_string_lossy()))).find(|p| p.is_file())
+        if crate::scripts::is_network_path(&d.to_string_lossy()) {
+            return None;
+        }
+        let bare = name.extension().is_some().then_some("");
+        bare.into_iter().chain([".com", ".exe", ".bat", ".cmd"]).map(|ext| d.join(format!("{}{ext}", name.to_string_lossy()))).find(|p| p.is_file())
     })
 }
 
@@ -985,6 +991,24 @@ mod tests {
             let out = std::process::Command::new("cmd.exe").raw_arg(cmd_args(&line)).current_dir(&d).output().unwrap();
             assert!(!d.join("pwned.txt").exists(), "a second command ran: {out:?}");
         }
+    }
+
+    #[test]
+    fn resolve_program_prefers_a_runnable_extension() {
+        // VS Code's bin folder holds `code` (a shell script) beside `code.cmd`.
+        let d = dir("resolve", &["code", "code.cmd", "tool.exe", "plain", "x.bat"]);
+        let path = std::env::join_paths([&d]).unwrap();
+        assert_eq!(resolve_program(Path::new("code"), Some(&path)), Some(d.join("code.cmd")));
+        assert_eq!(resolve_program(Path::new("tool"), Some(&path)), Some(d.join("tool.exe")));
+        assert_eq!(resolve_program(Path::new("x"), Some(&path)), Some(d.join("x.bat")));
+        // An extensionless file alone is no program; a name with its own extension is taken as is.
+        assert_eq!(resolve_program(Path::new("plain"), Some(&path)), None);
+        assert_eq!(resolve_program(Path::new("code.cmd"), Some(&path)), Some(d.join("code.cmd")));
+        // A PATH entry that is a share is never looked in.
+        let shared = std::env::join_paths([PathBuf::from(r"\\10.255.255.1\bin"), d.clone()]).unwrap();
+        let t = std::time::Instant::now();
+        assert_eq!(resolve_program(Path::new("tool"), Some(&shared)), Some(d.join("tool.exe")));
+        assert!(t.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]

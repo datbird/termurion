@@ -367,7 +367,7 @@ impl App {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x0800_0000);
         }
-        if let Some(d) = cwd.filter(|d| d.is_dir() && !crate::scripts::is_network_path(&d.to_string_lossy())) {
+        if let Some(d) = cwd.filter(|d| !crate::scripts::is_network_path(&d.to_string_lossy()) && d.is_dir()) {
             cmd.current_dir(d);
         }
         if let Err(e) = cmd.spawn() {
