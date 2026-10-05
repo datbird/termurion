@@ -380,6 +380,25 @@ pub fn pane_with(
     let bg_alpha = highlights.map_or(1.0, |h| h.bg_alpha);
     let opaque_colors = highlights.is_some_and(|h| h.opaque_colors);
     let block_cursor = !key_cursor && focused && content.cursor.shape == CursorShape::Block;
+    // Smart Cursor Color: a focused box only (`iTermMetalPerFrameState.m:455-490`). The cell's
+    // own colors and its neighbors' backgrounds come before selection and match highlights.
+    let smart_box = look.smart.filter(|_| block_cursor).and_then(|(bg_t, fg_t)| {
+        let (row, col) = cursor?;
+        let at = |r: i64, c: i64| -> Option<alacritty_terminal::term::cell::Cell> {
+            (r >= 0 && c >= 0 && (r as usize) < lines && (c as usize) < cols).then(|| term.grid()[alacritty_terminal::index::Point::new(alacritty_terminal::index::Line(r as i32 - content.display_offset as i32), alacritty_terminal::index::Column(c as usize))].clone())
+        };
+        let own = at(row as i64, col as i64)?;
+        let (fg, bg) = palette.cell(own.fg, own.bg, own.flags);
+        let (r, c) = (row as i64, col as i64);
+        let neighbors: Vec<Rgb> = [(r - 1, c), (r, c - 1), (r, c + 1), (r + 1, c)]
+            .into_iter()
+            .filter_map(|(r, c)| at(r, c))
+            .map(|n| palette.cell(n.fg, n.bg, n.flags - Flags::BOLD - Flags::DIM).1)
+            .collect();
+        Some(crate::cursor_look::smart_colors(fg, bg, &neighbors, bg_t as f64, fg_t as f64))
+    });
+    let cursor_box = smart_box.map_or(palette.cursor, |(b, _)| b);
+    let cursor_text = smart_box.map_or(palette.cursor_text, |(_, t)| t);
 
     let blank = || CellLook { text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false };
     let mut grid: Vec<Vec<CellLook>> = (0..lines).map(|_| (0..cols).map(|_| blank()).collect()).collect();
@@ -426,7 +445,7 @@ pub fn pane_with(
         if block_cursor && cursor == Some((row, col)) {
             // The cursor box is its own quad (after the background runs); the text takes its color.
             // A fading cursor (smooth blink) takes the text color part of the way.
-            fg = if look.alpha < 1.0 { blend(fg, palette.cursor_text, look.alpha) } else { palette.cursor_text };
+            fg = if look.alpha < 1.0 { blend(fg, cursor_text, look.alpha) } else { cursor_text };
         }
         if let Some(t) = c.image() {
             if let Some(img) = screen.images.by_id.get(&t.image) {
@@ -480,7 +499,7 @@ pub fn pane_with(
         if block_cursor && cursor.is_some_and(|(r, _)| r == row) {
             let (_, col) = cursor.unwrap();
             let r = box_rect(&look.geometry, (rect.x, rect.y), cell, row, col, wide_cursor);
-            frame.quads.push(Quad { rect: r, color: rgba(palette.cursor, look.alpha) });
+            frame.quads.push(Quad { rect: r, color: rgba(cursor_box, look.alpha) });
         }
         // Text pieces. An ASCII run shares one piece. Any other character gets its own
         // piece at its cell's x, because fallback fonts (CJK, emoji) are not monospace
@@ -4259,6 +4278,40 @@ mod tests {
         let c = rgba(s.palette.cursor, 1.0)[..3].to_vec();
         assert!(!f.quads.iter().chain(f.overlay.iter()).any(|q| q.color[..3] == c[..]), "{:?}", f.quads);
         assert!(f.rows[0].spans.iter().all(|sp| sp.color == s.palette.fg), "{:?}", f.rows[0].spans);
+    }
+
+    #[test]
+    fn smart_cursor_draws_its_colors() {
+        // White on black, every neighbor black: the box is the text color, the text the background.
+        let setup: &[u8] = b"\x1b[38;2;255;255;255m\x1b[48;2;0;0;0m\x1b[2J\x1b[Hab\x1b[1;2H";
+        let mut s = screen(setup);
+        s.palette.cursor = rgb(255, 0, 0);
+        s.palette.cursor_text = rgb(0, 0, 255);
+        let smart = CursorLook { smart: Some((0.5, 0.75)), ..CursorLook::shown(true) };
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &smart);
+        assert!(f.quads.iter().any(|q| q.color == rgba(rgb(255, 255, 255), 1.0) && q.rect.x == 10.0), "{:?}", f.quads);
+        let b = f.rows[0].spans.iter().find(|sp| sp.text == "b").unwrap();
+        assert_eq!(b.color, rgb(0, 0, 0));
+        // Unfocused: the hollow edges use the profile's cursor color.
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &smart);
+        let cc = rgba(s.palette.cursor, 1.0);
+        assert!(f.overlay.iter().any(|q| q.color == cc), "{:?}", f.overlay);
+        assert!(!f.overlay.iter().any(|q| q.color == rgba(rgb(255, 255, 255), 1.0)), "{:?}", f.overlay);
+        // A beam ignores smart colors.
+        let mut s = screen(b"\x1b[38;2;255;255;255m\x1b[48;2;0;0;0m\x1b[2J\x1b[Hab\x1b[6 q\x1b[1;2H");
+        s.palette.cursor = rgb(255, 0, 0);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &smart);
+        assert!(f.overlay.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0)), "{:?}", f.overlay);
+        // A neighbor as bright as the text pushes the box to black (the farthest gray); the text keeps the cell background (0.9 from black, past 0.75).
+        let mut s = screen(b"\x1b[38;2;255;255;255m\x1b[48;2;230;230;230m\x1b[2J\x1b[Hab\x1b[1;2H");
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &smart);
+        assert!(f.quads.iter().any(|q| q.color == rgba(rgb(0, 0, 0), 1.0) && q.rect.x == 10.0), "{:?}", f.quads);
+        let b = f.rows[0].spans.iter().find(|sp| sp.text == "b").unwrap();
+        assert_eq!(b.color, rgb(230, 230, 230));
     }
 
     #[test]

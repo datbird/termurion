@@ -5,6 +5,7 @@ use alacritty_terminal::vte::ansi::CursorShape;
 
 use crate::globals::Globals;
 use crate::layout::Rect;
+use crate::palette::Rgb;
 
 /// The measures iTerm2 reads for the cursor's box, bar and underline. Lengths in points are
 /// multiplied by `scale` where they are used.
@@ -77,6 +78,67 @@ pub fn cursor_rect(geo: &Geometry, shape: CursorShape, origin: (f32, f32), cell:
     }
 }
 
+/// iTerm2's perceived brightness, 0 to 1 (`NSColor+iTerm.m` `perceivedBrightness`).
+pub fn brightness(c: Rgb) -> f64 {
+    (0.30 * c.r as f64 + 0.59 * c.g as f64 + 0.11 * c.b as f64) / 255.0
+}
+
+/// The value between 0 and 1 farthest from every value in `constraints`
+/// (`iTermSmartCursorColor.m` `farthestValueFromAnyValueIn:`): 0 with none, else the midpoint
+/// of the widest gap, beaten by 0 when the smallest value is farther, then by 1 likewise.
+pub fn farthest_value(constraints: &[f64]) -> f64 {
+    if constraints.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = constraints.to_vec();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let (min, max) = (sorted[0], sorted[sorted.len() - 1]);
+    let mut best_distance = 0.0;
+    let mut best_value = -1.0;
+    let mut prev = sorted[0];
+    for &n in &sorted {
+        let dist = (n - prev).abs() / 2.0;
+        if dist > best_distance {
+            best_distance = dist;
+            best_value = (n + prev) / 2.0;
+        }
+        prev = n;
+    }
+    if min > best_distance {
+        best_value = 0.0;
+        best_distance = min;
+    }
+    if 1.0 - max > best_distance {
+        best_value = 1.0;
+    }
+    best_value
+}
+
+/// Smart Cursor Color (`iTermSmartCursorColor.m`): the box color and the text color for a
+/// block cursor over a cell with `cell_fg` and `cell_bg`. The box is the text color unless it
+/// is within `bg_threshold` of a neighbor's background brightness, then the gray farthest
+/// from all of them. The text is the cell's background unless it is within `fg_threshold` of
+/// the box, then white on a dark box and black on a light one.
+pub fn smart_colors(cell_fg: Rgb, cell_bg: Rgb, neighbor_bgs: &[Rgb], bg_threshold: f64, fg_threshold: f64) -> (Rgb, Rgb) {
+    let constraints: Vec<f64> = neighbor_bgs.iter().map(|c| brightness(*c)).collect();
+    let mut boxc = cell_fg;
+    let mut min_distance: f64 = 1.0;
+    for c in &constraints {
+        min_distance = min_distance.min((brightness(cell_fg) - c).abs());
+    }
+    if min_distance < bg_threshold {
+        let b = (farthest_value(&constraints) * 255.0).round() as u8;
+        boxc = Rgb { r: b, g: b, b };
+    }
+    let box_brightness = brightness(boxc);
+    let text = if (brightness(cell_bg) - box_brightness).abs() < fg_threshold {
+        if box_brightness < 0.5 { Rgb { r: 255, g: 255, b: 255 } } else { Rgb { r: 0, g: 0, b: 0 } }
+    } else {
+        cell_bg
+    };
+    (boxc, text)
+}
+
 /// Everything the scene draws for one pane's cursor. Later tasks fill the later fields.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CursorLook {
@@ -126,6 +188,32 @@ mod tests {
 
     fn r(x: f32, y: f32, w: f32, h: f32) -> Rect {
         Rect { x, y, w, h }
+    }
+
+    #[test]
+    fn farthest_value_follows_iterm2() {
+        assert_eq!(farthest_value(&[]), 0.0);
+        assert_eq!(farthest_value(&[0.2, 0.8]), 0.5);
+        assert_eq!(farthest_value(&[0.9]), 0.0);
+        assert_eq!(farthest_value(&[0.1]), 1.0);
+        // The smallest constraint (0.2) beats the widest gap (0.15).
+        assert_eq!(farthest_value(&[0.8, 0.2, 0.5]), 0.0);
+    }
+
+    #[test]
+    fn smart_colors_follow_iterm2() {
+        let (w, k) = (Rgb { r: 255, g: 255, b: 255 }, Rgb { r: 0, g: 0, b: 0 });
+        let gray = |v: u8| Rgb { r: v, g: v, b: v };
+        assert_eq!(smart_colors(w, k, &[k, k, k, k], 0.5, 0.75), (w, k));
+        // A neighbor near the text color: the box is the farthest gray, black here.
+        let (boxc, text) = smart_colors(w, k, &[gray(230); 4], 0.5, 0.75);
+        assert_eq!(boxc, k);
+        assert_eq!(text, w);
+        // Similar text and background: black text on the bright box.
+        assert_eq!(smart_colors(gray(179), gray(153), &[k; 4], 0.5, 0.75), (gray(179), k));
+        // Thresholds of 0 never replace the box and always use the cell background as text.
+        assert_eq!(smart_colors(w, k, &[gray(230); 4], 0.0, 0.0), (w, k));
+        assert_eq!(smart_colors(gray(179), gray(153), &[k; 4], 0.0, 0.0), (gray(179), gray(153)));
     }
 
     #[test]

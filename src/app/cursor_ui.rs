@@ -14,9 +14,17 @@ impl App {
         let hide_unfocused = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).is_some_and(|p| p.bool("Cursor Hidden When Unfocused"));
         // Smooth blink: the cursor is drawn at the fade's alpha whatever the on/off phase.
         let smooth = self.cursor_alpha.filter(|_| focused);
+        // Smart Cursor Color (light or dark variant); the scene applies it to a focused box only,
+        // whatever shape a program asked for.
+        let dark = self.dark();
+        let smart = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).filter(|p| p.bool_for("Smart Cursor Color", dark)).map(|_| {
+            let t = |key: &str, default: f64| self.globals.number(key).unwrap_or(default).clamp(0.0, 1.0) as f32;
+            (t("SmartCursorColorBgThreshold", 0.5), t("SmartCursorColorFgThreshold", 0.75))
+        });
         CursorLook {
             hide_unfocused,
             alpha: smooth.unwrap_or(1.0),
+            smart,
             geometry: Geometry::from_globals(&self.globals, self.scale(), self.base_cell()),
             ..CursorLook::shown(visible && (smooth.is_some() || self.cursor_visible_now(pane, focused)))
         }
