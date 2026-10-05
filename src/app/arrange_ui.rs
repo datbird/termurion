@@ -507,6 +507,10 @@ impl App {
         let original = table.get(crate::session_profile::ORIGINAL_GUID).and_then(|v| v.as_str()).and_then(|g| self.store.profiles.iter().find(|p| p.guid() == g));
         let shared = original.unwrap_or_else(|| self.store.default_profile()).clone();
         let mut copy = crate::session_profile::divorce(&shared, uuid::Uuid::new_v4().to_string().to_uppercase());
+        // A folder on a network host from a file is never started in: the connection would
+        // authenticate this PC to that host at process start.
+        let mut table = table.clone();
+        arrangement::without_network_folders(&mut table);
         let values: Vec<(String, Option<Value>)> = table.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
         copy.set(&values, &shared);
         let guid = copy.profile.guid();

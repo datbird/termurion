@@ -610,6 +610,10 @@ pub fn trust_text(name: &str, windows: &[Value]) -> String {
                 if !get("Initial Text").is_empty() {
                     lines.push(format!("Profile \u{201c}{pname}\u{201d} types: {}", get("Initial Text")));
                 }
+                let mut shown = prof.clone();
+                if !without_network_folders(&mut shown).is_empty() {
+                    lines.push(format!("Profile \u{201c}{pname}\u{201d} names a network folder to start in; Tandem ignores it and starts in your home folder."));
+                }
                 if prof.get("Triggers").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty()) {
                     lines.push(format!("Profile \u{201c}{pname}\u{201d} has triggers."));
                 }
@@ -622,6 +626,25 @@ pub fn trust_text(name: &str, windows: &[Value]) -> String {
     lines.push(String::new());
     lines.push("Open it only if you trust where it came from.".into());
     lines.join("\n")
+}
+
+/// The profile keys holding a start folder (the custom directory and the three Advanced ones).
+pub const FOLDER_KEYS: [&str; 4] = ["Working Directory", "AWDS Window Directory", "AWDS Tab Directory", "AWDS Pane Directory"];
+
+/// Empties every start folder of an arrangement's embedded profile that names a network or
+/// device path (`\\host`, `//host`, `\\?\`): `CreateProcessW` connects to the host at process
+/// start, so a file from elsewhere could make the person's PC authenticate to it. The profile
+/// the person typed themselves keeps its UNC folder; one from a file never does. Returns the
+/// keys emptied.
+pub fn without_network_folders(copy: &mut Table) -> Vec<String> {
+    let mut gone = Vec::new();
+    for key in FOLDER_KEYS {
+        if copy.get(key).and_then(|v| v.as_str()).is_some_and(crate::prompted::network_path) {
+            copy.insert(key.into(), Value::String(String::new()));
+            gone.push(key.to_string());
+        }
+    }
+    gone
 }
 
 /// Windows marks a downloaded file with a Zone.Identifier stream (its quarantine flag).
@@ -907,6 +930,45 @@ mod tests {
         let mut empty = Vec::new();
         plist::Value::Array(vec![plist::Value::String("x".into())]).to_writer_xml(&mut empty).unwrap();
         assert!(from_plist(&empty).is_err(), "an array without windows");
+    }
+
+    #[test]
+    fn embedded_profiles_lose_network_folders() {
+        let mut t = Table::new();
+        for (k, v) in [("Working Directory", r"\\evil\share"), ("AWDS Window Directory", "//evil/share"), ("AWDS Tab Directory", r"\\?\UNC\evil\s"), ("AWDS Pane Directory", r"D:\ok"), ("Name", r"\\keep")] {
+            t.insert(k.into(), Value::String(v.into()));
+        }
+        let mut gone = without_network_folders(&mut t);
+        gone.sort();
+        assert_eq!(gone, ["AWDS Tab Directory", "AWDS Window Directory", "Working Directory"]);
+        for k in ["Working Directory", "AWDS Window Directory", "AWDS Tab Directory"] {
+            assert_eq!(t[k].as_str(), Some(""), "{k}");
+        }
+        assert_eq!(t["AWDS Pane Directory"].as_str(), Some(r"D:\ok"), "a drive folder stays");
+        assert_eq!(t["Name"].as_str(), Some(r"\\keep"), "only folder keys are looked at");
+        // A saved arrangement's `~` or interpolated folder stays too.
+        let mut t = Table::new();
+        t.insert("Working Directory".into(), Value::String(r"~\src".into()));
+        assert!(without_network_folders(&mut t).is_empty());
+    }
+
+    #[test]
+    fn trust_text_names_a_network_folder() {
+        let mut p = Table::new();
+        p.insert("Name".into(), Value::String("Ops".into()));
+        p.insert("AWDS Tab Directory".into(), Value::String(r"\\evil\share".into()));
+        let t = trust_text("x.itermarrangement", &one_window(p));
+        assert!(t.contains("Ops") && t.contains("network folder"), "{t}");
+    }
+
+    /// The copy an arrangement's profile becomes is filtered before it can start a session.
+    #[test]
+    fn arrangement_copy_drops_network_folders() {
+        let src = include_str!("app/arrange_ui.rs").split("#[cfg(test)]").next().unwrap();
+        let i = src.find("fn arrangement_copy(").expect("arrangement_copy");
+        let body = &src[i..i + 900];
+        assert!(body.contains("arrangement::without_network_folders(&mut table);"));
+        assert!(body.find("without_network_folders").unwrap() < body.find("copy.set(").unwrap());
     }
 
     #[test]

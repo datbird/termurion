@@ -203,6 +203,24 @@ mod tests {
         assert_eq!(resolve(&Mode::Custom(r"D:\\(session.name)".into()), None, &h, &expand, &exists), (PathBuf::from(r"D:\x"), None));
     }
 
+    /// The real interpolation parser: `\\` is an escape that eats the second backslash, so
+    /// the working Windows forms are `\\\(` (after a path separator) or `/` before `\(`.
+    #[test]
+    fn windows_paths_interpolate_through_the_real_parser() {
+        let h = home();
+        let lookup = |name: &str| (name == "session.name").then(|| "proj".to_string());
+        let real = |t: &str| crate::interp::evaluate_lax(t, &lookup, &[], true).unwrap_or_else(|_| t.to_string());
+        let exists = |_: &Path| true;
+        assert_eq!(resolve(&Mode::Custom(r"D:/w/\(session.name)".into()), None, &h, &real, &exists), (PathBuf::from("D:/w/proj"), None));
+        assert_eq!(resolve(&Mode::Custom(r"D:\w\\\(session.name)".into()), None, &h, &real, &exists), (PathBuf::from(r"D:\w\proj"), None));
+        // `\\(` is an escaped backslash then literal text: not expanded, so a literal that
+        // does not exist.
+        let missing = |_: &Path| false;
+        let (dir, warning) = resolve(&Mode::Custom(r"D:\w\\(session.name)".into()), None, &h, &real, &missing);
+        assert_eq!(dir, h);
+        assert!(warning.is_some());
+    }
+
     #[test]
     fn a_unc_path_is_never_probed() {
         let h = home();
