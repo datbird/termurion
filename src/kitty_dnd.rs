@@ -255,6 +255,7 @@ impl Controller {
 
     /// One OSC 72 body from the program; the replies to write to its input.
     pub fn inbound_at(&mut self, now: Instant, body: &str) -> Vec<String> {
+        self.expire(now);
         let message = self.reassembler.accept(body);
         let mut out = Vec::new();
         if self.reassembler.overflowed() {
@@ -807,5 +808,22 @@ mod tests {
         assert_eq!(data_of(&c.inbound("t=r:x=1:y=1")).len(), 16 << 20);
         assert_eq!(c.inbound("t=r:x=1:y=5"), vec!["\x1b]72;t=E:x=1:y=5;EFBIG\x1b\\".to_string()]);
         assert!(ASKED.load(SeqCst) <= (64 << 20) + (16 << 20));
+    }
+
+    /// 13o final review I3: a drop is freed by time, not only by a later addressed request.
+    #[test]
+    fn an_expired_drop_is_freed_by_any_message_and_by_a_sweep() {
+        let t0 = Instant::now();
+        let backing = Backing { size: |_| Some(1), read: |_| Some(vec![1]) };
+        let mut c = registered();
+        c.drop_at(t0, (0, 0), (0, 0), files(&["C:\\a.txt"]), backing);
+        c.inbound_at(t0 + Duration::from_secs(59), "t=q");
+        assert!(c.has_drop(), "still held at 59 s");
+        c.inbound_at(t0 + Duration::from_secs(61), "t=q");
+        assert!(!c.has_drop(), "an unrelated message after the minute frees it");
+        let mut c = registered();
+        c.drop_at(t0, (0, 0), (0, 0), files(&["C:\\a.txt"]), backing);
+        c.expire(t0 + Duration::from_secs(61));
+        assert!(!c.has_drop(), "and so does a sweep");
     }
 }

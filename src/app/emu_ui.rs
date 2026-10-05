@@ -220,6 +220,12 @@ impl App {
     /// The files of one drop, handed to the program that registered. A folder's path ends
     /// with a separator; a network path or anything that is not a plain file is never read.
     pub(super) fn dnd_flush(&mut self) {
+        // A drop that outlived its minute is freed here, on the pass every wake-up makes (no
+        // timer of its own, so an idle app is never woken for it).
+        let now = std::time::Instant::now();
+        for p in self.panes.values_mut().filter(|p| p.own().dnd.has_drop()) {
+            p.own_mut().dnd.expire(now);
+        }
         if self.dnd_dropped.is_empty() {
             return;
         }
@@ -319,6 +325,10 @@ mod dnd_tests {
         let flush = include_str!("coprocess_ui.rs");
         let f = flush.find("fn flush_dropped").unwrap();
         assert!(flush[f..].contains("self.dnd_flush()"));
+        // The sweep that frees an expired drop runs in that flush, at the top (before the empty return).
+        let own = include_str!("emu_ui.rs");
+        let d = own.find("pub(super) fn dnd_flush").unwrap();
+        assert!(own[d..].find("dnd.expire(now)").unwrap() < own[d..].find("self.dnd_dropped.is_empty()").unwrap());
     }
 
     /// 13o final review I1: a drop is placed by the pointer as the system reports it, never by
