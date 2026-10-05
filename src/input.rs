@@ -80,6 +80,17 @@ pub fn wheel_reports_with(modes: Modes, mods: Mods, lines: i32, col: u32, row: u
     one.repeat(lines.unsigned_abs() as usize)
 }
 
+/// A horizontal wheel's reports: `steps` of them (the whole part, either sign) as WheelLeft
+/// when `left`, else WheelRight; nothing when `ReportHorizontalScrollEvents` is off, so the
+/// caller makes no (empty) write.
+pub fn horizontal_wheel_reports(modes: Modes, mods: Mods, steps: i32, left: bool, enabled: bool, col: u32, row: u32) -> Vec<u8> {
+    if !enabled || steps == 0 {
+        return Vec::new();
+    }
+    let button = if left { Button::WheelLeft } else { Button::WheelRight };
+    mouse::encode(modes, Event { button, action: Action::Press, mods, col, row }).unwrap_or_default().repeat(steps.unsigned_abs() as usize)
+}
+
 /// The arrows the alternate-screen wheel sends, `count` times (`PTYTextView.m:8358-8380`):
 /// vertical sends Up or Down, horizontal sends Left for a positive delta and Right otherwise,
 /// all with the event's modifiers as the xterm parameter.
@@ -163,5 +174,15 @@ mod tests {
     fn arrows_carry_modifiers() {
         assert_eq!(alt_arrows(true, true, Mods { shift: true, ..NONE }, true, 1), b"\x1b[1;2A".to_vec());
         assert_eq!(alt_arrows(true, true, Mods { ctrl: true, ..NONE }, false, 1), b"\x1b[1;5A".to_vec());
+    }
+
+    #[test]
+    fn horizontal_wheel_reports_need_the_setting() {
+        let modes = Modes { tracking: Tracking::Click, sgr: true, ..Default::default() };
+        let m = Mods::default();
+        assert!(horizontal_wheel_reports(modes, m, 2, true, false, 2, 1).is_empty(), "setting off: no bytes at all");
+        assert!(horizontal_wheel_reports(modes, m, 0, true, true, 2, 1).is_empty());
+        assert_eq!(horizontal_wheel_reports(modes, m, 2, true, true, 2, 1), b"\x1b[<66;3;2M\x1b[<66;3;2M".to_vec());
+        assert_eq!(horizontal_wheel_reports(modes, m, 1, false, true, 2, 1), b"\x1b[<67;3;2M".to_vec());
     }
 }

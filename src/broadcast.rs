@@ -295,6 +295,8 @@ pub enum Write {
     /// Key action 76, Send Text without Broadcasting.
     SendTextLocal,
     AltClickArrows,
+    /// The alternate-screen wheel's arrow keys (13j: iTerm2 broadcasts them, unlike mouse reports).
+    WheelArrows,
     MouseReport,
     FocusReport,
     Trigger,
@@ -315,7 +317,7 @@ pub enum Route {
 /// Which writes broadcast (iTerm2's canBroadcast).
 pub fn route(w: Write) -> Route {
     match w {
-        Write::Key | Write::KeyRelease | Write::Paste | Write::Drop | Write::SendText | Write::AltClickArrows => Route::Broadcast,
+        Write::Key | Write::KeyRelease | Write::Paste | Write::Drop | Write::SendText | Write::AltClickArrows | Write::WheelArrows => Route::Broadcast,
         Write::SendTextLocal | Write::MouseReport | Write::FocusReport | Write::Trigger | Write::Upload | Write::BufferRelease | Write::Agent => Route::Local,
     }
 }
@@ -343,7 +345,7 @@ pub fn write_targets(b: &Broadcast, v: &View, sender: PaneId, what: Write, gatew
 /// Writes that are typing (iTerm2's writeTask): a tmux gateway reads them as its Command
 /// Menu's keys. The rest never reach a gateway.
 pub fn typed(w: Write) -> bool {
-    matches!(w, Write::Key | Write::Paste | Write::Drop | Write::SendText | Write::SendTextLocal | Write::AltClickArrows | Write::Agent)
+    matches!(w, Write::Key | Write::Paste | Write::Drop | Write::SendText | Write::SendTextLocal | Write::AltClickArrows | Write::WheelArrows | Write::Agent)
 }
 
 /// Clear Buffer with two or more broadcast sessions: (heading, text, buttons).
@@ -588,6 +590,17 @@ mod tests {
         assert_eq!(without_gateways(vec![1, 2, 3], 1, &gateways), vec![1, 3], "no typing reaches a gateway");
         assert_eq!(without_gateways(vec![1, 2, 3], 2, &gateways), vec![2], "a gateway's keys stay in it");
         assert_eq!(without_gateways(vec![2], 2, &gateways), vec![2]);
+    }
+
+    #[test]
+    fn wheel_arrows_broadcast_but_wheel_reports_stay_local() {
+        // 13j: Tandem can now tell the two apart (m7f kept both local before).
+        let b = Broadcast { raw: Mode::AllPanes, ..Default::default() };
+        let v = View { tabs: vec![TabView { broadcasting: true, panes: vec![7, 8] }], current_tab: 0, current: 7, exited: BTreeSet::new() };
+        let none = BTreeSet::new();
+        assert_eq!(write_targets(&b, &v, 7, Write::WheelArrows, &none), vec![7, 8]);
+        assert!(typed(Write::WheelArrows));
+        assert_eq!(write_targets(&b, &v, 7, Write::MouseReport, &none), vec![7]);
     }
 
     #[test]

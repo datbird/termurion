@@ -1,0 +1,1 @@
+Task 3 fix: Ruling: the alternate-screen wheel arrows (Write::WheelArrows) follow broadcast input as iTerm2's do; mouse reports to a program (Write::MouseReport) stay local to the pane under the pointer. This amends the m7f line that kept all wheel output local (Tandem could not tell reports from arrows then) - cost if wrong: one wheel scroll moves every broadcast pane.

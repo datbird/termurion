@@ -54,7 +54,8 @@ impl App {
                 }
                 let bytes = input::alt_arrows(delta >= 0.0, vertical, mods, mode.contains(TermMode::APP_CURSOR), wheel::arrow_count(delta));
                 p.screen.term_mut().selection = None;
-                p.input(&bytes);
+                // Arrows are keys: they follow broadcast input as iTerm2's do (reports stay local).
+                self.user_write(id, &bytes, crate::broadcast::Write::WheelArrows);
                 return self.redraw();
             }
             AltScroll::Swallow => {
@@ -73,13 +74,10 @@ impl App {
             let bytes = if vertical {
                 let n = p.wheel.report.take(dy, ev.precise, cell_pt.1, &prefs);
                 input::wheel_reports_with(modes, mods, n as i32, col, row)
-            } else if horizontal_reports {
+            } else {
                 let n = p.wheel.horizontal.take(dx, ev.precise, cell_pt.0, &prefs);
                 let left = wheel::natural_swap(n > 0.0, ev.precise, touchpad_natural(), affects);
-                let button = if left { Button::WheelLeft } else { Button::WheelRight };
-                mouse::encode(modes, mouse::Event { button, action: mouse::Action::Press, mods, col, row }).unwrap_or_default().repeat(n.abs() as usize)
-            } else {
-                Vec::new()
+                input::horizontal_wheel_reports(modes, mods, n.abs() as i32, left, horizontal_reports, col, row)
             };
             if !bytes.is_empty() {
                 p.input(&bytes);
