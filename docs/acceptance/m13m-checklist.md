@@ -88,3 +88,7 @@ display scale. Mark each line pass or fail.
 | 39 | View > Show Timestamps with the profile style Next to contents (Adjacent): a 100 pt column appears right of the text, the text reflows narrower, and run `stty size` (or look at a tmux window): the shell sees the new columns. Toggling off widens it back. | |
 | 40 | The same inside tmux (tmux integration): the tmux window reports the narrower columns; with two panes only the Adjacent one narrows; the neighbor is unaffected. Over contents and Hover still draw over the text. | |
 | 41 | A wide label (long date format) extends left over the text, never cut; the label colors follow the pane's colors on a light theme (readable). | |
+| 42 | Windows "Always show scrollbars" on: open a window by Columns 100, and apply a Window Style from the menu; the window holds 100 columns beside the bar. | |
+| 43 | With a program blinking text (SGR 5) in two windows, the key window's cursor blinking does not hide the other window's blinking text: it rests visible. | |
+| 44 | Click an inactive window's scrollbar: the window activates and the bar does not page or start a drag. Any-motion mouse tracking (1003) in vim or tmux: moving over the bar sends no motion reports. | |
+| 45 | In a full-screen app (alternate screen) the legacy bar draws no mark or note ticks; Find ticks still draw. After the app exits the ticks return in the right places. | |
