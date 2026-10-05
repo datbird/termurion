@@ -186,10 +186,35 @@ impl Selection {
     }
 
     pub fn rotate<D: Dimensions>(
+        self,
+        dimensions: &D,
+        range: &Range<Line>,
+        delta: i32,
+    ) -> Option<Selection> {
+        let into_history = range.start == 0;
+        self.rotate_region(dimensions, range, delta, into_history)
+    }
+
+    // Tandem patch: `rotate` for a scroll that moves only the region's rows, even one starting
+    // at the top (a region scrolling in place, or any scroll down): history stays put, and what
+    // leaves the region's top is clamped or dropped as below a fixed top.
+    pub fn rotate_in_place<D: Dimensions>(
+        self,
+        dimensions: &D,
+        range: &Range<Line>,
+        delta: i32,
+    ) -> Option<Selection> {
+        self.rotate_region(dimensions, range, delta, false)
+    }
+
+    // Tandem patch: upstream's `range_top == 0` (lines above the region move into history with
+    // it) is `into_history`.
+    fn rotate_region<D: Dimensions>(
         mut self,
         dimensions: &D,
         range: &Range<Line>,
         delta: i32,
+        into_history: bool,
     ) -> Option<Selection> {
         let bottommost_line = dimensions.bottommost_line();
         let range_bottom = range.end;
@@ -197,7 +222,7 @@ impl Selection {
 
         // Tandem patch: runs and the visual anchor are numbered by line; they move with the
         // content as the region does. A run that scrolls out of the region is dropped.
-        let moves = |line: Line| (line >= range_top || range_top == 0) && line < range_bottom;
+        let moves = |line: Line| (line >= range_top || into_history) && line < range_bottom;
         let mut runs = Vec::with_capacity(self.runs.len());
         for &(a, b) in &self.runs {
             if !moves(a.line) {
@@ -205,7 +230,7 @@ impl Selection {
                 continue;
             }
             let line = a.line - delta;
-            if line >= range_bottom || (line < range_top && range_top != 0) {
+            if line >= range_bottom || (line < range_top && !into_history) {
                 continue;
             }
             runs.push((Point::new(line, a.column), Point::new(line, b.column)));
@@ -219,7 +244,7 @@ impl Selection {
             // A full-screen scroll sends the line into history, which `drop_above` bounds once
             // the grid has scrolled.
             let line = min(min(p.line - delta, range_bottom - 1), bottommost_line);
-            if range_top != 0 && line < range_top {
+            if !into_history && line < range_top {
                 // Clamped to the region's start as the hull is: column 0, left side.
                 *p = Point::new(range_top, Column(0));
                 *right = false;
@@ -234,7 +259,7 @@ impl Selection {
         }
 
         // Rotate start of selection.
-        if (start.point.line >= range_top || range_top == 0) && start.point.line < range_bottom {
+        if (start.point.line >= range_top || into_history) && start.point.line < range_bottom {
             start.point.line = min(start.point.line - delta, bottommost_line);
 
             // If end is within the same region, delete selection once start rotates out.
@@ -243,7 +268,7 @@ impl Selection {
             }
 
             // Clamp selection to start of region.
-            if start.point.line < range_top && range_top != 0 {
+            if start.point.line < range_top && !into_history {
                 if self.ty != SelectionType::Block {
                     start.point.column = Column(0);
                     start.side = Side::Left;
@@ -253,7 +278,7 @@ impl Selection {
         }
 
         // Rotate end of selection.
-        if (end.point.line >= range_top || range_top == 0) && end.point.line < range_bottom {
+        if (end.point.line >= range_top || into_history) && end.point.line < range_bottom {
             end.point.line = min(end.point.line - delta, bottommost_line);
 
             // Delete selection if end has overtaken the start.

@@ -670,6 +670,18 @@ impl Screen {
         self.term.selection.as_ref().and_then(|s| s.visual_anchor())
     }
 
+    /// Whether a visual (bidi) selection reads the whole lines `a.line..=b.line` from `a`:
+    /// Replace Selection refuses runs that skip cells inside their lines, since it rewrites
+    /// the lines. True when the selection is not visual.
+    pub fn visual_selection_is_whole_lines(&self, a: alacritty_terminal::index::Point, b: alacritty_terminal::index::Point) -> bool {
+        use alacritty_terminal::index::{Column, Point};
+        if self.term.selection.as_ref().is_none_or(|s| s.runs.is_empty()) {
+            return true;
+        }
+        let text = self.term.bounds_to_string(a, Point::new(b.line, Column(self.term.columns() - 1)));
+        self.term.selection_to_string().as_deref().map(str::trim_end) == Some(text.trim_end())
+    }
+
     /// `drag_visual_selection` from the stored anchor to the pointer at `b`.
     pub fn drag_visual_to(&mut self, b: (i32, usize, bool)) -> bool {
         match self.visual_anchor() {
@@ -1812,6 +1824,113 @@ mod tests {
         assert!(!copy.contains('\u{5d0}'), "{copy:?}");
         let (line, _, _) = s.visual_anchor().unwrap_or((-1, 0, false));
         assert!(line >= -1, "the anchor never leaves the buffer: {line}");
+    }
+
+    /// Lines 0..2 of a 3-row primary screen are a scroll region and Scrollback With Status Bar
+    /// is off, so a scroll moves only the region's rows: history stays, row 0 is discarded.
+    fn in_place_region() -> Screen {
+        let mut s = Screen::with_scrollback(10, 3, 100);
+        s.set_scrollback_with_status_bar(false);
+        s.feed("h2 \u{5d0}\u{5d1}\r\nh1 \u{5d2}\r\nab \u{5d0}\u{5d1}\r\nmid\r\nst \u{5d3}".as_bytes());
+        s.feed(b"\x1b[1;2r");
+        s
+    }
+
+    fn visual_drag(s: &mut Screen, from: (i32, usize, bool), to: (i32, usize, bool)) {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let start = Point::new(Line(from.0), Column(from.1));
+        s.term_mut().selection = Some(Selection::new(SelectionType::Simple, start, Side::Left));
+        s.term_mut().selection.as_mut().unwrap().set_visual_anchor(from);
+        assert!(s.drag_visual_to(to));
+    }
+
+    fn runs(s: &Screen) -> Vec<(i32, usize, usize)> {
+        let sel = s.term().selection.as_ref().expect("a selection");
+        sel.runs.iter().map(|(a, b)| (a.line.0, a.column.0, b.column.0)).collect()
+    }
+
+    /// A region that scrolls in place moves only its own rows: runs and the drag anchor inside
+    /// it move with them, the ones on its discarded top row go, and history and the rows below
+    /// it stay put. Copy, GetSelection's runs and the highlight never reach a line nobody
+    /// selected.
+    #[test]
+    fn visual_runs_follow_an_in_place_region_scroll() {
+        // Across the region's top: a history line and region row 0. The history run stays;
+        // row 0's text is discarded, so its run goes.
+        let mut s = in_place_region();
+        visual_drag(&mut s, (-1, 0, false), (0, 9, true));
+        assert_eq!(runs(&s), vec![(-1, 0, 9), (0, 0, 9)]);
+        s.feed(b"\x1b[2;1H\n");
+        assert_eq!(runs(&s), vec![(-1, 0, 9)], "history does not move");
+        assert_eq!(s.term().selection_to_string().as_deref().map(str::trim_end), Some("h1 \u{5d2}"));
+        assert_eq!(s.visual_anchor(), Some((-1, 0, false)));
+        // Inside the region: row 1 moves up to row 0; row 0's run goes, and the anchor on it
+        // stops at the region's top instead of jumping into history.
+        let mut s = in_place_region();
+        visual_drag(&mut s, (0, 0, false), (1, 2, true));
+        s.feed(b"\x1b[2;1H\n");
+        assert_eq!(runs(&s), vec![(0, 0, 2)]);
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("mid"));
+        let (line, _, _) = s.visual_anchor().expect("the drag goes on");
+        assert!(line >= 0, "the anchor never jumps into history: {line}");
+        // A second scroll discards that row too: nothing selected is left.
+        s.feed(b"\n");
+        assert!(s.term().selection.is_none());
+        assert_eq!(s.term().selection_to_string(), None);
+        // Across the region's bottom: the status line below it stays put.
+        let mut s = in_place_region();
+        visual_drag(&mut s, (1, 0, false), (2, 9, true));
+        s.feed(b"\x1b[2;1H\n");
+        assert_eq!(runs(&s), vec![(0, 0, 9), (2, 0, 9)]);
+        assert_eq!(s.term().selection_to_string().as_deref().map(|t| t.lines().map(str::trim_end).collect::<Vec<_>>()), Some(vec!["mid", "st \u{5d3}"]));
+        // Below the region only: nothing moves.
+        let mut s = in_place_region();
+        visual_drag(&mut s, (2, 0, false), (2, 9, true));
+        s.feed(b"\x1b[2;1H\n");
+        assert_eq!(runs(&s), vec![(2, 0, 9)]);
+        assert_eq!(s.visual_anchor(), Some((2, 0, false)));
+    }
+
+    /// A reverse index at the top of a region scrolls only the region down (history never
+    /// moves when the screen scrolls down): a selection on a history line stays on it.
+    #[test]
+    fn selections_on_history_stay_when_a_region_scrolls_down() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut s = in_place_region();
+        visual_drag(&mut s, (-1, 0, false), (-1, 9, true));
+        s.feed(b"\x1b[1;1H\x1bM");
+        assert_eq!(runs(&s), vec![(-1, 0, 9)]);
+        assert_eq!(s.visual_anchor(), Some((-1, 0, false)));
+        assert_eq!(s.term().selection_to_string().as_deref().map(str::trim_end), Some("h1 \u{5d2}"));
+        // A logical selection on history stays too, with the region over the whole screen.
+        let mut s = Screen::with_scrollback(10, 3, 100);
+        s.feed(b"old\r\na\r\nb\r\nc");
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(-1), Column(0)), Side::Left);
+        sel.update(Point::new(Line(-1), Column(2)), Side::Right);
+        s.term_mut().selection = Some(sel);
+        s.feed(b"\x1b[1;1H\x1bM");
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("old"));
+    }
+
+    /// Replace Selection rewrites whole lines, so a visual selection must read them all: a drag
+    /// that skips the aleph inside the line is refused, one over the whole line is allowed.
+    #[test]
+    fn visual_selection_is_whole_lines_only_when_the_runs_cover_them() {
+        use alacritty_terminal::index::{Column, Line, Point};
+        let mut s = Screen::new(10, 3);
+        s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
+        let (a, b) = (Point::new(Line(0), Column(0)), Point::new(Line(0), Column(4)));
+        // Visual 0..4 shows logical 0, 1, 2 and the bet (4): the aleph (3) is skipped.
+        visual_drag(&mut s, (0, 0, false), (0, 3, true));
+        assert_eq!(runs(&s), vec![(0, 0, 2), (0, 4, 4)]);
+        assert!(!s.visual_selection_is_whole_lines(a, b), "lines nobody selected are not rewritten");
+        visual_drag(&mut s, (0, 0, false), (0, 9, true));
+        assert!(s.visual_selection_is_whole_lines(a, b));
+        // A logical selection is checked by the caller's whole-line rule alone.
+        s.term_mut().selection.as_mut().unwrap().update(b, alacritty_terminal::index::Side::Right);
+        assert!(s.visual_selection_is_whole_lines(a, b));
     }
 
     #[test]

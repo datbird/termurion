@@ -100,5 +100,11 @@ test data) is left out. Changes:
     `Selection::drop_above` (called after `scroll_up_relative` scrolls the grid) drops runs
     above the oldest buffer line (alternate screen, full scrollback) and clamps the anchor;
     `selection_to_string` skips such runs; `rotate` returns None when every run was dropped.
+    `Selection::rotate_in_place` is `rotate` for a scroll that moves only the region's rows even
+    from the top (upstream's `range_top == 0` case, which moves history with it, becomes the
+    `into_history` flag of `rotate_region`): `scroll_up_relative` uses it when the region
+    scrolls in place (patch 14's `keep`) and `scroll_down_relative` always (a scroll down never
+    moves history). History stays put; runs, the anchor and the hull leaving the region's top
+    are dropped or clamped to it as below a fixed top.
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

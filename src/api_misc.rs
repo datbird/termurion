@@ -177,6 +177,15 @@ pub fn color_preset(r: &pb::ColorPresetRequest) -> pb::ColorPresetResponse {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use pb::set_broadcast_domains_response::Status as DStatus;
+    use pb::tmux_response::Status as TStatus;
+
+    fn sub(start: (i32, i64), end: (i32, i64), columns: Option<(i64, i64)>, mode: pb::SelectionMode) -> pb::SubSelection {
+        let range = pb::CoordRange { start: Some(pb::Coord { x: Some(start.0), y: Some(start.1) }), end: Some(pb::Coord { x: Some(end.0), y: Some(end.1) }) };
+        let columns = columns.map(|(location, length)| pb::Range { location: Some(location), length: Some(length) });
+        pb::SubSelection { windowed_coord_range: Some(pb::WindowedCoordRange { coord_range: Some(range), columns }), selection_mode: Some(mode as i32), connected: None }
+    }
 
     #[test]
     fn visual_runs_are_logical_sub_selections() {
@@ -197,15 +206,6 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(span(&got[0]), (2, 5, 3, 4));
         assert!(from_runs(&[], 0, 80).is_empty());
-    }
-    use super::*;
-    use pb::set_broadcast_domains_response::Status as DStatus;
-    use pb::tmux_response::Status as TStatus;
-
-    fn sub(start: (i32, i64), end: (i32, i64), columns: Option<(i64, i64)>, mode: pb::SelectionMode) -> pb::SubSelection {
-        let range = pb::CoordRange { start: Some(pb::Coord { x: Some(start.0), y: Some(start.1) }), end: Some(pb::Coord { x: Some(end.0), y: Some(end.1) }) };
-        let columns = columns.map(|(location, length)| pb::Range { location: Some(location), length: Some(length) });
-        pb::SubSelection { windowed_coord_range: Some(pb::WindowedCoordRange { coord_range: Some(range), columns }), selection_mode: Some(mode as i32), connected: None }
     }
 
     #[test]

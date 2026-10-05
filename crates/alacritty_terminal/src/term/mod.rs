@@ -843,8 +843,10 @@ impl<T> Term<T> {
         let region = origin..self.scroll_region.end;
 
         // Scroll selection.
+        // Tandem patch: a scroll down never moves history (`Grid::scroll_down` swaps only the
+        // region's rows when there is any), so the selection on it stays put.
         self.selection =
-            self.selection.take().and_then(|s| s.rotate(self, &region, -(lines as i32)));
+            self.selection.take().and_then(|s| s.rotate_in_place(self, &region, -(lines as i32)));
 
         // Scroll vi mode cursor.
         let line = &mut self.vi_mode_cursor.point.line;
@@ -869,14 +871,21 @@ impl<T> Term<T> {
 
         let region = origin..self.scroll_region.end;
 
-        // Scroll selection.
-        self.selection = self.selection.take().and_then(|s| s.rotate(self, &region, lines as i32));
-
         // Tandem patch: with Scrollback With Status Bar off, a region that starts at the top
         // but stops above the bottom row (an app's status line) scrolls like one below the top.
         let keep = !self.scrollback_with_region
             && region.start == 0
             && region.end < self.grid.screen_lines() as i32;
+
+        // Scroll selection.
+        // Tandem patch: `keep` scrolls in place, so the selection does too.
+        self.selection = self.selection.take().and_then(|s| {
+            if keep {
+                s.rotate_in_place(self, &region, lines as i32)
+            } else {
+                s.rotate(self, &region, lines as i32)
+            }
+        });
         if keep {
             self.grid.scroll_up_in_place(&region, lines);
         } else {
