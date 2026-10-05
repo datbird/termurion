@@ -189,6 +189,23 @@ impl App {
         }
     }
 
+    /// A press on a scrollbar that only activates the window (or, under focus follows mouse,
+    /// only focuses the pane) is consumed here: the bar does not page or start a drag for it.
+    pub(super) fn bar_press_only_activates(&mut self, first: bool, x: f32, y: f32) -> bool {
+        let Some((pane, _, _)) = self.scrollbar_at(x, y) else { return false };
+        let (kind, counts) = mouse::first_click(first, self.mods.cmd, self.globals.bool("AlwaysAcceptFirstMouse"), self.globals.bool("FocusFollowsMouse"), self.focused_id() == Some(pane));
+        self.first_mouse_down = counts;
+        match kind {
+            mouse::FirstClick::ActivateOnly => true,
+            mouse::FirstClick::FocusOnly => {
+                self.focus_stamped(pane);
+                self.redraw();
+                true
+            }
+            mouse::FirstClick::Normal => false,
+        }
+    }
+
     /// A press on a scrollbar: the thumb starts a drag, the track pages a screen; with nothing
     /// to scroll the press is swallowed (`scrollbar::press`). Any button is the bar's, never the
     /// program's or a selection's.

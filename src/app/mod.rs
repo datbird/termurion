@@ -4549,6 +4549,10 @@ impl App {
             return;
         }
         // The scrollbar is the pane's own, below Tandem's overlays and before any report.
+        // The click that activated the window only activates it, on the bar too.
+        if self.bar_press_only_activates(first, x, y) {
+            return;
+        }
         if self.scroll_press(button, x, y) {
             return;
         }

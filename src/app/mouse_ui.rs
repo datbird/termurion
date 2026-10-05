@@ -353,7 +353,7 @@ impl App {
             wheel: profile.bool("Mouse Reporting allow mouse wheel"),
             horizontal: self.globals.bool("ReportHorizontalScrollEvents"),
             first_mouse_blocks: self.first_mouse_down && !self.globals.bool("ReportOnFirstMouse"),
-            ui_over: !matches!(kind, mouse::Kind::Drag) && self.tandem_ui_at(x, y),
+            ui_over: !matches!(kind, mouse::Kind::Drag) && (self.tandem_ui_at(x, y) || self.scrollbar_at(x, y).is_some()),
             view_focused: self.focused && self.tabs.get(self.active).is_some_and(|t| t.focused == pane),
         };
         mouse::should_report(self.modes(pane), mods, kind, gates)
@@ -811,9 +811,11 @@ mod tests {
         let press = body(MOD, "mouse_press");
         let (ui, bar, pane) = (press.find("self.tandem_ui_at("), press.find("self.scroll_press("), press.find("self.pane_at("));
         assert!(ui < bar && bar < pane, "after Tandem's own overlays, before the program or the selection");
+        assert!(press[ui.unwrap()..bar.unwrap()].contains("self.bar_press_only_activates("), "the click that activates a window only activates it, on the bar too");
         let wheel = body(MOD, "wheel");
         let (ui, bar, pane) = (wheel.find("self.tandem_ui_at("), wheel.find("self.scroll_wheel("), wheel.find("self.pane_at("));
         assert!(ui < bar && bar < pane, "the wheel over the bar scrolls the pane, never a report");
+        assert!(body(UI, "report_gate_with").contains("self.scrollbar_at("), "an any-motion hover over the bar is not the program's");
         assert!(body(MOD, "mouse_move").contains("self.scroll_drag_to("), "the thumb follows the pointer");
         assert!(body(MOD, "mouse_release").contains("Drag::Scrollbar"), "the drag ends with the press");
         assert!(body(UI, "pointer_over").contains("scrollbar_at("), "the arrow shows over the bar");
