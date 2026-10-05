@@ -8,8 +8,19 @@ use super::find_ui::{reveal, to_pos};
 use crate::find::{self, Logical, Match};
 use crate::sh_context;
 use crate::semantic::{self, Around, ClickContext, Prefs, Run, Target};
-use crate::smartsel::{self, Escape};
+use crate::smartsel;
 use crate::ssh_files;
+
+/// How a plan is run beyond the plan itself.
+#[derive(Clone, Copy)]
+pub(super) struct Exec<'a> {
+    /// An Alt-click background open (`background` in the URL handler's template).
+    pub(super) background: bool,
+    /// The plan came from a clicked file: never handed to the URL handler.
+    pub(super) from_file: bool,
+    /// Present where a window may open (Run Command in Window).
+    pub(super) event_loop: Option<&'a ActiveEventLoop>,
+}
 
 /// The cells to underline for a Win-hover target: none when the underline key is off (the hand
 /// pointer still shows, `TVA:548-552`).
@@ -262,7 +273,7 @@ impl App {
 
     /// Win-click (and the Open URL/Semantic History pointer actions): opens what is at
     /// the click. Returns false when nothing there opens.
-    pub(super) fn open_target(&mut self, id: PaneId, point: Point, background: bool) -> bool {
+    pub(super) fn open_target(&mut self, id: PaneId, point: Point, background: bool, event_loop: &ActiveEventLoop) -> bool {
         let found = self.target_at(id, point);
         // Text a remote host wrote never builds a local run (P10): only a web or mail link
         // opens, anything else may only download.
@@ -297,30 +308,61 @@ impl App {
         };
         match run {
             Some(run) => {
-                self.execute(id, run, c.ctx.cwd.as_deref(), background);
+                // A file is never handed to the URL handler (`handler_applies`).
+                let from_file = matches!(target, Target::File { .. });
+                self.execute_with(id, run, c.ctx.cwd.as_deref(), Exec { background, from_file, event_loop: Some(event_loop) });
                 true
             }
             None => self.secure_copy_at(id, point),
         }
     }
 
-    /// What a Smart Selection action runs. Copy runs here and returns None.
+    /// What a Smart Selection action runs. Copy runs here and returns None. The parameter is
+    /// iTerm2's interpolated string with `matches` encoded per action when the profile says so
+    /// (`CAP:161-225`), else the `\0`..`\8` form; a value cmd.exe would read refuses a command
+    /// action either way (B3).
     fn smart_action_run(&mut self, id: PaneId, a: &smartsel::RuleAction, captures: &[String], cwd: &str) -> Option<Run> {
         let (host, user) = self.host_user(id)?;
-        let text = |escape| smartsel::expand(&a.parameter, captures, cwd, &host, &user, escape);
+        let interpolated = self.smart_interpolated(id);
+        let command = smartsel::runs_command(&a.action);
+        // The captures an interpolated command line holds are quoted by `encode_capture`; any
+        // that cmd.exe would read inside quotes refuses the action (the template's own text and
+        // its guarded variables stay).
+        let refused = command
+            && if interpolated { captures.iter().any(|c| semantic::cmd_unsafe(c)) } else { smartsel::cmd_unsafe_values(&a.parameter, captures, cwd, &host, &user) };
+        if refused {
+            return Some(Run::Blocked(semantic::CMD_REFUSED.into()));
+        }
+        let failure = std::cell::RefCell::new(None);
+        let param = smartsel::parameter(
+            a,
+            captures,
+            interpolated,
+            &|t, m| {
+                let r = self.evaluate_matches_with(id, t, m, command);
+                if let Err(e) = &r {
+                    *failure.borrow_mut() = Some(e.clone());
+                }
+                r
+            },
+            cwd,
+            &host,
+            &user,
+        );
+        // An evaluation error runs nothing and says why.
+        let Some(param) = param else {
+            return Some(Run::Blocked(failure.into_inner().unwrap_or_else(|| "The action's parameter could not be evaluated.".into())));
+        };
         Some(match a.action.as_str() {
-            "openFile:" => semantic::open_file_run(&text(Escape::None), (!cwd.is_empty()).then(|| std::path::Path::new(cwd)), has_code()),
-            "openUrl:" => semantic::open_url_run(&text(Escape::None), has_code()),
-            "runCommand:" | "runCommandInWindow:" | "runCoprocess:" if smartsel::cmd_unsafe_values(&a.parameter, captures, cwd, &host, &user) => {
-                Run::Blocked(semantic::CMD_REFUSED.into())
-            }
-            "runCommand:" | "runCommandInWindow:" => Run::Command(text(Escape::Cmd)),
-            "runCoprocess:" => Run::Coprocess(text(Escape::Cmd)),
-            "sendText:" => Run::Send(text(Escape::None)),
+            "openFile:" => semantic::open_file_run(&param, (!cwd.is_empty()).then(|| std::path::Path::new(cwd)), has_code()),
+            "openUrl:" => semantic::open_url_run(&param, has_code()),
+            "runCommand:" => Run::Command(param),
+            "runCommandInWindow:" => semantic::run_in_window(&param),
+            "runCoprocess:" => Run::Coprocess(param),
+            "sendText:" => Run::Send(param),
             "copy:" => {
-                let t = text(Escape::None);
                 if let Some(cb) = &mut self.clipboard {
-                    if let Err(e) = cb.set_text(t) {
+                    if let Err(e) = cb.set_text(param) {
                         self.banners.set("clipboard", format!("Copy failed: {e}"));
                     }
                 }
@@ -333,10 +375,21 @@ impl App {
         })
     }
 
+    /// Runs a Win-click's plan where no window can open and no file was clicked: a link opened by a
+    /// program's request, a label, a menu pick. See `execute_with`.
     pub(super) fn execute(&mut self, id: PaneId, run: Run, cwd: Option<&std::path::Path>, background: bool) {
+        self.execute_with(id, run, cwd, Exec { background, from_file: false, event_loop: None });
+    }
+
+    /// Runs a plan. An http, https, mailto or ftp URL goes to `UrlHandlerCommand` when one is
+    /// set (never a file); `Run::Window` opens a single-use window and needs the event loop.
+    pub(super) fn execute_with(&mut self, id: PaneId, run: Run, cwd: Option<&std::path::Path>, how: Exec) {
+        let Exec { background, from_file, event_loop } = how;
         match run {
             Run::Open(target) => {
-                if let Err(e) = shell_open(&target, cwd, background) {
+                if semantic::handler_applies(&Run::Open(target.clone()), from_file) && self.url_handler(id, &target, cwd, background) {
+                    // The handler took it, or said why not.
+                } else if let Err(e) = shell_open(&target, cwd, background) {
                     self.banners.set("action", format!("Could not open {target}: {e}"));
                 }
             }
@@ -366,6 +419,10 @@ impl App {
             Run::Blocked(why) => self.banners.set("action", why),
             Run::Reveal(path) => self.reveal_in_explorer(&path),
             Run::Spawn { program, args } => self.spawn_direct(&program, &args, cwd),
+            Run::Window(command) => match event_loop {
+                Some(event_loop) => self.run_in_new_window(id, command, cwd, event_loop),
+                None => self.banners.set("action", "Tandem could not open a window for this command."),
+            },
         }
         self.redraw();
     }
@@ -373,7 +430,7 @@ impl App {
     /// Starts a program directly (one `CreateProcessW`, no shell). A name without a folder is
     /// found on the PATH; a batch file is refused any argument cmd.exe would read as syntax.
     fn spawn_direct(&mut self, program: &std::path::Path, args: &[String], cwd: Option<&std::path::Path>) {
-        let found = semantic::resolve_program(program, std::env::var_os("PATH").as_deref());
+        let found = semantic::resolve_on_path(program, std::env::var_os("PATH").as_deref());
         let Some(exe) = found else {
             self.banners.set("action", format!("Could not start {}: not found.", program.display()));
             return;
@@ -394,6 +451,23 @@ impl App {
         }
         if let Err(e) = cmd.spawn() {
             self.banners.set("action", format!("Could not start {}: {e}", exe.display()));
+        }
+    }
+
+    /// Run Command in Window: a new single-use window of the default profile runs `command`
+    /// (`IC:2139-2200`), in the pane's folder when that is a local folder. The pane is
+    /// registered as single-use so a session end or close clears its record; it is not
+    /// short-lived: its end follows the profile (P20, the end action lands with 13q).
+    fn run_in_new_window(&mut self, owner: PaneId, command: String, cwd: Option<&std::path::Path>, event_loop: &ActiveEventLoop) {
+        let probe = self.path_probe();
+        let dir = cwd
+            .map(|d| d.to_string_lossy().to_string())
+            .filter(|d| d.as_bytes().get(1) == Some(&b':') && crate::netpath::may_probe(d, &probe) && std::path::Path::new(d).is_dir());
+        match self.open_single_use_window(event_loop, command, dir) {
+            Some(new) => {
+                self.single_use.insert(new, super::git_ui::SingleUse { owner, short_lived: false });
+            }
+            None => self.banners.set("action", "Tandem could not open a window for this command."),
         }
     }
 
@@ -433,14 +507,20 @@ impl App {
             return None;
         }
         let cwd = c.ctx.cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
-        self.smart_param(id, a, &f.captures, &cwd, Escape::None)
+        self.smart_param(id, a, &f.captures, &cwd)
     }
 
     /// A Smart Selection action's parameter with its captures, the working directory and the
-    /// pane's host and user filled in: the one expansion the hover preview and the run share.
-    fn smart_param(&self, id: PaneId, a: &smartsel::RuleAction, captures: &[String], cwd: &str, escape: Escape) -> Option<String> {
+    /// pane's host and user filled in: the one computation the hover preview and the run share.
+    fn smart_param(&self, id: PaneId, a: &smartsel::RuleAction, captures: &[String], cwd: &str) -> Option<String> {
         let (host, user) = self.host_user(id)?;
-        Some(smartsel::expand(&a.parameter, captures, cwd, &host, &user, escape))
+        let command = smartsel::runs_command(&a.action);
+        smartsel::parameter(a, captures, self.smart_interpolated(id), &|t, m| self.evaluate_matches_with(id, t, m, command), cwd, &host, &user)
+    }
+
+    /// The pane's profile says Smart Selection parameters are interpolated strings.
+    fn smart_interpolated(&self, id: PaneId) -> bool {
+        self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).is_some_and(|p| p.bool("Smart Selection Actions Use Interpolated Strings"))
     }
 
     /// The pane's reported host and user, empty when it reports none.
@@ -571,13 +651,13 @@ impl App {
                     self.refresh_route();
                 }
             }
-            CtxPick::Other => self.context_other_picked(item, pend),
+            CtxPick::Other => self.context_other_picked(item, pend, event_loop),
         }
         self.redraw();
         true
     }
 
-    fn context_other_picked(&mut self, item: &str, pend: CtxPending) {
+    fn context_other_picked(&mut self, item: &str, pend: CtxPending, event_loop: &ActiveEventLoop) {
         if item == "stopcoprocess" {
             self.stop_coprocess(pend.pane);
         } else if item == "togglebroadcast" {
@@ -602,7 +682,7 @@ impl App {
             if !ssh_files::remote_action_allowed(self.remote_text(pend.pane), &a.action) {
                 self.banners.set("action", format!("{} does not run for text from a remote host.", a.title));
             } else if let Some(run) = self.smart_action_run(pend.pane, &a, &pend.captures, &pend.cwd) {
-                self.execute(pend.pane, run, cwd_path.as_deref(), false);
+                self.execute_with(pend.pane, run, cwd_path.as_deref(), Exec { background: false, from_file: false, event_loop: Some(event_loop) });
             }
         }
     }
@@ -930,6 +1010,8 @@ mod tests {
     /// Callers of a sink whose input is not text a remote host wrote, and why.
     const NOT_PANE_TEXT: &[(&str, &str, &str)] = &[
         ("app/semantic_ui.rs", "execute", "the sink itself; its callers are checked"),
+        ("app/semantic_ui.rs", "execute_with", "the sink itself; its callers are checked"),
+        ("app/url_handler_ui.rs", "url_handler", "starts the person's own handler program directly; reached only from execute_with, the URL is one argument (handler_plan)"),
         ("app/semantic_ui.rs", "smart_action_run", "builds the Run; its callers are checked"),
         ("app/semantic_ui.rs", "shell_open", "the sink itself; its callers are checked"),
         ("app/semantic_ui.rs", "reveal_in_explorer", "the sink itself; its callers are checked"),

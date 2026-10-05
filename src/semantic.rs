@@ -413,6 +413,8 @@ pub enum Run {
     Reveal(String),
     /// A program started directly with arguments, never through a shell.
     Spawn { program: PathBuf, args: Vec<String> },
+    /// A command line run in a new single-use window of the default profile.
+    Window(String),
     /// Not opened, and why.
     Blocked(String),
 }
@@ -462,27 +464,218 @@ pub fn batch_unsafe(arg: &str) -> bool {
     arg.contains(['%', '^', '&', '|', '<', '>', '"']) || arg.chars().any(char::is_control)
 }
 
-/// The program `name` names: as given when it has a folder, else the first of `.com`, `.exe`,
-/// `.bat`, `.cmd` (PATHEXT's order) found on `path`; a name with its own extension is tried as
-/// written. An extensionless file is no program (VS Code's `code` is a shell script beside
-/// `code.cmd`), and a PATH entry that is a network path is never looked in.
-pub fn resolve_program(name: &Path, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
-    if name.components().count() > 1 || name.is_absolute() {
-        return Some(name.to_path_buf());
+/// The program a handler command names, looked up through `exists`: a name with a folder as
+/// written (with each PATHEXT extension when it has none), a bare name in each PATH folder in
+/// order, each with the name as written (only when it has an extension: an extensionless file
+/// is no program, VS Code's `code` is a shell script beside `code.cmd`) and then each PATHEXT
+/// extension. A network path is never asked (UNC invariant).
+pub fn resolve_program(name: &str, path_var: &str, pathext: &str, exists: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
+    let exts: Vec<&str> = pathext.split(';').map(str::trim).filter(|e| !e.is_empty()).collect();
+    let has_ext = Path::new(name).extension().is_some();
+    let candidates = |folder: Option<&str>| -> Vec<String> {
+        let base = match folder {
+            Some(f) => format!("{}\\{}", f.trim_end_matches(['\\', '/']), name),
+            None => name.to_string(),
+        };
+        let bare = has_ext.then(|| base.clone());
+        bare.into_iter().chain(exts.iter().map(|e| format!("{base}{}", e.to_ascii_lowercase()))).collect()
+    };
+    let try_all = |list: Vec<String>| list.into_iter().filter(|c| !crate::scripts::is_network_path(c)).map(PathBuf::from).find(|p| exists(p));
+    let folder_given = name.contains(['\\', '/']) || Path::new(name).is_absolute();
+    if folder_given {
+        return try_all(candidates(None));
     }
-    let path = path?;
-    std::env::split_paths(path).find_map(|d| {
-        if crate::scripts::is_network_path(&d.to_string_lossy()) {
-            return None;
-        }
-        let bare = name.extension().is_some().then_some("");
-        bare.into_iter().chain([".com", ".exe", ".bat", ".cmd"]).map(|ext| d.join(format!("{}{ext}", name.to_string_lossy()))).find(|p| p.is_file())
-    })
+    path_var.split(';').map(str::trim).filter(|d| !d.is_empty() && !crate::scripts::is_network_path(d)).find_map(|d| try_all(candidates(Some(d))))
 }
 
-/// Whether a program is a batch file, which re-parses its arguments through cmd.exe.
+/// `resolve_program` over the real file system and the PATH the caller gives (the editor's
+/// spawn): the same walk, PATHEXT in the order PATH searches use.
+pub fn resolve_on_path(name: &Path, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    let name = name.to_string_lossy();
+    let path_var = path.map(|p| std::env::split_paths(p).map(|d| d.to_string_lossy().to_string()).collect::<Vec<_>>().join(";")).unwrap_or_default();
+    resolve_program(&name, &path_var, ".COM;.EXE;.BAT;.CMD", &|p| p.is_file())
+}
+
+/// Whether a program's arguments are parsed by cmd.exe: a batch file, or cmd.exe itself.
 pub fn is_batch(program: &Path) -> bool {
     program.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"))
+        || program.file_stem().is_some_and(|s| s.eq_ignore_ascii_case("cmd"))
+}
+
+/// The window title of a URL handler's Script Console entry (`UAH:340-375`).
+pub const HANDLER_TITLE: &str = "URL Handler";
+/// The banner when a URL handler command fails (`UAH`).
+pub const HANDLER_FAILED: &str = "URL Handler Command Failed";
+
+/// A private-use marker bound to `url` while the handler template is evaluated, so the URL
+/// never passes through the evaluator or the splitter.
+pub const URL_TOKEN: &str = "\u{E000}tandem-url\u{E000}";
+
+/// Why a URL handler command is not run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    Empty,
+    UrlInProgram,
+    ControlCharacter,
+    BatchUnsafe,
+    /// The program is not on the PATH (P14): never started "as written".
+    Unresolved,
+}
+
+impl Refusal {
+    pub fn text(self) -> &'static str {
+        match self {
+            Refusal::Empty => "",
+            Refusal::UrlInProgram => "Tandem did not run the URL handler command: the URL cannot name the program.",
+            Refusal::ControlCharacter => "Tandem did not pass this URL to the URL handler command: it contains a control character.",
+            Refusal::BatchUnsafe => "Tandem did not pass this URL to the URL handler command: a batch file or cmd.exe would read its special characters.",
+            Refusal::Unresolved => HANDLER_FAILED,
+        }
+    }
+}
+
+/// `CommandLineToArgvW`'s split of a command line: the first token by the program-name rule
+/// (quotes toggle, backslashes are literal), the rest by the argument rules (2n backslashes
+/// before a quote give n and a quote toggle, 2n+1 give n and a literal quote, `""` inside
+/// quotes a literal quote).
+pub fn split_command_line(line: &str) -> Vec<String> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    let mut out = Vec::new();
+    let skip = |i: &mut usize| {
+        while *i < chars.len() && matches!(chars[*i], ' ' | '\t') {
+            *i += 1;
+        }
+    };
+    skip(&mut i);
+    if i >= chars.len() {
+        return out;
+    }
+    let mut program = String::new();
+    let mut quoted = false;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '"' {
+            quoted = !quoted;
+        } else if !quoted && matches!(c, ' ' | '\t') {
+            break;
+        } else {
+            program.push(c);
+        }
+        i += 1;
+    }
+    out.push(program);
+    loop {
+        skip(&mut i);
+        if i >= chars.len() {
+            break;
+        }
+        let mut arg = String::new();
+        let mut quoted = false;
+        while i < chars.len() {
+            let c = chars[i];
+            if c == '\\' {
+                let start = i;
+                while i < chars.len() && chars[i] == '\\' {
+                    i += 1;
+                }
+                let n = i - start;
+                if chars.get(i) == Some(&'"') {
+                    arg.extend(std::iter::repeat_n('\\', n / 2));
+                    if n % 2 == 1 {
+                        arg.push('"');
+                        i += 1;
+                    }
+                    // An even run leaves the quote for the toggle below.
+                } else {
+                    arg.extend(std::iter::repeat_n('\\', n));
+                }
+            } else if c == '"' {
+                if quoted && chars.get(i + 1) == Some(&'"') {
+                    // shell32 (unlike the C runtime) ends the quoted run here.
+                    arg.push('"');
+                    quoted = false;
+                    i += 2;
+                } else {
+                    quoted = !quoted;
+                    i += 1;
+                }
+            } else if !quoted && matches!(c, ' ' | '\t') {
+                break;
+            } else {
+                arg.push(c);
+                i += 1;
+            }
+        }
+        out.push(arg);
+    }
+    out
+}
+
+/// Run Command in Window (`IC:2147-2154`): a command ending in `&` with more before it runs
+/// the rest hidden; any other runs in a single-use window, through the one cmd.exe builder
+/// (a bare `/c` would let the first quote of a value change how cmd.exe reads the line).
+pub fn run_in_window(command: &str) -> Run {
+    match command.strip_suffix('&') {
+        Some(rest) if !rest.is_empty() => Run::Command(rest.to_string()),
+        _ => Run::Window(cmd_command_line(command)),
+    }
+}
+
+/// Whether a URL handler is asked for this run: an http, https, mailto or ftp URL only, and
+/// never for a file (a `Target::File`, a `file:` link or a path).
+pub fn handler_applies(run: &Run, from_file: bool) -> bool {
+    match run {
+        Run::Open(u) if !from_file => !crate::scripts::is_network_path(u) && scheme(u).is_some_and(|s| WEB.contains(&s.as_str())),
+        _ => false,
+    }
+}
+
+/// Programs that re-read their arguments as script: `cmd.exe` and batch files (`is_batch`), and
+/// the interpreters and shells Pass A ruling 2 names (P13).
+fn interpreter(program: &Path) -> bool {
+    let stem = program.file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    matches!(stem.as_str(), "powershell" | "pwsh" | "wscript" | "cscript" | "mshta" | "wsl" | "bash")
+}
+
+/// Whether `url` holds a character the program would read as syntax: `% ^ & | < > "` and any
+/// control character for a batch file or cmd.exe, and for the interpreters also semicolon, dollar, quotes, backtick, parentheses, braces and `!`.
+fn reparsed(program: &Path, url: &str) -> bool {
+    if is_batch(program) {
+        return batch_unsafe(url);
+    }
+    interpreter(program) && (batch_unsafe(url) || url.contains([';', '$', '\'', '`', '(', ')', '{', '}', '!']))
+}
+
+/// The program and arguments a URL handler command starts, never through a shell (13p-r).
+pub fn handler_plan(evaluated: &str, url: &str, resolve: &dyn Fn(&str) -> Option<PathBuf>) -> Result<Run, Refusal> {
+    if evaluated.trim().is_empty() {
+        return Err(Refusal::Empty);
+    }
+    if url.chars().any(char::is_control) {
+        return Err(Refusal::ControlCharacter);
+    }
+    let tokens = split_command_line(evaluated);
+    let Some((first, rest)) = tokens.split_first() else { return Err(Refusal::Empty) };
+    if first.contains(URL_TOKEN) {
+        return Err(Refusal::UrlInProgram);
+    }
+    let program = resolve(first).ok_or(Refusal::Unresolved)?;
+    let mut held = false;
+    let mut args: Vec<String> = rest
+        .iter()
+        .map(|t| {
+            held |= t.contains(URL_TOKEN);
+            t.replace(URL_TOKEN, url)
+        })
+        .collect();
+    if !held {
+        args.push(url.to_string());
+    }
+    if reparsed(&program, url) {
+        return Err(Refusal::BatchUnsafe);
+    }
+    Ok(Run::Spawn { program, args })
 }
 
 /// The link schemes that open in the browser or mail app.
@@ -1141,20 +1334,20 @@ mod tests {
     }
 
     #[test]
-    fn resolve_program_prefers_a_runnable_extension() {
+    fn resolve_on_path_prefers_a_runnable_extension() {
         // VS Code's bin folder holds `code` (a shell script) beside `code.cmd`.
         let d = dir("resolve", &["code", "code.cmd", "tool.exe", "plain", "x.bat"]);
         let path = std::env::join_paths([&d]).unwrap();
-        assert_eq!(resolve_program(Path::new("code"), Some(&path)), Some(d.join("code.cmd")));
-        assert_eq!(resolve_program(Path::new("tool"), Some(&path)), Some(d.join("tool.exe")));
-        assert_eq!(resolve_program(Path::new("x"), Some(&path)), Some(d.join("x.bat")));
+        assert_eq!(resolve_on_path(Path::new("code"), Some(&path)), Some(d.join("code.cmd")));
+        assert_eq!(resolve_on_path(Path::new("tool"), Some(&path)), Some(d.join("tool.exe")));
+        assert_eq!(resolve_on_path(Path::new("x"), Some(&path)), Some(d.join("x.bat")));
         // An extensionless file alone is no program; a name with its own extension is taken as is.
-        assert_eq!(resolve_program(Path::new("plain"), Some(&path)), None);
-        assert_eq!(resolve_program(Path::new("code.cmd"), Some(&path)), Some(d.join("code.cmd")));
+        assert_eq!(resolve_on_path(Path::new("plain"), Some(&path)), None);
+        assert_eq!(resolve_on_path(Path::new("code.cmd"), Some(&path)), Some(d.join("code.cmd")));
         // A PATH entry that is a share is never looked in.
         let shared = std::env::join_paths([PathBuf::from(r"\\10.255.255.1\bin"), d.clone()]).unwrap();
         let t = std::time::Instant::now();
-        assert_eq!(resolve_program(Path::new("tool"), Some(&shared)), Some(d.join("tool.exe")));
+        assert_eq!(resolve_on_path(Path::new("tool"), Some(&shared)), Some(d.join("tool.exe")));
         assert!(t.elapsed() < std::time::Duration::from_secs(2));
     }
 
@@ -1258,5 +1451,166 @@ mod tests {
         let live = ClickContext { no_probe: false, ..ctx };
         assert!(matches!(resolve(&live), Some(Target::File { .. })));
         assert!(PROBES.with(|n| n.get()) > before_count, "the counter sees real probes");
+    }
+
+    #[test]
+    fn run_in_window_follows_iterm2() {
+        // The one cmd.exe builder (standing rule): `/d /v:off /s /c "..."`, not a bare `/c`.
+        assert_eq!(run_in_window("dir"), Run::Window(cmd_command_line("dir")));
+        assert_eq!(run_in_window("dir"), Run::Window("cmd.exe /d /v:off /s /c \"dir\"".into()));
+        // A trailing `&` with more before it runs the rest hidden.
+        assert_eq!(run_in_window("start x &"), Run::Command("start x ".into()));
+        // One character is not the detached form.
+        assert_eq!(run_in_window("&"), Run::Window(cmd_command_line("&")));
+    }
+
+    fn fake_resolve(n: &str) -> Option<PathBuf> {
+        match n {
+            "h.cmd" => Some(PathBuf::from(r"C:\t\h.cmd")),
+            "open.exe" => Some(PathBuf::from(r"C:\t\open.exe")),
+            "cmd.exe" => Some(PathBuf::from(r"C:\Windows\System32\cmd.exe")),
+            "pwsh" => Some(PathBuf::from(r"C:\t\pwsh.exe")),
+            n if n.contains('\\') => Some(PathBuf::from(n)),
+            _ => None,
+        }
+    }
+
+    fn spawn_of(program: &str, args: &[&str]) -> Result<Run, Refusal> {
+        Ok(Run::Spawn { program: PathBuf::from(program), args: args.iter().map(|a| a.to_string()).collect() })
+    }
+
+    #[test]
+    fn url_handler_follows_iterm2() {
+        let plan = |t: &str, u: &str| handler_plan(t, u, &fake_resolve);
+        assert_eq!(plan(&format!("open.exe --new {URL_TOKEN}"), "https://a/?q=1%20"), spawn_of(r"C:\t\open.exe", &["--new", "https://a/?q=1%20"]));
+        // No marker: the URL is appended as the last argument.
+        assert_eq!(plan("open.exe", "https://a/"), spawn_of(r"C:\t\open.exe", &["https://a/"]));
+        assert_eq!(plan(&format!(r#""C:\Program Files\B\b.exe" "--u={URL_TOKEN}""#), "https://a/"), spawn_of(r"C:\Program Files\B\b.exe", &["--u=https://a/"]));
+        // SECURITY: one argument, byte for byte; no shell.
+        let evil = "https://x/%CMDCMDLINE%&calc";
+        assert_eq!(plan(&format!("open.exe {URL_TOKEN}"), evil), spawn_of(r"C:\t\open.exe", &[evil]));
+        assert_eq!(plan(&format!("h.cmd {URL_TOKEN}"), evil), Err(Refusal::BatchUnsafe));
+        for u in ["https://x/a^b", "https://x/a|b", "https://x/a<b", "https://x/a>b", "https://x/a\"b"] {
+            assert_eq!(plan(&format!("h.cmd {URL_TOKEN}"), u), Err(Refusal::BatchUnsafe), "{u}");
+        }
+        assert_eq!(plan(&format!("h.cmd {URL_TOKEN}"), "https://a/b"), spawn_of(r"C:\t\h.cmd", &["https://a/b"]));
+        assert_eq!(plan(&format!("cmd.exe /c start \"\" {URL_TOKEN}"), evil), Err(Refusal::BatchUnsafe));
+        // P13: an interpreter that re-parses its arguments gets the same refusal.
+        assert_eq!(plan(&format!("pwsh -Command Start-Process {URL_TOKEN}"), "https://x/?a=1;calc"), Err(Refusal::BatchUnsafe));
+        assert_eq!(plan(&format!("{URL_TOKEN} x"), "https://a/"), Err(Refusal::UrlInProgram));
+        assert_eq!(plan("open.exe", "https://a/\nx"), Err(Refusal::ControlCharacter));
+        assert_eq!(plan("open.exe", "https://a/\rx"), Err(Refusal::ControlCharacter));
+        assert_eq!(plan("   ", "https://a/"), Err(Refusal::Empty));
+        // P14: a program found nowhere is refused, never started "as written".
+        assert_eq!(plan("nothere.exe", "https://a/"), Err(Refusal::Unresolved));
+        // The URL can never add arguments or reach the program.
+        assert_eq!(plan(&format!("open.exe {URL_TOKEN}"), "https://a/ --evil \"x y\""), spawn_of(r"C:\t\open.exe", &["https://a/ --evil \"x y\""]));
+        assert_eq!(Refusal::Empty.text(), "");
+        assert_eq!(Refusal::UrlInProgram.text(), "Tandem did not run the URL handler command: the URL cannot name the program.");
+        assert_eq!(Refusal::ControlCharacter.text(), "Tandem did not pass this URL to the URL handler command: it contains a control character.");
+        assert_eq!(Refusal::BatchUnsafe.text(), "Tandem did not pass this URL to the URL handler command: a batch file or cmd.exe would read its special characters.");
+        assert_eq!(Refusal::Unresolved.text(), HANDLER_FAILED);
+        assert_eq!(HANDLER_TITLE, "URL Handler");
+    }
+
+    #[test]
+    fn split_follows_commandlinetoargvw() {
+        let v = |l: &str| split_command_line(l);
+        assert_eq!(v(r#"p "b c" d\"e x\\"y z""#), ["p", "b c", "d\"e", "x\\y z"]);
+        assert_eq!(v(r#""C:\x y\p.exe" z"#), ["C:\\x y\\p.exe", "z"]);
+        assert_eq!(v("a  b\tc"), ["a", "b", "c"]);
+        assert_eq!(v(r#"p "" q"#), ["p", "", "q"]);
+        // shell32: `""` inside quotes is a literal quote that also ends the quoted run.
+        assert_eq!(v(r#"p "a""b c" d"#), ["p", "a\"b", "c d"]);
+    }
+
+    #[test]
+    fn resolve_program_walks_path_and_pathext() {
+        let seen = std::cell::RefCell::new(Vec::<PathBuf>::new());
+        let exists = |p: &Path| {
+            seen.borrow_mut().push(p.to_path_buf());
+            p == Path::new(r"C:\t\h.cmd")
+        };
+        assert_eq!(resolve_program("h", r"C:\t;\\srv\s", ".EXE;.CMD", &exists), Some(PathBuf::from(r"C:\t\h.cmd")));
+        assert!(seen.borrow().iter().all(|p| !p.to_string_lossy().starts_with(r"\\")), "never asked about the share: {:?}", seen.borrow());
+        // The share first: skipped, the next folder still found.
+        assert_eq!(resolve_program("h", r"\\srv\s;C:\t", ".EXE;.CMD", &exists), Some(PathBuf::from(r"C:\t\h.cmd")));
+        assert_eq!(resolve_program("nope", r"C:\t", ".EXE", &exists), None);
+        // A name with a folder: as written, PATHEXT tried when it has no extension, nothing asked of a share.
+        let only = |p: &Path| p == Path::new(r"C:\x\p.exe");
+        assert_eq!(resolve_program(r"C:\x\p", "", ".EXE", &only), Some(PathBuf::from(r"C:\x\p.exe")));
+        assert_eq!(resolve_program(r"C:\x\p.exe", "", ".EXE", &only), Some(PathBuf::from(r"C:\x\p.exe")));
+        assert_eq!(resolve_program(r"\\srv\s\p.exe", "", ".EXE", &|_| true), None);
+        // An extensionless file is no program (VS Code's `code`).
+        let code = |p: &Path| p == Path::new(r"C:\t\code");
+        assert_eq!(resolve_program("code", r"C:\t", ".EXE;.CMD", &code), None);
+    }
+
+    #[test]
+    fn batch_programs_are_known() {
+        assert!(is_batch(Path::new(r"C:\t\H.BAT")));
+        assert!(is_batch(Path::new(r"C:\t\h.cmd")));
+        assert!(is_batch(Path::new(r"C:\Windows\System32\cmd.exe")));
+        assert!(is_batch(Path::new(r"C:\Windows\System32\CMD.EXE")));
+        assert!(!is_batch(Path::new(r"C:\t\open.exe")));
+    }
+
+    #[test]
+    fn the_handler_is_asked_only_for_web_urls() {
+        assert!(handler_applies(&Run::Open("https://a/".into()), false));
+        assert!(handler_applies(&Run::Open("HTTP://a/".into()), false));
+        assert!(handler_applies(&Run::Open("mailto:a@b".into()), false));
+        assert!(handler_applies(&Run::Open("ftp://a/".into()), false));
+        assert!(!handler_applies(&Run::Open("https://a/".into()), true), "a Target::File");
+        assert!(!handler_applies(&Run::Open("file:///C:/a".into()), false));
+        assert!(!handler_applies(&Run::Open(r"C:\a\b.txt".into()), false));
+        assert!(!handler_applies(&Run::Open(r"\\evil\s\x".into()), false));
+        assert!(!handler_applies(&Run::Command("https://a/".into()), false));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn split_matches_the_system() {
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
+        let table = [
+            r#"p a b"#,
+            r#"p "b c" d"#,
+            r#""C:\Program Files\x\p.exe" a"#,
+            r#"p a\b c\\d"#,
+            r#"p a\"b"#,
+            r#"p a\\"b c" d"#,
+            r#"p "" x"#,
+            r#"p "a""b c" d"#,
+            r#"p \\\"x y"#,
+            r#"p "x y"z w"#,
+            r#"p a"b c"d e"#,
+            "p a\tb  c",
+            r#"p """a b""#,
+            r#"p "a b""""#,
+            r#"p "a"" b"#,
+            r#"p a"" b"#,
+        ];
+        for line in table {
+            let wide: Vec<u16> = line.encode_utf16().chain(Some(0)).collect();
+            let mut n = 0;
+            let ours = split_command_line(line);
+            let theirs: Vec<String> = unsafe {
+                let argv = CommandLineToArgvW(wide.as_ptr(), &mut n);
+                assert!(!argv.is_null());
+                let out = (0..n as usize)
+                    .map(|i| {
+                        let mut len = 0;
+                        while *(*argv.add(i)).add(len) != 0 {
+                            len += 1;
+                        }
+                        String::from_utf16_lossy(std::slice::from_raw_parts(*argv.add(i), len))
+                    })
+                    .collect();
+                LocalFree(argv as _);
+                out
+            };
+            assert_eq!(ours, theirs, "{line}");
+        }
     }
 }

@@ -171,6 +171,7 @@ impl App {
     /// Timer work: variables for interpolated strings, Instant triggers, and finished Run
     /// Command processes. When to come back.
     pub(super) fn tick_triggers(&mut self) -> Option<Instant> {
+        self.handlers_finished();
         let now = Instant::now();
         let mut wake = None;
         let names: Vec<(PaneId, String, String)> = self

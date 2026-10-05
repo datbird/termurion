@@ -489,7 +489,7 @@ impl App {
             }
             "kOpenTargetPointerAction" | "kQuickLookAction" | "kOpenTargetInBackgroundPointerAction" => {
                 let point = self.grid_point(pane, cell.0, cell.1);
-                self.open_target(pane, point, b.action == "kOpenTargetInBackgroundPointerAction");
+                self.open_target(pane, point, b.action == "kOpenTargetInBackgroundPointerAction", event_loop);
             }
             "kSmartSelectionPointerAction" | "kSmartSelectionIgnoringNewlinesPointerAction" => {
                 let point = self.grid_point(pane, cell.0, cell.1);

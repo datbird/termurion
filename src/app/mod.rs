@@ -88,6 +88,7 @@ mod fold_ui;
 mod labels_ui;
 mod screenshot_ui;
 mod semantic_ui;
+mod url_handler_ui;
 mod session_ui;
 mod seltools_ui;
 mod view_ui;
@@ -721,6 +722,8 @@ pub struct App {
     trigger_alerts: HashMap<PaneId, usize>,
     trigger_pool: crate::triggers::CommandPool,
     trigger_children: Vec<(PaneId, String, std::process::Child)>,
+    /// URL handler commands that finished (`url_handler_ui`), drained with the triggers' tick.
+    handler_inbox: url_handler_ui::HandlerInbox,
     /// Each pane's bell state, and the panes whose tab shows a bell icon.
     bells: HashMap<PaneId, crate::bell::Bell>,
     bell_icons: std::collections::HashSet<PaneId>,
@@ -1823,6 +1826,7 @@ pub fn run() {
         trigger_alerts: HashMap::new(),
         trigger_pool: crate::triggers::CommandPool::new(16),
         trigger_children: Vec::new(),
+        handler_inbox: Default::default(),
         bells: HashMap::new(),
         bell_icons: std::collections::HashSet::new(),
         activity: HashMap::new(),
@@ -4869,7 +4873,7 @@ impl App {
             #[cfg(windows)]
             crate::winkeys::mask_start_menu();
             let point = self.grid_point(id, col, row);
-            if self.open_target(id, point, false) {
+            if self.open_target(id, point, false, event_loop) {
                 return self.redraw();
             }
         }

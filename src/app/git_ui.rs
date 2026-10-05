@@ -814,12 +814,7 @@ impl App {
             gp.status = Some(status);
         }
         self.redraw_all();
-        self.start_command_override = Some(single_use_command(&exe_dir, &git, command));
-        self.start_dir_override = Some(crate::arrangement::Folder::Forced(dir));
-        let made = self.open_window(event_loop, None);
-        self.start_command_override = None;
-        self.start_dir_override = None;
-        let new = made.ok().and_then(|_| self.tabs.get(self.active).map(|t| t.focused));
+        let new = self.open_single_use_window(event_loop, single_use_command(&exe_dir, &git, command), Some(dir));
         let Some(new) = new else {
             if let Some(gp) = self.git.get_mut(&pane) {
                 gp.status = None;
@@ -834,6 +829,22 @@ impl App {
             self.bury_pane(new);
         }
         self.redraw_all();
+    }
+
+    /// A new window of the default profile that runs `command` instead of the profile's shell,
+    /// in `dir` when one is given (a folder that is gone refuses the start, `start_pane_as`).
+    /// The window's first pane, or None when the window could not be made. The caller
+    /// registers the pane in `single_use` (it alone knows whether the pane is short-lived and
+    /// who owns it); the overrides are set only around the window's creation, so no later
+    /// pane inherits them and the profile's Initial Text never types over the command
+    /// (`start_command_override` is what blanks it).
+    pub(super) fn open_single_use_window(&mut self, event_loop: &ActiveEventLoop, command: String, dir: Option<String>) -> Option<PaneId> {
+        self.start_command_override = Some(command);
+        self.start_dir_override = dir.map(crate::arrangement::Folder::Forced);
+        let made = self.open_window(event_loop, None);
+        self.start_command_override = None;
+        self.start_dir_override = None;
+        made.ok().and_then(|_| self.tabs.get(self.active).map(|t| t.focused))
     }
 
     /// A single-use session ended or closed (its completion, `GIT:628-631`): its owner's
