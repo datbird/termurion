@@ -619,6 +619,10 @@ Special Exceptions window with Import and Export. Deferred: the Nerd Font bundle
 restoring Columns and Rows (13f's window sizing), a "Font not installed" banner for a non-default profile. Nothing of 13n was checked on
 screen during the build. Every kept quirk is listed in `docs/acceptance/m13n-checklist.md` and ruled on in
 `docs/superpowers/rulings/m13n-rulings.txt`.
+On the m13o branch, main (13n) merged into 13o's Tasks 1-7 (2026-10-05): 13o changes no parity row before its docs task, so
+the union is 13n's (01: 316 rows, 238 have, 66 partial, 12 missing; 02: 820, 540, 53, 227; 03: 647, 561, 43, 43; 1,783 rows,
+1,339 have, 162 partial, 282 missing). Seams wired at the merge: a cell 13o makes wide never joins a Non-ASCII ligature group, a U+200B
+cell draws as a space, and the DEC 2048 report's pixel size uses each pane's own cell.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's
