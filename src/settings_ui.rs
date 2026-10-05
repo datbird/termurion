@@ -669,6 +669,13 @@ impl SettingsWindow {
                                 }
                                 continue;
                             }
+                            if s.key == "Cursor Blink Fade In Duration" {
+                                ui.add_enabled_ui(profile_row_enabled(profile, "Presets", dark), |ui| {
+                                    if blink_presets_row(ui, profile) {
+                                        edit = Edit::Changed(selected.clone());
+                                    }
+                                });
+                            }
                             if s.key == "Smart Selection Rules" || s.key == "Semantic History" {
                                 let done = if s.key == "Smart Selection Rules" {
                                     crate::settings_advanced::smart_selection_rules(ui, profile)
@@ -680,7 +687,7 @@ impl SettingsWindow {
                                 }
                                 continue;
                             }
-                            let enabled = crate::transparency::row_enabled(&s.key, profile.float("Transparency"), profile.bool("Blur"));
+                            let enabled = crate::transparency::row_enabled(&s.key, profile.float("Transparency"), profile.bool("Blur")) && profile_row_enabled(profile, &s.key, dark);
                             let mut changed = false;
                             ui.add_enabled_ui(enabled, |ui| changed = control(ui, profile, s, dark, is_default));
                             // The notes under Transparency and Blur Radius (PWP:157-170, 762-769).
@@ -1054,6 +1061,69 @@ fn url_schemes_control(ui: &mut egui::Ui, globals: &mut Globals, guid: &str, ask
         });
     });
     changed
+}
+
+/// Whether a profile row is enabled by the rows it depends on; every key without a rule is. The cursor rules
+/// are iTerm2's: Cursor Color and Cursor Text Color give way to Smart Cursor Color on a box cursor
+/// (`ProfilesColorsPreferencesViewController.m:471-476`), Smart Cursor Color is for the box, the shadow and
+/// the smooth slide for the underline and the bar (`ProfilesTextPreferencesViewController.m:512-530`),
+/// smooth blink needs Blinking Cursor and its six timings both (`:537-560`), and the interactive-apps check
+/// needs Animate Movement (`:168-175`). `dark` picks the variant of a Light and Dark key.
+pub fn profile_row_enabled(p: &Profile, key: &str, dark: bool) -> bool {
+    let box_cursor = p.int("Cursor Type") == 2;
+    match key {
+        "Cursor Color" | "Cursor Text Color" => !(p.bool_for("Smart Cursor Color", dark) && box_cursor),
+        "Smart Cursor Color" => box_cursor,
+        "Cursor Shadow" | "Cursor Smooth Slide" => matches!(p.int("Cursor Type"), 0 | 1),
+        "Cursor Smooth Blink" => p.bool("Blinking Cursor"),
+        "Presets"
+        | "Cursor Blink Fade In Duration"
+        | "Cursor Blink Fade Out Duration"
+        | "Cursor Blink Fade In Curve"
+        | "Cursor Blink Fade Out Curve"
+        | "Cursor Blink Visible Dwell"
+        | "Cursor Blink Hidden Dwell" => p.bool("Blinking Cursor") && p.bool("Cursor Smooth Blink"),
+        "Animate Movement Only in Interactive Apps" => p.bool("Animate Movement"),
+        _ => true,
+    }
+}
+
+/// The title of the smooth-blink presets pull-down (`PreferencePanel.xib:11312`).
+pub const PRESETS_TITLE: &str = "Presets";
+
+/// Writes preset `index`'s six keys (`ProfilesTextPreferencesViewController.m:668-697`): the
+/// timings as floats, the curves as integers. An index past the five is ignored.
+pub fn apply_blink_preset(p: &mut Profile, index: usize) {
+    let Some((_, t)) = crate::cursor_anim::PRESETS.get(index) else { return };
+    p.set("Cursor Blink Fade In Duration", Value::Float(t.fade_in));
+    p.set("Cursor Blink Fade Out Duration", Value::Float(t.fade_out));
+    p.set("Cursor Blink Fade In Curve", Value::Integer(t.in_curve.index()));
+    p.set("Cursor Blink Fade Out Curve", Value::Integer(t.out_curve.index()));
+    p.set("Cursor Blink Visible Dwell", Value::Float(t.visible_dwell));
+    p.set("Cursor Blink Hidden Dwell", Value::Float(t.hidden_dwell));
+}
+
+/// The Presets pull-down: the five names, the matching one checked. True when one was picked.
+fn blink_presets_row(ui: &mut egui::Ui, p: &mut Profile) -> bool {
+    let current = crate::cursor_anim::preset_matching(&crate::cursor_anim::FadeTimes::from_profile(p));
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        ui.label(PRESETS_TITLE);
+        egui::ComboBox::from_id_salt("blink_presets").selected_text(current.map_or("", |i| crate::cursor_anim::PRESETS[i].0)).show_ui(ui, |ui| {
+            for (i, (name, _)) in crate::cursor_anim::PRESETS.iter().enumerate() {
+                if ui.selectable_label(current == Some(i), format!("{}{name}", if current == Some(i) { "\u{2713} " } else { "" })).clicked() {
+                    picked = Some(i);
+                }
+            }
+        });
+    });
+    match picked {
+        Some(i) => {
+            apply_blink_preset(p, i);
+            true
+        }
+        None => false,
+    }
 }
 
 /// One control for one setting. Returns true when a change is committed: at once for
@@ -1440,5 +1510,106 @@ mod tests {
         assert_eq!(s.kind, Kind::Dict);
         assert_eq!(s.label, "Configure SSH");
         assert_eq!(s.help, "SSH Integration, the environment variables and files to copy to the remote host, and the path to ssh, for the SSH command type.");
+    }
+
+    #[test]
+    fn blink_presets_write_the_six_keys() {
+        assert_eq!(PRESETS_TITLE, "Presets");
+        let mut p = Profile::default();
+        apply_blink_preset(&mut p, 0);
+        assert_eq!(p.get("Cursor Blink Fade In Duration"), Some(Value::Float(0.9)));
+        assert_eq!(p.get("Cursor Blink Fade Out Duration"), Some(Value::Float(0.9)));
+        assert_eq!(p.get("Cursor Blink Fade In Curve"), Some(Value::Integer(3)));
+        assert_eq!(p.get("Cursor Blink Fade Out Curve"), Some(Value::Integer(3)));
+        assert_eq!(p.get("Cursor Blink Visible Dwell"), Some(Value::Float(0.5)));
+        assert_eq!(p.get("Cursor Blink Hidden Dwell"), Some(Value::Float(0.5)));
+        assert_eq!(crate::cursor_anim::preset_matching(&crate::cursor_anim::FadeTimes::from_profile(&p)), Some(0));
+        apply_blink_preset(&mut p, 1);
+        assert_eq!(p.get("Cursor Blink Fade In Curve"), Some(Value::Integer(0)));
+        assert_eq!(crate::cursor_anim::preset_matching(&crate::cursor_anim::FadeTimes::from_profile(&p)), Some(1));
+        apply_blink_preset(&mut p, 99);
+        assert_eq!(crate::cursor_anim::preset_matching(&crate::cursor_anim::FadeTimes::from_profile(&p)), Some(1));
+    }
+
+    #[test]
+    fn cursor_profile_rows_enable_as_iterm2() {
+        let on = |p: &Profile, key: &str| profile_row_enabled(p, key, false);
+        let colors = ["Cursor Color", "Cursor Text Color"];
+        let timings = [
+            "Presets",
+            "Cursor Blink Fade In Duration",
+            "Cursor Blink Fade Out Duration",
+            "Cursor Blink Fade In Curve",
+            "Cursor Blink Fade Out Curve",
+            "Cursor Blink Visible Dwell",
+            "Cursor Blink Hidden Dwell",
+        ];
+        let mut p = Profile::default();
+        for k in colors {
+            assert!(on(&p, k), "{k}");
+        }
+        assert!(on(&p, "Columns"));
+        // Smart Cursor Color with a box (type 2) takes both colors away; any other type gives them back.
+        p.set("Smart Cursor Color", Value::Boolean(true));
+        p.set("Cursor Type", Value::Integer(2));
+        for k in colors {
+            assert!(!on(&p, k), "{k}");
+        }
+        p.set("Cursor Type", Value::Integer(0));
+        for k in colors {
+            assert!(on(&p, k), "{k}");
+        }
+        // Smart Cursor Color is for the box only.
+        for (ty, want) in [(0, false), (1, false), (2, true)] {
+            p.set("Cursor Type", Value::Integer(ty));
+            assert_eq!(on(&p, "Smart Cursor Color"), want, "type {ty}");
+        }
+        // The shadow and the smooth slide are for the underline and the bar.
+        for (ty, want) in [(0, true), (1, true), (2, false)] {
+            p.set("Cursor Type", Value::Integer(ty));
+            assert_eq!(on(&p, "Cursor Shadow"), want, "type {ty}");
+            assert_eq!(on(&p, "Cursor Smooth Slide"), want, "type {ty}");
+        }
+        // Smooth blink needs Blinking Cursor; the six timings need both.
+        let mut p = Profile::default();
+        assert!(!on(&p, "Cursor Smooth Blink"));
+        for k in timings {
+            assert!(!on(&p, k), "{k}");
+        }
+        p.set("Blinking Cursor", Value::Boolean(true));
+        assert!(on(&p, "Cursor Smooth Blink"));
+        for k in timings {
+            assert!(!on(&p, k), "{k}");
+        }
+        p.set("Cursor Smooth Blink", Value::Boolean(true));
+        for k in timings {
+            assert!(on(&p, k), "{k}");
+        }
+        p.set("Blinking Cursor", Value::Boolean(false));
+        for k in timings {
+            assert!(!on(&p, k), "{k}");
+        }
+        // Animate Movement Only in Interactive Apps follows Animate Movement.
+        let mut p = Profile::default();
+        assert!(!on(&p, "Animate Movement Only in Interactive Apps"));
+        p.set("Animate Movement", Value::Boolean(true));
+        assert!(on(&p, "Animate Movement Only in Interactive Apps"));
+        // Smart Cursor Color has Light and Dark variants (P7): the mode being edited decides.
+        let mut p = Profile::default();
+        p.set("Use Separate Colors for Light and Dark Mode", Value::Boolean(true));
+        p.set("Smart Cursor Color (Dark)", Value::Boolean(true));
+        p.set("Cursor Type", Value::Integer(2));
+        assert!(!profile_row_enabled(&p, "Cursor Color", true));
+        assert!(profile_row_enabled(&p, "Cursor Color", false));
+    }
+
+    #[test]
+    fn cursor_profile_help_follows_iterm2() {
+        let boost = crate::schema::find("Cursor Boost").unwrap();
+        assert_eq!(boost.help, "Amount to dim non-cursor text to highlight cursor");
+        assert_eq!(boost.label, "Cursor Boost");
+        assert_eq!((boost.min.clone(), boost.max.clone()), (Some(Value::Float(0.0)), Some(Value::Float(0.8))));
+        let shadow = crate::schema::find("Cursor Shadow").unwrap();
+        assert_eq!(shadow.help, "Whether the cursor has a shadow");
     }
 }

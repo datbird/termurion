@@ -343,6 +343,9 @@ pub struct Term<T> {
     /// saves the lines leaving it to scrollback (iTerm2's Scrollback With Status Bar).
     scrollback_with_region: bool,
 
+    /// Tandem patch: whether programs may change the cursor's blink (patch 17).
+    cursor_blink_change: bool,
+
     /// Currently inactive keyboard mode stack.
     inactive_keyboard_mode_stack: Vec<KeyboardModes>,
 
@@ -463,6 +466,7 @@ impl<T> Term<T> {
             da1_clipboard: true,
             alternate_scroll_allowed: true,
             scrollback_with_region: true,
+            cursor_blink_change: true,
             active_charset: Default::default(),
             vi_mode_cursor: Default::default(),
             cursor_style: Default::default(),
@@ -678,6 +682,11 @@ impl<T> Term<T> {
     /// Tandem: the scrolling region (top line, and the line past the bottom).
     pub fn scroll_region(&self) -> &Range<Line> {
         &self.scroll_region
+    }
+
+    /// Tandem patch: while off, programs change the cursor's shape but not its blink.
+    pub fn set_cursor_blink_change(&mut self, on: bool) {
+        self.cursor_blink_change = on;
     }
 
     /// Tandem: sets whether a top scroll region above the bottom row saves to scrollback.
@@ -2106,6 +2115,8 @@ impl<T: EventListener> Handler for Term<T> {
                 self.goto(0, 0);
             },
             NamedPrivateMode::ColumnMode => self.deccolm(),
+            // Tandem patch: ignored unless programs may change the blink.
+            NamedPrivateMode::BlinkingCursor if !self.cursor_blink_change => (),
             NamedPrivateMode::BlinkingCursor => {
                 let style = self.cursor_style.get_or_insert(self.config.default_cursor_style);
                 style.blinking = true;
@@ -2155,6 +2166,8 @@ impl<T: EventListener> Handler for Term<T> {
             NamedPrivateMode::LineWrap => self.mode.remove(TermMode::LINE_WRAP),
             NamedPrivateMode::Origin => self.mode.remove(TermMode::ORIGIN),
             NamedPrivateMode::ColumnMode => self.deccolm(),
+            // Tandem patch: ignored unless programs may change the blink.
+            NamedPrivateMode::BlinkingCursor if !self.cursor_blink_change => (),
             NamedPrivateMode::BlinkingCursor => {
                 let style = self.cursor_style.get_or_insert(self.config.default_cursor_style);
                 style.blinking = false;
@@ -2325,7 +2338,15 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn set_cursor_style(&mut self, style: Option<CursorStyle>) {
         trace!("Setting cursor style {style:?}");
-        self.cursor_style = style;
+        // Tandem patch: without permission a program's style keeps the current blink; DECSCUSR 0
+        // (None) still restores the configured style.
+        self.cursor_style = match style {
+            Some(mut s) if !self.cursor_blink_change => {
+                s.blinking = self.cursor_style.unwrap_or(self.config.default_cursor_style).blinking;
+                Some(s)
+            },
+            other => other,
+        };
 
         // Notify UI about blinking changes.
         self.event_proxy.send_event(Event::CursorBlinkingChange);

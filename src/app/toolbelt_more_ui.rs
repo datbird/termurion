@@ -1579,6 +1579,12 @@ impl App {
             return false;
         }
         let key = self.with_clipboard_text(key);
+        self.notes_edit_key(key)
+    }
+
+    /// One editing key for the Notes editor (a typed key, or text the IME committed).
+    pub(super) fn notes_edit_key(&mut self, key: EditKey) -> bool {
+        let mods = self.mods;
         let Some(area) = self.tool_area(ToolId::Notes) else { return true };
         self.notes_sync();
         let l = note_layout(area, self.scale());
@@ -2234,7 +2240,9 @@ impl App {
             self.redraw();
             return true;
         }
-        let Some(area) = self.tool_area(ToolId::Codecierge) else { return true };
+        if self.tool_area(ToolId::Codecierge).is_none() {
+            return true;
+        }
         let view = self.codecierge_view();
         let running = match &view {
             View::Goal { .. } => false,
@@ -2258,6 +2266,20 @@ impl App {
             return false;
         }
         let key = self.with_clipboard_text(key);
+        self.codecierge_edit_key(key)
+    }
+
+    /// One editing key for Codecierge's goal or reply (a typed key, or text the IME committed).
+    /// False when it has no text entry (onboarding), so the key goes on.
+    pub(super) fn codecierge_edit_key(&mut self, key: EditKey) -> bool {
+        let mods = self.mods;
+        let Some(area) = self.tool_area(ToolId::Codecierge) else { return true };
+        let view = self.codecierge_view();
+        let running = match &view {
+            View::Goal { .. } => false,
+            View::Running { .. } => true,
+            View::Onboarding(_) => return false,
+        };
         self.codecierge_sync();
         let geo = self.codecierge_geometry(area, &view);
         let text = match (&geo.goal, &geo.run) {

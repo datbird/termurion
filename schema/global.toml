@@ -3744,3 +3744,113 @@ label = "When splitting a pane, use the profile with local modifications, not th
 type = "bool"
 default = true
 help = "When splitting a pane, use the profile with local modifications, not the backing profile."
+
+# 13k: cursor rows (iTermAdvancedSettingsModel.m), kept in their own block.
+
+[[setting]]
+key = "TimeBetweenBlinks"
+tab = "Advanced"
+section = "Terminal"
+label = "Cursor blink speed (seconds)."
+type = "float"
+default = 0.5
+help = "Cursor blink speed (seconds)."
+
+[[setting]]
+key = "SmartCursorColorBgThreshold"
+tab = "Advanced"
+section = "Terminal"
+label = "Threshold for Smart Cursor Color for background color (0 to 1)."
+type = "float"
+default = 0.5
+help = "Threshold for Smart Cursor Color for background color (0 to 1).\n0 means the cursor\u2019s background color will always be the cell\u2019s text color, while 1 means it will always be black or white."
+
+[[setting]]
+key = "SmartCursorColorFgThreshold"
+tab = "Advanced"
+section = "Terminal"
+label = "Threshold for Smart Cursor Color for text color (0 to 1)."
+type = "float"
+default = 0.75
+help = "Threshold for Smart Cursor Color for text color (0 to 1).\n0 means the cursor\u2019s text color will always be the cell\u2019s background color, while 1 means it will always be black or white."
+
+[[setting]]
+key = "FullHeightCursor"
+tab = "Advanced"
+section = "Terminal"
+label = "Cursor occupies line spacing area."
+type = "bool"
+default = false
+help = "Cursor occupies line spacing area.\nIf lines have more than 100% vertical spacing and this setting is enabled the bottom of the cursor will be aligned to the bottom of the spacing area."
+
+[[setting]]
+key = "UnderlineCursorOffset"
+tab = "Advanced"
+section = "Terminal"
+label = "Vertical offset for underline cursor."
+type = "float"
+default = 0.0
+help = "Vertical offset for underline cursor.\nPositive values move it up, negative values move it down."
+
+[[setting]]
+key = "VerticalBarCursorWidth"
+tab = "Advanced"
+section = "Terminal"
+label = "Width of vertical bar cursor."
+type = "float"
+default = 1.0
+help = "Width of vertical bar cursor."
+
+[[setting]]
+key = "DrawOutlineAroundCursor"
+tab = "Advanced"
+section = "Drawing"
+label = "Draw outline around underline and vertical bar cursors using background color."
+type = "bool"
+default = false
+help = "Draw outline around underline and vertical bar cursors using background color."
+
+[[setting]]
+key = "UnderlineCursorHeight"
+tab = "Advanced"
+section = "Drawing"
+label = "Thickness of underline cursor."
+type = "float"
+default = 2.0
+help = "Thickness of underline cursor."
+
+[[setting]]
+key = "CursorAnimationMinDistance"
+tab = "Advanced"
+section = "Drawing"
+label = "When animated cursor movement is enabled, only perform animation if the cursor moves at least this distance in points."
+type = "float"
+default = 150.0
+help = "When animated cursor movement is enabled, only perform animation if the cursor moves at least this distance in points."
+
+[[setting]]
+key = "CursorSmearAnimationDuration"
+tab = "Advanced"
+section = "Drawing"
+label = "Duration in seconds for the \u201cAnimate large movements\u201d cursor animation."
+type = "float"
+default = 0.1
+help = "Duration in seconds for the \u201cAnimate large movements\u201d cursor animation."
+
+[[setting]]
+key = "CursorSlideAnimationDuration"
+tab = "Advanced"
+section = "Drawing"
+label = "Duration in seconds for smooth cursor slide animation."
+type = "float"
+default = 0.05
+help = "Duration in seconds for smooth cursor slide animation.\nThis affects the \"Smooth slide\" cursor movement option."
+
+[[setting]]
+key = "CursorSlideAnimationMaxCells"
+tab = "Advanced"
+section = "Drawing"
+label = "Maximum horizontal distance in cells for smooth cursor slide animation."
+type = "int"
+default = 1
+help = "Maximum horizontal distance in cells for smooth cursor slide animation.\nCursor movements larger than this will not animate."

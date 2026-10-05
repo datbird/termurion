@@ -1,0 +1,141 @@
+R3 02:655: Ruling: Tandem's cursor filled the whole line including spacing; iTerm2's default centers a spacing-free cursor (height min(line, font cell), top offset round(((line - cell) / 2) / scale) * scale, never negative, width capped at the font's advance). Fixed (R3) - cost if wrong: a cursor shorter than the line at vertical spacing above 100%
+R3 02:661: Ruling: the bar cursor was 2 pixels wide; iTerm2's is VerticalBarCursorWidth (1) points. Fixed (R3) - cost if wrong: a thinner bar than before at 100%
+R3 02:802: Ruling: the underline cursor was 2 pixels at the cell bottom; iTerm2's is UnderlineCursorHeight (2) points on the cursor box's bottom, raised by UnderlineCursorOffset points. Fixed (R3) - cost if wrong: an underline that sits above the line bottom at vertical spacing above 100%
+Pre-flight B2: Ruling: FullHeightCursor YES is height max(line, font cell) with its top on the line's top (iTermCursorRenderer.m:337), not its bottom on the line's bottom - cost if wrong: a cursor that overflows the wrong side at vertical spacing below 100% with the key on
+Pre-flight B4: Ruling: CellLook.cursor and 13g's alpha_of cursor arm are deleted; the cursor cell keeps its own background run at the pane's alpha and the cursor box is a quad over it at alpha 1; cursor_stays_opaque reads the topmost quad - cost if wrong: an opaque patch around the cursor in a see-through pane
+
+R3 (02:634, Task 3 Step 3a): the blink half period is TimeBetweenBlinks, 0.5 s by default; Tandem used 530 ms. Fixed.
+R3 (Task 3 Step 3b): Tandem showed the cursor on each key press; iTerm2 shows it for half a second after the cursor moves. Fixed (R3). The moved test compares the screen-relative grid cell (B3).
+Patch 17 (Task 3): Term::set_cursor_blink_change; programs change blink only with Allow Change Cursor Blink. DECRQSS ` q` and DECRQM ?12 answer from the permitted state.
+Task 6 fix round 1 (P9 corrected): Cursor Boost mutes the selection background and selected text and the find-match background and text too, before the Dim Only Text step, as iTerm2 does (iTermMetalPerFrameState.m:2191-2193, iTermColorMap.m:327-350 and :514-525); P9's earlier text excluding them was wrong. The cursor, smart colors, link, label and hover colors stay unmuted - cost if wrong: a selection or match brighter or dimmer than iTerm2 at Boost above 0.
+
+Task 7 (smooth slide)
+Task 7: Decision: a step LEFT slides too (iTerm2 takes fabs of the distance, PTYTextView.m:1561; the brief said 0 < dx) - cost if wrong: a left step snaps.
+Task 7: Decision: a slide starts only from a cursor that was seen the frame before; a pane not on screen forgets its place each frame (Task 7 fix r2), so a tab switch never animates - cost if wrong: none.
+
+Task 8 (animated large movements)
+Task 8: Decision: the smear shares Task 7's Motion, Metrics snap and frame clock (one anim_frame deadline for slide and smear); a slide wins when both apply - cost if wrong: none.
+Task 8: Decision: a smear needs a solid cursor (bar, underline or focused box, blink phase ignored); a hollow or hidden cursor forgets its place as iTerm2 does - cost if wrong: none.
+Task 8: Decision: the minimum distance is CursorAnimationMinDistance times the window scale, origin to origin - cost if wrong: smears start slightly early or late at fractional scales.
+
+Pre-flight fixes (B1, B3 here; B2 and B4 are recorded above)
+Pre-flight B1: Ruling: the cursor-move bookkeeping runs in App::prepare_cursors(&mut self), beside prepare_portholes before the pane loop of build_frame, from a Vec copy of visible(tab); the pane loop only reads Motion through cursor_look_for(&self) - the loop holds a borrow of self.tabs, a &mut self call inside is E0502 - cost if wrong: Task 3 does not compile, or Tab is cloned every frame
+Pre-flight B3: Ruling: "the cursor moved" compares the screen-relative grid cell (no history or display offset); Motion::note(None) keeps the stored cell (PTYTextView.m:2098, TDH:3896) - cost if wrong: a cursor on the last row of a scrolling screen never blinks
+
+Controller rulings (progress.md)
+Ruling: B1 to B4 and P1 to P16 of the pre-flight are accepted as written and override the plan text - cost if wrong: a task built on the plan text instead of the pre-flight does not compile or draws the wrong geometry
+Ruling: 13k lands after 13j and resolves the 13j seams (11) at its merge; 13j owns alacritty_terminal patch 16, so 13k's is 17 - cost if wrong: two TANDEM-PATCHES.md entries numbered 16
+Ruling: Cursor Boost also mutes the selection background and selected text and the find-match background and text (iTermMetalPerFrameState.m:2191-2193, iTermColorMap.m:327-350 and :514-525), before the Dim Only Text step; this corrects P9, which excluded them - cost if wrong: a selection or find highlight brighter or dimmer than iTerm2 at Boost above 0
+Ruling: the smear ease (ease_in_out_ca, Bezier (0.42,0)(0.58,1)) applies to the whole 0..1 progress as the plan says; Core Animation's per-segment timing is unverified and the keyframe at 50 ms is the same - cost if wrong: a slightly different mid-curve shape of the smear
+
+Pre-flight rulings P1 to P16
+P1: Ruling: App::prepare_cursors(&mut self) runs beside prepare_portholes and feeds Motion::note and Motion::moved_to from a Vec copy of visible(tab); the pane loop only calls cursor_look_for(&self, ..) - cost if wrong: Task 3 does not compile, or Tab is cloned per frame
+P2: Ruling: FullHeightCursor YES is height max(ch, base_h) with its top at row * ch (B2); the second test value is { y: 16, h: 20 } (iTermCursorRenderer.m:337) - cost if wrong: a cursor that overflows the wrong side at vertical spacing below 100% with the key on (rare)
+P3: Ruling: the "cursor moved" input is the screen-relative grid point, no history or display offset; note(None) keeps the stored cell (B3) - cost if wrong: a cursor on the last row of a scrolling screen never blinks
+P4: Ruling: CellLook.cursor and 13g's alpha_of cursor arm are deleted; cursor_stays_opaque is rewritten to the topmost quad (B4) - cost if wrong: an opaque patch around the cursor in a see-through pane
+P5: Ruling: the patch entry takes the next free number at write time (17, 13j holds 16); both Term::new field lines and the set_private_mode arms are merged by hand, nothing else of 13j is touched - cost if wrong: two entries numbered 16
+P6: Ruling: Task 1 adds no global_control Int or Float arm; the 12 rows are Advanced rows drawn by 13a's advanced_pane, and cursor_rows_follow_iterm2 asserts each row's RowKind (Float x9, Bool x2, Int x1) - cost if wrong: a dead control that 13i's guarded arm shadows
+P7: Ruling: settings_ui::profile_row_enabled(p, key, dark) reads the light/dark keys through bool_for and is composed with 13g's transparency::row_enabled by && at the one add_enabled_ui; a Use Separate Colors case is tested - cost if wrong: Cursor Color stays enabled while the Dark variant smart color is on
+P8: Ruling: Window::set_ime_allowed(true) is called in gpu_for (covers open_window_with and 13g's recreate_window_for_alpha) and in resumed after init_gpu, never at the three create_window calls - cost if wrong: a window recreated for alpha loses its IME
+P9: Ruling (SUPERSEDED in part by the Task 6 correction above): Cursor Boost's mute runs first, then 13i's Dim Only Text, at the cell construction in pane_with beside 13i's P14 site, on palette.cell colors; the cursor, smart colors and the IME caret (muted by the profile's boost only) skip it; selection, match, link, label and hover were first excluded, and the selection and match pairs are now muted too - cost if wrong: a selection or find highlight keeps full brightness at Boost 0.8 while iTerm2 mutes it
+P10: Ruling: tick_cursor stores cursor_alpha: f32 (focused pane only) and the wake; cursor_look_for reads it and computes a slide offset or smear polygon from Instant::now(); frames from other events draw the last stored alpha (Fade::alpha is &mut, cursor_look_for is &self) - cost if wrong: a fade that stutters on a redraw triggered by output
+P11: Ruling: key_cursor (the password key glyph) suppresses the cursor look entirely: no smart colors, boost shadow, outline, slide, smear or IME draw; the glyph still follows the blink (TDH:4053-4068) - cost if wrong: a shadow drawn under the key glyph
+P12: Ruling: programs reach the cursor only through ledger paths, each bounded and none touching the profile: DECSCUSR shape always, blink only with Allow Change Cursor Blink (patch 17), DECSET 12 (same gate), OSC 1337 CursorShape (shape only), SetColors curbg and curfg (session color_sets), DECSET 25; DECSCUSR 0 and RIS reset the style to the profile; DECRQSS and DECRQM answer from the permitted state. OSC 12 and OSC 112 are stored by alacritty but not drawn (the renderer reads palette.cursor): a deferred gap (iTerm2 honors OSC 12) - cost if wrong: a program thinks it set a blink it was refused, or an OSC 12 color is ignored
+P13: Ruling: the hollow unfocused cursor stays four overlay edges around box_rect; shadow, outline, smear and the IME caret are overlay quads inside overlay_from.., before 13i's gray quad; no new Highlights field - cost if wrong: a cursor extra that an Auto Composer does not hide
+P14: Ruling: Motion.last_rect and any running slide or smear are cleared when cell(), base_cell() or scale() differ from the previous frame (kept in Motion as metrics; Task 7 also compares the pane rect, display offset and the alternate screen) - cost if wrong: a zoom animates the cursor
+P15: Ruling: parity rows are found by title; 01:63, 01:120 and 01:218 lose the "later milestone" note and read have with the 13k note; HDR Cursor stays partial (Tandem renders sRGB, no HDR swap chain) - cost if wrong: a stale row
+P16: Ruling: name collisions are handled by qualified paths: cursor_anim::Motion vs hotkey_motion::Motion, cursor_look::Geometry vs pane_title::Geometry, Cursors/Shape (13j pointer shapes) vs CursorLook; App.cursor is the MOUSE POINTER position (read by 13j), cursor_ui never reads it as the text cursor - cost if wrong: an ambiguous import or a pointer position read as the caret
+Ruling (13k scope, ledger): IME composition had no parity row; one is added to 01 Keys ("IME composition (Windows IME)") - cost if wrong: an unrecorded feature
+
+Task 1 (cursor rows)
+Task 1: Decision: profile_row_enabled takes dark as a third argument (P7) - cost if wrong: callers and tests of the two-argument form need an argument
+Task 1: Decision: the twelve rows sit in their own commented block at the end of schema/global.toml (13j appends there too) - cost if wrong: none, the Advanced pane sorts by name
+Task 1: Decision: Cursor Smooth Blink and the six timings are read as plain bool and float (those keys are not light/dark) - cost if wrong: none
+
+Task 2 (geometry)
+Task 2: Decision: the block cursor over a wide character is double width (box_rect wide; iTermCursorRenderer.m:531-542) - cost if wrong: none
+Task 2: Decision: the screenshot paths use default Geometry (scale 1, no base cell) - cost if wrong: a full-line cursor in screenshots at vertical spacing above 100%
+Task 2: Decision: m13k-rulings.txt was created in Task 2 and later tasks append - cost if wrong: a merge note
+Task 2: Decision: cursor_look_for ignored pane and focused until Task 3 - cost if wrong: none
+Task 2: Decision: a geometry test with no base cell (base (0, 0) = the cell) was added - cost if wrong: none
+
+Task 3 (blink)
+Task 3: Decision: the clock stops when nothing blinks and restarts with a fresh half period (flipped = now), phase resting visible - cost if wrong: the first flip after a restart is half a period late
+Task 3: Decision: Blink::tick skips missed flips when the loop slept several periods, no replay - cost if wrong: none visible
+Task 3: Decision: turning Allow Change Cursor Blink off keeps the current style including its blink (only the shape is required); a program's blink persists until DECSCUSR 0 or RIS - cost if wrong: a program's blink outlives the permission change
+Task 3: Decision: "key window" is self.focused as the old blink used, not also app_active - cost if wrong: blinking continues while the app is inactive if the two differ
+Task 3: Decision: cursor_wake carries #[allow(dead_code)]; about_to_wait uses tick_cursor's return - cost if wrong: none
+Task 3: Decision: a pane's first cursor sighting counts as a move, so it is solid for 0.5 s (iTerm2's _oldCursorPosition starts empty too) - cost if wrong: none
+
+Task 4 (smooth blink)
+Task 4: Decision: the preset writer test is blink_presets_write_the_six_keys in settings_ui, not inside presets_follow_iterm2 (that lives in cursor_anim) - cost if wrong: none
+Task 4: Decision: with smooth blink on, the on/off half-period clock does not run, so blinking text (SGR 5) pauses until 13m adds its own wake (carry to 13m) - cost if wrong: text blink pauses under smooth cursor blink
+Task 4: Decision: smooth blink also needs the terminal's own blink (cursor_blinks), so a program's blink change counts, as in Task 3 - cost if wrong: none
+Task 4: Decision: the block's text blends toward Cursor Text Color by alpha; the key glyph follows alpha through the shared cursor filter - cost if wrong: the key glyph fades under smooth blink
+
+Task 5 (Smart Cursor Color)
+Task 5: Decision: with a 230 gray neighbor the letter stays the cell background (0.9 from the black box exceeds the 0.75 threshold), per iTermSmartCursorColor.m - cost if wrong: none
+Task 5: Decision: the cursor's own text color is Palette::cell's fg (inverse respected) and Dim Only Text is not applied to it (13i P14) - cost if wrong: the smart box brightness ignores dimming
+Task 5: Decision: the smart gate on shape lives in the scene (the terminal's actual shape, so DECSCUSR is honored); cursor_look_for checks only the profile - cost if wrong: none
+Task 5: Decision: a SetColors curbg override loses to Smart Cursor Color on a box, as iTerm2 disables the swatch - cost if wrong: a program-set cursor color ignored under Smart Cursor Color
+
+Task 6 (boost, shadow, outline)
+Task 6: Decision: outline edges do not overlap (top and bottom full width, sides between) so the 0.75 alpha is uniform at corners - cost if wrong: none visible
+Task 6: Decision: the outline takes look.alpha too, so it fades with smooth blink - cost if wrong: the outline stays solid during a fade
+Task 6: Decision: the boost scene test sets palette.bg to black (mute targets palette.bg) - cost if wrong: none
+Task 6: Decision: an unfocused underline or bar stays the existing solid draw, so it also gets shadow and outline - cost if wrong: a shadow under an unfocused underline
+Task 6: Decision: selected text is muted once (fg is already muted; a Selected Text Color is muted on its own), found in fix round 2 - cost if wrong: selected text twice as dim
+
+Task 7 (smooth slide), additional
+Task 7: Decision: Metrics include the pane rect and display offset, so resize, pane move, scroll and alternate screen switches snap as well as zoom and DPI - cost if wrong: none
+Task 7: Decision: a non-sliding jump clears a running slide, and a pane's moved cursor is solid (blink restarts), so "drawn" checks only Hide when unfocused - cost if wrong: none
+Task 7: Decision: App::tick_slides and note_cursor_moves are not unit tested (they need an App); the pure pieces are - cost if wrong: a wiring slip shows only in the checklist
+
+Task 8 (smear), additional
+Task 8: Decision: a slide starting does not cancel a running smear (iTerm2 the same) - cost if wrong: none
+Task 8: Decision: App-side smear wiring is not unit tested (needs an App) - cost if wrong: a wiring slip shows only in the checklist
+
+Task 9 (IME)
+Task 9: Decision: the scene test uses a 20x20 cell (the brief's x 100, w 40, caret x 140 need cell width 20) - cost if wrong: none
+Task 9: Decision: there is no App test harness, so the event logic is the pure step and holds_keys; ime_event and ime_area are checked on screen only - cost if wrong: a wiring slip shows only in the checklist
+Task 9: Decision: ime_cancel toggles set_ime_allowed false then true so Windows drops its own composition (winit has no reset call) - cost if wrong: the OS composition window lingers until the next key
+Task 9: Decision: caret vertical centering is round((ch - base_h) / 2) pixels with no scale rounding - cost if wrong: a half pixel difference at fractional scales
+Task 9: Decision: Esc cancels only while a composition exists; with none it reaches the session - cost if wrong: Esc swallowed with nothing to cancel
+SUPERSEDED by Task 9 r1 (the composition is per window and owned by (window, pane)): Task 9: Decision: a composition on a pane in a parked window is dropped on the next frame of the key window (wrong id check), harmless since an unfocused window has none - cost if wrong: none
+Task 9: Decision: the candidate window follows the cell, not a running slide or smear - cost if wrong: the candidate window sits at the destination while the caret glides
+Task 9: Decision: an Alt+click arrow write through user_write bypasses the IME hold - cost if wrong: one stray arrow when clicking mid-composition
+
+Deferred minors (final triage; none is a gate)
+Deferred (Task 2): full-height cursor with negative vertical spacing overflows into the next row and is painted over - cost if wrong: a visible overlap in a rare setup
+Deferred (Task 2): cursor_cell is called three or four times per focused pane per frame - cost if wrong: a trivial per-frame cost
+Deferred (Task 3): Blink::tick's skip branch, ime_event and ime_type are untested glue (the pure helpers carry the rules) - cost if wrong: a regression there is seen only on screen
+Deferred (Task 3): verify Hide when unfocused also hides the password key glyph (key_cursor) - cost if wrong: a key glyph shown in an unfocused pane (checklist line asks)
+Deferred (Task 4 to 13m): blinking text needs its own wake while smooth cursor blink is on - cost if wrong: text blink pauses meanwhile
+Deferred (Task 5): no tests for selection, edge or wide cells under smart color; smart colors not dimmed under Dim Only Text (13i P14) - cost if wrong: a warning, an untested edge, a cursor not dimmed with the text
+Deferred (Task 7): two minor flags (a cheap flag and a slide_ok extraction) not done - cost if wrong: none
+Deferred (Task 8): the scene test covers only an axis-aligned first frame of the smear - cost if wrong: an untested diagonal
+Deferred (13m, P12): OSC 12 and OSC 112 cursor colors are stored but not drawn - cost if wrong: a program that sets the cursor color by OSC 12 sees no change
+Deferred (HDR): Use HDR cursor stays partial; no HDR swap chain - cost if wrong: the cursor is never brighter than white on an HDR display
+
+Task 9 fix round 1 (task-9-findings-r1.md; supersedes the Task 9 decisions on parked windows and the user_write path)
+Task 9 r1: Ruling: an IME commit is typed text and goes through the same path as a typed key (Find, composer, toolbelt and bars first, then to_terminal with its scroll-to-bottom, view-end and shot guards), never straight to user_write - cost if wrong: committed text bypasses Find or the composer, or skips scroll-to-bottom
+Task 9 r1: Ruling: IME state is per window (WinSlot and swap_live); the preedit is owned by (window, pane) with a generation counter that a cancel bumps; a commit is delivered only to its owner pane, only while that pane is still the focused pane of that window and the generation matches, otherwise it is dropped; a repaint of another window never touches it - cost if wrong: text lands in the wrong pane or window after Esc, a focus loss or a pane switch, or another window's repaint kills a composition
+Task 9 r1: Ruling: when the program hides the cursor or the view is scrolled back, the composition still draws at the cursor cell (the bottom-left of the visible grid if the cursor is off view) and ime_area places the candidate window there; keys are held only while a composition is visible - cost if wrong: an invisible composition that swallows keys, or a candidate window far from the text
+
+Final review fix wave (final-review.md; the whole-branch review of 2f2bcb6..2959342)
+Final 1: Ruling: cursor motion and the cursor clocks are per window: a frame forgets only the panes of its own tabs that it does not show; the slide clock walks every pane's Motion (panes are shared) and repaints only the window that holds a running or just-ended one (redraw_pane_window, moved to windows_ui.rs); the blink clocks repaint only the live window (redraw_here) - cost if wrong: a second window cancels the key window's slide or smear, or a fade repaints every window
+Final 2: Ruling: an IME commit reaches every text entry a typed key reaches, in key()'s order: a toolbelt text entry (the Notes editor, Codecierge's goal and reply, a tool's search field), the Composer dropdown or field, the inline chat input, the shortcut labels (dropped, any key puts them away), Find, Copy Mode (dropped); a tool's list has no text entry and drops it. An owner with no text entry right now (a composer that let go, Codecierge onboarding) hands the text to the terminal, as its key would - cost if wrong: committed text vanishes in a field a typed key reaches, or lands in the terminal while a field has the keyboard
+Final 2: Decision: a commit that reaches the terminal path also gives Clippings its keyboard back and runs the completion list's Other key (the list follows the typing or closes), as a typed key does; a chat picker takes only Esc, so it is not an owner - cost if wrong: a Clippings panel keeps the keyboard after typed text, or a completion list lingers
+Final 2: Decision: an infobar is not a commit owner: bar_key answers a button press or any key, so IME text typed while one is up goes to the terminal as before - cost if wrong: committed text lands in the shell while an infobar asks a question
+Final 3: Ruling: only the commit of the cancelled composition is dropped. The wait ends at the first key press reaching App::key (before ime_holds_key, so the Esc that cancels sets it again), at Ime::Enabled (Windows sends it only when a composition starts) and at a non-empty Preedit; a commit with no composition before it (a Pinyin comma, the emoji panel, voice typing) typed after an Esc is delivered. Preedit(""), Commit, Disabled with nothing between still drops the stray - cost if wrong: Esc then a Pinyin comma loses the comma, or the stray commit of a cancelled composition types
+Final 4: Decision: Preedit(text, None) keeps its caret drawn at the end of the text (winit means hide the caret) - cost if wrong: a caret shows where an IME asked for none
+Final 4: Decision: a hidden or scrolled-off cursor starts no blink clock (scene::cursor_blinks_shown), and the smooth path leaves the on/off phase visible so switching it off never starts hidden - cost if wrong: idle frames for a cursor nobody sees, or a cursor hidden for half a period after the switch
+Final 4: Decision: ime.area is reset when the IME context is reset (ime_reset_system) and when 13g recreates the window for alpha, so the new context is given the area at its next frame - cost if wrong: the candidate window sits at the corner until the caret moves
+Final 4: Decision: fill_polygon refuses non-finite points and a band taller than 16384 px (scene::polygon_band) - cost if wrong: a bad profile number stalls a frame
+Final 4: Decision: preflight S2 named preedit on Pane; the fix round removed it, so only Pane.motion joins 13j's wheel in the four Pane literals; patch entry 17's note about number 16 is dropped at the 13j merge - cost if wrong: a merge adds a dead field or leaves a stale note
+Deferred (Final 12): the composition draws at the terminal cursor and the candidate window sits there even when the commit goes to Find, the composer or a toolbelt field; iTerm2's fields show their own marked text - cost if wrong: the person sees the composition in the wrong place
+Deferred (Final 13): the composition's background is an opaque popup quad in a 13g see-through pane - cost if wrong: a solid patch behind the composition in a transparent window
+Deferred (Final 15): untested glue and edges: Blink::tick skip branch, ime_event and ime_type, smart color at a selection, edges and wide cells, the smear's diagonal frames - cost if wrong: a regression there is seen only on screen
+Deferred (Final 16): a full-height cursor with negative spacing overflows into the next row (iTerm2 geometry kept, checklist 60) - cost if wrong: a visible overlap in a rare setup
+Deferred (Final 18/19): smart colors are not dimmed under Dim Only Text (13i P14); OSC 12/112 drawn colors (13m); the HDR cursor - cost if wrong: see the entries above
+Deferred (Final): a commit into Copy Mode is dropped (its keys are command names, not text), and the commit into a tool reaches only the search fields, Notes and Codecierge - cost if wrong: an IME user cannot type a Copy Mode command

@@ -79,4 +79,9 @@ test data) is left out. Changes:
     profile's Allow Alternate Mouse Scroll). `Term::clear_alternate_scroll` turns it off for an
     initial OSC 133 prompt mark.
 
+17. `term/mod.rs`: `Term::set_cursor_blink_change(bool)` (default true). When it is off, programs
+    change the cursor's shape but not its blink: DECSCUSR keeps the current blink and
+    DECSET/DECRST 12 are ignored; DECSCUSR 0 and RIS still restore the configured style (iTerm2's
+    Allow Change Cursor Blink).
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

@@ -1,0 +1,364 @@
+//! The cursor's look and geometry, as iTerm2 draws it (`iTermCursorRenderer.m`). Pure: the
+//! scene reads a `CursorLook` per pane and draws what it says.
+
+use alacritty_terminal::vte::ansi::CursorShape;
+
+use crate::globals::Globals;
+use crate::layout::Rect;
+use crate::palette::Rgb;
+
+/// The measures iTerm2 reads for the cursor's box, bar and underline. Lengths in points are
+/// multiplied by `scale` where they are used.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Geometry {
+    /// The window's scale factor: one point is `scale` pixels.
+    pub scale: f32,
+    /// The font's own cell, without the spacings. (0, 0) means "the same as the cell".
+    pub base_cell: (f32, f32),
+    /// Advanced "FullHeightCursor".
+    pub full_height: bool,
+    /// Advanced "VerticalBarCursorWidth", points.
+    pub bar_width: f32,
+    /// Advanced "UnderlineCursorHeight", points.
+    pub underline_height: f32,
+    /// Advanced "UnderlineCursorOffset", points.
+    pub underline_offset: f32,
+}
+
+impl Default for Geometry {
+    fn default() -> Self {
+        Geometry { scale: 1.0, base_cell: (0.0, 0.0), full_height: false, bar_width: 1.0, underline_height: 2.0, underline_offset: 0.0 }
+    }
+}
+
+impl Geometry {
+    pub fn from_globals(g: &Globals, scale: f32, base_cell: (f32, f32)) -> Geometry {
+        Geometry {
+            scale,
+            base_cell,
+            full_height: g.bool("FullHeightCursor"),
+            bar_width: g.number("VerticalBarCursorWidth").unwrap_or(1.0) as f32,
+            underline_height: g.number("UnderlineCursorHeight").unwrap_or(2.0) as f32,
+            underline_offset: g.number("UnderlineCursorOffset").unwrap_or(0.0) as f32,
+        }
+    }
+}
+
+/// The box a block cursor fills at `row`, `col` (`origin` is the pane's text origin).
+/// iTerm2 centers a spacing-free cursor in the line (`iTermCursorRenderer.m:332-339`,
+/// rounded to whole points in Metal); with Full Height Cursor it is as tall as the taller of
+/// the line and the font's cell and starts on the line's top (`:337`).
+pub fn box_rect(geo: &Geometry, origin: (f32, f32), cell: (f32, f32), row: usize, col: usize, wide: bool) -> Rect {
+    let (cw, ch) = cell;
+    let base_w = if geo.base_cell.0 > 0.0 { geo.base_cell.0 } else { cw };
+    let base_h = if geo.base_cell.1 > 0.0 { geo.base_cell.1 } else { ch };
+    let scale = geo.scale.max(f32::MIN_POSITIVE);
+    let line = row as f32 * ch;
+    let (top, h) = if geo.full_height {
+        (line, ch.max(base_h))
+    } else {
+        (line + (((ch - base_h) / 2.0 / scale).round() * scale).max(0.0), ch.min(base_h))
+    };
+    let w = cw.min(base_w) * if wide { 2.0 } else { 1.0 };
+    Rect { x: origin.0 + col as f32 * cw, y: origin.1 + top, w, h }
+}
+
+/// The solid part of the cursor: the box, the bar (`bar_width` points wide, the box's height),
+/// or the underline (`underline_height` points high on the box's bottom, raised by
+/// `underline_offset` points).
+pub fn cursor_rect(geo: &Geometry, shape: CursorShape, origin: (f32, f32), cell: (f32, f32), row: usize, col: usize, wide: bool) -> Rect {
+    let b = box_rect(geo, origin, cell, row, col, wide);
+    match shape {
+        CursorShape::Beam => Rect { w: geo.bar_width * geo.scale, ..b },
+        CursorShape::Underline => {
+            let h = geo.underline_height * geo.scale;
+            Rect { y: b.y + b.h - h - geo.underline_offset * geo.scale, h, ..b }
+        }
+        _ => b,
+    }
+}
+
+/// iTerm2's perceived brightness, 0 to 1 (`NSColor+iTerm.m` `perceivedBrightness`).
+pub fn brightness(c: Rgb) -> f64 {
+    (0.30 * c.r as f64 + 0.59 * c.g as f64 + 0.11 * c.b as f64) / 255.0
+}
+
+/// The value between 0 and 1 farthest from every value in `constraints`
+/// (`iTermSmartCursorColor.m` `farthestValueFromAnyValueIn:`): 0 with none, else the midpoint
+/// of the widest gap, beaten by 0 when the smallest value is farther, then by 1 likewise.
+pub fn farthest_value(constraints: &[f64]) -> f64 {
+    if constraints.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = constraints.to_vec();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let (min, max) = (sorted[0], sorted[sorted.len() - 1]);
+    let mut best_distance = 0.0;
+    let mut best_value = -1.0;
+    let mut prev = sorted[0];
+    for &n in &sorted {
+        let dist = (n - prev).abs() / 2.0;
+        if dist > best_distance {
+            best_distance = dist;
+            best_value = (n + prev) / 2.0;
+        }
+        prev = n;
+    }
+    if min > best_distance {
+        best_value = 0.0;
+        best_distance = min;
+    }
+    if 1.0 - max > best_distance {
+        best_value = 1.0;
+    }
+    best_value
+}
+
+/// Smart Cursor Color (`iTermSmartCursorColor.m`): the box color and the text color for a
+/// block cursor over a cell with `cell_fg` and `cell_bg`. The box is the text color unless it
+/// is within `bg_threshold` of a neighbor's background brightness, then the gray farthest
+/// from all of them. The text is the cell's background unless it is within `fg_threshold` of
+/// the box, then white on a dark box and black on a light one.
+pub fn smart_colors(cell_fg: Rgb, cell_bg: Rgb, neighbor_bgs: &[Rgb], bg_threshold: f64, fg_threshold: f64) -> (Rgb, Rgb) {
+    let constraints: Vec<f64> = neighbor_bgs.iter().map(|c| brightness(*c)).collect();
+    let mut boxc = cell_fg;
+    let mut min_distance: f64 = 1.0;
+    for c in &constraints {
+        min_distance = min_distance.min((brightness(cell_fg) - c).abs());
+    }
+    if min_distance < bg_threshold {
+        let b = (farthest_value(&constraints) * 255.0).round() as u8;
+        boxc = Rgb { r: b, g: b, b };
+    }
+    let box_brightness = brightness(boxc);
+    let text = if (brightness(cell_bg) - box_brightness).abs() < fg_threshold {
+        if box_brightness < 0.5 { Rgb { r: 255, g: 255, b: 255 } } else { Rgb { r: 0, g: 0, b: 0 } }
+    } else {
+        cell_bg
+    };
+    (boxc, text)
+}
+
+/// Cursor Boost (`iTermColorMap.m:299-306`): `c` averaged toward the default background by
+/// `amount`, rounded. Text and cell backgrounds go through it, the cursor does not.
+pub fn mute(c: Rgb, default_bg: Rgb, amount: f32) -> Rgb {
+    if amount <= 0.0 {
+        return c;
+    }
+    let m = |a: u8, b: u8| (a as f32 * (1.0 - amount) + b as f32 * amount).round().clamp(0.0, 255.0) as u8;
+    Rgb { r: m(c.r, default_bg.r), g: m(c.g, default_bg.g), b: m(c.b, default_bg.b) }
+}
+
+/// The cursor shadow (`iTermCursorRenderer.m:445-465`, `:498-520`): an underline's is a line one
+/// point high directly above it, a bar's one point wide directly right of it; white at half
+/// when the cursor color is dark (brightness below 0.5), else black at half. A box has none.
+pub fn shadow(shape: CursorShape, solid: Rect, cursor_color: Rgb, scale: f32) -> Option<(Rect, [f32; 4])> {
+    let rect = match shape {
+        CursorShape::Underline => Rect { x: solid.x, y: solid.y - scale, w: solid.w, h: scale },
+        CursorShape::Beam => Rect { x: solid.x + solid.w, y: solid.y, w: scale, h: solid.h },
+        _ => return None,
+    };
+    let v = if brightness(cursor_color) < 0.5 { 1.0 } else { 0.0 };
+    Some((rect, [v, v, v, 0.5]))
+}
+
+/// The outline of an underline or bar cursor (`iTermCursorRenderer.m:118-127`): the rect grown
+/// by half a point on each side, framed half a point wide in the default background at alpha
+/// 0.75, as four edges that do not overlap. A block has none.
+pub fn outline(shape: CursorShape, solid: Rect, default_bg: Rgb, scale: f32) -> Vec<(Rect, [f32; 4])> {
+    if !matches!(shape, CursorShape::Underline | CursorShape::Beam) {
+        return Vec::new();
+    }
+    let t = 0.5 * scale;
+    let color = crate::scene::rgba(default_bg, 0.75);
+    let (x, y, w, h) = (solid.x - t, solid.y - t, solid.w + 2.0 * t, solid.h + 2.0 * t);
+    vec![
+        (Rect { x, y, w, h: t }, color),
+        (Rect { x, y: y + h - t, w, h: t }, color),
+        (Rect { x, y: solid.y, w: t, h: solid.h }, color),
+        (Rect { x: solid.x + solid.w, y: solid.y, w: t, h: solid.h }, color),
+    ]
+}
+
+/// Everything the scene draws for one pane's cursor. Later tasks fill the later fields.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CursorLook {
+    /// The cursor is shown (not hidden by blink or an Auto Composer).
+    pub visible: bool,
+    pub geometry: Geometry,
+    pub hide_unfocused: bool,
+    pub alpha: f32,
+    pub offset: (f32, f32),
+    pub smart: Option<(f32, f32)>,
+    pub boost: f32,
+    pub shadow: bool,
+    pub outline: bool,
+    pub smear: Option<[(f32, f32); 6]>,
+    pub ime: Option<crate::ime::Drawn>,
+}
+
+impl CursorLook {
+    /// iTerm2's defaults: opaque, in place, no smart color, no boost, no shadow, no outline,
+    /// no smear, no IME.
+    pub fn shown(visible: bool) -> CursorLook {
+        CursorLook {
+            visible,
+            geometry: Geometry::default(),
+            hide_unfocused: false,
+            alpha: 1.0,
+            offset: (0.0, 0.0),
+            smart: None,
+            boost: 0.0,
+            shadow: false,
+            outline: false,
+            smear: None,
+            ime: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ORIGIN: (f32, f32) = (0.0, 0.0);
+
+    fn geo(scale: f32, base: (f32, f32)) -> Geometry {
+        Geometry { scale, base_cell: base, ..Geometry::default() }
+    }
+
+    fn r(x: f32, y: f32, w: f32, h: f32) -> Rect {
+        Rect { x, y, w, h }
+    }
+
+    #[test]
+    fn farthest_value_follows_iterm2() {
+        assert_eq!(farthest_value(&[]), 0.0);
+        assert_eq!(farthest_value(&[0.2, 0.8]), 0.5);
+        assert_eq!(farthest_value(&[0.9]), 0.0);
+        assert_eq!(farthest_value(&[0.1]), 1.0);
+        // The smallest constraint (0.2) beats the widest gap (0.15).
+        assert_eq!(farthest_value(&[0.8, 0.2, 0.5]), 0.0);
+    }
+
+    #[test]
+    fn smart_colors_follow_iterm2() {
+        let (w, k) = (Rgb { r: 255, g: 255, b: 255 }, Rgb { r: 0, g: 0, b: 0 });
+        let gray = |v: u8| Rgb { r: v, g: v, b: v };
+        assert_eq!(smart_colors(w, k, &[k, k, k, k], 0.5, 0.75), (w, k));
+        // A neighbor near the text color: the box is the farthest gray, black here.
+        let (boxc, text) = smart_colors(w, k, &[gray(230); 4], 0.5, 0.75);
+        assert_eq!(boxc, k);
+        assert_eq!(text, w);
+        // Similar text and background: black text on the bright box.
+        assert_eq!(smart_colors(gray(179), gray(153), &[k; 4], 0.5, 0.75), (gray(179), k));
+        // Thresholds of 0 never replace the box and always use the cell background as text.
+        assert_eq!(smart_colors(w, k, &[gray(230); 4], 0.0, 0.0), (w, k));
+        assert_eq!(smart_colors(gray(179), gray(153), &[k; 4], 0.0, 0.0), (gray(179), gray(153)));
+    }
+
+    #[test]
+    fn mute_averages_toward_the_background() {
+        let (w, k) = (Rgb { r: 255, g: 255, b: 255 }, Rgb { r: 0, g: 0, b: 0 });
+        assert_eq!(mute(w, k, 0.5), Rgb { r: 128, g: 128, b: 128 });
+        assert_eq!(mute(Rgb { r: 200, g: 0, b: 0 }, k, 0.5), Rgb { r: 100, g: 0, b: 0 });
+        assert_eq!(mute(w, k, 0.0), w);
+        assert_eq!(mute(k, w, 0.8), Rgb { r: 204, g: 204, b: 204 });
+    }
+
+    #[test]
+    fn shadow_follows_iterm2() {
+        let (k, w) = (Rgb { r: 0, g: 0, b: 0 }, Rgb { r: 255, g: 255, b: 255 });
+        let underline = r(20.0, 44.0, 10.0, 2.0);
+        assert_eq!(shadow(CursorShape::Underline, underline, k, 1.0), Some((r(20.0, 43.0, 10.0, 1.0), [1.0, 1.0, 1.0, 0.5])));
+        assert_eq!(shadow(CursorShape::Underline, underline, w, 1.0).unwrap().1, [0.0, 0.0, 0.0, 0.5]);
+        assert_eq!(shadow(CursorShape::Underline, r(20.0, 44.0, 10.0, 4.0), k, 2.0).unwrap().0, r(20.0, 42.0, 10.0, 2.0));
+        let beam = r(20.0, 26.0, 1.0, 20.0);
+        assert_eq!(shadow(CursorShape::Beam, beam, k, 1.5).unwrap().0, r(21.0, 26.0, 1.5, 20.0));
+        assert_eq!(shadow(CursorShape::Block, r(20.0, 26.0, 10.0, 20.0), k, 1.0), None);
+    }
+
+    #[test]
+    fn outline_follows_iterm2() {
+        let k = Rgb { r: 0, g: 0, b: 0 };
+        let underline = r(20.0, 44.0, 10.0, 2.0);
+        let area = |edges: &[(Rect, [f32; 4])]| edges.iter().map(|(e, _)| e.w * e.h).sum::<f32>();
+        let e = outline(CursorShape::Underline, underline, k, 1.0);
+        assert_eq!(e.len(), 4);
+        assert!(e.iter().all(|(_, c)| *c == [0.0, 0.0, 0.0, 0.75]));
+        // The edges frame {19.5, 43.5, 11, 3}, each 0.5 thick, without overlapping.
+        assert_eq!(area(&e), 11.0 * 3.0 - 10.0 * 2.0);
+        assert!(e.iter().any(|(q, _)| *q == r(19.5, 43.5, 11.0, 0.5)));
+        assert!(e.iter().any(|(q, _)| *q == r(19.5, 46.0, 11.0, 0.5)));
+        let e2 = outline(CursorShape::Underline, underline, k, 2.0);
+        assert!(e2.iter().any(|(q, _)| *q == r(19.0, 43.0, 12.0, 1.0)));
+        assert_eq!(area(&e2), 12.0 * 4.0 - 10.0 * 2.0);
+        assert_eq!(outline(CursorShape::Beam, r(20.0, 26.0, 1.0, 20.0), k, 1.0).len(), 4);
+        assert!(outline(CursorShape::Block, underline, k, 1.0).is_empty());
+        // The color is the default background in linear light (white stays 1).
+        let w = Rgb { r: 255, g: 255, b: 255 };
+        assert_eq!(outline(CursorShape::Underline, underline, w, 1.0)[0].1, [1.0, 1.0, 1.0, 0.75]);
+    }
+
+    #[test]
+    fn cursor_rect_follows_iterm2() {
+        // The line is 4 taller than the font's cell: the box is centered.
+        let g = geo(1.0, (10.0, 20.0));
+        assert_eq!(box_rect(&g, ORIGIN, (10.0, 24.0), 1, 2, false), r(20.0, 26.0, 10.0, 20.0));
+        // Negative spacing: no offset, the cell's height.
+        assert_eq!(box_rect(&g, ORIGIN, (10.0, 16.0), 1, 2, false), r(20.0, 16.0, 10.0, 16.0));
+        // The spacing-free width caps the width.
+        assert_eq!(box_rect(&g, ORIGIN, (12.0, 24.0), 1, 2, false).w, 10.0);
+        assert_eq!(box_rect(&g, ORIGIN, (10.0, 24.0), 1, 2, true).w, 20.0);
+        // Metal rounds the offset to whole points at a doubled scale.
+        let g2 = geo(2.0, (20.0, 41.0));
+        assert_eq!(box_rect(&g2, ORIGIN, (20.0, 48.0), 0, 0, false).y, 4.0);
+        // The origin moves every rect.
+        assert_eq!(box_rect(&g, (5.0, 7.0), (10.0, 24.0), 1, 2, false), r(25.0, 33.0, 10.0, 20.0));
+        // No base cell: the cell itself.
+        assert_eq!(box_rect(&Geometry::default(), ORIGIN, (10.0, 24.0), 1, 2, false), r(20.0, 24.0, 10.0, 24.0));
+    }
+
+    #[test]
+    fn full_height_cursor_follows_iterm2() {
+        let g = Geometry { full_height: true, ..geo(1.0, (10.0, 20.0)) };
+        assert_eq!(box_rect(&g, ORIGIN, (10.0, 24.0), 1, 0, false), r(0.0, 24.0, 10.0, 24.0));
+        // The line is shorter than the font's cell: the top stays on the line's top
+        // (`iTermCursorRenderer.m:337`), so it overflows below.
+        assert_eq!(box_rect(&g, ORIGIN, (10.0, 16.0), 1, 0, false), r(0.0, 16.0, 10.0, 20.0));
+    }
+
+    #[test]
+    fn bar_and_underline_follow_points() {
+        let cell = (10.0, 24.0);
+        let g = geo(1.0, (10.0, 20.0));
+        assert_eq!(cursor_rect(&g, CursorShape::Beam, ORIGIN, cell, 1, 2, false), r(20.0, 26.0, 1.0, 20.0));
+        assert_eq!(cursor_rect(&g, CursorShape::Underline, ORIGIN, cell, 1, 2, false), r(20.0, 44.0, 10.0, 2.0));
+        assert_eq!(cursor_rect(&g, CursorShape::Block, ORIGIN, cell, 1, 2, false), box_rect(&g, ORIGIN, cell, 1, 2, false));
+        let g15 = geo(1.5, (10.0, 20.0));
+        assert_eq!(cursor_rect(&g15, CursorShape::Beam, ORIGIN, cell, 1, 2, false).w, 1.5);
+        let u = cursor_rect(&g15, CursorShape::Underline, ORIGIN, cell, 1, 2, false);
+        assert_eq!(u.h, 3.0);
+        let raised = Geometry { underline_offset: 2.0, ..g15 };
+        let ur = cursor_rect(&raised, CursorShape::Underline, ORIGIN, cell, 1, 2, false);
+        assert_eq!(ur.y, u.y - 3.0);
+        let fat = Geometry { bar_width: 3.0, underline_height: 1.0, ..geo(2.0, (10.0, 20.0)) };
+        assert_eq!(cursor_rect(&fat, CursorShape::Beam, ORIGIN, cell, 1, 2, false).w, 6.0);
+        assert_eq!(cursor_rect(&fat, CursorShape::Underline, ORIGIN, cell, 1, 2, false).h, 2.0);
+        // A wide cell doubles the underline's width, not the bar's.
+        assert_eq!(cursor_rect(&g, CursorShape::Underline, ORIGIN, cell, 1, 2, true).w, 20.0);
+        assert_eq!(cursor_rect(&g, CursorShape::Beam, ORIGIN, cell, 1, 2, true).w, 1.0);
+    }
+
+    #[test]
+    fn geometry_reads_the_advanced_keys() {
+        let mut g = Globals::empty(std::path::Path::new("none"));
+        let d = Geometry::from_globals(&g, 2.0, (9.0, 18.0));
+        assert_eq!((d.scale, d.base_cell, d.full_height, d.bar_width, d.underline_height, d.underline_offset), (2.0, (9.0, 18.0), false, 1.0, 2.0, 0.0));
+        g.set("FullHeightCursor", toml::Value::Boolean(true));
+        g.set("VerticalBarCursorWidth", toml::Value::Float(3.0));
+        let d = Geometry::from_globals(&g, 1.0, (0.0, 0.0));
+        assert!(d.full_height);
+        assert_eq!(d.bar_width, 3.0);
+    }
+}

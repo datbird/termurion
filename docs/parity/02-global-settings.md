@@ -632,11 +632,11 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | bounceOnInactiveBell | bounceOnInactiveBell (bool, default NO) | Bounce dock icon when the bell rings while another app is active? | missing |  |
 | traditionalVisualBell | traditionalVisualBell (bool, default NO) | Visual bell flashes the whole screen, not just a bell icon. | missing |  |
 | indicatorFlashInitialAlpha | indicatorFlashInitialAlpha (float, default 0.5) | Initial alpha value when flashing the visual bell or search wraparound indicator. | missing |  |
-| timeBetweenBlinks | timeBetweenBlinks (float, default 0.5) | Cursor blink speed (seconds). | missing |  |
+| timeBetweenBlinks | timeBetweenBlinks (float, default 0.5) | Cursor blink speed (seconds). | have | Milestone 13k: Settings > Advanced > Terminal; read by the cursor. |
 | doNotSetCtype | doNotSetCtype (bool, default NO) | Never set the CTYPE environment variable. | missing |  |
 | debugShowPromptMarkRangesInLegacyRenderer | debugShowPromptMarkRangesInLegacyRenderer (bool, default NO) | Debug: highlight prompt mark prompt/command/excluded ranges in the legacy (non-GPU) renderer. | missing |  |
-| smartCursorColorBgThreshold | smartCursorColorBgThreshold (float, default 0.5) | Threshold for Smart Cursor Color for background color (0 to 1). | missing |  |
-| smartCursorColorFgThreshold | smartCursorColorFgThreshold (float, default 0.75) | Threshold for Smart Cursor Color for text color (0 to 1). | missing |  |
+| smartCursorColorBgThreshold | smartCursorColorBgThreshold (float, default 0.5) | Threshold for Smart Cursor Color for background color (0 to 1). | have | Milestone 13k: Settings > Advanced > Terminal; read by the cursor. |
+| smartCursorColorFgThreshold | smartCursorColorFgThreshold (float, default 0.75) | Threshold for Smart Cursor Color for text color (0 to 1). | have | Milestone 13k: Settings > Advanced > Terminal; read by the cursor. |
 | findUrlsRegex | findUrlsRegex (string, default @"https?://([a-z0-9A-Z]+(:[a-zA-Z0-9]+)?@)?[a-z0-9A-Z\\-]+(\\.[a-z0-9A-Z\\-]+)*"               @"((:[0-9]+)?)(/[a-zA-Z0-9;:/\\.\\-_+%~?&amp;@=#\\(\\)]*)?") | Regular expression for “Find URLs” command. | partial | Tandem uses its own URL pattern for Find URLs; the Advanced pane comes in milestone 13. |
 | findURLsRespectsSoftBoundaries | findURLsRespectsSoftBoundaries (bool, default YES) | When using “Find URLs”, extend results across soft boundaries like tmux pane dividers. | missing |  |
 | echoProbeDuration | echoProbeDuration (float, default 0.5) | Amount of time to wait while testing if echo is on (seconds). | have | Milestone 10b: the echo probe's duration; the probe off, 0 s, or no backspace bytes to type over sends the password at once, with no wait. |
@@ -653,13 +653,13 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | useColorfgbgFallback | useColorfgbgFallback (bool, default YES) | Use fallback for COLORFGBG if no exact match found? The COLORFGBG variable indicates the ANSI colors that match the foreground and background colors. | missing |  |
 | zeroWidthSpaceAdvancesCursor | zeroWidthSpaceAdvancesCursor (bool, default YES) | Zero-Width Space (U+200B) advances cursor? While a zero-width space should not advance the cursor per the Unicode spec, both Terminal.app and Konsole do this, and Weechat depends on it. | missing |  |
 | stripZeroWidthFormatCharactersOnPaste | stripZeroWidthFormatCharactersOnPaste (bool, default NO) | Strip zero-width bidi/format characters when pasting? Characters like the Zero-Width Non-Joiner (U+200C, the Persian half-space), ZWJ, LRM, and RLM are invisible but macOS classifies them as control characters, so line editors like zsh render them as a visible <200c> at the prompt. | have | Milestone 9a. |
-| fullHeightCursor | fullHeightCursor (bool, default NO) | Cursor occupies line spacing area. | missing |  |
-| underlineCursorOffset | underlineCursorOffset (float, default 0) | Vertical offset for underline cursor. | missing |  |
+| fullHeightCursor | fullHeightCursor (bool, default NO) | Cursor occupies line spacing area. | have | Milestone 13k: Settings > Advanced > Terminal; read by the cursor. |
+| underlineCursorOffset | underlineCursorOffset (float, default 0) | Vertical offset for underline cursor. | have | Milestone 13k: Settings > Advanced > Terminal; read by the cursor. |
 | preventEscapeSequenceFromClearingHistory | preventEscapeSequenceFromClearingHistory (bool?, default nil) | Prevent CSI 3 J from clearing scrollback history? This is also known as the terminfo E3 capability. | partial |  |
 | preventEscapeSequenceFromChangingProfile | preventEscapeSequenceFromChangingProfile (bool?, default nil) | Prevent control sequences from changing the current profile? | have | Milestone 13a: in the Advanced pane (Terminal) as Unspecified/No/Yes; Unspecified removes the key, so the next SetProfile asks again, and the question's remembered answer shows as No or Yes. |
 | warnAboutSecureKeyboardInputWithOpenCommand | warnAboutSecureKeyboardInputWithOpenCommand (bool, default YES) | Warn if the `open` command appears to fail when secure keyboard input is enabled? | missing |  |
 | maxHistoryLinesToRestore | maxHistoryLinesToRestore (int, default 20000) | Maximum number of lines of history to restore. | have | Milestone 7d. |
-| verticalBarCursorWidth | verticalBarCursorWidth (float, default 1) | Width of vertical bar cursor. | missing |  |
+| verticalBarCursorWidth | verticalBarCursorWidth (float, default 1) | Width of vertical bar cursor. | have | Milestone 13k: Settings > Advanced > Terminal; read by the cursor. |
 | acceptOSC7 | acceptOSC7 (bool, default YES) | Accept OSC 7 to set username, hostname, and path. | missing |  |
 | detectPasswordInput | detectPasswordInput (bool, default YES) | Show key at cursor at password prompt? | have | Milestone 10b: off turns off the console-mode watch entirely, so the key cursor never shows and nothing opens automatically. |
 | detectPasswordInputDebounce | detectPasswordInputDebounce (float, default 0.2) | How long (seconds) terminal echo must remain disabled before iTerm2 treats it as a password prompt. | have | Milestone 10b: a port of `iTermPasswordInputDebouncer`; 0 or negative turns on at once, and a reading that stops echoing off resets at once. |
@@ -797,10 +797,10 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | lowPowerModeFrameRate | lowPowerModeFrameRate (float, default 30.0) | Maximum frame rate (FPS) when low power mode is enabled. | missing |  |
 | dwcLineCache | dwcLineCache (bool, default YES) | Enable cache of double-width character locations? This should improve performance. | missing |  |
 | useGCDUpdateTimer | useGCDUpdateTimer (bool, default YES) | Use GCD-based update timer instead of NSTimer. | missing |  |
-| drawOutlineAroundCursor | drawOutlineAroundCursor (bool, default NO) | Draw outline around underline and vertical bar cursors using background color. | missing |  |
+| drawOutlineAroundCursor | drawOutlineAroundCursor (bool, default NO) | Draw outline around underline and vertical bar cursors using background color. | have | Milestone 13k: Settings > Advanced > Drawing; read by the cursor. |
 | disableCustomBoxDrawing | disableCustomBoxDrawing (bool, default NO) | Use your typeface’s box-drawing characters instead of iTerm2’s custom drawing code. | missing |  |
 | minimumWeightDifferenceForBoldFont | minimumWeightDifferenceForBoldFont (int, default 4) | Minimum weight difference between regular and bold font. | missing |  |
-| underlineCursorHeight | underlineCursorHeight (float, default 2) | Thickness of underline cursor. | missing |  |
+| underlineCursorHeight | underlineCursorHeight (float, default 2) | Thickness of underline cursor. | have | Milestone 13k: Settings > Advanced > Drawing; read by the cursor. |
 | preferSpeedToFullLigatureSupport | preferSpeedToFullLigatureSupport (bool, default YES) | Improves drawing performance at the expense of disallowing alphanumeric characters to belong to ligatures. | missing |  |
 | enableContextualAlternates | enableContextualAlternates (bool, default YES) | Enable contextual alternates (calt) for ligature-capable fonts. | missing |  |
 | forceAntialiasingOnRetina | forceAntialiasingOnRetina (bool, default NO) | Force text to be anti-aliased on Retina displays. | missing |  |
@@ -820,10 +820,10 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | alwaysUseLineStyleMarks | alwaysUseLineStyleMarks (bool, default NO) | Always use line-style marks? | missing |  |
 | alphaForDeselectedCommandShade | alphaForDeselectedCommandShade (float, default 0.25) | Alpha value for shade that covers areas outside the currently selected command. | missing |  |
 | showURLPreviewForSemanticHistory | showURLPreviewForSemanticHistory (bool, default YES) | Show URL preview on cmd-hover for semantic history matches. | missing |  |
-| cursorAnimationMinDistance | cursorAnimationMinDistance (float, default 150.0) | When animated cursor movement is enabled, only perform animation if the cursor moves at least this distance in points. | missing |  |
-| cursorSmearAnimationDuration | cursorSmearAnimationDuration (float, default 0.1) | Duration in seconds for the “Animate large movements” cursor animation. | missing |  |
-| cursorSlideAnimationDuration | cursorSlideAnimationDuration (float, default 0.05) | Duration in seconds for smooth cursor slide animation. | missing |  |
-| cursorSlideAnimationMaxCells | cursorSlideAnimationMaxCells (int, default 1) | Maximum horizontal distance in cells for smooth cursor slide animation. | missing |  |
+| cursorAnimationMinDistance | cursorAnimationMinDistance (float, default 150.0) | When animated cursor movement is enabled, only perform animation if the cursor moves at least this distance in points. | have | Milestone 13k: Settings > Advanced > Drawing; read by the cursor. |
+| cursorSmearAnimationDuration | cursorSmearAnimationDuration (float, default 0.1) | Duration in seconds for the “Animate large movements” cursor animation. | have | Milestone 13k: Settings > Advanced > Drawing; read by the cursor. |
+| cursorSlideAnimationDuration | cursorSlideAnimationDuration (float, default 0.05) | Duration in seconds for smooth cursor slide animation. | have | Milestone 13k: Settings > Advanced > Drawing; read by the cursor. |
+| cursorSlideAnimationMaxCells | cursorSlideAnimationMaxCells (int, default 1) | Maximum horizontal distance in cells for smooth cursor slide animation. | have | Milestone 13k: Settings > Advanced > Drawing; read by the cursor. |
 
 ### Semantic History
 

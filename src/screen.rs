@@ -46,6 +46,8 @@ impl Dimensions for GridSize {
 pub struct Look {
     pub cursor_shape: CursorShape,
     pub cursor_blink: bool,
+    /// The profile's Allow Change Cursor Blink: programs may change the blink.
+    pub blink_change: bool,
     pub scrollback: usize,
     /// The profile's Allow modifyOtherKeys: programs may change how keys are reported.
     pub app_key_modes: bool,
@@ -65,6 +67,7 @@ impl Look {
         Look {
             cursor_shape,
             cursor_blink: p.bool("Blinking Cursor"),
+            blink_change: p.bool("Allow Change Cursor Blink"),
             scrollback,
             app_key_modes: p.bool("Allow modifyOtherKeys"),
             csi_u: p.bool("Use libtickit protocol"),
@@ -404,7 +407,8 @@ impl Screen {
 
     pub fn with_look(cols: usize, rows: usize, palette: Palette, look: Look) -> Self {
         let (tx, events) = mpsc::channel();
-        let term = Term::new(config(look), &GridSize { cols, rows }, Listener(tx));
+        let mut term = Term::new(config(look), &GridSize { cols, rows }, Listener(tx));
+        term.set_cursor_blink_change(look.blink_change);
         Self {
             term,
             parser: Processor::new(),
@@ -498,6 +502,7 @@ impl Screen {
         }
         self.keys.profile_csi_u = look.csi_u;
         self.term.set_options(config(look));
+        self.term.set_cursor_blink_change(look.blink_change);
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
@@ -1210,6 +1215,11 @@ impl Screen {
         self.prune_images();
     }
 
+    /// Whether the cursor blinks now: the profile's blink, or a program's where it may change it.
+    pub fn cursor_blinks(&self) -> bool {
+        self.term.cursor_style().blinking
+    }
+
     pub(crate) fn alt_screen(&self) -> bool {
         self.term.mode().contains(TermMode::ALT_SCREEN)
     }
@@ -1440,6 +1450,42 @@ impl Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn program_blink_needs_permission() {
+        let look = |allow| Look { cursor_blink: false, blink_change: allow, ..Look::default() };
+        let mut s = Screen::with_look(80, 24, Palette::default(), look(false));
+        s.feed(b"\x1b[1 q");
+        assert_eq!(s.term().cursor_style().shape, CursorShape::Block);
+        assert!(!s.cursor_blinks());
+        s.feed(b"\x1b[?12h");
+        assert!(!s.cursor_blinks());
+        s.feed(b"\x1b[5 q");
+        assert_eq!(s.term().cursor_style().shape, CursorShape::Beam);
+        assert!(!s.cursor_blinks());
+        let mut s = Screen::with_look(80, 24, Palette::default(), look(true));
+        s.feed(b"\x1b[1 q");
+        assert!(s.cursor_blinks());
+        s.feed(b"\x1b[2 q");
+        assert!(!s.cursor_blinks());
+        s.feed(b"\x1b[?12h");
+        assert!(s.cursor_blinks());
+        s.feed(b"\x1b[?12l");
+        assert!(!s.cursor_blinks());
+        s.feed(b"\x1b[?12h\x1b[0 q");
+        assert!(!s.cursor_blinks(), "DECSCUSR 0 is the profile's blink");
+        // Turning the permission off keeps the program's shape.
+        s.feed(b"\x1b[6 q");
+        s.set_look(look(false));
+        assert_eq!(s.term().cursor_style().shape, CursorShape::Beam);
+        s.feed(b"\x1b[?12h");
+        assert!(!s.cursor_blinks());
+        // RIS restores the profile in every case.
+        s.set_look(look(true));
+        s.feed(b"\x1b[1 q\x1bc");
+        assert!(!s.cursor_blinks());
+        assert_eq!(s.term().cursor_style().shape, Look::default().cursor_shape);
+    }
 
     #[test]
     fn exfiltrated_follows_iterm2() {
@@ -1891,7 +1937,7 @@ mod tests {
         let text = lines_text(&s);
         assert!(text.starts_with("l0\nl1\nl2\n$"), "{text}");
         let mut f = crate::scene::Frame::default();
-        crate::scene::pane(&mut f, &s, crate::layout::Rect { x: 0.0, y: 0.0, w: 300.0, h: 100.0 }, (10.0, 20.0), true, true);
+        crate::scene::pane(&mut f, &s, crate::layout::Rect { x: 0.0, y: 0.0, w: 300.0, h: 100.0 }, (10.0, 20.0), true, &crate::cursor_look::CursorLook::shown(true));
     }
 
     #[test]

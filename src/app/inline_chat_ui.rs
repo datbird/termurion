@@ -589,6 +589,11 @@ impl App {
         true
     }
 
+    /// The panel of `pane` has the keyboard for its input (`inline_key` takes the keys).
+    pub(super) fn inline_has_keys(&self, pane: PaneId) -> bool {
+        self.inline.get(&pane).is_some_and(|s| s.keys && s.binding.visible && s.view.is_some())
+    }
+
     /// Keys while a panel has the keyboard: Enter by Task 7's rules, the rest through the editor as
     /// the Notes tool routes them (Ctrl chords, Paste from the clipboard); Escape gives the keyboard
     /// back to the terminal; Win chords are not taken (they stay Tandem's).
@@ -635,7 +640,7 @@ impl App {
     }
 
     /// One editing key for a panel's input.
-    fn inline_edit_key(&mut self, pane: PaneId, key: EditKey) -> bool {
+    pub(super) fn inline_edit_key(&mut self, pane: PaneId, key: EditKey) -> bool {
         let scale = self.scale();
         let shift = self.mods.shift;
         let Some(parts) = self.inline.get(&pane).and_then(|s| s.view.as_ref()).map(|v| v.parts) else { return false };
@@ -885,20 +890,6 @@ impl App {
         }
         let now = Instant::now();
         self.inline.values().filter_map(|s| s.copied.as_ref().map(|(_, _, at)| *at + chat_view::COPIED_FOR)).filter(|t| *t > now).min()
-    }
-
-    /// Asks the window that holds `pane` to draw again.
-    fn redraw_pane_window(&self, pane: PaneId) {
-        if self.tabs.iter().any(|t| t.layout.panes().contains(&pane)) {
-            return self.redraw();
-        }
-        for (_, slot) in self.windows.parked() {
-            if slot.tabs.iter().any(|t| t.layout.panes().contains(&pane)) {
-                if let Some(g) = &slot.gpu {
-                    g.window.request_redraw();
-                }
-            }
-        }
     }
 
     /// Edit puts the person's text back in this panel's input and gives it the keyboard.

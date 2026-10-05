@@ -290,8 +290,17 @@ pub struct Renderer {
     v_spacing: f32,
     font_px: f32,
     pub cell: (f32, f32),
+    /// The font's own cell, without the spacings (`cell_metrics`).
+    base_cell: (f32, f32),
     /// The texture format the pipelines draw into.
     format: wgpu::TextureFormat,
+}
+
+/// The cell for a font of `px` pixels whose glyph advance is `advance`, with the horizontal and
+/// vertical spacings applied, and the spacing-free cell `(advance, (px * 1.2).round())` the
+/// cursor is measured against (`cellSizeWithoutSpacing`).
+pub fn cell_metrics(advance: f32, px: f32, h_spacing: f32, v_spacing: f32) -> ((f32, f32), (f32, f32)) {
+    ((advance * h_spacing, (px * 1.2 * v_spacing).round()), (advance, (px * 1.2).round()))
 }
 
 impl Renderer {
@@ -327,6 +336,7 @@ impl Renderer {
             v_spacing: 1.0,
             font_px,
             cell: (0.0, 0.0),
+            base_cell: (0.0, 0.0),
         };
         r.prose_family = if r.has_family("Segoe UI Variable") { "Segoe UI Variable" } else { "Segoe UI" }.to_string();
         r.icon_family = if r.has_family("Segoe Fluent Icons") { "Segoe Fluent Icons" } else { "Segoe MDL2 Assets" }.to_string();
@@ -347,9 +357,14 @@ impl Renderer {
         b.set_text(&"M".repeat(n), &Attrs::new().family(Family::Name(&self.family)), Shaping::Advanced, None);
         b.shape_until_scroll(&mut self.font_system, false);
         let w = b.layout_runs().next().map(|r| r.line_w / n as f32).filter(|w| *w > 0.0).unwrap_or(px * 0.6);
-        self.cell = (w * self.h_spacing, line);
+        (self.cell, self.base_cell) = cell_metrics(w, px, self.h_spacing, self.v_spacing);
         self.buffers.clear();
         self.widths.clear();
+    }
+
+    /// The font's own cell, without the spacings: what iTerm2 calls `cellSizeWithoutSpacing`.
+    pub fn base_cell(&self) -> (f32, f32) {
+        self.base_cell
     }
 
     /// The installed family for an iTerm2 font name, which is usually a PostScript
@@ -750,6 +765,15 @@ mod tests {
     use crate::layout::Rect;
     use crate::palette::rgb;
     use crate::scene::{Quad, Span, TextRow, rgba};
+
+    #[test]
+    fn cell_metrics_keep_the_spacing_free_cell() {
+        let close = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 1e-4 && (a.1 - b.1).abs() < 1e-4;
+        let (cell, base) = cell_metrics(9.6, 16.0, 1.0, 1.0);
+        assert!(close(cell, (9.6, 19.0)) && close(base, (9.6, 19.0)), "{cell:?} {base:?}");
+        let (cell, base) = cell_metrics(9.6, 16.0, 1.2, 1.25);
+        assert!(close(cell, (11.52, 24.0)) && close(base, (9.6, 19.0)), "{cell:?} {base:?}");
+    }
 
     fn device() -> (wgpu::Device, wgpu::Queue) {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());

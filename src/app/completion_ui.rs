@@ -70,6 +70,24 @@ impl App {
         self.redraw();
     }
 
+    /// Text the IME committed while a completion list is open: a typed character that reaches
+    /// the terminal the way `completion_key`'s `Other` key does (the list follows the typing, or
+    /// closes). The text itself is written by the caller.
+    pub(super) fn completion_typed_text(&mut self) {
+        let Some((pane, list)) = self.completion.as_mut() else { return };
+        let pane = *pane;
+        let reply = list.key(CKey::Other);
+        if let Kind::Commands { typed } = &list.kind {
+            if !matches!(reply, Reply::Pass | Reply::Handled | Reply::Search) {
+                let typed = typed.clone();
+                self.auto.1.dismissed(&typed);
+            }
+        }
+        if matches!(reply, Reply::CloseAndPass) && self.focused_id() == Some(pane) {
+            self.completion = None;
+        }
+    }
+
     /// A key while the list shows. True when the list used it.
     pub(super) fn completion_key(&mut self, ev: &KeyEvent) -> bool {
         use winit::keyboard::{Key as WKey, NamedKey};

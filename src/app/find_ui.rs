@@ -296,6 +296,15 @@ impl App {
         true
     }
 
+    /// Text the IME commits while the find bar has the keyboard: typed into the query, as
+    /// `find_key` types a printable key.
+    pub(super) fn find_type_text(&mut self, id: PaneId, text: &str) {
+        if let Some(f) = self.finds.get_mut(&id) {
+            f.key(BarKey::Text(text.to_string()), Instant::now());
+        }
+        self.redraw();
+    }
+
     /// Pastes the clipboard into the find query, on one line.
     fn paste_into_find(&mut self, id: PaneId) {
         let text = match self.clipboard.as_mut().map(|cb| cb.get_text()) {

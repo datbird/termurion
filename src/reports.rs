@@ -193,6 +193,20 @@ mod tests {
     }
 
     #[test]
+    fn decrqss_cursor_follows_permission() {
+        use crate::screen::{Look, Screen};
+        let look = |allow| Look { cursor_blink: false, blink_change: allow, ..Look::default() };
+        let mut s = Screen::with_look(80, 24, crate::palette::Palette::default(), look(false));
+        s.feed(b"\x1b[1 q");
+        assert_eq!(ask(&mut s, b"\x1bP$q q\x1b\\"), "\x1bP1$r2 q\x1b\\");
+        assert_eq!(ask(&mut s, b"\x1b[?12$p"), "\x1b[?12;2$y");
+        let mut s = Screen::with_look(80, 24, crate::palette::Palette::default(), look(true));
+        s.feed(b"\x1b[1 q");
+        assert_eq!(ask(&mut s, b"\x1bP$q q\x1b\\"), "\x1bP1$r1 q\x1b\\");
+        assert_eq!(ask(&mut s, b"\x1b[?12$p"), "\x1b[?12;1$y");
+    }
+
+    #[test]
     fn xtversion_and_1337n() {
         let mut s = Screen::new(80, 24);
         let v = super::VERSION;

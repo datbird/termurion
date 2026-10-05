@@ -379,6 +379,26 @@ impl App {
         (c.shown == Shown::Dropdown && c.focused && !c.hidden && self.belt.focus.is_none()).then_some(id)
     }
 
+    /// Which composer part has the keyboard: (a dropdown, a status bar field). The IME's
+    /// commit goes where a typed key would.
+    pub(super) fn composer_keys_owner(&self) -> (bool, bool) {
+        (self.focused_composer().is_some(), self.focused_field().is_some())
+    }
+
+    /// Typed text from the IME into the composer dropdown or field that has the keyboard, as
+    /// `composer_key_press` and `composer_field_press` insert a printable key. False when none has it.
+    pub(super) fn composer_type_text(&mut self, text: &str) -> bool {
+        if let Some(pane) = self.focused_composer() {
+            self.composer_apply(pane, composer::Action::Edit(EditKey::Text(text.to_string())), false);
+            return true;
+        }
+        if let Some((pane, _)) = self.live_field() {
+            self.composer_field_edit(pane, EditKey::Text(text.to_string()), false);
+            return true;
+        }
+        false
+    }
+
     /// A composer has the keyboard (the keyboard hook takes its Win chords then).
     pub(super) fn composer_has_keys(&self) -> bool {
         self.focused_composer().is_some()

@@ -854,6 +854,19 @@ mod tests {
         assert!(enter < focus, "the pane is resolved in the right window");
     }
 
+    /// 13k merge (seam S11): a Ctrl+wheel or pinch font change reaches the renderer's cell
+    /// (`set_font_offset` -> `apply_fonts` -> `set_fonts` -> `set_font_px`), and 13k's cursor
+    /// frame compares the cell, base cell and scale every frame, so a zoom snaps the text cursor
+    /// (no slide or smear from a stale pixel rect).
+    #[test]
+    fn a_font_change_snaps_the_text_cursor() {
+        assert!(body(MOD, "set_font_offset").contains("self.apply_fonts()"));
+        assert!(body(MOD, "apply_fonts").contains("set_fonts("));
+        assert!(body(include_str!("../render.rs"), "set_fonts").contains("self.set_font_px("));
+        let frame = include_str!("cursor_ui.rs");
+        assert!(frame.contains("metrics_changed(Metrics { cell, base, scale,"), "the snap reads the live metrics");
+    }
+
     #[test]
     fn the_font_offset_is_clamped_to_the_drawn_range() {
         let b = body(UI, "change_font_size");
