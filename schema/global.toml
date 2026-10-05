@@ -2875,6 +2875,44 @@ type = "bool"
 default = true
 help = "Sessions whose shell integration scripts are out of date show \"This account\u2019s Shell Integration scripts are out of date.\" When on, only critically old scripts (bash, zsh or fish before version 5, tcsh before 2) and scripts that name no shell are announced; when off, any script older than the latest for its shell is."
 
+# Milestone 13l: General > GPU Renderer, before Experimental (the last General section).
+
+[[setting]]
+key = "metalMaximizeThroughput"
+tab = "General"
+section = "GPU Renderer"
+label = "Maximize throughput at the cost of higher latency"
+type = "bool"
+default = true
+help = "Maximize throughput at the cost of higher latency"
+
+[[setting]]
+key = "disableMetalWhenUnplugged"
+tab = "General"
+section = "GPU Renderer"
+label = "Disable GPU renderer when disconnected from power"
+type = "bool"
+default = true
+help = "Disable GPU renderer when disconnected from power\nTandem always draws with the GPU; stored for settings you bring from iTerm2."
+
+[[setting]]
+key = "disableMetalInLowPowerMode"
+tab = "General"
+section = "GPU Renderer"
+label = "Disable GPU renderer in low power mode"
+type = "bool"
+default = true
+help = "Disable GPU renderer in low power mode\nTandem always draws with the GPU; stored for settings you bring from iTerm2."
+
+[[setting]]
+key = "preferIntegratedGPU"
+tab = "General"
+section = "GPU Renderer"
+label = "Prefer integrated to discrete GPU"
+type = "bool"
+default = true
+help = "Prefer integrated to discrete GPU"
+
 [[setting]]
 key = "Bidi"
 tab = "General"
@@ -3854,3 +3892,158 @@ label = "Maximum horizontal distance in cells for smooth cursor slide animation.
 type = "int"
 default = 1
 help = "Maximum horizontal distance in cells for smooth cursor slide animation.\nCursor movements larger than this will not animate."
+
+# Milestone 13l: frames and underlines. Its own block, so 13m's rows merge beside it.
+
+[[setting]]
+key = "UseAdaptiveFrameRate"
+tab = "Advanced"
+section = "Drawing"
+label = "Use adaptive framerate."
+type = "bool"
+default = true
+help = "Use adaptive framerate.\nWhen throughput is low, the screen will update at 60 frames per second. When throughput is higher, it will drop to a configurable rate (15 fps by default)."
+
+[[setting]]
+key = "DisableAdaptiveFrameRateInInteractiveApps"
+tab = "Advanced"
+section = "Drawing"
+label = "Disable adaptive framerate in interactive apps."
+type = "bool"
+default = true
+help = "Disable adaptive framerate in interactive apps.\nTurn off adaptive frame rate while in alternate screen mode for more consistent refresh rate. This works even if alternate screen mode is disabled."
+
+[[setting]]
+key = "MetalSlowFrameRate"
+tab = "Advanced"
+section = "Drawing"
+label = "When adaptive framerate is enabled and using the Metal renderer, refresh at this rate during high throughput conditions (FPS)."
+type = "float"
+default = 30.0
+help = "When adaptive framerate is enabled and using the Metal renderer, refresh at this rate during high throughput conditions (FPS)."
+
+[[setting]]
+key = "ActiveUpdateCadence"
+tab = "Advanced"
+section = "Drawing"
+label = "Maximum frame rate (FPS) when adaptive framerate is disabled."
+type = "float"
+default = 60.0
+help = "Maximum frame rate (FPS) when adaptive framerate is disabled.\nNote: this is doubled on ARM Macs for displays that support at least 120hz. Modifications to this setting will not affect existing sessions."
+
+[[setting]]
+key = "AdaptiveFrameRateThroughputThreshold"
+tab = "Advanced"
+section = "Drawing"
+label = "Throughput threshold for adaptive frame rate."
+type = "int"
+default = 10000
+help = "Throughput threshold for adaptive frame rate.\nIf more than this many bytes per second are received, use the lower frame rate of 30 fps."
+
+[[setting]]
+key = "MaximumFrameRate"
+tab = "Advanced"
+section = "Drawing"
+label = "Frame rate (FPS) when adaptive framerate is enabled and throughput is low but not 0."
+type = "float"
+default = 60.0
+help = "Frame rate (FPS) when adaptive framerate is enabled and throughput is low but not 0."
+
+[[setting]]
+key = "LowPowerModeFrameRate"
+tab = "Advanced"
+section = "Drawing"
+label = "Maximum frame rate (FPS) when low power mode is enabled."
+type = "float"
+default = 30.0
+help = "Maximum frame rate (FPS) when low power mode is enabled."
+
+[[setting]]
+key = "UseLowPowerGPUWhenUnplugged"
+tab = "Advanced"
+section = "Drawing"
+label = "Metal renderer uses integrated GPU when not connected to power?"
+type = "bool"
+default = false
+help = "Metal renderer uses integrated GPU when not connected to power?\nFor this to be effective you must disable \u201cDisable Metal renderer when not connected to power\u201d."
+
+[[setting]]
+key = "UnderlineHyperlinks"
+tab = "Advanced"
+section = "Drawing"
+label = "Underline OSC 8 hyperlinks"
+type = "bool"
+default = true
+help = "Underline OSC 8 hyperlinks"
+
+[[setting]]
+key = "SolidUnderlines"
+tab = "Advanced"
+section = "Drawing"
+label = "Use solid underlines?"
+type = "bool"
+default = false
+help = "Use solid underlines?\nWhen disabled, underlines break near text that would intersect them."
+
+[[setting]]
+key = "UseMultiPassUnderlineRenderer"
+tab = "Advanced"
+section = "Drawing"
+label = "Use multi-pass underline renderer?"
+type = "bool"
+default = true
+help = "Use multi-pass underline renderer?\nFixes underline gaps with ligature fonts. Requires restart."
+
+[[setting]]
+key = "ShowMetalFPSmeter"
+tab = "Advanced"
+section = "Drawing"
+label = "Show FPS meter"
+type = "bool"
+default = false
+help = "Show FPS meter\nRequires Metal renderer"
+
+[[setting]]
+key = "MetalRedrawPeriod"
+tab = "Advanced"
+section = "Drawing"
+label = "GPU renderer redraws at least this often, in seconds."
+type = "float"
+default = 0.5
+help = "GPU renderer redraws at least this often, in seconds.\nThis is to work around a problem where the GPU renderer encounters a lot of latency when drawing for the first time after a short period of inactivity. Set this to a big number to render it ineffectual."
+
+[[setting]]
+key = "DisableAppNap"
+tab = "Advanced"
+section = "General"
+label = "Disable App Nap."
+type = "bool"
+default = false
+help = "Disable App Nap.\nChange effective after restarting Tandem."
+
+[[setting]]
+key = "ExtendBackgroundColorIntoMargins"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Extend background color into margins in alternate screen mode?"
+type = "bool"
+default = true
+help = "Extend background color into margins in alternate screen mode?"
+
+[[setting]]
+key = "TerminalMargin"
+tab = "Appearance"
+section = "Panes"
+label = "Side margins"
+type = "int"
+default = 5
+help = "Space between the terminal text and the left and right edges of a pane, in points."
+
+[[setting]]
+key = "TerminalVMargin"
+tab = "Appearance"
+section = "Panes"
+label = "Top & bottom margins"
+type = "int"
+default = 2
+help = "Space between the terminal text and the top and bottom edges of a pane, in points."

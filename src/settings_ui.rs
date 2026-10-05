@@ -1084,6 +1084,8 @@ pub fn profile_row_enabled(p: &Profile, key: &str, dark: bool) -> bool {
         | "Cursor Blink Visible Dwell"
         | "Cursor Blink Hidden Dwell" => p.bool("Blinking Cursor") && p.bool("Cursor Smooth Blink"),
         "Animate Movement Only in Interactive Apps" => p.bool("Animate Movement"),
+        // The swatch follows its switch (`ProfilesColorsPreferencesViewController.m:468`).
+        "Underline Color" => p.bool_for("Use Underline Color", dark),
         _ => true,
     }
 }
@@ -1611,5 +1613,31 @@ mod tests {
         assert_eq!((boost.min.clone(), boost.max.clone()), (Some(Value::Float(0.0)), Some(Value::Float(0.8))));
         let shadow = crate::schema::find("Cursor Shadow").unwrap();
         assert_eq!(shadow.help, "Whether the cursor has a shadow");
+    }
+
+    /// 13l: "Underline Color" is enabled only while "Use Underline Color" is on
+    /// (`ProfilesColorsPreferencesViewController.m:468`); the switch has Light and Dark variants.
+    #[test]
+    fn underline_color_row_follows_its_switch() {
+        let mut p = Profile::default();
+        assert!(!profile_row_enabled(&p, "Underline Color", false));
+        p.set("Use Underline Color", Value::Boolean(true));
+        assert!(profile_row_enabled(&p, "Underline Color", false));
+        assert!(profile_row_enabled(&p, "Underline Color", true));
+        // With separate colors the mode being edited decides.
+        p.set("Use Separate Colors for Light and Dark Mode", Value::Boolean(true));
+        p.set("Use Underline Color (Dark)", Value::Boolean(false));
+        p.set("Use Underline Color (Light)", Value::Boolean(true));
+        assert!(!profile_row_enabled(&p, "Underline Color", true));
+        assert!(profile_row_enabled(&p, "Underline Color", false));
+        // Reduce Flicker has no rule.
+        assert!(profile_row_enabled(&Profile::default(), "Reduce Flicker", false));
+    }
+
+    #[test]
+    fn underline_and_flicker_helps_follow_tandem() {
+        let help = |k: &str| crate::schema::find(k).unwrap().help.clone();
+        assert_eq!(help("Use Underline Color"), "Draws underlines in the Underline Color instead of the text color (an app's SGR 58 color still wins).");
+        assert_eq!(help("Reduce Flicker"), "While a program hides the cursor, keep showing the screen as it was for up to 0.2 seconds so half-drawn updates are not seen.");
     }
 }

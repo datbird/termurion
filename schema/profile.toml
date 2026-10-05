@@ -686,7 +686,7 @@ section = "Other Colors"
 label = "Use custom underline color"
 type = "bool"
 default = false
-help = "Enables a custom color for underlines instead of matching the underlined text's own color."
+help = "Draws underlines in the Underline Color instead of the text color (an app's SGR 58 color still wins)."
 light_dark = true
 macos_only = false
 
@@ -2442,7 +2442,7 @@ section = ""
 label = "Reduce Flicker"
 type = "bool"
 default = false
-help = "Enables extra frame synchronization to reduce visual flicker during redraws."
+help = "While a program hides the cursor, keep showing the screen as it was for up to 0.2 seconds so half-drawn updates are not seen."
 light_dark = false
 macos_only = false
 
