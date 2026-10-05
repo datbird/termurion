@@ -38,6 +38,18 @@ pub const SPECIAL_FONT_CONFIG: &str = crate::font_table::KEY;
 /// The stored key View > Size Changes Update Profile toggles (`kPreferenceKeySizeChangesAffectProfile`).
 pub const SIZE_CHANGES_AFFECT_PROFILE: &str = "Size Changes Affect Profile";
 
+/// Adds to `targets` every pane of `all` that shares a tmux window (gateway, window) with one of
+/// them: tmux sizes the window's panes together, so they take one text size. `window_of` names a
+/// pane's tmux window, None for a pane that is not tmux's.
+fn widen_to_tmux_windows(targets: &mut Vec<PaneId>, all: &[PaneId], window_of: &dyn Fn(PaneId) -> Option<(PaneId, u32)>) {
+    let windows: Vec<(PaneId, u32)> = targets.iter().filter_map(|p| window_of(*p)).collect();
+    for &p in all {
+        if !targets.contains(&p) && window_of(p).is_some_and(|w| windows.contains(&w)) {
+            targets.push(p);
+        }
+    }
+}
+
 /// The cell under a point of a pane whose text area starts at `origin`, and which half of the
 /// cell it is in.
 pub fn pointer_cell(cell: (f32, f32), origin: (f32, f32), x: f32, y: f32, cols: u32, rows: u32) -> (u32, u32, Side) {
@@ -295,12 +307,7 @@ impl App {
         let all: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
         let view = self.broadcast_view();
         let mut targets = adjust_targets(tab.focused, &all, self.globals.bool("FontChangeAffectsBroadcastingSessions"), &|p| self.broadcast.receives(&view, p));
-        let windows: Vec<(PaneId, u32)> = targets.iter().filter_map(|p| self.tmux_of(*p).map(|(gateway, _, window)| (gateway, window))).collect();
-        for p in all {
-            if !targets.contains(&p) && self.tmux_of(p).is_some_and(|(gateway, _, window)| windows.contains(&(gateway, window))) {
-                targets.push(p);
-            }
-        }
+        widen_to_tmux_windows(&mut targets, &all, &|p| self.tmux_of(p).map(|(gateway, _, window)| (gateway, window)));
         targets
     }
 
@@ -710,6 +717,31 @@ mod tests {
         faces.ensure(&mut r, [(2, FaceKey::new("Cascadia Mono", None, 64.0, 1.0, 1.0))]);
         assert_eq!(faces.face(2), Some(id));
         assert!(faces.cell(2).unwrap().0 > own.0 * 1.8);
+    }
+
+    /// 13n final 5: a size change on one tmux pane reaches every pane of its tmux window (and no
+    /// pane of another window, another gateway or no tmux at all).
+    #[test]
+    fn a_size_change_reaches_every_pane_of_a_tmux_window() {
+        // Panes 1, 2 and 3 are tmux window 7 of gateway 100; 4 is window 8; 5 is window 7 of gateway 200; 6 is no tmux pane.
+        let window_of = |p: PaneId| match p {
+            1..=3 => Some((100, 7)),
+            4 => Some((100, 8)),
+            5 => Some((200, 7)),
+            _ => None,
+        };
+        let all = [1, 2, 3, 4, 5, 6];
+        let mut targets = vec![2];
+        widen_to_tmux_windows(&mut targets, &all, &window_of);
+        targets.sort();
+        assert_eq!(targets, vec![1, 2, 3], "the focused pane's tmux window, nothing else");
+        let mut plain = vec![6];
+        widen_to_tmux_windows(&mut plain, &all, &window_of);
+        assert_eq!(plain, vec![6], "a pane that is not tmux's takes nothing along");
+        let mut group = vec![1, 4];
+        widen_to_tmux_windows(&mut group, &all, &window_of);
+        group.sort();
+        assert_eq!(group, vec![1, 2, 3, 4], "each target's window is widened, no pane twice");
     }
 
     #[test]

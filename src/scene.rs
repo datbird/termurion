@@ -958,8 +958,8 @@ pub fn pane_with(
             selected,
             level,
             mask,
-            // The logical cursor cell (the row is not in display order yet).
-            cursor: cursor_at == Some((row, col)),
+            // The logical cursor cell (the row is not in display order yet); only a block cursor breaks a ligature.
+            cursor: block_cursor && cursor_at == Some((row, col)),
             joins: false,
             table: None,
         };
@@ -5069,6 +5069,13 @@ mod tests {
         // The cursor cell is its own piece: the arrow before it cannot join it.
         let r = rows(b"->=\x1b[1D", &CursorLook::shown(true));
         assert!(r.len() >= 2 && r.iter().any(|(x, s)| *x == 20.0 && s[0].0 == "="), "{r:?}");
+        // 13n final 5: only a block cursor breaks the run (iTerm2); a bar or an underline cursor
+        // leaves the ligature whole.
+        for shape in [&b"\x1b[6 q"[..], b"\x1b[4 q"] {
+            let bytes = [&b"->="[..], shape, b"\x1b[1D"].concat();
+            let r = rows(&bytes, &CursorLook::shown(true));
+            assert_eq!(r.iter().map(|(_, s)| s.len()).sum::<usize>(), 1, "a non-block cursor does not split the ligature: {r:?}");
+        }
     }
 
     #[test]

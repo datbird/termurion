@@ -1153,10 +1153,13 @@ impl Renderer {
     /// A row whose spans differ in ligature level, as one row per run of equal level: cosmic-text
     /// shapes a whole word with the features of its first span, so a run at another level must
     /// be shaped on its own. Each run sits at its cell (the width of the text before it, in
-    /// cells), and a row of one level is left as it is.
+    /// cells), and a row of one level is left as it is. Every frame row keeps its own slot (its
+    /// first run, or the whole row); the later runs follow all of them, so a split that comes
+    /// and goes (the cursor moving through ligature text) does not reshape the rows after it.
     fn split_levels(&self, rows: &[TextRow]) -> Vec<TextRow> {
         use unicode_width::UnicodeWidthChar;
         let mut out = Vec::with_capacity(rows.len());
+        let mut later = Vec::new();
         for row in rows {
             if row.spans.windows(2).all(|w| w[0].ligatures == w[1].ligatures) {
                 out.push(row.clone());
@@ -1166,16 +1169,22 @@ impl Renderer {
             let mut at = 0.0;
             let mut run: Vec<Span> = Vec::new();
             let mut start = 0.0;
+            let mut first = true;
+            let mut put = |run: Vec<Span>, start: f32, first: &mut bool| {
+                let piece = TextRow { x: row.x + start, spans: run, ..row.clone() };
+                if std::mem::take(first) { out.push(piece) } else { later.push(piece) }
+            };
             for s in &row.spans {
                 if run.last().is_some_and(|l| l.ligatures != s.ligatures) {
-                    out.push(TextRow { x: row.x + start, spans: std::mem::take(&mut run), ..row.clone() });
+                    put(std::mem::take(&mut run), start, &mut first);
                     start = at;
                 }
                 run.push(s.clone());
                 at += s.text.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>() as f32 * cw;
             }
-            out.push(TextRow { x: row.x + start, spans: run, ..row.clone() });
+            put(run, start, &mut first);
         }
+        out.extend(later);
         out
     }
 
@@ -2338,6 +2347,25 @@ mod tests {
         // Each copy carries only its own spans; the other is blank advance.
         assert_eq!(copies[0].spans.iter().map(|s| s.text.trim().is_empty()).collect::<Vec<_>>(), vec![false, true]);
         assert_eq!(copies[1].spans.iter().map(|s| s.text.trim().is_empty()).collect::<Vec<_>>(), vec![true, false]);
+    }
+
+    /// 13n final 5: a row that mixes ligature levels keeps its own slot (its first run); the other
+    /// runs follow every frame row, so the slots after it are not reshaped when a split appears.
+    #[test]
+    fn split_levels_keeps_every_frame_row_in_its_slot() {
+        let (device, queue) = device();
+        let r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let level = |text: &str, ligatures: u8| Span { ligatures, ..masked(text, false, 0) };
+        let row = |y: f32, spans: Vec<Span>| TextRow { x: 10.0, y, spans, clip: Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, scale: 1.0, face: DEFAULT_FACE };
+        let rows = vec![row(0.0, vec![level("ab", 0), level("->", 2)]), row(20.0, vec![level("cd", 0)]), row(40.0, vec![level("e", 0), level("=>", 2), level("f", 0)])];
+        let out = r.split_levels(&rows);
+        assert_eq!(out.len(), 6, "three rows and three extra runs");
+        assert_eq!(out[..3].iter().map(|o| o.y).collect::<Vec<_>>(), vec![0.0, 20.0, 40.0], "the frame rows keep their slots");
+        assert_eq!(out[..3].iter().map(|o| o.spans.len()).collect::<Vec<_>>(), vec![1, 1, 1], "each slot holds the row's first run");
+        assert_eq!(out[1].spans[0].text, "cd");
+        let extras: Vec<(f32, f32, &str)> = out[3..].iter().map(|o| (o.x, o.y, o.spans[0].text.as_str())).collect();
+        let cw = r.face_cell(DEFAULT_FACE).0;
+        assert_eq!(extras, vec![(10.0 + 2.0 * cw, 0.0, "->"), (10.0 + cw, 40.0, "=>"), (10.0 + 3.0 * cw, 40.0, "f")], "the later runs sit at their cells, in row order");
     }
 
     fn target(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture {

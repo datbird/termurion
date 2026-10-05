@@ -339,7 +339,6 @@ pub struct App {
     jobs: crate::jobwatch::JobWatch,
     proxy: Arc<Mutex<EventLoopProxy<UserEvent>>>,
     menu_bar: Option<menu::MenuBar>,
-    /// Make Text Bigger and Smaller, in points, on top of the profile font size.
     /// Keys > Remap Modifiers, read by the keyboard hook's thread.
     remap_tags: Arc<std::sync::RwLock<crate::remap::Tags>>,
     /// What the keyboard hook needs to decide which Win chords Tandem takes.
@@ -5087,7 +5086,7 @@ impl App {
                     let reduce = self.store.get(&p.profile).is_some_and(|pr| pr.bool("Reduce Flicker"));
                     let hold = crate::flicker::holding(reduce, p.screen.cursor_hidden_at, Instant::now());
                     let alt = p.screen.alt_screen();
-                    match p.held.as_ref().filter(|h| hold && h.usable(rect, alt, p.screen.cursor_hidden_at)) {
+                    match p.held.as_ref().filter(|h| hold && h.usable(rect, alt, face, cell, p.screen.cursor_hidden_at)) {
                         Some(h) => {
                             h.replay(&mut frame);
                             if let Some(c) = cover {
@@ -5101,7 +5100,7 @@ impl App {
                                 composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, &mut frame.glyphs, glyph_from, c);
                             }
                             // Kept for the next hold; dropped when the switch is off.
-                            let held = reduce.then(|| crate::flicker::Held::slice(&frame, &marks, Instant::now(), rect, alt));
+                            let held = reduce.then(|| crate::flicker::Held::slice(&frame, &marks, Instant::now(), rect, alt, face, cell));
                             held_updates.push((id, held, None));
                         }
                     }
