@@ -414,7 +414,7 @@ impl App {
         let prefs = wheel::Prefs::from_globals(&self.globals);
         let affects = self.globals.bool("NaturalScrollingAffectsHorizontalMouseReporting");
         let (proportional, double) = (self.globals.bool("ProportionalScrollWheelReporting"), self.globals.bool("DoubleReportScrollWheel"));
-        let (cw, ch) = self.cell();
+        let (cw, ch) = self.pane_cell(id);
         let scale = self.scale() as f64;
         let cell_pt = (cw as f64 / scale, ch as f64 / scale);
         let Some(p) = self.panes.get_mut(&id) else { return };

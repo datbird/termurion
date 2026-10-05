@@ -43,6 +43,9 @@ pub struct TextRow {
     pub clip: Rect,
     /// Text size against the terminal font (a porthole's headings).
     pub scale: f32,
+    /// The renderer's face the row is shaped and sized with (`render::Renderer::face`): a pane's
+    /// rows carry their profile's face, every other row the default one.
+    pub face: u16,
 }
 
 /// A piece of an inline image: where it goes, which part of the picture (u0, v0, u1, v1),
@@ -386,7 +389,7 @@ pub struct FindBar<'a> {
 /// Draws one pane's visible screen into `rect`.
 /// `look` says how the cursor is drawn; `look.visible` false hides it (the blink phase).
 pub fn pane(frame: &mut Frame, screen: &Screen, rect: Rect, cell: (f32, f32), focused: bool, look: &CursorLook) {
-    pane_with(frame, screen, rect, cell, focused, look, &DrawPrefs::default(), None)
+    pane_with(frame, screen, rect, cell, focused, look, &DrawPrefs::default(), None, crate::render::DEFAULT_FACE)
 }
 
 /// The cursor's screen row and column, and whether it sits on a wide character; None when
@@ -446,10 +449,11 @@ pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) 
         spans: vec![span(format!("{field:<FIELD$}  {}", bar.count), query_color)],
         clip: r,
         scale: 1.0,
+        face: crate::render::DEFAULT_FACE,
     });
     let mode_x = r.x + (1 + FIELD + 2 + bar.count.chars().count() + 2) as f32 * cw;
     let mode_rect = Rect { x: mode_x, y: r.y, w: mode.chars().count() as f32 * cw, h: r.h };
-    frame.rows.push(TextRow { x: mode_x, y, spans: vec![span(mode, TAB_TEXT_DIM)], clip: r, scale: 1.0 });
+    frame.rows.push(TextRow { x: mode_x, y, spans: vec![span(mode, TAB_TEXT_DIM)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     mode_rect
 }
 
@@ -495,7 +499,7 @@ pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cel
         }
         cut_quads(frame, Rect { w: right - bg.x + 1.0e6, ..bg });
         let span = Span { text: text.clone(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-        frame.rows.push(TextRow { x: right - (n + 1.0) * cw, y, spans: vec![span], clip: rect, scale: 1.0 });
+        frame.rows.push(TextRow { x: right - (n + 1.0) * cw, y, spans: vec![span], clip: rect, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
 }
 
@@ -579,6 +583,7 @@ pub fn pane_with(
     look: &CursorLook,
     draw: &DrawPrefs,
     highlights: Option<&Highlights>,
+    face: u16,
 ) {
     let history = screen.term().grid().history_size() as i32;
     // Underlines and strikethrough come from the cells' flags (`CellLook.ul`); the Win-click
@@ -740,7 +745,7 @@ pub fn pane_with(
                     spans.pop();
                 }
                 if !spans.is_empty() {
-                    frame.rows.push(TextRow { x: rect.x + start as f32 * cw, y, spans, clip: rect, scale: 1.0 });
+                    frame.rows.push(TextRow { x: rect.x + start as f32 * cw, y, spans, clip: rect, scale: 1.0, face });
                 }
             }
         };
@@ -774,7 +779,7 @@ pub fn pane_with(
             let row = p.row as i32 - top;
             if row >= 0 && (row as usize) < lines {
                 let span = Span { text: label.clone(), color: LABEL_TEXT, bold: true, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-                frame.rows.push(TextRow { x: rect.x + p.col as f32 * cw, y: rect.y + row as f32 * ch, spans: vec![span], clip: rect, scale: 1.0 });
+                frame.rows.push(TextRow { x: rect.x + p.col as f32 * cw, y: rect.y + row as f32 * ch, spans: vec![span], clip: rect, scale: 1.0, face });
             }
         }
     }
@@ -805,7 +810,7 @@ pub fn pane_with(
                 let r = Rect { x, y, w: (shown.chars().count() as f32 + 1.0) * cw, h: ch };
                 frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
                 let span = Span { text: shown, color: rgb(0, 0, 0), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-                frame.rows.push(TextRow { x: x + cw * 0.5, y, spans: vec![span], clip: rect, scale: 1.0 });
+                frame.rows.push(TextRow { x: x + cw * 0.5, y, spans: vec![span], clip: rect, scale: 1.0, face });
             }
         }
     }
@@ -832,7 +837,7 @@ pub fn pane_with(
         let bg = grid.get(row).and_then(|l| l.get(col)).map_or(palette.bg, |c| c.bg);
         let scale = (cw * 1.2 / ch.max(1.0)).min(1.0);
         let span = Span { text: crate::pwm_prompt::KEY_GLYPH.to_string(), color: match_text(bg), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
-        frame.rows.push(TextRow { x: r.x, y: r.y + (ch - ch * scale) / 2.0, spans: vec![span], clip: r, scale });
+        frame.rows.push(TextRow { x: r.x, y: r.y + (ch - ch * scale) / 2.0, spans: vec![span], clip: r, scale, face });
     } else if let Some((row, col)) = cursor {
         let origin = (rect.x, rect.y);
         let r = box_rect(&look.geometry, origin, cell, row, col, wide_cursor);
@@ -884,7 +889,7 @@ pub fn pane_with(
             cut_out(frame, r, ch);
             frame.popups.push(Quad { rect: r, color: rgba(palette.bg, 1.0) });
             let span = Span { text: piece.text.clone(), color: palette.fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-            frame.rows.push(TextRow { x: r.x, y: r.y, spans: vec![span], clip: Rect { w: rect.x + rect.w - r.x, ..r }, scale: 1.0 });
+            frame.rows.push(TextRow { x: r.x, y: r.y, spans: vec![span], clip: Rect { w: rect.x + rect.w - r.x, ..r }, scale: 1.0, face });
             let line = look.geometry.scale.max(1.0).round();
             frame.overlay.push(Quad { rect: Rect { y: r.y + ch - line, h: line, ..r }, color: rgba(palette.fg, 1.0) });
         }
@@ -1049,7 +1054,7 @@ pub fn doc_lines(frame: &mut Frame, origin: (f32, f32), lines: &[crate::porthole
             .iter()
             .map(|r| Span { text: r.text.clone(), color: r.color, bold: r.bold, italic: r.italic, alt_font: false, icon: false, prose: r.face == crate::porthole::render::Face::Prose, badge: false, toolbelt: false })
             .collect();
-        frame.rows.push(TextRow { x: ox + l.x, y, spans, clip: area, scale: l.scale });
+        frame.rows.push(TextRow { x: ox + l.x, y, spans, clip: area, scale: l.scale, face: crate::render::DEFAULT_FACE });
     }
 }
 
@@ -1075,15 +1080,15 @@ pub fn porthole(frame: &mut Frame, rect: Rect, clip: Rect, lines: &[crate::porth
     let wide = Rect { x: language.x - 2.0 - ww, y: close.y, w: ww, h: s };
     let text = |t: String, color: Rgb, icon: bool| Span { text: t, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false, toolbelt: false };
     if let Some(c) = cut(close, clip) {
-        frame.rows.push(TextRow { x: close.x + (s - cell.0) / 2.0, y: close.y, spans: vec![text("\u{E711}".into(), blend(bg, fg, 0.5), true)], clip: c, scale: 1.0 });
+        frame.rows.push(TextRow { x: close.x + (s - cell.0) / 2.0, y: close.y, spans: vec![text("\u{E711}".into(), blend(bg, fg, 0.5), true)], clip: c, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     if let Some(c) = cut(language, clip) {
         frame.quads.push(Quad { rect: c, color: rgba(blend(back, fg, 0.12), 1.0) });
-        frame.rows.push(TextRow { x: language.x + cell.0, y: language.y, spans: vec![text(chrome.language.to_string(), fg, false)], clip: c, scale: 1.0 });
+        frame.rows.push(TextRow { x: language.x + cell.0, y: language.y, spans: vec![text(chrome.language.to_string(), fg, false)], clip: c, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     if let Some(c) = cut(wide, clip) {
         let label = if chrome.wide { "[x] Wide" } else { "[ ] Wide" };
-        frame.rows.push(TextRow { x: wide.x, y: wide.y, spans: vec![text(label.into(), fg, false)], clip: c, scale: 1.0 });
+        frame.rows.push(TextRow { x: wide.x, y: wide.y, spans: vec![text(label.into(), fg, false)], clip: c, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     let inner = Rect { x: rect.x + 4.0, y: rect.y + 4.0 + s, w: rect.w - 8.0, h: rect.h - 8.0 - s };
     let Some(area) = cut(inner, clip) else { return PortholeControls { close, language, wide } };
@@ -1104,7 +1109,7 @@ pub fn badge(frame: &mut Frame, pane: Rect, l: &crate::badge::BadgeLayout, color
             let x = pane.x + l.rect.x + l.rect.w - w + dx;
             let y = pane.y + l.rect.y + i as f32 * line_h + dy;
             let span = Span { text: text.clone(), color: c, bold: true, italic: false, alt_font: false, icon: false, prose: false, badge: true, toolbelt: false };
-            frame.rows.push(TextRow { x, y, spans: vec![span], clip: pane, scale });
+            frame.rows.push(TextRow { x, y, spans: vec![span], clip: pane, scale, face: crate::render::DEFAULT_FACE });
         }
     }
 }
@@ -1140,7 +1145,7 @@ pub fn inline_buttons(frame: &mut Frame, buttons: &[(Rect, ButtonFace, bool)], b
             ButtonFace::Icon(c) => {
                 frame.quads.push(Quad { rect: *r, color: rgba(mix(0.15 * a), 1.0) });
                 let span = Span { text: c.to_string(), color: mix(a), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
-                frame.rows.push(TextRow { x: r.x + r.w / 4.0, y: r.y, spans: vec![span], clip: *r, scale: 1.0 });
+                frame.rows.push(TextRow { x: r.x + r.w / 4.0, y: r.y, spans: vec![span], clip: *r, scale: 1.0, face: crate::render::DEFAULT_FACE });
             }
         }
     }
@@ -1331,7 +1336,7 @@ pub fn top_right_indicators(frame: &mut Frame, pane: Rect, glyphs: &[char], colo
     for (i, g) in glyphs.iter().enumerate() {
         let x = pane.x + pane.w - (i as f32 + 1.0) * step;
         let span = Span { text: g.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
-        frame.rows.push(TextRow { x, y: pane.y + 4.0, spans: vec![span], clip: pane, scale: 1.0 });
+        frame.rows.push(TextRow { x, y: pane.y + 4.0, spans: vec![span], clip: pane, scale: 1.0, face: crate::render::DEFAULT_FACE });
         hits.push(Rect { x, y: pane.y + 4.0, w: cell.0 * 2.0, h: cell.1 });
     }
     hits
@@ -1471,7 +1476,7 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
             let em = TAB_GLYPH_PT * scale;
             let x = box_.x + ((box_.w - em) / 2.0).floor();
             let y = box_.y + ((box_.h - line * s) / 2.0).floor();
-            frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, false, false, true)], clip, scale: s });
+            frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, false, false, true)], clip, scale: s, face: crate::render::DEFAULT_FACE });
         };
         // `YS drawInteriorWithTabCell:`: the close button at its alpha, halved in a window that
         // is not key.
@@ -1519,7 +1524,7 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
         if let Some(cr) = c.counter.map(at).filter(|_| !text.counter.is_empty()) {
             let x = cr.x + ((cr.w - text.counter_width * scale) / 2.0).floor();
             let y = cr.y + ((cr.h - title_h) / 2.0).floor();
-            frame.rows.push(TextRow { x, y, spans: vec![span(text.counter.clone(), color, false, false, false)], clip, scale: title_scale });
+            frame.rows.push(TextRow { x, y, spans: vec![span(text.counter.clone(), color, false, false, false)], clip, scale: title_scale, face: crate::render::DEFAULT_FACE });
         }
         let subtitle = bar.subtitles.get(k).filter(|s| !s.is_empty());
         let offset = if subtitle.is_some() { TITLE_OFFSET_WITH_SUBTITLE * scale } else { 0.0 };
@@ -1539,14 +1544,14 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
         }
         let spans: Vec<Span> = text.runs.iter().map(|(r, _)| span(r.text.clone(), color, r.bold, r.italic, false)).collect();
         if !spans.is_empty() {
-            frame.rows.push(TextRow { x, y, spans, clip, scale: title_scale });
+            frame.rows.push(TextRow { x, y, spans, clip, scale: title_scale, face: crate::render::DEFAULT_FACE });
         }
         if let Some(sub) = subtitle {
             let sl = at(text.subtitle_label);
             let sw = text.subtitle_width * scale;
             let x = if text.subtitle_truncate { sl.x } else { sl.x + (sl.w - sw) / 2.0 };
             let y = cell.y + ((cell.h - sub_h) / 2.0).floor() + offset + title_h + SUBTITLE_OFFSET * scale;
-            frame.rows.push(TextRow { x, y, spans: vec![span(sub.clone(), color, false, false, false)], clip, scale: sub_scale });
+            frame.rows.push(TextRow { x, y, spans: vec![span(sub.clone(), color, false, false, false)], clip, scale: sub_scale, face: crate::render::DEFAULT_FACE });
         }
     }
     // Minimal: the bar's room before the first tab is drawn as an unselected tab, or as the selected
@@ -1736,7 +1741,7 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
         let y = rect.y + ((rect.h - line * s) / 2.0).floor();
         let xs: &[f32] = if gap > 0.0 { &[x, x + gap] } else { &[x] };
         for &x in xs {
-            frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, false, false, true)], clip: clip_rect(rect, area), scale: s });
+            frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, false, false, true)], clip: clip_rect(rect, area), scale: s, face: crate::render::DEFAULT_FACE });
         }
     }
 }
@@ -1848,7 +1853,7 @@ pub fn caption_buttons(frame: &mut Frame, buttons: &[(crate::caption::Button, Re
         let span = Span { text: glyph.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
         let x = rect.x + ((rect.w - em) / 2.0).floor();
         let y = rect.y + ((rect.h - line * s) / 2.0).floor();
-        frame.rows.push(TextRow { x, y, spans: vec![span], clip: *rect, scale: s });
+        frame.rows.push(TextRow { x, y, spans: vec![span], clip: *rect, scale: s, face: crate::render::DEFAULT_FACE });
     }
 }
 
@@ -1860,7 +1865,7 @@ pub fn caption_menu_button(frame: &mut Frame, rect: Rect, pal: &crate::tab_theme
     let span = Span { text: crate::caption::MENU_GLYPH.to_string(), color: ink, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
     let x = rect.x + ((rect.w - em) / 2.0).floor();
     let y = rect.y + ((rect.h - line * s) / 2.0).floor();
-    frame.rows.push(TextRow { x, y, spans: vec![span], clip: rect, scale: s });
+    frame.rows.push(TextRow { x, y, spans: vec![span], clip: rect, scale: s, face: crate::render::DEFAULT_FACE });
 }
 
 /// A caption text row in the bar's prose font, `width` pixels wide, at `x`.
@@ -1869,7 +1874,7 @@ fn caption_row(frame: &mut Frame, text: &str, x: f32, rect: Rect, color: Rgb, pa
     let s = pal.font_pt * font_scale;
     let span = Span { text: text.to_string(), color, bold: false, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false };
     let y = rect.y + ((rect.h - line * s) / 2.0).floor();
-    frame.rows.push(TextRow { x, y, spans: vec![span], clip: rect, scale: s });
+    frame.rows.push(TextRow { x, y, spans: vec![span], clip: rect, scale: s, face: crate::render::DEFAULT_FACE });
 }
 
 /// The window's title in the caption where no tab bar shows: centered in `rect` (left-aligned and
@@ -1959,7 +1964,7 @@ fn group_runs(frame: &mut Frame, tabs: &[TabLook], bar: &crate::tab_layout::Bar,
             let x = sp.x + GROUP_NAME_PAD * scale;
             let y = sp.y + ((sp.h - name_h) / 2.0).floor();
             let span = Span { text: t.label.clone(), color: text, bold: true, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false };
-            frame.rows.push(TextRow { x, y, spans: vec![span], clip: clip_rect(sp, tabs_area), scale: name_scale });
+            frame.rows.push(TextRow { x, y, spans: vec![span], clip: clip_rect(sp, tabs_area), scale: name_scale, face: crate::render::DEFAULT_FACE });
         }
         if t.collapsed && union.is_none() {
             // The chevron, centered in its room at the block's end (`YS:1482-1494`).
@@ -1968,7 +1973,7 @@ fn group_runs(frame: &mut Frame, tabs: &[TabLook], bar: &crate::tab_layout::Bar,
             let x = (cx - GROUP_CHEVRON_PT * scale / 2.0).floor();
             let y = b.y + ((b.h - line * s) / 2.0).floor();
             let span = Span { text: GROUP_CHEVRON_GLYPH.to_string(), color: text, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
-            frame.rows.push(TextRow { x, y, spans: vec![span], clip: clip_rect(b, tabs_area), scale: s });
+            frame.rows.push(TextRow { x, y, spans: vec![span], clip: clip_rect(b, tabs_area), scale: s, face: crate::render::DEFAULT_FACE });
         }
         // The squared outline.
         frame_edges(frame, b, stroke, color);
@@ -2011,7 +2016,7 @@ fn tab_graphic(frame: &mut Frame, image: &TabImage, g: Rect, alpha: f32, back: R
             let x = circle.x + (circle.w - letter_w * scale) / 2.0;
             let y = circle.y + (circle.h - line * s) / 2.0;
             let span = Span { text: letter.clone(), color: back, bold: true, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false };
-            frame.rows.push(TextRow { x, y, spans: vec![span], clip, scale: s });
+            frame.rows.push(TextRow { x, y, spans: vec![span], clip, scale: s, face: crate::render::DEFAULT_FACE });
         }
     }
 }
@@ -2095,12 +2100,12 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
     let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
     let text_end = l.buttons.first().map_or(l.close.x, |b| b.x);
     let clip = Rect { w: (text_end - r.x).max(0.0), ..r };
-    frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.shown_text())], clip, scale: 1.0 });
+    frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.shown_text())], clip, scale: 1.0, face: crate::render::DEFAULT_FACE });
     for (i, b) in l.buttons.iter().enumerate() {
         frame.quads.push(Quad { rect: *b, color: rgba(BAR_BUTTON, 1.0) });
-        frame.rows.push(TextRow { x: b.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.label(i))], clip: *b, scale: 1.0 });
+        frame.rows.push(TextRow { x: b.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.label(i))], clip: *b, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
-    frame.rows.push(TextRow { x: l.close.x + cell.0 / 2.0, y: r.y + 4.0, spans: vec![span("x".into())], clip: l.close, scale: 1.0 });
+    frame.rows.push(TextRow { x: l.close.x + cell.0 / 2.0, y: r.y + 4.0, spans: vec![span("x".into())], clip: l.close, scale: 1.0, face: crate::render::DEFAULT_FACE });
     r
 }
 
@@ -2202,7 +2207,7 @@ pub fn pane_title_bar(frame: &mut Frame, bar: &TitleBar, cell: (f32, f32)) {
         let label = crate::pane_title::fit_label(bar.text, (g.label.w / cell.0) as usize);
         if !label.is_empty() {
             let y = g.bar.y + ((usable - cell.1) / 2.0).floor();
-            frame.rows.push(TextRow { x: g.label.x, y, spans: vec![span(label, text, false)], clip: g.label, scale: 1.0 });
+            frame.rows.push(TextRow { x: g.label.x, y, spans: vec![span(label, text, false)], clip: g.label, scale: 1.0, face: crate::render::DEFAULT_FACE });
         }
     }
     let mut glyph = |ch: char, r: Rect, color: Rgb| {
@@ -2210,7 +2215,7 @@ pub fn pane_title_bar(frame: &mut Frame, bar: &TitleBar, cell: (f32, f32)) {
         let s = em / cell.1.max(1.0);
         let x = r.x + ((r.w - em) / 2.0).floor();
         let y = r.y + ((r.h - cell.1 * s) / 2.0).floor();
-        frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, true)], clip: r, scale: s });
+        frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, true)], clip: r, scale: s, face: crate::render::DEFAULT_FACE });
     };
     glyph('\u{E711}', g.close, text);
     glyph('\u{E712}', g.menu, menu);
@@ -2249,7 +2254,7 @@ pub fn status_bar(frame: &mut Frame, d: &StatusBarDraw, cell: (f32, f32)) {
         let line_h = cell.1 * t.scale;
         let y = r.y + ((r.h - line_h) / 2.0).round() + t.dy;
         let span = Span { text: t.text.clone(), color: t.color, bold: false, italic: false, alt_font: false, icon: t.icon, prose: !t.icon, badge: false, toolbelt: false };
-        frame.rows.push(TextRow { x: t.x, y, spans: vec![span], clip: t.clip, scale: t.scale });
+        frame.rows.push(TextRow { x: t.x, y, spans: vec![span], clip: t.clip, scale: t.scale, face: crate::render::DEFAULT_FACE });
     }
     if let Some(e) = d.edge.filter(|_| !d.bare) {
         frame.quads.push(Quad { rect: e, color: rgba(STATUS_BAR_EDGE, 1.0) });
@@ -2394,10 +2399,10 @@ pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, foot
         if first + i == selected {
             frame.popups.push(Quad { rect: Rect { x, y: ry, w, h: cell.1 }, color: rgba(BAR_BUTTON, 1.0) });
         }
-        frame.rows.push(TextRow { x: x + cell.0, y: ry, spans: vec![span(text.clone())], clip: r, scale: 1.0 });
+        frame.rows.push(TextRow { x: x + cell.0, y: ry, spans: vec![span(text.clone())], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     if let Some(f) = footer {
-        frame.rows.push(TextRow { x: x + cell.0, y: y + 2.0 + visible.len() as f32 * cell.1, spans: vec![span(f.to_string())], clip: r, scale: 1.0 });
+        frame.rows.push(TextRow { x: x + cell.0, y: y + 2.0 + visible.len() as f32 * cell.1, spans: vec![span(f.to_string())], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     Some(r)
 }
@@ -2415,7 +2420,7 @@ pub fn session_picker_button(frame: &mut Frame, pane: Rect, label: &str, fg: Rgb
     frame.popups.push(Quad { rect: r, color: rgba(blend(bg, fg, 0.18), 1.0) });
     frame_lines(&mut frame.popups, r, rgba(blend(bg, fg, 0.6), 1.0));
     let span = Span { text: label.to_string(), color: fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-    frame.rows.push(TextRow { x: r.x + pad.min(r.w / 2.0), y: r.y + (h - cell.1) / 2.0, spans: vec![span], clip: r, scale: 1.0 });
+    frame.rows.push(TextRow { x: r.x + pad.min(r.w / 2.0), y: r.y + (h - cell.1) / 2.0, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     r
 }
 
@@ -2433,7 +2438,7 @@ pub fn tab_tooltip(frame: &mut Frame, text: &str, at: (f32, f32), area: Rect, ce
     frame.popups.push(Quad { rect: r, color: rgba(FIND_BAR, 1.0) });
     frame_lines(&mut frame.popups, r, rgba(DIVIDER, 1.0));
     for (i, line) in lines.iter().enumerate() {
-        frame.rows.push(TextRow { x: x + cell.0, y: y + 2.0 + i as f32 * cell.1, spans: vec![plain_span(line.to_string(), TAB_TEXT, false)], clip: r, scale: 1.0 });
+        frame.rows.push(TextRow { x: x + cell.0, y: y + 2.0 + i as f32 * cell.1, spans: vec![plain_span(line.to_string(), TAB_TEXT, false)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
 }
 
@@ -2485,10 +2490,10 @@ pub fn clippings_panel(frame: &mut Frame, d: &ClipDraw, cell: (f32, f32), scale:
             frame.quads.push(Quad { rect: Rect { x: r.x, y: line_y, w: r.w, h: 1.0 }, color: rgba(DIVIDER, 0.6) });
         }
         let x = r.x + 10.0 * scale;
-        frame.rows.push(TextRow { x, y: r.y + pad, spans: vec![clip_span(row.title.clone(), TAB_TEXT, true, false)], clip, scale: 1.0 });
+        frame.rows.push(TextRow { x, y: r.y + pad, spans: vec![clip_span(row.title.clone(), TAB_TEXT, true, false)], clip, scale: 1.0, face: crate::render::DEFAULT_FACE });
         for (k, line) in row.detail.iter().enumerate() {
             let y = r.y + pad + cell.1 + 2.0 * scale + k as f32 * cell.1;
-            frame.rows.push(TextRow { x, y, spans: vec![clip_span(line.clone(), TAB_TEXT_DIM, false, false)], clip, scale: 1.0 });
+            frame.rows.push(TextRow { x, y, spans: vec![clip_span(line.clone(), TAB_TEXT_DIM, false, false)], clip, scale: 1.0, face: crate::render::DEFAULT_FACE });
         }
     }
     if let Some(y) = d.drop_y {
@@ -2508,11 +2513,11 @@ pub fn clippings_panel(frame: &mut Frame, d: &ClipDraw, cell: (f32, f32), scale:
         };
         frame.quads.push(Quad { rect: *r, color: rgba(TAB_ACTIVE, 1.0) });
         let color = if on { TAB_TEXT } else { CLIP_DISABLED };
-        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(glyph.to_string(), color, false, true)], clip: *r, scale: 1.0 });
+        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(glyph.to_string(), color, false, true)], clip: *r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     if let Some(text) = d.status {
         let r = l.status;
-        frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(text.to_string(), TAB_TEXT_DIM, false, false)], clip: r, scale: 1.0 });
+        frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(text.to_string(), TAB_TEXT_DIM, false, false)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
 }
 
@@ -2539,11 +2544,11 @@ pub fn inline_chat_panel(frame: &mut Frame, d: &InlineDraw, cell: (f32, f32), sc
         if d.hover == Some(b) {
             frame.quads.push(Quad { rect: r, color: rgba(TAB_ACTIVE, 1.0) });
         }
-        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(b.glyph().to_string(), TAB_TEXT, false, true)], clip: r, scale: 1.0 });
+        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(b.glyph().to_string(), TAB_TEXT, false, true)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     let text_w = d.title.chars().count() as f32 * cell.0;
     let t = l.title;
-    frame.rows.push(TextRow { x: t.x + ((t.w - text_w) / 2.0).max(0.0), y: t.y + (t.h - cell.1) / 2.0, spans: vec![clip_span(d.title.to_string(), TAB_TEXT, true, false)], clip: t, scale: 1.0 });
+    frame.rows.push(TextRow { x: t.x + ((t.w - text_w) / 2.0).max(0.0), y: t.y + (t.h - cell.1) / 2.0, spans: vec![clip_span(d.title.to_string(), TAB_TEXT, true, false)], clip: t, scale: 1.0, face: crate::render::DEFAULT_FACE });
 }
 
 /// One conversation row of the inline panel, placed in pixels already: its bubble (zero width for
@@ -2608,7 +2613,7 @@ pub fn inline_chat_body(frame: &mut Frame, d: &InlineBodyDraw, cell: (f32, f32),
         if let Some(label) = row.date {
             if let Some(c) = cut(row.text, d.area) {
                 let w = label.chars().count() as f32 * cell.0 * 0.9;
-                frame.rows.push(TextRow { x: row.text.x + ((row.text.w - w) / 2.0).max(0.0), y: row.text.y, spans: vec![clip_span(label.to_string(), TAB_TEXT_DIM, false, false)], clip: c, scale: 0.85 });
+                frame.rows.push(TextRow { x: row.text.x + ((row.text.w - w) / 2.0).max(0.0), y: row.text.y, spans: vec![clip_span(label.to_string(), TAB_TEXT_DIM, false, false)], clip: c, scale: 0.85, face: crate::render::DEFAULT_FACE });
             }
             continue;
         }
@@ -2633,12 +2638,12 @@ pub fn inline_chat_body(frame: &mut Frame, d: &InlineBodyDraw, cell: (f32, f32),
         for r in &row.copies {
             if let Some(c) = cut(*r, d.area) {
                 frame.quads.push(Quad { rect: c, color: rgba(blend(back, fg, 0.15), 1.0) });
-                frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(crate::chat_view::COPY_GLYPH.to_string(), fg, false, true)], clip: c, scale: 1.0 });
+                frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(crate::chat_view::COPY_GLYPH.to_string(), fg, false, true)], clip: c, scale: 1.0, face: crate::render::DEFAULT_FACE });
             }
         }
         if let Some(r) = row.copied {
             if let Some(c) = cut(r, d.area) {
-                frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(crate::chat_view::COPIED.to_string(), blend(back, fg, 0.6), false, false)], clip: c, scale: 0.85 });
+                frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(crate::chat_view::COPIED.to_string(), blend(back, fg, 0.6), false, false)], clip: c, scale: 0.85, face: crate::render::DEFAULT_FACE });
             }
         }
         for (r, title, title_w, destructive, enabled) in &row.buttons {
@@ -2648,11 +2653,11 @@ pub fn inline_chat_body(frame: &mut Frame, d: &InlineBodyDraw, cell: (f32, f32),
             // The separator above the button, then its title centered.
             frame.quads.push(Quad { rect: Rect { h: 1.0, ..c }, color: rgba(color, 0.35 * alpha) });
             frame_lines(&mut frame.quads, c, rgba(color, 0.25 * alpha));
-            frame.rows.push(TextRow { x: r.x + ((r.w - title_w) / 2.0).max(0.0), y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span((*title).to_string(), blend(back, color, alpha), false, false)], clip: c, scale: 1.0 });
+            frame.rows.push(TextRow { x: r.x + ((r.w - title_w) / 2.0).max(0.0), y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span((*title).to_string(), blend(back, color, alpha), false, false)], clip: c, scale: 1.0, face: crate::render::DEFAULT_FACE });
         }
     }
     if let Some((r, text)) = d.strip {
-        frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(text.to_string(), TAB_TEXT_DIM, false, false)], clip: r, scale: 0.85 });
+        frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(text.to_string(), TAB_TEXT_DIM, false, false)], clip: r, scale: 0.85, face: crate::render::DEFAULT_FACE });
     }
     let i = &d.input;
     frame.quads.push(Quad { rect: i.rect, color: rgba(FIELD_BG_DARK, 1.0) });
@@ -2665,18 +2670,18 @@ pub fn inline_chat_body(frame: &mut Frame, d: &InlineBodyDraw, cell: (f32, f32),
     }
     for (x, y, line) in i.lines {
         if !line.is_empty() {
-            frame.rows.push(TextRow { x: *x, y: *y, spans: vec![list_span(line.clone(), TAB_TEXT, false, 0)], clip: i.clip, scale: i.text_scale });
+            frame.rows.push(TextRow { x: *x, y: *y, spans: vec![list_span(line.clone(), TAB_TEXT, false, 0)], clip: i.clip, scale: i.text_scale, face: crate::render::DEFAULT_FACE });
         }
     }
     if let (Some(text), true) = (i.placeholder, i.lines.iter().all(|l| l.2.is_empty())) {
-        frame.rows.push(TextRow { x: i.clip.x, y: i.clip.y, spans: vec![list_span(text.to_string(), TAB_TEXT_DIM, false, 0)], clip: i.clip, scale: i.text_scale });
+        frame.rows.push(TextRow { x: i.clip.x, y: i.clip.y, spans: vec![list_span(text.to_string(), TAB_TEXT_DIM, false, 0)], clip: i.clip, scale: i.text_scale, face: crate::render::DEFAULT_FACE });
     }
     if let Some(c) = i.caret.map(|c| clip_rect(c, i.clip)).filter(|c| c.h > 0.0) {
         frame.quads.push(Quad { rect: Rect { w: scale.max(1.0), ..c }, color: rgba(TAB_TEXT, 1.0) });
     }
     for (r, glyph, on) in [(i.attach, '\u{E710}', true), (i.send, i.send_glyph, i.send_enabled)] {
         let color = if on { TAB_TEXT } else { TAB_TEXT_DIM };
-        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(glyph.to_string(), color, false, true)], clip: r, scale: 1.0 });
+        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(glyph.to_string(), color, false, true)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
 }
 
@@ -2689,13 +2694,13 @@ pub fn clip_preview(frame: &mut Frame, area: Rect, title: &str, lines: &[String]
     frame.popups.push(Quad { rect: r, color: rgba(CLIP_BG, 1.0) });
     let x = r.x + 12.0 * scale;
     let mut y = r.y + 8.0 * scale;
-    frame.rows.push(TextRow { x, y, spans: vec![clip_span(title.to_string(), TAB_TEXT, true, false)], clip: r, scale: 1.0 });
+    frame.rows.push(TextRow { x, y, spans: vec![clip_span(title.to_string(), TAB_TEXT, true, false)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     y += cell.1 * 1.5;
     for line in lines {
         if y + cell.1 > r.y + r.h {
             break;
         }
-        frame.rows.push(TextRow { x, y, spans: vec![clip_span(line.clone(), TAB_TEXT, false, false)], clip: r, scale: 1.0 });
+        frame.rows.push(TextRow { x, y, spans: vec![clip_span(line.clone(), TAB_TEXT, false, false)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
         y += cell.1;
     }
 }
@@ -2745,7 +2750,7 @@ pub fn toolbelt(frame: &mut Frame, d: &BeltDraw, cell: (f32, f32), scale: f32) {
     // Glyph width: the font's size, a line being 1.2 of it.
     let glyph_w = line_h / 1.2;
     let glyph = |frame: &mut Frame, r: Rect, c: char| {
-        frame.rows.push(TextRow { x: r.x + (r.w - glyph_w) / 2.0, y: r.y + (r.h - line_h) / 2.0, spans: vec![belt_span(c.to_string(), icon, true)], clip: r, scale: d.text_scale });
+        frame.rows.push(TextRow { x: r.x + (r.w - glyph_w) / 2.0, y: r.y + (r.h - line_h) / 2.0, spans: vec![belt_span(c.to_string(), icon, true)], clip: r, scale: d.text_scale, face: crate::render::DEFAULT_FACE });
     };
     for (i, w) in l.wrappers.iter().enumerate() {
         glyph(frame, w.close, BELT_CLOSE_GLYPH);
@@ -2756,7 +2761,7 @@ pub fn toolbelt(frame: &mut Frame, d: &BeltDraw, cell: (f32, f32), scale: f32) {
         }
         let x = r.x + ((r.w - width) / 2.0).max(0.0);
         let clip = Rect { y: w.frame.y, h: w.frame.h.min(r.y - w.frame.y + r.h.max(line_h)), ..r };
-        frame.rows.push(TextRow { x, y: r.y + (r.h - line_h) / 2.0, spans: vec![belt_span(title.to_string(), text, false)], clip, scale: d.text_scale });
+        frame.rows.push(TextRow { x, y: r.y + (r.h - line_h) / 2.0, spans: vec![belt_span(title.to_string(), text, false)], clip, scale: d.text_scale, face: crate::render::DEFAULT_FACE });
     }
     glyph(frame, l.hamburger, BELT_MENU_GLYPH);
     if let Some(r) = l.empty_label {
@@ -2767,7 +2772,7 @@ pub fn toolbelt(frame: &mut Frame, d: &BeltDraw, cell: (f32, f32), scale: f32) {
             let mut y = r.y + (r.h - h) / 2.0;
             for (line, width) in d.empty {
                 let x = r.x + ((r.w - width) / 2.0).max(0.0);
-                frame.rows.push(TextRow { x, y, spans: vec![belt_span(line.clone(), text, false)], clip: r, scale: d.text_scale });
+                frame.rows.push(TextRow { x, y, spans: vec![belt_span(line.clone(), text, false)], clip: r, scale: d.text_scale, face: crate::render::DEFAULT_FACE });
                 y += line_h;
             }
         }
@@ -2908,7 +2913,7 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
         let y = r.y + (r.h - line_h) / 2.0;
         let clip = Rect { x: r.x + 1.0, w: (r.w - 2.0).max(0.0), ..r };
         if !shown.is_empty() {
-            frame.rows.push(TextRow { x, y, spans: vec![list_span(shown.to_string(), text, false, 0)], clip, scale: text_scale });
+            frame.rows.push(TextRow { x, y, spans: vec![list_span(shown.to_string(), text, false, 0)], clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
         }
         if focused {
             let cx = (x + width).min(r.x + r.w - 2.0);
@@ -2945,25 +2950,25 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
             let (slot, gap, size) = if c == STATUS_DOT { (DOT_SLOT, DOT_GAP, DOT_PT) } else { (LEAD_SLOT, LEAD_GAP, LEAD_PT) };
             let s = size * scale * 1.2 / cell.1.max(1.0);
             let gh = cell.1 * s;
-            frame.rows.push(TextRow { x: x + (slot * scale - gh / 1.2) / 2.0, y: y + (line_h - gh) / 2.0, spans: vec![list_span(c.to_string(), color, false, 2)], clip, scale: s });
+            frame.rows.push(TextRow { x: x + (slot * scale - gh / 1.2) / 2.0, y: y + (line_h - gh) / 2.0, spans: vec![list_span(c.to_string(), color, false, 2)], clip, scale: s, face: crate::render::DEFAULT_FACE });
             x += (slot + gap) * scale;
         }
         if let Some((right, w)) = &row.right {
             // The tertiary color; on the selection, white at 0.7 (`updateShortcutColor`).
             let color = if selected { blend(rgb(0xff, 0xff, 0xff), LIST_SELECTED, 0.3) } else { soft(blend(dim, bg, 0.35)) };
-            frame.rows.push(TextRow { x: (r.x + r.w - inset - w).max(x), y, spans: vec![list_span(right.clone(), color, false, 0)], clip, scale: text_scale });
+            frame.rows.push(TextRow { x: (r.x + r.w - inset - w).max(x), y, spans: vec![list_span(right.clone(), color, false, 0)], clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
         }
         if let Some(c) = row.disclosure {
-            frame.rows.push(TextRow { x, y, spans: vec![list_span(c.to_string(), fg2, false, 2)], clip, scale: text_scale });
+            frame.rows.push(TextRow { x, y, spans: vec![list_span(c.to_string(), fg2, false, 2)], clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
             x += glyph_w + 2.0 * scale;
         }
         if let Some((c, color)) = row.icon {
-            frame.rows.push(TextRow { x, y, spans: vec![list_span(c.to_string(), if selected { fg } else { color }, false, 2)], clip, scale: text_scale });
+            frame.rows.push(TextRow { x, y, spans: vec![list_span(c.to_string(), if selected { fg } else { color }, false, 2)], clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
             x += glyph_w + 4.0 * scale;
         }
-        frame.rows.push(TextRow { x, y, spans: vec![list_span(row.text.clone(), fg, row.bold, 0)], clip, scale: text_scale });
+        frame.rows.push(TextRow { x, y, spans: vec![list_span(row.text.clone(), fg, row.bold, 0)], clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
         if let Some(second) = &row.second {
-            frame.rows.push(TextRow { x, y: y + line_h, spans: vec![list_span(second.clone(), fg2, false, 1)], clip, scale: text_scale * d.second_scale });
+            frame.rows.push(TextRow { x, y: y + line_h, spans: vec![list_span(second.clone(), fg2, false, 1)], clip, scale: text_scale * d.second_scale, face: crate::render::DEFAULT_FACE });
         }
         let mut ly = y + line_h;
         for (k, line) in row.lines.iter().enumerate() {
@@ -2977,7 +2982,7 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
                 Some(_) => (x + row.lines_indent * scale, fg2),
                 None => (x + row.lines_indent * scale, fg),
             };
-            frame.rows.push(TextRow { x: lx, y: ly, spans: vec![list_span(line.clone(), color, false, 0)], clip, scale: text_scale });
+            frame.rows.push(TextRow { x: lx, y: ly, spans: vec![list_span(line.clone(), color, false, 0)], clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
             ly += line_h;
         }
         let mut cx = x;
@@ -2985,7 +2990,7 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
             let chip = Rect { x: cx, y: y + line_h, w: *w, h: line_h * CHIP_SCALE };
             let shown = Rect { w: chip.w.min((clip.x + clip.w - cx).max(0.0)), ..chip };
             frame.quads.push(Quad { rect: shown, color: rgba(CHIP_BG, 1.0) });
-            frame.rows.push(TextRow { x: cx, y: chip.y, spans: vec![list_span(tag.clone(), rgb(0xff, 0xff, 0xff), false, 0)], clip, scale: text_scale * CHIP_SCALE });
+            frame.rows.push(TextRow { x: cx, y: chip.y, spans: vec![list_span(tag.clone(), rgb(0xff, 0xff, 0xff), false, 0)], clip, scale: text_scale * CHIP_SCALE, face: crate::render::DEFAULT_FACE });
             cx += w + CHIP_GAP * scale;
         }
     }
@@ -3003,7 +3008,7 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
         } else {
             dim
         };
-        frame.rows.push(TextRow { x: r.x + (r.w - glyph_w) / 2.0, y: r.y + (r.h - line_h) / 2.0, spans: vec![list_span(b.glyph().to_string(), color, false, 2)], clip: *r, scale: text_scale });
+        frame.rows.push(TextRow { x: r.x + (r.w - glyph_w) / 2.0, y: r.y + (r.h - line_h) / 2.0, spans: vec![list_span(b.glyph().to_string(), color, false, 2)], clip: *r, scale: text_scale, face: crate::render::DEFAULT_FACE });
     }
 
     if let (Some(r), Some((label, on))) = (l.popup, d.popup) {
@@ -3013,8 +3018,8 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
         let y = r.y + (r.h - line_h) / 2.0;
         let glyph_x = r.x + r.w - glyph_w - 6.0 * scale;
         let clip = Rect { w: (glyph_x - r.x).max(0.0), ..r };
-        frame.rows.push(TextRow { x: r.x + 6.0 * scale, y, spans: vec![list_span(label.to_string(), color, false, 1)], clip, scale: text_scale });
-        frame.rows.push(TextRow { x: glyph_x, y, spans: vec![list_span(POPUP_GLYPH.to_string(), color, false, 2)], clip: r, scale: text_scale });
+        frame.rows.push(TextRow { x: r.x + 6.0 * scale, y, spans: vec![list_span(label.to_string(), color, false, 1)], clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
+        frame.rows.push(TextRow { x: glyph_x, y, spans: vec![list_span(POPUP_GLYPH.to_string(), color, false, 2)], clip: r, scale: text_scale, face: crate::render::DEFAULT_FACE });
     }
 }
 
@@ -3061,7 +3066,7 @@ pub fn note_editor(frame: &mut Frame, d: &NoteDraw, cell: (f32, f32), text_scale
         frame.quads.push(Quad { rect: *r, color: rgba(if on { LIST_SELECTED } else { field_bg }, 1.0) });
         frame_lines(&mut frame.quads, *r, edge);
         let color = if on { rgb(0xff, 0xff, 0xff) } else { text };
-        frame.rows.push(TextRow { x: r.x + ((r.w - w) / 2.0).max(0.0), y: r.y + (r.h - label_h) / 2.0, spans: vec![list_span(label.to_string(), color, false, 1)], clip: *r, scale: d.label_scale });
+        frame.rows.push(TextRow { x: r.x + ((r.w - w) / 2.0).max(0.0), y: r.y + (r.h - label_h) / 2.0, spans: vec![list_span(label.to_string(), color, false, 1)], clip: *r, scale: d.label_scale, face: crate::render::DEFAULT_FACE });
     }
     frame.quads.push(Quad { rect: d.frame, color: rgba(field_bg, 1.0) });
     frame_lines(&mut frame.quads, d.frame, if d.focused { rgba(LIST_SELECTED, 1.0) } else { edge });
@@ -3073,7 +3078,7 @@ pub fn note_editor(frame: &mut Frame, d: &NoteDraw, cell: (f32, f32), text_scale
     }
     for (x, y, line) in d.lines {
         if !line.is_empty() {
-            frame.rows.push(TextRow { x: *x, y: *y, spans: vec![list_span(line.clone(), text, false, 0)], clip: d.clip, scale: text_scale });
+            frame.rows.push(TextRow { x: *x, y: *y, spans: vec![list_span(line.clone(), text, false, 0)], clip: d.clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
         }
     }
     if let Some(c) = d.caret.map(|c| clip_rect(c, d.clip)).filter(|c| c.h > 0.0) {
@@ -3174,7 +3179,7 @@ pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) -> Option
     for (x, y, runs) in d.lines {
         let spans: Vec<Span> = runs.iter().filter(|(t, _, _)| !t.is_empty()).map(|(t, c, b)| plain_span(t.clone(), under(*c), *b)).collect();
         if !spans.is_empty() {
-            frame.rows.push(TextRow { x: *x, y: *y, spans, clip: d.clip, scale: 1.0 });
+            frame.rows.push(TextRow { x: *x, y: *y, spans, clip: d.clip, scale: 1.0, face: crate::render::DEFAULT_FACE });
         }
     }
     if d.separator.is_some() {
@@ -3183,20 +3188,20 @@ pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) -> Option
     let icon = |frame: &mut Frame, r: Rect, glyph: char| {
         let (w, h) = (cell.0, cell.1);
         let span = Span { text: glyph.to_string(), color: under(d.fg), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
-        frame.rows.push(TextRow { x: r.x + ((r.w - w) / 2.0).max(0.0), y: r.y + ((r.h - h) / 2.0).max(0.0), spans: vec![span], clip: r, scale: 1.0 });
+        frame.rows.push(TextRow { x: r.x + ((r.w - w) / 2.0).max(0.0), y: r.y + ((r.h - h) / 2.0).max(0.0), spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     };
     icon(frame, d.close, COMPOSER_CLOSE_GLYPH);
     icon(frame, d.help, COMPOSER_HELP_GLYPH);
     let small_h = cell.1 * d.small;
     if let Some(r) = d.ai {
         let w = 2.0 * cell.0 * d.small;
-        frame.rows.push(TextRow { x: r.x + ((r.w - w) / 2.0).max(0.0), y: r.y + ((r.h - small_h) / 2.0).max(0.0), spans: vec![plain_span("AI".into(), under(d.fg), false)], clip: r, scale: d.small });
+        frame.rows.push(TextRow { x: r.x + ((r.w - w) / 2.0).max(0.0), y: r.y + ((r.h - small_h) / 2.0).max(0.0), spans: vec![plain_span("AI".into(), under(d.fg), false)], clip: r, scale: d.small, face: crate::render::DEFAULT_FACE });
     }
     if let Some((x, y, text)) = d.warning {
-        frame.rows.push(TextRow { x, y, spans: vec![plain_span(text.to_string(), under(TAB_TEXT_DIM), false)], clip: inner, scale: d.small });
+        frame.rows.push(TextRow { x, y, spans: vec![plain_span(text.to_string(), under(TAB_TEXT_DIM), false)], clip: inner, scale: d.small, face: crate::render::DEFAULT_FACE });
     }
     if let Some((x, y, tip)) = d.tip {
-        frame.rows.push(TextRow { x, y, spans: vec![plain_span(tip.to_string(), under(TAB_TEXT_DIM), false)], clip: inner, scale: d.small });
+        frame.rows.push(TextRow { x, y, spans: vec![plain_span(tip.to_string(), under(TAB_TEXT_DIM), false)], clip: inner, scale: d.small, face: crate::render::DEFAULT_FACE });
     }
     // The tooltip above the Help button, a small box of its own over the text.
     if let Some(t) = d.tooltip {
@@ -3205,7 +3210,7 @@ pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) -> Option
         cut_out(frame, r, d.line_h);
         frame.popups.push(Quad { rect: r, color: rgba(FIND_BAR, a) });
         frame_lines(&mut frame.popups, r, rgba(DIVIDER, a));
-        frame.rows.push(TextRow { x: r.x + cell.0 * d.small, y: r.y + 3.0, spans: vec![plain_span(t.to_string(), under(TAB_TEXT), false)], clip: r, scale: d.small });
+        frame.rows.push(TextRow { x: r.x + cell.0 * d.small, y: r.y + 3.0, spans: vec![plain_span(t.to_string(), under(TAB_TEXT), false)], clip: r, scale: d.small, face: crate::render::DEFAULT_FACE });
     }
     Some(d.panel)
 }
@@ -3273,7 +3278,7 @@ pub fn composer_popup(frame: &mut Frame, d: &ComposerPopupDraw, cell: (f32, f32)
     let text_y = |ry: f32| ry + ((row_h - cell.1) / 2.0).max(0.0);
     if let Some(p) = d.placeholder {
         let ry = r.y + POPUP_SPACING * scale;
-        frame.rows.push(TextRow { x: r.x + 8.0 * scale, y: text_y(ry), spans: vec![plain_span(p.to_string(), TAB_TEXT_DIM, false)], clip: inner, scale: 1.0 });
+        frame.rows.push(TextRow { x: r.x + 8.0 * scale, y: text_y(ry), spans: vec![plain_span(p.to_string(), TAB_TEXT_DIM, false)], clip: inner, scale: 1.0, face: crate::render::DEFAULT_FACE });
         return r;
     }
     let strip = if d.detail.is_some() { POPUP_DETAIL * scale } else { 0.0 };
@@ -3290,7 +3295,7 @@ pub fn composer_popup(frame: &mut Frame, d: &ComposerPopupDraw, cell: (f32, f32)
             rounded_box(&mut frame.popups, sel, 4.0 * scale, rgba(LIST_SELECTED, 1.0));
         }
         let icon = Span { text: glyph.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
-        frame.rows.push(TextRow { x: r.x + 8.0 * scale, y: text_y(ry), spans: vec![icon], clip: list, scale: 1.0 });
+        frame.rows.push(TextRow { x: r.x + 8.0 * scale, y: text_y(ry), spans: vec![icon], clip: list, scale: 1.0, face: crate::render::DEFAULT_FACE });
         let mut spans = Vec::new();
         match bold.clone().filter(|b| b.end <= t.len() && t.is_char_boundary(b.end)) {
             Some(b) => {
@@ -3300,12 +3305,12 @@ pub fn composer_popup(frame: &mut Frame, d: &ComposerPopupDraw, cell: (f32, f32)
             None => spans.push(plain_span(t.clone(), color, false)),
         }
         spans.retain(|s| !s.text.is_empty());
-        frame.rows.push(TextRow { x: r.x + 8.0 * scale + 2.0 * cell.0, y: text_y(ry), spans, clip: list, scale: 1.0 });
+        frame.rows.push(TextRow { x: r.x + 8.0 * scale + 2.0 * cell.0, y: text_y(ry), spans, clip: list, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     if let Some(detail) = d.detail {
         let sy = r.y + r.h - strip;
         frame.popups.push(Quad { rect: Rect { x: inner.x, y: sy, w: inner.w, h: 1.0 }, color: rgba(DIVIDER, 1.0) });
-        frame.rows.push(TextRow { x: r.x + 8.0 * scale, y: sy + ((strip - cell.1) / 2.0).max(0.0), spans: vec![plain_span(detail.to_string(), TAB_TEXT_DIM, false)], clip: inner, scale: 1.0 });
+        frame.rows.push(TextRow { x: r.x + 8.0 * scale, y: sy + ((strip - cell.1) / 2.0).max(0.0), spans: vec![plain_span(detail.to_string(), TAB_TEXT_DIM, false)], clip: inner, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     r
 }
@@ -3375,7 +3380,7 @@ fn codecierge_field(frame: &mut Frame, f: &FieldDraw, cell: (f32, f32), text_sca
     note_editor(frame, &f.edit, cell, text_scale, scale);
     if let Some((x, y, t)) = f.placeholder {
         let dim = if f.edit.dark { TAB_TEXT_DIM } else { LIST_DISABLED_LIGHT };
-        frame.rows.push(TextRow { x, y, spans: vec![list_span(t.to_string(), dim, false, 0)], clip: f.edit.clip, scale: text_scale });
+        frame.rows.push(TextRow { x, y, spans: vec![list_span(t.to_string(), dim, false, 0)], clip: f.edit.clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
     }
 }
 
@@ -3384,7 +3389,7 @@ pub fn codecierge(frame: &mut Frame, d: &CodeciergeDraw, cell: (f32, f32), text_
     let (text, disabled, field_bg) = if d.dark { (TAB_TEXT, LIST_DISABLED_DARK, FIELD_BG_DARK) } else { (BELT_TEXT_LIGHT, LIST_DISABLED_LIGHT, FIELD_BG_LIGHT) };
     let line_h = cell.1 * text_scale;
     for (x, y, line) in d.lines {
-        frame.rows.push(TextRow { x: *x, y: *y, spans: vec![list_span(line.clone(), text, false, 1)], clip: d.clip, scale: text_scale });
+        frame.rows.push(TextRow { x: *x, y: *y, spans: vec![list_span(line.clone(), text, false, 1)], clip: d.clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
     }
     if let Some(g) = &d.goal {
         codecierge_field(frame, &g.field, cell, text_scale, scale);
@@ -3393,14 +3398,14 @@ pub fn codecierge(frame: &mut Frame, d: &CodeciergeDraw, cell: (f32, f32), text_
         frame_lines(&mut frame.quads, g.check, if g.check_enabled { edge } else { rgba(disabled, 1.0) });
         if g.checked {
             let span = list_span(CHECK_GLYPH.to_string(), if g.check_enabled { text } else { disabled }, false, 2);
-            frame.rows.push(TextRow { x: g.check.x + 1.0, y: g.check.y + (g.check.h - line_h) / 2.0, spans: vec![span], clip: g.check, scale: text_scale });
+            frame.rows.push(TextRow { x: g.check.x + 1.0, y: g.check.y + (g.check.h - line_h) / 2.0, spans: vec![span], clip: g.check, scale: text_scale, face: crate::render::DEFAULT_FACE });
         }
         let (x, y, t) = g.check_label;
-        frame.rows.push(TextRow { x, y, spans: vec![list_span(t.to_string(), if g.check_enabled { text } else { disabled }, false, 1)], clip: d.clip, scale: text_scale });
+        frame.rows.push(TextRow { x, y, spans: vec![list_span(t.to_string(), if g.check_enabled { text } else { disabled }, false, 1)], clip: d.clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
     }
     if let Some(r) = &d.run {
         let (x, y, t) = r.goal;
-        frame.rows.push(TextRow { x, y, spans: vec![list_span(t.to_string(), text, false, 1)], clip: d.clip, scale: text_scale });
+        frame.rows.push(TextRow { x, y, spans: vec![list_span(t.to_string(), text, false, 1)], clip: d.clip, scale: text_scale, face: crate::render::DEFAULT_FACE });
         if let Some((b, phase)) = r.spinner {
             // Eight dots round a circle, one lit, turning with `phase`.
             let dot = (b.w / 6.0).max(1.5);
@@ -3436,14 +3441,14 @@ pub fn codecierge(frame: &mut Frame, d: &CodeciergeDraw, cell: (f32, f32), text_
         let s = r.send;
         let color = if r.send_enabled { text } else { disabled };
         let span = list_span(SEND_GLYPH.to_string(), color, false, 2);
-        frame.rows.push(TextRow { x: s.x + (s.w - line_h) / 2.0, y: s.y + (s.h - line_h) / 2.0, spans: vec![span], clip: s, scale: text_scale });
+        frame.rows.push(TextRow { x: s.x + (s.w - line_h) / 2.0, y: s.y + (s.h - line_h) / 2.0, spans: vec![span], clip: s, scale: text_scale, face: crate::render::DEFAULT_FACE });
     }
     let b = d.button;
     rounded_box(&mut frame.quads, b, 4.0 * scale, rgba(DIVIDER, if d.dark { 1.0 } else { 0.4 }));
     let inner = Rect { x: b.x + 1.0, y: b.y + 1.0, w: (b.w - 2.0).max(0.0), h: (b.h - 2.0).max(0.0) };
     rounded_box(&mut frame.quads, inner, 3.0 * scale, rgba(field_bg, 1.0));
     let color = if d.enabled { text } else { disabled };
-    frame.rows.push(TextRow { x: b.x + ((b.w - d.label_w) / 2.0).max(0.0), y: b.y + (b.h - line_h) / 2.0, spans: vec![list_span(d.label.to_string(), color, false, 1)], clip: clip_rect(b, d.clip), scale: text_scale });
+    frame.rows.push(TextRow { x: b.x + ((b.w - d.label_w) / 2.0).max(0.0), y: b.y + (b.h - line_h) / 2.0, spans: vec![list_span(d.label.to_string(), color, false, 1)], clip: clip_rect(b, d.clip), scale: text_scale, face: crate::render::DEFAULT_FACE });
 }
 
 /// Make Screenshot's sign at the pane's top right while the pane shows the frozen copy: a
@@ -3509,7 +3514,7 @@ pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) -> Rec
     cut_rows_from(frame, r, cell.1);
     frame.quads.push(Quad { rect: r, color: rgba(STAMP_BG, 1.0) });
     let span = Span { text: text.to_string(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-    frame.rows.push(TextRow { x: r.x + 2.0 * cell.0, y: r.y + 6.0, spans: vec![span], clip: r, scale: 1.0 });
+    frame.rows.push(TextRow { x: r.x + 2.0 * cell.0, y: r.y + 6.0, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     r
 }
 
@@ -3526,7 +3531,7 @@ pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) -> Re
     cut_out(frame, r, cell.1);
     frame.quads.push(Quad { rect: r, color: rgba(BANNER, 1.0) });
     let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-    frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span], clip: r, scale: 1.0 });
+    frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     r
 }
 
@@ -3544,7 +3549,7 @@ pub fn fps_meter(frame: &mut Frame, text: &str, pane_inner: Rect, cell: (f32, f3
     cut_out(frame, r, cell.1);
     frame.popups.push(Quad { rect: r, color: rgba(to_rgb(crate::perf_stats::FPS_BG), 1.0) });
     let span = Span { text: text.to_string(), color: to_rgb(crate::perf_stats::FPS_FG), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-    frame.rows.push(TextRow { x: r.x, y: r.y, spans: vec![span], clip: r, scale: 1.0 });
+    frame.rows.push(TextRow { x: r.x, y: r.y, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
 }
 
 #[cfg(test)]
@@ -3603,8 +3608,8 @@ mod broadcast_tests {
 
 #[cfg(test)]
 mod tests {
-    /// (quads, rows, digest) of the porthole frame in `doc_lines_draw_as_the_porthole_did`, taken from `porthole` before `doc_lines` was extracted from it.
-    const GOLDEN: (usize, usize, u64) = (10, 15, 10881690239227710009);
+    /// (quads, rows, digest) of the porthole frame in `doc_lines_draw_as_the_porthole_did`, taken from `porthole` before `doc_lines` was extracted from it (retaken when `TextRow` gained `face`: the digest reads the rows' Debug text, and the 10 quads and 15 rows are unchanged).
+    const GOLDEN: (usize, usize, u64) = (10, 15, 12293229994081336650);
 
     /// The palette the tab bar had before themes: one flat dark bar, a lighter selected tab, the
     /// two greys for text and no lines. The layout tests below draw with it.
@@ -4180,7 +4185,7 @@ mod tests {
         let base = || {
             let mut f = Frame::default();
             f.quads.push(Quad { rect: pane, color: rgba(rgb(0, 0, 0), 1.0) });
-            f.rows.push(TextRow { x: 0.0, y: 0.0, spans: vec![span(rgb(9, 9, 9))], clip: pane, scale: 1.0 });
+            f.rows.push(TextRow { x: 0.0, y: 0.0, spans: vec![span(rgb(9, 9, 9))], clip: pane, scale: 1.0, face: crate::render::DEFAULT_FACE });
             // The sessions' overlay: a divider through the bar, an unfocused pane's dim, a
             // beam cursor on the top row, and a link underline below the bar.
             for rect in [
@@ -4196,7 +4201,7 @@ mod tests {
         let layer = || {
             let mut l = Frame::default();
             l.quads.push(Quad { rect: bar, color: rgba(rgb(50, 50, 50), 1.0) });
-            l.rows.push(TextRow { x: 4.0, y: 2.0, spans: vec![span(rgb(200, 100, 0))], clip: bar, scale: 1.0 });
+            l.rows.push(TextRow { x: 4.0, y: 2.0, spans: vec![span(rgb(200, 100, 0))], clip: bar, scale: 1.0, face: crate::render::DEFAULT_FACE });
             l
         };
         let mut f = base();
@@ -4397,7 +4402,7 @@ mod tests {
         let mut f = Frame::default();
         let span = Span { text: "terminal".into(), color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
         let under = Rect { x: 0.0, y: 0.0, w: 400.0, h: 16.0 };
-        f.rows.push(TextRow { x: 0.0, y: 0.0, spans: vec![span], clip: under, scale: 1.0 });
+        f.rows.push(TextRow { x: 0.0, y: 0.0, spans: vec![span], clip: under, scale: 1.0, face: crate::render::DEFAULT_FACE });
         let bounds = Rect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 };
         completion_list(&mut f, &["one".into(), "two".into()], 0, None, (100.0, 0.0), bounds, (8.0, 16.0));
         assert!(f.overlay.is_empty());
@@ -4416,7 +4421,7 @@ mod tests {
         // Terminal text under the tip is cut out; the tip is a popup box, not an overlay.
         let mut f = Frame::default();
         let span = plain_span("terminal".into(), LABEL_TEXT, false);
-        f.rows.push(TextRow { x: 0.0, y: 40.0, spans: vec![span], clip: Rect { x: 0.0, y: 40.0, w: 400.0, h: 16.0 }, scale: 1.0 });
+        f.rows.push(TextRow { x: 0.0, y: 40.0, spans: vec![span], clip: Rect { x: 0.0, y: 40.0, w: 400.0, h: 16.0 }, scale: 1.0, face: crate::render::DEFAULT_FACE });
         tab_tooltip(&mut f, "Name: zsh\nProfile: Default\nCommand: None", (100.0, 40.0), window, cell);
         assert!(f.overlay.is_empty() && f.quads.is_empty());
         let b = f.popups[0].rect;
@@ -4447,7 +4452,7 @@ mod tests {
         let pane = Rect { x: 0.0, y: 0.0, w: 400.0, h: 160.0 };
         for i in 0..10 {
             let span = Span { text: format!("line {i}"), color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-            f.rows.push(TextRow { x: 0.0, y: i as f32 * 16.0, spans: vec![span], clip: pane, scale: 1.0 });
+            f.rows.push(TextRow { x: 0.0, y: i as f32 * 16.0, spans: vec![span], clip: pane, scale: 1.0, face: crate::render::DEFAULT_FACE });
         }
         completion_list(&mut f, &["one".into(), "two".into()], 0, None, (100.0, 64.0), pane, (8.0, 16.0));
         let b = f.popups[0].rect;
@@ -4562,10 +4567,25 @@ mod tests {
     }
 
     #[test]
+    fn a_pane_draws_every_row_in_its_face() {
+        // The pane's text rows, a find label and a note all take the face `pane_with` is given.
+        let mut s = Screen::new(10, 3);
+        s.feed(b"hello \xe4\xb8\xad world");
+        let mut f = Frame::default();
+        let hl = Highlights { matches: &[], color: rgb(255, 255, 0), hover: None, link: rgb(0, 0, 255), labels: &[(crate::find::Pos { row: 0, col: 1 }, "a".to_string())], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl), 7);
+        assert!(f.rows.len() >= 3, "{:?}", f.rows);
+        assert!(f.rows.iter().all(|r| r.face == 7), "{:?}", f.rows.iter().map(|r| r.face).collect::<Vec<_>>());
+        let mut g = Frame::default();
+        pane(&mut g, &s, RECT, CELL, true, &CursorLook::shown(true));
+        assert!(!g.rows.is_empty() && g.rows.iter().all(|r| r.face == crate::render::DEFAULT_FACE), "pane() is the default face");
+    }
+
+    #[test]
     fn cell_backgrounds_take_the_alpha() {
         let s = red_selected_default();
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(0.7, false)));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(0.7, false)), crate::render::DEFAULT_FACE);
         assert_eq!(quad_alpha_at(&f, 5.0, 10.0), vec![0.7], "{:?}", f.quads);
         assert_eq!(quad_alpha_at(&f, 15.0, 10.0), vec![0.7], "{:?}", f.quads);
     }
@@ -4574,7 +4594,7 @@ mod tests {
     fn opaque_colors_keep_cells_solid() {
         let s = red_selected_default();
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(0.7, true)));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(0.7, true)), crate::render::DEFAULT_FACE);
         assert_eq!(quad_alpha_at(&f, 5.0, 10.0), vec![1.0], "{:?}", f.quads);
         assert_eq!(quad_alpha_at(&f, 15.0, 10.0), vec![1.0], "{:?}", f.quads);
         assert_eq!(quad_alpha_at(&f, 25.0, 10.0), vec![0.7], "{:?}", f.quads);
@@ -4584,7 +4604,7 @@ mod tests {
     fn cursor_stays_opaque() {
         let s = screen(b"");
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&see_through(0.5, false)));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&see_through(0.5, false)), crate::render::DEFAULT_FACE);
         let top = f.quads.iter().rev().find(|q| q.rect.contains(5.0, 10.0)).unwrap();
         assert_eq!(top.color, rgba(s.palette.cursor, 1.0), "{:?}", f.quads);
     }
@@ -4593,7 +4613,7 @@ mod tests {
     fn block_cursor_in_a_see_through_pane_keeps_the_cell_background_alpha() {
         let s = screen(b"");
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&see_through(0.5, false)));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&see_through(0.5, false)), crate::render::DEFAULT_FACE);
         assert_eq!(quad_alpha_at(&f, 5.0, 10.0), vec![0.5, 1.0], "{:?}", f.quads);
     }
 
@@ -4736,7 +4756,7 @@ mod tests {
         let mut f = Frame::default();
         let yellow = rgb(200, 200, 0);
         let hl = Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook { boost: 0.5, ..CursorLook::shown(false) }, &DrawPrefs::default(), Some(&hl));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook { boost: 0.5, ..CursorLook::shown(false) }, &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         let quad = |c: Rgb, x: f32| f.quads.iter().any(|q| q.color == rgba(c, 1.0) && q.rect.x == x);
         assert!(quad(rgb(100, 50, 0), 0.0), "selection background halfway to black: {:?}", f.quads);
         assert!(quad(rgb(100, 100, 0), 60.0), "match background halfway to black: {:?}", f.quads);
@@ -4909,7 +4929,7 @@ mod tests {
     fn default_background_is_not_a_cell_quad() {
         let s = screen(b"abc");
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(1.0, false)));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(1.0, false)), crate::render::DEFAULT_FACE);
         assert!(f.quads.is_empty(), "{:?}", f.quads);
     }
 
@@ -4993,7 +5013,7 @@ mod tests {
         let build = |opaque: bool| {
             let mut f = Frame::default();
             margin_fill_alpha(&mut f, pane, grid, CELL.1, &crate::margins::fill(&[], bg, false, false), bg, 0.7, false, false);
-            pane_with(&mut f, &s, grid, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(0.7, opaque)));
+            pane_with(&mut f, &s, grid, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(0.7, opaque)), crate::render::DEFAULT_FACE);
             f
         };
         let a = |f: &Frame, x: f32, y: f32| crate::transparency::composite(&f.quads, x, y)[3];
@@ -5140,7 +5160,7 @@ mod tests {
         let s = screen(b"a\x1b[41mb\x1b[0m");
         let mut f = Frame::default();
         background(&mut f, pane, &pieces, &img, s.palette.bg, 0.25);
-        pane_with(&mut f, &s, pane, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None);
+        pane_with(&mut f, &s, pane, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
         assert_eq!(f.backgrounds.len(), 1);
         assert_eq!((f.backgrounds[0].key, f.backgrounds[0].repeat), ((7, 0), false));
         assert_eq!(f.quads[0], Quad { rect: pane, color: rgba(s.palette.bg, 0.75) }, "the default background veils the image");
@@ -5650,7 +5670,7 @@ mod tests {
         let m = crate::find::find_all(&s, "ab").unwrap();
         let mut f = Frame::default();
         let yellow = rgb(0xff, 0xff, 0x00);
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false }));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false }), crate::render::DEFAULT_FACE);
         let y = rgba(yellow, 1.0);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 30.0, y: 0.0, w: 20.0, h: 20.0 }), "{:?}", f.quads);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 60.0, y: 0.0, w: 20.0, h: 20.0 }));
@@ -5687,7 +5707,7 @@ mod tests {
         assert!(f.underlines.iter().all(|q| q.rect.h == 1.0));
         assert!(f.overlay.is_empty(), "the old overlay dashes are gone");
         let mut off = Frame::default();
-        pane_with(&mut off, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs { underline_hyperlinks: false, ..DrawPrefs::default() }, None);
+        pane_with(&mut off, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs { underline_hyperlinks: false, ..DrawPrefs::default() }, None, crate::render::DEFAULT_FACE);
         assert!(off.underlines.is_empty());
     }
 
@@ -5843,7 +5863,7 @@ mod tests {
         let link = rgb(0x06, 0x45, 0xad);
         let hover = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
         let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         let q = f.overlay.iter().find(|q| q.color == rgba(link, 1.0)).unwrap();
         assert_eq!(q.rect, Rect { x: 40.0, y: CELL.1 - 1.0, w: 40.0, h: 1.0 });
         let x = f.rows.iter().flat_map(|r| &r.spans).find(|sp| sp.text.starts_with("x.rs")).unwrap();
@@ -5856,7 +5876,7 @@ mod tests {
         let mut f = Frame::default();
         let labels = [(crate::find::Pos { row: 0, col: 4 }, "1".to_string())];
         let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &labels, notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         let texts: Vec<String> = f.rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
         assert!(texts.iter().any(|t| t.starts_with("see  ttps")), "{texts:?}");
         let tag = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "1")).unwrap();
@@ -5888,7 +5908,7 @@ mod tests {
         let m = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
         let notes = [(m, Some("a file".to_string()))];
         let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         assert!(f.overlay.iter().any(|q| q.color == rgba(NOTE, 1.0) && q.rect == Rect { x: 40.0, y: CELL.1 - 3.0, w: 40.0, h: 1.0 }), "{:?}", f.overlay);
         assert!(f.rows.iter().any(|r| r.spans.iter().any(|s| s.text == "a file")));
     }
@@ -5933,7 +5953,7 @@ mod tests {
         let notes = [(m, Some("n".to_string()))];
         let rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 80.0 };
         let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
-        pane_with(&mut f, &s, rect, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
+        pane_with(&mut f, &s, rect, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         assert!(f.overlay.iter().all(|q| q.rect.x + q.rect.w <= rect.w + 0.01 && q.rect.y + q.rect.h <= rect.h + 0.01), "{:?}", f.overlay);
         assert!(f.overlay.len() < 50);
     }
@@ -6019,7 +6039,7 @@ mod tests {
         let s = screen(b"ab");
         let hl = Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::NONE, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         assert!(!f.overlay.iter().any(|q| q.rect == RECT), "the key pane of a background window keeps its brightness");
         assert!(!f.quads.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0)), "its cursor is hollow");
     }
@@ -6031,18 +6051,18 @@ mod tests {
         let whole = |f: &Frame| f.overlay.iter().any(|q| q.rect == RECT);
         // The render loop lays the gray quad over the whole pane; pane_with draws none with highlights.
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(crate::dim::Dim::NONE)));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(crate::dim::Dim::NONE)), crate::render::DEFAULT_FACE);
         assert!(!whole(&f));
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(crate::dim::Dim { amount: 0.4, only_text: false })));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(crate::dim::Dim { amount: 0.4, only_text: false })), crate::render::DEFAULT_FACE);
         assert!(!whole(&f), "the app draws the gray quad, not pane_with");
         // Dim Only Text: no quad, the text itself carries the dimmed color.
         let first = |f: &Frame| f.rows.iter().flat_map(|r| r.spans.iter()).find(|sp| sp.text.contains('a')).map(|sp| sp.color);
         let mut plain = Frame::default();
-        pane_with(&mut plain, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(crate::dim::Dim::NONE)));
+        pane_with(&mut plain, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(crate::dim::Dim::NONE)), crate::render::DEFAULT_FACE);
         let only_text = crate::dim::Dim { amount: 0.4, only_text: true };
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(only_text)));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(only_text)), crate::render::DEFAULT_FACE);
         assert!(!whole(&f));
         let fg = s.palette.fg;
         assert_eq!(first(&plain), Some(fg));
@@ -6050,10 +6070,10 @@ mod tests {
         assert_ne!(first(&f), first(&plain));
         // No highlights and not focused: today's quad (the screenshot path).
         let mut g = Frame::default();
-        pane_with(&mut g, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), None);
+        pane_with(&mut g, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
         assert!(g.overlay.iter().any(|q| q.rect == RECT && q.color == rgba(s.palette.bg, 0.4)));
         let mut g = Frame::default();
-        pane_with(&mut g, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), None);
+        pane_with(&mut g, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
         assert!(!whole(&g));
     }
 
@@ -6065,27 +6085,27 @@ mod tests {
         let mut s = screen(b"ab");
         s.palette.bg = rgb(0, 0, 0);
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(true)));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(true)), crate::render::DEFAULT_FACE);
         let row = key_row(&f).expect("the key is drawn");
         assert_eq!((row.clip.x, row.clip.y), (20.0, 0.0), "in the cursor's cell");
         assert_eq!(row.spans[0].color, rgb(0xff, 0xff, 0xff), "light on a dark background");
         assert!(!f.quads.iter().chain(&f.overlay).any(|q| q.color == rgba(s.palette.cursor, 1.0)), "no cursor shape");
         s.palette.bg = rgb(0xff, 0xff, 0xff);
         let mut light = Frame::default();
-        pane_with(&mut light, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(true)));
+        pane_with(&mut light, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(true)), crate::render::DEFAULT_FACE);
         assert_eq!(key_row(&light).map(|r| r.spans[0].color), Some(rgb(0, 0, 0)), "dark on a light background");
         let mut blink = Frame::default();
-        pane_with(&mut blink, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl(true)));
+        pane_with(&mut blink, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl(true)), crate::render::DEFAULT_FACE);
         assert!(key_row(&blink).is_none(), "it blinks with the cursor");
         // Over the cell: the character under the cursor is still drawn.
         let on_c = screen(b"abc\x1b[D");
         let mut over = Frame::default();
-        pane_with(&mut over, &on_c, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(true)));
+        pane_with(&mut over, &on_c, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(true)), crate::render::DEFAULT_FACE);
         assert!(key_row(&over).is_some_and(|r| r.clip.x == 20.0));
         assert_eq!(row_text(&over, 0).trim_end(), "abc", "the key does not blank the cell");
         let s = screen(b"ab");
         let mut plain = Frame::default();
-        pane_with(&mut plain, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(false)));
+        pane_with(&mut plain, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(false)), crate::render::DEFAULT_FACE);
         assert!(key_row(&plain).is_none());
         assert!(plain.quads.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0)), "the cursor otherwise");
     }

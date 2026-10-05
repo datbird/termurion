@@ -110,7 +110,7 @@ impl App {
             }
             Request::ReportCellSize => {
                 let scale = self.scale() as f64;
-                let (w, h) = self.cell();
+                let (w, h) = self.pane_cell(pane);
                 let reply = format!(
                     "\x1b]1337;ReportCellSize={};{};{}\x1b\\",
                     osc1337::number(h as f64 / scale),

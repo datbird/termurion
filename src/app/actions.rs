@@ -153,7 +153,7 @@ impl App {
     fn grow_focused(&mut self, axis: Axis, grow: bool) {
         // One cell's share of the tab, the nearest thing to iTerm2's one-cell step.
         let area = self.content_area();
-        let (cw, ch) = self.cell();
+        let (cw, ch) = self.focused_cell();
         let step = match axis {
             Axis::Row => cw / area.w.max(1.0),
             Axis::Column => ch / area.h.max(1.0),

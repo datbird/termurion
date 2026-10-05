@@ -24,10 +24,11 @@ impl App {
 
     /// A click on a bar: runs its button (or closes it). True when the click was on one.
     pub(super) fn info_bar_press(&mut self, x: f32, y: f32, event_loop: &ActiveEventLoop) -> bool {
-        let cell = self.cell();
         let Some(tab) = self.tabs.get(self.active) else { return false };
         for (id, rect) in self.visible(tab) {
             let Some(bar) = self.bars.get(&id).and_then(|b| b.front()) else { continue };
+            // The bar is laid out in its pane's cell (`build_frame`).
+            let cell = self.pane_cell(id);
             if !infobar::layout(bar, rect, cell).bar.contains(x, y) {
                 continue;
             }

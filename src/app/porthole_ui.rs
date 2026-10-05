@@ -69,13 +69,18 @@ fn doc_of(p: &Porthole, palette: &crate::palette::Palette, dark: bool, theme: &r
 
 /// A document laid out with the renderer's fonts.
 pub(super) fn lay_doc(renderer: &mut Renderer, doc: &render::Doc, wide: bool, width: f32, cell_h: f32) -> Layout {
+    lay_doc_in(renderer, crate::render::DEFAULT_FACE, doc, wide, width, cell_h)
+}
+
+/// `lay_doc` measured in a pane's face (its cell width and its size for the prose font).
+fn lay_doc_in(renderer: &mut Renderer, face: u16, doc: &render::Doc, wide: bool, width: f32, cell_h: f32) -> Layout {
     let r = RefCell::new(renderer);
-    let measure = |t: &str, f: Face, s: f32| r.borrow_mut().text_width(t, f == Face::Prose, s);
+    let measure = |t: &str, f: Face, s: f32| r.borrow_mut().text_width_in(face, t, f == Face::Prose, s);
     render::layout(doc, width, cell_h, &measure, wide)
 }
 
-fn lay(renderer: &mut Renderer, p: &Porthole, palette: &crate::palette::Palette, dark: bool, theme: &render::Theme, width: f32, cell_h: f32) -> Layout {
-    lay_doc(renderer, &doc_of(p, palette, dark, theme), p.wide, width, cell_h)
+fn lay(renderer: &mut Renderer, face: u16, p: &Porthole, palette: &crate::palette::Palette, dark: bool, theme: &render::Theme, width: f32, cell_h: f32) -> Layout {
+    lay_doc_in(renderer, face, &doc_of(p, palette, dark, theme), p.wide, width, cell_h)
 }
 
 
@@ -98,7 +103,7 @@ impl App {
     /// Replaces the pane's lines `first..=last` (grid lines of its own screen) with a
     /// porthole. None when nothing was made (the alternate screen, lines gone).
     pub(super) fn make_porthole(&mut self, pane: PaneId, first: i32, last: i32, source: Source) -> Option<u32> {
-        let cell = self.cell();
+        let (cell, face) = (self.pane_cell(pane), self.pane_face(pane));
         let gpu = self.gpu.as_mut()?;
         let p = self.panes.get_mut(&pane)?;
         let screen = p.own_mut();
@@ -108,7 +113,7 @@ impl App {
         // Colors do not change the rows, so the built-in theme counts them.
         let theme = render::Theme::builtin(&palette, dark);
         let renderer = RefCell::new(&mut gpu.renderer);
-        let rows_for = |ph: &Porthole| rows_needed(lay(&mut renderer.borrow_mut(), ph, &palette, dark, &theme, width, cell.1).height, cell.1);
+        let rows_for = |ph: &Porthole| rows_needed(lay(&mut renderer.borrow_mut(), face, ph, &palette, dark, &theme, width, cell.1).height, cell.1);
         let id = screen.render_range(first, last, source, &rows_for);
         if let Some(ph) = id.and_then(|i| screen.portholes.get_mut(&i)) {
             ph.sized = true;
@@ -144,8 +149,8 @@ impl App {
         }
     }
 
-    fn porthole_key(&self, s: &crate::screen::Screen, p: &Porthole) -> (u32, u32, bool, String, bool, String) {
-        let cell = self.cell();
+    fn porthole_key(&self, pane: PaneId, s: &crate::screen::Screen, p: &Porthole) -> (u32, u32, bool, String, bool, String) {
+        let cell = self.pane_cell(pane);
         let lang = p.detected.language.as_ref().map_or("Plain text".to_string(), |l| l.name());
         (text_width(s.term().columns(), cell.0).to_bits(), cell.1.to_bits(), s.is_dark(), lang, p.wide, self.css_setting(s.is_dark()))
     }
@@ -157,7 +162,6 @@ impl App {
 
     /// Lays out the portholes in view whose width, font, or look changed.
     pub(super) fn prepare_portholes(&mut self) {
-        let cell = self.cell();
         let Some(tab) = self.tabs.get(self.active) else { return };
         let panes: Vec<(PaneId, Rect)> = self.visible(tab);
         let mut keep: HashSet<(PaneId, u32)> = HashSet::new();
@@ -167,9 +171,10 @@ impl App {
         for &(pane, _) in &panes {
             let Some(p) = self.panes.get(&pane) else { continue };
             let s = &p.screen;
+            let (cell, face) = (self.pane_cell(pane), self.pane_faces.face(pane).unwrap_or(crate::render::DEFAULT_FACE));
             for (pid, ph) in &s.portholes {
                 keep.insert((pane, *pid));
-                let key = self.porthole_key(s, ph);
+                let key = self.porthole_key(pane, s, ph);
                 let old = self.porthole_views.get(&(pane, *pid));
                 if old.is_some_and(|v| v.key == key) {
                     continue;
@@ -190,7 +195,7 @@ impl App {
                     }
                 };
                 let Some(gpu) = self.gpu.as_mut() else { return };
-                let layout = lay_doc(&mut gpu.renderer, &doc, ph.wide, text_width(s.term().columns(), cell.0), cell.1);
+                let layout = lay_doc_in(&mut gpu.renderer, face, &doc, ph.wide, text_width(s.term().columns(), cell.0), cell.1);
                 // The terminal estimated this one's rows; the window's fonts decide once.
                 if !ph.sized {
                     resize.push((pane, *pid, rows_needed(layout.height, cell.1)));
@@ -216,13 +221,13 @@ impl App {
     /// This frame's marks, for the lines in view only: the selection in its porthole, and
     /// find matches while the find bar is open.
     fn porthole_marks(&mut self, panes: &[(PaneId, Rect)]) {
-        let cell = self.cell();
         let mode = self.find_mode();
         for v in self.porthole_views.values_mut() {
             v.marks.clear();
         }
         let mut work: Vec<(PaneId, u32, std::ops::Range<usize>)> = Vec::new();
         for &(pane, rect) in panes {
+            let cell = self.pane_cell(pane);
             for (pid, frame, inner) in self.porthole_frames(pane, rect, cell) {
                 let Some(v) = self.porthole_views.get(&(pane, pid)) else { continue };
                 let content_y = frame.y + PORTHOLE_MARGIN + cell.1;
@@ -235,10 +240,12 @@ impl App {
             .filter(|(_, f)| f.open && !f.query.is_empty())
             .filter_map(|(id, f)| regex::Regex::new(&crate::find::pattern(&f.query, mode)).ok().map(|re| (*id, re)))
             .collect();
+        let faces: HashMap<PaneId, u16> = panes.iter().map(|(p, _)| (*p, self.pane_faces.face(*p).unwrap_or(crate::render::DEFAULT_FACE))).collect();
         let Some(gpu) = self.gpu.as_mut() else { return };
         let r = RefCell::new(&mut gpu.renderer);
-        let measure = |t: &str, f: Face, s: f32| r.borrow_mut().text_width(t, f == Face::Prose, s);
         for (pane, pid, range) in work {
+            let face = faces.get(&pane).copied().unwrap_or(crate::render::DEFAULT_FACE);
+            let measure = |t: &str, f: Face, s: f32| r.borrow_mut().text_width_in(face, t, f == Face::Prose, s);
             let (Some(p), Some(view)) = (self.panes.get(&pane), self.porthole_views.get_mut(&(pane, pid))) else { continue };
             if range.is_empty() {
                 continue;
@@ -264,11 +271,11 @@ impl App {
 
     /// Where a point is in a porthole's text, held to its first and last lines.
     fn porthole_pos(&mut self, pane: PaneId, pid: u32, frame: Rect, x: f32, y: f32) -> Option<Pos> {
-        let cell = self.cell();
+        let (cell, face) = (self.pane_cell(pane), self.pane_faces.face(pane).unwrap_or(crate::render::DEFAULT_FACE));
         let view = self.porthole_views.get(&(pane, pid))?;
         let gpu = self.gpu.as_mut()?;
         let r = RefCell::new(&mut gpu.renderer);
-        let measure = |t: &str, f: Face, s: f32| r.borrow_mut().text_width(t, f == Face::Prose, s);
+        let measure = |t: &str, f: Face, s: f32| r.borrow_mut().text_width_in(face, t, f == Face::Prose, s);
         let (ox, oy) = (frame.x + PORTHOLE_MARGIN - view.scroll_x, frame.y + PORTHOLE_MARGIN + cell.1);
         let last = view.layout.lines.len().checked_sub(1)?;
         if y < oy {
@@ -361,7 +368,7 @@ impl App {
         if !wide || amount == 0.0 {
             return false;
         }
-        let cw = self.cell().0;
+        let cw = self.pane_cell(pane).0;
         if let Some(v) = self.porthole_views.get_mut(&(pane, pid)) {
             let max = (v.layout.width - (frame.w - 2.0 * PORTHOLE_MARGIN)).max(0.0);
             v.scroll_x = (v.scroll_x - amount * cw).clamp(0.0, max);

@@ -76,6 +76,7 @@ mod blocks_ui;
 mod clipboard_ui;
 mod copymode_ui;
 mod cursor_ui;
+mod fonts_ui;
 mod frames_ui;
 mod ime_ui;
 mod files_ui;
@@ -920,6 +921,8 @@ pub struct App {
     tray_on: bool,
     /// The font settings the renderer last loaded.
     font_sig: String,
+    /// The faces of this window's panes (`fonts_ui::PaneFaces`; per window like the renderer).
+    pane_faces: fonts_ui::PaneFaces,
     /// The blink phase (iTerm2's `blinkingItemsVisible`), shared by the cursor and blinking
     /// text; app-wide, so not in `swap_live`.
     blink: crate::cursor_anim::Blink,
@@ -1860,6 +1863,7 @@ pub fn run() {
         ui_element_now: false,
         tray_on: false,
         font_sig: String::new(),
+        pane_faces: Default::default(),
         profiles_win: None,
         blink: crate::cursor_anim::Blink::new(Instant::now()),
         cursor_due: None,
@@ -2910,10 +2914,10 @@ impl App {
         (margins::px(self.globals.int("TerminalMargin"), scale), margins::px(self.globals.int("TerminalVMargin"), scale))
     }
 
-    /// The one place a pane's pixels become columns and rows, so tmux, resizes, snaps,
-    /// screenshots and hit tests agree.
+    /// The columns and rows `rect` holds at the default cell: for a window's content area when no
+    /// pane is named. A pane's own grid is `grid_size_for`.
     fn grid_size(&self, rect: Rect) -> (u16, u16) {
-        margins::grid_size((rect.w, rect.h), self.cell(), self.margins())
+        fonts_ui::grid_for((rect.w, rect.h), self.cell(), self.margins())
     }
 
     /// The profile with this Guid, or the default profile.
@@ -3230,8 +3234,10 @@ impl App {
     }
 
     fn start_pane_as(&mut self, id: PaneId, rect: Rect, guid: Option<&str>) -> bool {
-        let (cols, rows) = self.grid_size(rect);
+        // The new pane's grid comes from its own profile's face, measured now.
         let p = self.profile(guid);
+        let cell = self.profile_cell(&p);
+        let (cols, rows) = fonts_ui::grid_for((rect.w, rect.h), cell, self.margins());
         let (cmd, transport) = match self.start_command_override.clone() {
             // The API's create command never takes the SSH path.
             Some(cmd) => (cmd, crate::ssh_transport::Transport::Conpty),
@@ -3593,6 +3599,8 @@ impl App {
         self.tmux_save_tab_colors();
         // "Status bar enabled" may have changed for a tmux tab.
         self.tmux_watch_status_all();
+        // A profile edit may have changed a pane's fonts: its face is measured now.
+        self.ensure_faces();
         // A profile edit may make a window need an alpha surface.
         self.check_alpha_surfaces();
         self.sync_blur();
@@ -3631,6 +3639,8 @@ impl App {
         }
         let Some(g) = self.gpu.as_mut() else { return };
         let px = normal.size_pt * 4.0 / 3.0 * g.window.scale_factor() as f32;
+        // The other panes' faces re-measure in place at a new scale (their ids stay valid).
+        g.renderer.set_scale(g.window.scale_factor() as f32);
         g.renderer.set_fonts(&normal.family, alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
         let badge = p.font("Badge Font").family;
         g.renderer.set_badge_family(if badge.is_empty() { "Helvetica" } else { &badge });
@@ -3644,6 +3654,7 @@ impl App {
         } else {
             self.banners.set("font", format!("Font not installed: {}. Text uses a fallback font.", missing.join(", ")));
         }
+        self.ensure_faces();
     }
 
     /// Make Text Bigger, Make Text Smaller and Make Text Normal Size: the shared font offset
@@ -3654,7 +3665,10 @@ impl App {
     /// `TAB:2189-2205`); else the panes refit the window as it is, and a tmux tab tells tmux
     /// through the size report. The caller lays out. 13n's `change_font_size` takes this over.
     fn set_font_offset(&mut self, offset: f32) {
-        let grid = self.grid_size(self.content_area());
+        let grid = match self.tabs.get(self.active) {
+            Some(t) => self.grid_size_for(t.focused, self.content_area()),
+            None => self.grid_size(self.content_area()),
+        };
         self.font_offset = offset;
         let sig = self.font_sig.clone();
         self.apply_fonts();
@@ -3981,18 +3995,18 @@ impl App {
         }
         self.stamp_focus();
         self.refresh_route();
-        let area = self.content_area();
-        let (cw, ch) = self.cell();
-        let _ = area;
-        let sizes: Vec<(PaneId, (u16, u16))> = self
+        // Each pane's grid comes from its own cell: the faces are measured first.
+        self.ensure_faces();
+        let sizes: Vec<(PaneId, (u16, u16), (f32, f32))> = self
             .tabs
             .iter()
             .flat_map(|t| self.visible(t))
-            .map(|(id, rect)| (id, self.grid_size(rect)))
+            .map(|(id, rect)| (id, self.grid_size_for(id, rect), self.pane_cell(id)))
             .collect();
+        self.pane_faces.mark_laid();
         self.tmux_report_sizes();
         let mut reframe = Vec::new();
-        for (id, (cols, rows)) in sizes {
+        for (id, (cols, rows), (cw, ch)) in sizes {
             if let Some(p) = self.panes.get_mut(&id) {
                 if p.resize(cols, rows) {
                     self.activity.entry(id).or_default().resized(Instant::now());
@@ -4039,12 +4053,9 @@ impl App {
 
     /// The cell under (x, y) in pane `rect`, and which half of the cell it is in.
     fn cell_at(&self, id: PaneId, rect: Rect, x: f32, y: f32) -> (u32, u32, Side) {
-        let (cw, ch) = self.cell();
         let inner = self.inner(rect);
         let term = self.panes[&id].screen.term();
-        let (col, row) = mouse::cell_at((x - inner.x) as f64, (y - inner.y) as f64, cw as f64, ch as f64, term.columns() as u32, term.screen_lines() as u32);
-        let side = if (x - inner.x) - col as f32 * cw > cw / 2.0 { Side::Right } else { Side::Left };
-        (col, row, side)
+        fonts_ui::pointer_cell(self.pane_cell(id), (inner.x, inner.y), x, y, term.columns() as u32, term.screen_lines() as u32)
     }
 
     fn grid_point(&self, id: PaneId, col: u32, row: u32) -> Point {
@@ -4802,7 +4813,8 @@ impl App {
     }
 
     fn wheel(&mut self, delta: MouseScrollDelta) {
-        let (cw, ch) = self.cell();
+        // A line of the wheel is a cell of the pane under the pointer.
+        let (cw, ch) = self.pane_at(self.cursor.0, self.cursor.1).map_or_else(|| self.focused_cell(), |(id, _)| self.pane_cell(id));
         let scale = self.scale() as f64;
         let cell_pt = (cw as f64 / scale, ch as f64 / scale);
         let ev = match delta {
@@ -4836,6 +4848,8 @@ impl App {
 
     fn build_frame(&mut self) -> Frame {
         let mut attention: Option<Instant> = None;
+        // Every pane's face is measured before the frame (`pane_cell` only reads).
+        self.ensure_faces();
         let cell = self.cell();
         let draw = self.draw_prefs();
         let palette_bg = self.panes.values().next().map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
@@ -4924,12 +4938,20 @@ impl App {
         let stripes = self.globals.bool("Use background pattern indicator").then(|| self.stripe_tile());
         if let Some(tab) = self.tabs.get(self.active) {
             for (id, rect) in self.visible(tab) {
+                // Everything a pane's iteration draws lays out in its own cell and shapes in its own
+                // face; the window's chrome (after the loop) keeps the default cell and face.
+                let cell = self.pane_cell(id);
+                let face = self.pane_faces.face(id).unwrap_or(crate::render::DEFAULT_FACE);
+                let draw = self.draw_prefs_for(face);
                 let receives = self.broadcast.receives(&bview, id);
                 let sends = self.broadcast.sends(&bview, id);
                 if let Some(b) = backgrounds.iter().find(|b| b.pane == id) {
                     scene::background(&mut frame, b.rect, &b.pieces, &b.image, b.bg, b.blend);
                 }
                 self.draw_badge(&mut frame, id, rect);
+                // The badge sizes itself in pixels against the default font and keeps the default
+                // face; the rows from here on are laid out in the pane's cell and take its face.
+                let rows_from = frame.rows.len();
                 if let Some(p) = self.panes.get(&id) {
                     let shortcuts = self.shortcuts.as_ref().filter(|s| s.pane == id);
                     let labeled: Vec<crate::find::Match> = shortcuts.map(|s| s.items.iter().map(|(_, m, _)| *m).collect()).unwrap_or_default();
@@ -4982,7 +5004,7 @@ impl App {
                             held_updates.push((id, None, p.screen.cursor_hidden_at.map(|t| t + crate::flicker::HOLD)));
                         }
                         None => {
-                            scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), &draw, Some(&hl));
+                            scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), &draw, Some(&hl), face);
                             if let Some(c) = cover {
                                 composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, c);
                             }
@@ -5054,6 +5076,9 @@ impl App {
                     if let Some(text) = self.fps_overlay() {
                         scene::fps_meter(&mut frame, &text, self.inner(rect), cell);
                     }
+                }
+                for row in frame.rows[rows_from..].iter_mut().filter(|r| r.face == crate::render::DEFAULT_FACE) {
+                    row.face = face;
                 }
             }
             self.draw_clippings(&mut frame, cell);
@@ -5933,7 +5958,9 @@ impl ApplicationHandler<UserEvent> for App {
                 // A font change, a banner or a status bar (shared or per pane) that came,
                 // went or changed height while another window was current reaches this one
                 // now: the room its terminals were sized for is compared whole.
-                if sig != self.font_sig || self.laid_out.as_ref() != Some(&self.room()) {
+                // A pane whose profile changed its font has a new cell and needs its grid again.
+                self.ensure_faces();
+                if sig != self.font_sig || self.pane_faces.stale() || self.laid_out.as_ref() != Some(&self.room()) {
                     self.relayout();
                 }
                 self.render();

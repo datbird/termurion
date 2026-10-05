@@ -36,7 +36,7 @@ impl App {
             hide_unfocused,
             alpha: smooth.unwrap_or(1.0),
             smart,
-            geometry: Geometry::from_globals(&self.globals, self.scale(), self.base_cell()),
+            geometry: Geometry::from_globals(&self.globals, self.scale(), self.pane_base_cell(pane)),
             ime: self.ime_drawn(pane).filter(|_| focused),
             ..CursorLook::shown(visible && (smooth.is_some() || self.cursor_visible_now(pane, focused)))
         }
@@ -200,7 +200,7 @@ impl App {
     /// cursor on the last row is no move; a hidden cursor leaves the stored cell alone. Then it
     /// starts a slide for a move of the pixel rect that qualifies (`PTYTextView.m:1590-1644`).
     fn note_cursor_moves(&mut self, pane: PaneId, inner: Rect, now: Instant) {
-        let (cell, base, scale) = (self.cell(), self.base_cell(), self.scale());
+        let (cell, base, scale) = (self.pane_cell(pane), self.pane_base_cell(pane), self.scale());
         let focused = self.focused && self.tabs.get(self.active).is_some_and(|t| t.focused == pane);
         let geometry = Geometry::from_globals(&self.globals, scale, base);
         let duration = self.slide_duration();

@@ -71,6 +71,8 @@ pub(super) struct WinSlot {
     chat_indicator_hits: Vec<(PaneId, Rect, crate::scene::IndicatorKind)>,
     focused: bool,
     font_sig: String,
+    /// The faces of this window's panes (`fonts_ui::PaneFaces`): the renderer is per window.
+    pane_faces: fonts_ui::PaneFaces,
     pub(super) win_style: i64,
     win_slot: Option<(String, u32)>,
     win_locks: crate::winmodel::Locks,
@@ -181,6 +183,7 @@ impl WinSlot {
             chat_indicator_hits: Vec::new(),
             focused: false,
             font_sig: String::new(),
+            pane_faces: Default::default(),
             win_style: 0,
             win_slot: None,
             win_locks: Default::default(),
@@ -298,6 +301,7 @@ impl App {
         swap(&mut self.chat_indicator_hits, &mut s.chat_indicator_hits);
         swap(&mut self.focused, &mut s.focused);
         swap(&mut self.font_sig, &mut s.font_sig);
+        swap(&mut self.pane_faces, &mut s.pane_faces);
         swap(&mut self.win_style, &mut s.win_style);
         swap(&mut self.win_slot, &mut s.win_slot);
         swap(&mut self.win_locks, &mut s.win_locks);
@@ -956,6 +960,7 @@ impl WinSlot {
             chat_indicator_hits: Vec::new(),
             focused: false,
             font_sig: String::new(),
+            pane_faces: Default::default(),
             win_style: 0,
             win_slot: None,
             win_locks: Default::default(),
@@ -1715,7 +1720,7 @@ impl App {
         if self.win_locks.size {
             return;
         }
-        let cell = self.cell();
+        let cell = self.focused_cell();
         let Some(g) = &self.gpu else { return };
         let inner = g.window.inner_size();
         let (w, h) = crate::winmodel::step_size((inner.width, inner.height), cell, r);

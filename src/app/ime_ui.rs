@@ -191,9 +191,9 @@ impl App {
         let Some(id) = self.focused_id() else { return };
         let Some((_, rect)) = self.visible(tab).into_iter().find(|(pid, _)| *pid == id) else { return };
         let Some(p) = self.panes.get(&id) else { return };
-        let (cell, scale) = (self.cell(), self.scale());
+        let (cell, scale) = (self.pane_cell(id), self.scale());
         let inner = self.inner(rect);
-        let geometry = crate::cursor_look::Geometry::from_globals(&self.globals, scale, self.base_cell());
+        let geometry = crate::cursor_look::Geometry::from_globals(&self.globals, scale, self.pane_base_cell(id));
         let r = match self.ime_drawn(id) {
             Some(d) => ime::caret_rect(d.caret, (inner.x, inner.y), cell, geometry.base_cell.1, p.screen.term().columns(), scale),
             None => {

@@ -449,7 +449,11 @@ impl App {
         self.store.sessions.push(crate::session_profile::SessionProfile { profile: profile.clone(), overridden: Default::default() });
         let (cols, rows) = match dvr.frame(dvr.ring.first) {
             Some(f) => (f.info.cols as u16, f.info.rows as u16),
-            None => self.grid_size(self.content_area()),
+            None => {
+                let cell = self.profile_cell(&profile);
+                let area = self.content_area();
+                fonts_ui::grid_for((area.w, area.h), cell, self.margins())
+            }
         };
         let id = self.next_id;
         self.next_id += 1;

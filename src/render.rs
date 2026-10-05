@@ -261,6 +261,56 @@ impl ImagePipeline {
 /// The most glyph placements kept for gap cutting.
 const INK_CACHE_MAX: usize = 16384;
 
+/// The face every row without a pane of its own draws with, and the one `set_fonts` makes.
+pub const DEFAULT_FACE: u16 = 0;
+
+/// The most faces one renderer keeps; past it `face` hands back the nearest size.
+const MAX_FACES: usize = 512;
+
+/// What makes two faces the same: the fonts, the pixel size, the spacings, and the profile's
+/// drawing switches later tasks pack into `profile_bits`. The size is in physical pixels,
+/// rounded to 1/64 pixel (`FaceKey::new`), so a key built twice from the same profile is equal.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FaceKey {
+    pub family: String,
+    pub alt_family: Option<String>,
+    pub px_bits: u32,
+    pub h_bits: u32,
+    pub v_bits: u32,
+    pub profile_bits: u64,
+}
+
+impl FaceKey {
+    pub fn new(family: &str, alt_family: Option<&str>, px: f32, h: f32, v: f32) -> FaceKey {
+        FaceKey { family: family.to_string(), alt_family: alt_family.map(str::to_string), px_bits: quantize_px(px).to_bits(), h_bits: h.to_bits(), v_bits: v.to_bits(), profile_bits: 0 }
+    }
+
+    pub fn px(&self) -> f32 {
+        f32::from_bits(self.px_bits)
+    }
+}
+
+/// A pixel size to 1/64 pixel: faces re-measured after a scale change land on the keys the app
+/// builds for the new scale.
+pub fn quantize_px(px: f32) -> f32 {
+    (px * 64.0).round() / 64.0
+}
+
+/// A measured face: what `draw` shapes a row with and what the cursor and underlines read.
+#[derive(Clone, Debug)]
+pub struct Face {
+    pub key: FaceKey,
+    /// The cell with the spacings applied.
+    pub cell: (f32, f32),
+    /// The font's own cell, without the spacings (`cellSizeWithoutSpacing`).
+    pub base: (f32, f32),
+    /// The underline numbers at this size (zero when the face did not load).
+    pub ul: crate::underline::Metrics,
+    /// The baseline's distance from the cell top (`ul.baseline`).
+    pub baseline: f32,
+    pub px: f32,
+}
+
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -275,7 +325,7 @@ pub struct Renderer {
     viewport: Viewport,
     text: TextRenderer,
     /// One text buffer per row slot, with the spans it last shaped.
-    buffers: Vec<(Buffer, Vec<Span>, f32, f32)>,
+    buffers: Vec<(Buffer, Vec<Span>, f32, f32, u16)>,
     /// A porthole's prose font: Segoe UI Variable, else Segoe UI.
     prose_family: String,
     /// The badge font (bold): the default profile's Badge Font, Arial when not installed.
@@ -284,7 +334,7 @@ pub struct Renderer {
     toolbelt_family: String,
     /// The toolbelt font's size in points (`toolbeltFontSize`, 0 meaning 11).
     toolbelt_pt: f32,
-    /// Widths of prose words already measured: (text, scale bits) to pixels.
+    /// Widths of prose words already measured: (text, pixel size bits, bold) to pixels.
     widths: std::collections::HashMap<(String, u32, bool), f32>,
     /// Widths of runs already measured in the toolbelt font: (text, pixel size bits) to pixels.
     toolbelt_widths: WidthCache,
@@ -302,6 +352,17 @@ pub struct Renderer {
     base_cell: (f32, f32),
     /// The texture format the pipelines draw into.
     format: wgpu::TextureFormat,
+    /// The faces, by id; id 0 is the default face `set_fonts` makes.
+    faces: Vec<Face>,
+    face_ids: std::collections::HashMap<FaceKey, u16>,
+    /// Memoized `resolve_family` and `has_family`: one scan of the installed fonts per name.
+    resolved: std::cell::RefCell<std::collections::HashMap<String, String>>,
+    installed: std::cell::RefCell<std::collections::HashMap<String, bool>>,
+    scans: std::cell::Cell<usize>,
+    /// The device scale the faces' sizes are in (`set_scale`).
+    scale: f32,
+    /// The face cap was reached and logged.
+    capped: bool,
 }
 
 /// The cell for a font of `px` pixels whose glyph advance is `advance`, with the horizontal and
@@ -347,6 +408,13 @@ impl Renderer {
             cell: (0.0, 0.0),
             ul_metrics: None,
             base_cell: (0.0, 0.0),
+            faces: Vec::new(),
+            face_ids: std::collections::HashMap::new(),
+            resolved: Default::default(),
+            installed: Default::default(),
+            scans: Default::default(),
+            scale: 1.0,
+            capped: false,
         };
         r.prose_family = if r.has_family("Segoe UI Variable") { "Segoe UI Variable" } else { "Segoe UI" }.to_string();
         r.icon_family = if r.has_family("Segoe Fluent Icons") { "Segoe Fluent Icons" } else { "Segoe MDL2 Assets" }.to_string();
@@ -359,24 +427,59 @@ impl Renderer {
     /// would drift away from the text along a row (the cursor landed two cells short).
     pub fn set_font_px(&mut self, px: f32) {
         self.font_px = px;
-        let line = (px * 1.2 * self.v_spacing).round();
+        let family = self.family.clone();
+        let (cell, base, ul) = self.measure(&family, px, self.h_spacing, self.v_spacing);
+        (self.cell, self.base_cell, self.ul_metrics) = (cell, base, ul);
+        self.sync_default_face();
+        self.buffers.clear();
+        self.widths.clear();
+    }
+
+    /// A face's cell, spacing-free cell and underline numbers at `px` pixels: the advance of
+    /// 100 "M"s, by the `cell_metrics` line.
+    fn measure(&mut self, family: &str, px: f32, h: f32, v: f32) -> ((f32, f32), (f32, f32), Option<crate::underline::Metrics>) {
+        let line = (px * 1.2 * v).round();
         let n = 100;
         let mut b = Buffer::new(&mut self.font_system, Metrics::new(px, line));
         b.set_size(None, None);
         b.set_wrap(Wrap::None);
-        b.set_text(&"M".repeat(n), &Attrs::new().family(Family::Name(&self.family)), Shaping::Advanced, None);
+        b.set_text(&"M".repeat(n), &Attrs::new().family(Family::Name(family)), Shaping::Advanced, None);
         b.shape_until_scroll(&mut self.font_system, false);
         let w = b.layout_runs().next().map(|r| r.line_w / n as f32).filter(|w| *w > 0.0).unwrap_or(px * 0.6);
-        // The primary face's underline numbers at this size (`iTermMetalPerFrameStateConfiguration.m:147-167`).
+        // The face's underline numbers at this size (`iTermMetalPerFrameStateConfiguration.m:147-167`).
         let face = b.layout_runs().next().and_then(|r| r.glyphs.first().map(|g| (r.line_y, g.font_id, g.font_weight)));
-        self.ul_metrics = face.and_then(|(baseline, id, weight)| {
+        let ul = face.and_then(|(baseline, id, weight)| {
             let font = self.font_system.get_font(id, weight)?;
             let m = font.as_swash().metrics(&[]).scale(px);
             Some(crate::underline::Metrics { underline_offset: m.underline_offset.abs(), thickness: m.stroke_size, x_height: m.x_height, baseline })
         });
-        (self.cell, self.base_cell) = cell_metrics(w, px, self.h_spacing, self.v_spacing);
-        self.buffers.clear();
-        self.widths.clear();
+        let (cell, base) = cell_metrics(w, px, h, v);
+        (cell, base, ul)
+    }
+
+    /// The face a key describes, measured now.
+    fn build_face(&mut self, key: &FaceKey) -> Face {
+        let px = key.px();
+        let (cell, base, ul) = self.measure(&key.family, px, f32::from_bits(key.h_bits), f32::from_bits(key.v_bits));
+        let ul = ul.unwrap_or(crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 });
+        Face { key: key.clone(), cell, base, baseline: ul.baseline, ul, px }
+    }
+
+    /// Face 0 is the default fonts, kept in step with the fields `set_font_px` fills.
+    fn sync_default_face(&mut self) {
+        let mut key = FaceKey::new(&self.family, self.alt_family.as_deref(), self.font_px, self.h_spacing, self.v_spacing);
+        key.profile_bits = 0;
+        let ul = self.ul_metrics.unwrap_or(crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 });
+        let face = Face { key: key.clone(), cell: self.cell, base: self.base_cell, baseline: ul.baseline, ul, px: self.font_px };
+        if self.faces.is_empty() {
+            self.faces.push(face);
+        } else {
+            let old = std::mem::replace(&mut self.faces[0], face);
+            if self.face_ids.get(&old.key) == Some(&DEFAULT_FACE) {
+                self.face_ids.remove(&old.key);
+            }
+        }
+        self.face_ids.insert(key, DEFAULT_FACE);
     }
 
     /// The primary face's underline metrics in pixels (all zero when the face did not load, which
@@ -394,6 +497,17 @@ impl Renderer {
     /// name ("JetBrainsMono-Regular"). Tries a family name, then the installed fonts'
     /// PostScript names, then a guess from the dashes.
     pub fn resolve_family(&self, name: &str) -> String {
+        if let Some(r) = self.resolved.borrow().get(name) {
+            return r.clone();
+        }
+        self.scans.set(self.scans.get() + 1);
+        let r = self.scan_family(name);
+        self.resolved.borrow_mut().insert(name.to_string(), r.clone());
+        r
+    }
+
+    /// `resolve_family`'s scan of the installed fonts, run once per name.
+    fn scan_family(&self, name: &str) -> String {
         let db = self.font_system.db();
         if let Some(f) = db.faces().flat_map(|f| f.families.iter()).find(|(n, _)| n.eq_ignore_ascii_case(name)) {
             return f.0.clone();
@@ -417,20 +531,34 @@ impl Renderer {
     /// A porthole run's width: the cell width per column for the profile's font, the shaped
     /// width for the prose font (remembered per word).
     pub fn text_width(&mut self, text: &str, prose: bool, scale: f32) -> f32 {
+        self.text_width_in(DEFAULT_FACE, text, prose, scale)
+    }
+
+    /// `text_width` in a pane's face: its cell, and its size for the prose font.
+    pub fn text_width_in(&mut self, face: u16, text: &str, prose: bool, scale: f32) -> f32 {
         use unicode_width::UnicodeWidthStr;
         if !prose {
-            return text.width() as f32 * self.cell.0 * scale;
+            return text.width() as f32 * self.face_cell(face).0 * scale;
         }
-        self.prose_width(text, false, scale)
+        self.prose_width_in(face, text, false, scale)
     }
 
     /// A text's shaped width in the prose font, bold or not (remembered per text).
     pub fn prose_width(&mut self, text: &str, bold: bool, scale: f32) -> f32 {
-        let key = (text.to_string(), scale.to_bits(), bold);
+        self.prose_width_in(DEFAULT_FACE, text, bold, scale)
+    }
+
+    /// `prose_width` at a pane's face size.
+    pub fn prose_width_in(&mut self, face: u16, text: &str, bold: bool, scale: f32) -> f32 {
+        let (px, ch) = {
+            let f = self.face_of(face);
+            (f.px, f.cell.1)
+        };
+        let key = (text.to_string(), (px * scale).to_bits(), bold);
         if let Some(w) = self.widths.get(&key) {
             return *w;
         }
-        let mut b = Buffer::new(&mut self.font_system, Metrics::new(self.font_px * scale, self.cell.1 * scale));
+        let mut b = Buffer::new(&mut self.font_system, Metrics::new(px * scale, ch * scale));
         b.set_size(None, None);
         b.set_wrap(Wrap::None);
         let weight = if bold { Weight::BOLD } else { Weight::NORMAL };
@@ -513,7 +641,13 @@ impl Renderer {
 
     /// True when a font family with this name is installed.
     pub fn has_family(&self, name: &str) -> bool {
-        self.font_system.db().faces().any(|f| f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)))
+        if let Some(r) = self.installed.borrow().get(name) {
+            return *r;
+        }
+        self.scans.set(self.scans.get() + 1);
+        let r = self.font_system.db().faces().any(|f| f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)));
+        self.installed.borrow_mut().insert(name.to_string(), r);
+        r
     }
 
     /// Sets the fonts and size. Spacing multiplies the cell width and height, as
@@ -524,6 +658,81 @@ impl Renderer {
         self.h_spacing = h_spacing;
         self.v_spacing = v_spacing;
         self.set_font_px(px);
+    }
+
+    /// The id of the face for `key`, measured on first use (the GPU thread; never per frame).
+    /// Past `MAX_FACES` a new key gets the existing face of its family nearest in size (the
+    /// table never shrinks and never renumbers, so an id held in a slice stays valid).
+    pub fn face(&mut self, key: &FaceKey) -> u16 {
+        if let Some(id) = self.face_ids.get(key) {
+            return *id;
+        }
+        if self.faces.len() >= MAX_FACES {
+            if !std::mem::replace(&mut self.capped, true) {
+                crate::host::log("fonts: too many faces; new sizes use the nearest one");
+            }
+            let nearest = (0..self.faces.len())
+                .filter(|i| self.faces[*i].key.family == key.family)
+                .min_by(|a, b| (self.faces[*a].px - key.px()).abs().total_cmp(&(self.faces[*b].px - key.px()).abs()));
+            return nearest.unwrap_or(0) as u16;
+        }
+        let face = self.build_face(key);
+        let id = self.faces.len() as u16;
+        self.faces.push(face);
+        self.face_ids.insert(key.clone(), id);
+        id
+    }
+
+    fn face_of(&self, id: u16) -> &Face {
+        self.faces.get(id as usize).unwrap_or(&self.faces[0])
+    }
+
+    /// The cell of face `id` (the default face's for an id that is not one).
+    pub fn face_cell(&self, id: u16) -> (f32, f32) {
+        self.face_of(id).cell
+    }
+
+    /// The font's own cell of face `id`, without the spacings.
+    pub fn face_base(&self, id: u16) -> (f32, f32) {
+        self.face_of(id).base
+    }
+
+    /// The underline numbers of face `id` (all zero when it did not load).
+    pub fn face_underline(&self, id: u16) -> crate::underline::Metrics {
+        self.face_of(id).ul
+    }
+
+    /// The scale the faces are measured at; faces re-measure in place when it changes: the same
+    /// ids, new cells (a key the app builds at the new scale finds its face again).
+    pub fn set_scale(&mut self, scale: f32) {
+        if scale == self.scale || self.scale <= 0.0 {
+            self.scale = scale;
+            return;
+        }
+        let ratio = scale / self.scale;
+        self.scale = scale;
+        for i in 1..self.faces.len() {
+            let mut key = self.faces[i].key.clone();
+            key.px_bits = quantize_px(key.px() * ratio).to_bits();
+            let face = self.build_face(&key);
+            self.faces[i] = face;
+        }
+        self.face_ids.clear();
+        for (i, f) in self.faces.iter().enumerate() {
+            self.face_ids.insert(f.key.clone(), i as u16);
+        }
+        self.buffers.clear();
+        self.widths.clear();
+    }
+
+    /// How many times `resolve_family` or `has_family` scanned the installed fonts (tests).
+    pub fn resolve_scans(&self) -> usize {
+        self.scans.get()
+    }
+
+    /// How many faces exist (tests).
+    pub fn face_count(&self) -> usize {
+        self.faces.len()
     }
 
     /// How many image textures were uploaded (tests).
@@ -597,9 +806,9 @@ impl Renderer {
         if self.ink_cache.len() > INK_CACHE_MAX {
             self.ink_cache.clear();
         }
-        let ch = self.cell.1;
         let mut bands = Vec::new();
         for (slot, row) in self.buffers.iter().zip(&frame.rows) {
+            let ch = self.faces.get(row.face as usize).unwrap_or(&self.faces[0]).cell.1;
             // A badge is drawn behind the text; iTerm2's mask never sees it.
             if row.spans.iter().any(|s| s.badge) {
                 continue;
@@ -631,23 +840,28 @@ impl Renderer {
     }
 
     pub fn draw(&mut self, frame: &Frame, view: &wgpu::TextureView, width: u32, height: u32) -> Result<(), String> {
-        let (cw, ch) = self.cell;
+        let (_, ch) = self.cell;
         let metrics = Metrics::new(self.font_px, ch);
         while self.buffers.len() < frame.rows.len() {
-            self.buffers.push((Buffer::new(&mut self.font_system, metrics), Vec::new(), 0.0, 1.0));
+            self.buffers.push((Buffer::new(&mut self.font_system, metrics), Vec::new(), 0.0, 1.0, DEFAULT_FACE));
         }
         for (slot, row) in self.buffers.iter_mut().zip(&frame.rows) {
-            let (buffer, last, last_w, last_scale) = slot;
-            if *last == row.spans && *last_w == row.clip.w && *last_scale == row.scale {
+            let (buffer, last, last_w, last_scale, last_face) = slot;
+            if *last == row.spans && *last_w == row.clip.w && *last_scale == row.scale && *last_face == row.face {
                 continue;
             }
-            let metrics = Metrics::new(self.font_px * row.scale, ch * row.scale);
+            // The row's own face: its fonts, pixel size and cell (a row of another face is never
+            // shaped with these).
+            let face = self.faces.get(row.face as usize).unwrap_or(&self.faces[0]);
+            let ((cw, ch), px) = (face.cell, face.px);
+            let (family, alt_family) = (face.key.family.clone(), face.key.alt_family.clone());
+            let metrics = Metrics::new(px * row.scale, ch * row.scale);
             buffer.set_metrics_and_size(metrics, Some(row.clip.w + cw * row.scale), Some(ch * row.scale));
             buffer.set_wrap(Wrap::None);
             // The toolbelt font keeps its own advance (it is not the terminal's cell).
             buffer.set_monospace_width((!row.spans.iter().any(|s| s.toolbelt)).then_some(cw));
-            let base = Attrs::new().family(Family::Name(&self.family));
-            let alt = self.alt_family.as_deref().map(|f| Attrs::new().family(Family::Name(f)));
+            let base = Attrs::new().family(Family::Name(&family));
+            let alt = alt_family.as_deref().map(|f| Attrs::new().family(Family::Name(f)));
             let icons = Attrs::new().family(Family::Name(&self.icon_family));
             let prose = Attrs::new().family(Family::Name(&self.prose_family));
             let badge = Attrs::new().family(Family::Name(&self.badge_family));
@@ -677,10 +891,11 @@ impl Renderer {
             *last = row.spans.clone();
             *last_w = row.clip.w;
             *last_scale = row.scale;
+            *last_face = row.face;
         }
 
         self.viewport.update(&self.queue, Resolution { width, height });
-        let areas = self.buffers.iter().zip(&frame.rows).map(|((buffer, _, _, _), row)| TextArea {
+        let areas = self.buffers.iter().zip(&frame.rows).map(|((buffer, _, _, _, _), row)| TextArea {
             buffer,
             left: row.x,
             top: row.y,
@@ -916,6 +1131,101 @@ mod tests {
         assert!(rulings.contains("Today's backend per adapter on EXTREME:"), "m13g-rulings.txt must record the backend");
     }
 
+    fn key(family: &str, px: f32, h: f32, v: f32) -> FaceKey {
+        FaceKey::new(family, None, px, h, v)
+    }
+
+    #[test]
+    fn faces_follow_profiles() {
+        let (device, queue) = device();
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        r.set_fonts("Cascadia Mono", None, 16.0, 1.0, 1.0);
+        assert_eq!(r.face_cell(DEFAULT_FACE), r.cell, "the default face is what set_fonts made");
+        assert_eq!(r.face(&key("Consolas", 16.0, 1.0, 1.0)), 1);
+        assert_eq!(r.face(&key("Consolas", 16.0, 1.0, 1.0)), 1, "a key is measured once");
+        assert_eq!(r.face(&key("Consolas", 20.0, 1.0, 1.0)), 2);
+        assert!(r.face_cell(2).1 > r.face_cell(1).1, "{:?} {:?}", r.face_cell(2), r.face_cell(1));
+        assert!(r.face_cell(2).0 > r.face_cell(1).0);
+        // Two rows, one in each face: both draw, the larger one wider.
+        let (w, h) = (256u32, 64u32);
+        let tex = target(&device, w, h);
+        let view = tex.create_view(&Default::default());
+        let (c1, c2) = (r.face_cell(1), r.face_cell(2));
+        let block = |x: f32, y: f32, face: u16| TextRow {
+            x,
+            y,
+            spans: vec![Span { text: "\u{2588}".repeat(4), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false }],
+            clip: Rect { x: 0.0, y, w: w as f32, h: if face == 1 { c1.1 } else { c2.1 } },
+            scale: 1.0,
+            face,
+        };
+        let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows: vec![block(0.0, 0.0, 1), block(0.0, c1.1 + 2.0, 2)], ..Default::default() };
+        r.draw(&frame, &view, w, h).unwrap();
+        let px = read(&device, &queue, &tex, w, h);
+        let right = |y0: f32, y1: f32| {
+            (0..w).rev().find(|&x| (y0 as u32..y1 as u32).any(|y| px[((y * w + x) * 4) as usize] > 128)).map(|x| x as f32 + 1.0)
+        };
+        let one = right(0.0, c1.1).expect("the face 1 row drew");
+        let two = right(c1.1 + 2.0, c1.1 + 2.0 + c2.1).expect("the face 2 row drew");
+        assert!((one - 4.0 * c1.0).abs() < c1.0 / 2.0, "face 1 ends at {one}, its cells at {}", 4.0 * c1.0);
+        assert!((two - 4.0 * c2.0).abs() < c2.0 / 2.0, "face 2 ends at {two}, its cells at {}", 4.0 * c2.0);
+        assert!(two > one + 2.0, "the larger face is wider: {one} {two}");
+    }
+
+    #[test]
+    fn faces_keep_their_ids_across_a_scale_change() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let a = r.face(&key("Consolas", 16.0, 1.0, 1.0));
+        let b = r.face(&key("Cascadia Mono", 18.0, 1.0, 1.25));
+        let (before, count) = (r.face_cell(a), r.face_count());
+        r.set_scale(2.0);
+        let after = r.face_cell(a);
+        assert!(after.0 > before.0 * 1.8 && after.1 > before.1 * 1.8, "{before:?} {after:?}");
+        assert_eq!(r.face_count(), count, "no face is dropped or added");
+        // The keys the app builds at the new scale find the same ids.
+        assert_eq!(r.face(&key("Consolas", 32.0, 1.0, 1.0)), a);
+        assert_eq!(r.face(&key("Cascadia Mono", 36.0, 1.0, 1.25)), b);
+        assert_eq!(r.face_count(), count);
+    }
+
+    #[test]
+    fn faces_carry_their_own_cell_metrics() {
+        // `underline_metrics_follow_the_pane_face` and the base of `cursor_geometry_uses_the_pane_base_cell`:
+        // a face reports its own spacing-free cell and underline numbers, not the default face's.
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        r.set_fonts("Cascadia Mono", None, 16.0, 1.0, 1.0);
+        let big = r.face(&key("Cascadia Mono", 32.0, 1.0, 1.0));
+        let spaced = r.face(&key("Cascadia Mono", 32.0, 1.25, 1.5));
+        assert_eq!(r.face_base(DEFAULT_FACE), r.base_cell());
+        assert_eq!(r.face_underline(DEFAULT_FACE), r.ul_metrics.unwrap());
+        // The same font at twice the size: twice the cell, twice the underline offset and x-height.
+        let (d, f) = (r.face_underline(DEFAULT_FACE), r.face_underline(big));
+        assert!(f.underline_offset > d.underline_offset * 1.5 && f.x_height > d.x_height * 1.5, "{d:?} {f:?}");
+        assert!(r.face_base(big).0 > r.face_base(DEFAULT_FACE).0 * 1.8);
+        // Spacing multiplies the cell and never the base cell.
+        assert_eq!(r.face_base(spaced), r.face_base(big));
+        let (cell, base) = (r.face_cell(spaced), r.face_base(spaced));
+        assert!((cell.0 - base.0 * 1.25).abs() < 1e-3, "{cell:?} {base:?}");
+        assert_eq!(cell.1, (32.0f32 * 1.2 * 1.5).round());
+        // An id that is not a face reads the default face.
+        assert_eq!(r.face_cell(999), r.cell);
+    }
+
+    #[test]
+    fn face_lookup_does_not_scan_fonts_per_call() {
+        let (device, queue) = device();
+        let r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let before = r.resolve_scans();
+        for _ in 0..1000 {
+            assert_eq!(r.resolve_family("CascadiaMono-Regular"), "Cascadia Mono");
+            assert!(r.has_family("Cascadia Mono"));
+        }
+        assert_eq!(r.resolve_scans() - before, 2, "one scan for each name, then memoized");
+    }
+
     #[test]
     fn renders_a_range_offscreen() {
         let (device, queue) = device();
@@ -965,6 +1275,7 @@ mod tests {
                 spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false }],
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
                 scale: 1.0,
+                face: crate::render::DEFAULT_FACE,
             }],
             overlay: vec![],
             underlines: vec![],
@@ -1019,6 +1330,7 @@ mod tests {
                 spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false }],
                 clip: Rect { x: 32.0, y: 0.0, w: 32.0, h: 32.0 },
                 scale: 1.0,
+                face: crate::render::DEFAULT_FACE,
             }],
             overlay: vec![],
             underlines: vec![],
@@ -1054,6 +1366,7 @@ mod tests {
                 spans: vec![Span { text: " \u{2588} ".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false }],
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
                 scale: 1.0,
+                face: crate::render::DEFAULT_FACE,
             }],
             underlines: vec![Quad { rect: Rect { x: 0.0, y, w: cw * 3.0, h: 1.0 }, color: red }],
             strikes: vec![Quad { rect: Rect { x: 0.0, y: y + 2.0, w: cw * 3.0, h: 1.0 }, color: red }],
@@ -1092,7 +1405,7 @@ mod tests {
         let red = rgba(rgb(255, 0, 0), 1.0);
         let clip = Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
         let span = |text: &str, badge: bool| Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge, toolbelt: false };
-        let row = |x: f32, text: &str, badge: bool| TextRow { x, y: 0.0, spans: vec![span(text, badge)], clip, scale: 1.0 };
+        let row = |x: f32, text: &str, badge: bool| TextRow { x, y: 0.0, spans: vec![span(text, badge)], clip, scale: 1.0, face: crate::render::DEFAULT_FACE };
         let frame = |rows: Vec<TextRow>| Frame {
             clear: rgba(rgb(0, 0, 0), 1.0),
             rows,

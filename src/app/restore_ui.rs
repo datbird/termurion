@@ -163,11 +163,12 @@ impl App {
     /// its environment still works (`PS:2243-2245`).
     pub(super) fn attach_pane(&mut self, rect: Rect, guid: Option<&str>, host_id: u64, pid: u32, since: u64, cookie: Option<String>) -> Result<PaneId, String> {
         let host = self.host.clone().ok_or("no session host is running")?;
-        let (cols, rows) = self.grid_size(rect);
+        let p = self.profile(guid);
+        let cell = self.profile_cell(&p);
+        let (cols, rows) = fonts_ui::grid_for((rect.w, rect.h), cell, self.margins());
         let (pty, _from, dropped) = host.attach(host_id, pid, since, self.notify.clone())?;
         let id = self.next_id;
         self.next_id += 1;
-        let p = self.profile(guid);
         let mut pane = Pane::attached(id, pty, cols, rows);
         if let Some(c) = &cookie {
             self.api_jar.lock().unwrap().add(c, crate::api_auth::CookieUse::Session);

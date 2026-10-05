@@ -11,7 +11,7 @@ impl App {
     /// `screen`'s cursor is drawn where it is shown, as a focused pane's, undimmed.
     pub(super) fn render_lines(&mut self, pane: PaneId, screen: &crate::screen::Screen, first: usize, last: usize, cursor: bool) -> Result<(u32, u32, Vec<u8>), String> {
         use alacritty_terminal::grid::Dimensions;
-        let cell = self.cell();
+        let (cell, face) = (self.pane_cell(pane), self.pane_face(pane));
         let pad = self.margins().0.round();
         let cols = screen.term().columns();
         let width = (cols as f32 * cell.0 + 2.0 * pad).ceil();
@@ -22,7 +22,7 @@ impl App {
         // A batch must fit in one texture; iTerm2 renders 1000 lines at a time.
         let max_rows = ((8192.0 / cell.1).floor() as usize).clamp(1, 1000);
         let bg = screen.palette.bg;
-        let draw = self.draw_prefs();
+        let draw = self.draw_prefs_for(face);
         let mut out = Vec::with_capacity((width as usize) * (total_h as usize) * 4);
         for (b0, b1) in screenshot::batches(first, last, max_rows) {
             let count = b1 + 1 - b0;
@@ -39,7 +39,7 @@ impl App {
                 let pieces = crate::bgimage::quads(*mode, image.size, container, area);
                 scene::background(&mut frame, area, &pieces, image, bg, *blend);
             }
-            scene::pane_with(&mut frame, &batch, Rect { x: pad, y: 0.0, w: cols as f32 * cell.0, h }, cell, cursor, &crate::cursor_look::CursorLook::shown(cursor), &draw, None);
+            scene::pane_with(&mut frame, &batch, Rect { x: pad, y: 0.0, w: cols as f32 * cell.0, h }, cell, cursor, &crate::cursor_look::CursorLook::shown(cursor), &draw, None, face);
             let gpu = self.gpu.as_mut().ok_or("no window")?;
             out.extend(gpu.renderer.draw_offscreen(&frame, width as u32, h as u32)?);
         }
@@ -149,7 +149,7 @@ impl App {
     fn refresh_preview(&mut self) {
         let Some(shot) = self.shot.as_ref() else { return };
         let (start, end) = shot.window.panel.range;
-        let cell = self.cell();
+        let cell = self.pane_cell(shot.pane);
         // The preview is one texture: at most 8000 pixels tall.
         let cap = ((8000.0 / cell.1).floor() as usize).max(1);
         let last = end.min(start + cap - 1);
@@ -170,7 +170,7 @@ impl App {
     fn shot_parts(&self) -> usize {
         let Some(shot) = self.shot.as_ref() else { return 1 };
         let (s, e) = shot.window.panel.range;
-        let cell = self.cell();
+        let cell = self.pane_cell(shot.pane);
         let cols = self.panes.get(&shot.pane).map_or(80, |p| { use alacritty_terminal::grid::Dimensions; p.screen.term().columns() });
         let width = (cols as f32 * cell.0 + 2.0 * self.margins().0.round()).ceil() as usize;
         screenshot::parts(e + 1 - s, cell.1.round().max(1.0) as usize, width, screenshot::MAX_PX).len().max(1)
@@ -180,7 +180,7 @@ impl App {
     /// highlights.
     fn render_annotated(&mut self, first: usize, last: usize) -> Option<Result<(u32, u32, Vec<u8>), String>> {
         let panel = self.shot.as_ref()?.window.panel.clone();
-        let cell = self.cell();
+        let cell = self.pane_cell(self.shot.as_ref()?.pane);
         let scale = self.scale();
         let pad = self.margins().0.round();
         self.with_snapshot(|app, pane, snap| {
@@ -232,7 +232,7 @@ impl App {
     /// `screenshot::save_paths`). The first file's path.
     fn save_shot(&mut self, chosen: &std::path::Path) -> Result<std::path::PathBuf, String> {
         let (start, end) = self.shot.as_ref().ok_or("no screenshot")?.window.panel.range;
-        let cell = self.cell();
+        let cell = self.pane_cell(self.shot.as_ref().ok_or("no screenshot")?.pane);
         let cols = self.shot.as_ref().and_then(|s| self.panes.get(&s.pane)).map_or(80, |p| { use alacritty_terminal::grid::Dimensions; p.screen.term().columns() });
         let width = (cols as f32 * cell.0 + 2.0 * self.margins().0.round()).ceil() as usize;
         let parts = screenshot::parts(end + 1 - start, cell.1.round().max(1.0) as usize, width, screenshot::MAX_PX);

@@ -918,14 +918,16 @@ impl App {
         // Title bars take room from the stacked panes (`variableTmuxSize` adds each one's
         // height, `PTYTab.m:4696-4754`): one per pane of the tallest column; widths are
         // unchanged.
-        let (_, ch) = self.cell();
+        // A tmux window's panes share one profile: its focused pane's cell sizes the report (P13).
+        self.ensure_faces();
         let tabs: Vec<(PaneId, (u16, u16))> = self
             .tabs
             .iter()
             .map(|t| {
                 let area = self.content_area_for(t);
                 let stack = if self.tab_shows_titles(t) { crate::layout::max_stack(&t.layout.tree(), Axis::Column) } else { 0 };
-                (t.focused, (self.grid_size(area).0, tmux_rows(area.h, ch, self.margins().1, self.title_height(), stack)))
+                let (_, ch) = self.pane_cell(t.focused);
+                (t.focused, (self.grid_size_for(t.focused, area).0, tmux_rows(area.h, ch, self.margins().1, self.title_height(), stack)))
             })
             .collect();
         let mut changed: Vec<PaneId> = Vec::new();
@@ -1226,7 +1228,7 @@ impl App {
             self.tmux_drag = Some((win, gw, p, horizontal, start));
             return;
         }
-        let (cw, ch) = self.cell();
+        let (cw, ch) = self.focused_cell();
         let pos = if horizontal { self.cursor.0 } else { self.cursor.1 };
         let cells = ((pos - start) / if horizontal { cw } else { ch }).round() as i32;
         let Some(t) = self.tmux.get_mut(&gw) else { return };

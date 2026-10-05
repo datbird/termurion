@@ -85,8 +85,8 @@ impl App {
     /// timestamps.
     pub(super) fn near_stamp_edge(&self) -> bool {
         let (x, y) = self.cursor;
-        let cell = self.cell();
         let Some((id, rect)) = self.pane_at(x, y) else { return false };
+        let cell = self.pane_cell(id);
         if !self.stamps_on(id) || self.profile_of(id).map_or(1, |p| p.int("Timestamps Style")) != 2 {
             return false;
         }

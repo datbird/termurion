@@ -1543,7 +1543,7 @@ impl App {
             let g = p.own().term().grid();
             (g.columns() as i64, g.screen_lines() as i64)
         };
-        let (cw, ch) = self.cell();
+        let (cw, ch) = self.pane_cell(pane);
         let Some(g) = self.gpu.as_ref() else { return status };
         let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
         let max_new_rows = match g.window.current_monitor() {

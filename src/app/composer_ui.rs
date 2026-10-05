@@ -532,7 +532,7 @@ impl App {
             return None;
         }
         let grid = self.inner(rect);
-        let (cw, line_h) = self.cell();
+        let (cw, line_h) = self.pane_cell(pane);
         let s = self.scale();
         let lines = composer_wrap(c, &c.edit.text, grid.w, cw);
         let ends = c.contents().ends_with('\n');
@@ -826,7 +826,7 @@ impl App {
     fn composer_lines(&self, pane: PaneId) -> Option<(composer::Layout, Vec<VisualLine>)> {
         let rect = self.pane_rect(pane)?;
         let l = self.composer_layout(pane, rect);
-        let cw = self.cell().0;
+        let cw = self.pane_cell(pane).0;
         let c = &self.panes.get(&pane)?.composer;
         let lines = composer_wrap(c, &c.edit.text, l.text.w, cw);
         Some((l, lines))
@@ -1202,7 +1202,7 @@ impl App {
     /// its one line (the composer's wrap at no width limit): a Shift move extends, Copy and
     /// Cut fill the clipboard, Paste reads it. A change forgets the history list's place.
     fn composer_field_edit(&mut self, pane: PaneId, k: EditKey, shift: bool) {
-        let cw = self.cell().0;
+        let cw = self.pane_cell(pane).0;
         let width = move |s: &str| text_width(s, cw);
         let clip = matches!(k, EditKey::Paste(_)).then(|| self.clipboard_text().unwrap_or_default());
         let Some(p) = self.panes.get_mut(&pane) else { return };
@@ -1341,7 +1341,7 @@ impl App {
     /// kept in view, and what the action asks for.
     fn composer_apply(&mut self, pane: PaneId, action: composer::Action, shift: bool) {
         let Some((l, lines)) = self.composer_lines(pane) else { return };
-        let (cw, line_h) = self.cell();
+        let (cw, line_h) = self.pane_cell(pane);
         let width = move |s: &str| text_width(s, cw);
         let clip_text = match &action {
             composer::Action::Edit(EditKey::Paste(_)) => Some(self.clipboard_text().unwrap_or_default()),
@@ -1415,7 +1415,7 @@ impl App {
     /// Keeps the primary caret inside the text's room.
     fn composer_scroll_to_caret(&mut self, pane: PaneId) {
         let Some((l, lines)) = self.composer_lines(pane) else { return };
-        let (cw, line_h) = self.cell();
+        let (cw, line_h) = self.pane_cell(pane);
         let Some(p) = self.panes.get(&pane) else { return };
         let (line, _) = p.composer.edit.caret_line(&lines, &|s: &str| text_width(s, cw));
         let v = self.composers.entry(pane).or_default();
@@ -1628,7 +1628,7 @@ impl App {
         v.popup = None;
         let Some(g) = v.ghost.take() else { return self.redraw() };
         let Some((_, lines)) = self.composer_lines(pane) else { return };
-        let cw = self.cell().0;
+        let cw = self.pane_cell(pane).0;
         let Some(p) = self.panes.get_mut(&pane) else { return };
         p.composer.apply(composer::Action::Edit(EditKey::Text(g)), &lines, &|s: &str| text_width(s, cw));
         let v = self.composers.entry(pane).or_default();
@@ -1645,7 +1645,7 @@ impl App {
             return;
         }
         let Some((_, lines)) = self.composer_lines(pane) else { return };
-        let cw = self.cell().0;
+        let cw = self.pane_cell(pane).0;
         let Some(p) = self.panes.get_mut(&pane) else { return };
         p.composer.apply(composer::Action::Edit(EditKey::Text(text.to_string())), &lines, &|s: &str| text_width(s, cw));
         self.composer_changed(pane);
@@ -1913,7 +1913,7 @@ impl App {
             if l.close.contains(x, y) {
                 // The close button is Esc (`MCVC:388-393`).
                 if let Some((_, lines)) = self.composer_lines(pane) {
-                    let cw = self.cell().0;
+                    let cw = self.pane_cell(pane).0;
                     let acts = self.panes.get_mut(&pane).map(|p| p.composer.apply(composer::Action::Esc, &lines, &|s: &str| text_width(s, cw))).unwrap_or_default();
                     self.composer_acts(pane, acts);
                 }
@@ -1967,7 +1967,7 @@ impl App {
                 continue;
             }
             let Some((l, lines)) = self.composer_lines(pane) else { return true };
-            let line_h = self.cell().1;
+            let line_h = self.pane_cell(pane).1;
             let content = lines.len() as f32 * line_h;
             let v = self.composers.entry(pane).or_default();
             v.scroll = (v.scroll - dy * line_h).clamp(0.0, (content - l.text.h).max(0.0));
@@ -2014,7 +2014,7 @@ impl App {
     /// a soft-wrapped line's end.
     fn composer_index_at(&self, pane: PaneId, x: f32, y: f32) -> Option<(usize, bool, usize, f32)> {
         let (l, lines) = self.composer_lines(pane)?;
-        let (cw, line_h) = self.cell();
+        let (cw, line_h) = self.pane_cell(pane);
         let scroll = self.composers.get(&pane).map_or(0.0, |v| v.scroll);
         let text = &self.panes.get(&pane)?.composer.edit.text;
         let line = (((y - l.text.y + scroll) / line_h.max(1.0)).floor().max(0.0) as usize).min(lines.len().saturating_sub(1));
@@ -2086,7 +2086,7 @@ impl App {
             ComposerDrag::Select { from } => {
                 let Some((at, end, line, lx)) = self.composer_index_at(pane, x, y) else { return };
                 let Some((_, lines)) = self.composer_lines(pane) else { return };
-                let cw = self.cell().0;
+                let cw = self.pane_cell(pane).0;
                 let Some(p) = self.panes.get_mut(&pane) else { return };
                 match from {
                     Some(start) => p.composer.edit.box_select(start, (line, lx), &lines, &|s: &str| text_width(s, cw)),
@@ -2147,7 +2147,7 @@ impl App {
         let v = self.composers.get(&pane)?;
         let caret = self.composer_caret_rect(pane, rect)?;
         let at = (caret.x, caret.y, caret.y + caret.h);
-        let cw = self.cell().0;
+        let cw = self.pane_cell(pane).0;
         match v.popup.as_ref() {
             Some(pop) => {
                 let widest = pop.items.iter().map(|i| (suggest::row_text(i, &pop.typed).0.chars().count() as f32 + 3.0) * cw).fold(0.0, f32::max);
@@ -2161,7 +2161,7 @@ impl App {
     /// The primary caret's rectangle on screen.
     fn composer_caret_rect(&self, pane: PaneId, rect: Rect) -> Option<Rect> {
         let l = self.composer_layout(pane, rect);
-        let (cw, line_h) = self.cell();
+        let (cw, line_h) = self.pane_cell(pane);
         let c = &self.panes.get(&pane)?.composer;
         let lines = composer_wrap(c, &c.edit.text, l.text.w, cw);
         let (line, x) = c.edit.caret_line(&lines, &|s: &str| text_width(s, cw));
