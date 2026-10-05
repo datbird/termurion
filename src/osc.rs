@@ -438,17 +438,27 @@ impl Scanner {
                         // The prefix is known: take the whole run at once (a large inline image
                         // streams by).
                         o.len += run.len() - p;
-                        if !o.cut {
-                            o.buf.extend_from_slice(&run[p..]);
-                            let limit = limit_for(&o.buf);
-                            if o.buf.len() > limit {
-                                if cut_at_cap(&o.buf) {
-                                    o.buf.truncate(limit);
-                                    o.cut = true;
-                                } else {
-                                    o.keep = false;
-                                    o.buf.clear();
+                        if o.cut {
+                            // An OSC 52 string past its cut: the rest is not fed (vte would
+                            // buffer all of it); its terminator still ends the string.
+                            out.push((base + p, base + run.len(), Osc::Held(crate::emu::Held::Drop)));
+                            return;
+                        }
+                        let before = o.buf.len();
+                        o.buf.extend_from_slice(&run[p..]);
+                        let limit = limit_for(&o.buf);
+                        if o.buf.len() > limit {
+                            if cut_at_cap(&o.buf) {
+                                o.buf.truncate(limit);
+                                o.cut = true;
+                                // What fits is fed; the rest of this run is not.
+                                let k = base + p + limit.saturating_sub(before);
+                                if k < base + run.len() {
+                                    out.push((k, base + run.len(), Osc::Held(crate::emu::Held::Drop)));
                                 }
+                            } else {
+                                o.keep = false;
+                                o.buf.clear();
                             }
                         }
                         return;
@@ -746,6 +756,37 @@ mod tests {
         let bel = 4 + OSC_CAP + 10;
         assert_eq!(dropped, bel - ev[cancel].1 + 1);
         assert!(s.pending.is_none());
+    }
+
+    /// 13o final review I6: an OSC 52 string past the 1 MiB cut is not fed to the screen's parser
+    /// (vte would buffer all of it), and its terminator still ends it, so a `cat` of a file that
+    /// opens one and never closes it costs 1 MiB, not gigabytes.
+    #[test]
+    fn osc52_past_the_cap_is_not_buffered() {
+        use crate::emu::Held;
+        let mut s = Scanner::default();
+        let (fed, total) = (std::cell::Cell::new(0usize), std::cell::Cell::new(0usize));
+        let spans = |s: &mut Scanner, bytes: &[u8]| {
+            let ev = s.scan_spans(bytes);
+            let dropped: usize = ev.iter().filter(|e| e.2 == Osc::Held(Held::Drop)).map(|e| e.1 - e.0).sum();
+            fed.set(fed.get() + bytes.len() - dropped);
+            total.set(total.get() + bytes.len());
+            ev
+        };
+        spans(&mut s, b"\x1b]52;c;");
+        let chunk = vec![b'A'; 64 * 1024];
+        for _ in 0..48 {
+            spans(&mut s, &chunk);
+        }
+        assert_eq!(total.get(), 7 + 48 * 64 * 1024, "3 MiB went in");
+        assert!(fed.get() <= OSC_CAP + 64, "{} bytes reached the parser", fed.get());
+        let ev = spans(&mut s, b"\x07");
+        let Some(Osc::Clipboard(text)) = ev.iter().map(|e| &e.2).find(|e| matches!(e, Osc::Clipboard(_))) else { panic!("{ev:?}") };
+        assert_eq!(text.len(), OSC_CAP - 3, "the clipboard string is cut to the cap");
+        assert!(s.pending.is_none());
+        // The next sequence is untouched.
+        let ev = spans(&mut s, b"\x1b]52;c;QQ==\x07");
+        assert!(ev.iter().any(|e| matches!(&e.2, Osc::Clipboard(t) if t == b"c;QQ==")));
     }
 
     /// 13o Task 2 fix (B1): the scanner reads the stream as vte does, so every spelling vte takes

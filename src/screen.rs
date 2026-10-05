@@ -4635,6 +4635,22 @@ mod tests {
         assert_eq!(column_of(&s, 0, 'x'), Some(1));
     }
 
+    /// 13o final review I6: an unterminated OSC 52 of 3 MiB does not wedge the screen, and what
+    /// follows its terminator prints normally.
+    #[test]
+    fn a_runaway_osc52_ends_cleanly() {
+        let mut s = Screen::new(10, 3);
+        s.feed(b"\x1b]52;c;");
+        let chunk = vec![b'A'; 64 * 1024];
+        for _ in 0..48 {
+            s.feed(&chunk);
+        }
+        s.feed(b"\x07ok");
+        assert_eq!(column_of(&s, 0, 'o'), Some(0));
+        assert_eq!(column_of(&s, 0, 'k'), Some(1));
+        assert_eq!(column_of(&s, 0, 'A'), None, "the string never printed");
+    }
+
     /// 13o final review I5: a mark or a selector never has a width of its own, so it stays on its
     /// base with Ambiguous Double Width on or off (the tables are only asked about bases), and
     /// iTerm2's ignorable characters take no cell (`SC:520-522`).
