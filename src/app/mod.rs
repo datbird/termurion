@@ -3459,7 +3459,7 @@ impl App {
                 if self.start_command_override.is_none() {
                     // Not an ssh session for F27 yet: its hook, vouched by the origin token,
                     // makes it one.
-                    pane.ssh.profile_ssh = profile::is_ssh(&p);
+                    pane.start_as_profile(profile::is_ssh(&p));
                     pane.ssh.initial_directory = profile::ssh_initial_directory(&p);
                 }
                 if let Some(jumps) = self.start_jumps_override.take() {

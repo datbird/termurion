@@ -192,7 +192,7 @@ impl App {
         let previous_jumps = p.conductor.as_ref().map(|c| c.subsequent_jumps.clone());
         let plan = crate::ssh_jumps::hook_plan(&mut p.pending_jumps, pwd, previous_jumps.is_some(), previous_jumps.as_deref().unwrap_or_default());
         let directory = plan.directory;
-        p.ssh.profile_ssh = false;
+        p.ssh_hook_took_over();
         p.note_ssh_cwd();
         let env = p.own().exfiltrated(None);
         let finder = crate::ssh_args::SshConfigs::load(&ssh_config_paths());

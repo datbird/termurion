@@ -78,6 +78,9 @@ pub struct PaneSsh {
     /// The pane was started from an SSH profile (iTerm2's `_sshState == iTermSSHStateProfile`);
     /// 14b's conductor clears it once it hooks (`PS:20129-20132`).
     pub profile_ssh: bool,
+    /// Set with `profile_ssh` when the session starts and never cleared by the hook: the
+    /// SSH profile's Initial Text still waits for the conductor's login (`PS:25565`).
+    pub initial_text_waits: bool,
     /// The SSH profile's remote initial directory (`profile::ssh_initial_directory`), used
     /// only while `profile_ssh` and there is no conductor yet.
     pub initial_directory: Option<String>,

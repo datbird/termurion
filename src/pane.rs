@@ -935,11 +935,22 @@ impl Pane {
         self.ssh_hook.unhook();
     }
 
+    /// The session started: whether it is an SSH profile's, and so waits for a login.
+    pub fn start_as_profile(&mut self, ssh: bool) {
+        self.ssh.profile_ssh = ssh;
+        self.ssh.initial_text_waits = ssh;
+    }
+
+    /// The it2ssh hook took the session over (`PS:20129-20132`): it is no longer "from a profile".
+    pub fn ssh_hook_took_over(&mut self) {
+        self.ssh.profile_ssh = false;
+    }
+
     /// A conductor logged in: an SSH profile's Initial Text is now due, once per session. A
     /// session that is not an SSH profile's (a typed `ssh` an it2ssh hook took over) already
     /// sent its text at start and never gets it again.
     pub fn conductor_login_text(&mut self) {
-        if self.ssh.profile_ssh && !self.initial_text_sent {
+        if self.ssh.initial_text_waits && !self.initial_text_sent {
             self.initial_text_due = true;
         }
     }
@@ -3327,13 +3338,28 @@ mod tests {
     }
 
     #[test]
+    fn initial_text_is_due_after_the_hook_cleared_the_profile_flag() {
+        let mut p = Pane::with(1, None, 80, 24);
+        p.start_as_profile(true);
+        p.ssh_hook_took_over();
+        p.conductor_login_text();
+        assert!(p.take_initial_text_due(), "the SSH profile's text is due at login, hook or not");
+        assert!(!p.take_initial_text_due());
+        let mut typed = Pane::with(2, None, 80, 24);
+        typed.start_as_profile(false);
+        typed.ssh_hook_took_over();
+        typed.conductor_login_text();
+        assert!(!typed.take_initial_text_due(), "a typed ssh never gets it");
+    }
+
+    #[test]
     fn initial_text_is_due_only_for_an_ssh_profile_after_login_and_once() {
         let mut p = Pane::with(1, None, 80, 24);
         // Not an SSH profile's session: a conductor never makes its text due.
         p.conductor_login_text();
         assert!(!p.take_initial_text_due());
         // An SSH profile's: nothing before the conductor logs in.
-        p.ssh.profile_ssh = true;
+        p.start_as_profile(true);
         assert!(!p.take_initial_text_due(), "nothing before the login");
         p.conductor_login_text();
         p.conductor_login_text();
