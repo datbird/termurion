@@ -10,12 +10,12 @@ use crate::palette::Palette;
 use crate::stamps::Parts;
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 use alacritty_terminal::vte::{Params, Parser, Perform};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// iTerm2's `iTermLoggingStyle` (`LH`): the numbers are the stored values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -631,7 +631,7 @@ pub struct FileSink {
     #[cfg(test)]
     ready_result: Mutex<Option<Result<(), String>>>,
     /// Answers when the writer thread has ended (it drops its end of this).
-    done: mpsc::Receiver<()>,
+    done: Option<mpsc::Receiver<()>>,
 }
 
 impl FileSink {
@@ -646,14 +646,13 @@ impl FileSink {
         let spawned = std::thread::Builder::new().name("session-log".into()).spawn(move || {
             // Dropped when the thread ends, by any return.
             let _done = done_tx;
-            let opened = std::fs::OpenOptions::new().create(true).write(true).open(&thread_path).and_then(|mut f| {
-                if append {
-                    f.seek(SeekFrom::End(0))?;
-                } else {
-                    f.set_len(0)?;
-                }
-                Ok(f)
-            });
+            // Appending opens in append mode: every write goes to the end, whoever else writes the
+            // file (a restart's new log while the old writer drains); replacing truncates once.
+            let opened = if append {
+                std::fs::OpenOptions::new().create(true).append(true).open(&thread_path)
+            } else {
+                std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&thread_path)
+            };
             let file = match opened {
                 Ok(f) => {
                     #[cfg(test)]
@@ -704,7 +703,7 @@ impl FileSink {
         if let Err(e) = spawned {
             fail(&failure, e.to_string());
         }
-        FileSink { path: path.to_path_buf(), tx, budget, failure, #[cfg(test)] ready: Mutex::new(ready_rx), #[cfg(test)] ready_result: Mutex::new(None), done }
+        FileSink { path: path.to_path_buf(), tx, budget, failure, #[cfg(test)] ready: Mutex::new(ready_rx), #[cfg(test)] ready_result: Mutex::new(None), done: Some(done) }
     }
 
     /// The first error the open or a write met. Never blocks.
@@ -733,6 +732,39 @@ impl FileSink {
             let _ = rx.recv_timeout(Duration::from_secs(5));
         }
     }
+}
+
+/// Writers whose sink was dropped: they still drain their queue. `wait_for_writers` waits for them
+/// (quit, the last window's close, a restart), so nothing queued is lost when the process ends.
+static DRAINING: Mutex<Vec<mpsc::Receiver<()>>> = Mutex::new(Vec::new());
+
+impl Drop for FileSink {
+    /// A dropped sink's writer drains on its own thread; it is remembered (those that ended are
+    /// forgotten) so `wait_for_writers` can wait for it.
+    fn drop(&mut self) {
+        let Some(done) = self.done.take() else { return };
+        if let Ok(mut list) = DRAINING.lock() {
+            list.retain(|d| !matches!(d.try_recv(), Err(mpsc::TryRecvError::Disconnected)));
+            list.push(done);
+        }
+    }
+}
+
+/// Waits until every dropped sink's writer has ended, at most `wait` in all (one deadline for
+/// every log, not one per log).
+pub fn wait_for_writers(wait: Duration) {
+    let deadline = Instant::now() + wait;
+    let list = DRAINING.lock().map(|mut l| std::mem::take(&mut *l)).unwrap_or_default();
+    for done in list {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let _ = done.recv_timeout(left);
+    }
+}
+
+/// How many dropped writers are still registered. Tests only.
+#[cfg(test)]
+pub fn writers_draining() -> usize {
+    DRAINING.lock().map_or(0, |l| l.len())
 }
 
 impl Sink for FileSink {
@@ -771,10 +803,14 @@ impl Sink for FileSink {
     }
 
     fn close(self: Box<Self>, wait: Duration) {
-        let FileSink { tx, done, .. } = *self;
-        drop(tx);
-        // The thread drops its end when it has written what was queued; a hung share only costs `wait`.
-        let _ = done.recv_timeout(wait);
+        let mut sink = *self;
+        let done = sink.done.take();
+        // Dropping the sender (with the sink) lets the writer end once it has written what was queued.
+        drop(sink);
+        // A hung share only costs `wait`.
+        if let Some(done) = done {
+            let _ = done.recv_timeout(wait);
+        }
     }
 }
 
@@ -1478,6 +1514,48 @@ mod tests {
         let pairs = [("termid", "w0t0p0.3"), ("profileName", "A/B")];
         let p = auto_log_path("D:/logs", "\\(termid).\\(profileName).log", &lookup_for(&pairs), home).unwrap();
         assert_eq!(p, PathBuf::from("D:/logs").join("w0t0p0.3.A_B.log"));
+    }
+
+    static WRITERS: Mutex<()> = Mutex::new(());
+
+    /// Item 4: two writers on one file (a restart's new log while the old one drains) never
+    /// overwrite each other: every write goes to the end of the file.
+    #[test]
+    fn a_second_writer_never_overwrites_the_first() {
+        let path = temp_path("two-writers");
+        let _ = std::fs::remove_file(&path);
+        let mut first = FileSink::open(&path, true);
+        first.wait_ready(Duration::from_secs(5)).unwrap();
+        first.write(b"AAAA").unwrap();
+        first.finish_for_test();
+        let mut second = FileSink::open(&path, true);
+        second.wait_ready(Duration::from_secs(5)).unwrap();
+        second.write(b"BB").unwrap();
+        second.finish_for_test();
+        first.write(b"CC").unwrap();
+        first.finish_for_test();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "AAAABBCC");
+        // Replacing truncates only when the file is opened.
+        let mut fresh = FileSink::open(&path, false);
+        fresh.wait_ready(Duration::from_secs(5)).unwrap();
+        fresh.write(b"Z").unwrap();
+        fresh.finish_for_test();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "Z");
+    }
+
+    /// Item 3: a dropped sink's queue is still written when the app waits for the writers.
+    #[test]
+    fn a_dropped_log_is_written_out_by_wait_for_writers() {
+        let _one = WRITERS.lock().unwrap_or_else(|e| e.into_inner());
+        let path = temp_path("drained");
+        let _ = std::fs::remove_file(&path);
+        let mut sink = FileSink::open(&path, false);
+        sink.write(&vec![b'x'; 1_000_000]).unwrap();
+        drop(sink);
+        assert!(writers_draining() >= 1, "a dropped sink's writer is registered");
+        wait_for_writers(Duration::from_secs(10));
+        assert_eq!(writers_draining(), 0, "and waited for");
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 1_000_000);
     }
 
     #[test]

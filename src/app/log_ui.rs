@@ -229,11 +229,13 @@ impl App {
         self.panes.values().any(|p| p.log.is_some()).then(|| Instant::now() + Duration::from_secs(1))
     }
 
-    /// Quit: every log is written out (what is queued reaches the file, waiting a moment).
+    /// Quit and the last window's close: every log stops and what is queued reaches its file, in
+    /// one wait for all of them (a hung share costs the wait once, not per pane).
     pub(super) fn close_all_logs(&mut self) {
         for p in self.panes.values_mut() {
-            p.close_log(Duration::from_millis(500));
+            p.stop_log();
         }
+        crate::session_log::wait_for_writers(Duration::from_millis(500));
     }
 
     /// Compact logging's prompt (`PS:16729-16740`): each line of the revealed prompt's text, then a
@@ -309,7 +311,15 @@ mod tests {
         assert!(body(include_str!("session_end_ui.rs"), "pub(super) fn session_exited(").contains("p.stop_log();"), "the end stops it");
         let menu = include_str!("menu.rs");
         assert!(menu.contains("\"startStopLogging:\" => self.start_stop_logging()"));
-        assert!(body(menu, "pub(super) fn quit_confirmed(").contains("self.close_all_logs();"), "quit writes the queue out");
+        let quit = body(menu, "pub(super) fn quit_confirmed(");
+        assert!(quit.find("self.close_all_logs();").unwrap() < quit.find("self.leave_host(keep);").unwrap(), "quit writes the queue out BEFORE leave_host empties the panes");
+        let last = body(m, "    fn close_pane(");
+        assert!(last.find("self.close_all_logs();").unwrap() < last.find("self.leave_host(false);").unwrap(), "the last window's close does too");
+        let all = body(include_str!("log_ui.rs"), "    pub(super) fn close_all_logs(");
+        assert!(all.find("stop_log()").unwrap() < all.find("wait_for_writers(").unwrap(), "every log stops, then one shared wait");
+        let restart = body(m, "    fn restart_confirmed(");
+        assert!(restart.find("wait_for_writers(").unwrap() < restart.find("Pane::relaunch(").unwrap(), "the old log is written out before the new one opens");
+        assert!(restart.find("stop_log()").unwrap() < restart.find("wait_for_writers(").unwrap());
         // Log to File is a check item and a command that works.
         assert!(menu.contains("| \"startStopLogging:\")"));
         assert!(crate::commands::DONE.contains(&"startStopLogging:"));

@@ -3262,7 +3262,11 @@ impl App {
                 return;
             }
         };
-        let Some(old) = self.panes.remove(&id) else { return };
+        let Some(mut old) = self.panes.remove(&id) else { return };
+        // The old log stops and is written out before the new shell's opens the same file (a
+        // restart appends to it): two writers on one file would interleave.
+        old.stop_log();
+        crate::session_log::wait_for_writers(Duration::from_millis(500));
         // The offer and the tmux question are about the shell that is gone (`willRecycleSession`).
         if let Some(b) = self.bars.get_mut(&id) {
             b.retain(|x| x.id != crate::session_end::RESTART_BAR && x.id != crate::session_end::TMUX_CLOSE_BAR);
@@ -4308,7 +4312,9 @@ impl App {
                 self.save_pending_settings();
                 self.save_empty_state();
                 self.flush_notes();
-                // The last window closed: its shells end (iTerm2), and the host hears it.
+                // The last window closed: its logs are written out, its shells end (iTerm2), and the
+                // host hears it.
+                self.close_all_logs();
                 self.leave_host(false);
                 if self.save_due.is_some() {
                     self.save_now();

@@ -1106,8 +1106,9 @@ impl App {
         if self.save_due.is_some() {
             self.save_now();
         }
-        self.leave_host(keep);
+        // Logs are written out while the panes still hold them: `leave_host` empties the panes.
         self.close_all_logs();
+        self.leave_host(keep);
         self.panes.clear();
         self.focus_order.clear();
         if self.prefs_before_exit() {
