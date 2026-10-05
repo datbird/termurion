@@ -1451,7 +1451,7 @@ pub(super) fn pwsh_install_command(script: &std::path::Path) -> String {
     )
 }
 
-const PWSH_SCRIPT: &str = include_str!("../../resources/shell_integration/tandem_shell_integration.ps1");
+pub(super) const PWSH_SCRIPT: &str = include_str!("../../resources/shell_integration/tandem_shell_integration.ps1");
 
 fn ask(text: &str) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW};
@@ -1460,6 +1460,27 @@ fn ask(text: &str) -> bool {
 }
 
 impl App {
+    /// The PowerShell integration script on disk for the automatic injection: written when
+    /// the file is missing or differs (so one another process changed is repaired before
+    /// `-Command` reads it), at every session start. A `%APPDATA%` that is a network path is
+    /// never touched (None, nothing is injected); a write error sets the "install" banner.
+    pub(super) fn ensure_pwsh_script(&mut self) -> Option<std::path::PathBuf> {
+        let path = crate::shell_inject::script_path(&crate::session_env::appdata_local()?);
+        if std::fs::read(&path).is_ok_and(|b| b == PWSH_SCRIPT.as_bytes()) {
+            return Some(path);
+        }
+        match path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&path, PWSH_SCRIPT)) {
+            Ok(()) => {
+                self.banners.clear("install");
+                Some(path)
+            }
+            Err(e) => {
+                self.banners.set("install", format!("Could not save {}: {e}", path.display()));
+                None
+            }
+        }
+    }
+
     /// iTerm2 > Install Shell Integration, for the focused pane's shell.
     pub(super) fn install_shell_integration(&mut self) {
         if let Some(pane) = self.focused_id() {
@@ -1483,8 +1504,8 @@ impl App {
                 curl_command(utilities).to_string()
             }
             Plan::Pwsh => {
-                let dir = std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem").join("shell_integration");
-                let path = dir.join("tandem_shell_integration.ps1");
+                let path = crate::shell_inject::script_path(&std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir));
+                let dir = path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
                 if !ask(&format!("Tandem will save its PowerShell script to\n{}\nand add a line that loads it to your PowerShell profile ($PROFILE).\n\nIf PowerShell's execution policy blocks scripts (Restricted or AllSigned), Tandem also sets it to RemoteSigned for your user only. Continue?", path.display())) {
                     return;
                 }

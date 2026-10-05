@@ -3393,17 +3393,21 @@ impl App {
             self.banners.set("host", "The session host stopped. New shells run inside Tandem, so they end with it.");
         }
         let (env, cookie) = self.session_env(id, &p, transport, &cmd);
+        // Only the profile's own shell is injected; `cmd` stays the profile's line for the pane,
+        // its banner and its title (B6).
+        let injected = self.injected_command(&p, &cmd, transport);
+        let launch = injected.as_deref().unwrap_or(&cmd);
         let started = match &self.host {
-            Some(h) => match Pane::start_hosted_transport(id, h, transport, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone()) {
+            Some(h) => match Pane::start_hosted_transport(id, h, transport, launch, Some(&cwd), &env, cols, rows, self.notify.clone()) {
                 // A host below protocol 4 cannot run this transport: the session runs inside
                 // Tandem instead.
                 Err(e) if e == crate::host_client::HOST_TOO_OLD => {
                     self.banners.set("host", "The session host is too old for this SSH session, so it runs inside Tandem.");
-                    Pane::start_transport(id, &self.api, transport, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone())
+                    Pane::start_transport(id, &self.api, transport, launch, Some(&cwd), &env, cols, rows, self.notify.clone())
                 }
                 other => other,
             },
-            None => Pane::start_transport(id, &self.api, transport, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone()),
+            None => Pane::start_transport(id, &self.api, transport, launch, Some(&cwd), &env, cols, rows, self.notify.clone()),
         };
         match started {
             Ok(mut pane) => {
@@ -3419,6 +3423,12 @@ impl App {
                     pane.pending_jumps = jumps;
                 }
                 self.install_pane(id, pane, &p);
+                // iTerm2 blanks Initial Text for single-use and URL launches (`iTermController.m:1872`,
+                // `:2188`): a git window, an orchestrated or scripted command, the API's command
+                // and an ssh: URL's copy never type the profile's text (B2).
+                if self.start_command_override.is_none() && self.start_env_override.is_none() {
+                    self.send_initial_text(id, &p);
+                }
                 true
             }
             Err(e) => {
@@ -3427,6 +3437,21 @@ impl App {
                 false
             }
         }
+    }
+
+    /// The command line with the PowerShell shell integration loaded, when the profile asks
+    /// ("Load Shell Integration Automatically"), the launch is the profile's own shell on
+    /// ConPTY (never a git, orchestrated, script or API command, never an SSH profile), the
+    /// shell is PowerShell and the script is written (`PS:3633-3653`). None leaves the line as
+    /// it is.
+    fn injected_command(&mut self, p: &Profile, cmd: &str, transport: crate::ssh_transport::Transport) -> Option<String> {
+        let own = self.start_command_override.is_none() && self.start_env_override.is_none();
+        if !own || transport != crate::ssh_transport::Transport::Conpty || profile::is_ssh(p) || !p.bool("Load Shell Integration Automatically") {
+            return None;
+        }
+        crate::shell_inject::shell_of(cmd)?;
+        let script = self.ensure_pwsh_script()?;
+        crate::shell_inject::inject(cmd, &script)
     }
 
     /// The command profile `p` starts and its transport. An SSH profile runs `it2ssh.exe` from

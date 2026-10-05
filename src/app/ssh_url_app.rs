@@ -34,7 +34,12 @@ pub(super) fn click_plan(remote: bool, url: &str, bound: Option<&str>) -> Option
 /// Working Directory feeds the local folder check (ruling r1, revised P9).
 pub(super) fn session_values(base: &crate::profile::Profile, url: &str, s: &crate::ssh_url::Settings) -> Result<Option<Vec<(String, Option<toml::Value>)>>, crate::ssh_url::UrlError> {
     let Some(changed) = crate::ssh_url::profile_for_url(base, url, s)? else { return Ok(None) };
-    let values = changed.values.iter().filter(|(k, v)| base.values.get(*k) != Some(*v)).map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
+    let mut values: Vec<(String, Option<toml::Value>)> = changed.values.iter().filter(|(k, v)| base.values.get(*k) != Some(*v)).map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
+    // A link from a web page never types the person's Initial Text into the host it names
+    // (iTerm2 blanks it for URL launches, `iTermController.m:2188`); an empty text stays unchanged.
+    if !base.string("Initial Text").is_empty() {
+        values.push(("Initial Text".to_string(), Some(toml::Value::String(String::new()))));
+    }
     Ok(Some(values))
 }
 
@@ -246,6 +251,29 @@ mod session_tests {
                 });
                 assert!(calls.borrow().is_empty(), "{url} (integration {integration}) probed {:?}", calls.borrow());
                 assert_eq!(warning, None, "{url}: no local start-directory banner");
+            }
+        }
+    }
+
+    /// B2: the copy a URL opens types no Initial Text, whether or not it changes anything else,
+    /// and a profile with none gains no key.
+    #[test]
+    fn url_session_sends_no_initial_text() {
+        for integration in [true, false] {
+            for url in PROBE_URLS {
+                let mut base = Profile::default();
+                base.set("Initial Text", toml::Value::String("echo hi".to_string()));
+                let Ok(Some(values)) = session_values(&base, url, &settings(integration)) else { continue };
+                let mut copy = base.clone();
+                for (k, v) in values {
+                    if let Some(v) = v {
+                        copy.set(&k, v);
+                    }
+                }
+                assert_eq!(copy.string("Initial Text"), "", "{url} (integration {integration})");
+                let plain = Profile::default();
+                let Ok(Some(values)) = session_values(&plain, url, &settings(integration)) else { continue };
+                assert!(values.iter().all(|(k, _)| k != "Initial Text"), "{url}: an empty text adds no key");
             }
         }
     }

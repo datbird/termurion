@@ -234,9 +234,22 @@ impl App {
         }
         self.ssh_registry_drain(pane);
         self.ssh_answers_drain(pane);
+        self.initial_text_after_login(pane);
         self.ssh_files_drain(pane);
         self.ssh_search_drain(pane);
         self.ssh_files_settle();
+    }
+
+    /// An SSH profile's Initial Text, once its conductor has logged in (`PS:25565`); the pane
+    /// says when it is due (once per session), the profile's own text is typed.
+    fn initial_text_after_login(&mut self, pane: PaneId) {
+        if !self.panes.get_mut(&pane).is_some_and(|p| p.take_initial_text_due()) {
+            return;
+        }
+        // The profile the session started with, a URL's blanked copy included.
+        let Some(guid) = self.panes.get(&pane).map(|p| p.profile.clone()) else { return };
+        let p = self.profile(Some(&guid));
+        self.send_initial_text(pane, &p);
     }
 
     /// Delivers what the pane's conductors answered to script calls (`get_time_offset`).

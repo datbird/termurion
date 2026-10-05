@@ -60,6 +60,26 @@ pub(super) enum Origin {
     /// A status bar string's evaluation: its cache entry (`script_templates`) and the
     /// evaluation's number there, so an older one never replaces a newer one's value.
     Template { pane: PaneId, key: String, nth: u64 },
+    /// A profile's Initial Text (`PS:3698-3706`): written to the session when it finishes; a
+    /// failure or a result that is not a string writes nothing.
+    InitialText { pane: PaneId },
+}
+
+/// Whether Initial Text must wait: an SSH profile's session with no conductor yet is still at
+/// ssh's login, host-key or password prompt, where typed text would be taken as an answer
+/// (`PS:3687-3691`; the conductor's login sends it, `PS:25565`).
+pub(super) fn initial_text_blocked(ssh_profile: bool, has_conductor: bool) -> bool {
+    ssh_profile && !has_conductor
+}
+
+/// What an Initial Text evaluation writes: the string and Enter (`\r`, the key a Windows
+/// console reads; iTerm2 writes `\n`). An empty result still sends Enter; a value that is not
+/// a string, or a failure, sends nothing (`PS:3702-3706`).
+pub(super) fn initial_text_bytes(r: &Result<Value, Failure>) -> Option<Vec<u8>> {
+    let Ok(Value::String(text)) = r else { return None };
+    let mut bytes = text.clone().into_bytes();
+    bytes.push(b'\r');
+    Some(bytes)
 }
 
 /// A status bar string with function calls (`iTermGenericEvaluator.m`): the paths its parse
@@ -757,7 +777,30 @@ impl App {
                 }
             }
             Origin::Title { pane, nth } => self.title_finished(*pane, *nth, invocation, r),
+            // Never `user_write`: Initial Text is not broadcast (`writeTaskNoBroadcast`,
+            // `PS:4276`). The pane may be gone by now.
+            Origin::InitialText { pane } => {
+                if let (Some(bytes), Some(p)) = (initial_text_bytes(&r), self.panes.get_mut(pane)) {
+                    p.input(&bytes);
+                }
+            }
         }
+    }
+
+    /// Types the profile's "Initial Text" into a session that just started (`PS:3686-3707`):
+    /// an interpolated string, strict, side effects allowed, 5 s; its text and then Enter go
+    /// to the session without broadcast. Nothing when the text is empty, and nothing for an
+    /// SSH profile before its conductor (`initial_text_blocked`; the conductor's login asks
+    /// again). The caller never calls it for an override launch (git, orchestration, script
+    /// and URL launches), as iTerm2 blanks those.
+    pub(super) fn send_initial_text(&mut self, pane: PaneId, p: &crate::profile::Profile) {
+        let text = p.string("Initial Text");
+        let has_conductor = self.panes.get(&pane).is_some_and(|x| x.conductor.is_some());
+        if text.is_empty() || initial_text_blocked(crate::profile::is_ssh(p), has_conductor) {
+            return;
+        }
+        let inv = Invocation::for_template(&text, Timeout::from_secs(5.0), true, false, Instant::now());
+        self.start_run(&text, inv, ScopeSpec::Session { pane, frame: Values::new() }, Origin::InitialText { pane });
     }
 
     /// A status bar string's value (Interpolated String, a Custom Action's title): one with no
@@ -1208,6 +1251,66 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn initial_text_follows_iterm2() {
+        use crate::expr::{Failure, Value};
+        use serde_json::json;
+        use super::initial_text_bytes;
+        let ok = |v: Value| initial_text_bytes(&Ok(v));
+        assert_eq!(ok(json!("cd src")), Some(b"cd src\r".to_vec()));
+        assert_eq!(ok(json!("")), Some(b"\r".to_vec()), "iTerm2 writes the empty evaluation and the newline");
+        assert_eq!(ok(json!("cd a\rgo")), Some(b"cd a\rgo\r".to_vec()), "13v1's joined text passes through");
+        assert_eq!(ok(json!("h\u{e9}")), Some("h\u{e9}\r".as_bytes().to_vec()));
+        assert_eq!(ok(json!(3)), None, "not a string");
+        assert_eq!(ok(Value::Null), None);
+        assert_eq!(ok(json!(["a"])), None);
+        assert_eq!(initial_text_bytes(&Err(Failure::plain("boom".to_string()))), None);
+    }
+
+    /// The body of `fn start_pane_as(` and `fn injected_command(` in mod.rs.
+    fn body(name: &str) -> String {
+        let code = include_str!("mod.rs").split("#[cfg(test)]").next().unwrap();
+        let i = code.find(name).unwrap_or_else(|| panic!("{name} is missing"));
+        let rest = &code[i..];
+        rest[..rest.find("\n    }\n").unwrap()].to_string()
+    }
+
+    /// B2: a git, orchestrated, script or API command, and an ssh: URL's copy, are not the
+    /// profile's own shell: no Initial Text, no injection.
+    #[test]
+    fn override_launches_get_no_initial_text_or_injection() {
+        let start = body("fn start_pane_as(");
+        let at = start.find("self.send_initial_text(id, &p)").expect("start_pane_as sends Initial Text");
+        let guard = &start[..at];
+        assert!(guard.trim_end().ends_with("if self.start_command_override.is_none() && self.start_env_override.is_none() {"), "{}", &guard[guard.len().saturating_sub(200)..]);
+        let inject = body("fn injected_command(");
+        let own = inject.find("let own = self.start_command_override.is_none() && self.start_env_override.is_none();").expect("the override check");
+        assert!(inject[own..].contains("if !own ||") && inject.contains("transport != crate::ssh_transport::Transport::Conpty") && inject.contains("profile::is_ssh(p)"));
+    }
+
+    /// B6: the pane, its banner and its title keep the profile's own command line; only the
+    /// string handed to the start is injected.
+    #[test]
+    fn pane_command_is_the_profile_line() {
+        let start = body("fn start_pane_as(");
+        assert!(start.contains("pane.command = cmd;"), "the pane's command is the profile's line");
+        assert!(start.contains("format!(\"Could not start {cmd}: {e}\")"), "the banner names the profile's line");
+        assert!(start.contains("let launch = injected.as_deref().unwrap_or(&cmd);"));
+        for call in ["start_hosted_transport(id, h, transport, launch,", "start_transport(id, &self.api, transport, launch,"] {
+            assert!(start.contains(call), "{call}");
+        }
+        assert!(!start.contains("transport, &cmd,"), "a start never gets the profile's line past the injection");
+    }
+
+    #[test]
+    fn initial_text_waits_for_the_conductor() {
+        use super::initial_text_blocked;
+        assert!(initial_text_blocked(true, false), "ssh login, host key and password prompts");
+        assert!(!initial_text_blocked(true, true), "after the conductor logged in");
+        assert!(!initial_text_blocked(false, false), "a profile that is not SSH, even one whose Command says ssh (iTerm2's own)");
+        assert!(!initial_text_blocked(false, true));
+    }
+
     use super::*;
     use serde_json::json;
     use std::time::Duration;

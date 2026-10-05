@@ -301,6 +301,12 @@ pub struct Pane {
     pub stuck: Option<crate::stuck_mouse::Detector>,
     /// The detector found a report echoed back; `App::stuck_tick` takes it.
     pub stuck_seen: bool,
+    /// A conductor logged in and the profile's Initial Text may now be typed (`PS:25565`);
+    /// `App::ssh_apply` takes it.
+    pub initial_text_due: bool,
+    /// The session's Initial Text went (or was refused for good): a conductor's repeated
+    /// `SendInitialText` (a hop, a reconnect) never types it twice.
+    pub initial_text_sent: bool,
     /// `idleTimeSeconds`, read once when the session starts (`PS:849`).
     pub idle_time: Duration,
     /// Test hook: every size `jiggle` sent to the pty.
@@ -453,7 +459,7 @@ impl Pane {
     fn with(id: PaneId, pty: Option<Io>, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = pty.is_some();
-        Pane { id, activity: 0, locked: false, pinned_width: None, session_guid: new_session_guid(), stable_id: crate::stable_id::generate(), screen, pty, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: false, idle_time: crate::activity::DEFAULT_IDLE, #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() }
+        Pane { id, activity: 0, locked: false, pinned_width: None, session_guid: new_session_guid(), stable_id: crate::stable_id::generate(), screen, pty, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: false, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -896,6 +902,22 @@ impl Pane {
         self.ssh_hook.unhook();
     }
 
+    /// A conductor logged in: an SSH profile's Initial Text is now due, once per session. A
+    /// session that is not an SSH profile's (a typed `ssh` an it2ssh hook took over) already
+    /// sent its text at start and never gets it again.
+    pub fn conductor_login_text(&mut self) {
+        if self.ssh.profile_ssh && !self.initial_text_sent {
+            self.initial_text_due = true;
+        }
+    }
+
+    /// True once when the Initial Text is due; the caller types it.
+    pub fn take_initial_text_due(&mut self) -> bool {
+        let due = std::mem::take(&mut self.initial_text_due);
+        self.initial_text_sent |= due;
+        due
+    }
+
     /// The changes to the connected hosts since the last call, in order.
     pub fn take_ssh_registry(&mut self) -> Vec<crate::ssh_registry::Change> {
         std::mem::take(&mut self.ssh_registry_out)
@@ -1258,8 +1280,9 @@ impl Pane {
                         let queued = self.ssh.stop_queueing();
                         self.send_routed(&queued);
                     }
-                    // Decision: Tandem sends no Initial Text anywhere yet; it goes here.
-                    Effect::SendInitialText => {}
+                    // `PS:25565`: after the conductor's login, an SSH profile's Initial Text
+                    // is typed (the app does it, in the pass that drains the answers).
+                    Effect::SendInitialText => self.conductor_login_text(),
                     Effect::StateChanged => redraw = true,
                     // conductorQuit (`PS:25603-25612`): the banner, the conductor and its hop
                     // go, and the writes it held are dropped. Its own quit was written first.
@@ -2948,7 +2971,7 @@ mod tests {
 
     #[test]
     fn gateway_panes_take_no_input() {
-        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: false, idle_time: crate::activity::DEFAULT_IDLE, #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
+        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: false, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
         p.buffer.on = true;
         p.input(b"a");
         p.gateway = true;
@@ -2961,7 +2984,7 @@ mod tests {
         // During a replay iTerm2's tab shows the task-less synthetic session, so nothing
         // the user sends reaches the live shell; the live session's own writes (a
         // trigger's Send Text) still do.
-        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: false, idle_time: crate::activity::DEFAULT_IDLE, #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
+        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: false, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
         p.buffer.on = true;
         p.input(b"a");
         p.replay = Some(replay::Replay { decoder: None, read_only: false });
@@ -2976,7 +2999,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: own, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: false, idle_time: crate::activity::DEFAULT_IDLE, #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
+        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: own, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: false, initial_text_due: false, initial_text_sent: false, idle_time: crate::activity::DEFAULT_IDLE, #[cfg(test)] resizes_for_test: Vec::new(), no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);
@@ -3040,6 +3063,39 @@ mod tests {
         let rows: Vec<usize> = p.screen.text().lines().enumerate().filter(|(_, l)| l.contains("MARK")).map(|(i, _)| i).collect();
         assert!(rows.iter().all(|&r| r < 4), "MARK on rows {rows:?}:\n{}", p.screen.all_text());
         assert!(p.error.is_none(), "{:?}", p.error);
+    }
+
+    #[test]
+    fn initial_text_is_due_only_for_an_ssh_profile_after_login_and_once() {
+        let mut p = Pane::with(1, None, 80, 24);
+        // Not an SSH profile's session: a conductor never makes its text due.
+        p.conductor_login_text();
+        assert!(!p.take_initial_text_due());
+        // An SSH profile's: nothing before the conductor logs in.
+        p.ssh.profile_ssh = true;
+        assert!(!p.take_initial_text_due(), "nothing before the login");
+        p.conductor_login_text();
+        p.conductor_login_text();
+        assert!(p.take_initial_text_due(), "due after the login");
+        assert!(!p.take_initial_text_due(), "taken once");
+        p.conductor_login_text();
+        assert!(!p.take_initial_text_due(), "a repeated effect never types it again");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn injected_powershell_emits_marks() {
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/shell_integration/tandem_shell_integration.ps1");
+        let cmd = crate::shell_inject::inject("powershell.exe -NoProfile -NoLogo", &script).expect("a PowerShell line is injected");
+        assert!(!cmd.contains("Set-ExecutionPolicy"), "{cmd}");
+        let mut p = start(&cmd);
+        // The script is read and run before the first prompt; typing then runs one more.
+        assert!(pump_until(&mut p, |p| p.screen.shell.shell.as_deref() == Some("powershell")), "{}", p.screen.all_text());
+        p.input(b"prompt; exit\r");
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "powershell did not exit");
+        p.pump();
+        assert!(!p.screen.marks_in_order().is_empty(), "{}", p.screen.all_text());
+        assert_eq!(p.screen.shell.shell.as_deref(), Some("powershell"));
     }
 
     #[test]
