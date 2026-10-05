@@ -3358,4 +3358,23 @@ mod tests {
             assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
         }
     }
+
+    #[test]
+    fn stream_rows_follow_iterm2() {
+        let url = "Maximum length for OSC 8 URLs";
+        let rep = "Enable support for REP (Repeat previous character) escape sequence?";
+        let sgr = "Reset colors at shell prompt?";
+        let rows: [(&str, &str, Kind, Value, &str, String); 3] = [
+            ("MaxURLLength", "Terminal", Kind::Int, Value::Integer(2_097_152), url, url.to_string()),
+            ("SupportREPCode", "Experimental Features", Kind::Bool, Value::Boolean(true), rep, rep.to_string()),
+            ("ResetSGROnPrompt", "Experimental Features", Kind::Bool, Value::Boolean(true), sgr, format!("{sgr}\nUses shell integration to detect a shell prompt and, if enabled, resets colors to their defaults.")),
+        ];
+        for (key, section, kind, default, label, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", section, kind), "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+        }
+    }
+
 }

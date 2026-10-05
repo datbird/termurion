@@ -123,4 +123,8 @@ test data) is left out. Changes:
     `reportFocus = mode && terminalFocusReportingAllowed`, `VT100Terminal.m:857`, `:5691`); a reset
     is never refused (the shape of patch 16's `alternate_scroll_allowed`).
 
+21. `term/mod.rs`: `Term.max_url_len` (default 2097152, iTerm2's maxURLLength). `set_hyperlink`
+    returns before touching the template when the URI is longer, so a refused link neither starts
+    nor ends one (`VT100Terminal.m:4189`); a later OSC 8 with no URI still ends an open link.
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

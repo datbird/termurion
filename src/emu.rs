@@ -80,6 +80,71 @@ impl Rules {
     }
 }
 
+/// A control sequence a setting may drop or rewrite before it reaches the parser. The scanner
+/// reads parameters as vte does (numbers, never raw text), so padding, leading zeros and the
+/// colon form cannot slip past a gate; `rebuild` writes the canonical sequence back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Held {
+    /// `CSI Pn b`: repeat the previous character.
+    Rep(u16),
+    /// `CSI 3 J` (with any further parameters): erase the history.
+    ClearHistory,
+    /// `CSI ? Pm h` or `l` whose list holds 47, 1047, 1048 or 1049; the whole list, in order.
+    AltScreen { params: Vec<u16>, set: bool },
+    /// `CSI 20 t` or `CSI 21 t`.
+    TitleReport(u8),
+    /// `CSI Pi;Pg;Pt;Pl;Pb;Pr * y`.
+    Decrqcra(Vec<u16>),
+    /// `CSI Pn i` (`CSI i` is 0): media copy.
+    Print(u16),
+    /// ENQ (0x05) in the ground state.
+    Enq,
+    /// `CSI Pl;Pc H` or `f`, found only while the scanner is armed for cursor moves.
+    Cup { params: Vec<u16>, fin: u8 },
+    /// An OSC that passed the length cap: the parser is sent CAN (vte ends the string there, as
+    /// iTerm2 cuts it), and the rest of the string is dropped as `Drop` runs.
+    CancelString,
+    /// Bytes of a cancelled string: fed to nothing.
+    Drop,
+}
+
+impl Held {
+    /// Whether answering or acting on this reads what the grid and title are now, so a
+    /// synchronized update in progress must be drawn first.
+    pub fn reads_state(&self) -> bool {
+        matches!(self, Held::ClearHistory | Held::TitleReport(_) | Held::Decrqcra(_) | Held::Print(_) | Held::Cup { .. })
+    }
+}
+
+fn join(params: &[u16]) -> String {
+    params.iter().map(u16::to_string).collect::<Vec<_>>().join(";")
+}
+
+/// The canonical bytes of a held sequence.
+pub fn rebuild(h: &Held) -> Vec<u8> {
+    match h {
+        Held::Rep(n) => format!("\x1b[{n}b").into_bytes(),
+        Held::ClearHistory => b"\x1b[3J".to_vec(),
+        Held::AltScreen { params, set } => format!("\x1b[?{}{}", join(params), if *set { 'h' } else { 'l' }).into_bytes(),
+        Held::TitleReport(n) => format!("\x1b[{n}t").into_bytes(),
+        Held::Decrqcra(p) => format!("\x1b[{}*y", join(p)).into_bytes(),
+        Held::Print(n) => format!("\x1b[{n}i").into_bytes(),
+        Held::Enq => vec![0x05],
+        Held::Cup { params, fin } => format!("\x1b[{}{}", join(params), *fin as char).into_bytes(),
+        Held::CancelString => vec![0x18],
+        Held::Drop => Vec::new(),
+    }
+}
+
+/// The bytes to feed the parser for a held event. `keep` is what survives (None: nothing). When
+/// the sequence began in an earlier read its start is already in the parser, so a CAN goes first
+/// to return it to the ground state.
+pub fn held_bytes(_original: &[u8], began_here: bool, keep: Option<Vec<u8>>) -> Vec<u8> {
+    let mut out = if began_here { Vec::new() } else { vec![0x18] };
+    out.extend(keep.unwrap_or_default());
+    out
+}
+
 pub const OSC7_WARNING_ID: &str = "NoSyncOSC7DisabledBreaksShellIntegration";
 pub const OSC7_HEADING: &str = "Shell Integration Setting Conflict";
 pub const OSC7_TEXT: &str = "Tandem\u{2019}s shell integration now reports your username, hostname, and current directory using OSC 7, but the \u{201c}Accept OSC 7\u{201d} advanced setting is turned off. Shell integration will not work correctly until it is turned back on.";

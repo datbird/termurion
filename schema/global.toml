@@ -4182,3 +4182,30 @@ label = "Maximum number of chunks to buffer."
 type = "int"
 default = 40
 help = "Maximum number of chunks to buffer.\nIn general, these chunks are 1024 bytes. A larger value increases buffer bloat but\u2014up to a limit\u2014can improve performance in the fast path of ASCII text."
+
+[[setting]]
+key = "MaxURLLength"
+tab = "Advanced"
+section = "Terminal"
+label = "Maximum length for OSC 8 URLs"
+type = "int"
+default = 2097152
+help = "Maximum length for OSC 8 URLs"
+
+[[setting]]
+key = "SupportREPCode"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Enable support for REP (Repeat previous character) escape sequence?"
+type = "bool"
+default = true
+help = "Enable support for REP (Repeat previous character) escape sequence?"
+
+[[setting]]
+key = "ResetSGROnPrompt"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Reset colors at shell prompt?"
+type = "bool"
+default = true
+help = "Reset colors at shell prompt?\nUses shell integration to detect a shell prompt and, if enabled, resets colors to their defaults."

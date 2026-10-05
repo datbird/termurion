@@ -354,6 +354,9 @@ pub struct Term<T> {
     /// refused while false, and DECRQM then answers reset. A reset is always honored.
     pub focus_reporting_allowed: bool,
 
+    /// Tandem patch: the longest OSC 8 URI `set_hyperlink` accepts (iTerm2's maxURLLength).
+    pub max_url_len: usize,
+
     /// Tandem: whether a scroll region that starts at the top but stops above the bottom row
     /// saves the lines leaving it to scrollback (iTerm2's Scrollback With Status Bar).
     scrollback_with_region: bool,
@@ -484,6 +487,7 @@ impl<T> Term<T> {
             xterm_version: 2500,
             color_report_16: true,
             focus_reporting_allowed: true,
+            max_url_len: 2_097_152,
             scrollback_with_region: true,
             cursor_blink_change: true,
             active_charset: Default::default(),
@@ -2075,6 +2079,11 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn set_hyperlink(&mut self, hyperlink: Option<Hyperlink>) {
         trace!("Setting hyperlink: {hyperlink:?}");
+        // Tandem patch: a URI over the cap is refused before the template is touched, so it
+        // neither starts nor ends a link (iTerm2's executeLink).
+        if hyperlink.as_ref().is_some_and(|h| h.uri.len() > self.max_url_len) {
+            return;
+        }
         self.grid.cursor.template.set_hyperlink(hyperlink.map(|e| e.into()));
     }
 

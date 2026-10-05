@@ -883,7 +883,7 @@ impl Screen {
                 let answer = crate::reports::answer(self, &q);
                 self.replies.extend(answer);
             }
-            Osc::Sync(_) => {}
+            Osc::Sync(_) | Osc::Held(_) => {}
             Osc::TabStatus(payload) => {
                 let pairs = crate::tabstatus::parse(&payload);
                 self.apply_tab_status(&pairs);
@@ -900,6 +900,11 @@ impl Screen {
                 let events = self.prompt_state.a();
                 self.composer_events.extend(events);
                 let redraw = self.marks.in_command;
+                // iTerm2 resets the graphic rendition at the prompt mark (`MS:3747-3749`).
+                if self.rules.reset_sgr_on_prompt {
+                    use alacritty_terminal::vte::ansi::{Attr, Handler};
+                    self.term.terminal_attribute(Attr::Reset);
+                }
                 self.prompt_start(kind, aid, fresh_line);
                 // A prompt redrawn at its own start while a command is typed keeps the range
                 // (`MS:3719-3727`).
@@ -2127,4 +2132,20 @@ mod tests {
         assert!(changes(&mut s).is_empty());
         assert!(paste_on(&s), "Never leaves it");
     }
+
+    /// 13o Task 2: a prompt mark resets the colors (iTerm2's Reset colors at shell prompt).
+    #[test]
+    fn prompt_resets_sgr() {
+        use alacritty_terminal::index::{Column, Line};
+        use alacritty_terminal::vte::ansi::{Color, NamedColor};
+        let fg = |s: &Screen| s.term().grid()[Line(0)][Column(0)].fg;
+        let mut s = Screen::new(40, 4);
+        s.feed(b"\x1b[31m\x1b]133;A\x07p");
+        assert_eq!(fg(&s), Color::Named(NamedColor::Foreground));
+        let mut s = Screen::new(40, 4);
+        s.set_rules(crate::emu::Rules { reset_sgr_on_prompt: false, ..Default::default() });
+        s.feed(b"\x1b[31m\x1b]133;A\x07p");
+        assert_eq!(fg(&s), Color::Named(NamedColor::Red));
+    }
+
 }

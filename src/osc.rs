@@ -68,6 +68,8 @@ pub enum Osc {
     Notify(String),
     /// OSC 9;4: a progress bar (its state and value).
     Progress(String),
+    /// A sequence a setting may drop or rewrite (milestone 13o).
+    Held(crate::emu::Held),
 }
 
 #[derive(Default)]
@@ -75,14 +77,120 @@ enum State {
     #[default]
     Ground,
     Esc,
-    Osc { buf: Vec<u8>, keep: bool, esc: bool, cut: bool },
+    Osc { buf: Vec<u8>, keep: bool, esc: bool, cut: bool, len: usize, swallow: bool },
+    /// `ESC X` (SOS) or `ESC ^` (PM): a string to ST that ignores everything, ENQ included.
+    Sos { esc: bool },
     /// `ESC P`: a DCS string (sixel images are kept).
     Dcs { buf: Vec<u8>, esc: bool },
     /// `ESC _`: an APC string (kitty graphics commands are kept).
     Apc { buf: Vec<u8>, esc: bool },
     /// `ESC [`: a control sequence (a few queries are caught). `long` marks one too long to
     /// be a query.
-    Csi { buf: Vec<u8>, long: bool },
+    Csi { buf: Vec<u8>, long: bool, num: CsiNum },
+}
+
+/// Where a control sequence's bytes are, as vte's parser sees them.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Phase {
+    #[default]
+    Start,
+    Param,
+    Inter,
+    Ignore,
+}
+
+/// A control sequence's parameters read as numbers, as vte reads them: digits saturate at u16,
+/// `;` and `:` separate, a subparameter after `:` does not count as a parameter of its own (only
+/// the first of each group is kept) but does count toward the limit of 32, and more than 32 makes
+/// vte drop the sequence.
+#[derive(Clone, Default)]
+struct CsiNum {
+    vals: [u16; MAX_VALUES],
+    n: usize,
+    total: usize,
+    cur: u16,
+    in_sub: bool,
+    marker: u8,
+    inter: u8,
+    inters: u8,
+    phase: Phase,
+}
+
+/// vte's parameter limit.
+const MAX_VALUES: usize = 32;
+
+impl CsiNum {
+    fn commit(&mut self) {
+        if !self.in_sub && self.n < MAX_VALUES {
+            self.vals[self.n] = self.cur;
+            self.n += 1;
+        }
+        self.total += 1;
+        self.cur = 0;
+    }
+
+    fn byte(&mut self, b: u8) {
+        match b {
+            b'0'..=b'9' => {
+                if matches!(self.phase, Phase::Inter | Phase::Ignore) {
+                    self.phase = Phase::Ignore;
+                } else {
+                    self.phase = Phase::Param;
+                    self.cur = self.cur.saturating_mul(10).saturating_add((b - b'0') as u16);
+                }
+            }
+            b':' | b';' => {
+                if matches!(self.phase, Phase::Inter | Phase::Ignore) {
+                    self.phase = Phase::Ignore;
+                } else {
+                    self.phase = Phase::Param;
+                    self.commit();
+                    self.in_sub = b == b':';
+                }
+            }
+            0x3c..=0x3f => {
+                if self.phase == Phase::Start {
+                    self.marker = b;
+                    self.phase = Phase::Param;
+                } else {
+                    self.phase = Phase::Ignore;
+                }
+            }
+            _ => {
+                if self.phase != Phase::Ignore {
+                    self.phase = Phase::Inter;
+                    self.inters = self.inters.saturating_add(1);
+                    if self.inters == 1 {
+                        self.inter = b;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The held sequence the finished control sequence is, if any.
+    fn held(mut self, fin: u8, cup_armed: bool) -> Option<Osc> {
+        use crate::emu::Held;
+        self.commit();
+        if self.phase == Phase::Ignore || self.total > MAX_VALUES {
+            return None;
+        }
+        let vals = &self.vals[..self.n];
+        let first = vals.first().copied().unwrap_or(0);
+        let held = match (self.marker, self.inters, fin) {
+            (0, 0, b'b') => Held::Rep(first),
+            (0, 0, b'J') if first == 3 => Held::ClearHistory,
+            (b'?', 0, b'h' | b'l') if vals.iter().any(|v| matches!(v, 47 | 1047 | 1048 | 1049)) => {
+                Held::AltScreen { params: vals.to_vec(), set: fin == b'h' }
+            }
+            (0, 0, b't') if matches!(first, 20 | 21) => Held::TitleReport(first as u8),
+            (0, 0, b'i') => Held::Print(first),
+            (0, 0, b'H' | b'f') if cup_armed => Held::Cup { params: vals.to_vec(), fin },
+            (0, 1, b'y') if self.inter == b'*' => Held::Decrqcra(vals.to_vec()),
+            _ => return None,
+        };
+        Some(Osc::Held(held))
+    }
 }
 
 /// A control sequence longer than this is no query Tandem answers.
@@ -133,6 +241,9 @@ pub struct Scanner {
     /// After a scan: where an unfinished escape sequence began in those bytes (0 when it
     /// began in an earlier read), or None when the bytes ended between sequences.
     pub pending: Option<usize>,
+    /// Report `CSI Pl;Pc H` and `f` as held cursor moves (armed by the screen while a command
+    /// runs, milestone 13o Task 4).
+    pub cup_armed: bool,
 }
 
 fn could_be_wanted(buf: &[u8]) -> bool {
@@ -151,6 +262,7 @@ impl Scanner {
         let mut out = Vec::new();
         // Where the escape sequence being read began (0 when it began in an earlier read).
         let mut began = 0;
+        let cup_armed = self.cup_armed;
         let mut i = 0;
         while i < bytes.len() {
             let b = bytes[i];
@@ -159,14 +271,17 @@ impl Scanner {
                     if b == 0x1b {
                         began = i;
                         self.state = State::Esc;
+                    } else if b == 0x05 {
+                        out.push((i, i + 1, Osc::Held(crate::emu::Held::Enq)));
                     }
                 }
                 State::Esc => {
                     self.state = match b {
-                        b']' => State::Osc { buf: Vec::new(), keep: true, esc: false, cut: false },
+                        b']' => State::Osc { buf: Vec::new(), keep: true, esc: false, cut: false, len: 0, swallow: false },
+                        b'X' | b'^' => State::Sos { esc: false },
                         b'P' => State::Dcs { buf: Vec::new(), esc: false },
                         b'_' => State::Apc { buf: Vec::new(), esc: false },
-                        b'[' => State::Csi { buf: Vec::new(), long: false },
+                        b'[' => State::Csi { buf: Vec::new(), long: false, num: CsiNum::default() },
                         0x1b => State::Esc,
                         _ => State::Ground,
                     };
@@ -203,13 +318,14 @@ impl Scanner {
                         }
                     }
                 }
-                State::Csi { buf, long } => match b {
+                State::Csi { buf, long, num } => match b {
                     0x1b => {
                         began = i;
                         self.state = State::Esc;
                     }
                     0x18 | 0x1a => self.state = State::Ground,
                     0x20..=0x3f => {
+                        num.byte(b);
                         if buf.len() < CSI_LIMIT {
                             buf.push(b);
                         } else {
@@ -217,7 +333,7 @@ impl Scanner {
                         }
                     }
                     0x40..=0x7e => {
-                        let ev = if *long { None } else { csi_query(buf, b) };
+                        let ev = num.clone().held(b, cup_armed).or_else(|| if *long { None } else { csi_query(buf, b) });
                         self.state = State::Ground;
                         if let Some(ev) = ev {
                             out.push((began, i + 1, ev));
@@ -226,6 +342,23 @@ impl Scanner {
                     // Other control bytes act inside a control sequence without ending it.
                     _ => {}
                 },
+                State::Sos { esc } => {
+                    if *esc {
+                        if b == b'\\' {
+                            self.state = State::Ground;
+                        } else {
+                            began = i.saturating_sub(1);
+                            self.state = State::Esc;
+                            continue;
+                        }
+                    } else {
+                        match b {
+                            0x1b => *esc = true,
+                            0x18 | 0x1a => self.state = State::Ground,
+                            _ => {}
+                        }
+                    }
+                }
                 State::Dcs { buf, esc } => {
                     if *esc {
                         if b == b'\\' {
@@ -258,7 +391,38 @@ impl Scanner {
                         }
                     }
                 }
-                State::Osc { buf, keep, esc, cut } => {
+                State::Osc { buf, keep, esc, cut, len, swallow } => {
+                    if *swallow {
+                        // Past the cap: the parser was sent CAN, and what is left of the string
+                        // is dropped up to its terminator (an ESC goes on as it was).
+                        if *esc {
+                            if b == b'\\' {
+                                self.state = State::Ground;
+                            } else {
+                                began = i.saturating_sub(1);
+                                self.state = State::Esc;
+                                continue;
+                            }
+                        } else {
+                            match b {
+                                0x07 => {
+                                    out.push((i, i + 1, Osc::Held(crate::emu::Held::Drop)));
+                                    self.state = State::Ground;
+                                }
+                                0x1b => *esc = true,
+                                0x18 | 0x1a => self.state = State::Ground,
+                                _ => {
+                                    let rest = &bytes[i..];
+                                    let n = rest.iter().position(|c| matches!(c, 0x07 | 0x1b | 0x18 | 0x1a)).unwrap_or(rest.len());
+                                    out.push((i, i + n, Osc::Held(crate::emu::Held::Drop)));
+                                    i += n;
+                                    continue;
+                                }
+                            }
+                        }
+                        i += 1;
+                        continue;
+                    }
                     if *esc {
                         if b == b'\\' {
                             let done = std::mem::take(buf);
@@ -290,11 +454,28 @@ impl Scanner {
                             0x1b => *esc = true,
                             0x18 | 0x1a => self.state = State::Ground,
                             _ => {
+                                if !*keep {
+                                    // Not ours: skipped, but counted, so a string past the cap is cut
+                                    // (vte would buffer all of it).
+                                    let rest = &bytes[i..];
+                                    let n = rest.iter().position(|c| matches!(c, 0x07 | 0x1b | 0x18 | 0x1a)).unwrap_or(rest.len());
+                                    if *len + n > OSC_CAP {
+                                        let k = i + OSC_CAP.saturating_sub(*len);
+                                        out.push((k, k + 1, Osc::Held(crate::emu::Held::CancelString)));
+                                        *swallow = true;
+                                        i = k + 1;
+                                    } else {
+                                        *len += n;
+                                        i += n;
+                                    }
+                                    continue;
+                                }
                                 if *keep && (buf.len() >= 24 || *cut) {
                                     // The prefix is known: take the whole run up to the next
                                     // control byte at once (a large inline image streams by).
                                     let rest = &bytes[i..];
                                     let n = rest.iter().position(|c| matches!(c, 0x07 | 0x1b | 0x18 | 0x1a)).unwrap_or(rest.len());
+                                    *len += n;
                                     if !*cut {
                                         buf.extend_from_slice(&rest[..n]);
                                         let limit = limit_for(buf);
@@ -312,6 +493,7 @@ impl Scanner {
                                     continue;
                                 }
                                 if *keep {
+                                    *len += 1;
                                     buf.push(b);
                                     if buf.len() > limit_for(buf) || !could_be_wanted(buf) {
                                         *keep = false;
@@ -464,5 +646,108 @@ mod tests {
         assert!(matches!(parse("133;B"), Some(Osc::CommandStart)));
         assert!(matches!(parse("1337;SetMark"), Some(Osc::Kv(k, v)) if k == "SetMark" && v.is_empty()));
         assert!(matches!(parse("1337;SetUserVar=a=Yg=="), Some(Osc::Kv(k, v)) if k == "SetUserVar" && v == "a=Yg=="));
+    }
+
+    /// The spans of the held events in `bytes`.
+    fn held_in(bytes: &[u8]) -> Vec<(usize, usize, crate::emu::Held)> {
+        let mut s = Scanner::default();
+        s.scan_spans(bytes).into_iter().filter_map(|(a, b, o)| if let Osc::Held(h) = o { Some((a, b, h)) } else { None }).collect()
+    }
+
+    #[test]
+    fn held_sequences_are_found() {
+        use crate::emu::Held;
+        let parts: [(&[u8], Held); 7] = [
+            (b"\x1b[5b", Held::Rep(5)),
+            (b"\x1b[3J", Held::ClearHistory),
+            (b"\x1b[?1;1049h", Held::AltScreen { params: vec![1, 1049], set: true }),
+            (b"\x1b[21t", Held::TitleReport(21)),
+            (b"\x1b[1;1;1;1;2;2*y", Held::Decrqcra(vec![1, 1, 1, 1, 2, 2])),
+            (b"\x1b[5i", Held::Print(5)),
+            (b"\x05", Held::Enq),
+        ];
+        let mut bytes = b"x".to_vec();
+        let mut want = Vec::new();
+        for (text, held) in &parts {
+            want.push((bytes.len(), bytes.len() + text.len(), held.clone()));
+            bytes.extend_from_slice(text);
+        }
+        assert_eq!(held_in(&bytes), want);
+        // Not held: other erases and modes, other window reports, an ENQ inside a string.
+        for text in [&b"\x1b[2J"[..], b"\x1b[?25h", b"\x1b[18t", b"\x1b]0;a\x05b\x07", b"\x1bPqa\x05\x1b\\", b"\x1b^a\x05b\x1b\\", b"\x1bXa\x05b\x1b\\", b"\x1b[?5i", b"\x1b[1;5H"] {
+            assert_eq!(held_in(text), vec![], "{:?}", String::from_utf8_lossy(text));
+        }
+        // An ENQ right after a string is held again.
+        assert_eq!(held_in(b"\x1b^a\x1b\\\x05"), vec![(5, 6, Held::Enq)]);
+    }
+
+    /// B1: the scanner reads numbers as vte does, so padding cannot hide a sequence.
+    #[test]
+    fn held_sequences_read_numbers() {
+        use crate::emu::Held;
+        let one = |text: &[u8]| {
+            let mut v = held_in(text);
+            assert_eq!(v.len(), 1, "{:?}", String::from_utf8_lossy(text));
+            let (a, b, h) = v.remove(0);
+            assert_eq!((a, b), (0, text.len()));
+            h
+        };
+        assert_eq!(one(b"\x1b[000000000000000000000000000000000003J"), Held::ClearHistory);
+        assert_eq!(one(b"\x1b[3:1J"), Held::ClearHistory);
+        assert_eq!(one(b"\x1b[3;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0J"), Held::ClearHistory);
+        assert_eq!(one(b"\x1b[?0001049h"), Held::AltScreen { params: vec![1049], set: true });
+        assert_eq!(one(b"\x1b[?25;47l"), Held::AltScreen { params: vec![25, 47], set: false });
+        assert_eq!(one(b"\x1b[?1049:2h"), Held::AltScreen { params: vec![1049], set: true });
+        assert_eq!(one(b"\x1b[b"), Held::Rep(0));
+        assert_eq!(one(b"\x1b[99999999b"), Held::Rep(u16::MAX));
+        assert_eq!(one(b"\x1b[i"), Held::Print(0));
+        assert_eq!(one(b"\x1b[20;1t"), Held::TitleReport(20));
+        // 33 values: vte ignores the sequence, so nothing is held.
+        let mut long = b"\x1b[3".to_vec();
+        for _ in 0..32 {
+            long.extend(b";0");
+        }
+        long.push(b'J');
+        assert_eq!(held_in(&long), vec![]);
+        // Not an erase 3: another first value, a marker, a misplaced marker, an intermediate.
+        for text in [&b"\x1b[;3J"[..], b"\x1b[?3J", b"\x1b[0;3J", b"\x1b[3$J", b"\x1b[3?J", b"\x1b[?5:1049h", b"\x1b[>1049h", b"\x1b[1049h", b"\x1b[?1049$h", b"\x1b[5;1b\x1b[3 b"] {
+            let got = held_in(text);
+            assert!(got.iter().all(|(_, _, h)| !matches!(h, Held::ClearHistory | Held::AltScreen { .. })), "{:?}", String::from_utf8_lossy(text));
+        }
+        // The cursor moves are held only while armed.
+        assert_eq!(held_in(b"\x1b[3;4H"), vec![]);
+        let mut s = Scanner::default();
+        s.cup_armed = true;
+        let ev = s.scan_spans(b"\x1b[3;4H\x1b[f");
+        assert_eq!(ev[0].2, Osc::Held(Held::Cup { params: vec![3, 4], fin: b'H' }));
+        assert_eq!(ev[1].2, Osc::Held(Held::Cup { params: vec![0], fin: b'f' }));
+    }
+
+    #[test]
+    fn held_sequences_split_across_reads_start_at_zero() {
+        use crate::emu::Held;
+        let mut s = Scanner::default();
+        assert!(s.scan_spans(b"ab\x1b[3").is_empty());
+        assert_eq!(s.pending, Some(2));
+        let ev = s.scan_spans(b"Jx");
+        assert_eq!(ev, vec![(0, 1, Osc::Held(Held::ClearHistory))]);
+    }
+
+    #[test]
+    fn a_huge_osc_is_cancelled() {
+        use crate::emu::Held;
+        let mut s = Scanner::default();
+        let mut big = b"\x1b]0;".to_vec();
+        big.extend(std::iter::repeat_n(b'A', OSC_CAP + 10));
+        big.extend(b"\x07z\x1b]0;ok\x07");
+        let ev = s.scan_spans(&big);
+        let cancel = ev.iter().position(|e| e.2 == Osc::Held(Held::CancelString)).expect("cancelled");
+        assert_eq!(ev[cancel].1 - ev[cancel].0, 1);
+        assert!(ev[cancel].0 <= 4 + OSC_CAP + 1);
+        // Everything after the cut up to the terminator is dropped; the next OSC is untouched.
+        let dropped: usize = ev[cancel + 1..].iter().filter(|e| e.2 == Osc::Held(Held::Drop)).map(|e| e.1 - e.0).sum();
+        let bel = 4 + OSC_CAP + 10;
+        assert_eq!(dropped, bel - ev[cancel].1 + 1);
+        assert!(s.pending.is_none());
     }
 }

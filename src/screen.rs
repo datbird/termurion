@@ -891,6 +891,30 @@ impl Screen {
         }
         for (start, end, osc) in events {
             self.capture_bytes(&bytes[at..start.max(at)]);
+            if let crate::osc::Osc::Held(held) = &osc {
+                // A sequence a setting may drop or rewrite: what came before it is fed, then
+                // whatever `pass` lets through (never the original bytes).
+                reply.extend(self.feed_raw(&bytes[at..start.max(at)]));
+                at = end;
+                if held.reads_state() {
+                    if self.sync_deadline().is_some() {
+                        reply.extend(self.flush_sync());
+                    }
+                    self.composer_accrue();
+                }
+                let fed = match held {
+                    crate::emu::Held::Drop => Vec::new(),
+                    crate::emu::Held::CancelString => vec![0x18],
+                    _ => {
+                        let began_here = matches!(held, crate::emu::Held::Enq) || bytes.get(start) == Some(&0x1b) || start > 0;
+                        let keep = self.pass(held);
+                        crate::emu::held_bytes(&bytes[start..end], began_here, keep)
+                    }
+                };
+                reply.extend(self.feed_raw(&fed));
+                reply.append(&mut self.replies);
+                continue;
+            }
             reply.extend(self.feed_raw(&bytes[at..end]));
             at = end;
             match osc {
@@ -936,6 +960,16 @@ impl Screen {
         self.composer_accrue();
         self.run_triggers_after_feed();
         reply
+    }
+
+    /// What reaches the parser for a held sequence: its canonical bytes, a rewrite, or nothing.
+    /// Later tasks add arms; until then every sequence passes as it would without being held.
+    pub(crate) fn pass(&mut self, held: &crate::emu::Held) -> Option<Vec<u8>> {
+        use crate::emu::{rebuild, Held};
+        match held {
+            Held::Rep(_) if !self.rules.rep => None,
+            h => Some(rebuild(h)),
+        }
     }
 
     /// What the prompt state machine asked of the app since the last call.
@@ -1240,6 +1274,7 @@ impl Screen {
         self.term.xterm_version = rules.xterm_version;
         self.term.color_report_16 = rules.color_16;
         self.term.focus_reporting_allowed = rules.focus_reporting;
+        self.term.max_url_len = rules.max_url;
         self.rules = rules;
     }
 
@@ -3284,4 +3319,104 @@ mod tests {
         s.feed(b"\x1b[?1004l");
         assert!(!s.term().mode().contains(TermMode::FOCUS_IN_OUT));
     }
+
+    /// 13o Task 2 (Review Focus 2): a held sequence whose start was fed and whose end is dropped
+    /// leaves the parser in the ground state.
+    #[test]
+    fn held_sequences_survive_split_reads() {
+        use crate::emu::{held_bytes, Rules};
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { rep: false, ..Default::default() });
+        s.feed(b"a\x1b[3");
+        s.feed(b"bc");
+        assert_eq!(row_text(&s, 0), "ac");
+        s.feed(b"\x1b[1md");
+        assert!(s.term.grid()[Line(0)][Column(2)].flags.contains(alacritty_terminal::term::cell::Flags::BOLD), "the parser is in the ground state");
+        assert_eq!(row_text(&s, 0), "acd");
+        // The same drop inside one read, and with the sequence split in two places.
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { rep: false, ..Default::default() });
+        s.feed(b"a\x1b[");
+        s.feed(b"0");
+        s.feed(b"3b");
+        s.feed(b"c");
+        assert_eq!(row_text(&s, 0), "ac");
+        assert_eq!(held_bytes(b"b", false, None), vec![0x18]);
+        assert!(held_bytes(b"\x1b[3J", true, None).is_empty());
+        assert_eq!(held_bytes(b"\x1b[5b", true, Some(b"\x1b[5b".to_vec())), b"\x1b[5b");
+        assert_eq!(held_bytes(b"b", false, Some(b"\x1b[5b".to_vec())), b"\x18\x1b[5b");
+    }
+
+    /// 13o Task 2: the REP switch, and REP read by number.
+    #[test]
+    fn rep_follows_iterm2() {
+        use crate::emu::Rules;
+        let mut s = Screen::new(20, 3);
+        s.feed(b"a\x1b[3b");
+        assert_eq!(row_text(&s, 0), "aaaa");
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { rep: false, ..Default::default() });
+        s.feed(b"a\x1b[3b");
+        assert_eq!(row_text(&s, 0), "a");
+        assert_eq!(s.term.grid().cursor.point.column, Column(1));
+        // Padding and the colon form still reach the switch, and a padded REP runs shortened.
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { rep: false, ..Default::default() });
+        s.feed(b"a\x1b[0000003b\x1b[3:1b");
+        assert_eq!(row_text(&s, 0), "a");
+        let mut s = Screen::new(20, 3);
+        s.feed(b"a\x1b[0000003b");
+        assert_eq!(row_text(&s, 0), "aaaa");
+        // A huge count is bounded by the parameter width (65535), however many digits.
+        let mut s = Screen::new(10, 2);
+        s.feed(b"a\x1b[99999999999999999999b");
+        assert_eq!(s.term.grid().cursor.point.line, Line(1));
+    }
+
+    /// 13o Task 2: the OSC 8 length cap.
+    #[test]
+    fn url_length_follows_iterm2() {
+        use crate::emu::Rules;
+        let link = |s: &Screen| s.term.grid()[Line(0)][Column(0)].hyperlink().map(|h| h.uri().to_string());
+        let feed = |max: usize, text: &[u8]| {
+            let mut s = Screen::new(20, 3);
+            s.set_rules(Rules { max_url: max, ..Default::default() });
+            s.feed(text);
+            s
+        };
+        let long = b"\x1b]8;;http://a.b/cdefgh\x1b\\x\x1b]8;;\x1b\\";
+        assert_eq!(link(&feed(10, long)), None);
+        assert_eq!(link(&feed(2_097_152, long)).as_deref(), Some("http://a.b/cdefgh"));
+        assert_eq!(link(&feed(10, b"\x1b]8;;http://a\x1b\\y")).as_deref(), Some("http://a"));
+        // A refused link neither starts nor ends one: the open link stays open.
+        let s = feed(10, b"\x1b]8;;http://a\x1b\\x\x1b]8;;http://a.b/cdefgh\x1b\\y");
+        assert_eq!(s.term.grid()[Line(0)][Column(1)].hyperlink().map(|h| h.uri().to_string()).as_deref(), Some("http://a"));
+        // A later OSC 8 with no URL still ends the link.
+        let s = feed(10, b"\x1b]8;;http://a\x1b\\x\x1b]8;;\x1b\\y");
+        assert!(s.term.grid()[Line(0)][Column(1)].hyperlink().is_none());
+    }
+
+    /// 13o Task 2 (B2): a held event that reads state runs after a synchronized update is drawn.
+    #[test]
+    fn held_reads_flush_synchronized_output() {
+        let mut s = Screen::new(20, 3);
+        s.feed(b"\x1b[?2026hab\x1b[5i");
+        assert_eq!(row_text(&s, 0), "ab", "the update was flushed before the held sequence");
+    }
+
+    /// 13o Task 2: a string over the cap is cut at the cap and its tail does not print.
+    #[test]
+    fn a_huge_osc_does_not_print_its_tail() {
+        let mut s = Screen::new(20, 3);
+        let mut big = b"\x1b]0;".to_vec();
+        big.extend(std::iter::repeat_n(b'A', (1 << 20) + 10));
+        big.extend(b"\x07z");
+        s.feed(&big);
+        assert_eq!(row_text(&s, 0), "z");
+        // Like iTerm2, the string is cut at the cap (vte ends it on CAN).
+        assert!(s.title().is_some_and(|t| t.len() <= 1 << 20), "the string is cut at the cap");
+        s.feed(b"\x1b]0;ok\x07");
+        assert_eq!(s.title(), Some("ok"));
+    }
+
 }
