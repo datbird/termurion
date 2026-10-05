@@ -208,11 +208,17 @@ pub fn logical_texts_over(screen: &Screen, first: usize, last: usize) -> Vec<Str
 
 /// One cell's text as it is shown: its characters in the profile's normalization form, so a
 /// search matches what the pane draws (never across cells, so a match still covers whole cells).
-fn cell_text(screen: &Screen, cell: &alacritty_terminal::term::cell::Cell) -> String {
+fn push_cell_text(out: &mut String, screen: &Screen, cell: &alacritty_terminal::term::cell::Cell) {
+    // Nothing to normalize: the common case adds no allocation.
+    if screen.normalization == crate::encoding::Form::None || (cell.c.is_ascii() && cell.zerowidth().is_none()) {
+        out.push(cell.c);
+        out.extend(cell.zerowidth().into_iter().flatten());
+        return;
+    }
     let mut text = String::from(cell.c);
     text.extend(cell.zerowidth().into_iter().flatten());
     crate::encoding::normalize_in_place(&mut text, screen.normalization);
-    text
+    out.push_str(&text);
 }
 
 fn texts_between(screen: &Screen, top: i32, bottom: i32) -> Vec<String> {
@@ -230,7 +236,7 @@ fn texts_between(screen: &Screen, top: i32, bottom: i32) -> Vec<String> {
         for c in 0..end {
             let cell = &row[Column(c)];
             if !cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
-                cur.push_str(&cell_text(screen, cell));
+                push_cell_text(&mut cur, screen, cell);
             }
         }
         if !wrapped || l == bottom {
@@ -263,7 +269,7 @@ fn logical_between(screen: &Screen, top: i32, bottom: i32) -> Vec<Logical> {
                 continue;
             }
             cur.cells.push((cur.text.len(), Pos { row: r, col: c }));
-            cur.text.push_str(&cell_text(screen, cell));
+            push_cell_text(&mut cur.text, screen, cell);
         }
         if !wrapped || l == bottom {
             let kept = cur.text.trim_end_matches(' ').len();

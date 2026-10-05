@@ -118,6 +118,13 @@ impl Decoder {
                     i += 1;
                     continue;
                 }
+                // Every later trail byte is checked, so a control byte is never swallowed.
+                if let Some(at) = bad_trail(cp, &data[i..]) {
+                    flush(&mut run, &mut out);
+                    out.extend_from_slice("\u{fffd}".as_bytes());
+                    i += at;
+                    continue;
+                }
                 let len = sequence_len(cp, b, second);
                 if i + len > data.len() {
                     self.held = data[i..].to_vec();
@@ -155,6 +162,21 @@ fn min_trail(cp: u32) -> u8 {
     if cp == 54936 { 0x30 } else { 0x40 }
 }
 
+/// The offset of the first byte past the second that cannot continue the character starting
+/// `seq[0]` (GB 18030's third byte is 0x81 to 0xFE and its fourth a digit; EUC-JP's 0x8F form
+/// takes a byte of 0xA1 or more third), among the bytes present.
+fn bad_trail(cp: u32, seq: &[u8]) -> Option<usize> {
+    let len = sequence_len(cp, seq[0], *seq.get(1)?);
+    (2..len.min(seq.len())).find(|&j| {
+        let b = seq[j];
+        match (cp, j) {
+            (54936, 2) => !(0x81..=0xfe).contains(&b),
+            (54936, _) => !(0x30..=0x39).contains(&b),
+            _ => b < 0xa1,
+        }
+    })
+}
+
 /// How many bytes the character starting `lead, second` takes: GB 18030's four-byte form,
 /// EUC-JP's three-byte 0x8F form, else two.
 fn sequence_len(cp: u32, lead: u8, second: u8) -> usize {
@@ -163,6 +185,15 @@ fn sequence_len(cp: u32, lead: u8, second: u8) -> usize {
         20932 | 51949 if lead == 0x8f => 3,
         _ => 2,
     }
+}
+
+/// `text` converted whole to the session's bytes: the answerback, which iTerm2 sends in
+/// `self.encoding` (`VT100Terminal.m:1951`), ASCII included.
+pub fn encode_whole(cp: u32, text: &str, sys: &dyn CodePage) -> Vec<u8> {
+    if cp == 0 {
+        return text.as_bytes().to_vec();
+    }
+    sys.encode(cp, text)
 }
 
 /// `text` as the session's bytes. UTF-8 (`cp` 0) is the text itself.
@@ -176,14 +207,11 @@ pub fn encode_input(cp: u32, text: &str, sys: &dyn CodePage) -> Vec<u8> {
 /// Bytes bound for the session, with the text in them encoded: what is typed, pasted or a
 /// text reply (the answerback, a title). Bytes below 0x80 and anything that is not UTF-8
 /// pass unchanged, so reports and escape sequences are never touched; the three raw bytes of a
-/// legacy mouse report (`CSI M`) are never read as text. UTF-16 sessions get everything as
-/// UTF-16, as iTerm2 encodes whatever it writes.
+/// legacy mouse report (`CSI M`) are never read as text. Only non-ASCII runs are converted, in
+/// UTF-16 too.
 pub fn encode_stream(cp: u32, bytes: &[u8], sys: &dyn CodePage) -> Vec<u8> {
-    if cp == 0 || bytes.is_ascii() && cp != UTF16 {
+    if cp == 0 || bytes.is_ascii() {
         return bytes.to_vec();
-    }
-    if cp == UTF16 {
-        return sys.encode(cp, &String::from_utf8_lossy(bytes));
     }
     let mut out = Vec::with_capacity(bytes.len());
     let mut at = 0;
@@ -198,11 +226,19 @@ pub fn encode_stream(cp: u32, bytes: &[u8], sys: &dyn CodePage) -> Vec<u8> {
         }
         let stop = rest.windows(3).position(|w| w == b"\x1b[M").unwrap_or(rest.len());
         for chunk in rest[..stop].utf8_chunks() {
+            // Only the runs of non-ASCII characters are converted: ASCII, and so every escape
+            // sequence, leaves as it is, also in UTF-16 (iTerm2 sends keys and reports raw).
             let valid = chunk.valid();
-            if valid.is_ascii() {
-                out.extend_from_slice(valid.as_bytes());
-            } else {
-                out.extend_from_slice(&sys.encode(cp, valid));
+            let mut rest = valid;
+            while !rest.is_empty() {
+                let ascii = rest.starts_with(|c: char| c.is_ascii());
+                let n = rest.find(|c: char| c.is_ascii() != ascii).unwrap_or(rest.len());
+                if ascii {
+                    out.extend_from_slice(rest[..n].as_bytes());
+                } else {
+                    out.extend_from_slice(&sys.encode(cp, &rest[..n]));
+                }
+                rest = &rest[n..];
             }
             out.extend_from_slice(chunk.invalid());
         }
@@ -249,14 +285,18 @@ impl CodePage for WinCodePage {
         if len == 0 {
             return Vec::new();
         }
+        // No best fit (`WC_NO_BEST_FIT_CHARS`): a character the page lacks becomes its default,
+        // never a lookalike (a fullwidth quote must not turn into `"` in a paste). Windows takes
+        // no flags for ISO 2022, GB 18030, UTF-7, UTF-8 and the other symbolic pages.
+        let flags = if matches!(cp, 50220..=50229 | 52936 | 54936 | 57002..=57011 | 65000 | 65001 | 42) { 0 } else { 0x400 };
         // SAFETY: as in `decode`. No default character is passed: some code pages refuse one.
         unsafe {
-            let n = WideCharToMultiByte(cp, 0, wide.as_ptr(), len, std::ptr::null_mut(), 0, std::ptr::null(), std::ptr::null_mut());
+            let n = WideCharToMultiByte(cp, flags, wide.as_ptr(), len, std::ptr::null_mut(), 0, std::ptr::null(), std::ptr::null_mut());
             if n <= 0 {
                 return text.as_bytes().to_vec();
             }
             let mut out = vec![0u8; n as usize];
-            let got = WideCharToMultiByte(cp, 0, wide.as_ptr(), len, out.as_mut_ptr(), n, std::ptr::null(), std::ptr::null_mut());
+            let got = WideCharToMultiByte(cp, flags, wide.as_ptr(), len, out.as_mut_ptr(), n, std::ptr::null(), std::ptr::null_mut());
             out.truncate(got.max(0) as usize);
             out
         }
@@ -482,7 +522,7 @@ mod tests {
         // The three raw bytes of a legacy mouse report are never text, even when they look like it.
         assert_eq!(encode_stream(28591, b"\x1b[M \xc3\xa9", &fake), b"\x1b[M \xc3\xa9");
         // UTF-16 sessions get everything as UTF-16.
-        assert_eq!(encode_stream(1200, b"a\xc3\xa9", &fake), vec![0x61, 0, 0xe9, 0]);
+        assert_eq!(encode_stream(1200, b"a\xc3\xa9", &fake), vec![0x61, 0xe9, 0], "only the non-ASCII text is UTF-16 (iTerm2 sends keys and reports raw)");
         assert_eq!(encode_stream(0, b"\xc3\xa9", &fake), b"\xc3\xa9");
     }
 
@@ -539,5 +579,49 @@ mod tests {
         assert_eq!(d.feed(b"\xa0y", &w), "\u{3042}y".as_bytes());
         // A character the code page lacks encodes as its default, never a panic.
         assert_eq!(w.encode(1252, "\u{3042}"), vec![b'?']);
+    }
+
+    /// Fix round 1 (Important 1): escape sequences stay raw in a UTF-16 session; only text with
+    /// non-ASCII characters is converted.
+    #[test]
+    fn utf16_keeps_escape_sequences_raw() {
+        let fake = FakeCodePage;
+        assert_eq!(encode_stream(1200, b"\x1b[A", &fake), b"\x1b[A");
+        assert_eq!(encode_stream(1200, b"\x1b[1;1R", &fake), b"\x1b[1;1R");
+        assert_eq!(encode_stream(1200, "\u{e9}".as_bytes(), &fake), vec![0xe9, 0]);
+        // The answerback is text and is converted whole.
+        assert_eq!(encode_whole(1200, "hi", &fake), vec![b'h', 0, b'i', 0]);
+        assert_eq!(encode_whole(0, "h\u{e9}", &fake), "h\u{e9}".as_bytes());
+        assert_eq!(encode_whole(28591, "h\u{e9}", &fake), b"h\xe9");
+    }
+
+    /// Fix round 1 (Minor 2): every trail byte is checked, so a control byte after the lead of a
+    /// GB 18030 or EUC-JP three-byte form is never handed to the conversion.
+    #[cfg(windows)]
+    #[test]
+    fn later_trail_bytes_are_checked() {
+        let mut d = Decoder::new(54936);
+        assert_eq!(d.feed(b"\x81\x30\x1b[0m", system()), "\u{fffd}\x1b[0m".as_bytes());
+        assert_eq!(d.feed(b"\x81\x30\x81\x1b[0m", system()), "\u{fffd}\x1b[0m".as_bytes());
+        // A whole four-byte character still decodes, also across reads.
+        assert_eq!(d.feed(b"\x81\x30\x81\x30", system()), "\u{80}".as_bytes());
+        assert!(d.feed(b"\x81\x30\x81", system()).is_empty());
+        assert_eq!(d.feed(b"\x30x", system()), "\u{80}x".as_bytes());
+        let mut e = Decoder::new(51949);
+        assert_eq!(e.feed(b"\x8f\xa1\x1b[0m", system()), "\u{fffd}\x1b[0m".as_bytes());
+    }
+
+    /// Fix round 1 (Minor 1, security): a character the page lacks never becomes a similar one
+    /// (a fullwidth quote must not become `"` in a paste); it is the page's default.
+    #[cfg(windows)]
+    #[test]
+    fn no_best_fit_characters() {
+        assert_eq!(system().encode(1252, "\u{ff02}\u{ff3c}"), b"??");
+        assert_eq!(system().encode(932, "\u{a5}"), b"?");
+        assert_eq!(system().encode(1252, "caf\u{e9}"), b"caf\xe9");
+        assert_eq!(system().encode(932, "\u{3042}"), b"\x82\xa0");
+        // Pages that take no flags still convert.
+        assert_eq!(system().encode(65001, "\u{ff02}"), "\u{ff02}".as_bytes());
+        assert_eq!(system().encode(54936, "\u{ff02}\u{4e2d}").len(), 4);
     }
 }

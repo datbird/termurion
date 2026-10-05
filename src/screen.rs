@@ -335,6 +335,8 @@ pub struct Screen {
     look: Look,
     /// The profile's Answerback String, what ENQ answers (at most `ANSWERBACK_MAX` bytes).
     answerback: String,
+    /// The code page the answerback leaves in (0 is UTF-8).
+    answerback_cp: u32,
     pub key_labels: crate::osc1337::KeyLabels,
     /// SetColors changes, reapplied over a new profile palette.
     pub(crate) color_sets: Vec<(String, crate::osc1337::Color)>,
@@ -611,6 +613,7 @@ impl Screen {
             normalization: look.normalization,
             look,
             answerback: String::new(),
+            answerback_cp: 0,
             key_labels: crate::osc1337::KeyLabels::default(),
             color_sets: Vec::new(),
             clipboard_allowed: false,
@@ -1243,7 +1246,8 @@ impl Screen {
             // ENQs in one batch coalesce: one answerback (a flood would queue 256 bytes each).
             Held::Enq if std::mem::replace(&mut self.answerback_sent, true) => None,
             Held::Enq => {
-                self.replies.extend_from_slice(self.answerback.as_bytes());
+                let bytes = crate::encoding::encode_whole(self.answerback_cp, &self.answerback, crate::encoding::system());
+                self.replies.extend_from_slice(&bytes);
                 None
             }
             h => Some(rebuild(h)),
@@ -1589,6 +1593,11 @@ impl Screen {
             text.truncate(cut);
         }
         self.answerback = text;
+    }
+
+    /// The code page the answerback leaves in (0 is UTF-8); the pane sets it with its encoding.
+    pub fn set_answerback_encoding(&mut self, cp: u32) {
+        self.answerback_cp = cp;
     }
 
     /// DEC mode 2048 (in-band resize reports) is set.

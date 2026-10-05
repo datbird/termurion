@@ -690,8 +690,10 @@ impl Pane {
 
     /// Bytes bound for the session with the text in them in the session's encoding.
     fn encode_text<'a>(&self, bytes: &'a [u8]) -> std::borrow::Cow<'a, [u8]> {
+        // tmux control mode is UTF-8 (`PTYSession.m:10958`): a tmux pane and its gateway never encode.
         match self.encoding {
             0 => std::borrow::Cow::Borrowed(bytes),
+            _ if self.gateway || self.tmux_io().is_some() => std::borrow::Cow::Borrowed(bytes),
             cp => std::borrow::Cow::Owned(crate::encoding::encode_stream(cp, bytes, crate::encoding::system())),
         }
     }
@@ -1660,9 +1662,10 @@ impl Pane {
     /// (`send_routed`).
     pub fn reply(&mut self, bytes: &[u8]) {
         self.composer.probe = None;
-        // The answerback and a title report are text and take the session's encoding.
-        let bytes = self.encode_text(bytes).into_owned();
-        self.send_routed(&bytes);
+        // Replies are raw: a report, a title report (UTF-8, `PTYSession.m:18338`), a tmux command,
+        // a key the SSH queue already encoded. Only typed text, pastes and the answerback take
+        // the session's encoding (`PTYSession.m:4364-4376`).
+        self.send_routed(bytes);
     }
 
     /// Typed bytes Buffer Input let go: the session's typed route (`write_session`).
@@ -1865,6 +1868,10 @@ impl Pane {
         if cp != self.encoding {
             self.encoding = cp;
             self.decoder = (cp != 0).then(|| crate::encoding::Decoder::new(cp));
+            // The answerback is the one reply in the session's encoding.
+            for screen in self.live.iter_mut().chain(std::iter::once(&mut self.screen)) {
+                screen.set_answerback_encoding(cp);
+            }
         }
     }
 
@@ -2159,27 +2166,82 @@ mod tests {
         assert_eq!(j.encoding, 28591);
     }
 
-    /// Typed text, pastes and text replies go out in the session's encoding; reports and escape
-    /// sequences are ASCII and pass unchanged; UTF-8 sessions send what they were given.
+    /// Typed text and pastes leave in the session's encoding; a tmux pane and its gateway are
+    /// always UTF-8 (control mode, `PTYSession.m:10958`).
     #[test]
-    fn input_and_text_replies_use_the_session_encoding() {
+    fn input_uses_the_session_encoding_but_tmux_is_utf8() {
         let mut p = Pane::tmux(5, 1, 3, 20, 4);
         p.set_encoding(5);
         p.input("caf\u{e9}\r".as_bytes());
-        assert_eq!(p.tmux_io().unwrap().take_input(), b"caf\xe9\r");
+        assert_eq!(p.tmux_io().unwrap().take_input(), "caf\u{e9}\r".as_bytes(), "a tmux pane sends UTF-8");
         p.paste("na\u{ef}ve");
         let sent = p.tmux_io().unwrap().take_input();
-        assert!(sent.windows(5).any(|w| w == b"na\xefve"), "{sent:?}");
-        p.reply(b"\x1b[1;1R");
-        assert_eq!(p.tmux_io().unwrap().take_input(), b"\x1b[1;1R");
-        // The answerback and a title report are text: they take the encoding (Task 6 carry).
-        p.screen.set_answerback("caf\u{e9}".into());
-        let reply = p.own_mut().feed(b"\x05");
-        p.reply(&reply);
-        assert_eq!(p.tmux_io().unwrap().take_input(), b"caf\xe9");
+        assert!(sent.windows(6).any(|w| w == "na\u{ef}ve".as_bytes()), "{sent:?}");
+        // A gateway's tmux commands are UTF-8 whatever the profile says.
+        let mut g = Pane::with(7, None, 10, 4);
+        g.set_encoding(5);
+        g.gateway = true;
+        assert_eq!(g.encode_text("send -lt %1 \u{e9}".as_bytes()).as_ref(), "send -lt %1 \u{e9}".as_bytes());
+        // Any other pane encodes its text.
+        let mut q = Pane::with(8, None, 10, 4);
+        q.set_encoding(5);
+        assert_eq!(q.encode_text("caf\u{e9}".as_bytes()).as_ref(), b"caf\xe9");
         let mut u = Pane::tmux(6, 1, 4, 20, 4);
         u.input("caf\u{e9}".as_bytes());
         assert_eq!(u.tmux_io().unwrap().take_input(), "caf\u{e9}".as_bytes());
+    }
+
+    /// Fix round 1 (Important 1): what the terminal answers and what Tandem itself writes
+    /// (`Pane::reply`) leaves as the bytes it was given, in every encoding; only typed text,
+    /// pastes and the answerback are encoded, once.
+    #[test]
+    fn replies_leave_raw_and_text_is_encoded_once() {
+        let held = |p: &mut Pane| p.take_ssh_held();
+        for ns in [5, 10] {
+            let mut p = Pane::with(1, None, 10, 4);
+            p.conductor = setting_up();
+            p.set_encoding(ns);
+            // A title report (UTF-8 text), a DA answer and a 1005 mouse report are raw.
+            p.reply("\x1bP1;caf\u{e9}\x1b\\".as_bytes());
+            p.reply(b"\x1b[?1;2c");
+            p.reply(b"\x1b[M \xc4\x80!");
+            let mut want = "\x1bP1;caf\u{e9}\x1b\\".as_bytes().to_vec();
+            want.extend_from_slice(b"\x1b[?1;2c\x1b[M \xc4\x80!");
+            assert_eq!(held(&mut p), want, "encoding {ns}");
+        }
+        // Typing: text is encoded, key escapes are not (also in UTF-16).
+        let mut l = Pane::with(2, None, 10, 4);
+        l.conductor = setting_up();
+        l.set_encoding(5);
+        l.live_input("caf\u{e9}\x1b[A".as_bytes());
+        assert_eq!(held(&mut l), b"caf\xe9\x1b[A");
+        let mut u = Pane::with(3, None, 10, 4);
+        u.conductor = setting_up();
+        u.set_encoding(10);
+        u.live_input(b"\x1b[A");
+        assert_eq!(held(&mut u), b"\x1b[A", "an arrow key is 3 bytes in UTF-16");
+        // Text typed while SSH connects is encoded when typed and sent as it is queued (no second pass).
+        let mut q = Pane::with(4, None, 10, 4);
+        q.conductor = setting_up();
+        q.set_encoding(5);
+        q.reply("\u{e9}".as_bytes());
+        assert_eq!(held(&mut q), "\u{e9}".as_bytes(), "reply does not encode");
+        // The answerback is converted whole, once, where it is set and when the encoding changes.
+        let mut a = Pane::with(5, None, 10, 4);
+        a.conductor = setting_up();
+        a.set_answerback("caf\u{e9}");
+        a.set_encoding(5);
+        let r = a.own_mut().feed(b"\x05");
+        a.reply(&r);
+        assert_eq!(held(&mut a), b"caf\xe9");
+        a.set_encoding(10);
+        let r = a.own_mut().feed(b"\x05");
+        a.reply(&r);
+        assert_eq!(held(&mut a), vec![b'c', 0, b'a', 0, b'f', 0, 0xe9, 0]);
+        a.set_encoding(0);
+        let r = a.own_mut().feed(b"\x05");
+        a.reply(&r);
+        assert_eq!(held(&mut a), "caf\u{e9}".as_bytes());
     }
 
     #[test]
