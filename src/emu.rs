@@ -261,7 +261,7 @@ const TEMPORARY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 impl PrintGuard {
     /// Whether a print goes ahead. An attempt that will print counts, asked or not (`PG:21-25`).
     pub fn check(&mut self, now: std::time::Instant, profile_disabled: bool, will_print: bool) -> Guard {
-        if self.off || self.disabled_until.is_some_and(|t| now < t) {
+        if self.refused(now) {
             return Guard::Refuse;
         }
         self.disabled_until = None;
@@ -276,6 +276,12 @@ impl PrintGuard {
             }
         }
         Guard::Print
+    }
+
+    /// Whether a print the person allowed some time ago is refused now: Disable Temporarily or
+    /// Disable Permanently was answered since (`PG:31-33` checks at every attempt).
+    pub fn refused(&self, now: std::time::Instant) -> bool {
+        self.off || self.disabled_until.is_some_and(|t| now < t)
     }
 
     /// The person's answer to the question: 0 Allow, 1 Disable Temporarily, 2 Disable
@@ -541,6 +547,22 @@ mod tests {
         g.check(t0, false, true);
         assert!(!g.answer(t0, 0), "Allow changes nothing");
         assert_eq!(g.check(t0 + s(31), false, true), Guard::Print, "30 s apart is not recent");
+    }
+
+    /// Task 7 fix: an Allow answered after a Disable is refused at answer time.
+    #[test]
+    fn print_guard_refuses_a_stale_allow() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        let mut g = PrintGuard::default();
+        assert!(!g.refused(t0));
+        g.answer(t0, 1);
+        assert!(g.refused(t0 + s(10)), "Disable Temporarily");
+        assert!(!g.refused(t0 + s(301)), "it ends after 5 minutes");
+        let mut g = PrintGuard::default();
+        g.answer(t0, 2);
+        assert!(g.refused(t0 + s(100_000)), "Disable Permanently");
     }
 
     /// 13o Task 7 (B8): the capture keeps text, CR and LF, drops escape sequences, is bounded and

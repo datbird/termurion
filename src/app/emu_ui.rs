@@ -103,6 +103,11 @@ impl App {
     /// the print dialog prints anything.
     pub(super) fn print_request(&mut self, pane: PaneId, job: crate::screen::PrintJob) {
         use crate::emu::Guard;
+        // One question at a time per pane: while "Allow Printing?" waits (shown or queued) a
+        // further attempt is dropped, and is not counted against the guard (P21).
+        if self.alert_waits(|t| matches!(t, Then::PrintGuard { pane: p, .. } if *p == pane)) {
+            return;
+        }
         let disabled = self.profile_of(pane).is_some_and(|p| p.bool("Disable Printing"));
         let guard = self.print_guards.entry(pane).or_default().check(std::time::Instant::now(), disabled, true);
         match guard {
@@ -118,7 +123,13 @@ impl App {
     /// The answer to "Allow Printing?": Allow prints; Disable Permanently also turns the saved
     /// profile's Disable Printing on (the original of a session copy, `PG:57-62`).
     pub(super) fn print_guard_answered(&mut self, pane: PaneId, job: crate::screen::PrintJob, index: usize) {
-        let permanent = self.print_guards.entry(pane).or_default().answer(std::time::Instant::now(), index);
+        // A pane that closed since has no guard and prints nothing.
+        let now = std::time::Instant::now();
+        let Some(guard) = self.print_guards.get_mut(&pane) else { return };
+        // The guard is checked again now: an Allow that waited behind a Disable prints nothing
+        // (iTerm2 asks and answers synchronously, `PG:31-33`).
+        let refused = guard.refused(now);
+        let permanent = guard.answer(now, index);
         if permanent {
             let guid = self.panes.get(&pane).map(|p| self.store.shared_guid(&p.profile));
             if let Some(profile) = guid.and_then(|g| self.store.get_mut(&g)) {
@@ -129,7 +140,7 @@ impl App {
                 self.refresh_panes();
             }
         }
-        if index == 0 {
+        if index == 0 && !refused {
             self.print_job(pane, &job);
         }
     }

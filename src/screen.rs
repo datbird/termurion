@@ -282,6 +282,8 @@ pub struct Screen {
     /// Reports answered in the current `feed` (a batch): at most one answerback, and DECRQCRA
     /// replies up to `DECRQCRA_PER_BATCH`, so a hostile file cannot flood the input queue.
     answerback_sent: bool,
+    /// A title report was sent in this batch (one reply per `feed`, like the answerback).
+    title_sent: bool,
     decrqcra_sent: u16,
     /// OSC 1337 Block: the blocks this screen knows.
     pub blocks: crate::blocks::Blocks,
@@ -612,6 +614,7 @@ impl Screen {
             capture_hold: Vec::new(),
             print_capture: None,
             answerback_sent: false,
+            title_sent: false,
             decrqcra_sent: 0,
             color_reports: false,
             last_dark: true,
@@ -955,6 +958,7 @@ impl Screen {
     /// answers to device, color, and size queries. An app that gets no answer may hang.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
         self.answerback_sent = false;
+        self.title_sent = false;
         self.decrqcra_sent = 0;
         self.bump_ticks();
         if !bytes.is_empty() && !self.triggers.list.is_empty() {
@@ -1171,12 +1175,12 @@ impl Screen {
                         if let Some(job) = self.print_capture.take() {
                             let text = job.text();
                             if !text.is_empty() {
-                                self.requests.push(Request::Print(PrintJob::Text(text)));
+                                self.push_print(PrintJob::Text(text));
                             }
                         }
                     }
                     _ if self.look.disable_printing || self.print_capture.is_some() => {}
-                    _ => self.requests.push(Request::Print(PrintJob::Screen)),
+                    _ => self.push_print(PrintJob::Screen),
                 }
                 None
             }
@@ -1217,7 +1221,7 @@ impl Screen {
             Held::TitleReport(k) => {
                 // Only with Allow Title Reporting and trust (`S:18316-18351`); a tmux pane's
                 // replies are dropped by its pane. One title serves 20 and 21 (Decision).
-                if self.look.allow_title_reporting && self.trusted {
+                if self.look.allow_title_reporting && self.trusted && !std::mem::replace(&mut self.title_sent, true) {
                     self.replies.extend(crate::emu::title_report(*k, self.title().unwrap_or("")).into_bytes());
                 }
                 None
@@ -1229,6 +1233,14 @@ impl Screen {
                 None
             }
             h => Some(rebuild(h)),
+        }
+    }
+
+    /// Queues a print, one at a time: while a request waits (a frame has not taken it) further
+    /// ones are dropped, so a flood of CSI i is one question, not one alert each (P21).
+    fn push_print(&mut self, job: PrintJob) {
+        if !self.requests.iter().any(|r| matches!(r, Request::Print(_))) {
+            self.requests.push(Request::Print(job));
         }
     }
 
@@ -3948,7 +3960,7 @@ mod tests {
         s.feed(b"\x1b[i");
         assert_eq!(s.take_requests(), vec![Request::Print(PrintJob::Screen)]);
         s.feed(b"\x1b[0i\x1b[2i");
-        assert_eq!(s.take_requests(), vec![Request::Print(PrintJob::Screen), Request::Print(PrintJob::Screen)]);
+        assert_eq!(s.take_requests(), vec![Request::Print(PrintJob::Screen)], "one pending print at a time");
         // Split reads.
         s.feed(b"\x1b[");
         s.feed(b"5ixy");
@@ -3965,6 +3977,29 @@ mod tests {
         s.feed(b"\x1b[5iabc\x1b[4i\x1b[i");
         assert_eq!(row_text(&s, 0), "abc");
         assert!(!s.take_requests().iter().any(|r| matches!(r, Request::Print(_))));
+    }
+
+    /// Task 7 fix (P21): a flood of CSI i queues one print request, not one alert each.
+    #[test]
+    fn print_floods_are_bounded() {
+        let mut s = Screen::new(20, 4);
+        s.feed(&b"\x1b[i".repeat(1000));
+        assert_eq!(s.take_requests(), vec![Request::Print(PrintJob::Screen)]);
+        s.feed(b"\x1b[i");
+        assert_eq!(s.take_requests(), vec![Request::Print(PrintJob::Screen)], "the next batch asks again once it was taken");
+    }
+
+    /// Task 7 fix: a title report answers once a batch, as the answerback does.
+    #[test]
+    fn title_reports_are_one_per_batch() {
+        let mut s = Screen::new(20, 4);
+        s.set_look(Look { allow_title_reporting: true, ..Look::default() });
+        s.trusted = true;
+        s.feed(b"\x1b]2;hello\x07");
+        let one = s.feed(b"\x1b[21t");
+        assert_eq!(one, b"\x1b]lhello\x1b\\", "a title report answers");
+        assert_eq!(s.feed(&b"\x1b[21t".repeat(1000)), one, "one reply per batch");
+        assert_eq!(s.feed(&b"\x1b[20t\x1b[21t".repeat(10)), b"\x1b]Lhello\x1b\\", "20 and 21 share the one reply");
     }
 
     /// 13o Task 7 (B8): a capture with no end is bounded and never swallows all output.

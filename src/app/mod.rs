@@ -6345,6 +6345,22 @@ mod tests {
         assert!(body.contains("p.set_encoding("));
     }
 
+    /// Task 7 fix (P21): one "Allow Printing?" alert is pending per pane, and its answer checks
+    /// the guard again, so an Allow queued before a Disable never prints.
+    #[test]
+    fn print_guard_answers_are_rechecked() {
+        let src = include_str!("emu_ui.rs");
+        let ask = &src[src.find("fn print_request").unwrap()..];
+        let ask = &ask[..ask.find("\n    }\n").unwrap()];
+        assert!(ask.contains("alert_waits(|t| matches!(t, Then::PrintGuard { pane: p, .. } if *p == pane))"), "a pane with a question pending asks no more");
+        assert!(ask.find("alert_waits").unwrap() < ask.find(".check(").unwrap(), "a dropped attempt is not counted");
+        let answer = &src[src.find("fn print_guard_answered").unwrap()..];
+        let answer = &answer[..answer.find("\n    }\n").unwrap()];
+        assert!(answer.contains("print_guards.get_mut(&pane)"), "no guard is made for a pane that closed");
+        assert!(answer.contains(".refused("), "the answer re-checks the guard");
+        assert!(!answer.contains("or_default"));
+    }
+
     #[test]
     fn menu_bar_hides_in_full_screen() {
         assert!(menu_should_hide(true, true));
