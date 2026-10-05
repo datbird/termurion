@@ -1712,6 +1712,28 @@ mod tests {
         assert!(restart.split("\n    }\n").next().unwrap().contains("bump_initial_text"), "a restart that sends nothing still drops the old answer");
     }
 
+    /// S4 (13o x 13p): Initial Text is typed through `Pane::input`, the path 13o's session
+    /// encoder sits on, never a raw write; and the pane has its encoding (`install_pane` ->
+    /// `apply_emu_rules`) before the text is started, at a launch and at a conductor's login.
+    #[test]
+    fn initial_text_goes_through_the_session_encoder() {
+        let src = include_str!("script_ui.rs").split("#[cfg(test)]").next().unwrap();
+        let answer = &src[src.find("Origin::InitialText { pane, epoch } => {").unwrap()..];
+        let answer = &answer[..answer.find("\n            }\n").unwrap()];
+        assert!(answer.contains("p.input(&bytes)"), "{answer}");
+        assert!(!answer.contains("reply(") && !answer.contains("write("), "no raw write skips the encoder");
+        let start = include_str!("mod.rs");
+        let start = &start[start.find("self.install_pane(id, pane, &p);").unwrap()..];
+        assert!(start[..1200].contains("self.send_initial_text(id, &p)"), "the launch sends right after the install");
+        let install = include_str!("mod.rs");
+        let install = &install[install.find("    fn install_pane(").unwrap()..];
+        let install = &install[..install.find("\n    }\n").unwrap()];
+        assert!(install.contains("self.apply_emu_rules(id);"), "install sets the encoding");
+        let emu = include_str!("emu_ui.rs");
+        let emu = &emu[emu.find("fn apply_emu_rules").unwrap()..];
+        assert!(emu[..emu.find("\n    }\n").unwrap()].contains("p.set_encoding("));
+    }
+
     /// B1: nothing is typed at a plain ssh prompt. An SSH profile has no conductor until it has
     /// logged in (with SSH Integration off, never), and only the conductor's login makes the text due.
     #[test]

@@ -2228,6 +2228,27 @@ mod tests {
         assert_eq!(j.encoding, 28591);
     }
 
+    /// S4 (13o x 13p): Initial Text (its text, then Enter) goes through `input` and so leaves
+    /// in the session's encoding like typing, in every non-UTF-8 choice; a UTF-8 session sends
+    /// it as written.
+    #[test]
+    fn initial_text_leaves_in_the_session_encoding() {
+        let text = |ns: i64| {
+            let mut p = Pane::with(1, None, 10, 4);
+            p.conductor = setting_up();
+            p.set_encoding(ns);
+            p.input("cd caf\u{e9}\r".as_bytes());
+            p.take_ssh_held()
+        };
+        assert_eq!(text(5), b"cd caf\xe9\r");
+        assert_eq!(text(4), "cd caf\u{e9}\r".as_bytes());
+        // UTF-16: the text is paired, the Enter leaves as the one byte a typed Enter does
+        // (13o's stream encoder passes C0 controls as they are).
+        let mut utf16 = crate::encoding::utf16le_encode("cd caf\u{e9}");
+        utf16.push(b'\r');
+        assert_eq!(text(10), utf16);
+    }
+
     /// Typed text and pastes leave in the session's encoding; a tmux pane and its gateway are
     /// always UTF-8 (control mode, `PTYSession.m:10958`).
     #[test]
