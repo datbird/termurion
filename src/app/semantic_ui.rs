@@ -21,6 +21,13 @@ pub(super) fn context_bounds(line_len: usize, offset: usize, max: usize) -> (usi
     (offset.saturating_sub(max), offset.saturating_add(max).min(line_len))
 }
 
+/// What `update_hover` compares to skip work: the pane, the cell and both hover keys.
+pub(super) type HoverKey = (PaneId, i32, usize, bool, bool);
+
+pub(super) fn hover_key(at: Option<(PaneId, Point)>, underline: bool, preview: bool) -> Option<HoverKey> {
+    at.map(|(id, p)| (id, p.line.0, p.column.0, underline, preview))
+}
+
 /// Smart Selection looks this many logical lines each way from the click.
 const RADIUS: usize = 2;
 
@@ -72,6 +79,7 @@ impl App {
             smart,
             raw_command: prefs.action == "raw command",
             urls: self.url_prefs(id),
+            no_probe: self.remote_text(id),
         };
         Some(Clicked { ctx, line, base, joined, found, rules, prefs, link_id: link.map(|h| h.id().to_string()) })
     }
@@ -199,8 +207,7 @@ impl App {
 
     /// What a Smart Selection action runs. Copy runs here and returns None.
     fn smart_action_run(&mut self, id: PaneId, a: &smartsel::RuleAction, captures: &[String], cwd: &str) -> Option<Run> {
-        let shell = &self.panes.get(&id)?.own().shell;
-        let (host, user) = (shell.host.clone().unwrap_or_default(), shell.user.clone().unwrap_or_default());
+        let (host, user) = self.host_user(id)?;
         let text = |escape| smartsel::expand(&a.parameter, captures, cwd, &host, &user, escape);
         Some(match a.action.as_str() {
             "openFile:" => semantic::open_file_run(&text(Escape::None), has_code()),
@@ -295,10 +302,21 @@ impl App {
         if a.action != "openUrl:" {
             return None;
         }
-        let shell = &self.panes.get(&id)?.own().shell;
-        let (host, user) = (shell.host.clone().unwrap_or_default(), shell.user.clone().unwrap_or_default());
         let cwd = c.ctx.cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
-        Some(smartsel::expand(&a.parameter, &f.captures, &cwd, &host, &user, Escape::None))
+        self.smart_param(id, a, &f.captures, &cwd, Escape::None)
+    }
+
+    /// A Smart Selection action's parameter with its captures, the working directory and the
+    /// pane's host and user filled in: the one expansion the hover preview and the run share.
+    fn smart_param(&self, id: PaneId, a: &smartsel::RuleAction, captures: &[String], cwd: &str, escape: Escape) -> Option<String> {
+        let (host, user) = self.host_user(id)?;
+        Some(smartsel::expand(&a.parameter, captures, cwd, &host, &user, escape))
+    }
+
+    /// The pane's reported host and user, empty when it reports none.
+    fn host_user(&self, id: PaneId) -> Option<(String, String)> {
+        let shell = &self.panes.get(&id)?.own().shell;
+        Some((shell.host.clone().unwrap_or_default(), shell.user.clone().unwrap_or_default()))
     }
 
     /// Win held over a pane: underline the Win-click target under the pointer (with its key),
@@ -313,14 +331,13 @@ impl App {
             let (col, row, _) = self.cell_at(id, rect, x, y);
             (id, self.grid_point(id, col, row))
         });
-        let key = at.map(|(id, p)| (id, p.line.0, p.column.0, underline, preview));
+        let key = hover_key(at, underline, preview);
         if key != self.hover_key {
             self.hover_key = key;
             let found = at.and_then(|(id, point)| self.target_at(id, point).map(|(c, target, cells)| (id, c, cells, target)));
             // A link's text can differ from where it goes, so the URL shows while hovering.
             let text = found.as_ref().and_then(|(id, c, _, t)| {
-                let osc8 = matches!(t, Target::Link(_));
-                semantic::preview_text(t, osc8, self.smart_open_url(*id, c, t).as_deref(), preview)
+                semantic::preview_text(t, self.smart_open_url(*id, c, t).as_deref(), preview)
             });
             match text {
                 Some(t) => self.banners.set("hover", t),
@@ -940,6 +957,19 @@ mod hover_tests {
     fn hover_underline_follows_the_key() {
         assert_eq!(hover_cells(cells(), true), Some(cells()));
         assert_eq!(hover_cells(cells(), false), None);
+    }
+
+    #[test]
+    fn hover_key_follows_cell_and_keys() {
+        let id: PaneId = 1;
+        let at = |line: i32, col: usize| Some((id, Point::new(alacritty_terminal::index::Line(line), alacritty_terminal::index::Column(col))));
+        let base = hover_key(at(1, 2), true, true);
+        assert_eq!(base, hover_key(at(1, 2), true, true), "same cell, same keys: no recompute");
+        assert_ne!(base, hover_key(at(1, 3), true, true));
+        assert_ne!(base, hover_key(at(2, 2), true, true));
+        assert_ne!(base, hover_key(at(1, 2), false, true));
+        assert_ne!(base, hover_key(at(1, 2), true, false));
+        assert_ne!(base, hover_key(None, true, true));
     }
 
     #[test]

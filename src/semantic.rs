@@ -28,18 +28,34 @@ pub struct ClickContext {
     pub raw_command: bool,
     /// The URL guessing settings and the pane's locality (`App::url_prefs`).
     pub urls: crate::url_guess::UrlPrefs,
+    /// Probe no path on disk (a pane whose text a remote host wrote, hover).
+    pub no_probe: bool,
 }
 
 /// `MaxSemanticHistoryPrefixOrSuffix`'s default: iTerm2 looks this far each way from the click.
 pub const DEFAULT_MAX_CONTEXT: usize = 2000;
 
 /// What the hover banner shows for a target (`TVA:733-748`).
-pub fn preview_text(target: &Target, osc8: bool, smart_open_url: Option<&str>, show_preview: bool) -> Option<String> {
-    match target {
-        Target::Link(url) => Some(url.clone()),
-        Target::Url(url) if show_preview || osc8 => Some(url.clone()),
-        Target::Action { .. } if show_preview => smart_open_url.map(str::to_string),
-        _ => None,
+pub fn preview_text(target: &Target, smart_open_url: Option<&str>, show_preview: bool) -> Option<String> {
+    let text = match target {
+        Target::Link(url) => url.as_str(),
+        Target::Url(url) if show_preview => url.as_str(),
+        Target::Action { .. } if show_preview => smart_open_url?,
+        _ => return None,
+    };
+    Some(shown_preview(text))
+}
+
+/// The most characters a hover banner shows.
+pub const PREVIEW_MAX: usize = 512;
+
+/// Program-controlled text (an OSC 8 URI) as a banner shows it: control, bidirectional and
+/// zero-width characters dropped, cut at `PREVIEW_MAX` with an ellipsis.
+fn shown_preview(text: &str) -> String {
+    let clean = crate::inert_files::clean_name(text);
+    match clean.char_indices().nth(PREVIEW_MAX) {
+        Some((i, _)) => format!("{}\u{2026}", &clean[..i]),
+        None => clean,
     }
 }
 
@@ -49,7 +65,7 @@ pub fn resolve_range(ctx: &ClickContext) -> Option<(Target, Option<std::ops::Ran
     if let Some(link) = &ctx.link {
         return Some((Target::Link(link.clone()), None));
     }
-    if let Some((path, line, column, range)) = path_in(&ctx.before, &ctx.after, ctx.cwd.as_deref()) {
+    if let Some((path, line, column, range)) = path_in(&ctx.before, &ctx.after, ctx.cwd.as_deref()).filter(|_| !ctx.no_probe) {
         return Some((Target::File { path, line, column }, Some(range)));
     }
     if let Some((rule, action, text)) = &ctx.smart {
@@ -149,14 +165,17 @@ fn existing(text: &str, cwd: Option<&Path>) -> Option<PathBuf> {
     }
     // A share name ("\\\\host\\x", "//host/x") or URL text would make Windows try the
     // network, which can take 20 s and hands the host the user's credentials.
-    tries.retain(|t| !(t.starts_with("\\\\") || t.starts_with("//") || t.contains("://")));
+    // The repo's one rule (scripts::is_network_path) covers every mixed-separator spelling.
+    tries.retain(|t| !(crate::scripts::is_network_path(t) || t.contains("://")));
     tries.into_iter().find_map(|t| {
         let p = match t.strip_prefix("~/").or_else(|| t.strip_prefix("~\\")) {
             Some(rest) => home()?.join(rest),
             None if Path::new(&t).is_absolute() => PathBuf::from(&t),
             None => cwd?.join(&t),
         };
-        p.exists().then_some(p)
+        // After the join, so a network home or working folder cannot slip in, and only
+        // through folders and links that stay local.
+        (crate::scripts::stays_local(&p) && p.exists()).then_some(p)
     })
 }
 
@@ -708,15 +727,46 @@ mod tests {
     #[test]
     fn url_preview_follows_iterm2() {
         // An OSC 8 link always shows its URL.
-        assert_eq!(preview_text(&Target::Link("https://a/".into()), true, None, false), Some("https://a/".into()));
-        assert_eq!(preview_text(&Target::Url("https://b".into()), false, None, true), Some("https://b".into()));
-        assert_eq!(preview_text(&Target::Url("https://b".into()), false, None, false), None);
+        assert_eq!(preview_text(&Target::Link("https://a/".into()), None, false), Some("https://a/".into()));
+        assert_eq!(preview_text(&Target::Url("https://b".into()), None, true), Some("https://b".into()));
+        assert_eq!(preview_text(&Target::Url("https://b".into()), None, false), None);
         let action = Target::Action { rule: 0, action: 0, text: "x".into() };
-        assert_eq!(preview_text(&action, false, Some("https://c"), true), Some("https://c".into()));
-        assert_eq!(preview_text(&action, false, Some("https://c"), false), None);
-        assert_eq!(preview_text(&action, false, None, true), None, "a non Open URL action shows nothing");
+        assert_eq!(preview_text(&action, Some("https://c"), true), Some("https://c".into()));
+        assert_eq!(preview_text(&action, Some("https://c"), false), None);
+        assert_eq!(preview_text(&action, None, true), None, "a non Open URL action shows nothing");
         let file = Target::File { path: PathBuf::from("a.txt"), line: None, column: None };
-        assert_eq!(preview_text(&file, false, None, true), None);
-        assert_eq!(preview_text(&Target::RawCommand("x".into()), false, None, true), None);
+        assert_eq!(preview_text(&file, None, true), None);
+        assert_eq!(preview_text(&Target::RawCommand("x".into()), None, true), None);
+    }
+
+    #[test]
+    fn preview_is_sanitized_and_bounded() {
+        let raw = format!("https://a/\u{1b}[31m\u{202e}x\n\u{85}\u{200b}{}", "a".repeat(5000));
+        let shown = preview_text(&Target::Link(raw), None, false).unwrap();
+        assert!(!shown.chars().any(|c| c.is_control() || matches!(c, '\u{202e}' | '\u{200b}')), "{shown:?}");
+        assert!(shown.starts_with("https://a/[31mx"), "{shown:?}");
+        assert_eq!(shown.chars().count(), PREVIEW_MAX + 1);
+        assert!(shown.ends_with('\u{2026}'));
+        let short = preview_text(&Target::Link("https://a/b".into()), None, false).unwrap();
+        assert_eq!(short, "https://a/b");
+        let action = Target::Action { rule: 0, action: 0, text: "x".into() };
+        assert_eq!(preview_text(&action, Some("https://c/\u{7}d"), true).as_deref(), Some("https://c/d"));
+    }
+
+    #[test]
+    fn hover_probes_no_network_path() {
+        // Every mixed-separator spelling of a share is skipped before any probe; a dead
+        // address takes about 21 s to answer on Windows.
+        let t = std::time::Instant::now();
+        for p in [r"\\10.255.255.1\x\y", "//10.255.255.1/x", r"\/10.255.255.1/x", r"/\10.255.255.1\x", r"\\?\UNC\10.255.255.1\x"] {
+            assert_eq!(find_path("see ", p, None), None, "{p}");
+        }
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+        // A remote pane probes nothing: an existing file is no target.
+        let d = dir("noprobe", &["a.txt"]);
+        let (before, after) = click("open a.|txt");
+        let ctx = ClickContext { before, after, cwd: Some(d), ..Default::default() };
+        assert!(matches!(resolve(&ctx), Some(Target::File { .. })));
+        assert_eq!(resolve(&ClickContext { no_probe: true, ..ctx }), None);
     }
 }
