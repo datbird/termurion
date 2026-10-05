@@ -37,6 +37,8 @@ pub struct ClickContext {
     pub respecting: Option<(String, String)>,
     /// The filename characters (`FilenameCharacterSet`); None is iTerm2's default.
     pub filename_set: Option<crate::url_guess::CharSet>,
+    /// Ignored folders and mapped drives (`App::path_probe`, P19).
+    pub probe: crate::netpath::Probe,
 }
 
 /// Which context a resolved range belongs to.
@@ -94,13 +96,15 @@ pub fn resolve_in(ctx: &ClickContext) -> Option<(Target, Option<std::ops::Range<
             &default_set
         }
     };
+    // P1: at most this many probes per click, across both passes.
+    let budget = std::cell::Cell::new(MAX_PROBES);
     if !ctx.no_probe {
-        if let Some((path, line, column, range)) = path_in(&ctx.before, &ctx.after, ctx.cwd.as_deref(), set) {
+        if let Some((path, line, column, range)) = path_in(&ctx.before, &ctx.after, ctx.cwd.as_deref(), set, &ctx.probe, &budget) {
             return Some((Target::File { path, line, column }, Some(range), Pass::Detect));
         }
         // ExistingFileRespectingHardNewlines (`UAF:291-297`).
         if let Some((b, a)) = &ctx.respecting {
-            if let Some((path, line, column, range)) = path_in(b, a, ctx.cwd.as_deref(), set) {
+            if let Some((path, line, column, range)) = path_in(b, a, ctx.cwd.as_deref(), set, &ctx.probe, &budget) {
                 return Some((Target::File { path, line, column }, Some(range), Pass::Respecting));
             }
         }
@@ -191,6 +195,9 @@ fn home() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
 }
 
+/// The most files one click probes (P1), across both passes.
+const MAX_PROBES: usize = 120;
+
 #[cfg(test)]
 thread_local! {
     /// How many candidates `existing` probed on this thread (tests).
@@ -198,7 +205,7 @@ thread_local! {
 }
 
 /// The existing file or folder `text` names, relative to `cwd`.
-fn existing(text: &str, cwd: Option<&Path>) -> Option<PathBuf> {
+fn existing(text: &str, cwd: Option<&Path>, probe: &crate::netpath::Probe, budget: &std::cell::Cell<usize>) -> Option<PathBuf> {
     let text = text.replace("\\ ", " ");
     let mut tries = vec![text.clone()];
     for prefix in ["a/", "b/", "i/", "w/", "c/", "o/"] {
@@ -216,18 +223,24 @@ fn existing(text: &str, cwd: Option<&Path>) -> Option<PathBuf> {
             None if Path::new(&t).is_absolute() => PathBuf::from(&t),
             None => cwd?.join(&t),
         };
-        // After the join, so a network home or working folder cannot slip in, and only
-        // through folders and links that stay local.
+        // After the join, so a network home or working folder cannot slip in (a working
+        // folder that may not be probed hides every relative candidate under it), and only
+        // through folders and links that stay local, outside ignored folders and mapped
+        // drives (`netpath::may_probe`, `IPF:fileExistsAtPathLocally`). Never a probe first.
+        if budget.get() == 0 || !crate::netpath::may_probe(&p.to_string_lossy(), probe) {
+            return None;
+        }
+        budget.set(budget.get() - 1);
         #[cfg(test)]
         PROBES.with(|n| n.set(n.get() + 1));
-        (crate::scripts::stays_local(&p) && p.exists()).then_some(p)
+        p.exists().then_some(p)
     })
 }
 
 /// An existing file or folder around the click, with a line and column when the text
 /// after it gives them.
-pub fn find_path(before: &str, after: &str, cwd: Option<&Path>) -> Option<(PathBuf, Option<u32>, Option<u32>)> {
-    path_in(before, after, cwd, &default_filename_set()).map(|(p, l, c, _)| (p, l, c))
+pub fn find_path(before: &str, after: &str, cwd: Option<&Path>, probe: &crate::netpath::Probe) -> Option<(PathBuf, Option<u32>, Option<u32>)> {
+    path_in(before, after, cwd, &default_filename_set(), probe, &std::cell::Cell::new(MAX_PROBES)).map(|(p, l, c, _)| (p, l, c))
 }
 
 type PathHit = (PathBuf, Option<u32>, Option<u32>, std::ops::Range<usize>);
@@ -238,7 +251,7 @@ fn default_filename_set() -> crate::url_guess::CharSet {
 }
 
 /// The path hit's range is in the coordinates of `before` + `after` as given.
-fn path_in(before: &str, after: &str, cwd: Option<&Path>, set: &crate::url_guess::CharSet) -> Option<PathHit> {
+fn path_in(before: &str, after: &str, cwd: Option<&Path>, set: &crate::url_guess::CharSet, probe: &crate::netpath::Probe, budget: &std::cell::Cell<usize>) -> Option<PathHit> {
     // Only the filename characters around the click are candidates (`UAF:437-452`).
     let (b, a) = crate::sh_context::filename_parts(before, after, set);
     let shift = before.len() - b.len();
@@ -254,7 +267,7 @@ fn path_in(before: &str, after: &str, cwd: Option<&Path>, set: &crate::url_guess
             if l >= r || best.as_ref().is_some_and(|(range, _)| range.len() >= r - l) {
                 continue;
             }
-            if let Some(p) = existing(&joined[l..r], cwd) {
+            if let Some(p) = existing(&joined[l..r], cwd, probe, budget) {
                 best = Some((s + l..s + r, p));
             }
         }
@@ -596,6 +609,8 @@ pub fn plan(target: &Target, prefs: &Prefs, around: &Around, has_code: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::netpath::{Drives, Probe};
+    use std::sync::Arc;
 
     #[test]
     fn explorer_runs_from_the_windows_folder() {
@@ -629,11 +644,11 @@ mod tests {
     fn finds_a_path_with_line_and_column() {
         let d = dir("linecol", &["src/main.rs"]);
         let (b, a) = click("error at src/ma|in.rs:12:5: oops");
-        assert_eq!(find_path(&b, &a, Some(&d)), Some((d.join("src/main.rs"), Some(12), Some(5))));
+        assert_eq!(find_path(&b, &a, Some(&d), &Probe::default()), Some((d.join("src/main.rs"), Some(12), Some(5))));
         let (b, a) = click("src\\ma|in.rs(7,3): error C2065");
-        assert_eq!(find_path(&b, &a, Some(&d)), Some((d.join("src\\main.rs"), Some(7), Some(3))));
+        assert_eq!(find_path(&b, &a, Some(&d), &Probe::default()), Some((d.join("src\\main.rs"), Some(7), Some(3))));
         let (b, a) = click("src/main.r|s");
-        assert_eq!(find_path(&b, &a, Some(&d)), Some((d.join("src/main.rs"), None, None)));
+        assert_eq!(find_path(&b, &a, Some(&d), &Probe::default()), Some((d.join("src/main.rs"), None, None)));
     }
 
     #[test]
@@ -642,33 +657,33 @@ mod tests {
         let full = d.join("my file.txt").to_string_lossy().to_string();
         let at = full.len() - 3;
         let (b, a) = (format!("see {}", &full[..at]), format!("{} now", &full[at..]));
-        assert_eq!(find_path(&b, &a, None), Some((d.join("my file.txt"), None, None)));
+        assert_eq!(find_path(&b, &a, None, &Probe::default()), Some((d.join("my file.txt"), None, None)));
     }
 
     #[test]
     fn finds_a_python_traceback_path() {
         let d = dir("py", &["x.py"]);
         let (b, a) = click("  File \"x|.py\", line 3, in f");
-        assert_eq!(find_path(&b, &a, Some(&d)), Some((d.join("x.py"), Some(3), None)));
+        assert_eq!(find_path(&b, &a, Some(&d), &Probe::default()), Some((d.join("x.py"), Some(3), None)));
     }
 
     #[test]
     fn strips_git_diff_prefixes() {
         let d = dir("git", &["lib/x.rs"]);
         let (b, a) = click("+++ b/lib/|x.rs");
-        assert_eq!(find_path(&b, &a, Some(&d)), Some((d.join("lib/x.rs"), None, None)));
+        assert_eq!(find_path(&b, &a, Some(&d), &Probe::default()), Some((d.join("lib/x.rs"), None, None)));
     }
 
     #[test]
     fn trailing_punctuation_is_not_part_of_the_path() {
         let d = dir("punct", &["notes.md", "docs/"]);
         let (b, a) = click("read no|tes.md.");
-        assert_eq!(find_path(&b, &a, Some(&d)), Some((d.join("notes.md"), None, None)));
+        assert_eq!(find_path(&b, &a, Some(&d), &Probe::default()), Some((d.join("notes.md"), None, None)));
         let (b, a) = click("see (not|es.md)!");
-        assert_eq!(find_path(&b, &a, Some(&d)), Some((d.join("notes.md"), None, None)));
+        assert_eq!(find_path(&b, &a, Some(&d), &Probe::default()), Some((d.join("notes.md"), None, None)));
         let (b, a) = click("in do|cs, see");
-        assert_eq!(find_path(&b, &a, Some(&d)), Some((d.join("docs"), None, None)));
-        assert_eq!(find_path("nothing he", "re", Some(&d)), None);
+        assert_eq!(find_path(&b, &a, Some(&d), &Probe::default()), Some((d.join("docs"), None, None)));
+        assert_eq!(find_path("nothing he", "re", Some(&d), &Probe::default()), None);
     }
 
     #[test]
@@ -688,8 +703,8 @@ mod tests {
     #[test]
     fn path_uses_filename_parts() {
         let d = dir("fnparts", &["x.txt"]);
-        assert_eq!(find_path("see <", "x.txt>", Some(&d)).map(|(p, _, _)| p), Some(d.join("x.txt")));
-        assert_eq!(find_path("a|b ", "x.txt", Some(&d)).map(|(p, _, _)| p), Some(d.join("x.txt")));
+        assert_eq!(find_path("see <", "x.txt>", Some(&d), &Probe::default()).map(|(p, _, _)| p), Some(d.join("x.txt")));
+        assert_eq!(find_path("a|b ", "x.txt", Some(&d), &Probe::default()).map(|(p, _, _)| p), Some(d.join("x.txt")));
         // The range stays in the coordinates of the text given.
         let (before, after) = ("see <x".to_string(), ".txt>".to_string());
         let ctx = ClickContext { before: before.clone(), after: after.clone(), cwd: Some(d.clone()), ..Default::default() };
@@ -796,12 +811,50 @@ mod tests {
     fn unc_paths_are_never_probed() {
         // A dead address: probing it as a share takes about 21 s on Windows.
         let t = std::time::Instant::now();
-        assert_eq!(find_path("see ", "\\\\10.255.255.1\\x\\y", None), None);
-        assert_eq!(find_path("go ", "//10.255.255.1/x", None), None);
+        assert_eq!(find_path("see ", "\\\\10.255.255.1\\x\\y", None, &Probe::default()), None);
+        assert_eq!(find_path("go ", "//10.255.255.1/x", None, &Probe::default()), None);
         let d = dir("unc", &[]);
         let (b, a) = click("at https://10.255.255.1/x|/y now");
-        assert_eq!(find_path(&b, &a, Some(&d)), None);
+        assert_eq!(find_path(&b, &a, Some(&d), &Probe::default()), None);
         assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+    }
+
+    /// Every drive is a mapped network drive.
+    struct AllRemote;
+    impl Drives for AllRemote {
+        fn is_remote(&self, _root: &str) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn ignored_paths_are_not_found() {
+        let d = dir("ignored", &["x.txt"]);
+        let here = d.to_string_lossy().to_string();
+        assert_eq!(find_path("", "x.txt", Some(&d), &Probe::default()).map(|(p, _, _)| p), Some(d.join("x.txt")));
+        // Under an ignored folder: the working folder and an absolute path alike.
+        let ignoring = Probe::from_settings(&here, false, Arc::new(crate::netpath::LocalDrives));
+        assert_eq!(find_path("", "x.txt", Some(&d), &ignoring), None);
+        assert_eq!(find_path("", &d.join("x.txt").to_string_lossy(), None, &ignoring), None);
+        // A mapped drive is not probed unless network mounts are allowed.
+        let remote = Probe { drives: Arc::new(AllRemote), ..Probe::default() };
+        assert_eq!(find_path("", "x.txt", Some(&d), &remote), None);
+        let allowed = Probe { allow_network: true, ..remote };
+        assert_eq!(find_path("", "x.txt", Some(&d), &allowed).map(|(p, _, _)| p), Some(d.join("x.txt")));
+        // The click resolves through the context's probe too.
+        let ctx = ClickContext { before: String::new(), after: "x.txt".into(), cwd: Some(d.clone()), probe: ignoring, ..Default::default() };
+        assert!(!matches!(resolve(&ctx), Some(Target::File { .. })));
+    }
+
+    #[test]
+    fn a_click_probes_at_most_120_files() {
+        let d = dir("budget", &[]);
+        let words: Vec<String> = (0..60).map(|i| format!("a/w{i}")).collect();
+        let (b, a) = (words[..30].join(" ") + " ", words[30..].join(" "));
+        PROBES.with(|n| n.set(0));
+        assert_eq!(find_path(&b, &a, Some(&d), &Probe::default()), None);
+        let probed = PROBES.with(|n| n.get());
+        assert!(probed > 100 && probed <= 120, "{probed}");
     }
 
     #[test]
@@ -972,7 +1025,7 @@ mod tests {
         // address takes about 21 s to answer on Windows.
         let t = std::time::Instant::now();
         for p in [r"\\10.255.255.1\x\y", "//10.255.255.1/x", r"\/10.255.255.1/x", r"/\10.255.255.1\x", r"\\?\UNC\10.255.255.1\x"] {
-            assert_eq!(find_path("see ", p, None), None, "{p}");
+            assert_eq!(find_path("see ", p, None, &Probe::default()), None, "{p}");
         }
         assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
         // A remote pane probes nothing: an existing file is no target.

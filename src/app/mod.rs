@@ -3529,6 +3529,7 @@ impl App {
         pane.restyle(Palette::from_profile(p, self.dark()), Look::from_profile(p));
         pane.set_bidi_rules(crate::bidi::Rules::from_globals(&self.globals));
         screen_follows_profile(&mut pane.screen, p);
+        pane.screen.set_path_probe(self.path_probe());
         pane.profile = p.guid();
         pane.set_buffering(p.bool("Buffer Input by Default"));
         // `IRMemory` is read once per session (`S:121-122`).
@@ -3757,8 +3758,13 @@ impl App {
         self.apply_border_everywhere();
         // An emulation knob (Advanced > Terminal) may have changed.
         let ids: Vec<PaneId> = self.panes.keys().copied().collect();
+        // PathsToIgnore or EnableSemanticHistoryOnNetworkMounts may have changed.
+        let probe = self.path_probe();
         for id in ids {
             self.apply_emu_rules(id);
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.screen.set_path_probe(probe.clone());
+            }
         }
         self.tmux_resend_colors();
         // AllowLiveResize may have changed.

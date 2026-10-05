@@ -55,6 +55,7 @@ pub mod tab_menu;
 pub mod tab_position;
 pub mod status_tool;
 pub mod seltools;
+pub mod netpath;
 pub mod sh_context;
 pub mod copymode;
 pub mod fold;

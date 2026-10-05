@@ -286,6 +286,11 @@ pub fn toggle_off(label: &str) -> &'static [u8] {
 }
 
 impl Screen {
+    /// The probe rules the prompt path sniff reads (`App::path_probe`).
+    pub fn set_path_probe(&mut self, p: crate::netpath::Probe) {
+        self.path_probe = p;
+    }
+
     /// Clears from grid line `line` to the end (iTerm2 clearFromAbsoluteLineToEnd). The
     /// cursor's row (the prompt) goes to the top of the screen, and the rows kept above move
     /// into history, so the screen matches ConPTY after its own clear (which keeps only the

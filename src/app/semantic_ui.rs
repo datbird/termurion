@@ -132,6 +132,7 @@ impl App {
             windowed: window.is_some(),
             respecting: hard.as_ref().map(|h| (h.before.clone(), h.after.clone())),
             filename_set: Some(filename_set),
+            probe: self.path_probe(),
         };
         Some(Clicked { ctx, line, text, hard, joined, found, rules, prefs, link_id: link.map(|h| h.id().to_string()) })
     }
@@ -153,10 +154,11 @@ impl App {
     /// network path; true when the pane reports no directory.
     pub(super) fn url_prefs(&self, id: PaneId) -> crate::url_guess::UrlPrefs {
         let shell = self.panes.get(&id).map(|p| &p.own().shell);
+        let probe = self.path_probe();
         let cwd_is_local = !self.remote_text(id)
             && shell.is_none_or(|s| {
                 s.host.as_ref().is_none_or(|h| self.host_is_this_machine(h))
-                    && s.cwd.as_deref().is_none_or(|c| crate::profile::local_path(c).is_some_and(|p| !crate::scripts::is_network_path(&p.to_string_lossy())))
+                    && s.cwd.as_deref().is_none_or(|c| crate::profile::local_path(c).is_some_and(|p| crate::netpath::may_probe(&p.to_string_lossy(), &probe)))
             });
         let chars = crate::url_guess::url(&self.globals.string("URLCharacterSet"), &self.globals.string("URLCharacterSetExclusions"));
         crate::url_guess::UrlPrefs {
@@ -168,6 +170,12 @@ impl App {
             default_scheme: self.globals.string("DefaultURLScheme"),
             cwd_is_local,
         }
+    }
+
+    /// What Semantic History may probe: `PathsToIgnore` and `EnableSemanticHistoryOnNetworkMounts`
+    /// with the real drive types (`NFM:17-70`).
+    pub(super) fn path_probe(&self) -> crate::netpath::Probe {
+        crate::netpath::Probe::from_settings(&self.globals.string("PathsToIgnore"), self.globals.bool("EnableSemanticHistoryOnNetworkMounts"), crate::netpath::real_drives())
     }
 
     /// Whether a reported host name is this computer (`localhost`, its name or its DNS name; P17).
@@ -593,7 +601,7 @@ impl App {
         }
         let cwd = self.pane_dir(id);
         let prefs = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).map(|p| Prefs::from_value(p.get("Semantic History").as_ref())).unwrap_or_default();
-        let target = match semantic::find_path("", text, cwd.as_deref()) {
+        let target = match semantic::find_path("", text, cwd.as_deref(), &self.path_probe()) {
             Some((path, line, column)) => Target::File { path, line, column },
             None => Target::Url(semantic::url_like_in("", text, &urls).unwrap_or_else(|| text.to_string())),
         };
