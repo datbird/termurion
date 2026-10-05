@@ -91,12 +91,29 @@ pub fn width_rule(look: &Look, rules: &crate::emu::Rules, version_override: u8) 
     }
 }
 
-/// iTerm2's `StringToScreenChars` width of one character: U+200B by its switch, two cells by
-/// the tables, else one (or zero for marks), whatever the Unicode data in unicode-width says.
+/// iTerm2's default-ignorable set (`iTermIsIgnorableCharacter`, `CS:792-806`), U+200B aside.
+fn is_ignorable(c: char) -> bool {
+    matches!(c as u32,
+        0xAD | 0x34F | 0x61C | 0x115F..=0x1160 | 0x17B4..=0x17B5 | 0x180B..=0x180F | 0x200C..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0x3164 | 0xFE00..=0xFE0F | 0xFEFF | 0xFFA0 | 0xFFF0..=0xFFF8 | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A | 0xE0000..=0xE0FFF)
+}
+
+/// iTerm2's `StringToScreenChars` width of one character: U+200B by its switch, no cell for an
+/// ignorable base, zero for a mark or a selector (it rides on its base: iTerm2 measures only the
+/// base of a cluster, `enumerateComposedCharacters`), two cells by the tables, else one.
 fn rule_width(c: char, rule: &alacritty_terminal::term::WidthRule) -> Option<usize> {
     use unicode_width::UnicodeWidthChar;
     if c == '\u{200B}' {
         return Some(usize::from(rule.zwsp_advances));
+    }
+    // Marks and selectors are asked before the tables: the ambiguous and full-width tables hold
+    // U+0300-036F, U+FE00-FE0F and U+3099-309A, which would otherwise take two cells of their own.
+    if c.width() == Some(0) {
+        return Some(0);
+    }
+    // An ignorable character that is not a zero-width mark (the Hangul fillers, the soft hyphen)
+    // has no cell at all. (Ignorables of width 0 ride on the previous cell, as before.)
+    if is_ignorable(c) {
+        return None;
     }
     if crate::widths::is_double_width(c as u32, rule.ambiguous_wide, rule.unicode_version, rule.full_width_flags) {
         return Some(2);
@@ -4616,6 +4633,30 @@ mod tests {
         s.set_profile_unicode(8);
         s.feed("\u{1F600}x".as_bytes());
         assert_eq!(column_of(&s, 0, 'x'), Some(1));
+    }
+
+    /// 13o final review I5: a mark or a selector never has a width of its own, so it stays on its
+    /// base with Ambiguous Double Width on or off (the tables are only asked about bases), and
+    /// iTerm2's ignorable characters take no cell (`SC:520-522`).
+    #[test]
+    fn ambiguous_wide_keeps_marks_on_their_base() {
+        let x_at = |adw: bool, text: &str| {
+            let mut s = Screen::with_look(12, 3, Palette::default(), Look { ambiguous_wide: adw, ..wide_look() });
+            s.feed(format!("{text}x").as_bytes());
+            column_of(&s, 0, 'x')
+        };
+        for adw in [true, false] {
+            assert_eq!(x_at(adw, "e\u{301}"), Some(1), "e + accent, ADW {adw}");
+            assert_eq!(x_at(adw, "\u{2764}\u{FE0F}"), Some(2), "heart + VS16, ADW {adw}");
+            assert_eq!(x_at(adw, "\u{304B}\u{3099}"), Some(2), "ka + voiced mark, ADW {adw}");
+            assert_eq!(x_at(adw, "a\u{FE00}"), Some(1), "a + VS1, ADW {adw}");
+            // Ignorable characters get no cell (the Hangul fillers are in the full-width tables).
+            for filler in ["\u{115F}", "\u{3164}", "\u{FFA0}", "\u{AD}"] {
+                assert_eq!(x_at(adw, &format!("a{filler}")), Some(1), "{filler:?}, ADW {adw}");
+            }
+        }
+        assert_eq!(x_at(true, "\u{A7}"), Some(2), "a base still widens");
+        assert_eq!(x_at(false, "\u{A7}"), Some(1));
     }
 
     /// Task 5 fix round 1: a skin tone modifier joins its base, and a ZWJ sequence is one cell
