@@ -21,7 +21,15 @@ impl App {
             let t = |key: &str, default: f64| self.globals.number(key).unwrap_or(default).clamp(0.0, 1.0) as f32;
             (t("SmartCursorColorBgThreshold", 0.5), t("SmartCursorColorFgThreshold", 0.75))
         });
+        // Cursor Boost (light or dark variant, 0 to 0.8), Cursor Shadow, and the outline.
+        let profile = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile));
+        let boost = profile.map_or(0.0, |p| p.float_for("Cursor Boost", dark).clamp(0.0, 0.8) as f32);
+        let shadow = profile.is_some_and(|p| p.bool("Cursor Shadow"));
+        let outline = self.globals.bool("DrawOutlineAroundCursor");
         CursorLook {
+            boost,
+            shadow,
+            outline,
             hide_unfocused,
             alpha: smooth.unwrap_or(1.0),
             smart,

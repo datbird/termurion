@@ -153,6 +153,18 @@ impl Profile {
         self.bool(key)
     }
 
+    /// A number that may have Light and Dark variants, read like `bool_for`.
+    pub fn float_for(&self, key: &str, dark: bool) -> f64 {
+        if self.bool("Use Separate Colors for Light and Dark Mode") {
+            let variant = format!("{key} ({})", if dark { "Dark" } else { "Light" });
+            let stock = schema::find(key).and_then(|s| if dark { s.default_dark.as_ref() } else { s.default_light.as_ref() });
+            if let Some(f) = self.values.get(&variant).or(stock).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))) {
+                return f;
+            }
+        }
+        self.float(key)
+    }
+
     /// The tab's color (Use Tab Color and Tab Color, for the mode); None without one.
     pub fn tab_color(&self, dark: bool) -> Option<Rgb> {
         if !self.bool_for("Use Tab Color", dark) {
@@ -348,6 +360,20 @@ mod tests {
         assert_eq!(p.color_for("Foreground Color", true), rgb(9, 9, 9));
         // With separate colors on, an unset variant reads iTerm2's stock Light value, not the plain key.
         assert_eq!(p.color_for("Foreground Color", false), rgb(16, 16, 16));
+    }
+
+    #[test]
+    fn float_for_reads_the_variant() {
+        let mut p = Profile::stock();
+        p.set("Use Separate Colors for Light and Dark Mode", toml::Value::Boolean(true));
+        p.set("Cursor Boost (Dark)", toml::Value::Float(0.4));
+        p.set("Cursor Boost (Light)", toml::Value::Float(0.1));
+        assert_eq!(p.float_for("Cursor Boost", true), 0.4);
+        assert_eq!(p.float_for("Cursor Boost", false), 0.1);
+        p.set("Use Separate Colors for Light and Dark Mode", toml::Value::Boolean(false));
+        p.set("Cursor Boost", toml::Value::Float(0.3));
+        assert_eq!(p.float_for("Cursor Boost", true), 0.3);
+        assert_eq!(p.float_for("Cursor Boost", false), 0.3);
     }
 
     #[test]

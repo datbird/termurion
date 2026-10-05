@@ -410,6 +410,8 @@ pub fn pane_with(
         }
         let c = indexed.cell;
         let (mut fg, mut bg) = palette.cell(c.fg, c.bg, c.flags);
+        // Cursor Boost mutes first, then Dim Only Text dims (`iTermColorMap.m:347-360`).
+        (fg, bg) = (crate::cursor_look::mute(fg, palette.bg, look.boost), crate::cursor_look::mute(bg, palette.bg, look.boost));
         if let Some(d) = highlights.map(|h| h.dim).filter(|d| d.only_text) {
             (fg, bg) = (crate::dim::text_color(fg, d, bg_brightness), crate::dim::bg_color(bg, palette.bg, d, bg_brightness));
         }
@@ -612,7 +614,21 @@ pub fn pane_with(
         let solid = cursor_rect(&look.geometry, content.cursor.shape, origin, cell, row, col, wide_cursor);
         let color = rgba(palette.cursor, look.alpha);
         match content.cursor.shape {
-            CursorShape::Beam | CursorShape::Underline => frame.overlay.push(Quad { rect: solid, color }),
+            CursorShape::Beam | CursorShape::Underline => {
+                frame.overlay.push(Quad { rect: solid, color });
+                // The shadow follows the cursor and fades with it; the outline is a second
+                // pass over the text (`iTermTextDrawingHelper.m:556-565`).
+                if let Some((r, mut c)) = look.shadow.then(|| crate::cursor_look::shadow(content.cursor.shape, solid, palette.cursor, look.geometry.scale)).flatten() {
+                    c[3] *= look.alpha;
+                    frame.overlay.push(Quad { rect: r, color: c });
+                }
+                if look.outline {
+                    for (r, mut c) in crate::cursor_look::outline(content.cursor.shape, solid, palette.bg, look.geometry.scale) {
+                        c[3] *= look.alpha;
+                        frame.overlay.push(Quad { rect: r, color: c });
+                    }
+                }
+            }
             _ if !block_cursor => {
                 for edge in [
                     Rect { h: 1.0, ..r },
@@ -4312,6 +4328,54 @@ mod tests {
         assert!(f.quads.iter().any(|q| q.color == rgba(rgb(0, 0, 0), 1.0) && q.rect.x == 10.0), "{:?}", f.quads);
         let b = f.rows[0].spans.iter().find(|sp| sp.text == "b").unwrap();
         assert_eq!(b.color, rgb(230, 230, 230));
+    }
+
+    #[test]
+    fn boost_mutes_all_but_the_cursor() {
+        // White on black text, a red cell, Boost 0.5: everything but the cursor is halfway to black.
+        let mut s = screen(b"\x1b[38;2;255;255;255m\x1b[48;2;0;0;0m\x1b[2J\x1b[H\x1b[48;2;200;0;0mc\x1b[48;2;0;0;0mab\x1b[1;3H");
+        s.palette.bg = rgb(0, 0, 0);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook { boost: 0.5, ..CursorLook::shown(true) });
+        let a = f.rows[0].spans.iter().find(|sp| sp.text.contains('a')).unwrap();
+        assert_eq!(a.color, rgb(128, 128, 128));
+        let b = f.rows[0].spans.iter().find(|sp| sp.text == "b").unwrap();
+        assert_eq!(b.color, s.palette.cursor_text, "the cursor's text keeps its color");
+        assert!(f.quads.iter().any(|q| q.color == rgba(rgb(100, 0, 0), 1.0) && q.rect.x == 0.0), "{:?}", f.quads);
+        assert!(f.quads.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0) && q.rect.x == 20.0), "the cursor is not muted");
+        // Boost 0 leaves the text alone.
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true));
+        let a = f.rows[0].spans.iter().find(|sp| sp.text.contains('a')).unwrap();
+        assert_eq!(a.color, rgb(255, 255, 255));
+    }
+
+    #[test]
+    fn shadow_and_outline_are_drawn_after_the_cursor() {
+        let s = screen(b"ab\x1b[4 q\x1b[1;2H");
+        let look = CursorLook { shadow: true, outline: true, ..CursorLook::shown(true) };
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &look);
+        let solid = crate::cursor_look::cursor_rect(&look.geometry, CursorShape::Underline, (0.0, 0.0), CELL, 0, 1, false);
+        let pos = |c: [f32; 4]| f.overlay.iter().position(|q| q.color == c);
+        let cursor = pos(rgba(s.palette.cursor, 1.0)).expect("the underline");
+        let shadow_color = if crate::cursor_look::brightness(s.palette.cursor) < 0.5 { [1.0, 1.0, 1.0, 0.5] } else { [0.0, 0.0, 0.0, 0.5] };
+        let shadow = pos(shadow_color).expect("the shadow");
+        assert!(shadow > cursor);
+        assert_eq!(f.overlay[shadow].rect, Rect { x: solid.x, y: solid.y - 1.0, w: solid.w, h: 1.0 });
+        let outline: Vec<_> = f.overlay.iter().skip(shadow + 1).filter(|q| q.color == rgba(s.palette.bg, 0.75)).collect();
+        assert_eq!(outline.len(), 4, "{:?}", f.overlay);
+        // The shadow fades with the smooth blink.
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook { alpha: 0.5, ..look.clone() });
+        assert!(f.overlay.iter().any(|q| q.color == [shadow_color[0], shadow_color[1], shadow_color[2], 0.25]), "{:?}", f.overlay);
+        // A focused block has neither, and neither has an unfocused hollow box.
+        for focus in [true, false] {
+            let s = screen(b"ab\x1b[2 q\x1b[1;2H");
+            let mut f = Frame::default();
+            pane(&mut f, &s, RECT, CELL, focus, &look);
+            assert!(!f.overlay.iter().any(|q| q.color == rgba(s.palette.bg, 0.75) || q.color[3] == 0.5), "{:?}", f.overlay);
+        }
     }
 
     #[test]

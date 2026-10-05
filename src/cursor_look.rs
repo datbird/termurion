@@ -139,6 +139,47 @@ pub fn smart_colors(cell_fg: Rgb, cell_bg: Rgb, neighbor_bgs: &[Rgb], bg_thresho
     (boxc, text)
 }
 
+/// Cursor Boost (`iTermColorMap.m:299-306`): `c` averaged toward the default background by
+/// `amount`, rounded. Text and cell backgrounds go through it, the cursor does not.
+pub fn mute(c: Rgb, default_bg: Rgb, amount: f32) -> Rgb {
+    if amount <= 0.0 {
+        return c;
+    }
+    let m = |a: u8, b: u8| (a as f32 * (1.0 - amount) + b as f32 * amount).round().clamp(0.0, 255.0) as u8;
+    Rgb { r: m(c.r, default_bg.r), g: m(c.g, default_bg.g), b: m(c.b, default_bg.b) }
+}
+
+/// The cursor shadow (`iTermCursorRenderer.m:445-465`, `:498-520`): an underline's is a line one
+/// point high directly above it, a bar's one point wide directly right of it; white at half
+/// when the cursor color is dark (brightness below 0.5), else black at half. A box has none.
+pub fn shadow(shape: CursorShape, solid: Rect, cursor_color: Rgb, scale: f32) -> Option<(Rect, [f32; 4])> {
+    let rect = match shape {
+        CursorShape::Underline => Rect { x: solid.x, y: solid.y - scale, w: solid.w, h: scale },
+        CursorShape::Beam => Rect { x: solid.x + solid.w, y: solid.y, w: scale, h: solid.h },
+        _ => return None,
+    };
+    let v = if brightness(cursor_color) < 0.5 { 1.0 } else { 0.0 };
+    Some((rect, [v, v, v, 0.5]))
+}
+
+/// The outline of an underline or bar cursor (`iTermCursorRenderer.m:118-127`): the rect grown
+/// by half a point on each side, framed half a point wide in the default background at alpha
+/// 0.75, as four edges that do not overlap. A block has none.
+pub fn outline(shape: CursorShape, solid: Rect, default_bg: Rgb, scale: f32) -> Vec<(Rect, [f32; 4])> {
+    if !matches!(shape, CursorShape::Underline | CursorShape::Beam) {
+        return Vec::new();
+    }
+    let t = 0.5 * scale;
+    let color = crate::scene::rgba(default_bg, 0.75);
+    let (x, y, w, h) = (solid.x - t, solid.y - t, solid.w + 2.0 * t, solid.h + 2.0 * t);
+    vec![
+        (Rect { x, y, w, h: t }, color),
+        (Rect { x, y: y + h - t, w, h: t }, color),
+        (Rect { x, y: solid.y, w: t, h: solid.h }, color),
+        (Rect { x: solid.x + solid.w, y: solid.y, w: t, h: solid.h }, color),
+    ]
+}
+
 /// Everything the scene draws for one pane's cursor. Later tasks fill the later fields.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CursorLook {
@@ -214,6 +255,49 @@ mod tests {
         // Thresholds of 0 never replace the box and always use the cell background as text.
         assert_eq!(smart_colors(w, k, &[gray(230); 4], 0.0, 0.0), (w, k));
         assert_eq!(smart_colors(gray(179), gray(153), &[k; 4], 0.0, 0.0), (gray(179), gray(153)));
+    }
+
+    #[test]
+    fn mute_averages_toward_the_background() {
+        let (w, k) = (Rgb { r: 255, g: 255, b: 255 }, Rgb { r: 0, g: 0, b: 0 });
+        assert_eq!(mute(w, k, 0.5), Rgb { r: 128, g: 128, b: 128 });
+        assert_eq!(mute(Rgb { r: 200, g: 0, b: 0 }, k, 0.5), Rgb { r: 100, g: 0, b: 0 });
+        assert_eq!(mute(w, k, 0.0), w);
+        assert_eq!(mute(k, w, 0.8), Rgb { r: 204, g: 204, b: 204 });
+    }
+
+    #[test]
+    fn shadow_follows_iterm2() {
+        let (k, w) = (Rgb { r: 0, g: 0, b: 0 }, Rgb { r: 255, g: 255, b: 255 });
+        let underline = r(20.0, 44.0, 10.0, 2.0);
+        assert_eq!(shadow(CursorShape::Underline, underline, k, 1.0), Some((r(20.0, 43.0, 10.0, 1.0), [1.0, 1.0, 1.0, 0.5])));
+        assert_eq!(shadow(CursorShape::Underline, underline, w, 1.0).unwrap().1, [0.0, 0.0, 0.0, 0.5]);
+        assert_eq!(shadow(CursorShape::Underline, r(20.0, 44.0, 10.0, 4.0), k, 2.0).unwrap().0, r(20.0, 42.0, 10.0, 2.0));
+        let beam = r(20.0, 26.0, 1.0, 20.0);
+        assert_eq!(shadow(CursorShape::Beam, beam, k, 1.5).unwrap().0, r(21.0, 26.0, 1.5, 20.0));
+        assert_eq!(shadow(CursorShape::Block, r(20.0, 26.0, 10.0, 20.0), k, 1.0), None);
+    }
+
+    #[test]
+    fn outline_follows_iterm2() {
+        let k = Rgb { r: 0, g: 0, b: 0 };
+        let underline = r(20.0, 44.0, 10.0, 2.0);
+        let area = |edges: &[(Rect, [f32; 4])]| edges.iter().map(|(e, _)| e.w * e.h).sum::<f32>();
+        let e = outline(CursorShape::Underline, underline, k, 1.0);
+        assert_eq!(e.len(), 4);
+        assert!(e.iter().all(|(_, c)| *c == [0.0, 0.0, 0.0, 0.75]));
+        // The edges frame {19.5, 43.5, 11, 3}, each 0.5 thick, without overlapping.
+        assert_eq!(area(&e), 11.0 * 3.0 - 10.0 * 2.0);
+        assert!(e.iter().any(|(q, _)| *q == r(19.5, 43.5, 11.0, 0.5)));
+        assert!(e.iter().any(|(q, _)| *q == r(19.5, 46.0, 11.0, 0.5)));
+        let e2 = outline(CursorShape::Underline, underline, k, 2.0);
+        assert!(e2.iter().any(|(q, _)| *q == r(19.0, 43.0, 12.0, 1.0)));
+        assert_eq!(area(&e2), 12.0 * 4.0 - 10.0 * 2.0);
+        assert_eq!(outline(CursorShape::Beam, r(20.0, 26.0, 1.0, 20.0), k, 1.0).len(), 4);
+        assert!(outline(CursorShape::Block, underline, k, 1.0).is_empty());
+        // The color is the default background in linear light (white stays 1).
+        let w = Rgb { r: 255, g: 255, b: 255 };
+        assert_eq!(outline(CursorShape::Underline, underline, w, 1.0)[0].1, [1.0, 1.0, 1.0, 0.75]);
     }
 
     #[test]
