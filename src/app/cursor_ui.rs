@@ -48,13 +48,14 @@ impl App {
     /// "Allow Change Cursor Blink" lets it.
     pub(super) fn blink_clock_needed(&self) -> bool {
         let cursor = self.focused && self.cursor_alpha.is_none() && self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).is_some_and(|p| scene::cursor_blinks_shown(&p.screen));
-        blink_needed(cursor, self.text_blinks())
+        blink_needed(cursor, self.focused && self.text_blinking)
     }
 
     /// Whether the key window shows a pane whose profile allows blinking text and whose screen
     /// has some (iTerm2's `textViewWillNeedUpdateForBlink`). An unfocused window's blinking
-    /// text rests visible.
-    fn text_blinks(&self) -> bool {
+    /// text rests visible. A walk of every visible cell: `tick_cursor` runs it once per pass and
+    /// the answer waits in `text_blinking` for the clock and the frame cadence.
+    fn scan_text_blinks(&self) -> bool {
         self.focused && self.tabs.get(self.active).is_some_and(|t| self.visible(t).into_iter().any(|(id, _)| self.panes.get(&id).is_some_and(|p| p.screen.blink_allowed && p.screen.has_blinking_text())))
     }
 
@@ -70,6 +71,7 @@ impl App {
     /// flip, or None when nothing blinks (the loop then sleeps).
     pub(super) fn tick_cursor(&mut self) -> Option<Instant> {
         let now = Instant::now();
+        self.text_blinking = self.scan_text_blinks();
         let slide = self.tick_slides(now);
         let blink = self.tick_blink(now);
         self.cursor_due = [slide, blink].into_iter().flatten().min();
@@ -126,7 +128,7 @@ impl App {
     /// cursor without a fade, and blinking text, which keeps its clock under a smooth blink).
     /// Returns the earlier due time.
     fn tick_blink(&mut self, now: Instant) -> Option<Instant> {
-        let text = self.text_blinks();
+        let text = self.text_blinking;
         let smooth = self.tick_smooth_blink(now, text).flatten();
         let onoff = self.tick_onoff_blink(now);
         [smooth, onoff].into_iter().flatten().min()

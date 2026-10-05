@@ -642,6 +642,8 @@ pub struct App {
     /// Per pane: the scrollbar's ticks and the key they were built for, so the buffer is not
     /// walked every frame (`scrollbar_series`). A RefCell: drawing reads the app by `&self`.
     scroll_series: std::cell::RefCell<HashMap<PaneId, scrollbar::TickCache>>,
+    /// Whether the key window showed blinking text at the last `tick_cursor` (one scan per pass).
+    text_blinking: bool,
     /// The block under the pointer (pane, number, first and last line), and the drawn pill
     /// buttons.
     block_hover: Option<(PaneId, u32, i32, i32)>,
@@ -1823,6 +1825,7 @@ pub fn run() {
         scroll_hover: None,
         scroll_ticks: HashMap::new(),
         scroll_series: Default::default(),
+        text_blinking: false,
         flashes: HashMap::new(),
         fireworks: HashMap::new(),
         tab_colors: HashMap::new(),

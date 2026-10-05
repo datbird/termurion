@@ -831,6 +831,19 @@ mod tests {
         assert!(frame.contains("text_blink_on: self.blink.visible || !self.focused"), "{frame}");
     }
 
+    /// 13m final minor 1: the scan for blinking text runs once per `tick_cursor`; the blink clock
+    /// and the frame cadence read its answer instead of walking every visible cell again.
+    #[test]
+    fn blinking_text_is_scanned_once_per_tick() {
+        let cursor = include_str!("cursor_ui.rs");
+        assert!(body(cursor, "tick_cursor").contains("self.text_blinking = self.scan_text_blinks()"), "the one scan");
+        assert!(!body(cursor, "blink_clock_needed").contains("scan_text_blinks()"), "the clock reads the answer");
+        assert!(!body(cursor, "tick_blink").contains("scan_text_blinks()"));
+        let production = cursor.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        assert_eq!(production.matches("scan_text_blinks()").count(), 1, "one call site beside the definition");
+        assert!(!include_str!("frames_ui.rs").contains("scan_text_blinks"), "the cadence asks the clock");
+    }
+
     /// 13m Task 8 App side: the ticks come from one collection (`scrollbar::collect`) over the
     /// buffer's marks, the notes and the open find bar's matches, drawn on the minimap rect, and
     /// the two keys are read when a pane starts, not on every frame.
