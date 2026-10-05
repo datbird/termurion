@@ -354,7 +354,6 @@ pub struct App {
     /// A plain single click began in this pane: its release may open the password manager
     /// (`PTYMouseHandler.m:644-659` looks at the mouse-up).
     key_click: Option<PaneId>,
-    wheel_acc_x: f32,
     /// The alternate-scroll inferrer of each pane the wheel has scrolled (app-wide; the person's input only).
     alt_infer: HashMap<PaneId, crate::alt_infer::Inferrer>,
     /// The pane that had the keyboard at the last check (a move resets its inferrer).
@@ -774,7 +773,6 @@ pub struct App {
     cursor: (f32, f32),
     drag: Drag,
     clicks: Clicks,
-    wheel_acc: f32,
     focused: bool,
     /// The tab bar as last laid out, in points, not scrolled (`build_frame`).
     tab_bar: tab_layout::Bar,
@@ -1540,7 +1538,6 @@ pub fn run() {
         mouse_override: HashMap::new(),
         alt_click: None,
         key_click: None,
-        wheel_acc_x: 0.0,
         alt_infer: HashMap::new(),
         alt_infer_focus: None,
         mark_pos: HashMap::new(),
@@ -1749,7 +1746,6 @@ pub fn run() {
         cursor: (0.0, 0.0),
         drag: Drag::None,
         clicks: Clicks::default(),
-        wheel_acc: 0.0,
         focused: true,
         tab_bar: tab_layout::Bar::default(),
         tab_scroll: 0.0,
@@ -3229,6 +3225,8 @@ impl App {
         pane.set_buffering(p.bool("Buffer Input by Default"));
         // `IRMemory` is read once per session (`S:121-122`).
         pane.dvr = crate::dvr::Dvr::new(crate::pane::capacity_for(self.globals.int("IRMemory")));
+        // Read once per session ("Changes to this setting only affect new sessions").
+        pane.wheel = crate::wheel::PaneWheel::new(self.globals.number("HorizontalScrollingSensitivity").unwrap_or(0.1));
         if let Some(pid) = pane.shell_pid() {
             self.jobs.watch(pid);
             if let Some(paused) = pane.console_pause_flag() {
@@ -4667,26 +4665,20 @@ impl App {
 
     fn wheel(&mut self, delta: MouseScrollDelta) {
         let (cw, ch) = self.cell();
-        let (dx, dy) = match delta {
-            MouseScrollDelta::LineDelta(x, y) => (x * WHEEL_LINES, y * WHEEL_LINES),
-            MouseScrollDelta::PixelDelta(p) => (p.x as f32 / cw, p.y as f32 / ch),
+        let scale = self.scale() as f64;
+        let cell_pt = (cw as f64 / scale, ch as f64 / scale);
+        let ev = match delta {
+            MouseScrollDelta::LineDelta(x, y) => crate::wheel::event_from(x, y, None, WHEEL_LINES as f64, cell_pt),
+            MouseScrollDelta::PixelDelta(p) => crate::wheel::event_from(0.0, 0.0, Some((p.x / scale, p.y / scale)), WHEEL_LINES as f64, cell_pt),
         };
+        let (dx, dy) = (ev.dx as f32, ev.dy as f32);
         if self.tab_bar_wheel(delta) || self.composer_wheel(dy) || self.toolbelt_wheel(dy) || self.inline_wheel(dy) || self.clip_wheel(dy) || self.porthole_wheel(dx, dy) {
-            return;
-        }
-        self.wheel_acc += dy;
-        self.wheel_acc_x += dx;
-        let lines = self.wheel_acc.trunc() as i32;
-        let steps = self.wheel_acc_x.trunc() as i32;
-        self.wheel_acc -= lines as f32;
-        self.wheel_acc_x -= steps as f32;
-        if lines == 0 && steps == 0 {
             return;
         }
         let (x, y) = self.cursor;
         let Some((id, rect)) = self.pane_at(x, y) else { return };
         let (col, row, _) = self.cell_at(id, rect, x, y);
-        self.route_wheel(id, col, row, lines as f64, steps as f64);
+        self.route_wheel(id, col, row, ev);
     }
 
     fn build_frame(&mut self) -> Frame {

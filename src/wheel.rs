@@ -65,6 +65,166 @@ pub fn arrow_count(delta: f64) -> usize {
     delta.abs().ceil() as usize
 }
 
+/// One wheel event in lines (`dx` positive moves the content right).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Event {
+    pub dx: f64,
+    pub dy: f64,
+    /// Windows' fractional-notch touchpad delta (no gesture phases): the trackpad path.
+    pub precise: bool,
+}
+
+/// A winit delta as an `Event`: a pixel delta over the cell size, or notches times
+/// `wheel_lines`; a notch count that is not whole is a touchpad's, so precise.
+pub fn event_from(delta_x: f32, delta_y: f32, pixel: Option<(f64, f64)>, wheel_lines: f64, cell_pt: (f64, f64)) -> Event {
+    if let Some((px, py)) = pixel {
+        return Event { dx: px / cell_pt.0, dy: py / cell_pt.1, precise: true };
+    }
+    let fractional = |d: f32| (d * 120.0).round() as i64 % 120 != 0;
+    Event { dx: delta_x as f64 * wheel_lines, dy: delta_y as f64 * wheel_lines, precise: fractional(delta_x) || fractional(delta_y) }
+}
+
+/// The Advanced settings the accumulators read (`ScrollWheelAcceleration`, `FastTrackpad`,
+/// `UseModernScrollWheelAccumulator`, `SensitiveScrollWheel`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Prefs {
+    pub acceleration: f64,
+    pub fast_trackpad: bool,
+    pub modern: bool,
+    pub sensitive: bool,
+}
+
+impl Prefs {
+    pub fn from_globals(g: &crate::globals::Globals) -> Prefs {
+        Prefs {
+            acceleration: g.number("ScrollWheelAcceleration").unwrap_or(1.0),
+            fast_trackpad: g.bool("FastTrackpad"),
+            modern: g.bool("UseModernScrollWheelAccumulator"),
+            sensitive: g.bool("SensitiveScrollWheel"),
+        }
+    }
+}
+
+fn round_away(x: f64) -> f64 {
+    if x < 0.0 { x.floor() } else { x.ceil() }
+}
+
+/// `iTermScrollAccumulator`: one remainder, one sensitivity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Accumulator {
+    acc: f64,
+    pub sensitivity: f64,
+}
+
+impl Accumulator {
+    pub fn new(sensitivity: f64) -> Accumulator {
+        Accumulator { acc: 0.0, sensitivity }
+    }
+
+    /// `takeWholePortionWithDelta:` (`iTermScrollAccumulator.m:111-148`).
+    fn take_whole(&mut self, delta: f64) -> f64 {
+        if self.acc.abs() >= 1.0 {
+            let whole = self.acc.trunc();
+            self.acc -= whole;
+            whole
+        } else if delta * self.acc < 0.0 {
+            self.acc = 0.0;
+            delta.round()
+        } else {
+            0.0
+        }
+    }
+
+    /// The modern accumulator, `deltaForEvent:increment:` (`:48-66`, `:69-99`). `raw` is lines.
+    pub fn delta(&mut self, raw: f64, precise: bool, p: &Prefs) -> f64 {
+        let adjusted = if precise && p.fast_trackpad { round_away(raw) } else { raw };
+        let got = if precise {
+            let d = adjusted * self.sensitivity;
+            self.acc += d;
+            self.take_whole(d)
+        } else if self.sensitivity == 1.0 {
+            let r = adjusted.round();
+            if r == 0.0 && adjusted != 0.0 { adjusted.signum() } else { r }
+        } else {
+            self.acc += adjusted * self.sensitivity;
+            self.take_whole(adjusted)
+        };
+        let sign = if got > 0.0 { 1.0 } else { -1.0 };
+        got.abs().powf(p.acceleration.max(0.0)) * sign
+    }
+
+    /// The legacy accumulator (`legacyDeltaForEvent:increment:`, `:158-181`). `raw` is what
+    /// the event delivers: points when `precise`, lines otherwise.
+    pub fn legacy_delta(&mut self, raw: f64, precise: bool, increment: f64, p: &Prefs) -> f64 {
+        let mut d = raw * self.sensitivity;
+        if precise {
+            d /= increment;
+        }
+        if p.sensitive {
+            return if d > 0.0 { d.ceil() } else if d < 0.0 { d.floor() } else { 0.0 };
+        }
+        self.acc += d;
+        if self.acc.abs() >= 1.0 {
+            let whole = self.acc.trunc();
+            self.acc -= whole;
+            whole
+        } else {
+            0.0
+        }
+    }
+
+    /// Modern or legacy by the preference (`PTYScrollView.m:230-237`, `PTYTextView.m:8318-8328`).
+    /// `raw` is lines; the legacy path wants points for a precise event, so it is scaled up
+    /// by `increment` (the cell size) first and comes back down in `legacy_delta`.
+    pub fn take(&mut self, raw: f64, precise: bool, increment: f64, p: &Prefs) -> f64 {
+        if p.modern {
+            self.delta(raw, precise, p)
+        } else {
+            self.legacy_delta(if precise { raw * increment } else { raw }, precise, increment, p)
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.acc = 0.0;
+    }
+}
+
+/// The three accumulators a session holds (`PTYTextView.m:349-353`): the scroller's (history),
+/// the text view's (reports and arrows), and the horizontal one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaneWheel {
+    pub scroll: Accumulator,
+    pub report: Accumulator,
+    pub horizontal: Accumulator,
+}
+
+impl PaneWheel {
+    pub fn new(horizontal_sensitivity: f64) -> PaneWheel {
+        PaneWheel { scroll: Accumulator::new(1.0), report: Accumulator::new(1.0), horizontal: Accumulator::new(horizontal_sensitivity) }
+    }
+}
+
+/// Whether a horizontal report goes as "scroll left" (`PTYMouseHandler.m:1553-1570`): a
+/// touchpad's delta is swapped back when natural scrolling is on, unless the Advanced setting
+/// says otherwise. A mouse wheel is never swapped.
+pub fn natural_swap(dx_positive: bool, precise: bool, natural_on: bool, affects: bool) -> bool {
+    if precise && natural_on && !affects { !dx_positive } else { dx_positive }
+}
+
+/// The precision touchpad's "Down motion scrolls up" (natural) setting. UNVERIFIED mapping:
+/// `ScrollDirection` 0 is natural, 0xFFFFFFFF the classic direction; absent is false.
+#[cfg(windows)]
+pub fn touchpad_natural() -> bool {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    let key: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\PrecisionTouchPad\0".encode_utf16().collect();
+    let name: Vec<u16> = "ScrollDirection\0".encode_utf16().collect();
+    let mut data: u32 = 0;
+    let mut len: u32 = 4;
+    // SAFETY: both strings are NUL-terminated; `data` and `len` outlive the call.
+    let rc = unsafe { RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(), &mut data as *mut u32 as *mut _, &mut len) };
+    rc == 0 && data == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +271,104 @@ mod tests {
         let on = AltSwitches { term_1007: true, ..S0 };
         assert_eq!(alternate(true, true, false, false, true, on, true), AltScroll::Arrows { vertical_only: false });
         assert_eq!(alternate(true, true, false, false, false, on, true), AltScroll::Arrows { vertical_only: false });
+    }
+
+    const P0: Prefs = Prefs { acceleration: 1.0, fast_trackpad: true, modern: true, sensitive: false };
+
+    #[test]
+    fn modern_accumulator_follows_iterm2() {
+        let mut a = Accumulator::new(1.0);
+        assert_eq!(a.delta(3.0, false, &P0), 3.0);
+        assert_eq!(a.delta(0.3, false, &P0), 1.0, "a wheel moves at least one");
+        assert_eq!(a.delta(-0.3, false, &P0), -1.0);
+        assert_eq!(a.delta(2.5, false, &P0), 3.0, "half rounds away from zero");
+        assert_eq!(a.delta(0.2, true, &P0), 1.0, "fast trackpad rounds away from zero");
+        let slow = Prefs { fast_trackpad: false, ..P0 };
+        let mut a = Accumulator::new(1.0);
+        assert_eq!(a.delta(0.4, true, &slow), 0.0);
+        assert_eq!(a.delta(0.4, true, &slow), 0.0);
+        assert_eq!(a.delta(0.4, true, &slow), 1.0, "the whole part toward zero");
+        assert!((a.acc - 0.2).abs() < 1e-9, "leaves 0.2, got {}", a.acc);
+        // Turnaround (P11): 0.8 held, then -0.6 reverses at once and clears.
+        let mut a = Accumulator::new(1.0);
+        assert_eq!(a.delta(0.4, true, &slow), 0.0);
+        assert_eq!(a.delta(0.4, true, &slow), 0.0);
+        assert_eq!(a.delta(-0.6, true, &slow), -1.0);
+        assert_eq!(a.acc, 0.0);
+        // Sensitivity under 1: a wheel accumulates 0.3 a notch.
+        let mut a = Accumulator::new(0.1);
+        assert_eq!(a.delta(3.0, false, &P0), 0.0);
+        assert_eq!(a.delta(3.0, false, &P0), 0.0);
+        assert_eq!(a.delta(3.0, false, &P0), 0.0);
+        assert_eq!(a.delta(3.0, false, &P0), 1.0);
+    }
+
+    #[test]
+    fn legacy_accumulator_follows_iterm2() {
+        let legacy = Prefs { modern: false, ..P0 };
+        let mut a = Accumulator::new(1.0);
+        assert_eq!(a.legacy_delta(0.4, false, 17.0, &legacy), 0.0);
+        assert_eq!(a.legacy_delta(0.4, false, 17.0, &legacy), 0.0);
+        assert_eq!(a.legacy_delta(0.4, false, 17.0, &legacy), 1.0);
+        let sens = Prefs { sensitive: true, ..legacy };
+        let mut a = Accumulator::new(1.0);
+        assert_eq!(a.legacy_delta(0.1, false, 17.0, &sens), 1.0);
+        assert_eq!(a.legacy_delta(-0.1, false, 17.0, &sens), -1.0);
+        assert_eq!(a.legacy_delta(0.0, false, 17.0, &sens), 0.0);
+        let mut a = Accumulator::new(1.0);
+        assert_eq!(a.legacy_delta(34.0, true, 17.0, &legacy), 2.0, "pixels over the increment");
+        // take picks the path by the preference; its raw is in lines.
+        let mut a = Accumulator::new(1.0);
+        assert_eq!(a.take(3.0, false, 17.0, &legacy), 3.0);
+        assert_eq!(a.take(2.0, true, 17.0, &legacy), 2.0, "lines in, lines out");
+        assert_eq!(a.take(3.0, false, 17.0, &P0), 3.0);
+    }
+
+    #[test]
+    fn acceleration_follows_iterm2() {
+        let mut a = Accumulator::new(1.0);
+        let p = Prefs { acceleration: 2.0, ..P0 };
+        assert_eq!(a.delta(3.0, false, &p), 9.0);
+        assert_eq!(a.delta(-2.0, false, &p), -4.0);
+        assert_eq!(a.delta(4.0, false, &Prefs { acceleration: 0.5, ..P0 }), 2.0);
+        let neg = Prefs { acceleration: -1.0, ..P0 };
+        assert_eq!(a.delta(3.0, false, &neg), 1.0, "a negative power counts as 0");
+        assert_eq!(a.delta(0.0, false, &neg), -1.0, "iTerm2's sign is -1 for 0 (kept)");
+    }
+
+    #[test]
+    fn horizontal_follows_iterm2() {
+        let w = PaneWheel::new(0.1);
+        assert_eq!(w.horizontal.sensitivity, 0.1);
+        assert_eq!(w.scroll.sensitivity, 1.0);
+        assert_eq!(w.report.sensitivity, 1.0);
+        let mut h = w.horizontal;
+        assert_eq!(h.take(3.0, false, 8.0, &P0), 0.0);
+        assert_eq!(h.take(3.0, false, 8.0, &P0), 0.0);
+        assert_eq!(h.take(3.0, false, 8.0, &P0), 0.0);
+        assert_eq!(h.take(3.0, false, 8.0, &P0), 1.0);
+        let mut h = PaneWheel::new(1.0).horizontal;
+        assert_eq!(h.take(3.0, false, 8.0, &P0), 3.0);
+        let mut h = PaneWheel::new(0.0).horizontal;
+        for _ in 0..5 {
+            assert_eq!(h.take(3.0, false, 8.0, &P0), 0.0, "0 disables");
+        }
+    }
+
+    #[test]
+    fn natural_scrolling_follows_iterm2() {
+        assert!(!natural_swap(true, true, true, false), "iTerm2 undoes the reversal");
+        assert!(natural_swap(true, true, true, true));
+        assert!(natural_swap(true, false, true, false), "a wheel is never swapped");
+        assert!(natural_swap(true, true, false, false));
+        assert!(natural_swap(false, true, true, false), "a leftward delta is swapped to scroll left");
+    }
+
+    #[test]
+    fn event_from_follows_the_delta_kind() {
+        assert_eq!(event_from(0.0, 1.0, None, 3.0, (8.0, 17.0)), Event { dx: 0.0, dy: 3.0, precise: false });
+        assert_eq!(event_from(0.0, 0.25, None, 3.0, (8.0, 17.0)), Event { dx: 0.0, dy: 0.75, precise: true });
+        assert_eq!(event_from(0.0, 0.0, Some((0.0, 34.0)), 3.0, (8.0, 17.0)), Event { dx: 0.0, dy: 2.0, precise: true });
+        assert_eq!(event_from(-1.0, 0.0, None, 3.0, (8.0, 17.0)), Event { dx: -3.0, dy: 0.0, precise: false });
     }
 }

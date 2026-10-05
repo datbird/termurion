@@ -741,6 +741,7 @@ impl App {
         self.next_id += 1;
         let guid = self.tmux_profile_guid(gw);
         let mut pane = Pane::tmux(id, gw, p.pane, p.w.clamp(1, u16::MAX as u32) as u16, p.h.clamp(1, u16::MAX as u32) as u16);
+        pane.wheel = crate::wheel::PaneWheel::new(self.globals.number("HorizontalScrollingSensitivity").unwrap_or(0.1));
         let profile = self.profile(Some(&guid));
         pane.restyle(Palette::from_profile(&profile, self.dark()), Look::from_profile(&profile));
         let (list, prefs) = triggers_ui::triggers_of(&profile);

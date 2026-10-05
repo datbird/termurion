@@ -25,7 +25,8 @@ impl App {
     /// The whole wheel path for one pane at a cell: `dy` lines up and `dx` steps left (both
     /// positive), after the accumulators. A vertical event is one with `|dx| < |dy|`
     /// (`NSEvent+iTerm.m:197-199`, strict).
-    pub(super) fn route_wheel(&mut self, id: PaneId, col: u32, row: u32, dy: f64, dx: f64) {
+    pub(super) fn route_wheel(&mut self, id: PaneId, col: u32, row: u32, ev: wheel::Event) {
+        let (dx, dy) = (ev.dx, ev.dy);
         if dy == 0.0 && dx == 0.0 {
             return;
         }
@@ -35,6 +36,11 @@ impl App {
         let switches = self.alt_switches(id);
         let strings_set = !self.globals.string("AlternateMouseScrollStringForUp").is_empty() || !self.globals.string("AlternateMouseScrollStringForDown").is_empty();
         let horizontal_reports = self.globals.bool("ReportHorizontalScrollEvents");
+        let prefs = wheel::Prefs::from_globals(&self.globals);
+        let affects = self.globals.bool("NaturalScrollingAffectsHorizontalMouseReporting");
+        let (cw, ch) = self.cell();
+        let scale = self.scale() as f64;
+        let cell_pt = (cw as f64 / scale, ch as f64 / scale);
         let Some(p) = self.panes.get_mut(&id) else { return };
         let mode = *p.screen.term().mode();
         let reporting = mouse::app_owns_mouse(modes, mods);
@@ -42,7 +48,10 @@ impl App {
         let decision = wheel::alternate(mode.contains(TermMode::ALT_SCREEN), writable, reporting, mods.alt, vertical, switches, strings_set);
         match decision {
             AltScroll::Arrows { .. } => {
-                let delta = if vertical { dy } else { dx };
+                let delta = if vertical { p.wheel.report.take(dy, ev.precise, cell_pt.1, &prefs) } else { p.wheel.horizontal.take(dx, ev.precise, cell_pt.0, &prefs) };
+                if delta == 0.0 {
+                    return;
+                }
                 let bytes = input::alt_arrows(delta >= 0.0, vertical, mods, mode.contains(TermMode::APP_CURSOR), wheel::arrow_count(delta));
                 p.screen.term_mut().selection = None;
                 p.input(&bytes);
@@ -62,16 +71,24 @@ impl App {
         if reporting {
             // Positive x moves the content right: the view scrolls left.
             let bytes = if vertical {
-                input::wheel_reports_with(modes, mods, dy as i32, col, row)
+                let n = p.wheel.report.take(dy, ev.precise, cell_pt.1, &prefs);
+                input::wheel_reports_with(modes, mods, n as i32, col, row)
             } else if horizontal_reports {
-                let button = if dx > 0.0 { Button::WheelLeft } else { Button::WheelRight };
-                mouse::encode(modes, mouse::Event { button, action: mouse::Action::Press, mods, col, row }).unwrap_or_default().repeat(dx.abs() as usize)
+                let n = p.wheel.horizontal.take(dx, ev.precise, cell_pt.0, &prefs);
+                let left = wheel::natural_swap(n > 0.0, ev.precise, touchpad_natural(), affects);
+                let button = if left { Button::WheelLeft } else { Button::WheelRight };
+                mouse::encode(modes, mouse::Event { button, action: mouse::Action::Press, mods, col, row }).unwrap_or_default().repeat(n.abs() as usize)
             } else {
                 Vec::new()
             };
-            p.input(&bytes);
+            if !bytes.is_empty() {
+                p.input(&bytes);
+            }
         } else if vertical {
-            p.scroll(Scroll::Delta(dy as i32));
+            let lines = p.wheel.scroll.take(dy, ev.precise, cell_pt.1, &prefs);
+            if lines != 0.0 {
+                p.scroll(Scroll::Delta(lines as i32));
+            }
         }
         self.redraw();
     }
@@ -148,4 +165,12 @@ impl App {
         }
         true
     }
+}
+
+/// The touchpad's natural scrolling (false off Windows).
+fn touchpad_natural() -> bool {
+    #[cfg(windows)]
+    return wheel::touchpad_natural();
+    #[cfg(not(windows))]
+    false
 }

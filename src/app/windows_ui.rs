@@ -69,8 +69,6 @@ pub(super) struct WinSlot {
     /// The AI indicators' rectangles this window drew, for a press on them (`chat_session_app`).
     chat_indicator_hits: Vec<(PaneId, Rect, crate::scene::IndicatorKind)>,
     focused: bool,
-    wheel_acc: f32,
-    wheel_acc_x: f32,
     font_sig: String,
     pub(super) win_style: i64,
     win_slot: Option<(String, u32)>,
@@ -171,8 +169,6 @@ impl WinSlot {
             inline_hits: Vec::new(),
             chat_indicator_hits: Vec::new(),
             focused: false,
-            wheel_acc: 0.0,
-            wheel_acc_x: 0.0,
             font_sig: String::new(),
             win_style: 0,
             win_slot: None,
@@ -283,8 +279,6 @@ impl App {
         swap(&mut self.inline_hits, &mut s.inline_hits);
         swap(&mut self.chat_indicator_hits, &mut s.chat_indicator_hits);
         swap(&mut self.focused, &mut s.focused);
-        swap(&mut self.wheel_acc, &mut s.wheel_acc);
-        swap(&mut self.wheel_acc_x, &mut s.wheel_acc_x);
         swap(&mut self.font_sig, &mut s.font_sig);
         swap(&mut self.win_style, &mut s.win_style);
         swap(&mut self.win_slot, &mut s.win_slot);
@@ -902,8 +896,6 @@ impl WinSlot {
             inline_hits: Vec::new(),
             chat_indicator_hits: Vec::new(),
             focused: false,
-            wheel_acc: 0.0,
-            wheel_acc_x: 0.0,
             font_sig: String::new(),
             win_style: 0,
             win_slot: None,
