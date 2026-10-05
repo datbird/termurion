@@ -37,3 +37,7 @@ Task 7 (built-in Powerline glyphs)
 - Decision: bleed is one device pixel at 1x (iTerm2's one point) times the scale, drawn inside the image transform, so a mirrored symbol bleeds on the other side. Cost if wrong: a seam of one pixel on a mirrored separator.
 - Decision: a wide Powerline symbol is one CellGlyph two cells wide; the grid keeps one cell, the next cell's text still lays out at its own column and the glyph draws over it (iTerm2 does the same). On a right-to-left row the glyph sits at its cell's visual column and extends to the right. Cost if wrong: none known.
 - Decision: Draw Powerline Glyphs is part of the face key and RawFont (a face that ignores the switch is another face); DisableCustomBoxDrawing turns the Powerline set off with the box set (iTerm2's sets are both empty with it). Cost if wrong: none.
+
+Task 6 fix round 1
+- Ruling (the source wins): the shades U+2591 to U+2593 are left to the font. iTerm2 leaves them out of boxDrawingCharactersWithBezierPathsExcludingPowerline and shapeBuilderForSolidBoxesForCode returns nil for them; they are only in blockDrawingCharacters (the minimum contrast exemption), so is_block keeps them and drawn() does not. Shape::Shade, Piece::Shade and the flat 25/50/75 fills are gone. Cost if wrong: a font with no shade glyphs falls back to another font's, as in iTerm2.
+- Decision: the timestamp labels and the announcement bar cut box glyphs like every other surface that clips rows (cut_glyphs), so no glyph draws through them. Cost if wrong: none.

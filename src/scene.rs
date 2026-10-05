@@ -613,7 +613,9 @@ pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cel
         for r in frame.rows.iter_mut().filter(|r| r.y == y && r.clip.x + r.clip.w > x) {
             r.clip.w = (x - r.clip.x).max(0.0);
         }
-        cut_quads(frame, Rect { x, y, w: 1.0e6, h: ch });
+        let band = Rect { x, y, w: 1.0e6, h: ch };
+        cut_quads(frame, band);
+        cut_glyphs(frame, band);
     };
     if let Some(col) = column {
         let right = col.x + col.w;
@@ -2489,6 +2491,7 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
         }
     }
     cut_quads(frame, r);
+    cut_glyphs(frame, r);
     frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
     let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0 };
     let text_end = l.buttons.first().map_or(l.close.x, |b| b.x);
@@ -5104,6 +5107,41 @@ mod tests {
         f.glyphs = vec![box_glyph(0.0, 0.0, 10.0), box_glyph(30.0, 0.0, 10.0), box_glyph(30.0, 60.0, 10.0), box_glyph(5.0, 20.0, 10.0)];
         cut_rows_from(&mut f, Rect { x: 20.0, y: 0.0, w: 50.0, h: 30.0 }, 20.0);
         assert_eq!(shown(&f), vec![(0.0, 0.0, 10.0, 20.0), (5.0, 20.0, 10.0, 20.0), (30.0, 60.0, 10.0, 20.0)]);
+    }
+
+    /// B1(a), task 6 review: a timestamp label cuts the box glyphs under it as it cuts text, in both
+    /// modes (right-aligned over the text, and the Adjacent block).
+    #[test]
+    fn timestamps_cut_box_glyphs() {
+        // Row 3 is y 60; the label block is 100 px wide at the right edge of RECT (800 px).
+        let glyphs = || vec![box_glyph(100.0, 60.0, 10.0), box_glyph(695.0, 60.0, 10.0), box_glyph(750.0, 60.0, 10.0), box_glyph(750.0, 0.0, 10.0)];
+        let mut f = Frame::default();
+        f.glyphs = glyphs();
+        timestamps(&mut f, &[(3, "12:00:00".to_string())], RECT, CELL, None, STAMP_COLORS);
+        assert_eq!(shown(&f), vec![(100.0, 60.0, 10.0, 20.0), (695.0, 60.0, 5.0, 20.0), (750.0, 0.0, 10.0, 20.0)], "the label's block covers the glyphs under it, nothing else");
+        // Adjacent: the block starts at the same x on every labelled row and covers what is under it.
+        let col = Rect { x: 700.0, y: 0.0, w: 100.0, h: 200.0 };
+        let mut f = Frame::default();
+        f.glyphs = glyphs();
+        // A block wider than the column extends left over the text, which stops where it starts.
+        timestamps(&mut f, &[(3, "2026-10-05 12:00:00 CDT".to_string())], Rect { x: 0.0, y: 0.0, w: 700.0, h: 200.0 }, CELL, Some(col), STAMP_COLORS);
+        let x = f.quads.iter().find(|q| q.rect.y == 60.0).map(|q| q.rect.x).expect("the label block");
+        assert!(x < 695.0, "the block is wider than the column: {x}");
+        let seen = shown(&f);
+        assert!(seen.iter().all(|g| g.1 != 60.0 || g.0 + g.2 <= x), "no glyph shows under the block at x {x}: {seen:?}");
+        assert!(seen.contains(&(100.0, 60.0, 10.0, 20.0)) && seen.contains(&(750.0, 0.0, 10.0, 20.0)));
+        assert!(!seen.iter().any(|g| g.0 == 695.0 && g.1 == 60.0 && g.2 == 10.0), "the glyph at 695 is cut: {seen:?}");
+    }
+
+    /// B1(a), task 6 review: the announcement bar hides the box glyphs under it as it hides text.
+    #[test]
+    fn info_bar_cuts_box_glyphs() {
+        let bar = crate::infobar::Bar { id: "x".into(), text: "hi".into(), buttons: vec!["_Yes".into()], important: true };
+        let l = crate::infobar::layout(&bar, RECT, CELL);
+        let mut f = Frame::default();
+        f.glyphs = vec![box_glyph(l.bar.x + 20.0, l.bar.y, 10.0), box_glyph(l.bar.x + 20.0, l.bar.y + l.bar.h + 40.0, 10.0)];
+        info_bar(&mut f, &bar, &l, CELL);
+        assert_eq!(shown(&f), vec![(l.bar.x + 20.0, l.bar.y + l.bar.h + 40.0, 10.0, 20.0)], "the glyph under the bar is gone, the one below stays");
     }
 
     #[test]

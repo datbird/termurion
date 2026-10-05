@@ -31,7 +31,6 @@ pub enum Piece {
     Line { from: (f32, f32), to: (f32, f32), weight: Weight },
     Curve { from: (f32, f32), c1: (f32, f32), c2: (f32, f32), to: (f32, f32), weight: Weight },
     Solid(Vec<(f32, f32)>),
-    Shade(u8),
 }
 
 /// iTerm2's path descriptions, by code point (`shapeBuilderForBoxDrawingCode:`): the components
@@ -250,10 +249,8 @@ const BLOCKS: &[(u32, &[&str])] = &[
     (0x259F, &["e044", "a444", "e444"]),
 ];
 
-/// What a drawn character is: a shade, solid boxes, or a path.
+/// What a drawn character is: solid boxes, or a path.
 enum Shape {
-    /// Light, medium and dark shade (1 to 3 quarters).
-    Shade(u8),
     Boxes(Vec<String>),
     Path(&'static str, bool),
 }
@@ -292,9 +289,6 @@ fn sextant_boxes(digits: &str) -> Vec<String> {
 fn shape(c: char) -> Option<Shape> {
     let code = u32::from(c);
     match code {
-        // Tandem draws the shades too (iTerm2 leaves them to the font): the block set minimum
-        // contrast exempts (`is_block`) is then all drawn the same way.
-        0x2591..=0x2593 => return Some(Shape::Shade((code - 0x2590) as u8)),
         0x1FB00..=0x1FB3B => return Some(Shape::Boxes(sextant_boxes(&sextant_cells(code)))),
         _ => {}
     }
@@ -405,7 +399,6 @@ fn weight_of(seg: &Seg) -> Weight {
 pub fn pieces(c: char) -> Vec<Piece> {
     match shape(c) {
         None => Vec::new(),
-        Some(Shape::Shade(n)) => vec![Piece::Shade(n)],
         Some(Shape::Boxes(parts)) => parts
             .iter()
             .map(|p| {
@@ -496,7 +489,6 @@ pub fn rasterize(c: char, w: u16, h: u16, scale: f32) -> Vec<u8> {
         None => {
             crate::powerline::draw(c, &mut mask, w, h, scale);
         }
-        Some(Shape::Shade(n)) => mask.fill(n * 64),
         Some(Shape::Boxes(parts)) => {
             for part in &parts {
                 // Rounded to pixel boundaries for sharp edges (`alignX` of a solid shape).
@@ -619,9 +611,13 @@ mod tests {
         assert_eq!(pieces('\u{2503}'), vec![Piece::Line { from: (0.5, 0.0), to: (0.5, 1.0), weight: Weight::Heavy }]);
         assert_eq!(pieces('\u{2550}'), vec![Piece::Line { from: (0.0, 0.5), to: (1.0, 0.5), weight: Weight::Double }]);
         assert_eq!(pieces('\u{2588}'), vec![Piece::Solid(vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])]);
-        assert_eq!(pieces('\u{2591}'), vec![Piece::Shade(1)]);
-        assert_eq!(pieces('\u{2592}'), vec![Piece::Shade(2)]);
-        assert_eq!(pieces('\u{2593}'), vec![Piece::Shade(3)]);
+        // iTerm2 leaves the shades to the font (they are in `blockDrawingCharacters`, the minimum
+        // contrast exemption, but not in the drawn set), so Tandem draws nothing for them.
+        for c in ['\u{2591}', '\u{2592}', '\u{2593}'] {
+            assert!(!drawn(c, false, false) && !drawn(c, true, false) && pieces(c).is_empty(), "{c:?}");
+            assert!(rasterize(c, 8, 16, 1.0).iter().all(|&a| a == 0), "{c:?}");
+            assert!(is_block(c), "the contrast exemption stays: {c:?}");
+        }
         assert_eq!(pieces('\u{256D}'), vec![Piece::Curve { from: (0.5, 1.0), c1: (0.5, 0.5), c2: (0.5, 0.5), to: (1.0, 0.5), weight: Weight::Light }]);
         assert_eq!(pieces('\u{2571}'), vec![Piece::Line { from: (0.0, 1.0), to: (1.0, 0.0), weight: Weight::Light }]);
         // A heavy corner is one heavy path (its two strokes merge); a double corner two double lines.
@@ -640,12 +636,13 @@ mod tests {
         assert!(is_block('\u{2580}') && !is_block('\u{2500}'));
     }
 
-    /// The seam with 13m: every block (but Powerline) is a character Tandem draws.
+    /// The seam with 13m: every block (but Powerline and the shades, which iTerm2 leaves to the
+    /// font) is a character Tandem draws.
     #[test]
     fn drawn_set_contains_every_block_except_powerline_when_off() {
         for n in 0..=0x1FB6F_u32 {
             let Some(c) = char::from_u32(n) else { continue };
-            if is_block(c) && !(0xE000..=0xF8FF).contains(&n) {
+            if is_block(c) && !(0xE000..=0xF8FF).contains(&n) && !(0x2591..=0x2593).contains(&n) {
                 assert!(drawn(c, false, false), "{c:?}");
             }
         }
@@ -670,13 +667,6 @@ mod tests {
             let row = &lower[y * 9..y * 9 + 9];
             assert!(row.iter().all(|&a| a == if y >= 10 { 255 } else { 0 }), "row {y}");
         }
-        // A light shade is a quarter.
-        let shade = rasterize('\u{2591}', 8, 16, 1.0);
-        let mean = shade.iter().map(|&a| a as u32).sum::<u32>() as f32 / shade.len() as f32;
-        assert!((mean - 64.0).abs() < 2.0, "{mean}");
-        let medium = rasterize('\u{2592}', 8, 16, 1.0).iter().map(|&a| a as u32).sum::<u32>() / 128;
-        let dark = rasterize('\u{2593}', 8, 16, 1.0).iter().map(|&a| a as u32).sum::<u32>() / 128;
-        assert!((medium as i32 - 128).abs() <= 2 && (dark as i32 - 192).abs() <= 2, "{medium} {dark}");
     }
 
     #[test]

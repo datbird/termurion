@@ -340,7 +340,6 @@ fn mirror(p: &mut Piece) {
             }
         }
         Piece::Solid(points) => points.iter_mut().for_each(flip),
-        Piece::Shade(_) => {}
     }
 }
 
@@ -385,8 +384,7 @@ pub(crate) fn draw(c: char, mask: &mut [u8], w: u16, h: u16, scale: f32) -> bool
             Piece::Solid(points) => fills.push(points.into_iter().map(map).collect()),
             Piece::Line { from, to, weight } => strokes.push((width(weight), Piece::Line { from: map(from), to: map(to), weight })),
             Piece::Curve { from, c1, c2, to, weight } => strokes.push((width(weight), Piece::Curve { from: map(from), c1: map(c1), c2: map(c2), to: map(to), weight })),
-            Piece::Shade(_) => {}
-        }
+            }
     }
     // One point of ink past the edge of the image on a bleed side.
     if o.bleed_left {
@@ -506,7 +504,6 @@ mod tests {
             Piece::Line { from, to, .. } => vec![*from, *to],
             Piece::Curve { from, c1, c2, to, .. } => vec![*from, *c1, *c2, *to],
             Piece::Solid(pts) => pts.clone(),
-            Piece::Shade(_) => Vec::new(),
         }
     }
 
