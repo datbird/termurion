@@ -79,10 +79,15 @@ pub enum MarkColor {
 }
 
 /// iTerm2's mark color by exit code (iTermTextDrawingHelper).
-pub fn color(m: &Mark) -> MarkColor {
-    match m.code {
+pub fn color(m: &Mark, yellow_for_signals: bool) -> MarkColor {
+    color_for_code(m.code, yellow_for_signals)
+}
+
+/// The same by exit code alone (P5: the gutter bar and the scrollbar tick share it).
+pub fn color_for_code(code: Option<i32>, yellow_for_signals: bool) -> MarkColor {
+    match code {
         None | Some(0) => MarkColor::Success,
-        Some(128..=160) => MarkColor::Other,
+        Some(128..=160) if yellow_for_signals => MarkColor::Other,
         Some(_) => MarkColor::Error,
     }
 }
@@ -1475,7 +1480,7 @@ mod tests {
         assert_eq!(marks[0].1.command, "ls -l");
         assert_eq!(marks[0].1.code, Some(2));
         assert!(marks[0].1.start.is_some() && marks[0].1.end.is_some());
-        assert_eq!(color(&marks[0].1), MarkColor::Error);
+        assert_eq!(color(&marks[0].1, true), MarkColor::Error);
         assert_eq!(s.shell.history[0].command, "ls -l");
         assert_eq!(s.shell.history[0].code, Some(2));
     }
@@ -1804,10 +1809,10 @@ mod tests {
     #[test]
     fn colors_follow_the_exit_code() {
         let m = |code| Mark { code, ..Mark::new(1, Kind::Prompt) };
-        assert_eq!(color(&m(None)), MarkColor::Success);
-        assert_eq!(color(&m(Some(0))), MarkColor::Success);
-        assert_eq!(color(&m(Some(130))), MarkColor::Other);
-        assert_eq!(color(&m(Some(1))), MarkColor::Error);
+        assert_eq!(color(&m(None), true), MarkColor::Success);
+        assert_eq!(color(&m(Some(0)), true), MarkColor::Success);
+        assert_eq!(color(&m(Some(130)), true), MarkColor::Other);
+        assert_eq!(color(&m(Some(1)), true), MarkColor::Error);
     }
     #[test]
     fn composer_events_follow_osc_133() {
@@ -2325,4 +2330,22 @@ mod tests {
         assert_eq!(fg(&s), Color::Named(NamedColor::Foreground));
     }
 
+    #[test]
+    fn mark_color_follows_the_key() {
+        for yellow in [true, false] {
+            assert_eq!(color_for_code(None, yellow), MarkColor::Success);
+            assert_eq!(color_for_code(Some(0), yellow), MarkColor::Success);
+            assert_eq!(color_for_code(Some(127), yellow), MarkColor::Error);
+            assert_eq!(color_for_code(Some(161), yellow), MarkColor::Error);
+        }
+        for code in [128, 143, 160] {
+            assert_eq!(color_for_code(Some(code), true), MarkColor::Other, "{code}");
+            assert_eq!(color_for_code(Some(code), false), MarkColor::Error, "{code}");
+        }
+        let mut m = Mark::new(0, Kind::Prompt);
+        m.code = Some(143);
+        assert_eq!((color(&m, true), color(&m, false)), (MarkColor::Other, MarkColor::Error));
+        assert_eq!(crate::scrollbar::series_of_mark(Some(143), true), crate::scrollbar::Series::Other);
+        assert_eq!(crate::scrollbar::series_of_mark(Some(143), false), crate::scrollbar::Series::Error);
+    }
 }

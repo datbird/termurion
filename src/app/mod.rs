@@ -393,6 +393,10 @@ pub struct App {
     pane_move: Option<pane_move_ui::PaneMove>,
     /// The Win-click target under the pointer while Win is held.
     hover: Option<(PaneId, crate::find::Match)>,
+    /// A Win-click target is under the pointer (the hand shows even with the underline off).
+    hover_hand: bool,
+    /// What `update_hover` last computed for: pane, cell and the two hover keys (P2).
+    hover_key: Option<(PaneId, i32, usize, bool, bool)>,
     /// The annotation or session note window: its pane and note (None for the session note).
     note_win: Option<(crate::note_ui::NoteWindow, PaneId, Option<u32>)>,
     /// Annotation navigation: the row each pane is at.
@@ -1671,6 +1675,8 @@ pub fn run() {
         title_press: None,
         pane_move: None,
         hover: None,
+        hover_hand: false,
+        hover_key: None,
         popup_menu: None,
         color_pick: None,
         shortcuts: None,
@@ -5404,7 +5410,7 @@ impl App {
                         if block_rows.contains(&row) || !(show || m.name.is_some()) {
                             continue;
                         }
-                        let color = crate::marks::color(&m);
+                        let color = crate::marks::color(&m, self.globals.bool("ShowYellowMarkForJobStoppedBySignal"));
                         // A line-style mark draws a line, and no bar unless its row is folded.
                         if m.line_style {
                             if !scene::line_mark_hidden(row, None) {

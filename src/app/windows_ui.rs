@@ -17,6 +17,10 @@ pub(super) struct WinSlot {
     drag: Drag,
     pointer_down: Option<PointerDown>,
     hover: Option<(PaneId, crate::find::Match)>,
+    /// A Win-click target is under the pointer (the hand shows even with the underline off).
+    hover_hand: bool,
+    /// What `update_hover` last computed for: pane, cell and the two hover keys (P2).
+    hover_key: Option<(PaneId, i32, usize, bool, bool)>,
     find_bar_rect: Option<Rect>,
     find_mode_rect: Option<Rect>,
     /// The title bars drawn last frame (pane, geometry), for clicks.
@@ -156,6 +160,8 @@ impl WinSlot {
             drag: Drag::None,
             pointer_down: None,
             hover: None,
+            hover_hand: false,
+            hover_key: None,
             find_bar_rect: None,
             find_mode_rect: None,
             title_bars: Vec::new(),
@@ -276,6 +282,8 @@ impl App {
         swap(&mut self.drag, &mut s.drag);
         swap(&mut self.pointer_down, &mut s.pointer_down);
         swap(&mut self.hover, &mut s.hover);
+        swap(&mut self.hover_hand, &mut s.hover_hand);
+        swap(&mut self.hover_key, &mut s.hover_key);
         swap(&mut self.find_bar_rect, &mut s.find_bar_rect);
         swap(&mut self.find_mode_rect, &mut s.find_mode_rect);
         swap(&mut self.title_bars, &mut s.title_bars);
@@ -960,6 +968,8 @@ impl WinSlot {
             drag: Drag::None,
             pointer_down: None,
             hover: None,
+            hover_hand: false,
+            hover_key: None,
             find_bar_rect: None,
             find_mode_rect: None,
             title_bars: Vec::new(),

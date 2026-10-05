@@ -10,6 +10,17 @@ use crate::semantic::{self, Around, ClickContext, Prefs, Run, Target};
 use crate::smartsel::{self, Escape};
 use crate::ssh_files;
 
+/// The cells to underline for a Win-hover target: none when the underline key is off (the hand
+/// pointer still shows, `TVA:548-552`).
+pub(super) fn hover_cells(target_cells: Match, underline: bool) -> Option<Match> {
+    underline.then_some(target_cells)
+}
+
+/// The byte window around a click in its line: `max` each way, clamped to the line.
+pub(super) fn context_bounds(line_len: usize, offset: usize, max: usize) -> (usize, usize) {
+    (offset.saturating_sub(max), offset.saturating_add(max).min(line_len))
+}
+
 /// Smart Selection looks this many logical lines each way from the click.
 const RADIUS: usize = 2;
 
@@ -43,12 +54,12 @@ impl App {
         let joined = Logical::join(&lines, "\n");
         let found = joined.offset_of(at).and_then(|click| smartsel::select_at(&joined.text, click, &rules));
         let smart = found.as_ref().filter(|f| !rules[f.rule].actions.is_empty()).map(|f| (f.rule, 0, joined.text[f.range.clone()].to_string()));
-        // At most iTerm2's reach each way, cut on character boundaries.
-        let mut base = o.saturating_sub(semantic::MAX_CONTEXT);
+        // At most `MaxSemanticHistoryPrefixOrSuffix` each way, cut on character boundaries.
+        let max = self.globals.int("MaxSemanticHistoryPrefixOrSuffix").max(0) as usize;
+        let (mut base, mut end) = context_bounds(line.text.len(), o, max);
         while !line.text.is_char_boundary(base) {
             base += 1;
         }
-        let mut end = (o + semantic::MAX_CONTEXT).min(line.text.len());
         while !line.text.is_char_boundary(end) {
             end -= 1;
         }
@@ -247,28 +258,56 @@ impl App {
         }
     }
 
-    /// Win held over a pane: underline the Win-click target under the pointer and show
-    /// a hand. Called when the pointer moves and when the modifiers change.
+    /// What Win-hover shows: the underline (`EnableUnderlineSemanticHistoryOnCmdHover`) and the
+    /// URL preview (`ShowURLPreviewForSemanticHistory`).
+    pub(super) fn hover_wanted(&self) -> (bool, bool) {
+        (self.globals.bool("EnableUnderlineSemanticHistoryOnCmdHover"), self.globals.bool("ShowURLPreviewForSemanticHistory"))
+    }
+
+    /// The Open URL a Smart Selection action at the click computes, for the hover preview.
+    fn smart_open_url(&self, id: PaneId, c: &Clicked, target: &Target) -> Option<String> {
+        let Target::Action { rule, action, .. } = target else { return None };
+        let (a, f) = (c.rules.get(*rule)?.actions.get(*action)?, c.found.as_ref()?);
+        if a.action != "openUrl:" {
+            return None;
+        }
+        let shell = &self.panes.get(&id)?.own().shell;
+        let (host, user) = (shell.host.clone().unwrap_or_default(), shell.user.clone().unwrap_or_default());
+        let cwd = c.ctx.cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+        Some(smartsel::expand(&a.parameter, &f.captures, &cwd, &host, &user, Escape::None))
+    }
+
+    /// Win held over a pane: underline the Win-click target under the pointer (with its key),
+    /// show a hand, and preview its URL (with its key). Called when the pointer moves and when
+    /// the modifiers change. Resolving probes the disk, so it runs only when the pane, the cell,
+    /// Win or a hover key changed since the last call (P2).
     pub(super) fn update_hover(&mut self) {
         let (x, y) = self.cursor;
+        let (underline, preview) = self.hover_wanted();
         let want = self.mods.cmd && !self.mods.ctrl && self.globals.bool("CommandSelection") && matches!(self.drag, Drag::None);
-        let hover = want
-            .then(|| self.pane_at(x, y))
-            .flatten()
-            .and_then(|(id, rect)| {
-                let (col, row, _) = self.cell_at(id, rect, x, y);
-                let point = self.grid_point(id, col, row);
-                self.target_at(id, point).map(|(_, target, cells)| (id, cells, target))
+        let at = want.then(|| self.pane_at(x, y)).flatten().map(|(id, rect)| {
+            let (col, row, _) = self.cell_at(id, rect, x, y);
+            (id, self.grid_point(id, col, row))
+        });
+        let key = at.map(|(id, p)| (id, p.line.0, p.column.0, underline, preview));
+        if key != self.hover_key {
+            self.hover_key = key;
+            let found = at.and_then(|(id, point)| self.target_at(id, point).map(|(c, target, cells)| (id, c, cells, target)));
+            // A link's text can differ from where it goes, so the URL shows while hovering.
+            let text = found.as_ref().and_then(|(id, c, _, t)| {
+                let osc8 = matches!(t, Target::Link(_));
+                semantic::preview_text(t, osc8, self.smart_open_url(*id, c, t).as_deref(), preview)
             });
-        // A link's text can differ from where it goes, so the target shows while hovering.
-        match hover.as_ref().map(|(_, _, t)| t) {
-            Some(Target::Link(u) | Target::Url(u)) => self.banners.set("hover", format!("Win-click opens {u}")),
-            _ => self.banners.clear("hover"),
-        }
-        let hover = hover.map(|(id, cells, _)| (id, cells));
-        if hover != self.hover {
-            self.hover = hover;
-            self.redraw();
+            match text {
+                Some(t) => self.banners.set("hover", t),
+                None => self.banners.clear("hover"),
+            }
+            self.hover_hand = found.is_some();
+            let hover = found.and_then(|(id, _, cells, _)| hover_cells(cells, underline).map(|m| (id, m)));
+            if hover != self.hover {
+                self.hover = hover;
+                self.redraw();
+            }
         }
         self.refresh_pointer_shape();
     }
@@ -859,5 +898,30 @@ mod tests {
             }
         }
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+}
+
+#[cfg(test)]
+mod hover_tests {
+    use super::*;
+    use crate::find::Pos;
+
+    fn cells() -> Match {
+        Match { start: Pos { row: 3, col: 2 }, end: Pos { row: 3, col: 9 } }
+    }
+
+    #[test]
+    fn hover_underline_follows_the_key() {
+        assert_eq!(hover_cells(cells(), true), Some(cells()));
+        assert_eq!(hover_cells(cells(), false), None);
+    }
+
+    #[test]
+    fn context_size_follows_the_key() {
+        assert_eq!(context_bounds(5000, 2500, 2000), (500, 4500));
+        assert_eq!(context_bounds(100, 50, 10), (40, 60));
+        assert_eq!(context_bounds(100, 5, 10), (0, 15), "clamped at the start");
+        assert_eq!(context_bounds(100, 95, 10), (85, 100), "clamped at the end");
+        assert_eq!(context_bounds(100, 50, 0), (50, 50));
     }
 }

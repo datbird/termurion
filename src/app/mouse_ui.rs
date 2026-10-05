@@ -247,7 +247,7 @@ impl App {
         if matches!(self.drag, Drag::Scrollbar { .. }) || self.scrollbar_at(x, y).is_some() {
             return Err(Shape::Arrow);
         }
-        let mut o = Over { rect_mods: self.mods.ctrl && self.mods.alt, action_with_win: self.hover.is_some() && self.mods.cmd && !self.mods.alt, button: self.tandem_ui_at(x, y), ..Over::default() };
+        let mut o = Over { rect_mods: self.mods.ctrl && self.mods.alt, action_with_win: self.hover_hand && self.mods.cmd && !self.mods.alt, button: self.tandem_ui_at(x, y), ..Over::default() };
         if let Some((id, rect)) = self.pane_at(x, y) {
             o.terminal = true;
             let (col, row, _) = self.cell_at(id, rect, x, y);

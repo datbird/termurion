@@ -159,12 +159,12 @@ pub const TICK_HEIGHT: f32 = 3.0;
 pub const MINIMAP_ALPHA: f32 = 0.62;
 
 /// iTerm2's tick series for a mark by its exit code (`iTermIntervalTreeObjectTypeForObject`): no
-/// code is a manual mark, 0 success, 128 to 160 other, anything else an error.
-pub fn series_of_mark(code: Option<i32>) -> Series {
+/// code is a manual mark, 0 success, 128 to 160 other with `ShowYellowMarkForJobStoppedBySignal`, anything else an error.
+pub fn series_of_mark(code: Option<i32>, yellow_for_signals: bool) -> Series {
     match code {
         None => Series::Manual,
         Some(0) => Series::Success,
-        Some(128..=160) => Series::Other,
+        Some(128..=160) if yellow_for_signals => Series::Other,
         Some(_) => Series::Error,
     }
 }
@@ -527,13 +527,13 @@ mod tests {
 
     #[test]
     fn mark_series_follow_the_exit_code() {
-        assert_eq!(series_of_mark(None), Series::Manual, "no code: a manual mark");
-        assert_eq!(series_of_mark(Some(0)), Series::Success);
-        assert_eq!(series_of_mark(Some(1)), Series::Error);
-        assert_eq!(series_of_mark(Some(127)), Series::Error);
-        assert_eq!(series_of_mark(Some(128)), Series::Other);
-        assert_eq!(series_of_mark(Some(160)), Series::Other);
-        assert_eq!(series_of_mark(Some(161)), Series::Error);
-        assert_eq!(series_of_mark(Some(-1)), Series::Error);
+        assert_eq!(series_of_mark(None, true), Series::Manual, "no code: a manual mark");
+        assert_eq!(series_of_mark(Some(0), true), Series::Success);
+        assert_eq!(series_of_mark(Some(1), true), Series::Error);
+        assert_eq!(series_of_mark(Some(127), true), Series::Error);
+        assert_eq!(series_of_mark(Some(128), true), Series::Other);
+        assert_eq!(series_of_mark(Some(160), true), Series::Other);
+        assert_eq!(series_of_mark(Some(161), true), Series::Error);
+        assert_eq!(series_of_mark(Some(-1), true), Series::Error);
     }
 }

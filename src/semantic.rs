@@ -28,8 +28,18 @@ pub struct ClickContext {
     pub raw_command: bool,
 }
 
-/// iTerm2 looks this far each way from the click.
-pub const MAX_CONTEXT: usize = 2000;
+/// `MaxSemanticHistoryPrefixOrSuffix`'s default: iTerm2 looks this far each way from the click.
+pub const DEFAULT_MAX_CONTEXT: usize = 2000;
+
+/// What the hover banner shows for a target (`TVA:733-748`).
+pub fn preview_text(target: &Target, osc8: bool, smart_open_url: Option<&str>, show_preview: bool) -> Option<String> {
+    match target {
+        Target::Link(url) => Some(url.clone()),
+        Target::Url(url) if show_preview || osc8 => Some(url.clone()),
+        Target::Action { .. } if show_preview => smart_open_url.map(str::to_string),
+        _ => None,
+    }
+}
 
 /// Like `resolve`, with the target's byte range in `before` + `after`. The range is None
 /// for a link or a Smart Selection action, whose extent the caller knows.
@@ -653,5 +663,19 @@ mod tests {
         let link = Target::Link("file:///C:/x/evil.cmd".into());
         assert_eq!(plan(&link, &best, &Around::default(), false), Some(Run::Reveal("C:\\x\\evil.cmd".into())));
         assert!(matches!(plan(&Target::Url("javascript://x".into()), &best, &Around::default(), false), Some(Run::Blocked(_))));
+    }
+    #[test]
+    fn url_preview_follows_iterm2() {
+        // An OSC 8 link always shows its URL.
+        assert_eq!(preview_text(&Target::Link("https://a/".into()), true, None, false), Some("https://a/".into()));
+        assert_eq!(preview_text(&Target::Url("https://b".into()), false, None, true), Some("https://b".into()));
+        assert_eq!(preview_text(&Target::Url("https://b".into()), false, None, false), None);
+        let action = Target::Action { rule: 0, action: 0, text: "x".into() };
+        assert_eq!(preview_text(&action, false, Some("https://c"), true), Some("https://c".into()));
+        assert_eq!(preview_text(&action, false, Some("https://c"), false), None);
+        assert_eq!(preview_text(&action, false, None, true), None, "a non Open URL action shows nothing");
+        let file = Target::File { path: PathBuf::from("a.txt"), line: None, column: None };
+        assert_eq!(preview_text(&file, false, None, true), None);
+        assert_eq!(preview_text(&Target::RawCommand("x".into()), false, None, true), None);
     }
 }

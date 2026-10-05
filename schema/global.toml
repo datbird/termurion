@@ -4461,3 +4461,185 @@ label = "Enable low-latency updates of the current foreground job"
 type = "bool"
 default = true
 help = "Enable low-latency updates of the current foreground job"
+
+# Semantic history (13r)
+
+[[setting]]
+key = "CmdClickWhenInactiveInvokesSemanticHistory"
+tab = "Advanced"
+section = "Mouse"
+label = "Win-click in an active pane while Tandem isn't the active app invokes Semantic History."
+type = "bool"
+default = false
+help = "Win-click in an active pane while Tandem isn't the active app invokes Semantic History.\nBy default, Tandem respects the OS standard that Win-click in an app that doesn't have keyboard focus behaves like a non-Win click that does not raise the window."
+
+[[setting]]
+key = "EnableUnderlineSemanticHistoryOnCmdHover"
+tab = "Advanced"
+section = "Mouse"
+label = "Underline Semantic History-selectable items under the cursor while holding Win?"
+type = "bool"
+default = true
+help = "Underline Semantic History-selectable items under the cursor while holding Win?"
+
+[[setting]]
+key = "EnableCmdClickPromptForShowCommandInfo"
+tab = "Advanced"
+section = "Mouse"
+label = "Win-click in the prompt shows the Command Info window"
+type = "bool"
+default = true
+help = "Win-click in the prompt shows the Command Info window"
+
+[[setting]]
+key = "ShowButtonsForSelectedCommand"
+tab = "Advanced"
+section = "General"
+label = "Show buttons at the top of a selected command?"
+type = "bool"
+default = true
+help = "Show buttons at the top of a selected command?\nWhen you select a command by single clicking the command line or its output, buttons are shown on the top right with options like Copy and Share. Note that this setting only applies when marks are not \u201Cline style\u201D such as when using Auto Composer."
+
+[[setting]]
+key = "ShowURLPreviewForSemanticHistory"
+tab = "Advanced"
+section = "Drawing"
+label = "Show URL preview on Win-hover for semantic history matches."
+type = "bool"
+default = true
+help = "Show URL preview on Win-hover for semantic history matches."
+
+[[setting]]
+key = "IgnoreHardNewlinesInURLs"
+tab = "Advanced"
+section = "Semantic History"
+label = "Ignore hard newlines for the purposes of locating URLs and file names for Semantic History."
+type = "bool"
+default = false
+help = "Ignore hard newlines for the purposes of locating URLs and file names for Semantic History.\nIf a hard newline occurs at the end of a line then Win-click will not see it all unless this setting is turned on. This is useful for some interactive applications. Turning this on will remove newlines from the \\3 and \\4 substitutions."
+
+[[setting]]
+key = "URLCharacterSet"
+tab = "Advanced"
+section = "Semantic History"
+label = "Non-alphanumeric characters considered part of a URL or file name for Semantic History."
+type = "string"
+default = ".?\\/:;$%=&_-,+~#@!*'(\uFF08)\uFF09|[]"
+help = "Non-alphanumeric characters considered part of a URL or file name for Semantic History.\nLetters and numbers are always considered part of the URL. These non-alphanumeric characters are used in addition for the purposes of figuring out where a URL begins and ends. You must restart Tandem for changes to this setting to take effect."
+
+[[setting]]
+key = "URLCharacterSetExclusions"
+tab = "Advanced"
+section = "Semantic History"
+label = "Characters never considered part of a URL."
+type = "string"
+default = "\u00AC"
+help = "Characters never considered part of a URL.\nThe characters in this string may never occur in a URL; when one is seen that delineates the beginning or end of a URL."
+
+[[setting]]
+key = "FilenameCharacterSet"
+tab = "Advanced"
+section = "Semantic History"
+label = "Non-alphanumeric characters considered part of a filename. Note that URL characters (a separate advanced setting) are also allowed."
+type = "string"
+default = "$@"
+help = "Non-alphanumeric characters considered part of a filename. Note that URL characters (a separate advanced setting) are also allowed.\nLetters and numbers are always considered part of the URL. These non-alphanumeric characters are used in addition for the purposes of figuring out where a file begins and ends. You must restart Tandem for changes to this setting to take effect."
+
+[[setting]]
+key = "MaxSemanticHistoryPrefixOrSuffix"
+tab = "Advanced"
+section = "Semantic History"
+label = "Maximum number of bytes of text before and after click location to take into account."
+type = "int"
+default = 2000
+help = "Maximum number of bytes of text before and after click location to take into account.\nThis also limits the size of the \\3 and \\4 substitutions."
+
+[[setting]]
+key = "PathsToIgnore"
+tab = "Advanced"
+section = "Semantic History"
+label = "Paths to ignore for Semantic History."
+type = "string"
+default = ""
+help = "Paths to ignore for Semantic History.\nSeparate paths with a comma. Any file under one of these paths will not be openable with Semantic History. It is wise to add network file systems to this list, since they can be very slow."
+
+[[setting]]
+key = "ShowYellowMarkForJobStoppedBySignal"
+tab = "Advanced"
+section = "Semantic History"
+label = "Use a yellow for a Shell Integration prompt mark when the job is stopped by a signal."
+type = "bool"
+default = true
+help = "Use a yellow for a Shell Integration prompt mark when the job is stopped by a signal."
+
+[[setting]]
+key = "ConservativeURLGuessing"
+tab = "Advanced"
+section = "Semantic History"
+label = "URLs must contain a scheme?"
+type = "bool"
+default = false
+help = "URLs must contain a scheme?\nEnable this to reduce the number of false positives that semantic history thinks are a URL"
+
+[[setting]]
+key = "TrailingPunctuationMarks"
+tab = "Advanced"
+section = "Semantic History"
+label = "Characters to ignore at the end of a URL"
+type = "string"
+default = "!?\u2026)].\"';:,"
+help = "Characters to ignore at the end of a URL"
+
+[[setting]]
+key = "DefaultURLScheme"
+tab = "Advanced"
+section = "Semantic History"
+label = "Default URL scheme."
+type = "string"
+default = "https"
+help = "Default URL scheme.\nThis is applied to hostnames that are not a single word."
+
+[[setting]]
+key = "UrlHandlerCommand"
+tab = "Advanced"
+section = "Semantic History"
+label = "Command to run when opening a clicked URL, instead of asking the OS to open it."
+type = "string"
+default = ""
+help = "Command to run when opening a clicked URL, instead of asking the OS to open it.\nWhen non-empty, this command runs as a silent background task whenever you click a URL (including OSC 8 hyperlinks and auto-detected URLs) that Tandem would otherwise hand to the system. Tandem splits it into a program and its arguments and starts the program directly, without a shell. This is an interpolated string; use \\(url) for the URL, which is always passed as one argument of its own (added at the end when \\(url) is absent), and \\(background) for whether a background open was requested (1 if you held Alt while clicking, otherwise 0). The command is responsible for opening the URL however it likes (e.g., \u201Cexplorer.exe \\(url)\u201D to open it with the default browser). A .cmd or .bat handler, or cmd.exe itself, is not given URLs containing % ^ & | < > \" or control characters. When empty, URLs open normally. Tandem-internal schemes (iterm2:), URL schemes bound to a profile, and Semantic History file links are not affected."
+
+[[setting]]
+key = "RestrictSemanticHistoryPrefixAndSuffixToLogicalWindow"
+tab = "Advanced"
+section = "Semantic History"
+label = "Respect soft boundaries for computing the prefix and suffix text passed to semantic history commands?"
+type = "bool"
+default = true
+help = "Respect soft boundaries for computing the prefix and suffix text passed to semantic history commands?\nDue to a long-standing bug this did not used to be respected. Soft boundaries were always respected for deciding what text was clicked on, but the prefix and suffix did not. If you have a semantic history command that depends on the bug, you can switch this off to get the pre-3.1.2 behavior."
+
+[[setting]]
+key = "EnableSemanticHistoryOnNetworkMounts"
+tab = "Advanced"
+section = "Semantic History"
+label = "Enable semantic history for network-mounted filesystems?"
+type = "bool"
+default = false
+help = "Enable semantic history for network-mounted filesystems?\nOnly enable this if you know your network-mounted filesystems are really fast and reliable. A slow filesystem may cause the entire Tandem app to hang."
+
+[[setting]]
+key = "PrioritizeSmartSelectionActions"
+tab = "Advanced"
+section = "Semantic History"
+label = "Check smart selection actions before existing files on Win-click?"
+type = "bool"
+default = false
+help = "Check smart selection actions before existing files on Win-click?"
+
+[[setting]]
+key = "DisableSmartSelectionActionsOnClick"
+tab = "Advanced"
+section = "Semantic History"
+label = "Disable performing the first matching Smart Selection\u2019s Action on Win-click?"
+type = "bool"
+default = false
+help = "Disable performing the first matching Smart Selection\u2019s Action on Win-click?"
