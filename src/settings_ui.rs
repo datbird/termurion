@@ -651,6 +651,9 @@ impl SettingsWindow {
                             if matches!(s.key.as_str(), "Rows" | "Width Percentage" | "Height Percentage") {
                                 continue;
                             }
+                            if s.key == "Background Image Source Mode" && background_image_row(ui, profile) {
+                                edit = Edit::Changed(selected.clone());
+                            }
                             if s.key == "Title Function" {
                                 if title_function_row(ui, profile, s, title_providers) {
                                     edit = Edit::Changed(selected.clone());
@@ -1129,6 +1132,64 @@ fn blink_presets_row(ui: &mut egui::Ui, p: &mut Profile) -> bool {
 /// One control for one setting. Returns true when a change is committed: at once for
 /// checkboxes, pickers, and colors; when a drag ends for sliders; when the field loses
 /// focus (or Enter) for text. Uncommitted edits still update the profile in memory.
+/// The "Use background image" checkbox row's text (`PP`).
+pub const USE_BACKGROUND_IMAGE: &str = "Use background image";
+/// The picker's message (`PWP:815-827`).
+pub const BACKGROUND_PICKER_MESSAGE: &str = "Choose an image for the background, or a folder to rotate through its images.";
+
+/// On when the path of the current source mode is non-empty (`PWP:937-939`).
+pub fn background_checkbox_state(p: &Profile) -> bool {
+    !p.string(background_key(p)).is_empty()
+}
+
+/// The key the current source mode reads: the folder in folder rotation, else the image.
+fn background_key(p: &Profile) -> &'static str {
+    if p.int("Background Image Source Mode") == 1 {
+        "Background Image Folder Location"
+    } else {
+        "Background Image Location"
+    }
+}
+
+/// The unchecked box: clears the key of the current source mode only.
+pub fn clear_background_image(p: &mut Profile) {
+    p.set(background_key(p), Value::String(String::new()));
+}
+
+/// A picked file sets source mode 0 and the location; a folder sets mode 1 and the folder.
+pub fn set_background_pick(p: &mut Profile, path: &str, is_dir: bool) {
+    p.set("Background Image Source Mode", Value::Integer(is_dir as i64));
+    p.set(if is_dir { "Background Image Folder Location" } else { "Background Image Location" }, Value::String(path.to_string()));
+}
+
+/// The "Use background image" row (`PWP:815-827`): the box is on while the current source has
+/// a path. Checking it opens the picker for a file; the Folder button picks a folder (Windows'
+/// dialog cannot take both). Cancel leaves the profile alone; unchecking clears the key.
+fn background_image_row(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        let mut on = background_checkbox_state(profile);
+        if ui.checkbox(&mut on, USE_BACKGROUND_IMAGE).changed() {
+            if on {
+                if let Some(path) = rfd::FileDialog::new().set_title(BACKGROUND_PICKER_MESSAGE).add_filter("Images", &["png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp"]).pick_file() {
+                    set_background_pick(profile, &path.to_string_lossy(), false);
+                    changed = true;
+                }
+            } else {
+                clear_background_image(profile);
+                changed = true;
+            }
+        }
+        if ui.button("Folder...").on_hover_text(BACKGROUND_PICKER_MESSAGE).clicked() {
+            if let Some(path) = rfd::FileDialog::new().set_title(BACKGROUND_PICKER_MESSAGE).pick_folder() {
+                set_background_pick(profile, &path.to_string_lossy(), true);
+                changed = true;
+            }
+        }
+    });
+    changed
+}
+
 /// The warning beside the Minimum Contrast slider: shown at 0.97 and above (`PCP:459-463`).
 fn contrast_warning(key: &str, value: f64) -> Option<&'static str> {
     (key == "Minimum Contrast" && crate::contrast::warns(value)).then_some(crate::contrast::WARNING_TEXT)
@@ -1284,6 +1345,44 @@ mod tests {
         fn register(&mut self, _: &str, _: &std::path::Path) -> Result<(), String> {
             panic!("a menu choice never writes the registry")
         }
+    }
+
+    #[test]
+    fn background_checkbox_follows_iterm2() {
+        let mut p = Profile::new("P");
+        assert!(!background_checkbox_state(&p));
+        p.set("Background Image Source Mode", Value::Integer(0));
+        p.set("Background Image Location", Value::String("C:\\bg.png".into()));
+        assert!(background_checkbox_state(&p));
+        p.set("Background Image Location", Value::String(String::new()));
+        assert!(!background_checkbox_state(&p));
+        // Source mode 1 reads the folder key, not the file key.
+        p.set("Background Image Source Mode", Value::Integer(1));
+        p.set("Background Image Location", Value::String("C:\\bg.png".into()));
+        assert!(!background_checkbox_state(&p));
+        p.set("Background Image Folder Location", Value::String("C:\\pics".into()));
+        assert!(background_checkbox_state(&p));
+        // Unchecking clears the current source's key only.
+        clear_background_image(&mut p);
+        assert_eq!(p.string("Background Image Folder Location"), "");
+        assert_eq!(p.string("Background Image Location"), "C:\\bg.png");
+        p.set("Background Image Source Mode", Value::Integer(0));
+        p.set("Background Image Folder Location", Value::String("C:\\pics".into()));
+        clear_background_image(&mut p);
+        assert_eq!(p.string("Background Image Location"), "");
+        assert_eq!(p.string("Background Image Folder Location"), "C:\\pics");
+    }
+
+    #[test]
+    fn background_pick_sets_the_source_mode() {
+        let mut p = Profile::new("P");
+        set_background_pick(&mut p, "C:\\pics", true);
+        assert_eq!((p.int("Background Image Source Mode"), p.string("Background Image Folder Location").as_str()), (1, "C:\\pics"));
+        assert!(background_checkbox_state(&p));
+        set_background_pick(&mut p, "C:\\bg.png", false);
+        assert_eq!((p.int("Background Image Source Mode"), p.string("Background Image Location").as_str()), (0, "C:\\bg.png"));
+        assert_eq!(USE_BACKGROUND_IMAGE, "Use background image");
+        assert_eq!(BACKGROUND_PICKER_MESSAGE, "Choose an image for the background, or a folder to rotate through its images.");
     }
 
     #[test]

@@ -1991,6 +1991,20 @@ mod tests {
     }
 
     #[test]
+    fn color_space_rows_follow_iterm2() {
+        let p3 = "Use P3 as default color space? If No, sRGB will be used.";
+        let row = schema::find_global("P3").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Terminal"));
+        assert_eq!((row.kind, row.default.clone()), (Kind::Bool, Some(Value::Boolean(true))));
+        assert_eq!((row.label.as_str(), row.help.as_str()), (p3, p3));
+        let hdr = "Allow HDR effects\nWhen enabled, Tandem may render some UI effects, such as the selected tab's outline, brighter than white on an HDR-capable display. Off by default because forcing the display into extended dynamic range can cause hangs on some systems.";
+        let row = schema::find_global("AllowHDR").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Drawing"));
+        assert_eq!((row.kind, row.default.clone()), (Kind::Bool, Some(Value::Boolean(false))));
+        assert_eq!((row.label.as_str(), row.help.as_str()), ("Allow HDR effects", hdr));
+    }
+
+    #[test]
     fn scripting_rows_follow_iterm2() {
         for (key, default, help) in [
             ("pythonRuntimeDownloadURL", "https://iterm2.com/downloads/pyenv/manifest.json", "URL to check for new versions of the Python scripting runtime."),

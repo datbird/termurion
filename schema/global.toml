@@ -553,6 +553,24 @@ default = false
 help = "Always use line-style marks?"
 
 [[setting]]
+key = "P3"
+tab = "Advanced"
+section = "Terminal"
+label = "Use P3 as default color space? If No, sRGB will be used."
+type = "bool"
+default = true
+help = "Use P3 as default color space? If No, sRGB will be used."
+
+[[setting]]
+key = "AllowHDR"
+tab = "Advanced"
+section = "Drawing"
+label = "Allow HDR effects"
+type = "bool"
+default = false
+help = "Allow HDR effects\nWhen enabled, Tandem may render some UI effects, such as the selected tab's outline, brighter than white on an HDR-capable display. Off by default because forcing the display into extended dynamic range can cause hangs on some systems."
+
+[[setting]]
 key = "disableTopRightIndicators"
 tab = "Advanced"
 section = "Drawing"
