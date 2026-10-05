@@ -377,6 +377,16 @@ mod tests {
     }
 
     #[test]
+    fn minimum_contrast_reads_the_dark_variant() {
+        let mut p = Profile::stock();
+        p.set("Use Separate Colors for Light and Dark Mode", toml::Value::Boolean(true));
+        p.set("Minimum Contrast (Dark)", toml::Value::Float(0.6));
+        p.set("Minimum Contrast (Light)", toml::Value::Float(0.2));
+        assert_eq!(p.float_for("Minimum Contrast", true), 0.6);
+        assert_eq!(p.float_for("Minimum Contrast", false), 0.2);
+    }
+
+    #[test]
     fn ssh_command_line_follows_iterm2() {
         let u = std::path::Path::new(r"C:\T\utilities\it2ssh.exe");
         let s = |v: &str| toml::Value::String(v.into());

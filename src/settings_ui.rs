@@ -1129,6 +1129,11 @@ fn blink_presets_row(ui: &mut egui::Ui, p: &mut Profile) -> bool {
 /// One control for one setting. Returns true when a change is committed: at once for
 /// checkboxes, pickers, and colors; when a drag ends for sliders; when the field loses
 /// focus (or Enter) for text. Uncommitted edits still update the profile in memory.
+/// The warning beside the Minimum Contrast slider: shown at 0.97 and above (`PCP:459-463`).
+fn contrast_warning(key: &str, value: f64) -> Option<&'static str> {
+    (key == "Minimum Contrast" && crate::contrast::warns(value)).then_some(crate::contrast::WARNING_TEXT)
+}
+
 fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is_default: bool) -> bool {
     let font_locked = !is_default && FONT_KEYS.contains(&s.key.as_str());
     let key = edit_key(profile, s, dark);
@@ -1181,6 +1186,14 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                     }
                     widget = Some((r.rect, enabled));
                     commit = r.drag_stopped() || (r.changed() && !r.dragged());
+                    // iTerm2's two outlets (`_bwWarning1`, `_bwWarning2`): the glyph, then the text.
+                    if let Some(text) = contrast_warning(&s.key, f) {
+                        let color = ui.visuals().warn_fg_color;
+                        if let Some(g) = crate::settings_keys::icon_text(ui.ctx(), crate::scripts::WARNING_GLYPH) {
+                            ui.label(g.color(color));
+                        }
+                        ui.label(egui::RichText::new(text).color(color));
+                    }
                 }
                 Kind::String | Kind::Font => {
                     ui.label(&s.label);
@@ -1271,6 +1284,14 @@ mod tests {
         fn register(&mut self, _: &str, _: &std::path::Path) -> Result<(), String> {
             panic!("a menu choice never writes the registry")
         }
+    }
+
+    #[test]
+    fn minimum_contrast_warns_near_one() {
+        assert_eq!(contrast_warning("Minimum Contrast", 0.97), Some("Black & White Text Only"));
+        assert_eq!(contrast_warning("Minimum Contrast", 1.0), Some("Black & White Text Only"));
+        assert_eq!(contrast_warning("Minimum Contrast", 0.96), None);
+        assert_eq!(contrast_warning("Cursor Boost", 1.0), None);
     }
 
     #[test]

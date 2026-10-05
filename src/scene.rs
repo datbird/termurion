@@ -471,22 +471,39 @@ pub fn pane_with(
             continue;
         }
         let c = indexed.cell;
-        let (mut fg, mut bg) = palette.cell(c.fg, c.bg, c.flags);
+        let (raw_fg, raw_bg) = palette.cell(c.fg, c.bg, c.flags);
+        // Minimum contrast adjusts the raw text color against the raw background, before Cursor
+        // Boost mutes and Dim Only Text dims (`iTermColorMap.m:318-360`). Block characters
+        // (`contrastIneligible`, `iTermAttributedStringBuilder.m:755`) and hidden cells keep theirs.
+        let exempt = c.flags.contains(Flags::HIDDEN) || (c.zerowidth().is_none() && crate::boxdraw::is_block(c.c));
+        let adjust = |text: Rgb, against: Rgb| if exempt { text } else { crate::contrast::apply(text, against, palette.min_contrast) };
         // Cursor Boost mutes first, then Dim Only Text dims (`iTermColorMap.m:347-360`).
-        (fg, bg) = (crate::cursor_look::mute(fg, palette.bg, look.boost), crate::cursor_look::mute(bg, palette.bg, look.boost));
+        let own_text = |against: Rgb| {
+            let fg = crate::cursor_look::mute(adjust(raw_fg, against), palette.bg, look.boost);
+            match highlights.map(|h| h.dim).filter(|d| d.only_text) {
+                Some(d) => crate::dim::text_color(fg, d, bg_brightness),
+                None => fg,
+            }
+        };
+        let (mut fg, mut bg) = (own_text(raw_bg), crate::cursor_look::mute(raw_bg, palette.bg, look.boost));
         if let Some(d) = highlights.map(|h| h.dim).filter(|d| d.only_text) {
-            (fg, bg) = (crate::dim::text_color(fg, d, bg_brightness), crate::dim::bg_color(bg, palette.bg, d, bg_brightness));
+            bg = crate::dim::bg_color(bg, palette.bg, d, bg_brightness);
         }
+        // The text and background the cell ended with, for the later choices; `own` while the
+        // text is still the cell's own color.
+        let (mut under, mut own) = (raw_bg, true);
         let mut hover = false;
         if let Some(h) = highlights {
             let at = crate::find::Pos { row: (indexed.point.line.0 + history) as usize, col };
             let i = h.matches.partition_point(|m| m.end < at);
             if h.matches.get(i).is_some_and(|m| m.start <= at) {
                 // The match colors are muted by Cursor Boost like every other background and text.
-                (fg, bg) = (crate::cursor_look::mute(match_text(h.color), palette.bg, look.boost), crate::cursor_look::mute(h.color, palette.bg, look.boost));
+                (fg, bg) = (crate::cursor_look::mute(adjust(match_text(h.color), h.color), palette.bg, look.boost), crate::cursor_look::mute(h.color, palette.bg, look.boost));
+                (under, own) = (h.color, false);
             }
             if h.hover.is_some_and(|m| m.start <= at && at <= m.end) {
-                fg = h.link;
+                fg = adjust(h.link, under);
+                own = false;
                 hover = true;
                 hovered.push((row, col));
             }
@@ -499,13 +516,19 @@ pub fn pane_with(
             let at_row = (indexed.point.line.0 + history) as usize;
             if h.labels.iter().any(|(p, l)| p.row == at_row && col >= p.col && col < p.col + l.chars().count()) {
                 (fg, bg) = (LABEL_TEXT, LABEL_BG);
+                own = false;
                 hidden = true;
             }
         }
         let mut selected = false;
         if content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) {
-            // `fg` is already muted: only an explicit Selected Text Color still needs it.
-            (fg, bg) = (palette.selected_text.map_or(fg, |t| crate::cursor_look::mute(t, palette.bg, look.boost)), crate::cursor_look::mute(palette.selection, palette.bg, look.boost));
+            // The text is adjusted against the selection color; `fg` is already muted otherwise.
+            fg = match palette.selected_text {
+                Some(t) => crate::cursor_look::mute(adjust(t, palette.selection), palette.bg, look.boost),
+                None if own => own_text(palette.selection),
+                None => fg,
+            };
+            bg = crate::cursor_look::mute(palette.selection, palette.bg, look.boost);
             selected = true;
         }
         if block_cursor && cursor == Some((row, col)) {
@@ -4476,6 +4499,92 @@ mod tests {
         assert!(f.quads.iter().any(|q| q.color == rgba(rgb(0, 0, 0), 1.0) && q.rect.x == 10.0), "{:?}", f.quads);
         let b = f.rows[0].spans.iter().find(|sp| sp.text == "b").unwrap();
         assert_eq!(b.color, rgb(230, 230, 230));
+    }
+
+    fn with_min_contrast(s: &mut Screen, min: f32) {
+        s.palette.min_contrast = min;
+    }
+
+    fn span_color(f: &Frame, text: &str) -> Option<Rgb> {
+        f.rows.iter().flat_map(|r| &r.spans).find(|sp| sp.text.contains(text)).map(|sp| sp.color)
+    }
+
+    #[test]
+    fn contrast_applies_per_cell() {
+        // Gray on the same gray: unreadable until minimum contrast moves it.
+        let mut s = screen(b"\x1b[38;2;100;100;100m\x1b[48;2;100;100;100mab");
+        with_min_contrast(&mut s, 0.5);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        let c = span_color(&f, "ab").unwrap();
+        assert!(c.r > 200, "dark gray on itself goes toward white: {c:?}");
+        assert_eq!(c, crate::contrast::apply(rgb(100, 100, 100), rgb(100, 100, 100), 0.5));
+        // On a light background the text goes dark.
+        let mut s = screen(b"\x1b[38;2;250;250;250m\x1b[48;2;250;250;250mab");
+        with_min_contrast(&mut s, 0.5);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        let c = span_color(&f, "ab").unwrap();
+        assert!(c.r < 130 && c.r > 115, "{c:?}");
+        // Zero keeps the palette color.
+        let mut s = screen(b"\x1b[38;2;128;128;128m\x1b[48;2;128;128;128mab");
+        with_min_contrast(&mut s, 0.0);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        assert_eq!(span_color(&f, "ab"), Some(rgb(128, 128, 128)));
+    }
+
+    #[test]
+    fn selected_cells_contrast_against_the_selection_color() {
+        let mut s = screen(b"\x1b[38;2;100;100;100mhello");
+        s.palette.selection = rgb(100, 100, 100);
+        s.palette.selected_text = None;
+        with_min_contrast(&mut s, 0.5);
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left);
+        sel.update(Point::new(Line(0), Column(1)), Side::Right);
+        s.term_mut().selection = Some(sel);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false));
+        let sel_text = span_color(&f, "he").unwrap();
+        assert_ne!(sel_text, rgb(100, 100, 100), "selected text is adjusted against the selection color");
+        assert_eq!(sel_text, crate::contrast::apply(rgb(100, 100, 100), rgb(100, 100, 100), 0.5));
+    }
+
+    #[test]
+    fn contrast_runs_before_mute() {
+        let mut s = screen(b"\x1b[38;2;128;128;128m\x1b[48;2;128;128;128mab");
+        s.palette.bg = rgb(0, 0, 0);
+        with_min_contrast(&mut s, 0.5);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook { boost: 0.5, ..CursorLook::shown(false) });
+        let raw = crate::contrast::apply(rgb(128, 128, 128), rgb(128, 128, 128), 0.5);
+        let want = crate::cursor_look::mute(raw, s.palette.bg, 0.5);
+        assert_eq!(span_color(&f, "ab"), Some(want));
+        let wrong = crate::contrast::apply(crate::cursor_look::mute(rgb(128, 128, 128), s.palette.bg, 0.5), crate::cursor_look::mute(rgb(128, 128, 128), s.palette.bg, 0.5), 0.5);
+        assert_ne!(want, wrong);
+    }
+
+    #[test]
+    fn cursor_text_is_not_adjusted() {
+        let mut s = screen(b"ab\x1b[1;1H");
+        s.palette.cursor = rgb(200, 200, 200);
+        s.palette.cursor_text = rgb(200, 200, 200);
+        with_min_contrast(&mut s, 1.0);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true));
+        assert_eq!(span_color(&f, "a"), Some(rgb(200, 200, 200)));
+    }
+
+    #[test]
+    fn blocks_keep_their_color() {
+        let mut s = screen(b"\x1b[38;2;128;128;128m\x1b[48;2;128;128;128m\xe2\x96\x88\xe2\x94\x80");
+        with_min_contrast(&mut s, 1.0);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        let block = f.rows.iter().flat_map(|r| &r.spans).find(|sp| sp.text.contains('\u{2588}')).unwrap();
+        assert_eq!(block.color, rgb(128, 128, 128), "a block character keeps its foreground");
+        let line = f.rows.iter().flat_map(|r| &r.spans).find(|sp| sp.text.contains('\u{2500}')).unwrap();
+        assert_ne!(line.color, rgb(128, 128, 128), "a box line is adjusted");
     }
 
     #[test]

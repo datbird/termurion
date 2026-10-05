@@ -27,6 +27,8 @@ pub struct Palette {
     pub match_bg: Rgb,
     /// Links and URLs under the pointer.
     pub link: Rgb,
+    /// iTerm2's Minimum Contrast, 0 to 1 (0 leaves text colors alone).
+    pub min_contrast: f32,
 }
 
 impl Default for Palette {
@@ -64,6 +66,7 @@ impl Palette {
             faint_alpha: p.float("Faint Text Alpha") as f32,
             match_bg: c("Match Background Color"),
             link: c("Link Color"),
+            min_contrast: p.float_for("Minimum Contrast", dark) as f32,
         }
     }
 
@@ -136,6 +139,19 @@ mod tests {
     #[test]
     fn named_red_is_itermish() {
         assert_eq!(Palette::default().color(Color::Named(NamedColor::Red)), rgb(0xb4, 0x3c, 0x2a));
+    }
+
+    #[test]
+    fn palette_reads_minimum_contrast_for_the_mode() {
+        let mut p = crate::profile::Profile::default();
+        p.set("Use Separate Colors for Light and Dark Mode", toml::Value::Boolean(true));
+        p.set("Minimum Contrast (Dark)", toml::Value::Float(0.75));
+        p.set("Minimum Contrast (Light)", toml::Value::Float(0.25));
+        assert_eq!(Palette::from_profile(&p, true).min_contrast, 0.75);
+        assert_eq!(Palette::from_profile(&p, false).min_contrast, 0.25);
+        p.set("Use Separate Colors for Light and Dark Mode", toml::Value::Boolean(false));
+        p.set("Minimum Contrast", toml::Value::Float(0.5));
+        assert_eq!(Palette::from_profile(&p, true).min_contrast, 0.5);
     }
 
     #[test]
