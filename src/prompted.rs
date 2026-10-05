@@ -22,8 +22,9 @@ pub fn valid(key: &str, json: &serde_json::Value) -> Option<Value> {
         return None;
     }
     // Stricter than iTerm2: the Answerback String is typed back into the input on ENQ, so only
-    // the person's own profile may set it, never a program (13o Task 6 review).
-    if key == "Answerback String" {
+    // the person's own profile may set it, never a program (13o Task 6 review); Restart
+    // Session types the Initial Text, so the same holds for it (13p final review).
+    if key == "Answerback String" || key == "Initial Text" {
         return None;
     }
     let s = schema::find(key)?;
@@ -530,6 +531,12 @@ mod tests {
         assert_eq!(UPLOAD_CANCEL, b"\x03");
         assert_eq!(UPLOAD_OK, b"ok\n");
     }
+    /// 13p final review: Restart Session types the Initial Text, so a program can never set it.
+    #[test]
+    fn a_program_cannot_set_the_initial_text() {
+        assert_eq!(valid("Initial Text", &serde_json::json!("rm -rf ~\r")), None);
+    }
+
     /// 13o Task 6 fix: a program can never set the Answerback String.
     #[test]
     fn a_program_cannot_set_the_answerback() {

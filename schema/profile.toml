@@ -365,7 +365,7 @@ section = ""
 label = "Load shell integration automatically"
 type = "bool"
 default = false
-help = "Automatically injects the shell integration script for supported shells (bash, fish, xonsh, zsh) at session start."
+help = "Automatically injects the shell integration script at session start: for PowerShell here, and for the shells of an SSH integration session (zsh, fish and xonsh) on the remote host."
 light_dark = false
 macos_only = false
 

@@ -95,18 +95,15 @@ impl App {
     fn panes_on_screen(&self) -> std::collections::HashSet<PaneId> {
         let mut out = std::collections::HashSet::new();
         let (front, back) = self.tab_panes_here();
-        out.extend(front);
-        if self.tabs.len() > 1 {
-            out.extend(back);
-        }
+        out.extend(seen_tabs(front, back, self.tabs.len(), self.tab_bar_rect().is_some()));
         for (_, s) in self.windows.parked() {
             let up = s.gpu.as_ref().is_some_and(|g| super::frames_ui::window_on_screen(g.window.is_visible(), g.window.is_minimized(), s.hotkey.as_ref().map(|h| h.shown)));
             if up {
                 let (front, back) = super::frames_ui::split_tabs(s.tabs.iter().map(|t| t.layout.panes()).collect(), s.active);
-                out.extend(front);
-                if s.tabs.len() > 1 {
-                    out.extend(back);
-                }
+                let full = s.gpu.as_ref().is_some_and(|g| g.window.fullscreen().is_some());
+                let always = crate::tab_position::always_visible(self.globals.bool("HideTab"));
+                let bar = crate::tab_position::bar_visible(full, self.globals.bool("ShowFullScreenTabBar"), false, always, s.tabs.len());
+                out.extend(seen_tabs(front, back, s.tabs.len(), bar));
             }
         }
         out
@@ -118,9 +115,27 @@ impl App {
     }
 }
 
+/// The panes of one window whose bar can be seen: the front tab's, and the other tabs' only
+/// when the tab bar shows (its cell draws their bar). A hidden bar (full screen without
+/// Show tab bar in fullscreen) shows nothing of a background tab.
+fn seen_tabs(front: Vec<PaneId>, back: Vec<PaneId>, tabs: usize, bar_shown: bool) -> Vec<PaneId> {
+    let mut out = front;
+    if tabs > 1 && bar_shown {
+        out.extend(back);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_background_tabs_bar_is_seen_only_through_a_shown_tab_bar() {
+        assert_eq!(seen_tabs(vec![1], vec![2], 2, true), vec![1, 2]);
+        assert_eq!(seen_tabs(vec![1], vec![2], 2, false), vec![1], "tab bar hidden: no frames for a bar nobody sees");
+        assert_eq!(seen_tabs(vec![1], vec![], 1, false), vec![1]);
+    }
 
     /// A bar nobody can see asks for no frames (review of Task 7, item 1).
     #[test]

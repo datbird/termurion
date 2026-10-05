@@ -894,8 +894,6 @@ impl Screen {
         self.fire_event(crate::trigger_events::EventKind::PromptDetected, &Default::default(), &[]);
     }
 
-    /// Acts on one shell-integration OSC at the current cursor position. A full-screen app
-    /// on the alternate screen makes no marks; its cursor is not on the main screen.
     /// Sets the progress bar's state; the request and the event follow a change of whether it
     /// shows (`PTYSession.m:24278-24279`).
     pub(crate) fn set_progress(&mut self, next: crate::progress::Progress) {
@@ -908,6 +906,8 @@ impl Screen {
         }
     }
 
+    /// Acts on one shell-integration OSC at the current cursor position. A full-screen app
+    /// on the alternate screen makes no marks; its cursor is not on the main screen.
     pub(crate) fn apply(&mut self, osc: Osc) {
         // A print job drops sequences; a prompt mark or a command end ends it unprinted (B8).
         if self.print_capture.is_some() {

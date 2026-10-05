@@ -47,7 +47,7 @@ pub fn network_folder(v: &str) -> bool {
 }
 
 /// Whether `v` stored under `key` is a network or device path, or for a start URL a `file:` URL
-/// whose host is another machine (`file://host/share`; `file:///C:/x` and `localhost` are local).
+/// whose host is another machine (`file://host/share`, or `file:////host/share`; `file:///C:/x`, `file:///share/x` and `localhost` are local).
 pub fn network_value(key: &str, v: &str) -> bool {
     if network_folder(v) {
         return true;
@@ -60,7 +60,9 @@ pub fn network_value(key: &str, v: &str) -> bool {
         };
         let host: String = rest.chars().skip_while(|c| *c == '/' || *c == '\\').take_while(|c| *c != '/' && *c != '\\').collect();
         let slashes = rest.chars().take_while(|c| *c == '/' || *c == '\\').count();
-        slashes >= 2 && !host.is_empty() && !host.eq_ignore_ascii_case("localhost") && !(host.len() == 2 && host.ends_with(':'))
+        // Exactly two slashes lead to a host; three are a local path (`file:///share/x`), four
+        // or more a UNC path (`file:////host/share`).
+        slashes >= 4 || (slashes == 2 && !host.is_empty() && !host.eq_ignore_ascii_case("localhost") && !(host.len() == 2 && host.ends_with(':')))
     }
 }
 
@@ -431,6 +433,8 @@ mod tests {
             assert!(scrub_value(key, &mut v), "{key} {bad}");
             assert_eq!(v.as_str(), Some(""));
         }
+        assert!(network_value("Initial URL", "file:////evil/share/x.html"), "four slashes is a UNC path");
+        assert!(!network_value("Initial URL", "file:///share/x.html"), "three slashes is a local path, not a host");
         for (key, ok) in [("Log Filename Format", "\\(creationTimeString).log"), ("Initial URL", "https://example.com"), ("Initial URL", "file:///C:/x.html"), ("Initial URL", "file://localhost/C:/x.html"), ("Initial URL", "iterm2-about:welcome")] {
             let mut v = toml::Value::String(ok.into());
             assert!(!scrub_value(key, &mut v), "{key} {ok}");
