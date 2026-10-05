@@ -369,7 +369,8 @@ pub fn pane_with(
     let term = screen.term();
     let (cols, lines) = (term.columns(), term.screen_lines());
     let content = term.renderable_content();
-    let cursor = cursor_cell(screen).filter(|_| look.visible).map(|(row, col, _)| (row, col));
+    // Cursor Hidden When Unfocused (`iTermTextDrawingHelper.m:4254-4256`).
+    let cursor = cursor_cell(screen).filter(|_| look.visible && !(look.hide_unfocused && !focused)).map(|(row, col, _)| (row, col));
     let wide_cursor = cursor_cell(screen).is_some_and(|(_, _, w)| w);
     let key_cursor = highlights.is_some_and(|h| h.key_cursor);
     let bg_brightness = crate::tab_theme::perceived(palette.bg);
@@ -4144,6 +4145,26 @@ mod tests {
         pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true));
         assert!(f.overlay.iter().any(|q| q.rect == RECT));
         assert!(!f.quads.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0)));
+    }
+
+    #[test]
+    fn hidden_when_unfocused_follows_iterm2() {
+        let s = screen(b"ab");
+        let cursor = rgba(s.palette.cursor, 1.0);
+        let hide = CursorLook { hide_unfocused: true, ..CursorLook::shown(true) };
+        // Unfocused with the key on: no box and no hollow edges.
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &hide);
+        assert!(!f.quads.iter().any(|q| q.color == cursor));
+        assert!(!f.overlay.iter().any(|q| q.color == cursor));
+        // Focused: the block quad is there.
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &hide);
+        assert!(f.quads.iter().any(|q| q.color == cursor && q.rect.x == 20.0));
+        // Key off and unfocused: the four hollow edges, as before.
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true));
+        assert_eq!(f.overlay.iter().filter(|q| q.color == cursor).count(), 4);
     }
 
     fn see_through(bg_alpha: f32, opaque_colors: bool) -> Highlights<'static> {

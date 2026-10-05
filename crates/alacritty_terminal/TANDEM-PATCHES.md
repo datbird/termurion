@@ -74,4 +74,9 @@ test data) is left out. Changes:
     `shrink_columns` and `splice`. Clearing the history does not count. `Grid::dropped()` plus the
     history size numbers lines as iTerm2's API does, which a reflow cannot move below zero.
 
+17. `term/mod.rs`: `Term::set_cursor_blink_change(bool)` (default true). When it is off, programs
+    change the cursor's shape but not its blink: DECSCUSR keeps the current blink and
+    DECSET/DECRST 12 are ignored; DECSCUSR 0 and RIS still restore the configured style (iTerm2's
+    Allow Change Cursor Blink). (Number 16 is 13j's, on another branch.)
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

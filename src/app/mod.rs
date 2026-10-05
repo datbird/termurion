@@ -53,7 +53,6 @@ const TIP_POINTER_PT: f32 = 20.0;
 /// Lines scrolled per wheel notch.
 const WHEEL_LINES: f32 = 3.0;
 /// Half a cursor blink cycle.
-const BLINK: std::time::Duration = std::time::Duration::from_millis(530);
 /// How long after the last settings edit the file is written.
 const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -881,9 +880,11 @@ pub struct App {
     tray_on: bool,
     /// The font settings the renderer last loaded.
     font_sig: String,
-    /// Cursor blink phase, and when it last flipped.
-    blink_on: bool,
-    last_blink: Instant,
+    /// The blink phase (iTerm2's `blinkingItemsVisible`), shared by the cursor and blinking
+    /// text; app-wide, so not in `swap_live`.
+    blink: crate::cursor_anim::Blink,
+    /// The next time the cursor clock needs the loop awake, set by `tick_cursor`.
+    cursor_due: Option<Instant>,
     /// The Python API's server while it runs (app-wide, as every API field is: none goes in
     /// `swap_live`). Not `api`, which is the ConPTY API.
     api_server: Option<crate::api_server::Server>,
@@ -1799,8 +1800,8 @@ pub fn run() {
         tray_on: false,
         font_sig: String::new(),
         profiles_win: None,
-        blink_on: true,
-        last_blink: Instant::now(),
+        blink: crate::cursor_anim::Blink::new(Instant::now()),
+        cursor_due: None,
         api_server: None,
         api_jar: Default::default(),
         ssh_secrets: Default::default(),
@@ -4167,9 +4168,6 @@ impl App {
         if self.bar_key(ev, event_loop) || self.upload_key(ev) {
             return;
         }
-        // Typing shows the cursor at once and restarts the blink.
-        self.blink_on = true;
-        self.last_blink = Instant::now();
         self.banners.clear("action");
         if self.picker_key(ev) || self.inline_key(ev) || self.clip_key(ev) || self.shortcut_key(ev) || self.find_key(ev) || self.copy_mode_key(ev) || self.completion_key(ev) {
             return;
@@ -4821,6 +4819,7 @@ impl App {
         let mut indicator_hits = Vec::new();
         let mut inline_hits = Vec::new();
         self.prepare_portholes();
+        self.prepare_cursors();
         self.prepare_badges();
         self.prepare_inline_chats();
         let mut porthole_hits = Vec::new();
@@ -4858,7 +4857,7 @@ impl App {
                     // An Auto Composer hides the terminal cursor and the rows it covers.
                     let cover = self.auto_composer_cover(id, rect);
                     let overlay_from = frame.overlay.len();
-                    scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, self.blink_on && cover.is_none()), Some(&hl));
+                    scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), Some(&hl));
                     if let Some(c) = cover {
                         composer_ui::skip_covered(&mut frame.overlay, overlay_from, c);
                     }
@@ -5392,31 +5391,12 @@ impl ApplicationHandler<UserEvent> for App {
         let tip_due = self.tick_tab_tip();
         let flash_due = self.tick_tab_flash();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due].into_iter().flatten().min();
-        let blinks = self
-            .tabs
-            .get(self.active)
-            .and_then(|t| self.panes.get(&t.focused))
-            .and_then(|p| self.store.get(&p.profile))
-            .is_some_and(|p| p.bool("Blinking Cursor"));
-        if !blinks || !self.focused {
-            if !self.blink_on {
-                self.blink_on = true;
-                self.redraw();
-            }
-            match wake {
-                Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
-                None => event_loop.set_control_flow(ControlFlow::Wait),
-            }
-            return;
+        let cursor_due = self.tick_cursor();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due].into_iter().flatten().min();
+        match wake {
+            Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
         }
-        if Instant::now() >= self.last_blink + BLINK {
-            self.blink_on = !self.blink_on;
-            self.last_blink = Instant::now();
-            self.redraw();
-        }
-        let next = wake.map_or(self.last_blink + BLINK, |t| t.min(self.last_blink + BLINK));
-        event_loop.set_control_flow(ControlFlow::WaitUntil(next));
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {

@@ -3,3 +3,7 @@ R3 02:661: Ruling: the bar cursor was 2 pixels wide; iTerm2's is VerticalBarCurs
 R3 02:802: Ruling: the underline cursor was 2 pixels at the cell bottom; iTerm2's is UnderlineCursorHeight (2) points on the cursor box's bottom, raised by UnderlineCursorOffset points. Fixed (R3) - cost if wrong: an underline that sits above the line bottom at vertical spacing above 100%
 Pre-flight B2: Ruling: FullHeightCursor YES is height max(line, font cell) with its top on the line's top (iTermCursorRenderer.m:337), not its bottom on the line's bottom - cost if wrong: a cursor that overflows the wrong side at vertical spacing below 100% with the key on
 Pre-flight B4: Ruling: CellLook.cursor and 13g's alpha_of cursor arm are deleted; the cursor cell keeps its own background run at the pane's alpha and the cursor box is a quad over it at alpha 1; cursor_stays_opaque reads the topmost quad - cost if wrong: an opaque patch around the cursor in a see-through pane
+
+R3 (02:634, Task 3 Step 3a): the blink half period is TimeBetweenBlinks, 0.5 s by default; Tandem used 530 ms. Fixed.
+R3 (Task 3 Step 3b): Tandem showed the cursor on each key press; iTerm2 shows it for half a second after the cursor moves. Fixed (R3). The moved test compares the screen-relative grid cell (B3).
+Patch 17 (Task 3): Term::set_cursor_blink_change; programs change blink only with Allow Change Cursor Blink. DECRQSS ` q` and DECRQM ?12 answer from the permitted state.
