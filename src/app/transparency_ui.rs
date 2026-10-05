@@ -361,6 +361,8 @@ impl App {
         // The display change subclass (the old handle's goes with its window).
         if let Some(h) = menu::hwnd_of(&window) {
             crate::display_watch::watch(h);
+            #[cfg(windows)]
+            crate::firstmouse_win::watch(h);
         }
         self.refresh_caption_frame();
         self.apply_corners();

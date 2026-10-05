@@ -55,6 +55,19 @@ impl App {
         crate::blocks::button_hit(&p.screen.buttons_on_line(line), col as usize).is_some()
     }
 
+    /// Takes the first-mouse flag of the window in front of the event: true once after a
+    /// client-area click that activated it (`firstmouse_win`).
+    pub(super) fn first_mouse(&mut self) -> bool {
+        #[cfg(windows)]
+        {
+            self.hwnd().is_some_and(crate::firstmouse_win::take)
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
+
     /// The point is on one of Tandem's overlays inside a pane: no program ever sees a click,
     /// drag or hover there, whatever the button (B5).
     pub(super) fn tandem_ui_at(&self, x: f32, y: f32) -> bool {
@@ -79,7 +92,7 @@ impl App {
             clicks: profile.bool("Mouse Reporting allow clicks and drags"),
             wheel: profile.bool("Mouse Reporting allow mouse wheel"),
             horizontal: self.globals.bool("ReportHorizontalScrollEvents"),
-            first_mouse_blocks: false,
+            first_mouse_blocks: self.first_mouse_down && !self.globals.bool("ReportOnFirstMouse"),
             ui_over: matches!(kind, mouse::Kind::Click | mouse::Kind::Hover) && self.tandem_ui_at(x, y),
         };
         mouse::should_report(self.modes(pane), mods, kind, gates)
@@ -329,5 +342,48 @@ mod tests {
             assert!(b.contains(needle), "{needle} is not read");
         }
         assert!(body(UI, "tandem_ui_at").contains("inline_button_at"), "inline buttons too");
+    }
+
+    /// R3, B6: the flag is taken at the very top of `mouse_press`, `first_click` runs only after
+    /// `pane_at` (after every UI hit test), and the report gate reads `first_mouse_down`.
+    #[test]
+    fn first_mouse_is_applied_after_the_ui_hit_tests() {
+        let b = body(MOD, "mouse_press");
+        let take = b.find("self.first_mouse()").expect("the flag is taken in mouse_press");
+        let clear = b.find("self.first_mouse_down = false").expect("the next press clears the old flag");
+        let find = b.find("self.find_press(").expect("find_press");
+        let pane_at = b.find("self.pane_at(x, y)").expect("pane_at");
+        let apply = b.find("first_click(").expect("first_click");
+        let cell = b.find("self.cell_at(").expect("cell_at");
+        let title = b.find("self.title_press(").expect("title_press");
+        assert!(take < b.find("self.composer_press(").unwrap(), "taken before any hit test");
+        assert!(clear < b.find("self.composer_press(").unwrap());
+        assert!(title < apply && find < apply && pane_at < apply, "a title, find or divider press is never first mouse");
+        assert!(apply < cell, "before the focus and cell block");
+        assert!(b.contains("FirstClick::ActivateOnly") && b.contains("FirstClick::FocusOnly"));
+        assert!(b.contains("self.first_mouse_down = counts"), "Normal stores the returned flag");
+    }
+
+    #[test]
+    fn report_gate_reads_the_first_mouse_flag() {
+        let b = body(UI, "report_gate_with");
+        assert!(b.contains("first_mouse_blocks: self.first_mouse_down && !self.globals.bool(\"ReportOnFirstMouse\")"));
+    }
+
+    #[test]
+    fn first_mouse_down_is_per_window() {
+        let w = include_str!("windows_ui.rs");
+        assert!(w.contains("swap(&mut self.first_mouse_down, &mut s.first_mouse_down)"));
+        assert!(w.matches("first_mouse_down: false").count() >= 2, "WinSlot::new and new_empty");
+        assert!(MOD.contains("first_mouse_down: bool"));
+    }
+
+    #[test]
+    fn every_window_is_watched_for_first_mouse() {
+        let w = include_str!("windows_ui.rs");
+        assert!(body(w, "open_window_with").contains("firstmouse_win::watch"), "windows opened later");
+        assert!(MOD.contains("firstmouse_win::watch"), "the first window, in resumed");
+        assert!(include_str!("transparency_ui.rs").contains("firstmouse_win::watch"), "a recreated window");
+        assert!(body(w, "drop_current_window").contains("firstmouse_win::forget"));
     }
 }

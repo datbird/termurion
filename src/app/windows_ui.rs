@@ -78,6 +78,7 @@ pub(super) struct WinSlot {
     border_applied: Option<u32>,
     theme_applied: Option<bool>,
     menu_hidden: bool,
+    first_mouse_down: bool,
     caption_hover: Option<crate::caption::Button>,
     caption_pressed: Option<crate::caption::Button>,
     caption_label_w: f32,
@@ -178,6 +179,7 @@ impl WinSlot {
             border_applied: None,
             theme_applied: None,
             menu_hidden: false,
+            first_mouse_down: false,
             caption_hover: None,
             caption_pressed: None,
             caption_label_w: 0.0,
@@ -288,6 +290,7 @@ impl App {
         swap(&mut self.border_applied, &mut s.border_applied);
         swap(&mut self.theme_applied, &mut s.theme_applied);
         swap(&mut self.menu_hidden, &mut s.menu_hidden);
+        swap(&mut self.first_mouse_down, &mut s.first_mouse_down);
         swap(&mut self.caption_hover, &mut s.caption_hover);
         swap(&mut self.caption_pressed, &mut s.caption_pressed);
         swap(&mut self.caption_label_w, &mut s.caption_label_w);
@@ -538,6 +541,8 @@ impl App {
         self.guard_theme();
         if let Some(h) = self.hwnd() {
             crate::display_watch::watch(h);
+            #[cfg(windows)]
+            crate::firstmouse_win::watch(h);
         }
         // iTerm2 reads it once per tab bar it makes: a change affects new windows only.
         self.tab_selects_on_down = self.globals.bool("SelectsTabsOnMouseDown");
@@ -680,6 +685,8 @@ impl App {
         self.forget_window(k);
         if let Some(h) = self.hwnd() {
             crate::winkeys::remove_window(h);
+            #[cfg(windows)]
+            crate::firstmouse_win::forget(h);
         }
         let mut live = WinSlot::new_empty();
         self.swap_live(&mut live);
@@ -905,6 +912,7 @@ impl WinSlot {
             border_applied: None,
             theme_applied: None,
             menu_hidden: false,
+            first_mouse_down: false,
             caption_hover: None,
             caption_pressed: None,
             caption_label_w: 0.0,
@@ -1305,6 +1313,8 @@ impl App {
             if let Some(g) = &slot.gpu {
                 if let Ok(RawWindowHandle::Win32(h)) = g.window.window_handle().map(|h| h.as_raw()) {
                     crate::winkeys::remove_window(h.hwnd.get());
+                    #[cfg(windows)]
+                    crate::firstmouse_win::forget(h.hwnd.get());
                 }
             }
             drop(slot);

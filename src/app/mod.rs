@@ -450,6 +450,9 @@ pub struct App {
     theme_applied: Option<bool>,
     /// The current window's menu bar is hidden (full screen, `HideMenuBarInFullscreen`).
     menu_hidden: bool,
+    /// The last press was the click that activated its window, so its release, drags and hover
+    /// are not reported either (`PTYMouseHandler.m:1511`); the next press clears it (13r and 13s read it).
+    pub(super) first_mouse_down: bool,
     /// The caption button under the pointer and the one held down in the current Minimal or
     /// Compact window (`caption_ui`).
     caption_hover: Option<crate::caption::Button>,
@@ -1586,6 +1589,7 @@ pub fn run() {
         border_applied: None,
         theme_applied: None,
         menu_hidden: false,
+        first_mouse_down: false,
         caption_hover: None,
         caption_pressed: None,
         caption_label_w: 0.0,
@@ -4284,6 +4288,11 @@ impl App {
     }
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
+        // The subclass's flag is taken for every press (a click on the tab bar or a status bar
+        // that activated the window must not leave it for the next terminal click), and the
+        // last click's hold ends; the terminal part applies it after every UI hit test (B6).
+        let first = self.first_mouse();
+        self.first_mouse_down = false;
         self.hide_tab_tip();
         // A press starts over on the tab bar too: a bar press whose release never came (focus
         // went mid-press) must not take this press's release; a press on the bar stores itself.
@@ -4374,6 +4383,19 @@ impl App {
         let Some((id, rect)) = self.pane_at(x, y) else { return };
         self.alt_infer_non_scroll(id);
         let b = button_number(button);
+        // The click that activated the window (`mouseDownImpl:`): only now, so a divider, title
+        // bar or status bar press is never swallowed and never counts as first mouse.
+        let (kind, counts) = mouse::first_click(first, self.mods.cmd, self.globals.bool("AlwaysAcceptFirstMouse"), self.globals.bool("FocusFollowsMouse"), self.focused_id() == Some(id));
+        self.first_mouse_down = counts;
+        match kind {
+            mouse::FirstClick::ActivateOnly => return,
+            mouse::FirstClick::FocusOnly => {
+                self.tabs[self.active].focused = id;
+                self.refresh_route();
+                return self.redraw();
+            }
+            mouse::FirstClick::Normal => {}
+        }
         // A left click always focuses its pane; right and middle only when the setting says so.
         if b == 0 || self.globals.bool("FocusOnRightOrMiddleClick") {
             self.tabs[self.active].focused = id;
@@ -5055,6 +5077,8 @@ impl ApplicationHandler<UserEvent> for App {
                 self.guard_theme();
                 if let Some(h) = self.hwnd() {
                     crate::display_watch::watch(h);
+                    #[cfg(windows)]
+                    crate::firstmouse_win::watch(h);
                 }
                 self.refresh_caption_frame();
                 self.apply_corners();

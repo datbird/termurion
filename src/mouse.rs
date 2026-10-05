@@ -104,6 +104,31 @@ pub fn should_report(modes: Modes, mods: Mods, kind: Kind, g: Gates) -> bool {
     }
 }
 
+/// What a press does when it may be the click that activated the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FirstClick {
+    /// A normal click.
+    Normal,
+    /// The click only brought the window forward and does nothing else.
+    ActivateOnly,
+    /// Focus follows mouse: the click only focuses the pane.
+    FocusOnly,
+}
+
+/// `mouseDownImpl:` (`PTYMouseHandler.m:165-203`): the kind of the click, and whether it still
+/// counts as first mouse for reporting. Focus follows mouse comes first (an unfocused pane
+/// without the Win key only takes focus); then an activating click without the Win key does
+/// nothing unless AlwaysAcceptFirstMouse.
+pub fn first_click(first_mouse: bool, cmd: bool, always_accept: bool, ffm: bool, pane_has_focus: bool) -> (FirstClick, bool) {
+    if !pane_has_focus && !cmd && ffm {
+        return (FirstClick::FocusOnly, true);
+    }
+    if first_mouse && !cmd && !always_accept {
+        return (FirstClick::ActivateOnly, true);
+    }
+    (FirstClick::Normal, first_mouse)
+}
+
 /// `xtermMouseReporting` (`PTYSession.m:7020-7028`): allowed, and outside the alternate screen
 /// not restricted to it.
 pub fn reporting_on(ever_allowed: bool, alt_screen: bool, restrict: bool) -> bool {
@@ -331,6 +356,35 @@ mod tests {
         assert!(reporting_on(true, true, true));
         assert!(reporting_on(true, false, false));
         assert!(!reporting_on(false, true, false));
+    }
+
+    /// `PTYMouseHandler.m:165-203`: the kind of the click and whether it still counts as first mouse.
+    #[test]
+    fn first_mouse_follows_iterm2() {
+        use FirstClick::*;
+        // (first, cmd, always_accept, ffm, pane_has_focus)
+        assert_eq!(first_click(true, false, true, false, true), (Normal, true), "accepted, still first mouse");
+        assert_eq!(first_click(true, false, false, false, true), (ActivateOnly, true));
+        assert_eq!(first_click(true, true, false, false, true), (Normal, true), "a Win-click acts");
+        assert_eq!(first_click(false, false, true, false, true), (Normal, false));
+        assert_eq!(first_click(false, false, true, true, false), (FocusOnly, true), "focus follows mouse, pane not focused");
+        assert_eq!(first_click(false, true, true, true, false), (Normal, false), "Win key beats focus follows mouse");
+    }
+
+    /// R3 (`02:612`): the activating click is not reported unless ReportOnFirstMouse; the wheel never is held.
+    #[test]
+    fn activating_click_is_not_reported() {
+        let m = Mods::default();
+        let blocked = Gates { first_mouse_blocks: true, ..ALL };
+        for k in [Kind::Click, Kind::Drag, Kind::Hover] {
+            assert!(!should_report(SGR_ANY, m, k, blocked), "{k:?}");
+        }
+        // ReportOnFirstMouse on: the App passes first_mouse_blocks false.
+        for k in KINDS {
+            assert!(should_report(SGR_ANY, m, k, ALL), "{k:?} with ReportOnFirstMouse");
+        }
+        assert!(should_report(SGR_ANY, m, Kind::Wheel { horizontal: false }, blocked));
+        assert!(should_report(SGR_ANY, m, Kind::Wheel { horizontal: true }, blocked));
     }
 
     /// B5: a program never gets a click, drag or hover meant for a Tandem overlay.

@@ -12,6 +12,8 @@ pub mod mru;
 pub mod desktops;
 #[cfg(windows)]
 pub mod display_watch;
+#[cfg(windows)]
+pub mod firstmouse_win;
 pub mod dvr;
 pub mod replay;
 pub mod replay_panel;
