@@ -64,7 +64,8 @@ fn is_blank(c: char) -> bool {
 }
 
 /// `substringIncludingOffset` (`NSS:1043`): the byte range of the run of set characters
-/// that contains `offset`. A character at `offset` outside the set gives an empty run.
+/// that contains `offset`. A character at `offset` outside the set ends the run after it, so the
+/// run before the offset is returned (as iTerm2 does).
 pub fn around(s: &str, offset: usize, set: &CharSet) -> (usize, usize) {
     let start = s[..offset].char_indices().rev().find(|(_, c)| !set.contains(*c)).map_or(0, |(i, c)| i + c.len_utf8());
     let end = s[offset..].char_indices().find(|(_, c)| !set.contains(*c)).map_or(s.len(), |(i, _)| offset + i);
@@ -206,6 +207,12 @@ pub fn guess(before: &str, after: &str, p: &UrlPrefs) -> Option<(String, Range<u
     let r = range_of_url(run, &p.trailing)?;
     let text = &run[r.clone()];
     let range = s + r.start..s + r.end;
+    // Path-shaped text (a share, a drive path, any mix of separators in the host) is a path for
+    // the file route and the network filter, never a web address (a browser reads `\` as `/`).
+    let host_part = text.split('/').next().unwrap_or(text);
+    if crate::scripts::is_network_path(text) || text.starts_with(['\\', '/']) || host_part.contains('\\') {
+        return None;
+    }
     if p.conservative {
         return (looks_like_url(text, p.require_slash, &p.chars) && conservative_shape(text) && colon_scheme(text).is_some_and(|c| GUESS_SCHEMES.contains(&c.as_str())))
             .then(|| (text.to_string(), range));
@@ -311,6 +318,17 @@ mod tests {
         }
         let odd = UrlPrefs { default_scheme: "ms-msdt".into(), ..UrlPrefs::default() };
         assert_eq!(g("www.exam|ple.com/x", &odd), None);
+    }
+
+    #[test]
+    fn path_shaped_text_never_becomes_a_url() {
+        let d = UrlPrefs::default();
+        for t in ["\\\\evil\\share/|x", "//evil/sh|are/x", "\\/evil/s|/x", "/\\evil/s|/x", "\\\\ev|il\\s", "C:\\a/|b", "\\evil|/x", "ho\\st/|x"] {
+            assert_eq!(g(t, &d), None, "{t}");
+        }
+        let loose = UrlPrefs { require_slash: false, ..UrlPrefs::default() };
+        assert_eq!(g("\\\\evil\\sh|are", &loose), None);
+        assert_eq!(g("www.exa|mple.com/x", &d).as_deref(), Some("https://www.example.com/x"), "real hosts still guess");
     }
 
     #[test]
