@@ -281,8 +281,8 @@ fn prefix_runs(c: &composer::Composer) -> Vec<(Range<usize>, Rgb, bool, Rgb)> {
 /// hover underlines) and into `underlines` from `underline_from` on (SGR underlines and
 /// strikethrough, link dashes) inside the rows `cover` spans: the rows under an Auto Composer
 /// are skipped. A quad reaching past them (the dimming over the whole pane) stays.
-pub(super) fn skip_covered(overlay: &mut Vec<scene::Quad>, from: usize, underlines: &mut Vec<scene::Quad>, underline_from: usize, cover: Rect) {
-    for (quads, from) in [(overlay, from), (underlines, underline_from)] {
+pub(super) fn skip_covered(overlay: &mut Vec<scene::Quad>, from: usize, underlines: &mut Vec<scene::Quad>, underline_from: usize, strikes: &mut Vec<scene::Quad>, strike_from: usize, cover: Rect) {
+    for (quads, from) in [(overlay, from), (underlines, underline_from), (strikes, strike_from)] {
         let mut i = from;
         while i < quads.len() {
             let r = quads[i].rect;
@@ -2595,7 +2595,9 @@ mod tests {
         let q = |y: f32, h: f32| scene::Quad { rect: Rect { x: 0.0, y, w: 10.0, h }, color: [1.0; 4] };
         let mut overlay = vec![q(45.0, 1.0), q(45.0, 1.0), q(0.0, 200.0), q(10.0, 1.0), q(69.0, 1.0)];
         let mut underlines = vec![q(45.0, 1.0), q(45.0, 1.0), q(10.0, 1.0), q(69.0, 1.0)];
-        skip_covered(&mut overlay, 1, &mut underlines, 1, Rect { x: 0.0, y: 40.0, w: 100.0, h: 30.0 });
+        let mut strikes = vec![q(45.0, 1.0), q(10.0, 1.0)];
+        skip_covered(&mut overlay, 1, &mut underlines, 1, &mut strikes, 0, Rect { x: 0.0, y: 40.0, w: 100.0, h: 30.0 });
+        assert_eq!(strikes.iter().map(|o| o.rect.y).collect::<Vec<_>>(), vec![10.0], "strikethrough under the composer goes too");
         let ys: Vec<(f32, f32)> = overlay.iter().map(|o| (o.rect.y, o.rect.h)).collect();
         assert_eq!(ys, vec![(45.0, 1.0), (0.0, 200.0), (10.0, 1.0)]);
         // `underlines_skip_an_auto_composer_cover`: the same rule for the strokes.

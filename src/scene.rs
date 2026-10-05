@@ -58,7 +58,7 @@ pub struct ImageQuad {
     pub repeat: bool,
 }
 
-/// Draw order: `quads`, then `images`, then `rows`, then `underlines`, then `overlay`.
+/// Draw order: `quads`, then `images`, then `rows`, then `underlines` and `strikes`, then `overlay`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Frame {
     pub clear: [f32; 4],
@@ -71,6 +71,11 @@ pub struct Frame {
     /// Underline and strikethrough strokes: drawn after the text, right before `overlay`, so
     /// the dimming and the cursor extras lie over them. Trimmed under popups by `cut_quads`.
     pub underlines: Vec<Quad>,
+    /// Strikethrough strokes: drawn with `underlines`, trimmed and covered like them, but never
+    /// broken around glyph ink (iTerm2's mask leaves strikethrough whole).
+    pub strikes: Vec<Quad>,
+    /// Break `underlines` around the ink of glyphs in their row (`SolidUnderlines` off).
+    pub gap_underlines: bool,
     /// Popup boxes over the terminal: drawn after images, before text.
     pub popups: Vec<Quad>,
 }
@@ -255,15 +260,17 @@ fn emit_run(frame: &mut Frame, rect: Rect, row: usize, cell: (f32, f32), run: &R
     let m = draw.metrics_for(ch);
     let top = rect.y + row as f32 * ch;
     let t = crate::underline::thickness(&m, scale);
-    let mut all = crate::underline::strokes(run.style, top + crate::underline::underline_y(&m, ch, scale), top + ch, t, scale);
-    if run.strike {
-        all.push(crate::underline::snap(crate::underline::Stroke { y: top + crate::underline::strike_y(&m, scale), h: t, on: 0.0, off: 0.0, shift: 0.0 }));
-    }
+    let all = crate::underline::strokes(run.style, top + crate::underline::underline_y(&m, ch, scale), top + ch, t, scale);
     let (x0, x1) = (run.first as f32 * cw, (run.last + 1) as f32 * cw);
     for s in &all {
         for (a, b) in crate::underline::dash_pieces(x0, x1, s) {
             frame.underlines.push(Quad { rect: Rect { x: rect.x + a, y: s.y, w: b - a, h: s.h }, color: rgba(run.color, 1.0) });
         }
+    }
+    // Strikethrough never breaks around ink (iTerm2's mask leaves it whole), so it has its own list.
+    if run.strike {
+        let s = crate::underline::snap(crate::underline::Stroke { y: top + crate::underline::strike_y(&m, scale), h: t, on: 0.0, off: 0.0, shift: 0.0 });
+        frame.strikes.push(Quad { rect: Rect { x: rect.x + x0, y: s.y, w: x1 - x0, h: s.h }, color: rgba(run.color, 1.0) });
     }
 }
 
@@ -2210,10 +2217,12 @@ pub fn cut_out(frame: &mut Frame, r: Rect, line_h: f32) {
     cut_quads(frame, r);
 }
 
-/// The underline strokes already in the frame stop at `r` (a popup drawn over them): each
+/// The underline and strikethrough strokes already in the frame stop at `r` (a popup drawn over them): each
 /// keeps the parts of it outside `r`. `cut_out` calls this, so every popup trims both.
 pub fn cut_quads(frame: &mut Frame, r: Rect) {
-    frame.underlines = frame.underlines.drain(..).flat_map(|q| outside(q.rect, r).into_iter().map(move |rect| Quad { rect, ..q })).collect();
+    for quads in [&mut frame.underlines, &mut frame.strikes] {
+        *quads = quads.drain(..).flat_map(|q| outside(q.rect, r).into_iter().map(move |rect| Quad { rect, ..q })).collect();
+    }
 }
 
 /// Lays `layer` (a flashing tab bar drawn apart) over what the frame has, at opacity
@@ -2233,6 +2242,7 @@ pub fn lay_over(frame: &mut Frame, layer: Frame, area: Rect, alpha: f32, under: 
     frame.popups.extend(layer.quads.into_iter().chain(layer.popups).map(faded));
     frame.overlay.extend(layer.overlay.into_iter().map(faded));
     frame.underlines.extend(layer.underlines.into_iter().map(faded));
+    frame.strikes.extend(layer.strikes.into_iter().map(faded));
     // Pictures keep their full opacity and draw before popups (none in the bar yet).
     frame.images.extend(layer.images);
     frame.rows.extend(layer.rows.into_iter().map(|mut row| {
@@ -5535,7 +5545,8 @@ mod tests {
         let fg = rgba(s.palette.fg, 1.0);
         // "ab": one merged solid line; "cd": a struck line at the baseline less half the x-height; "x": two curly lines.
         assert!(f.underlines.contains(&Quad { rect: Rect { x: 0.0, y: 19.0, w: 20.0, h: 1.0 }, color: fg }), "{:?}", f.underlines);
-        assert!(f.underlines.contains(&Quad { rect: Rect { x: 30.0, y: 15.0, w: 20.0, h: 1.0 }, color: fg }), "{:?}", f.underlines);
+        assert!(f.strikes.contains(&Quad { rect: Rect { x: 30.0, y: 15.0, w: 20.0, h: 1.0 }, color: fg }), "{:?}", f.strikes);
+        assert!(f.underlines.iter().all(|q| q.rect.y != 15.0 || q.rect.x < 30.0 || q.rect.x >= 50.0), "strikethrough is not an underline");
         let curly: Vec<&Quad> = f.underlines.iter().filter(|q| q.rect.x >= 50.0).collect();
         assert!(!curly.is_empty() && curly.iter().all(|q| q.rect.h == 1.0 && q.rect.w <= 3.0), "{curly:?}");
         assert!(curly.iter().any(|q| q.rect.y == 19.0) && curly.iter().any(|q| q.rect.y == 18.0));
@@ -5571,6 +5582,20 @@ mod tests {
         cut_out(&mut f, Rect { x: 40.0, y: 0.0, w: 20.0, h: 40.0 }, 20.0);
         let xs: Vec<(f32, f32)> = f.underlines.iter().map(|q| (q.rect.x, q.rect.w)).collect();
         assert_eq!(xs, vec![(0.0, 40.0), (60.0, 40.0), (200.0, 10.0)]);
+    }
+
+    #[test]
+    fn strikes_are_trimmed_like_underlines() {
+        let q = |x: f32, w: f32| Quad { rect: Rect { x, y: 15.0, w, h: 1.0 }, color: [1.0; 4] };
+        let mut f = Frame::default();
+        f.strikes = vec![q(0.0, 100.0)];
+        cut_out(&mut f, Rect { x: 40.0, y: 0.0, w: 20.0, h: 40.0 }, 20.0);
+        let xs: Vec<(f32, f32)> = f.strikes.iter().map(|q| (q.rect.x, q.rect.w)).collect();
+        assert_eq!(xs, vec![(0.0, 40.0), (60.0, 40.0)]);
+        let mut layer = Frame::default();
+        layer.strikes.push(q(0.0, 10.0));
+        lay_over(&mut f, layer, Rect { x: 0.0, y: 100.0, w: 10.0, h: 10.0 }, 1.0, rgb(0, 0, 0), 16.0);
+        assert_eq!(f.strikes.len(), 3, "the bar's own strike comes");
     }
 
     #[test]

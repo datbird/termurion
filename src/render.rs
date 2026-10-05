@@ -258,6 +258,9 @@ impl ImagePipeline {
     }
 }
 
+/// The most glyph placements kept for gap cutting.
+const INK_CACHE_MAX: usize = 16384;
+
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -265,6 +268,9 @@ pub struct Renderer {
     images: ImagePipeline,
     font_system: FontSystem,
     swash: SwashCache,
+    /// Each glyph's ink placement (left, top, width, height) from the swash image, keyed by the
+    /// glyph; `None` for a glyph with no ink. Cleared past `INK_CACHE_MAX`.
+    ink_cache: std::collections::HashMap<glyphon::cosmic_text::CacheKey, Option<(i32, i32, u32, u32)>>,
     atlas: TextAtlas,
     viewport: Viewport,
     text: TextRenderer,
@@ -320,6 +326,7 @@ impl Renderer {
             images,
             font_system: FontSystem::new(),
             swash: SwashCache::new(),
+            ink_cache: std::collections::HashMap::new(),
             atlas,
             viewport,
             text,
@@ -580,6 +587,45 @@ impl Renderer {
         Ok(out)
     }
 
+    /// `frame.underlines` cut around the ink of the glyphs in their row (`SolidUnderlines` off). Only
+    /// rows that carry a stroke are measured, and each glyph's ink placement is looked up once and
+    /// kept in `ink_cache`, so a steady screen costs a hash lookup per glyph, not a rasterization.
+    fn gapped_underlines(&mut self, frame: &Frame) -> Vec<Quad> {
+        if !frame.gap_underlines || frame.underlines.is_empty() {
+            return frame.underlines.clone();
+        }
+        if self.ink_cache.len() > INK_CACHE_MAX {
+            self.ink_cache.clear();
+        }
+        let ch = self.cell.1;
+        let mut bands = Vec::new();
+        for (slot, row) in self.buffers.iter().zip(&frame.rows) {
+            let (top, bottom) = (row.y, row.y + ch * row.scale);
+            let (left, right) = (row.clip.x, row.clip.x + row.clip.w);
+            let holds = |q: &Quad| q.rect.y >= top - 0.5 && q.rect.y + q.rect.h <= bottom + 0.5 && q.rect.x < right && q.rect.x + q.rect.w > left;
+            if !frame.underlines.iter().any(holds) {
+                continue;
+            }
+            let mut inks = Vec::new();
+            for run in slot.0.layout_runs() {
+                let line_y = run.line_y.round() as i32;
+                for g in run.glyphs.iter() {
+                    let p = g.physical((row.x, row.y), 1.0);
+                    let swash = &mut self.swash;
+                    let fonts = &mut self.font_system;
+                    let place = *self.ink_cache.entry(p.cache_key).or_insert_with(|| {
+                        swash.get_image_uncached(fonts, p.cache_key).filter(|i| i.placement.width > 0 && i.placement.height > 0).map(|i| (i.placement.left, i.placement.top, i.placement.width, i.placement.height))
+                    });
+                    if let Some((l, t, w, h)) = place {
+                        inks.push(((p.x + l) as f32, (p.y + line_y - t) as f32, w as f32, h as f32));
+                    }
+                }
+            }
+            bands.push(crate::underline::Band { top, bottom, left, right, inks });
+        }
+        crate::underline::cut_quads_around(&frame.underlines, &bands, 1.0)
+    }
+
     pub fn draw(&mut self, frame: &Frame, view: &wgpu::TextureView, width: u32, height: u32) -> Result<(), String> {
         let (cw, ch) = self.cell;
         let metrics = Metrics::new(self.font_px, ch);
@@ -650,8 +696,10 @@ impl Renderer {
 
         self.queue.write_buffer(&self.quads.uniform, 0, bytemuck::cast_slice(&[width as f32, height as f32, 0.0, 0.0]));
         let under = QuadPipeline::vertices(&frame.quads);
-        // Underline strokes lie under the overlay (the dimming, the cursor extras).
-        let over = QuadPipeline::vertices(&frame.underlines.iter().chain(&frame.overlay).copied().collect::<Vec<_>>());
+        // Underline strokes lie under the overlay (the dimming, the cursor extras); with gaps on they
+        // break around the ink of the glyphs in their row, strikethrough stays whole.
+        let underlines = self.gapped_underlines(frame);
+        let over = QuadPipeline::vertices(&underlines.iter().chain(&frame.strikes).chain(&frame.overlay).copied().collect::<Vec<_>>());
         let pops = QuadPipeline::vertices(&frame.popups);
         let make = |v: &[f32]| {
             self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -916,6 +964,8 @@ mod tests {
             }],
             overlay: vec![],
             underlines: vec![],
+            strikes: vec![],
+            gap_underlines: false,
             popups: vec![],
             backgrounds: vec![],
         };
@@ -968,6 +1018,8 @@ mod tests {
             }],
             overlay: vec![],
             underlines: vec![],
+            strikes: vec![],
+            gap_underlines: false,
             popups: vec![],
             backgrounds: vec![],
         };
@@ -977,6 +1029,48 @@ mod tests {
         assert_eq!(at(4, 4), &[255, 0, 0]);
         let white = (32..64).flat_map(|x| (0..32).map(move |y| (x, y))).any(|(x, y)| at(x, y)[0] > 200 && at(x, y)[2] > 200);
         assert!(white, "no text pixels drawn");
+    }
+
+    #[test]
+    fn underlines_break_around_glyph_ink() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 24.0);
+        let (cw, ch) = r.cell;
+        // Rows copy out in 256-byte multiples: 64 pixels.
+        let (w, h) = (((cw * 3.0).ceil() as u32 + 2).next_multiple_of(64), ch.ceil() as u32 + 2);
+        let tex = target(&device, w, h);
+        let view = tex.create_view(&Default::default());
+        let y = (ch / 2.0).floor();
+        let red = rgba(rgb(255, 0, 0), 1.0);
+        let frame = |gap: bool| Frame {
+            clear: rgba(rgb(0, 0, 0), 1.0),
+            rows: vec![TextRow {
+                x: 0.0,
+                y: 0.0,
+                spans: vec![Span { text: " \u{2588} ".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false }],
+                clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
+                scale: 1.0,
+            }],
+            underlines: vec![Quad { rect: Rect { x: 0.0, y, w: cw * 3.0, h: 1.0 }, color: red }],
+            strikes: vec![Quad { rect: Rect { x: 0.0, y: y + 2.0, w: cw * 3.0, h: 1.0 }, color: red }],
+            gap_underlines: gap,
+            ..Default::default()
+        };
+        let look = |r: &mut Renderer, f: &Frame| {
+            r.draw(f, &view, w, h).unwrap();
+            let px = read(&device, &queue, &tex, w, h);
+            let at = move |x: f32, y: f32| px[((y as u32 * w + x as u32) * 4) as usize..((y as u32 * w + x as u32) * 4 + 3) as usize].to_vec();
+            (at(cw * 0.5, y), at(cw * 1.5, y), at(cw * 2.5, y), at(cw * 1.5, y + 2.0))
+        };
+        // Gaps on: the block's columns are text, the cells either side carry the line, and the
+        // strikethrough crosses the block whole.
+        let (left, mid, right, strike) = look(&mut r, &frame(true));
+        assert_eq!((left, right), (vec![255, 0, 0], vec![255, 0, 0]));
+        assert_eq!(mid, vec![255, 255, 255], "the underline breaks around the ink");
+        assert_eq!(strike, vec![255, 0, 0], "strikethrough never breaks");
+        // SolidUnderlines: whole.
+        let (_, mid, _, _) = look(&mut r, &frame(false));
+        assert_eq!(mid, vec![255, 0, 0]);
     }
 
     fn target(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture {

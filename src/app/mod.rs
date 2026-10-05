@@ -4826,7 +4826,7 @@ impl App {
         let metrics = self.gpu.as_mut().map(|g| g.renderer.underline_metrics()).unwrap_or(scene::DrawPrefs::default().metrics);
         let draw = scene::DrawPrefs { underline_hyperlinks: self.globals.bool("UnderlineHyperlinks"), solid_underlines: self.globals.bool("SolidUnderlines"), metrics, scale: self.scale() };
         let palette_bg = self.panes.values().next().map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
-        let mut frame = Frame { clear: rgba(palette_bg, 1.0), ..Default::default() };
+        let mut frame = Frame { clear: rgba(palette_bg, 1.0), gap_underlines: !draw.solid_underlines, ..Default::default() };
         // Only a window made for alpha draws see-through; its panes' alphas come from their profiles.
         let alphas = self.tabs.get(self.active).map(|t| self.pane_alphas(t)).unwrap_or_default();
         let see_through = self.win_alpha_surface == crate::transparency::SurfaceKind::Alpha && !self.transparency_unavailable && crate::transparency::needs_alpha(&alphas.iter().map(|(_, a)| *a).collect::<Vec<_>>());
@@ -4940,10 +4940,10 @@ impl App {
                     }
                     // An Auto Composer hides the terminal cursor and the rows it covers.
                     let cover = self.auto_composer_cover(id, rect);
-                    let (overlay_from, underline_from) = (frame.overlay.len(), frame.underlines.len());
+                    let (overlay_from, underline_from, strike_from) = (frame.overlay.len(), frame.underlines.len(), frame.strikes.len());
                     scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), &draw, Some(&hl));
                     if let Some(c) = cover {
-                        composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, c);
+                        composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, c);
                     }
                     // The gray quad over the whole pane (margins included); Dim Only Text dimmed the cells itself.
                     if dim.amount > 0.0 && !dim.only_text {

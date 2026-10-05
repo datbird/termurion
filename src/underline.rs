@@ -167,11 +167,101 @@ pub fn dash_pieces(x0: f32, x1: f32, s: &Stroke) -> Vec<(f32, f32)> {
     out
 }
 
+/// A text row's band for gap cutting: where its underline strokes sit (`top`..`bottom`,
+/// `left`..`right`) and the ink boxes (x, y, w, h) of its shaped glyphs.
+pub struct Band {
+    pub top: f32,
+    pub bottom: f32,
+    pub left: f32,
+    pub right: f32,
+    pub inks: Vec<(f32, f32, f32, f32)>,
+}
+
+/// `stroke` (x, y, w, h) with the spans removed where an ink box crossing its height reaches,
+/// `pad` wider each side (iTerm2's composite mask leaves one pixel around the ink).
+pub fn cut_gaps(stroke: (f32, f32, f32, f32), inks: &[(f32, f32, f32, f32)], pad: f32) -> Vec<(f32, f32, f32, f32)> {
+    let (x, y, w, h) = stroke;
+    let end = x + w;
+    // The spans to remove, clipped to the stroke, for the inks whose height crosses its own.
+    let mut cuts: Vec<(f32, f32)> = inks
+        .iter()
+        .filter(|&&(_, iy, iw, ih)| iw > 0.0 && iy < y + h && iy + ih > y)
+        .map(|&(ix, _, iw, _)| ((ix - pad).max(x), (ix + iw + pad).min(end)))
+        .filter(|&(a, b)| b > a)
+        .collect();
+    cuts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out = Vec::new();
+    let mut at = x;
+    for (a, b) in cuts {
+        if a > at {
+            out.push((at, y, a - at, h));
+        }
+        at = at.max(b);
+    }
+    if end > at {
+        out.push((at, y, end - at, h));
+    }
+    out
+}
+
+/// Cuts each quad around the inks of the band that holds it (the band whose rows and columns
+/// contain the quad); a quad in no band stays whole.
+pub fn cut_quads_around(quads: &[crate::scene::Quad], bands: &[Band], pad: f32) -> Vec<crate::scene::Quad> {
+    let mut out = Vec::with_capacity(quads.len());
+    for q in quads {
+        let r = q.rect;
+        let band = bands.iter().find(|b| r.y >= b.top - 0.5 && r.y + r.h <= b.bottom + 0.5 && r.x < b.right && r.x + r.w > b.left);
+        match band {
+            Some(b) if !b.inks.is_empty() => {
+                out.extend(cut_gaps((r.x, r.y, r.w, r.h), &b.inks, pad).into_iter().map(|(x, y, w, h)| crate::scene::Quad { rect: crate::layout::Rect { x, y, w, h }, ..*q }));
+            }
+            _ => out.push(*q),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::palette::rgb;
     use alacritty_terminal::term::cell::Flags;
+
+    #[test]
+    fn gaps_follow_iterm2() {
+        let stroke = (0.0, 16.0, 20.0, 1.0);
+        // An ink reaching y 18 crosses the stroke: it loses 1 pixel either side of the ink.
+        assert_eq!(cut_gaps(stroke, &[(5.0, 4.0, 4.0, 14.0)], 1.0), vec![(0.0, 16.0, 4.0, 1.0), (10.0, 16.0, 10.0, 1.0)]);
+        // An ink ending at y 12 does not.
+        assert_eq!(cut_gaps(stroke, &[(5.0, 2.0, 4.0, 10.0)], 1.0), vec![stroke]);
+        // Two inks, two gaps; the pad is in device pixels.
+        assert_eq!(
+            cut_gaps(stroke, &[(5.0, 4.0, 2.0, 14.0), (12.0, 10.0, 2.0, 8.0)], 1.0),
+            vec![(0.0, 16.0, 4.0, 1.0), (8.0, 16.0, 3.0, 1.0), (15.0, 16.0, 5.0, 1.0)]
+        );
+        assert_eq!(cut_gaps(stroke, &[(5.0, 4.0, 4.0, 14.0)], 2.0), vec![(0.0, 16.0, 3.0, 1.0), (11.0, 16.0, 9.0, 1.0)]);
+        // Inks whose gaps touch or overlap merge; one reaching past an end leaves one piece.
+        assert_eq!(cut_gaps(stroke, &[(2.0, 0.0, 2.0, 20.0), (5.0, 0.0, 2.0, 20.0)], 1.0), vec![(0.0, 16.0, 1.0, 1.0), (8.0, 16.0, 12.0, 1.0)]);
+        assert_eq!(cut_gaps(stroke, &[(-5.0, 0.0, 30.0, 20.0)], 1.0), vec![]);
+        // An ink touching the stroke's top edge from above, or starting at its bottom edge, does not cross.
+        assert_eq!(cut_gaps(stroke, &[(5.0, 0.0, 4.0, 16.0)], 1.0), vec![stroke]);
+        assert_eq!(cut_gaps(stroke, &[(5.0, 17.0, 4.0, 3.0)], 1.0), vec![stroke]);
+    }
+
+    #[test]
+    fn bands_cut_only_their_own_rows() {
+        use crate::scene::Quad;
+        let q = |x: f32, y: f32, w: f32| Quad { rect: crate::layout::Rect { x, y, w, h: 1.0 }, color: [1.0; 4] };
+        let bands = vec![
+            Band { top: 0.0, bottom: 20.0, left: 0.0, right: 100.0, inks: vec![(10.0, 4.0, 4.0, 14.0)] },
+            Band { top: 20.0, bottom: 40.0, left: 0.0, right: 100.0, inks: vec![] },
+        ];
+        // Row 0's underline breaks at the ink, row 1's is whole, and a quad in no band stays.
+        let out = cut_quads_around(&[q(0.0, 17.0, 30.0), q(0.0, 37.0, 30.0), q(0.0, 90.0, 30.0)], &bands, 1.0);
+        let got: Vec<(f32, f32, f32)> = out.iter().map(|q| (q.rect.x, q.rect.y, q.rect.w)).collect();
+        assert_eq!(got, vec![(0.0, 17.0, 9.0), (15.0, 17.0, 15.0), (0.0, 37.0, 30.0), (0.0, 90.0, 30.0)]);
+        assert!(out.iter().all(|q| q.color == [1.0; 4] && q.rect.h == 1.0));
+    }
 
     #[test]
     fn styles_follow_iterm2() {
