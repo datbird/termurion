@@ -18,8 +18,20 @@ pub const SLOW_GAP: Duration = Duration::from_nanos(1_000_000_000 / 30);
 pub const BACKGROUND_GAP: Duration = Duration::from_secs(1);
 /// `adaptiveFrameRateThroughputThreshold` (10000 bytes a second).
 pub const THROUGHPUT_LIMIT: i64 = 10_000;
-/// `isIdle` (`PS:6584-6587`): no output for more than `idleTimeSeconds` (2) plus one.
-pub const IDLE_AFTER: Duration = Duration::from_secs(3);
+/// `isIdle` (`PS:6584-6587`): a session is idle after no output for more than its
+/// `idleTimeSeconds` plus one second.
+pub fn idle_after(idle: Duration) -> Duration {
+    idle + Duration::from_secs(1)
+}
+
+/// `idleTimeSeconds` (`AS:488`, default 2), read once when a session starts (`PS:849`); a
+/// missing, negative or non-finite value is the default.
+pub fn idle_time(seconds: Option<f64>) -> Duration {
+    match seconds {
+        Some(s) if s.is_finite() && s >= 0.0 => Duration::try_from_secs_f64(s).unwrap_or(crate::activity::DEFAULT_IDLE),
+        _ => crate::activity::DEFAULT_IDLE,
+    }
+}
 
 /// `frame_gap` with iTerm2's defaults, on the visible, normal-power path: what Instant
 /// Replay's tests were written against.
@@ -371,5 +383,18 @@ mod tests {
         assert_eq!(t.estimate(t0 + Duration::from_millis(200)), 0);
         t.add(t0 + Duration::from_millis(1_000), 30_000);
         assert!(t.estimate(t0 + Duration::from_millis(1_010)) >= THROUGHPUT_LIMIT);
+    }
+
+    /// `idleTimeSeconds` (`AS:488`, `PS:849`): a missing, negative or non-finite value is the
+    /// default 2 s; a pane is idle after that plus one second (`PS:6586`).
+    #[test]
+    fn idle_time_reads_the_setting() {
+        assert_eq!(idle_time(Some(0.5)), Duration::from_millis(500));
+        assert_eq!(idle_time(Some(10.0)), Duration::from_secs(10));
+        for bad in [None, Some(f64::NAN), Some(-1.0), Some(f64::INFINITY)] {
+            assert_eq!(idle_time(bad), Duration::from_secs(2), "{bad:?}");
+        }
+        assert_eq!(idle_after(Duration::from_secs(2)), Duration::from_secs(3));
+        assert_eq!(idle_after(Duration::from_millis(500)), Duration::from_millis(1500));
     }
 }

@@ -56,7 +56,7 @@ impl App {
             let last_output = self.activity.get(id).and_then(|a| a.last_output());
             let Some(p) = self.panes.get_mut(id) else { continue };
             let output = with_output && changed.contains(id);
-            let idle = !output && !p.got_output && last_output.is_none_or(|t| now.saturating_duration_since(t) > cadence::IDLE_AFTER);
+            let idle = !output && !p.got_output && last_output.is_none_or(|t| now.saturating_duration_since(t) > cadence::idle_after(p.idle_time));
             // A tick with no new output does not run the estimator again (it mutates).
             let throughput = if with_output { p.throughput.estimate(now) } else { 0 };
             reading.typing |= output && cadence::typing_now(throughput, last_key, now);

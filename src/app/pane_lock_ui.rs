@@ -95,6 +95,17 @@ impl App {
         }
     }
 
+    /// What a session reads once, when it starts (13p, ruling P3): `IdleTimeSeconds` goes to the
+    /// pane and its activity tracker (`PS:849`; a changed setting applies to new sessions only,
+    /// and a restarted session keeps its tracker, so the tracker is told here).
+    pub(super) fn apply_session_start(&mut self, id: PaneId) {
+        let idle = crate::cadence::idle_time(self.globals.number("IdleTimeSeconds"));
+        if let Some(p) = self.panes.get_mut(&id) {
+            p.idle_time = idle;
+        }
+        self.activity.entry(id).or_default().set_idle(idle);
+    }
+
     /// Whether `pane` is locked (a locked pane refuses every move to another tab or window).
     pub(super) fn pane_locked(&self, pane: PaneId) -> bool {
         self.panes.get(&pane).is_some_and(|p| p.locked)

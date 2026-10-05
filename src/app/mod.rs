@@ -3366,6 +3366,7 @@ impl App {
         self.scroll_ticks.insert(id, (self.globals.bool("ShowLocationsInScrollbar"), self.globals.bool("ShowMarksInScrollbar")));
         self.panes.insert(id, pane);
         self.apply_new_pane_defaults(id);
+        self.apply_session_start(id);
     }
 
     /// Instant Replay: every pane, background tabs and tmux panes included, records a frame

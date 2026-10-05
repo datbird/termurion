@@ -4218,3 +4218,76 @@ label = "Size Changes Update Profile"
 type = "bool"
 default = false
 help = "Make Text Bigger and Make Text Smaller also change the font of the session's saved profile, so a new session opens at the new size."
+
+# Milestone 13p: session start (Advanced > Terminal, General and Experimental Features).
+[[setting]]
+key = "DoNotSetCtype"
+tab = "Advanced"
+section = "Terminal"
+label = "Never set the CTYPE environment variable."
+type = "bool"
+default = false
+help = "Never set the CTYPE environment variable."
+
+[[setting]]
+key = "UseColorfgbgFallback"
+tab = "Advanced"
+section = "Terminal"
+label = "Use fallback for COLORFGBG if no exact match found?"
+type = "bool"
+default = true
+help = "Use fallback for COLORFGBG if no exact match found?\nThe COLORFGBG variable indicates the ANSI colors that match the foreground and background colors. If no colors match and this setting is enabled, then the variable will be set to 15;0 to indicate a dark background or 0;15 to indicate a light background."
+
+[[setting]]
+key = "ShouldSetTerminfoDirs"
+tab = "Advanced"
+section = "Terminal"
+label = "Set $TERMINFO_DIRS to add modern terminal features to xterm-like $TERMs?"
+type = "bool"
+default = true
+help = "Set $TERMINFO_DIRS to add modern terminal features to xterm-like $TERMs?\nTandem ships with extended terminfo capabilities for common TERMs (xterm, xterm-new, and xterm-256color). For example, it enables undercurl. New sessions get created with a TERMINFO_DIRS that make the customized TERMINFOs take precedence over the system defaults."
+
+[[setting]]
+key = "PreventSleepOnBatteryToo"
+tab = "Advanced"
+section = "General"
+label = "Prevent system idle sleep on battery too, for profiles with \u201cPrevent sleep\u201d enabled?"
+type = "bool"
+default = false
+help = "Prevent system idle sleep on battery too, for profiles with \u201cPrevent sleep\u201d enabled?\nBy default the \u201cPrevent sleep\u201d profile setting only prevents idle sleep while connected to power. Enable this to also prevent idle sleep on battery."
+
+[[setting]]
+key = "IdleTimeSeconds"
+tab = "Advanced"
+section = "General"
+label = "Time in seconds before a session is considered idle."
+type = "float"
+default = 2.0
+help = "Time in seconds before a session is considered idle.\nUsed for updating icons and activity indicator in tabs."
+
+[[setting]]
+key = "JiggleTTYSizeOnClearBuffer"
+tab = "Advanced"
+section = "General"
+label = "Redraw the screen after the Clear Buffer menu item is selected."
+type = "bool"
+default = false
+help = "Redraw the screen after the Clear Buffer menu item is selected.\nWhen enabled, the TTY size is briefly changed after clearing the buffer to cause the shell or current app to redraw."
+
+[[setting]]
+key = "FallbackLCCType"
+tab = "Advanced"
+section = "General"
+label = "Value to set LC_CTYPE to if the machine\u2018s combination of country and language are not supported."
+type = "string"
+default = ""
+help = "Value to set LC_CTYPE to if the machine\u2018s combination of country and language are not supported.\nIf unset, the encoding (e.g., UTF-8) will be used."
+
+[[setting]]
+key = "FastForegroundJobUpdates"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Enable low-latency updates of the current foreground job"
+type = "bool"
+default = true
+help = "Enable low-latency updates of the current foreground job"

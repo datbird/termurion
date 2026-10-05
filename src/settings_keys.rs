@@ -2167,6 +2167,48 @@ mod tests {
         assert_eq!((row.label.as_str(), row.help.as_str()), ("Allow HDR effects", hdr));
     }
 
+    /// 13p's eight Advanced rows (`AS:409`, `429`, `450`, `487`, `488`, `498`, `517`, `855`):
+    /// tab, section, kind, default, label and help as iTerm2 words them; `DoNotSetCtype` is
+    /// inert in iTerm2 and so here (ruling R2).
+    #[test]
+    fn session_start_rows_follow_iterm2() {
+        use crate::advanced_pane::RowKind;
+        let ctype = "Never set the CTYPE environment variable.";
+        let colorfgbg = "Use fallback for COLORFGBG if no exact match found?";
+        let terminfo = "Set $TERMINFO_DIRS to add modern terminal features to xterm-like $TERMs?";
+        let battery = "Prevent system idle sleep on battery too, for profiles with \u{201c}Prevent sleep\u{201d} enabled?";
+        let idle = "Time in seconds before a session is considered idle.";
+        let jiggle = "Redraw the screen after the Clear Buffer menu item is selected.";
+        let lcctype = "Value to set LC_CTYPE to if the machine\u{2018}s combination of country and language are not supported.";
+        let fast = "Enable low-latency updates of the current foreground job";
+        let rows: [(&str, &str, Kind, Value, &str, String); 8] = [
+            ("DoNotSetCtype", "Terminal", Kind::Bool, Value::Boolean(false), ctype, ctype.to_string()),
+            ("UseColorfgbgFallback", "Terminal", Kind::Bool, Value::Boolean(true), colorfgbg, format!("{colorfgbg}\nThe COLORFGBG variable indicates the ANSI colors that match the foreground and background colors. If no colors match and this setting is enabled, then the variable will be set to 15;0 to indicate a dark background or 0;15 to indicate a light background.")),
+            ("ShouldSetTerminfoDirs", "Terminal", Kind::Bool, Value::Boolean(true), terminfo, format!("{terminfo}\nTandem ships with extended terminfo capabilities for common TERMs (xterm, xterm-new, and xterm-256color). For example, it enables undercurl. New sessions get created with a TERMINFO_DIRS that make the customized TERMINFOs take precedence over the system defaults.")),
+            ("PreventSleepOnBatteryToo", "General", Kind::Bool, Value::Boolean(false), battery, format!("{battery}\nBy default the \u{201c}Prevent sleep\u{201d} profile setting only prevents idle sleep while connected to power. Enable this to also prevent idle sleep on battery.")),
+            ("IdleTimeSeconds", "General", Kind::Float, Value::Float(2.0), idle, format!("{idle}\nUsed for updating icons and activity indicator in tabs.")),
+            ("JiggleTTYSizeOnClearBuffer", "General", Kind::Bool, Value::Boolean(false), jiggle, format!("{jiggle}\nWhen enabled, the TTY size is briefly changed after clearing the buffer to cause the shell or current app to redraw.")),
+            ("FallbackLCCType", "General", Kind::String, Value::String(String::new()), lcctype, format!("{lcctype}\nIf unset, the encoding (e.g., UTF-8) will be used.")),
+            ("FastForegroundJobUpdates", "Experimental Features", Kind::Bool, Value::Boolean(true), fast, fast.to_string()),
+        ];
+        let advanced = crate::advanced_pane::rows();
+        for (key, section, kind, default, label, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} is not in the schema"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+            // The row draws through the Advanced pane with the kind its type gives (P1).
+            let drawn = advanced.iter().find(|r| r.key == key).unwrap_or_else(|| panic!("{key} is not drawn"));
+            let want = match kind {
+                Kind::Float => RowKind::Float,
+                Kind::String => RowKind::Text,
+                _ => RowKind::Bool,
+            };
+            assert_eq!(drawn.kind, want, "{key}");
+        }
+    }
+
     #[test]
     fn scripting_rows_follow_iterm2() {
         for (key, default, help) in [
