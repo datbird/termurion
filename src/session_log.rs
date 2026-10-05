@@ -610,6 +610,9 @@ enum Msg {
 
 type Failure = Arc<Mutex<Option<String>>>;
 
+/// What a writer thread calls after it records a failure.
+pub type Wake = Arc<dyn Fn() + Send + Sync>;
+
 fn fail(slot: &Failure, error: String) {
     if let Ok(mut s) = slot.lock() {
         s.get_or_insert(error);
@@ -636,6 +639,12 @@ pub struct FileSink {
 
 impl FileSink {
     pub fn open(path: &Path, append: bool) -> FileSink {
+        FileSink::open_with_wake(path, append, None)
+    }
+
+    /// `open`, and `wake` runs on the writer thread when it records a failure (the open or a
+    /// write), so the app looks at the log then and not on a timer.
+    pub fn open_with_wake(path: &Path, append: bool, wake: Option<Wake>) -> FileSink {
         let (tx, rx) = mpsc::sync_channel::<Msg>(QUEUE_CHUNKS);
         #[cfg(test)]
         let (ready_tx, ready_rx) = mpsc::channel();
@@ -646,6 +655,13 @@ impl FileSink {
         let spawned = std::thread::Builder::new().name("session-log".into()).spawn(move || {
             // Dropped when the thread ends, by any return.
             let _done = done_tx;
+            // A failure is recorded, then the app is woken to see it.
+            let report = |text: String| {
+                fail(&thread_failure, text);
+                if let Some(w) = &wake {
+                    w();
+                }
+            };
             // Appending opens in append mode: every write goes to the end, whoever else writes the
             // file (a restart's new log while the old writer drains); replacing truncates once.
             let opened = if append {
@@ -663,7 +679,7 @@ impl FileSink {
                     let text = e.to_string();
                     #[cfg(test)]
                     let _ = ready_tx.send(Err(text.clone()));
-                    fail(&thread_failure, text);
+                    report(text);
                     return;
                 }
             };
@@ -673,27 +689,27 @@ impl FileSink {
                     Ok(Msg::Data(bytes)) => {
                         thread_budget.sub(bytes.len());
                         if let Err(e) = out.write_all(&bytes) {
-                            fail(&thread_failure, e.to_string());
+                            report(e.to_string());
                             return;
                         }
                     }
                     #[cfg(test)]
                     Ok(Msg::Sync(done)) => {
                         if let Err(e) = out.flush() {
-                            fail(&thread_failure, e.to_string());
+                            report(e.to_string());
                             return;
                         }
                         let _ = done.send(());
                     }
                     Err(RecvTimeoutError::Timeout) => {
                         if let Err(e) = out.flush() {
-                            fail(&thread_failure, e.to_string());
+                            report(e.to_string());
                             return;
                         }
                     }
                     Err(RecvTimeoutError::Disconnected) => {
                         if let Err(e) = out.flush() {
-                            fail(&thread_failure, e.to_string());
+                            report(e.to_string());
                         }
                         return;
                     }
@@ -1399,6 +1415,36 @@ mod tests {
         s.write(b"x").unwrap();
         s.finish_for_test();
         assert_eq!(std::fs::read_to_string(temp_path("fresh").with_file_name("made.log")).unwrap(), "x");
+    }
+
+    /// A log has no timer: the writer wakes the app when a write fails, and only then.
+    #[test]
+    fn a_failed_log_wakes_the_app_itself() {
+        let missing = temp_path("wake").parent().unwrap().join("no").join("such").join("a.log");
+        let woke = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let w = woke.clone();
+        let s = FileSink::open_with_wake(&missing, true, Some(Arc::new(move || {
+            w.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })));
+        for _ in 0..200 {
+            if woke.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(s.failed().is_some());
+        assert_eq!(woke.load(std::sync::atomic::Ordering::SeqCst), 1, "one wake, after the failure was recorded");
+        // A log that is fine never wakes anyone.
+        let ok = temp_path("wake-ok");
+        let quiet = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let q = quiet.clone();
+        let mut fine = FileSink::open_with_wake(&ok, false, Some(Arc::new(move || {
+            q.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })));
+        fine.write(b"x").unwrap();
+        fine.finish_for_test();
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(quiet.load(std::sync::atomic::Ordering::SeqCst), 0, "no failure, no wake");
     }
 
     #[test]

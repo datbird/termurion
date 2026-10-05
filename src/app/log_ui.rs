@@ -133,7 +133,11 @@ impl App {
                 ansi: palette.ansi,
             }
         });
-        let sink = sl::FileSink::open(&path, append);
+        let proxy = self.proxy.clone();
+        let wake: sl::Wake = std::sync::Arc::new(move || {
+            let _ = proxy.lock().map(|p| p.send_event(super::UserEvent::Wake));
+        });
+        let sink = sl::FileSink::open_with_wake(&path, append, Some(wake));
         let logger = Logger::new(style, Box::new(sink), timestamps, header, stylesheet);
         if let Some(p) = self.panes.get_mut(&id) {
             p.stop_log();
@@ -209,7 +213,8 @@ impl App {
     }
 
     /// A log that failed (it never opened, or a write failed) goes off and the person is told
-    /// once, with the path (`LH:304-316`).
+    /// once, with the path (`LH:304-316`). The writer wakes the loop when it records a failure;
+    /// no timer looks (an idle wake while any pane logs).
     pub(super) fn log_tick(&mut self) {
         let mut failed = Vec::new();
         for (id, p) in self.panes.iter() {
@@ -221,12 +226,6 @@ impl App {
             self.stop_log(id);
             let _ = crate::notify::show_with(sl::CANNOT_WRITE, &format!("{path}\n{error}"), false);
         }
-    }
-
-    /// When `log_tick` looks again: a log has no wake of its own, so a failure to open a share
-    /// is noticed within a second.
-    pub(super) fn log_due(&self) -> Option<Instant> {
-        self.panes.values().any(|p| p.log.is_some()).then(|| Instant::now() + Duration::from_secs(1))
     }
 
     /// Quit and the last window's close: every log stops and what is queued reaches its file, in
@@ -340,5 +339,16 @@ mod tests {
         assert_eq!(shell_program("pwsh.exe -NoLogo"), "pwsh.exe");
         assert_eq!(shell_program("\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -l"), "C:\\Program Files\\PowerShell\\7\\pwsh.exe");
         assert_eq!(shell_program(""), "");
+    }
+
+    /// A logging pane adds no idle wake: the writer wakes the loop when a write fails, and the
+    /// wake array has no slot of the log's own (13q final fix 3).
+    #[test]
+    fn a_logging_pane_adds_no_idle_wake() {
+        let m = include_str!("mod.rs");
+        assert!(!m.contains("self.log_due()") && !m.contains("[ended_due, log_due"), "no log timer in the wake array");
+        let prod = include_str!("log_ui.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(!prod.contains("fn log_due"));
+        assert!(body(prod, "    pub(super) fn start_log(").contains("open_with_wake(") && prod.contains("UserEvent::Wake"), "the writer's failure wakes the loop");
     }
 }
