@@ -145,7 +145,7 @@ impl App {
                 // Disconnect is enabled by `refresh_ssh_menu`, for a session that has a conductor.
                 let enabled = Self::menu_enabled(item) && item.selector != "sshDisconnect:" && item.selector != "explainOutputWithAI:" && (item.selector != "downloadFiles:" || self.download_files_enabled()) && (item.selector != "performNaturalLanguageQuery:" || self.globals.bool(crate::ai_settings::ADMIN));
                 let parent = &item.path[..item.path.len() - 1];
-                let alert_check = super::marks_ui::CHECKS.iter().any(|(s, _)| *s == item.selector) || super::seltools_ui::CHECKED.contains(&item.selector.as_str()) || matches!(item.selector.as_str(), "toggleMultiLinePasteWarning:" | "promptToConvertTabsToSpacesWhenPasting:" | "toggleSizeChangesAffectProfile:");
+                let alert_check = super::marks_ui::CHECKS.iter().any(|(s, _)| *s == item.selector) || super::seltools_ui::CHECKED.contains(&item.selector.as_str()) || matches!(item.selector.as_str(), "toggleMultiLinePasteWarning:" | "promptToConvertTabsToSpacesWhenPasting:" | "toggleSizeChangesAffectProfile:" | "startStopLogging:");
                 let state_check = parent.iter().any(|p| p == "Terminal State") && item.label() != "Reset";
                 if alert_check || state_check {
                     let c = CheckMenuItem::with_id(item.id(), menu_text(item), enabled, false, None);
@@ -554,6 +554,12 @@ impl App {
         }
         check("Literal Controls", screen.is_some_and(|s| s.keys.literal));
         check("Size Changes Update Profile", self.globals.bool(fonts_ui::SIZE_CHANGES_AFFECT_PROFILE));
+        // Log to File: disabled with no session or an ended one, checked while logging.
+        let (log_enabled, log_on) = super::log_ui::log_menu_state(self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).map(|p| (p.ended || p.exited.is_some(), p.log.is_some())));
+        if let Some(c) = bar.checks.get("Log to File") {
+            c.set_enabled(log_enabled);
+        }
+        check("Log to File", log_on);
         let alert_next = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).is_some_and(|p| p.own().marks.alert_next);
         let action = self.globals.string("Mark Alert Action");
         self.refresh_named_marks();
@@ -891,6 +897,7 @@ impl App {
                 }
             }
             "toggleAutoComposer:" => self.toggle_auto_composer(),
+            "startStopLogging:" => self.start_stop_logging(),
             "openDirectories:" => self.open_recent_dirs(event_loop),
             "openAutocomplete:" => self.open_autocomplete(),
             "toggleShowClippings:" => self.toggle_clippings(),
@@ -1094,6 +1101,7 @@ impl App {
             self.save_now();
         }
         self.leave_host(keep);
+        self.close_all_logs();
         self.panes.clear();
         self.focus_order.clear();
         if self.prefs_before_exit() {

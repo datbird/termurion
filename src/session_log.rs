@@ -528,6 +528,9 @@ pub trait Sink: Send {
     fn failed(&self) -> Option<String> {
         None
     }
+
+    /// Ends the sink at quit: what is queued is written, waiting at most `wait` for it.
+    fn close(self: Box<Self>, _wait: Duration) {}
 }
 
 /// The bytes waiting for the writer thread, bounded. An oversized chunk is taken when the
@@ -586,6 +589,8 @@ pub struct FileSink {
     failure: Failure,
     ready: Mutex<mpsc::Receiver<Result<(), String>>>,
     ready_result: Mutex<Option<Result<(), String>>>,
+    /// Answers when the writer thread has ended (it drops its end of this).
+    done: mpsc::Receiver<()>,
 }
 
 impl FileSink {
@@ -595,7 +600,10 @@ impl FileSink {
         let budget = Arc::new(Budget::new(QUEUE_BYTES));
         let failure: Failure = Arc::new(Mutex::new(None));
         let (thread_path, thread_budget, thread_failure) = (path.to_path_buf(), budget.clone(), failure.clone());
+        let (done_tx, done) = mpsc::channel::<()>();
         let spawned = std::thread::Builder::new().name("session-log".into()).spawn(move || {
+            // Dropped when the thread ends, by any return.
+            let _done = done_tx;
             let opened = std::fs::OpenOptions::new().create(true).write(true).open(&thread_path).and_then(|mut f| {
                 if append {
                     f.seek(SeekFrom::End(0))?;
@@ -651,7 +659,7 @@ impl FileSink {
         if let Err(e) = spawned {
             fail(&failure, e.to_string());
         }
-        FileSink { path: path.to_path_buf(), tx, budget, failure, ready: Mutex::new(ready_rx), ready_result: Mutex::new(None) }
+        FileSink { path: path.to_path_buf(), tx, budget, failure, ready: Mutex::new(ready_rx), ready_result: Mutex::new(None), done }
     }
 
     /// The first error the open or a write met. Never blocks.
@@ -713,6 +721,13 @@ impl Sink for FileSink {
 
     fn failed(&self) -> Option<String> {
         FileSink::failed(self)
+    }
+
+    fn close(self: Box<Self>, wait: Duration) {
+        let FileSink { tx, done, .. } = *self;
+        drop(tx);
+        // The thread drops its end when it has written what was queued; a hung share only costs `wait`.
+        let _ = done.recv_timeout(wait);
     }
 }
 
@@ -838,6 +853,131 @@ impl Logger {
     pub fn stop(&mut self) {
         self.sink = None;
     }
+
+    /// `stop` at quit: waits up to `wait` for the queued bytes to reach the file.
+    pub fn close(&mut self, wait: Duration) {
+        if let Some(sink) = self.sink.take() {
+            sink.close(wait);
+        }
+    }
+}
+
+// ---------------------------------------------------------------- logging in the app
+
+/// iTerm2's `creationTimeString` (`PS:885-897`): "yyyyMMdd_HHmmss".
+pub fn creation_time_string(p: &Parts) -> String {
+    format!("{:04}{:02}{:02}_{:02}{:02}{:02}", p.year, p.month, p.day, p.hour, p.minute, p.second)
+}
+
+/// `smartLoggingWithAutoComposer` (`PS:15607-15616`): output at the prompt is left out of a
+/// plain text or HTML log while the Auto Composer is on.
+pub fn skip_compact(compact: bool, auto_composer: bool, at_prompt: bool) -> bool {
+    compact && auto_composer && at_prompt
+}
+
+/// Whether a log path is a network or device path, by 13p's one filter (it trims spaces,
+/// quotes and controls first, and knows every UNC form).
+pub fn is_network_log_path(path: &Path) -> bool {
+    crate::start_dir::network_value("Log Directory", &path.to_string_lossy())
+}
+
+/// A folder template with its path backslashes kept: the interpolation reads `\t` as a tab and
+/// `\\` as one backslash, which would turn `C:\temp` into a tab and `\\host` into `\host`. Only
+/// the `\(` that opens an expression stays an escape; a backslash anywhere else is a path
+/// separator. The text inside an expression is not touched.
+fn literal_backslashes(template: &str) -> String {
+    let chars: Vec<char> = template.chars().collect();
+    let mut out = String::with_capacity(template.len() + 8);
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '\\' {
+            out.push(chars[i]);
+            i += 1;
+        } else if chars.get(i + 1) == Some(&'(') {
+            // Copy `\(` through its matching `)`; a quoted string inside may hold a `)`.
+            let (mut depth, mut quoted, mut j) = (0usize, false, i + 1);
+            while j < chars.len() {
+                let c = chars[j];
+                if quoted {
+                    if c == '\\' {
+                        j += 1;
+                    } else if c == '"' {
+                        quoted = false;
+                    }
+                } else if c == '"' {
+                    quoted = true;
+                } else if c == '(' {
+                    depth += 1;
+                } else if c == ')' {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                j += 1;
+            }
+            let end = (j + 1).min(chars.len());
+            out.extend(&chars[i..end]);
+            i = end;
+        } else {
+            out.push_str("\\\\");
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The automatic log's path (`PSA:131-166`): both templates are evaluated, the name is made
+/// safe and joined to the folder (empty and "~" are the home folder). A network folder is only
+/// the person's own when they typed it in the template; one that came out of an interpolated
+/// value or the home folder is refused, and so is a folder that is not absolute (it would be
+/// joined to Tandem's working folder).
+pub fn auto_log_path(raw_dir: &str, name_template: &str, lookup: &dyn Fn(&str) -> Option<String>, home: &Path) -> Result<PathBuf, String> {
+    // An unclosed `\(` evaluates as text; the person is told instead.
+    let dir_template = literal_backslashes(raw_dir);
+    crate::interp::check(&dir_template)?;
+    crate::interp::check(name_template)?;
+    let dir = crate::interp::evaluate(&dir_template, lookup, &[])?;
+    let name = crate::interp::evaluate(name_template, lookup, &[])?;
+    let joined = join_log_path(&dir, &name, home);
+    // A share is the person's only when the template names it in plain text.
+    let typed = !raw_dir.contains("\\(") && crate::start_dir::network_folder(raw_dir);
+    if is_network_log_path(&joined) && !typed {
+        return Err("the log folder is a network path".to_string());
+    }
+    if !joined.is_absolute() {
+        return Err("the log folder is not a full path".to_string());
+    }
+    Ok(joined)
+}
+
+/// The local time now and its milliseconds, for timestamps.
+#[cfg(windows)]
+pub fn now_parts() -> (Parts, u16) {
+    let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    (crate::stamps::local(d.as_secs()), d.subsec_millis() as u16)
+}
+
+/// What a log folder needs before the file opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FolderAction {
+    Open,
+    AskCreate,
+}
+
+/// A network folder is never probed or created (13p UNC invariant): it opens on the writer
+/// thread. A local folder that exists opens; a missing one asks first (`FM:10-51`).
+pub fn folder_action(dir: &Path, is_unc: bool, exists: &dyn Fn(&Path) -> bool) -> FolderAction {
+    if is_unc || exists(dir) {
+        FolderAction::Open
+    } else {
+        FolderAction::AskCreate
+    }
+}
+
+/// The logging style question's text (Decision: the remembered style is named in the text).
+pub fn style_prompt(remembered: Style) -> String {
+    format!("Last used: {}", STYLE_LABELS[remembered as usize])
 }
 
 #[cfg(test)]
@@ -1243,5 +1383,69 @@ mod tests {
             assert!(crate::start_dir::network_value(key, " \"\\\\host\\share\""), "{key}");
             assert!(!crate::start_dir::network_value(key, "D:\\logs"), "{key}");
         }
+    }
+    fn lookup_for<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |n: &str| pairs.iter().find(|(k, _)| *k == n).map(|(_, v)| v.to_string())
+    }
+
+    #[test]
+    fn auto_log_path_follows_iterm2() {
+        let pairs = [("creationTimeString", "20260927_150405"), ("profileName", "Default"), ("termid", "w0t0p0.3"), ("iterm2.pid", "1234"), ("autoLogId", "42")];
+        let look = lookup_for(&pairs);
+        let home = Path::new(r"C:\Users\u");
+        let name = "\\(creationTimeString).\\(profileName).\\(termid).\\(iterm2.pid).\\(autoLogId).log";
+        assert_eq!(auto_log_path("", name, &look, home).unwrap(), PathBuf::from(r"C:\Users\u\20260927_150405.Default.w0t0p0.3.1234.42.log"));
+        assert_eq!(auto_log_path("~\\logs\\\\(profileName)", name, &look, home).unwrap(), PathBuf::from(r"C:\Users\u\logs\Default\20260927_150405.Default.w0t0p0.3.1234.42.log"));
+        // A Windows folder keeps its backslashes: `\t` is not a tab and `\\host` stays a share.
+        assert_eq!(auto_log_path("C:\\temp\\new", "a.log", &look, home).unwrap(), PathBuf::from(r"C:\temp\new\a.log"));
+        assert_eq!(literal_backslashes("a\\b\\(x ?? \"q\\)\")\\c"), "a\\\\b\\(x ?? \"q\\)\")\\\\c");
+        // A name that evaluates to "a/b" is "a__b" (`PSA:160-166`).
+        let slash = [("x", "a/b")];
+        assert_eq!(auto_log_path("", "\\(x)", &lookup_for(&slash), home).unwrap(), PathBuf::from(r"C:\Users\u\a__b"));
+        // An unclosed interpolation is an error the person reads.
+        assert!(auto_log_path("", "\\(creationTimeString", &look, home).is_err());
+        let when = Parts { year: 2026, month: 9, day: 27, weekday: 0, hour: 15, minute: 4, second: 5 };
+        assert_eq!(creation_time_string(&when), "20260927_150405");
+        assert!(skip_compact(true, true, true));
+        for (a, b, c) in [(false, true, true), (true, false, true), (true, true, false), (false, false, false)] {
+            assert!(!skip_compact(a, b, c), "{a} {b} {c}");
+        }
+    }
+
+    #[test]
+    fn auto_log_path_never_follows_a_network_folder_a_program_could_name() {
+        let home = Path::new(r"C:\Users\u");
+        // A value the program set (`\(path)`), a leading space, or a network home folder: refused.
+        for evaluated in [" \\\\host\\share", "\\\\host\\share", "//host/share", "\\\\?\\UNC\\host\\share", "\t\\\\host\\share"] {
+            let pairs = [("path", evaluated)];
+            assert!(auto_log_path("\\(path)", "a.log", &lookup_for(&pairs), home).is_err(), "{evaluated:?}");
+        }
+        let net_home = Path::new(r"\\fileserver\home\u");
+        assert!(auto_log_path("", "a.log", &lookup_for(&[]), net_home).is_err());
+        assert!(auto_log_path("~", "a.log", &lookup_for(&[]), net_home).is_err());
+        assert!(auto_log_path("~\\logs", "a.log", &lookup_for(&[]), net_home).is_err());
+        // Typed by the person in the template, a share is theirs (13p ruling), padded or not.
+        assert_eq!(auto_log_path("\\\\srv\\logs", "a.log", &lookup_for(&[]), home).unwrap(), PathBuf::from(r"\\srv\logs\a.log"));
+        let padded = auto_log_path(" \\\\srv\\logs", "a.log", &lookup_for(&[]), home).unwrap();
+        assert!(is_network_log_path(&padded), "the same filter names it a share: {padded:?}");
+        // A relative folder would land in Tandem's working folder.
+        assert!(auto_log_path("logs", "a.log", &lookup_for(&[]), home).is_err());
+        assert!(auto_log_path("D:logs", "a.log", &lookup_for(&[]), home).is_err());
+        assert!(!is_network_log_path(Path::new(r"D:\logs\a.log")));
+        assert!(is_network_log_path(Path::new(" \\\\host\\share\\a.log")));
+    }
+
+    #[test]
+    fn unc_log_folders_are_never_probed() {
+        let boom = |_: &Path| -> bool { panic!("probed") };
+        assert_eq!(folder_action(Path::new(r"\\srv\logs"), true, &boom), FolderAction::Open);
+        assert_eq!(folder_action(Path::new("//srv/logs"), true, &boom), FolderAction::Open);
+        let there = std::env::temp_dir();
+        let missing = there.join("tandem-no-such-log-folder-13q");
+        assert_eq!(folder_action(&missing, false, &|d| d.is_dir()), FolderAction::AskCreate);
+        assert_eq!(folder_action(&there, false, &|d| d.is_dir()), FolderAction::Open);
+        assert_eq!(style_prompt(Style::Html), "Last used: HTML");
+        assert_eq!(style_prompt(Style::Raw), "Last used: Raw data");
+        assert_eq!(style_prompt(Style::Asciicast), "Last used: ASCIInema");
     }
 }

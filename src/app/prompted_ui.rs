@@ -333,6 +333,13 @@ impl App {
         v.session.insert("name", title.clone());
         v.session.insert("presentationName", title);
         v.session.insert("id", pane.to_string());
+        // The log name's variables (`PS:885-897`): set once at creation, kept across a restart.
+        let created = p.created.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        v.session.insert("creationTimeString", crate::session_log::creation_time_string(&crate::stamps::local(created)));
+        v.session.insert("autoLogId", p.auto_log_id.to_string());
+        if let Some(path) = p.log.as_ref().and_then(|l| l.path()) {
+            v.session.insert("logFilename", path.display().to_string());
+        }
         self.scope_variables(pane, &mut v, titles);
         v.session.insert("columns", grid.columns().to_string());
         v.session.insert("rows", grid.screen_lines().to_string());
@@ -421,7 +428,7 @@ impl App {
         let t = w.tab;
         if let Some(tab) = w.tabs.get(t) {
             let index = tab.layout.panes().iter().position(|x| *x == pane).unwrap_or(0);
-            v.session.insert("termid", format!("w{number}t{t}p{index}"));
+            v.session.insert("termid", crate::session_env::termid(number, t, index, &pane.to_string()));
             v.tab.insert("id", tab.id.to_string());
             let own = if titles { self.tab_title_text(tab) } else { tab.title.clone() };
             v.tab.insert("title", self.tmux_tab_label(tab.focused).or_else(|| own.clone().filter(|t| !t.is_empty())).unwrap_or_else(|| self.session_title(tab.focused)));

@@ -117,6 +117,8 @@ impl App {
             self.jobs.forget(pid);
         }
         p.inline_paused_off();
+        // Logging stops with the session (`cleanUpAfterBrokenPipe`, `PS:4728`).
+        p.stop_log();
         // Everything bound to the program goes; the message below is written to the pane's own
         // screen, never a Filter or Zoom view or a replay frame (B9).
         p.own_mut().program_ended();

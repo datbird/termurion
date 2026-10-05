@@ -640,6 +640,8 @@ impl App {
                     if !self.globals.bool(AUTO_KEY) || self.have_auto_composer(pane) {
                         continue;
                     }
+                    // Compact logging writes the prompt once, in plain text (`PS:16729-16740`).
+                    self.log_compact_prompt(pane, &text);
                     let had_keys = self.terminal_has_keys(pane);
                     let copy = self.copy_modes.contains_key(&pane);
                     let (status_bar, visible) = self.composer_routing(pane);
@@ -1729,9 +1731,11 @@ impl App {
         }
         let mut out = command.to_string();
         let mut auto = false;
+        let mut log_command = false;
         if let Some(p) = self.panes.get_mut(&pane) {
             if p.composer.auto {
                 auto = true;
+                log_command = true;
                 if p.composer.shell_provided {
                     out.insert(0, '\u{15}');
                 }
@@ -1740,6 +1744,10 @@ impl App {
                 p.composer.set_string(&contents, false);
                 p.own_mut().prompt_state.will_send();
             }
+        }
+        // Compact logging writes the sent command (`PS:24561-24566`).
+        if log_command {
+            self.log_compact_command(pane, &out);
         }
         self.user_write(pane, &line_ends(&out), Write::SendText);
         if auto {

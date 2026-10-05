@@ -19,6 +19,11 @@ pub fn session_id(window: usize, tab: usize, pane: usize, id: &str) -> String {
     format!("w{window}t{tab}p{pane}:{id}")
 }
 
+/// iTerm2's `termid` variable (`PS:3178-3184`, `PSA:168-173`): the session id with ":" made ".".
+pub fn termid(window: usize, tab: usize, pane: usize, id: &str) -> String {
+    format!("w{window}t{tab}p{pane}.{id}")
+}
+
 /// The tab and pane numbers of a session about to start (`TAB:7435-7443`): `panes` holds each
 /// tab's pane count; `holding` is the tab the pane is already in (Restart Session), `split` the
 /// tab a split puts it in. Already in a tab: that tab, its count less one; a split: the target
@@ -276,6 +281,12 @@ pub fn block(pairs: &[(String, String)]) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn termid_follows_iterm2() {
+        assert_eq!(termid(0, 1, 2, "17"), "w0t1p2.17");
+        assert_eq!(termid(3, 0, 0, "x"), "w3t0p0.x");
+    }
 
     fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
         v.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()

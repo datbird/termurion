@@ -73,6 +73,9 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::SlowScan => Answer::Button(1),
         // Neither: a close never changes the person's locale.
         Then::LocaleMismatch { .. } => Answer::Closed,
+        // A closed window never starts a log or makes a folder.
+        Then::LogExists { .. } | Then::LogStyle { .. } => Answer::Closed,
+        Then::CreateLogFolder { .. } => Answer::Button(1),
         // Keep Both: a closed window never replaces a file (P9).
         Then::SshKeepOrReplace { .. } => Answer::Button(0),
         // Cancel: a closed window never uploads the person's files (P9).
@@ -241,6 +244,16 @@ pub(super) enum Then {
     /// Change Locale (0) asks for another, Keep This Locale (1) keeps it, storing it when
     /// `from_settings` (a pick made in Settings). A closed window does neither.
     LocaleMismatch { guid: String, locale: String, from_settings: bool },
+    /// "Logging Folder Not Found" for a local folder: OK (0) makes it and starts the log; Cancel
+    /// (1) does nothing.
+    CreateLogFolder { pane: crate::layout::PaneId, path: std::path::PathBuf, append: bool, style: crate::session_log::Style },
+    /// "\"name\" already exists. Do you want to replace it or append to it?": Cancel (0), Replace
+    /// (1) or Append (2), then the style question.
+    LogExists { pane: crate::layout::PaneId, path: std::path::PathBuf },
+    /// "Logging Style": Raw data (0), Plain text (1), HTML (2) or ASCIInema (3) starts the log.
+    LogStyle { pane: crate::layout::PaneId, path: std::path::PathBuf, append: bool },
+    /// "Session Logging Problem": OK only.
+    LogProblem,
 }
 
 impl Then {
@@ -421,7 +434,10 @@ impl App {
     /// Acts on an answer: the button's place in the alert's buttons.
     pub(super) fn scripts_answered(&mut self, then: Then, index: usize) {
         match then {
-            Then::Nothing | Then::ErrorRunning | Then::ExportFailed | Then::ShortLived => {}
+            Then::Nothing | Then::ErrorRunning | Then::ExportFailed | Then::ShortLived | Then::LogProblem => {}
+            Then::CreateLogFolder { pane, path, append, style } => self.log_folder_answered(pane, path, append, style, index),
+            Then::LogExists { pane, path } => self.log_exists_answered(pane, path, index),
+            Then::LogStyle { pane, path, append } => self.log_style_answered(pane, path, append, index),
             Then::TurnOnOsc7 { was_silenced } => self.osc7_answered(was_silenced, index),
             Then::Paste(pane) => self.paste_answered(pane, Some(index)),
             Then::PrintGuard { pane, job } => self.print_guard_answered(pane, job, index),
