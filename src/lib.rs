@@ -26,6 +26,7 @@ pub mod recording;
 pub mod cadence;
 pub mod perf_stats;
 pub mod underline;
+pub mod url_guess;
 pub mod fonts;
 pub mod margins;
 pub mod power;

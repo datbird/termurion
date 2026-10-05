@@ -26,6 +26,8 @@ pub struct ClickContext {
     pub smart: Option<(usize, usize, String)>,
     /// Semantic History is set to "raw command".
     pub raw_command: bool,
+    /// The URL guessing settings and the pane's locality (`App::url_prefs`).
+    pub urls: crate::url_guess::UrlPrefs,
 }
 
 /// `MaxSemanticHistoryPrefixOrSuffix`'s default: iTerm2 looks this far each way from the click.
@@ -60,7 +62,7 @@ pub fn resolve_range(ctx: &ClickContext) -> Option<(Target, Option<std::ops::Ran
             return Some((Target::RawCommand(word), Some(range)));
         }
     }
-    url_in(&ctx.before, &ctx.after).map(|(u, r)| (Target::Url(u), Some(r)))
+    crate::url_guess::guess(&ctx.before, &ctx.after, &ctx.urls).map(|(u, r)| (Target::Url(u), Some(r)))
 }
 
 pub fn resolve(ctx: &ClickContext) -> Option<Target> {
@@ -190,51 +192,20 @@ fn path_in(before: &str, after: &str, cwd: Option<&Path>) -> Option<PathHit> {
     })
 }
 
-/// URL-like text around the click, made into a URL.
-pub fn url_like(before: &str, after: &str) -> Option<String> {
-    url_in(before, after).map(|(u, _)| u)
+/// URL-like text around the click, made into a URL (13s's signature; the settings are the
+/// defaults but for the slash rule).
+pub fn url_like(before: &str, after: &str, require_slash: bool) -> Option<String> {
+    url_like_in(before, after, &crate::url_guess::UrlPrefs { require_slash, ..Default::default() })
 }
 
-fn url_in(before: &str, after: &str) -> Option<(String, std::ops::Range<usize>)> {
-    let url_char = |c: char| c.is_ascii_alphanumeric() || "-._~:/?#[]@!$&'()*+,;=%".contains(c);
-    let mut start = before.char_indices().rev().find(|(_, c)| !url_char(*c)).map_or(0, |(i, c)| i + c.len_utf8());
-    let end = after.char_indices().find(|(_, c)| !url_char(*c)).map_or(after.len(), |(i, _)| i);
-    let mut s = format!("{}{}", &before[start..], &after[..end]);
-    loop {
-        let unbalanced = |open: char, close: char, s: &str| s.matches(close).count() > s.matches(open).count();
-        let wrapped = [('(', ')'), ('[', ']'), ('\'', '\'')].iter().any(|(o, c)| s.len() > 1 && s.starts_with(*o) && s.ends_with(*c));
-        if wrapped {
-            s.remove(0);
-            s.pop();
-            start += 1;
-        } else if s.starts_with(['(', '[', '\'']) && !s.ends_with([')', ']', '\'']) {
-            s.remove(0);
-            start += 1;
-        } else if s.ends_with(['.', ',', ';', ':', '!', '?', '\''])
-            || s.ends_with(')') && unbalanced('(', ')', &s)
-            || s.ends_with(']') && unbalanced('[', ']', &s)
-        {
-            s.pop();
-        } else {
-            break;
-        }
-    }
-    let range = |from: usize| start + from..start + s.len();
-    if let Some(i) = s.find("://") {
-        let scheme_start = s[..i].rfind(|c: char| !(c.is_ascii_alphanumeric() || "+.-".contains(c))).map_or(0, |j| j + 1);
-        let scheme = &s[scheme_start..i];
-        return (!scheme.is_empty() && s.len() > i + 3).then(|| (s[scheme_start..].to_string(), range(scheme_start)));
-    }
-    if s.starts_with("mailto:") && s.len() > 7 {
-        return Some((s.clone(), range(0)));
-    }
-    let host = s.split(['/', '?', '#']).next().unwrap_or_default();
-    let host = host.rsplit_once(':').filter(|(_, port)| port.chars().all(|c| c.is_ascii_digit())).map_or(host, |(h, _)| h);
-    let labels: Vec<&str> = host.split('.').collect();
-    let domain = labels.len() >= 2
-        && labels.iter().all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
-        && labels.last().is_some_and(|t| t.len() >= 2 && t.chars().all(|c| c.is_ascii_alphabetic()));
-    domain.then(|| (format!("https://{s}"), range(0)))
+/// `url_like` under every URL setting (B6): the click, the menu and Copy URL all call this.
+pub fn url_like_in(before: &str, after: &str, prefs: &crate::url_guess::UrlPrefs) -> Option<String> {
+    crate::url_guess::guess(before, after, prefs).map(|(u, _)| u)
+}
+
+/// 13s's `looks_like_url` (`UAF:896-941`) under the default URL characters.
+pub fn looks_like_url(s: &str, require_slash: bool) -> bool {
+    crate::url_guess::looks_like_url(s, require_slash, &crate::url_guess::CharSet::default())
 }
 
 /// A profile's Semantic History setting.
@@ -298,18 +269,37 @@ pub fn web_link(target: &str) -> bool {
     scheme(target).is_some_and(|s| REMOTE_WEB.contains(&s.as_str()))
 }
 
-/// What opening `target` (a URL or a path) runs. Only http, https, mailto, and ftp links
-/// open; a file: link is a path; a program or script is shown, never run.
+/// What opening `target` runs. `target` is text a program may have written (an OSC 8 link,
+/// a URL found in output, a Smart Selection `openUrl:`), so only http, https, mailto, and ftp
+/// links open: a target with no scheme (a path, a drive path, a network path) is refused (B1),
+/// a network path first of all, and a file: link is a local path through `file_open`.
 pub fn guard_open(target: &str, has_code: bool) -> Run {
+    if crate::scripts::is_network_path(target) {
+        return Run::Blocked(format!("Tandem does not open network paths: {target}"));
+    }
     match scheme(target).as_deref() {
-        None => file_open(target, None, None, has_code),
+        None => Run::Blocked("Tandem opens only http, https, mailto, and ftp links, not paths or other text.".into()),
         Some(s) if WEB.contains(&s) => Run::Open(target.to_string()),
         Some("file") => match file_url_path(target) {
-            Some(p) => file_open(&p, None, None, has_code),
-            None => Run::Blocked(format!("Tandem does not open network file links: {target}")),
+            Some(p) if crate::scripts::stays_local(Path::new(&p)) => file_open(&p, None, None, has_code),
+            _ => Run::Blocked(format!("Tandem does not open network file links: {target}")),
         },
         Some(s) => Run::Blocked(format!("Tandem opens only http, https, mailto, and ftp links, not {s}: links.")),
     }
+}
+
+/// A Smart Selection `openFile:`: the parameter is a path, never probed or opened when it is
+/// a network path or leads through a link to one, and a program or script is shown, not run.
+pub fn open_file_run(path: &str, has_code: bool) -> Run {
+    if crate::scripts::is_network_path(path) || !crate::scripts::stays_local(Path::new(path)) {
+        return Run::Blocked(format!("Tandem does not open network paths: {path}"));
+    }
+    file_open(path, None, None, has_code)
+}
+
+/// A Smart Selection `openUrl:`: a link, through the same guard as every other.
+pub fn open_url_run(text: &str, has_code: bool) -> Run {
+    guard_open(text, has_code)
 }
 
 /// Programs and scripts: "open" would run them, so Tandem shows them instead.
@@ -539,15 +529,15 @@ mod tests {
     #[test]
     fn url_like_text_becomes_a_url() {
         let (b, a) = click("go to https://exa|mple.com/a?b=1.");
-        assert_eq!(url_like(&b, &a).as_deref(), Some("https://example.com/a?b=1"));
+        assert_eq!(url_like(&b, &a, true).as_deref(), Some("https://example.com/a?b=1"));
         let (b, a) = click("(see www.exam|ple.com/x)");
-        assert_eq!(url_like(&b, &a).as_deref(), Some("https://www.example.com/x"));
+        assert_eq!(url_like(&b, &a, true).as_deref(), Some("https://www.example.com/x"));
         let (b, a) = click("mail mailto:a@|b.com");
-        assert_eq!(url_like(&b, &a).as_deref(), Some("mailto:a@b.com"));
+        assert_eq!(url_like(&b, &a, true).as_deref(), Some("mailto:a@b.com"));
         let (b, a) = click("just a wo|rd");
-        assert_eq!(url_like(&b, &a), None);
+        assert_eq!(url_like(&b, &a, true), None);
         let (b, a) = click("version 1.2|.3");
-        assert_eq!(url_like(&b, &a), None);
+        assert_eq!(url_like(&b, &a, true), None);
     }
 
     #[test]
@@ -566,6 +556,9 @@ mod tests {
         ctx.smart = None;
         assert_eq!(resolve(&ctx), Some(Target::RawCommand("example.com".into())));
         ctx.raw_command = false;
+        // A bare two-label name is a URL only with a slash, unless the slash rule is off.
+        assert_eq!(resolve(&ctx), None);
+        ctx.urls.require_slash = false;
         assert_eq!(resolve(&ctx), Some(Target::Url("https://example.com".into())));
         ctx.before = "plain ".into();
         ctx.after = "".into();
@@ -620,9 +613,9 @@ mod tests {
         let (t, r) = resolve_range(&ctx).unwrap();
         assert_eq!(t, Target::Url("https://a.b/c".into()));
         assert_eq!(&text[r.unwrap()], "https://a.b/c");
-        let (before, after) = click("(www.ex|ample.com)");
+        let (before, after) = click("(www.ex|ample.com/x)");
         let (_, r) = resolve_range(&ClickContext { before: before.clone(), after: after.clone(), ..Default::default() }).unwrap();
-        assert_eq!(&format!("{before}{after}")[r.unwrap()], "www.example.com");
+        assert_eq!(&format!("{before}{after}")[r.unwrap()], "www.example.com/x");
     }
 
     #[test]
@@ -658,12 +651,60 @@ mod tests {
         assert!(matches!(guard_open("search-ms:query=x", false), Run::Blocked(_)));
         assert_eq!(guard_open("file:///C:/Users/u/Downloads/x.exe", false), Run::Reveal("C:\\Users\\u\\Downloads\\x.exe".into()));
         assert_eq!(guard_open("file:///C:/docs/a%20b.txt", false), Run::Open("C:\\docs\\a b.txt".into()));
-        assert_eq!(guard_open("C:\\tools\\x.bat", false), Run::Reveal("C:\\tools\\x.bat".into()));
+        assert!(matches!(guard_open("C:\\tools\\x.bat", false), Run::Blocked(_)));
         let best = Prefs::from_value(None);
         let link = Target::Link("file:///C:/x/evil.cmd".into());
         assert_eq!(plan(&link, &best, &Around::default(), false), Some(Run::Reveal("C:\\x\\evil.cmd".into())));
         assert!(matches!(plan(&Target::Url("javascript://x".into()), &best, &Around::default(), false), Some(Run::Blocked(_))));
     }
+    #[test]
+    fn drive_paths_never_open_as_urls() {
+        // B1: a colon string is no URL unless its scheme is one guard_open passes on, and
+        // guard_open refuses what is not a link.
+        let best = Prefs::from_value(None);
+        let plan_of = |t: &str| plan(&Target::Url(t.into()), &best, &Around::default(), false);
+        assert!(matches!(plan_of(r"C:\missing\x.txt"), Some(Run::Blocked(_))));
+        assert!(matches!(plan_of("notes.txt"), Some(Run::Blocked(_))));
+        let (b, a) = click(r"see C:\missing\|x.txt now");
+        assert_eq!(url_like(&b, &a, true), None);
+    }
+
+    #[test]
+    fn link_without_scheme_is_blocked() {
+        let best = Prefs::from_value(None);
+        for t in [r"\\evil\s\x", "//evil/s/x", r"/\evil/s", r"\??\UNC\evil\s", r"\\?\UNC\evil\s\x", r"C:\x\y.txt", "relative/x.txt"] {
+            assert!(matches!(guard_open(t, false), Run::Blocked(_)), "{t}");
+            assert!(matches!(plan(&Target::Link(t.into()), &best, &Around::default(), false), Some(Run::Blocked(_))), "{t}");
+        }
+        assert!(matches!(guard_open("file://evil/s/x", false), Run::Blocked(_)));
+    }
+
+    #[test]
+    fn open_file_action_never_probes_a_network_path() {
+        assert!(matches!(open_file_run(r"\\evil\s\a.txt", false), Run::Blocked(_)));
+        assert!(matches!(open_file_run("//evil/s/a.txt", false), Run::Blocked(_)));
+        assert_eq!(open_file_run(r"C:\no\such\a.txt", false), Run::Open(r"C:\no\such\a.txt".into()));
+        assert!(matches!(open_url_run("ms-msdt:/id x", false), Run::Blocked(_)));
+        assert!(matches!(open_url_run(r"\\evil\s\a.exe", false), Run::Blocked(_)));
+        assert_eq!(open_url_run("https://a.b/x", false), Run::Open("https://a.b/x".into()));
+    }
+
+    #[test]
+    fn menu_and_click_agree_on_urls() {
+        let docs = crate::url_guess::UrlPrefs::default();
+        let loose = crate::url_guess::UrlPrefs { require_slash: false, ..Default::default() };
+        let remote = crate::url_guess::UrlPrefs { cwd_is_local: false, ..Default::default() };
+        let strict = crate::url_guess::UrlPrefs { conservative: true, ..Default::default() };
+        for text in ["exam|ple.com", "foo/b|ar", "https://exa|mple.com", "plain wo|rd"] {
+            for prefs in [&docs, &loose, &remote, &strict] {
+                let (before, after) = click(text);
+                let ctx = ClickContext { before: before.clone(), after: after.clone(), urls: prefs.clone(), ..Default::default() };
+                let clicked = matches!(resolve(&ctx), Some(Target::Url(_)));
+                assert_eq!(url_like_in(&before, &after, prefs).is_some(), clicked, "{text}");
+            }
+        }
+    }
+
     #[test]
     fn url_preview_follows_iterm2() {
         // An OSC 8 link always shows its URL.

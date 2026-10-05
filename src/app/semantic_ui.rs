@@ -71,8 +71,31 @@ impl App {
             cwd: self.pane_dir(id),
             smart,
             raw_command: prefs.action == "raw command",
+            urls: self.url_prefs(id),
         };
         Some(Clicked { ctx, line, base, joined, found, rules, prefs, link_id: link.map(|h| h.id().to_string()) })
+    }
+
+    /// The URL guessing settings for a pane: the Advanced keys plus whether its working
+    /// directory is local (P3): false for a framed pane, a host that is not this machine, or a
+    /// network path; true when the pane reports no directory.
+    pub(super) fn url_prefs(&self, id: PaneId) -> crate::url_guess::UrlPrefs {
+        let shell = self.panes.get(&id).map(|p| &p.own().shell);
+        let cwd_is_local = !self.remote_text(id)
+            && shell.is_none_or(|s| {
+                s.host.as_ref().is_none_or(|h| self.host_is_this_machine(h))
+                    && s.cwd.as_deref().is_none_or(|c| crate::profile::local_path(c).is_some_and(|p| !crate::scripts::is_network_path(&p.to_string_lossy())))
+            });
+        let chars = crate::url_guess::url(&self.globals.string("URLCharacterSet"), &self.globals.string("URLCharacterSetExclusions"));
+        crate::url_guess::UrlPrefs {
+            chars,
+            trailing: self.globals.string("TrailingPunctuationMarks"),
+            conservative: self.globals.bool("ConservativeURLGuessing"),
+            // 13s's RequireSlashInURLGuess (default true); until its row exists the default holds.
+            require_slash: self.globals.get("RequireSlashInURLGuess").and_then(|v| v.as_bool()).unwrap_or(true),
+            default_scheme: self.globals.string("DefaultURLScheme"),
+            cwd_is_local,
+        }
     }
 
     /// Whether a reported host name is this computer (`localhost`, its name or its DNS name; P17).
@@ -180,7 +203,8 @@ impl App {
         let (host, user) = (shell.host.clone().unwrap_or_default(), shell.user.clone().unwrap_or_default());
         let text = |escape| smartsel::expand(&a.parameter, captures, cwd, &host, &user, escape);
         Some(match a.action.as_str() {
-            "openFile:" | "openUrl:" => Run::Open(text(Escape::None)),
+            "openFile:" => semantic::open_file_run(&text(Escape::None), has_code()),
+            "openUrl:" => semantic::open_url_run(&text(Escape::None), has_code()),
             "runCommand:" | "runCommandInWindow:" => Run::Command(text(Escape::Cmd)),
             "runCoprocess:" => Run::Coprocess(text(Escape::Cmd)),
             "sendText:" => Run::Send(text(Escape::None)),
@@ -334,10 +358,10 @@ impl App {
                 }
                 if c.ctx.link.is_some() {
                     extra.push(("Copy Link Address".into(), CtxItem::CopyLink));
-                } else if semantic::url_like(&c.ctx.before, &c.ctx.after).is_some() {
+                } else if semantic::url_like_in(&c.ctx.before, &c.ctx.after, &c.ctx.urls).is_some() {
                     extra.push(("Copy URL".into(), CtxItem::CopyLink));
                 }
-                let link = c.ctx.link.clone().or_else(|| semantic::url_like(&c.ctx.before, &c.ctx.after));
+                let link = c.ctx.link.clone().or_else(|| semantic::url_like_in(&c.ctx.before, &c.ctx.after, &c.ctx.urls));
                 let cwd = c.ctx.cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
                 let actions = c.found.as_ref().map(|f| (c.rules[f.rule].actions.clone(), f.captures.clone())).unwrap_or_default();
                 pending = Some(CtxPending { pane: id, link, actions: actions.0, captures: actions.1, cwd, fold, providers: Vec::new() });
@@ -439,8 +463,9 @@ impl App {
     /// History, else the text as a URL. In a remote pane only a web or mail link opens; other
     /// text may only download (P10).
     pub(super) fn open_text(&mut self, id: PaneId, text: &str) {
+        let urls = self.url_prefs(id);
         if self.remote_text(id) {
-            let link = semantic::url_like("", text);
+            let link = semantic::url_like_in("", text, &urls);
             match link.filter(|u| ssh_files::click_route(true, Some(u.as_str())) == ssh_files::ClickRoute::Local) {
                 Some(u) => self.execute(id, semantic::guard_open(&u, has_code()), None, false),
                 None => {
@@ -453,7 +478,7 @@ impl App {
         let prefs = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).map(|p| Prefs::from_value(p.get("Semantic History").as_ref())).unwrap_or_default();
         let target = match semantic::find_path("", text, cwd.as_deref()) {
             Some((path, line, column)) => Target::File { path, line, column },
-            None => Target::Url(semantic::url_like("", text).unwrap_or_else(|| text.to_string())),
+            None => Target::Url(semantic::url_like_in("", text, &urls).unwrap_or_else(|| text.to_string())),
         };
         let cwd_s = cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
         let around = Around { prefix: "", suffix: text, cwd: &cwd_s };
@@ -465,7 +490,7 @@ impl App {
     /// Copy Link Address, the pointer action: the link or URL at a point.
     pub(super) fn copy_link_at(&mut self, id: PaneId, point: Point) {
         let Some(c) = self.clicked(id, point) else { return };
-        let Some(link) = c.ctx.link.clone().or_else(|| semantic::url_like(&c.ctx.before, &c.ctx.after)) else { return };
+        let Some(link) = c.ctx.link.clone().or_else(|| semantic::url_like_in(&c.ctx.before, &c.ctx.after, &c.ctx.urls)) else { return };
         if let Some(cb) = &mut self.clipboard {
             if let Err(e) = cb.set_text(link) {
                 self.banners.set("clipboard", format!("Copy failed: {e}"));
@@ -759,6 +784,7 @@ mod tests {
         ("app/semantic_ui.rs", "shell_open", "the sink itself; its callers are checked"),
         ("app/semantic_ui.rs", "reveal_in_explorer", "the sink itself; its callers are checked"),
         ("semantic.rs", "plan", "builds a Run and opens nothing; its callers are checked"),
+        ("semantic.rs", "open_url_run", "builds a Run and opens nothing; smart_action_run's callers are checked"),
         ("coproc_win.rs", "spawn", "the coprocess start; start_coprocess's callers are checked"),
         ("app/actions.rs", "run_key_action", "the user's own key binding"),
         ("app/ai_tools_app.rs", "ai_reveal_file", "reveals the AI's own new file, runs nothing"),
