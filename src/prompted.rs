@@ -35,7 +35,7 @@ pub fn valid(key: &str, json: &serde_json::Value) -> Option<Value> {
         (Kind::String, J::String(t)) if matches!(key, "Background Image Location" | "Background Image Folder Location") && !t.is_empty() && !local_path_ok(t) => return None,
         // Nor may it start sessions in, log to, archive to or read an icon from a network path:
         // Windows connects to the host.
-        (Kind::String, J::String(t)) if crate::start_dir::PATH_KEYS.contains(&key) && crate::start_dir::network_folder(t) => return None,
+        (Kind::String, J::String(t)) if crate::start_dir::PATH_KEYS.contains(&key) && crate::start_dir::network_value(key, t) => return None,
         (Kind::String | Kind::Font, J::String(t)) => Value::String(t.clone()),
         (Kind::Enum, J::Number(n)) => {
             let v = Value::Integer(n.as_i64()?);

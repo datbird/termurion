@@ -6,8 +6,9 @@ use crate::profile::Profile;
 use std::path::{Path, PathBuf};
 
 /// The profile keys holding a path (the custom directory and the three Advanced ones, then the
-/// log and archive folders, the custom icon and the two background image keys).
-pub const PATH_KEYS: [&str; 9] = [
+/// log and archive folders, the log filename template (an absolute name replaces the folder), the
+/// custom icon, the two background image keys and a Browser profile's start URL).
+pub const PATH_KEYS: [&str; 11] = [
     "Working Directory",
     "AWDS Window Directory",
     "AWDS Tab Directory",
@@ -17,10 +18,12 @@ pub const PATH_KEYS: [&str; 9] = [
     "Custom Icon Path",
     "Background Image Location",
     "Background Image Folder Location",
+    "Log Filename Format",
+    "Initial URL",
 ];
 
 /// Every key `scrub_value` acts on: the path keys and the SSH dictionary (its program and files).
-pub const SCRUBBED_KEYS: [&str; 10] = [
+pub const SCRUBBED_KEYS: [&str; 12] = [
     "Working Directory",
     "AWDS Window Directory",
     "AWDS Tab Directory",
@@ -30,6 +33,8 @@ pub const SCRUBBED_KEYS: [&str; 10] = [
     "Custom Icon Path",
     "Background Image Location",
     "Background Image Folder Location",
+    "Log Filename Format",
+    "Initial URL",
     crate::ssh_config::KEY,
 ];
 
@@ -41,12 +46,30 @@ pub fn network_folder(v: &str) -> bool {
     crate::prompted::network_path(v.trim_matches(|c: char| c.is_whitespace() || c.is_control() || c == '"' || c == '\''))
 }
 
+/// Whether `v` stored under `key` is a network or device path, or for a start URL a `file:` URL
+/// whose host is another machine (`file://host/share`; `file:///C:/x` and `localhost` are local).
+pub fn network_value(key: &str, v: &str) -> bool {
+    if network_folder(v) {
+        return true;
+    }
+    key == "Initial URL" && {
+        let t = v.trim_matches(|c: char| c.is_whitespace() || c.is_control());
+        let rest = match t.get(..5) {
+            Some(scheme) if scheme.eq_ignore_ascii_case("file:") => &t[5..],
+            _ => return false,
+        };
+        let host: String = rest.chars().skip_while(|c| *c == '/' || *c == '\\').take_while(|c| *c != '/' && *c != '\\').collect();
+        let slashes = rest.chars().take_while(|c| *c == '/' || *c == '\\').count();
+        slashes >= 2 && !host.is_empty() && !host.eq_ignore_ascii_case("localhost") && !(host.len() == 2 && host.ends_with(':'))
+    }
+}
+
 /// Empties `v` (stored under `key`) when it is a path key naming a network or device path; a
 /// network program or file in the SSH dictionary is dropped from it. True when it changed `v`.
 /// The one filter every ingress other than Settings uses: Windows connects to the host (and
 /// offers the person's credentials) when it opens such a path.
 pub fn scrub_value(key: &str, v: &mut toml::Value) -> bool {
-    if PATH_KEYS.contains(&key) && v.as_str().is_some_and(network_folder) {
+    if PATH_KEYS.contains(&key) && v.as_str().is_some_and(|t| network_value(key, t)) {
         *v = toml::Value::String(String::new());
         return true;
     }
@@ -394,6 +417,23 @@ mod tests {
             if named && s.kind == crate::schema::Kind::String {
                 assert!(PATH_KEYS.contains(&s.key.as_str()), "{} looks like a path and is not filtered", s.key);
             }
+        }
+    }
+
+    /// Review of Task 6 (r1, item 4): the log filename template and a Browser profile's start URL
+    /// go through the same filter, so a later reader cannot reintroduce the leak.
+    #[test]
+    fn log_filename_and_initial_url_are_filtered() {
+        assert!(PATH_KEYS.contains(&"Log Filename Format") && PATH_KEYS.contains(&"Initial URL"));
+        assert!(SCRUBBED_KEYS.contains(&"Log Filename Format") && SCRUBBED_KEYS.contains(&"Initial URL"));
+        for (key, bad) in [("Log Filename Format", "\\\\evil\\share\\x.log"), ("Initial URL", "file://evil/share/x.html"), ("Initial URL", "FILE:\\\\evil\\s"), ("Initial URL", "\\\\evil\\s\\x.html")] {
+            let mut v = toml::Value::String(bad.into());
+            assert!(scrub_value(key, &mut v), "{key} {bad}");
+            assert_eq!(v.as_str(), Some(""));
+        }
+        for (key, ok) in [("Log Filename Format", "\\(creationTimeString).log"), ("Initial URL", "https://example.com"), ("Initial URL", "file:///C:/x.html"), ("Initial URL", "file://localhost/C:/x.html"), ("Initial URL", "iterm2-about:welcome")] {
+            let mut v = toml::Value::String(ok.into());
+            assert!(!scrub_value(key, &mut v), "{key} {ok}");
         }
     }
 
