@@ -28,6 +28,8 @@ pub fn valid(key: &str, json: &serde_json::Value) -> Option<Value> {
         (Kind::Float, J::Number(n)) => Value::Float(n.as_f64()?),
         // A program may only point the background image at a local file.
         (Kind::String, J::String(t)) if matches!(key, "Background Image Location" | "Background Image Folder Location") && !t.is_empty() && !local_path_ok(t) => return None,
+        // Nor may it start sessions in a network folder: CreateProcessW connects to the host.
+        (Kind::String, J::String(t)) if crate::start_dir::FOLDER_KEYS.contains(&key) && crate::start_dir::network_folder(t) => return None,
         (Kind::String | Kind::Font, J::String(t)) => Value::String(t.clone()),
         (Kind::Enum, J::Number(n)) => {
             let v = Value::Integer(n.as_i64()?);
@@ -567,5 +569,16 @@ mod tests {
         assert_eq!(open_url(&b("C:\\Users\\me\\x.xll")), None);
         assert_eq!(open_url(&b("file://localhost/C:/x.xll")), None);
         assert_eq!(open_url(&b("ms-settings:privacy")), None);
+    }
+
+    /// A program (OSC 1337 SetProfileProperty) never sets a network start folder.
+    #[test]
+    fn a_program_cannot_set_a_network_start_folder() {
+        for key in crate::start_dir::FOLDER_KEYS {
+            for bad in [" \\\\evil\\share", "//evil/s", "\"\\\\evil\\s\""] {
+                assert_eq!(valid(key, &serde_json::json!(bad)), None, "{key} {bad:?}");
+            }
+            assert!(valid(key, &serde_json::json!("D:\\ok")).is_some(), "{key}");
+        }
     }
 }

@@ -105,11 +105,19 @@ pub fn from_plist_bytes(bytes: &[u8]) -> Result<Vec<Profile>, String> {
     Ok(bookmarks
         .iter()
         .filter_map(|b| match from_plist(b) {
-            Some(Value::Table(t)) => Some(Profile { values: t.into_iter().collect() }),
+            Some(Value::Table(t)) => Some(scrubbed(t)),
             _ => None,
         })
         .collect::<Vec<_>>())
     .map(unique)
+}
+
+/// An imported profile: a start folder naming a network path is emptied (it did not come from
+/// the person typing it in Settings; `start_dir::scrub_value`).
+fn scrubbed(t: toml::Table) -> Profile {
+    let mut values: std::collections::BTreeMap<String, Value> = t.into_iter().collect();
+    crate::start_dir::scrub_map(&mut values);
+    Profile { values }
 }
 
 /// Imported profiles may lack a Guid or repeat one; give each a unique Guid.
@@ -124,7 +132,7 @@ pub fn from_dynamic_json(text: &str) -> Result<Vec<Profile>, String> {
     Ok(list
         .iter()
         .filter_map(|b| match from_json(b) {
-            Some(Value::Table(t)) => Some(Profile { values: t.into_iter().collect() }),
+            Some(Value::Table(t)) => Some(scrubbed(t)),
             _ => None,
         })
         .collect::<Vec<_>>())
@@ -600,5 +608,19 @@ mod tests {
     fn a_plist_without_profiles_is_an_error() {
         let empty = r#"<?xml version="1.0"?><plist version="1.0"><dict></dict></plist>"#;
         assert!(from_plist_bytes(empty.as_bytes()).unwrap_err().contains("New Bookmarks"));
+    }
+
+    /// An imported profile never carries a network start folder (it was not typed in Settings).
+    #[test]
+    fn imported_profiles_lose_network_folders() {
+        let json = r#"{"Profiles":[{"Name":"X","Guid":"g","Custom Directory":"Yes","Working Directory":" \\\\evil\\share","AWDS Tab Directory":"//evil/s","AWDS Pane Directory":"D:\\ok"}]}"#;
+        let got = from_dynamic_json(json).unwrap();
+        let v = |k: &str| got[0].string(k);
+        assert_eq!((v("Working Directory"), v("AWDS Tab Directory"), v("AWDS Pane Directory")), (String::new(), String::new(), "D:\\ok".to_string()));
+        let plist = r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>New Bookmarks</key><array><dict>
+<key>Name</key><string>P</string><key>Guid</key><string>g2</string>
+<key>Working Directory</key><string>	\\evil\share</string><key>AWDS Window Directory</key><string>"//evil/s"</string></dict></array></dict></plist>"#;
+        let got = from_plist_bytes(plist.as_bytes()).unwrap();
+        assert_eq!((got[0].string("Working Directory"), got[0].string("AWDS Window Directory")), (String::new(), String::new()));
     }
 }

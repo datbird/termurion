@@ -561,4 +561,13 @@ mod tests {
             ])
         );
     }
+
+    /// SetProfileProperty (a session or a saved profile) refuses a network start folder.
+    #[test]
+    fn legal_refuses_network_folders() {
+        let bad = vec![("Working Directory".to_string(), serde_json::json!("\t\\\\evil\\share"))];
+        assert_eq!(legal(&bad), None);
+        let ok = vec![("AWDS Pane Directory".to_string(), serde_json::json!("D:\\ok"))];
+        assert_eq!(legal(&ok), Some(vec![("AWDS Pane Directory".to_string(), Value::String("D:\\ok".into()))]));
+    }
 }

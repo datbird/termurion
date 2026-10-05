@@ -5,6 +5,31 @@
 use crate::profile::Profile;
 use std::path::{Path, PathBuf};
 
+/// The profile keys holding a start folder (the custom directory and the three Advanced ones).
+pub const FOLDER_KEYS: [&str; 4] = ["Working Directory", "AWDS Window Directory", "AWDS Tab Directory", "AWDS Pane Directory"];
+
+/// Whether a stored start folder names a network or device path after the trimming `resolve`
+/// does.
+pub fn network_folder(v: &str) -> bool {
+    // Whitespace, control characters and quotes around the text are not part of the path the
+    // person meant: a leading space must not hide `\\host` from this filter while `resolve` trims it.
+    crate::prompted::network_path(v.trim_matches(|c: char| c.is_whitespace() || c.is_control() || c == '"' || c == '\''))
+}
+
+/// Empties `v` (stored under `key`) when it is a start folder naming a network path. True when it did.
+pub fn scrub_value(key: &str, v: &mut toml::Value) -> bool {
+    if FOLDER_KEYS.contains(&key) && v.as_str().is_some_and(network_folder) {
+        *v = toml::Value::String(String::new());
+        return true;
+    }
+    false
+}
+
+/// `scrub_value` over every folder key of a profile's values. Answers the keys emptied.
+pub fn scrub_map(values: &mut std::collections::BTreeMap<String, toml::Value>) -> Vec<String> {
+    FOLDER_KEYS.iter().filter(|k| values.get_mut(**k).is_some_and(|v| scrub_value(k, v))).map(|k| k.to_string()).collect()
+}
+
 /// What the new session is for: a window's first tab, a tab, or a split (`iTermObjectType`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Object {
@@ -288,5 +313,27 @@ mod tests {
         assert_eq!(previous_for(Object::Tab, here.clone(), before.clone()), here);
         assert_eq!(previous_for(Object::Pane, here.clone(), before), here);
         assert_eq!(previous_for(Object::Window, here, None), None);
+    }
+
+    /// The filter reads a folder as `resolve` does: whitespace and quotes around it do not hide a network path.
+    #[test]
+    fn network_folder_follows_resolve_normalization() {
+        for p in [" \\\\evil\\share", "\t\\\\evil\\share", "\n//evil/share", "\"\\\\evil\\share\"", "'//evil/share'", "  \\\\?\\UNC\\evil\\s", " \\\\.\\pipe\\x", "\\??\\UNC\\evil\\s", "/\\evil\\s", "\\\\evil\\share\t "] {
+            assert!(network_folder(p), "{p:?}");
+        }
+        for p in ["D:\\ok", " D:\\ok ", "~\\src", "", "  ", "\\rooted", "relative\\x", "\"D:\\x y\"", "D:/a//b"] {
+            assert!(!network_folder(p), "{p:?}");
+        }
+        // The two agree: every form the filter refuses resolves, were it not filtered, as a UNC the person typed.
+        let mut v = toml::Value::String(" \\\\evil\\share".into());
+        assert!(scrub_value("Working Directory", &mut v));
+        assert_eq!(v.as_str(), Some(""));
+        let mut other = toml::Value::String(" \\\\evil\\share".into());
+        assert!(!scrub_value("Name", &mut other), "only folder keys");
+        assert_eq!(other.as_str(), Some(" \\\\evil\\share"));
+        let mut map: std::collections::BTreeMap<String, toml::Value> = FOLDER_KEYS.iter().map(|k| (k.to_string(), toml::Value::String("\t//evil/s".into()))).collect();
+        map.insert("Name".into(), toml::Value::String("//keep".into()));
+        assert_eq!(scrub_map(&mut map).len(), 4);
+        assert!(FOLDER_KEYS.iter().all(|k| map[*k].as_str() == Some("")) && map["Name"].as_str() == Some("//keep"));
     }
 }

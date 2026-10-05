@@ -21,10 +21,14 @@ pub fn custom_values(props: &[pb::ProfileProperty]) -> Option<Vec<(String, Optio
         if key == GUID || key == ORIGINAL_GUID {
             continue;
         }
-        let value = match json {
+        let mut value = match json {
             serde_json::Value::Null => None,
             v => crate::import::from_json(&v),
         };
+        // A program or script is not the person typing in Settings: no network start folder.
+        if let Some(v) = value.as_mut() {
+            crate::start_dir::scrub_value(&key, v);
+        }
         out.push((key, value));
     }
     Some(out)
@@ -141,5 +145,14 @@ mod tests {
         assert_eq!((r.status, r.session_id), (Some(SStatus::Ok as i32), vec![]));
         let r = split_response(&[]);
         assert_eq!((r.status, r.session_id), (Some(SStatus::Ok as i32), vec![]));
+    }
+
+    /// The API's custom properties never carry a network start folder through to the session copy.
+    #[test]
+    fn custom_values_blank_network_folders() {
+        let got = custom_values(&[prop("Working Directory", "\" \\\\\\\\evil\\\\share\""), prop("AWDS Tab Directory", "\"D:\\\\ok\""), prop("Name", "\"//keep\"")]).unwrap();
+        assert_eq!(got[0], ("Working Directory".to_string(), Some(Value::String(String::new()))));
+        assert_eq!(got[1].1, Some(Value::String("D:\\ok".into())));
+        assert_eq!(got[2].1, Some(Value::String("//keep".into())));
     }
 }

@@ -628,19 +628,18 @@ pub fn trust_text(name: &str, windows: &[Value]) -> String {
     lines.join("\n")
 }
 
-/// The profile keys holding a start folder (the custom directory and the three Advanced ones).
-pub const FOLDER_KEYS: [&str; 4] = ["Working Directory", "AWDS Window Directory", "AWDS Tab Directory", "AWDS Pane Directory"];
+pub use crate::start_dir::FOLDER_KEYS;
 
 /// Empties every start folder of an arrangement's embedded profile that names a network or
-/// device path (`\\host`, `//host`, `\\?\`): `CreateProcessW` connects to the host at process
-/// start, so a file from elsewhere could make the person's PC authenticate to it. The profile
-/// the person typed themselves keeps its UNC folder; one from a file never does. Returns the
-/// keys emptied.
+/// device path (`\\host`, `//host`, `\\?\`), however it is padded: `CreateProcessW` connects to
+/// the host at process start, so a file from elsewhere could make the person's PC authenticate
+/// to it. The profile the person typed themselves keeps its UNC folder; one from a file never
+/// does (`start_dir::scrub_value` is the one filter every such ingress uses). Returns the keys
+/// emptied.
 pub fn without_network_folders(copy: &mut Table) -> Vec<String> {
     let mut gone = Vec::new();
     for key in FOLDER_KEYS {
-        if copy.get(key).and_then(|v| v.as_str()).is_some_and(crate::prompted::network_path) {
-            copy.insert(key.into(), Value::String(String::new()));
+        if copy.get_mut(key).is_some_and(|v| crate::start_dir::scrub_value(key, v)) {
             gone.push(key.to_string());
         }
     }
@@ -946,6 +945,14 @@ mod tests {
         }
         assert_eq!(t["AWDS Pane Directory"].as_str(), Some(r"D:\ok"), "a drive folder stays");
         assert_eq!(t["Name"].as_str(), Some(r"\\keep"), "only folder keys are looked at");
+        // Whitespace or quotes in front do not hide it from the filter (`resolve` trims first).
+        for (i, v) in [" \\\\evil\\share", "\t//evil/share", "\n\\\\?\\UNC\\evil\\s", "\"\\\\evil\\share\""].into_iter().enumerate() {
+            let key = FOLDER_KEYS[i];
+            let mut t = Table::new();
+            t.insert(key.into(), Value::String(v.into()));
+            assert_eq!(without_network_folders(&mut t), [key], "{v:?}");
+            assert_eq!(t[key].as_str(), Some(""));
+        }
         // A saved arrangement's `~` or interpolated folder stays too.
         let mut t = Table::new();
         t.insert("Working Directory".into(), Value::String(r"~\src".into()));
@@ -966,7 +973,7 @@ mod tests {
     fn arrangement_copy_drops_network_folders() {
         let src = include_str!("app/arrange_ui.rs").split("#[cfg(test)]").next().unwrap();
         let i = src.find("fn arrangement_copy(").expect("arrangement_copy");
-        let body = &src[i..i + 900];
+        let body = src[i..].split("\n    }\n").next().unwrap();
         assert!(body.contains("arrangement::without_network_folders(&mut table);"));
         assert!(body.find("without_network_folders").unwrap() < body.find("copy.set(").unwrap());
     }

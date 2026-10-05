@@ -164,7 +164,12 @@ fn start(g: &Globals, home: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>,
 /// when it has none, as Tandem always has a profile).
 pub(super) fn apply_snapshot(snap: &Snapshot, g: &mut Globals, store: &mut Store) {
     rp::apply(snap, &mut g.values);
-    let mut profiles: Vec<Profile> = snap.profiles.iter().cloned().map(|values| Profile { values }).collect();
+    // A start folder naming a network path from the loaded file is emptied: it was not typed
+    // in Settings (`start_dir::scrub_map`).
+    let mut profiles: Vec<Profile> = snap.profiles.iter().cloned().map(|mut values| {
+        crate::start_dir::scrub_map(&mut values);
+        Profile { values }
+    }).collect();
     if profiles.is_empty() {
         profiles.push(Profile::new("Default"));
     }
@@ -747,6 +752,20 @@ mod tests {
         assert!(write_snapshot(&other, &named, &file_to_share).is_err());
         assert_eq!(std::fs::read_to_string(&named).unwrap(), before, "nothing written");
         assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1, "no temporary file either");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A snapshot loaded from a custom folder or URL never brings a network start folder in.
+    #[test]
+    fn a_loaded_snapshot_loses_network_folders() {
+        let dir = std::env::temp_dir().join(format!("tandem-prefs-unc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut g, mut store) = local(&dir, "x");
+        let profile = map(&[("Guid", Value::String("g1".into())), ("Name", Value::String("R".into())), ("Working Directory", Value::String(" \\\\evil\\share".into())), ("AWDS Tab Directory", Value::String("D:\\ok".into()))]);
+        let snap = Snapshot { settings: map(&[]), default: "g1".into(), profiles: vec![profile] };
+        apply_snapshot(&snap, &mut g, &mut store);
+        assert_eq!(store.profiles[0].string("Working Directory"), "");
+        assert_eq!(store.profiles[0].string("AWDS Tab Directory"), "D:\\ok");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
