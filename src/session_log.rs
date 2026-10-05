@@ -101,6 +101,18 @@ pub fn safe_file_name(formatted: &str) -> String {
     name
 }
 
+/// An automatic log's file name: the safe name, always ending in ".log" (any other ending, or
+/// none, gets ".log" appended: `x.bat` is `x.bat.log`), so shell output is never written to a name
+/// Windows runs, whoever set the template (13q final fix 5: Settings, an imported profile, an
+/// arrangement, an archive, a program's value). The cut of a long name keeps the ending.
+pub fn log_file_name(formatted: &str) -> String {
+    let name = safe_file_name(formatted);
+    if name.len() >= 4 && name.is_char_boundary(name.len() - 4) && name[name.len() - 4..].eq_ignore_ascii_case(".log") {
+        return name;
+    }
+    safe_file_name(&format!("{name}.log"))
+}
+
 /// The UTF-16 units of `s`: Windows counts file names in them.
 fn units(s: &str) -> usize {
     s.encode_utf16().count()
@@ -154,7 +166,7 @@ pub fn join_log_path(folder: &str, formatted_name: &str, home: &Path) -> PathBuf
     } else {
         PathBuf::from(folder)
     };
-    dir.join(safe_file_name(formatted_name))
+    dir.join(log_file_name(formatted_name))
 }
 
 // ---------------------------------------------------------------- cooked text
@@ -1447,6 +1459,23 @@ mod tests {
         assert_eq!(quiet.load(std::sync::atomic::Ordering::SeqCst), 0, "no failure, no wake");
     }
 
+    /// An automatic log's name always ends in .log, whoever set the template (Settings, an imported
+    /// profile, an arrangement, an archive, a program's value): raw shell output is never written
+    /// to a name Windows would run (13q final fix 5).
+    #[test]
+    fn an_automatic_log_name_always_ends_in_dot_log() {
+        let home = Path::new(r"C:\Users\u");
+        let look = lookup_for(&[("profileName", "Ops"), ("title", "evil.cmd")]);
+        for (template, want) in [("x.bat", "x.bat.log"), ("\\(profileName).cmd", "Ops.cmd.log"), ("x.PS1", "x.PS1.log"), ("x", "x.log"), ("x.log", "x.log"), ("x.LOG", "x.LOG"), ("\\(title)", "evil_cmd.log"), ("x.bat.", "x.bat.log"), ("x.lnk ", "x.lnk.log")] {
+            let path = auto_log_path(r"D:\logs", template, &look, home).unwrap();
+            assert_eq!(path, PathBuf::from(r"D:\logs").join(want), "{template:?}");
+        }
+        // The cut of an over-long name keeps the rule.
+        let long = format!("{}.bat", "a".repeat(300));
+        let name = auto_log_path(r"D:\logs", &long, &look, home).unwrap().file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.ends_with(".log") && units(&name) <= MAX_NAME, "{name}");
+    }
+
     #[test]
     fn file_sink_failure_comes_back_without_blocking() {
         let missing = temp_path("missing").parent().unwrap().join("no").join("such").join("a.log");
@@ -1517,7 +1546,7 @@ mod tests {
         assert_eq!(auto_log_path("D:\\w\\\\(profileName)", "a.log", &look, home).unwrap(), PathBuf::from(r"D:\w\(profileName)\a.log"), "`\\\\(` is a literal, as for a working directory");
         // A name that evaluates to "a/b" is "a__b" (`PSA:160-166`).
         let slash = [("x", "a/b")];
-        assert_eq!(auto_log_path("", "\\(x)", &lookup_for(&slash), home).unwrap(), PathBuf::from(r"C:\Users\u\a_b"), "a program's value is one segment");
+        assert_eq!(auto_log_path("", "\\(x)", &lookup_for(&slash), home).unwrap(), PathBuf::from(r"C:\Users\u\a_b.log"), "a program's value is one segment");
         assert_eq!(auto_log_path("", "a/b.log", &lookup_for(&[]), home).unwrap(), PathBuf::from(r"C:\Users\u\a__b.log"), "the template's own slash is iTerm2's");
         // A plain local folder is used as written, as 13p's working directory reads it.
         assert_eq!(auto_log_path(r"C:\temp\new", "a.log", &look, home).unwrap(), PathBuf::from(r"C:\temp\new\a.log"));
