@@ -1336,6 +1336,8 @@ pub struct App {
     script_templates: HashMap<(PaneId, String), script_ui::Template>,
     /// The last bar layout pass that asked for status bar strings (`begin_script_pass`).
     script_pass: u64,
+    /// Each pane's latest Initial Text generation (`bump_initial_text`): a late answer of an older start is dropped.
+    initial_text_gen: HashMap<PaneId, u64>,
     /// Status bar component unread counts set by scripts: by component identifier, and per
     /// session (which wins when set, `iTermStatusBarUnreadCountController.m:51-60`), drawn as
     /// a badge on the component.
@@ -1974,6 +1976,7 @@ pub fn run() {
         script_alerts: VecDeque::new(),
         script_templates: HashMap::new(),
         script_pass: 0,
+        initial_text_gen: HashMap::new(),
         script_alert: None,
         provisioner: None,
         provision_after: HashMap::new(),
@@ -3161,6 +3164,8 @@ impl App {
         let (locked, activity, pinned) = self.panes.get(&id).map_or((false, 0, None), |p| (p.locked, p.activity, p.pinned_width));
         // The new shell never saw what a model typed into the old one.
         self.orch_held.remove(&id);
+        // A slow Initial Text of the old shell must not type into the new one.
+        self.bump_initial_text(id);
         if let Some(old) = self.panes.remove(&id) {
             if let Some(pid) = old.shell_pid() {
                 self.jobs.forget(pid);
@@ -3431,8 +3436,10 @@ impl App {
                 }
                 self.install_pane(id, pane, &p);
                 // iTerm2 blanks Initial Text for single-use and URL launches (`iTermController.m:1872`,
-                // `:2188`): a git window, an orchestrated or scripted command, the API's command
-                // and an ssh: URL's copy never type the profile's text (B2).
+                // `:2188`): a git window, an orchestrated or scripted command and an ssh: URL's
+                // copy never type the profile's text (B2). The API's CreateTab with custom
+                // properties starts the base profile's own shell with the text, as iTerm2's does
+                // (the API is authenticated; its command is a profile property, not an override).
                 if self.start_command_override.is_none() && self.start_env_override.is_none() {
                     self.send_initial_text(id, &p);
                 }

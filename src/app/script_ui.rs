@@ -62,7 +62,7 @@ pub(super) enum Origin {
     Template { pane: PaneId, key: String, nth: u64 },
     /// A profile's Initial Text (`PS:3698-3706`): written to the session when it finishes; a
     /// failure or a result that is not a string writes nothing.
-    InitialText { pane: PaneId },
+    InitialText { pane: PaneId, epoch: u64 },
 }
 
 /// Whether Initial Text must wait: an SSH profile's session with no conductor yet is still at
@@ -70,6 +70,12 @@ pub(super) enum Origin {
 /// (`PS:3687-3691`; the conductor's login sends it, `PS:25565`).
 pub(super) fn initial_text_blocked(ssh_profile: bool, has_conductor: bool) -> bool {
     ssh_profile && !has_conductor
+}
+
+/// Whether an Initial Text answer still belongs to the pane's current start (`current` is the
+/// generation the pane's last start took, `epoch` the one this evaluation took).
+pub(super) fn initial_text_current(current: Option<u64>, epoch: u64) -> bool {
+    current == Some(epoch)
 }
 
 /// What an Initial Text evaluation writes: the string and Enter (`\r`, the key a Windows
@@ -779,7 +785,11 @@ impl App {
             Origin::Title { pane, nth } => self.title_finished(*pane, *nth, invocation, r),
             // Never `user_write`: Initial Text is not broadcast (`writeTaskNoBroadcast`,
             // `PS:4276`). The pane may be gone by now.
-            Origin::InitialText { pane } => {
+            // An answer of an older start (the session restarted meanwhile) is dropped.
+            Origin::InitialText { pane, epoch } => {
+                if !initial_text_current(self.initial_text_gen.get(pane).copied(), *epoch) {
+                    return;
+                }
                 if let (Some(bytes), Some(p)) = (initial_text_bytes(&r), self.panes.get_mut(pane)) {
                     p.input(&bytes);
                 }
@@ -794,13 +804,22 @@ impl App {
     /// again). The caller never calls it for an override launch (git, orchestration, script
     /// and URL launches), as iTerm2 blanks those.
     pub(super) fn send_initial_text(&mut self, pane: PaneId, p: &crate::profile::Profile) {
+        let epoch = self.bump_initial_text(pane);
         let text = p.string("Initial Text");
         let has_conductor = self.panes.get(&pane).is_some_and(|x| x.conductor.is_some());
         if text.is_empty() || initial_text_blocked(crate::profile::is_ssh(p), has_conductor) {
             return;
         }
         let inv = Invocation::for_template(&text, Timeout::from_secs(5.0), true, false, Instant::now());
-        self.start_run(&text, inv, ScopeSpec::Session { pane, frame: Values::new() }, Origin::InitialText { pane });
+        self.start_run(&text, inv, ScopeSpec::Session { pane, frame: Values::new() }, Origin::InitialText { pane, epoch });
+    }
+
+    /// Takes the pane's next Initial Text generation: a start, a restart or a send that sends
+    /// nothing makes every earlier evaluation's answer stale.
+    pub(super) fn bump_initial_text(&mut self, pane: PaneId) -> u64 {
+        let epoch = self.initial_text_gen.get(&pane).copied().unwrap_or(0) + 1;
+        self.initial_text_gen.insert(pane, epoch);
+        epoch
     }
 
     /// A status bar string's value (Interpolated String, a Custom Action's title): one with no
@@ -1675,5 +1694,41 @@ mod tests {
         queue_alert(&mut queue, None, traced.clone());
         assert_eq!(queue, VecDeque::from([traced]));
         assert_eq!(Alert::Result("f() returned:\n3".into()).form(), ("Function Call Result", "f() returned:\n3"));
+    }
+
+    /// A slow Initial Text (a function call, up to 5 s) from the old shell never types into a
+    /// restarted session: every start takes a new generation, and an answer of an older one is dropped.
+    #[test]
+    fn a_restart_discards_a_late_initial_text() {
+        assert!(initial_text_current(Some(1), 1));
+        assert!(!initial_text_current(Some(2), 1), "the session restarted");
+        assert!(!initial_text_current(None, 1), "the pane is gone");
+        let src = include_str!("script_ui.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(src.contains("initial_text_current(self.initial_text_gen.get(pane).copied(), *epoch)"), "the answer checks its generation");
+        let body = src[src.find("fn send_initial_text(").unwrap()..].split("\n    }\n").next().unwrap();
+        assert!(body.find("bump_initial_text").unwrap() < body.find("initial_text_blocked(").unwrap(), "every start takes a generation, even one that sends nothing");
+        let restart = include_str!("mod.rs");
+        let restart = &restart[restart.find("fn restart_pane(").unwrap()..];
+        assert!(restart.split("\n    }\n").next().unwrap().contains("bump_initial_text"), "a restart that sends nothing still drops the old answer");
+    }
+
+    /// B1: nothing is typed at a plain ssh prompt. An SSH profile has no conductor until it has
+    /// logged in (with SSH Integration off, never), and only the conductor's login makes the text due.
+    #[test]
+    fn initial_text_never_reaches_a_plain_ssh_prompt() {
+        let mut p = crate::profile::Profile::default();
+        p.set("Custom Command", toml::Value::String("SSH".into()));
+        p.set("Command", toml::Value::String("host".into()));
+        p.set("Initial Text", toml::Value::String("echo hi".into()));
+        for integration in [true, false] {
+            p.set("SSH Integration", toml::Value::Boolean(integration));
+            assert!(crate::profile::is_ssh(&p));
+            assert!(initial_text_blocked(crate::profile::is_ssh(&p), false), "integration {integration}: no conductor, no text");
+        }
+        let src = include_str!("script_ui.rs").split("#[cfg(test)]").next().unwrap();
+        let body = src[src.find("fn send_initial_text(").unwrap()..].split("\n    }\n").next().unwrap();
+        assert!(body.contains("initial_text_blocked(crate::profile::is_ssh(p), has_conductor)"));
+        let pane = include_str!("../pane.rs");
+        assert_eq!(pane.matches("initial_text_due = true").count(), 1, "only the conductor's login makes it due");
     }
 }
