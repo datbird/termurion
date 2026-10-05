@@ -753,13 +753,14 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
                 .inner
                 .into()
             }
-            // The two word rows are single-line text fields committed on focus loss or Enter, drawn
+            // The two word rows are single-line text fields stored as typed, drawn
             // with no label of their own: the mode popup above them carries the title (`XIB:8010`).
             // Other String rows stay as they were (drawn elsewhere or on the Advanced pane).
             Kind::String if matches!(s.key.as_str(), "WordCharacters" | "WordSelectionRegexPattern") => {
                 let mut text = g.string(&s.key);
                 let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(220.0));
-                if r.lost_focus() && text != g.string(&s.key) {
+                // Stored as it is typed: the buffer is rebuilt from the globals every frame.
+                if r.changed() && text != g.string(&s.key) {
                     g.set(&s.key, Value::String(text));
                     changed = true;
                 }
@@ -1253,7 +1254,7 @@ pub fn custom_scripts_folder_row(ui: &mut egui::Ui, g: &mut Globals, home: &std:
 /// in mode 1 (iTerm2 hides the other text field); every other row always.
 pub fn row_visible(g: &Globals, key: &str) -> bool {
     match key {
-        "WordCharacters" => g.int("WordSelectionMode") == 0,
+        "WordCharacters" => g.int("WordSelectionMode") != 1,
         "WordSelectionRegexPattern" => g.int("WordSelectionMode") == 1,
         _ => true,
     }
@@ -3587,6 +3588,39 @@ mod tests {
             assert_eq!((s.label.as_str(), s.help.as_str()), (label, help), "{key}");
             assert!(s.min.is_none() && s.max.is_none(), "{key} is unbounded, as iTerm2's");
         }
+    }
+
+    /// Task 1 fix 1: the word field is rewritten from the globals every frame, so what is
+    /// typed must be stored as it is typed, not only on losing focus.
+    #[test]
+    fn word_field_keeps_typed_text() {
+        let ctx = egui::Context::default();
+        let mut g = Globals::empty(std::path::Path::new("word-field-test.toml"));
+        let s = schema::find_global("WordCharacters").unwrap();
+        let before = g.string("WordCharacters");
+        let frame = |events: Vec<egui::Event>, g: &mut Globals| {
+            let mut out = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+                global_control(ui, g, s, true);
+            });
+            out.textures_delta.clear();
+        };
+        let tab = egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        frame(vec![], &mut g);
+        frame(vec![tab], &mut g);
+        frame(vec![], &mut g);
+        frame(vec![egui::Event::Text("x".into())], &mut g);
+        frame(vec![], &mut g);
+        let now = g.string("WordCharacters");
+        assert!(now.contains('x') && now != before, "typed text was lost: {now:?}");
+    }
+
+    /// Task 1 fix 2: a hand-edited WordSelectionMode other than 1 is the list mode.
+    #[test]
+    fn out_of_range_word_mode_is_the_list() {
+        let mut g = Globals::empty(std::path::Path::new("word-mode-test.toml"));
+        g.set("WordSelectionMode", Value::Integer(2));
+        assert!(row_visible(&g, "WordCharacters"));
+        assert!(!row_visible(&g, "WordSelectionRegexPattern"));
     }
 
     /// 13l P5: an Int row draws a drag value for its stored integer.
