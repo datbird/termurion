@@ -478,10 +478,7 @@ impl App {
         }
         // A program or script a document links to is shown in Explorer, never run.
         if crate::porthole::link_action(target) == crate::porthole::LinkAction::Reveal {
-            if let Err(e) = std::process::Command::new("explorer").arg(format!("/select,{t}")).spawn() {
-                self.banners.set("link", format!("Could not show {t}: {e}"));
-            }
-            return;
+            return self.reveal_in_explorer(&t);
         }
         if let Err(e) = super::semantic_ui::shell_open(&t, None, false) {
             self.banners.set("link", format!("Could not open {t}: {e}"));

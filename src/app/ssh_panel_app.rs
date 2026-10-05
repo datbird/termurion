@@ -136,8 +136,9 @@ pub(super) fn reveal_all(paths: &[PathBuf]) -> Result<(), String> {
         [one] => {
             // The same Explorer the Win-click's reveal runs, found through the system directory.
             let program = crate::script_provision::system_directory().and_then(|s| crate::semantic::explorer_in(&s)).ok_or("the Windows folder is unknown")?;
+            let arg = crate::semantic::explorer_select_arg(&one.to_string_lossy()).ok_or("the file's name cannot be shown in Explorer")?;
             let mut cmd = std::process::Command::new(program);
-            cmd.raw_arg(format!("/select,{}", crate::semantic::cmd_quote(&one.to_string_lossy())));
+            cmd.raw_arg(arg);
             cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
         }
         many => {

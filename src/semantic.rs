@@ -869,6 +869,15 @@ pub fn explorer_in(system: &Path) -> Option<PathBuf> {
     system.parent().map(|windows| windows.join("explorer.exe"))
 }
 
+/// The one builder of the argument explorer.exe gets to select `path` (every Reveal: Win-click,
+/// document links, scripts, downloads, the allow-all file): `/select,"<path>"`, passed raw. None
+/// when the path holds a quote (it would end the argument and let the rest add Explorer
+/// switches, `/root,\\host\share`), a control character, or is a network path.
+pub fn explorer_select_arg(path: &str) -> Option<String> {
+    let refused = path.contains('"') || path.chars().any(char::is_control) || crate::scripts::is_network_path(path);
+    (!refused).then(|| format!("/select,{}", cmd_quote(path)))
+}
+
 /// Quotes a value for cmd.exe.
 pub fn cmd_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
@@ -1117,6 +1126,17 @@ mod tests {
         for bad in ["a&b", "a\"b", "a\\", "a\nb", "a\u{ff02}"] {
             assert_eq!(build_cmd_line(&[t("run \""), v(bad), t("\"")]), None, "{bad:?}");
             assert_eq!(build_cmd_line(&[t("run "), v(bad)]), None, "{bad:?}");
+        }
+    }
+
+    /// Every Explorer reveal's argument comes from one builder: the path in quotes, and refused
+    /// when it holds a quote (it would end the argument and add Explorer switches such as
+    /// `/root,\\host\share`), a control character, or is a network path.
+    #[test]
+    fn explorer_select_is_one_argument() {
+        assert_eq!(explorer_select_arg(r"C:\a b\x.exe").as_deref(), Some(r#"/select,"C:\a b\x.exe""#));
+        for bad in [r#"C:\x" /root,\\evil\s\x.exe"#, "C:\\a\nb.exe", r"\\evil\s\x.exe", r"//evil/s/x.exe"] {
+            assert_eq!(explorer_select_arg(bad), None, "{bad:?}");
         }
     }
 

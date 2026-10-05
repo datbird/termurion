@@ -456,12 +456,18 @@ impl App {
             self.banners.set("action", format!("Could not show {path}: the Windows folder is unknown."));
             return;
         };
+        let Some(arg) = semantic::explorer_select_arg(path) else {
+            self.banners.set("action", format!("Tandem does not show this path in Explorer: {path:?}"));
+            return;
+        };
         let mut cmd = std::process::Command::new(program);
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            cmd.raw_arg(format!("/select,{}", semantic::cmd_quote(path)));
+            cmd.raw_arg(arg);
         }
+        #[cfg(not(windows))]
+        let _ = arg;
         if let Err(e) = cmd.spawn() {
             self.banners.set("action", format!("Could not show {path}: {e}"));
         }
@@ -973,6 +979,7 @@ mod tests {
         "guard_open(",
         "shell_open(",
         "start_coprocess(",
+        "start_coprocess_titled(",
         "reveal_in_explorer(",
         "Command::new(",
         "ShellExecuteW(",
@@ -1003,7 +1010,9 @@ mod tests {
         ("app/chat_window_app.rs", "chat_file", "an AI chat attachment, inert types only (F19)"),
         ("app/coprocess_ui.rs", "coprocess_prompt_event", "the command the user typed"),
         ("app/coprocess_ui.rs", "coprocess_bar", "Notepad on Tandem's own coprocess error file"),
-        ("app/coprocess_ui.rs", "flush_dropped", "files the user dropped"),
+        ("app/coprocess_ui.rs", "flush_dropped", "files the user dropped, through the one cmd.exe builder and its refusal (drop_command)"),
+        ("app/coprocess_ui.rs", "start_coprocess", "the sink itself; its callers are checked"),
+        ("app/toolbelt_more_ui.rs", "run_captured", "a Captured Output command the user's own Capture Output trigger built through the one cmd.exe builder and its refusal"),
         ("app/host_offers_ui.rs", "host_offer_bar", "a fixed help page"),
         ("app/menu.rs", "run_command", "the Help menu's fixed documentation page"),
         ("app/mod.rs", "window_event", "the Configure SSH help page"),

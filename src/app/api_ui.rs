@@ -1255,10 +1255,11 @@ impl App {
     fn reveal_allow_all_file(&mut self) {
         let Some(path) = noauth_path() else { return };
         let path = path.replace('/', "\\");
+        let Some(arg) = crate::semantic::explorer_select_arg(&path) else { return };
         let mut cmd = std::process::Command::new("explorer.exe");
         {
             use std::os::windows::process::CommandExt;
-            cmd.raw_arg(format!("/select,{}", crate::semantic::cmd_quote(&path)));
+            cmd.raw_arg(arg);
         }
         if let Err(e) = cmd.spawn() {
             self.banners.set("action", format!("Could not show {path}: {e}"));
