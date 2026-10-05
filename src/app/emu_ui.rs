@@ -28,6 +28,24 @@ impl App {
         }
     }
 
+    /// CSI 3 J with Prevent CSI 3 J unset (`N:795-815`): the pane's bar asks once. The sequence
+    /// that asked was dropped.
+    pub(super) fn ask_clear_history(&mut self, pane: PaneId) {
+        use crate::emu::{ALWAYS_ALLOW, ALWAYS_DENY, CLEAR_HISTORY_ID, CLEAR_HISTORY_TEXT};
+        self.ask(pane, CLEAR_HISTORY_ID, CLEAR_HISTORY_TEXT, &[ALWAYS_ALLOW, ALWAYS_DENY], false);
+    }
+
+    /// The answer to that bar: "Always Allow" stores false, "Always Deny" true (iTerm2 stores
+    /// the key the same way); every pane takes the new rules. A closed bar stores nothing.
+    pub(super) fn clear_history_answered(&mut self, button: &str) {
+        self.globals.set("PreventEscapeSequenceFromClearingHistory", toml::Value::Boolean(button.contains("Deny")));
+        self.save_globals();
+        let ids: Vec<PaneId> = self.panes.keys().copied().collect();
+        for id in ids {
+            self.apply_emu_rules(id);
+        }
+    }
+
     /// OSC 7 with a machine id arrived while Accept OSC 7 is off (`PS:15534-15558`): asked once
     /// a run, however many panes send it.
     pub(super) fn osc7_disabled(&mut self) {

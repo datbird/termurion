@@ -299,7 +299,11 @@ impl Screen {
     /// A tmux pane's history and screen from tmux's captures: triggers do not see them
     /// (they are not new output) and no reply goes back.
     pub fn feed_tmux_restore(&mut self, bytes: &[u8]) {
+        // Tandem's own bytes (iTerm2's clearScrollbackBuffer): never asked about.
+        let rules = self.rules;
+        self.rules.clear_history = Some(false);
         self.feed_quiet(bytes);
+        self.rules.clear_history = rules.clear_history;
     }
 
     /// A tmux gateway message (iTerm2's printTmuxMessage): the text as is, in the default

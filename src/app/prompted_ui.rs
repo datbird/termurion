@@ -161,6 +161,8 @@ impl App {
                     _ => {}
                 }
             }
+            (crate::emu::CLEAR_HISTORY_ID, Some(b)) => self.clear_history_answered(b),
+            (crate::emu::CLEAR_HISTORY_ID, None) => {}
             (ASK_PROFILE, None) => {}
             (UPLOAD_FORMAT, _) => {}
             (UPLOAD_KIND, Some(b @ ("Files" | "Folders"))) => self.upload_pick(pane, b == "Folders"),

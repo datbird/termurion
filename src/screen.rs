@@ -309,6 +309,8 @@ pub struct Capture {
 /// Something output asked for that the window must do.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
+    /// CSI 3 J arrived while Prevent CSI 3 J is unset: ask once whether to allow it.
+    AskClearHistory,
     /// OSC 7 with a machine id arrived while Accept OSC 7 is off.
     Osc7Disabled,
     /// Put text on the clipboard (if the user allows programs to).
@@ -969,8 +971,20 @@ impl Screen {
     /// Later tasks add arms; until then every sequence passes as it would without being held.
     pub(crate) fn pass(&mut self, held: &crate::emu::Held) -> Option<Vec<u8>> {
         use crate::emu::{rebuild, Held};
+        use crate::prompted::Decision;
         match held {
             Held::Rep(_) if !self.rules.rep => None,
+            Held::ClearHistory => match crate::emu::clear_history_decision(self.rules.clear_history) {
+                Decision::Apply => Some(rebuild(held)),
+                Decision::Deny => None,
+                Decision::Ask => {
+                    // One question at a time: a flood of CSI 3 J queues one request.
+                    if !self.requests.iter().any(|r| matches!(r, Request::AskClearHistory)) {
+                        self.requests.push(Request::AskClearHistory);
+                    }
+                    None
+                }
+            },
             h => Some(rebuild(h)),
         }
     }
@@ -2204,6 +2218,7 @@ mod tests {
     fn clears_resets_and_screen_switches_keep_a_visual_selection_exact_or_clear_it() {
         let fresh = || {
             let mut s = Screen::with_scrollback(10, 3, 100);
+            s.set_rules(crate::emu::Rules { clear_history: Some(false), ..Default::default() });
             s.feed("h \u{5d0}\r\nx\r\ny \u{5d1}\r\nz".as_bytes());
             assert_eq!(s.term().topmost_line().0, -1);
             s
@@ -3375,6 +3390,71 @@ mod tests {
         let mut s = Screen::new(10, 2);
         s.feed(b"a\x1b[99999999999999999999b");
         assert_eq!(s.term.grid().cursor.point.line, Line(1));
+    }
+
+    /// 13o Task 3 (Review Focus 1): CSI 3 J asks while the key is unset and the history stays.
+    #[test]
+    fn csi_3j_is_held_and_asked() {
+        use crate::emu::Rules;
+        let hist = |s: &Screen| s.term().grid().history_size();
+        let filled = |rules: Rules| {
+            let mut s = Screen::new(20, 3);
+            s.set_rules(rules);
+            for i in 0..52 {
+                s.feed(format!("line{i}\r\n").as_bytes());
+            }
+            s.take_requests();
+            assert_eq!(hist(&s), 50);
+            s
+        };
+        let mut s = filled(Rules::default());
+        s.feed(b"\x1b[3J");
+        assert_eq!(hist(&s), 50);
+        assert_eq!(s.take_requests(), vec![Request::AskClearHistory]);
+        // Output keeps flowing while the ask is pending, and a flood asks once.
+        s.feed(b"\x1b[3J\x1b[3J\x1b[000003J\x1b[3:1Jtail");
+        assert_eq!(hist(&s), 50);
+        assert!(row_text(&s, 2).contains("tail") || row_text(&s, 1).contains("tail"));
+        assert_eq!(s.take_requests(), vec![Request::AskClearHistory]);
+        // A split read leaves the parser clean.
+        s.feed(b"\x1b[");
+        s.feed(b"3Jok");
+        s.take_requests();
+        assert!((0..3).any(|l| row_text(&s, l).contains("ok")));
+        let mut s = filled(Rules { clear_history: Some(false), ..Default::default() });
+        s.feed(b"\x1b[3J");
+        assert_eq!(hist(&s), 0);
+        assert!(s.take_requests().is_empty());
+        let mut s = filled(Rules { clear_history: Some(true), ..Default::default() });
+        s.feed(b"\x1b[3J\x1b[0003J");
+        assert_eq!(hist(&s), 50);
+        assert!(s.take_requests().is_empty());
+        // ED 2 is never held and never touches the history.
+        let mut s = filled(Rules::default());
+        s.feed(b"\x1b[2J");
+        assert!(hist(&s) >= 50);
+        assert!(s.take_requests().is_empty());
+    }
+
+    /// 13o Task 3: the user's clears and OSC 1337 ClearScrollback are never gated.
+    #[test]
+    fn user_clears_are_not_gated() {
+        let hist = |s: &Screen| s.term().grid().history_size();
+        let filled = || {
+            let mut s = Screen::new(20, 3);
+            for i in 0..52 {
+                s.feed(format!("line{i}\r\n").as_bytes());
+            }
+            s
+        };
+        let mut s = filled();
+        assert_eq!(hist(&s), 50);
+        s.clear(true);
+        assert_eq!(hist(&s), 0);
+        let mut s = filled();
+        s.feed(b"\x1b]1337;ClearScrollback\x07");
+        assert_eq!(hist(&s), 0);
+        assert!(s.take_requests().is_empty());
     }
 
     /// 13o Task 2: the OSC 8 length cap.

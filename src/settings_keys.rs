@@ -3377,4 +3377,14 @@ mod tests {
         }
     }
 
+    /// 13o Task 3: the CSI 3 J row.
+    #[test]
+    fn clear_history_row_follows_iterm2() {
+        let label = "Prevent CSI 3 J from clearing scrollback history?";
+        let row = schema::find_global("PreventEscapeSequenceFromClearingHistory").expect("row missing");
+        assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "Terminal", Kind::Bool));
+        assert_eq!(row.default, None);
+        assert_eq!(row.label, label);
+        assert_eq!(row.help, format!("{label}\nThis is also known as the terminfo E3 capability."));
+    }
 }

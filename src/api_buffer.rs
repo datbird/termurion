@@ -618,6 +618,7 @@ mod tests {
         assert_eq!(f.history, 3);
         assert_eq!(f.lost() + f.history + f.rows, 9, "every row ever made is numbered once");
         // Clearing the history loses nothing (iTerm2 keeps its overflow and drops the lines).
+        s.set_rules(crate::emu::Rules { clear_history: Some(false), ..Default::default() });
         s.feed(b"\x1b[3J");
         assert_eq!((super::facts(&s).lost(), super::facts(&s).history), (f.lost(), 0));
         assert_eq!(s.term().primary_grid().dropped(), f.lost() as u64);

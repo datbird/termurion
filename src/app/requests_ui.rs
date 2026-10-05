@@ -148,6 +148,7 @@ impl App {
                 };
                 self.redraw();
             }
+            Request::AskClearHistory => self.ask_clear_history(pane),
             Request::SetProfile(name) => self.set_profile_request(pane, name),
             Request::SetProfileProperty(pairs) => self.set_property_request(pane, pairs),
             Request::SetBackgroundImageFile(value) => self.set_background_request(pane, value),

@@ -2832,6 +2832,14 @@ default = ""
 help = "Variables to report via control sequence\nThis is a comma-delimited list of variables that can be reported with the OSC 1337 ReportVariable=name control sequence. Each variable name must be prefixed with \u201callow:\u201d or \u201cdeny:\u201d."
 
 [[setting]]
+key = "PreventEscapeSequenceFromClearingHistory"
+tab = "Advanced"
+section = "Terminal"
+label = "Prevent CSI 3 J from clearing scrollback history?"
+type = "bool"
+help = "Prevent CSI 3 J from clearing scrollback history?\nThis is also known as the terminfo E3 capability."
+
+[[setting]]
 key = "PreventEscapeSequenceFromChangingProfile"
 tab = "Advanced"
 section = "Terminal"

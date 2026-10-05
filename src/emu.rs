@@ -80,6 +80,23 @@ impl Rules {
     }
 }
 
+/// Identifier of the CSI 3 J question (iTerm2's `ClearScrollbackHistory`).
+pub const CLEAR_HISTORY_ID: &str = "ClearScrollbackHistory";
+pub const CLEAR_HISTORY_TEXT: &str = "A control sequence attempted to clear scrollback history. Allow this in the future?";
+pub const ALWAYS_ALLOW: &str = "Always _Allow";
+pub const ALWAYS_DENY: &str = "Always _Deny";
+
+/// CSI 3 J's permission from `PreventEscapeSequenceFromClearingHistory`: unset asks (and the
+/// sequence that asked is dropped), true denies, false allows (`PTYSession.m:19822-19836`).
+pub fn clear_history_decision(prevent: Option<bool>) -> crate::prompted::Decision {
+    use crate::prompted::Decision;
+    match prevent {
+        None => Decision::Ask,
+        Some(true) => Decision::Deny,
+        Some(false) => Decision::Apply,
+    }
+}
+
 /// A control sequence a setting may drop or rewrite before it reaches the parser. The scanner
 /// reads parameters as vte does (numbers, never raw text), so padding, leading zeros and the
 /// colon form cannot slip past a gate; `rebuild` writes the canonical sequence back.
@@ -171,6 +188,18 @@ mod tests {
 
     fn empty() -> Globals {
         Globals::empty(std::path::Path::new("emu-test.toml"))
+    }
+
+    /// 13o Task 3 (Review Focus 1): CSI 3 J's decision and its texts.
+    #[test]
+    fn clear_history_follows_iterm2() {
+        use crate::prompted::Decision;
+        assert_eq!(clear_history_decision(None), Decision::Ask);
+        assert_eq!(clear_history_decision(Some(true)), Decision::Deny);
+        assert_eq!(clear_history_decision(Some(false)), Decision::Apply);
+        assert_eq!(CLEAR_HISTORY_ID, "ClearScrollbackHistory");
+        assert_eq!(CLEAR_HISTORY_TEXT, "A control sequence attempted to clear scrollback history. Allow this in the future?");
+        assert_eq!((ALWAYS_ALLOW, ALWAYS_DENY), ("Always _Allow", "Always _Deny"));
     }
 
     #[test]
