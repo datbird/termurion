@@ -3652,6 +3652,7 @@ impl App {
     fn install_pane(&mut self, id: PaneId, mut pane: Pane, p: &Profile, relaunch: bool) {
         pane.restyle(Palette::from_profile(p, self.dark()), Look::from_profile(p));
         pane.set_bidi_rules(crate::bidi::Rules::from_globals(&self.globals));
+        pane.set_copy_options(crate::seltext::Options::from_globals(&self.globals));
         screen_follows_profile(&mut pane.screen, p);
         pane.profile = p.guid();
         pane.set_buffering(p.bool("Buffer Input by Default"));
@@ -3972,10 +3973,12 @@ impl App {
         self.tools_changed();
         let dark = self.dark();
         let bidi = crate::bidi::Rules::from_globals(&self.globals);
+        let copy = crate::seltext::Options::from_globals(&self.globals);
         for pane in self.panes.values_mut() {
             let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
             pane.restyle(Palette::from_profile(p, dark), Look::from_profile(p));
             pane.set_bidi_rules(bidi);
+            pane.set_copy_options(copy);
             screen_follows_profile(pane.own_mut(), p);
         }
         let ids: Vec<PaneId> = self.panes.keys().copied().collect();
@@ -4510,11 +4513,16 @@ impl App {
         viewport_to_point(offset, Point::new(row as usize, Column(col as usize)))
     }
 
+    /// Copy as the person asked for it (Edit > Copy, a key, copy mode): the selection's text
+    /// goes to the clipboard, except an empty one with `DisallowCopyEmptyString` (`TV:4089-4150`).
     fn copy_selection(&mut self, id: PaneId) {
         if self.copy_porthole_selection(id, porthole_ui::CopyAs::Plain) {
             return;
         }
-        let Some(text) = self.panes.get(&id).and_then(|p| p.screen.selection_text()) else { return };
+        let Some(text) = self.selected_text(id) else { return };
+        if !crate::seltext::copy_decision(&text, self.globals.bool("DisallowCopyEmptyString")) {
+            return;
+        }
         self.remember_paste(&text);
         if let Some(cb) = &mut self.clipboard {
             if let Err(e) = cb.set_text(text) {
@@ -5061,7 +5069,7 @@ impl App {
                 let follow = mouse::press_follow_up(self.first_mouse_down, smart, count, alt_only);
                 if follow.copy_now {
                     // iTerm2 copies a selection as soon as it is made.
-                    self.copy_selection(id);
+                    self.copy_on_selection(id);
                 }
                 // A terminal selection ends any porthole's.
                 self.clear_porthole_selections();
@@ -5157,7 +5165,7 @@ impl App {
                     }
                 } else {
                     // iTerm2 copies a selection as soon as it is made.
-                    self.copy_selection(pane);
+                    self.copy_on_selection(pane);
                     self.chat_offer_selection(pane);
                 }
             }

@@ -67,20 +67,14 @@ pub fn from_sel(ty: SelectionType, start: (i64, i32), end_inclusive: (i64, i32),
 /// ended at the last column of the line above, and merges into it; a run followed by another on
 /// its own line is `connected`.
 pub fn from_runs(runs: &[((i64, i32), (i64, i32))], lost: i64, width: i32) -> Vec<pb::SubSelection> {
-    let mut merged: Vec<((i64, i32), (i64, i32))> = Vec::new();
-    for &(a, b) in runs {
-        match merged.last_mut() {
-            Some(prev) if a.1 == 0 && a.0 == prev.1.0 + 1 && prev.1.1 == width - 1 => prev.1 = b,
-            _ => merged.push((a, b)),
-        }
-    }
-    let mut out: Vec<pb::SubSelection> = Vec::new();
-    for (i, &(a, b)) in merged.iter().enumerate() {
-        let mut sub = from_sel(SelectionType::Simple, a, b, lost, width);
-        sub.connected = Some(merged.get(i + 1).is_some_and(|n| n.0.0 == b.0));
-        out.push(sub);
-    }
-    out
+    crate::seltext::merge_runs(runs, width)
+        .into_iter()
+        .map(|(a, b, connected)| {
+            let mut sub = from_sel(SelectionType::Simple, a, b, lost, width);
+            sub.connected = Some(connected);
+            sub
+        })
+        .collect()
 }
 
 /// SetBroadcastDomains' check (`H:4146-4182`): each domain's sessions, by id as

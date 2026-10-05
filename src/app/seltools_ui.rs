@@ -227,6 +227,6 @@ impl App {
         };
         let (a, b) = seltools::move_endpoint(sel, which, left, n, grid.columns(), last_row);
         self.set_simple_selection(id, a, b);
-        self.copy_selection(id);
+        self.copy_on_selection(id);
     }
 }

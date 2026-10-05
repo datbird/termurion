@@ -153,7 +153,7 @@ impl Screen {
 
     /// Selects text in a porthole (one selection at a time: the terminal's goes).
     pub fn select_in_porthole(&mut self, id: u32, anchor: super::render::Pos, head: super::render::Pos) {
-        self.term.selection = None;
+        self.clear_selection();
         self.porthole_selection = Some((id, anchor, head));
     }
 

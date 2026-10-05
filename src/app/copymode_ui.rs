@@ -140,7 +140,12 @@ impl App {
             match outcome {
                 Outcome::None => {}
                 Outcome::Moved => {
-                    p.screen.term_mut().selection = state.selection().map(|(a, b, kind)| {
+                    let mode = match state.selection() {
+                        Some((_, _, Kind::Line)) => crate::seltext::Mode::Line,
+                        Some((_, _, Kind::Box)) => crate::seltext::Mode::Box,
+                        _ => crate::seltext::Mode::Character,
+                    };
+                    let sel = state.selection().map(|(a, b, kind)| {
                         let ty = match kind {
                             Kind::Char => SelectionType::Simple,
                             Kind::Line => SelectionType::Lines,
@@ -150,6 +155,7 @@ impl App {
                         sel.update(to_point(&p.screen, b), Side::Right);
                         sel
                     });
+                    p.set_selection(sel, mode);
                     let line = to_point(&p.screen, state.cursor).line.0;
                     super::find_ui::show_line(p, line);
                 }
@@ -161,7 +167,7 @@ impl App {
                 }
                 Outcome::Exit { clear } => {
                     if clear {
-                        p.screen.term_mut().selection = None;
+                        p.clear_selection();
                     }
                     self.sync_checks();
                     continue;

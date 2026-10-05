@@ -440,13 +440,13 @@ impl App {
                     return;
                 }
                 let bytes = input::alt_arrows(delta >= 0.0, vertical, mods, mode.contains(TermMode::APP_CURSOR), wheel::arrow_count(delta));
-                p.screen.term_mut().selection = None;
+                p.clear_selection();
                 // Arrows are keys: they follow broadcast input as iTerm2's do (reports stay local).
                 self.user_write(id, &bytes, crate::broadcast::Write::WheelArrows);
                 return self.redraw();
             }
             AltScroll::Swallow => {
-                p.screen.term_mut().selection = None;
+                p.clear_selection();
                 return self.redraw();
             }
             AltScroll::NoAndInfer => {

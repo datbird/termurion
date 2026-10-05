@@ -334,7 +334,7 @@ impl App {
         let Some((a, b)) = location_points(facts(p.own()), start, end) else { return };
         let mut sel = Selection::new(SelectionType::Simple, a, Side::Left);
         sel.update(b, Side::Right);
-        p.own_mut().term_mut().selection = Some(sel);
+        p.own_mut().set_selection(Some(sel), crate::seltext::Mode::Character);
         self.reveal_pane(pane);
         if let Some(p) = self.panes.get_mut(&pane) {
             super::find_ui::show_line(p, a.line.0);

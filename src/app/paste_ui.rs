@@ -121,7 +121,7 @@ impl App {
         // iTerm2: pasting clears the selection (PastingClearsSelection).
         if self.globals.bool("PastingClearsSelection") {
             if let Some(p) = self.panes.get_mut(&sender) {
-                p.screen.term_mut().selection = None;
+                p.clear_selection();
             }
         }
         self.paste_tick();

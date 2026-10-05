@@ -656,6 +656,11 @@ impl<T> Term<T> {
         self.mark_fully_damaged();
     }
 
+    /// Tandem patch: whether a tab stop is set at `column`.
+    pub fn is_tab_stop(&self, column: Column) -> bool {
+        self.tabs[column]
+    }
+
     /// Convert the active selection to a String.
     pub fn selection_to_string(&self) -> Option<String> {
         let selection_range = self.selection.as_ref().and_then(|s| s.to_range(self))?;

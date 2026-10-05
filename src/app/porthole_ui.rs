@@ -143,7 +143,7 @@ impl App {
         if !crate::porthole::selection_can_render(1, dragging, overlaps) {
             return beep();
         }
-        p.screen.term_mut().selection = None;
+        p.clear_selection();
         if self.make_porthole(id, first, last, Source { hint: None, filename: None, wide }).is_none() {
             beep();
         }

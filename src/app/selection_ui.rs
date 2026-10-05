@@ -108,6 +108,22 @@ fn make_live(pane: &mut crate::pane::Pane, a: Pos, b: Pos, mode: Mode, window: O
 }
 
 impl App {
+    /// The text of every selection in `id`'s pane through `seltext::extract` with the copy
+    /// options; None with no selection. `Screen::selection_text` is the one entry (every other
+    /// reader of the selected text goes through it too); this is its pane-level name.
+    pub(super) fn selected_text(&mut self, id: PaneId) -> Option<String> {
+        self.panes.get(&id).and_then(|p| p.screen.selection_text())
+    }
+
+    /// Copies a selection the person just made (mouse release, Smart Selection, Select All):
+    /// nothing with `CopySelection` off (`TV:3940-3945`).
+    pub(super) fn copy_on_selection(&mut self, id: PaneId) {
+        if !self.globals.bool("CopySelection") {
+            return;
+        }
+        self.copy_selection(id);
+    }
+
     /// The share of a cell, from its right edge, in which the pointer picks the next cell
     /// (`FractionOfCharacterSelectingNextNeighbor`, iTerm2's 0.35).
     pub(super) fn neighbor_fraction(&self) -> f32 {

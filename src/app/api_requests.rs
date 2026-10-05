@@ -1226,12 +1226,19 @@ impl App {
                     let line = Line((index - f.history).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
                     if x >= f.cols { (Point::new(line, Column(f.cols.max(1) as usize - 1)), Side::Right) } else { (Point::new(line, Column(x.max(0) as usize)), Side::Left) }
                 };
-                p.own_mut().term_mut().selection = sels.first().map(|s| {
+                let mode = sels.first().map_or(crate::seltext::Mode::Character, |s| match s.ty {
+                    alacritty_terminal::selection::SelectionType::Block => crate::seltext::Mode::Box,
+                    alacritty_terminal::selection::SelectionType::Semantic => crate::seltext::Mode::Word,
+                    alacritty_terminal::selection::SelectionType::Lines => crate::seltext::Mode::Line,
+                    alacritty_terminal::selection::SelectionType::Simple => crate::seltext::Mode::Character,
+                });
+                let sel = sels.first().map(|s| {
                     let ((a, a_side), (b, b_side)) = (point(s.start), point(s.end));
                     let mut sel = Selection::new(s.ty, a, a_side);
                     sel.update(b, b_side);
                     sel
                 });
+                p.own_mut().set_selection(sel, mode);
                 // The window that shows the pane redraws (the current one for a buried pane).
                 self.enter_pane_window(pane);
                 self.redraw();

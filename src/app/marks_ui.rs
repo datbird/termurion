@@ -79,7 +79,7 @@ impl App {
         let Some(p) = self.panes.get_mut(&id) else { return };
         let mut sel = Selection::new(SelectionType::Simple, a, Side::Left);
         sel.update(b, Side::Right);
-        p.screen.term_mut().selection = Some(sel);
+        p.set_selection(Some(sel), crate::seltext::Mode::Character);
     }
 
     fn top_visible_line(&self, id: PaneId) -> i32 {
@@ -143,13 +143,13 @@ impl App {
             "selectOutputOfLastCommand:" => {
                 if let Some(r) = self.panes.get(&id).and_then(|p| p.screen.last_output_range()) {
                     self.select(id, r);
-                    self.copy_selection(id);
+                    self.copy_on_selection(id);
                 }
             }
             "selectCurrentCommand:" => {
                 if let Some(r) = self.panes.get(&id).and_then(|p| p.screen.last_command_range()) {
                     self.select(id, r);
-                    self.copy_selection(id);
+                    self.copy_on_selection(id);
                 }
             }
             "toggleAlertOnNextMark:" => {

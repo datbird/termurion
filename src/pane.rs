@@ -2103,7 +2103,7 @@ impl Pane {
         let cursor = self.screen.term().grid().cursor.point.line.0;
         let start = crate::marks::clear_start(&lines, self.screen.current_prompt_line(), cursor);
         self.screen.clear_from(start);
-        self.screen.term_mut().selection = None;
+        self.screen.clear_selection();
         if let Some(pty) = self.pty.as_ref().filter(|_| self.exited.is_none()) {
             if let Err(e) = pty.clear() {
                 self.error = Some(e);
@@ -2131,7 +2131,7 @@ impl Pane {
         let line = end - 1;
         self.end_view();
         self.screen.clear_from(line);
-        self.screen.term_mut().selection = None;
+        self.screen.clear_selection();
         if let Some(pty) = &self.pty {
             if let Err(e) = pty.clear() {
                 self.error = Some(e);
@@ -2261,12 +2261,21 @@ impl Pane {
         self.screen.bidi_rules = rules;
     }
 
+    /// What a copy does with whitespace, on the pane's own screen and any view.
+    pub fn set_copy_options(&mut self, options: crate::seltext::Options) {
+        if let Some(live) = &mut self.live {
+            live.copy_options = options;
+        }
+        self.screen.copy_options = options;
+    }
+
     /// Shows a read-only view in place of the pane's screen.
     pub fn show_view(&mut self, mut view: Screen) {
         if self.frozen {
             return;
         }
         view.bidi_rules = self.screen.bidi_rules;
+        view.copy_options = self.screen.copy_options;
         let own = std::mem::replace(&mut self.screen, view);
         if self.live.is_none() {
             self.live = Some(own);
@@ -4113,6 +4122,47 @@ mod tests {
         p.end_view();
         assert_eq!(p.screen.palette.bg, red.bg);
     }
+    #[test]
+    fn selection_writes_keep_state() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut p = start("cmd /c ping -n 3 127.0.0.1 >nul");
+        p.screen.feed(b"one\r\ntwo");
+        let sel = || Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left);
+        p.set_selection(Some(sel()), crate::seltext::Mode::Word);
+        assert_eq!(p.screen.sel.live_mode, crate::seltext::Mode::Word);
+        p.screen.push_extra(crate::seltext::Sub { start: crate::find::Pos { row: 1, col: 0 }, end: crate::find::Pos { row: 1, col: 2 }, mode: crate::seltext::Mode::Character, window: None, connected: false });
+        p.screen.sel.window = Some((1, 2));
+        assert_eq!(p.screen.sel.extras.len(), 1);
+        // A new selection starts the extras and the window over.
+        p.set_selection(Some(sel()), crate::seltext::Mode::Character);
+        assert!(p.screen.sel.extras.is_empty() && p.screen.sel.window.is_none());
+        p.screen.push_extra(crate::seltext::Sub { start: crate::find::Pos { row: 1, col: 0 }, end: crate::find::Pos { row: 1, col: 2 }, mode: crate::seltext::Mode::Character, window: None, connected: false });
+        p.clear_selection();
+        assert!(p.screen.sel.extras.is_empty());
+        // What alacritty does on output: the selection goes, and the extras with it.
+        p.set_selection(Some(sel()), crate::seltext::Mode::Character);
+        p.screen.push_extra(crate::seltext::Sub { start: crate::find::Pos { row: 1, col: 0 }, end: crate::find::Pos { row: 1, col: 2 }, mode: crate::seltext::Mode::Character, window: None, connected: false });
+        p.screen.term_mut().selection = None;
+        p.screen.sync_selection();
+        assert!(p.screen.sel.extras.is_empty());
+    }
+
+    /// B1: the extras travel with the screen a Zoom or Filter view swaps out.
+    #[test]
+    fn extras_ride_with_the_screen() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut p = start("cmd /c ping -n 3 127.0.0.1 >nul");
+        p.screen.feed(b"one\r\ntwo");
+        p.set_selection(Some(Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left)), crate::seltext::Mode::Character);
+        p.screen.push_extra(crate::seltext::Sub { start: crate::find::Pos { row: 1, col: 0 }, end: crate::find::Pos { row: 1, col: 2 }, mode: crate::seltext::Mode::Character, window: None, connected: false });
+        p.show_view(Screen::new(20, 4));
+        assert!(p.screen.sel.extras.is_empty(), "the view shows none");
+        p.end_view();
+        assert_eq!(p.screen.sel.extras.len(), 1, "the own screen gets them back");
+    }
+
     #[test]
     fn copies_read_the_screen_the_user_selects_in() {
         use alacritty_terminal::index::{Column, Line, Point, Side};

@@ -220,7 +220,7 @@ impl App {
             })
             .collect();
         let spans: Vec<(usize, usize, usize)> = spans.into_iter().map(|(l, a, b)| ((l + history) as usize, a, b)).collect();
-        p.screen.term_mut().selection = None;
+        p.clear_selection();
         if let Some(s) = self.shot.as_mut() {
             s.window.panel.annotate(kind, spans, is_box, &lines);
         }

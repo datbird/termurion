@@ -258,6 +258,11 @@ impl App {
             g.shape = None;
         }
         self.prefs_note_location();
+        // Copy options ride on each screen so every reader of the selection sees them.
+        let copy = crate::seltext::Options::from_globals(&self.globals);
+        for pane in self.panes.values_mut() {
+            pane.set_copy_options(copy);
+        }
         let g = &self.globals;
         if !g.bool(rp::LOAD_KEY) || rp::save_mode(g.bool(rp::HAVE_SELECTION_KEY), g.int(rp::SELECTION_KEY)) != rp::SaveMode::Always || self.prefs_save_due.is_some() {
             return;
