@@ -60,6 +60,29 @@ pub fn from_sel(ty: SelectionType, start: (i64, i32), end_inclusive: (i64, i32),
     pb::SubSelection { windowed_coord_range: Some(pb::WindowedCoordRange { coord_range: Some(range), columns: None }), selection_mode: Some(mode as i32), connected: Some(false) }
 }
 
+/// GetSelection sub-selections for a visual (bidi) drag: one Character sub-selection per
+/// logical run, as iTerm2's `logicalSubSelections` answers (`iTermSelection.m`
+/// `decomposedLogicalSubSelectionsForVisualLiveRange`). Each run is `(first, last)` inclusive
+/// (buffer index, column). A run that starts at column 0 continues the previous one when that
+/// ended at the last column of the line above, and merges into it; a run followed by another on
+/// its own line is `connected`.
+pub fn from_runs(runs: &[((i64, i32), (i64, i32))], lost: i64, width: i32) -> Vec<pb::SubSelection> {
+    let mut merged: Vec<((i64, i32), (i64, i32))> = Vec::new();
+    for &(a, b) in runs {
+        match merged.last_mut() {
+            Some(prev) if a.1 == 0 && a.0 == prev.1.0 + 1 && prev.1.1 == width - 1 => prev.1 = b,
+            _ => merged.push((a, b)),
+        }
+    }
+    let mut out: Vec<pb::SubSelection> = Vec::new();
+    for (i, &(a, b)) in merged.iter().enumerate() {
+        let mut sub = from_sel(SelectionType::Simple, a, b, lost, width);
+        sub.connected = Some(merged.get(i + 1).is_some_and(|n| n.0.0 == b.0));
+        out.push(sub);
+    }
+    out
+}
+
 /// SetBroadcastDomains' check (`H:4146-4182`): each domain's sessions, by id as
 /// `sessionForAPIIdentifier` finds them (buried ones too), all in one window (a buried
 /// session is in none: first in a domain it leaves the window to the next one, later it
@@ -154,6 +177,27 @@ pub fn color_preset(r: &pb::ColorPresetRequest) -> pb::ColorPresetResponse {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn visual_runs_are_logical_sub_selections() {
+        // Two runs on one line (a bidi split): both Character, the first connected.
+        let got = from_runs(&[((2, 0), (2, 1)), ((2, 4), (2, 6)), ((3, 2), (3, 3))], 10, 80);
+        let span = |s: &pb::SubSelection| {
+            let r = s.windowed_coord_range.clone().unwrap().coord_range.unwrap();
+            (r.start.unwrap().y(), r.start.unwrap().x(), r.end.unwrap().y(), r.end.unwrap().x())
+        };
+        assert_eq!(got.len(), 3);
+        assert_eq!(span(&got[0]), (12, 0, 12, 2));
+        assert_eq!(span(&got[1]), (12, 4, 12, 7));
+        assert_eq!(span(&got[2]), (13, 2, 13, 4));
+        assert_eq!(got.iter().map(|s| s.connected()).collect::<Vec<_>>(), vec![true, false, false]);
+        assert!(got.iter().all(|s| s.selection_mode == Some(pb::SelectionMode::Character as i32)));
+        // A run that continues from the right edge of the line above is one sub-selection.
+        let got = from_runs(&[((2, 5), (2, 79)), ((3, 0), (3, 3))], 0, 80);
+        assert_eq!(got.len(), 1);
+        assert_eq!(span(&got[0]), (2, 5, 3, 4));
+        assert!(from_runs(&[], 0, 80).is_empty());
+    }
     use super::*;
     use pb::set_broadcast_domains_response::Status as DStatus;
     use pb::tmux_response::Status as TStatus;
