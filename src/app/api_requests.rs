@@ -1188,13 +1188,20 @@ impl App {
                 let f = api_buffer::facts(screen);
                 let term = screen.term();
                 let at = |pt: Point| (pt.line.0 as i64 + f.history, pt.column.0 as i32);
-                let subs: Vec<pb::SubSelection> = term
-                    .selection
-                    .as_ref()
-                    .and_then(|s| Some((s.ty, s.to_range(term)?)))
-                    .map(|(ty, range)| api_misc::from_sel(ty, at(range.start), at(range.end), f.lost(), f.cols))
-                    .into_iter()
-                    .collect();
+                let subs: Vec<pb::SubSelection> = match term.selection.as_ref().filter(|s| !s.runs.is_empty()) {
+                    // A visual (bidi) drag: one sub-selection per logical run.
+                    Some(sel) => {
+                        let runs: Vec<_> = sel.runs.iter().map(|(a, b)| (at(*a), at(*b))).collect();
+                        api_misc::from_runs(&runs, f.lost(), f.cols)
+                    }
+                    None => term
+                        .selection
+                        .as_ref()
+                        .and_then(|s| Some((s.ty, s.to_range(term)?)))
+                        .map(|(ty, range)| api_misc::from_sel(ty, at(range.start), at(range.end), f.lost(), f.cols))
+                        .into_iter()
+                        .collect(),
+                };
                 let response = (!subs.is_empty()).then_some(Response::GetSelectionResponse(GetSelectionResponse { selection: Some(pb::Selection { sub_selections: subs }) }));
                 answer(Status::Ok, response)
             }

@@ -534,7 +534,7 @@ impl App {
         if !c.auto {
             return None;
         }
-        let grid = self.inner(rect);
+        let grid = self.text_rect(pane, rect);
         let (cw, line_h) = self.pane_cell(pane);
         let s = self.scale();
         let lines = composer_wrap(c, &c.edit.text, grid.w, cw);
@@ -2292,7 +2292,7 @@ impl App {
             line_h,
             // The Auto Composer's 1 point line above it in the success mark color
             // (`PS:24640-24650`, `MCVC:221-246`).
-            separator: auto.then(|| (scene::mark_rgba(crate::marks::MarkColor::Success), scale.max(1.0))),
+            separator: auto.then(|| (scene::rgba(scene::mark_color(crate::marks::MarkColor::Success, pal, false), 1.0), scale.max(1.0))),
             backs: &backs,
         };
         out.extend(scene::composer(frame, &d, cell).map(|r| (Overlay::Composer, r)));

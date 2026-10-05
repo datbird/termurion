@@ -57,11 +57,14 @@ pub struct Mark {
     pub output_start: Option<Anchor>,
     /// The directory at the prompt's end.
     pub directory: Option<String>,
+    /// Drawn as a line across the pane instead of a bar in the margin; decided when the
+    /// prompt mark is made (`MS:3578-3641`) and never changed after.
+    pub line_style: bool,
 }
 
 impl Mark {
     pub fn new(id: u32, kind: Kind) -> Mark {
-        Mark { id, kind, command: String::new(), code: None, start: None, end: None, aid: None, name: None, command_range: None, captured: Vec::new(), clear_count: 0, prompt_end: None, output_start: None, directory: None }
+        Mark { id, kind, command: String::new(), code: None, start: None, end: None, aid: None, name: None, command_range: None, captured: Vec::new(), clear_count: 0, prompt_end: None, output_start: None, directory: None, line_style: false }
     }
 }
 
@@ -280,11 +283,14 @@ impl Screen {
     /// into history, so the screen matches ConPTY after its own clear (which keeps only the
     /// cursor row). The current prompt's mark moves onto that row when its own row went.
     pub fn clear_from(&mut self, line: i32) {
+        self.bump_ticks();
         let grid = self.term.grid();
         let top = -(grid.history_size() as i32);
         let line = line.max(top);
         let cursor = grid.cursor.point;
         let mut saved = grid[cursor.line].clone();
+        // Rows go and move: no selection maps onto them.
+        self.term.selection = None;
         let cur = self.marks.current;
         // A prompt mark above the cursor row (a two-line prompt) moves down to it.
         if let Some(cur) = cur.filter(|_| saved.mark() == 0) {
@@ -424,13 +430,16 @@ impl Screen {
     }
 
     pub(crate) fn new_mark(&mut self, line: i32, kind: Kind) -> u32 {
+        self.bump_ticks();
         self.marks.next_id = self.marks.next_id.wrapping_add(1).max(1);
         let id = self.marks.next_id;
         match kind {
             Kind::Prompt => self.set_row_mark(line, id),
             Kind::Manual => self.set_row_manual(line, id),
         }
-        self.marks.records.insert(id, Mark::new(id, kind));
+        // iTerm2 decides the style when the prompt mark is made (`MS:3578-3641`).
+        let line_style = kind == Kind::Prompt && self.line_style_marks;
+        self.marks.records.insert(id, Mark { line_style, ..Mark::new(id, kind) });
         self.marks.made = true;
         self.marks.marks_added = self.marks.marks_added.saturating_add(1);
         id
@@ -461,6 +470,7 @@ impl Screen {
     /// Removes mark `id`, its record and its row's slot (`VT100ScreenMutableState.m:3517-3529`,
     /// `removeNamedMark:`, whatever the mark's kind). False for an unknown id.
     pub fn remove_mark(&mut self, id: u32) -> bool {
+        self.bump_ticks();
         if self.marks.records.remove(&id).is_none() {
             return false;
         }
@@ -635,6 +645,12 @@ impl Screen {
     /// The code of the command before the newest one, for the alert sound.
     pub fn previous_code(&self) -> Option<i32> {
         self.marks.records.values().rev().filter(|m| m.kind == Kind::Prompt).nth(1).and_then(|m| m.code)
+    }
+
+    /// A mark's exit code: None when there is no such mark, Some(None) when it has no code
+    /// (iTerm2's `hasCode` false: a manual mark or a command still running).
+    pub fn mark_code(&self, id: u32) -> Option<Option<i32>> {
+        self.marks.records.get(&id).map(|m| m.code)
     }
 
     /// The marks on rows in view, for the margin indicators: (row on screen, mark). None
@@ -1394,6 +1410,22 @@ mod tests {
         off.place_prompt_first_column = false;
         off.feed(b"no newline\x1b]133;A\x07$ ");
         assert_eq!(off.marks_in_order()[0].0, 0);
+    }
+
+    #[test]
+    fn line_style_marks_follow_iterm2() {
+        let mut s = Screen::new(40, 10);
+        s.line_style_marks = true;
+        s.feed(b"\x1b]133;A\x07$ \r\n");
+        // A later change does not restyle a mark that exists (iTerm2 decides at creation).
+        s.line_style_marks = false;
+        s.feed(b"\x1b]133;A\x07$ \r\n");
+        s.feed(b"\x1b]1337;SetMark\x07");
+        let marks = s.marks_in_order();
+        assert_eq!(marks.len(), 3);
+        assert!(marks[0].1.line_style, "made while the setting was on");
+        assert!(!marks[1].1.line_style, "made while it was off");
+        assert!(!marks[2].1.line_style, "a manual mark is never line-style");
     }
 
     #[test]

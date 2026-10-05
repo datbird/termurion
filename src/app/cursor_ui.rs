@@ -42,11 +42,21 @@ impl App {
         }
     }
 
-    /// True when the key window's focused pane's cursor blinks, which asks for the blink clock.
+    /// True when the on/off blink clock should run: the key window's focused pane's cursor
+    /// blinks (and the smooth blink is not fading it instead), or blinking text is on show.
     /// The terminal's own style is read, not the profile: it carries a program's change where
-    /// "Allow Change Cursor Blink" lets it. 13m adds blinking text it may blink here.
+    /// "Allow Change Cursor Blink" lets it.
     pub(super) fn blink_clock_needed(&self) -> bool {
-        self.focused && self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).is_some_and(|p| scene::cursor_blinks_shown(&p.screen))
+        let cursor = self.focused && self.cursor_alpha.is_none() && self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).is_some_and(|p| scene::cursor_blinks_shown(&p.screen));
+        blink_needed(cursor, self.focused && self.text_blinking)
+    }
+
+    /// Whether the key window shows a pane whose profile allows blinking text and whose screen
+    /// has some (iTerm2's `textViewWillNeedUpdateForBlink`). An unfocused window's blinking
+    /// text rests visible. A walk of every visible cell: `tick_cursor` runs it once per pass and
+    /// the answer waits in `text_blinking` for the clock and the frame cadence.
+    fn scan_text_blinks(&self) -> bool {
+        self.focused && self.tabs.get(self.active).is_some_and(|t| self.visible(t).into_iter().any(|(id, _)| self.panes.get(&id).is_some_and(|p| p.screen.blink_allowed && p.screen.has_blinking_text())))
     }
 
     /// Whether the blink phase leaves `pane`'s cursor drawn. Only the key window's focused pane
@@ -61,6 +71,7 @@ impl App {
     /// flip, or None when nothing blinks (the loop then sleeps).
     pub(super) fn tick_cursor(&mut self) -> Option<Instant> {
         let now = Instant::now();
+        self.text_blinking = self.scan_text_blinks();
         let slide = self.tick_slides(now);
         let blink = self.tick_blink(now);
         self.cursor_due = [slide, blink].into_iter().flatten().min();
@@ -113,11 +124,18 @@ impl App {
         self.anim_frame
     }
 
-    /// The blink clocks: the smooth blink's, else the on/off blink's.
+    /// The blink clocks: the smooth blink's (the cursor's fade) and the on/off blink's (the
+    /// cursor without a fade, and blinking text, which keeps its clock under a smooth blink).
+    /// Returns the earlier due time.
     fn tick_blink(&mut self, now: Instant) -> Option<Instant> {
-        if let Some(due) = self.tick_smooth_blink(now) {
-            return due;
-        }
+        let text = self.text_blinking;
+        let smooth = self.tick_smooth_blink(now, text).flatten();
+        let onoff = self.tick_onoff_blink(now);
+        [smooth, onoff].into_iter().flatten().min()
+    }
+
+    /// The on/off blink: flips the phase while `blink_clock_needed`, else rests it visible.
+    fn tick_onoff_blink(&mut self, now: Instant) -> Option<Instant> {
         if self.blink_clock_needed() {
             let half = cursor_anim::half_period(self.globals.number("TimeBetweenBlinks").unwrap_or(0.5));
             let (changed, next) = self.blink.tick(now, half);
@@ -140,7 +158,7 @@ impl App {
     /// has it off (the on/off blink runs instead), else Some(the next frame, if any). The alpha
     /// is stored for drawing; a redraw is asked only when it changed, so a dwell sleeps and a
     /// fade runs frame by frame (`FAST_GAP`).
-    fn tick_smooth_blink(&mut self, now: Instant) -> Option<Option<Instant>> {
+    fn tick_smooth_blink(&mut self, now: Instant, text_blinks: bool) -> Option<Option<Instant>> {
         let pane = self.tabs.get(self.active).map(|t| t.focused);
         let p = pane.and_then(|id| self.panes.get(&id));
         let smooth = p.and_then(|p| self.store.get(&p.profile)).filter(|prof| prof.bool("Cursor Smooth Blink")).map(crate::cursor_anim::FadeTimes::from_profile);
@@ -150,9 +168,11 @@ impl App {
             return None;
         };
         // The fade owns the cursor's look: the on/off phase rests visible, so turning smooth
-        // blink off never starts with the cursor hidden.
-        self.blink.visible = true;
-        self.blink.flipped = now;
+        // blink off never starts with the cursor hidden. Blinking text keeps the phase moving.
+        if smooth_pins_phase(text_blinks) {
+            self.blink.visible = true;
+            self.blink.flipped = now;
+        }
         let blinks = scene::cursor_blinks_shown(&p.screen);
         let since = p.motion.since_moved(now);
         let condition = cursor_anim::blink_condition(blinks, self.focused, since);
@@ -177,7 +197,7 @@ impl App {
     /// frame's pane loop borrows the tab (the loop only reads `Motion`).
     pub(super) fn prepare_cursors(&mut self) {
         let Some(tab) = self.tabs.get(self.active) else { return };
-        let panes: Vec<(PaneId, Rect)> = self.visible(tab).into_iter().map(|(id, rect)| (id, self.inner(rect))).collect();
+        let panes: Vec<(PaneId, Rect)> = self.visible(tab).into_iter().map(|(id, rect)| (id, self.text_rect(id, rect))).collect();
         self.ime_sync();
         let now = Instant::now();
         let shown: Vec<PaneId> = panes.iter().map(|(id, _)| *id).collect();
@@ -243,5 +263,43 @@ impl App {
         if !solid {
             p.motion.last_rect = None;
         }
+    }
+}
+
+/// Whether the blink clock runs: the cursor blinks on and off, or text blinks. One clock serves
+/// both (iTerm2 flips one `blinkingItemsVisible`), so a steady cursor over blinking text still
+/// asks `tick_cursor` for the next flip.
+pub(super) fn blink_needed(cursor_blinks: bool, text_blinks: bool) -> bool {
+    cursor_blinks || text_blinks
+}
+
+/// Whether the smooth blink pins the on/off phase visible. It does unless text blinks, which
+/// needs the phase to move while the fading cursor ignores it.
+fn smooth_pins_phase(text_blinks: bool) -> bool {
+    !text_blinks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blink_timer_follows_blinking_text() {
+        assert!(!blink_needed(false, false));
+        assert!(blink_needed(true, false));
+        // A steady cursor over blinking text still asks for the next flip.
+        assert!(blink_needed(false, true));
+        assert!(blink_needed(true, true));
+    }
+
+    #[test]
+    fn smooth_blink_does_not_stop_text_blink() {
+        // Smooth blink owns the cursor, so the on/off clock serves the text alone.
+        let (smooth, steady_cursor) = (true, false);
+        assert!(blink_needed(steady_cursor && !smooth, true), "text blinks under smooth blink");
+        assert!(!smooth_pins_phase(true), "the phase is left to the text clock");
+        // Without blinking text the phase rests visible, as 13k ruled.
+        assert!(!blink_needed(true && !smooth, false));
+        assert!(smooth_pins_phase(false));
     }
 }

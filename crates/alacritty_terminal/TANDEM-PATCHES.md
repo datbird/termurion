@@ -84,4 +84,32 @@ test data) is left out. Changes:
     DECSET/DECRST 12 are ignored; DECSCUSR 0 and RIS still restore the configured style (iTerm2's
     Allow Change Cursor Blink).
 
+18. `term/cell.rs`, `term/mod.rs`: `Flags::BLINK` (the last free bit of the `u16`), set by SGR 5
+    (`Attr::BlinkSlow`) and SGR 6 (`Attr::BlinkFast`) and cleared by SGR 25 (`Attr::CancelBlink`)
+    and `Attr::Reset`. Upstream ignored all three. Tandem draws BLINK text in the off phase of the
+    blink clock when the profile allows blinking text.
+
+19. `selection.rs`, `term/mod.rs`: `Selection.runs` (inclusive per-line `(first, last)` cell pairs),
+    `Selection::set_visual` (sets the runs and makes the region their hull) and
+    `Selection::covers` (inside the runs, or true with none). `Term::selection_to_string` copies
+    the runs, each line in logical order, joined by newlines (not across a wrapped line).
+    `Selection::update` drops the runs; `rotate` moves them (and the visual drag's anchor,
+    `set_visual_anchor`/`visual_anchor`, a grid line plus visual column) with the content and
+    drops the runs that scroll out of the region. Tandem's visual character selection on
+    bidirectional rows uses it (iTerm2's live visual range, `iTermSelection.m:409`).
+    `Selection::drop_above` (called after `scroll_up_relative` scrolls the grid) drops runs
+    above the oldest buffer line (alternate screen, full scrollback) and clamps the anchor;
+    `selection_to_string` skips such runs; `rotate` returns None when every run was dropped.
+    `Selection::rotate_in_place` is `rotate` for a scroll that moves only the region's rows even
+    from the top (upstream's `range_top == 0` case, which moves history with it, becomes the
+    `into_history` flag of `rotate_region`): `scroll_up_relative` uses it when the region
+    scrolls in place (patch 14's `keep`) and `scroll_down_relative` always (a scroll down never
+    moves history). History stays put; runs, the anchor and the hull leaving the region's top
+    are dropped or clamped to it as below a fixed top.
+    `Selection::shift_lines` replaces upstream's `rotate` in a height-only `Term::resize`: every
+    line moved by `delta`, and runs and the visual anchor on a line now outside the buffer (rows
+    cut below a high cursor, the oldest full scrollback, the alternate screen's top rows) are
+    dropped; a visual selection's hull becomes its remaining runs', and a logical selection
+    whose end left the buffer is cleared (None, as when nothing is left).
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

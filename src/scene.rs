@@ -110,6 +110,9 @@ pub struct Frame {
     pub gap_underlines: bool,
     /// Popup boxes over the terminal: drawn after images, before text.
     pub popups: Vec<Quad>,
+    /// Scrollbars and their ticks: no text, drawn after the strokes and before `overlay` (the
+    /// dimming covers them). `cut_quads` trims them under a popup, so popups lie over a bar.
+    pub scrollbars: Vec<Quad>,
 }
 
 /// Which frame of an animated image shows at `now_ms`.
@@ -398,6 +401,9 @@ struct CellLook {
     mask: u8,
     /// The cursor is on this cell: a ligature never joins it to a neighbor.
     cursor: bool,
+    /// The cell joins its neighbors when drawn (an Arabic letter in a right-to-left run): its
+    /// run is one text piece, so the font can pick the joining forms.
+    joins: bool,
 }
 
 /// The ligature level of a cell's text under the pane's rules (`fonts::span_level`): the font
@@ -425,6 +431,18 @@ fn bidi_control(c: char) -> bool {
 fn groupable(text: &str) -> bool {
     use unicode_width::UnicodeWidthStr;
     !text.is_ascii() && text.width() == 1 && !text.chars().any(bidi_control)
+}
+
+/// The one rule for whether `next` continues the text piece `prev` is in, two neighboring
+/// cells of a row in display order (S3). A joined Arabic run (13m, `CellLook.joins`) is one
+/// piece and is never split; nothing else joins it (bidi controls are stripped from it, P9). Any
+/// other cell continues only within its font (ASCII, or grouped one-column non-ASCII under
+/// Non-ASCII Ligatures, P7) and when no ligature boundary falls between (`ligature_break`).
+fn piece_continues(prev: &CellLook, next: &CellLook, group: bool) -> bool {
+    if prev.joins || next.joins {
+        return prev.joins && next.joins;
+    }
+    !ligature_break(prev, next) && if next.text.is_ascii() { prev.text.is_ascii() } else { group && groupable(&next.text) && groupable(&prev.text) }
 }
 
 /// Whether a ligature must not join `prev` and `next`, two neighboring cells: only when one of
@@ -455,6 +473,9 @@ pub struct Highlights<'a> {
     pub bg_alpha: f32,
     /// Keep background colors opaque: non-default and selected cells stay solid.
     pub opaque_colors: bool,
+    /// The blink phase for text with the blink attribute: false hides it when the profile
+    /// allows blinking. True in tests and screenshots.
+    pub text_blink_on: bool,
 }
 
 /// What the find bar shows.
@@ -489,6 +510,11 @@ pub fn cursor_cell(screen: &Screen) -> Option<(usize, usize, bool)> {
 /// scrolled it off the view leaves nothing to blink, so no blink clock runs for it.
 pub fn cursor_blinks_shown(screen: &Screen) -> bool {
     screen.cursor_blinks() && cursor_cell(screen).is_some()
+}
+
+/// The leftmost visual column of the cells `col..col + cells` of a row in display order `order`.
+fn visual_start(order: Option<&crate::bidi::Order>, col: usize, cells: usize) -> usize {
+    order.and_then(|o| crate::bidi::visual_spans(o, col..col + cells).first().map(|r| r.start)).unwrap_or(col)
 }
 
 /// Where a composition starts: the cursor's cell, whether or not a program hid the cursor
@@ -564,22 +590,58 @@ pub fn cursor_guide(frame: &mut Frame, rect: Rect, cell: (f32, f32), row: usize,
     frame.quads.push(Quad { rect: r, color });
 }
 
-/// Per-line timestamps: each label right-aligned on its screen row, over the text.
-pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cell: (f32, f32)) {
+/// Per-line timestamps, in the profile's foreground on a 0.9-alpha block of its background
+/// (`colors` is that pair), as iTerm2 draws every mode (`iTermTimestampDrawHelper.m`
+/// `drawBackgroundInFrame:`). With no `column` each label is right-aligned on its screen row,
+/// over the text, which stops where the label starts. With a `column` (Adjacent) the labels
+/// form one block ending at the column's right edge: every label starts at the same x, and a
+/// label equal to the one on the row above is two 1 px lines (`drawString:...`,
+/// `rowIsRepeat:`). A block wider than the column extends left over the text, which then stops
+/// where the block starts (`frameForStringGivenWidth:`, `x = MAX(0, maxX - w)`); it is never cut.
+pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cell: (f32, f32), column: Option<Rect>, colors: (Rgb, Rgb)) {
     let (cw, ch) = cell;
+    let (fg, bg) = colors;
+    let span = |text: &str| Span { text: text.to_string(), color: fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0 };
+    // The pane's text on a row, and its underlines and strikes, stop where its label's block starts.
+    let clip_text = |frame: &mut Frame, y: f32, x: f32| {
+        for r in frame.rows.iter_mut().filter(|r| r.y == y && r.clip.x + r.clip.w > x) {
+            r.clip.w = (x - r.clip.x).max(0.0);
+        }
+        cut_quads(frame, Rect { x, y, w: 1.0e6, h: ch });
+    };
+    if let Some(col) = column {
+        let right = col.x + col.w;
+        let x = (right - crate::stamps::block_width(cw, labels)).max(rect.x);
+        let over_text = x < rect.x + rect.w;
+        let clip = Rect { x, w: right - x, ..col };
+        let mut prev: Option<(usize, &str)> = None;
+        for (row, text) in labels {
+            let y = col.y + *row as f32 * ch;
+            if over_text {
+                clip_text(frame, y, x);
+            }
+            frame.quads.push(Quad { rect: Rect { x, y, w: right - x, h: ch }, color: rgba(bg, 0.9) });
+            let repeat = prev.is_some_and(|(r, t)| r + 1 == *row && t == text);
+            prev = Some((*row, text));
+            if repeat {
+                // The center of a repeat is 10 px into the block (`center = x + 10`).
+                for dx in [-1.0, 1.0] {
+                    frame.quads.push(Quad { rect: Rect { x: x + 10.0 + dx, y, w: 1.0, h: ch }, color: rgba(fg, 1.0) });
+                }
+                continue;
+            }
+            frame.rows.push(TextRow { x, y, spans: vec![span(text)], clip, scale: 1.0, face: crate::render::DEFAULT_FACE });
+        }
+        return;
+    }
     let right = rect.x + rect.w;
     for (row, text) in labels {
         let n = text.chars().count() as f32;
         let y = rect.y + *row as f32 * ch;
-        let bg = Rect { x: right - (n + 2.0) * cw, y, w: (n + 2.0) * cw, h: ch };
-        frame.quads.push(Quad { rect: bg, color: rgba(STAMP_BG, 0.85) });
-        // The pane's text on this row stops where the label starts.
-        for r in frame.rows.iter_mut().filter(|r| r.y == y && r.clip.x + r.clip.w > bg.x) {
-            r.clip.w = (bg.x - r.clip.x).max(0.0);
-        }
-        cut_quads(frame, Rect { w: right - bg.x + 1.0e6, ..bg });
-        let span = Span { text: text.clone(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0 };
-        frame.rows.push(TextRow { x: right - (n + 1.0) * cw, y, spans: vec![span], clip: rect, scale: 1.0, face: crate::render::DEFAULT_FACE });
+        let bg_rect = Rect { x: right - (n + 2.0) * cw, y, w: (n + 2.0) * cw, h: ch };
+        frame.quads.push(Quad { rect: bg_rect, color: rgba(bg, 0.9) });
+        clip_text(frame, y, bg_rect.x);
+        frame.rows.push(TextRow { x: right - (n + 1.0) * cw, y, spans: vec![span(text)], clip: rect, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
 }
 
@@ -679,7 +741,8 @@ pub fn pane_with(
     // A composition in progress replaces the terminal cursor (`iTermTextDrawingHelper.m:4267`),
     // except at a password prompt, where the key glyph is the cursor (P11).
     let ime = look.ime.as_ref().filter(|_| !key_cursor);
-    let cursor = cursor_cell(screen).filter(|_| ime.is_none() && look.visible && look.alpha > CURSOR_MIN_ALPHA && !(look.hide_unfocused && !focused)).map(|(row, col, _)| (row, col));
+    // The cursor's logical cell; `cursor` below is where it draws once rows are in display order.
+    let cursor_at = cursor_cell(screen).filter(|_| ime.is_none() && look.visible && look.alpha > CURSOR_MIN_ALPHA && !(look.hide_unfocused && !focused)).map(|(row, col, _)| (row, col));
     let wide_cursor = cursor_cell(screen).is_some_and(|(_, _, w)| w);
     let bg_brightness = crate::tab_theme::perceived(palette.bg);
     let bg_alpha = highlights.map_or(1.0, |h| h.bg_alpha);
@@ -688,7 +751,7 @@ pub fn pane_with(
     // Smart Cursor Color: a focused box only (`iTermMetalPerFrameState.m:455-490`). The cell's
     // own colors and its neighbors' backgrounds come before selection and match highlights.
     let smart_box = look.smart.filter(|_| block_cursor).and_then(|(bg_t, fg_t)| {
-        let (row, col) = cursor?;
+        let (row, col) = cursor_at?;
         let at = |r: i64, c: i64| -> Option<alacritty_terminal::term::cell::Cell> {
             (r >= 0 && c >= 0 && (r as usize) < lines && (c as usize) < cols).then(|| term.grid()[alacritty_terminal::index::Point::new(alacritty_terminal::index::Line(r as i32 - content.display_offset as i32), alacritty_terminal::index::Column(c as usize))].clone())
         };
@@ -708,7 +771,13 @@ pub fn pane_with(
     // Thin Strokes on Dark Backgrounds is decided per cell: the cell's background is darker than
     // its text (`iTermTextDrawingHelper.m:3045`, `iTermMetalPerFrameState.m:2186`).
     let dark = |fg: Rgb, bg: Rgb| crate::tab_theme::hsp(bg) < crate::tab_theme::hsp(fg);
-    let blank = || CellLook { ul: None, text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false, level: cell_level(" ", draw), mask: cell_mask(" ", draw, dark(palette.fg, palette.bg)), cursor: false };
+    // Each row's display order (right-to-left text); None draws it as it is. A row is its own
+    // line of program output: nothing here moves a cell to another row.
+    let display_offset = content.display_offset as i32;
+    let orders: Vec<Option<std::sync::Arc<crate::bidi::Order>>> = (0..lines).map(|row| screen.row_order(row as i32 - display_offset).filter(|o| o.lut.len() <= cols)).collect();
+    let visual_col = |row: usize, col: usize| orders.get(row).and_then(|o| o.as_ref()).and_then(|o| o.lut.get(col)).map_or(col, |&v| v as usize);
+    let cursor = cursor_at.map(|(row, col)| (row, visual_col(row, col)));
+    let blank = || CellLook { ul: None, text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false, level: cell_level(" ", draw), mask: cell_mask(" ", draw, dark(palette.fg, palette.bg)), cursor: false, joins: false };
     let mut grid: Vec<Vec<CellLook>> = (0..lines).map(|_| (0..cols).map(|_| blank()).collect()).collect();
     for indexed in content.display_iter {
         let Some(vp) = point_to_viewport(content.display_offset, indexed.point) else { continue };
@@ -717,24 +786,47 @@ pub fn pane_with(
             continue;
         }
         let c = indexed.cell;
-        let (mut fg, mut bg) = palette.cell(c.fg, c.bg, c.flags);
+        let (raw_fg, raw_bg) = palette.cell(c.fg, c.bg, c.flags);
+        // Minimum contrast adjusts the raw text color against the raw background, before Cursor
+        // Boost mutes and Dim Only Text dims (`iTermColorMap.m:318-360`). Block characters
+        // (`contrastIneligible`, `iTermAttributedStringBuilder.m:755`) and hidden cells keep theirs.
+        let exempt = c.flags.contains(Flags::HIDDEN) || (c.zerowidth().is_none() && crate::boxdraw::is_block(c.c));
+        let adjust = |text: Rgb, against: Rgb| if exempt { text } else { crate::contrast::apply(text, against, palette.min_contrast) };
         // Cursor Boost mutes first, then Dim Only Text dims (`iTermColorMap.m:347-360`).
-        (fg, bg) = (crate::cursor_look::mute(fg, palette.bg, look.boost), crate::cursor_look::mute(bg, palette.bg, look.boost));
+        let own_text = |against: Rgb| {
+            let fg = crate::cursor_look::mute(adjust(raw_fg, against), palette.bg, look.boost);
+            match highlights.map(|h| h.dim).filter(|d| d.only_text) {
+                Some(d) => crate::dim::text_color(fg, d, bg_brightness),
+                None => fg,
+            }
+        };
+        let (mut fg, mut bg) = (own_text(raw_bg), crate::cursor_look::mute(raw_bg, palette.bg, look.boost));
         if let Some(d) = highlights.map(|h| h.dim).filter(|d| d.only_text) {
-            (fg, bg) = (crate::dim::text_color(fg, d, bg_brightness), crate::dim::bg_color(bg, palette.bg, d, bg_brightness));
+            bg = crate::dim::bg_color(bg, palette.bg, d, bg_brightness);
         }
+        // The text and background the cell ended with, for the later choices; `own` while the
+        // text is still the cell's own color.
+        // The text a match or a hovered link chose, before any adjusting, so a selection over
+        // the cell adjusts it against the selection color that draws (iTerm2 adjusts against the
+        // background actually drawn).
+        let (mut under, mut own) = (raw_bg, true);
+        let mut raw_choice: Option<Rgb> = None;
         let mut hover = false;
         if let Some(h) = highlights {
             let at = crate::find::Pos { row: (indexed.point.line.0 + history) as usize, col };
             let i = h.matches.partition_point(|m| m.end < at);
             if h.matches.get(i).is_some_and(|m| m.start <= at) {
                 // The match colors are muted by Cursor Boost like every other background and text.
-                (fg, bg) = (crate::cursor_look::mute(match_text(h.color), palette.bg, look.boost), crate::cursor_look::mute(h.color, palette.bg, look.boost));
+                (fg, bg) = (crate::cursor_look::mute(adjust(match_text(h.color), h.color), palette.bg, look.boost), crate::cursor_look::mute(h.color, palette.bg, look.boost));
+                (under, own) = (h.color, false);
+                raw_choice = Some(match_text(h.color));
             }
             if h.hover.is_some_and(|m| m.start <= at && at <= m.end) {
-                fg = h.link;
+                fg = adjust(h.link, under);
+                own = false;
+                raw_choice = Some(h.link);
                 hover = true;
-                hovered.push((row, col));
+                hovered.push((row, visual_col(row, col)));
             }
         }
         let mut hidden = false;
@@ -742,16 +834,28 @@ pub fn pane_with(
             let at_row = (indexed.point.line.0 + history) as usize;
             if h.labels.iter().any(|(p, l)| p.row == at_row && col >= p.col && col < p.col + l.chars().count()) {
                 (fg, bg) = (LABEL_TEXT, LABEL_BG);
+                own = false;
+                raw_choice = None;
                 hidden = true;
             }
         }
         let mut selected = false;
-        if content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) {
-            // `fg` is already muted: only an explicit Selected Text Color still needs it.
-            (fg, bg) = (palette.selected_text.map_or(fg, |t| crate::cursor_look::mute(t, palette.bg, look.boost)), crate::cursor_look::mute(palette.selection, palette.bg, look.boost));
+        // A visual selection (bidi rows) is its runs inside the hull.
+        if content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) && term.selection.as_ref().map_or(true, |s| s.covers(indexed.point)) {
+            // The text is adjusted against the selection color; `fg` is already muted otherwise.
+            fg = match palette.selected_text {
+                Some(t) => crate::cursor_look::mute(adjust(t, palette.selection), palette.bg, look.boost),
+                None if own => own_text(palette.selection),
+                // Hover text is not muted (the hover ruling); a match's is.
+                None => raw_choice.map_or(fg, |t| {
+                    let a = adjust(t, palette.selection);
+                    if hover { a } else { crate::cursor_look::mute(a, palette.bg, look.boost) }
+                }),
+            };
+            bg = crate::cursor_look::mute(palette.selection, palette.bg, look.boost);
             selected = true;
         }
-        if block_cursor && cursor == Some((row, col)) {
+        if block_cursor && cursor_at == Some((row, col)) {
             // The cursor box is its own quad (after the background runs); the text takes its color.
             // A fading cursor (smooth blink) takes the text color part of the way.
             fg = if look.alpha < 1.0 { blend(fg, cursor_text, look.alpha) } else { cursor_text };
@@ -765,8 +869,12 @@ pub fn pane_with(
                 }
             }
         }
+        // Blinking text hides in the off phase when the profile allows it
+        // (`iTermMetalPerFrameState.m:1691`); the background keeps drawing, and so do the
+        // neighbors' lines, but the cell's own underline and strikethrough go with its glyph.
+        let blink_off = screen.blink_allowed && c.flags.contains(Flags::BLINK) && !highlights.is_none_or(|h| h.text_blink_on);
         let mut text = String::new();
-        if hidden {
+        if hidden || blink_off {
             text.push(' ');
         } else if !c.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
             text.push(c.c);
@@ -781,7 +889,7 @@ pub fn pane_with(
             let u = palette.color(u);
             if c.flags.contains(Flags::DIM) { blend(palette.cell(c.fg, c.bg, c.flags - Flags::DIM).1, u, palette.faint_alpha) } else { u }
         });
-        let ul = (!hidden && c.image().is_none()).then_some(Ul { style, strike, sgr });
+        let ul = (!hidden && !blink_off && c.image().is_none()).then_some(Ul { style, strike, sgr });
         let level = cell_level(&text, draw);
         let mask = cell_mask(&text, draw, dark(fg, bg));
         grid[row][col] = CellLook {
@@ -794,8 +902,35 @@ pub fn pane_with(
             selected,
             level,
             mask,
-            cursor: cursor == Some((row, col)),
+            // The logical cursor cell (the row is not in display order yet).
+            cursor: cursor_at == Some((row, col)),
+            joins: false,
         };
+    }
+
+    // Right-to-left rows: the whole row of looks moves to its display order once, so the
+    // backgrounds, text pieces, colors and selection all follow (P5). Mirrored characters draw
+    // as their counterparts; Arabic letters are marked so a run is shaped as one piece.
+    for (row, order) in orders.iter().enumerate() {
+        let Some(o) = order else { continue };
+        let mut old: Vec<Option<CellLook>> = std::mem::take(&mut grid[row]).into_iter().map(Some).collect();
+        let mut new: Vec<CellLook> = (0..cols)
+            .map(|visual| {
+                let logical = o.inverse.get(visual).map_or(visual, |&l| l as usize);
+                old[logical].take().unwrap_or_else(blank)
+            })
+            .collect();
+        for (logical, &visual) in o.lut.iter().enumerate() {
+            let cell = &mut new[visual as usize];
+            let first = cell.text.chars().next();
+            if o.mirrored[logical] {
+                if let Some(c) = first {
+                    cell.text.replace_range(..c.len_utf8(), &crate::bidi::mirror(c).to_string());
+                }
+            }
+            cell.joins = o.rtl[logical] && first.is_some_and(crate::bidi::joins);
+        }
+        grid[row] = new;
     }
 
     for (row, cells) in grid.iter().enumerate() {
@@ -841,17 +976,25 @@ pub fn pane_with(
         let group = draw.ligatures.non_ascii;
         let mut piece: Option<(usize, Vec<Span>)> = None;
         let mut before: Option<usize> = None;
-        for (col, c) in cells.iter().enumerate() {
+        let mut col = 0;
+        while col < cells.len() {
+            let c = &cells[col];
             if c.text.is_empty() {
+                col += 1;
                 continue;
             }
+            let at = col;
+            col += 1;
             // A box or block character is drawn by Tandem to fill its cell (iTerm2 does the
             // same): it leaves the text, ends the piece around it, and takes the cell's color.
+            // The row is in display order here, so `at` is the VISUAL column and the character
+            // is the mirrored one on a right-to-left row (S4); `c.fg` is the color after minimum
+            // contrast, blocks exempt (S2); a blinked-out or hidden cell's text is a space (S7).
             let mut chars = c.text.chars();
             if let (true, Some(drawn), None) = (draw.custom_boxes, chars.next(), chars.next()) {
                 if crate::boxdraw::drawn(drawn, false, false) {
                     flush(&mut piece, frame);
-                    frame.glyphs.push(CellGlyph { c: drawn, rect: Rect { x: rect.x + col as f32 * cw, y, w: cw, h: ch }, color: c.fg, face, clip: rect });
+                    frame.glyphs.push(CellGlyph { c: drawn, rect: Rect { x: rect.x + at as f32 * cw, y, w: cw, h: ch }, color: c.fg, face, clip: rect });
                     before = None;
                     continue;
                 }
@@ -859,22 +1002,35 @@ pub fn pane_with(
             let ascii = c.text.is_ascii();
             let joinable = group && groupable(&c.text);
             // The previous cell, when it is the one right before (a wide character's spacer is empty).
-            let prev = before.filter(|b| *b + 1 == col).map(|b| &cells[b]);
-            let continues = prev.is_some_and(|p| !ligature_break(p, c) && if ascii { p.text.is_ascii() } else { joinable && groupable(&p.text) });
-            if !continues {
+            let prev = before.filter(|b| *b + 1 == at).map(|b| &cells[b]);
+            if !prev.is_some_and(|p| piece_continues(p, c, group)) {
                 flush(&mut piece, frame);
             }
-            let (_, spans) = piece.get_or_insert_with(|| (col, Vec::new()));
-            match spans.last_mut() {
-                Some(s) if s.color == c.fg && s.bold == c.bold && s.italic == c.italic && s.ligatures == c.level && s.mask == c.mask => s.text.push_str(&c.text),
-                _ => spans.push(Span { text: c.text.clone(), color: c.fg, bold: c.bold, italic: c.italic, alt_font: !ascii, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: c.bold, ligatures: c.level, mask: c.mask }),
+            let (_, spans) = piece.get_or_insert_with(|| (at, Vec::new()));
+            let same = |s: &Span| s.color == c.fg && s.bold == c.bold && s.italic == c.italic && s.ligatures == c.level && s.mask == c.mask;
+            let span = |text: String| Span { text, color: c.fg, bold: c.bold, italic: c.italic, alt_font: !ascii, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: c.bold, ligatures: c.level, mask: c.mask };
+            if c.joins {
+                // An Arabic run is one piece at its visual start, in logical order (the cells
+                // read right to left on screen), so the font joins the letters: each cell goes
+                // in front. The shaper runs its own bidi over the piece: explicit controls
+                // riding on a cell must not reach it (P9).
+                let text: String = c.text.chars().filter(|&ch| !crate::bidi::is_explicit_control(ch)).collect();
+                match spans.first_mut() {
+                    Some(s) if same(s) => s.text.insert_str(0, &text),
+                    _ => spans.insert(0, span(text)),
+                }
+            } else {
+                match spans.last_mut() {
+                    Some(s) if same(s) => s.text.push_str(&c.text),
+                    _ => spans.push(span(c.text.clone())),
+                }
+                // Any other non-ASCII character gets its own piece at its cell's x, because
+                // fallback fonts (CJK, emoji) are not monospace.
+                if !ascii && !joinable {
+                    flush(&mut piece, frame);
+                }
             }
-            // Any other non-ASCII character gets its own piece at its cell's x, because fallback
-            // fonts (CJK, emoji) are not monospace.
-            if !ascii && !joinable {
-                flush(&mut piece, frame);
-            }
-            before = Some(col);
+            before = Some(at);
         }
         flush(&mut piece, frame);
         for run in underline_runs(cells, palette.underline_color) {
@@ -888,7 +1044,9 @@ pub fn pane_with(
             let row = p.row as i32 - top;
             if row >= 0 && (row as usize) < lines {
                 let span = Span { text: label.clone(), color: LABEL_TEXT, bold: true, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0 };
-                frame.rows.push(TextRow { x: rect.x + p.col as f32 * cw, y: rect.y + row as f32 * ch, spans: vec![span], clip: rect, scale: 1.0, face });
+                // The tag sits at the leftmost of the cells it covers, where the row draws them.
+                let col = visual_start(orders.get(row as usize).and_then(|o| o.as_deref()), p.col, label.chars().count());
+                frame.rows.push(TextRow { x: rect.x + col as f32 * cw, y: rect.y + row as f32 * ch, spans: vec![span], clip: rect, scale: 1.0, face });
             }
         }
     }
@@ -908,13 +1066,23 @@ pub fn pane_with(
                 let a = (if r == m.start.row { m.start.col } else { 0 }).min(cols - 1);
                 let b = (if r == m.end.row { m.end.col } else { cols - 1 }).min(cols - 1);
                 let y = rect.y + row as f32 * ch + ch - 3.0;
-                frame.overlay.push(Quad { rect: Rect { x: rect.x + a as f32 * cw, y, w: (b + 1 - a.min(b + 1)) as f32 * cw, h: 1.0 }, color: rgba(NOTE, 1.0) });
+                // One line per visual piece the annotated cells are drawn in.
+                let pieces = match orders.get(row as usize).and_then(|o| o.as_deref()) {
+                    Some(o) => crate::bidi::visual_spans(o, a..b + 1),
+                    None => vec![a..b + 1],
+                };
+                for piece in pieces {
+                    frame.overlay.push(Quad { rect: Rect { x: rect.x + piece.start as f32 * cw, y, w: (piece.end - piece.start) as f32 * cw, h: 1.0 }, color: rgba(NOTE, 1.0) });
+                }
             }
             // A note on show: its text in a box after the annotated text.
             let row = m.end.row as i32 - top;
             if let (Some(text), true) = (label, row >= 0 && (row as usize) < lines) {
                 let shown: String = text.lines().next().unwrap_or_default().chars().take(40).collect();
-                let x = rect.x + ((m.end.col + 2) as f32 * cw).min((rect.w - (shown.chars().count() as f32 + 1.0) * cw).max(0.0));
+                // The box follows the annotated text's rightmost visual cell.
+                let from = if m.start.row == m.end.row { m.start.col } else { 0 };
+                let end_col = orders.get(row as usize).and_then(|o| o.as_deref()).and_then(|o| crate::bidi::visual_spans(o, from.min(m.end.col)..m.end.col + 1).last().map(|r| r.end - 1)).unwrap_or(m.end.col);
+                let x = rect.x + ((end_col + 2) as f32 * cw).min((rect.w - (shown.chars().count() as f32 + 1.0) * cw).max(0.0));
                 let y = rect.y + row as f32 * ch;
                 let r = Rect { x, y, w: (shown.chars().count() as f32 + 1.0) * cw, h: ch };
                 frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
@@ -923,6 +1091,8 @@ pub fn pane_with(
             }
         }
     }
+    // Right-to-left rows reverse the order the hovered cells were found in.
+    hovered.sort_unstable();
     if let Some(h) = highlights {
         let mut i = 0;
         while i < hovered.len() {
@@ -994,7 +1164,10 @@ pub fn pane_with(
     // the default text color with an underline, then the caret in its color.
     if let Some(d) = ime {
         for piece in d.pieces.iter().filter(|p| p.row < lines) {
-            let r = Rect { x: rect.x + piece.col as f32 * cw, y: rect.y + piece.row as f32 * ch, w: piece.cells as f32 * cw, h: ch };
+            // On a right-to-left row the cells the composition covers are drawn where the row's
+            // order puts them: the piece starts at the first of their visual pieces.
+            let col = visual_start(orders.get(piece.row).and_then(|o| o.as_deref()), piece.col, piece.cells);
+            let r = Rect { x: rect.x + col as f32 * cw, y: rect.y + piece.row as f32 * ch, w: piece.cells as f32 * cw, h: ch };
             cut_out(frame, r, ch);
             frame.popups.push(Quad { rect: r, color: rgba(palette.bg, 1.0) });
             let span = Span { text: piece.text.clone(), color: palette.fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0 };
@@ -1003,7 +1176,8 @@ pub fn pane_with(
             frame.overlay.push(Quad { rect: Rect { y: r.y + ch - line, h: line, ..r }, color: rgba(palette.fg, 1.0) });
         }
         if d.caret.0 < lines {
-            frame.overlay.push(Quad { rect: crate::ime::caret_rect(d.caret, (rect.x, rect.y), cell, look.geometry.base_cell.1, cols, look.geometry.scale), color: rgba(d.caret_color, 1.0) });
+            let caret = (d.caret.0, visual_col(d.caret.0, d.caret.1));
+            frame.overlay.push(Quad { rect: crate::ime::caret_rect(caret, (rect.x, rect.y), cell, look.geometry.base_cell.1, cols, look.geometry.scale), color: rgba(d.caret_color, 1.0) });
         }
     }
 
@@ -1026,12 +1200,113 @@ pub fn mark_rgba(c: crate::marks::MarkColor) -> [f32; 4] {
     [r, g, b, 1.0]
 }
 
-/// Mark indicators: a bar in the left padding beside each marked row on screen.
-pub fn mark_bars(frame: &mut Frame, marks: &[(usize, crate::marks::MarkColor)], inner: Rect, cell_h: f32, pad: f32) {
+/// The color of a mark's indicator (`TDH:1305-1346`): with "Use Theme Mark Colors" the ANSI
+/// blue, yellow and red; otherwise iTerm2's fixed colors (`mark_rgba`).
+pub fn mark_color(c: crate::marks::MarkColor, palette: &crate::palette::Palette, theme: bool) -> Rgb {
+    use crate::marks::MarkColor::*;
+    if theme {
+        return palette.ansi[match c {
+            Success => 4,
+            Other => 3,
+            Error => 1,
+        }];
+    }
+    let [r, g, b, _] = mark_rgba(c);
+    let u = |v: f32| (v * 255.0).round() as u8;
+    Rgb { r: u(r), g: u(g), b: u(b) }
+}
+
+/// A line-style mark's line color (`TDH:1448-1456`): the mark color blended 50% with the
+/// default background.
+pub fn line_mark_color(mark: Rgb, bg: Rgb) -> Rgb {
+    let mix = |m: u8, b: u8| ((m as f32 + b as f32) / 2.0).round() as u8;
+    rgb(mix(mark.r, bg.r), mix(mark.g, bg.g), mix(mark.b, bg.b))
+}
+
+/// A line-style mark (`TDH:1380-1414`): a 1 px line across the pane at the row's top minus
+/// half a cell, stopping 15 cells short of the right when the mark has a command.
+pub fn line_mark(frame: &mut Frame, rect: Rect, row: usize, cell: (f32, f32), color: Rgb, has_command: bool, cols: usize) {
+    let y = (rect.y + (row as f32 - 0.5) * cell.1).round();
+    if y < rect.y {
+        return;
+    }
+    let cells = if has_command { cols.saturating_sub(LINE_MARK_RIGHT_INSET) } else { cols };
+    frame.overlay.push(Quad { rect: Rect { x: rect.x, y, w: cells as f32 * cell.0, h: 1.0 }, color: rgba(color, 1.0) });
+}
+
+/// A pane's scrollbar, over the text and the pane's backdrop margins (it holds no text).
+/// The legacy style is an opaque track with a rounded knob when there is history; the
+/// overlay style is a translucent thumb, 7 points wide, widening to the track's width
+/// under the pointer. Gray, light or dark with the window.
+pub fn scrollbar(frame: &mut Frame, g: &crate::scrollbar::Geometry, style: crate::scrollbar::Style, dark: bool, hover: bool) {
+    use crate::scrollbar::{LEGACY_WIDTH, OVERLAY_WIDTH, Style};
+    let gray = |v: f32, a: f32| [v, v, v, a];
+    match style {
+        Style::Legacy => {
+            let scale = g.track.w / LEGACY_WIDTH;
+            frame.scrollbars.push(Quad { rect: g.track, color: gray(if dark { 0.13 } else { 0.96 }, 1.0) });
+            let edge = Rect { w: scale.max(1.0), ..g.track };
+            frame.scrollbars.push(Quad { rect: edge, color: gray(if dark { 0.24 } else { 0.86 }, 1.0) });
+            if g.thumb.h < g.track.h {
+                let inset = 3.0 * scale;
+                let knob = Rect { x: g.thumb.x + inset, y: g.thumb.y + 2.0 * scale, w: g.thumb.w - 2.0 * inset, h: (g.thumb.h - 4.0 * scale).max(1.0) };
+                let v = match (dark, hover) {
+                    (false, false) => 0.62,
+                    (false, true) => 0.48,
+                    (true, false) => 0.42,
+                    (true, true) => 0.58,
+                };
+                rounded_box(&mut frame.scrollbars, knob, knob.w / 2.0, gray(v, 1.0));
+            }
+        }
+        Style::Overlay => {
+            let scale = g.track.w / OVERLAY_WIDTH;
+            let w = if hover { g.track.w } else { 7.0 * scale };
+            let thumb = Rect { x: g.track.x + g.track.w - w, w, ..g.thumb };
+            let (v, a) = (if dark { 1.0 } else { 0.0 }, if hover { 0.65 } else { 0.45 });
+            rounded_box(&mut frame.scrollbars, thumb, w / 2.0, gray(v, a));
+        }
+    }
+}
+
+/// Marks and search results along the scrollbar (`MM:85-125`): per non-empty series, each
+/// tick a 1 px outline around a fill inset by 1, at `MINIMAP_ALPHA`. `track` is the minimap
+/// rectangle (`Geometry::minimap`). Series draw in the order given.
+pub fn scrollbar_ticks(frame: &mut Frame, track: Rect, series: &[(crate::scrollbar::Series, Vec<usize>)], total: usize, scale: f32) {
+    use crate::scrollbar::{MINIMAP_ALPHA, series_colors, ticks};
+    for (kind, lines) in series {
+        let (outline, fill) = series_colors(*kind);
+        for t in ticks(track, lines, total, false, scale) {
+            let c = rgba(outline, MINIMAP_ALPHA);
+            // The outline is half a point stroked, so a point wide at each side: `scale` px. The
+            // side edges stop at the top and bottom edges so no corner draws twice.
+            let o = scale.max(1.0);
+            for edge in [Rect { h: o, ..t }, Rect { y: t.y + t.h - o, h: o, ..t }, Rect { y: t.y + o, h: (t.h - 2.0 * o).max(0.0), w: o, ..t }, Rect { x: t.x + t.w - o, y: t.y + o, h: (t.h - 2.0 * o).max(0.0), w: o, ..t }] {
+                frame.scrollbars.push(Quad { rect: edge, color: c });
+            }
+            let inner = Rect { x: t.x + o, y: t.y + o, w: (t.w - 2.0 * o).max(0.0), h: (t.h - 2.0 * o).max(0.0) };
+            frame.scrollbars.push(Quad { rect: inner, color: rgba(fill, MINIMAP_ALPHA) });
+        }
+    }
+}
+
+/// `iTermTextDrawingHelperLineStyleMarkRightInsetCells`: the cells a line-style mark leaves
+/// free at the right for a command's buttons.
+const LINE_MARK_RIGHT_INSET: usize = 15;
+
+/// True when a line-style mark on `row` is not drawn: inside the selected command's rows
+/// (first, last) or two rows after `last`, as iTerm2's `NSMaxRange + 1` (`TDH:1387-1394`).
+pub fn line_mark_hidden(row: usize, region: Option<(usize, usize)>) -> bool {
+    region.is_some_and(|(first, last)| (first..=last).contains(&row) || row == last + 2)
+}
+
+/// Mark indicators: a bar in the left padding beside each marked row on screen, in the
+/// mark's color (`mark_color`).
+pub fn mark_bars(frame: &mut Frame, marks: &[(usize, crate::marks::MarkColor)], inner: Rect, cell_h: f32, pad: f32, palette: &crate::palette::Palette, theme: bool) {
     let w = (pad * 0.75).max(1.0);
     for (row, color) in marks {
         let rect = Rect { x: inner.x - pad, y: inner.y + *row as f32 * cell_h, w, h: cell_h };
-        frame.overlay.push(Quad { rect, color: mark_rgba(*color) });
+        frame.overlay.push(Quad { rect, color: rgba(mark_color(*color, palette, theme), 1.0) });
     }
 }
 
@@ -2422,7 +2697,7 @@ pub fn cut_rows_from(frame: &mut Frame, r: Rect, line_h: f32) {
 /// The underline and strikethrough strokes already in the frame stop at `r` (a popup drawn over them): each
 /// keeps the parts of it outside `r`. `cut_out` calls this, so every popup trims both.
 pub fn cut_quads(frame: &mut Frame, r: Rect) {
-    for quads in [&mut frame.underlines, &mut frame.strikes] {
+    for quads in [&mut frame.underlines, &mut frame.strikes, &mut frame.scrollbars] {
         *quads = quads.drain(..).flat_map(|q| outside(q.rect, r).into_iter().map(move |rect| Quad { rect, ..q })).collect();
     }
 }
@@ -2476,6 +2751,7 @@ pub fn lay_over(frame: &mut Frame, layer: Frame, area: Rect, alpha: f32, under: 
     let faded = |q: Quad| Quad { color: [q.color[0], q.color[1], q.color[2], q.color[3] * alpha], ..q };
     frame.popups.extend(layer.quads.into_iter().chain(layer.popups).map(faded));
     frame.overlay.extend(layer.overlay.into_iter().map(faded));
+    frame.scrollbars.extend(layer.scrollbars.into_iter().map(faded));
     frame.underlines.extend(layer.underlines.into_iter().map(faded));
     frame.strikes.extend(layer.strikes.into_iter().map(faded));
     // Pictures keep their full opacity and draw before popups (none in the bar yet).
@@ -4614,10 +4890,51 @@ mod tests {
     }
 
     #[test]
+    fn mark_colors_follow_iterm2() {
+        use crate::marks::MarkColor::*;
+        let pal = crate::palette::Palette::default();
+        assert_eq!(mark_color(Success, &pal, false), rgb(137, 193, 255));
+        assert_eq!(mark_color(Other, &pal, false), rgb(219, 216, 109));
+        assert_eq!(mark_color(Error, &pal, false), rgb(252, 114, 109));
+        assert_eq!(mark_color(Success, &pal, true), pal.ansi[4]);
+        assert_eq!(mark_color(Other, &pal, true), pal.ansi[3]);
+        assert_eq!(mark_color(Error, &pal, true), pal.ansi[1]);
+        assert_eq!(line_mark_color(rgb(255, 0, 0), rgb(0, 0, 0)), rgb(128, 0, 0));
+        assert_eq!(line_mark_color(rgb(0, 0, 0), rgb(255, 255, 255)), rgb(128, 128, 128));
+    }
+
+    #[test]
+    fn line_marks_follow_iterm2() {
+        let rect = Rect { x: 8.0, y: 100.0, w: 800.0, h: 400.0 };
+        let mut f = Frame::default();
+        line_mark(&mut f, rect, 3, (10.0, 20.0), rgb(255, 0, 0), true, 80);
+        let q = f.overlay.last().unwrap();
+        // round(100 + (3 - 0.5) * 20) = 150, 1 px tall, 65 cells wide from the pane's left.
+        assert_eq!((q.rect.x, q.rect.y, q.rect.w, q.rect.h), (8.0, 150.0, 650.0, 1.0));
+        assert!(q.color[0] > 0.9 && q.color[1] < 0.01, "{:?}", q.color);
+        let mut f = Frame::default();
+        line_mark(&mut f, rect, 3, (10.0, 20.0), rgb(255, 0, 0), false, 80);
+        assert_eq!(f.overlay.last().unwrap().rect.w, 800.0);
+        // Row 0 would sit half a cell above the pane: nothing is drawn.
+        let mut f = Frame::default();
+        line_mark(&mut f, rect, 0, (10.0, 20.0), rgb(255, 0, 0), false, 80);
+        assert!(f.overlay.is_empty());
+    }
+
+    #[test]
+    fn line_marks_skip_the_selected_command() {
+        // Not drawn inside the region or on the row after it (`TDH:1387-1394`).
+        let region = Some((4usize, 6usize));
+        assert!(line_mark_hidden(4, region) && line_mark_hidden(6, region) && line_mark_hidden(8, region));
+        assert!(!line_mark_hidden(3, region) && !line_mark_hidden(7, region) && !line_mark_hidden(9, region));
+        assert!(!line_mark_hidden(5, None));
+    }
+
+    #[test]
     fn mark_bars_sit_in_the_left_padding() {
         let mut f = Frame::default();
         let inner = Rect { x: 10.0, y: 20.0, w: 100.0, h: 100.0 };
-        mark_bars(&mut f, &[(2, crate::marks::MarkColor::Error)], inner, 16.0, 4.0);
+        mark_bars(&mut f, &[(2, crate::marks::MarkColor::Error)], inner, 16.0, 4.0, &crate::palette::Palette::default(), false);
         let q = f.overlay.last().unwrap();
         assert!(q.rect.x >= 6.0 && q.rect.x + q.rect.w <= 10.0, "{:?}", q.rect);
         assert_eq!((q.rect.y, q.rect.h), (52.0, 16.0));
@@ -4879,7 +5196,7 @@ mod tests {
     }
 
     fn see_through(bg_alpha: f32, opaque_colors: bool) -> Highlights<'static> {
-        Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha, opaque_colors }
+        Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha, opaque_colors, text_blink_on: true }
     }
 
     /// "X" on red, then a selected "a", then a plain "b".
@@ -4901,7 +5218,7 @@ mod tests {
         let mut s = Screen::new(10, 3);
         s.feed(b"hello \xe4\xb8\xad world");
         let mut f = Frame::default();
-        let hl = Highlights { matches: &[], color: rgb(255, 255, 0), hover: None, link: rgb(0, 0, 255), labels: &[(crate::find::Pos { row: 0, col: 1 }, "a".to_string())], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
+        let hl = Highlights { matches: &[], color: rgb(255, 255, 0), hover: None, link: rgb(0, 0, 255), labels: &[(crate::find::Pos { row: 0, col: 1 }, "a".to_string())], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
         pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl), 7);
         assert!(f.rows.len() >= 3, "{:?}", f.rows);
         assert!(f.rows.iter().all(|r| r.face == 7), "{:?}", f.rows.iter().map(|r| r.face).collect::<Vec<_>>());
@@ -5050,6 +5367,334 @@ mod tests {
         assert_eq!(b.color, rgb(230, 230, 230));
     }
 
+    fn with_min_contrast(s: &mut Screen, min: f32) {
+        s.palette.min_contrast = min;
+    }
+
+    fn span_color(f: &Frame, text: &str) -> Option<Rgb> {
+        f.rows.iter().flat_map(|r| &r.spans).find(|sp| sp.text.contains(text)).map(|sp| sp.color)
+    }
+
+    #[test]
+    fn blink_follows_the_profile() {
+        // A blinking "a" on red, then a plain "b".
+        let mut s = screen(b"\x1b[41;5ma\x1b[0mb");
+        let draw = |s: &Screen, on: bool| {
+            let mut f = Frame::default();
+            let hl = Highlights { text_blink_on: on, ..see_through(1.0, false) };
+            pane_with(&mut f, s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
+            f
+        };
+        let red = rgba(s.palette.ansi[1], 1.0);
+        // Not allowed: the off phase hides nothing.
+        let f = draw(&s, false);
+        assert_eq!(row_text(&f, 0).trim_end(), "ab");
+        // Allowed and off: the glyph is gone, the background and the neighbor stay.
+        s.blink_allowed = true;
+        let f = draw(&s, false);
+        assert_eq!(row_text(&f, 0).trim_end(), " b", "{:?}", f.rows);
+        assert!(f.quads.iter().any(|q| q.color == red && q.rect.x == 0.0), "background still draws");
+        // Allowed and on: drawn.
+        let f = draw(&s, true);
+        assert_eq!(row_text(&f, 0).trim_end(), "ab");
+        // No highlights (previews, screenshots): drawn.
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        assert_eq!(row_text(&f, 0).trim_end(), "ab");
+    }
+
+    /// Phase B (13l's ruling, from `iTermMetalPerFrameState.m`): a blinking cell in its off phase
+    /// draws no underline and no strikethrough either; its neighbors keep theirs.
+    #[test]
+    fn blink_off_draws_no_underline_or_strike() {
+        let mut s = screen(b"\x1b[4;9;5ma\x1b[0;4mb");
+        s.blink_allowed = true;
+        let draw = |s: &Screen, on: bool| {
+            let mut f = Frame::default();
+            let hl = Highlights { text_blink_on: on, ..see_through(1.0, false) };
+            pane_with(&mut f, s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
+            f
+        };
+        let at = |qs: &[Quad], x: f32| qs.iter().any(|q| q.rect.x >= x && q.rect.x < x + 10.0);
+        let f = draw(&s, false);
+        assert!(!at(&f.underlines, 0.0), "no underline under the hidden glyph {:?}", f.underlines);
+        assert!(!at(&f.strikes, 0.0), "no strikethrough through it {:?}", f.strikes);
+        assert!(at(&f.underlines, 10.0), "the neighbor keeps its underline");
+        let f = draw(&s, true);
+        assert!(at(&f.underlines, 0.0) && at(&f.strikes, 0.0), "on phase draws both");
+        // Not allowed: the off phase hides nothing, so the runs stay.
+        s.blink_allowed = false;
+        let f = draw(&s, false);
+        assert!(at(&f.underlines, 0.0) && at(&f.strikes, 0.0));
+    }
+
+    /// Phase B (preflight T2 -> T7): a line-style mark takes the pane's text rect, so it stops
+    /// at the text's last column and never runs under the scrollbar strip or the stamp column.
+    #[test]
+    fn line_marks_stay_in_the_text_rect() {
+        let text = Rect { x: 5.0, y: 2.0, w: 800.0 - 10.0 - 15.0, h: 480.0 };
+        let mut f = Frame::default();
+        line_mark(&mut f, text, 3, CELL, rgb(1, 2, 3), false, 77);
+        let q = f.overlay[0].rect;
+        assert_eq!((q.x, q.y, q.h), (5.0, (2.0 + 2.5 * 20.0f32).round(), 1.0));
+        assert!(q.x + q.w <= text.x + text.w, "{q:?} ends inside the text rect");
+        assert_eq!(q.w, 770.0);
+    }
+
+    /// Phase B: underline, strikethrough and OSC 8 runs on a right-to-left row sit under the
+    /// cells where they draw (the display order), and a logical run that is not contiguous on
+    /// screen is several runs.
+    #[test]
+    fn underline_runs_follow_the_display_order() {
+        let xs = |qs: &[Quad]| -> Vec<(f32, f32)> { qs.iter().map(|q| (q.rect.x, q.rect.x + q.rect.w)).collect() };
+        let draw = |bytes: &str| {
+            let s = screen(bytes.as_bytes());
+            let mut f = Frame::default();
+            pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+            f
+        };
+        // Underline only the aleph of aleph bet gimel. A hebrew row draws gimel bet aleph from
+        // the left, so the aleph is the third cell: x 20..30, never 0..10.
+        let f = draw("\x1b[4m\u{5d0}\x1b[0m\u{5d1}\u{5d2}");
+        assert_eq!(xs(&f.underlines), vec![(20.0, 30.0)], "the aleph draws third");
+        // Strike only the bet: the middle cell either way, so a strike on the gimel pins order too.
+        let f = draw("\u{5d0}\u{5d1}\x1b[9m\u{5d2}");
+        assert_eq!(xs(&f.strikes), vec![(0.0, 10.0)], "the gimel draws first");
+        // An OSC 8 link over the aleph only of "ab " + aleph bet: the aleph draws at column 4.
+        let f = draw("ab \x1b]8;;http://x\x07\u{5d0}\x1b]8;;\x07\u{5d1}");
+        let u = xs(&f.underlines);
+        assert!(!u.is_empty() && u.iter().all(|&(a, b)| a >= 40.0 && b <= 50.0), "the link is a dash under column 4 only: {u:?}");
+        // A pair that crosses a direction change: a, aleph, bet, b with the underline on logical
+        // cells 0 and 1 (a and aleph). Display order is a, bet, aleph, b: columns 0 and 2, two runs.
+        let f = draw("\x1b[4ma\u{5d0}\x1b[0m\u{5d1}b");
+        assert_eq!(xs(&f.underlines), vec![(0.0, 10.0), (20.0, 30.0)], "two runs, not one");
+    }
+
+    /// The x of the first text piece holding `ch`.
+    fn piece_x(f: &Frame, ch: char) -> Option<f32> {
+        f.rows.iter().find(|r| r.spans.iter().any(|sp| sp.text.contains(ch))).map(|r| r.x)
+    }
+
+    #[test]
+    fn bidi_rows_draw_in_display_order() {
+        let mut s = screen("ab \u{5d0}\u{5d1}".as_bytes());
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        assert_eq!(piece_x(&f, '\u{5d1}'), Some(30.0), "bet is drawn at column 3");
+        assert_eq!(piece_x(&f, '\u{5d0}'), Some(40.0), "aleph at column 4");
+        // Bidi off: logical order.
+        s.bidi_rules.enabled = false;
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        assert_eq!(piece_x(&f, '\u{5d0}'), Some(30.0));
+        assert_eq!(piece_x(&f, '\u{5d1}'), Some(40.0));
+    }
+
+    #[test]
+    fn bidi_mirrors_brackets_and_moves_the_row_together() {
+        // aleph ( bet ) on a red background from column 1: the colors travel with their cells,
+        // and the brackets are drawn as their counterparts.
+        let s = screen("\u{5d0}\x1b[41m(\u{5d1})\x1b[0m".as_bytes());
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        // Logical: aleph(0) ( (1) bet(2) ) (3). All right to left: ) bet ( aleph, so the
+        // logical ")" draws mirrored as "(" at column 0 and "(" as ")" at column 2.
+        let at = |col: f32| f.rows.iter().find(|r| r.x == col * 10.0).map(|r| r.spans.iter().map(|sp| sp.text.as_str()).collect::<String>());
+        assert_eq!(at(0.0).as_deref(), Some("("), "{:?}", f.rows);
+        assert_eq!(at(1.0).as_deref(), Some("\u{5d1}"));
+        assert_eq!(at(2.0).as_deref(), Some(")"));
+        assert_eq!(at(3.0).as_deref(), Some("\u{5d0}"));
+        // The red background of logical cells 1..=3 now covers visual columns 0..=2.
+        let red = rgba(s.palette.ansi[1], 1.0);
+        assert!(f.quads.iter().any(|q| q.color == red && q.rect.x == 0.0 && q.rect.w == 30.0), "{:?}", f.quads);
+    }
+
+    #[test]
+    fn bidi_cursor_and_hover_follow_the_display_order() {
+        // The cursor sits on the aleph (logical column 3), which draws at column 4.
+        let s = screen("ab \u{5d0}\u{5d1}\x1b[1;4H".as_bytes());
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true));
+        let cursor = rgba(s.palette.cursor, 1.0);
+        let box_quad = f.quads.iter().find(|q| q.color == cursor).expect("the block cursor");
+        assert_eq!(box_quad.rect.x, 40.0);
+        // Its text is the aleph, in the cursor text color, at the same cell.
+        let at = f.rows.iter().find(|r| r.x == 40.0).unwrap();
+        assert_eq!(at.spans[0].text, "\u{5d0}");
+        assert_eq!(at.spans[0].color, s.palette.cursor_text);
+    }
+
+    /// P9: an explicit override riding on an Arabic cell never reaches the shaper, which would
+    /// run its own bidi over the joined piece and honor it.
+    #[test]
+    fn arabic_runs_drop_explicit_controls() {
+        let piece_text = |bytes: &str| {
+            let s = screen(bytes.as_bytes());
+            let mut f = Frame::default();
+            pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+            let piece = f.rows.iter().find(|r| r.spans.iter().any(|sp| sp.text.contains('\u{633}'))).unwrap();
+            piece.spans.iter().map(|sp| sp.text.as_str()).collect::<String>()
+        };
+        let plain = piece_text("x \u{633}\u{644}\u{627}\u{645}");
+        for ctl in ['\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}'] {
+            assert_eq!(piece_text(&format!("x \u{633}{ctl}\u{644}\u{627}\u{645}")), plain, "{ctl:?} must not reach the shaper");
+        }
+    }
+
+    #[test]
+    fn arabic_runs_are_one_piece() {
+        // Each letter alone would lose its joining forms (P8): the run is one piece, in
+        // logical order, at its visual start.
+        let s = screen("x \u{633}\u{644}\u{627}\u{645}".as_bytes());
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        let piece = f.rows.iter().find(|r| r.spans.iter().any(|sp| sp.text.contains('\u{633}'))).unwrap();
+        let text: String = piece.spans.iter().map(|sp| sp.text.as_str()).collect();
+        assert_eq!(text, "\u{633}\u{644}\u{627}\u{645}");
+        assert_eq!(piece.x, 20.0);
+    }
+
+    #[test]
+    fn contrast_applies_per_cell() {
+        // Gray on the same gray: unreadable until minimum contrast moves it.
+        let mut s = screen(b"\x1b[38;2;100;100;100m\x1b[48;2;100;100;100mab");
+        with_min_contrast(&mut s, 0.5);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        let c = span_color(&f, "ab").unwrap();
+        assert!(c.r > 200, "dark gray on itself goes toward white: {c:?}");
+        assert_eq!(c, crate::contrast::apply(rgb(100, 100, 100), rgb(100, 100, 100), 0.5));
+        // On a light background the text goes dark.
+        let mut s = screen(b"\x1b[38;2;250;250;250m\x1b[48;2;250;250;250mab");
+        with_min_contrast(&mut s, 0.5);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        let c = span_color(&f, "ab").unwrap();
+        assert!(c.r < 130 && c.r > 115, "{c:?}");
+        // Zero keeps the palette color.
+        let mut s = screen(b"\x1b[38;2;128;128;128m\x1b[48;2;128;128;128mab");
+        with_min_contrast(&mut s, 0.0);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        assert_eq!(span_color(&f, "ab"), Some(rgb(128, 128, 128)));
+        // 13l seam S1: a default-colored underline follows the adjusted text color; an SGR 58
+        // color is left alone.
+        let mut s = screen(b"\x1b[4;38;2;100;100;100m\x1b[48;2;100;100;100ma\x1b[58;2;0;255;0mb");
+        with_min_contrast(&mut s, 0.5);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        let adjusted = crate::contrast::apply(rgb(100, 100, 100), rgb(100, 100, 100), 0.5);
+        let ul = |x: f32| f.underlines.iter().find(|q| q.rect.x == x).map(|q| q.color);
+        assert_eq!(ul(0.0), Some(rgba(adjusted, 1.0)), "follows the adjusted fg");
+        assert_eq!(ul(10.0), Some(rgba(rgb(0, 255, 0), 1.0)), "SGR 58 does not");
+    }
+
+    #[test]
+    fn selected_cells_contrast_against_the_selection_color() {
+        let mut s = screen(b"\x1b[38;2;100;100;100mhello");
+        s.palette.selection = rgb(100, 100, 100);
+        s.palette.selected_text = None;
+        with_min_contrast(&mut s, 0.5);
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left);
+        sel.update(Point::new(Line(0), Column(1)), Side::Right);
+        s.term_mut().selection = Some(sel);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false));
+        let sel_text = span_color(&f, "he").unwrap();
+        assert_ne!(sel_text, rgb(100, 100, 100), "selected text is adjusted against the selection color");
+        assert_eq!(sel_text, crate::contrast::apply(rgb(100, 100, 100), rgb(100, 100, 100), 0.5));
+    }
+
+    /// 13m final 3: a cell both find-matched (or hovered) and selected adjusts its text against
+    /// the selection color that draws, not against the match color.
+    #[test]
+    fn a_matched_selected_cell_contrasts_against_the_selection() {
+        let mut s = screen(b"hello");
+        s.palette.selection = rgb(0, 0, 0);
+        s.palette.selected_text = None;
+        with_min_contrast(&mut s, 1.0);
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left);
+        sel.update(Point::new(Line(0), Column(0)), Side::Right);
+        s.term_mut().selection = Some(sel);
+        // A white match color makes the match text black; against the black selection that is
+        // unreadable until it is adjusted against the selection.
+        let m = [crate::find::Match { start: crate::find::Pos { row: 0, col: 0 }, end: crate::find::Pos { row: 0, col: 0 } }];
+        let hl = Highlights { matches: &m, color: rgb(255, 255, 255), ..see_through(1.0, false) };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
+        let c = span_color(&f, "h").unwrap();
+        assert_ne!(c, rgb(0, 0, 0), "black text on the black selection");
+        assert_eq!(c, crate::contrast::apply(rgb(0, 0, 0), rgb(0, 0, 0), 1.0));
+        // A hovered link over the selection does the same.
+        let hl = Highlights { hover: Some(crate::find::Match { start: crate::find::Pos { row: 0, col: 0 }, end: crate::find::Pos { row: 0, col: 0 } }), link: rgb(0, 0, 0), ..see_through(1.0, false) };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
+        assert_eq!(span_color(&f, "h"), Some(crate::contrast::apply(rgb(0, 0, 0), rgb(0, 0, 0), 1.0)));
+    }
+
+    /// An explicit Selected Text Color is adjusted against the selection color too.
+    #[test]
+    fn an_explicit_selected_text_color_is_adjusted() {
+        let mut s = screen(b"hello");
+        s.palette.selection = rgb(100, 100, 100);
+        s.palette.selected_text = Some(rgb(100, 100, 100));
+        with_min_contrast(&mut s, 0.5);
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left);
+        sel.update(Point::new(Line(0), Column(1)), Side::Right);
+        s.term_mut().selection = Some(sel);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false));
+        assert_eq!(span_color(&f, "he"), Some(crate::contrast::apply(rgb(100, 100, 100), rgb(100, 100, 100), 0.5)));
+    }
+
+    /// A hidden (SGR 8) cell keeps its color whatever the minimum contrast.
+    #[test]
+    fn hidden_cells_are_exempt_from_contrast() {
+        let mut s = screen(b"\x1b[8;38;2;128;128;128m\x1b[48;2;128;128;128mab");
+        with_min_contrast(&mut s, 1.0);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        assert!(f.rows.iter().flat_map(|r| &r.spans).all(|sp| sp.color == rgb(128, 128, 128) || sp.text.trim().is_empty()), "{:?}", f.rows);
+    }
+
+    #[test]
+    fn contrast_runs_before_mute() {
+        let mut s = screen(b"\x1b[38;2;128;128;128m\x1b[48;2;128;128;128mab");
+        s.palette.bg = rgb(0, 0, 0);
+        with_min_contrast(&mut s, 0.5);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook { boost: 0.5, ..CursorLook::shown(false) });
+        let raw = crate::contrast::apply(rgb(128, 128, 128), rgb(128, 128, 128), 0.5);
+        let want = crate::cursor_look::mute(raw, s.palette.bg, 0.5);
+        assert_eq!(span_color(&f, "ab"), Some(want));
+        let wrong = crate::contrast::apply(crate::cursor_look::mute(rgb(128, 128, 128), s.palette.bg, 0.5), crate::cursor_look::mute(rgb(128, 128, 128), s.palette.bg, 0.5), 0.5);
+        assert_ne!(want, wrong);
+    }
+
+    #[test]
+    fn cursor_text_is_not_adjusted() {
+        let mut s = screen(b"ab\x1b[1;1H");
+        s.palette.cursor = rgb(200, 200, 200);
+        s.palette.cursor_text = rgb(200, 200, 200);
+        with_min_contrast(&mut s, 1.0);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true));
+        assert_eq!(span_color(&f, "a"), Some(rgb(200, 200, 200)));
+    }
+
+    #[test]
+    fn blocks_keep_their_color() {
+        let mut s = screen(b"\x1b[38;2;128;128;128m\x1b[48;2;128;128;128m\xe2\x96\x88\xe2\x94\x80");
+        with_min_contrast(&mut s, 1.0);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        // Both are drawn by Tandem (13n), so their colors are the glyphs'.
+        let block = f.glyphs.iter().find(|g| g.c == '\u{2588}').unwrap();
+        assert_eq!(block.color, rgb(128, 128, 128), "a block character keeps its foreground");
+        let line = f.glyphs.iter().find(|g| g.c == '\u{2500}').unwrap();
+        assert_ne!(line.color, rgb(128, 128, 128), "a box line is adjusted");
+    }
+
     #[test]
     fn boost_mutes_all_but_the_cursor() {
         // White on black text, a red cell, Boost 0.5: everything but the cursor is halfway to black.
@@ -5084,7 +5729,7 @@ mod tests {
         let m = crate::find::find_all(&s, "ab").unwrap();
         let mut f = Frame::default();
         let yellow = rgb(200, 200, 0);
-        let hl = Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
+        let hl = Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
         pane_with(&mut f, &s, RECT, CELL, true, &CursorLook { boost: 0.5, ..CursorLook::shown(false) }, &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         let quad = |c: Rgb, x: f32| f.quads.iter().any(|q| q.color == rgba(c, 1.0) && q.rect.x == x);
         assert!(quad(rgb(100, 50, 0), 0.0), "selection background halfway to black: {:?}", f.quads);
@@ -5999,7 +6644,7 @@ mod tests {
         let m = crate::find::find_all(&s, "ab").unwrap();
         let mut f = Frame::default();
         let yellow = rgb(0xff, 0xff, 0x00);
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false }), crate::render::DEFAULT_FACE);
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true }), crate::render::DEFAULT_FACE);
         let y = rgba(yellow, 1.0);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 30.0, y: 0.0, w: 20.0, h: 20.0 }), "{:?}", f.quads);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 60.0, y: 0.0, w: 20.0, h: 20.0 }));
@@ -6073,8 +6718,36 @@ mod tests {
         assert_eq!(find(&f, 0.0), Some(red));
         assert_eq!(find(&f, 10.0), Some(rgba(green, 1.0)));
         // The default color is the cell's final text color: a selected cell's.
-        let runs = underline_runs(&[CellLook { ul: Some(Ul { style: crate::underline::Style::Single, strike: false, sgr: None }), text: "a".into(), fg: rgb(1, 2, 3), bg: rgb(0, 0, 0), bold: false, italic: false, selected: false, level: 0, mask: 0, cursor: false }], None);
+        let runs = underline_runs(&[CellLook { ul: Some(Ul { style: crate::underline::Style::Single, strike: false, sgr: None }), text: "a".into(), fg: rgb(1, 2, 3), bg: rgb(0, 0, 0), bold: false, italic: false, selected: false, level: 0, mask: 0, cursor: false, joins: false }], None);
         assert_eq!(runs[0].color, rgb(1, 2, 3));
+    }
+
+    /// 13m Task 7: a popup, a toast or a find bar over a pane's right edge lies over the
+    /// scrollbar, not under it: whatever cuts the text cuts the bar and its ticks.
+    #[test]
+    fn popups_lie_over_the_scrollbar() {
+        use crate::scrollbar::{Series, Style, geometry};
+        let pane = Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 };
+        let g = geometry(pane, Style::Legacy, 1.0, 100, 50, 0).unwrap();
+        let hits = |f: &Frame, r: Rect| f.scrollbars.iter().any(|q| q.rect.x < r.x + r.w && q.rect.x + q.rect.w > r.x && q.rect.y < r.y + r.h && q.rect.y + q.rect.h > r.y);
+        let fresh = || {
+            let mut f = Frame::default();
+            scrollbar(&mut f, &g, Style::Legacy, false, false);
+            scrollbar_ticks(&mut f, g.minimap(false, 1.0), &[(Series::Search, vec![10, 40])], 150, 1.0);
+            f
+        };
+        let over = Rect { x: 700.0, y: 100.0, w: 100.0, h: 300.0 };
+        let mut f = fresh();
+        assert!(hits(&f, over), "the bar is there before the popup");
+        assert!(f.overlay.is_empty() && f.quads.is_empty(), "the bar is its own layer");
+        cut_out(&mut f, over, CELL.1);
+        assert!(!hits(&f, over), "cut_out trims the bar and its ticks");
+        assert!(hits(&f, Rect { x: 780.0, y: 0.0, w: 20.0, h: 90.0 }), "the part above the popup stays");
+        let mut f = fresh();
+        cut_rows_from(&mut f, over, CELL.1);
+        assert!(!hits(&f, over), "so does every surface that cuts rows");
+        // The renderer draws the layer (after the strokes, before the overlay): wired, not dropped.
+        assert!(include_str!("render.rs").contains("frame.scrollbars"));
     }
 
     #[test]
@@ -6117,7 +6790,7 @@ mod tests {
         let r = info_bar(&mut f, &ib, &l, CELL);
         assert!(!hits(&f, r), "info bar {r:?}");
         let mut f = fresh();
-        timestamps(&mut f, &[(3, "12:00:00".to_string())], RECT, CELL);
+        timestamps(&mut f, &[(3, "12:00:00".to_string())], RECT, CELL, None, STAMP_COLORS);
         let r = Rect { x: 800.0 - 100.0, y: 60.0, w: 100.0, h: CELL.1 };
         assert!(!hits(&f, r), "timestamp {r:?}");
     }
@@ -6191,7 +6864,7 @@ mod tests {
         let mut f = Frame::default();
         let link = rgb(0x06, 0x45, 0xad);
         let hover = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
         pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         let q = f.overlay.iter().find(|q| q.color == rgba(link, 1.0)).unwrap();
         assert_eq!(q.rect, Rect { x: 40.0, y: CELL.1 - 1.0, w: 40.0, h: 1.0 });
@@ -6199,12 +6872,75 @@ mod tests {
         assert_eq!(x.color, link);
     }
 
+    /// The row "ab " + aleph + bet draws the aleph (logical column 3) at visual column 4 and the
+    /// bet (logical 4) at visual column 3. Everything placed by a logical column follows.
+    fn hl_with<'a>(matches: &'a [crate::find::Match], labels: &'a [(crate::find::Pos, String)], notes: &'a [(crate::find::Match, Option<String>)]) -> Highlights<'a> {
+        Highlights { matches, color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels, notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true }
+    }
+
+    fn at(col: usize) -> crate::find::Pos {
+        crate::find::Pos { row: 0, col }
+    }
+
+    #[test]
+    fn bidi_find_and_selection_follow_the_order() {
+        let mut s = screen("ab \u{5d0}\u{5d1}".as_bytes());
+        // A find match over logical 3..4 is one run at visual 3..4.
+        let m = [crate::find::Match { start: at(3), end: at(4) }];
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl_with(&m, &[], &[])), crate::render::DEFAULT_FACE);
+        let yellow: Vec<Rect> = f.quads.iter().filter(|q| q.color == rgba(rgb(0xff, 0xff, 0), 1.0)).map(|q| q.rect).collect();
+        assert_eq!(yellow, vec![Rect { x: 30.0, y: 0.0, w: 20.0, h: 20.0 }]);
+        // A selection of logical column 3 shades visual column 4.
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(3)), Side::Left);
+        sel.update(Point::new(Line(0), Column(3)), Side::Right);
+        s.term_mut().selection = Some(sel);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        let shade: Vec<Rect> = f.quads.iter().filter(|q| q.color == rgba(s.palette.selection, 1.0)).map(|q| q.rect).collect();
+        assert_eq!(shade, vec![Rect { x: 40.0, y: 0.0, w: 10.0, h: 20.0 }]);
+    }
+
+    #[test]
+    fn bidi_labels_notes_and_ime_follow_the_order() {
+        let s = screen("ab \u{5d0}\u{5d1}".as_bytes());
+        // A two-character label over logical 3..5 sits where its cells are, at visual 3.
+        let labels = [(at(3), "12".to_string())];
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl_with(&[], &labels, &[])), crate::render::DEFAULT_FACE);
+        let tag = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "12")).unwrap();
+        assert_eq!(tag.x, 30.0);
+        // A one-character label over the aleph sits at its visual column 4.
+        let labels = [(at(3), "A".to_string())];
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl_with(&[], &labels, &[])), crate::render::DEFAULT_FACE);
+        assert_eq!(f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "A")).unwrap().x, 40.0);
+        // A note over logical 3 underlines visual 4; over logical 0..3 it is two pieces.
+        let notes = [(crate::find::Match { start: at(3), end: at(3) }, None), (crate::find::Match { start: at(0), end: at(3) }, None)];
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl_with(&[], &[], &notes)), crate::render::DEFAULT_FACE);
+        let y = CELL.1 - 3.0;
+        let lines: Vec<(f32, f32)> = f.overlay.iter().filter(|q| q.color == rgba(NOTE, 1.0) && q.rect.y == y).map(|q| (q.rect.x, q.rect.w)).collect();
+        assert_eq!(lines, vec![(40.0, 10.0), (0.0, 30.0), (40.0, 10.0)], "{lines:?}");
+        // The IME composition over logical 3 draws at visual 4 and its caret at logical 4 is at visual 3.
+        use crate::ime::{Drawn, Piece};
+        let yellow = rgb(255, 255, 0);
+        let mut look = CursorLook::shown(true);
+        look.geometry.base_cell = CELL;
+        look.ime = Some(Drawn { pieces: vec![Piece { row: 0, col: 3, text: "x".to_string(), cells: 1 }], caret: (0, 4), caret_color: yellow });
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &look);
+        let bg = rgba(s.palette.bg, 1.0);
+        assert!(f.popups.iter().any(|q| q.color == bg && q.rect.x == 40.0), "{:?}", f.popups);
+        assert!(f.overlay.iter().any(|q| q.color == rgba(yellow, 1.0) && q.rect.x == 30.0), "caret: {:?}", f.overlay);
+    }
+
     #[test]
     fn labels_hide_the_text_under_them() {
         let s = screen(b"see https://x.y now");
         let mut f = Frame::default();
         let labels = [(crate::find::Pos { row: 0, col: 4 }, "1".to_string())];
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &labels, notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &labels, notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
         pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         let texts: Vec<String> = f.rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
         assert!(texts.iter().any(|t| t.starts_with("see  ttps")), "{texts:?}");
@@ -6236,7 +6972,7 @@ mod tests {
         let mut f = Frame::default();
         let m = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
         let notes = [(m, Some("a file".to_string()))];
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
         pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         assert!(f.overlay.iter().any(|q| q.color == rgba(NOTE, 1.0) && q.rect == Rect { x: 40.0, y: CELL.1 - 3.0, w: 40.0, h: 1.0 }), "{:?}", f.overlay);
         assert!(f.rows.iter().any(|r| r.spans.iter().any(|s| s.text == "a file")));
@@ -6254,10 +6990,70 @@ mod tests {
     #[test]
     fn timestamps_sit_at_the_right() {
         let mut f = Frame::default();
-        timestamps(&mut f, &[(2, "14:02:09".into())], RECT, CELL);
+        timestamps(&mut f, &[(2, "14:02:09".into())], RECT, CELL, None, STAMP_COLORS);
         let r = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "14:02:09")).unwrap();
         assert_eq!((r.x, r.y), (800.0 - 90.0, 40.0));
         assert!(f.quads.iter().any(|q| q.rect.x < 710.0 && q.rect.x + q.rect.w == 800.0 && q.rect.y == 40.0));
+        // The profile's foreground on its background at 0.9 alpha, as in every iTerm2 mode.
+        assert_eq!(r.spans[0].color, STAMP_COLORS.0);
+        assert!(f.quads.iter().all(|q| q.color == rgba(STAMP_COLORS.1, 0.9)));
+    }
+
+    /// A light profile: dark text on a white background.
+    const STAMP_COLORS: (Rgb, Rgb) = (rgb(0x10, 0x10, 0x10), rgb(0xff, 0xff, 0xff));
+
+    #[test]
+    fn adjacent_labels_follow_iterm2() {
+        let col = Rect { x: 700.0, y: 0.0, w: 100.0, h: 200.0 };
+        let labels: Vec<(usize, String)> = vec![(2, "14:02:09".into()), (3, "14:02:09".into()), (4, "14:02:10".into())];
+        let text_row = |y: f32| TextRow { x: 0.0, y, spans: vec![], clip: Rect { x: 0.0, y, w: 800.0, h: 20.0 }, scale: 1.0, face: crate::render::DEFAULT_FACE };
+        let mut f = Frame::default();
+        f.rows.push(text_row(40.0));
+        timestamps(&mut f, &labels, Rect { x: 0.0, y: 0.0, w: 700.0, h: 200.0 }, CELL, Some(col), STAMP_COLORS);
+        // No text row is clipped, and nothing is cut out of the text.
+        assert_eq!(f.rows[0].clip.w, 800.0);
+        let stamp = |t: &str| f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == t));
+        // One block, left aligned at the column's right edge less the widest label and a cell.
+        let a = stamp("14:02:09").unwrap();
+        assert_eq!((a.x, a.y), (710.0, 40.0));
+        assert_eq!(stamp("14:02:10").unwrap().x, 710.0);
+        // The row right below with the same text is a repeat: two 1 px lines, no text.
+        assert_eq!(f.rows.iter().filter(|r| r.spans.iter().any(|s| s.text == "14:02:09")).count(), 1);
+        let lines: Vec<_> = f.quads.iter().filter(|q| q.rect.y == 60.0 && q.rect.w == 1.0 && q.rect.h == CELL.1).map(|q| q.rect.x).collect();
+        assert_eq!(lines, vec![719.0, 721.0]);
+        // Everything stays inside the column.
+        assert!(f.rows.iter().skip(1).all(|r| r.clip.x >= col.x && r.clip.x + r.clip.w <= col.x + col.w));
+        assert!(f.quads.iter().all(|q| q.rect.x >= col.x && q.rect.x + q.rect.w <= col.x + col.w));
+        // Readable on a light profile: its foreground (the repeat lines too) on a 0.9-alpha block
+        // of its background behind every row, as iTerm2 draws every mode.
+        assert_eq!(a.spans[0].color, STAMP_COLORS.0);
+        let fill = |y: f32| f.quads.iter().find(|q| q.rect.y == y && q.color == rgba(STAMP_COLORS.1, 0.9)).map(|q| (q.rect.x, q.rect.x + q.rect.w));
+        assert_eq!([fill(40.0), fill(60.0), fill(80.0)], [Some((710.0, 800.0)); 3]);
+        assert!(f.quads.iter().filter(|q| q.rect.w == 1.0).all(|q| q.color == rgba(STAMP_COLORS.0, 1.0)));
+    }
+
+    /// iTerm2 never cuts a label: a block wider than the column starts further left, over the
+    /// text (`x = MAX(0, maxX - w)`), and the text under it stops where it starts.
+    #[test]
+    fn adjacent_labels_wider_than_the_column_extend_over_the_text() {
+        let col = Rect { x: 700.0, y: 0.0, w: 40.0, h: 100.0 };
+        let text = Rect { x: 0.0, y: 0.0, w: 700.0, h: 100.0 };
+        let text_row = |y: f32| TextRow { x: 0.0, y, spans: vec![], clip: Rect { x: 0.0, y, w: 700.0, h: 20.0 }, scale: 1.0, face: crate::render::DEFAULT_FACE };
+        let mut f = Frame::default();
+        f.rows.push(text_row(0.0));
+        f.rows.push(text_row(20.0));
+        timestamps(&mut f, &[(0, "2026 Mar 7 14:02:09".into())], text, CELL, Some(col), STAMP_COLORS);
+        // 19 characters and a cell of margin: 200 px, ending at the column's right edge.
+        let label = &f.rows[2];
+        assert_eq!(label.x, 540.0);
+        assert!(label.clip.x <= 540.0 && label.clip.x + label.clip.w == 740.0, "{:?}", label.clip);
+        assert_eq!(f.rows[0].clip.w, 540.0, "the text under the label stops where it starts");
+        assert_eq!(f.rows[1].clip.w, 700.0, "a row without a label keeps its text");
+        assert!(f.quads.iter().any(|q| q.rect == Rect { x: 540.0, y: 0.0, w: 200.0, h: 20.0 } && q.color == rgba(STAMP_COLORS.1, 0.9)));
+        // A block wider than the whole pane starts at the text's left edge.
+        let mut f = Frame::default();
+        timestamps(&mut f, &[(0, "2026 Mar 7 14:02:09".into())], Rect { w: 100.0, ..text }, CELL, Some(Rect { x: 100.0, ..col }), STAMP_COLORS);
+        assert_eq!(f.rows[0].x, 0.0);
     }
 
     #[test]
@@ -6281,7 +7077,7 @@ mod tests {
         let m = crate::find::Match { start: crate::find::Pos { row: 0, col: 16 }, end: crate::find::Pos { row: 1_000_000, col: 19 } };
         let notes = [(m, Some("n".to_string()))];
         let rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 80.0 };
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
         pane_with(&mut f, &s, rect, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         assert!(f.overlay.iter().all(|q| q.rect.x + q.rect.w <= rect.w + 0.01 && q.rect.y + q.rect.h <= rect.h + 0.01), "{:?}", f.overlay);
         assert!(f.overlay.len() < 50);
@@ -6366,7 +7162,7 @@ mod tests {
     #[test]
     fn a_background_window_keeps_a_hollow_cursor() {
         let s = screen(b"ab");
-        let hl = Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::NONE, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
+        let hl = Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::NONE, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
         let mut f = Frame::default();
         pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         assert!(!f.overlay.iter().any(|q| q.rect == RECT), "the key pane of a background window keeps its brightness");
@@ -6376,7 +7172,7 @@ mod tests {
     #[test]
     fn dim_quads_follow_the_dim() {
         let s = screen(b"ab");
-        let hl = |dim| Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim, key_cursor: false, bg_alpha: 1.0, opaque_colors: false };
+        let hl = |dim| Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
         let whole = |f: &Frame| f.overlay.iter().any(|q| q.rect == RECT);
         // The render loop lays the gray quad over the whole pane; pane_with draws none with highlights.
         let mut f = Frame::default();
@@ -6409,7 +7205,7 @@ mod tests {
     #[test]
     fn a_password_prompt_draws_the_key_for_the_cursor() {
         let key = crate::pwm_prompt::KEY_GLYPH.to_string();
-        let hl = |key_cursor| Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor, bg_alpha: 1.0, opaque_colors: false };
+        let hl = |key_cursor| Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
         let key_row = |f: &Frame| f.rows.iter().find(|r| r.spans.iter().any(|s| s.icon && s.text == key)).cloned();
         let mut s = screen(b"ab");
         s.palette.bg = rgb(0, 0, 0);
@@ -6687,5 +7483,103 @@ mod drawn_overlay_tests {
         let drawn = composer_popup(&mut f, &d, CELL);
         let widest = (2.0 + 3.0) * CELL.0;
         assert_eq!(drawn, composer_popup_frame(d.caret, AREA, 1, Some(0), false, widest, 1.0).0);
+    }
+
+    fn bbox(quads: &[Quad]) -> Rect {
+        let x0 = quads.iter().map(|q| q.rect.x).fold(f32::MAX, f32::min);
+        let y0 = quads.iter().map(|q| q.rect.y).fold(f32::MAX, f32::min);
+        let x1 = quads.iter().map(|q| q.rect.x + q.rect.w).fold(f32::MIN, f32::max);
+        let y1 = quads.iter().map(|q| q.rect.y + q.rect.h).fold(f32::MIN, f32::max);
+        Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+    }
+
+    #[test]
+    fn scrollbar_ticks_draw_outlined_boxes_at_the_minimap_alpha() {
+        use crate::scrollbar::{MINIMAP_ALPHA, Series, TICK_HEIGHT, series_colors};
+        let track = Rect { x: 100.0, y: 10.0, w: 15.0, h: 203.0 };
+        let mut f = Frame::default();
+        scrollbar_ticks(&mut f, track, &[(Series::Search, vec![0, 99]), (Series::Error, vec![]), (Series::Manual, vec![50])], 100, 1.0);
+        assert!(f.quads.is_empty() && f.rows.is_empty() && f.popups.is_empty(), "ticks hold no text and sit in the overlay");
+        assert!(f.scrollbars.iter().all(|q| (q.color[3] - MINIMAP_ALPHA).abs() < 1e-6));
+        // Two search ticks and one manual tick: each is four outline edges and one fill.
+        assert_eq!(f.scrollbars.len(), 15, "an empty series draws nothing");
+        let (outline, fill) = series_colors(Series::Search);
+        let first = &f.scrollbars[..5];
+        assert_eq!(first.iter().filter(|q| q.color == rgba(outline, MINIMAP_ALPHA)).count(), 4);
+        let inner = first.iter().find(|q| q.color == rgba(fill, MINIMAP_ALPHA)).unwrap();
+        assert_eq!(inner.rect, Rect { x: 101.0, y: 11.0, w: 13.0, h: TICK_HEIGHT - 2.0 });
+        let top = first.iter().map(|q| q.rect.y).fold(f32::MAX, f32::min);
+        assert_eq!(top, 10.0, "line 0 sits at the top of the track");
+        let none: &[(Series, Vec<usize>)] = &[];
+        let mut g = Frame::default();
+        scrollbar_ticks(&mut g, track, none, 100, 1.0);
+        assert!(g.scrollbars.is_empty());
+    }
+
+    #[test]
+    fn scrollbar_pieces_scale_with_the_display() {
+        use crate::scrollbar::{Series, Style, geometry};
+        // 200%: the outline is 2 px and the fill sits 2 px in.
+        let track = Rect { x: 100.0, y: 10.0, w: 30.0, h: 406.0 };
+        let mut f = Frame::default();
+        scrollbar_ticks(&mut f, track, &[(Series::Search, vec![0])], 100, 2.0);
+        let top = f.scrollbars.iter().find(|q| q.rect.y == 10.0 && q.rect.h == 2.0).expect("a 2 px top edge");
+        assert_eq!(top.rect.w, 30.0);
+        let fill = f.scrollbars.last().unwrap();
+        assert_eq!(fill.rect, Rect { x: 102.0, y: 12.0, w: 26.0, h: 2.0 });
+        // The legacy track's edge line and the knob's top and bottom padding.
+        let pane = Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 };
+        let g = geometry(pane, Style::Legacy, 2.0, 100, 50, 0).unwrap();
+        let mut s = Frame::default();
+        scrollbar(&mut s, &g, Style::Legacy, false, false);
+        assert!(s.scrollbars.iter().any(|q| q.rect.w == 2.0 && q.rect.x == g.track.x && q.rect.h == g.track.h), "a 2 px edge");
+        assert!(s.scrollbars.iter().any(|q| q.rect.y >= g.thumb.y + 3.9 && q.rect.y <= g.thumb.y + 4.1), "the knob starts 4 px in");
+    }
+
+    #[test]
+    fn scrollbar_draws_the_track_and_thumb() {
+        use crate::scrollbar::{Style, geometry};
+        let pane = Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 };
+        for dark in [false, true] {
+            let g = geometry(pane, Style::Legacy, 1.0, 100, 50, 0).unwrap();
+            let mut f = Frame::default();
+            scrollbar(&mut f, &g, Style::Legacy, dark, false);
+            let track = f.scrollbars[0];
+            assert_eq!((track.rect, track.color[3]), (g.track, 1.0), "the legacy track is opaque and fills its strip");
+            let thumb = bbox(&f.scrollbars[2..]);
+            assert!(thumb.x > g.track.x && thumb.x + thumb.w < g.track.x + g.track.w, "the knob sits inside the track");
+            assert_eq!((thumb.y, thumb.h), (g.thumb.y + 2.0, g.thumb.h - 4.0), "the knob follows the thumb");
+            assert!(f.scrollbars.iter().all(|q| q.rect.x >= g.track.x - 0.001), "nothing draws left of the strip");
+            assert!(f.quads.is_empty() && f.rows.is_empty() && f.popups.is_empty());
+
+            let flat = geometry(pane, Style::Legacy, 1.0, 0, 50, 0).unwrap();
+            let mut f = Frame::default();
+            scrollbar(&mut f, &flat, Style::Legacy, dark, false);
+            assert_eq!(f.scrollbars.len(), 2, "no history: the track and its edge alone");
+        }
+        let (mut a, mut b) = (Frame::default(), Frame::default());
+        let g = geometry(pane, Style::Legacy, 1.0, 100, 50, 0).unwrap();
+        scrollbar(&mut a, &g, Style::Legacy, false, false);
+        scrollbar(&mut b, &g, Style::Legacy, true, false);
+        assert_ne!(a.scrollbars[0].color, b.scrollbars[0].color, "colors follow the theme");
+    }
+
+    #[test]
+    fn overlay_scrollbar_is_a_thin_thumb_that_widens_on_hover() {
+        use crate::scrollbar::{OVERLAY_WIDTH, Style, geometry};
+        let pane = Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 };
+        let g = geometry(pane, Style::Overlay, 1.0, 100, 50, 0).unwrap();
+        let (mut calm, mut over) = (Frame::default(), Frame::default());
+        scrollbar(&mut calm, &g, Style::Overlay, false, false);
+        scrollbar(&mut over, &g, Style::Overlay, false, true);
+        let (c, o) = (bbox(&calm.scrollbars), bbox(&over.scrollbars));
+        assert_eq!((c.w, o.w), (7.0, OVERLAY_WIDTH));
+        assert_eq!((c.x + c.w, o.x + o.w), (800.0, 800.0), "both hug the pane's right edge");
+        assert_eq!((c.y, c.h), (g.thumb.y, g.thumb.h));
+        assert!(calm.scrollbars.iter().all(|q| q.color[3] < 1.0), "no track, the thumb is translucent");
+        let mut dark = Frame::default();
+        scrollbar(&mut dark, &g, Style::Overlay, true, false);
+        assert_ne!(dark.scrollbars[0].color[..3], calm.scrollbars[0].color[..3]);
+        assert!(over.scrollbars[0].color[3] > calm.scrollbars[0].color[3], "hover is stronger");
     }
 }

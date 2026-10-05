@@ -567,6 +567,25 @@ impl<T> Term<T> {
         let selection_range = self.selection.as_ref().and_then(|s| s.to_range(self))?;
         let SelectionRange { start, end, .. } = selection_range;
 
+        // Tandem patch: a visual selection copies its runs, each line's in logical order.
+        if let Some(sel) = self.selection.as_ref().filter(|s| !s.runs.is_empty()) {
+            let mut res = String::new();
+            let mut prev: Option<Line> = None;
+            // Tandem patch: never index a line above the buffer.
+            for (a, b) in sel.runs.iter().filter(|(a, _)| a.line >= self.topmost_line()) {
+                if let Some(p) = prev.filter(|p| *p != a.line) {
+                    let last = self.last_column();
+                    let wrapped = self.grid[p][last].flags.contains(Flags::WRAPLINE);
+                    if !res.ends_with('\n') && !wrapped {
+                        res.push('\n');
+                    }
+                }
+                res += &self.line_to_string(a.line, a.column..b.column, true);
+                prev = Some(a.line);
+            }
+            return Some(res.strip_suffix('\n').map(str::to_owned).unwrap_or(res));
+        }
+
         let mut res = String::new();
 
         match self.selection.as_ref() {
@@ -760,9 +779,11 @@ impl<T> Term<T> {
             // Recreate tabs list.
             self.tabs.resize(num_cols);
         } else if let Some(selection) = self.selection.take() {
-            let max_lines = cmp::max(num_lines, old_lines) as i32;
-            let range = Line(0)..Line(max_lines);
-            self.selection = selection.rotate(self, &range, -delta);
+            // Tandem patch: every line moved by `delta`, and the ones now outside the buffer
+            // are gone; upstream's `rotate` clamped the hull onto other rows and kept runs and
+            // the visual anchor on lines the grid no longer holds.
+            let (topmost, bottommost) = (self.topmost_line(), self.bottommost_line());
+            self.selection = selection.shift_lines(delta, topmost, bottommost);
         }
 
         // Clamp vi cursor to viewport.
@@ -824,8 +845,10 @@ impl<T> Term<T> {
         let region = origin..self.scroll_region.end;
 
         // Scroll selection.
+        // Tandem patch: a scroll down never moves history (`Grid::scroll_down` swaps only the
+        // region's rows when there is any), so the selection on it stays put.
         self.selection =
-            self.selection.take().and_then(|s| s.rotate(self, &region, -(lines as i32)));
+            self.selection.take().and_then(|s| s.rotate_in_place(self, &region, -(lines as i32)));
 
         // Scroll vi mode cursor.
         let line = &mut self.vi_mode_cursor.point.line;
@@ -850,18 +873,35 @@ impl<T> Term<T> {
 
         let region = origin..self.scroll_region.end;
 
-        // Scroll selection.
-        self.selection = self.selection.take().and_then(|s| s.rotate(self, &region, lines as i32));
-
         // Tandem patch: with Scrollback With Status Bar off, a region that starts at the top
         // but stops above the bottom row (an app's status line) scrolls like one below the top.
         let keep = !self.scrollback_with_region
             && region.start == 0
             && region.end < self.grid.screen_lines() as i32;
+
+        // Scroll selection.
+        // Tandem patch: `keep` scrolls in place, so the selection does too.
+        self.selection = self.selection.take().and_then(|s| {
+            if keep {
+                s.rotate_in_place(self, &region, lines as i32)
+            } else {
+                s.rotate(self, &region, lines as i32)
+            }
+        });
         if keep {
             self.grid.scroll_up_in_place(&region, lines);
         } else {
             self.grid.scroll_up(&region, lines);
+        }
+
+        // Tandem patch: the scroll may have pushed the oldest history line out (a full
+        // scrollback), or the alternate screen has none: visual runs and the drag anchor above
+        // the buffer are dropped.
+        let topmost = self.topmost_line();
+        if let Some(sel) = self.selection.as_mut() {
+            if !sel.drop_above(topmost) {
+                self.selection = None;
+            }
         }
 
         // Scroll vi mode cursor.
@@ -2050,9 +2090,9 @@ impl<T: EventListener> Handler for Term<T> {
             Attr::CancelHidden => cursor.template.flags.remove(Flags::HIDDEN),
             Attr::Strike => cursor.template.flags.insert(Flags::STRIKEOUT),
             Attr::CancelStrike => cursor.template.flags.remove(Flags::STRIKEOUT),
-            _ => {
-                debug!("Term got unhandled attr: {attr:?}");
-            },
+            // Tandem patch: SGR 5 and 6 blink, SGR 25 stops (`Attr::Reset` clears it with the rest).
+            Attr::BlinkSlow | Attr::BlinkFast => cursor.template.flags.insert(Flags::BLINK),
+            Attr::CancelBlink => cursor.template.flags.remove(Flags::BLINK),
         }
     }
 

@@ -213,6 +213,8 @@ impl App {
     /// its mode again. Nothing to do for Regular, Minimal and Compact, which follow Windows.
     pub(super) fn reapply_forced_theme(&mut self) {
         RESET_PENDING.with(|p| p.set(false));
+        // The same broadcast carries "Always show scrollbars" (`DynamicScrollbars`).
+        self.refresh_scroll_style();
         if crate::tab_theme::forced_dark(self.tab_style()).is_some() {
             self.apply_theme_everywhere();
         }

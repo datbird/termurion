@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 316 | 222 | 80 | 14 |
-| `02-global-settings.md` | 820 | 521 | 53 | 246 |
-| `03-features-and-menus.md` | 647 | 556 | 47 | 44 |
-| Total | 1,783 | 1,299 | 180 | 304 |
+| `01-profile-settings.md` | 316 | 229 | 75 | 12 |
+| `02-global-settings.md` | 820 | 529 | 55 | 236 |
+| `03-features-and-menus.md` | 647 | 558 | 45 | 44 |
+| Total | 1,783 | 1,316 | 175 | 292 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -585,6 +585,22 @@ margins take its edge color, Reduce Flicker holds the picture while the cursor i
 show Tandem's own renderer timings. The two Disable GPU settings, UseAdaptiveFrameRate, DisableAdaptiveFrameRateInInteractiveApps,
 UseLowPowerGPUWhenUnplugged and UseMultiPassUnderlineRenderer are stored and inert. Nothing of 13l was checked on screen during the
 build. Every kept quirk is listed in `docs/acceptance/m13l-checklist.md` and ruled on in `docs/superpowers/rulings/m13l-rulings.txt`.
+Milestone 13m built contrast and bidi (01: 7 rows to have, 5 of them from partial: Minimum Contrast, Harmonize 256 Colors, Use Theme Mark
+Colors, Allow blinking text, Timestamps Style; 2 from missing: Excessive contrast warning, Use background image; 02: 8 rows from
+missing to have: Bidi, rightJustifyRTLLines, detectParagraphDirection, disableBidiInAlternateScreen, HideScrollbar,
+alwaysUseLineStyleMarks, showLocationsInScrollbar, showMarksInScrollbar; p3 and allowHDR from missing to partial, Tandem renders sRGB
+and has no HDR swap chain; 03: Show Timestamps, Exit-code coloring and Mark rendering in scrollbar to have; 1,783 rows, 1,316 have,
+175 partial, 292 missing). Minimum Contrast follows iTerm2's perceived-brightness rule on each cell's raw text color before Cursor
+Boost and Dim Only Text, with a Black & White Text Only warning at 0.97; Harmonize 256 Colors rebuilds the cube in Lab; Use Theme
+Mark Colors and line-style marks (Auto Composer or alwaysUseLineStyleMarks) follow iTerm2; SGR 5 text blinks with Blink Allowed
+(alacritty_terminal patch 18). Right-to-left rows reorder through UAX 9 with mirrored characters and joined Arabic; the pointer,
+a visual drag selection (patch 19), copy (logical), cursor, IME, links, notes and underlines follow the display order, mouse
+reports carry the visual column, and explicit bidi controls are stripped so a program cannot flip text outside its line. Every
+pane has iTerm2's scrollbar (legacy or thin overlay by Windows' "Always show scrollbars", HideScrollbar) with prompt, annotation
+and Find ticks, and Adjacent timestamps get their own column through one per-pane text rectangle that tmux sizing shares. Deferred:
+Highlights.selections (13s), the selected-command-region skip for line marks, OSC 12 and OSC 112 cursor colors. Nothing of 13m was
+checked on screen during the build. Every kept quirk is listed in `docs/acceptance/m13m-checklist.md` and ruled on in
+`docs/superpowers/rulings/m13m-rulings.txt`.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's

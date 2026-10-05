@@ -119,6 +119,11 @@ pub enum SelectionType {
 pub struct Selection {
     pub ty: SelectionType,
     region: Range<Anchor>,
+    // Tandem patch: see `set_visual`.
+    pub runs: Vec<(Point, Point)>,
+    // Tandem patch: where a visual drag began, `(grid line, visual column)` and the right half
+    // flag; `rotate` moves it with the content like the region.
+    visual_anchor: Option<(Point, bool)>,
 }
 
 impl Selection {
@@ -126,23 +131,157 @@ impl Selection {
         Self {
             region: Range { start: Anchor::new(location, side), end: Anchor::new(location, side) },
             ty,
+            runs: Vec::new(),
+            visual_anchor: None,
         }
+    }
+
+    // Tandem patch: a visual selection (iTerm2's character selection on a bidi row follows
+    // the pointer on screen). `runs` are inclusive `(first, last)` cell pairs, each on one
+    // line, in reading order: the logical cells the swept screen cells show. The region
+    // becomes their hull, so every consumer of the range sees a superset; `covers` and
+    // `Term::selection_to_string` use the runs. A logical `update` drops them; a scroll moves them.
+    pub fn set_visual(&mut self, runs: Vec<(Point, Point)>) {
+        let (Some(first), Some(last)) = (runs.first(), runs.last()) else { return };
+        self.region = Range { start: Anchor::new(first.0, Side::Left), end: Anchor::new(last.1, Side::Right) };
+        self.runs = runs;
+    }
+
+    // Tandem patch: the buffer's oldest line moved (a scroll pushed a line out of history, or
+    // the alternate screen, which keeps none, lost its top row). Runs above `topmost` are
+    // dropped and the visual anchor is clamped into the buffer as the hull's start is (column
+    // 0, left side). Returns false when the selection was visual and nothing of it is left.
+    pub fn drop_above(&mut self, topmost: Line) -> bool {
+        let had_runs = !self.runs.is_empty();
+        self.runs.retain(|(a, _)| a.line >= topmost);
+        if let Some((p, right)) = self.visual_anchor.as_mut().filter(|(p, _)| p.line < topmost) {
+            *p = Point::new(topmost, Column(0));
+            *right = false;
+        }
+        !(had_runs && self.runs.is_empty())
+    }
+
+    // Tandem patch: a height-only resize moved every buffer line by `delta` (pulled from or
+    // pushed into history) and dropped the lines outside `topmost..=bottommost` (rows cut
+    // below a high cursor, the oldest history, the alternate screen's top rows). Only what
+    // still maps exactly stays: runs and the visual anchor on a dropped line are dropped, and
+    // a visual selection's hull becomes its remaining runs'. None when nothing selected is
+    // left, or a logical selection's end left the buffer (it would select other cells).
+    pub fn shift_lines(mut self, delta: i32, topmost: Line, bottommost: Line) -> Option<Selection> {
+        let inside = |line: Line| line >= topmost && line <= bottommost;
+        if let Some((p, _)) = self.visual_anchor.as_mut() {
+            p.line += delta;
+        }
+        self.visual_anchor = self.visual_anchor.filter(|(p, _)| inside(p.line));
+        if !self.runs.is_empty() {
+            let runs: Vec<_> = self
+                .runs
+                .iter()
+                .map(|&(a, b)| (Point::new(a.line + delta, a.column), Point::new(b.line + delta, b.column)))
+                .filter(|(a, _)| inside(a.line))
+                .collect();
+            let (Some(first), Some(last)) = (runs.first(), runs.last()) else { return None };
+            // As `set_visual` makes it.
+            self.region = Range { start: Anchor::new(first.0, Side::Left), end: Anchor::new(last.1, Side::Right) };
+            self.runs = runs;
+            return Some(self);
+        }
+        self.region.start.point.line += delta;
+        self.region.end.point.line += delta;
+        (inside(self.region.start.point.line) && inside(self.region.end.point.line)).then_some(self)
+    }
+
+    // Tandem patch: the visual drag anchor.
+    /// Where a visual drag began: a grid line, a visual column and whether the press was in
+    /// that cell's right half.
+    pub fn set_visual_anchor(&mut self, (line, column, right): (i32, usize, bool)) {
+        self.visual_anchor = Some((Point::new(Line(line), Column(column)), right));
+    }
+
+    pub fn visual_anchor(&self) -> Option<(i32, usize, bool)> {
+        self.visual_anchor.map(|(p, right)| (p.line.0, p.column.0, right))
+    }
+
+    /// Whether `point` is selected: inside the range and, for a visual selection, in a run.
+    pub fn covers(&self, point: Point) -> bool {
+        self.runs.is_empty()
+            || self.runs.iter().any(|(a, b)| a.line == point.line && a.column <= point.column && point.column <= b.column)
     }
 
     /// Update the end of the selection.
     pub fn update(&mut self, point: Point, side: Side) {
+        // Tandem patch: a logical update ends a visual selection.
+        self.runs.clear();
         self.region.end = Anchor::new(point, side);
     }
 
     pub fn rotate<D: Dimensions>(
-        mut self,
+        self,
         dimensions: &D,
         range: &Range<Line>,
         delta: i32,
     ) -> Option<Selection> {
+        let into_history = range.start == 0;
+        self.rotate_region(dimensions, range, delta, into_history)
+    }
+
+    // Tandem patch: `rotate` for a scroll that moves only the region's rows, even one starting
+    // at the top (a region scrolling in place, or any scroll down): history stays put, and what
+    // leaves the region's top is clamped or dropped as below a fixed top.
+    pub fn rotate_in_place<D: Dimensions>(
+        self,
+        dimensions: &D,
+        range: &Range<Line>,
+        delta: i32,
+    ) -> Option<Selection> {
+        self.rotate_region(dimensions, range, delta, false)
+    }
+
+    // Tandem patch: upstream's `range_top == 0` (lines above the region move into history with
+    // it) is `into_history`.
+    fn rotate_region<D: Dimensions>(
+        mut self,
+        dimensions: &D,
+        range: &Range<Line>,
+        delta: i32,
+        into_history: bool,
+    ) -> Option<Selection> {
         let bottommost_line = dimensions.bottommost_line();
         let range_bottom = range.end;
         let range_top = range.start;
+
+        // Tandem patch: runs and the visual anchor are numbered by line; they move with the
+        // content as the region does. A run that scrolls out of the region is dropped.
+        let moves = |line: Line| (line >= range_top || into_history) && line < range_bottom;
+        let mut runs = Vec::with_capacity(self.runs.len());
+        for &(a, b) in &self.runs {
+            if !moves(a.line) {
+                runs.push((a, b));
+                continue;
+            }
+            let line = a.line - delta;
+            if line >= range_bottom || (line < range_top && !into_history) {
+                continue;
+            }
+            runs.push((Point::new(line, a.column), Point::new(line, b.column)));
+        }
+        let all_gone = !self.runs.is_empty() && runs.is_empty();
+        self.runs = runs;
+        if all_gone {
+            return None;
+        }
+        if let Some((p, right)) = self.visual_anchor.as_mut().filter(|(p, _)| moves(p.line)) {
+            // A full-screen scroll sends the line into history, which `drop_above` bounds once
+            // the grid has scrolled.
+            let line = min(min(p.line - delta, range_bottom - 1), bottommost_line);
+            if !into_history && line < range_top {
+                // Clamped to the region's start as the hull is: column 0, left side.
+                *p = Point::new(range_top, Column(0));
+                *right = false;
+            } else {
+                p.line = line;
+            }
+        }
 
         let (mut start, mut end) = (&mut self.region.start, &mut self.region.end);
         if start.point > end.point {
@@ -150,7 +289,7 @@ impl Selection {
         }
 
         // Rotate start of selection.
-        if (start.point.line >= range_top || range_top == 0) && start.point.line < range_bottom {
+        if (start.point.line >= range_top || into_history) && start.point.line < range_bottom {
             start.point.line = min(start.point.line - delta, bottommost_line);
 
             // If end is within the same region, delete selection once start rotates out.
@@ -159,7 +298,7 @@ impl Selection {
             }
 
             // Clamp selection to start of region.
-            if start.point.line < range_top && range_top != 0 {
+            if start.point.line < range_top && !into_history {
                 if self.ty != SelectionType::Block {
                     start.point.column = Column(0);
                     start.side = Side::Left;
@@ -169,7 +308,7 @@ impl Selection {
         }
 
         // Rotate end of selection.
-        if (end.point.line >= range_top || range_top == 0) && end.point.line < range_bottom {
+        if (end.point.line >= range_top || into_history) && end.point.line < range_bottom {
             end.point.line = min(end.point.line - delta, bottommost_line);
 
             // Delete selection if end has overtaken the start.

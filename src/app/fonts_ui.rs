@@ -211,7 +211,8 @@ impl App {
 
     /// The columns and rows a pane's rectangle holds at the pane's own cell.
     pub(super) fn grid_size_for(&self, pane: PaneId, rect: Rect) -> (u16, u16) {
-        grid_for((rect.w, rect.h), self.pane_cell(pane), self.margins())
+        // Its scrollbar and its Adjacent timestamp column are out (13m's room), at its own cell.
+        self.grid_size_in(rect, self.pane_cell(pane), self.pane_room(pane))
     }
 
     /// The cell a new pane of profile `p` will have: its face measured now.

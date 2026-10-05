@@ -544,6 +544,33 @@ default = ""
 help = "When files are dropped into a terminal window, execute a silent coprocess.\nThis is an interpolated string. Use \\(filenames) to reference the shell-quoted, space-delimited full paths to the dropped files. If this preference is empty, the filenames get pasted instead."
 
 [[setting]]
+key = "AlwaysUseLineStyleMarks"
+tab = "Advanced"
+section = "Drawing"
+label = "Always use line-style marks?"
+type = "bool"
+default = false
+help = "Always use line-style marks?"
+
+[[setting]]
+key = "P3"
+tab = "Advanced"
+section = "Terminal"
+label = "Use P3 as default color space? If No, sRGB will be used."
+type = "bool"
+default = true
+help = "Use P3 as default color space? If No, sRGB will be used."
+
+[[setting]]
+key = "AllowHDR"
+tab = "Advanced"
+section = "Drawing"
+label = "Allow HDR effects"
+type = "bool"
+default = false
+help = "Allow HDR effects\nWhen enabled, Tandem may render some UI effects, such as the selected tab's outline, brighter than white on an HDR-capable display. Off by default because forcing the display into extended dynamic range can cause hangs on some systems."
+
+[[setting]]
 key = "disableTopRightIndicators"
 tab = "Advanced"
 section = "Drawing"
@@ -606,6 +633,15 @@ type = "enum"
 default = 3
 choices = [ { value = 0, label = "Let Windows decide the position of new windows and use size from profile" }, { value = 1, label = "Smart Window Placement" }, { value = 2, label = "Remember the size and position of previously closed windows" }, { value = 3, label = "Remember the position of previously closed windows and use size from profile" } ]
 help = "Where a new window opens. Smart Window Placement puts new windows where the most free space is available. Saved frames are kept per profile."
+
+[[setting]]
+key = "HideScrollbar"
+tab = "Appearance"
+section = "Windows"
+label = "Hide scrollbars"
+type = "bool"
+default = false
+help = "Hide scrollbars"
 
 [[setting]]
 key = "UseBorder"
@@ -1293,6 +1329,51 @@ label = "Use your typeface\u2019s box-drawing characters instead of Tandem\u2019
 type = "bool"
 default = false
 help = "Use your typeface\u2019s box-drawing characters instead of Tandem\u2019s custom drawing code.\nYou must restart Tandem after changing this setting."
+
+[[setting]]
+key = "DetectParagraphDirection"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Auto-detect paragraph writing direction based on the first strong directional character?"
+type = "bool"
+default = false
+help = "Auto-detect paragraph writing direction based on the first strong directional character?\nRequires right-to-left text support to be enabled."
+
+[[setting]]
+key = "RightJustifyRTLLines"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Right-justify lines in paragraphs with base writing direction of right-to-left?"
+type = "bool"
+default = true
+help = "Right-justify lines in paragraphs with base writing direction of right-to-left?\nRequires BOTH \u201cright-to-left text support\u201d and \u201cauto-detect paragraph writing detection\u201d to be enabled."
+
+[[setting]]
+key = "ShowLocationsInScrollbar"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Show search result and prompt locations in scroll bar."
+type = "bool"
+default = true
+help = "Show search result and prompt locations in scroll bar.\nChanging this setting will not affect existing sessions until you restart."
+
+[[setting]]
+key = "ShowMarksInScrollbar"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Show prompt locations in scroll bar?"
+type = "bool"
+default = true
+help = "Show prompt locations in scroll bar?\nChanging this setting will not affect existing sessions until you restart. You must also enable \u201cShow search result and prompt locations in scroll bar\u201d for this to take effect."
+
+[[setting]]
+key = "DisableBidiInAlternateScreen"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Do not reorder right-to-left text in the alternate screen?"
+type = "bool"
+default = false
+help = "Do not reorder right-to-left text in the alternate screen?\nFull-screen apps (editors and some CLIs) position their own text and may already order it for display, so reordering it again fights their layout. Turn this on to leave alternate-screen text unreordered. Requires right-to-left text support."
 
 [[setting]]
 key = "EscapeWithQuotes"

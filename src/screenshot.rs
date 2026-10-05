@@ -88,6 +88,8 @@ pub fn slice(from: &crate::screen::Screen, first: i32, count: usize) -> crate::s
     let rows = (first..first + count as i32).map(|l| if (top..=bottom).contains(&l) { g[Line(l)].clone() } else { alacritty_terminal::grid::Row::new(cols) }).collect();
     s.splice_rows(0, count as i32 - 1, rows);
     s.images = from.images.clone();
+    s.bidi_rules = from.bidi_rules;
+    s.blink_allowed = from.blink_allowed;
     s
 }
 
@@ -112,6 +114,8 @@ pub fn pick(from: &crate::screen::Screen, lines: &[usize]) -> crate::screen::Scr
         .collect();
     s.splice_rows(0, count as i32 - 1, picked);
     s.images = from.images.clone();
+    s.bidi_rules = from.bidi_rules;
+    s.blink_allowed = from.blink_allowed;
     s
 }
 
@@ -165,6 +169,8 @@ pub fn snapshot(from: &crate::screen::Screen) -> crate::screen::Screen {
     // Splicing in more rows than the screen holds pushes the rest into scrollback.
     s.splice_rows(0, rows as i32 - 1, all);
     s.images = from.images.clone();
+    s.bidi_rules = from.bidi_rules;
+    s.blink_allowed = from.blink_allowed;
     s
 }
 

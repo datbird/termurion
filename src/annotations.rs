@@ -66,7 +66,8 @@ impl Screen {
         {
             return 0;
         }
-        let existing = grid[Line(line)].note();
+        self.bump_ticks();
+        let existing = self.term().primary_grid()[Line(line)].note();
         self.notes.next += 1;
         let id = self.notes.next;
         let row_key = if existing != 0 && self.notes.by_id.values().any(|n| n.row_key == existing) {
@@ -95,6 +96,7 @@ impl Screen {
 
     pub fn remove_note(&mut self, id: u32) {
         let Some(note) = self.notes.by_id.remove(&id) else { return };
+        self.bump_ticks();
         let key = note.row_key;
         // The row keeps its slot while other notes there share it.
         if self.notes.by_id.values().any(|n| n.row_key == key) {

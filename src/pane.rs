@@ -1805,11 +1805,20 @@ impl Pane {
         self.live.as_mut().unwrap_or(&mut self.screen)
     }
 
+    /// The right-to-left display rules, on the pane's own screen and any view.
+    pub fn set_bidi_rules(&mut self, rules: crate::bidi::Rules) {
+        if let Some(live) = &mut self.live {
+            live.bidi_rules = rules;
+        }
+        self.screen.bidi_rules = rules;
+    }
+
     /// Shows a read-only view in place of the pane's screen.
-    pub fn show_view(&mut self, view: Screen) {
+    pub fn show_view(&mut self, mut view: Screen) {
         if self.frozen {
             return;
         }
+        view.bidi_rules = self.screen.bidi_rules;
         let own = std::mem::replace(&mut self.screen, view);
         if self.live.is_none() {
             self.live = Some(own);

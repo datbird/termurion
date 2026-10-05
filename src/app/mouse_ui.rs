@@ -252,6 +252,11 @@ impl App {
         if let Some(axis) = axis {
             return Err(if axis == crate::layout::Axis::Row { Shape::ResizeH } else { Shape::ResizeV });
         }
+        // Over a scrollbar (or holding its thumb) the pointer is the arrow, a program that tracks
+        // the mouse notwithstanding.
+        if matches!(self.drag, Drag::Scrollbar { .. }) || self.scrollbar_at(x, y).is_some() {
+            return Err(Shape::Arrow);
+        }
         let mut o = Over { rect_mods: self.mods.ctrl && self.mods.alt, action_with_win: self.hover.is_some() && self.mods.cmd && !self.mods.alt, button: self.tandem_ui_at(x, y), ..Over::default() };
         if let Some((id, rect)) = self.pane_at(x, y) {
             o.terminal = true;
@@ -348,7 +353,7 @@ impl App {
             wheel: profile.bool("Mouse Reporting allow mouse wheel"),
             horizontal: self.globals.bool("ReportHorizontalScrollEvents"),
             first_mouse_blocks: self.first_mouse_down && !self.globals.bool("ReportOnFirstMouse"),
-            ui_over: !matches!(kind, mouse::Kind::Drag) && self.tandem_ui_at(x, y),
+            ui_over: !matches!(kind, mouse::Kind::Drag) && (self.tandem_ui_at(x, y) || self.scrollbar_at(x, y).is_some()),
             view_focused: self.focused && self.tabs.get(self.active).is_some_and(|t| t.focused == pane),
         };
         mouse::should_report(self.modes(pane), mods, kind, gates)
@@ -671,8 +676,8 @@ mod tests {
         assert!(u.contains("overlay_drawn") && !u.contains("pane_move_hit_rects"));
         let c = include_str!("completion_ui.rs");
         let production = c.split("\n#[cfg(test)]").next().unwrap();
-        assert!(!MOD.contains("draw_completion(&mut frame, id, self.inner(rect)"), "the draw takes the pane rect");
-        assert!(production.contains("self.inner(rect)"), "the shared box applies the inset once");
+        assert!(!MOD.contains("draw_completion(&mut frame, id, self.text_rect(id, rect)"), "the draw takes the pane rect");
+        assert!(production.contains("self.text_rect(pane, rect)"), "the shared box applies the inset once");
     }
 
     /// Task 6 review, Important 1 and 2: `mouse_press` follows `press_follow_up`.
@@ -742,6 +747,158 @@ mod tests {
     fn body_stops_at_the_nearest_method() {
         let b = body(UI, "tandem_ui_at");
         assert!(!b.contains("fn report_gate_with"), "{b}");
+    }
+
+    /// iTerm2 reports the VISUAL column to a program (`PTYMouseHandler.m:1404`, plain pixel
+    /// division, no bidi conversion), so every report path takes `report_cell`, never `cell_at`.
+    #[test]
+    fn mouse_reports_carry_the_visual_column() {
+        for name in ["send_motion", "mouse_release", "wheel"] {
+            let b = body(MOD, name);
+            assert!(b.contains("self.report_cell("), "{name}: {b}");
+            assert!(!b.contains("self.cell_at("), "{name} reports through cell_at");
+        }
+        let press = body(MOD, "mouse_press");
+        assert!(press.contains("self.report_cell("), "the press report takes the visual column");
+        assert!(press.contains("col: rcol, row: rrow"), "the press event carries it");
+        let b = body(MOD, "report_cell");
+        assert!(b.contains("mouse::cell_at(") && !b.contains("logical_col"), "{b}");
+        assert!(!MOD.contains("PTYTextView.m:7353"), "the accessibility helper is not the mouse-report path");
+    }
+
+    /// 13m Task 7 and 9 App side (B5): every pane-scoped site that draws or hit-tests the grid
+    /// takes the pane's one `text_rect`, and every pixel-to-grid conversion takes the room
+    /// through `grid_size_for`, `tmux_cols` or the window's scrollbar room: tmux, resize,
+    /// snap, screenshots and the pointer agree.
+    #[test]
+    fn one_text_rect_per_pane() {
+        for name in ["cell_at", "report_cell", "visual_pos", "build_frame"] {
+            let b = body(MOD, name);
+            assert!(!b.contains("self.inner("), "{name} insets the pane without its room");
+            assert!(b.contains("text_rect("), "{name}");
+        }
+        for src in ["badge_ui.rs", "completion_ui.rs", "porthole_ui.rs", "cursor_ui.rs", "composer_ui.rs", "ime_ui.rs", "blocks_ui.rs", "view_ui.rs"] {
+            let text = match src {
+                "badge_ui.rs" => include_str!("badge_ui.rs"),
+                "completion_ui.rs" => include_str!("completion_ui.rs"),
+                "porthole_ui.rs" => include_str!("porthole_ui.rs"),
+                "cursor_ui.rs" => include_str!("cursor_ui.rs"),
+                "composer_ui.rs" => include_str!("composer_ui.rs"),
+                "ime_ui.rs" => include_str!("ime_ui.rs"),
+                "blocks_ui.rs" => include_str!("blocks_ui.rs"),
+                _ => include_str!("view_ui.rs"),
+            };
+            let production = text.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+            assert!(!production.contains("self.inner("), "{src} insets a pane without its room");
+        }
+        assert!(body(MOD, "relayout").contains("grid_size_for("), "each pane's pty is sized by its own room");
+        assert!(body(MOD, "start_pane_as").contains("pane_room_for("), "a new pane starts with its room");
+        assert!(body(MOD, "size_window").contains("scroll_room()"), "a new window opens with its columns");
+        assert!(include_str!("sizing_ui.rs").contains("scroll_room()"), "the edge snap counts the strip once");
+        assert!(body(include_str!("windows_ui.rs"), "apply_window_style").contains("scroll_room()"), "a styled window opens with its columns beside the bar");
+        assert!(include_str!("tmux_tabs_ui.rs").contains("margins::tmux_cols("), "tmux is told the narrower width");
+        assert!(include_str!("statusbar_ui.rs").contains("rooms,"), "a window compares each pane's room before a frame");
+        assert!(body(MOD, "grid_size_in").contains("margins::pane_grid("), "the one path");
+        assert!(body(MOD, "grid_size").contains("scroll_room()"), "an area no pane owns still gives up the strip");
+    }
+
+    /// 13m Task 7: the bar is drawn per pane, routes its press, drag and wheel before the report
+    /// path, keeps the arrow over it, and follows a style change at the places Windows tells us.
+    #[test]
+    fn the_scrollbar_is_drawn_and_routed_per_pane() {
+        let frame = body(MOD, "build_frame");
+        assert!(frame.contains("draw_scrollbar("), "drawn in each pane's turn, so popups drawn later cut it");
+        let press = body(MOD, "mouse_press");
+        let (ui, bar, pane) = (press.find("self.tandem_ui_at("), press.find("self.scroll_press("), press.find("self.pane_at("));
+        assert!(ui < bar && bar < pane, "after Tandem's own overlays, before the program or the selection");
+        assert!(press[ui.unwrap()..bar.unwrap()].contains("self.bar_press_only_activates("), "the click that activates a window only activates it, on the bar too");
+        let wheel = body(MOD, "wheel");
+        let (ui, bar, pane) = (wheel.find("self.tandem_ui_at("), wheel.find("self.scroll_wheel("), wheel.find("self.pane_at("));
+        assert!(ui < bar && bar < pane, "the wheel over the bar scrolls the pane, never a report");
+        assert!(body(UI, "report_gate_with").contains("self.scrollbar_at("), "an any-motion hover over the bar is not the program's");
+        assert!(body(MOD, "mouse_move").contains("self.scroll_drag_to("), "the thumb follows the pointer");
+        assert!(body(MOD, "mouse_release").contains("Drag::Scrollbar"), "the drag ends with the press");
+        assert!(body(UI, "pointer_over").contains("scrollbar_at("), "the arrow shows over the bar");
+        let theme = include_str!("chrome_ui.rs");
+        assert!(body(theme, "reapply_forced_theme").contains("refresh_scroll_style("), "WM_SETTINGCHANGE re-reads the style");
+        assert!(body(MOD, "globals_changed").contains("refresh_scroll_style("), "so does a settings change");
+        assert!(MOD.contains("WindowEvent::ThemeChanged(_) => {\n                self.theme_applied = Some(self.dark());\n                self.refresh_scroll_style("), "and a light or dark change");
+    }
+
+    /// 13m final 5: the blink phase is app-wide, so a window that is not the key window rests its
+    /// blinking text visible (P4) instead of drawing whatever phase the key window is in.
+    #[test]
+    fn an_unfocused_window_rests_its_blinking_text_visible() {
+        let frame = body(MOD, "build_frame");
+        assert!(frame.contains("text_blink_on: self.blink.visible || !self.focused"), "{frame}");
+    }
+
+    /// 13m final minor 1: the scan for blinking text runs once per `tick_cursor`; the blink clock
+    /// and the frame cadence read its answer instead of walking every visible cell again.
+    #[test]
+    fn blinking_text_is_scanned_once_per_tick() {
+        let cursor = include_str!("cursor_ui.rs");
+        assert!(body(cursor, "tick_cursor").contains("self.text_blinking = self.scan_text_blinks()"), "the one scan");
+        assert!(!body(cursor, "blink_clock_needed").contains("scan_text_blinks()"), "the clock reads the answer");
+        assert!(!body(cursor, "tick_blink").contains("scan_text_blinks()"));
+        let production = cursor.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        assert_eq!(production.matches("scan_text_blinks()").count(), 1, "one call site beside the definition");
+        assert!(!include_str!("frames_ui.rs").contains("scan_text_blinks"), "the cadence asks the clock");
+    }
+
+    /// 13m final minors 7 and 9: Find Cursor points at the cell where the row draws the cursor,
+    /// and the Auto Composer's separator is a linear color like every other quad.
+    #[test]
+    fn find_cursor_and_the_composer_rule_use_drawn_positions_and_linear_colors() {
+        assert!(body(include_str!("view_ui.rs"), "draw_find_cursor").contains("visual_col("), "an RTL row draws the cursor elsewhere");
+        let composer = include_str!("composer_ui.rs");
+        let sep = composer.lines().find(|l| l.contains("separator: auto.then(")).unwrap();
+        assert!(!sep.contains("mark_rgba(") && sep.contains("scene::rgba(scene::mark_color("), "{sep}");
+    }
+
+    /// 13m Task 8 App side: the ticks come from one collection (`scrollbar::collect`) over the
+    /// buffer's marks, the notes and the open find bar's matches, drawn on the minimap rect, and
+    /// the two keys are read when a pane starts, not on every frame.
+    #[test]
+    fn scrollbar_ticks_are_collected_once_per_pane() {
+        let view = include_str!("view_ui.rs");
+        let b = body(view, "scrollbar_series");
+        assert!(b.contains("scrollbar::collect(") && b.contains("series_of_mark(") && b.contains("note_cells(") && b.contains("f.open"), "{b}");
+        let d = body(view, "draw_scrollbar");
+        assert!(d.contains("scene::scrollbar_ticks(") && d.contains(".minimap(") && d.contains("scrollbar_series("), "{d}");
+        assert!(!d.contains("globals.bool(\"Show"), "the keys are read at pane start");
+        assert!(b.contains("scroll_series") && b.contains("tick_digest()") && b.contains("ALT_SCREEN"), "the walk is cached, and the alternate screen shows no marks: {b}");
+        assert!(include_str!("windows_ui.rs").contains("swap(&mut self.text_blinking, &mut s.text_blinking)"), "text_blinking is per window: swap_live");
+        assert!(body(MOD, "restart_pane").contains("forget_scrollbar("), "Restart Session reuses the id: the old ticks go");
+        assert!(body(view, "forget_scrollbar").contains("scroll_ticks.remove(") && body(MOD, "close_pane").contains("forget_scrollbar("), "a closed pane's entries go");
+        let s = body(MOD, "install_pane");
+        assert!(s.contains("scroll_ticks.insert(") && s.contains("ShowLocationsInScrollbar") && s.contains("ShowMarksInScrollbar"), "{s}");
+    }
+
+    /// 13m Task 9 App side: the Adjacent column is the rect between the text and the bar, the
+    /// timestamps draw into it, and a toggle (or a profile's style) relays out at once.
+    #[test]
+    fn adjacent_timestamps_are_wired_through_the_pane_room() {
+        let view = include_str!("view_ui.rs");
+        let extras = body(view, "draw_view_extras");
+        assert!(extras.contains("self.stamp_column(id, rect)") && !extras.contains("cell, None,"), "{extras}");
+        let toggle = body(view, "run_view_command");
+        assert!(toggle.contains("self.relayout()"), "the grid narrows and widens at once: {toggle}");
+        assert!(body(view, "stamp_room").contains("stamps::room("));
+        assert!(body(MOD, "build_frame").contains("stamp_column("), "the column is filled with the pane color");
+        assert!(!include_str!("../commands.rs").split("\n#[cfg(test)]").next().unwrap().contains("(\"toggleShowTimestamps:\", \"Next to contents"));
+    }
+
+    /// Review Focus 2: every pointer-to-cell path goes through `cell_at`, which maps the visual
+    /// cell to the logical one (and turns the cell's halves over in a right-to-left run); the
+    /// copy-mode cursor and the IME caret draw through the same order.
+    #[test]
+    fn pointer_goes_through_the_display_order() {
+        let b = body(MOD, "cell_at");
+        assert!(b.contains("screen.logical_col("), "{b}");
+        assert!(b.contains("right != rtl"), "the halves turn over in an RTL cell");
+        assert!(MOD.contains("screen.visual_col(row, col)"), "the copy-mode cursor draws at its visual cell");
+        assert!(include_str!("ime_ui.rs").contains("screen.visual_col("), "the IME area follows the order");
     }
 
     /// R3, B6: the flag is taken at the very top of `mouse_press`, `first_click` runs only after

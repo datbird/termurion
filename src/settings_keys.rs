@@ -2084,6 +2084,74 @@ mod tests {
     }
 
     #[test]
+    fn scrollbar_tick_rows_follow_iterm2() {
+        let locations = "Show search result and prompt locations in scroll bar.\nChanging this setting will not affect existing sessions until you restart.";
+        let marks = "Show prompt locations in scroll bar?\nChanging this setting will not affect existing sessions until you restart. You must also enable \u{201c}Show search result and prompt locations in scroll bar\u{201d} for this to take effect.";
+        for (key, help) in [("ShowLocationsInScrollbar", locations), ("ShowMarksInScrollbar", marks)] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"), "{key}");
+            assert_eq!((row.kind, row.default.clone()), (Kind::Bool, Some(Value::Boolean(true))), "{key}");
+            assert_eq!(row.help.as_str(), help, "{key}");
+            assert_eq!(row.label.as_str(), help.lines().next().unwrap(), "{key}");
+        }
+    }
+
+    #[test]
+    fn hide_scrollbar_row_follows_iterm2() {
+        let row = schema::find_global("HideScrollbar").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "Windows"));
+        assert_eq!(row.kind, Kind::Bool);
+        assert_eq!(row.default, Some(Value::Boolean(false)));
+        assert_eq!((row.label.as_str(), row.help.as_str()), ("Hide scrollbars", "Hide scrollbars"));
+    }
+
+    #[test]
+    fn line_style_marks_row_follows_iterm2() {
+        let row = schema::find_global("AlwaysUseLineStyleMarks").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Drawing"));
+        assert_eq!(row.kind, Kind::Bool);
+        assert_eq!(row.default, Some(Value::Boolean(false)));
+        assert_eq!((row.label.as_str(), row.help.as_str()), ("Always use line-style marks?", "Always use line-style marks?"));
+    }
+
+    #[test]
+    fn bidi_rows_follow_iterm2() {
+        use crate::bidi::Rules;
+        let detect = "Auto-detect paragraph writing direction based on the first strong directional character?\nRequires right-to-left text support to be enabled.";
+        let justify = "Right-justify lines in paragraphs with base writing direction of right-to-left?\nRequires BOTH \u{201c}right-to-left text support\u{201d} and \u{201c}auto-detect paragraph writing detection\u{201d} to be enabled.";
+        let alt = "Do not reorder right-to-left text in the alternate screen?\nFull-screen apps (editors and some CLIs) position their own text and may already order it for display, so reordering it again fights their layout. Turn this on to leave alternate-screen text unreordered. Requires right-to-left text support.";
+        for (key, default, help) in [("DetectParagraphDirection", false, detect), ("RightJustifyRTLLines", true, justify), ("DisableBidiInAlternateScreen", false, alt)] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"), "{key}");
+            assert_eq!((row.kind, row.default.clone()), (Kind::Bool, Some(Value::Boolean(default))), "{key}");
+            assert_eq!(row.help.as_str(), help, "{key}");
+            assert_eq!(row.label.as_str(), help.lines().next().unwrap(), "{key}");
+        }
+        // The rules read the four rows, the General one included.
+        let mut g = Globals::empty(&std::env::temp_dir().join("tandem-bidi-rows.toml"));
+        assert_eq!(Rules::from_globals(&g), Rules { enabled: true, detect_direction: false, right_justify: true, off_in_alternate: false });
+        g.set("Bidi", Value::Boolean(false));
+        g.set("DetectParagraphDirection", Value::Boolean(true));
+        g.set("RightJustifyRTLLines", Value::Boolean(false));
+        g.set("DisableBidiInAlternateScreen", Value::Boolean(true));
+        assert_eq!(Rules::from_globals(&g), Rules { enabled: false, detect_direction: true, right_justify: false, off_in_alternate: true });
+    }
+
+    #[test]
+    fn color_space_rows_follow_iterm2() {
+        let p3 = "Use P3 as default color space? If No, sRGB will be used.";
+        let row = schema::find_global("P3").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Terminal"));
+        assert_eq!((row.kind, row.default.clone()), (Kind::Bool, Some(Value::Boolean(true))));
+        assert_eq!((row.label.as_str(), row.help.as_str()), (p3, p3));
+        let hdr = "Allow HDR effects\nWhen enabled, Tandem may render some UI effects, such as the selected tab's outline, brighter than white on an HDR-capable display. Off by default because forcing the display into extended dynamic range can cause hangs on some systems.";
+        let row = schema::find_global("AllowHDR").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Drawing"));
+        assert_eq!((row.kind, row.default.clone()), (Kind::Bool, Some(Value::Boolean(false))));
+        assert_eq!((row.label.as_str(), row.help.as_str()), ("Allow HDR effects", hdr));
+    }
+
+    #[test]
     fn scripting_rows_follow_iterm2() {
         for (key, default, help) in [
             ("pythonRuntimeDownloadURL", "https://iterm2.com/downloads/pyenv/manifest.json", "URL to check for new versions of the Python scripting runtime."),

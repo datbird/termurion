@@ -120,6 +120,8 @@ pub(super) struct WinSlot {
     ssh_menu_shown: Option<Option<String>>,
     /// What Shell > ssh > Download Files last showed in this window (P21).
     download_files_shown: Option<bool>,
+    /// Whether this window showed blinking text at its last `tick_cursor`.
+    text_blinking: bool,
     /// Window > Notify on Status Change is armed for this window (`PseudoTerminal.m:1350`).
     pub(super) status_armed: bool,
     /// The IME's composition in this window (13k): per window, since panes are shared.
@@ -218,6 +220,7 @@ impl WinSlot {
             pwm_window: None,
             ssh_menu_shown: None,
             download_files_shown: None,
+            text_blinking: false,
             status_armed: false,
             ime: Default::default(),
             pacer: Default::default(),
@@ -336,6 +339,7 @@ impl App {
         swap(&mut self.pwm_window, &mut s.pwm_window);
         swap(&mut self.ssh_menu_shown, &mut s.ssh_menu_shown);
         swap(&mut self.download_files_shown, &mut s.download_files_shown);
+        swap(&mut self.text_blinking, &mut s.text_blinking);
         swap(&mut self.status_armed, &mut s.status_armed);
         swap(&mut self.ime, &mut s.ime);
         swap(&mut self.pacer, &mut s.pacer);
@@ -995,6 +999,7 @@ impl WinSlot {
             pwm_window: None,
             ssh_menu_shown: None,
             download_files_shown: None,
+            text_blinking: false,
             status_armed: false,
             ime: Default::default(),
             pacer: Default::default(),
@@ -1443,7 +1448,7 @@ impl App {
         let (cw, ch) = self.cell();
         let area = self.content_area();
         let (side, vert) = self.margins();
-        let chrome = (2.0 * side, inner.height as f32 - area.h + 2.0 * vert);
+        let chrome = (2.0 * side + self.scroll_room(), inner.height as f32 - area.h + 2.0 * vert);
         let input = Input {
             style: s,
             percent,

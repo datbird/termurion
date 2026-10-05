@@ -3,6 +3,7 @@
 use std::time::{Duration, Instant};
 
 use super::*;
+use crate::scrollbar;
 use crate::stamps;
 
 /// Find Cursor stays at least this long, and while Win is held.
@@ -18,6 +19,8 @@ impl App {
             "toggleShowTimestamps:" => {
                 let on = !self.stamps_on(id);
                 self.show_stamps.insert(id, on);
+                // An Adjacent column takes room or gives it back: the pty and tmux follow now.
+                self.relayout();
             }
             "toggleCursorGuide:" => {
                 let on = !self.guide_on(id);
@@ -40,14 +43,269 @@ impl App {
         self.show_stamps.get(&id).copied().unwrap_or_else(|| self.profile_of(id).is_some_and(|p| p.bool("Timestamps Visible")))
     }
 
+    /// The pane's Adjacent-timestamp mode while its timestamps show (`profile` is its profile when
+    /// the pane is not in `panes` yet).
+    fn stamp_mode_with(&self, id: PaneId, profile: Option<&Profile>) -> Option<stamps::Mode> {
+        let on = self.show_stamps.get(&id).copied().unwrap_or_else(|| profile.is_some_and(|p| p.bool("Timestamps Visible")));
+        on.then(|| stamps::Mode::from_style(profile.map_or(1, |p| p.int("Timestamps Style"))))
+    }
+
+    /// The width a pane's grid gives up for Adjacent timestamps, in pixels (0 for Over, Hover,
+    /// or timestamps off).
+    pub(super) fn stamp_room(&self, id: PaneId) -> f32 {
+        self.stamp_mode_with(id, self.profile_of(id)).map_or(0.0, |m| stamps::room(m, self.scale()))
+    }
+
+    /// The width every pane's grid gives up to a legacy scrollbar (`HideScrollbar` and the
+    /// overlay style give none): the part of a pane's room the window itself must plan for.
+    pub(super) fn scroll_room(&self) -> f32 {
+        scrollbar::room(self.scroll_style, self.globals.bool("HideScrollbar"), self.scale())
+    }
+
+    /// What pane `id` gives up at its right edge: the scrollbar's strip and the timestamp column.
+    pub(super) fn pane_room(&self, id: PaneId) -> f32 {
+        self.pane_room_with(id, self.profile_of(id))
+    }
+
+    /// `pane_room` for a pane that is not in `panes` yet (it is being started with `profile`).
+    pub(super) fn pane_room_for(&self, id: PaneId, profile: &Profile) -> f32 {
+        self.pane_room_with(id, Some(profile))
+    }
+
+    fn pane_room_with(&self, id: PaneId, profile: Option<&Profile>) -> f32 {
+        margins::pane_room(self.scroll_style, self.globals.bool("HideScrollbar"), self.stamp_mode_with(id, profile), self.scale())
+    }
+
+    /// The pane's rectangle less its scrollbar and timestamp column: the margin painter's outer.
+    pub(super) fn text_outer(&self, id: PaneId, rect: Rect) -> Rect {
+        margins::text_outer(rect, self.pane_room(id))
+    }
+
+    /// The pane's text area: THE rectangle the grid, the pointer and everything drawn on the
+    /// text share (B5), so tmux, resizes, snaps and hit tests agree with what is drawn.
+    pub(super) fn text_rect(&self, id: PaneId, rect: Rect) -> Rect {
+        margins::text_rect(rect, self.margins(), self.pane_room(id))
+    }
+
+    /// The Adjacent column: between the text and the scrollbar, the text's height.
+    pub(super) fn stamp_column(&self, id: PaneId, rect: Rect) -> Option<Rect> {
+        let room = self.stamp_room(id);
+        if room <= 0.0 {
+            return None;
+        }
+        let text = self.text_rect(id, rect);
+        Some(Rect { x: rect.x + rect.w - self.scroll_room() - room, y: text.y, w: room, h: text.h })
+    }
+
+    /// The pane's scrollbar under (`x`, `y`): its pane, the pane's rectangle and the bar's
+    /// geometry. None when the bar is hidden (`HideScrollbar`), when an overlay bar has no
+    /// history to show, or when the point is on no bar.
+    pub(super) fn scrollbar_at(&self, x: f32, y: f32) -> Option<(PaneId, Rect, scrollbar::Geometry)> {
+        let (id, rect) = self.pane_at(x, y)?;
+        let g = self.scrollbar_geometry(id, rect)?;
+        let t = g.track;
+        (x >= t.x && x < t.x + t.w && y >= t.y && y < t.y + t.h).then_some((id, rect, g))
+    }
+
+    /// The pane's scrollbar geometry now: None while hidden, or an overlay bar with nothing to
+    /// scroll.
+    fn scrollbar_geometry(&self, id: PaneId, rect: Rect) -> Option<scrollbar::Geometry> {
+        if self.globals.bool("HideScrollbar") {
+            return None;
+        }
+        let g = self.panes.get(&id)?.screen.term().grid();
+        scrollbar::geometry(rect, self.scroll_style, self.scale(), g.history_size(), g.screen_lines(), g.display_offset())
+    }
+
+    /// Whether the overlay style shows its thumb: under the pointer, while dragged, or for a
+    /// second after the view moved. The legacy style always shows.
+    fn scrollbar_shown(&self, id: PaneId) -> bool {
+        self.scroll_style == scrollbar::Style::Legacy
+            || self.scroll_hover == Some(id)
+            || matches!(self.drag, Drag::Scrollbar { pane, .. } if pane == id)
+            || self.scroll_seen.get(&id).is_some_and(|(_, until)| Instant::now() < *until)
+    }
+
+    /// The ticks along pane `id`'s bar (buffer lines, 0 the oldest): the open find bar's matches,
+    /// then the buffer's marks by exit code, then the notes (`scrollbar::collect`). The two keys
+    /// are the ones read when the pane started.
+    ///
+    /// Cached per pane: the buffer is walked only when the key changes (the find matches, the
+    /// marks, notes, scrollback or screen: `Screen::tick_digest`), not on every frame.
+    fn scrollbar_series(&self, id: PaneId) -> std::rc::Rc<scrollbar::Ticks> {
+        let Some(p) = self.panes.get(&id) else { return Default::default() };
+        let (locations, show_marks) = self.scroll_ticks.get(&id).copied().unwrap_or_else(|| (self.globals.bool("ShowLocationsInScrollbar"), self.globals.bool("ShowMarksInScrollbar")));
+        if !locations {
+            return Default::default();
+        }
+        // Marks and notes belong to the main screen: a full-screen app's screen shows none (and
+        // its line count is not theirs).
+        let alt = p.screen.term().mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
+        let found = self.finds.get(&id).filter(|f| f.open).map(|f| &f.results.matches[..]).unwrap_or_default();
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (locations, show_marks, alt, p.screen.tick_digest(), found.len()).hash(&mut h);
+            for m in found {
+                m.start.row.hash(&mut h);
+            }
+            h.finish()
+        };
+        self.scroll_series.borrow_mut().entry(id).or_default().get(key, || {
+            let history = p.screen.term().primary_grid().history_size() as i32;
+            let search: Vec<usize> = found.iter().map(|m| m.start.row).collect();
+            let (marks, notes) = if show_marks && !alt {
+                let marks = p.screen.row_marks().into_iter().filter_map(|(line, mid)| Some((scrollbar::series_of_mark(p.screen.mark_code(mid)?), (line + history).max(0) as usize))).collect();
+                (marks, self.note_cells(id).into_iter().map(|(m, _, _)| m.start.row).collect())
+            } else {
+                (Vec::new(), Vec::new())
+            };
+            scrollbar::collect(locations, show_marks, &search, &marks, &notes)
+        })
+    }
+
+    /// Drops a closed pane's scrollbar bookkeeping.
+    pub(super) fn forget_scrollbar(&mut self, id: PaneId) {
+        self.scroll_ticks.remove(&id);
+        self.scroll_seen.remove(&id);
+        self.scroll_series.get_mut().remove(&id);
+    }
+
+    /// Draws pane `id`'s scrollbar at the right edge of `rect`, in its own layer (popups drawn
+    /// later cut it).
+    pub(super) fn draw_scrollbar(&self, frame: &mut Frame, id: PaneId, rect: Rect, _cell: (f32, f32)) {
+        let Some(g) = self.scrollbar_geometry(id, rect) else { return };
+        if !self.scrollbar_shown(id) {
+            return;
+        }
+        let hover = self.scroll_hover == Some(id) || matches!(self.drag, Drag::Scrollbar { pane, .. } if pane == id);
+        scene::scrollbar(frame, &g, self.scroll_style, self.dark(), hover);
+        // The ticks ride the bar, on its minimap rect (already narrow for the overlay style).
+        let series = self.scrollbar_series(id);
+        if !series.is_empty() {
+            let grid = self.panes[&id].screen.term().grid();
+            let total = grid.history_size() + grid.screen_lines();
+            scene::scrollbar_ticks(frame, g.minimap(self.dark(), self.scale()), &series, total, self.scale());
+        }
+    }
+
+    /// A press on a scrollbar that only activates the window (or, under focus follows mouse,
+    /// only focuses the pane) is consumed here: the bar does not page or start a drag for it.
+    pub(super) fn bar_press_only_activates(&mut self, first: bool, x: f32, y: f32) -> bool {
+        let Some((pane, _, _)) = self.scrollbar_at(x, y) else { return false };
+        let (kind, counts) = mouse::first_click(first, self.mods.cmd, self.globals.bool("AlwaysAcceptFirstMouse"), self.globals.bool("FocusFollowsMouse"), self.focused_id() == Some(pane));
+        self.first_mouse_down = counts;
+        match kind {
+            mouse::FirstClick::ActivateOnly => true,
+            mouse::FirstClick::FocusOnly => {
+                self.focus_stamped(pane);
+                self.redraw();
+                true
+            }
+            mouse::FirstClick::Normal => false,
+        }
+    }
+
+    /// A press on a scrollbar: the thumb starts a drag, the track pages a screen; with nothing
+    /// to scroll the press is swallowed (`scrollbar::press`). Any button is the bar's, never the
+    /// program's or a selection's.
+    pub(super) fn scroll_press(&mut self, button: MouseButton, x: f32, y: f32) -> bool {
+        let Some((id, _, g)) = self.scrollbar_at(x, y) else { return false };
+        let history = self.panes.get(&id).map_or(0, |p| p.screen.term().grid().history_size());
+        if button != MouseButton::Left {
+            return true;
+        }
+        self.focus_stamped(id);
+        match scrollbar::press(&g, x, y, history) {
+            scrollbar::Press::Pass | scrollbar::Press::Swallow => {}
+            scrollbar::Press::Drag(grab) => self.drag = Drag::Scrollbar { pane: id, grab },
+            scrollbar::Press::Page(up) => {
+                if let Some(p) = self.panes.get_mut(&id) {
+                    p.scroll(if up > 0 { Scroll::PageUp } else { Scroll::PageDown });
+                }
+            }
+        }
+        self.redraw();
+        true
+    }
+
+    /// The thumb of pane `pane` follows the pointer to `y`.
+    pub(super) fn scroll_drag_to(&mut self, pane: PaneId, grab: f32, y: f32) {
+        let Some(rect) = self.pane_rect(pane) else { return };
+        let Some(g) = self.scrollbar_geometry(pane, rect) else { return };
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        let (history, offset) = (p.screen.term().grid().history_size(), p.screen.term().grid().display_offset());
+        let target = scrollbar::offset_for_drag(&g, grab, y, history);
+        if target != offset {
+            p.scroll(Scroll::Delta(target as i32 - offset as i32));
+            self.redraw();
+        }
+    }
+
+    /// The wheel over a scrollbar scrolls its pane by the usual rule (acceleration included).
+    /// Returns whether it was over one.
+    pub(super) fn scroll_wheel(&mut self, dy: f32, precise: bool) -> bool {
+        let (x, y) = self.cursor;
+        let Some((id, _, _)) = self.scrollbar_at(x, y) else { return false };
+        let prefs = crate::wheel::Prefs::from_globals(&self.globals);
+        let ch = self.cell().1 as f64 / self.scale() as f64;
+        if let Some(p) = self.panes.get_mut(&id) {
+            let lines = p.wheel.scroll.take(dy as f64, precise, ch, &prefs);
+            if lines != 0.0 {
+                p.scroll(Scroll::Delta(lines as i32));
+            }
+        }
+        self.redraw();
+        true
+    }
+
+    /// Notices a pane's view moving: an overlay bar then shows for a second. Redraws when the
+    /// time is up, and says when to look next.
+    pub(super) fn tick_scrollbars(&mut self) -> Option<Instant> {
+        const SHOWN: Duration = Duration::from_secs(1);
+        let now = Instant::now();
+        let seen: Vec<(PaneId, usize)> = self.tabs.get(self.active).map(|t| t.layout.panes()).unwrap_or_default().into_iter().filter_map(|id| Some((id, self.panes.get(&id)?.screen.term().grid().display_offset()))).collect();
+        self.scroll_seen.retain(|id, _| self.panes.contains_key(id));
+        let mut moved = false;
+        for (id, offset) in seen {
+            match self.scroll_seen.get_mut(&id) {
+                Some((last, until)) if *last != offset => {
+                    (*last, *until) = (offset, now + SHOWN);
+                    moved = true;
+                }
+                Some(_) => {}
+                // First sight: the position, not a move.
+                None => {
+                    self.scroll_seen.insert(id, (offset, now));
+                }
+            }
+        }
+        let (due, expired) = scrollbar::fade_pass(self.scroll_seen.values_mut().map(|(_, until)| until), now);
+        if moved || (expired && self.scroll_style == scrollbar::Style::Overlay) {
+            self.redraw();
+        }
+        due
+    }
+
+    /// Windows' "Always show scrollbars" now: the style the panes size for. A change gives or
+    /// takes the strip in every window (their ptys and tmux's report follow).
+    pub(super) fn refresh_scroll_style(&mut self) {
+        let style = scrollbar::current_style();
+        if style != self.scroll_style {
+            self.scroll_style = style;
+            self.relayout_changed_windows();
+        }
+    }
+
     /// The cursor guide shows in a pane: its own choice, else its profile's Use Cursor Guide.
     pub(super) fn guide_on(&self, id: PaneId) -> bool {
         self.show_guide.get(&id).copied().unwrap_or_else(|| self.profile_of(id).is_some_and(|p| p.bool("Use Cursor Guide")))
     }
 
     /// Draws a pane's cursor guide and timestamps.
-    pub(super) fn draw_view_extras(&self, frame: &mut Frame, id: PaneId, inner: Rect, cell: (f32, f32)) {
+    pub(super) fn draw_view_extras(&self, frame: &mut Frame, id: PaneId, rect: Rect, cell: (f32, f32)) {
         let Some(p) = self.panes.get(&id) else { return };
+        let inner = self.text_rect(id, rect);
         let grid = p.screen.term().grid();
         let (offset, lines) = (grid.display_offset() as i32, grid.screen_lines() as i32);
         if self.guide_on(id) {
@@ -65,10 +323,10 @@ impl App {
         }
         if self.stamps_on(id) {
             // Hover (2) shows them only while the pointer is over the right edge of the pane.
-            let style = self.profile_of(id).map_or(1, |pr| pr.int("Timestamps Style"));
+            let mode = stamps::Mode::from_style(self.profile_of(id).map_or(1, |pr| pr.int("Timestamps Style")));
             let (x, y) = self.cursor;
             let near = x >= inner.x + inner.w - 12.0 * cell.0 && x <= inner.x + inner.w && y >= inner.y && y <= inner.y + inner.h;
-            if style != 2 || near {
+            if mode != stamps::Mode::Hover || near {
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
                 let labels: Vec<(usize, String)> = (0..lines)
                     .filter_map(|row| {
@@ -76,7 +334,7 @@ impl App {
                         (t > 0).then(|| (row as usize, stamps::label(now.saturating_sub(t), &stamps::local(t))))
                     })
                     .collect();
-                scene::timestamps(frame, &labels, inner, cell);
+                scene::timestamps(frame, &labels, inner, cell, self.stamp_column(id, rect).filter(|_| mode == stamps::Mode::Adjacent), (p.screen.palette.fg, p.screen.palette.bg));
             }
         }
     }
@@ -90,7 +348,7 @@ impl App {
         if !self.stamps_on(id) || self.profile_of(id).map_or(1, |p| p.int("Timestamps Style")) != 2 {
             return false;
         }
-        let inner = self.inner(rect);
+        let inner = self.text_rect(id, rect);
         x >= inner.x + inner.w - 12.0 * cell.0
     }
 
@@ -156,8 +414,10 @@ impl App {
         let Some(p) = self.panes.get(&tab.focused) else { return };
         let grid = p.screen.term().grid();
         let row = grid.cursor.point.line.0 + grid.display_offset() as i32;
-        let inner = self.inner(rect);
-        let center = (inner.x + (grid.cursor.point.column.0 as f32 + 0.5) * cell.0, inner.y + (row as f32 + 0.5) * cell.1);
+        let inner = self.text_rect(tab.focused, rect);
+        // Where the row draws the cursor's cell (a right-to-left row reorders it).
+        let col = if row >= 0 { p.screen.visual_col(row as usize, grid.cursor.point.column.0) } else { grid.cursor.point.column.0 };
+        let center = (inner.x + (col as f32 + 0.5) * cell.0, inner.y + (row as f32 + 0.5) * cell.1);
         scene::find_cursor(frame, area, center, FIND_CURSOR_RADIUS * self.scale());
     }
 

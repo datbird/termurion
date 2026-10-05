@@ -53,6 +53,8 @@ pub struct Look {
     pub app_key_modes: bool,
     /// The profile's Use libtickit protocol: keys start in CSI u mode.
     pub csi_u: bool,
+    /// The profile's Blink Allowed: text with the blink attribute hides in the off phase.
+    pub blink_allowed: bool,
 }
 
 impl Look {
@@ -71,6 +73,7 @@ impl Look {
             scrollback,
             app_key_modes: p.bool("Allow modifyOtherKeys"),
             csi_u: p.bool("Use libtickit protocol"),
+            blink_allowed: p.bool("Blink Allowed"),
         }
     }
 }
@@ -131,11 +134,24 @@ impl Default for Limits {
     }
 }
 
+/// A cached row order with the row it was made for, compared on every hit.
+struct BidiEntry {
+    sig: (usize, bool, bool),
+    texts: Vec<crate::bidi::CellText>,
+    order: Option<std::sync::Arc<crate::bidi::Order>>,
+}
+
 pub struct Screen {
     pub(crate) term: Term<Listener>,
     parser: Processor,
     events: Receiver<Event>,
     pub palette: Palette,
+    /// The profile's Blink Allowed (`Look.blink_allowed`).
+    pub blink_allowed: bool,
+    /// Right-to-left display rules (the globals `Bidi` and its Advanced siblings); the app sets them.
+    pub bidi_rules: crate::bidi::Rules,
+    /// Display orders by row content (`row_order`); `pane_with` holds `&Screen` and fills it.
+    bidi_cache: std::cell::RefCell<std::collections::HashMap<u64, BidiEntry>>,
     /// When the program hid the cursor (DECTCEM), until it shows it again (Reduce Flicker).
     pub cursor_hidden_at: Option<std::time::Instant>,
     title: Option<String>,
@@ -144,6 +160,9 @@ pub struct Screen {
     cell_px: (u16, u16),
     osc: crate::osc::Scanner,
     pub marks: crate::marks::Marks,
+    /// New prompt marks are line-style (Auto Composer on, or `AlwaysUseLineStyleMarks`); the
+    /// app sets it (`S:18934`).
+    pub line_style_marks: bool,
     pub shell: crate::marks::Shell,
     /// The profile's Place Prompt at First Column.
     pub place_prompt_first_column: bool,
@@ -177,6 +196,8 @@ pub struct Screen {
     pub(crate) folds: std::collections::HashMap<u32, Vec<Row<Cell>>>,
     next_fold: u32,
     feeds: u32,
+    /// Moves with every change to the main grid's rows, marks or notes; the scrollbar's tick cache keys on it.
+    tick_gen: u64,
     /// Key reporting chosen in the menu (on top of the program's requests).
     pub keys: KeyState,
     /// False when the global disablePotentiallyInsecureEscapeSequences is on.
@@ -413,6 +434,9 @@ impl Screen {
         term.set_cursor_blink_change(look.blink_change);
         Self {
             term,
+            blink_allowed: look.blink_allowed,
+            bidi_rules: crate::bidi::Rules::default(),
+            bidi_cache: Default::default(),
             parser: Processor::new(),
             events,
             palette,
@@ -422,6 +446,7 @@ impl Screen {
             cell_px: (0, 0),
             osc: crate::osc::Scanner::default(),
             marks: crate::marks::Marks::default(),
+            line_style_marks: false,
             shell: crate::marks::Shell::default(),
             place_prompt_first_column: true,
             pty_backed: false,
@@ -439,6 +464,7 @@ impl Screen {
             folds: std::collections::HashMap::new(),
             next_fold: 0,
             feeds: 0,
+            tick_gen: 0,
             keys: KeyState::new(look.csi_u),
             trusted: true,
             tab_status: crate::tabstatus::Status::default(),
@@ -498,6 +524,178 @@ impl Screen {
         self.replies.extend(report);
     }
 
+    /// The display order of grid line `line` (negative lines are history), or None when the row
+    /// needs none: Bidi is off, the alternate screen with its setting, no right-to-left letter,
+    /// or the row holds an inline image (its tiles sit at logical columns). The order is cached
+    /// by row content, so a redrawn row never keeps an old one, and the cache is cleared past
+    /// four screens of distinct rows. It covers the row's used cells and, with right
+    /// justification, is padded to the row's width (`bidi::pad`).
+    pub fn row_order(&self, line: i32) -> Option<std::sync::Arc<crate::bidi::Order>> {
+        use alacritty_terminal::term::cell::Flags;
+        use std::hash::{Hash, Hasher};
+        let rules = self.bidi_rules;
+        let alternate = self.term.mode().contains(TermMode::ALT_SCREEN);
+        if !rules.enabled || (alternate && rules.off_in_alternate) {
+            return None;
+        }
+        let grid = self.term.grid();
+        if line < -(grid.history_size() as i32) || line >= grid.screen_lines() as i32 {
+            return None;
+        }
+        let row = &grid[Line(line)];
+        let cols = grid.columns();
+        let spacer = Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER;
+        // Quick scan: an ASCII row, the common case, costs one pass and no allocation.
+        let mut rtl = false;
+        let mut used = 0;
+        for col in 0..cols {
+            let c = &row[Column(col)];
+            if c.image().is_some() {
+                return None;
+            }
+            let blank = (c.c == ' ' || c.c == '\0') && c.zerowidth().is_none() && !c.flags.intersects(spacer);
+            if !blank {
+                used = col + 1;
+            }
+            rtl |= crate::bidi::is_rtl_letter(c.c);
+        }
+        if !rtl {
+            return None;
+        }
+        let texts: Vec<crate::bidi::CellText> = (0..used)
+            .map(|col| {
+                let c = &row[Column(col)];
+                let is_spacer = c.flags.intersects(spacer);
+                let mut text = String::new();
+                if !is_spacer {
+                    text.push(c.c);
+                    text.extend(c.zerowidth().into_iter().flatten());
+                }
+                crate::bidi::CellText { text, wide: c.flags.contains(Flags::WIDE_CHAR), spacer: is_spacer }
+            })
+            .collect();
+        let sig = (cols, rules.detect_direction, rules.right_justify);
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (sig, &texts).hash(&mut h);
+        let key = h.finish();
+        #[cfg(test)]
+        let key = tests::FORCE_KEY.with(|f| f.get()).unwrap_or(key);
+        // The 64-bit digest only picks a bucket: a hit must hold this very row, so a crafted
+        // collision can never show one row in another row's order.
+        if let Some(hit) = self.bidi_cache.borrow().get(&key) {
+            if hit.sig == sig && hit.texts == texts {
+                return hit.order.clone();
+            }
+        }
+        let made = crate::bidi::order(&texts, rules, alternate).map(|o| std::sync::Arc::new(if rules.right_justify && used < cols { crate::bidi::pad(&o, cols) } else { o }));
+        let mut cache = self.bidi_cache.borrow_mut();
+        if cache.len() >= 4 * grid.screen_lines().max(1) {
+            cache.clear();
+        }
+        cache.insert(key, BidiEntry { sig, texts, order: made.clone() });
+        made
+    }
+
+    /// The display order of viewport row `row` (as drawn: the view's scroll offset applied),
+    /// or None when it has none or does not cover this width. The pointer, the copy-mode
+    /// cursor and the IME go through here, so they land where `scene::pane_with` drew.
+    fn viewport_order(&self, row: usize) -> Option<std::sync::Arc<crate::bidi::Order>> {
+        let grid = self.term.grid();
+        self.row_order(row as i32 - grid.display_offset() as i32).filter(|o| o.lut.len() <= grid.columns())
+    }
+
+    /// The visual column at which logical column `col` of viewport row `row` is drawn.
+    pub fn visual_col(&self, row: usize, col: usize) -> usize {
+        crate::bidi::visual_for_logical(self.viewport_order(row).as_deref(), col)
+    }
+
+    /// The logical column drawn at visual column `col` of viewport row `row`, and whether that
+    /// cell lies in a right-to-left run (a pointer on its left half is then at the character's
+    /// end).
+    pub fn logical_col(&self, row: usize, col: usize) -> (usize, bool) {
+        let order = self.viewport_order(row);
+        let logical = crate::bidi::logical_for_visual(order.as_deref(), col);
+        (logical, order.is_some_and(|o| o.rtl.get(logical).copied().unwrap_or(false)))
+    }
+
+    /// The visual pieces the logical columns `cols` of viewport row `row` are drawn in.
+    pub fn visual_runs(&self, row: usize, cols: std::ops::Range<usize>) -> Vec<std::ops::Range<usize>> {
+        match self.viewport_order(row) {
+            Some(o) => crate::bidi::visual_spans(&o, cols),
+            None if cols.is_empty() => Vec::new(),
+            None => vec![cols],
+        }
+    }
+
+    /// A character drag on a row with a display order is VISUAL, as iTerm2's
+    /// (`PTYMouseHandler.m:393-402`, `iTermSelection.m:409`): the selection is the cells the
+    /// pointer swept on screen, copied in logical order. `a` and `b` are the press and the
+    /// pointer as (grid line, visual column, right half of that visual cell). The selection
+    /// takes the logical runs those cells show; false when no swept row has an order (the
+    /// logical selection then does the same job) or there is no selection or nothing swept.
+    pub fn drag_visual_selection(&mut self, a: (i32, usize, bool), b: (i32, usize, bool)) -> bool {
+        use alacritty_terminal::index::Point;
+        // A boundary on the visual axis: before a cell, or after it for its right half.
+        let bound = |p: (i32, usize, bool)| (p.0, p.1 + p.2 as usize);
+        let (mut lo, mut hi) = (bound(a), bound(b));
+        if lo > hi {
+            std::mem::swap(&mut lo, &mut hi);
+        }
+        let cols = self.term.columns();
+        let orders: Vec<_> = (lo.0..=hi.0).map(|line| self.row_order(line).filter(|o| o.lut.len() <= cols)).collect();
+        if orders.iter().all(|o| o.is_none()) {
+            return false;
+        }
+        let mut runs = Vec::new();
+        for (i, line) in (lo.0..=hi.0).enumerate() {
+            let from = if line == lo.0 { lo.1 } else { 0 };
+            let to = if line == hi.0 { hi.1 } else { cols };
+            let mut logical: Vec<usize> = (from..to.min(cols)).map(|v| crate::bidi::logical_for_visual(orders[i].as_deref(), v)).collect();
+            logical.sort_unstable();
+            let mut k = 0;
+            while k < logical.len() {
+                let mut e = k;
+                while e + 1 < logical.len() && logical[e + 1] == logical[e] + 1 {
+                    e += 1;
+                }
+                runs.push((Point::new(Line(line), Column(logical[k])), Point::new(Line(line), Column(logical[e]))));
+                k = e + 1;
+            }
+        }
+        let Some(sel) = self.term.selection.as_mut().filter(|s| s.ty == alacritty_terminal::selection::SelectionType::Simple) else { return false };
+        if runs.is_empty() {
+            return false;
+        }
+        sel.set_visual(runs);
+        true
+    }
+
+    /// Where the drag in progress began, as `drag_visual_selection` takes it; the selection
+    /// carries it, so output scrolling the grid moves it with the content.
+    pub fn visual_anchor(&self) -> Option<(i32, usize, bool)> {
+        self.term.selection.as_ref().and_then(|s| s.visual_anchor())
+    }
+
+    /// Whether a visual (bidi) selection reads the whole lines `a.line..=b.line` from `a`:
+    /// Replace Selection refuses runs that skip cells inside their lines, since it rewrites
+    /// the lines. True when the selection is not visual.
+    pub fn visual_selection_is_whole_lines(&self, a: alacritty_terminal::index::Point, b: alacritty_terminal::index::Point) -> bool {
+        use alacritty_terminal::index::{Column, Point};
+        if self.term.selection.as_ref().is_none_or(|s| s.runs.is_empty()) {
+            return true;
+        }
+        let text = self.term.bounds_to_string(a, Point::new(b.line, Column(self.term.columns() - 1)));
+        self.term.selection_to_string().as_deref().map(str::trim_end) == Some(text.trim_end())
+    }
+
+    /// `drag_visual_selection` from the stored anchor to the pointer at `b`.
+    pub fn drag_visual_to(&mut self, b: (i32, usize, bool)) -> bool {
+        match self.visual_anchor() {
+            Some(a) => self.drag_visual_selection(a, b),
+            None => false,
+        }
+    }
+
     pub fn set_look(&mut self, look: Look) {
         // A new profile default for CSI u applies unless the menu chose otherwise.
         if self.keys.csi_u == self.keys.profile_csi_u {
@@ -506,9 +704,11 @@ impl Screen {
         self.keys.profile_csi_u = look.csi_u;
         self.term.set_options(config(look));
         self.term.set_cursor_blink_change(look.blink_change);
+        self.blink_allowed = look.blink_allowed;
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
+        self.bump_ticks();
         self.term.resize(GridSize { cols, rows });
         // Reflow moved rows: triggers go on from the cursor.
         self.triggers_from_cursor();
@@ -520,6 +720,7 @@ impl Screen {
     }
 
     pub fn term_mut(&mut self) -> &mut Term<Listener> {
+        self.bump_ticks();
         &mut self.term
     }
 
@@ -608,6 +809,7 @@ impl Screen {
     /// Feeds app output. Returns the bytes the terminal must send back, such as
     /// answers to device, color, and size queries. An app that gets no answer may hang.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.bump_ticks();
         if !bytes.is_empty() && !self.triggers.list.is_empty() {
             self.events_on_output();
         }
@@ -1100,6 +1302,7 @@ impl Screen {
         if self.alt_screen() {
             return Vec::new();
         }
+        self.bump_ticks();
         self.term.selection = None;
         let removed = self.term.primary_grid_mut().splice(Line(first), Line(last), with);
         // Rows moved: triggers go on from the cursor.
@@ -1198,6 +1401,7 @@ impl Screen {
     /// Drops folds and notes whose rows left the buffer (cleared, or trimmed off the top of
     /// the scrollback), so their saved lines do not stay in memory.
     pub fn prune_tags(&mut self) {
+        self.bump_ticks();
         let grid = self.term.primary_grid();
         let top = -(grid.history_size() as i32);
         let mut folds = std::collections::HashSet::new();
@@ -1221,6 +1425,17 @@ impl Screen {
     /// Whether the cursor blinks now: the profile's blink, or a program's where it may change it.
     pub fn cursor_blinks(&self) -> bool {
         self.term.cursor_style().blinking
+    }
+
+    /// Whether any visible cell carries the blink attribute (iTerm2's
+    /// `textViewWillNeedUpdateForBlink`): the blink clock runs while it does.
+    pub fn has_blinking_text(&self) -> bool {
+        let grid = self.term.grid();
+        let offset = grid.display_offset() as i32;
+        (0..grid.screen_lines() as i32).any(|l| {
+            let row = &grid[Line(l - offset)];
+            (0..grid.columns()).any(|c| row[Column(c)].flags.contains(alacritty_terminal::term::cell::Flags::BLINK))
+        })
     }
 
     /// Each visible row's first and last cell background, None where it is the default
@@ -1254,6 +1469,7 @@ impl Screen {
     }
 
     pub(crate) fn feed_raw(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.bump_ticks();
         self.term.stamp = self.clock.unwrap_or_else(|| {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32)
         });
@@ -1331,6 +1547,7 @@ impl Screen {
 
     /// Puts a mark id on a row (grid line: 0 is the top of the screen, negative is history).
     pub fn set_row_mark(&mut self, line: i32, id: u32) {
+        self.bump_ticks();
         let grid = self.term.primary_grid_mut();
         if line >= -(grid.history_size() as i32) && line < grid.screen_lines() as i32 {
             grid[Line(line)].set_mark(id);
@@ -1339,6 +1556,7 @@ impl Screen {
 
     /// Puts a manual mark id on a row, beside any prompt mark there.
     pub fn set_row_manual(&mut self, line: i32, id: u32) {
+        self.bump_ticks();
         let grid = self.term.primary_grid_mut();
         if line >= -(grid.history_size() as i32) && line < grid.screen_lines() as i32 {
             grid[Line(line)].set_manual(id);
@@ -1358,6 +1576,18 @@ impl Screen {
             })
             .filter(|(_, id)| *id != 0)
             .collect()
+    }
+
+    /// What the scrollbar's mark and note ticks are keyed on: the grid generation (bumped by
+    /// every output batch, reset, clear, resize, fold and mark or note edit, so a row erased
+    /// or moved in place is seen too) and the screen in view.
+    pub fn tick_digest(&self) -> u64 {
+        self.tick_gen ^ (u64::from(self.term.mode().contains(TermMode::ALT_SCREEN)) << 63)
+    }
+
+    /// Notes that the main grid's rows, marks or notes may have changed.
+    pub(crate) fn bump_ticks(&mut self) {
+        self.tick_gen = (self.tick_gen.wrapping_add(1)) & !(1 << 63);
     }
 
     /// One logical line's text starting at `line`: its row and the rows it wraps onto,
@@ -1398,6 +1628,7 @@ impl Screen {
     /// iTerm2's Clear Scrollback Buffer (`scrollback_only`) or Clear Buffer (everything but
     /// the cursor line, which moves to the top, as iTerm2 keeps the prompt).
     pub fn clear(&mut self, scrollback_only: bool) {
+        self.bump_ticks();
         // Scrolling and clearing push lines into scrollback, so the screen goes first,
         // then the scrollback.
         if !scrollback_only {
@@ -1487,6 +1718,564 @@ mod tests {
         assert_eq!(e[0], (Some(blue), Some(blue)));
         assert_eq!(e[1], (Some(red), Some(blue)));
         assert_eq!(e[2], (None, Some(blue)), "a default first cell is None");
+    }
+
+    #[test]
+    fn blink_flag_follows_sgr() {
+        let mut s = Screen::new(10, 3);
+        s.feed(b"\x1b[5ma\x1b[25mb\x1b[6mc\x1b[0md");
+        let blinks: Vec<bool> = (0..4).map(|c| s.term.grid()[Line(0)][Column(c)].flags.contains(alacritty_terminal::term::cell::Flags::BLINK)).collect();
+        assert_eq!(blinks, [true, false, true, false]);
+        // RIS clears the template: "b" after it is not flagged.
+        let mut s = Screen::new(10, 3);
+        s.feed(b"\x1b[5ma\x1bcb");
+        let b = &s.term.grid()[Line(0)][Column(0)];
+        assert_eq!(b.c, 'b');
+        assert!(!b.flags.contains(alacritty_terminal::term::cell::Flags::BLINK));
+    }
+
+    #[test]
+    fn has_blinking_text_sees_visible_cells_only() {
+        let mut s = Screen::new(10, 2);
+        assert!(!s.has_blinking_text());
+        s.feed(b"\x1b[5mx");
+        assert!(s.has_blinking_text());
+        // Two more lines push the row off the screen into history: nothing visible blinks.
+        s.feed(b"\x1b[0m\r\ny\r\nz");
+        assert!(!s.has_blinking_text());
+    }
+
+    thread_local! {
+        /// Test seam: every row's cache key becomes this one, as a found hash collision would.
+        pub(super) static FORCE_KEY: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    }
+
+    #[test]
+    fn a_hash_collision_never_shows_another_rows_order() {
+        let mut s = Screen::new(20, 4);
+        s.feed("ab \u{5d0}\u{5d1}\r\n\u{5d0}\u{5d1}\u{5d2}  ".as_bytes());
+        FORCE_KEY.with(|f| f.set(Some(7)));
+        let a = s.row_order(0).unwrap();
+        let b = s.row_order(1).unwrap();
+        FORCE_KEY.with(|f| f.set(None));
+        assert_eq!(&a.lut[..5], &[0, 1, 2, 4, 3]);
+        assert_eq!(&b.lut[..3], &[2, 1, 0], "the second row gets its own order, not the first's");
+    }
+
+    #[test]
+    fn row_orders_are_cached_by_content() {
+        use std::sync::Arc;
+        let mut s = Screen::new(20, 4);
+        s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
+        let a = s.row_order(0).expect("a Hebrew row has an order");
+        assert_eq!(&a.lut[..5], &[0, 1, 2, 4, 3]);
+        assert!(Arc::ptr_eq(&a, &s.row_order(0).unwrap()), "same content, same order");
+        assert!(s.row_order(1).is_none(), "an English row has none");
+        // Rewriting the row changes its order.
+        s.feed("\x1b[1;1H\u{5d0}\u{5d1}\u{5d2}  ".as_bytes());
+        let b = s.row_order(0).unwrap();
+        assert!(!Arc::ptr_eq(&a, &b));
+        assert_eq!(&b.lut[..3], &[2, 1, 0]);
+        // The rules change the answer: off, and off in the alternate screen only.
+        s.bidi_rules.enabled = false;
+        assert!(s.row_order(0).is_none());
+        s.bidi_rules = crate::bidi::Rules { off_in_alternate: true, ..crate::bidi::Rules::default() };
+        assert!(s.row_order(0).is_some());
+        s.feed(b"\x1b[?1049h");
+        s.feed("\u{5d0}\u{5d1}".as_bytes());
+        assert!(s.row_order(0).is_none(), "the alternate screen is left alone with the setting");
+    }
+
+    #[test]
+    fn right_justify_pads_a_detected_rtl_row() {
+        let mut s = Screen::new(10, 2);
+        s.bidi_rules = crate::bidi::Rules { detect_direction: true, ..crate::bidi::Rules::default() };
+        s.feed("\u{5d0}\u{5d1}".as_bytes());
+        let o = s.row_order(0).unwrap();
+        assert!(o.paragraph_rtl);
+        assert_eq!(o.lut.len(), 10, "padded to the pane's width");
+        assert_eq!(&o.lut[..2], &[9, 8], "the text sits at the right edge");
+        s.bidi_rules.right_justify = false;
+        let o = s.row_order(0).unwrap();
+        assert_eq!(o.lut.len(), 2);
+    }
+
+    #[test]
+    fn a_drag_selects_the_cells_the_pointer_covered() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut s = Screen::new(10, 3);
+        // Logical "ab " + aleph (3) + bet (4); drawn as visual a b _ bet aleph.
+        s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
+        let p = |col: usize| Point::new(Line(0), Column(col));
+        s.term_mut().selection = Some(Selection::new(SelectionType::Simple, p(0), Side::Left));
+        // From the left of visual 0 to the right half of visual 3 (the bet).
+        assert!(s.drag_visual_selection((0, 0, false), (0, 3, true)));
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("ab \u{5d1}"), "the aleph, which the pointer never reached, is left out");
+        let sel = s.term().selection.as_ref().unwrap();
+        let covered: Vec<usize> = (0..6).filter(|c| sel.covers(p(*c))).collect();
+        assert_eq!(covered, vec![0, 1, 2, 4], "the highlight is the same cells");
+        // The same drag backwards (end before the anchor) covers the same cells.
+        s.term_mut().selection = Some(Selection::new(SelectionType::Simple, p(4), Side::Right));
+        assert!(s.drag_visual_selection((0, 3, true), (0, 0, false)));
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("ab \u{5d1}"));
+        // Across two rows: the rest of the first row in reading order, then the second's start.
+        s.term_mut().selection = Some(Selection::new(SelectionType::Simple, p(0), Side::Left));
+        assert!(s.drag_visual_selection((0, 3, false), (1, 1, true)));
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("\u{5d0}\u{5d1}\npl"), "visual 3 to 9 of row 0, copied in logical order");
+        // A drag over rows with no right-to-left text is left to the logical selection.
+        let mut t = Screen::new(10, 3);
+        t.feed(b"abc\r\ndef");
+        assert!(!t.drag_visual_selection((0, 0, false), (1, 2, true)));
+    }
+
+    #[test]
+    fn output_scrolling_during_a_drag_keeps_the_anchor_and_the_runs() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut s = Screen::new(10, 3);
+        s.feed("ab \u{5d0}\u{5d1}\r\nx\r\ny".as_bytes());
+        s.term_mut().selection = Some(Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left));
+        s.term_mut().selection.as_mut().unwrap().set_visual_anchor((0, 0, false));
+        assert!(s.drag_visual_to((0, 3, true)));
+        let want = Some("ab \u{5d1}");
+        assert_eq!(s.term().selection_to_string().as_deref(), want);
+        // Two lines of output scroll the row into history.
+        s.feed(b"\r\nz\r\nw");
+        assert_eq!(s.term().selection_to_string().as_deref(), want, "scrolling alone copies only the swept cells");
+        let sel = s.term().selection.as_ref().unwrap();
+        assert_eq!((0..5).filter(|c| sel.covers(Point::new(Line(-2), Column(*c)))).collect::<Vec<_>>(), vec![0, 1, 2, 4], "and highlights them");
+        assert_eq!(s.visual_anchor(), Some((-2, 0, false)), "the anchor stays on the same text");
+        // The next move sweeps from the same text, not from whatever now sits on grid line 0.
+        assert!(s.drag_visual_to((-2, 4, true)));
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("ab \u{5d0}\u{5d1}"));
+        assert_eq!(s.term().selection.as_ref().unwrap().covers(Point::new(Line(0), Column(0))), false);
+    }
+
+    #[test]
+    fn visual_runs_leave_with_the_oldest_line() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let drag = |s: &mut Screen, to: (i32, usize, bool)| {
+            s.term_mut().selection = Some(Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left));
+            s.term_mut().selection.as_mut().unwrap().set_visual_anchor((0, 0, false));
+            assert!(s.drag_visual_to(to));
+        };
+        // The alternate screen keeps no history: a row scrolled off its top is gone, and so
+        // are the runs and the anchor on it. Nothing indexes a line that does not exist.
+        let mut s = Screen::new(10, 3);
+        s.feed(b"\x1b[?1049h");
+        s.feed("ab \u{5d0}\u{5d1}".as_bytes());
+        drag(&mut s, (0, 3, true));
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("ab \u{5d1}"));
+        s.feed(b"\r\n\r\n\r\n\r\n");
+        assert_eq!(s.term().selection_to_string(), None, "no row is copied that nobody selected");
+        assert!(s.term().selection.is_none());
+        assert_eq!(s.visual_anchor(), None);
+        // A full scrollback drops its oldest line on every scroll: of two selected rows only
+        // the one still in the buffer is copied and highlighted.
+        let mut s = Screen::with_scrollback(10, 3, 1);
+        s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
+        drag(&mut s, (1, 2, true));
+        s.feed(b"\r\n\r\n\r\n");
+        let sel = s.term().selection.as_ref().expect("row 1 is still in the buffer");
+        assert!(sel.runs.iter().all(|(a, _)| a.line.0 >= -1), "{:?}", sel.runs);
+        assert!(!sel.covers(Point::new(Line(2), Column(0))), "the newest rows are not highlighted");
+        let copy = s.term().selection_to_string().unwrap();
+        assert!(copy.starts_with("pl") || copy.starts_with("pla"), "{copy:?}");
+        assert!(!copy.contains('\u{5d0}'), "{copy:?}");
+        let (line, _, _) = s.visual_anchor().unwrap_or((-1, 0, false));
+        assert!(line >= -1, "the anchor never leaves the buffer: {line}");
+    }
+
+    /// Lines 0..2 of a 3-row primary screen are a scroll region and Scrollback With Status Bar
+    /// is off, so a scroll moves only the region's rows: history stays, row 0 is discarded.
+    fn in_place_region() -> Screen {
+        let mut s = Screen::with_scrollback(10, 3, 100);
+        s.set_scrollback_with_status_bar(false);
+        s.feed("h2 \u{5d0}\u{5d1}\r\nh1 \u{5d2}\r\nab \u{5d0}\u{5d1}\r\nmid\r\nst \u{5d3}".as_bytes());
+        s.feed(b"\x1b[1;2r");
+        s
+    }
+
+    fn visual_drag(s: &mut Screen, from: (i32, usize, bool), to: (i32, usize, bool)) {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let start = Point::new(Line(from.0), Column(from.1));
+        s.term_mut().selection = Some(Selection::new(SelectionType::Simple, start, Side::Left));
+        s.term_mut().selection.as_mut().unwrap().set_visual_anchor(from);
+        assert!(s.drag_visual_to(to));
+    }
+
+    fn runs(s: &Screen) -> Vec<(i32, usize, usize)> {
+        let sel = s.term().selection.as_ref().expect("a selection");
+        sel.runs.iter().map(|(a, b)| (a.line.0, a.column.0, b.column.0)).collect()
+    }
+
+    /// A region that scrolls in place moves only its own rows: runs and the drag anchor inside
+    /// it move with them, the ones on its discarded top row go, and history and the rows below
+    /// it stay put. Copy, GetSelection's runs and the highlight never reach a line nobody
+    /// selected.
+    #[test]
+    fn visual_runs_follow_an_in_place_region_scroll() {
+        // Across the region's top: a history line and region row 0. The history run stays;
+        // row 0's text is discarded, so its run goes.
+        let mut s = in_place_region();
+        visual_drag(&mut s, (-1, 0, false), (0, 9, true));
+        assert_eq!(runs(&s), vec![(-1, 0, 9), (0, 0, 9)]);
+        s.feed(b"\x1b[2;1H\n");
+        assert_eq!(runs(&s), vec![(-1, 0, 9)], "history does not move");
+        assert_eq!(s.term().selection_to_string().as_deref().map(str::trim_end), Some("h1 \u{5d2}"));
+        assert_eq!(s.visual_anchor(), Some((-1, 0, false)));
+        // Inside the region: row 1 moves up to row 0; row 0's run goes, and the anchor on it
+        // stops at the region's top instead of jumping into history.
+        let mut s = in_place_region();
+        visual_drag(&mut s, (0, 0, false), (1, 2, true));
+        s.feed(b"\x1b[2;1H\n");
+        assert_eq!(runs(&s), vec![(0, 0, 2)]);
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("mid"));
+        let (line, _, _) = s.visual_anchor().expect("the drag goes on");
+        assert!(line >= 0, "the anchor never jumps into history: {line}");
+        // A second scroll discards that row too: nothing selected is left.
+        s.feed(b"\n");
+        assert!(s.term().selection.is_none());
+        assert_eq!(s.term().selection_to_string(), None);
+        // Across the region's bottom: the status line below it stays put.
+        let mut s = in_place_region();
+        visual_drag(&mut s, (1, 0, false), (2, 9, true));
+        s.feed(b"\x1b[2;1H\n");
+        assert_eq!(runs(&s), vec![(0, 0, 9), (2, 0, 9)]);
+        assert_eq!(s.term().selection_to_string().as_deref().map(|t| t.lines().map(str::trim_end).collect::<Vec<_>>()), Some(vec!["mid", "st \u{5d3}"]));
+        // Below the region only: nothing moves.
+        let mut s = in_place_region();
+        visual_drag(&mut s, (2, 0, false), (2, 9, true));
+        s.feed(b"\x1b[2;1H\n");
+        assert_eq!(runs(&s), vec![(2, 0, 9)]);
+        assert_eq!(s.visual_anchor(), Some((2, 0, false)));
+    }
+
+    /// A reverse index at the top of a region scrolls only the region down (history never
+    /// moves when the screen scrolls down): a selection on a history line stays on it.
+    #[test]
+    fn selections_on_history_stay_when_a_region_scrolls_down() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut s = in_place_region();
+        visual_drag(&mut s, (-1, 0, false), (-1, 9, true));
+        s.feed(b"\x1b[1;1H\x1bM");
+        assert_eq!(runs(&s), vec![(-1, 0, 9)]);
+        assert_eq!(s.visual_anchor(), Some((-1, 0, false)));
+        assert_eq!(s.term().selection_to_string().as_deref().map(str::trim_end), Some("h1 \u{5d2}"));
+        // A logical selection on history stays too, with the region over the whole screen.
+        let mut s = Screen::with_scrollback(10, 3, 100);
+        s.feed(b"old\r\na\r\nb\r\nc");
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(-1), Column(0)), Side::Left);
+        sel.update(Point::new(Line(-1), Column(2)), Side::Right);
+        s.term_mut().selection = Some(sel);
+        s.feed(b"\x1b[1;1H\x1bM");
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("old"));
+    }
+
+    /// Replace Selection rewrites whole lines, so a visual selection must read them all: a drag
+    /// that skips the aleph inside the line is refused, one over the whole line is allowed.
+    #[test]
+    fn visual_selection_is_whole_lines_only_when_the_runs_cover_them() {
+        use alacritty_terminal::index::{Column, Line, Point};
+        let mut s = Screen::new(10, 3);
+        s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
+        let (a, b) = (Point::new(Line(0), Column(0)), Point::new(Line(0), Column(4)));
+        // Visual 0..4 shows logical 0, 1, 2 and the bet (4): the aleph (3) is skipped.
+        visual_drag(&mut s, (0, 0, false), (0, 3, true));
+        assert_eq!(runs(&s), vec![(0, 0, 2), (0, 4, 4)]);
+        assert!(!s.visual_selection_is_whole_lines(a, b), "lines nobody selected are not rewritten");
+        visual_drag(&mut s, (0, 0, false), (0, 9, true));
+        assert!(s.visual_selection_is_whole_lines(a, b));
+        // A logical selection is checked by the caller's whole-line rule alone.
+        s.term_mut().selection.as_mut().unwrap().update(b, alacritty_terminal::index::Side::Right);
+        assert!(s.visual_selection_is_whole_lines(a, b));
+    }
+
+    /// The copy, a line per row with the padding trimmed.
+    fn copied(s: &Screen) -> Option<Vec<String>> {
+        s.term().selection_to_string().map(|t| t.lines().map(|l| l.trim_end().to_string()).collect())
+    }
+
+    /// Every run and the drag anchor sit on a line the buffer holds, and the highlight
+    /// (`selection_spans`) is the runs.
+    fn in_buffer(s: &Screen) {
+        let (top, bottom) = (s.term().topmost_line().0, s.term().bottommost_line().0);
+        if let Some(sel) = s.term().selection.as_ref() {
+            assert!(sel.runs.iter().all(|(a, _)| a.line.0 >= top && a.line.0 <= bottom), "{:?} outside {top}..={bottom}", sel.runs);
+        }
+        if let Some((line, _, _)) = s.visual_anchor() {
+            assert!(line >= top && line <= bottom, "anchor {line} outside {top}..={bottom}");
+        }
+        let spans = crate::styled_copy::selection_spans(s).0;
+        assert!(spans.iter().all(|(l, _, _)| *l >= top && *l <= bottom), "{spans:?}");
+    }
+
+    /// A height-only shrink with the cursor high cuts the rows below the new bottom: runs on
+    /// them go (the selection with them when nothing is left), and a later grow never
+    /// highlights, copies or reports the fresh rows put there.
+    #[test]
+    fn a_shrink_with_the_cursor_high_drops_the_cut_rows() {
+        let five = || {
+            let mut s = Screen::new(10, 5);
+            s.feed("r0\r\nr1\r\nr2 \u{5d0}\u{5d1}\r\nr3 \u{5d2}\u{5d3}\r\nr4 \u{5d4}\x1b[H".as_bytes());
+            s
+        };
+        // Only the cut rows selected: nothing is left.
+        let mut s = five();
+        visual_drag(&mut s, (3, 0, false), (4, 9, true));
+        s.resize(10, 3);
+        in_buffer(&s);
+        assert!(s.term().selection.is_none());
+        assert_eq!(s.term().selection_to_string(), None);
+        assert_eq!(s.visual_anchor(), None);
+        s.resize(10, 5);
+        assert!(s.term().selection.is_none(), "the fresh rows are not selected");
+        assert!(crate::styled_copy::selection_spans(&s).0.is_empty());
+        // Across the new bottom: row 2 stays as it was, row 3's run goes.
+        let mut s = five();
+        visual_drag(&mut s, (2, 0, false), (3, 9, true));
+        s.resize(10, 3);
+        in_buffer(&s);
+        assert_eq!(runs(&s), vec![(2, 0, 9)]);
+        assert_eq!(copied(&s), Some(vec!["r2 \u{5d0}\u{5d1}".to_string()]));
+        assert_eq!(s.visual_anchor(), Some((2, 0, false)));
+        s.resize(10, 5);
+        assert_eq!(runs(&s), vec![(2, 0, 9)], "the rows grown back are not selected");
+        assert_eq!(copied(&s), Some(vec!["r2 \u{5d0}\u{5d1}".to_string()]));
+    }
+
+    /// The alternate screen keeps no history: a shrink with the cursor at the bottom pushes
+    /// its top rows out, and the runs and the anchor on them go.
+    #[test]
+    fn a_shrink_at_the_bottom_of_the_alternate_screen_drops_its_top_rows() {
+        let five = || {
+            let mut s = Screen::new(10, 5);
+            s.feed(b"\x1b[?1049h");
+            s.feed("a0 \u{5d0}\r\na1 \u{5d1}\r\na2 \u{5d2}\r\na3\r\na4".as_bytes());
+            s
+        };
+        let mut s = five();
+        visual_drag(&mut s, (0, 0, false), (1, 9, true));
+        s.resize(10, 3);
+        in_buffer(&s);
+        assert!(s.term().selection.is_none());
+        assert_eq!(s.term().selection_to_string(), None);
+        // Across the top: row 2 moves up to row 0 and stays selected; the anchor's row is gone.
+        let mut s = five();
+        visual_drag(&mut s, (1, 0, false), (2, 9, true));
+        s.resize(10, 3);
+        in_buffer(&s);
+        assert_eq!(runs(&s), vec![(0, 0, 9)]);
+        assert_eq!(copied(&s), Some(vec!["a2 \u{5d2}".to_string()]));
+        assert_eq!(s.visual_anchor(), None, "the press row is gone");
+        assert!(!s.drag_visual_to((0, 4, true)), "no drag goes on from a row that is gone");
+    }
+
+    /// A full scrollback loses its oldest lines when a shrink at the bottom pushes rows into
+    /// it: runs and the anchor on them go, the rest move up with their text.
+    #[test]
+    fn a_shrink_with_a_full_scrollback_drops_the_oldest_lines() {
+        let filled = || {
+            let mut s = Screen::with_scrollback(10, 5, 1);
+            s.feed("h0\r\ns0 \u{5d0}\r\ns1 \u{5d1}\r\ns2\r\ns3\r\ns4".as_bytes());
+            assert_eq!(s.term().topmost_line().0, -1);
+            s
+        };
+        let mut s = filled();
+        visual_drag(&mut s, (-1, 0, false), (0, 9, true));
+        s.resize(10, 3);
+        in_buffer(&s);
+        assert!(s.term().selection.is_none());
+        assert_eq!(s.term().selection_to_string(), None);
+        let mut s = filled();
+        visual_drag(&mut s, (0, 0, false), (1, 9, true));
+        s.resize(10, 3);
+        in_buffer(&s);
+        assert_eq!(runs(&s), vec![(-1, 0, 9)]);
+        assert_eq!(copied(&s), Some(vec!["s1 \u{5d1}".to_string()]));
+        assert_eq!(s.visual_anchor(), None);
+        // A grow pulls history back: the run moves down with its text.
+        s.resize(10, 5);
+        in_buffer(&s);
+        assert_eq!(copied(&s), Some(vec!["s1 \u{5d1}".to_string()]));
+    }
+
+    /// A width change (with or without a height change, and the reflow it brings) clears a
+    /// visual selection as alacritty clears any selection: nothing maps cell for cell.
+    #[test]
+    fn a_width_change_clears_a_visual_selection() {
+        for (cols, rows) in [(12, 3), (4, 3), (12, 5), (4, 2)] {
+            let mut s = Screen::new(10, 3);
+            s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
+            visual_drag(&mut s, (0, 0, false), (1, 3, true));
+            s.resize(cols, rows);
+            assert!(s.term().selection.is_none(), "{cols}x{rows}");
+            assert_eq!(s.term().selection_to_string(), None);
+            assert_eq!(s.visual_anchor(), None);
+            assert!(crate::styled_copy::selection_spans(&s).0.is_empty());
+        }
+    }
+
+    /// Clearing scrollback, the screen or the lines under a visual selection, a reset, a
+    /// screen switch and Clear To Mark leave it exact or clear it: no run or anchor points at
+    /// a row that moved or went.
+    #[test]
+    fn clears_resets_and_screen_switches_keep_a_visual_selection_exact_or_clear_it() {
+        let fresh = || {
+            let mut s = Screen::with_scrollback(10, 3, 100);
+            s.feed("h \u{5d0}\r\nx\r\ny \u{5d1}\r\nz".as_bytes());
+            assert_eq!(s.term().topmost_line().0, -1);
+            s
+        };
+        // Clear scrollback: a selection on the screen stays on its text; one reaching into
+        // history goes.
+        let mut s = fresh();
+        visual_drag(&mut s, (1, 0, false), (1, 9, true));
+        s.feed(b"\x1b[3J");
+        assert_eq!(runs(&s), vec![(1, 0, 9)]);
+        assert_eq!(copied(&s), Some(vec!["y \u{5d1}".to_string()]));
+        let mut s = fresh();
+        visual_drag(&mut s, (-1, 0, false), (1, 9, true));
+        s.feed(b"\x1b[3J");
+        assert!(s.term().selection.is_none());
+        // The rest clear it.
+        for (what, bytes) in [
+            ("clear screen", &b"\x1b[2J"[..]),
+            ("erase above", b"\x1b[3;1H\x1b[1J"),
+            ("erase below", b"\x1b[1;1H\x1b[0J"),
+            ("erase line", b"\x1b[2;1H\x1b[2K"),
+            ("reset", b"\x1bc"),
+            ("alternate screen", b"\x1b[?1049h"),
+        ] {
+            let mut s = fresh();
+            visual_drag(&mut s, (1, 0, false), (1, 9, true));
+            s.feed(bytes);
+            assert!(s.term().selection.is_none(), "{what}");
+            assert_eq!(s.visual_anchor(), None, "{what}");
+            in_buffer(&s);
+        }
+        // Clear To Mark cuts rows and moves the cursor row to the top.
+        let mut s = fresh();
+        visual_drag(&mut s, (1, 0, false), (1, 9, true));
+        s.clear_from(0);
+        assert!(s.term().selection.is_none(), "clear to mark");
+        in_buffer(&s);
+    }
+
+    #[test]
+    fn pointer_maps_through_the_order() {
+        let mut s = Screen::new(10, 3);
+        s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
+        // Visual column 4 shows the aleph (logical 3); visual 3 shows the bet (logical 4).
+        assert_eq!(s.logical_col(0, 4), (3, true));
+        assert_eq!(s.logical_col(0, 3), (4, true));
+        assert_eq!(s.logical_col(0, 1), (1, false));
+        assert_eq!(s.visual_col(0, 3), 4);
+        assert_eq!(s.visual_col(0, 9), 9, "past the text: itself");
+        // A row with no right-to-left text maps to itself.
+        assert_eq!(s.logical_col(1, 3), (3, false));
+        assert_eq!(s.visual_col(1, 3), 3);
+        // A drag from visual column 4 to 3 (the right half of 4 to the left half of 3, as the
+        // pointer's sides turn over in a right-to-left cell) selects logical columns 3 and 4.
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let side = |right: bool, rtl: bool| if right != rtl { Side::Right } else { Side::Left };
+        let (a, a_rtl) = s.logical_col(0, 4);
+        let (b, b_rtl) = s.logical_col(0, 3);
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(a)), side(true, a_rtl));
+        sel.update(Point::new(Line(0), Column(b)), side(false, b_rtl));
+        s.term_mut().selection = Some(sel);
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("\u{5d0}\u{5d1}"), "the copy is logical, as the program wrote it");
+        // The highlight pieces of that selection cover visual 3 and 4 as one.
+        assert_eq!(s.visual_runs(0, 3..5), vec![3..5]);
+        assert_eq!(s.visual_runs(0, 3..4), vec![4..5]);
+    }
+
+    /// A click or hover on a visual cell acts on the cell shown there: its OSC 8 link, never a
+    /// neighbour's.
+    #[test]
+    fn links_under_the_pointer_are_the_ones_shown() {
+        use alacritty_terminal::index::{Column, Line, Point};
+        let mut s = Screen::new(10, 2);
+        s.feed("ab \x1b]8;;https://one.test\x1b\\\u{5d0}\x1b]8;;\x1b\\\x1b]8;;https://two.test\x1b\\\u{5d1}\x1b]8;;\x1b\\".as_bytes());
+        let link_at = |s: &Screen, visual: usize| {
+            let (logical, _) = s.logical_col(0, visual);
+            s.term().grid()[Point::new(Line(0), Column(logical))].hyperlink().map(|h| h.uri().to_string())
+        };
+        // The aleph (link one) is drawn at visual 4, the bet (link two) at visual 3.
+        assert_eq!(link_at(&s, 4).as_deref(), Some("https://one.test"));
+        assert_eq!(link_at(&s, 3).as_deref(), Some("https://two.test"));
+        assert_eq!(s.logical_col(0, 4).0, 3, "a click on the cell shown acts on its logical character");
+        assert_eq!(link_at(&s, 1), None);
+    }
+
+    #[test]
+    fn right_justify_follows_iterm2() {
+        let row = |detect: bool, justify: bool| {
+            let mut s = Screen::new(6, 2);
+            s.bidi_rules = crate::bidi::Rules { enabled: true, detect_direction: detect, right_justify: justify, off_in_alternate: false };
+            s.feed("\u{5d0}\u{5d1}".as_bytes());
+            s.row_order(0).unwrap().lut.clone()
+        };
+        // Both switches: the paragraph pads to the right edge, the fill reversed.
+        assert_eq!(row(true, true), vec![5, 4, 3, 2, 1, 0]);
+        // iTerm2 needs both: no padding with either off.
+        assert_eq!(row(true, false), vec![1, 0]);
+        // Detection off: the paragraph is left to right, so the fill follows in order and the text stays left.
+        assert_eq!(row(false, true), vec![1, 0, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn the_order_cache_is_bounded() {
+        let mut s = Screen::new(20, 3);
+        for i in 0..400u32 {
+            let c = char::from_u32(0x5d0 + i % 27).unwrap();
+            s.feed(format!("\r\n{c}{c}{i}").as_bytes());
+            for line in 0..3 {
+                let _ = s.row_order(line);
+            }
+        }
+        assert!(s.bidi_cache.borrow().len() <= 4 * 3 + 3, "{}", s.bidi_cache.borrow().len());
+    }
+
+    /// Security: only the grid's own draw and the pointer mapping ask for an order. Tab bars,
+    /// title bars, status bars, find bars and popups never reorder Tandem's own text.
+    #[test]
+    fn chrome_is_never_reordered() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        let allowed = ["bidi.rs", "screen.rs", "scene.rs"];
+        for f in files {
+            let name = f.file_name().unwrap().to_string_lossy().to_string();
+            let text = std::fs::read_to_string(&f).unwrap();
+            let calls = text.contains("bidi::order(") || text.contains(".row_order(");
+            assert!(!calls || allowed.contains(&name.as_str()), "{} reorders text outside the grid", f.display());
+        }
+    }
+
+    #[test]
+    fn blink_allowed_follows_the_look() {
+        assert!(!Look::default().blink_allowed, "the stock profile's Blink Allowed is off");
+        let s = Screen::with_look(10, 2, Palette::default(), Look { blink_allowed: true, ..Look::default() });
+        assert!(s.blink_allowed);
+        let mut s = Screen::new(10, 2);
+        assert!(!s.blink_allowed);
+        s.set_look(Look { blink_allowed: true, ..Look::default() });
+        assert!(s.blink_allowed);
     }
 
     #[test]
@@ -2288,5 +3077,95 @@ mod tests {
         s.feed(b"\x1b[>4;2m");
         s.set_look(Look { app_key_modes: false, ..Look::default() });
         assert_eq!(s.keyboard().mode, KeyMode::Standard);
+    }
+
+    #[test]
+    fn the_tick_digest_follows_marks_notes_and_rows() {
+        let mut s = Screen::new(20, 4);
+        let base = s.tick_digest();
+        assert_eq!(s.tick_digest(), base, "nothing changed");
+        let mark = s.set_manual_mark(0, None);
+        let with_mark = s.tick_digest();
+        assert_ne!(with_mark, base, "a mark was added");
+        assert!(s.remove_mark(mark));
+        assert_ne!(s.tick_digest(), with_mark, "and removed");
+        s.add_note(0, 0, 0, 3, "n", false);
+        let with_note = s.tick_digest();
+        assert_ne!(with_note, base, "a note was added");
+        s.feed(b"1\r\n2\r\n3\r\n4\r\n5\r\n");
+        assert_ne!(s.tick_digest(), with_note, "rows scrolled");
+        let before = s.tick_digest();
+        s.feed(b"x");
+        assert_ne!(s.tick_digest(), before, "every output batch bumps the generation");
+        let again = s.tick_digest();
+        assert_eq!(s.tick_digest(), again, "and nothing else moves it");
+        let before = again;
+        s.feed(b"\x1b[?1049h");
+        assert_ne!(s.tick_digest(), before, "the alternate screen shows");
+        // An exit code arriving on an existing prompt mark changes the ticks' series.
+        let mut p = Screen::new(20, 4);
+        p.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07");
+        let running = p.tick_digest();
+        p.feed(b"\x1b]133;D;1\x07");
+        assert_ne!(p.tick_digest(), running, "the command finished with a code");
+    }
+
+    /// The tick cache's key moves with any grid change: erasers and movers that touch no record.
+    #[test]
+    fn the_tick_generation_follows_every_grid_change() {
+        fn moves(stale: &mut Vec<String>, what: &str, setup: &[u8], act: &dyn Fn(&mut Screen)) {
+            let mut s = Screen::new(20, 6);
+            s.feed(setup);
+            s.set_manual_mark(1, None);
+            let before = s.tick_digest();
+            act(&mut s);
+            if s.tick_digest() == before {
+                stale.push(what.to_string());
+            }
+        }
+        let mut stale = Vec::new();
+        let text = b"a\r\nb\r\nc\r\nd";
+        moves(&mut stale, "ED 0", text, &|s| {
+            s.feed(b"\x1b[2;1H\x1b[J");
+        });
+        moves(&mut stale, "ED 1", text, &|s| {
+            s.feed(b"\x1b[3;1H\x1b[1J");
+        });
+        moves(&mut stale, "IL", text, &|s| {
+            s.feed(b"\x1b[2;1H\x1b[L");
+        });
+        moves(&mut stale, "DL", text, &|s| {
+            s.feed(b"\x1b[2;1H\x1b[M");
+        });
+        moves(&mut stale, "a region scroll", text, &|s| {
+            s.feed(b"\x1b[1;3r\x1b[3;1H\n");
+        });
+        moves(&mut stale, "fold", text, &|s| {
+            s.fold(0, 1);
+        });
+        moves(&mut stale, "RIS with no history", text, &|s| {
+            s.feed(b"\x1bc");
+        });
+        moves(&mut stale, "clear scrollback", text, &|s| s.clear(true));
+        moves(&mut stale, "resize", text, &|s| s.resize(10, 6));
+        moves(&mut stale, "a mark removed", text, &|s| {
+            let id = s.row_marks()[0].1;
+            s.remove_mark(id);
+        });
+        assert!(stale.is_empty(), "the ticks would go stale after: {stale:?}");
+    }
+
+    /// A screenshot or preview draws rows as the pane does: Bidi off stays off, and Blink
+    /// Allowed carries over.
+    #[test]
+    fn a_slice_keeps_the_bidi_and_blink_rules() {
+        let mut s = crate::screen::Screen::new(10, 3);
+        s.feed("\u{5d0}\u{5d1}".as_bytes());
+        assert!(crate::screenshot::slice(&s, 0, 3).row_order(0).is_some(), "Bidi on reorders the slice");
+        s.bidi_rules.enabled = false;
+        s.blink_allowed = true;
+        let cut = crate::screenshot::slice(&s, 0, 3);
+        assert!(cut.row_order(0).is_none(), "Bidi off stays off in the slice");
+        assert!(cut.blink_allowed);
     }
 }

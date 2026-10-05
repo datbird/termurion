@@ -513,6 +513,19 @@ pub fn max_stack(tree: &Tree<PaneId>, axis: Axis) -> usize {
     }
 }
 
+/// The most room a row of side by side panes gives up at their right edges: each leaf's `room`,
+/// summed along `Axis::Row` splits, the larger side across the other axis (tmux's width report
+/// takes it from the widest row).
+pub fn widest_row_room(tree: &Tree<PaneId>, room: &impl Fn(PaneId) -> f32) -> f32 {
+    match tree {
+        Tree::Leaf(id) => room(*id),
+        Tree::Split { axis, a, b, .. } => {
+            let (x, y) = (widest_row_room(a, room), widest_row_room(b, room));
+            if *axis == Axis::Row { x + y } else { x.max(y) }
+        }
+    }
+}
+
 /// The rectangles a tab shows: only the zoomed pane when one is zoomed and still here.
 pub fn visible_rects(layout: &Layout, zoomed: Option<PaneId>, area: Rect, gap: f32) -> Vec<(PaneId, Rect)> {
     match zoomed.filter(|z| layout.panes().contains(z)) {
@@ -523,6 +536,23 @@ pub fn visible_rects(layout: &Layout, zoomed: Option<PaneId>, area: Rect, gap: f
 
 #[cfg(test)]
 mod tests {
+    /// The room a tmux tab's width gives up: the widest row's panes add, stacked panes do not.
+    #[test]
+    fn the_widest_row_gives_up_the_most_room() {
+        let room = |id: PaneId| if id == 3 { 150.0 } else { 15.0 };
+        // 1 | (2 over 3): two panes across, the right one stacked.
+        let t: Tree<PaneId> = Tree::Split {
+            axis: Axis::Row,
+            ratio: 0.5,
+            a: Box::new(Tree::Leaf(1)),
+            b: Box::new(Tree::Split { axis: Axis::Column, ratio: 0.5, a: Box::new(Tree::Leaf(2)), b: Box::new(Tree::Leaf(3)) }),
+        };
+        assert_eq!(widest_row_room(&t, &room), 15.0 + 150.0, "the left pane and the larger of the stacked pair");
+        assert_eq!(widest_row_room(&Tree::Leaf(2), &room), 15.0);
+        let stacked: Tree<PaneId> = Tree::Split { axis: Axis::Column, ratio: 0.5, a: Box::new(Tree::Leaf(2)), b: Box::new(Tree::Leaf(3)) };
+        assert_eq!(widest_row_room(&stacked, &room), 150.0, "stacked panes do not add");
+    }
+
     #[test]
     fn the_pane_before_a_divider() {
         let t: Tree<PaneId> = Tree::Split {

@@ -105,6 +105,7 @@ fn sgr(cell: &alacritty_terminal::term::cell::Cell) -> String {
         (Flags::UNDERCURL, "4:3"),
         (Flags::DOTTED_UNDERLINE, "4:4"),
         (Flags::DASHED_UNDERLINE, "4:5"),
+        (Flags::BLINK, "5"),
         (Flags::INVERSE, "7"),
         (Flags::HIDDEN, "8"),
         (Flags::STRIKEOUT, "9"),
@@ -226,6 +227,8 @@ mod tests {
         assert_eq!(ask(&mut s, b"\x1bP$qm\x1b\\"), "\x1bP1$r0;1;4;31;48;5;200m\x1b\\");
         s.feed(b"\x1b[0;38;2;1;2;3m");
         assert_eq!(ask(&mut s, b"\x1bP$qm\x1b\\"), "\x1bP1$r0;38;2;1;2;3m\x1b\\");
+        s.feed(b"\x1b[0;5;7m");
+        assert_eq!(ask(&mut s, b"\x1bP$qm\x1b\\"), "\x1bP1$r0;5;7m\x1b\\");
         s.feed(b"\x1b[5;10r");
         assert_eq!(ask(&mut s, b"\x1bP$qr\x1b\\"), "\x1bP1$r5;10r\x1b\\");
         s.feed(b"\x1b[4 q");

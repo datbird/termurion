@@ -130,8 +130,8 @@ fn link_id(id: &str) -> Option<String> {
 }
 
 /// A cell's style (`protoStyleForCharacter:externalAttributes:`, `PS:22176-22315`), `repeats`
-/// 1. An image cell has no colors and is an iTerm2 image. Alacritty keeps no blink or
-/// guarded attribute: both are false.
+/// 1. An image cell has no colors and is an iTerm2 image. Alacritty keeps no guarded
+/// attribute: it is false.
 pub fn style_of(cell: &Cell) -> pb::CellStyle {
     use pb::cell_style::{BgColor, FgColor};
     let alt = pb::AlternateColor::Default as i32;
@@ -165,7 +165,7 @@ pub fn style_of(cell: &Cell) -> pb::CellStyle {
         bold: Some(f.contains(Flags::BOLD)),
         faint: Some(f.contains(Flags::DIM)),
         italic: Some(f.contains(Flags::ITALIC)),
-        blink: Some(false),
+        blink: Some(f.contains(Flags::BLINK)),
         underline: Some(f.intersects(Flags::ALL_UNDERLINES)),
         strikethrough: Some(f.contains(Flags::STRIKEOUT)),
         invisible: Some(f.contains(Flags::HIDDEN)),
@@ -455,6 +455,7 @@ mod tests {
             assert_eq!(flag(u).underline, Some(true));
         }
         assert_eq!(flag(Flags::INVERSE).inverse, Some(true));
+        assert_eq!(flag(Flags::BLINK).blink, Some(true));
         let mut linked = cell('x');
         linked.set_hyperlink(Some(Hyperlink::new(Some("id1"), "https://example.com/".into())));
         assert_eq!(style_of(&linked).url, Some(pb::Url { url: Some("https://example.com/".into()), identifier: Some("id1".into()) }));

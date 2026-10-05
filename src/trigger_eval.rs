@@ -183,7 +183,7 @@ fn apply_sgr(cell: &mut Cell, param: &str) {
         let mut used = 0;
         match p[0] {
             0 => {
-                cell.flags.remove(Flags::BOLD | Flags::DIM | Flags::ITALIC | Flags::UNDERLINE | Flags::INVERSE | Flags::HIDDEN | Flags::STRIKEOUT);
+                cell.flags.remove(Flags::BOLD | Flags::DIM | Flags::ITALIC | Flags::UNDERLINE | Flags::BLINK | Flags::INVERSE | Flags::HIDDEN | Flags::STRIKEOUT);
                 cell.fg = Color::Named(NamedColor::Foreground);
                 cell.bg = Color::Named(NamedColor::Background);
             }
@@ -191,12 +191,14 @@ fn apply_sgr(cell: &mut Cell, param: &str) {
             2 => cell.flags.insert(Flags::DIM),
             3 => cell.flags.insert(Flags::ITALIC),
             4 => cell.flags.insert(Flags::UNDERLINE),
+            5 => cell.flags.insert(Flags::BLINK),
             7 => cell.flags.insert(Flags::INVERSE),
             8 => cell.flags.insert(Flags::HIDDEN),
             9 => cell.flags.insert(Flags::STRIKEOUT),
             22 => cell.flags.remove(Flags::BOLD | Flags::DIM),
             23 => cell.flags.remove(Flags::ITALIC),
             24 => cell.flags.remove(Flags::UNDERLINE),
+            25 => cell.flags.remove(Flags::BLINK),
             27 => cell.flags.remove(Flags::INVERSE),
             28 => cell.flags.remove(Flags::HIDDEN),
             29 => cell.flags.remove(Flags::STRIKEOUT),
@@ -1081,6 +1083,18 @@ mod tests {
         assert!(cell(&s, 0, 0).flags.contains(Flags::UNDERLINE));
         let s = one("hot", "iTermSGRTrigger", "48;5;200", b"hot\r\n");
         assert_eq!(cell(&s, 0, 0).bg, Color::Indexed(200));
+    }
+
+    #[test]
+    fn change_style_sets_and_clears_blink() {
+        let s = one("hot", "iTermSGRTrigger", "5", b"hot\r\n");
+        assert!(cell(&s, 0, 0).flags.contains(Flags::BLINK));
+        // 0 resets it with the other attributes, 25 removes it alone.
+        let s = one("hot", "iTermSGRTrigger", "5;1;0", b"hot\r\n");
+        assert!(!cell(&s, 0, 0).flags.contains(Flags::BLINK));
+        let s = one("hot", "iTermSGRTrigger", "5;1;25", b"hot\r\n");
+        assert!(!cell(&s, 0, 0).flags.contains(Flags::BLINK));
+        assert!(cell(&s, 0, 0).flags.contains(Flags::BOLD));
     }
 
     #[test]

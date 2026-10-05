@@ -24,7 +24,7 @@ impl App {
         for (id, rect) in panes {
             keep.insert(id);
             let text = self.badge_text(id);
-            let inner = self.inner(rect);
+            let inner = self.text_rect(id, rect);
             let Some(p) = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)) else { continue };
             let prefs = BadgePrefs {
                 max_w: p.float("Badge Max Width") as f32,
@@ -58,7 +58,7 @@ impl App {
         let Some(pr) = self.store.get(&p.profile) else { return };
         let dark = self.dark();
         let font_px = self.gpu.as_ref().map_or(16.0, |g| g.renderer.font_px());
-        scene::badge(frame, self.inner(rect), l, pr.color_for("Badge Color", dark), pr.alpha_for("Badge Color", dark), p.own().palette.bg, font_px);
+        scene::badge(frame, self.text_rect(id, rect), l, pr.color_for("Badge Color", dark), pr.alpha_for("Badge Color", dark), p.own().palette.bg, font_px);
     }
 
     /// SetBadgeFormat: the session's badge text, or iTerm2's refusal.

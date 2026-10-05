@@ -1,6 +1,7 @@
 //! The room around a pane's text and the alternate screen's margin color (iTerm2's
 //! `TerminalMargin`, `TerminalVMargin`, `PTYTextView.m:2965-3070`, `iTermTextDrawingHelper.m:619-647`).
 
+use crate::layout::Rect;
 use crate::palette::Rgb;
 
 /// Side margin in points (`iTermPreferences.m:112`).
@@ -62,6 +63,37 @@ pub fn grid_size(rect: (f32, f32), cell: (f32, f32), margins: (f32, f32)) -> (u1
     ((w / cell.0).floor().max(2.0) as u16, (h / cell.1).floor().max(1.0) as u16)
 }
 
+/// The pane's rectangle less `room` at the right edge: what the scrollbar strip and the
+/// Adjacent timestamp column take (iTerm2 lays them out beside the text view, then the margins
+/// sit inside what is left). The margin painter and the grid both start from this.
+pub fn text_outer(rect: Rect, room: f32) -> Rect {
+    Rect { w: (rect.w - room).max(0.0), ..rect }
+}
+
+/// The text area: `text_outer` inset by the margins. The grid, the pointer, every overlay that
+/// sits on the text and `grid_size` agree on it.
+pub fn text_rect(rect: Rect, margins: (f32, f32), room: f32) -> Rect {
+    text_outer(rect, room).inset_xy(margins.0, margins.1)
+}
+
+/// The columns and rows a pane of `rect` (width, height) holds once it gives up `room` pixels
+/// at its right edge: `grid_size` of what is left, the one path every sizing site takes.
+pub fn pane_grid(rect: (f32, f32), cell: (f32, f32), margins: (f32, f32), room: f32) -> (u16, u16) {
+    grid_size((rect.0 - room, rect.1), cell, margins)
+}
+
+/// The columns a tmux tab reports: its area less the side margins and the room the panes of
+/// its widest row give up (`row_room`, the sum of that row's panes), floored at two.
+pub fn tmux_cols(area_w: f32, cw: f32, side: f32, row_room: f32) -> u16 {
+    grid_size((area_w - row_room, 0.0), (cw, 1.0), (side, 0.0)).0
+}
+
+/// What a pane gives up at its right edge: the legacy scrollbar (unless hidden) and the
+/// Adjacent timestamp column (`stamps` is the pane's mode while its timestamps show).
+pub fn pane_room(style: crate::scrollbar::Style, hidden: bool, stamps: Option<crate::stamps::Mode>, scale: f32) -> f32 {
+    crate::scrollbar::room(style, hidden, scale) + stamps.map_or(0.0, |m| crate::stamps::room(m, scale))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +152,60 @@ mod tests {
         assert_eq!(grid_size((810.0, 400.0), (8.0, 16.0), (side, vert)), (100, 24));
         assert_eq!(grid_size((810.0, 400.0), (8.0, 16.0), (0.0, 0.0)), (101, 25));
         assert_eq!(grid_size((10.0, 10.0), (8.0, 16.0), (side, vert)), (2, 1));
+    }
+
+    /// 13m Task 7 (Review Focus 3): the legacy scrollbar takes its 15 points from the grid, the
+    /// overlay style and `HideScrollbar` take nothing, and a tmux tab reports the narrower width.
+    #[test]
+    fn panes_make_room_for_the_scrollbar() {
+        use crate::scrollbar::{room, Style};
+        let m = (px(DEFAULT_SIDE as i64, 1.0), px(DEFAULT_TOP_BOTTOM as i64, 1.0));
+        let cell = (8.0, 16.0);
+        let legacy = pane_room(Style::Legacy, false, None, 1.0);
+        assert_eq!(legacy, room(Style::Legacy, false, 1.0));
+        assert_eq!(pane_grid((1000.0, 400.0), cell, m, legacy).0, grid_size((1000.0 - 15.0, 400.0), cell, m).0);
+        assert_eq!(pane_grid((1000.0, 400.0), cell, m, legacy).0, 121, "(1000 - 10 - 15) / 8");
+        for none in [pane_room(Style::Legacy, true, None, 1.0), pane_room(Style::Overlay, false, None, 1.0)] {
+            assert_eq!(none, 0.0);
+            assert_eq!(pane_grid((1000.0, 400.0), cell, m, none), grid_size((1000.0, 400.0), cell, m));
+            assert_eq!(pane_grid((1000.0, 400.0), cell, m, none).0, 123, "(1000 - 10) / 8");
+        }
+        assert_eq!(tmux_cols(1000.0, 8.0, m.0, legacy), 121, "tmux is told the narrower width");
+        assert_eq!(tmux_cols(1000.0, 8.0, m.0, 0.0), 123);
+        // Two panes side by side each give up the strip: the widest row's rooms add.
+        assert_eq!(tmux_cols(1000.0, 8.0, m.0, 2.0 * legacy), 120, "(1000 - 10 - 30) / 8");
+        assert_eq!(tmux_cols(5.0, 8.0, 5.0, 100.0), 2, "never below two columns");
+        // The rect the text sits in leaves the room at the right and the margins inside it.
+        let pane = Rect { x: 10.0, y: 20.0, w: 1000.0, h: 400.0 };
+        let t = text_rect(pane, m, legacy);
+        assert_eq!((t.x, t.y, t.w, t.h), (15.0, 22.0, 1000.0 - 10.0 - 15.0, 396.0));
+        assert_eq!(text_outer(pane, legacy).w, 985.0);
+    }
+
+    /// 13m Task 9 (Review Focus 6): an Adjacent column narrows its pane's grid by 100 points
+    /// times the scale (with the scrollbar's room), Over and Hover keep the width, and a
+    /// neighbor's grid is its own.
+    #[test]
+    fn adjacent_timestamps_make_room() {
+        use crate::scrollbar::{room, Style};
+        use crate::stamps::{room as stamp_room, Mode};
+        let scale = 1.5;
+        let m = (px(DEFAULT_SIDE as i64, scale), px(DEFAULT_TOP_BOTTOM as i64, scale));
+        let cell = (12.0, 24.0);
+        let full = pane_room(Style::Overlay, false, None, scale);
+        let adjacent = pane_room(Style::Overlay, false, Some(Mode::Adjacent), scale);
+        assert_eq!(adjacent, 150.0);
+        assert_eq!(pane_room(Style::Overlay, false, Some(Mode::Over), scale), 0.0);
+        assert_eq!(pane_room(Style::Overlay, false, Some(Mode::Hover), scale), 0.0);
+        assert_eq!(pane_grid((900.0, 600.0), cell, m, adjacent), grid_size((900.0 - 150.0, 600.0), cell, m));
+        assert!(pane_grid((900.0, 600.0), cell, m, adjacent).0 < pane_grid((900.0, 600.0), cell, m, full).0);
+        // With a legacy scrollbar too: the order on screen is grid, column, scrollbar.
+        let both = pane_room(Style::Legacy, false, Some(Mode::Adjacent), scale);
+        assert_eq!(both, room(Style::Legacy, false, scale) + stamp_room(Mode::Adjacent, scale));
+        assert_eq!(pane_grid((900.0, 600.0), cell, m, both), grid_size((900.0 - both, 600.0), cell, m));
+        // One pane's column leaves its neighbor's grid alone, and tmux reports the widest row.
+        assert_eq!(pane_grid((450.0, 600.0), cell, m, full), grid_size((450.0, 600.0), cell, m));
+        assert_eq!(tmux_cols(900.0, 12.0, m.0, adjacent + full), tmux_cols(900.0, 12.0, m.0, adjacent));
+        assert!(tmux_cols(900.0, 12.0, m.0, adjacent) < tmux_cols(900.0, 12.0, m.0, 0.0));
     }
 }

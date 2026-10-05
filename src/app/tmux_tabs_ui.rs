@@ -744,6 +744,7 @@ impl App {
         pane.wheel = crate::wheel::PaneWheel::new(self.globals.number("HorizontalScrollingSensitivity").unwrap_or(0.1));
         let profile = self.profile(Some(&guid));
         pane.restyle(Palette::from_profile(&profile, self.dark()), Look::from_profile(&profile));
+        pane.set_bidi_rules(crate::bidi::Rules::from_globals(&self.globals));
         let (list, prefs) = triggers_ui::triggers_of(&profile);
         pane.screen.set_triggers(list, prefs);
         pane.screen.set_scrollback_with_status_bar(profile.bool("Scrollback With Status Bar"));
@@ -768,6 +769,7 @@ impl App {
                 pane.own_mut().shell.vars.insert(name.to_string(), v.clone());
             }
         }
+        self.scroll_ticks.insert(id, (self.globals.bool("ShowLocationsInScrollbar"), self.globals.bool("ShowMarksInScrollbar")));
         self.panes.insert(id, pane);
         self.apply_new_pane_defaults(id);
         // The job is watched only when the profile shows an icon (iTerm2's PS:10098).
@@ -926,8 +928,10 @@ impl App {
             .map(|t| {
                 let area = self.content_area_for(t);
                 let stack = if self.tab_shows_titles(t) { crate::layout::max_stack(&t.layout.tree(), Axis::Column) } else { 0 };
-                let (_, ch) = self.pane_cell(t.focused);
-                (t.focused, (self.grid_size_for(t.focused, area).0, tmux_rows(area.h, ch, self.margins().1, self.title_height(), stack)))
+                let (cw, ch) = self.pane_cell(t.focused);
+                // The panes of the widest row each give up their room (scrollbar, timestamp column).
+                let row_room = crate::layout::widest_row_room(&t.layout.tree(), &|id| self.pane_room(id));
+                (t.focused, (crate::margins::tmux_cols(area.w, cw, self.margins().0, row_room), tmux_rows(area.h, ch, self.margins().1, self.title_height(), stack)))
             })
             .collect();
         let mut changed: Vec<PaneId> = Vec::new();

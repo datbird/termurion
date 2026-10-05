@@ -184,6 +184,10 @@ impl App {
             return self.banners.set("action", "Replace Selection needs whole lines, from the start of the first.");
         }
         let text = p.screen.term().bounds_to_string(pa, Point::new(pb.line, Column(cols - 1)));
+        // A visual (bidi) selection that skips cells inside its lines is not whole lines.
+        if !p.screen.visual_selection_is_whole_lines(pa, pb) {
+            return self.banners.set("action", "Replace Selection needs whole lines, from the start of the first.");
+        }
         match f(text.trim_end_matches('\n')) {
             Err(e) => self.banners.set("action", e),
             Ok(new) => {

@@ -79,7 +79,7 @@ pub const DONE: &[&str] = &[
     "smartSelectAllVisible:", "revealContentNavigationShortcuts:", "findGlobally:", "openQuickly:", "openSelection:",
     "replaceSelectionWithPrettyPrintedJSON:", "replaceSelectionWithBase64Encoded:", "replaceSelectionWithBase64Decoded:",
     "clearToStartOfSelection:", "toggleCopyMode:", "foldSelection:", "foldAll:", "addNoteAtCursor:", "annotateSelection:", "nextAnnotation:",
-    "previousAnnotation:", "showHideNotes:", "toggleCursorGuide:", "findCursor:", "editSessionNote:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
+    "previousAnnotation:", "showHideNotes:", "toggleShowTimestamps:", "toggleCursorGuide:", "findCursor:", "editSessionNote:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
     "setWindowStyle:|No Title Bar", "setWindowStyle:|Centered", "setWindowStyle:|Centered, No Title Bar",
     "setWindowStyle:|Full-Width Bottom of Screen", "setWindowStyle:|Full-Width Top of Screen",
     "setWindowStyle:|Full-Height Left of Screen", "setWindowStyle:|Full-Height Right of Screen",
@@ -101,7 +101,6 @@ const PARTIAL: &[(&str, &str)] = &[
     ("biggerFont:", "Changes every pane, since all panes share one font until per-pane fonts arrive."),
     ("smallerFont:", "Changes every pane, since all panes share one font until per-pane fonts arrive."),
     ("filter:", "Shows the matching lines without their colors."),
-    ("toggleShowTimestamps:", "Next to contents (Adjacent) draws over the text like Over contents, since the grid keeps its width."),
     ("toggleSelectionRespectsSoftBoundaries:", "Double-click and Smart Selection stop at pane dividers; a drag still crosses them."),
     ("zoomOnSelection:", "Shows the selected lines without their colors."),
     ("performFindPanelAction:|Select Matches", "Selects from the first match to the last and copies every match, one per line, since a selection is one range."),
@@ -334,6 +333,7 @@ mod tests {
     fn known_statuses() {
         let find = |sel: &str, label: &str| items().iter().find(|i| i.selector == sel && i.label() == label).unwrap();
         assert_eq!(status(find("splitVertically:", "Split Vertically with Current Profile")), Status::Done);
+        assert_eq!(status(find("toggleShowTimestamps:", "Show Timestamps")), Status::Done, "13m: Adjacent has its own column, so no PARTIAL note");
         assert_eq!(status(find("newWindow:", "New Window")), Status::Done, "7a opens real windows");
         assert_eq!(status(find("moveSessionToTab:", "Move Session to Tab")), Status::Done, "8h");
         assert_eq!(status(find("performFindPanelAction:", "Find...")), Status::Done);

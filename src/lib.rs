@@ -1,6 +1,7 @@
 //! Tandem: an iTerm2-style terminal for Windows.
 
 pub mod mouse;
+pub mod scrollbar;
 pub mod cursor_look;
 pub mod cursor_anim;
 pub mod ime;
@@ -160,7 +161,10 @@ pub mod reports;
 pub mod layout;
 pub mod list_popup_ui;
 pub mod palette;
+pub mod contrast;
 pub mod boxdraw;
+pub mod bidi;
+pub mod bidi_mirror;
 pub mod paste;
 pub mod paste_history;
 pub mod popup_filter;
