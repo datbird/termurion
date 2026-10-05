@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 315 | 191 | 109 | 15 |
-| `02-global-settings.md` | 819 | 463 | 69 | 287 |
-| `03-features-and-menus.md` | 644 | 551 | 47 | 46 |
-| Total | 1,778 | 1,205 | 225 | 348 |
+| `01-profile-settings.md` | 315 | 198 | 102 | 15 |
+| `02-global-settings.md` | 820 | 484 | 60 | 276 |
+| `03-features-and-menus.md` | 645 | 551 | 47 | 47 |
+| Total | 1,780 | 1,233 | 209 | 338 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -529,6 +529,25 @@ and RequireOptionToDragSplitPaneTitleBar asks for Alt. Lock Layout refuses (a be
 The documented gap of 11c (a per-pane title bar menu adding context menu provider items) is closed. Nothing of 13h was
 checked on screen during the build. Every kept quirk is listed in `docs/acceptance/m13h-checklist.md` and ruled on in
 `docs/superpowers/rulings/m13h-rulings.txt`.
+Milestone 13j built the mouse and the scroll wheel (01: 7 rows to have, all from partial; 02: 20 rows to have, 10 from missing
+and 10 from partial, StealKeyFocus from missing to partial, one row added: NoSyncNeverAskAboutSettingAlternateMouseScroll; 03: one row added, OSC 22, missing).
+iTerm2's defaults now hold, each a change users will see: in the alternate screen the wheel scrolls Tandem's history and
+sends arrow keys only when the app set DECSET 1007 (which starts off), the profile's Automatically enable alternate mouse
+scroll or the Advanced switch AlternateMouseScroll asks for them; one report and one arrow per wheel notch; horizontal
+sensitivity 0.1; the click that activates a window is not reported (and never selects, copies or moves the cursor); new
+profiles report the mouse (Mouse Reporting defaults on). Scrolling uses iTerm2's accumulators per pane, with a touchpad's
+small deltas accumulated before rounding so a laptop does not over-scroll, acceleration, fast trackpad, proportional
+reporting, double reports and natural scrolling. Report Mouse Wheel Events, Report Mouse Clicks and Drags and Restrict mouse
+reporting to alternate screen work. A pane that echoes the mouse reports it was sent offers to turn reporting off for that
+pane. Focus follows mouse gains steal and aggressive modes and makes another Tandem window key under the pointer; Ctrl+wheel
+(a touchpad pinch) changes the font size. The pointer is the system I-beam over text (or one Tandem draws), a circled I-beam
+under a mouse-reporting program, an arrow over an image, a pointing hand over a Win-hovered link, a crosshair with Ctrl+Alt
+and resize arrows on dividers; Next Window, Previous Window and New Window With Profile pointer actions run. Every Tandem
+overlay inside the terminal (info bars, pills, pickers, the find bar, the completion list, the composer, toasts, banners and
+the pane move pick) holds clicks, hover and the wheel from a mouse-reporting program. Open URL in background and QuickLook
+stay partial (final, ruling R7). StealKeyFocus stays partial: Windows may refuse the foreground. The program-set pointer
+(OSC 22, a new 03 row marked missing) is owned by 13y2 (gaps sweep). Nothing of 13j was checked on screen during the build. Every kept quirk is listed in
+`docs/acceptance/m13j-checklist.md` and ruled on in `docs/superpowers/rulings/m13j-rulings.txt`.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's

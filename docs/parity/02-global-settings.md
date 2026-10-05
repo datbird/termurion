@@ -448,7 +448,7 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 | Right click reported to apps, does not open menu | ReportRightClick | Sends a right-click straight to the running program instead of opening iTerm2's context menu. | have |  |
 | Option-Click moves cursor | OptionClickMovesCursor | Lets Option-click reposition the cursor on the current line, for apps that support cursor-repositioning reports. | have | Option is Alt. |
 | Three-finger tap emulates middle click | ThreeFingerEmulates | Maps a three-finger trackpad tap to a middle-click (paste). | missing | macOS trackpad gesture; Windows keeps three-finger gestures for itself. |
-| Focus follows mouse | FocusFollowsMouse | Moves keyboard focus to whichever pane/window the mouse is over, without clicking. | have | Panes follow the mouse; Windows does not let an app take window focus on hover. |
+| Focus follows mouse | FocusFollowsMouse | Moves keyboard focus to whichever pane/window the mouse is over, without clicking. | have | Milestone 13j: Tandem windows become key under the pointer while Tandem is active (iTerm2's non-steal path); StealKeyFocus and AggressiveFocusFollowsMouse extend it (see Advanced > Mouse). Never acts from a title bar, status bar or any overlay. |
 | Focus window after right or middle click | FocusOnRightOrMiddleClick | Also focuses the window on a right- or middle-click, not just a left-click. | have |  |
 | Mouse reporting supports horizontal scrolling | ReportHorizontalScrollEvents | Includes horizontal wheel/trackpad scroll in the mouse-reporting events sent to the running program. | have |  |
 
@@ -474,8 +474,8 @@ A table mapping a mouse button-plus-click-count-plus-modifiers combo, or a track
 | Open Context Menu | kContextMenuPointerAction | Opens iTerm2's right-click context menu. | have |  |
 | Next Tab | kNextTabPointerAction | Switches to the next tab. | have |  |
 | Previous Tab | kPrevTabPointerAction | Switches to the previous tab. | have |  |
-| Next Window | kNextWindowPointerAction | Switches to the next iTerm2 window. | missing | Comes in milestone 7. |
-| Previous Window | kPrevWindowPointerAction | Switches to the previous iTerm2 window. | missing | Comes in milestone 7. |
+| Next Window | kNextWindowPointerAction | Switches to the next iTerm2 window. | have | Milestone 13j: runs the Next Window key action. |
+| Previous Window | kPrevWindowPointerAction | Switches to the previous iTerm2 window. | have | Milestone 13j: runs the Previous Window key action. |
 | Move Pane | kMovePanePointerAction | Starts Move Session to Split Pane: pick a destination pane and a side. | have | Pick mode across windows. |
 | Send Escape Sequence... | kSendEscapeSequencePointerAction | Sends a literal escape sequence. | have |  |
 | Send Hex Code... | kSendHexCodePointerAction | Sends one or more literal hex byte codes. | have |  |
@@ -484,7 +484,7 @@ A table mapping a mouse button-plus-click-count-plus-modifiers combo, or a track
 | Select Pane Right | kSelectPaneRightPointerAction | Moves focus to the split pane on the right. | have |  |
 | Select Pane Above | kSelectPaneAbovePointerAction | Moves focus to the split pane above. | have |  |
 | Select Pane Below | kSelectPaneBelowPointerAction | Moves focus to the split pane below. | have |  |
-| New Window With Profile... | kNewWindowWithProfilePointerAction | Opens a new window using a chosen profile. | missing | Comes in milestone 7. |
+| New Window With Profile... | kNewWindowWithProfilePointerAction | Opens a new window using a chosen profile. | have | Milestone 13j: opens a window with the bound profile (the pointer binding's argument). |
 | New Tab With Profile... | kNewTabWithProfilePointerAction | Opens a new tab using a chosen profile. | have |  |
 | New Vertical Split With Profile... | kNewVerticalSplitWithProfilePointerAction | Splits vertically using a chosen profile. | have |  |
 | New Horizontal Split With Profile... | kNewHorizontalSplitWithProfilePointerAction | Splits horizontally using a chosen profile. | have |  |
@@ -602,25 +602,26 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| alternateMouseScrollStringForUp | alternateMouseScrollStringForUp (string, default @"") | Scroll wheel up sends the specified text when in alternate screen mode. | partial |  |
-| alternateMouseScrollStringForDown | alternateMouseScrollStringForDown (string, default @"") | Scroll wheel down sends the specified text when in alternate screen mode. | partial |  |
-| alternateMouseScroll | alternateMouseScroll (bool, default NO) | Scroll wheel sends arrow keys when in alternate screen mode. | partial |  |
-| pinchToChangeFontSizeDisabled | pinchToChangeFontSizeDisabled (bool, default NO) | Disable changing font size in response to a pinch gesture. | missing |  |
-| useSystemCursorWhenPossible | useSystemCursorWhenPossible (bool, default UseSystemCursorWhenPossibleDefault()) | Use system cursor icons when possible. | missing |  |
-| alwaysAcceptFirstMouse | alwaysAcceptFirstMouse (bool, default YES) | Always accept first mouse event on terminal windows. | partial |  |
-| autodetectMouseReportingStuck | autodetectMouseReportingStuck (bool, default YES) | Automatically detect when mouse reporting got stuck on? This watches for parts of mouse reporting control sequences being printed to the screen. | partial |  |
-| reportOnFirstMouse | reportOnFirstMouse (bool, default NO) | Send mouse reports when you click in a window that isn't already frontmouse? | partial |  |
-| doubleReportScrollWheel | doubleReportScrollWheel (bool, default NO) | Double-report scroll wheel events to work around tmux scrolling bug. | partial |  |
-| stealKeyFocus | stealKeyFocus (bool, default NO) | When Focus Follows Mouse is enabled, steal key focus even when inactive. | missing |  |
-| aggressiveFocusFollowsMouse | aggressiveFocusFollowsMouse (bool, default NO) | When Focus Follows Mouse is enabled, activate the window under the cursor when iTerm2 becomes active? | missing |  |
+| alternateMouseScrollStringForUp | alternateMouseScrollStringForUp (string, default @"") | Scroll wheel up sends the specified text when in alternate screen mode. | have | Stored (Advanced > Mouse). Windows note: iTerm2 64791fc never sends the strings; with the feature off and a string set in the alternate screen it only swallows a horizontal wheel, and Tandem does the same (13j ruling). The API refuses to set it. |
+| alternateMouseScrollStringForDown | alternateMouseScrollStringForDown (string, default @"") | Scroll wheel down sends the specified text when in alternate screen mode. | have | Stored (Advanced > Mouse). Same as the Up string: only a horizontal wheel swallow (13j ruling). The API refuses to set it. |
+| alternateMouseScroll | alternateMouseScroll (bool, default NO) | Scroll wheel sends arrow keys when in alternate screen mode. | have | Milestone 13j: on, the wheel in the alternate screen sends arrow keys, one per notch, and the restriction to vertical is lifted. The API refuses to set it (it types into panes). |
+| pinchToChangeFontSizeDisabled | pinchToChangeFontSizeDisabled (bool, default NO) | Disable changing font size in response to a pinch gesture. | have | Milestone 13j: off (default), Ctrl+wheel with no other modifier changes the font size, one notch one step. Windows note: a precision touchpad pinch arrives as Ctrl+wheel. On, Ctrl+wheel is reported or scrolls like any wheel. |
+| useSystemCursorWhenPossible | useSystemCursorWhenPossible (bool, default UseSystemCursorWhenPossibleDefault()) | Use system cursor icons when possible. | have | Milestone 13j: on (default), the pointer over text is the system I-beam; off, an I-beam Tandem draws at iTerm2's sizes. The circled I-beam under a mouse-reporting program is always Tandem's drawing (iTerm2's images are GPL-2.0 and are not copied). |
+| alwaysAcceptFirstMouse | alwaysAcceptFirstMouse (bool, default YES) | Always accept first mouse event on terminal windows. | have | Milestone 13j: off, a click on a window not in front only activates it. Windows note: first mouse is a client-area WM_MOUSEACTIVATE on a window that is not in front. |
+| autodetectMouseReportingStuck | autodetectMouseReportingStuck (bool, default YES) | Automatically detect when mouse reporting got stuck on? This watches for parts of mouse reporting control sequences being printed to the screen. | have | Milestone 13j: output that echoes a mouse report within 100 ms of one Tandem sent offers to turn reporting off for that pane (the 13b host-change offer). Matches a byte substring, not iTerm2's escaped regex. |
+| reportOnFirstMouse | reportOnFirstMouse (bool, default NO) | Send mouse reports when you click in a window that isn't already frontmouse? | have | Milestone 13j: on, the click that activates a window is also reported to the program; off (default), it is not (press, drags and release). Windows note: see alwaysAcceptFirstMouse. |
+| doubleReportScrollWheel | doubleReportScrollWheel (bool, default NO) | Double-report scroll wheel events to work around tmux scrolling bug. | have | Milestone 13j: on, a single-step wheel report is sent twice. The check follows iTerm2's truncation before doubling. |
+| stealKeyFocus | stealKeyFocus (bool, default NO) | When Focus Follows Mouse is enabled, steal key focus even when inactive. | partial | Milestone 13j: with Focus Follows Mouse, a pointer entering a Tandem window while another app is in front asks Windows for the foreground (SetForegroundWindow). Windows may refuse and flash the taskbar button instead, so the row stays partial. |
+| aggressiveFocusFollowsMouse | aggressiveFocusFollowsMouse (bool, default NO) | When Focus Follows Mouse is enabled, activate the window under the cursor when iTerm2 becomes active? | have | Milestone 13j: when Tandem becomes the active app, the window under the pointer becomes key unless the pointer has not moved since Tandem lost activation. |
 | cmdClickWhenInactiveInvokesSemanticHistory | cmdClickWhenInactiveInvokesSemanticHistory (bool, default NO) | ⌘-click in an active pane while iTerm2 isn't the active app invokes Semantic History. | missing |  |
 | enableUnderlineSemanticHistoryOnCmdHover | enableUnderlineSemanticHistoryOnCmdHover (bool, default YES) | Underline Semantic History-selectable items under the cursor while holding ⌘? | missing |  |
 | enableCmdClickPromptForShowCommandInfo | enableCmdClickPromptForShowCommandInfo (bool, default YES) | ⌘-click in the prompt shows the Command Info window. | missing |  |
-| sensitiveScrollWheel | sensitiveScrollWheel (bool, default NO) | Scroll on any scroll wheel movement, no matter how small? | partial |  |
-| scrollWheelAcceleration | scrollWheelAcceleration (float, default 1) | Speed up scroll gestures by this factor. | missing |  |
+| sensitiveScrollWheel | sensitiveScrollWheel (bool, default NO) | Scroll on any scroll wheel movement, no matter how small? | have | Milestone 13j: acts on the legacy accumulator only (UseModernScrollWheelAccumulator off), as iTerm2. |
+| scrollWheelAcceleration | scrollWheelAcceleration (float, default 1) | Speed up scroll gestures by this factor. | have | Milestone 13j: the scroll delta is raised to this power (iTerm2's pow), so 1 is no change. |
 | fractionOfCharacterSelectingNextNeighbor | fractionOfCharacterSelectingNextNeighbor (float, default 0.35) | Fraction of character’s width on its right side that can be used to select the character to its right. | missing |  |
-| naturalScrollingAffectsHorizontalMouseReporting | naturalScrollingAffectsHorizontalMouseReporting (bool, default NO) | Horizontal scrolling is reversed when “Natural scrolling” is enabled in System Settings. | partial |  |
-| horizontalScrollingSensitivity | horizontalScrollingSensitivity (float, default 0.1) | Sensitivity of mouse wheel for horizontal scrolling. | partial |  |
+| naturalScrollingAffectsHorizontalMouseReporting | naturalScrollingAffectsHorizontalMouseReporting (bool, default NO) | Horizontal scrolling is reversed when “Natural scrolling” is enabled in System Settings. | have | Milestone 13j: off (default) swaps the horizontal report direction when natural scrolling is on, undoing the OS reversal. Windows note: the precision touchpad's ScrollDirection setting (read from the registry; its meaning is unverified on hardware). |
+| horizontalScrollingSensitivity | horizontalScrollingSensitivity (float, default 0.1) | Sensitivity of mouse wheel for horizontal scrolling. | have | Milestone 13j: default 0.1, read when a pane is created (a change affects new panes only, as iTerm2). |
+| NoSyncNeverAskAboutSettingAlternateMouseScroll | NoSyncNeverAskAboutSettingAlternateMouseScroll (bool, default NO, stored in the defaults only) | Never ask whether to turn on alternate mouse scroll after a sideways scroll in the alternate screen. | have | Milestone 13j: the question's Don't Ask Again; shown in Advanced > Stored. Yes turns the Advanced switch AlternateMouseScroll on. |
 | useDoubleClickDelayForCommandSelection | useDoubleClickDelayForCommandSelection (bool, default NO) | Wait to be sure it's not a double click before selecting a command. | partial |  |
 | requireOptionToDragSplitPaneTitleBar | requireOptionToDragSplitPaneTitleBar (bool, default NO) | Require Option to be pressed to drag a split pane by its title bar? This helps prevent accidental drags. | have | Windows: Alt takes the place of Option. |
 
@@ -1068,8 +1069,8 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | disableMetalWhenIdle | disableMetalWhenIdle (bool, default NO) | Disable metal renderer when idle to save CPU utilization? Requires Metal renderer. | missing |  |
 | extendBackgroundColorIntoMargins | extendBackgroundColorIntoMargins (bool, default YES) | Extend background color into margins in alternate screen mode? | missing |  |
 | supportREPCode | supportREPCode (bool, default YES) | Enable support for REP (Repeat previous character) escape sequence? | missing |  |
-| proportionalScrollWheelReporting | proportionalScrollWheelReporting (bool, default YES) | Report multiple mouse scroll events when scrolling quickly? | missing |  |
-| useModernScrollWheelAccumulator | useModernScrollWheelAccumulator (bool, default YES) | Use modern scroll wheel accumulator. | missing |  |
+| proportionalScrollWheelReporting | proportionalScrollWheelReporting (bool, default YES) | Report multiple mouse scroll events when scrolling quickly? | have | Milestone 13j: on, a fast scroll reports several steps (capped at 32); off, one step per event. At the defaults a notch reports once (R3). |
+| useModernScrollWheelAccumulator | useModernScrollWheelAccumulator (bool, default YES) | Use modern scroll wheel accumulator. | have | Milestone 13j: on (default) uses iTerm2's modern accumulators; off uses the legacy one, which SensitiveScrollWheel acts on. Was marked not applicable; it is two portable formulas. |
 | resetSGROnPrompt | resetSGROnPrompt (bool, default YES) | Reset colors at shell prompt? Uses shell integration to detect a shell prompt and, if enabled, resets colors to their defaults. | missing |  |
 | retinaInlineImages | retinaInlineImages (bool, default YES) | Show inline images at Retina resolution. | have | Images draw at their pixel size on the real screen pixels, which is what Retina mode does. |
 | throttleMetalConcurrentFrames | throttleMetalConcurrentFrames (bool, default YES) | Reduce number of frames in flight when GPU can't produce drawables quickly. | missing |  |
@@ -1094,7 +1095,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | useNewContentFormat | useNewContentFormat (bool, default YES) | Save unlimited amount of window contents. | missing |  |
 | vs16Supported | vs16Supported (bool, default NO) | Support variation selector 16 making emoji fullwidth in all modes? | missing |  |
 | vs16SupportedInPrimaryScreen | vs16SupportedInPrimaryScreen (bool, default YES) | Support variation selector 16 making emoji fullwidth outside of alternate screen mode? | missing |  |
-| fastTrackpad | fastTrackpad (bool, default YES) | Trackpad scrolls fast? Set to No for legacy scrolling speed. | missing |  |
+| fastTrackpad | fastTrackpad (bool, default YES) | Trackpad scrolls fast? Set to No for legacy scrolling speed. | have | Milestone 13j: on, a touchpad scrolls fast. Windows note: fractional-notch deltas are the precise (touchpad) ones; Tandem accumulates them and rounds whole lines only, so a laptop touchpad does not over-scroll. |
 | supportDecsetMetaSendsEscape | supportDecsetMetaSendsEscape (bool, default YES_IF_BETA_ELSE_NO) | Support DECSET 1036? This allows apps in the terminal to control whether the option key sends esc+ or acts like a regular option key. | missing |  |
 | fastTriggerRegexes | fastTriggerRegexes (bool, default YES) | Fast regular expression evaluation for triggers. | missing |  |
 | postFakeFlagsChangedEvents | postFakeFlagsChangedEvents (bool, default NO) | Post fake flags-changed events when remapping modifiers with an event tap. | missing |  |
