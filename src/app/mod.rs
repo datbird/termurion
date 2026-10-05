@@ -5032,7 +5032,7 @@ impl App {
                     let bg_alpha = if see_through { alphas.iter().find(|(a, _)| *a == id).map_or(1.0, |(_, a)| *a) } else { 1.0 };
                     let opaque_colors = see_through && self.store.get(&p.profile).is_some_and(|pr| pr.bool("Only The Default BG Color Uses Transparency"));
                     let dim = self.pane_dim(tab, id, &bview);
-                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, dim, key_cursor: self.focused && id == tab.focused && p.at_password_prompt(), bg_alpha, opaque_colors, text_blink_on: self.blink.visible };
+                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, dim, key_cursor: self.focused && id == tab.focused && p.at_password_prompt(), bg_alpha, opaque_colors, text_blink_on: self.blink.visible || !self.focused };
                     // The margins, one layer per pixel and the only margin painter: the pane's
                     // color, or an alternate screen's edge colors (`ExtendBackgroundColorIntoMargins`).
                     {

@@ -795,6 +795,7 @@ mod tests {
         assert!(body(MOD, "start_pane_as").contains("pane_room_for("), "a new pane starts with its room");
         assert!(body(MOD, "size_window").contains("scroll_room()"), "a new window opens with its columns");
         assert!(include_str!("sizing_ui.rs").contains("scroll_room()"), "the edge snap counts the strip once");
+        assert!(body(include_str!("windows_ui.rs"), "apply_window_style").contains("scroll_room()"), "a styled window opens with its columns beside the bar");
         assert!(include_str!("tmux_tabs_ui.rs").contains("margins::tmux_cols("), "tmux is told the narrower width");
         assert!(include_str!("statusbar_ui.rs").contains("rooms,"), "a window compares each pane's room before a frame");
         assert!(body(MOD, "grid_size_in").contains("margins::pane_grid("), "the one path");
@@ -820,6 +821,14 @@ mod tests {
         assert!(body(theme, "reapply_forced_theme").contains("refresh_scroll_style("), "WM_SETTINGCHANGE re-reads the style");
         assert!(body(MOD, "globals_changed").contains("refresh_scroll_style("), "so does a settings change");
         assert!(MOD.contains("WindowEvent::ThemeChanged(_) => {\n                self.theme_applied = Some(self.dark());\n                self.refresh_scroll_style("), "and a light or dark change");
+    }
+
+    /// 13m final 5: the blink phase is app-wide, so a window that is not the key window rests its
+    /// blinking text visible (P4) instead of drawing whatever phase the key window is in.
+    #[test]
+    fn an_unfocused_window_rests_its_blinking_text_visible() {
+        let frame = body(MOD, "build_frame");
+        assert!(frame.contains("text_blink_on: self.blink.visible || !self.focused"), "{frame}");
     }
 
     /// 13m Task 8 App side: the ticks come from one collection (`scrollbar::collect`) over the

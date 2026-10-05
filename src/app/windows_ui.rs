@@ -1438,7 +1438,7 @@ impl App {
         let (cw, ch) = self.cell();
         let area = self.content_area();
         let (side, vert) = self.margins();
-        let chrome = (2.0 * side, inner.height as f32 - area.h + 2.0 * vert);
+        let chrome = (2.0 * side + self.scroll_room(), inner.height as f32 - area.h + 2.0 * vert);
         let input = Input {
             style: s,
             percent,
