@@ -57,11 +57,14 @@ pub struct Mark {
     pub output_start: Option<Anchor>,
     /// The directory at the prompt's end.
     pub directory: Option<String>,
+    /// Drawn as a line across the pane instead of a bar in the margin; decided when the
+    /// prompt mark is made (`MS:3578-3641`) and never changed after.
+    pub line_style: bool,
 }
 
 impl Mark {
     pub fn new(id: u32, kind: Kind) -> Mark {
-        Mark { id, kind, command: String::new(), code: None, start: None, end: None, aid: None, name: None, command_range: None, captured: Vec::new(), clear_count: 0, prompt_end: None, output_start: None, directory: None }
+        Mark { id, kind, command: String::new(), code: None, start: None, end: None, aid: None, name: None, command_range: None, captured: Vec::new(), clear_count: 0, prompt_end: None, output_start: None, directory: None, line_style: false }
     }
 }
 
@@ -430,7 +433,9 @@ impl Screen {
             Kind::Prompt => self.set_row_mark(line, id),
             Kind::Manual => self.set_row_manual(line, id),
         }
-        self.marks.records.insert(id, Mark::new(id, kind));
+        // iTerm2 decides the style when the prompt mark is made (`MS:3578-3641`).
+        let line_style = kind == Kind::Prompt && self.line_style_marks;
+        self.marks.records.insert(id, Mark { line_style, ..Mark::new(id, kind) });
         self.marks.made = true;
         self.marks.marks_added = self.marks.marks_added.saturating_add(1);
         id
@@ -1394,6 +1399,22 @@ mod tests {
         off.place_prompt_first_column = false;
         off.feed(b"no newline\x1b]133;A\x07$ ");
         assert_eq!(off.marks_in_order()[0].0, 0);
+    }
+
+    #[test]
+    fn line_style_marks_follow_iterm2() {
+        let mut s = Screen::new(40, 10);
+        s.line_style_marks = true;
+        s.feed(b"\x1b]133;A\x07$ \r\n");
+        // A later change does not restyle a mark that exists (iTerm2 decides at creation).
+        s.line_style_marks = false;
+        s.feed(b"\x1b]133;A\x07$ \r\n");
+        s.feed(b"\x1b]1337;SetMark\x07");
+        let marks = s.marks_in_order();
+        assert_eq!(marks.len(), 3);
+        assert!(marks[0].1.line_style, "made while the setting was on");
+        assert!(!marks[1].1.line_style, "made while it was off");
+        assert!(!marks[2].1.line_style, "a manual mark is never line-style");
     }
 
     #[test]

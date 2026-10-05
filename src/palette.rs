@@ -29,6 +29,9 @@ pub struct Palette {
     pub link: Rgb,
     /// iTerm2's Minimum Contrast, 0 to 1 (0 leaves text colors alone).
     pub min_contrast: f32,
+    /// The harmonized 256-color table (indexes 16 to 255) when "Harmonize 256 Colors" is on;
+    /// None keeps the standard cube and grays.
+    pub cube: Option<Box<[Rgb; 240]>>,
 }
 
 impl Default for Palette {
@@ -53,10 +56,15 @@ impl Palette {
             *slot = c(&format!("Ansi {i} Color"));
         }
         let fg = c("Foreground Color");
+        let bg = c("Background Color");
+        let cube = p.bool_for("Harmonize 256 Colors", dark).then(|| {
+            let base8: [Rgb; 8] = std::array::from_fn(|i| ansi[i]);
+            Box::new(crate::contrast::harmonized_256(base8, bg, fg))
+        });
         Palette {
             ansi,
             fg,
-            bg: c("Background Color"),
+            bg,
             bold: if p.bool_for("Use Bright Bold", dark) { c("Bold Color") } else { fg },
             cursor: c("Cursor Color"),
             cursor_text: c("Cursor Text Color"),
@@ -67,11 +75,15 @@ impl Palette {
             match_bg: c("Match Background Color"),
             link: c("Link Color"),
             min_contrast: p.float_for("Minimum Contrast", dark) as f32,
+            cube,
         }
     }
 
     /// A 256-color index: 16 ANSI colors, a 6x6x6 cube, then 24 grays.
     pub fn indexed(&self, i: u8) -> Rgb {
+        if let (Some(table), 16..) = (&self.cube, i) {
+            return table[i as usize - 16];
+        }
         match i {
             0..=15 => self.ansi[i as usize],
             16..=231 => {
@@ -152,6 +164,28 @@ mod tests {
         p.set("Use Separate Colors for Light and Dark Mode", toml::Value::Boolean(false));
         p.set("Minimum Contrast", toml::Value::Float(0.5));
         assert_eq!(Palette::from_profile(&p, true).min_contrast, 0.5);
+    }
+
+    #[test]
+    fn harmonize_follows_the_profile() {
+        let mut p = crate::profile::Profile::default();
+        p.set("Use Separate Colors for Light and Dark Mode", toml::Value::Boolean(false));
+        let off = Palette::from_profile(&p, true);
+        assert_eq!(off.indexed(16), rgb(0, 0, 0));
+        assert_eq!(off.indexed(21), rgb(0, 0, 255));
+        p.set("Harmonize 256 Colors", toml::Value::Boolean(true));
+        let on = Palette::from_profile(&p, true);
+        let close = |a: Rgb, b: Rgb| a.r.abs_diff(b.r) <= 1 && a.g.abs_diff(b.g) <= 1 && a.b.abs_diff(b.b) <= 1;
+        assert!(close(on.indexed(16), on.bg), "{:?} vs {:?}", on.indexed(16), on.bg);
+        assert!(close(on.indexed(231), on.fg));
+        assert!(close(on.indexed(196), on.ansi[1]));
+        assert_eq!(on.indexed(5), on.ansi[5], "the ANSI colors stay");
+        // The dark and light variants each get their own table.
+        p.set("Use Separate Colors for Light and Dark Mode", toml::Value::Boolean(true));
+        p.set("Harmonize 256 Colors (Light)", toml::Value::Boolean(false));
+        p.set("Harmonize 256 Colors (Dark)", toml::Value::Boolean(true));
+        assert!(Palette::from_profile(&p, true).cube.is_some());
+        assert!(Palette::from_profile(&p, false).cube.is_none());
     }
 
     #[test]

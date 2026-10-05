@@ -774,12 +774,57 @@ pub fn mark_rgba(c: crate::marks::MarkColor) -> [f32; 4] {
     [r, g, b, 1.0]
 }
 
-/// Mark indicators: a bar in the left padding beside each marked row on screen.
-pub fn mark_bars(frame: &mut Frame, marks: &[(usize, crate::marks::MarkColor)], inner: Rect, cell_h: f32, pad: f32) {
+/// The color of a mark's indicator (`TDH:1305-1346`): with "Use Theme Mark Colors" the ANSI
+/// blue, yellow and red; otherwise iTerm2's fixed colors (`mark_rgba`).
+pub fn mark_color(c: crate::marks::MarkColor, palette: &crate::palette::Palette, theme: bool) -> Rgb {
+    use crate::marks::MarkColor::*;
+    if theme {
+        return palette.ansi[match c {
+            Success => 4,
+            Other => 3,
+            Error => 1,
+        }];
+    }
+    let [r, g, b, _] = mark_rgba(c);
+    let u = |v: f32| (v * 255.0).round() as u8;
+    Rgb { r: u(r), g: u(g), b: u(b) }
+}
+
+/// A line-style mark's line color (`TDH:1448-1456`): the mark color blended 50% with the
+/// default background.
+pub fn line_mark_color(mark: Rgb, bg: Rgb) -> Rgb {
+    let mix = |m: u8, b: u8| ((m as f32 + b as f32) / 2.0).round() as u8;
+    rgb(mix(mark.r, bg.r), mix(mark.g, bg.g), mix(mark.b, bg.b))
+}
+
+/// A line-style mark (`TDH:1380-1414`): a 1 px line across the pane at the row's top minus
+/// half a cell, stopping 15 cells short of the right when the mark has a command.
+pub fn line_mark(frame: &mut Frame, rect: Rect, row: usize, cell: (f32, f32), color: Rgb, has_command: bool, cols: usize) {
+    let y = (rect.y + (row as f32 - 0.5) * cell.1).round();
+    if y < rect.y {
+        return;
+    }
+    let cells = if has_command { cols.saturating_sub(LINE_MARK_RIGHT_INSET) } else { cols };
+    frame.overlay.push(Quad { rect: Rect { x: rect.x, y, w: cells as f32 * cell.0, h: 1.0 }, color: rgba(color, 1.0) });
+}
+
+/// `iTermTextDrawingHelperLineStyleMarkRightInsetCells`: the cells a line-style mark leaves
+/// free at the right for a command's buttons.
+const LINE_MARK_RIGHT_INSET: usize = 15;
+
+/// True when a line-style mark on `row` is not drawn: inside the selected command's rows
+/// (first, last) or two rows after `last`, as iTerm2's `NSMaxRange + 1` (`TDH:1387-1394`).
+pub fn line_mark_hidden(row: usize, region: Option<(usize, usize)>) -> bool {
+    region.is_some_and(|(first, last)| (first..=last).contains(&row) || row == last + 2)
+}
+
+/// Mark indicators: a bar in the left padding beside each marked row on screen, in the
+/// mark's color (`mark_color`).
+pub fn mark_bars(frame: &mut Frame, marks: &[(usize, crate::marks::MarkColor)], inner: Rect, cell_h: f32, pad: f32, palette: &crate::palette::Palette, theme: bool) {
     let w = (pad * 0.75).max(1.0);
     for (row, color) in marks {
         let rect = Rect { x: inner.x - pad, y: inner.y + *row as f32 * cell_h, w, h: cell_h };
-        frame.overlay.push(Quad { rect, color: mark_rgba(*color) });
+        frame.overlay.push(Quad { rect, color: rgba(mark_color(*color, palette, theme), 1.0) });
     }
 }
 
@@ -4260,10 +4305,51 @@ mod tests {
     }
 
     #[test]
+    fn mark_colors_follow_iterm2() {
+        use crate::marks::MarkColor::*;
+        let pal = crate::palette::Palette::default();
+        assert_eq!(mark_color(Success, &pal, false), rgb(137, 193, 255));
+        assert_eq!(mark_color(Other, &pal, false), rgb(219, 216, 109));
+        assert_eq!(mark_color(Error, &pal, false), rgb(252, 114, 109));
+        assert_eq!(mark_color(Success, &pal, true), pal.ansi[4]);
+        assert_eq!(mark_color(Other, &pal, true), pal.ansi[3]);
+        assert_eq!(mark_color(Error, &pal, true), pal.ansi[1]);
+        assert_eq!(line_mark_color(rgb(255, 0, 0), rgb(0, 0, 0)), rgb(128, 0, 0));
+        assert_eq!(line_mark_color(rgb(0, 0, 0), rgb(255, 255, 255)), rgb(128, 128, 128));
+    }
+
+    #[test]
+    fn line_marks_follow_iterm2() {
+        let rect = Rect { x: 8.0, y: 100.0, w: 800.0, h: 400.0 };
+        let mut f = Frame::default();
+        line_mark(&mut f, rect, 3, (10.0, 20.0), rgb(255, 0, 0), true, 80);
+        let q = f.overlay.last().unwrap();
+        // round(100 + (3 - 0.5) * 20) = 150, 1 px tall, 65 cells wide from the pane's left.
+        assert_eq!((q.rect.x, q.rect.y, q.rect.w, q.rect.h), (8.0, 150.0, 650.0, 1.0));
+        assert!(q.color[0] > 0.9 && q.color[1] < 0.01, "{:?}", q.color);
+        let mut f = Frame::default();
+        line_mark(&mut f, rect, 3, (10.0, 20.0), rgb(255, 0, 0), false, 80);
+        assert_eq!(f.overlay.last().unwrap().rect.w, 800.0);
+        // Row 0 would sit half a cell above the pane: nothing is drawn.
+        let mut f = Frame::default();
+        line_mark(&mut f, rect, 0, (10.0, 20.0), rgb(255, 0, 0), false, 80);
+        assert!(f.overlay.is_empty());
+    }
+
+    #[test]
+    fn line_marks_skip_the_selected_command() {
+        // Not drawn inside the region or on the row after it (`TDH:1387-1394`).
+        let region = Some((4usize, 6usize));
+        assert!(line_mark_hidden(4, region) && line_mark_hidden(6, region) && line_mark_hidden(8, region));
+        assert!(!line_mark_hidden(3, region) && !line_mark_hidden(7, region) && !line_mark_hidden(9, region));
+        assert!(!line_mark_hidden(5, None));
+    }
+
+    #[test]
     fn mark_bars_sit_in_the_left_padding() {
         let mut f = Frame::default();
         let inner = Rect { x: 10.0, y: 20.0, w: 100.0, h: 100.0 };
-        mark_bars(&mut f, &[(2, crate::marks::MarkColor::Error)], inner, 16.0, 4.0);
+        mark_bars(&mut f, &[(2, crate::marks::MarkColor::Error)], inner, 16.0, 4.0, &crate::palette::Palette::default(), false);
         let q = f.overlay.last().unwrap();
         assert!(q.rect.x >= 6.0 && q.rect.x + q.rect.w <= 10.0, "{:?}", q.rect);
         assert_eq!((q.rect.y, q.rect.h), (52.0, 16.0));

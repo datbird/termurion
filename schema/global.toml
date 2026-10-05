@@ -544,6 +544,15 @@ default = ""
 help = "When files are dropped into a terminal window, execute a silent coprocess.\nThis is an interpolated string. Use \\(filenames) to reference the shell-quoted, space-delimited full paths to the dropped files. If this preference is empty, the filenames get pasted instead."
 
 [[setting]]
+key = "AlwaysUseLineStyleMarks"
+tab = "Advanced"
+section = "Drawing"
+label = "Always use line-style marks?"
+type = "bool"
+default = false
+help = "Always use line-style marks?"
+
+[[setting]]
 key = "disableTopRightIndicators"
 tab = "Advanced"
 section = "Drawing"

@@ -4943,16 +4943,31 @@ impl App {
                 if let Some(p) = self.panes.get(&id) {
                     // Block bars take a row's gutter over mark bars.
                     let block_rows = self.block_view_rows(id);
-                    let bars: Vec<(usize, crate::marks::MarkColor)> = p
-                        .screen
-                        .visible_marks()
-                        .into_iter()
-                        .filter(|(row, _)| !block_rows.contains(row))
-                        .filter(|(_, m)| show || m.name.is_some())
-                        .map(|(row, m)| (row, crate::marks::color(&m)))
-                        .collect();
+                    let theme = self.store.get(&p.profile).is_some_and(|pr| pr.bool("Use Theme Mark Colors"));
+                    let g = p.screen.term().grid();
+                    let off = g.display_offset() as i32;
+                    let folded = |row: usize| g[alacritty_terminal::index::Line(row as i32 - off)].fold() != 0;
+                    let (cols, inner) = (g.columns(), self.inner(rect));
                     let pad = PAD * self.scale();
-                    scene::mark_bars(&mut frame, &bars, self.inner(rect), cell.1, pad);
+                    let mut bars: Vec<(usize, crate::marks::MarkColor)> = Vec::new();
+                    for (row, m) in p.screen.visible_marks() {
+                        if block_rows.contains(&row) || !(show || m.name.is_some()) {
+                            continue;
+                        }
+                        let color = crate::marks::color(&m);
+                        // A line-style mark draws a line, and no bar unless its row is folded.
+                        if m.line_style {
+                            if !scene::line_mark_hidden(row, None) {
+                                let line = scene::line_mark_color(scene::mark_color(color, &p.screen.palette, theme), p.screen.palette.bg);
+                                scene::line_mark(&mut frame, inner, row, cell, line, !m.command.is_empty(), cols);
+                            }
+                            if !folded(row) {
+                                continue;
+                            }
+                        }
+                        bars.push((row, color));
+                    }
+                    scene::mark_bars(&mut frame, &bars, inner, cell.1, pad, &p.screen.palette, theme);
                     block_buttons.extend(self.draw_blocks(&mut frame, id, rect, cell));
                     self.draw_inline_buttons(&mut frame, id, rect, cell);
                 }
@@ -5509,8 +5524,12 @@ impl ApplicationHandler<UserEvent> for App {
         // The prompt state machine follows View > Auto Composer before it reads output (the
         // Task 3 contract: every pane, new ones included).
         let auto_composer = self.globals.bool("AutoComposer");
+        let always_line_marks = self.globals.bool("AlwaysUseLineStyleMarks");
         for (id, p) in self.panes.iter_mut() {
             p.own_mut().prompt_state.enabled = auto_composer;
+            // New prompt marks are line-style with Auto Composer or AlwaysUseLineStyleMarks
+            // (`S:18934`); marks already made keep their style.
+            p.screen.line_style_marks = auto_composer || always_line_marks;
             let got = p.pump();
             if got {
                 outputs.push(*id);

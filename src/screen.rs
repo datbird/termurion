@@ -142,6 +142,9 @@ pub struct Screen {
     cell_px: (u16, u16),
     osc: crate::osc::Scanner,
     pub marks: crate::marks::Marks,
+    /// New prompt marks are line-style (Auto Composer on, or `AlwaysUseLineStyleMarks`); the
+    /// app sets it (`S:18934`).
+    pub line_style_marks: bool,
     pub shell: crate::marks::Shell,
     /// The profile's Place Prompt at First Column.
     pub place_prompt_first_column: bool,
@@ -419,6 +422,7 @@ impl Screen {
             cell_px: (0, 0),
             osc: crate::osc::Scanner::default(),
             marks: crate::marks::Marks::default(),
+            line_style_marks: false,
             shell: crate::marks::Shell::default(),
             place_prompt_first_column: true,
             pty_backed: false,
