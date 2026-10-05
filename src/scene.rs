@@ -73,6 +73,21 @@ pub struct ImageQuad {
     pub repeat: bool,
 }
 
+/// A character Tandem draws itself to fill its cell (`boxdraw`): a box line, a block, a sextant.
+/// It draws with the text, so it is cut, covered and held exactly like a row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CellGlyph {
+    pub c: char,
+    /// The cell (or cells) the character fills.
+    pub rect: Rect,
+    pub color: Rgb,
+    /// The renderer face of the pane the cell is in.
+    pub face: u16,
+    /// Where it may draw: the pane's text rectangle, narrowed where a popup covers it. It also
+    /// groups a pane's glyphs into one `TextArea`.
+    pub clip: Rect,
+}
+
 /// Draw order: `quads`, then `images`, then `rows`, then `underlines` and `strikes`, then `overlay`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Frame {
@@ -82,6 +97,8 @@ pub struct Frame {
     pub quads: Vec<Quad>,
     pub images: Vec<ImageQuad>,
     pub rows: Vec<TextRow>,
+    /// Box and block characters Tandem draws itself, drawn with the rows.
+    pub glyphs: Vec<CellGlyph>,
     pub overlay: Vec<Quad>,
     /// Underline and strikethrough strokes: drawn after the text, right before `overlay`, so
     /// the dimming and the cursor extras lie over them. Trimmed under popups by `cut_quads`.
@@ -286,11 +303,13 @@ pub struct DrawPrefs {
     pub alt_level: u8,
     /// What the pane's profile and the window say about anti-aliasing and thin strokes.
     pub masks: crate::fonts::MaskRules,
+    /// Tandem draws box and block characters itself (`DisableCustomBoxDrawing` off).
+    pub custom_boxes: bool,
 }
 
 impl Default for DrawPrefs {
     fn default() -> Self {
-        DrawPrefs { underline_hyperlinks: true, solid_underlines: false, metrics: crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 }, scale: 1.0, ligatures: STOCK_LIGATURES, alt_level: 2, masks: crate::fonts::MaskRules::STOCK }
+        DrawPrefs { underline_hyperlinks: true, solid_underlines: false, metrics: crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 }, scale: 1.0, ligatures: STOCK_LIGATURES, alt_level: 2, masks: crate::fonts::MaskRules::STOCK, custom_boxes: true }
     }
 }
 
@@ -301,7 +320,7 @@ impl DrawPrefs {
     /// The prefs the live frame and a screenshot both draw with: the two Advanced switches from
     /// `globals`, the renderer's face metrics and the window's scale.
     pub fn from_globals(globals: &crate::globals::Globals, metrics: crate::underline::Metrics, scale: f32) -> DrawPrefs {
-        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale, ligatures: crate::fonts::LigatureRules { prefer_speed: globals.bool("PreferSpeedToFullLigatureSupport"), ..STOCK_LIGATURES }, alt_level: STOCK_LIGATURES.level, masks: crate::fonts::MaskRules { retina: scale >= 2.0, force_aa_on_retina: globals.bool("ForceAntialiasingOnRetina"), ..crate::fonts::MaskRules::STOCK } }
+        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale, ligatures: crate::fonts::LigatureRules { prefer_speed: globals.bool("PreferSpeedToFullLigatureSupport"), ..STOCK_LIGATURES }, alt_level: STOCK_LIGATURES.level, masks: crate::fonts::MaskRules { retina: scale >= 2.0, force_aa_on_retina: globals.bool("ForceAntialiasingOnRetina"), ..crate::fonts::MaskRules::STOCK }, custom_boxes: !globals.bool("DisableCustomBoxDrawing") }
     }
 
     /// The metrics to draw with in a cell of height `ch`: the face's, or (none measured) an
@@ -824,6 +843,17 @@ pub fn pane_with(
         for (col, c) in cells.iter().enumerate() {
             if c.text.is_empty() {
                 continue;
+            }
+            // A box or block character is drawn by Tandem to fill its cell (iTerm2 does the
+            // same): it leaves the text, ends the piece around it, and takes the cell's color.
+            let mut chars = c.text.chars();
+            if let (true, Some(drawn), None) = (draw.custom_boxes, chars.next(), chars.next()) {
+                if crate::boxdraw::drawn(drawn, false, false) {
+                    flush(&mut piece, frame);
+                    frame.glyphs.push(CellGlyph { c: drawn, rect: Rect { x: rect.x + col as f32 * cw, y, w: cw, h: ch }, color: c.fg, face, clip: rect });
+                    before = None;
+                    continue;
+                }
             }
             let ascii = c.text.is_ascii();
             let joinable = group && groupable(&c.text);
@@ -2361,6 +2391,7 @@ pub fn cut_out(frame: &mut Frame, r: Rect, line_h: f32) {
     }
     frame.rows.extend(extra);
     cut_quads(frame, r);
+    cut_glyphs(frame, r);
 }
 
 /// A box drawn over the pane's rows: the text of the rows it touches stops where the box
@@ -2383,6 +2414,8 @@ pub fn cut_rows_from(frame: &mut Frame, r: Rect, line_h: f32) {
     for b in bands {
         cut_quads(frame, b);
     }
+    // The glyphs in the rows the box touches stop at its left edge, whole rows like the text.
+    trim_glyphs(&mut frame.glyphs, |g| (g.rect.y < r.y + r.h && g.rect.y + g.rect.h > r.y).then_some(Rect { x: r.x, y: g.rect.y, w: 1.0e6, h: g.rect.h }));
 }
 
 /// The underline and strikethrough strokes already in the frame stop at `r` (a popup drawn over them): each
@@ -2391,6 +2424,39 @@ pub fn cut_quads(frame: &mut Frame, r: Rect) {
     for quads in [&mut frame.underlines, &mut frame.strikes] {
         *quads = quads.drain(..).flat_map(|q| outside(q.rect, r).into_iter().map(move |rect| Quad { rect, ..q })).collect();
     }
+}
+
+/// Box and block glyphs already in the frame stop at `r` (a popup drawn over them): each keeps the
+/// parts of its visible area outside `r`, as `cut_out` does for a row. A glyph wholly under `r`
+/// goes; one straddling it keeps a clip narrowed to what is outside (two glyphs when `r` is
+/// inside it, as `cut_out` copies a row). Each piece keeps its cell, so its mask is unchanged.
+pub fn cut_glyphs(frame: &mut Frame, r: Rect) {
+    trim_glyphs(&mut frame.glyphs, |_| Some(r));
+}
+
+/// Applies a hole to every glyph: `hole` names the part of the frame a glyph must not draw in.
+fn trim_glyphs(glyphs: &mut Vec<CellGlyph>, hole: impl Fn(&CellGlyph) -> Option<Rect>) {
+    let mut kept = Vec::with_capacity(glyphs.len());
+    for g in glyphs.drain(..) {
+        let Some(hole) = hole(&g) else {
+            kept.push(g);
+            continue;
+        };
+        // What shows of the glyph: its cell inside its clip.
+        let (x0, x1) = (g.rect.x.max(g.clip.x), (g.rect.x + g.rect.w).min(g.clip.x + g.clip.w));
+        let (y0, y1) = (g.rect.y.max(g.clip.y), (g.rect.y + g.rect.h).min(g.clip.y + g.clip.h));
+        if x1 <= x0 || y1 <= y0 {
+            continue;
+        }
+        let visible = Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+        let parts = outside(visible, hole);
+        if parts.len() == 1 && parts[0] == visible {
+            kept.push(g);
+            continue;
+        }
+        kept.extend(parts.into_iter().map(|clip| CellGlyph { clip, ..g.clone() }));
+    }
+    *glyphs = kept;
 }
 
 /// Lays `layer` (a flashing tab bar drawn apart) over what the frame has, at opacity
@@ -2413,6 +2479,10 @@ pub fn lay_over(frame: &mut Frame, layer: Frame, area: Rect, alpha: f32, under: 
     frame.strikes.extend(layer.strikes.into_iter().map(faded));
     // Pictures keep their full opacity and draw before popups (none in the bar yet).
     frame.images.extend(layer.images);
+    frame.glyphs.extend(layer.glyphs.into_iter().map(|mut g| {
+        g.color = blend(under, g.color, alpha);
+        g
+    }));
     frame.rows.extend(layer.rows.into_iter().map(|mut row| {
         for s in &mut row.spans {
             s.color = blend(under, s.color, alpha);
@@ -4630,6 +4700,101 @@ mod tests {
         // The control rides in its base cell as a zero-width mark: that cell never groups.
         let bidi = pieces("\u{e0b0}\u{200f}\u{e0b1}".as_bytes(), &rules(true));
         assert_eq!(bidi, vec![(0.0, vec![("\u{e0b0}\u{200f}".to_string(), 2)]), (10.0, vec![("\u{e0b1}".to_string(), 2)])]);
+    }
+
+    fn box_glyph(x: f32, y: f32, w: f32) -> CellGlyph {
+        CellGlyph { c: '\u{2500}', rect: Rect { x, y, w, h: 20.0 }, color: rgb(1, 2, 3), face: 0, clip: RECT }
+    }
+
+    /// What of each glyph shows: its cell clipped to its clip, sorted left to right.
+    fn shown(f: &Frame) -> Vec<(f32, f32, f32, f32)> {
+        let mut v: Vec<(f32, f32, f32, f32)> = f
+            .glyphs
+            .iter()
+            .map(|g| {
+                let (x0, x1) = (g.rect.x.max(g.clip.x), (g.rect.x + g.rect.w).min(g.clip.x + g.clip.w));
+                let (y0, y1) = (g.rect.y.max(g.clip.y), (g.rect.y + g.rect.h).min(g.clip.y + g.clip.h));
+                (x0, y0, x1 - x0, y1 - y0)
+            })
+            .collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v
+    }
+
+    /// Review Focus 4: Tandem draws the box and block characters (a glyph each, out of the text),
+    /// unless `DisableCustomBoxDrawing` leaves them to the font.
+    #[test]
+    fn box_drawing_switch_follows_iterm2() {
+        let s = screen("\u{2500}\u{2500}a".as_bytes());
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        assert_eq!(f.glyphs.len(), 2, "{:?}", f.glyphs);
+        assert_eq!(f.glyphs[0].rect, Rect { x: 0.0, y: 0.0, w: 10.0, h: 20.0 });
+        assert_eq!(f.glyphs[1].rect, Rect { x: 10.0, y: 0.0, w: 10.0, h: 20.0 });
+        assert_eq!((f.glyphs[0].c, f.glyphs[0].color, f.glyphs[0].clip, f.glyphs[0].face), ('\u{2500}', s.palette.fg, RECT, crate::render::DEFAULT_FACE));
+        assert_eq!(f.rows.len(), 1, "only the letter is text");
+        assert_eq!((row_text(&f, 0).trim_end(), f.rows[0].x), ("a", 20.0));
+        // With the switch on the font draws all three.
+        let off = DrawPrefs { custom_boxes: false, ..DrawPrefs::default() };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &off, None, crate::render::DEFAULT_FACE);
+        assert!(f.glyphs.is_empty());
+        assert_eq!((0..f.rows.len()).map(|i| row_text(&f, i).trim_end().to_string()).collect::<String>(), "\u{2500}\u{2500}a");
+    }
+
+    #[test]
+    fn a_box_cell_ends_the_text_piece_around_it() {
+        let s = screen("ab\u{2502}cd".as_bytes());
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        assert_eq!((0..f.rows.len()).map(|i| (f.rows[i].x, row_text(&f, i).trim_end().to_string())).collect::<Vec<_>>(), vec![(0.0, "ab".to_string()), (30.0, "cd".to_string())]);
+        assert_eq!(f.glyphs.len(), 1);
+        assert_eq!(f.glyphs[0].rect.x, 20.0);
+        // The glyph takes the cell's own color.
+        let s = screen("\x1b[31m\u{2588}".as_bytes());
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        assert_eq!(f.glyphs[0].color, s.palette.ansi[1]);
+    }
+
+    /// B1(a): a popup over box glyphs cuts them like text: whole, partly, or in two.
+    #[test]
+    fn glyphs_are_cut_under_popups() {
+        let mut f = Frame::default();
+        f.glyphs = vec![box_glyph(0.0, 0.0, 10.0), box_glyph(10.0, 0.0, 10.0), box_glyph(20.0, 0.0, 10.0), box_glyph(40.0, 0.0, 10.0), box_glyph(100.0, 0.0, 60.0), box_glyph(0.0, 60.0, 10.0)];
+        // A popup from x 15 to 45 over the first row, and one from x 120 to 140 inside the wide glyph.
+        cut_out(&mut f, Rect { x: 15.0, y: 0.0, w: 30.0, h: 20.0 }, 20.0);
+        cut_out(&mut f, Rect { x: 120.0, y: 0.0, w: 20.0, h: 20.0 }, 20.0);
+        assert_eq!(
+            shown(&f),
+            vec![(0.0, 0.0, 10.0, 20.0), (0.0, 60.0, 10.0, 20.0), (10.0, 0.0, 5.0, 20.0), (45.0, 0.0, 5.0, 20.0), (100.0, 0.0, 20.0, 20.0), (140.0, 0.0, 20.0, 20.0)],
+            "the third cell is gone, the second and fourth lose their covered part, the wide one splits"
+        );
+        // Every piece keeps its cell, so its mask stays the same.
+        assert!(f.glyphs.iter().filter(|g| g.rect.w == 60.0).count() == 2);
+        // A box drawn over rows (find bar, toast) cuts everything from its left edge on, in the rows it touches.
+        let mut f = Frame::default();
+        f.glyphs = vec![box_glyph(0.0, 0.0, 10.0), box_glyph(30.0, 0.0, 10.0), box_glyph(30.0, 60.0, 10.0), box_glyph(5.0, 20.0, 10.0)];
+        cut_rows_from(&mut f, Rect { x: 20.0, y: 0.0, w: 50.0, h: 30.0 }, 20.0);
+        assert_eq!(shown(&f), vec![(0.0, 0.0, 10.0, 20.0), (5.0, 20.0, 10.0, 20.0), (30.0, 60.0, 10.0, 20.0)]);
+    }
+
+    #[test]
+    fn lay_over_clips_glyphs() {
+        let mut f = Frame::default();
+        f.glyphs = vec![box_glyph(0.0, 0.0, 10.0), box_glyph(0.0, 40.0, 10.0)];
+        let mut layer = Frame::default();
+        layer.glyphs = vec![box_glyph(0.0, 0.0, 10.0)];
+        let area = Rect { x: 0.0, y: 0.0, w: 100.0, h: 20.0 };
+        let under = rgb(0, 0, 0);
+        let mut over = f.clone();
+        lay_over(&mut over, layer.clone(), area, 0.25, under, 20.0);
+        assert_eq!(over.glyphs.len(), 3, "a faint bar leaves the sessions' glyphs");
+        let mut over = f;
+        lay_over(&mut over, layer, area, 1.0, under, 20.0);
+        assert_eq!(over.glyphs.len(), 2, "an opaque bar hides the glyph behind it and brings its own");
+        assert!(over.glyphs.iter().any(|g| g.rect.y == 40.0));
+        assert!(over.glyphs.iter().any(|g| g.rect.y == 0.0 && g.color == rgb(1, 2, 3)), "full alpha keeps the layer's color");
     }
 
     #[test]

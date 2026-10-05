@@ -1,8 +1,8 @@
 //! Draws a scene Frame: rectangles with a small wgpu pipeline, text with glyphon.
 
 use glyphon::{
-    Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, Style, SwashCache, TextArea,
-    TextAtlas, TextBounds, TextRenderer, Viewport, Weight, Wrap,
+    Attrs, Buffer, Cache, Color, ContentType, CustomGlyph, Family, FontSystem, Metrics, RasterizeCustomGlyphRequest, RasterizedCustomGlyph,
+    Resolution, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight, Wrap,
 };
 use wgpu::util::DeviceExt;
 
@@ -270,6 +270,36 @@ pub const DEFAULT_FACE: u16 = 0;
 /// The most faces one renderer keeps; past it `face` hands back the nearest size.
 const MAX_FACES: usize = 512;
 
+/// The ids glyphon caches Tandem's custom glyphs by. Its cache key is only the id, the size and
+/// the subpixel bin, and every `TextArea` here draws at scale 1, so the device scale (which sets
+/// a stroke's thickness) is part of the id: a character at another scale is another glyph, and a
+/// mask is never reused across a DPI change. The rasterizer maps an id back to its pair.
+#[derive(Default)]
+pub struct CustomIds {
+    ids: std::collections::HashMap<(char, u32), u16>,
+    list: Vec<(char, f32)>,
+}
+
+impl CustomIds {
+    /// The id of `c` at `scale`; `None` once the table is full (the glyph is skipped).
+    pub fn id(&mut self, c: char, scale: f32) -> Option<u16> {
+        let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+        let key = (c, scale.to_bits());
+        if let Some(id) = self.ids.get(&key) {
+            return Some(*id);
+        }
+        let id = u16::try_from(self.list.len()).ok().filter(|id| *id < u16::MAX)?;
+        self.ids.insert(key, id);
+        self.list.push((c, scale));
+        Some(id)
+    }
+
+    /// The character and scale an id stands for.
+    pub fn get(&self, id: u16) -> Option<(char, f32)> {
+        self.list.get(id as usize).copied()
+    }
+}
+
 /// What makes two faces the same: the fonts, the pixel size, the spacings, and the profile's
 /// drawing switches later tasks pack into `profile_bits`. The size is in physical pixels,
 /// rounded to 1/64 pixel (`FaceKey::new`), so a key built twice from the same profile is equal.
@@ -399,6 +429,10 @@ pub struct Renderer {
     scans: std::cell::Cell<usize>,
     /// The device scale the faces' sizes are in (`set_scale`).
     scale: f32,
+    /// The ids of the box and block glyphs drawn so far (`draw`).
+    custom: CustomIds,
+    /// An empty buffer: the `TextArea`s that carry only custom glyphs need one.
+    blank: Buffer,
     /// The face cap was reached and logged.
     capped: bool,
 }
@@ -414,12 +448,14 @@ impl Renderer {
         let text = TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
         let quads = QuadPipeline::new(device, format);
         let images = ImagePipeline::new(device, format, &quads.uniform);
+        let mut font_system = FontSystem::new();
+        let blank = Buffer::new(&mut font_system, Metrics::new(12.0, 14.0));
         let mut r = Renderer {
             device: device.clone(),
             queue: queue.clone(),
             quads,
             images,
-            font_system: FontSystem::new(),
+            font_system,
             swash: SwashCache::new(),
             ink_cache: std::collections::HashMap::new(),
             atlas,
@@ -454,6 +490,8 @@ impl Renderer {
             installed: Default::default(),
             scans: Default::default(),
             scale: 1.0,
+            custom: CustomIds::default(),
+            blank,
             capped: false,
         };
         r.prose_family = if r.has_family("Segoe UI Variable") { "Segoe UI Variable" } else { "Segoe UI" }.to_string();
@@ -1076,6 +1114,28 @@ impl Renderer {
         out
     }
 
+    /// The frame's box and block glyphs as glyphon custom glyphs, grouped by clip rectangle. Each
+    /// cell is snapped to whole pixels on both edges (`round(x)` to `round(x + w)`), so neighbors
+    /// meet exactly at a fractional cell width; a cell of no size, or too big, is skipped.
+    fn glyph_groups(&mut self, glyphs: &[crate::scene::CellGlyph]) -> Vec<(crate::layout::Rect, Vec<CustomGlyph>)> {
+        let mut groups: Vec<(crate::layout::Rect, Vec<CustomGlyph>)> = Vec::new();
+        for g in glyphs {
+            let (x0, x1) = (g.rect.x.round(), (g.rect.x + g.rect.w).round());
+            let (y0, y1) = (g.rect.y.round(), (g.rect.y + g.rect.h).round());
+            let (w, h) = (x1 - x0, y1 - y0);
+            if !(w >= 1.0 && h >= 1.0 && w <= 1024.0 && h <= 1024.0) {
+                continue;
+            }
+            let Some(id) = self.custom.id(g.c, self.scale) else { continue };
+            let glyph = CustomGlyph { id, left: x0, top: y0, width: w, height: h, color: Some(Color::rgb(g.color.r, g.color.g, g.color.b)), snap_to_physical_pixel: true, metadata: 0 };
+            match groups.iter_mut().rev().find(|(clip, _)| *clip == g.clip) {
+                Some((_, list)) => list.push(glyph),
+                None => groups.push((g.clip, vec![glyph])),
+            }
+        }
+        groups
+    }
+
     pub fn draw(&mut self, frame: &Frame, view: &wgpu::TextureView, width: u32, height: u32) -> Result<(), String> {
         let (_, ch) = self.cell;
         let metrics = Metrics::new(self.font_px, ch);
@@ -1165,6 +1225,7 @@ impl Renderer {
         }
 
         self.viewport.update(&self.queue, Resolution { width, height });
+        let groups = self.glyph_groups(&frame.glyphs);
         let areas = self.buffers.iter().zip(all_rows.iter().copied()).map(|((buffer, _, _, _, _), row)| TextArea {
             buffer,
             left: row.x,
@@ -1179,8 +1240,24 @@ impl Renderer {
             default_color: Color::rgb(255, 255, 255),
             custom_glyphs: &[],
         });
+        // Box and block glyphs: one more `TextArea` per clip rectangle, an empty buffer carrying the
+        // glyphs as custom glyphs (rasterized by `boxdraw` on request, cached by id and size).
+        let glyph_areas = groups.iter().map(|(clip, glyphs)| TextArea {
+            buffer: &self.blank,
+            left: 0.0,
+            top: 0.0,
+            scale: 1.0,
+            bounds: TextBounds { left: clip.x.round() as i32, top: clip.y.round() as i32, right: (clip.x + clip.w).round() as i32, bottom: (clip.y + clip.h).round() as i32 },
+            default_color: Color::rgb(255, 255, 255),
+            custom_glyphs: glyphs,
+        });
+        let custom = &self.custom;
         self.text
-            .prepare(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, areas, &mut self.swash)
+            .prepare_with_custom(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, areas.chain(glyph_areas), &mut self.swash, |request: RasterizeCustomGlyphRequest| {
+                // Total for every interned id: the same mask each time, never `None` once it was `Some`.
+                let (c, scale) = custom.get(request.id)?;
+                Some(RasterizedCustomGlyph { data: crate::boxdraw::rasterize(c, request.width, request.height, scale), content_type: ContentType::Mask })
+            })
             .map_err(|e| format!("text prepare: {e:?}"))?;
 
         self.queue.write_buffer(&self.quads.uniform, 0, bytemuck::cast_slice(&[width as f32, height as f32, 0.0, 0.0]));
@@ -1717,6 +1794,7 @@ mod tests {
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
             }],
+            glyphs: vec![],
             overlay: vec![],
             underlines: vec![],
             strikes: vec![],
@@ -1772,6 +1850,7 @@ mod tests {
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
             }],
+            glyphs: vec![],
             overlay: vec![],
             underlines: vec![],
             strikes: vec![],
@@ -1963,6 +2042,121 @@ mod tests {
         assert_eq!(levels(&aliased2), vec![0, 255], "the re-rasterized aliased mask is still filtered");
         assert_eq!(aliased2, aliased);
         assert_eq!(thin2, thin, "the re-rasterized thin mask equals the first draw's");
+    }
+
+    #[test]
+    fn custom_glyph_ids_split_by_scale() {
+        let mut ids = CustomIds::default();
+        let a = ids.id('\u{2500}', 1.0).unwrap();
+        assert_eq!(ids.id('\u{2500}', 1.0), Some(a), "one id per character and scale");
+        let b = ids.id('\u{2500}', 2.0).unwrap();
+        let c = ids.id('\u{2502}', 1.0).unwrap();
+        assert!(a != b && a != c && b != c, "{a} {b} {c}");
+        assert_eq!(ids.get(a), Some(('\u{2500}', 1.0)));
+        assert_eq!(ids.get(b), Some(('\u{2500}', 2.0)));
+        assert_eq!(ids.get(c), Some(('\u{2502}', 1.0)));
+        assert_eq!(ids.get(60000), None);
+        // A table that fills up hands out nothing more instead of reusing an id.
+        let mut seen = std::collections::HashSet::new();
+        for n in 0..70_000u32 {
+            let scale = 1.0 + n as f32 * 0.001;
+            match ids.id('\u{2500}', scale) {
+                Some(id) => assert!(seen.insert(id) || n < 3, "id {id} reused"),
+                None => {
+                    assert!(n > 60_000, "full too early: {n}");
+                    return;
+                }
+            }
+        }
+        panic!("the table never filled");
+    }
+
+    /// Lines of three fractional-width cells meet with no gap, and the second draw (a new scale
+    /// and a new size) is a new mask, not the first one scaled.
+    #[test]
+    fn box_glyphs_draw_edge_to_edge_offscreen() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let (w, h) = (64u32, 24u32);
+        let tex = target(&device, w, h);
+        let view = tex.create_view(&Default::default());
+        let clip = Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
+        let cw = 9.4_f32;
+        let glyphs = |c: char| -> Vec<crate::scene::CellGlyph> { (0..3).map(|i| crate::scene::CellGlyph { c, rect: Rect { x: i as f32 * cw, y: 0.0, w: cw, h: 19.0 }, color: rgb(255, 255, 255), face: 0, clip }).collect() };
+        let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), glyphs: glyphs('\u{2500}'), ..Default::default() };
+        r.draw(&frame, &view, w, h).unwrap();
+        let px = read(&device, &queue, &tex, w, h);
+        let red = |x: u32, y: u32| px[((y * w + x) * 4) as usize];
+        let rows: Vec<u32> = (0..h).filter(|&y| red(0, y) > 200).collect();
+        assert_eq!(rows, vec![9], "one pixel row, at the center of 19");
+        assert!((0..28).all(|x| red(x, 9) == 255), "no gap between the cells: {:?}", (0..30).map(|x| red(x, 9)).collect::<Vec<_>>());
+        assert_eq!(red(28, 9), 0, "the line ends at the third cell's right edge");
+        // A block fills the cell and nothing else.
+        let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), glyphs: glyphs('\u{2588}'), ..Default::default() };
+        r.draw(&frame, &view, w, h).unwrap();
+        let px = read(&device, &queue, &tex, w, h);
+        let red = |x: u32, y: u32| px[((y * w + x) * 4) as usize];
+        assert!((0..28).all(|x| (0..19).all(|y| red(x, y) == 255)));
+        assert_eq!((red(28, 5), red(5, 19)), (0, 0));
+    }
+
+    /// A glyph's clip trims it: a popup that cut a cell leaves the rest drawn and the rest dark.
+    #[test]
+    fn box_glyph_clip_trims_the_mask() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let (w, h) = (64u32, 24u32);
+        let tex = target(&device, w, h);
+        let view = tex.create_view(&Default::default());
+        let cell = Rect { x: 0.0, y: 0.0, w: 20.0, h: 20.0 };
+        let glyph = |clip: Rect| crate::scene::CellGlyph { c: '\u{2588}', rect: cell, color: rgb(255, 255, 255), face: 0, clip };
+        let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), glyphs: vec![glyph(Rect { x: 0.0, y: 0.0, w: 8.0, h: 20.0 }), glyph(Rect { x: 14.0, y: 0.0, w: 6.0, h: 20.0 })], ..Default::default() };
+        r.draw(&frame, &view, w, h).unwrap();
+        let px = read(&device, &queue, &tex, w, h);
+        let row: Vec<u8> = (0..24).map(|x| px[((5 * w + x) * 4) as usize]).collect();
+        let want: Vec<u8> = (0..24).map(|x| if x < 8 || (14..20).contains(&x) { 255 } else { 0 }).collect();
+        assert_eq!(row, want);
+    }
+
+    /// A box mask re-rasterized after the atlas grew is the mask it was before (glyphon panics when
+    /// a re-rasterization differs in size, and a stale mask would show as a broken line).
+    #[test]
+    fn box_mask_is_stable_across_atlas_growth() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let Some(cjk) = ["Microsoft YaHei", "Yu Gothic", "MS Gothic", "SimSun", "Malgun Gothic"].into_iter().find(|f| r.has_family(f)) else {
+            println!("skip: no CJK family is installed");
+            return;
+        };
+        let (w, h) = (64u32, 24u32);
+        let clip = Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
+        let line = |r: &mut Renderer| {
+            let tex = target(&device, w, h);
+            let view = tex.create_view(&Default::default());
+            let glyphs = vec![crate::scene::CellGlyph { c: '\u{256D}', rect: Rect { x: 2.0, y: 2.0, w: 10.0, h: 19.0 }, color: rgb(255, 255, 255), face: 0, clip }];
+            r.draw(&Frame { clear: rgba(rgb(0, 0, 0), 1.0), glyphs, ..Default::default() }, &view, w, h).unwrap();
+            read(&device, &queue, &tex, w, h)
+        };
+        let before_px = line(&mut r);
+        assert!(before_px.chunks(4).any(|p| p[0] > 200), "the arc drew");
+        let before = r.atlas.mask_size();
+        let big = r.face(&key(cjk, 64.0, 1.0, 1.0));
+        let (bw, bh) = (3584u32, 3584u32);
+        let rows: Vec<TextRow> = (0..56u32)
+            .map(|i| TextRow {
+                x: 0.0,
+                y: (i * 64) as f32,
+                spans: vec![masked(&(0..56u32).filter_map(|j| char::from_u32(0x4e00 + i * 56 + j)).collect::<String>(), false, 0)],
+                clip: Rect { x: 0.0, y: 0.0, w: bw as f32, h: bh as f32 },
+                scale: 1.0,
+                face: big,
+            })
+            .collect();
+        let tex = target(&device, bw, bh);
+        let view = tex.create_view(&Default::default());
+        r.draw(&Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows, ..Default::default() }, &view, bw, bh).unwrap();
+        assert!(r.atlas.mask_size() > before, "the mask atlas grew");
+        assert_eq!(line(&mut r), before_px, "the arc is the same after the atlas grew");
     }
 
     /// iTerm2 shifts the second copy of fake bold by `antiAliasedShift` when anti-aliased (0.5 pt

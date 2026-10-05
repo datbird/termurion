@@ -4994,8 +4994,8 @@ impl App {
                     }
                     // An Auto Composer hides the terminal cursor and the rows it covers.
                     let cover = self.auto_composer_cover(id, rect);
-                    let (quad_from, image_from, row_from) = (frame.quads.len(), frame.images.len(), frame.rows.len());
-                    let (overlay_from, underline_from, strike_from) = (frame.overlay.len(), frame.underlines.len(), frame.strikes.len());
+                    let marks = crate::flicker::Marks::of(&frame);
+                    let (overlay_from, underline_from, strike_from, glyph_from) = (frame.overlay.len(), frame.underlines.len(), frame.strikes.len(), frame.glyphs.len());
                     // Reduce Flicker: while the program has the cursor hidden, the pane's last
                     // live picture stands in for the one it is drawing.
                     let reduce = self.store.get(&p.profile).is_some_and(|pr| pr.bool("Reduce Flicker"));
@@ -5003,34 +5003,19 @@ impl App {
                     let alt = p.screen.alt_screen();
                     match p.held.as_ref().filter(|h| hold && h.usable(rect, alt, p.screen.cursor_hidden_at)) {
                         Some(h) => {
-                            frame.quads.extend(h.quads.iter().copied());
-                            frame.images.extend(h.images.iter().cloned());
-                            frame.rows.extend(h.rows.iter().cloned());
-                            frame.overlay.extend(h.overlay.iter().copied());
-                            frame.underlines.extend(h.underlines.iter().copied());
-                            frame.strikes.extend(h.strikes.iter().copied());
+                            h.replay(&mut frame);
                             if let Some(c) = cover {
-                                composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, c);
+                                composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, &mut frame.glyphs, glyph_from, c);
                             }
                             held_updates.push((id, None, p.screen.cursor_hidden_at.map(|t| t + crate::flicker::HOLD)));
                         }
                         None => {
                             scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), &draw, Some(&hl), face);
                             if let Some(c) = cover {
-                                composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, c);
+                                composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, &mut frame.glyphs, glyph_from, c);
                             }
                             // Kept for the next hold; dropped when the switch is off.
-                            let held = reduce.then(|| crate::flicker::Held {
-                                since: Instant::now(),
-                                rect,
-                                alt_screen: alt,
-                                quads: frame.quads[quad_from..].to_vec(),
-                                images: frame.images[image_from..].to_vec(),
-                                rows: frame.rows[row_from..].to_vec(),
-                                overlay: frame.overlay[overlay_from..].to_vec(),
-                                underlines: frame.underlines[underline_from..].to_vec(),
-                                strikes: frame.strikes[strike_from..].to_vec(),
-                            });
+                            let held = reduce.then(|| crate::flicker::Held::slice(&frame, &marks, Instant::now(), rect, alt));
                             held_updates.push((id, held, None));
                         }
                     }

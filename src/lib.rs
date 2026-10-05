@@ -160,6 +160,7 @@ pub mod reports;
 pub mod layout;
 pub mod list_popup_ui;
 pub mod palette;
+pub mod boxdraw;
 pub mod paste;
 pub mod paste_history;
 pub mod popup_filter;

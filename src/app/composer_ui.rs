@@ -280,8 +280,11 @@ fn prefix_runs(c: &composer::Composer) -> Vec<(Range<usize>, Rgb, bool, Rgb)> {
 /// Drops what the pane drew into `overlay` from index `from` on (link dashes, annotation and
 /// hover underlines) and into `underlines` from `underline_from` on (SGR underlines and
 /// strikethrough, link dashes) inside the rows `cover` spans: the rows under an Auto Composer
-/// are skipped. A quad reaching past them (the dimming over the whole pane) stays.
-pub(super) fn skip_covered(overlay: &mut Vec<scene::Quad>, from: usize, underlines: &mut Vec<scene::Quad>, underline_from: usize, strikes: &mut Vec<scene::Quad>, strike_from: usize, cover: Rect) {
+/// are skipped, and so are the box glyphs (`glyphs` from `glyph_from`) in those rows. A quad reaching
+/// past them (the dimming over the whole pane) stays.
+pub(super) fn skip_covered(overlay: &mut Vec<scene::Quad>, from: usize, underlines: &mut Vec<scene::Quad>, underline_from: usize, strikes: &mut Vec<scene::Quad>, strike_from: usize, glyphs: &mut Vec<scene::CellGlyph>, glyph_from: usize, cover: Rect) {
+    let tail = glyphs.split_off(glyph_from.min(glyphs.len()));
+    glyphs.extend(tail.into_iter().filter(|g| !(g.rect.y >= cover.y - 0.5 && g.rect.y + g.rect.h <= cover.y + cover.h + 0.5)));
     for (quads, from) in [(overlay, from), (underlines, underline_from), (strikes, strike_from)] {
         let tail = quads.split_off(from.min(quads.len()));
         quads.extend(tail.into_iter().filter(|q| {
@@ -2591,9 +2594,20 @@ mod tests {
         let mut underlines: Vec<scene::Quad> = (0..120_000).map(|i| q(if i % 10 == 0 { 500.0 } else { 45.0 })).collect();
         let (mut overlay, mut strikes) = (Vec::new(), Vec::new());
         let t = std::time::Instant::now();
-        skip_covered(&mut overlay, 0, &mut underlines, 0, &mut strikes, 0, Rect { x: 0.0, y: 40.0, w: 100.0, h: 30.0 });
+        skip_covered(&mut overlay, 0, &mut underlines, 0, &mut strikes, 0, &mut Vec::new(), 0, Rect { x: 0.0, y: 40.0, w: 100.0, h: 30.0 });
         assert_eq!(underlines.len(), 12_000);
         assert!(t.elapsed() < std::time::Duration::from_millis(300), "took {:?}", t.elapsed());
+    }
+
+    /// B1(b): an Auto Composer's cover skips the box glyphs its rows drew, and only those.
+    #[test]
+    fn glyphs_skip_an_auto_composer_cover() {
+        let g = |y: f32| scene::CellGlyph { c: '\u{2502}', rect: Rect { x: 0.0, y, w: 10.0, h: 20.0 }, color: crate::palette::rgb(1, 2, 3), face: 0, clip: Rect { x: 0.0, y: 0.0, w: 100.0, h: 200.0 } };
+        // The first glyph was drawn before the pane (index 0); the pane's start at 1.
+        let mut glyphs = vec![g(40.0), g(40.0), g(0.0), g(60.0), g(80.0), g(100.0)];
+        let (mut overlay, mut underlines, mut strikes) = (Vec::new(), Vec::new(), Vec::new());
+        skip_covered(&mut overlay, 0, &mut underlines, 0, &mut strikes, 0, &mut glyphs, 1, Rect { x: 0.0, y: 40.0, w: 100.0, h: 40.0 });
+        assert_eq!(glyphs.iter().map(|g| g.rect.y).collect::<Vec<_>>(), vec![40.0, 0.0, 80.0, 100.0], "rows 40 to 80 are covered; the glyph before the pane stays");
     }
 
     #[test]
@@ -2604,7 +2618,7 @@ mod tests {
         let mut overlay = vec![q(45.0, 1.0), q(45.0, 1.0), q(0.0, 200.0), q(10.0, 1.0), q(69.0, 1.0)];
         let mut underlines = vec![q(45.0, 1.0), q(45.0, 1.0), q(10.0, 1.0), q(69.0, 1.0)];
         let mut strikes = vec![q(45.0, 1.0), q(10.0, 1.0)];
-        skip_covered(&mut overlay, 1, &mut underlines, 1, &mut strikes, 0, Rect { x: 0.0, y: 40.0, w: 100.0, h: 30.0 });
+        skip_covered(&mut overlay, 1, &mut underlines, 1, &mut strikes, 0, &mut Vec::new(), 0, Rect { x: 0.0, y: 40.0, w: 100.0, h: 30.0 });
         assert_eq!(strikes.iter().map(|o| o.rect.y).collect::<Vec<_>>(), vec![10.0], "strikethrough under the composer goes too");
         let ys: Vec<(f32, f32)> = overlay.iter().map(|o| (o.rect.y, o.rect.h)).collect();
         assert_eq!(ys, vec![(45.0, 1.0), (0.0, 200.0), (10.0, 1.0)]);

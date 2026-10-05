@@ -2060,6 +2060,16 @@ mod tests {
     }
 
     #[test]
+    fn box_drawing_row_follows_iterm2() {
+        let row = schema::find_global("DisableCustomBoxDrawing").expect("a row");
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Drawing"));
+        assert_eq!(row.kind, Kind::Bool);
+        assert_eq!(row.default, Some(Value::Boolean(false)));
+        assert_eq!(row.label, "Use your typeface\u{2019}s box-drawing characters instead of Tandem\u{2019}s custom drawing code.");
+        assert_eq!(row.help, format!("{}\nYou must restart Tandem after changing this setting.", row.label));
+    }
+
+    #[test]
     fn anti_alias_rows_follow_iterm2() {
         let row = schema::find_global("ForceAntialiasingOnRetina").expect("a row");
         assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Drawing"));

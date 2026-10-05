@@ -1286,6 +1286,15 @@ default = false
 help = "Force text to be anti-aliased on Retina displays.\nEnable this to use non-AA text on non-retina displays, which sometimes looks better."
 
 [[setting]]
+key = "DisableCustomBoxDrawing"
+tab = "Advanced"
+section = "Drawing"
+label = "Use your typeface\u2019s box-drawing characters instead of Tandem\u2019s custom drawing code."
+type = "bool"
+default = false
+help = "Use your typeface\u2019s box-drawing characters instead of Tandem\u2019s custom drawing code.\nYou must restart Tandem after changing this setting."
+
+[[setting]]
 key = "EscapeWithQuotes"
 tab = "Advanced"
 section = "Experimental Features"
