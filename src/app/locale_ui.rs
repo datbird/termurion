@@ -268,20 +268,39 @@ impl App {
         }
     }
 
-    /// An answer applied: what `apply_answer` gives is written to the saved profile (the
-    /// session's own copy is not a separate profile here; iTerm2 writes `originalProfile`).
+    /// An answer applied: what `apply_answer` gives is written to the saved profile for the
+    /// start-time prompt (iTerm2 writes `originalProfile`), and to the profile the Settings
+    /// window edits, a session's own copy included.
     pub(super) fn locale_answered(&mut self, ask: Ask, choice: Option<String>, remember: bool) {
         let Some((mode, custom)) = apply_answer(&ask, choice.as_deref(), remember) else { return };
-        let (Ask::Mismatch { guid, .. } | Ask::Prompt { guid, .. }) = &ask;
-        let shared = self.store.shared_guid(guid);
-        let Some(p) = self.store.get_mut(&shared) else { return };
-        p.set("Set Local Environment Vars", Value::Integer(mode));
-        if let Some(l) = custom {
-            p.set("Custom Locale", Value::String(l));
-        }
+        let Some(changed) = write_locale(&mut self.store, &ask, mode, custom) else { return };
         self.save_now();
-        self.apply_edit(Edit::Changed(shared));
+        self.apply_edit(Edit::Changed(changed));
     }
+}
+
+/// Stores the answer's mode and Custom Locale. `Ask::Prompt` writes the saved profile; a
+/// Settings answer writes the profile being edited: a session's own copy through
+/// `set_session` (so the copy's overrides hold), a saved profile directly. The Guid it
+/// changed, or None when the profile is gone.
+fn write_locale(store: &mut crate::store::Store, ask: &Ask, mode: i64, custom: Option<String>) -> Option<String> {
+    let (Ask::Mismatch { guid, .. } | Ask::Prompt { guid, .. }) = ask;
+    let mut values = vec![("Set Local Environment Vars".to_string(), Some(Value::Integer(mode)))];
+    if let Some(l) = custom {
+        values.push(("Custom Locale".to_string(), Some(Value::String(l))));
+    }
+    let target = if matches!(ask, Ask::Mismatch { from_settings: true, .. }) { guid.clone() } else { store.shared_guid(guid) };
+    if store.is_session(&target) {
+        store.set_session(&target, &values);
+    } else {
+        let p = store.get_mut(&target)?;
+        for (k, v) in values {
+            if let Some(v) = v {
+                p.set(&k, v);
+            }
+        }
+    }
+    Some(target)
 }
 
 #[cfg(test)]
@@ -305,5 +324,22 @@ mod tests {
         // A custom locale already in the profile (session start) has nothing to store.
         let at_start = Ask::Mismatch { guid: "G".into(), locale: "C".into(), from_settings: false };
         assert_eq!(apply_answer(&at_start, Some("C"), false), None);
+    }
+
+    #[test]
+    fn a_settings_answer_on_a_session_copy_writes_the_copy_not_the_saved_profile() {
+        let path = std::env::temp_dir().join(format!("tandem-locale-{}.toml", std::process::id()));
+        let mut st = crate::store::Store::fresh(&path);
+        let saved = st.profiles[0].guid();
+        let copy = st.divorce(&saved);
+        let ask = Ask::Mismatch { guid: copy.clone(), locale: "fr_FR.UTF-8".into(), from_settings: true };
+        assert_eq!(write_locale(&mut st, &ask, 2, Some("fr_FR.UTF-8".into())), Some(copy.clone()));
+        assert_eq!(st.get(&copy).unwrap().string("Custom Locale"), "fr_FR.UTF-8");
+        assert_ne!(st.get(&saved).unwrap().string("Custom Locale"), "fr_FR.UTF-8", "the saved profile is untouched");
+        assert!(st.sessions.iter().any(|s| s.profile.guid() == copy && s.overridden.contains("Custom Locale")));
+        // The start-time prompt on that copy still writes the saved profile.
+        let prompt = Ask::Prompt { guid: copy, profile_name: "Work".into(), allow_remember: true };
+        assert_eq!(write_locale(&mut st, &prompt, 2, Some("de_DE.UTF-8".into())), Some(saved.clone()));
+        assert_eq!(st.get(&saved).unwrap().string("Custom Locale"), "de_DE.UTF-8");
     }
 }
