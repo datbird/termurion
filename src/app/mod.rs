@@ -1597,6 +1597,7 @@ pub fn run() {
     let aps_logging = globals.bool(aps_ui::LOG_KEY);
     // The first window's tab bar takes SelectsTabsOnMouseDown now; later windows at opening.
     let tab_selects_on_down = globals.bool("SelectsTabsOnMouseDown");
+    jobs.set_fast_updates(globals.bool("FastForegroundJobUpdates"));
     let side_bar_preferred = side_bar_default(&globals);
     let min_tab_drag = globals.int("MinimumTabDragDistance") as f32;
     // Session restoration: shells run in tandem-host so they outlive Tandem (read once:
@@ -3732,6 +3733,8 @@ impl App {
     /// settle, or the next pass), so a script's request that changed them is answered first.
     pub(super) fn globals_changed(&mut self, api_now: bool) {
         self.save_globals();
+        // Job updates wait on a job's exit, or only poll (Advanced > Experimental Features).
+        self.jobs.set_fast_updates(self.globals.bool("FastForegroundJobUpdates"));
         if api_now {
             self.api_settings_changed();
         }
