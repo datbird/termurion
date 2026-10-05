@@ -2290,10 +2290,11 @@ tab = "Session"
 section = ""
 label = "Close or restart session on end"
 type = "enum"
-default = 1
-default_note = "iTermProfilePreferences.m's fallback default is iTermSessionEndActionDefault (0), but the shipped DefaultBookmark.plist stores this as boolean true (a pre-migration leftover), which reads back as intValue 1 = iTermSessionEndActionClose for the stock Default profile."
-choices = [ { value = 0, label = "Default" }, { value = 1, label = "Close" }, { value = 2, label = "Restart" } ]
-help = "What happens when the shell process exits: default, close, or restart."
+default = 0
+seed = 1
+default_note = "A missing key reads iTermSessionEndActionDefault (0, No Action; PP:1216); iTerm2's DefaultBookmark.plist stores true (1, Close) in every profile iTerm2 makes (ABM:543-547)."
+choices = [ { value = 0, label = "No Action" }, { value = 1, label = "Close" }, { value = 2, label = "Restart" } ]
+help = "What happens when the shell process exits: nothing (the pane stays with a Session Ended line), close, or restart."
 light_dark = false
 macos_only = false
 
