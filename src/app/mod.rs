@@ -3211,13 +3211,15 @@ impl App {
         match restart_step(via, p.exited.is_some(), left.len()) {
             RestartStep::Now => self.restart_pane(id),
             RestartStep::AskRunningJobs => {
-                if !self.alert_waits(|then| *then == scripts_alerts::Then::Restart(id)) {
-                    self.ask_scripts(scripts_alerts::Ask::new(menu::restart_spec(), scripts_alerts::Then::Restart(id)));
+                if !self.alert_waits(|then| matches!(then, scripts_alerts::Then::Restart(p, _) if *p == id)) {
+                    let about = self.panes.get(&id).map(|p| p.restart_subject()).unwrap_or_default();
+                    self.ask_scripts(scripts_alerts::Ask::new(menu::restart_spec(), scripts_alerts::Then::Restart(id, about)));
                 }
             }
             RestartStep::AskSurvivors => {
-                if !self.alert_waits(|then| *then == scripts_alerts::Then::Restart(id)) {
-                    self.ask_scripts(scripts_alerts::Ask::new(crate::session_end::restart_survivors_spec(&left), scripts_alerts::Then::Restart(id)));
+                if !self.alert_waits(|then| matches!(then, scripts_alerts::Then::Restart(p, _) if *p == id)) {
+                    let about = crate::session_end::AskedAbout { generation: self.panes.get(&id).map_or(0, |p| p.shell_gen), survivors: left };
+                    self.ask_scripts(scripts_alerts::Ask::new(crate::session_end::restart_survivors_spec(&about.survivors), scripts_alerts::Then::Restart(id, about)));
                 }
             }
             RestartStep::Offer => self.offer_restart(id),
@@ -3321,13 +3323,16 @@ impl App {
     }
 
     /// "Restart session?" answered OK (running jobs or left-over programs): the pane restarts in
-    /// its own window (gone: nothing happens).
-    pub(super) fn restart_answered(&mut self, id: PaneId) {
-        if !self.panes.contains_key(&id) {
-            return;
-        }
+    /// its own window (gone: nothing happens). Only the shell the question named restarts: if it
+    /// exited and was restarted since, or left other programs, the answer is not for the pane as
+    /// it is now, and the restart asks again about that (never ending a new shell unasked).
+    pub(super) fn restart_answered(&mut self, id: PaneId, asked: &crate::session_end::AskedAbout) {
+        let Some(now) = self.panes.get(&id).map(|p| p.restart_subject()) else { return };
         self.enter_pane_window(id);
-        self.restart_confirmed(id);
+        match crate::session_end::answer_step(asked, &now) {
+            crate::session_end::AnswerStep::Restart => self.restart_confirmed(id),
+            crate::session_end::AnswerStep::AskAgain => self.restart_via(id, crate::session_end::Via::Menu),
+        }
     }
 
     /// The session variables for pane `id`, about to start with profile `p` (`PS:3246-3350`),

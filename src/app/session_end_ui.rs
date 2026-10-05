@@ -217,7 +217,10 @@ impl App {
         let (due, next) = se::restart_due(Instant::now(), &self.pending_restarts);
         for id in due {
             self.pending_restarts.remove(&id);
-            if self.panes.get(&id).is_some_and(|p| p.ended) && self.restartable(id) {
+            // A restart question about this pane is waiting: its answer decides (the person said
+            // Restart; the shell may have changed since, and the answer checks).
+            let asked = self.alert_waits(|then| matches!(then, super::scripts_alerts::Then::Restart(p, _) if *p == id));
+            if !asked && self.panes.get(&id).is_some_and(|p| p.ended) && self.restartable(id) {
                 self.enter_pane_window(id);
                 self.restart_via(id, se::Via::Timer);
                 self.redraw();
@@ -356,5 +359,17 @@ mod tests {
         let start = i.find("self.apply_session_start(id);").unwrap();
         assert!(!i[..start].trim_end().ends_with("if !relaunch {"), "read again at a restart");
         assert_eq!(i.matches("apply_session_start").count(), 1);
+    }
+
+    /// A restart question's answer checks the shell it was asked about, and the timer leaves a
+    /// pane with a waiting question to that answer (13q final fix 2).
+    #[test]
+    fn a_restart_answer_checks_the_shell_it_was_asked_about() {
+        let m = include_str!("mod.rs");
+        let a = body(m, "pub(super) fn restart_answered(");
+        assert!(a.contains("answer_step(asked, &now)") && a.contains("AnswerStep::AskAgain => self.restart_via("), "a stale answer asks again");
+        let v = body(m, "pub(super) fn restart_via(");
+        assert_eq!(v.matches("Then::Restart(id, about)").count(), 2, "each question carries its shell");
+        assert!(body(include_str!("session_end_ui.rs"), "pub(super) fn tick_restarts(").contains("let asked = self.alert_waits("), "the timer waits for the answer");
     }
 }

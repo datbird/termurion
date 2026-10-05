@@ -289,6 +289,32 @@ pub fn restart_step(via: Via, exited: bool, survivors: usize) -> RestartStep {
     }
 }
 
+/// Which shell a "Restart session?" question was asked about: the pane's shell generation and
+/// the programs an ended shell left (the question named them).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AskedAbout {
+    pub generation: u64,
+    pub survivors: Vec<String>,
+}
+
+/// What an answered OK does (a question can be answered long after it was asked).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnswerStep {
+    /// The shell is the one asked about: restart.
+    Restart,
+    /// That shell is gone or changed (it exited and restarted, or left other programs): the
+    /// answer is not for the pane as it is now, so the restart asks again about it.
+    AskAgain,
+}
+
+pub fn answer_step(asked: &AskedAbout, now: &AskedAbout) -> AnswerStep {
+    if asked == now {
+        AnswerStep::Restart
+    } else {
+        AnswerStep::AskAgain
+    }
+}
+
 /// The question asked before a restart ends the programs an ended shell left. Never silenceable.
 pub fn restart_survivors_spec(names: &[String]) -> crate::warnings::Spec {
     let text = if names.len() == 1 {
@@ -325,6 +351,23 @@ pub fn restart_dir(start_dir: Option<&std::path::Path>, p: &crate::profile::Prof
 
 #[cfg(test)]
 mod tests {
+    /// An old "Restart session?" answer never ends a new shell: the shell it was asked about must
+    /// still be the pane's, with the same programs left.
+    #[test]
+    fn a_stale_restart_answer_asks_again() {
+        use super::*;
+        let asked = AskedAbout { generation: 3, survivors: vec![] };
+        assert_eq!(answer_step(&asked, &asked.clone()), AnswerStep::Restart, "the same shell");
+        // Order one: the shell exited (generation 4), the timer restarted it (5).
+        assert_eq!(answer_step(&asked, &AskedAbout { generation: 5, survivors: vec![] }), AnswerStep::AskAgain, "a new shell");
+        // Order two: the shell exited and the person answers over the ended shell.
+        assert_eq!(answer_step(&asked, &AskedAbout { generation: 4, survivors: vec![] }), AnswerStep::AskAgain, "the shell exited since the question");
+        // Programs appeared (or went) after the survivors question named them.
+        let named = AskedAbout { generation: 4, survivors: vec!["a.exe".into()] };
+        assert_eq!(answer_step(&named, &named.clone()), AnswerStep::Restart);
+        assert_eq!(answer_step(&named, &AskedAbout { generation: 4, survivors: vec!["a.exe".into(), "b.exe".into()] }), AnswerStep::AskAgain, "a program the question did not name");
+    }
+
     use super::*;
 
     fn exit(action: EndAction, restartable: bool, single: bool) -> Exit {

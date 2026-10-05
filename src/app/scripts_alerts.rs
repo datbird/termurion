@@ -184,7 +184,7 @@ pub(super) enum Then {
     /// nothing.
     BroadcastInput(crate::layout::PaneId, &'static str),
     /// "Restart session?" for the pane: OK (0) restarts it; Cancel (1) does nothing.
-    Restart(crate::layout::PaneId),
+    Restart(crate::layout::PaneId, crate::session_end::AskedAbout),
     /// A terminal-initiated download from the pane, and whether its question was silenced
     /// when asked: Yes (0) saves it, after the large file question when that follows; No (1)
     /// drops it.
@@ -447,9 +447,9 @@ impl App {
                     self.broadcast_granted(anchor, selector);
                 }
             }
-            Then::Restart(pane) => {
+            Then::Restart(pane, about) => {
                 if index == 0 {
-                    self.restart_answered(pane);
+                    self.restart_answered(pane, &about);
                 }
             }
             Then::Download(pane, d, was_silenced) => self.download_answered(pane, d, was_silenced, index),
@@ -681,7 +681,7 @@ mod tests {
             assert!(push_capped(&mut q, ask(d(pane))).is_none());
         }
         assert!(push_capped(&mut q, ask(d(99))).is_some(), "one download too many");
-        for then in [Then::Paste(1), Then::Restart(1), Then::PrefsQuit, Then::Broadcast { clear: true, me: 1, targets: vec![2] }, Then::TmuxNew { anchor: 1, window: false, beside: Some(3) }, Then::SlowScan, Then::CloseTabs { window: winit::window::WindowId::from(1), ids: vec![2] }] {
+        for then in [Then::Paste(1), Then::Restart(1, Default::default()), Then::PrefsQuit, Then::Broadcast { clear: true, me: 1, targets: vec![2] }, Then::TmuxNew { anchor: 1, window: false, beside: Some(3) }, Then::SlowScan, Then::CloseTabs { window: winit::window::WindowId::from(1), ids: vec![2] }] {
             assert!(push_capped(&mut q, ask(then.clone())).is_none(), "{then:?}");
         }
         assert_eq!(q.len(), LIMIT + 7);
