@@ -1501,6 +1501,31 @@ mod tests {
         assert_eq!(text(&s, list[1].abs_line), "error: y");
     }
 
+    /// A Capture Output trigger's parameter is the coprocess a double-click in Captured Output
+    /// runs through cmd.exe: its captures and `\(...)` values pass the one refusal before it is
+    /// stored, plain and interpolated.
+    #[test]
+    fn capture_output_commands_pass_the_cmd_refusal() {
+        let stored = |param: &str, interpolated: bool, cwd: Option<&str>, out: &[u8]| {
+            let mut s = Screen::new(40, 10);
+            s.set_triggers(vec![trig(r"error: (.*)", "CaptureTrigger", param, false)], TriggerPrefs { interpolated, ..TriggerPrefs::default() });
+            s.shell.cwd = cwd.map(str::to_string);
+            s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07cmd\r\n\x1b]133;C\x07");
+            s.feed(out);
+            let commands: Vec<Option<String>> = s.last_command_mark().map(|m| m.captured.iter().map(|c| c.command.clone()).collect()).unwrap_or_default();
+            (commands, trigger_requests(&mut s))
+        };
+        let refused = |r: &[TriggerRequest]| matches!(r, [TriggerRequest::ParameterError { text, .. }] if text == crate::semantic::CMD_REFUSED);
+        let (cmds, _) = stored("notepad \\1", false, None, b"error: x\r\n");
+        assert_eq!(cmds, vec![Some("notepad \"x\"".to_string())], "a clean capture is quoted");
+        let (cmds, r) = stored("notepad \\1", false, None, b"error: x&calc\r\n");
+        assert!(cmds.iter().all(|c| c.as_deref().is_none_or(|c| !c.contains('&'))) && refused(&r), "{cmds:?} {r:?}");
+        let (cmds, r) = stored("notepad \\(matches[1])", true, None, b"error: x&calc\r\n");
+        assert!(cmds.iter().all(|c| c.as_deref().is_none_or(|c| !c.contains('&'))) && refused(&r), "{cmds:?} {r:?}");
+        let (cmds, r) = stored("notepad \\(session.path)\\\\x", true, Some("C:\\a&calc"), b"error: y\r\n");
+        assert!(cmds.iter().all(|c| c.as_deref().is_none_or(|c| !c.contains('&'))) && refused(&r), "{cmds:?} {r:?}");
+    }
+
     #[test]
     fn capture_follows_iterm2() {
         let mut s = Screen::new(40, 10);
@@ -1520,7 +1545,7 @@ mod tests {
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].line, "see error: x here");
         assert_eq!(captured[0].values, vec!["error: x".to_string(), "x".to_string()], "group 0 (the match), then the numbered groups");
-        assert_eq!(captured[0].command.as_deref(), Some("run x"));
+        assert_eq!(captured[0].command.as_deref(), Some("run \"x\""), "quoted by the one cmd builder");
         assert_eq!(captured[0].mark, mark_id);
         assert!(!captured[0].state);
         assert_eq!(trigger_requests(&mut s), vec![TriggerRequest::Captured { needs_shell_integration: false }]);

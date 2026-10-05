@@ -167,10 +167,11 @@ pub fn substitute(param: &str, captures: &[Option<&str>]) -> String {
     substitute_with(param, captures, &mut |c| c.to_string())
 }
 
-/// The actions that put text on a cmd.exe command line: Run Command, Run Coprocess and Run
-/// Silent Coprocess. Their captures are program text (output, titles, directories).
+/// The actions that put text on a cmd.exe command line: Run Command, Run Coprocess, Run
+/// Silent Coprocess, and Capture Output (its parameter is the coprocess a double-click in
+/// Captured Output runs). Their captures are program text (output, titles, directories).
 pub fn runs_command(action: &str) -> bool {
-    matches!(action, "ScriptTrigger" | "CoprocessTrigger" | "MuteCoprocessTrigger")
+    matches!(action, "ScriptTrigger" | "CoprocessTrigger" | "MuteCoprocessTrigger" | "CaptureTrigger")
 }
 
 /// `substitute` for a cmd.exe command line: each capture is quoted (`semantic::cmd_quote`),
