@@ -499,4 +499,23 @@ mod tests {
         assert!(e.contains("p.exited.is_some() || p.ended") && e.contains("\"The session has ended.\""));
     }
 
+    /// 13q S9 x 13r: every pane construction path (start, restart, session restore, archive
+    /// restore, recording) goes through `install_pane`, which gives the screen the path probe.
+    #[test]
+    fn every_pane_gets_the_path_probe() {
+        assert!(body(include_str!("mod.rs"), "    fn install_pane(").contains("pane.screen.set_path_probe(self.path_probe());"));
+        assert!(body(include_str!("arrange_ui.rs"), "    fn archived_pane(").contains("self.install_pane(id, Pane::archived(id, cols, rows), &p, false);"));
+        assert!(include_str!("replay_ui.rs").contains("self.install_pane(id, Pane::recording(id, cols, rows), &profile, false);"));
+        assert!(include_str!("restore_ui.rs").contains("self.install_pane(id, pane, &p, false);"));
+        assert!(body(include_str!("mod.rs"), "    fn restart_confirmed(").contains("self.install_pane(id, pane, &profile, true);"));
+        for (file, src) in [("arrange_ui.rs", include_str!("arrange_ui.rs")), ("replay_ui.rs", include_str!("replay_ui.rs")), ("restore_ui.rs", include_str!("restore_ui.rs")), ("mod.rs", include_str!("mod.rs"))] {
+            let code = src.split("#[cfg(test)]").next().unwrap();
+            for ctor in ["Pane::archived(", "Pane::recording("] {
+                for (i, _) in code.match_indices(ctor) {
+                    let line = &code[code[..i].rfind('\n').unwrap_or(0)..i];
+                    assert!(line.contains("install_pane("), "{file}: {ctor} outside install_pane");
+                }
+            }
+        }
+    }
 }
