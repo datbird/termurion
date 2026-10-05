@@ -2010,17 +2010,16 @@ fn outside(r: Rect, hole: Rect) -> Vec<Rect> {
     .collect()
 }
 
-/// The completion list at the cursor (Autocomplete, Auto Command Completion): rows with
-/// the chosen one marked, and a footer. `at`: the cell below the cursor's top-left corner.
-pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, footer: Option<&str>, at: (f32, f32), bounds: Rect, cell: (f32, f32)) {
+/// The completion list's box, its first shown row and how many rows show (`None` without rows).
+pub fn completion_rect(rows: &[String], selected: usize, footer: Option<&str>, at: (f32, f32), bounds: Rect, cell: (f32, f32)) -> Option<(Rect, usize, usize)> {
     const SHOWN: usize = 10;
     if rows.is_empty() {
-        return;
+        return None;
     }
     let first = selected.saturating_sub(SHOWN - 1);
-    let visible = &rows[first..rows.len().min(first + SHOWN)];
-    let widest = visible.iter().map(|r| r.chars().count()).chain(footer.map(|f| f.chars().count())).max().unwrap_or(10).clamp(10, 60);
-    let h = (visible.len() + usize::from(footer.is_some())) as f32 * cell.1 + 4.0;
+    let shown = rows.len().min(first + SHOWN) - first;
+    let widest = rows[first..first + shown].iter().map(|r| r.chars().count()).chain(footer.map(|f| f.chars().count())).max().unwrap_or(10).clamp(10, 60);
+    let h = (shown + usize::from(footer.is_some())) as f32 * cell.1 + 4.0;
     let w = (widest + 2) as f32 * cell.0;
     // Below the cursor, or above it when it would not fit; kept inside the pane.
     let mut y = at.1;
@@ -2028,7 +2027,16 @@ pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, foot
         y = (at.1 - cell.1 - h).max(bounds.y);
     }
     let x = at.0.min(bounds.x + bounds.w - w).max(bounds.x);
-    let r = Rect { x, y, w, h };
+    Some((Rect { x, y, w, h }, first, shown))
+}
+
+/// The completion list at the cursor (Autocomplete, Auto Command Completion): rows with
+/// the chosen one marked, and a footer. `at`: the cell below the cursor's top-left corner.
+pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, footer: Option<&str>, at: (f32, f32), bounds: Rect, cell: (f32, f32)) {
+    let Some((r, first, shown)) = completion_rect(rows, selected, footer, at, bounds, cell) else { return };
+    let visible = &rows[first..first + shown];
+    let (x, y) = (r.x, r.y);
+    let w = r.w;
     cut_out(frame, r, cell.1);
     frame.popups.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
     let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
@@ -3136,10 +3144,15 @@ pub fn fireworks(frame: &mut Frame, center: (f32, f32), t: f32, cell: (f32, f32)
     }
 }
 
+/// The toast's box.
+pub fn toast_rect(text: &str, area: Rect, cell: (f32, f32)) -> Rect {
+    let w = (text.chars().count() as f32 + 4.0) * cell.0;
+    Rect { x: area.x + ((area.w - w) / 2.0).max(0.0), y: area.y + area.h - 3.0 * cell.1, w: w.min(area.w), h: cell.1 + 12.0 }
+}
+
 /// A short message in a dark box near the bottom center of `area`.
 pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
-    let w = (text.chars().count() as f32 + 4.0) * cell.0;
-    let r = Rect { x: area.x + ((area.w - w) / 2.0).max(0.0), y: area.y + area.h - 3.0 * cell.1, w: w.min(area.w), h: cell.1 + 12.0 };
+    let r = toast_rect(text, area, cell);
     // Text under the box is cut where the box starts, as under the find bar.
     for row in frame.rows.iter_mut() {
         if row.y < r.y + r.h && row.y + cell.1 > r.y && row.clip.x + row.clip.w > r.x {
@@ -3151,10 +3164,15 @@ pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
     frame.rows.push(TextRow { x: r.x + 2.0 * cell.0, y: r.y + 6.0, spans: vec![span], clip: r, scale: 1.0 });
 }
 
+/// The error bar's box.
+pub fn banner_rect(area: Rect, cell: (f32, f32)) -> Rect {
+    Rect { x: area.x, y: area.y + area.h - cell.1 - 8.0, w: area.w, h: cell.1 + 8.0 }
+}
+
 /// A one-line error bar along the bottom of `area`. Its box goes in `quads`, so its
 /// text (in `rows`) draws on top.
 pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
-    let r = Rect { x: area.x, y: area.y + area.h - cell.1 - 8.0, w: area.w, h: cell.1 + 8.0 };
+    let r = banner_rect(area, cell);
     frame.quads.push(Quad { rect: r, color: rgba(BANNER, 1.0) });
     let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
     frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span], clip: r, scale: 1.0 });

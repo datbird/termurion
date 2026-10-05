@@ -491,7 +491,7 @@ impl App {
 
     /// The dropdown's parts over pane rectangle `rect` (pixels): `minimal_rect` in points, or
     /// the Auto Composer's frame.
-    fn composer_layout(&self, pane: PaneId, rect: Rect) -> composer::Layout {
+    pub(super) fn composer_layout(&self, pane: PaneId, rect: Rect) -> composer::Layout {
         if let Some(l) = self.auto_layout(pane, rect) {
             return l;
         }
@@ -2106,6 +2106,12 @@ impl App {
 
     /// What a point on `pane`'s popup hits: Some(Some(row)) a row, Some(None) the popup
     /// without a row (the "Thinking..." placeholder), None not the popup.
+    /// The popup's box in `pane`'s rectangle (a point on it is Tandem's).
+    pub(super) fn composer_popup_rect(&self, pane: PaneId, rect: Rect) -> Option<Rect> {
+        let (caret, rows, selected, detail, widest, _) = self.composer_popup_geometry(pane, rect)?;
+        Some(scene::composer_popup_frame(caret, rect, rows, selected, detail, widest, self.scale()).0)
+    }
+
     fn composer_popup_hit(&self, pane: PaneId, rect: Rect, x: f32, y: f32) -> Option<Option<usize>> {
         let (caret, rows, selected, detail, widest, thinking) = self.composer_popup_geometry(pane, rect)?;
         let scale = self.scale();

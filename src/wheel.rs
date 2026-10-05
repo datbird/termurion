@@ -155,17 +155,16 @@ impl Accumulator {
         // iTerm2 rounds each precise event's deltaY away from zero (`SA:69-86`), coarse on a Mac
         // trackpad. Windows touchpads send many tiny deltas, so a precise event accumulates and
         // only whole lines come out, with FastTrackpad on or off (Task 4 fix ruling).
-        let adjusted = raw;
         let got = if precise {
-            let d = adjusted * self.sensitivity;
+            let d = raw * self.sensitivity;
             self.acc += d;
             self.take_whole(d)
         } else if self.sensitivity == 1.0 {
-            let r = adjusted.round();
-            if r == 0.0 && adjusted != 0.0 { adjusted.signum() } else { r }
+            let r = raw.round();
+            if r == 0.0 && raw != 0.0 { raw.signum() } else { r }
         } else {
-            self.acc += adjusted * self.sensitivity;
-            self.take_whole(adjusted)
+            self.acc += raw * self.sensitivity;
+            self.take_whole(raw)
         };
         let sign = if got > 0.0 { 1.0 } else { -1.0 };
         got.abs().powf(p.acceleration.max(0.0)) * sign
@@ -306,7 +305,7 @@ mod tests {
         assert_eq!(a.delta(0.3, false, &P0), 1.0, "a wheel moves at least one");
         assert_eq!(a.delta(-0.3, false, &P0), -1.0);
         assert_eq!(a.delta(2.5, false, &P0), 3.0, "half rounds away from zero");
-                let slow = Prefs { fast_trackpad: false, ..P0 };
+        let slow = Prefs { fast_trackpad: false, ..P0 };
         let mut a = Accumulator::new(1.0);
         assert_eq!(a.delta(0.4, true, &slow), 0.0);
         assert_eq!(a.delta(0.4, true, &slow), 0.0);

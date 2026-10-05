@@ -176,14 +176,27 @@ impl App {
         }
     }
 
-    /// Draws the list at the cursor of its pane.
-    pub(super) fn draw_completion(&self, frame: &mut Frame, pane: PaneId, rect: Rect, cell: (f32, f32)) {
-        let Some((p, list)) = self.completion.as_ref().filter(|(p, _)| *p == pane) else { return };
-        let Some(s) = self.panes.get(p).map(|x| x.own()) else { return };
+    /// The list's rows and box in `pane`'s rectangle `rect`: the rows, the selection, the footer
+    /// and where the box goes.
+    fn completion_box(&self, pane: PaneId, rect: Rect, cell: (f32, f32)) -> Option<(Vec<String>, usize, Option<&'static str>, (f32, f32))> {
+        let (p, list) = self.completion.as_ref().filter(|(p, _)| *p == pane)?;
+        let s = self.panes.get(p).map(|x| x.own())?;
         let cursor = s.term().grid().cursor.point;
         let at = (rect.x + cursor.column.0 as f32 * cell.0, rect.y + (cursor.line.0 as f32 + 1.0) * cell.1);
         let rows: Vec<String> = list.rows.iter().map(|r| format!("{}{}", r.shown, r.value)).collect();
         let footer = matches!(list.kind, Kind::Commands { .. }).then_some(AUTO_FOOTER);
-        scene::completion_list(frame, &rows, list.selected, footer, at, rect, cell);
+        Some((rows, list.selected, footer, at))
+    }
+
+    /// Where the list is drawn in `pane` (its hit rectangle: a click on it is Tandem's).
+    pub(super) fn completion_rect(&self, pane: PaneId, rect: Rect, cell: (f32, f32)) -> Option<Rect> {
+        let (rows, selected, footer, at) = self.completion_box(pane, rect, cell)?;
+        scene::completion_rect(&rows, selected, footer, at, rect, cell).map(|(r, _, _)| r)
+    }
+
+    /// Draws the list at the cursor of its pane.
+    pub(super) fn draw_completion(&self, frame: &mut Frame, pane: PaneId, rect: Rect, cell: (f32, f32)) {
+        let Some((rows, selected, footer, at)) = self.completion_box(pane, rect, cell) else { return };
+        scene::completion_list(frame, &rows, selected, footer, at, rect, cell);
     }
 }

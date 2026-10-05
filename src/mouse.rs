@@ -91,14 +91,14 @@ pub struct Gates {
 }
 
 /// Whether an event is reported to the program (`shouldReportMouseEvent:at:`): tracking on, Alt
-/// not held, then the gate of its kind. The wheel scrolls under an overlay and passes the
-/// first-mouse hold; clicks, drags and hover do neither; hover is not a click or drag.
+/// not held, then the gate of its kind. The wheel passes the first-mouse hold; clicks, drags
+/// and hover do not; nothing reaches the program through an overlay; hover is not a click or drag.
 pub fn should_report(modes: Modes, mods: Mods, kind: Kind, g: Gates) -> bool {
     if !app_owns_mouse(modes, mods) {
         return false;
     }
     match kind {
-        Kind::Wheel { horizontal } => g.wheel && (g.horizontal || !horizontal),
+        Kind::Wheel { horizontal } => g.wheel && (g.horizontal || !horizontal) && !g.ui_over,
         Kind::Click | Kind::Drag => g.clicks && !g.first_mouse_blocks && !g.ui_over,
         Kind::Hover => !g.first_mouse_blocks && !g.ui_over,
     }
@@ -135,21 +135,63 @@ pub fn reporting_on(ever_allowed: bool, alt_screen: bool, restrict: bool) -> boo
     ever_allowed && (alt_screen || !restrict)
 }
 
-/// Tandem's own overlays that sit inside a pane's rectangle, by kind (B5).
+/// The kinds of Tandem overlay drawn inside a pane's rectangle or over the window (B5). A new
+/// overlay adds its kind here and pushes its rectangle in `App::ui_rects`; a test checks both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Overlay {
+    InfoBar,
+    Porthole,
+    Pill,
+    Picker,
+    Indicator,
+    Find,
+    /// The completion list (Autocomplete, Auto Command Completion).
+    Completion,
+    /// The composer panel (minimal and Auto Composer).
+    Composer,
+    ComposerPopup,
+    /// The toast along the bottom (a click through it would reach the program).
+    Toast,
+    Banner,
+}
+
+impl Overlay {
+    pub const ALL: [Overlay; 11] = [Overlay::InfoBar, Overlay::Porthole, Overlay::Pill, Overlay::Picker, Overlay::Indicator, Overlay::Find, Overlay::Completion, Overlay::Composer, Overlay::ComposerPopup, Overlay::Toast, Overlay::Banner];
+}
+
+/// Tandem's own surfaces that never lie inside a pane's terminal rectangle, so `pane_at` never
+/// finds a pane there, and why: `visible()` cuts the title bar and the status bar out, the
+/// inline AI panel and the Clippings panel take the right of the pane, the tab bar and toolbelt
+/// are outside the content area, and Tandem draws no scrollbar.
+pub const OUTSIDE_THE_TERMINAL: [(&str, &str); 5] = [
+    ("title bar", "visible() splits it off (pane_bar_split)"),
+    ("status bar", "visible() and the content area exclude it"),
+    ("inline AI panel", "takes the right of the pane's rectangle"),
+    ("clip panel", "takes the right of the pane's rectangle"),
+    ("scrollbar", "none is drawn"),
+];
+
+/// Every overlay's rectangle in one list (B5): a point inside any is Tandem's.
 #[derive(Clone, Debug, Default)]
 pub struct UiRects {
-    pub info_bars: Vec<crate::layout::Rect>,
-    pub portholes: Vec<crate::layout::Rect>,
-    pub pills: Vec<crate::layout::Rect>,
-    pub pickers: Vec<crate::layout::Rect>,
-    pub indicators: Vec<crate::layout::Rect>,
-    pub find: Vec<crate::layout::Rect>,
+    rects: Vec<(Overlay, crate::layout::Rect)>,
 }
 
 impl UiRects {
-    pub fn hit(&self, x: f32, y: f32) -> bool {
-        [&self.info_bars, &self.portholes, &self.pills, &self.pickers, &self.indicators, &self.find].into_iter().flatten().any(|r| r.contains(x, y))
+    pub fn push(&mut self, kind: Overlay, rect: crate::layout::Rect) {
+        self.rects.push((kind, rect));
     }
+
+    pub fn hit(&self, x: f32, y: f32) -> bool {
+        self.rects.iter().any(|(_, r)| r.contains(x, y))
+    }
+}
+
+/// `PTYMouseHandler.m:595-607`: Alt-click moves the cursor only when the terminal's raw mouse
+/// mode is off; a program that asked for clicks gets none as arrows, whatever the profile's
+/// gates, the alternate-screen restriction or the reporting toggle say.
+pub fn alt_click_may_move_cursor(raw: Modes) -> bool {
+    raw.tracking == Tracking::Off
 }
 
 /// Returns the bytes to send the app for `ev`, or None when the app did not ask for it.
@@ -395,28 +437,49 @@ mod tests {
         for k in [Kind::Click, Kind::Drag, Kind::Hover] {
             assert!(!should_report(SGR_ANY, m, k, over), "{k:?} over an overlay");
         }
-        assert!(should_report(SGR_ANY, m, Kind::Wheel { horizontal: false }, over), "the wheel scrolls under a bar as before");
+        assert!(!should_report(SGR_ANY, m, Kind::Wheel { horizontal: false }, over), "the wheel over an overlay is Tandem's too (review fix 1)");
     }
 
     fn r(x: f32, y: f32) -> crate::layout::Rect {
         crate::layout::Rect { x, y, w: 10.0, h: 10.0 }
     }
 
-    /// B5: one test per overlay kind, each alone in the list, hit inside and missed outside.
+    /// B5, review fix 1: every overlay kind, enumerated, is a hit when it is in the list; the
+    /// kinds that sit outside the terminal rectangle are named with the reason.
     #[test]
     fn each_overlay_kind_is_a_tandem_hit() {
-        let kinds: [(&str, UiRects); 6] = [
-            ("info bar", UiRects { info_bars: vec![r(0.0, 0.0)], ..Default::default() }),
-            ("porthole", UiRects { portholes: vec![r(0.0, 0.0)], ..Default::default() }),
-            ("block pill", UiRects { pills: vec![r(0.0, 0.0)], ..Default::default() }),
-            ("picker", UiRects { pickers: vec![r(0.0, 0.0)], ..Default::default() }),
-            ("chat indicator", UiRects { indicators: vec![r(0.0, 0.0)], ..Default::default() }),
-            ("find bar", UiRects { find: vec![r(0.0, 0.0)], ..Default::default() }),
-        ];
-        for (name, ui) in kinds {
-            assert!(ui.hit(5.0, 5.0), "{name} inside");
-            assert!(!ui.hit(50.0, 5.0), "{name} outside");
+        assert!(Overlay::ALL.len() >= 11);
+        for kind in Overlay::ALL {
+            let mut ui = UiRects::default();
+            ui.push(kind, r(0.0, 0.0));
+            assert!(ui.hit(5.0, 5.0), "{kind:?} inside");
+            assert!(!ui.hit(50.0, 5.0), "{kind:?} outside");
         }
         assert!(!UiRects::default().hit(5.0, 5.0));
+        for want in ["InfoBar", "Porthole", "Pill", "Picker", "Indicator", "Find", "Completion", "Composer", "ComposerPopup", "Toast", "Banner"] {
+            assert!(Overlay::ALL.iter().any(|k| format!("{k:?}") == want), "{want} is an overlay kind");
+        }
+        for want in ["title bar", "status bar", "inline AI panel", "clip panel", "scrollbar"] {
+            assert!(OUTSIDE_THE_TERMINAL.iter().any(|(n, _)| *n == want), "{want} is named as outside");
+        }
+    }
+
+    /// Review fix 1: presses, releases, drags, hover and the wheel over an overlay never reach the program.
+    #[test]
+    fn overlays_hold_every_kind_of_event() {
+        let over = Gates { ui_over: true, ..ALL };
+        for k in KINDS {
+            assert!(!should_report(SGR_ANY, Mods::default(), k, over), "{k:?} over an overlay");
+        }
+    }
+
+    /// Review fix 2 (`PTYMouseHandler.m:595-607`): Alt-click moves the cursor only when the raw
+    /// mouse mode is off, whatever the gates say.
+    #[test]
+    fn alt_click_follows_the_raw_mouse_mode() {
+        assert!(alt_click_may_move_cursor(Modes::default()));
+        assert!(!alt_click_may_move_cursor(SGR_CLICK));
+        assert!(!alt_click_may_move_cursor(SGR_ANY));
+        assert!(!alt_click_may_move_cursor(Modes { tracking: Tracking::Drag, sgr: false }));
     }
 }

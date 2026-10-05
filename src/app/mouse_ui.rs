@@ -22,26 +22,56 @@ impl App {
         }
     }
 
-    /// Tandem's own overlays inside the terminal rectangle, by kind (B5): the front info bar
-    /// of each visible pane, portholes, block pills, session pickers, AI indicators and the
-    /// find bar of the focused pane.
+    /// Every Tandem overlay inside the terminal rectangle or over the window, in ONE list (B5):
+    /// the front info bar of each visible pane, portholes, block pills, session pickers, AI
+    /// indicators, the find bar of the focused pane, the completion list, each shown composer
+    /// and its popup, the toast and the error banner. A new overlay adds its `Overlay` kind
+    /// here; `tandem_ui_at` and the report gate read only this list.
     fn ui_rects(&self) -> mouse::UiRects {
+        use mouse::Overlay;
         let mut ui = mouse::UiRects::default();
         let cell = self.cell();
         if let Some(tab) = self.tabs.get(self.active) {
             for (id, rect) in self.visible(tab) {
                 if let Some(bar) = self.bars.get(&id).and_then(|b| b.front()) {
-                    ui.info_bars.push(crate::infobar::layout(bar, rect, cell).bar);
+                    ui.push(Overlay::InfoBar, crate::infobar::layout(bar, rect, cell).bar);
+                }
+                if let Some(r) = self.completion_rect(id, rect, cell) {
+                    ui.push(Overlay::Completion, r);
+                }
+                if self.composer_shown(id) {
+                    ui.push(Overlay::Composer, self.composer_layout(id, rect).panel);
+                    if let Some(r) = self.composer_popup_rect(id, rect) {
+                        ui.push(Overlay::ComposerPopup, r);
+                    }
                 }
             }
         }
-        ui.portholes = self.porthole_hits.iter().map(|h| h.3).collect();
-        ui.pills = self.block_buttons.iter().map(|b| b.0).collect();
-        ui.pickers = self.picker_hits.iter().map(|h| h.1).collect();
-        ui.indicators = self.chat_indicator_hits.iter().map(|h| h.1).collect();
+        for h in &self.porthole_hits {
+            ui.push(Overlay::Porthole, h.3);
+        }
+        for b in &self.block_buttons {
+            ui.push(Overlay::Pill, b.0);
+        }
+        for h in &self.picker_hits {
+            ui.push(Overlay::Picker, h.1);
+        }
+        for h in &self.chat_indicator_hits {
+            ui.push(Overlay::Indicator, h.1);
+        }
         if self.focused_id().is_some_and(|id| self.finds.get(&id).is_some_and(|f| f.open)) {
-            ui.find.extend(self.find_bar_rect);
-            ui.find.extend(self.find_mode_rect);
+            for r in self.find_bar_rect.into_iter().chain(self.find_mode_rect) {
+                ui.push(Overlay::Find, r);
+            }
+        }
+        let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
+        let window = Rect { x: 0.0, y: 0.0, w: ww, h: wh };
+        // The toast and the banner are not interactive, but a click through them is not the program's either.
+        if let Some((text, _)) = self.toast.as_ref().filter(|(_, until)| Instant::now() < *until) {
+            ui.push(Overlay::Toast, scene::toast_rect(text, window, cell));
+        }
+        if self.banners.text().is_some() || self.panes.values().any(|p| p.error.is_some()) {
+            ui.push(Overlay::Banner, scene::banner_rect(window, cell));
         }
         ui
     }
@@ -93,7 +123,7 @@ impl App {
             wheel: profile.bool("Mouse Reporting allow mouse wheel"),
             horizontal: self.globals.bool("ReportHorizontalScrollEvents"),
             first_mouse_blocks: self.first_mouse_down && !self.globals.bool("ReportOnFirstMouse"),
-            ui_over: matches!(kind, mouse::Kind::Click | mouse::Kind::Hover) && self.tandem_ui_at(x, y),
+            ui_over: !matches!(kind, mouse::Kind::Drag) && self.tandem_ui_at(x, y),
         };
         mouse::should_report(self.modes(pane), mods, kind, gates)
     }
@@ -268,7 +298,7 @@ mod tests {
         let production = src.split("\n#[cfg(test)]\nmod tests").next().unwrap();
         let start = production.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("fn {name} missing"));
         let rest = &production[start..];
-        let end = rest[1..].find("\n    fn ").or_else(|| rest[1..].find("\n    pub(super) fn ")).map_or(rest.len(), |e| e + 1);
+        let end = [rest[1..].find("\n    fn "), rest[1..].find("\n    pub(super) fn ")].into_iter().flatten().min().map_or(rest.len(), |e| e + 1);
         &rest[..end]
     }
 
@@ -295,12 +325,6 @@ mod tests {
         let b = body(MOD, "mouse_move");
         assert!(b.contains("report_gate("));
         assert!(!b.contains("app_owns_mouse("));
-    }
-
-    #[test]
-    fn alt_click_reads_report_gate() {
-        let b = body(MOD, "alt_click_moves_cursor");
-        assert!(b.contains("report_gate_with("), "alt-click moves the cursor only where the click would not be reported");
     }
 
     #[test]
@@ -338,10 +362,37 @@ mod tests {
     #[test]
     fn tandem_ui_at_reads_every_overlay_list() {
         let b = body(UI, "ui_rects");
-        for needle in ["infobar::layout", "porthole_hits", "block_buttons", "picker_hits", "chat_indicator_hits", "find_bar_rect", "find_mode_rect"] {
+        for kind in crate::mouse::Overlay::ALL {
+            assert!(b.contains(&format!("Overlay::{kind:?}")), "{kind:?} is not pushed into the one list");
+        }
+        for needle in ["infobar::layout", "porthole_hits", "block_buttons", "picker_hits", "chat_indicator_hits", "find_bar_rect", "find_mode_rect", "completion_rect", "composer_layout", "composer_popup_rect", "toast_rect", "banner_rect"] {
             assert!(b.contains(needle), "{needle} is not read");
         }
         assert!(body(UI, "tandem_ui_at").contains("inline_button_at"), "inline buttons too");
+        assert!(!body(UI, "tandem_ui_at").contains("completion") && !body(UI, "tandem_ui_at").contains("composer"), "no per-site special cases");
+    }
+
+    /// Review fix 1: the overlay under the pointer holds every kind of event but a drag's end.
+    #[test]
+    fn the_gate_asks_the_overlay_list_for_every_kind() {
+        let b = body(UI, "report_gate_with");
+        assert!(b.contains("!matches!(kind, mouse::Kind::Drag)") && b.contains("self.tandem_ui_at(x, y)"));
+        assert!(!b.contains("Kind::Click | mouse::Kind::Hover"));
+    }
+
+    /// Review fix 2: Alt-click reads the raw mode, not the gate.
+    #[test]
+    fn alt_click_reads_the_raw_mouse_mode() {
+        let b = body(MOD, "alt_click_moves_cursor");
+        assert!(b.contains("alt_click_may_move_cursor(") && b.contains("mouse_modes()"));
+        assert!(!b.contains("report_gate"), "profile gates and the toggle do not matter");
+    }
+
+    /// The `body` helper stops at the nearer next method, private or `pub(super)`.
+    #[test]
+    fn body_stops_at_the_nearest_method() {
+        let b = body(UI, "tandem_ui_at");
+        assert!(!b.contains("fn report_gate_with"), "{b}");
     }
 
     /// R3, B6: the flag is taken at the very top of `mouse_press`, `first_click` runs only after

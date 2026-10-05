@@ -4494,7 +4494,9 @@ impl App {
     /// Alt-click moves the cursor (Pointer > Alt-click moves cursor), unless the app
     /// takes clicks or the view is scrolled back.
     fn alt_click_moves_cursor(&mut self, pane: PaneId, target: (u32, u32)) {
-        if !self.globals.bool("OptionClickMovesCursor") || self.report_gate_with(pane, mouse::Kind::Click, mouse::Mods::default()) {
+        // iTerm2 (`PTYMouseHandler.m:595-607`) asks the terminal's raw mouse mode, not the gates.
+        let raw_off = self.panes.get(&pane).is_some_and(|p| mouse::alt_click_may_move_cursor(p.screen.mouse_modes()));
+        if !self.globals.bool("OptionClickMovesCursor") || !raw_off {
             return;
         }
         let Some(p) = self.panes.get_mut(&pane) else { return };
