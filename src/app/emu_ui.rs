@@ -228,12 +228,12 @@ impl App {
         self.enter_pane_window(pane);
         // The pointer as the drop event saw it (`GetCursorPos`), not a later or an older one.
         let (cell, px) = self.dnd_place(point).filter(|(id, ..)| *id == pane).map_or(((0, 0), (0, 0)), |(_, c, p)| (c, p));
-        let files: Vec<std::path::PathBuf> = dropped.into_iter().filter(|(id, ..)| *id == pane).map(|(_, f, _)| if !is_network_path(&f) && f.is_dir() { f.join("") } else { f }).collect();
+        let files: Vec<std::path::PathBuf> = dropped.into_iter().filter(|(id, ..)| *id == pane).map(|(_, f, _)| if is_plain_dir(&f) { f.join("") } else { f }).collect();
         let Some(p) = self.panes.get_mut(&pane) else { return };
         if !p.own().dnd_accepting() {
             return;
         }
-        let replies = p.own_mut().dnd.drop(cell, px, files, &read_dropped);
+        let replies = p.own_mut().dnd.drop(cell, px, files, crate::kitty_dnd::Backing { size: dropped_size, read: read_dropped });
         Self::dnd_send(p, replies);
     }
 
@@ -257,13 +257,44 @@ fn is_network_path(path: &std::path::Path) -> bool {
     s.starts_with("\\\\") || s.starts_with("//")
 }
 
+/// A reserved device name (`NUL`, `CON`, `COM1`, `LPT3`, ...), with or without an extension and
+/// in any case: opening one reads a device, never a file.
+fn is_device_name(path: &std::path::Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return false };
+    let stem = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+}
+
+/// The entry's own metadata (never a link's target) when it is a plain local one: not a network
+/// path, not a device name, not a symbolic link, junction or other reparse point. A link may
+/// point at `\\host\share` or at a device, and nothing of that is probed (invariant 5).
+fn plain_meta(path: &std::path::Path) -> Option<std::fs::Metadata> {
+    if is_network_path(path) || is_device_name(path) {
+        return None;
+    }
+    let m = std::fs::symlink_metadata(path).ok()?;
+    #[cfg(windows)]
+    let reparse = std::os::windows::fs::MetadataExt::file_attributes(&m) & 0x400 != 0;
+    #[cfg(not(windows))]
+    let reparse = false;
+    (!m.file_type().is_symlink() && !reparse).then_some(m)
+}
+
+/// A dropped folder: a plain local directory.
+fn is_plain_dir(path: &std::path::Path) -> bool {
+    plain_meta(path).is_some_and(|m| m.is_dir())
+}
+
+/// A dropped file's size for the budget; None when it is not a plain local file.
+fn dropped_size(path: &std::path::Path) -> Option<u64> {
+    plain_meta(path).filter(std::fs::Metadata::is_file).map(|m| m.len())
+}
+
 /// A dropped file's bytes for an OSC 72 reader: a plain local file, at most the size the
 /// protocol serves plus one byte (so the controller can tell a file that is too big).
 fn read_dropped(path: &std::path::Path) -> Option<Vec<u8>> {
     use std::io::Read;
-    if is_network_path(path) || !std::fs::metadata(path).ok()?.is_file() {
-        return None;
-    }
+    dropped_size(path)?;
     let mut bytes = Vec::new();
     std::fs::File::open(path).ok()?.take(crate::kitty_dnd::MAX_FILE_BYTES as u64 + 1).read_to_end(&mut bytes).ok()?;
     Some(bytes)
@@ -306,6 +337,37 @@ mod dnd_tests {
         let place = own.find("fn dnd_place").unwrap();
         let place_end = own[place..].find("/// winit's `HoveredFile`").unwrap() + place;
         assert!(!own[place..place_end].contains("self.cursor"));
+    }
+
+    /// 13o final review I2 and Task 9 minor 5: a dropped link, junction, device or network path is
+    /// never statted through, read or listed (invariant 5).
+    #[test]
+    fn dropped_links_and_devices_are_refused() {
+        let dir = std::env::temp_dir().join(format!("tandem-dnd-links-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("real.txt");
+        std::fs::write(&real, b"hello").unwrap();
+        assert_eq!(dropped_size(&real), Some(5));
+        assert!(!is_plain_dir(&real) && is_plain_dir(&dir));
+        // A junction (needs no privilege) to a folder is not a plain folder.
+        let junction = dir.join("junction");
+        let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&junction).arg(&dir).output().map(|o| o.status.success()).unwrap_or(false);
+        assert!(made, "mklink /J failed");
+        assert!(!is_plain_dir(&junction), "a junction may point at a share");
+        assert_eq!(dropped_size(&junction.join("real.txt")), Some(5), "a file reached through a folder link is the person's own navigation");
+        // A file symlink needs a privilege; where it cannot be made the check is skipped.
+        let link = dir.join("link.txt");
+        if std::os::windows::fs::symlink_file(&real, &link).is_ok() {
+            assert_eq!(dropped_size(&link), None);
+            assert_eq!(read_dropped(&link), None);
+        }
+        // Devices and their names, in any case or with an extension, are not files.
+        for name in ["NUL", "nul.txt", "C:\\x\\COM1", "LPT3.log", "\\\\.\\NUL", "CON"] {
+            assert_eq!(dropped_size(std::path::Path::new(name)), None, "{name}");
+            assert_eq!(read_dropped(std::path::Path::new(name)), None, "{name}");
+        }
+        std::fs::remove_dir(&junction).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

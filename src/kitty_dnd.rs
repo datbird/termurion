@@ -174,6 +174,7 @@ impl Reassembler {
 struct Drop {
     uris: Vec<u8>,
     files: Vec<File>,
+    read: fn(&Path) -> Option<Vec<u8>>,
     arrived: Instant,
     /// The program asked for the URI list (a file entry may be asked for only after it).
     uri_listed: bool,
@@ -182,9 +183,18 @@ struct Drop {
 }
 
 enum File {
-    Bytes(Vec<u8>),
+    /// A plain local file of this size (from metadata); read when a request asks.
+    Local(PathBuf, usize),
     TooBig,
     Missing,
+}
+
+/// How the window reaches a dropped file: its size (None when it is not a plain local file) and
+/// its bytes. Plain function pointers: nothing captured, so a drop can keep them.
+#[derive(Clone, Copy)]
+pub struct Backing {
+    pub size: fn(&Path) -> Option<u64>,
+    pub read: fn(&Path) -> Option<Vec<u8>>,
 }
 
 /// What a program has registered for, and the drop it may read.
@@ -357,19 +367,21 @@ impl Controller {
         vec![self.send(msg(&[("t", "m".into()), ("x", "-1".into()), ("y", "-1".into())], None))]
     }
 
-    pub fn drop(&mut self, cell: (i64, i64), px: (i64, i64), files: Vec<PathBuf>, read: &dyn Fn(&Path) -> Option<Vec<u8>>) -> Vec<String> {
-        self.drop_at(Instant::now(), cell, px, files, read)
+    pub fn drop(&mut self, cell: (i64, i64), px: (i64, i64), files: Vec<PathBuf>, backing: Backing) -> Vec<String> {
+        self.drop_at(Instant::now(), cell, px, files, backing)
     }
 
-    /// The person dropped `files` on the pane: `t=M`. The files are read now, once, bounded
-    /// (`MAX_FILE_BYTES` each, `MAX_DROP_BYTES` in all): a request later can reach only them.
-    pub fn drop_at(&mut self, now: Instant, cell: (i64, i64), px: (i64, i64), mut files: Vec<PathBuf>, read: &dyn Fn(&Path) -> Option<Vec<u8>>) -> Vec<String> {
+    /// The person dropped `files` on the pane: `t=M`. The files are sized now and read per request,
+    /// bounded (`MAX_FILE_BYTES` each, `MAX_DROP_BYTES` in all): a request can reach only them.
+    pub fn drop_at(&mut self, now: Instant, cell: (i64, i64), px: (i64, i64), mut files: Vec<PathBuf>, backing: Backing) -> Vec<String> {
         self.hovering = false;
         if !self.accepting || files.is_empty() {
             return Vec::new();
         }
         files.truncate(MAX_DROP_FILES);
         let uris: Vec<String> = files.iter().map(|f| file_uri(f)).collect();
+        // Sized from metadata, never read here: a file over the per-file bound, or one that
+        // would take the drop past the budget, is TooBig before any byte is read.
         let mut held = 0usize;
         let data = files
             .iter()
@@ -379,18 +391,18 @@ impl Controller {
                 if text.ends_with('\\') || text.ends_with('/') {
                     return File::Missing;
                 }
-                match read(f) {
+                match (backing.size)(f).map(|n| usize::try_from(n).unwrap_or(usize::MAX)) {
                     None => File::Missing,
-                    Some(b) if b.len() > MAX_FILE_BYTES || held + b.len() > MAX_DROP_BYTES => File::TooBig,
-                    Some(b) => {
-                        held += b.len();
-                        File::Bytes(b)
+                    Some(n) if n > MAX_FILE_BYTES || held + n > MAX_DROP_BYTES => File::TooBig,
+                    Some(n) => {
+                        held += n;
+                        File::Local(f.clone(), n)
                     }
                 }
             })
             .collect();
         let list: String = uris.iter().map(|u| format!("{u}\r\n")).collect();
-        self.drop = Some(Drop { uris: list.into_bytes(), files: data, arrived: now, uri_listed: false, served: 0 });
+        self.drop = Some(Drop { uris: list.into_bytes(), files: data, read: backing.read, arrived: now, uri_listed: false, served: 0 });
         self.last_move = None;
         vec![self.position("M", cell, px, Some(&[MIME_URI_LIST.to_string()]))]
     }
@@ -434,7 +446,7 @@ impl Controller {
                 return vec![self.error(&addressing, "ENOENT")];
             };
             match &drop.files[index] {
-                File::Bytes(_) => Some(index),
+                File::Local(path, size) => Some((path.clone(), *size)),
                 File::TooBig => return vec![self.error(&addressing, "EFBIG")],
                 File::Missing => return vec![self.error(&addressing, "ENOENT")],
             }
@@ -442,23 +454,24 @@ impl Controller {
             drop.uri_listed = true;
             None
         };
-        let len = match pick {
-            Some(i) => match &drop.files[i] {
-                File::Bytes(b) => b.len(),
-                _ => 0,
-            },
-            None => drop.uris.len(),
-        };
+        let len = pick.as_ref().map_or(drop.uris.len(), |(_, size)| *size);
         if drop.served + len > MAX_DROP_BYTES {
             return vec![self.error(&addressing, "EFBIG")];
         }
-        drop.served += len;
-        let drop = self.drop.as_ref().expect("checked above");
-        let data = match pick.map(|i| &drop.files[i]) {
-            Some(File::Bytes(b)) => b.as_slice(),
-            _ => drop.uris.as_slice(),
+        // The file is read now, for this request only; one that grew past its bound since the
+        // drop is refused, and one that is gone is missing.
+        let bytes = match &pick {
+            Some((path, _)) => match (drop.read)(path) {
+                None => return vec![self.error(&addressing, "ENOENT")],
+                Some(b) if b.len() > MAX_FILE_BYTES || drop.served + b.len() > MAX_DROP_BYTES => return vec![self.error(&addressing, "EFBIG")],
+                Some(b) => Some(b),
+            },
+            None => None,
         };
-        self.data_reply(&addressing, data)
+        let drop = self.drop.as_mut().expect("checked above");
+        drop.served += bytes.as_ref().map_or(len, Vec::len);
+        let drop = self.drop.as_ref().expect("checked above");
+        self.data_reply(&addressing, bytes.as_deref().unwrap_or(&drop.uris))
     }
 
     /// `t=r` messages for `data`: base64 in `m=1` chunks of 4,096 characters, then `m=0`.
@@ -507,7 +520,7 @@ mod tests {
     }
 
     fn dropped(c: &mut Controller, list: &[&str]) -> Vec<String> {
-        c.drop((3, 1), (30, 18), files(list), &|p: &Path| Some(format!("data of {}", p.display()).into_bytes()))
+        c.drop((3, 1), (30, 18), files(list), Backing { size: |_| Some(16), read: |p| Some(format!("data of {}", p.display()).into_bytes()) })
     }
 
     #[test]
@@ -620,7 +633,7 @@ mod tests {
         assert_eq!(c.inbound("t=r:x=1"), vec!["\x1b]72;t=E:x=1;ENOENT\x1b\\".to_string()]);
         // Data over several chunks decodes whole: 10 000 bytes in 3 072-byte pieces.
         let mut c = registered();
-        c.drop((0, 0), (0, 0), files(&["C:\\big.bin"]), &|_| Some(vec![7u8; 10_000]));
+        c.drop((0, 0), (0, 0), files(&["C:\\big.bin"]), Backing { size: |_| Some(10_000), read: |_| Some(vec![7u8; 10_000]) });
         c.inbound("t=r:x=1");
         let big = c.inbound("t=r:x=1:y=1");
         assert_eq!(big.len(), 4 + 1, "four m=1 chunks and the m=0 end");
@@ -721,31 +734,26 @@ mod tests {
         // A drop carries at most 256 files, and the files are the only thing a request reads.
         let mut c = registered();
         let many: Vec<PathBuf> = (0..300).map(|i| PathBuf::from(format!("C:\\f{i}.txt"))).collect();
-        c.drop((0, 0), (0, 0), many, &|_| Some(vec![1]));
+        c.drop((0, 0), (0, 0), many, Backing { size: |_| Some(1), read: |_| Some(vec![1]) });
         let list = String::from_utf8(data_of(&c.inbound("t=r:x=1"))).unwrap();
         assert_eq!(list.matches("\r\n").count(), 256);
         assert_eq!(c.inbound("t=r:x=1:y=257"), vec!["\x1b]72;t=E:x=1:y=257;ENOENT\x1b\\".to_string()]);
 
-        // A file past 16 MiB answers EFBIG; the read closure is only asked for what was dropped.
+        // A file past 16 MiB answers EFBIG, and is never read.
         let mut c = registered();
-        let asked = std::cell::RefCell::new(Vec::new());
-        c.drop((0, 0), (0, 0), files(&["C:\\big.bin", "C:\\ok.bin"]), &|p: &Path| {
-            asked.borrow_mut().push(p.to_path_buf());
-            Some(vec![0u8; if p.ends_with("big.bin") { 16 * 1024 * 1024 + 1 } else { 5 }])
-        });
-        assert_eq!(asked.borrow().len(), 2);
+        c.drop((0, 0), (0, 0), files(&["C:\\big.bin", "C:\\ok.bin"]), Backing { size: |p| Some(if p.ends_with("big.bin") { (16 << 20) + 1 } else { 5 }), read: |p| Some(vec![0u8; if p.ends_with("ok.bin") { 5 } else { panic!("an oversized file is never read") }]) });
         c.inbound("t=r:x=1");
         assert_eq!(c.inbound("t=r:x=1:y=1"), vec!["\x1b]72;t=E:x=1:y=1;EFBIG\x1b\\".to_string()]);
         assert_eq!(data_of(&c.inbound("t=r:x=1:y=2")), vec![0u8; 5]);
         // 16 MiB exactly is served.
         let mut c = registered();
-        c.drop((0, 0), (0, 0), files(&["C:\\max.bin"]), &|_| Some(vec![0u8; 16 * 1024 * 1024]));
+        c.drop((0, 0), (0, 0), files(&["C:\\max.bin"]), Backing { size: |_| Some(16 << 20), read: |_| Some(vec![0u8; 16 << 20]) });
         c.inbound("t=r:x=1");
         assert_eq!(c.inbound("t=r:x=1:y=1").len(), (16usize * 1024 * 1024).div_ceil(3072) + 1);
 
         // The bytes served from one drop are capped, so a request loop cannot flood the input.
         let mut c = registered();
-        c.drop((0, 0), (0, 0), files(&["C:\\max.bin"]), &|_| Some(vec![0u8; 16 * 1024 * 1024]));
+        c.drop((0, 0), (0, 0), files(&["C:\\max.bin"]), Backing { size: |_| Some(16 << 20), read: |_| Some(vec![0u8; 16 << 20]) });
         c.inbound("t=r:x=1");
         let mut served = 0;
         let mut refused = false;
@@ -762,7 +770,7 @@ mod tests {
         // A drop lives 60 s.
         let t0 = Instant::now();
         let mut c = registered();
-        c.drop_at(t0, (0, 0), (0, 0), files(&["C:\\a.txt"]), &|_| Some(vec![1]));
+        c.drop_at(t0, (0, 0), (0, 0), files(&["C:\\a.txt"]), Backing { size: |_| Some(1), read: |_| Some(vec![1]) });
         assert!(!c.inbound_at(t0 + Duration::from_secs(59), "t=r:x=1").is_empty());
         assert!(c.inbound_at(t0 + Duration::from_secs(59), "t=r:x=1")[0].contains("m="), "still served at 59 s");
         let late = c.inbound_at(t0 + Duration::from_secs(61), "t=r:x=1");
@@ -774,5 +782,30 @@ mod tests {
         assert!(c.has_drop());
         c.inbound("t=A");
         assert!(!c.has_drop());
+    }
+
+    static ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    /// 13o final review I2: a drop is sized from metadata and read only when a request asks, so
+    /// 256 big files cost nothing up front and the 64 MiB budget is spent before any read.
+    #[test]
+    fn a_big_drop_is_not_read_up_front() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let mut c = registered();
+        let many: Vec<PathBuf> = (0..300).map(|i| PathBuf::from(format!("C:\\f{i}.bin"))).collect();
+        let backing = Backing {
+            size: |_| Some(16 << 20),
+            read: |_| {
+                ASKED.fetch_add(16 << 20, SeqCst);
+                Some(vec![0u8; 16 << 20])
+            },
+        };
+        c.drop((0, 0), (0, 0), many, backing);
+        assert!(ASKED.load(SeqCst) <= (64 << 20) + (16 << 20), "asked {} bytes before any request", ASKED.load(SeqCst));
+        // Four 16 MiB files fit the 64 MiB budget; the fifth was over it when the drop arrived.
+        c.inbound("t=r:x=1");
+        assert_eq!(data_of(&c.inbound("t=r:x=1:y=1")).len(), 16 << 20);
+        assert_eq!(c.inbound("t=r:x=1:y=5"), vec!["\x1b]72;t=E:x=1:y=5;EFBIG\x1b\\".to_string()]);
+        assert!(ASKED.load(SeqCst) <= (64 << 20) + (16 << 20));
     }
 }
