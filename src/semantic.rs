@@ -430,15 +430,40 @@ pub fn cmd_unsafe(v: &str) -> bool {
         || v.chars().any(|c| matches!(c, '&' | '|' | '<' | '>' | '^' | '"' | '%' | '!' | '(' | ')' | '`' | '\u{ff02}' | '\u{201c}' | '\u{201d}' | '\u{2018}' | '\u{2019}') || c.is_control())
 }
 
-/// `fill` for a cmd.exe command line: every substituted value quoted, and None when any of them
-/// is `cmd_unsafe` (the template's own text is the person's and stays).
+/// `fill` for a cmd.exe command line, through the one builder: None when a value is refused.
 fn fill_cmd(template: &str, values: [&str; 5]) -> Option<String> {
-    let bad = std::cell::Cell::new(false);
-    let text = fill(template, values, |v| {
-        bad.set(bad.get() || cmd_unsafe(v));
-        cmd_quote(v)
-    });
-    (!bad.get()).then_some(text)
+    build_cmd_line(&fill_pieces(template, values))
+}
+
+/// A piece of a cmd.exe command line template: the person's own text, or a value substituted into it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CmdPiece {
+    Text(String),
+    Value(String),
+}
+
+/// THE builder of a cmd.exe command line from a template and the values substituted into it
+/// (Semantic History, Smart Selection, triggers, Capture Output, file drops, interpolated
+/// templates). The template's text is the person's and stays as written. Each value is refused
+/// when `cmd_unsafe` (the context-free list: None, nothing runs); otherwise it goes in bare
+/// where the template's own quotes enclose it, and in quotes of its own elsewhere, so a value
+/// with spaces is always one argument for the program cmd.exe starts (a second pair inside the
+/// template's quotes would close them). The whole line then goes to cmd.exe as `cmd_args`.
+pub fn build_cmd_line(pieces: &[CmdPiece]) -> Option<String> {
+    let mut out = String::new();
+    let mut quoted = false;
+    for p in pieces {
+        match p {
+            CmdPiece::Text(t) => {
+                quoted ^= t.chars().filter(|&c| c == '"').count() % 2 == 1;
+                out.push_str(t);
+            }
+            CmdPiece::Value(v) if cmd_unsafe(v) => return None,
+            CmdPiece::Value(v) if quoted => out.push_str(v),
+            CmdPiece::Value(v) => out.push_str(&cmd_quote(v)),
+        }
+    }
+    Some(out)
 }
 
 /// The arguments cmd.exe gets for a command line that holds substituted program text: `/s`
@@ -859,17 +884,31 @@ pub fn percent_encode(s: &str) -> String {
 /// Fills iTerm2's \\1 (file), \\2 (line), \\3 (text before the click), \\4 (text after it),
 /// and \\5 (working directory) into `template`, each passed through `each`.
 pub fn fill(template: &str, values: [&str; 5], each: impl Fn(&str) -> String) -> String {
-    let mut out = String::new();
+    fill_pieces(template, values)
+        .into_iter()
+        .map(|p| match p {
+            CmdPiece::Text(t) => t,
+            CmdPiece::Value(v) => each(&v),
+        })
+        .collect()
+}
+
+/// `fill`'s template split into its text and the values for \\1 to \\5.
+fn fill_pieces(template: &str, values: [&str; 5]) -> Vec<CmdPiece> {
+    let mut out = Vec::new();
+    let mut text = String::new();
     let mut chars = template.chars().peekable();
     while let Some(c) = chars.next() {
         match (c, chars.peek()) {
             ('\\', Some(d @ '1'..='5')) => {
-                out.push_str(&each(values[*d as usize - '1' as usize]));
+                out.push(CmdPiece::Text(std::mem::take(&mut text)));
+                out.push(CmdPiece::Value(values[*d as usize - '1' as usize].to_string()));
                 chars.next();
             }
-            _ => out.push(c),
+            _ => text.push(c),
         }
     }
+    out.push(CmdPiece::Text(text));
     out
 }
 
@@ -1046,6 +1085,39 @@ mod tests {
         // A safe value still runs: the exact line cmd.exe is created with.
         let Some(Run::Command(line)) = plan(&Target::RawCommand("w".into()), &Prefs { action: "raw command".into(), text: "echo \\3".into(), editor: String::new() }, &Around { prefix: "abc", suffix: "", cwd: "" }, false) else { panic!() };
         assert_eq!(cmd_command_line(&line), "cmd.exe /d /v:off /s /c \"echo \"abc\"\"");
+    }
+
+    /// A placeholder the template already quotes gets the value bare (no second pair of quotes),
+    /// so a value with spaces stays one argument for the program cmd.exe starts; an unquoted
+    /// placeholder gets its own quotes. The exact CreateProcess line and its argv.
+    #[test]
+    fn a_pre_quoted_placeholder_stays_one_argument() {
+        let v = "a --output=C:\\p";
+        let line = fill_cmd("git log \"\\1\"", [v, "", "", "", ""]).unwrap();
+        assert_eq!(cmd_command_line(&line), "cmd.exe /d /v:off /s /c \"git log \"a --output=C:\\p\"\"");
+        assert_eq!(split_command_line(&line), ["git", "log", v]);
+        assert_eq!(fill_cmd("git log \\1", [v, "", "", "", ""]).as_deref(), Some(line.as_str()), "unquoted: quoted by the builder");
+        let mixed = fill_cmd("p \"--x=\\1\" \\1 \"\\2\"", [v, "", "", "", ""]).unwrap();
+        assert_eq!(mixed, "p \"--x=a --output=C:\\p\" \"a --output=C:\\p\" \"\"");
+        assert_eq!(split_command_line(&mixed), ["p", "--x=a --output=C:\\p", v, ""]);
+        assert_eq!(fill_cmd("git log \"\\1\"", ["x&calc", "", "", "", ""]), None, "the refusal holds inside the template's quotes");
+    }
+
+    /// The one builder: the person's text as written; each value refused by the context-free
+    /// list, else bare inside the template's own quotes and quoted outside them.
+    #[test]
+    fn the_one_cmd_builder_follows_the_template_quotes() {
+        use CmdPiece::{Text, Value};
+        let t = |s: &str| Text(s.into());
+        let v = |s: &str| Value(s.into());
+        assert_eq!(build_cmd_line(&[t("run "), v("a b")]).as_deref(), Some("run \"a b\""));
+        assert_eq!(build_cmd_line(&[t("run \""), v("a b"), t("\" "), v("c")]).as_deref(), Some("run \"a b\" \"c\""));
+        assert_eq!(build_cmd_line(&[t("run \"x\" "), v("")]).as_deref(), Some("run \"x\" \"\""), "an even count of quotes is closed");
+        assert_eq!(build_cmd_line(&[t("echo %PATH% & "), v("ok")]).as_deref(), Some("echo %PATH% & \"ok\""), "the template's own text stays");
+        for bad in ["a&b", "a\"b", "a\\", "a\nb", "a\u{ff02}"] {
+            assert_eq!(build_cmd_line(&[t("run \""), v(bad), t("\"")]), None, "{bad:?}");
+            assert_eq!(build_cmd_line(&[t("run "), v(bad)]), None, "{bad:?}");
+        }
     }
 
     #[test]

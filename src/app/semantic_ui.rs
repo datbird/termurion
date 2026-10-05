@@ -319,39 +319,13 @@ impl App {
 
     /// What a Smart Selection action runs. Copy runs here and returns None. The parameter is
     /// iTerm2's interpolated string with `matches` encoded per action when the profile says so
-    /// (`CAP:161-225`), else the `\0`..`\8` form; a value cmd.exe would read refuses a command
-    /// action either way (B3).
+    /// (`CAP:161-225`), else the `\0`..`\8` form; a command action's line is built by the one
+    /// cmd.exe builder either way, and a value it refuses runs nothing (B3).
     fn smart_action_run(&mut self, id: PaneId, a: &smartsel::RuleAction, captures: &[String], cwd: &str) -> Option<Run> {
-        let (host, user) = self.host_user(id)?;
-        let interpolated = self.smart_interpolated(id);
-        let command = smartsel::runs_command(&a.action);
-        // The captures an interpolated command line holds are quoted by `encode_capture`; any
-        // that cmd.exe would read inside quotes refuses the action (the template's own text and
-        // its guarded variables stay).
-        let refused = command
-            && if interpolated { captures.iter().any(|c| semantic::cmd_unsafe(c)) } else { smartsel::cmd_unsafe_values(&a.parameter, captures, cwd, &host, &user) };
-        if refused {
-            return Some(Run::Blocked(semantic::CMD_REFUSED.into()));
-        }
-        let failure = std::cell::RefCell::new(None);
-        let param = smartsel::parameter(
-            a,
-            captures,
-            interpolated,
-            &|t, m| {
-                let r = self.evaluate_matches_with(id, t, m, command);
-                if let Err(e) = &r {
-                    *failure.borrow_mut() = Some(e.clone());
-                }
-                r
-            },
-            cwd,
-            &host,
-            &user,
-        );
-        // An evaluation error runs nothing and says why.
-        let Some(param) = param else {
-            return Some(Run::Blocked(failure.into_inner().unwrap_or_else(|| "The action's parameter could not be evaluated.".into())));
+        // An evaluation error or a refused value runs nothing and says why.
+        let param = match self.smart_param(id, a, captures, cwd)? {
+            Ok(p) => p,
+            Err(why) => return Some(Run::Blocked(if why.is_empty() { "The action's parameter could not be evaluated.".into() } else { why })),
         };
         Some(match a.action.as_str() {
             "openFile:" => semantic::open_file_run(&param, (!cwd.is_empty()).then(|| std::path::Path::new(cwd)), has_code()),
@@ -507,15 +481,14 @@ impl App {
             return None;
         }
         let cwd = c.ctx.cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
-        self.smart_param(id, a, &f.captures, &cwd)
+        self.smart_param(id, a, &f.captures, &cwd)?.ok()
     }
 
     /// A Smart Selection action's parameter with its captures, the working directory and the
     /// pane's host and user filled in: the one computation the hover preview and the run share.
-    fn smart_param(&self, id: PaneId, a: &smartsel::RuleAction, captures: &[String], cwd: &str) -> Option<String> {
+    fn smart_param(&self, id: PaneId, a: &smartsel::RuleAction, captures: &[String], cwd: &str) -> Option<Result<String, String>> {
         let (host, user) = self.host_user(id)?;
-        let command = smartsel::runs_command(&a.action);
-        smartsel::parameter(a, captures, self.smart_interpolated(id), &|t, m| self.evaluate_matches_with(id, t, m, command), cwd, &host, &user)
+        Some(smartsel::parameter(a, captures, self.smart_interpolated(id), &|t, m, cmd| self.evaluate_matches_with(id, t, m, cmd), cwd, &host, &user))
     }
 
     /// The pane's profile says Smart Selection parameters are interpolated strings.

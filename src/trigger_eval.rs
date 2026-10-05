@@ -529,21 +529,13 @@ impl Screen {
                 let value = if raw {
                     param.clone()
                 } else if self.triggers.prefs.interpolated && param.contains("\\(") {
-                    // A command line gets only quoted captures, or nothing (B3).
-                                        // A command line gets only quoted captures and variables, or nothing (B3).
-                    let cmd = triggers::runs_command(&self.triggers.list[i].trigger.action);
-                    let quoted = if cmd { triggers::quote_groups(&groups).map(Some) } else { Some(None) };
-                    let bad_var = std::cell::Cell::new(false);
-                    let var = |n: &str| triggers::guard_var(self.trigger_var(n, row), cmd, &bad_var);
-                    let evaluated = match &quoted {
-                        None => Err(crate::semantic::CMD_REFUSED.to_string()),
-                        Some(None) => crate::interp::evaluate(&param, &var, &groups),
-                        Some(Some(q)) => {
-                            let refs: Vec<Option<&str>> = q.iter().map(|g| g.as_deref()).collect();
-                            crate::interp::evaluate(&param, &var, &refs)
-                        }
+                    // A command line through the one builder: its values refused or quoted (B3).
+                    let var = |n: &str| self.trigger_var(n, row);
+                    let evaluated = if triggers::runs_command(&self.triggers.list[i].trigger.action) {
+                        crate::interp::evaluate_cmd(&param, &var, &groups, true)
+                    } else {
+                        crate::interp::evaluate(&param, &var, &groups)
                     };
-                    let evaluated = if bad_var.get() { Err(crate::semantic::CMD_REFUSED.to_string()) } else { evaluated };
                     match evaluated {
                         Ok(v) => v,
                         Err(e) => {
@@ -584,8 +576,8 @@ impl Screen {
         }
     }
 
-    /// A command trigger whose capture holds `%`, a quote or a control character does not run;
-    /// said once per trigger, as a parameter error is (B3).
+    /// A command trigger whose capture the one cmd.exe builder refuses does not run; said once
+    /// per trigger, as a parameter error is (B3).
     pub(crate) fn refuse_command(&mut self, i: usize) {
         let text = crate::semantic::CMD_REFUSED.to_string();
         if self.triggers.list[i].error.as_ref() != Some(&text) {
@@ -1266,6 +1258,18 @@ mod tests {
         assert_eq!(run(b"xfoo\r\n"), vec![TriggerRequest::RunCommand("run \"foo\"".into())]);
         assert!(matches!(&run(b"xfoo&calc\r\n")[..], [TriggerRequest::ParameterError { .. }]));
         assert!(matches!(&run(b"x%COMSPEC%\r\n")[..], [TriggerRequest::ParameterError { .. }]));
+    }
+
+    /// An interpolated value inside the parameter's own quotes goes in bare (one argument), and
+    /// one outside them gets quotes: captures and variables alike.
+    #[test]
+    fn interpolated_values_in_the_templates_quotes_stay_one_argument() {
+        let mut s = Screen::with_scrollback(40, 6, 100);
+        s.set_triggers(vec![trig(r"x (.+)", "ScriptTrigger", "git log \"\\(matches[1])\" \\(session.path) \"\\(session.path)\"", false)], TriggerPrefs { interpolated: true, ..TriggerPrefs::default() });
+        s.shell.cwd = Some("C:\\a b".into());
+        s.feed(b"x a --flag\r\n");
+        let got = requests(&mut s);
+        assert_eq!(got, vec![TriggerRequest::RunCommand("git log \"a --flag\" \"C:\\a b\" \"C:\\a b\"".into())]);
     }
 
     #[test]

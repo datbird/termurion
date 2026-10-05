@@ -618,22 +618,21 @@ impl App {
         self.evaluate_matches_with(pane, template, matches, false)
     }
 
-    /// `evaluate_with_matches` for a template that becomes a cmd.exe command line (`cmd`): every
-    /// variable is quoted, and a value holding what cmd.exe would read is refused (B3, the one
-    /// rule `triggers::guard_var` applies to a trigger's variables).
+    /// `evaluate_with_matches` for a template that becomes a cmd.exe command line (`cmd`): built
+    /// by the one builder (`interp::evaluate_cmd`: every value refused by the context-free list,
+    /// or quoted unless the template's own quotes enclose it, B3).
     pub(super) fn evaluate_matches_with(&self, pane: PaneId, template: &str, matches: &[Option<&str>], cmd: bool) -> Result<String, String> {
         let (light, full) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
-        let bad = std::cell::Cell::new(false);
         let lookup = |n: &str| {
             let n = n.strip_prefix("session.").unwrap_or(n);
             let vars = if crate::prompted::names_selection(n) { full.get_or_init(|| self.variables_with(pane, true)) } else { light.get_or_init(|| self.variables_with(pane, false)) };
-            crate::triggers::guard_var(crate::prompted::variable(n, vars), cmd, &bad)
+            crate::prompted::variable(n, vars)
         };
-        let out = crate::interp::evaluate_lax(template, &lookup, matches, self.globals.bool("laxNilPolicyInInterpolatedStrings"));
-        if bad.get() {
-            return Err(crate::semantic::CMD_REFUSED.to_string());
+        let lax = self.globals.bool("laxNilPolicyInInterpolatedStrings");
+        if cmd {
+            return crate::interp::evaluate_cmd(template, &lookup, matches, lax);
         }
-        out
+        crate::interp::evaluate_lax(template, &lookup, matches, lax)
     }
 
     /// A script component's content (`RPC:341-349`): its variants ("" before the first

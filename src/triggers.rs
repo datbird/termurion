@@ -1,6 +1,8 @@
 //! iTerm2's triggers: the profile's list (stored as iTerm2 stores it, so imported profiles
 //! work), the catalog of actions, and plain parameter substitution.
 
+use crate::semantic::CmdPiece;
+
 /// One trigger as a profile stores it (iTerm2's keys), with keys Tandem does not use kept.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Trigger {
@@ -164,7 +166,12 @@ pub fn action_info(class: &str) -> Option<&'static ActionInfo> {
 /// `\9` is never replaced), then `\a \b \e \n \r \t \\` and `\xHH`; any other backslash
 /// sequence stays as written. Captured text goes in as it is.
 pub fn substitute(param: &str, captures: &[Option<&str>]) -> String {
-    substitute_with(param, captures, &mut |c| c.to_string())
+    substitute_pieces(param, captures)
+        .into_iter()
+        .map(|p| match p {
+            CmdPiece::Text(t) | CmdPiece::Value(t) => t,
+        })
+        .collect()
 }
 
 /// The actions that put text on a cmd.exe command line: Run Command, Run Coprocess, Run
@@ -174,41 +181,17 @@ pub fn runs_command(action: &str) -> bool {
     matches!(action, "ScriptTrigger" | "CoprocessTrigger" | "MuteCoprocessTrigger" | "CaptureTrigger")
 }
 
-/// `substitute` for a cmd.exe command line: each capture is quoted (`semantic::cmd_quote`),
-/// and None when a capture the parameter uses holds `%`, a quote or a control character
-/// (`semantic::cmd_unsafe`), which cmd.exe would read inside quotes. The parameter's own
-/// text is the person's and stays as written.
+/// `substitute` for a cmd.exe command line, through the one builder
+/// (`semantic::build_cmd_line`): None when a capture the parameter uses is refused. The
+/// parameter's own text is the person's and stays as written.
 pub fn substitute_cmd(param: &str, captures: &[Option<&str>]) -> Option<String> {
-    let mut bad = false;
-    let out = substitute_with(param, captures, &mut |c| {
-        bad |= crate::semantic::cmd_unsafe(c);
-        crate::semantic::cmd_quote(c)
-    });
-    (!bad).then_some(out)
+    crate::semantic::build_cmd_line(&substitute_pieces(param, captures))
 }
 
-/// The groups of an interpolated parameter (`matches`) for a cmd.exe command line: all
-/// quoted, or None when any holds `%`, a quote or a control character.
-pub fn quote_groups(groups: &[Option<&str>]) -> Option<Vec<Option<String>>> {
-    groups.iter().map(|g| g.map(|c| (!crate::semantic::cmd_unsafe(c)).then(|| crate::semantic::cmd_quote(c))).map_or(Some(None), |q| q.map(Some))).collect()
-}
-
-/// An interpolated variable for a parameter: on a command line quoted, and flagged in `bad`
-/// when it is `semantic::cmd_unsafe` (program text: OSC 7, user variables, job titles).
-pub fn guard_var(value: Option<String>, cmd: bool, bad: &std::cell::Cell<bool>) -> Option<String> {
-    if !cmd {
-        return value;
-    }
-    value.map(|v| {
-        if crate::semantic::cmd_unsafe(&v) {
-            bad.set(true);
-        }
-        crate::semantic::cmd_quote(&v)
-    })
-}
-
-fn substitute_with(param: &str, captures: &[Option<&str>], each: &mut dyn FnMut(&str) -> String) -> String {
+/// The parameter split into its text (escapes applied) and the captures it substitutes.
+fn substitute_pieces(param: &str, captures: &[Option<&str>]) -> Vec<CmdPiece> {
     let chars: Vec<char> = param.chars().collect();
+    let mut pieces = Vec::new();
     let mut out = String::new();
     let mut i = 0;
     while i < chars.len() {
@@ -222,7 +205,8 @@ fn substitute_with(param: &str, captures: &[Option<&str>], each: &mut dyn FnMut(
         match n {
             '0'..='8' => {
                 let g = n as usize - '0' as usize;
-                out.push_str(&each(captures.get(g).copied().flatten().unwrap_or("")));
+                pieces.push(CmdPiece::Text(std::mem::take(&mut out)));
+                pieces.push(CmdPiece::Value(captures.get(g).copied().flatten().unwrap_or("").to_string()));
             }
             'a' => out.push('\x07'),
             'b' => out.push('\x08'),
@@ -244,7 +228,8 @@ fn substitute_with(param: &str, captures: &[Option<&str>], each: &mut dyn FnMut(
         }
         i += 2;
     }
-    out
+    pieces.push(CmdPiece::Text(out));
+    pieces
 }
 
 /// Enable All and Disable All in place: `disabled` set on every entry that is a table;
@@ -365,16 +350,23 @@ pub fn escape_regex(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn command_captures_with_shell_characters_are_refused() {
         for bad in ["foo&calc", "a|b", "a>b", "a^b", "a(b)", "a!b", "a`b", "a\\", "a\u{ff02}b"] {
             assert_eq!(substitute_cmd("run \"\\1\"", &[Some(""), Some(bad)]), None, "{bad}");
-            assert_eq!(quote_groups(&[Some(""), Some(bad)]), None, "{bad}");
         }
         assert_eq!(substitute_cmd("run \\1", &[Some(""), Some("a b")]), Some("run \"a b\"".into()));
     }
 
-    use super::*;
+    /// A capture the parameter already quotes goes in bare: one argument for the program.
+    #[test]
+    fn a_pre_quoted_capture_stays_one_argument() {
+        let line = substitute_cmd("git log \"\\1\" \\1", &[Some(""), Some("a --flag")]).unwrap();
+        assert_eq!(line, "git log \"a --flag\" \"a --flag\"");
+        assert_eq!(crate::semantic::split_command_line(&line), ["git", "log", "a --flag", "a --flag"]);
+    }
 
     #[test]
     fn triggers_round_trip_with_unknown_keys() {

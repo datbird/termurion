@@ -133,6 +133,21 @@ fn text_of(parts: &[Part], scope: &StrScope, cx: &Ctx) -> Result<String, String>
     }
 }
 
+/// An interpolated string that becomes a cmd.exe command line: the template's text stays as
+/// written and each `\( )` is evaluated on its own into a value for the one builder
+/// (`semantic::build_cmd_line`: refused by the context-free list, bare inside the template's
+/// own quotes, quoted outside them). Values are what `lookup` and `matches` give, unquoted.
+/// Err is the evaluation error, or `CMD_REFUSED`.
+pub fn evaluate_cmd(template: &str, lookup: &dyn Fn(&str) -> Option<String>, matches: &[Option<&str>], lax: bool) -> Result<String, String> {
+    use crate::semantic::CmdPiece;
+    parse(template)?;
+    let mut pieces = Vec::new();
+    for (is_expr, text) in expr::template_pieces(template) {
+        pieces.push(if is_expr { CmdPiece::Value(evaluate_lax(&format!("\\({text})"), lookup, matches, lax)?) } else { CmdPiece::Text(text) });
+    }
+    crate::semantic::build_cmd_line(&pieces).ok_or_else(|| crate::semantic::CMD_REFUSED.to_string())
+}
+
 /// Evaluates an interpolated string with the lax policy on (an undefined bare reference is
 /// empty) and function calls refused.
 pub fn evaluate(template: &str, lookup: &dyn Fn(&str) -> Option<String>, matches: &[Option<&str>]) -> Result<String, String> {
@@ -186,6 +201,25 @@ mod tests {
             "user.x" => Some("42".into()),
             _ => None,
         }
+    }
+
+    /// A cmd.exe template: each `\( )` is a value for the one builder (bare inside the
+    /// template's quotes, quoted outside, refused by the context-free list), the text stays.
+    #[test]
+    fn cmd_templates_use_the_one_builder() {
+        let m = [Some("all"), Some("a --flag"), Some("x&calc")];
+        let lookup = |n: &str| match n {
+            "session.path" => Some("C:\\a b".to_string()),
+            "user.x" => Some("a|b".to_string()),
+            _ => None,
+        };
+        assert_eq!(evaluate_cmd(r#"git log "\(matches[1])" \(session.path)"#, &lookup, &m, true).as_deref(), Ok(r#"git log "a --flag" "C:\a b""#));
+        assert_eq!(evaluate_cmd(r"run \(path ?? user.x)", &lookup, &m, true).as_deref(), Ok(r#"run "C:\a b""#), "a fallback is one value");
+        for bad in [r#"run "\(matches[2])""#, r"run \(user.x)", r#"run \("a\"b")"#] {
+            assert_eq!(evaluate_cmd(bad, &lookup, &m, true), Err(crate::semantic::CMD_REFUSED.to_string()), "{bad}");
+        }
+        assert_eq!(evaluate_cmd(r"run \(matches[1])", &lookup, &[Some(""), Some("ok"), Some("x&calc")], true).as_deref(), Ok(r#"run "ok""#), "an unused capture does not refuse");
+        assert!(evaluate_cmd(r"run \(f())", &lookup, &m, true).is_err(), "calls are still refused");
     }
 
     #[test]

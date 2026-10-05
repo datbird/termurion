@@ -1,6 +1,8 @@
 //! iTerm2's Smart Selection: regular-expression rules that decide what a click selects,
 //! each with a precision and optional actions.
 
+use crate::semantic::CmdPiece;
+
 /// One action on a rule, as iTerm2 stores it: `action` is its selector ("openFile:",
 /// "openUrl:", "runCommand:", "runCoprocess:", "sendText:", "runCommandInWindow:",
 /// "copy:").
@@ -100,42 +102,46 @@ pub fn select_at(text: &str, click: usize, rules: &[Rule]) -> Option<Found> {
     best.map(|(_, f)| f)
 }
 
-/// How a capture is written into a command.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Escape {
-    None,
-    /// Quoted for cmd.exe.
-    Cmd,
-}
-
 /// Fills in an action's parameter: \0 to \8 are the captures, \d the working
 /// directory, \h the host, \u the user, \n a newline, and \\ a backslash.
-pub fn expand(parameter: &str, captures: &[String], cwd: &str, host: &str, user: &str, escape: Escape) -> String {
-    let quote = |t: &str| match escape {
-        Escape::None => t.to_string(),
-        Escape::Cmd => format!("\"{}\"", t.replace('"', "\"\"")),
+pub fn expand(parameter: &str, captures: &[String], cwd: &str, host: &str, user: &str) -> String {
+    expand_pieces(parameter, captures, cwd, host, user)
+        .into_iter()
+        .map(|p| match p {
+            CmdPiece::Text(t) | CmdPiece::Value(t) => t,
+        })
+        .collect()
+}
+
+/// `expand`'s parameter split into its text and the values it substitutes.
+fn expand_pieces(parameter: &str, captures: &[String], cwd: &str, host: &str, user: &str) -> Vec<CmdPiece> {
+    let mut out = Vec::new();
+    let mut text = String::new();
+    let value = |out: &mut Vec<CmdPiece>, text: &mut String, v: &str| {
+        out.push(CmdPiece::Text(std::mem::take(text)));
+        out.push(CmdPiece::Value(v.to_string()));
     };
-    let mut out = String::new();
     let mut chars = parameter.chars().peekable();
     while let Some(c) = chars.next() {
         if c != '\\' {
-            out.push(c);
+            text.push(c);
             continue;
         }
         match chars.peek().copied() {
-            Some(d @ '0'..='8') => out.push_str(&quote(captures.get(d as usize - '0' as usize).map_or("", String::as_str))),
-            Some('d') => out.push_str(&quote(cwd)),
-            Some('h') => out.push_str(&quote(host)),
-            Some('u') => out.push_str(&quote(user)),
-            Some('n') => out.push('\n'),
-            Some('\\') => out.push('\\'),
+            Some(d @ '0'..='8') => value(&mut out, &mut text, captures.get(d as usize - '0' as usize).map_or("", String::as_str)),
+            Some('d') => value(&mut out, &mut text, cwd),
+            Some('h') => value(&mut out, &mut text, host),
+            Some('u') => value(&mut out, &mut text, user),
+            Some('n') => text.push('\n'),
+            Some('\\') => text.push('\\'),
             _ => {
-                out.push('\\');
+                text.push('\\');
                 continue;
             }
         }
         chars.next();
     }
+    out.push(CmdPiece::Text(text));
     out
 }
 
@@ -144,13 +150,10 @@ pub fn runs_command(action: &str) -> bool {
     matches!(action, "runCommand:" | "runCommandInWindow:" | "runCoprocess:")
 }
 
-/// A capture written for `action` (`CAP:139-156`): quoted for cmd.exe for the run actions
-/// (iTerm2 backslash-escapes for sh), a URL's spaces and non-ASCII percent-encoded for Open
-/// URL, others as they are.
+/// A capture written for `action` (`CAP:139-156`): a URL's spaces and non-ASCII
+/// percent-encoded for Open URL, others as they are (the run actions' captures are values for
+/// the one cmd.exe builder, which quotes them; iTerm2 backslash-escapes for sh).
 pub fn encode_capture(action: &str, capture: &str) -> String {
-    if runs_command(action) {
-        return crate::semantic::cmd_quote(capture);
-    }
     if action != "openUrl:" {
         return capture.to_string();
     }
@@ -169,55 +172,34 @@ pub fn encode_capture(action: &str, capture: &str) -> String {
 }
 
 /// An action's parameter (`CAP:161-255`). Interpolated: Copy with no parameter copies the whole
-/// match, else the parameter is evaluated with the captures (`matches`) encoded per action;
-/// None when evaluation fails (nothing runs). Not interpolated: `expand`'s `\0`..`\8` form.
+/// match, else the parameter is evaluated with the captures (`matches`) encoded per action, by
+/// `eval(template, matches, cmd)`, where `cmd` says the result is a cmd.exe command line (the
+/// evaluator then builds it with the one builder, `interp::evaluate_cmd`). Not interpolated:
+/// `expand`'s `\0`..`\8` form, a run action's through `semantic::build_cmd_line`. Err is why
+/// nothing runs: an evaluation error, or `CMD_REFUSED`.
 #[allow(clippy::too_many_arguments)]
 pub fn parameter(
     a: &RuleAction,
     captures: &[String],
     interpolated: bool,
-    eval: &dyn Fn(&str, &[Option<&str>]) -> Result<String, String>,
+    eval: &dyn Fn(&str, &[Option<&str>], bool) -> Result<String, String>,
     cwd: &str,
     host: &str,
     user: &str,
-) -> Option<String> {
+) -> Result<String, String> {
     if a.action == "copy:" && a.parameter.is_empty() {
-        return Some(captures.first().cloned().unwrap_or_default());
+        return Ok(captures.first().cloned().unwrap_or_default());
     }
+    let cmd = runs_command(&a.action);
     if !interpolated {
-        let escape = if runs_command(&a.action) { Escape::Cmd } else { Escape::None };
-        return Some(expand(&a.parameter, captures, cwd, host, user, escape));
+        if cmd {
+            return crate::semantic::build_cmd_line(&expand_pieces(&a.parameter, captures, cwd, host, user)).ok_or_else(|| crate::semantic::CMD_REFUSED.to_string());
+        }
+        return Ok(expand(&a.parameter, captures, cwd, host, user));
     }
     let encoded: Vec<String> = captures.iter().map(|c| encode_capture(&a.action, c)).collect();
     let matches: Vec<Option<&str>> = encoded.iter().map(|c| Some(c.as_str())).collect();
-    eval(&a.parameter, &matches).ok()
-}
-
-/// Whether any value `parameter` substitutes is unsafe for cmd.exe (B3): `%`, a quote or a
-/// control character, which `Escape::Cmd` quoting does not neutralize.
-pub fn cmd_unsafe_values(parameter: &str, captures: &[String], cwd: &str, host: &str, user: &str) -> bool {
-    let mut chars = parameter.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            continue;
-        }
-        let value = match chars.peek().copied() {
-            Some(d @ '0'..='8') => captures.get(d as usize - '0' as usize).map_or("", String::as_str),
-            Some('d') => cwd,
-            Some('h') => host,
-            Some('u') => user,
-            Some('\\') | Some('n') => {
-                chars.next();
-                continue;
-            }
-            _ => continue,
-        };
-        if crate::semantic::cmd_unsafe(value) {
-            return true;
-        }
-        chars.next();
-    }
-    false
+    eval(&a.parameter, &matches, cmd)
 }
 
 #[cfg(test)]
@@ -228,42 +210,40 @@ mod tests {
     fn interpolated_actions_follow_iterm2() {
         let act = |action: &str, parameter: &str| RuleAction { title: "t".into(), action: action.into(), parameter: parameter.into() };
         let caps = vec!["x.y".to_string(), "x".to_string()];
-        // The evaluator reads `matches[n]` as the interpolation does: a template with `\(matches[1])`.
-        let eval = |t: &str, m: &[Option<&str>]| -> Result<String, String> {
-            if t == "boom" {
-                return Err("bad".into());
-            }
-            Ok(t.replace("\\(matches[1])", m.get(1).copied().flatten().unwrap_or("")).replace("\\(matches[0])", m.first().copied().flatten().unwrap_or("")))
-        };
+        // The interpolation itself; a command line through the one builder.
+        let eval = |t: &str, m: &[Option<&str>], cmd: bool| if cmd { crate::interp::evaluate_cmd(t, &|_| None, m, true) } else { crate::interp::evaluate(t, &|_| None, m) };
         // Off: expand's answers.
         let old = act("runCommand:", "open \\1");
-        assert_eq!(parameter(&old, &caps, false, &eval, "", "", ""), Some("open \"x\"".into()));
+        assert_eq!(parameter(&old, &caps, false, &eval, "", "", ""), Ok("open \"x\"".into()));
         let old = act("sendText:", "open \\1");
-        assert_eq!(parameter(&old, &caps, false, &eval, "", "", ""), Some("open x".into()));
+        assert_eq!(parameter(&old, &caps, false, &eval, "", "", ""), Ok("open x".into()));
         // On: matches encoded per action.
         let run = act("runCommand:", "open \\(matches[1])");
-        assert_eq!(parameter(&run, &caps, true, &eval, "", "", ""), Some("open \"x\"".into()));
+        assert_eq!(parameter(&run, &caps, true, &eval, "", "", ""), Ok("open \"x\"".into()));
         let window = act("runCommandInWindow:", "open \\(matches[0])");
-        assert_eq!(parameter(&window, &caps, true, &eval, "", "", ""), Some("open \"x.y\"".into()));
+        assert_eq!(parameter(&window, &caps, true, &eval, "", "", ""), Ok("open \"x.y\"".into()));
         let send = act("sendText:", "open \\(matches[0])");
-        assert_eq!(parameter(&send, &caps, true, &eval, "", "", ""), Some("open x.y".into()));
+        assert_eq!(parameter(&send, &caps, true, &eval, "", "", ""), Ok("open x.y".into()));
         let url = act("openUrl:", "\\(matches[0])");
-        assert_eq!(parameter(&url, &["a b\u{e9}".to_string()], true, &eval, "", "", ""), Some("a%20b%C3%A9".into()));
+        assert_eq!(parameter(&url, &["a b\u{e9}".to_string()], true, &eval, "", "", ""), Ok("a%20b%C3%A9".into()));
         // Copy with no parameter copies the whole match, in both modes.
         let copy = act("copy:", "");
-        assert_eq!(parameter(&copy, &caps, true, &eval, "", "", ""), Some("x.y".into()));
-        assert_eq!(parameter(&copy, &caps, false, &eval, "", "", ""), Some("x.y".into()));
+        assert_eq!(parameter(&copy, &caps, true, &eval, "", "", ""), Ok("x.y".into()));
+        assert_eq!(parameter(&copy, &caps, false, &eval, "", "", ""), Ok("x.y".into()));
         // An evaluation error: nothing runs.
-        assert_eq!(parameter(&act("runCommand:", "boom"), &caps, true, &eval, "", "", ""), None);
+        assert!(parameter(&act("runCommand:", "\\(f())"), &caps, true, &eval, "", "", "").is_err());
+        // A refused value: nothing runs, in both modes.
+        let amp = vec!["x&calc".to_string(), "x&calc".to_string()];
+        assert_eq!(parameter(&act("runCommand:", "open \\(matches[1])"), &amp, true, &eval, "", "", ""), Err(crate::semantic::CMD_REFUSED.into()));
+        assert_eq!(parameter(&act("runCommand:", "open \\1"), &amp, false, &eval, "", "", ""), Err(crate::semantic::CMD_REFUSED.into()));
     }
 
     #[test]
     fn captures_are_encoded_per_action() {
         assert_eq!(encode_capture("openUrl:", "a b\u{e9}"), "a%20b%C3%A9");
         assert_eq!(encode_capture("openUrl:", "https://a/b?c=d"), "https://a/b?c=d");
-        assert_eq!(encode_capture("runCommand:", "a b"), "\"a b\"");
-        assert_eq!(encode_capture("runCommandInWindow:", "x"), "\"x\"");
-        assert_eq!(encode_capture("runCoprocess:", "x"), "\"x\"");
+        assert_eq!(encode_capture("runCommand:", "a b"), "a b", "the one cmd builder quotes it");
+        assert_eq!(encode_capture("runCoprocess:", "x"), "x");
         assert_eq!(encode_capture("sendText:", "a b"), "a b");
         assert_eq!(encode_capture("openFile:", "a b"), "a b");
         assert!(runs_command("runCommand:") && runs_command("runCommandInWindow:") && runs_command("runCoprocess:"));
@@ -272,22 +252,19 @@ mod tests {
 
     #[test]
     fn a_pre_quoted_capture_is_refused_when_it_holds_a_command() {
-        let c = |t: &str| vec![t.to_string()];
-        assert!(cmd_unsafe_values("echo \"\\0\"", &c("x&calc"), "", "", ""));
-        assert!(cmd_unsafe_values("run \\0", &c("a\\"), "", "", ""), "a trailing backslash");
-        assert!(cmd_unsafe_values("run \\0", &c("a\u{ff02}b"), "", "", ""));
-        assert!(cmd_unsafe_values("run \\d", &c("x"), "C:\\Program Files (x86)", "", ""));
-        assert!(!cmd_unsafe_values("run \\0", &c("a b.txt"), "C:\\w", "h", "u"));
-    }
-
-    #[test]
-    fn cmd_unsafe_values_are_found() {
-        let caps = vec!["a".to_string(), "%COMSPEC%".to_string()];
-        assert!(!cmd_unsafe_values("run \\0 %PATH%", &caps, "", "", ""), "the template's own text stays");
-        assert!(cmd_unsafe_values("run \\1", &caps, "", "", ""));
-        assert!(cmd_unsafe_values("run \\d", &caps, "C:\\a\"b", "", ""));
-        assert!(cmd_unsafe_values("run \\h", &caps, "", "ho\nst", ""));
-        assert!(!cmd_unsafe_values("run \\\\1 \\9", &caps, "", "", ""), "an escaped backslash and an unset capture");
+        let run = |param: &str, caps: &[&str], cwd: &str, host: &str| {
+            let a = RuleAction { title: "t".into(), action: "runCommand:".into(), parameter: param.into() };
+            let caps: Vec<String> = caps.iter().map(|c| c.to_string()).collect();
+            parameter(&a, &caps, false, &|_, _, _| Err("unused".into()), cwd, host, "")
+        };
+        let refused = Err(crate::semantic::CMD_REFUSED.to_string());
+        assert_eq!(run("echo \"\\0\"", &["x&calc"], "", ""), refused);
+        assert_eq!(run("run \\0", &["a\\"], "", ""), refused, "a trailing backslash");
+        assert_eq!(run("run \\0", &["a\u{ff02}b"], "", ""), refused);
+        assert_eq!(run("run \\d", &["x"], "C:\\Program Files (x86)", ""), refused);
+        assert_eq!(run("run \\h", &["x"], "", "ho\nst"), refused);
+        assert_eq!(run("run \\0 %PATH%", &["a", "%COMSPEC%"], "", ""), Ok("run \"a\" %PATH%".into()), "the template's own text stays; an unused capture does not matter");
+        assert_eq!(run("run \\\\1 \\9", &["a", "%COMSPEC%"], "", ""), Ok("run \\1 \\9".into()), "an escaped backslash and an unset capture");
     }
 
     #[test]
@@ -349,13 +326,26 @@ mod tests {
     #[test]
     fn action_parameters_substitute() {
         let caps = vec!["a b".to_string(), "x\"y".to_string()];
-        assert_eq!(expand("open \\0 in \\d on \\h as \\u\\n\\\\", &caps, "C:\\w", "box", "me", Escape::None), "open a b in C:\\w on box as me\n\\");
-        assert_eq!(expand("code \\0 \\1 \\2", &caps, "", "", "", Escape::Cmd), "code \"a b\" \"x\"\"y\" \"\"");
+        assert_eq!(expand("open \\0 in \\d on \\h as \\u\\n\\\\", &caps, "C:\\w", "box", "me"), "open a b in C:\\w on box as me\n\\");
+    }
+
+    /// A run action's pre-quoted `\0` keeps a value with spaces one argument (no doubled quotes).
+    #[test]
+    fn a_pre_quoted_capture_stays_one_argument() {
+        let a = RuleAction { title: "t".into(), action: "runCommand:".into(), parameter: "git log \"\\1\" \\d".into() };
+        let caps = vec!["m".to_string(), "a --flag".to_string()];
+        let eval = |_: &str, _: &[Option<&str>], _: bool| -> Result<String, String> { Err("unused".into()) };
+        let line = parameter(&a, &caps, false, &eval, "C:\\w d", "", "").unwrap();
+        assert_eq!(line, "git log \"a --flag\" \"C:\\w d\"");
+        assert_eq!(crate::semantic::split_command_line(&line), ["git", "log", "a --flag", "C:\\w d"]);
     }
 
     #[test]
     fn folder_host_and_user_are_quoted_for_cmd() {
+        let a = RuleAction { title: "t".into(), action: "runCoprocess:".into(), parameter: "x \\d \\h \\u".into() };
         let caps = vec!["m".to_string()];
-        assert_eq!(expand("x \\d \\h \\u", &caps, "C:\\a&b", "h&calc", "u\"x", Escape::Cmd), "x \"C:\\a&b\" \"h&calc\" \"u\"\"x\"");
+        let eval = |_: &str, _: &[Option<&str>], _: bool| -> Result<String, String> { Err("unused".into()) };
+        assert_eq!(parameter(&a, &caps, false, &eval, "C:\\a b", "h", "u"), Ok("x \"C:\\a b\" \"h\" \"u\"".into()));
+        assert_eq!(parameter(&a, &caps, false, &eval, "C:\\a&b", "h", "u"), Err(crate::semantic::CMD_REFUSED.into()));
     }
 }
