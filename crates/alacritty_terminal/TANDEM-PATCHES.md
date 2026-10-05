@@ -84,4 +84,9 @@ test data) is left out. Changes:
     DECSET/DECRST 12 are ignored; DECSCUSR 0 and RIS still restore the configured style (iTerm2's
     Allow Change Cursor Blink).
 
+18. `term/cell.rs`, `term/mod.rs`: `Flags::BLINK` (the last free bit of the `u16`), set by SGR 5
+    (`Attr::BlinkSlow`) and SGR 6 (`Attr::BlinkFast`) and cleared by SGR 25 (`Attr::CancelBlink`)
+    and `Attr::Reset`. Upstream ignored all three. Tandem draws BLINK text in the off phase of the
+    blink clock when the profile allows blinking text.
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

@@ -53,6 +53,8 @@ pub struct Look {
     pub app_key_modes: bool,
     /// The profile's Use libtickit protocol: keys start in CSI u mode.
     pub csi_u: bool,
+    /// The profile's Blink Allowed: text with the blink attribute hides in the off phase.
+    pub blink_allowed: bool,
 }
 
 impl Look {
@@ -71,6 +73,7 @@ impl Look {
             scrollback,
             app_key_modes: p.bool("Allow modifyOtherKeys"),
             csi_u: p.bool("Use libtickit protocol"),
+            blink_allowed: p.bool("Blink Allowed"),
         }
     }
 }
@@ -136,6 +139,8 @@ pub struct Screen {
     parser: Processor,
     events: Receiver<Event>,
     pub palette: Palette,
+    /// The profile's Blink Allowed (`Look.blink_allowed`).
+    pub blink_allowed: bool,
     title: Option<String>,
     /// The profile's Allow Title Setting: whether programs may set the title (OSC 0, 1, 2).
     pub allow_title: bool,
@@ -414,6 +419,7 @@ impl Screen {
         term.set_cursor_blink_change(look.blink_change);
         Self {
             term,
+            blink_allowed: look.blink_allowed,
             parser: Processor::new(),
             events,
             palette,
@@ -507,6 +513,7 @@ impl Screen {
         self.keys.profile_csi_u = look.csi_u;
         self.term.set_options(config(look));
         self.term.set_cursor_blink_change(look.blink_change);
+        self.blink_allowed = look.blink_allowed;
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
@@ -1224,6 +1231,17 @@ impl Screen {
         self.term.cursor_style().blinking
     }
 
+    /// Whether any visible cell carries the blink attribute (iTerm2's
+    /// `textViewWillNeedUpdateForBlink`): the blink clock runs while it does.
+    pub fn has_blinking_text(&self) -> bool {
+        let grid = self.term.grid();
+        let offset = grid.display_offset() as i32;
+        (0..grid.screen_lines() as i32).any(|l| {
+            let row = &grid[Line(l - offset)];
+            (0..grid.columns()).any(|c| row[Column(c)].flags.contains(alacritty_terminal::term::cell::Flags::BLINK))
+        })
+    }
+
     pub(crate) fn alt_screen(&self) -> bool {
         self.term.mode().contains(TermMode::ALT_SCREEN)
     }
@@ -1454,6 +1472,42 @@ impl Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blink_flag_follows_sgr() {
+        let mut s = Screen::new(10, 3);
+        s.feed(b"\x1b[5ma\x1b[25mb\x1b[6mc\x1b[0md");
+        let blinks: Vec<bool> = (0..4).map(|c| s.term.grid()[Line(0)][Column(c)].flags.contains(alacritty_terminal::term::cell::Flags::BLINK)).collect();
+        assert_eq!(blinks, [true, false, true, false]);
+        // RIS clears the template: "b" after it is not flagged.
+        let mut s = Screen::new(10, 3);
+        s.feed(b"\x1b[5ma\x1bcb");
+        let b = &s.term.grid()[Line(0)][Column(0)];
+        assert_eq!(b.c, 'b');
+        assert!(!b.flags.contains(alacritty_terminal::term::cell::Flags::BLINK));
+    }
+
+    #[test]
+    fn has_blinking_text_sees_visible_cells_only() {
+        let mut s = Screen::new(10, 2);
+        assert!(!s.has_blinking_text());
+        s.feed(b"\x1b[5mx");
+        assert!(s.has_blinking_text());
+        // Two more lines push the row off the screen into history: nothing visible blinks.
+        s.feed(b"\x1b[0m\r\ny\r\nz");
+        assert!(!s.has_blinking_text());
+    }
+
+    #[test]
+    fn blink_allowed_follows_the_look() {
+        assert!(!Look::default().blink_allowed, "the stock profile's Blink Allowed is off");
+        let s = Screen::with_look(10, 2, Palette::default(), Look { blink_allowed: true, ..Look::default() });
+        assert!(s.blink_allowed);
+        let mut s = Screen::new(10, 2);
+        assert!(!s.blink_allowed);
+        s.set_look(Look { blink_allowed: true, ..Look::default() });
+        assert!(s.blink_allowed);
+    }
 
     #[test]
     fn program_blink_needs_permission() {

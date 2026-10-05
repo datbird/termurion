@@ -330,6 +330,7 @@ pub fn sgr_codes(c: &Cell) -> Vec<String> {
         (Flags::DOUBLE_UNDERLINE, "21"),
         (Flags::DOTTED_UNDERLINE, "4:4"),
         (Flags::DASHED_UNDERLINE, "4:5"),
+        (Flags::BLINK, "5"),
         (Flags::HIDDEN, "8"),
         (Flags::INVERSE, "7"),
         (Flags::STRIKEOUT, "9"),
@@ -444,6 +445,14 @@ mod tests {
         s.feed(b"\x1b[1;31mab\x1b[0m c\x1b[48;5;200mz\x1b[0;101my\x1b[0;38;2;1;2;3;4:3;7mq\x1b[0m");
         select(&mut s, (0, 0), (0, 11));
         assert_eq!(sgr_text(&s), "\x1b[0;31;1mab\x1b[0m c\x1b[0;48:5:200mz\x1b[0;101my\x1b[0;38:2:1:1:2:3;4:3;7mq\x1b[0m");
+    }
+
+    #[test]
+    fn sgr_copy_carries_blink() {
+        let mut s = Screen::new(12, 3);
+        s.feed(b"\x1b[5mab\x1b[25mc");
+        select(&mut s, (0, 0), (0, 11));
+        assert_eq!(sgr_text(&s), "\x1b[0;5mab\x1b[0mc\x1b[0m");
     }
 
     #[test]
