@@ -156,5 +156,10 @@ test data) is left out. Changes:
     stays), and stays narrow when it is off. A regional indicator right after a cell holding a
     lone regional indicator joins it as a zero-width mark (one cluster) and the pair is always
     two cells: it widens a one-cell first indicator the same way (iTerm2 `StringToScreenChars`).
+26. `term/mod.rs`: ED 2 in the alternate screen first scrolls the screen into its history when
+    `alt_scrollback` is on (iTerm2 `MS:1712-1720`; patch 24 did it for ED 0 at home only).
+    `Term.history_splices` and `take_history_splices`: leaving the alternate screen records
+    `(main scrolled_off, rows spliced)`, so a holder of absolute row numbers (those below
+    `scrolled_off` named history rows) can move them down by the rows inserted after them.
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

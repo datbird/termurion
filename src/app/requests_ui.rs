@@ -149,6 +149,14 @@ impl App {
                 self.redraw();
             }
             Request::AskClearHistory => self.ask_clear_history(pane),
+            Request::HistoryRebased { below, by } => {
+                // The Captured Output tool's Clear line names a row the same way an entry does.
+                if let Some(st) = self.belt.tools.get_mut(&crate::toolbelt::ToolId::CapturedOutput) {
+                    if st.cleared_pane == Some(pane) && st.cleared.abs_line != i64::MIN && st.cleared.abs_line < below {
+                        st.cleared.abs_line -= by;
+                    }
+                }
+            }
             Request::SetProfile(name) => self.set_profile_request(pane, name),
             Request::SetProfileProperty(pairs) => self.set_property_request(pane, pairs),
             Request::SetBackgroundImageFile(value) => self.set_background_request(pane, value),

@@ -353,6 +353,9 @@ pub struct Capture {
 /// Something output asked for that the window must do.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
+    /// Absolute row numbers below `below` moved down by `by` (rows spliced into the history
+    /// when the alternate screen ended); the app moves the ones it holds.
+    HistoryRebased { below: i64, by: i64 },
     /// CSI 3 J arrived while Prevent CSI 3 J is unset: ask once whether to allow it.
     AskClearHistory,
     /// OSC 7 with a machine id arrived while Accept OSC 7 is off.
@@ -1671,6 +1674,9 @@ impl Screen {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32)
         });
         self.parser.advance(&mut self.term, bytes);
+        for (below, by) in self.term.take_history_splices() {
+            self.rebase_history_rows(below, by);
+        }
         // DECTCEM: the time the cursor went away (the first, while it stays away).
         match (self.term.mode().contains(TermMode::SHOW_CURSOR), self.cursor_hidden_at) {
             (true, Some(_)) => self.cursor_hidden_at = None,
@@ -3867,6 +3873,24 @@ mod tests {
         // RIS in the alternate screen leaves no history behind.
         s.feed(b"\x1b[?1049h1\r\n2\r\n3\r\n4\x1bc");
         assert_eq!(s.term().grid().history_size(), 0);
+    }
+
+    /// 13o Task 4 fix: ED 2 in the alternate screen saves the screen first, as iTerm2
+    /// (`MS:1712-1720`), whatever Save Scroll Buffer When Clearing says.
+    #[test]
+    fn full_clear_saves_the_alternate_screen() {
+        let look = |on| Look { alt_scrollback: on, scrollback: 100, ..Look::default() };
+        let mut s = Screen::with_look(10, 4, Palette::default(), look(true));
+        s.feed(b"\x1b[?1049ha\r\nb\x1b[2J");
+        assert_eq!(history_texts(s.term().grid()), ["a", "b"]);
+        assert_eq!(shown_row(&s, 0), "");
+        let mut s = Screen::with_look(10, 4, Palette::default(), look(false));
+        s.feed(b"\x1b[?1049ha\r\nb\x1b[2J");
+        assert_eq!(s.term().grid().history_size(), 0);
+        // The main screen's ED 2 is unchanged.
+        let mut s = Screen::with_look(10, 4, Palette::default(), look(true));
+        s.feed(b"a\r\nb\x1b[2J");
+        assert_eq!(history_texts(s.term().grid()), ["a", "b"]);
     }
 
     /// 13o Task 4 (MS:1729-1742): ED 0 at home in the alternate screen saves the screen first.

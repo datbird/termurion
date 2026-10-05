@@ -391,6 +391,10 @@ pub struct Term<T> {
     /// screen into history (iTerm2's saveScrollBufferWhenClearing).
     pub save_screen_on_clear: bool,
 
+    /// Tandem patch: `(scrolled_off, rows)` for each time leaving the alternate screen spliced
+    /// rows into the main history. Take them with `take_history_splices`.
+    history_splices: Vec<(u64, usize)>,
+
     /// Tandem patch: the width rule `input` follows (None keeps upstream's `c.width()`).
     pub width_rule: Option<WidthRule>,
 
@@ -538,6 +542,7 @@ impl<T> Term<T> {
             max_url_len: 2_097_152,
             alt_scrollback: true,
             save_screen_on_clear: true,
+            history_splices: Vec::new(),
             width_rule: None,
             printed: 0,
             scrollback_with_region: true,
@@ -844,6 +849,12 @@ impl<T> Term<T> {
         self.scroll_region = region;
     }
 
+    /// Tandem patch: the history splices since the last call, oldest first. Absolute row
+    /// numbers (`scrolled_off` plus a line) below `.0` move down by `.1`.
+    pub fn take_history_splices(&mut self) -> Vec<(u64, usize)> {
+        mem::take(&mut self.history_splices)
+    }
+
     /// Tandem patch: the main screen's grid, also while the alternate screen is up.
     pub fn primary_grid(&self) -> &Grid<Cell> {
         if self.mode.contains(TermMode::ALT_SCREEN) { &self.inactive_grid } else { &self.grid }
@@ -941,6 +952,21 @@ impl<T> Term<T> {
         } else {
             // Tandem patch: the alternate screen's history goes above the main history.
             let rows = self.grid.take_history();
+            let by = rows.len();
+            if by > 0 {
+                // Tandem patch: every absolute row number below the main grid's `scrolled_off`
+                // named a history row, and `by` rows now sit after them.
+                let below = self.inactive_grid.scrolled_off();
+                match self.history_splices.last_mut() {
+                    Some((b, n)) if *b == below => *n += by,
+                    _ => {
+                        if self.history_splices.len() >= 256 {
+                            self.history_splices.remove(0);
+                        }
+                        self.history_splices.push((below, by));
+                    },
+                }
+            }
             self.inactive_grid.append_history(rows);
         }
 
@@ -2225,6 +2251,11 @@ impl<T: EventListener> Handler for Term<T> {
             },
             ansi::ClearMode::All => {
                 if self.mode.contains(TermMode::ALT_SCREEN) {
+                    // Tandem patch: iTerm2 always scrolls the alternate screen into its history
+                    // before a full clear (`VT100ScreenMutableState.m:1712-1720`).
+                    if self.alt_scrollback {
+                        self.scroll_screen_into_history();
+                    }
                     self.grid.reset_region(..);
                 } else {
                     let old_offset = self.grid.display_offset();

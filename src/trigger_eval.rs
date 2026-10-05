@@ -277,6 +277,33 @@ impl Screen {
         self.row_number(self.term.grid().cursor.point.line.0)
     }
 
+    /// Leaving the alternate screen spliced `by` rows into the main history after every row
+    /// numbered below `below` (`Term::take_history_splices`): the numbers of those rows move
+    /// down so they still name the same text (iTerm2 rebases its marks the same way). Row
+    /// numbers on the screen stay as they are. Tells the app, which holds the Captured
+    /// Output tool's Clear line.
+    pub(crate) fn rebase_history_rows(&mut self, below: u64, by: usize) {
+        let (below, by) = (below as i64, by as i64);
+        let shift = |n: &mut i64| {
+            if *n < below {
+                *n -= by;
+            }
+        };
+        shift(&mut self.triggers.next);
+        for r in &mut self.triggers.skip {
+            if r.end <= below {
+                r.start -= by;
+                r.end -= by;
+            }
+        }
+        for m in self.marks.records.values_mut() {
+            for c in &mut m.captured {
+                shift(&mut c.abs_line);
+            }
+        }
+        self.requests.push(Request::HistoryRebased { below, by });
+    }
+
     /// Rows moved (a resize, a fold, a porthole): checking goes on from the cursor.
     pub(crate) fn triggers_from_cursor(&mut self) {
         self.triggers.next = self.cursor_row();
@@ -1350,6 +1377,32 @@ mod tests {
         let line = "\u{1F600}ab\u{e9}c";
         let b = line.find('b').unwrap();
         assert_eq!(utf16_ranges(line, &[Some((0, line.len())), Some((b, b + 1)), None]), vec![(0, 6), (3, 1), (NOT_FOUND, 0)]);
+    }
+
+    /// 13o Task 4 fix: an alternate session splices its history between the main history and
+    /// the screen; a Captured Output entry for a history row still names the same text.
+    #[test]
+    fn captured_rows_survive_an_alternate_session() {
+        use alacritty_terminal::index::{Column, Line};
+        let text = |s: &Screen, abs: i64| -> String {
+            let line = (abs - s.term().grid().scrolled_off() as i64) as i32;
+            (0..40).map(|c| s.term().grid()[Line(line)][Column(c)].c).collect::<String>().trim_end().to_string()
+        };
+        let mut s = Screen::with_scrollback(40, 4, 100);
+        s.set_triggers(vec![trig(r"error: (\w+)", "CaptureTrigger", "run \\1", false)], TriggerPrefs::default());
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07cmd\r\n\x1b]133;C\x07");
+        s.feed(b"see error: x here\r\n");
+        let abs = s.last_command_mark().unwrap().captured[0].abs_line;
+        s.feed(b"l1\r\nl2\r\nl3\r\nl4\r\nl5\r\n");
+        assert_eq!(text(&s, abs), "see error: x here", "in history before");
+        s.feed(b"\x1b[?1049h\x1b[Ha\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng");
+        s.feed(b"\x1b[?1049l");
+        let abs = s.last_command_mark().unwrap().captured[0].abs_line;
+        assert_eq!(text(&s, abs), "see error: x here", "and after the alternate session");
+        // Triggers go on from where they were: a new match is numbered right.
+        s.feed(b"error: y\r\n");
+        let list = s.last_command_mark().unwrap().captured.clone();
+        assert_eq!(text(&s, list[1].abs_line), "error: y");
     }
 
     #[test]
