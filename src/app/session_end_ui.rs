@@ -489,4 +489,14 @@ mod tests {
         assert!(ai.contains("RestartStep::Refused => done(ai_actions::NOT_RESTARTABLE"));
     }
 
+    /// 13q S6/P11 x 13r: Send Text and Run Coprocess on an ended pane show "The session has
+    /// ended." instead of a silent drop; the pane's text stays clickable (nothing else is refused).
+    #[test]
+    fn semantic_actions_on_an_ended_pane_say_so() {
+        let e = body(include_str!("semantic_ui.rs"), "    pub(super) fn execute_with(");
+        let check = e.find("semantic::needs_live_session(&run)").expect("checked");
+        assert!(check < e.find("match run {").unwrap(), "before anything runs");
+        assert!(e.contains("p.exited.is_some() || p.ended") && e.contains("\"The session has ended.\""));
+    }
+
 }

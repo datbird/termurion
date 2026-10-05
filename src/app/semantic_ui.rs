@@ -359,6 +359,11 @@ impl App {
     /// set (never a file); `Run::Window` opens a single-use window and needs the event loop.
     pub(super) fn execute_with(&mut self, id: PaneId, run: Run, cwd: Option<&std::path::Path>, how: Exec) {
         let Exec { background, from_file, event_loop } = how;
+        // Send Text and Run Coprocess need the pane's shell; an ended session says so (P11).
+        if semantic::needs_live_session(&run) && self.panes.get(&id).is_some_and(|p| p.exited.is_some() || p.ended) {
+            self.banners.set("action", "The session has ended.");
+            return self.redraw();
+        }
         match run {
             Run::Open(target) => {
                 if semantic::handler_applies(&Run::Open(target.clone()), from_file) && self.url_handler(id, &target, cwd, background) {

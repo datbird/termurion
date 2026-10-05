@@ -998,6 +998,12 @@ pub fn plan(target: &Target, prefs: &Prefs, around: &Around, has_code: bool) -> 
     }
 }
 
+/// Whether a plan acts on the pane's own shell (Send Text, Run Coprocess): an ended session
+/// has none, so the action is refused with a message (13q S6, 13r P11).
+pub fn needs_live_session(run: &Run) -> bool {
+    matches!(run, Run::Send(_) | Run::Coprocess(_))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1790,6 +1796,17 @@ mod tests {
                 out
             };
             assert_eq!(ours, theirs, "{line}");
+        }
+    }
+
+    /// 13q S6/P11: Send Text and Run Coprocess act on the pane's own shell; an ended session has
+    /// none, so they say so instead of dropping the text. Every other plan acts outside the pane.
+    #[test]
+    fn only_send_and_coprocess_need_a_live_session() {
+        assert!(needs_live_session(&Run::Send("x".into())));
+        assert!(needs_live_session(&Run::Coprocess("x".into())));
+        for r in [Run::Open("https://a.b".into()), Run::Command("x".into()), Run::Blocked("x".into()), Run::Reveal("C:\\x".into()), Run::Window("x".into())] {
+            assert!(!needs_live_session(&r), "{r:?}");
         }
     }
 }
