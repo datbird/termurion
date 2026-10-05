@@ -39,13 +39,18 @@ pub const MIN_COLUMNS: usize = 2;
 pub const MIN_SCREEN_LINES: usize = 1;
 
 /// Max size of the window title stack.
-const TITLE_STACK_MAX_DEPTH: usize = 4096;
+// Tandem patch: xterm's depth (10), not 4096, and each entry is cut (`TITLE_STACK_MAX_BYTES`), so
+// a program cannot hold gigabytes with `CSI 22 t` (13o, patch 22).
+const TITLE_STACK_MAX_DEPTH: usize = 10;
+
+/// Tandem patch: the longest title kept on the stack, in bytes (cut at a character boundary).
+const TITLE_STACK_MAX_BYTES: usize = 4096;
 
 /// Default semantic escape characters.
 pub const SEMANTIC_ESCAPE_CHARS: &str = ",│`|:\"' ()[]{}<>\t";
 
 /// Max size of the keyboard modes.
-const KEYBOARD_MODE_STACK_MAX_DEPTH: usize = TITLE_STACK_MAX_DEPTH;
+const KEYBOARD_MODE_STACK_MAX_DEPTH: usize = 4096;
 
 /// Default tab interval, corresponding to terminfo `it` value.
 const INITIAL_TABSTOPS: usize = 8;
@@ -430,6 +435,11 @@ pub enum Osc52 {
 }
 
 impl<T> Term<T> {
+    /// Tandem patch: the saved titles (`CSI 22 t`), oldest first.
+    pub fn title_stack(&self) -> &[Option<String>] {
+        &self.title_stack
+    }
+
     #[inline]
     pub fn scroll_display(&mut self, scroll: Scroll)
     where
@@ -2480,7 +2490,18 @@ impl<T: EventListener> Handler for Term<T> {
             );
         }
 
-        self.title_stack.push(self.title.clone());
+        // Tandem patch: an entry is cut at `TITLE_STACK_MAX_BYTES`.
+        let mut title = self.title.clone();
+        if let Some(t) = &mut title {
+            if t.len() > TITLE_STACK_MAX_BYTES {
+                let mut end = TITLE_STACK_MAX_BYTES;
+                while !t.is_char_boundary(end) {
+                    end -= 1;
+                }
+                t.truncate(end);
+            }
+        }
+        self.title_stack.push(title);
     }
 
     #[inline]
@@ -3513,7 +3534,18 @@ mod tests {
         for _ in 0..4097 {
             term.push_title();
         }
-        assert_eq!(term.title_stack.len(), 4096);
+        assert_eq!(term.title_stack.len(), TITLE_STACK_MAX_DEPTH);
+
+        // Tandem patch: nor does it hold big titles (13o, patch 22).
+        term.set_title(Some("\u{e9}".repeat(1 << 19)));
+        for _ in 0..4096 {
+            term.push_title();
+        }
+        assert_eq!(term.title_stack.len(), TITLE_STACK_MAX_DEPTH);
+        let bytes: usize = term.title_stack.iter().flatten().map(String::len).sum();
+        assert!(bytes <= TITLE_STACK_MAX_DEPTH * TITLE_STACK_MAX_BYTES, "{bytes} bytes held");
+        assert!(term.title_stack.last().unwrap().as_ref().is_some_and(|t| t.len() == TITLE_STACK_MAX_BYTES && t.starts_with('\u{e9}')));
+        term.set_title(None);
 
         // Title and title stack reset when terminal state is reset.
         term.push_title();

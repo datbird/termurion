@@ -3608,4 +3608,24 @@ mod tests {
             assert!(s.term().grid().history_size() >= before, "round {round}: {stream:?} cleared history");
         }
     }
+    /// 13o Task 2 fix 3: the title stack stays small however long the titles and however many
+    /// pushes (a 1 MiB title pushed 4096 times held 4 GiB).
+    #[test]
+    fn the_title_stack_is_bounded() {
+        let mut s = Screen::new(20, 3);
+        let mut title = b"\x1b]0;".to_vec();
+        title.extend(std::iter::repeat_n(b'T', 600_000));
+        title.push(7);
+        s.feed(&title);
+        for _ in 0..4096 {
+            s.feed(b"\x1b[22t");
+        }
+        let stack = s.term.title_stack();
+        assert!(stack.len() <= 10, "depth {}", stack.len());
+        let bytes: usize = stack.iter().flatten().map(String::len).sum();
+        assert!(bytes <= 10 * 4096, "{bytes} bytes held");
+        // The newest title comes back (cut), and a short title is unchanged.
+        s.feed(b"\x1b]0;short\x07\x1b[22t\x1b]0;other\x07\x1b[23t");
+        assert_eq!(s.title(), Some("short"));
+    }
 }

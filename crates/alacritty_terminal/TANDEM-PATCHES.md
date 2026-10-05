@@ -126,5 +126,10 @@ test data) is left out. Changes:
 21. `term/mod.rs`: `Term.max_url_len` (default 2097152, iTerm2's maxURLLength). `set_hyperlink`
     returns before touching the template when the URI is longer, so a refused link neither starts
     nor ends one (`VT100Terminal.m:4189`); a later OSC 8 with no URI still ends an open link.
+22. `term/mod.rs`: the title stack holds at most 10 titles (xterm's depth; it was 4096) and each
+    entry is cut at 4096 bytes on a character boundary, so `CSI 22 t` repeated cannot hold
+    gigabytes of a program's 1 MiB title. `KEYBOARD_MODE_STACK_MAX_DEPTH` keeps 4096 (it shared
+    the constant). A title longer than 4096 bytes comes back cut from `CSI 23 t`. `Term::title_stack()`
+    lets Tandem's tests read the stack.
 
 To update alacritty_terminal, copy the new version here and apply these changes again.
