@@ -677,7 +677,7 @@ detached tmux window asks whether to close. Sessions log in four styles (raw, pl
 menu, and archive on closure or by Shell > Archives; Restore Archive opens a saved window read-only and Restart makes it live. Security fixes
 found by the reviews: a pane never ends a program its shell left running without asking (close, every restart route including the API and AI tool),
 log names and folders cannot be steered by a program's title, a downloaded archive asks before it opens and is bounded (512 MB, 64 windows,
-10,000,000 lines a pane), and logs and archives are written out before Tandem exits. Deferred: the minors listed in
+10,000,000 lines a pane), and logs and archives are written out before Tandem exits (and at logoff), a Restart session answer is only for the shell it was asked about, an archived pane never revives as a live shell at launch, and every automatic log name ends in .log. Deferred: the minors listed in
 `docs/superpowers/rulings/m13q-rulings.txt`. Nothing of 13q was checked on screen during the build. Every kept quirk is listed in
 `docs/acceptance/m13q-checklist.md` and ruled on in that file.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the

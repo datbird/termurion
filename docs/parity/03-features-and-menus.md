@@ -53,7 +53,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Shell > Close All Panes in Tab | Opt+Cmd+W | Closes every pane in the current tab. | have |
 | Shell > Undo Close | Shift+Cmd+T | Reopens the most recently closed session. (milestone 7) | have, milestone 7b |
 | Shell > Archives > Save Archive of Current Session... | no shortcut | Saves session scrollback and state as a reloadable archive file. | have |
-| Shell > Archives > Restore Archive... | no shortcut | Reloads a previously saved session archive. | have |
+| Shell > Archives > Restore Archive... | no shortcut | Reloads a previously saved session archive. | have | Milestone 13q: the panes hold the saved text with no shell; Restart starts one. A pane that was archived stays archived through session restoration (it never starts the archive's profile at launch). Only Restore Archive asks about an unmarked file that opens several windows. |
 | Shell > Workgroups > Exit Workgroup | no shortcut | Leaves a linked group of peer sessions. (milestone 7) | missing |
 | Shell > Broadcast Input > Send Input to Current Session Only | Opt+Cmd+Shift+I | Turns off input broadcasting, typing goes only to the active pane. | have, milestone 7f |
 | Shell > Broadcast Input > Broadcast Input to All Panes in All Tabs | Cmd+Shift+I | Sends typed input to every pane in every tab of the window. | have, milestone 7f |

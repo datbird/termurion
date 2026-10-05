@@ -1057,7 +1057,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| killSessionsOnLogout | killSessionsOnLogout (bool, default NO) | Kill sessions on logout. | have | Milestone 13q: Settings > Advanced > Experimental Features, key KillSessionsOnLogout. Windows: on WM_ENDSESSION (sign out or shutdown) Tandem ends the hosted sessions and writes the logs; it acts only with "Run jobs in servers" on and a host running. |
+| killSessionsOnLogout | killSessionsOnLogout (bool, default NO) | Kill sessions on logout. | have | Milestone 13q: Settings > Advanced > Experimental Features, key KillSessionsOnLogout. Windows: on WM_ENDSESSION (sign out or shutdown) Tandem, as its normal quit does, writes the archives and logs out and then ends the hosted sessions (waiting for the host to get the request), all within about 6 seconds; it acts only with "Run jobs in servers" on and a host running, and the setting is one for every window. |
 | useExperimentalFontMetrics | useExperimentalFontMetrics (bool, default NO) | Use a more theoretically correct technique to measure line height. | missing |  |
 | fastForegroundJobUpdates | fastForegroundJobUpdates (bool, default YES) | Enable low-latency updates of the current foreground job. | have | Milestone 13p: Advanced > Experimental Features; a foreground job's exit wakes the watcher at once; a new job is found by the next look. |
 | tmuxVariableWindowSizesSupported | tmuxVariableWindowSizesSupported (bool, default YES) | Allow variable window sizes in tmux integration. | have | Milestone 8c: per-window sizes on tmux 2.9 and later (refresh-client -C @W:WxH on 3.4, else resize-window). |
