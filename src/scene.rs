@@ -3019,13 +3019,23 @@ pub fn session_picker_button(frame: &mut Frame, pane: Rect, label: &str, fg: Rgb
 /// rows, box glyphs and strokes under it are cut out first, so nothing of row 0 shows through),
 /// outlined by a 1 pixel line at its top and bottom, and the command's cells on `line` are
 /// drawn in it from `text_origin`. The box goes in `popups` and the text in `rows`, never in
-/// `overlay`, which draws over text. `colors` is `offscreen::band_colors` (sRGB).
-pub fn offscreen_band(frame: &mut Frame, screen: &Screen, band: Rect, text_origin: (f32, f32), cell: (f32, f32), line: i32, colors: ([f32; 4], [f32; 4]), face: u16) {
+/// `overlay`, which draws over text. `colors` is `offscreen::band_colors` (sRGB). `holes` are
+/// Tandem's surfaces already drawn over the band's strip (info bar, find bar, indicators): the
+/// band is drawn around them, so it is called last.
+pub fn offscreen_band(frame: &mut Frame, screen: &Screen, band: Rect, text_origin: (f32, f32), cell: (f32, f32), line: i32, colors: ([f32; 4], [f32; 4]), face: u16, holes: &[Rect]) {
     let lin = |c: [f32; 4]| [srgb_to_linear((c[0] * 255.0).round() as u8), srgb_to_linear((c[1] * 255.0).round() as u8), srgb_to_linear((c[2] * 255.0).round() as u8), c[3]];
-    cut_out(frame, band, cell.1);
-    frame.popups.push(Quad { rect: band, color: lin(colors.0) });
-    frame.popups.push(Quad { rect: Rect { h: 1.0, ..band }, color: lin(colors.1) });
-    frame.popups.push(Quad { rect: Rect { y: band.y + band.h - 1.0, h: 1.0, ..band }, color: lin(colors.1) });
+    // Around Tandem's own surfaces over the pane's top, which keep their pixels.
+    let parts = crate::offscreen::band_pieces(band, holes);
+    let (top, bottom) = (Rect { h: 1.0, ..band }, Rect { y: band.y + band.h - 1.0, h: 1.0, ..band });
+    for part in &parts {
+        cut_out(frame, *part, cell.1);
+        frame.popups.push(Quad { rect: *part, color: lin(colors.0) });
+        for edge in [top, bottom] {
+            if let Some(r) = cut(edge, *part) {
+                frame.popups.push(Quad { rect: r, color: lin(colors.1) });
+            }
+        }
+    }
     if face != crate::render::DEFAULT_FACE && !frame.face_heights.iter().any(|(f, _)| *f == face) {
         frame.face_heights.push((face, cell.1));
     }
@@ -3076,7 +3086,9 @@ pub fn offscreen_band(frame: &mut Frame, screen: &Screen, band: Rect, text_origi
         if spans.is_empty() {
             continue;
         }
-        frame.rows.push(TextRow { x: text_origin.0 + col as f32 * cell.0, y: text_origin.1, spans, clip: band, scale: 1.0, face });
+        for part in &parts {
+            frame.rows.push(TextRow { x: text_origin.0 + col as f32 * cell.0, y: text_origin.1, spans: spans.clone(), clip: *part, scale: 1.0, face });
+        }
     }
 }
 
@@ -5319,7 +5331,7 @@ mod tests {
         use crate::encoding::Form;
         let band = |s: &Screen| {
             let mut f = Frame::default();
-            offscreen_band(&mut f, s, RECT, (0.0, 0.0), CELL, 0, ([0.0; 4], [1.0; 4]), crate::render::DEFAULT_FACE);
+            offscreen_band(&mut f, s, RECT, (0.0, 0.0), CELL, 0, ([0.0; 4], [1.0; 4]), crate::render::DEFAULT_FACE, &[]);
             f.rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect::<String>()).collect::<Vec<_>>()
         };
         assert_eq!(band(&normal_screen("\u{e9}x", Form::Nfd)), vec!["e\u{301}".to_string(), "x".to_string()]);
@@ -7850,7 +7862,7 @@ mod tests {
         let (before, overlay) = (f.rows.len(), f.overlay.len());
         let band = Rect { x: 0.0, y: 0.0, w: 160.0, h: 32.0 };
         let colors = ([0.105, 0.105, 0.105, 0.5], [0.5, 0.5, 0.5, 1.0]);
-        offscreen_band(&mut f, &s, band, (0.0, 8.0), CELL, 0, colors, 3);
+        offscreen_band(&mut f, &s, band, (0.0, 8.0), CELL, 0, colors, 3, &[]);
         let lin = |c: [f32; 4]| [srgb_to_linear((c[0] * 255.0).round() as u8), srgb_to_linear((c[1] * 255.0).round() as u8), srgb_to_linear((c[2] * 255.0).round() as u8), c[3]];
         assert!(f.popups.iter().any(|q| q.rect == band && q.color == lin(colors.0)), "{:?}", f.popups);
         assert!(f.popups.iter().any(|q| q.rect == Rect { h: 1.0, ..band } && q.color == lin(colors.1)));
@@ -7873,7 +7885,7 @@ mod tests {
         assert!(!f.glyphs.is_empty() && !f.underlines.is_empty() && !f.strikes.is_empty(), "the fixture draws all three");
         let band = Rect { x: 0.0, y: 0.0, w: 160.0, h: 32.0 };
         let under = f.rows.len();
-        offscreen_band(&mut f, &s, band, (0.0, 8.0), CELL, 0, ([0.1, 0.1, 0.1, 0.5], [0.5, 0.5, 0.5, 1.0]), crate::render::DEFAULT_FACE);
+        offscreen_band(&mut f, &s, band, (0.0, 8.0), CELL, 0, ([0.1, 0.1, 0.1, 0.5], [0.5, 0.5, 0.5, 1.0]), crate::render::DEFAULT_FACE, &[]);
         let hit = |r: Rect| r.x < band.x + band.w && r.x + r.w > band.x && r.y < band.y + band.h && r.y + r.h > band.y;
         assert!(f.underlines.iter().chain(&f.strikes).all(|q| !hit(q.rect)), "strokes: {:?}", f.underlines);
         assert!(f.glyphs.iter().all(|g| {
@@ -7881,6 +7893,33 @@ mod tests {
             !(hit(g.rect) && c.w > 0.0 && c.h > 0.0 && hit(c))
         }), "glyphs: {:?}", f.glyphs);
         assert!(f.rows.iter().enumerate().all(|(i, r)| i >= under || r.clip.w <= 0.0 || !hit(Rect { x: r.clip.x, y: r.y, w: r.clip.w, h: 16.0 })), "rows: {:?}", f.rows.iter().map(|r| (r.y, r.clip, r.spans.iter().map(|s| s.text.clone()).collect::<String>())).collect::<Vec<_>>());
+    }
+
+    /// Task 6 review 2: Tandem's surfaces over the pane's top (an info bar, the find bar, an
+    /// indicator) keep their own pixels: the band's fill and outlines go around them, its text is
+    /// clipped away from them, and what they drew is not cut.
+    #[test]
+    fn offscreen_band_leaves_later_surfaces_alone() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"ls -R\r\nnext");
+        let mut f = Frame::default();
+        let pane = Rect { x: 0.0, y: 0.0, w: 160.0, h: 64.0 };
+        pane_with(&mut f, &s, pane, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        let info = Rect { x: 0.0, y: 0.0, w: 160.0, h: 12.0 };
+        let corner = Rect { x: 120.0, y: 12.0, w: 40.0, h: 20.0 };
+        let span = Span { text: "Allow?".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+        f.rows.push(TextRow { x: 4.0, y: 0.0, spans: vec![span], clip: info, scale: 1.0, face: crate::render::DEFAULT_FACE });
+        let band = Rect { x: 0.0, y: 0.0, w: 160.0, h: 32.0 };
+        offscreen_band(&mut f, &s, band, (0.0, 8.0), CELL, 0, ([0.1, 0.1, 0.1, 0.5], [0.5, 0.5, 0.5, 1.0]), crate::render::DEFAULT_FACE, &[info, corner]);
+        let touches = |a: Rect, b: Rect| a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+        for hole in [info, corner] {
+            assert!(f.popups.iter().all(|q| !touches(q.rect, hole)), "box: {:?}", f.popups);
+        }
+        assert!(f.popups.iter().any(|q| q.rect.w > 0.0), "the band still shows below the info bar");
+        let prompt = f.rows.iter().find(|r| r.spans[0].text == "Allow?").expect("the info bar's text survives");
+        assert_eq!((prompt.x, prompt.clip), (4.0, info));
+        let band_rows: Vec<&TextRow> = f.rows.iter().filter(|r| r.y == 8.0 && r.spans.iter().any(|s| s.text.contains("ls"))).collect();
+        assert!(!band_rows.is_empty() && band_rows.iter().all(|r| !touches(r.clip, info) && !touches(r.clip, corner)), "band text clipped away from the surfaces: {:?}", band_rows.iter().map(|r| r.clip).collect::<Vec<_>>());
     }
 
     #[test]

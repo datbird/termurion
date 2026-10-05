@@ -98,6 +98,32 @@ pub fn band_rect(pane: Rect, cell: (f32, f32), scale: f32) -> Rect {
     Rect { h: cell.1 + 2.0 * PADDING * scale, ..pane }
 }
 
+/// The parts of `band` left when `holes` (Tandem's own surfaces drawn over the pane's top: the
+/// info bar, find bar, indicators, portholes) are taken out: the band yields to them.
+pub fn band_pieces(band: Rect, holes: &[Rect]) -> Vec<Rect> {
+    let mut pieces = vec![band];
+    for h in holes.iter().filter(|h| h.w > 0.0 && h.h > 0.0) {
+        let mut next = Vec::with_capacity(pieces.len() + 3);
+        for p in pieces {
+            let (x0, y0, x1, y1) = (h.x.max(p.x), h.y.max(p.y), (h.x + h.w).min(p.x + p.w), (h.y + h.h).min(p.y + p.h));
+            if x0 >= x1 || y0 >= y1 {
+                next.push(p);
+                continue;
+            }
+            // The band's rows above the hole, below it, then left and right of it.
+            let (px1, py1) = (p.x + p.w, p.y + p.h);
+            next.extend([
+                Rect { x: p.x, y: p.y, w: p.w, h: y0 - p.y },
+                Rect { x: p.x, y: y1, w: p.w, h: py1 - y1 },
+                Rect { x: p.x, y: y0, w: x0 - p.x, h: y1 - y0 },
+                Rect { x: x1, y: y0, w: px1 - x1, h: y1 - y0 },
+            ]);
+        }
+        pieces = next.into_iter().filter(|r| r.w > 0.0 && r.h > 0.0).collect();
+    }
+    pieces
+}
+
 /// The band's fill (with alpha) and outline for the pane's default background and text colors.
 pub fn band_colors(bg: Rgb, fg: Rgb) -> ([f32; 4], [f32; 4]) {
     let n = |v: u8| f32::from(v) / 255.0;
@@ -232,5 +258,29 @@ mod tests {
         let (fill, outline) = band_colors(rgb(255, 255, 255), rgb(0, 0, 0));
         assert!(near(fill, [0.915, 0.915, 0.915, 0.5]), "{fill:?}");
         assert!(near(outline, [0.5, 0.5, 0.5, 1.0]), "{outline:?}");
+    }
+    /// Task 6 review 2: the band is drawn around Tandem's surfaces, never under them.
+    #[test]
+    fn band_pieces_leave_the_holes_out() {
+        let band = Rect { x: 0.0, y: 0.0, w: 100.0, h: 32.0 };
+        let area = |r: &Rect| r.w * r.h;
+        assert_eq!(band_pieces(band, &[]), vec![band]);
+        // An info bar across the top leaves the strip below it.
+        assert_eq!(band_pieces(band, &[Rect { x: 0.0, y: 0.0, w: 100.0, h: 12.0 }]), vec![Rect { x: 0.0, y: 12.0, w: 100.0, h: 20.0 }]);
+        // A corner (the find bar) and a middle hole (an indicator): no piece touches a hole and
+        // together the pieces are the band less the holes.
+        let holes = [Rect { x: 80.0, y: 0.0, w: 20.0, h: 12.0 }, Rect { x: 30.0, y: 10.0, w: 10.0, h: 10.0 }];
+        let pieces = band_pieces(band, &holes);
+        let touches = |a: &Rect, b: &Rect| a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+        assert!(pieces.iter().all(|p| holes.iter().all(|h| !touches(p, h))), "{pieces:?}");
+        assert!(pieces.iter().all(|p| p.x >= 0.0 && p.y >= 0.0 && p.x + p.w <= 100.0 && p.y + p.h <= 32.0 && p.w > 0.0 && p.h > 0.0));
+        let total: f32 = pieces.iter().map(area).sum();
+        assert!((total - (area(&band) - 20.0 * 12.0 - 10.0 * 10.0)).abs() < 0.01, "{total}");
+        for (i, a) in pieces.iter().enumerate() {
+            assert!(pieces[i + 1..].iter().all(|b| !touches(a, b)), "pieces do not overlap");
+        }
+        // A hole over the whole band, or off it, and a zero-size hole.
+        assert!(band_pieces(band, &[Rect { x: -5.0, y: -5.0, w: 200.0, h: 100.0 }]).is_empty());
+        assert_eq!(band_pieces(band, &[Rect { x: 0.0, y: 50.0, w: 100.0, h: 5.0 }, Rect { x: 10.0, y: 10.0, w: 0.0, h: 0.0 }]), vec![band]);
     }
 }

@@ -39,9 +39,14 @@ impl App {
         }
     }
 
-    /// Draws pane `id`'s band when the rules allow it. Answers its rectangle and the line it
-    /// shows, which the frame keeps as this window's hits.
-    pub(super) fn draw_offscreen(&self, frame: &mut Frame, id: PaneId, rect: Rect, cell: (f32, f32)) -> Option<(Rect, i32)> {
+    /// Draws pane `id`'s band when the rules allow it, around `holes` (Tandem's own surfaces
+    /// drawn over the pane's top). Answers the band's visible pieces and the line it shows,
+    /// which the frame keeps as this window's hits.
+    pub(super) fn draw_offscreen(&self, frame: &mut Frame, id: PaneId, rect: Rect, cell: (f32, f32), holes: &[Rect]) -> Vec<(Rect, i32)> {
+        self.offscreen_band_for(frame, id, rect, cell, holes).unwrap_or_default()
+    }
+
+    fn offscreen_band_for(&self, frame: &mut Frame, id: PaneId, rect: Rect, cell: (f32, f32), holes: &[Rect]) -> Option<Vec<(Rect, i32)>> {
         let prompts = self.offscreen_prepared.get(&id)?;
         let p = self.panes.get(&id)?;
         let profile = self.store.get(&p.profile)?;
@@ -68,8 +73,8 @@ impl App {
         let text = self.text_rect(id, rect);
         let face = self.pane_faces.face(id).unwrap_or(crate::render::DEFAULT_FACE);
         let colors = offscreen::band_colors(p.screen.palette.bg, p.screen.palette.fg);
-        scene::offscreen_band(frame, &p.screen, band, (text.x, band.y + offscreen::PADDING * scale), cell, line, colors, face);
-        Some((band, line))
+        scene::offscreen_band(frame, &p.screen, band, (text.x, band.y + offscreen::PADDING * scale), cell, line, colors, face, holes);
+        Some(offscreen::band_pieces(band, holes).into_iter().map(|r| (r, line)).collect())
     }
 
     /// A left press inside a band reveals its command at the top of the pane and is consumed.
@@ -141,8 +146,13 @@ mod tests {
         assert!(slot.contains("swap(&mut self.offscreen_hits, &mut s.offscreen_hits)"));
         assert_eq!(slot.matches("offscreen_hits: Vec::new()").count(), 2, "WinSlot::new and new_empty");
         let m = include_str!("mod.rs");
-        let (band, porthole) = (m.find("self.draw_offscreen(&mut frame, id, rect, cell)").unwrap(), m.find("self.draw_portholes(&mut frame, id, rect, cell)").unwrap());
-        assert!(band < porthole, "later popups cut the band");
+        // Task 6 review 2: drawn once every Tandem surface is, around their rectangles.
+        let build = &m[m.find("fn build_frame(&mut self)").unwrap()..];
+        let band = build.find("self.draw_offscreen(&mut frame, id, rect, cell, &holes)").unwrap();
+        for before in ["self.draw_info_bar(&mut frame, id, rect, cell)", "self.draw_portholes(&mut frame, id, rect, cell)", "self.draw_coprocess_indicator(", "scene::find_bar(&mut frame", "self.draw_composer(&mut frame", "self.draw_completion(&mut frame", "mouse::Overlay::Toast", "mouse::Overlay::Banner"] {
+            assert!(build.find(before).unwrap_or_else(|| panic!("{before} missing")) < band, "{before} is drawn before the band");
+        }
+        assert!(band < build.find("self.overlay_drawn = overlay_drawn;").unwrap());
         assert!(m.contains("let cell = self.pane_cell(id);"));
         let me = include_str!("offscreen_ui.rs").split("#[cfg(test)]").next().unwrap();
         assert!(me.contains("self.pane_faces.face(id)") && me.contains("self.text_outer(id, rect)") && !me.contains("marks_in_order"));

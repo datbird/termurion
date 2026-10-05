@@ -5249,6 +5249,7 @@ impl App {
         let mut block_buttons = Vec::new();
         let mut picker_hits = Vec::new();
         let mut offscreen_hits: Vec<(PaneId, Rect, i32)> = Vec::new();
+        let mut band_jobs: Vec<(PaneId, Rect, (f32, f32))> = Vec::new();
         let mut indicator_hits = Vec::new();
         let mut inline_hits = Vec::new();
         self.prepare_portholes();
@@ -5352,9 +5353,8 @@ impl App {
                         let r = self.text_rect(id, rect);
                         frame.images.push(scene::ImageQuad { rect: r, uv: [0.0, 0.0, r.w / *n as f32, r.h / *n as f32], key: (0x5354_5249, *n as usize), pixels: px.clone(), size: (*n, *n), repeat: true });
                     }
-                    // After the pane's own rows and strokes (it cuts them out), before the extras
-                    // that cut it in turn (portholes, info bars, the composer, completion).
-                    offscreen_hits.extend(self.draw_offscreen(&mut frame, id, rect, cell).map(|(r, line)| (id, r, line)));
+                    // The offscreen command line is drawn last, below (`band_jobs`).
+                    band_jobs.push((id, rect, cell));
                     porthole_hits.extend(self.draw_portholes(&mut frame, id, rect, cell));
                 }
                 self.draw_view_extras(&mut frame, id, rect, cell);
@@ -5482,7 +5482,6 @@ impl App {
         self.block_buttons = block_buttons;
         self.porthole_hits = porthole_hits;
         self.picker_hits = picker_hits;
-        self.offscreen_hits = offscreen_hits;
         self.inline_hits = inline_hits;
         self.chat_indicator_hits = indicator_hits;
         let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
@@ -5490,6 +5489,20 @@ impl App {
             let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
             overlay_drawn.push((mouse::Overlay::Banner, scene::banner(&mut frame, &text, Rect { x: 0.0, y: 0.0, w, h }, cell)));
         }
+        // The offscreen command lines, last: over the pane's rows and strokes (they are cut out)
+        // but around every Tandem surface drawn over a pane's top, which the one overlay list
+        // names (`ui_rects`): info bars, the composer and completion, portholes, pills,
+        // pickers, indicators, the find bar, the toast and the banner (Task 6 review 2).
+        let mut holes: Vec<Rect> = overlay_drawn.iter().map(|(_, r)| *r).collect();
+        holes.extend(self.porthole_hits.iter().map(|h| h.3));
+        holes.extend(self.block_buttons.iter().map(|b| b.0));
+        holes.extend(self.picker_hits.iter().map(|h| h.1));
+        holes.extend(self.chat_indicator_hits.iter().map(|h| h.1));
+        holes.extend(self.find_bar_rect.into_iter().chain(self.find_mode_rect));
+        for (id, rect, cell) in band_jobs {
+            offscreen_hits.extend(self.draw_offscreen(&mut frame, id, rect, cell, &holes).into_iter().map(|(r, line)| (id, r, line)));
+        }
+        self.offscreen_hits = offscreen_hits;
         self.overlay_drawn = overlay_drawn;
         frame
     }
