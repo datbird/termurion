@@ -5,9 +5,19 @@
 use super::*;
 use crate::offscreen::{self, Facts};
 
-/// The pane and line of the band under (`x`, `y`), if any.
-fn hit(hits: &[(PaneId, Rect, i32)], x: f32, y: f32) -> Option<(PaneId, i32)> {
+/// The pane and line of the band under (`x`, `y`), if any. `covered` is whether something of
+/// Tandem's (an info bar, the find bar, an indicator) is drawn over the point: it keeps its press.
+fn hit(hits: &[(PaneId, Rect, i32)], covered: &dyn Fn(f32, f32) -> bool, x: f32, y: f32) -> Option<(PaneId, i32)> {
+    if covered(x, y) {
+        return None;
+    }
     hits.iter().find(|(_, r, _)| r.contains(x, y)).map(|(id, _, line)| (*id, *line))
+}
+
+/// iTerm2 reveals the line on a single click, never on the click that activated the window
+/// (`TV:7873`, `clickCount == 1`).
+pub(super) fn click_allowed(first_mouse: bool, clicks: u8) -> bool {
+    !first_mouse && clicks == 1
 }
 
 impl App {
@@ -64,7 +74,8 @@ impl App {
 
     /// A left press inside a band reveals its command at the top of the pane and is consumed.
     pub(super) fn offscreen_click(&mut self, x: f32, y: f32) -> bool {
-        let Some((id, line)) = hit(&self.offscreen_hits, x, y) else { return false };
+        let covered = |x: f32, y: f32| self.tandem_ui_at(x, y);
+        let Some((id, line)) = hit(&self.offscreen_hits, &covered, x, y) else { return false };
         self.show_line(id, line, false);
         self.redraw();
         true
@@ -79,11 +90,47 @@ mod tests {
     fn offscreen_click_follows_iterm2() {
         let r = |x: f32, y: f32| Rect { x, y, w: 100.0, h: 32.0 };
         let hits = [(1, r(0.0, 0.0), -60), (2, r(200.0, 0.0), -9)];
-        assert_eq!(hit(&hits, 50.0, 10.0), Some((1, -60)));
-        assert_eq!(hit(&hits, 250.0, 31.0), Some((2, -9)));
-        assert_eq!(hit(&hits, 150.0, 10.0), None);
-        assert_eq!(hit(&hits, 50.0, 40.0), None);
-        assert_eq!(hit(&[], 1.0, 1.0), None);
+        let free = |_: f32, _: f32| false;
+        assert_eq!(hit(&hits, &free, 50.0, 10.0), Some((1, -60)));
+        assert_eq!(hit(&hits, &free, 250.0, 31.0), Some((2, -9)));
+        assert_eq!(hit(&hits, &free, 150.0, 10.0), None);
+        assert_eq!(hit(&hits, &free, 50.0, 40.0), None);
+        assert_eq!(hit(&[], &free, 1.0, 1.0), None);
+    }
+
+    /// Task 6 review 1: a point under an info bar, the find bar or an indicator belongs to
+    /// that surface, not to the band drawn beneath it.
+    #[test]
+    fn band_hit_area_excludes_tandem_surfaces() {
+        let hits = [(1, Rect { x: 0.0, y: 0.0, w: 100.0, h: 32.0 }, -60)];
+        let info_bar = |x: f32, y: f32| Rect { x: 0.0, y: 0.0, w: 100.0, h: 12.0 }.contains(x, y);
+        assert_eq!(hit(&hits, &info_bar, 50.0, 5.0), None, "the info bar's strip");
+        assert_eq!(hit(&hits, &info_bar, 50.0, 20.0), Some((1, -60)), "below it the band still answers");
+    }
+
+    /// Task 6 review 1 (minor): a single click that did not activate the window.
+    #[test]
+    fn band_click_is_a_single_non_first_click() {
+        assert!(click_allowed(false, 1));
+        assert!(!click_allowed(true, 1), "the click that activated the window");
+        assert!(!click_allowed(false, 2), "the second press of a double click");
+        assert!(!click_allowed(false, 3));
+    }
+
+    /// Task 6 review 1: the band's press runs after every Tandem surface that can sit over it
+    /// (indicators, panels, inline buttons, info bar, porthole, block pills, the divider, title
+    /// bars, find bar, the one overlay list) and before the scrollbar and the pane.
+    #[test]
+    fn band_press_runs_after_the_surfaces_over_it() {
+        let m = include_str!("mod.rs");
+        let press = m.split("fn mouse_press(").nth(1).unwrap();
+        let at = |needle: &str| press.find(needle).unwrap_or_else(|| panic!("{needle} missing"));
+        let band = at("self.offscreen_click(x, y)");
+        for before in ["self.chat_indicator_press(x, y)", "self.clip_press(x, y, event_loop)", "self.inline_press(button, x, y, event_loop)", "self.info_bar_press(x, y, event_loop)", "self.porthole_press(x, y)", "self.block_press(x, y)", "self.divider_at(x, y)", "self.find_press(x, y)", "self.tandem_ui_at(x, y)"] {
+            assert!(at(before) < band, "{before} must come first");
+        }
+        assert!(band < at("self.bar_press_only_activates(first, x, y)"), "the band is above the scrollbar");
+        assert!(press.contains("click_allowed(first, self.next_os_clicks(0))"), "gated on a single, non-first click");
     }
 
     /// The band's wiring: per window in the swap and both slot literals, drawn after the pane

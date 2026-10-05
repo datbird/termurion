@@ -4476,16 +4476,21 @@ impl App {
         pointer::Prefs { pass_on_control_click: self.globals.bool("PassOnControlClick"), report_right_click: self.globals.bool("ReportRightClick") }
     }
 
-    /// The multi-click count for a press of `button` here: 1 to 4.
-    fn os_clicks(&mut self, button: u8) -> u8 {
+    /// The multi-click count a press of `button` here would be, 1 to 4, without recording it.
+    fn next_os_clicks(&self, button: u8) -> u8 {
         let now = Instant::now();
         let (x, y) = self.cursor;
         let near = 4.0 * self.scale();
-        let count = match self.pointer_last {
+        match self.pointer_last {
             Some((t, b, (px, py), n)) if b == button && now.duration_since(t) <= input::MULTI_CLICK && (x - px).abs() <= near && (y - py).abs() <= near => (n + 1).min(4),
             _ => 1,
-        };
-        self.pointer_last = Some((now, button, (x, y), count));
+        }
+    }
+
+    /// The multi-click count for a press of `button` here: 1 to 4.
+    fn os_clicks(&mut self, button: u8) -> u8 {
+        let count = self.next_os_clicks(button);
+        self.pointer_last = Some((Instant::now(), button, self.cursor, count));
         count
     }
 
@@ -4725,10 +4730,6 @@ impl App {
         if button == MouseButton::Left && self.picker_press(x, y) {
             return;
         }
-        // The offscreen command line scrolls to its command (`PTYTextView.m:7885-7896`).
-        if button == MouseButton::Left && self.offscreen_click(x, y) {
-            return;
-        }
         // A pane's AI indicator (linked or streaming) opens its menu.
         if button == MouseButton::Left && self.chat_indicator_press(x, y) {
             return;
@@ -4767,6 +4768,13 @@ impl App {
         }
         // Any button on one of Tandem's overlays inside a pane is Tandem's, never the program's (B5).
         if self.tandem_ui_at(x, y) {
+            return;
+        }
+        // The offscreen command line scrolls to its command (`PTYTextView.m:7885-7896`): after
+        // every Tandem surface that can sit over its strip, a single click that did not activate
+        // the window (`clickCount == 1`); the band covers the pane's scrollbar, so it comes first.
+        if button == MouseButton::Left && offscreen_ui::click_allowed(first, self.next_os_clicks(0)) && self.offscreen_click(x, y) {
+            self.os_clicks(0);
             return;
         }
         // The scrollbar is the pane's own, below Tandem's overlays and before any report.
