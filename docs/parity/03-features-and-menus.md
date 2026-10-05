@@ -165,7 +165,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | View > Show Composer | Shift+Cmd+. | Shows the Composer, a multi-line command editor above the prompt. (milestone 9) | have | Milestone 9l: Win+Shift+.; a bordered dropdown panel above the prompt (135 pt default height, resizable and draggable, saved per profile); disabled while an Auto Composer could show (shouldShowAutoComposer, source over the earlier "only while one shows" guess); Esc keeps the typed text as a draft. |
 | View > Show Cursor Guide | Opt+Cmd+; | Shows a horizontal highlight line tracking the cursor's row. (milestone 4) | have |
 | View > Show Session Note | Opt+Cmd+G | Shows a free-text note panel attached to the session. (milestone 4) | have |
-| View > Show Timestamps | Cmd+E | Shows a timestamp gutter next to each line of output. (milestone 4) | partial |
+| View > Show Timestamps | Cmd+E | Shows a timestamp gutter next to each line of output. (milestone 4) | have | Milestone 13m: Next to contents has its own column and toggling relayouts the shell (stty size); Over and Hover as before. |
 | View > Auto Command Completion | Shift+Opt+Cmd+Y | Toggles automatic command-history-based autocomplete suggestions. (milestone 9) | have, milestone 9d |
 | View > Auto Composer | Opt+Shift+Cmd+. | Toggles automatically opening the Composer for multi-line input. (milestone 9) | have | Milestone 9l: Opt+Shift+Win+.; replaces the shell prompt at the next OSC 133 prompt with a borderless composer covering the prompt row downward, growing upward when the pane runs out of room below; does nothing the first time until shell command history has ever been used (kept iTerm2 bug); turning it off leaves a shown one up until the next prompt (kept iTerm2 bug). |
 | View > Open Quickly | Shift+Cmd+O | Opens a fuzzy search palette to jump to any window, tab, session, profile, or command. (milestone 9k) | have |
@@ -561,14 +561,14 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Annotations | Inline annotation | A user- or trigger-attached note bound to a range of terminal text, shown inline and editable, independent of triggers. | have | A row holds one annotation. |
 | Annotations | Annotation from Named Mark | Auto-generates annotation text describing a named mark. | missing | |
 | Marks and navigation | Command mark (prompt-based) | A mark automatically placed at each shell prompt via shell integration, carrying the command text, start/end time, and exit code. | have |  |
-| Marks and navigation | Exit-code coloring | Colors a command mark green/red based on success/failure of the exit code, visible in the scrollbar gutter. | have | In the left margin (Tandem has no scrollbar). |
+| Marks and navigation | Exit-code coloring | Colors a command mark green/red based on success/failure of the exit code, visible in the scrollbar gutter. | have | Milestone 13m: the left margin and the pane's scrollbar ticks (green, red, gray). |
 | Marks and navigation | Manual mark | A mark the user places explicitly, not tied to a command, for bookmarking a scrollback position. | have |  |
 | Marks and navigation | Named mark | A manual or triggered mark with a user-supplied label, surfaced in the Named Marks toolbelt tool. | have | Milestone 9j: surfaced in the Named Marks toolbelt tool (see the toolbelt rows above). |
 | Marks and navigation | Image mark | A mark type used to anchor an inline image's position in the buffer. | have | Images live in their cells, so they move with their lines. |
 | Marks and navigation | Fold mark | Marks a block of lines as folded/collapsed, paired with the Fold trigger. | have, milestone 6a adds the Fold to Named Mark trigger |  |
 | Marks and navigation | Block mark / Button mark | Marks used by block-based UI, for example clickable inline buttons in output such as AI suggestions. | missing | |
 | Marks and navigation | Next/previous mark navigation | Keyboard commands to jump the viewport to the next or previous mark in scrollback. | have | Tandem has scrollback but no mark concept to navigate between; plain scroll-by-page exists instead. |
-| Marks and navigation | Mark rendering in scrollbar | Draws small colored tick marks in the scrollbar gutter representing command marks, for an at-a-glance command timeline. | partial | Marks show in the left margin; Tandem has no scrollbar. |
+| Marks and navigation | Mark rendering in scrollbar | Draws small colored tick marks in the scrollbar gutter representing command marks, for an at-a-glance command timeline. | have | Milestone 13m: every pane has iTerm2's scrollbar (legacy 15 points when Windows' "Always show scrollbars" is on, a thin overlay otherwise) with ticks for prompts, annotations, manual marks and Find results. |
 | Marks and navigation | Select output of last/given command | Uses command mark ranges to select exactly the output of one command for copy. | have |  |
 | Marks and navigation | Clear buffer up to mark | Clears scrollback history up to, but not including, a specific mark. | have |  |
 
