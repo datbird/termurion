@@ -1268,6 +1268,33 @@ default = -1
 help = "When pasting more than this many characters, require confirmation.\nSet to -1 to disable warning.\nCharacters are counted in UTF-16."
 
 [[setting]]
+key = "DetectParagraphDirection"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Auto-detect paragraph writing direction based on the first strong directional character?"
+type = "bool"
+default = false
+help = "Auto-detect paragraph writing direction based on the first strong directional character?\nRequires right-to-left text support to be enabled."
+
+[[setting]]
+key = "RightJustifyRTLLines"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Right-justify lines in paragraphs with base writing direction of right-to-left?"
+type = "bool"
+default = true
+help = "Right-justify lines in paragraphs with base writing direction of right-to-left?\nRequires BOTH \u201cright-to-left text support\u201d and \u201cauto-detect paragraph writing detection\u201d to be enabled."
+
+[[setting]]
+key = "DisableBidiInAlternateScreen"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Do not reorder right-to-left text in the alternate screen?"
+type = "bool"
+default = false
+help = "Do not reorder right-to-left text in the alternate screen?\nFull-screen apps (editors and some CLIs) position their own text and may already order it for display, so reordering it again fights their layout. Turn this on to leave alternate-screen text unreordered. Requires right-to-left text support."
+
+[[setting]]
 key = "EscapeWithQuotes"
 tab = "Advanced"
 section = "Experimental Features"

@@ -188,6 +188,9 @@ struct CellLook {
     italic: bool,
     /// The background comes from the selection or the cursor.
     selected: bool,
+    /// The cell joins its neighbors when drawn (an Arabic letter in a right-to-left run): its
+    /// run is one text piece, so the font can pick the joining forms.
+    joins: bool,
 }
 
 /// Find matches to mark in a pane.
@@ -439,7 +442,8 @@ pub fn pane_with(
     // A composition in progress replaces the terminal cursor (`iTermTextDrawingHelper.m:4267`),
     // except at a password prompt, where the key glyph is the cursor (P11).
     let ime = look.ime.as_ref().filter(|_| !key_cursor);
-    let cursor = cursor_cell(screen).filter(|_| ime.is_none() && look.visible && look.alpha > CURSOR_MIN_ALPHA && !(look.hide_unfocused && !focused)).map(|(row, col, _)| (row, col));
+    // The cursor's logical cell; `cursor` below is where it draws once rows are in display order.
+    let cursor_at = cursor_cell(screen).filter(|_| ime.is_none() && look.visible && look.alpha > CURSOR_MIN_ALPHA && !(look.hide_unfocused && !focused)).map(|(row, col, _)| (row, col));
     let wide_cursor = cursor_cell(screen).is_some_and(|(_, _, w)| w);
     let bg_brightness = crate::tab_theme::perceived(palette.bg);
     let bg_alpha = highlights.map_or(1.0, |h| h.bg_alpha);
@@ -448,7 +452,7 @@ pub fn pane_with(
     // Smart Cursor Color: a focused box only (`iTermMetalPerFrameState.m:455-490`). The cell's
     // own colors and its neighbors' backgrounds come before selection and match highlights.
     let smart_box = look.smart.filter(|_| block_cursor).and_then(|(bg_t, fg_t)| {
-        let (row, col) = cursor?;
+        let (row, col) = cursor_at?;
         let at = |r: i64, c: i64| -> Option<alacritty_terminal::term::cell::Cell> {
             (r >= 0 && c >= 0 && (r as usize) < lines && (c as usize) < cols).then(|| term.grid()[alacritty_terminal::index::Point::new(alacritty_terminal::index::Line(r as i32 - content.display_offset as i32), alacritty_terminal::index::Column(c as usize))].clone())
         };
@@ -465,7 +469,13 @@ pub fn pane_with(
     let cursor_box = smart_box.map_or(palette.cursor, |(b, _)| b);
     let cursor_text = smart_box.map_or(palette.cursor_text, |(_, t)| t);
 
-    let blank = || CellLook { text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false };
+    // Each row's display order (right-to-left text); None draws it as it is. A row is its own
+    // line of program output: nothing here moves a cell to another row.
+    let display_offset = content.display_offset as i32;
+    let orders: Vec<Option<std::sync::Arc<crate::bidi::Order>>> = (0..lines).map(|row| screen.row_order(row as i32 - display_offset).filter(|o| o.lut.len() <= cols)).collect();
+    let visual_col = |row: usize, col: usize| orders.get(row).and_then(|o| o.as_ref()).and_then(|o| o.lut.get(col)).map_or(col, |&v| v as usize);
+    let cursor = cursor_at.map(|(row, col)| (row, visual_col(row, col)));
+    let blank = || CellLook { text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false, joins: false };
     let mut grid: Vec<Vec<CellLook>> = (0..lines).map(|_| (0..cols).map(|_| blank()).collect()).collect();
     for indexed in content.display_iter {
         let Some(vp) = point_to_viewport(content.display_offset, indexed.point) else { continue };
@@ -508,11 +518,11 @@ pub fn pane_with(
                 fg = adjust(h.link, under);
                 own = false;
                 hover = true;
-                hovered.push((row, col));
+                hovered.push((row, visual_col(row, col)));
             }
         }
         if !hover && c.hyperlink().is_some() {
-            dashes.push((row, col, fg));
+            dashes.push((row, visual_col(row, col), fg));
         }
         let mut hidden = false;
         if let Some(h) = highlights {
@@ -534,7 +544,7 @@ pub fn pane_with(
             bg = crate::cursor_look::mute(palette.selection, palette.bg, look.boost);
             selected = true;
         }
-        if block_cursor && cursor == Some((row, col)) {
+        if block_cursor && cursor_at == Some((row, col)) {
             // The cursor box is its own quad (after the background runs); the text takes its color.
             // A fading cursor (smooth blink) takes the text color part of the way.
             fg = if look.alpha < 1.0 { blend(fg, cursor_text, look.alpha) } else { cursor_text };
@@ -567,7 +577,33 @@ pub fn pane_with(
             bold: c.flags.contains(Flags::BOLD),
             italic: c.flags.contains(Flags::ITALIC),
             selected,
+            joins: false,
         };
+    }
+
+    // Right-to-left rows: the whole row of looks moves to its display order once, so the
+    // backgrounds, text pieces, colors and selection all follow (P5). Mirrored characters draw
+    // as their counterparts; Arabic letters are marked so a run is shaped as one piece.
+    for (row, order) in orders.iter().enumerate() {
+        let Some(o) = order else { continue };
+        let mut old: Vec<Option<CellLook>> = std::mem::take(&mut grid[row]).into_iter().map(Some).collect();
+        let mut new: Vec<CellLook> = (0..cols)
+            .map(|visual| {
+                let logical = o.inverse.get(visual).map_or(visual, |&l| l as usize);
+                old[logical].take().unwrap_or_else(blank)
+            })
+            .collect();
+        for (logical, &visual) in o.lut.iter().enumerate() {
+            let cell = &mut new[visual as usize];
+            let first = cell.text.chars().next();
+            if o.mirrored[logical] {
+                if let Some(c) = first {
+                    cell.text.replace_range(..c.len_utf8(), &crate::bidi::mirror(c).to_string());
+                }
+            }
+            cell.joins = o.rtl[logical] && first.is_some_and(crate::bidi::joins);
+        }
+        grid[row] = new;
     }
 
     for (row, cells) in grid.iter().enumerate() {
@@ -610,15 +646,37 @@ pub fn pane_with(
             }
         };
         let mut piece: Option<(usize, Vec<Span>)> = None;
-        for (col, c) in cells.iter().enumerate() {
+        let mut col = 0;
+        while col < cells.len() {
+            let c = &cells[col];
             if c.text.is_empty() {
+                col += 1;
                 continue;
             }
+            if c.joins {
+                // An Arabic run is one piece at its visual start, in logical order (the cells
+                // read right to left on screen), so the font joins the letters.
+                flush(&mut piece, frame);
+                let end = (col..cells.len()).find(|&k| !cells[k].joins).unwrap_or(cells.len());
+                let mut spans: Vec<Span> = Vec::new();
+                for c in cells[col..end].iter().rev() {
+                    match spans.last_mut() {
+                        Some(s) if s.color == c.fg && s.bold == c.bold && s.italic == c.italic => s.text.push_str(&c.text),
+                        _ => spans.push(Span { text: c.text.clone(), color: c.fg, bold: c.bold, italic: c.italic, alt_font: true, icon: false, prose: false, badge: false, toolbelt: false }),
+                    }
+                }
+                piece = Some((col, spans));
+                flush(&mut piece, frame);
+                col = end;
+                continue;
+            }
+            let at = col;
+            col += 1;
             let ascii = c.text.is_ascii();
             if !ascii {
                 flush(&mut piece, frame);
             }
-            let (_, spans) = piece.get_or_insert_with(|| (col, Vec::new()));
+            let (_, spans) = piece.get_or_insert_with(|| (at, Vec::new()));
             match spans.last_mut() {
                 Some(s) if s.color == c.fg && s.bold == c.bold && s.italic == c.italic => s.text.push_str(&c.text),
                 _ => spans.push(Span { text: c.text.clone(), color: c.fg, bold: c.bold, italic: c.italic, alt_font: !ascii, icon: false, prose: false, badge: false, toolbelt: false }),
@@ -677,6 +735,8 @@ pub fn pane_with(
             frame.overlay.push(Quad { rect: r, color: rgba(color, 1.0) });
         }
     }
+    // Right-to-left rows reverse the order the hovered cells were found in.
+    hovered.sort_unstable();
     if let Some(h) = highlights {
         let mut i = 0;
         while i < hovered.len() {
@@ -4627,6 +4687,73 @@ mod tests {
         let mut f = Frame::default();
         pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), None);
         assert_eq!(row_text(&f, 0).trim_end(), "ab");
+    }
+
+    /// The x of the first text piece holding `ch`.
+    fn piece_x(f: &Frame, ch: char) -> Option<f32> {
+        f.rows.iter().find(|r| r.spans.iter().any(|sp| sp.text.contains(ch))).map(|r| r.x)
+    }
+
+    #[test]
+    fn bidi_rows_draw_in_display_order() {
+        let mut s = screen("ab \u{5d0}\u{5d1}".as_bytes());
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        assert_eq!(piece_x(&f, '\u{5d1}'), Some(30.0), "bet is drawn at column 3");
+        assert_eq!(piece_x(&f, '\u{5d0}'), Some(40.0), "aleph at column 4");
+        // Bidi off: logical order.
+        s.bidi_rules.enabled = false;
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        assert_eq!(piece_x(&f, '\u{5d0}'), Some(30.0));
+        assert_eq!(piece_x(&f, '\u{5d1}'), Some(40.0));
+    }
+
+    #[test]
+    fn bidi_mirrors_brackets_and_moves_the_row_together() {
+        // aleph ( bet ) on a red background from column 1: the colors travel with their cells,
+        // and the brackets are drawn as their counterparts.
+        let s = screen("\u{5d0}\x1b[41m(\u{5d1})\x1b[0m".as_bytes());
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        // Logical: aleph(0) ( (1) bet(2) ) (3). All right to left: ) bet ( aleph, so the
+        // logical ")" draws mirrored as "(" at column 0 and "(" as ")" at column 2.
+        let at = |col: f32| f.rows.iter().find(|r| r.x == col * 10.0).map(|r| r.spans.iter().map(|sp| sp.text.as_str()).collect::<String>());
+        assert_eq!(at(0.0).as_deref(), Some("("), "{:?}", f.rows);
+        assert_eq!(at(1.0).as_deref(), Some("\u{5d1}"));
+        assert_eq!(at(2.0).as_deref(), Some(")"));
+        assert_eq!(at(3.0).as_deref(), Some("\u{5d0}"));
+        // The red background of logical cells 1..=3 now covers visual columns 0..=2.
+        let red = rgba(s.palette.ansi[1], 1.0);
+        assert!(f.quads.iter().any(|q| q.color == red && q.rect.x == 0.0 && q.rect.w == 30.0), "{:?}", f.quads);
+    }
+
+    #[test]
+    fn bidi_cursor_and_hover_follow_the_display_order() {
+        // The cursor sits on the aleph (logical column 3), which draws at column 4.
+        let s = screen("ab \u{5d0}\u{5d1}\x1b[1;4H".as_bytes());
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true));
+        let cursor = rgba(s.palette.cursor, 1.0);
+        let box_quad = f.quads.iter().find(|q| q.color == cursor).expect("the block cursor");
+        assert_eq!(box_quad.rect.x, 40.0);
+        // Its text is the aleph, in the cursor text color, at the same cell.
+        let at = f.rows.iter().find(|r| r.x == 40.0).unwrap();
+        assert_eq!(at.spans[0].text, "\u{5d0}");
+        assert_eq!(at.spans[0].color, s.palette.cursor_text);
+    }
+
+    #[test]
+    fn arabic_runs_are_one_piece() {
+        // Each letter alone would lose its joining forms (P8): the run is one piece, in
+        // logical order, at its visual start.
+        let s = screen("x \u{633}\u{644}\u{627}\u{645}".as_bytes());
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        let piece = f.rows.iter().find(|r| r.spans.iter().any(|sp| sp.text.contains('\u{633}'))).unwrap();
+        let text: String = piece.spans.iter().map(|sp| sp.text.as_str()).collect();
+        assert_eq!(text, "\u{633}\u{644}\u{627}\u{645}");
+        assert_eq!(piece.x, 20.0);
     }
 
     #[test]

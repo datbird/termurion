@@ -157,6 +157,8 @@ pub mod list_popup_ui;
 pub mod palette;
 pub mod contrast;
 pub mod boxdraw;
+pub mod bidi;
+pub mod bidi_mirror;
 pub mod paste;
 pub mod paste_history;
 pub mod popup_filter;

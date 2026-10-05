@@ -141,6 +141,10 @@ pub struct Screen {
     pub palette: Palette,
     /// The profile's Blink Allowed (`Look.blink_allowed`).
     pub blink_allowed: bool,
+    /// Right-to-left display rules (the globals `Bidi` and its Advanced siblings); the app sets them.
+    pub bidi_rules: crate::bidi::Rules,
+    /// Display orders by row content (`row_order`); `pane_with` holds `&Screen` and fills it.
+    bidi_cache: std::cell::RefCell<std::collections::HashMap<u64, Option<std::sync::Arc<crate::bidi::Order>>>>,
     title: Option<String>,
     /// The profile's Allow Title Setting: whether programs may set the title (OSC 0, 1, 2).
     pub allow_title: bool,
@@ -420,6 +424,8 @@ impl Screen {
         Self {
             term,
             blink_allowed: look.blink_allowed,
+            bidi_rules: crate::bidi::Rules::default(),
+            bidi_cache: Default::default(),
             parser: Processor::new(),
             events,
             palette,
@@ -503,6 +509,78 @@ impl Screen {
         }
         let report = self.color_scheme_change();
         self.replies.extend(report);
+    }
+
+    /// The display order of grid line `line` (negative lines are history), or None when the row
+    /// needs none: Bidi is off, the alternate screen with its setting, no right-to-left letter,
+    /// or the row holds an inline image (its tiles sit at logical columns). The order is cached
+    /// by row content, so a redrawn row never keeps an old one, and the cache is cleared past
+    /// four screens of distinct rows. It covers the row's used cells and, with right
+    /// justification, is padded to the row's width (`bidi::pad`).
+    pub fn row_order(&self, line: i32) -> Option<std::sync::Arc<crate::bidi::Order>> {
+        use alacritty_terminal::term::cell::Flags;
+        use std::hash::{Hash, Hasher};
+        let rules = self.bidi_rules;
+        let alternate = self.term.mode().contains(TermMode::ALT_SCREEN);
+        if !rules.enabled || (alternate && rules.off_in_alternate) {
+            return None;
+        }
+        let grid = self.term.grid();
+        if line < -(grid.history_size() as i32) || line >= grid.screen_lines() as i32 {
+            return None;
+        }
+        let row = &grid[Line(line)];
+        let cols = grid.columns();
+        let spacer = Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER;
+        // Quick scan: an ASCII row, the common case, costs one pass and no allocation.
+        let mut rtl = false;
+        let mut used = 0;
+        for col in 0..cols {
+            let c = &row[Column(col)];
+            if c.image().is_some() {
+                return None;
+            }
+            let blank = (c.c == ' ' || c.c == '\0') && c.zerowidth().is_none() && !c.flags.intersects(spacer);
+            if !blank {
+                used = col + 1;
+            }
+            rtl |= crate::bidi::is_rtl_letter(c.c);
+        }
+        if !rtl {
+            return None;
+        }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (cols, used, rules.detect_direction, rules.right_justify).hash(&mut h);
+        for col in 0..used {
+            let c = &row[Column(col)];
+            c.c.hash(&mut h);
+            c.zerowidth().hash(&mut h);
+            c.flags.intersects(Flags::WIDE_CHAR).hash(&mut h);
+            c.flags.intersects(spacer).hash(&mut h);
+        }
+        let key = h.finish();
+        if let Some(hit) = self.bidi_cache.borrow().get(&key) {
+            return hit.clone();
+        }
+        let texts: Vec<crate::bidi::CellText> = (0..used)
+            .map(|col| {
+                let c = &row[Column(col)];
+                let is_spacer = c.flags.intersects(spacer);
+                let mut text = String::new();
+                if !is_spacer {
+                    text.push(c.c);
+                    text.extend(c.zerowidth().into_iter().flatten());
+                }
+                crate::bidi::CellText { text, wide: c.flags.contains(Flags::WIDE_CHAR), spacer: is_spacer }
+            })
+            .collect();
+        let made = crate::bidi::order(&texts, rules, alternate).map(|o| std::sync::Arc::new(if rules.right_justify && used < cols { crate::bidi::pad(&o, cols) } else { o }));
+        let mut cache = self.bidi_cache.borrow_mut();
+        if cache.len() >= 4 * grid.screen_lines().max(1) {
+            cache.clear();
+        }
+        cache.insert(key, made.clone());
+        made
     }
 
     pub fn set_look(&mut self, look: Look) {
@@ -1496,6 +1574,82 @@ mod tests {
         // Two more lines push the row off the screen into history: nothing visible blinks.
         s.feed(b"\x1b[0m\r\ny\r\nz");
         assert!(!s.has_blinking_text());
+    }
+
+    #[test]
+    fn row_orders_are_cached_by_content() {
+        use std::sync::Arc;
+        let mut s = Screen::new(20, 4);
+        s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
+        let a = s.row_order(0).expect("a Hebrew row has an order");
+        assert_eq!(&a.lut[..5], &[0, 1, 2, 4, 3]);
+        assert!(Arc::ptr_eq(&a, &s.row_order(0).unwrap()), "same content, same order");
+        assert!(s.row_order(1).is_none(), "an English row has none");
+        // Rewriting the row changes its order.
+        s.feed("\x1b[1;1H\u{5d0}\u{5d1}\u{5d2}  ".as_bytes());
+        let b = s.row_order(0).unwrap();
+        assert!(!Arc::ptr_eq(&a, &b));
+        assert_eq!(&b.lut[..3], &[2, 1, 0]);
+        // The rules change the answer: off, and off in the alternate screen only.
+        s.bidi_rules.enabled = false;
+        assert!(s.row_order(0).is_none());
+        s.bidi_rules = crate::bidi::Rules { off_in_alternate: true, ..crate::bidi::Rules::default() };
+        assert!(s.row_order(0).is_some());
+        s.feed(b"\x1b[?1049h");
+        s.feed("\u{5d0}\u{5d1}".as_bytes());
+        assert!(s.row_order(0).is_none(), "the alternate screen is left alone with the setting");
+    }
+
+    #[test]
+    fn right_justify_pads_a_detected_rtl_row() {
+        let mut s = Screen::new(10, 2);
+        s.bidi_rules = crate::bidi::Rules { detect_direction: true, ..crate::bidi::Rules::default() };
+        s.feed("\u{5d0}\u{5d1}".as_bytes());
+        let o = s.row_order(0).unwrap();
+        assert!(o.paragraph_rtl);
+        assert_eq!(o.lut.len(), 10, "padded to the pane's width");
+        assert_eq!(&o.lut[..2], &[9, 8], "the text sits at the right edge");
+        s.bidi_rules.right_justify = false;
+        let o = s.row_order(0).unwrap();
+        assert_eq!(o.lut.len(), 2);
+    }
+
+    #[test]
+    fn the_order_cache_is_bounded() {
+        let mut s = Screen::new(20, 3);
+        for i in 0..400u32 {
+            let c = char::from_u32(0x5d0 + i % 27).unwrap();
+            s.feed(format!("\r\n{c}{c}{i}").as_bytes());
+            for line in 0..3 {
+                let _ = s.row_order(line);
+            }
+        }
+        assert!(s.bidi_cache.borrow().len() <= 4 * 3 + 3, "{}", s.bidi_cache.borrow().len());
+    }
+
+    /// Security: only the grid's own draw and the pointer mapping ask for an order. Tab bars,
+    /// title bars, status bars, find bars and popups never reorder Tandem's own text.
+    #[test]
+    fn chrome_is_never_reordered() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        let allowed = ["bidi.rs", "screen.rs", "scene.rs"];
+        for f in files {
+            let name = f.file_name().unwrap().to_string_lossy().to_string();
+            let text = std::fs::read_to_string(&f).unwrap();
+            let calls = text.contains("bidi::order(") || text.contains(".row_order(");
+            assert!(!calls || allowed.contains(&name.as_str()), "{} reorders text outside the grid", f.display());
+        }
     }
 
     #[test]

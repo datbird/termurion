@@ -744,6 +744,7 @@ impl App {
         pane.wheel = crate::wheel::PaneWheel::new(self.globals.number("HorizontalScrollingSensitivity").unwrap_or(0.1));
         let profile = self.profile(Some(&guid));
         pane.restyle(Palette::from_profile(&profile, self.dark()), Look::from_profile(&profile));
+        pane.set_bidi_rules(crate::bidi::Rules::from_globals(&self.globals));
         let (list, prefs) = triggers_ui::triggers_of(&profile);
         pane.screen.set_triggers(list, prefs);
         pane.screen.set_scrollback_with_status_bar(profile.bool("Scrollback With Status Bar"));

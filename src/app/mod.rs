@@ -3287,6 +3287,7 @@ impl App {
     /// A started pane takes its profile's look, triggers, and input settings.
     fn install_pane(&mut self, id: PaneId, mut pane: Pane, p: &Profile) {
         pane.restyle(Palette::from_profile(p, self.dark()), Look::from_profile(p));
+        pane.set_bidi_rules(crate::bidi::Rules::from_globals(&self.globals));
         screen_follows_profile(&mut pane.screen, p);
         pane.profile = p.guid();
         pane.set_buffering(p.bool("Buffer Input by Default"));
@@ -3550,9 +3551,11 @@ impl App {
         self.store.merge_sessions();
         self.tools_changed();
         let dark = self.dark();
+        let bidi = crate::bidi::Rules::from_globals(&self.globals);
         for pane in self.panes.values_mut() {
             let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
             pane.restyle(Palette::from_profile(p, dark), Look::from_profile(p));
+            pane.set_bidi_rules(bidi);
             screen_follows_profile(pane.own_mut(), p);
         }
         self.tmux_resend_colors();

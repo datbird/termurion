@@ -1991,6 +1991,29 @@ mod tests {
     }
 
     #[test]
+    fn bidi_rows_follow_iterm2() {
+        use crate::bidi::Rules;
+        let detect = "Auto-detect paragraph writing direction based on the first strong directional character?\nRequires right-to-left text support to be enabled.";
+        let justify = "Right-justify lines in paragraphs with base writing direction of right-to-left?\nRequires BOTH \u{201c}right-to-left text support\u{201d} and \u{201c}auto-detect paragraph writing detection\u{201d} to be enabled.";
+        let alt = "Do not reorder right-to-left text in the alternate screen?\nFull-screen apps (editors and some CLIs) position their own text and may already order it for display, so reordering it again fights their layout. Turn this on to leave alternate-screen text unreordered. Requires right-to-left text support.";
+        for (key, default, help) in [("DetectParagraphDirection", false, detect), ("RightJustifyRTLLines", true, justify), ("DisableBidiInAlternateScreen", false, alt)] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"), "{key}");
+            assert_eq!((row.kind, row.default.clone()), (Kind::Bool, Some(Value::Boolean(default))), "{key}");
+            assert_eq!(row.help.as_str(), help, "{key}");
+            assert_eq!(row.label.as_str(), help.lines().next().unwrap(), "{key}");
+        }
+        // The rules read the four rows, the General one included.
+        let mut g = Globals::empty(&std::env::temp_dir().join("tandem-bidi-rows.toml"));
+        assert_eq!(Rules::from_globals(&g), Rules { enabled: true, detect_direction: false, right_justify: true, off_in_alternate: false });
+        g.set("Bidi", Value::Boolean(false));
+        g.set("DetectParagraphDirection", Value::Boolean(true));
+        g.set("RightJustifyRTLLines", Value::Boolean(false));
+        g.set("DisableBidiInAlternateScreen", Value::Boolean(true));
+        assert_eq!(Rules::from_globals(&g), Rules { enabled: false, detect_direction: true, right_justify: false, off_in_alternate: true });
+    }
+
+    #[test]
     fn color_space_rows_follow_iterm2() {
         let p3 = "Use P3 as default color space? If No, sRGB will be used.";
         let row = schema::find_global("P3").unwrap();
