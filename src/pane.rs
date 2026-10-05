@@ -94,6 +94,18 @@ pub struct TmuxInfo {
     pub cwd: String,
 }
 
+impl TmuxInfo {
+    /// What a tmux monitor reported. The job is another program's text and joins
+    /// `session.jobName` and the titles, so it is stored as the person reads it.
+    pub fn store(&mut self, what: crate::tmux_controller::Info, value: String) {
+        match what {
+            crate::tmux_controller::Info::Title => self.title = value,
+            crate::tmux_controller::Info::Job => self.job = crate::inert_files::clean_name(&value),
+            crate::tmux_controller::Info::Cwd => self.cwd = value,
+        }
+    }
+}
+
 impl TmuxIo {
     pub fn new(gateway: PaneId, pane: u32) -> TmuxIo {
         TmuxIo { gateway, pane, inbox: Default::default(), outbox: Default::default(), ended: Default::default(), info: Default::default(), answers_osc4: Default::default() }
@@ -3335,6 +3347,15 @@ mod tests {
         let rows: Vec<usize> = p.screen.text().lines().enumerate().filter(|(_, l)| l.contains("MARK")).map(|(i, _)| i).collect();
         assert!(rows.iter().all(|&r| r < 4), "MARK on rows {rows:?}:\n{}", p.screen.all_text());
         assert!(p.error.is_none(), "{:?}", p.error);
+    }
+
+    #[test]
+    fn a_tmux_job_is_stored_without_hidden_characters() {
+        let mut info = TmuxInfo::default();
+        info.store(crate::tmux_controller::Info::Job, "vi\u{202e}m\u{7}\u{200b}".into());
+        assert_eq!(info.job, "vim");
+        info.store(crate::tmux_controller::Info::Job, "x".repeat(300));
+        assert_eq!(info.job.chars().count(), 300, "a name is not cut here (a command line must not be)");
     }
 
     #[test]

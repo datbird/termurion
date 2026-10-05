@@ -52,11 +52,17 @@ pub fn is_hidden(c: char) -> bool {
     c.is_control() || bidi || unseen
 }
 
+/// `name` without the characters no shown name keeps, and with no length cut (a command line
+/// stays whole; `shown_name` also cuts).
+pub fn clean_name(name: &str) -> String {
+    name.chars().filter(|&c| !is_hidden(c)).collect()
+}
+
 /// A name the remote sent, as the person reads it (a notification, a question, a panel row):
 /// control, bidirectional formatting, line and paragraph separator and zero-width characters
 /// dropped, and at most `SHOWN_NAME` characters, the rest an ellipsis.
 pub fn shown_name(name: &str) -> String {
-    let clean: Vec<char> = name.chars().filter(|&c| !is_hidden(c)).collect();
+    let clean: Vec<char> = clean_name(name).chars().collect();
     if clean.len() <= SHOWN_NAME {
         return clean.into_iter().collect();
     }

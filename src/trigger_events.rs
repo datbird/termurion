@@ -261,7 +261,13 @@ impl Screen {
     }
 
     /// The window saw the foreground job change.
+    /// The one setter of `session.jobName` and its kin: what a remote host or tmux called a
+    /// job is stored as the person reads it (`inert_files::clean_name`), so no reader of
+    /// `shell.job` sees a control or bidirectional character.
     pub fn set_job(&mut self, job: Option<crate::proctree::Job>, ancestors: Vec<String>) {
+        use crate::inert_files::clean_name;
+        let job = job.map(|j| crate::proctree::Job { name: clean_name(&j.name), title: clean_name(&j.title), cmdline: clean_name(&j.cmdline), pid: j.pid });
+        let ancestors: Vec<String> = ancestors.iter().map(|a| clean_name(a)).collect();
         let (started, ended) = job_events(&self.shell.job_ancestors, &ancestors);
         self.shell.job = job;
         self.shell.job_ancestors = ancestors;
@@ -468,6 +474,18 @@ mod tests {
         assert_eq!(s.trigger_var("session.commandLine", 0).as_deref(), Some("vim a.txt"));
         assert_eq!(s.trigger_var("session.jobPid", 0).as_deref(), Some("42"));
         assert_eq!(s.trigger_var("session.processTitle", 0).as_deref(), Some("vim"));
+        assert_eq!(s.trigger_var("session.foregroundJobAncestors", 0).as_deref(), Some("vim\ncmd"));
+    }
+
+    #[test]
+    fn a_job_the_remote_named_is_stored_without_hidden_characters() {
+        let mut s = Screen::new(40, 4);
+        let job = crate::proctree::Job { name: "vi\u{202e}m".into(), title: "v\u{7}im".into(), cmdline: format!("vim {}\u{200b}x", "a".repeat(250)), pid: 1 };
+        s.set_job(Some(job), vec!["v\u{1b}im".into(), "cmd".into()]);
+        let j = s.shell.job.as_ref().unwrap();
+        assert_eq!((j.name.as_str(), j.title.as_str()), ("vim", "vim"));
+        assert_eq!(j.cmdline.chars().count(), 255, "a command line is cleaned, not cut");
+        assert_eq!(s.trigger_var("session.jobName", 0).as_deref(), Some("vim"));
         assert_eq!(s.trigger_var("session.foregroundJobAncestors", 0).as_deref(), Some("vim\ncmd"));
     }
 

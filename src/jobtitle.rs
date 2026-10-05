@@ -99,7 +99,7 @@ pub fn title(components: u32, p: &TitleParts) -> String {
         if session == p.profile { out.push_str(session) } else { out.push_str(&format!("{}: {session}", p.profile)) }
     }
     // A job's name and command line are another program's text (a tmux pane's, a remote's).
-    let job = if c & COMMAND_LINE != 0 { crate::inert_files::shown_name(&p.cmdline) } else if c & JOB != 0 { crate::inert_files::shown_name(&p.job) } else { String::new() };
+    let job = if c & COMMAND_LINE != 0 { crate::inert_files::clean_name(&p.cmdline) } else if c & JOB != 0 { crate::inert_files::shown_name(&p.job) } else { String::new() };
     let job = job.as_str();
     if !job.is_empty() {
         if out.is_empty() { out.push_str(job) } else { out.push_str(&format!(" ({job})")) }
