@@ -119,6 +119,14 @@ impl Profile {
         self.get(key).and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
     }
 
+    /// `string` borrowed: the profile's own text or the schema default's, no copy (a font table
+    /// can be 256 KiB, and a frame reads it for every pane).
+    pub fn str_ref(&self, key: &str) -> &str {
+        let own = self.values.get(key);
+        let stock = || schema::find(key).and_then(|s| s.default.as_ref());
+        own.or_else(stock).and_then(|v| v.as_str()).unwrap_or("")
+    }
+
     pub fn color(&self, key: &str) -> Rgb {
         self.get(key).as_ref().and_then(to_rgb).unwrap_or(rgb(0, 0, 0))
     }

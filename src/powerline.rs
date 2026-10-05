@@ -384,7 +384,7 @@ pub(crate) fn draw(c: char, mask: &mut [u8], w: u16, h: u16, scale: f32) -> bool
             Piece::Solid(points) => fills.push(points.into_iter().map(map).collect()),
             Piece::Line { from, to, weight } => strokes.push((width(weight), Piece::Line { from: map(from), to: map(to), weight })),
             Piece::Curve { from, c1, c2, to, weight } => strokes.push((width(weight), Piece::Curve { from: map(from), c1: map(c1), c2: map(c2), to: map(to), weight })),
-            }
+        }
     }
     // One point of ink past the edge of the image on a bleed side.
     if o.bleed_left {
@@ -395,6 +395,10 @@ pub(crate) fn draw(c: char, mask: &mut [u8], w: u16, h: u16, scale: f32) -> bool
     }
     fill_all(mask, w, h, &fills);
     stroke_all(mask, w, h, &strokes);
+    // iTerm2 draws the LN symbol without anti-aliasing: ink or nothing.
+    if c == '\u{E0A1}' {
+        mask.iter_mut().for_each(|v| *v = if *v >= 128 { 255 } else { 0 });
+    }
     true
 }
 
@@ -462,6 +466,23 @@ mod tests {
     use crate::boxdraw;
 
     const NO: Options = Options { mirrored: false, half_width: false, bleed_left: false, bleed_right: false };
+
+    /// 13n final 5: iTerm2 draws the LN symbol (U+E0A1) non-anti-aliased, so every pixel of it is
+    /// ink or nothing; the other named symbols keep their soft edges.
+    #[test]
+    fn the_ln_symbol_is_not_anti_aliased() {
+        let (w, h) = (20u16, 40u16);
+        let draw = |c: char| {
+            let mut mask = vec![0u8; usize::from(w) * usize::from(h)];
+            assert!(super::draw(c, &mut mask, w, h, 1.0));
+            mask
+        };
+        let ln = draw('\u{E0A1}');
+        assert!(ln.iter().any(|v| *v == 255), "the symbol has ink");
+        assert!(ln.iter().all(|v| *v == 0 || *v == 255), "no partial coverage: {:?}", ln.iter().filter(|v| **v != 0 && **v != 255).count());
+        let branch = draw('\u{E0A0}');
+        assert!(branch.iter().any(|v| *v != 0 && *v != 255), "the branch symbol keeps its anti-aliased edges");
+    }
 
     #[test]
     fn powerline_sets_follow_iterm2() {

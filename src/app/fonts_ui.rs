@@ -157,10 +157,31 @@ impl RawFont {
     }
 }
 
+impl RawFont {
+    /// Whether `RawFont::of(p, scale)` would equal `self`, compared in place: the frame asks this
+    /// of every pane, and only a miss builds (and copies) a new one.
+    fn matches(&self, p: &Profile, scale: f32) -> bool {
+        self.normal == p.str_ref("Normal Font")
+            && match &self.alt {
+                Some(alt) => p.bool("Use Non-ASCII Font") && alt == p.str_ref("Non Ascii Font"),
+                None => !p.bool("Use Non-ASCII Font"),
+            }
+            && self.spacing == (p.float("Horizontal Spacing").to_bits(), p.float("Vertical Spacing").to_bits())
+            && self.scale == scale.to_bits()
+            && self.bold == p.bool("Use Bold Font")
+            && self.italic == p.bool("Use Italic Font")
+            && self.ligatures == (p.bool("ASCII Ligatures"), p.bool("Non-ASCII Ligatures"))
+            && self.anti_alias == (p.bool("ASCII Anti Aliased"), p.bool("Non-ASCII Anti Aliased"))
+            && self.thin == p.int("Thin Strokes")
+            && self.powerline == p.bool("Draw Powerline Glyphs")
+            && self.table == p.str_ref(SPECIAL_FONT_CONFIG)
+    }
+}
+
 impl PaneFaces {
-    /// The key cached for `pane` when its raw values are still `raw`.
-    fn cached(&self, pane: PaneId, raw: &RawFont) -> Option<FaceKey> {
-        self.raw.get(&pane).filter(|(r, _)| r == raw).map(|(_, k)| k.clone())
+    /// The key cached for `pane` when its raw values still match profile `p` at `scale`.
+    fn cached(&self, pane: PaneId, p: &Profile, scale: f32) -> Option<FaceKey> {
+        self.raw.get(&pane).filter(|(r, _)| r.matches(p, scale)).map(|(_, k)| k.clone())
     }
 
     /// Measures the face of each pane in `panes` (on first use only: the renderer remembers a
@@ -208,35 +229,34 @@ impl App {
         face_key_for(p, self.scale(), &|name| renderer.map_or_else(|| name.to_string(), |r| r.resolve_family(name)))
     }
 
-    /// The face key of the profile `pane` runs (the default profile when it is gone).
-    /// Returns the raw values with it, and reuses the cached key while they are unchanged.
-    fn pane_face_key(&self, id: PaneId, pane: &Pane) -> (RawFont, FaceKey) {
-        let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
-        let raw = RawFont::of(p, self.scale());
-        let key = self.pane_faces.cached(id, &raw).unwrap_or_else(|| self.face_key(p));
-        (raw, key)
-    }
-
     /// Measures the face of every pane of this window, at the window's scale. Called at the top
     /// of every frame, after a profile edit, and before any code sizes a new pane, so that
-    /// `pane_cell` (which only reads) is never stale; a face is measured once per key.
+    /// `pane_cell` (which only reads) is never stale; a face is measured once per key. A pane
+    /// whose profile values are unchanged keeps its cached key and copies nothing (the Special
+    /// Font Config text can be 256 KiB); only a changed pane builds a new `RawFont` and key.
     pub(super) fn ensure_faces(&mut self) {
         if self.gpu.is_none() {
             return;
         }
         let scale = self.scale();
-        let built: Vec<(PaneId, RawFont, FaceKey)> = self
+        let built: Vec<(PaneId, Option<RawFont>, FaceKey)> = self
             .tabs
             .iter()
             .flat_map(|t| t.layout.panes())
             .filter_map(|id| {
-                let (raw, key) = self.pane_face_key(id, self.panes.get(&id)?);
-                Some((id, raw, key))
+                let pane = self.panes.get(&id)?;
+                let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
+                Some(match self.pane_faces.cached(id, p, scale) {
+                    Some(key) => (id, None, key),
+                    None => (id, Some(RawFont::of(p, scale)), self.face_key(p)),
+                })
             })
             .collect();
         let mut keys = Vec::with_capacity(built.len());
         for (id, raw, key) in built {
-            self.pane_faces.raw.insert(id, (raw, key.clone()));
+            if let Some(raw) = raw {
+                self.pane_faces.raw.insert(id, (raw, key.clone()));
+            }
             keys.push((id, key));
         }
         let Some(g) = self.gpu.as_mut() else { return };
@@ -742,6 +762,32 @@ mod tests {
         widen_to_tmux_windows(&mut group, &all, &window_of);
         group.sort();
         assert_eq!(group, vec![1, 2, 3, 4], "each target's window is widened, no pane twice");
+    }
+
+    /// 13n final 5: the per-frame check compares borrowed values (no 256 KiB copy of the table per
+    /// pane per frame) and agrees with comparing two built `RawFont`s.
+    #[test]
+    fn a_pane_whose_values_are_unchanged_matches_without_building() {
+        let stock = Profile::new("A");
+        let mut table = stock.clone();
+        table.set(SPECIAL_FONT_CONFIG, toml::Value::String(crate::font_table::Config::with_entries(vec![crate::font_table::Entry { start: 0xE000, count: 16, destination: None, font_name: "Consolas".into(), point_size: None }]).string()));
+        let mut bold = stock.clone();
+        bold.set("Use Bold Font", toml::Value::Boolean(!stock.bool("Use Bold Font")));
+        let mut alt = stock.clone();
+        alt.set("Use Non-ASCII Font", toml::Value::Boolean(!stock.bool("Use Non-ASCII Font")));
+        let mut spaced = stock.clone();
+        spaced.set("Horizontal Spacing", toml::Value::Float(1.5));
+        let mut font = stock.clone();
+        font.set("Normal Font", toml::Value::String("Consolas 20".into()));
+        for (a, b) in [(&stock, &stock), (&stock, &table), (&table, &table), (&table, &stock), (&stock, &bold), (&stock, &alt), (&stock, &spaced), (&stock, &font)] {
+            let raw = RawFont::of(a, 1.0);
+            assert_eq!(raw.matches(b, 1.0), raw == RawFont::of(b, 1.0), "{:?}", raw);
+        }
+        assert!(RawFont::of(&stock, 1.0).matches(&stock, 1.0));
+        assert!(!RawFont::of(&stock, 1.0).matches(&stock, 2.0), "a scale change is a change");
+        // The borrowed read is the same text as the owned one.
+        assert_eq!(table.str_ref(SPECIAL_FONT_CONFIG), table.string(SPECIAL_FONT_CONFIG));
+        assert_eq!(stock.str_ref("Normal Font"), stock.string("Normal Font"));
     }
 
     #[test]
