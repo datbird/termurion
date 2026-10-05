@@ -539,7 +539,8 @@ pub fn pane_with(
             }
         }
         let mut selected = false;
-        if content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) {
+        // A visual selection (bidi rows) is its runs inside the hull.
+        if content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) && term.selection.as_ref().map_or(true, |s| s.covers(indexed.point)) {
             // The text is adjusted against the selection color; `fg` is already muted otherwise.
             fg = match palette.selected_text {
                 Some(t) => crate::cursor_look::mute(adjust(t, palette.selection), palette.bg, look.boost),

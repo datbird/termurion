@@ -134,6 +134,13 @@ impl Default for Limits {
     }
 }
 
+/// A cached row order with the row it was made for, compared on every hit.
+struct BidiEntry {
+    sig: (usize, bool, bool),
+    texts: Vec<crate::bidi::CellText>,
+    order: Option<std::sync::Arc<crate::bidi::Order>>,
+}
+
 pub struct Screen {
     pub(crate) term: Term<Listener>,
     parser: Processor,
@@ -144,7 +151,7 @@ pub struct Screen {
     /// Right-to-left display rules (the globals `Bidi` and its Advanced siblings); the app sets them.
     pub bidi_rules: crate::bidi::Rules,
     /// Display orders by row content (`row_order`); `pane_with` holds `&Screen` and fills it.
-    bidi_cache: std::cell::RefCell<std::collections::HashMap<u64, Option<std::sync::Arc<crate::bidi::Order>>>>,
+    bidi_cache: std::cell::RefCell<std::collections::HashMap<u64, BidiEntry>>,
     title: Option<String>,
     /// The profile's Allow Title Setting: whether programs may set the title (OSC 0, 1, 2).
     pub allow_title: bool,
@@ -549,19 +556,6 @@ impl Screen {
         if !rtl {
             return None;
         }
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        (cols, used, rules.detect_direction, rules.right_justify).hash(&mut h);
-        for col in 0..used {
-            let c = &row[Column(col)];
-            c.c.hash(&mut h);
-            c.zerowidth().hash(&mut h);
-            c.flags.intersects(Flags::WIDE_CHAR).hash(&mut h);
-            c.flags.intersects(spacer).hash(&mut h);
-        }
-        let key = h.finish();
-        if let Some(hit) = self.bidi_cache.borrow().get(&key) {
-            return hit.clone();
-        }
         let texts: Vec<crate::bidi::CellText> = (0..used)
             .map(|col| {
                 let c = &row[Column(col)];
@@ -574,12 +568,25 @@ impl Screen {
                 crate::bidi::CellText { text, wide: c.flags.contains(Flags::WIDE_CHAR), spacer: is_spacer }
             })
             .collect();
+        let sig = (cols, rules.detect_direction, rules.right_justify);
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (sig, &texts).hash(&mut h);
+        let key = h.finish();
+        #[cfg(test)]
+        let key = tests::FORCE_KEY.with(|f| f.get()).unwrap_or(key);
+        // The 64-bit digest only picks a bucket: a hit must hold this very row, so a crafted
+        // collision can never show one row in another row's order.
+        if let Some(hit) = self.bidi_cache.borrow().get(&key) {
+            if hit.sig == sig && hit.texts == texts {
+                return hit.order.clone();
+            }
+        }
         let made = crate::bidi::order(&texts, rules, alternate).map(|o| std::sync::Arc::new(if rules.right_justify && used < cols { crate::bidi::pad(&o, cols) } else { o }));
         let mut cache = self.bidi_cache.borrow_mut();
         if cache.len() >= 4 * grid.screen_lines().max(1) {
             cache.clear();
         }
-        cache.insert(key, made.clone());
+        cache.insert(key, BidiEntry { sig, texts, order: made.clone() });
         made
     }
 
@@ -612,6 +619,49 @@ impl Screen {
             None if cols.is_empty() => Vec::new(),
             None => vec![cols],
         }
+    }
+
+    /// A character drag on a row with a display order is VISUAL, as iTerm2's
+    /// (`PTYMouseHandler.m:393-402`, `iTermSelection.m:409`): the selection is the cells the
+    /// pointer swept on screen, copied in logical order. `a` and `b` are the press and the
+    /// pointer as (grid line, visual column, right half of that visual cell). The selection
+    /// takes the logical runs those cells show; false when no swept row has an order (the
+    /// logical selection then does the same job) or there is no selection or nothing swept.
+    pub fn drag_visual_selection(&mut self, a: (i32, usize, bool), b: (i32, usize, bool)) -> bool {
+        use alacritty_terminal::index::Point;
+        // A boundary on the visual axis: before a cell, or after it for its right half.
+        let bound = |p: (i32, usize, bool)| (p.0, p.1 + p.2 as usize);
+        let (mut lo, mut hi) = (bound(a), bound(b));
+        if lo > hi {
+            std::mem::swap(&mut lo, &mut hi);
+        }
+        let cols = self.term.columns();
+        let orders: Vec<_> = (lo.0..=hi.0).map(|line| self.row_order(line).filter(|o| o.lut.len() <= cols)).collect();
+        if orders.iter().all(|o| o.is_none()) {
+            return false;
+        }
+        let mut runs = Vec::new();
+        for (i, line) in (lo.0..=hi.0).enumerate() {
+            let from = if line == lo.0 { lo.1 } else { 0 };
+            let to = if line == hi.0 { hi.1 } else { cols };
+            let mut logical: Vec<usize> = (from..to.min(cols)).map(|v| crate::bidi::logical_for_visual(orders[i].as_deref(), v)).collect();
+            logical.sort_unstable();
+            let mut k = 0;
+            while k < logical.len() {
+                let mut e = k;
+                while e + 1 < logical.len() && logical[e + 1] == logical[e] + 1 {
+                    e += 1;
+                }
+                runs.push((Point::new(Line(line), Column(logical[k])), Point::new(Line(line), Column(logical[e]))));
+                k = e + 1;
+            }
+        }
+        let Some(sel) = self.term.selection.as_mut().filter(|s| s.ty == alacritty_terminal::selection::SelectionType::Simple) else { return false };
+        if runs.is_empty() {
+            return false;
+        }
+        sel.set_visual(runs);
+        true
     }
 
     pub fn set_look(&mut self, look: Look) {
@@ -1607,6 +1657,23 @@ mod tests {
         assert!(!s.has_blinking_text());
     }
 
+    thread_local! {
+        /// Test seam: every row's cache key becomes this one, as a found hash collision would.
+        pub(super) static FORCE_KEY: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    }
+
+    #[test]
+    fn a_hash_collision_never_shows_another_rows_order() {
+        let mut s = Screen::new(20, 4);
+        s.feed("ab \u{5d0}\u{5d1}\r\n\u{5d0}\u{5d1}\u{5d2}  ".as_bytes());
+        FORCE_KEY.with(|f| f.set(Some(7)));
+        let a = s.row_order(0).unwrap();
+        let b = s.row_order(1).unwrap();
+        FORCE_KEY.with(|f| f.set(None));
+        assert_eq!(&a.lut[..5], &[0, 1, 2, 4, 3]);
+        assert_eq!(&b.lut[..3], &[2, 1, 0], "the second row gets its own order, not the first's");
+    }
+
     #[test]
     fn row_orders_are_cached_by_content() {
         use std::sync::Arc;
@@ -1646,6 +1713,35 @@ mod tests {
     }
 
     #[test]
+    fn a_drag_selects_the_cells_the_pointer_covered() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut s = Screen::new(10, 3);
+        // Logical "ab " + aleph (3) + bet (4); drawn as visual a b _ bet aleph.
+        s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
+        let p = |col: usize| Point::new(Line(0), Column(col));
+        s.term_mut().selection = Some(Selection::new(SelectionType::Simple, p(0), Side::Left));
+        // From the left of visual 0 to the right half of visual 3 (the bet).
+        assert!(s.drag_visual_selection((0, 0, false), (0, 3, true)));
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("ab \u{5d1}"), "the aleph, which the pointer never reached, is left out");
+        let sel = s.term().selection.as_ref().unwrap();
+        let covered: Vec<usize> = (0..6).filter(|c| sel.covers(p(*c))).collect();
+        assert_eq!(covered, vec![0, 1, 2, 4], "the highlight is the same cells");
+        // The same drag backwards (end before the anchor) covers the same cells.
+        s.term_mut().selection = Some(Selection::new(SelectionType::Simple, p(4), Side::Right));
+        assert!(s.drag_visual_selection((0, 3, true), (0, 0, false)));
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("ab \u{5d1}"));
+        // Across two rows: the rest of the first row in reading order, then the second's start.
+        s.term_mut().selection = Some(Selection::new(SelectionType::Simple, p(0), Side::Left));
+        assert!(s.drag_visual_selection((0, 3, false), (1, 1, true)));
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("\u{5d0}\u{5d1}\npl"), "visual 3 to 9 of row 0, copied in logical order");
+        // A drag over rows with no right-to-left text is left to the logical selection.
+        let mut t = Screen::new(10, 3);
+        t.feed(b"abc\r\ndef");
+        assert!(!t.drag_visual_selection((0, 0, false), (1, 2, true)));
+    }
+
+    #[test]
     fn pointer_maps_through_the_order() {
         let mut s = Screen::new(10, 3);
         s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
@@ -1675,7 +1771,7 @@ mod tests {
     }
 
     /// A click or hover on a visual cell acts on the cell shown there: its OSC 8 link, never a
-    /// neighbour's. The mouse report keeps the logical column `cell_at` returns.
+    /// neighbour's.
     #[test]
     fn links_under_the_pointer_are_the_ones_shown() {
         use alacritty_terminal::index::{Column, Line, Point};
@@ -1688,7 +1784,7 @@ mod tests {
         // The aleph (link one) is drawn at visual 4, the bet (link two) at visual 3.
         assert_eq!(link_at(&s, 4).as_deref(), Some("https://one.test"));
         assert_eq!(link_at(&s, 3).as_deref(), Some("https://two.test"));
-        assert_eq!(s.logical_col(0, 4).0, 3, "a mouse report to a program carries the logical column");
+        assert_eq!(s.logical_col(0, 4).0, 3, "a click on the cell shown acts on its logical character");
         assert_eq!(link_at(&s, 1), None);
     }
 

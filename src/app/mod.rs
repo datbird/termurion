@@ -232,7 +232,8 @@ struct PointerDown {
 
 enum Drag {
     None,
-    Select { pane: PaneId },
+    /// `anchor`: the press as a visual position, for a character drag (`visual_pos`).
+    Select { pane: PaneId, anchor: Option<(i32, usize, bool)> },
     Divider { path: Vec<bool>, axis: Axis, parent: Rect },
     /// A press the program took as a mouse report: its click count and when it came, for
     /// the frustration detector's release.
@@ -4014,10 +4015,30 @@ impl App {
         let right = (x - inner.x) - col as f32 * cw > cw / 2.0;
         // A right-to-left row: the pointer's visual cell is a different logical cell, and its
         // halves turn over (the left half of the cell is the character's end). Mouse reports
-        // keep this logical column (`PTYTextView.m:7353-7365`).
+        // do not use this column: iTerm2 reports the visual one (`report_cell`).
         let (logical, rtl) = self.panes[&id].screen.logical_col(row as usize, col as usize);
         let side = if right != rtl { Side::Right } else { Side::Left };
         (logical as u32, row, side)
+    }
+
+    /// The cell a mouse report names: the VISUAL column under the pointer, as iTerm2 reports it
+    /// (`PTYMouseHandler.m:1404`, `mouseHandlerCoordForPointInView`: plain pixel division, no
+    /// bidi conversion). Clamped to the grid like `cell_at`.
+    fn report_cell(&self, id: PaneId, rect: Rect, x: f32, y: f32) -> (u32, u32) {
+        let (cw, ch) = self.cell();
+        let inner = self.inner(rect);
+        let term = self.panes[&id].screen.term();
+        mouse::cell_at((x - inner.x) as f64, (y - inner.y) as f64, cw as f64, ch as f64, term.columns() as u32, term.screen_lines() as u32)
+    }
+
+    /// The pointer on screen as a visual selection sees it: grid line, visual column, and
+    /// whether it is in the right half of that cell.
+    fn visual_pos(&self, id: PaneId, rect: Rect, x: f32, y: f32) -> (i32, usize, bool) {
+        let (col, row) = self.report_cell(id, rect, x, y);
+        let (cw, _) = self.cell();
+        let right = (x - self.inner(rect).x) - col as f32 * cw > cw / 2.0;
+        let offset = self.panes[&id].screen.term().grid().display_offset() as i32;
+        (row as i32 - offset, col as usize, right)
     }
 
     fn grid_point(&self, id: PaneId, col: u32, row: u32) -> Point {
@@ -4477,6 +4498,7 @@ impl App {
             self.composer_take_back(true);
         }
         let (col, row, side) = self.cell_at(id, rect, x, y);
+        let (rcol, rrow) = self.report_cell(id, rect, x, y);
         let mods = self.mods;
         let modes = self.modes(id);
         let mb = match b {
@@ -4512,7 +4534,7 @@ impl App {
             }
         }
         if let (true, Some(mb)) = (reportable, mb) {
-            let ev = mouse::Event { button: mb, action: mouse::Action::Press, mods, col, row };
+            let ev = mouse::Event { button: mb, action: mouse::Action::Press, mods, col: rcol, row: rrow };
             if let Some(bytes) = mouse::encode(modes, ev) {
                 self.write_mouse_report(id, &bytes);
             }
@@ -4529,6 +4551,8 @@ impl App {
                 }
                 let pick = input::click_pick(count, mods, self.globals.bool("DoubleClickPerformsSmartSelection"));
                 let smart = pick == input::Pick::Smart && self.smart_select(id, point, false).is_some();
+                // A character drag on a bidi row is visual: remember where it began on screen.
+                let anchor = (!smart && pick == input::Pick::Type(input::SelectionType::Simple)).then(|| self.visual_pos(id, rect, x, y));
                 if !smart {
                     let ty = match pick {
                         input::Pick::Type(t) => t,
@@ -4549,7 +4573,7 @@ impl App {
                 self.clear_porthole_selections();
                 // A Smart Selection is whole; moving the pointer does not reshape it. The
                 // click that activated the window never extends or copies one (`MH:778-782`).
-                self.drag = if follow.drag_selects { Drag::Select { pane: id } } else { Drag::None };
+                self.drag = if follow.drag_selects { Drag::Select { pane: id, anchor } } else { Drag::None };
                 self.alt_click = follow.alt_click.then_some((id, (col, row)));
                 self.key_click = (count == 1 && !mods.shift).then_some(id);
             }
@@ -4623,7 +4647,7 @@ impl App {
             }
             // Its press went (the tab moved away under it): the drag ends with nothing dropped.
             Drag::Tab { .. } | Drag::Chip { .. } | Drag::AddButton { .. } | Drag::Window { .. } => self.end_tab_drag(),
-            Drag::Select { pane } => {
+            Drag::Select { pane, .. } => {
                 let empty = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string()).map_or(true, |s| s.is_empty());
                 if empty {
                     if let Some(p) = self.panes.get_mut(&pane) {
@@ -4656,7 +4680,7 @@ impl App {
                 // Look the pane up by id: the button may come up outside it, and the app
                 // must still get the release (cell_at clamps to the pane's edge).
                 if let Some(rect) = self.pane_rect(pane) {
-                    let (col, row, _) = self.cell_at(pane, rect, x, y);
+                    let (col, row) = self.report_cell(pane, rect, x, y);
                     let modes = self.modes(pane);
                     let ev = mouse::Event { button, action: mouse::Action::Release, mods: self.mods, col, row };
                     if let Some(bytes) = mouse::encode(modes, ev) {
@@ -4709,13 +4733,20 @@ impl App {
                 let (pane, from) = (*pane, *from);
                 self.title_drag_move(pane, from, x, y);
             }
-            Drag::Select { pane } => {
-                let pane = *pane;
+            Drag::Select { pane, anchor } => {
+                let (pane, anchor) = (*pane, *anchor);
                 let Some(rect) = self.pane_rect(pane) else { return };
                 let (col, row, side) = self.cell_at(pane, rect, x, y);
                 let point = self.grid_point(pane, col, row);
+                let end = anchor.map(|_| self.visual_pos(pane, rect, x, y));
                 if let Some(sel) = self.panes.get_mut(&pane).and_then(|p| p.screen.term_mut().selection.as_mut()) {
                     sel.update(point, side);
+                }
+                // On a bidi row the drag is the cells swept on screen (iTerm2's live visual range).
+                if let (Some(a), Some(b)) = (anchor, end) {
+                    if let Some(p) = self.panes.get_mut(&pane) {
+                        p.screen.drag_visual_selection(a, b);
+                    }
                 }
                 self.redraw();
             }
@@ -4758,7 +4789,7 @@ impl App {
 
     fn send_motion(&mut self, pane: PaneId, button: Option<Button>, x: f32, y: f32) {
         let Some(rect) = self.pane_rect(pane) else { return };
-        let (col, row, _) = self.cell_at(pane, rect, x, y);
+        let (col, row) = self.report_cell(pane, rect, x, y);
         let modes = self.modes(pane);
         let kind = if button.is_some() { mouse::Kind::Drag } else { mouse::Kind::Hover };
         if !self.report_gate(pane, kind) {
@@ -4792,7 +4823,7 @@ impl App {
         if self.pinch(ev) {
             return;
         }
-        let (col, row, _) = self.cell_at(id, rect, x, y);
+        let (col, row) = self.report_cell(id, rect, x, y);
         self.route_wheel(id, col, row, ev);
     }
 

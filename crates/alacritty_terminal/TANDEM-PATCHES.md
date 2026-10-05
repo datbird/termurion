@@ -89,4 +89,11 @@ test data) is left out. Changes:
     and `Attr::Reset`. Upstream ignored all three. Tandem draws BLINK text in the off phase of the
     blink clock when the profile allows blinking text.
 
+19. `selection.rs`, `term/mod.rs`: `Selection.runs` (inclusive per-line `(first, last)` cell pairs),
+    `Selection::set_visual` (sets the runs and makes the region their hull) and
+    `Selection::covers` (inside the runs, or true with none). `Term::selection_to_string` copies
+    the runs, each line in logical order, joined by newlines (not across a wrapped line).
+    `Selection::update` and `rotate` drop the runs. Tandem's visual character selection on
+    bidirectional rows uses it (iTerm2's live visual range, `iTermSelection.m:409`).
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

@@ -567,6 +567,24 @@ impl<T> Term<T> {
         let selection_range = self.selection.as_ref().and_then(|s| s.to_range(self))?;
         let SelectionRange { start, end, .. } = selection_range;
 
+        // Tandem patch: a visual selection copies its runs, each line's in logical order.
+        if let Some(sel) = self.selection.as_ref().filter(|s| !s.runs.is_empty()) {
+            let mut res = String::new();
+            let mut prev: Option<Line> = None;
+            for (a, b) in &sel.runs {
+                if let Some(p) = prev.filter(|p| *p != a.line) {
+                    let last = self.last_column();
+                    let wrapped = self.grid[p][last].flags.contains(Flags::WRAPLINE);
+                    if !res.ends_with('\n') && !wrapped {
+                        res.push('\n');
+                    }
+                }
+                res += &self.line_to_string(a.line, a.column..b.column, true);
+                prev = Some(a.line);
+            }
+            return Some(res.strip_suffix('\n').map(str::to_owned).unwrap_or(res));
+        }
+
         let mut res = String::new();
 
         match self.selection.as_ref() {

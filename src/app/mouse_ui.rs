@@ -744,6 +744,23 @@ mod tests {
         assert!(!b.contains("fn report_gate_with"), "{b}");
     }
 
+    /// iTerm2 reports the VISUAL column to a program (`PTYMouseHandler.m:1404`, plain pixel
+    /// division, no bidi conversion), so every report path takes `report_cell`, never `cell_at`.
+    #[test]
+    fn mouse_reports_carry_the_visual_column() {
+        for name in ["send_motion", "mouse_release", "wheel"] {
+            let b = body(MOD, name);
+            assert!(b.contains("self.report_cell("), "{name}: {b}");
+            assert!(!b.contains("self.cell_at("), "{name} reports through cell_at");
+        }
+        let press = body(MOD, "mouse_press");
+        assert!(press.contains("self.report_cell("), "the press report takes the visual column");
+        assert!(press.contains("col: rcol, row: rrow"), "the press event carries it");
+        let b = body(MOD, "report_cell");
+        assert!(b.contains("mouse::cell_at(") && !b.contains("logical_col"), "{b}");
+        assert!(!MOD.contains("PTYTextView.m:7353"), "the accessibility helper is not the mouse-report path");
+    }
+
     /// Review Focus 2: every pointer-to-cell path goes through `cell_at`, which maps the visual
     /// cell to the logical one (and turns the cell's halves over in a right-to-left run); the
     /// copy-mode cursor and the IME caret draw through the same order.

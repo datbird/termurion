@@ -6,7 +6,8 @@
 //! its own line. Safety rules (preflight P9, P10):
 //! - The explicit embedding, override and isolate controls (U+202A to U+202E, U+2066 to U+2069)
 //!   are left out of the text the algorithm sees, so a program cannot reverse a line with RLO.
-//!   They stay on their cell for copying. Only implicit, script-driven reordering remains.
+//!   They stay on their cell for copying. Only implicit reordering remains: letters, and the
+//!   invisible marks RLM, ALM and LRM (ruled in m13m-rulings.txt).
 //! - Anything unexpected (several paragraphs, a length mismatch, a table that is not a
 //!   permutation) gives None: the row draws in logical order.
 //! - Only rows holding a right-to-left letter are analysed, and a row is capped at `MAX_CELLS`.
@@ -19,7 +20,7 @@ const MAX_CELLS: usize = 4096;
 /// One cell of a row as text: the base character and its zero-width characters, whether it is
 /// the first half of a wide character, and whether it is that character's second half (a
 /// spacer, which has no text).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CellText {
     pub text: String,
     pub wide: bool,

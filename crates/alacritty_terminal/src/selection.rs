@@ -119,6 +119,8 @@ pub enum SelectionType {
 pub struct Selection {
     pub ty: SelectionType,
     region: Range<Anchor>,
+    // Tandem patch: see `set_visual`.
+    pub runs: Vec<(Point, Point)>,
 }
 
 impl Selection {
@@ -126,11 +128,31 @@ impl Selection {
         Self {
             region: Range { start: Anchor::new(location, side), end: Anchor::new(location, side) },
             ty,
+            runs: Vec::new(),
         }
+    }
+
+    // Tandem patch: a visual selection (iTerm2's character selection on a bidi row follows
+    // the pointer on screen). `runs` are inclusive `(first, last)` cell pairs, each on one
+    // line, in reading order: the logical cells the swept screen cells show. The region
+    // becomes their hull, so every consumer of the range sees a superset; `covers` and
+    // `Term::selection_to_string` use the runs. A logical `update` or a scroll drops them.
+    pub fn set_visual(&mut self, runs: Vec<(Point, Point)>) {
+        let (Some(first), Some(last)) = (runs.first(), runs.last()) else { return };
+        self.region = Range { start: Anchor::new(first.0, Side::Left), end: Anchor::new(last.1, Side::Right) };
+        self.runs = runs;
+    }
+
+    /// Whether `point` is selected: inside the range and, for a visual selection, in a run.
+    pub fn covers(&self, point: Point) -> bool {
+        self.runs.is_empty()
+            || self.runs.iter().any(|(a, b)| a.line == point.line && a.column <= point.column && point.column <= b.column)
     }
 
     /// Update the end of the selection.
     pub fn update(&mut self, point: Point, side: Side) {
+        // Tandem patch: a logical update ends a visual selection.
+        self.runs.clear();
         self.region.end = Anchor::new(point, side);
     }
 
@@ -140,6 +162,8 @@ impl Selection {
         range: &Range<Line>,
         delta: i32,
     ) -> Option<Selection> {
+        // Tandem patch: runs are numbered by line; a scroll drops them (the hull stays).
+        self.runs.clear();
         let bottommost_line = dimensions.bottommost_line();
         let range_bottom = range.end;
         let range_top = range.start;
