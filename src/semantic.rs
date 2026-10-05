@@ -274,8 +274,8 @@ fn path_in(before: &str, after: &str, cwd: Option<&Path>, set: &crate::url_guess
     }
     best.map(|(range, p)| {
         let range = range.start + shift..range.end + shift;
-        // The line and column come from the text as given (msvc's "(7,3)" is not a filename
-        // character; iTerm2 reads it from the narrowed suffix only).
+        // The line and column come from the whole suffix after the path, as iTerm2 reads them
+        // (`UAF:524-528` passes the un-narrowed located suffix to `cleanedUpPathFromPath:suffix:`).
         let (line, column) = line_and_column(&whole[range.end..]);
         (p, line, column, range)
     })

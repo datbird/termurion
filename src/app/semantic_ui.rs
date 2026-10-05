@@ -58,10 +58,46 @@ fn around(screen: &crate::screen::Screen, at: find::Pos, window: Option<(usize, 
     let top = -(grid.history_size() as i32);
     let line = at.row as i32 + top;
     // Each cell holds at least one byte, so this many rows hold `max` bytes.
-    let n = (sh_context::ROW_CLAMP.max(max / grid.columns().max(1) + 2)).min(200) as i32;
+    let n = rows_each_way(grid.columns(), max);
     let first = (line - n).max(top);
     let rows = find::rows_text(screen, first, line + n, window);
     sh_context::build(&rows, (line - first) as usize, at.col, respect, max)
+}
+
+/// The rows each way from a click that hold `max` bytes, as `around` reads them.
+fn rows_each_way(columns: usize, max: usize) -> i32 {
+    (sh_context::ROW_CLAMP.max(max / columns.max(1) + 2)).min(200) as i32
+}
+
+/// The logical lines Smart Selection reads around `at` (`RADIUS` each way) and the index of the
+/// one holding `at`, built from a bounded span of rows (`rows_each_way`) inside the column
+/// window, never from whole logical lines: one huge wrapped line costs the same as a short one.
+fn smart_lines(screen: &crate::screen::Screen, at: find::Pos, window: Option<(usize, usize)>, max: usize) -> (Vec<Logical>, usize) {
+    use alacritty_terminal::grid::Dimensions;
+    let grid = screen.term().grid();
+    let top = -(grid.history_size() as i32);
+    let line = at.row as i32 + top;
+    let n = rows_each_way(grid.columns(), max);
+    let first = (line - n).max(top);
+    let rows = find::rows_text(screen, first, line + n, window);
+    let click_row = (line - first).max(0) as usize;
+    let mut lines: Vec<Logical> = Vec::new();
+    let mut clicked = 0;
+    let mut cur = Logical { text: String::new(), cells: Vec::new() };
+    for (i, r) in rows.iter().enumerate() {
+        let base = cur.text.len();
+        cur.cells.extend(r.cells.iter().map(|(o, p)| (o + base, *p)));
+        cur.text.push_str(&r.text);
+        if i == click_row {
+            clicked = lines.len();
+        }
+        if !r.wraps || i + 1 == rows.len() {
+            lines.push(std::mem::replace(&mut cur, Logical { text: String::new(), cells: Vec::new() }));
+        }
+    }
+    let (lo, hi) = (clicked.saturating_sub(RADIUS), (clicked + RADIUS + 1).min(lines.len()));
+    let kept: Vec<Logical> = lines.drain(lo..hi).collect();
+    (kept, clicked - lo)
 }
 
 /// What `update_hover` compares to skip work: the pane, the cell and both hover keys.
@@ -81,7 +117,8 @@ impl App {
         let rules = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).map(smartsel::rules)?;
         let p = self.panes.get_mut(&id)?;
         let at = to_pos(&p.screen, point);
-        let (lines, _) = find::logical_lines_around(&p.screen, at.row, RADIUS);
+        let max = self.globals.int("MaxSemanticHistoryPrefixOrSuffix").max(0) as usize;
+        let (lines, _) = smart_lines(&p.screen, at, None, max);
         let joined = find::Logical::join(&lines, if ignore_newlines { "" } else { "\n" });
         let click = joined.offset_of(at)?;
         let found = smartsel::select_at(&joined.text, click, &rules)?;
@@ -98,19 +135,16 @@ impl App {
         let rules = smartsel::rules(profile);
         let prefs = Prefs::from_value(profile.get("Semantic History").as_ref());
         let at = to_pos(&p.screen, point);
-        let (lines, i) = find::logical_lines_around(&p.screen, at.row, RADIUS);
+        let max = self.globals.int("MaxSemanticHistoryPrefixOrSuffix").max(0) as usize;
+        // Detection stays between soft boundaries (`UAH:86`), Smart Selection included (P12),
+        // over a bounded number of rows, never whole logical lines.
+        let window = click_window(&p.screen, at, true);
+        let (lines, i) = smart_lines(&p.screen, at, window, max);
         let line = lines.get(i)?.clone_line();
         line.offset_of(at)?;
-        // Detection stays between soft boundaries (`UAH:86`), Smart Selection included (P12).
-        let window = click_window(&p.screen, at, true);
-        let lines: Vec<Logical> = match window {
-            Some((lo, hi)) => lines.iter().map(|l| restrict_columns(l, lo, hi)).collect(),
-            None => lines,
-        };
         let joined = Logical::join(&lines, "\n");
         let found = joined.offset_of(at).and_then(|click| smartsel::select_at(&joined.text, click, &rules));
         let smart = found.as_ref().filter(|f| !rules[f.rule].actions.is_empty()).map(|f| (f.rule, 0, joined.text[f.range.clone()].to_string()));
-        let max = self.globals.int("MaxSemanticHistoryPrefixOrSuffix").max(0) as usize;
         let ignore = self.globals.bool("IgnoreHardNewlinesInURLs");
         let respect = sh_context::respect_hard(ignore, p.screen.alt_screen(), window.is_some());
         let text = around(&p.screen, at, window, respect, max);
@@ -1118,5 +1152,49 @@ mod hover_tests {
         assert_eq!(cut.text, "cd");
         assert_eq!(cut.cells, vec![(0, find::Pos { row: 4, col: 3 }), (1, find::Pos { row: 4, col: 4 })]);
         assert_eq!(restrict_columns(&line, 0, 1).text, "ab");
+    }
+}
+
+#[cfg(test)]
+mod smart_lines_tests {
+    use super::*;
+
+    /// A screen holding one logical line of `n` characters wrapped over many rows.
+    fn long_line(n: usize) -> crate::screen::Screen {
+        let mut s = crate::screen::Screen::with_scrollback(80, 24, 5000);
+        s.feed("x".repeat(n).as_bytes());
+        s.feed(b"\r\ntail\r\n");
+        s
+    }
+
+    #[test]
+    fn smart_text_is_bounded_on_a_huge_logical_line() {
+        let s = long_line(40_000);
+        let at = find::Pos { row: 100, col: 5 };
+        let (lines, i) = smart_lines(&s, at, None, 2000);
+        let bytes: usize = lines.iter().map(|l| l.text.len()).sum();
+        // 27 rows each way at 80 columns, not the 500 rows of the line.
+        assert!(bytes <= 55 * 80, "{bytes}");
+        assert!(lines[i].offset_of(at).is_some(), "the clicked cell is still in its line");
+        // A window cuts the columns too, and the bound holds on the whole buffer's far end.
+        let (win, _) = smart_lines(&s, at, Some((0, 9)), 2000);
+        assert!(win.iter().map(|l| l.text.len()).sum::<usize>() <= 55 * 10);
+        let (top, i) = smart_lines(&s, find::Pos { row: 0, col: 0 }, None, 2000);
+        assert!(top[i].offset_of(find::Pos { row: 0, col: 0 }).is_some());
+    }
+
+    #[test]
+    fn smart_text_keeps_short_lines_whole() {
+        let mut s = crate::screen::Screen::with_scrollback(80, 24, 100);
+        s.feed(b"one\r\ntwo https://a.b/c\r\nthree\r\n");
+        let history = {
+            use alacritty_terminal::grid::Dimensions;
+            s.term().grid().history_size()
+        };
+        let at = find::Pos { row: history + 1, col: 4 };
+        let (lines, i) = smart_lines(&s, at, None, 2000);
+        assert_eq!(lines[i].text, "two https://a.b/c");
+        assert_eq!(lines[i - 1].text, "one");
+        assert_eq!(lines[i + 1].text, "three");
     }
 }
