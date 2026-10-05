@@ -409,7 +409,9 @@ impl Controller {
     }
 
     fn error(&self, addressing: &[(&str, String)], code: &str) -> String {
-        let mut pairs = vec![("t", "E".to_string())];
+        // A data request is answered in kind: `t=R` with its addressing (`KC:1469-1474`), so a
+        // client waiting on its `t=r` sees the error. Registration errors stay `t=E` (`KC:368`).
+        let mut pairs = vec![("t", "R".to_string())];
         pairs.extend(addressing.iter().cloned());
         self.send(msg(&pairs, Some(code.into())))
     }
@@ -428,7 +430,8 @@ impl Controller {
             return vec![self.error(&addressing, "EINVAL")];
         }
         let Some(drop) = &mut self.drop else {
-            return vec![self.error(&addressing, "ENOENT")];
+            // No drop to read from (`KC:515-519`).
+            return vec![self.error(&addressing, "EINVAL")];
         };
         let Some(x) = m.int("x") else {
             return vec![self.error(&addressing, "EINVAL")];
@@ -607,7 +610,7 @@ mod tests {
         assert_eq!(data_of(&file), b"data of C:\\a.txt");
         // t=r with no addressing ends the drop; a later request is the stale-request error.
         assert!(c.inbound("t=r:o=1").is_empty());
-        assert_eq!(c.inbound("t=r:x=1"), vec!["\x1b]72;t=E:x=1;ENOENT\x1b\\".to_string()]);
+        assert_eq!(c.inbound("t=r:x=1"), vec!["\x1b]72;t=R:x=1;EINVAL\x1b\\".to_string()], "no drop, no data: EINVAL as iTerm2");
         assert!(c.accepting(), "the registration outlives a drop");
     }
 
@@ -617,21 +620,21 @@ mod tests {
         dropped(&mut c, &["C:\\My Files\\a b.txt", "\\\\host\\share\\n.txt", "D:\\dir\\"]);
         let uris = c.inbound("t=r:x=1");
         assert_eq!(data_of(&uris), b"file:///C:/My%20Files/a%20b.txt\r\nfile://host/share/n.txt\r\nfile:///D:/dir/\r\n");
-        assert_eq!(c.inbound("t=r:x=2"), vec!["\x1b]72;t=E:x=2;ENOENT\x1b\\".to_string()], "index out of bounds");
-        assert_eq!(c.inbound("t=r:x=0"), vec!["\x1b]72;t=E:x=0;ENOENT\x1b\\".to_string()]);
-        assert_eq!(c.inbound("t=r:x=1:y=4"), vec!["\x1b]72;t=E:x=1:y=4;ENOENT\x1b\\".to_string()]);
-        assert_eq!(c.inbound("t=r:x=1:y=z"), vec!["\x1b]72;t=E:x=1:y=z;EINVAL\x1b\\".to_string()]);
-        assert_eq!(c.inbound("t=r:y=1"), vec!["\x1b]72;t=E:y=1;EINVAL\x1b\\".to_string()], "a sub-index with no MIME index is malformed");
-        assert_eq!(c.inbound("t=r:Y=5"), vec!["\x1b]72;t=E:Y=5;EINVAL\x1b\\".to_string()], "directory handles are not built");
+        assert_eq!(c.inbound("t=r:x=2"), vec!["\x1b]72;t=R:x=2;ENOENT\x1b\\".to_string()], "index out of bounds");
+        assert_eq!(c.inbound("t=r:x=0"), vec!["\x1b]72;t=R:x=0;ENOENT\x1b\\".to_string()]);
+        assert_eq!(c.inbound("t=r:x=1:y=4"), vec!["\x1b]72;t=R:x=1:y=4;ENOENT\x1b\\".to_string()]);
+        assert_eq!(c.inbound("t=r:x=1:y=z"), vec!["\x1b]72;t=R:x=1:y=z;EINVAL\x1b\\".to_string()]);
+        assert_eq!(c.inbound("t=r:y=1"), vec!["\x1b]72;t=R:y=1;EINVAL\x1b\\".to_string()], "a sub-index with no MIME index is malformed");
+        assert_eq!(c.inbound("t=r:Y=5"), vec!["\x1b]72;t=R:Y=5;EINVAL\x1b\\".to_string()], "directory handles are not built");
         // A directory has no data to read.
-        assert_eq!(c.inbound("t=r:x=1:y=3"), vec!["\x1b]72;t=E:x=1:y=3;ENOENT\x1b\\".to_string()]);
+        assert_eq!(c.inbound("t=r:x=1:y=3"), vec!["\x1b]72;t=R:x=1:y=3;ENOENT\x1b\\".to_string()]);
         // Before the list was asked for, a file entry is EINVAL.
         let mut c = registered();
         dropped(&mut c, &["C:\\a.txt"]);
-        assert_eq!(c.inbound("t=r:x=1:y=1"), vec!["\x1b]72;t=E:x=1:y=1;EINVAL\x1b\\".to_string()]);
+        assert_eq!(c.inbound("t=r:x=1:y=1"), vec!["\x1b]72;t=R:x=1:y=1;EINVAL\x1b\\".to_string()]);
         // A new drag forgets the drop.
         c.drag_entered((0, 0), (0, 0), &["text/uri-list".to_string()]);
-        assert_eq!(c.inbound("t=r:x=1"), vec!["\x1b]72;t=E:x=1;ENOENT\x1b\\".to_string()]);
+        assert_eq!(c.inbound("t=r:x=1"), vec!["\x1b]72;t=R:x=1;EINVAL\x1b\\".to_string()]);
         // Data over several chunks decodes whole: 10 000 bytes in 3 072-byte pieces.
         let mut c = registered();
         c.drop((0, 0), (0, 0), files(&["C:\\big.bin"]), Backing { size: |_| Some(10_000), read: |_| Some(vec![7u8; 10_000]) });
@@ -688,7 +691,7 @@ mod tests {
         dropped(&mut c, &["C:\\a.txt"]);
         let e = c.inbound(&format!("t=r:x=9\u{f}7:\u{3}z=1:yy=2:y={hostile}"));
         assert_eq!(e.len(), 1);
-        assert!(e[0].starts_with("\x1b]72;t=E:i=abc:x=97"), "{:?}", e[0]);
+        assert!(e[0].starts_with("\x1b]72;t=R:i=abc:x=97"), "{:?}", e[0]);
         for r in c.inbound("t=r:x=9\u{f}") {
             assert!(r.bytes().all(|b| b == 0x1b || (0x20..0x7f).contains(&b)), "{r:?}");
         }
@@ -702,7 +705,7 @@ mod tests {
         // The program's own text never becomes a payload: errors are the fixed words.
         for body in ["t=r:x=1", "t=r:x=1:y=1", "t=r:Y=1", "t=r:x=q"] {
             for r in c.inbound(body) {
-                if let (true, Some((_, p))) = (r.starts_with("\x1b]72;t=E"), r.trim_end_matches("\x1b\\").rsplit_once(';')) {
+                if let (true, Some((_, p))) = (r.starts_with("\x1b]72;t=R"), r.trim_end_matches("\x1b\\").rsplit_once(';')) {
                     assert!(["EFBIG", "ENOENT", "EINVAL"].contains(&p), "{r:?}");
                 }
             }
@@ -738,13 +741,13 @@ mod tests {
         c.drop((0, 0), (0, 0), many, Backing { size: |_| Some(1), read: |_| Some(vec![1]) });
         let list = String::from_utf8(data_of(&c.inbound("t=r:x=1"))).unwrap();
         assert_eq!(list.matches("\r\n").count(), 256);
-        assert_eq!(c.inbound("t=r:x=1:y=257"), vec!["\x1b]72;t=E:x=1:y=257;ENOENT\x1b\\".to_string()]);
+        assert_eq!(c.inbound("t=r:x=1:y=257"), vec!["\x1b]72;t=R:x=1:y=257;ENOENT\x1b\\".to_string()]);
 
         // A file past 16 MiB answers EFBIG, and is never read.
         let mut c = registered();
         c.drop((0, 0), (0, 0), files(&["C:\\big.bin", "C:\\ok.bin"]), Backing { size: |p| Some(if p.ends_with("big.bin") { (16 << 20) + 1 } else { 5 }), read: |p| Some(vec![0u8; if p.ends_with("ok.bin") { 5 } else { panic!("an oversized file is never read") }]) });
         c.inbound("t=r:x=1");
-        assert_eq!(c.inbound("t=r:x=1:y=1"), vec!["\x1b]72;t=E:x=1:y=1;EFBIG\x1b\\".to_string()]);
+        assert_eq!(c.inbound("t=r:x=1:y=1"), vec!["\x1b]72;t=R:x=1:y=1;EFBIG\x1b\\".to_string()]);
         assert_eq!(data_of(&c.inbound("t=r:x=1:y=2")), vec![0u8; 5]);
         // 16 MiB exactly is served.
         let mut c = registered();
@@ -775,7 +778,7 @@ mod tests {
         assert!(!c.inbound_at(t0 + Duration::from_secs(59), "t=r:x=1").is_empty());
         assert!(c.inbound_at(t0 + Duration::from_secs(59), "t=r:x=1")[0].contains("m="), "still served at 59 s");
         let late = c.inbound_at(t0 + Duration::from_secs(61), "t=r:x=1");
-        assert_eq!(late, vec!["\x1b]72;t=E:x=1;ENOENT\x1b\\".to_string()]);
+        assert_eq!(late, vec!["\x1b]72;t=R:x=1;EINVAL\x1b\\".to_string()]);
         assert!(!c.has_drop(), "an expired drop frees its data");
         // Unregistering frees the drop too.
         let mut c = registered();
@@ -806,7 +809,7 @@ mod tests {
         // Four 16 MiB files fit the 64 MiB budget; the fifth was over it when the drop arrived.
         c.inbound("t=r:x=1");
         assert_eq!(data_of(&c.inbound("t=r:x=1:y=1")).len(), 16 << 20);
-        assert_eq!(c.inbound("t=r:x=1:y=5"), vec!["\x1b]72;t=E:x=1:y=5;EFBIG\x1b\\".to_string()]);
+        assert_eq!(c.inbound("t=r:x=1:y=5"), vec!["\x1b]72;t=R:x=1:y=5;EFBIG\x1b\\".to_string()]);
         assert!(ASKED.load(SeqCst) <= (64 << 20) + (16 << 20));
     }
 
