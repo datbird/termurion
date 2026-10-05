@@ -94,6 +94,12 @@ impl State {
         self.preedit.as_ref().filter(|_| self.owner.is_some_and(|(p, g)| p == pane && g == self.generation))
     }
 
+    /// A composition is visible on its owner pane (the keys are the IME's): focus follows mouse
+    /// waits while it is (13j's seam).
+    pub fn composing(&self) -> bool {
+        self.owner.is_some_and(|(pane, _)| holds_keys(self.of(pane)))
+    }
+
     /// The IME reports a composition on `pane`.
     pub fn store(&mut self, pane: u64, p: Preedit) {
         self.owner = Some((pane, self.generation));
@@ -453,5 +459,25 @@ mod tests {
         s.area = Some([1, 2, 3, 4]);
         s.system_reset();
         assert_eq!(s.area, None);
+    }
+
+    /// 13j seam: focus follows mouse reads `composing` and never acts while it is true: a
+    /// visible composition on its owner, the same test that holds keys.
+    #[test]
+    fn composing_is_a_visible_composition() {
+        let mut s = State::default();
+        assert!(!s.composing(), "nothing yet");
+        s.store(7, pre("", None));
+        assert!(!s.composing(), "an empty preedit holds nothing");
+        s.store(7, pre("ni", Some(2)));
+        assert!(s.composing());
+        s.end();
+        assert!(!s.composing(), "the IME ended it; only a commit may follow");
+        s.store(7, pre("ni", Some(2)));
+        s.cancel();
+        assert!(!s.composing(), "a cancel ends it");
+        s.store(7, pre("ha", Some(2)));
+        assert_eq!(s.commit(Some(7), true), Some(7));
+        assert!(!s.composing(), "a commit ends it");
     }
 }

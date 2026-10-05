@@ -88,9 +88,11 @@ impl App {
         }
     }
 
-    /// 13k seam: true while an IME composition is open (Tandem has none yet).
+    /// True while an IME composition is open in any Tandem window (13k's IME state is per
+    /// window: the live one and every parked one): focus follows mouse never moves the keyboard
+    /// away from it.
     fn ffm_composing(&self) -> bool {
-        false
+        self.ime.composing() || self.windows.parked().any(|(_, w)| w.ime.composing())
     }
 
     /// Plain focus follows mouse inside a window: the pane under the pointer takes focus.
@@ -125,7 +127,7 @@ impl App {
         }
         self.ffm_saved = None;
         let front = hotkey_ui::foreground();
-        if self.ffm_front(front) != mouse::Front::Terminal || self.focused_password_prompt() || !self.orch_waits.is_empty() {
+        if self.ffm_front(front) != mouse::Front::Terminal || self.focused_password_prompt() || !self.orch_waits.is_empty() || self.ffm_composing() {
             return;
         }
         let Some((id, hwnd)) = self.terminal_window_under(now) else { return };
@@ -845,6 +847,22 @@ mod tests {
         assert!(b.contains("tandem_ui_at("), "the one overlay list");
         assert!(b.contains("ffm_composing()"), "the 13k seam");
         assert!(body(UI, "focus_pane_at_screen").contains("ffm_pane_focus(id, "));
+    }
+
+    /// 13k merge: the composing seam reads 13k's per-window IME state, the live window's and
+    /// every parked window's, and every focus follows mouse path checks it: MakeKey and Steal
+    /// (`ffm_may_act`), aggressive activation, and the hover pane focus.
+    #[test]
+    fn focus_follows_mouse_waits_for_a_composition() {
+        let c = body(UI, "ffm_composing");
+        assert!(c.contains("self.ime.composing()"), "the live window");
+        assert!(c.contains("self.windows.parked()") && c.contains("ime.composing()"), "every parked window");
+        assert!(!c.contains("false\n"), "no stub");
+        assert!(body(UI, "ffm_enter").contains("self.ffm_composing())"), "MakeKey and Steal");
+        let act = body(UI, "ffm_became_active");
+        let (gate, raise) = (act.find("self.ffm_composing()").expect("aggressive activation waits"), act.find("focus_terminal_window(").unwrap());
+        assert!(gate < raise, "before any window comes forward");
+        assert!(body(UI, "ffm_pane_focus").contains("self.ffm_composing()"), "hover pane focus");
     }
 
     #[test]
