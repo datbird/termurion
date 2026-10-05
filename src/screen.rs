@@ -2147,8 +2147,11 @@ impl Screen {
         const DECSTR: &[u8] = b"\x1b[?25h\x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\
             \x1b[?2004l\x1b[?1004l\x1b[?1007l\x1b[4l\x1b[0m\x1b[r\x1b[?6l\x1b[?7h\x1b[?2048l\x1b(B";
         // Straight to the parser: Literal Controls would print the sequence instead.
+        // DECSTBM (the `r`) homes the cursor; a soft reset leaves it where it was.
+        let c = self.term.grid().cursor.point;
         let reply = self.feed_raw(DECSTR);
         self.replies.extend(reply);
+        let _ = self.feed_raw(format!("\x1b[{};{}H", c.line.0.max(0) + 1, c.column.0 + 1).as_bytes());
         // The ESC in it cancelled any sequence the program left open; the scanner follows (it
         // reads the program's bytes only, so it would still be inside that sequence).
         if self.osc.pending.is_some() {
@@ -2194,7 +2197,13 @@ impl Screen {
         self.marks.program_ended();
         self.restart_scanner();
         // The reset reaches the parser itself (the answers to it are not wanted).
-        let _ = self.feed_raw(b"\x1b[?1049l\x1b[0m\x1b(B\x0f\x1b]8;;\x1b\\\x1b[r\x1b[?6l\x1b[?7h\x1b[4l");
+        let _ = self.feed_raw(b"\x1b[?1049l");
+        let (row, col) = {
+            let c = self.term.grid().cursor.point;
+            (c.line.0.max(0) + 1, c.column.0 + 1)
+        };
+        // DECSTBM homes the cursor, so it is put back: the text stays where it was.
+        let _ = self.feed_raw(format!("\x1b[0m\x1b(B\x0f\x1b]8;;\x1b\\\x1b[r\x1b[?6l\x1b[?7h\x1b[4l\x1b[{row};{col}H").as_bytes());
         self.restart_scanner();
         self.term.clear_keyboard_modes();
         self.keys = KeyState { literal: self.keys.literal, ..KeyState::new(self.keys.profile_csi_u) };
@@ -3247,6 +3256,22 @@ mod tests {
         s.shell.user = None;
         s.restore_ssh_saved(&saved);
         assert_eq!((s.shell.cwd.as_deref(), s.shell.host.as_deref(), s.shell.user.as_deref()), (Some("/home/me"), Some("laptop"), Some("me")));
+    }
+
+    #[test]
+    fn soft_reset_and_program_ended_leave_the_cursor() {
+        // DECSTBM inside the reset homes the cursor; a restart must write under the old text.
+        for ended in [false, true] {
+            let mut s = Screen::new(20, 5);
+            s.feed(b"one\r\ntwo\r\n");
+            let before = s.term().grid().cursor.point;
+            if ended {
+                s.program_ended();
+            } else {
+                s.soft_reset();
+            }
+            assert_eq!(s.term().grid().cursor.point, before, "ended={ended}");
+        }
     }
 
     #[test]

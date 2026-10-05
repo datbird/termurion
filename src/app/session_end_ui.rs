@@ -141,8 +141,23 @@ impl App {
                 self.ask(id, SURVIVORS_BAR, &text, &["OK"], true);
             }
             Outcome::Close => self.close_pane(id, event_loop),
-            // The restart offer and the timed restart are the next task's.
-            Outcome::Keep { .. } | Outcome::RestartAfter(_) => {}
+            Outcome::Keep { offer_restart } => {
+                if offer_restart {
+                    self.offer_restart(id);
+                }
+            }
+            Outcome::RestartAfter(delay) => {
+                // A pane that keeps ending stops restarting and offers instead (P11).
+                let now = Instant::now();
+                let history = self.restart_history.entry(id).or_default();
+                history.retain(|t| now.saturating_duration_since(*t) < se::STORM_WINDOW);
+                if se::restart_allowed(history, now) {
+                    history.push(now);
+                    self.pending_restarts.insert(id, now + delay);
+                } else {
+                    self.ask(id, se::RESTART_BAR, se::KEEPS_ENDING, &[se::RESTART, se::DONT_ASK_AGAIN], true);
+                }
+            }
             Outcome::Finished { close } => {
                 // A buried window comes back to show it (`PS:4786`).
                 if self.buried.contains(id) {
@@ -156,6 +171,26 @@ impl App {
         self.redraw();
     }
 
+    /// The restart offer: "Session ended (command exited). Restart it?" (`NC:318-327`).
+    pub(super) fn offer_restart(&mut self, id: PaneId) {
+        self.ask(id, se::RESTART_BAR, se::RESTART_OFFER, &[se::RESTART, se::DONT_ASK_AGAIN], true);
+    }
+
+    /// The timer pass of the Restart end action: each pane whose second is up restarts, if it is
+    /// still ended and restartable (`PS:4856-4864`). Returns the next deadline.
+    pub(super) fn tick_restarts(&mut self) -> Option<Instant> {
+        let (due, next) = se::restart_due(Instant::now(), &self.pending_restarts);
+        for id in due {
+            self.pending_restarts.remove(&id);
+            if self.panes.get(&id).is_some_and(|p| p.ended) && self.restartable(id) {
+                self.enter_pane_window(id);
+                self.restart_pane(id);
+                self.redraw();
+            }
+        }
+        next
+    }
+
     /// Writes the end message into the pane's own screen.
     fn end_message(&mut self, id: PaneId, text: &str, divider: &str) {
         if let Some(p) = self.panes.get_mut(&id) {
@@ -167,6 +202,17 @@ impl App {
     pub(super) fn session_end_bar(&mut self, pane: PaneId, id: &str, button: Option<&str>, event_loop: &ActiveEventLoop) -> bool {
         match id {
             SURVIVORS_BAR => true,
+            se::RESTART_BAR => {
+                match button {
+                    Some(b) if b == se::RESTART => self.restart_answered(pane),
+                    Some(b) if b == se::DONT_ASK_AGAIN => {
+                        self.globals.set("SuppressRestartAnnouncement", toml::Value::Boolean(true));
+                        self.save_globals();
+                    }
+                    _ => {}
+                }
+                true
+            }
             se::TMUX_CLOSE_BAR => {
                 let always = match button {
                     Some(b) if b == se::ALWAYS => true,

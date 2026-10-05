@@ -388,6 +388,49 @@ impl Pane {
         self.ssh_registry_out.clear();
     }
 
+    /// A restart in place (13q Task 4, `resetForRelaunch`, `PS:6734-6741`): `fresh` is a new
+    /// pane for the same id with a new shell. The pane that comes back is `fresh`, so every
+    /// field of the shell (its pty, cookie, SSH and decoder state, coprocess, held input, the
+    /// profile's flags) is new by construction; the screen and what belongs to the session
+    /// itself move in from `old`: the text, scrollback and marks, the lock, pinned width, last
+    /// use, references, note, arrangement, Instant Replay's recording, the composer, the wheel
+    /// and the creation time and log id (a restart keeps them, `PS:846`, `PS:892-897`). The old
+    /// shell goes with `old`'s pty. The caller has dropped the app-wide state of the old shell
+    /// (jobs, cookie, SSH registry).
+    pub fn relaunch(mut old: Pane, mut fresh: Pane) -> Pane {
+        // A Filter or Zoom view or a frozen copy gives way to the pane's own screen.
+        old.frozen = false;
+        old.end_view();
+        old.replay = None;
+        // The program is gone: its modes, its open strings and its state go; the text stays.
+        old.screen.program_ended();
+        old.screen.soft_reset();
+        let want = (fresh.screen.term().columns() as u16, fresh.screen.term().screen_lines() as u16);
+        std::mem::swap(&mut fresh.screen, &mut old.screen);
+        fresh.screen.pty_backed = true;
+        fresh.session_note = std::mem::take(&mut old.session_note);
+        fresh.locked = old.locked;
+        fresh.pinned_width = old.pinned_width;
+        fresh.activity = old.activity;
+        fresh.session_guid = std::mem::take(&mut old.session_guid);
+        fresh.stable_id = std::mem::take(&mut old.stable_id);
+        fresh.arrangement = old.arrangement.take();
+        std::mem::swap(&mut fresh.dvr, &mut old.dvr);
+        fresh.replay_at = old.replay_at;
+        fresh.held = old.held.take();
+        fresh.held_until = old.held_until;
+        std::mem::swap(&mut fresh.composer, &mut old.composer);
+        fresh.composer.probe = None;
+        std::mem::swap(&mut fresh.wheel, &mut old.wheel);
+        fresh.motion = std::mem::take(&mut old.motion);
+        fresh.created = old.created;
+        fresh.created_at = old.created_at;
+        fresh.auto_log_id = old.auto_log_id;
+        // The shell started at the size the layout gives now; the kept screen follows it.
+        fresh.resize(want.0, want.1);
+        fresh
+    }
+
     /// Takes `guid` as the pane's reference: a restored pane keeps the one it saved, and a
     /// restarted session keeps its own (iTerm2 keeps a session's guid, `PTYSession.m:2403-2420`).
     pub fn keep_reference(&mut self, guid: &str) {
@@ -3346,6 +3389,88 @@ mod tests {
         let text = p.screen.all_text();
         assert!(text.contains("tandem-end"), "{text:?}");
         assert!(text.contains(" Session Ended "), "{text:?}");
+    }
+
+    #[test]
+    fn relaunch_keeps_the_screen() {
+        let mut a = start("cmd.exe /c echo first-run");
+        assert!(pump_until(&mut a, |p| p.exited.is_some()), "no exit");
+        assert!(pump_until(&mut a, |p| p.screen.all_text().contains("first-run")), "{:?}", a.screen.all_text());
+        a.ended = true;
+        a.own_mut().feed(b"\x1b[?1000h");
+        assert_ne!(a.screen.mouse_modes().tracking, crate::mouse::Tracking::Off);
+        let b = start("cmd.exe /c echo second-run");
+        let mut a = Pane::relaunch(a, b);
+        assert_eq!(a.exited, None);
+        assert!(!a.ended);
+        assert!(a.screen.pty_backed);
+        assert_eq!(a.screen.mouse_modes().tracking, crate::mouse::Tracking::Off, "a restart resets the modes");
+        assert!(pump_until(&mut a, |p| p.exited.is_some() && p.screen.all_text().contains("second-run")), "{:?}", a.screen.all_text());
+        let text = a.screen.all_text();
+        assert!(text.contains("first-run") && text.contains("second-run"), "{text:?}");
+    }
+
+    /// Every field of a Pane is classified here: a new field fails to compile until it is named,
+    /// and the test says which pane it comes from after a relaunch.
+    #[test]
+    fn relaunch_takes_every_shell_field_from_the_fresh_pane() {
+        fn classify(p: &Pane) {
+            let Pane { id: _, activity: _, locked: _, pinned_width: _, session_guid: _, stable_id: _, screen: _, encoding: _, decoder: _, pty: _, exited: _, error: _, profile: _, command: _, live: _, session_note: _, buffer: _, frozen: _, suppress_output: _, got_output: _, coprocess: _, co_out: _, co_end: _, tmux_hook: _, tmux_q: _, ssh_hook: _, ssh_q: _, conductor: _, ssh_registry_out: _, ssh_answers: _, ssh_files_out: _, ssh_search_out: _, ssh_clock: _, ssh_held: _, pending_jumps: _, screen_filter: _, gateway: _, tmux_size: _, last_newline: _, composer: _, dvr: _, replay_at: _, throughput: _, held: _, held_until: _, replay: _, echo_probe: _, stuck: _, stuck_seen: _, no_focus_reports: _, password_input: _, cookie: _, inline_paused: _, frustration: _, wheel: _, arrangement: _, ssh: _, motion: _, ended: _, created: _, created_at: _, auto_log_id: _, hold_open: _, survivors: _, exit_seen: _, exit_pid: _ } = p;
+        }
+        let mut old = Pane::recording(1, 10, 3);
+        classify(&old);
+        old.own_mut().feed(b"kept text");
+        old.locked = true;
+        old.activity = 7;
+        old.pinned_width = Some(120.0);
+        old.session_guid = "OLD-GUID".into();
+        old.stable_id = "old-stable".into();
+        old.session_note = "note".into();
+        old.arrangement = Some(("arr".into(), "sess".into()));
+        old.created = std::time::SystemTime::UNIX_EPOCH;
+        old.auto_log_id = 99;
+        old.composer.probe = crate::prompt_state::ClearProbe::start(b"\x08", Instant::now());
+        // The dead shell's state.
+        old.exited = Some(3);
+        old.ended = true;
+        old.error = Some("boom".into());
+        old.password_input = true;
+        old.cookie = Some("old-cookie".into());
+        old.ssh_held = b"queued".to_vec();
+        old.pending_jumps = Vec::new();
+        old.co_end = Some(("c".into(), "e".into()));
+        old.encoding = 932;
+        old.gateway = true;
+        old.echo_probe = None;
+        old.hold_open = true;
+        let mut fresh = Pane::recording(1, 10, 3);
+        fresh.cookie = Some("new-cookie".into());
+        fresh.session_guid = "NEW-GUID".into();
+        let new = Pane::relaunch(old, fresh);
+        // From the old pane.
+        assert!(new.screen.all_text().contains("kept text"));
+        assert!(new.locked);
+        assert_eq!(new.activity, 7);
+        assert_eq!(new.pinned_width, Some(120.0));
+        assert_eq!(new.session_guid, "OLD-GUID");
+        assert_eq!(new.stable_id, "old-stable");
+        assert_eq!(new.session_note, "note");
+        assert_eq!(new.arrangement, Some(("arr".into(), "sess".into())));
+        assert_eq!(new.created, std::time::SystemTime::UNIX_EPOCH, "a restart keeps the creation time (B6)");
+        assert_eq!(new.auto_log_id, 99);
+        assert!(new.composer.probe.is_none());
+        // From the fresh one.
+        assert_eq!(new.exited, None);
+        assert!(!new.ended);
+        assert_eq!(new.error, None);
+        assert!(!new.password_input);
+        assert_eq!(new.cookie.as_deref(), Some("new-cookie"));
+        assert!(new.ssh_held.is_empty());
+        assert!(new.co_end.is_none());
+        assert_eq!(new.encoding, 0);
+        assert!(!new.gateway);
+        assert!(!new.hold_open);
+        assert!(new.screen.pty_backed);
     }
 
     #[test]

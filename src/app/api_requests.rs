@@ -1011,7 +1011,7 @@ impl App {
     fn api_restart_session(&mut self, r: &pb::RestartSessionRequest) -> pb::restart_session_response::Status {
         use pb::restart_session_response::Status;
         let pane = self.api_session_pane(r.session_id.as_deref());
-        let (restartable, exited) = pane.and_then(|p| self.panes.get(&p)).map_or((false, false), |p| (p.tmux_io().is_none() && !p.gateway && !p.dvr.read_only, p.exited.is_some()));
+        let (restartable, exited) = pane.and_then(|p| self.panes.get(&p)).map_or((false, false), |p| ((p.exited.is_some() || !p.gateway) && self.restartable(p.id), p.exited.is_some()));
         let status = api_layout::restart_status(pane.is_some(), restartable, r.only_if_exited.unwrap_or(false), exited);
         if let (Status::Ok, Some(p)) = (status, pane) {
             self.enter_pane_window(p);

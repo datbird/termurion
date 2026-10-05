@@ -175,7 +175,7 @@ impl App {
             self.api_jar.lock().unwrap().add(c, crate::api_auth::CookieUse::Session);
         }
         pane.cookie = cookie;
-        self.install_pane(id, pane, &p);
+        self.install_pane(id, pane, &p, false);
         if dropped {
             if let Some(pane) = self.panes.get_mut(&id) {
                 // A visible mark where output is missing, then a repaint.

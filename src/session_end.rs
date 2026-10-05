@@ -2,7 +2,8 @@
 //! of a tmux detach (`PTYSession.m:4747-4822`, `iTermNaggingController.m:866-886`), the end
 //! message line, the silence keys of the short-lived warning, and every text.
 
-use std::time::Duration;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use unicode_width::UnicodeWidthStr;
 
@@ -111,6 +112,39 @@ pub const DIVIDER_RGB: (u8, u8, u8) = (70, 83, 246);
 /// The divider when the character is empty (Decision: iTerm2 draws an image).
 pub const DEFAULT_DIVIDER: &str = "\u{2500}";
 
+/// The panes whose timed restart came due, sorted by id, and the earliest deadline still
+/// waiting (`PS:4856-4864`).
+pub fn restart_due(now: Instant, pending: &HashMap<crate::layout::PaneId, Instant>) -> (Vec<crate::layout::PaneId>, Option<Instant>) {
+    let mut due: Vec<crate::layout::PaneId> = pending.iter().filter(|(_, at)| **at <= now).map(|(id, _)| *id).collect();
+    due.sort_unstable();
+    let next = pending.values().filter(|at| **at > now).min().copied();
+    (due, next)
+}
+
+/// Tandem's bound on the Restart action (13q P11; iTerm2 has none): at most this many timed
+/// restarts of one pane within `STORM_WINDOW`.
+pub const STORM_LIMIT: usize = 5;
+pub const STORM_WINDOW: Duration = Duration::from_secs(10);
+/// The bar shown when the bound stops a restart.
+pub const KEEPS_ENDING: &str = "Session keeps ending. Restart it?";
+
+/// Whether a pane that restarted at `history` may be restarted again at `now`.
+pub fn restart_allowed(history: &[Instant], now: Instant) -> bool {
+    history.iter().filter(|t| now.saturating_duration_since(**t) < STORM_WINDOW).count() < STORM_LIMIT
+}
+
+/// The words of the restart message (`PS:4779`): the custom end text replaces it as it
+/// replaces every message (`PS:4525`), else the Advanced "restarted" text.
+pub fn restarted_text(custom_end: &str, restarted: &str) -> String {
+    if !custom_end.is_empty() {
+        custom_end.to_string()
+    } else if restarted.is_empty() {
+        SESSION_RESTARTED_DEFAULT.to_string()
+    } else {
+        restarted.to_string()
+    }
+}
+
 pub const SESSION_ENDED: &str = "Session Ended";
 pub const TMUX_DETACHED: &str = "tmux detached";
 pub const SESSION_RESTARTED_DEFAULT: &str = "Session Restarted";
@@ -214,5 +248,39 @@ mod tests {
         assert_eq!(end_line_with(20, "Session Ended", "", wide), "\u{2500} Session Ended \u{2500}");
         let narrow = |s: &str| s.chars().count();
         assert_eq!(end_line_with(20, "Session Ended", "", narrow), "\u{2500}\u{2500} Session Ended \u{2500}\u{2500}\u{2500}");
+    }
+
+    #[test]
+    fn restart_offer_follows_iterm2() {
+        assert_eq!(RESTART_OFFER, "Session ended (command exited). Restart it?");
+        assert_eq!(RESTART, "Restart");
+        assert_eq!(DONT_ASK_AGAIN, "Don\u{2019}t Ask Again");
+        assert_eq!(FAILED_TO_START, "Session failed to start.");
+        assert_eq!(SESSION_RESTARTED_DEFAULT, "Session Restarted");
+        assert_eq!(FINISHED_DEFAULT, "Finished");
+    }
+
+    #[test]
+    fn restart_due_follows_iterm2() {
+        let t0 = Instant::now();
+        let mut pending: HashMap<crate::layout::PaneId, Instant> = HashMap::new();
+        pending.insert(2, t0 + Duration::from_secs(1));
+        pending.insert(1, t0 + Duration::from_millis(500));
+        assert_eq!(restart_due(t0 + Duration::from_millis(600), &pending), (vec![1], Some(t0 + Duration::from_secs(1))));
+        pending.remove(&1);
+        assert_eq!(restart_due(t0 + Duration::from_secs(1), &pending), (vec![2], None));
+        assert_eq!(restart_due(t0, &HashMap::new()), (vec![], None));
+    }
+
+    #[test]
+    fn restart_storm_is_bounded() {
+        let t0 = Instant::now();
+        let five: Vec<Instant> = (0..5).map(|i| t0 + Duration::from_secs(i)).collect();
+        assert!(restart_allowed(&five[..4], t0 + Duration::from_secs(5)));
+        assert!(!restart_allowed(&five, t0 + Duration::from_secs(5)));
+        assert!(restart_allowed(&five, t0 + Duration::from_secs(14)), "old restarts fall out of the window");
+        assert_eq!(restarted_text("", "Back"), "Back");
+        assert_eq!(restarted_text("", ""), "Session Restarted");
+        assert_eq!(restarted_text("Bye", "Back"), "Bye");
     }
 }

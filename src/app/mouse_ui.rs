@@ -799,7 +799,7 @@ mod tests {
             assert!(!production.contains("self.inner("), "{src} insets a pane without its room");
         }
         assert!(body(MOD, "relayout").contains("grid_size_for("), "each pane's pty is sized by its own room");
-        assert!(body(MOD, "start_pane_as").contains("pane_room_for("), "a new pane starts with its room");
+        assert!(body(MOD, "spawn_pane").contains("pane_room_for("), "a new pane starts with its room");
         assert!(body(MOD, "size_window").contains("scroll_room()"), "a new window opens with its columns");
         assert!(include_str!("sizing_ui.rs").contains("scroll_room()"), "the edge snap counts the strip once");
         assert!(body(include_str!("windows_ui.rs"), "apply_window_style").contains("scroll_room()"), "a styled window opens with its columns beside the bar");
