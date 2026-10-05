@@ -202,6 +202,10 @@ impl App {
         for h in &self.picker_hits {
             ui.push(Overlay::Picker, h.1);
         }
+        // The command buttons are pills too: a click on one is Tandem's, never the program's.
+        for h in &self.cmd_button_hits {
+            ui.push(Overlay::Pill, h.1);
+        }
         for h in &self.chat_indicator_hits {
             ui.push(Overlay::Indicator, h.1);
         }

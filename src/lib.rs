@@ -66,6 +66,7 @@ pub mod inline_file;
 pub mod sixel;
 pub mod kitty;
 pub mod stamps;
+pub mod cmdbuttons;
 pub mod cmdinfo;
 pub mod pathnav;
 pub mod session_log;

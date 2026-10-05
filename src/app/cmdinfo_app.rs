@@ -40,7 +40,7 @@ impl App {
     }
 
     /// The window's fields for a command mark and its "Started at" text (`TVA:616-645`).
-    fn command_info(&self, pane: PaneId, mark: u32) -> Option<(Info, Option<String>)> {
+    pub(super) fn command_info(&self, pane: PaneId, mark: u32) -> Option<(Info, Option<String>)> {
         let p = self.panes.get(&pane)?;
         let m = p.screen.command_mark(mark)?;
         let (code, end, running) = self.command_state(pane, mark)?;
@@ -126,7 +126,9 @@ impl App {
                     self.select(pane, r);
                 }
             }
-            Act::AddSnippet => self.cmdinfo_add_snippet(&info.command),
+            Act::AddSnippet => {
+                self.cmdinfo_add_snippet(&info.command);
+            }
             Act::Composer => {
                 let shell = self.panes.get(&pane).and_then(|p| p.own().shell.shell.clone());
                 match cmdinfo::composer_text(&info.command, info.directory.as_deref(), shell.as_deref()) {
@@ -156,7 +158,7 @@ impl App {
         self.user_write(pane, text.as_bytes(), crate::broadcast::Write::SendText);
     }
 
-    fn cmdinfo_copy(&mut self, text: String) {
+    pub(super) fn cmdinfo_copy(&mut self, text: String) {
         if let Some(cb) = &mut self.clipboard {
             if let Err(e) = cb.set_text(text) {
                 self.banners.set("clipboard", format!("Copy failed: {e}"));
@@ -167,10 +169,13 @@ impl App {
     /// "Add Command as Snippet" (`CIV:334-341`): a snippet titled and valued with the command,
     /// no tags, nothing escaped. The snippet is typed later by whoever picks it, so its text
     /// passes the same guard as a write.
-    fn cmdinfo_add_snippet(&mut self, command: &str) {
+    pub(super) fn cmdinfo_add_snippet(&mut self, command: &str) -> bool {
         let command = match cmdinfo::writable(command) {
             Ok(c) => c.to_string(),
-            Err(why) => return self.banners.set("action", why),
+            Err(why) => {
+                self.banners.set("action", why);
+                return false;
+            }
         };
         let snippet = crate::snippets::Snippet {
             title: command.clone(),
@@ -185,6 +190,7 @@ impl App {
         if let Some(w) = self.cmdinfo.as_mut() {
             w.toast_snippet_added();
         }
+        true
     }
 }
 

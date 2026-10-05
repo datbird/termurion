@@ -90,6 +90,7 @@ mod screenshot_ui;
 mod semantic_ui;
 mod url_handler_ui;
 mod cmdinfo_app;
+mod cmdbuttons_ui;
 mod session_end_ui;
 mod log_ui;
 mod archive_ui;
@@ -1244,6 +1245,10 @@ pub struct App {
     chat_picker: Option<chat_session_app::Pick>,
     /// The picker buttons this window drew, per pane (this window's, in `WinSlot`).
     picker_hits: Vec<(PaneId, Rect)>,
+    /// The selected command's buttons from the last frame (this window's; `swap_live`).
+    cmd_button_hits: Vec<(PaneId, Rect, crate::cmdbuttons::Button)>,
+    /// The pane, mark and button whose menu is open (the pick arrives later).
+    cmd_button_menu: Option<(PaneId, u32, crate::cmdbuttons::Button)>,
     /// The offscreen command lines this window drew: pane, band, line to reveal (13p; in `WinSlot`).
     offscreen_hits: Vec<(PaneId, Rect, i32)>,
     /// Each visible pane's prompt facts for this frame (`prepare_offscreen`); scratch, not swapped.
@@ -2102,6 +2107,8 @@ pub fn run() {
         chat_convo_dirty: true,
         chat_picker: None,
         picker_hits: Vec::new(),
+        cmd_button_hits: Vec::new(),
+        cmd_button_menu: None,
         offscreen_hits: Vec::new(),
         offscreen_prepared: HashMap::new(),
         inline_hits: Vec::new(),
@@ -4250,6 +4257,7 @@ impl App {
         self.single_use_ended(id);
         self.deps_command_ended(id);
         // Its Command Info window goes with it.
+        self.cmd_button_hits.retain(|(p, ..)| *p != id);
         if self.cmdinfo.as_ref().is_some_and(|w| w.pane == id) {
             self.cmdinfo = None;
         }
@@ -4946,7 +4954,7 @@ impl App {
         if self.clip_split_hit(x, y) || self.inline_split_hit(x, y) {
             return;
         }
-        if button == MouseButton::Left && (self.info_bar_press(x, y, event_loop) || self.porthole_press(x, y) || self.block_press(x, y)) {
+        if button == MouseButton::Left && (self.info_bar_press(x, y, event_loop) || self.porthole_press(x, y) || self.block_press(x, y) || self.cmd_button_press(x, y, event_loop)) {
             return;
         }
         // A divider's grab zone is Tandem's for every button: the left drags it, the others
@@ -5455,6 +5463,7 @@ impl App {
         let mut block_buttons = Vec::new();
         let mut fps_rect: Option<Rect> = None;
         let mut picker_hits = Vec::new();
+        let mut cmd_button_hits = Vec::new();
         let mut offscreen_hits: Vec<(PaneId, Rect, i32)> = Vec::new();
         let mut band_jobs: Vec<(PaneId, Rect, (f32, f32))> = Vec::new();
         let mut indicator_hits = Vec::new();
@@ -5579,6 +5588,7 @@ impl App {
                 }
                 indicator_hits.extend(self.draw_coprocess_indicator(&mut frame, id, self.text_rect(id, rect), cell, (sends, receives)));
                 picker_hits.extend(self.draw_session_picker(&mut frame, id, self.text_rect(id, rect), cell));
+                cmd_button_hits.extend(self.draw_command_buttons(&mut frame, id, self.text_rect(id, rect), cell));
                 overlay_drawn.extend(self.draw_info_bar(&mut frame, id, rect, cell).map(|r| (mouse::Overlay::InfoBar, r)));
                 if let Some(t) = self.draw_attention(&mut frame, id, self.text_rect(id, rect), cell) {
                     attention = Some(attention.map_or(t, |a: Instant| a.min(t)));
@@ -5690,6 +5700,7 @@ impl App {
         self.block_buttons = block_buttons;
         self.porthole_hits = porthole_hits;
         self.picker_hits = picker_hits;
+        self.cmd_button_hits = cmd_button_hits;
         self.inline_hits = inline_hits;
         self.chat_indicator_hits = indicator_hits;
         let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
@@ -5705,6 +5716,7 @@ impl App {
         holes.extend(self.porthole_hits.iter().map(|h| h.3));
         holes.extend(self.block_buttons.iter().map(|b| b.0));
         holes.extend(self.picker_hits.iter().map(|h| h.1));
+        holes.extend(self.cmd_button_hits.iter().map(|h| h.1));
         holes.extend(self.chat_indicator_hits.iter().map(|h| h.1));
         holes.extend(self.find_bar_rect.into_iter().chain(self.find_mode_rect));
         // The tab tooltip, the fps meter, the clippings panels and preview and the inline chat

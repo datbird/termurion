@@ -3015,6 +3015,27 @@ pub fn session_picker_button(frame: &mut Frame, pane: Rect, label: &str, fg: Rgb
     r
 }
 
+/// The selected command's buttons (`TV:6832-6917`): one pill per button on view row `row`, each
+/// at its first column (`cmdbuttons::columns`) and two cells wide, filled with the text color at
+/// a low alpha and holding the button's icon glyph. The pill goes in `popups` (the pane's text
+/// under it is cut out first) and the glyph in `rows`. Answers each button's hit rectangle.
+pub fn command_buttons(frame: &mut Frame, pane_inner: Rect, cell: (f32, f32), row: usize, buttons: &[(crate::cmdbuttons::Button, usize)], color: Rgb) -> Vec<(crate::cmdbuttons::Button, Rect)> {
+    let mut hits = Vec::new();
+    for &(button, col) in buttons {
+        let r = Rect { x: pane_inner.x + col as f32 * cell.0, y: pane_inner.y + row as f32 * cell.1, w: 2.0 * cell.0, h: cell.1 };
+        if r.x < pane_inner.x || r.x + r.w > pane_inner.x + pane_inner.w || r.y + r.h > pane_inner.y + pane_inner.h {
+            continue;
+        }
+        cut_out(frame, r, cell.1);
+        frame.popups.push(Quad { rect: r, color: rgba(color, 0.22) });
+        frame_lines(&mut frame.popups, r, rgba(color, 0.5));
+        let span = Span { text: button.glyph().to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
+        hits.push((button, r));
+    }
+    hits
+}
+
 /// The offscreen command line (`TDH:3593-3617`): `band` is filled over the pane's top (the
 /// rows, box glyphs and strokes under it are cut out first, so nothing of row 0 shows through),
 /// outlined by a 1 pixel line at its top and bottom, and the command's cells on `line` are
@@ -5170,6 +5191,25 @@ mod tests {
         let mut f = Frame::default();
         line_mark(&mut f, rect, 0, (10.0, 20.0), rgb(255, 0, 0), false, 80);
         assert!(f.overlay.is_empty());
+    }
+
+    #[test]
+    fn command_buttons_sit_on_their_row() {
+        use crate::cmdbuttons::{self, Button};
+        let inner = Rect { x: 10.0, y: 20.0, w: 800.0, h: 480.0 };
+        let mut f = Frame::default();
+        let cols = cmdbuttons::columns(80);
+        let list: Vec<(Button, usize)> = cmdbuttons::buttons(false).into_iter().zip(cols).collect();
+        let hits = command_buttons(&mut f, inner, (10.0, 20.0), 4, &list, rgb(200, 200, 200));
+        assert_eq!(hits.len(), 6);
+        assert_eq!(hits[0].0, Button::Settings);
+        assert_eq!((hits[0].1.x, hits[0].1.y, hits[0].1.w, hits[0].1.h), (780.0, 100.0, 20.0, 20.0));
+        assert_eq!(hits[1].1.x, 750.0, "3 cells apart");
+        assert!(hits.iter().all(|(_, r)| r.x + r.w <= inner.x + inner.w));
+        assert_eq!(f.rows.iter().filter(|r| r.spans[0].icon).count(), 6, "an icon glyph each");
+        assert!(f.overlay.is_empty(), "no text-bearing box in the overlay");
+        let mut g = Frame::default();
+        assert!(command_buttons(&mut g, inner, (10.0, 20.0), 40, &list, rgb(1, 1, 1)).is_empty(), "a row outside the pane draws nothing");
     }
 
     #[test]
