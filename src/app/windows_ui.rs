@@ -1437,8 +1437,8 @@ impl App {
         let pos = g.window.outer_position().unwrap_or_default();
         let (cw, ch) = self.cell();
         let area = self.content_area();
-        let pad = 2.0 * PAD * self.scale();
-        let chrome = (pad, inner.height as f32 - area.h + pad);
+        let (side, vert) = self.margins();
+        let chrome = (2.0 * side, inner.height as f32 - area.h + 2.0 * vert);
         let input = Input {
             style: s,
             percent,

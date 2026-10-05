@@ -19,6 +19,7 @@ use winit::window::{Window, WindowId};
 
 use crate::conpty::{self, Api, Source};
 use crate::globals::{self, Globals};
+use crate::margins;
 use crate::power;
 use crate::input::{self, Clicks};
 use crate::keyroute::{self, Route};
@@ -46,7 +47,7 @@ const FONT: &str = "Cascadia Mono";
 /// 12 pt, iTerm2's default size, at 96 dpi.
 const FONT_PX: f32 = 16.0;
 /// Space between a pane's edge and its text, in pixels at 100%.
-const PAD: f32 = 4.0;
+const SIDE_TAB_MARGIN: f32 = 4.0;
 /// How often a fading tab bar draws while it fades (60 frames a second).
 const FLASH_FRAME: Duration = Duration::from_millis(16);
 /// How far below the pointer a tab tooltip starts, in points (the arrow pointer's height).
@@ -2311,7 +2312,7 @@ impl App {
     pub(super) fn side_bar_width(&self) -> f32 {
         let scale = self.scale();
         let w = self.gpu.as_ref().map_or(800.0, |g| g.config.width as f32);
-        (tab_position::side_width(self.side_bar_preferred, w / scale, PAD, self.side_bar_minimum()) * scale).round()
+        (tab_position::side_width(self.side_bar_preferred, w / scale, SIDE_TAB_MARGIN, self.side_bar_minimum()) * scale).round()
     }
 
     /// The window shared out (`tab_position::window_split`): the tab bar's rect, the sessions'
@@ -2842,7 +2843,7 @@ impl App {
         let dx = (x - start_x) / scale;
         let dx = if self.tab_position() == TabPosition::Right { -dx } else { dx };
         let w = self.gpu.as_ref().map_or(800.0, |g| g.config.width as f32) / scale;
-        let preferred = tab_position::side_width(start_width + dx, w, PAD, self.side_bar_minimum()).round();
+        let preferred = tab_position::side_width(start_width + dx, w, SIDE_TAB_MARGIN, self.side_bar_minimum()).round();
         if preferred != self.side_bar_preferred {
             self.side_bar_preferred = preferred;
             self.relayout();
@@ -2901,13 +2902,21 @@ impl App {
 
     /// The text area inside a pane rectangle.
     fn inner(&self, rect: Rect) -> Rect {
-        rect.inset(PAD * self.scale())
+        let (side, vert) = self.margins();
+        rect.inset_xy(side, vert)
     }
 
+    /// The side and the top and bottom margins in pixels (`TerminalMargin`, `TerminalVMargin`,
+    /// iTerm2's 5 and 2 points by default), read on every call.
+    fn margins(&self) -> (f32, f32) {
+        let scale = self.scale();
+        (margins::px(self.globals.int("TerminalMargin"), scale), margins::px(self.globals.int("TerminalVMargin"), scale))
+    }
+
+    /// The one place a pane's pixels become columns and rows, so tmux, resizes, snaps,
+    /// screenshots and hit tests agree.
     fn grid_size(&self, rect: Rect) -> (u16, u16) {
-        let (cw, ch) = self.cell();
-        let inner = self.inner(rect);
-        ((inner.w / cw).floor().max(2.0) as u16, (inner.h / ch).floor().max(1.0) as u16)
+        margins::grid_size((rect.w, rect.h), self.cell(), self.margins())
     }
 
     /// The profile with this Guid, or the default profile.
@@ -3684,7 +3693,8 @@ impl App {
     fn size_window(&mut self, guid: Option<&str>) {
         let p = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).clone();
         let (cw, ch) = self.cell();
-        let pad = 2.0 * PAD * self.scale();
+        let (side, vert) = self.margins();
+        let (padx, pady) = (2.0 * side, 2.0 * vert);
         // The line under the title bar is part of the window's decoration (`PT:13235-13237`).
         let line = self.division_height() + self.caption_strip().unwrap_or(0.0);
         let Some(g) = self.gpu.as_ref() else { return };
@@ -3703,7 +3713,7 @@ impl App {
             (Some(pct), Some(work)) => i64::from(crate::frames::percent_cells(pct, ch, work.h)),
             _ => p.int("Rows").max(4),
         };
-        let (mut w, mut h) = (columns as f32 * cw + pad, rows as f32 * ch + pad + line);
+        let (mut w, mut h) = (columns as f32 * cw + padx, rows as f32 * ch + pady + line);
         if let Some(work) = work.filter(|_| pw.is_some() || ph.is_some()) {
             // The whole window stays on the work area.
             let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
@@ -4838,7 +4848,6 @@ impl App {
         let see_through = self.win_alpha_surface == crate::transparency::SurfaceKind::Alpha && !self.transparency_unavailable && crate::transparency::needs_alpha(&alphas.iter().map(|(_, a)| *a).collect::<Vec<_>>());
         self.frame_alpha = see_through;
         self.warn_transparency_unavailable(&alphas);
-        let mut margin_panes: Vec<(Vec<Rect>, [f32; 4])> = Vec::new();
         if see_through {
             frame.clear = [0.0; 4];
         }
@@ -4935,14 +4944,21 @@ impl App {
                     let opaque_colors = see_through && self.store.get(&p.profile).is_some_and(|pr| pr.bool("Only The Default BG Color Uses Transparency"));
                     let dim = self.pane_dim(tab, id, &bview);
                     let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, dim, key_cursor: self.focused && id == tab.focused && p.at_password_prompt(), bg_alpha, opaque_colors };
-                    if see_through {
-                        // The pane's margins (its rect less the cell grid) carry the default background at the
-                        // pane's alpha; the grid's own background runs cover the rest, one layer per pixel.
+                    // The margins, one layer per pixel and the only margin painter: the pane's
+                    // color, or an alternate screen's edge colors (`ExtendBackgroundColorIntoMargins`).
+                    {
                         let inner = self.inner(rect);
                         let (cols, lines) = (p.screen.term().columns(), p.screen.term().screen_lines());
                         let grid = Rect { x: inner.x, y: inner.y, w: cols as f32 * cell.0, h: lines as f32 * cell.1 };
                         let bg = p.screen.palette.bg;
-                        margin_panes.push((scene::margins(rect, grid), crate::transparency::premultiplied([bg.r, bg.g, bg.b], bg_alpha)));
+                        let (alt, extend) = (p.screen.alt_screen(), self.globals.bool("ExtendBackgroundColorIntoMargins"));
+                        let edges = if alt && extend { p.screen.edge_backgrounds() } else { Vec::new() };
+                        let fill = margins::fill(&edges, bg, extend, alt);
+                        if see_through {
+                            scene::margin_fill_alpha(&mut frame, rect, grid, cell.1, &fill, bg, bg_alpha, opaque_colors);
+                        } else {
+                            scene::margin_fill(&mut frame, rect, grid, cell.1, &fill);
+                        }
                     }
                     // An Auto Composer hides the terminal cursor and the rows it covers.
                     let cover = self.auto_composer_cover(id, rect);
@@ -4991,7 +5007,7 @@ impl App {
                         .filter(|(_, m)| show || m.name.is_some())
                         .map(|(row, m)| (row, crate::marks::color(&m)))
                         .collect();
-                    let pad = PAD * self.scale();
+                    let pad = self.margins().0;
                     scene::mark_bars(&mut frame, &bars, self.inner(rect), cell.1, pad);
                     block_buttons.extend(self.draw_blocks(&mut frame, id, rect, cell));
                     self.draw_inline_buttons(&mut frame, id, rect, cell);
@@ -5050,7 +5066,7 @@ impl App {
         if see_through {
             let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
             let chrome = rgba(palette_bg, 1.0);
-            let mut quads = crate::transparency::backdrop(Rect { x: 0.0, y: 0.0, w: ww, h: wh }, area, chrome, &margin_panes);
+            let mut quads = crate::transparency::backdrop(Rect { x: 0.0, y: 0.0, w: ww, h: wh }, area, chrome, &[]);
             quads.append(&mut frame.quads);
             frame.quads = quads;
         }

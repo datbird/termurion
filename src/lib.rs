@@ -25,6 +25,7 @@ pub mod recording;
 pub mod cadence;
 pub mod perf_stats;
 pub mod underline;
+pub mod margins;
 pub mod power;
 pub mod osc;
 pub mod osc1337;

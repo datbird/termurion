@@ -180,6 +180,58 @@ pub fn margins(rect: Rect, grid: Rect) -> Vec<Rect> {
     .collect()
 }
 
+/// The strips of `outer` outside `inner` (the cell grid), each with its color: the top and
+/// bottom across the whole width in `fill.default`, then the left and right of each row in that
+/// row's colors (adjacent rows of one color join). They never overlap.
+fn margin_strips(outer: Rect, inner: Rect, cell_h: f32, fill: &crate::margins::Fill) -> Vec<(Rect, Rgb)> {
+    let mut out = Vec::new();
+    let mut put = |rect: Rect, color: Rgb| {
+        if rect.w > 0.0 && rect.h > 0.0 {
+            out.push((rect, color));
+        }
+    };
+    let (bottom, right) = (inner.y + inner.h, inner.x + inner.w);
+    put(Rect { x: outer.x, y: outer.y, w: outer.w, h: inner.y - outer.y }, fill.default);
+    put(Rect { x: outer.x, y: bottom, w: outer.w, h: outer.y + outer.h - bottom }, fill.default);
+    let rows = if cell_h > 0.0 { (inner.h / cell_h).round() as usize } else { 0 };
+    let mut row = 0;
+    while row < rows {
+        let (l, r) = fill.rows.get(row).copied().unwrap_or((fill.default, fill.default));
+        let mut end = row + 1;
+        while end < rows && fill.rows.get(end).copied().unwrap_or((fill.default, fill.default)) == (l, r) {
+            end += 1;
+        }
+        let y = inner.y + row as f32 * cell_h;
+        // The last row runs to the grid's bottom edge.
+        let h = if end == rows { bottom - y } else { (end - row) as f32 * cell_h };
+        put(Rect { x: outer.x, y, w: inner.x - outer.x, h }, l);
+        put(Rect { x: right, y, w: outer.x + outer.w - right, h }, r);
+        row = end;
+    }
+    out
+}
+
+/// Paints the margins of a pane in an opaque window, under its text: the one painter of every
+/// pane's margins (the alternate screen's colors included). A strip the window's clear color
+/// already shows is not drawn.
+pub fn margin_fill(frame: &mut Frame, outer: Rect, inner: Rect, cell_h: f32, fill: &crate::margins::Fill) {
+    for (rect, color) in margin_strips(outer, inner, cell_h, fill) {
+        let color = rgba(color, 1.0);
+        if color != frame.clear {
+            frame.quads.push(Quad { rect, color });
+        }
+    }
+}
+
+/// `margin_fill` for a see-through window: each strip is one layer at the pane's `alpha`, or
+/// opaque when it is a non-default color (not `pane_bg`) and `opaque_colors` is on (13g).
+pub fn margin_fill_alpha(frame: &mut Frame, outer: Rect, inner: Rect, cell_h: f32, fill: &crate::margins::Fill, pane_bg: Rgb, alpha: f32, opaque_colors: bool) {
+    for (rect, color) in margin_strips(outer, inner, cell_h, fill) {
+        let a = if opaque_colors && color != pane_bg { 1.0 } else { alpha };
+        frame.quads.push(Quad { rect, color: crate::transparency::premultiplied([color.r, color.g, color.b], a) });
+    }
+}
+
 /// A color for the quad shader. The target is sRGB, so the shader works in linear light.
 pub fn rgba(c: Rgb, a: f32) -> [f32; 4] {
     [srgb_to_linear(c.r), srgb_to_linear(c.g), srgb_to_linear(c.b), a]
@@ -4851,6 +4903,52 @@ mod tests {
         assert!(f.quads.is_empty(), "{:?}", f.quads);
     }
 
+    /// B1: `margin_fill` is the only margin painter, one layer per pixel: a 0.7 pane's margins
+    /// compose to 0.7, never to 0.91.
+    #[test]
+    fn margin_fill_one_layer_in_a_see_through_pane() {
+        let outer = Rect { x: 0.0, y: 0.0, w: 820.0, h: 500.0 };
+        let inner = Rect { x: 10.0, y: 10.0, w: 800.0, h: 480.0 };
+        let (bg, red) = (rgb(0, 0, 0), rgb(255, 0, 0));
+        let mut fill = crate::margins::fill(&vec![(None, None); 24], bg, true, true);
+        fill.rows[2] = (red, bg);
+        let mut f = Frame::default();
+        margin_fill_alpha(&mut f, outer, inner, 20.0, &fill, bg, 0.7, false);
+        let a = |x: f32, y: f32| crate::transparency::composite(&f.quads, x, y)[3];
+        for (x, y) in [(3.0, 3.0), (815.0, 495.0), (3.0, 100.0), (815.0, 100.0), (3.0, 55.0), (409.0, 3.0)] {
+            assert!((a(x, y) - 0.7).abs() < 1e-4, "({x},{y}) {}", a(x, y));
+        }
+        assert!(a(400.0, 200.0) == 0.0, "the grid is not a margin");
+        let area: f32 = f.quads.iter().map(|q| q.rect.w * q.rect.h).sum();
+        assert_eq!(area, 820.0 * 500.0 - 800.0 * 480.0, "no pixel is covered twice");
+        // A non-default side color is opaque only with Only The Default BG Color Uses Transparency.
+        let mut g = Frame::default();
+        margin_fill_alpha(&mut g, outer, inner, 20.0, &fill, bg, 0.7, true);
+        assert!((crate::transparency::composite(&g.quads, 3.0, 55.0)[3] - 1.0).abs() < 1e-4);
+        assert!((crate::transparency::composite(&g.quads, 815.0, 55.0)[3] - 0.7).abs() < 1e-4);
+    }
+
+    /// In an opaque window a strip the clear color already shows is not drawn; other colors are.
+    #[test]
+    fn margin_fill_opaque_window_skips_clear_colored_strips() {
+        let outer = Rect { x: 0.0, y: 0.0, w: 820.0, h: 500.0 };
+        let inner = Rect { x: 10.0, y: 10.0, w: 800.0, h: 480.0 };
+        let (bg, red) = (rgb(10, 20, 30), rgb(255, 0, 0));
+        let mut f = Frame { clear: rgba(bg, 1.0), ..Default::default() };
+        margin_fill(&mut f, outer, inner, 20.0, &crate::margins::fill(&vec![(None, None); 24], bg, true, true));
+        assert!(f.quads.is_empty(), "{:?}", f.quads);
+        let mut fill = crate::margins::fill(&vec![(None, None); 24], bg, true, true);
+        fill.rows[1] = (red, bg);
+        fill.rows[2] = (red, bg);
+        margin_fill(&mut f, outer, inner, 20.0, &fill);
+        assert_eq!(f.quads, vec![Quad { rect: Rect { x: 0.0, y: 30.0, w: 10.0, h: 40.0 }, color: rgba(red, 1.0) }], "two red rows join into one strip");
+        // Another pane's color over the window's clear color is drawn everywhere.
+        let mut g = Frame { clear: rgba(red, 1.0), ..Default::default() };
+        margin_fill(&mut g, outer, inner, 20.0, &crate::margins::fill(&vec![(None, None); 24], bg, true, true));
+        let area: f32 = g.quads.iter().map(|q| q.rect.w * q.rect.h).sum();
+        assert_eq!(area, 820.0 * 500.0 - 800.0 * 480.0);
+    }
+
     #[test]
     fn composited_pixel_alpha_follows_iterm2() {
         let s = red_selected_default();
@@ -4859,7 +4957,7 @@ mod tests {
         let bg = s.palette.bg;
         let build = |opaque: bool| {
             let mut f = Frame::default();
-            f.quads = crate::transparency::backdrop(pane, pane, [0.0; 4], &[(margins(pane, grid), crate::transparency::premultiplied([bg.r, bg.g, bg.b], 0.7))]);
+            margin_fill_alpha(&mut f, pane, grid, CELL.1, &crate::margins::fill(&[], bg, false, false), bg, 0.7, false);
             pane_with(&mut f, &s, grid, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(0.7, opaque)));
             f
         };

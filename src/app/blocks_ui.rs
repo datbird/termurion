@@ -54,7 +54,7 @@ impl App {
             bars.push((r, row.fold() != 0, red));
         }
         let inner = self.inner(rect);
-        let pad = PAD * self.scale();
+        let pad = self.margins().0;
         scene::block_bars(frame, &bars, inner, cell.1, pad, s.palette.fg, s.palette.ansi[1]);
         let Some((_, n, first, last)) = hovered else { return Vec::new() };
         let folded = s.blocks.folds.contains_key(&n);

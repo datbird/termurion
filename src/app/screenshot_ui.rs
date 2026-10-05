@@ -12,7 +12,7 @@ impl App {
     pub(super) fn render_lines(&mut self, pane: PaneId, screen: &crate::screen::Screen, first: usize, last: usize, cursor: bool) -> Result<(u32, u32, Vec<u8>), String> {
         use alacritty_terminal::grid::Dimensions;
         let cell = self.cell();
-        let pad = (PAD * self.scale()).round();
+        let pad = self.margins().0.round();
         let cols = screen.term().columns();
         let width = (cols as f32 * cell.0 + 2.0 * pad).ceil();
         let lines = last + 1 - first;
@@ -172,7 +172,7 @@ impl App {
         let (s, e) = shot.window.panel.range;
         let cell = self.cell();
         let cols = self.panes.get(&shot.pane).map_or(80, |p| { use alacritty_terminal::grid::Dimensions; p.screen.term().columns() });
-        let width = (cols as f32 * cell.0 + 2.0 * (PAD * self.scale()).round()).ceil() as usize;
+        let width = (cols as f32 * cell.0 + 2.0 * self.margins().0.round()).ceil() as usize;
         screenshot::parts(e + 1 - s, cell.1.round().max(1.0) as usize, width, screenshot::MAX_PX).len().max(1)
     }
 
@@ -182,7 +182,7 @@ impl App {
         let panel = self.shot.as_ref()?.window.panel.clone();
         let cell = self.cell();
         let scale = self.scale();
-        let pad = (PAD * scale).round();
+        let pad = self.margins().0.round();
         self.with_snapshot(|app, pane, snap| {
             let (w, h, mut px) = app.render_lines(pane, snap, first, last, false)?;
             let bg = snap.palette.bg;
@@ -234,7 +234,7 @@ impl App {
         let (start, end) = self.shot.as_ref().ok_or("no screenshot")?.window.panel.range;
         let cell = self.cell();
         let cols = self.shot.as_ref().and_then(|s| self.panes.get(&s.pane)).map_or(80, |p| { use alacritty_terminal::grid::Dimensions; p.screen.term().columns() });
-        let width = (cols as f32 * cell.0 + 2.0 * (PAD * self.scale()).round()).ceil() as usize;
+        let width = (cols as f32 * cell.0 + 2.0 * self.margins().0.round()).ceil() as usize;
         let parts = screenshot::parts(end + 1 - start, cell.1.round().max(1.0) as usize, width, screenshot::MAX_PX);
         let paths = screenshot::save_paths(chosen, parts.len());
         let mut first_path = None;

@@ -11,7 +11,7 @@ use alacritty_terminal::term::{Config, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{ClearMode, CursorShape, CursorStyle, Handler, Processor};
 
 use crate::mouse::{Modes, Tracking};
-use crate::palette::Palette;
+use crate::palette::{Palette, Rgb};
 
 #[derive(Clone)]
 pub struct Listener(Sender<Event>);
@@ -1220,6 +1220,20 @@ impl Screen {
         self.term.cursor_style().blinking
     }
 
+    /// Each visible row's first and last cell background, None where it is the default
+    /// (`iTermTextDrawingHelper.m:619-647`): the colors the margins of an alternate screen take.
+    pub fn edge_backgrounds(&self) -> Vec<(Option<Rgb>, Option<Rgb>)> {
+        use alacritty_terminal::index::Point;
+        let grid = self.term.grid();
+        let (cols, lines, offset) = (self.term.columns(), self.term.screen_lines(), grid.display_offset() as i32);
+        let edge = |row: usize, col: usize| {
+            let c = &grid[Point::new(Line(row as i32 - offset), Column(col))];
+            let bg = self.palette.cell(c.fg, c.bg, c.flags).1;
+            (bg != self.palette.bg).then_some(bg)
+        };
+        (0..lines).map(|row| (edge(row, 0), edge(row, cols.saturating_sub(1)))).collect()
+    }
+
     pub(crate) fn alt_screen(&self) -> bool {
         self.term.mode().contains(TermMode::ALT_SCREEN)
     }
@@ -1450,6 +1464,21 @@ impl Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The margin colors of an alternate screen come from each row's edge cells.
+    #[test]
+    fn edge_backgrounds_are_the_rows_first_and_last_non_default_cells() {
+        let mut s = Screen::new(10, 4);
+        assert_eq!(s.edge_backgrounds(), vec![(None, None); 4], "a fresh screen is all default");
+        let red = s.palette.color(alacritty_terminal::vte::ansi::Color::Indexed(1));
+        let blue = s.palette.color(alacritty_terminal::vte::ansi::Color::Indexed(4));
+        s.feed(b"\x1b[?1049h\x1b[44m\x1b[2J\x1b[2;1H\x1b[41mX\x1b[0m\x1b[3;1H\x1b[0mY");
+        let e = s.edge_backgrounds();
+        assert_eq!(e.len(), 4);
+        assert_eq!(e[0], (Some(blue), Some(blue)));
+        assert_eq!(e[1], (Some(red), Some(blue)));
+        assert_eq!(e[2], (None, Some(blue)), "a default first cell is None");
+    }
 
     #[test]
     fn program_blink_needs_permission() {

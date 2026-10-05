@@ -16,7 +16,12 @@ impl Rect {
     }
 
     pub fn inset(&self, by: f32) -> Rect {
-        Rect { x: self.x + by, y: self.y + by, w: (self.w - 2.0 * by).max(0.0), h: (self.h - 2.0 * by).max(0.0) }
+        self.inset_xy(by, by)
+    }
+
+    /// Inset by `dx` on the left and right and `dy` on the top and bottom.
+    pub fn inset_xy(&self, dx: f32, dy: f32) -> Rect {
+        Rect { x: self.x + dx, y: self.y + dy, w: (self.w - 2.0 * dx).max(0.0), h: (self.h - 2.0 * dy).max(0.0) }
     }
 }
 
