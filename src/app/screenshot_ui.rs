@@ -38,7 +38,7 @@ impl App {
                 let pieces = crate::bgimage::quads(*mode, image.size, container, area);
                 scene::background(&mut frame, area, &pieces, image, bg, *blend);
             }
-            scene::pane_with(&mut frame, &batch, Rect { x: pad, y: 0.0, w: cols as f32 * cell.0, h }, cell, cursor, cursor, None);
+            scene::pane_with(&mut frame, &batch, Rect { x: pad, y: 0.0, w: cols as f32 * cell.0, h }, cell, cursor, &crate::cursor_look::CursorLook::shown(cursor), None);
             let gpu = self.gpu.as_mut().ok_or("no window")?;
             out.extend(gpu.renderer.draw_offscreen(&frame, width as u32, h as u32)?);
         }

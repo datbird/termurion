@@ -1814,7 +1814,7 @@ mod tests {
         let text = lines_text(&s);
         assert!(text.starts_with("l0\nl1\nl2\n$"), "{text}");
         let mut f = crate::scene::Frame::default();
-        crate::scene::pane(&mut f, &s, crate::layout::Rect { x: 0.0, y: 0.0, w: 300.0, h: 100.0 }, (10.0, 20.0), true, true);
+        crate::scene::pane(&mut f, &s, crate::layout::Rect { x: 0.0, y: 0.0, w: 300.0, h: 100.0 }, (10.0, 20.0), true, &crate::cursor_look::CursorLook::shown(true));
     }
 
     #[test]

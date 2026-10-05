@@ -75,6 +75,7 @@ mod bgimage_ui;
 mod blocks_ui;
 mod clipboard_ui;
 mod copymode_ui;
+mod cursor_ui;
 mod files_ui;
 mod find_ui;
 mod infobar_ui;
@@ -2021,6 +2022,12 @@ impl App {
 
     fn cell(&self) -> (f32, f32) {
         self.gpu.as_ref().map_or((8.0, 16.0), |g| g.renderer.cell)
+    }
+
+    /// The font's own cell, without the spacings; (0, 0) before the renderer exists, which
+    /// the cursor reads as "the same as the cell".
+    fn base_cell(&self) -> (f32, f32) {
+        self.gpu.as_ref().map_or((0.0, 0.0), |g| g.renderer.base_cell())
     }
 
     /// The edge the tab bar sits on (`TabViewType`).
@@ -4851,7 +4858,7 @@ impl App {
                     // An Auto Composer hides the terminal cursor and the rows it covers.
                     let cover = self.auto_composer_cover(id, rect);
                     let overlay_from = frame.overlay.len();
-                    scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on && cover.is_none(), Some(&hl));
+                    scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, self.blink_on && cover.is_none()), Some(&hl));
                     if let Some(c) = cover {
                         composer_ui::skip_covered(&mut frame.overlay, overlay_from, c);
                     }
