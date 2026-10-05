@@ -181,6 +181,37 @@ pub fn is_flag(c: u32, version: u8) -> bool {
     version >= 9 && ((0x1F1E6..=0x1F1FF).contains(&c) || c == 0x1F3F4)
 }
 
+/// An emoji skin tone modifier (U+1F3FB to U+1F3FF), which `iTermStringContainsModifierForcingFullWidth`
+/// counts beside VS16 and which grapheme clusters keep with their base.
+pub fn is_skin_tone(c: u32) -> bool {
+    (0x1F3FB..=0x1F3FF).contains(&c)
+}
+
+/// Extended_Pictographic, the characters a ZWJ joins to the one before it (UAX 29 GB11). The
+/// ranges are the Unicode 15 data folded into blocks (a few unassigned points inside them count).
+pub fn is_extended_pictographic(c: u32) -> bool {
+    const RANGES: [(u32, u32); 17] = [
+        (0xA9, 0xA9),
+        (0xAE, 0xAE),
+        (0x203C, 0x203C),
+        (0x2049, 0x2049),
+        (0x2122, 0x2122),
+        (0x2139, 0x2139),
+        (0x2194, 0x21AA),
+        (0x231A, 0x23FF),
+        (0x24C2, 0x24C2),
+        (0x25AA, 0x25FE),
+        (0x2600, 0x27BF),
+        (0x2934, 0x2935),
+        (0x2B05, 0x2B55),
+        (0x3030, 0x303D),
+        (0x3297, 0x3299),
+        (0x1F000, 0x1FAFF),
+        (0x1FC00, 0x1FFFD),
+    ];
+    RANGES.iter().any(|&(a, b)| (a..=b).contains(&c))
+}
+
 /// `iTermIsDoubleWidthCharacter`.
 pub fn is_double_width(c: u32, ambiguous_wide: bool, version: u8, full_width_flags: bool) -> bool {
     // iTerm2's fast path for ASCII, Latin-1 and the long run below Hangul Jamo.

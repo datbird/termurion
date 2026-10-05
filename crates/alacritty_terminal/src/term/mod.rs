@@ -283,6 +283,10 @@ pub struct WidthRule {
     pub vs16: bool,
     pub vs16_primary: bool,
     pub accepts_vs16: fn(char) -> bool,
+    /// An emoji skin tone modifier: it joins the cell before it.
+    pub is_modifier: fn(char) -> bool,
+    /// Extended_Pictographic: it joins the cell before it when a ZWJ and a pictograph precede.
+    pub is_pictograph: fn(char) -> bool,
 }
 
 /// A regional indicator symbol (U+1F1E6 to U+1F1FF).
@@ -1462,6 +1466,32 @@ impl<T: EventListener> Handler for Term<T> {
                         self.widen_previous();
                     }
                     return;
+                }
+            }
+        }
+
+        // Tandem patch: a skin tone modifier, or a pictograph after a ZWJ, joins the cell before it
+        // (grapheme clusters, iTerm2 `StringToScreenChars`). A narrow base that takes VS16 widens
+        // for a modifier as it does for U+FE0F.
+        if let Some(rule) = rule {
+            let modifier = (rule.is_modifier)(c);
+            if modifier || (rule.is_pictograph)(c) {
+                if let Some(column) = self.previous_cell_column() {
+                    let line = self.grid.cursor.point.line;
+                    let cell = &self.grid[line][column];
+                    let joins = cell.c != ' ' && cell.c != '\0' && cell.zerowidth().is_some_and(|z| z.last() == Some(&'\u{200D}'));
+                    if modifier && cell.c != ' ' && cell.c != '\0' || joins && (rule.is_pictograph)(cell.c) {
+                        let narrow = !cell.flags.contains(Flags::WIDE_CHAR);
+                        let widen = modifier && narrow && (rule.accepts_vs16)(cell.c) && {
+                            let alt = self.mode.contains(TermMode::ALT_SCREEN);
+                            rule.vs16 || (rule.vs16_primary && !alt)
+                        };
+                        self.grid[line][column].push_zerowidth(c);
+                        if widen {
+                            self.widen_previous();
+                        }
+                        return;
+                    }
                 }
             }
         }
