@@ -202,6 +202,28 @@ pub fn collect(locations: bool, show_marks: bool, search: &[usize], marks: &[(Se
 /// memory the track height, whatever the history; the order of `lines` does not matter.
 /// `style_narrow` is the overlay scroller's narrow state: 11 wide, 5 in (`SV:2626-2629`).
 /// The height, the merge distance and the narrow values are points: times `scale`.
+/// How long after its deadline a hidden thumb still counts as just passed.
+const FADE_WINDOW: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// One pass over the overlay bars' hide deadlines: when the next one is due, and whether one
+/// just passed (a redraw is owed to take its thumb away). A deadline that passed is reported
+/// once and then retired, so the loop does not redraw every frame afterwards.
+pub fn fade_pass<'a>(untils: impl Iterator<Item = &'a mut std::time::Instant>, now: std::time::Instant) -> (Option<std::time::Instant>, bool) {
+    let (mut due, mut expired) = (None::<std::time::Instant>, false);
+    for until in untils {
+        if *until > now {
+            due = Some(due.map_or(*until, |d| d.min(*until)));
+        } else if now.duration_since(*until) < FADE_WINDOW {
+            expired = true;
+            // Retired: pushed out of the window so the next pass does not report it again.
+            if let Some(old) = now.checked_sub(FADE_WINDOW) {
+                *until = old;
+            }
+        }
+    }
+    (due, expired)
+}
+
 /// The ticks along one pane's bar: each series with its buffer lines.
 pub type Ticks = Vec<(Series, Vec<usize>)>;
 
@@ -283,6 +305,19 @@ mod tests {
     use super::*;
 
     const PANE: Rect = Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 };
+
+    #[test]
+    fn a_passed_fade_deadline_asks_for_one_redraw() {
+        let now = std::time::Instant::now();
+        let mut untils = [now - std::time::Duration::from_millis(10), now + std::time::Duration::from_secs(1)];
+        let (due, expired) = fade_pass(untils.iter_mut(), now);
+        assert!(expired, "the first pass owes the redraw");
+        assert_eq!(due, Some(now + std::time::Duration::from_secs(1)));
+        let (_, again) = fade_pass(untils.iter_mut(), now);
+        assert!(!again, "and the second does not: no redraw every frame for 250 ms");
+        let (_, later) = fade_pass(untils.iter_mut(), now + std::time::Duration::from_millis(1005));
+        assert!(later, "a deadline that passes later is reported when it passes");
+    }
 
     #[test]
     fn the_tick_cache_builds_only_when_the_key_changes() {

@@ -280,8 +280,7 @@ impl App {
                 }
             }
         }
-        let due = self.scroll_seen.values().map(|(_, until)| *until).filter(|until| *until > now).min();
-        let expired = self.scroll_seen.values().any(|(_, until)| *until <= now && now.duration_since(*until) < Duration::from_millis(250));
+        let (due, expired) = scrollbar::fade_pass(self.scroll_seen.values_mut().map(|(_, until)| until), now);
         if moved || (expired && self.scroll_style == scrollbar::Style::Overlay) {
             self.redraw();
         }
