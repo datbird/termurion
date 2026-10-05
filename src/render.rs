@@ -269,6 +269,8 @@ pub const DEFAULT_FACE: u16 = 0;
 
 /// The most faces one renderer keeps; past it `face` hands back the nearest size.
 const MAX_FACES: usize = 512;
+/// The names `resolve_family` and `has_family` remember before they start over.
+const LOOKUP_CAP: usize = 4096;
 
 /// The ids glyphon caches Tandem's custom glyphs by. Its cache key is only the id, the size and
 /// the subpixel bin, and every `TextArea` here draws at scale 1, so the device scale (which sets
@@ -326,11 +328,14 @@ pub struct FaceKey {
     pub thin: u8,
     /// The profile's Draw Powerline Glyphs (a face that ignores the switch is another face).
     pub powerline: bool,
+    /// The profile's Special Font Config, normalized (`font_table::normalized`): the table itself
+    /// and not a hash of it, so two tables never share a face (P5).
+    pub table: Option<std::sync::Arc<str>>,
 }
 
 impl FaceKey {
     pub fn new(family: &str, alt_family: Option<&str>, px: f32, h: f32, v: f32) -> FaceKey {
-        FaceKey { family: family.to_string(), alt_family: alt_family.map(str::to_string), px_bits: quantize_px(px).to_bits(), h_bits: h.to_bits(), v_bits: v.to_bits(), profile_bits: 0, use_bold: true, use_italic: true, ascii_ligatures: false, non_ascii_ligatures: false, ascii_aa: true, non_ascii_aa: true, thin: 4, powerline: false }
+        FaceKey { family: family.to_string(), alt_family: alt_family.map(str::to_string), px_bits: quantize_px(px).to_bits(), h_bits: h.to_bits(), v_bits: v.to_bits(), profile_bits: 0, use_bold: true, use_italic: true, ascii_ligatures: false, non_ascii_ligatures: false, ascii_aa: true, non_ascii_aa: true, thin: 4, powerline: false, table: None }
     }
 
     pub fn px(&self) -> f32 {
@@ -366,6 +371,18 @@ pub struct Face {
     /// blacklist (`fonts::blacklisted`).
     pub blacklisted: bool,
     pub alt_blacklisted: bool,
+    /// The profile's Special Font Config, and the font each of its entries draws in (same order).
+    pub table: Option<std::sync::Arc<crate::font_table::Config>>,
+    pub table_fonts: Vec<TableFont>,
+}
+
+/// One Special Font Config entry's font, resolved once when the face is built.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TableFont {
+    /// The installed family; None when the font is not installed (the face's own fonts draw).
+    pub family: Option<String>,
+    /// The entry's size in physical pixels; None draws at the face's size.
+    pub px: Option<f32>,
 }
 
 pub struct Renderer {
@@ -628,7 +645,25 @@ impl Renderer {
         let ul = ul.unwrap_or(crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 });
         let blacklisted = self.family_blacklisted(&key.family);
         let alt_blacklisted = key.alt_family.as_deref().map_or(blacklisted, |f| self.family_blacklisted(f));
-        Face { key: key.clone(), cell, base, baseline: ul.baseline, ul, px, bold: self.bold_face(&key.family), use_bold: key.use_bold, use_italic: key.use_italic, blacklisted, alt_blacklisted }
+        let (table, table_fonts) = self.table_of(key);
+        Face { key: key.clone(), cell, base, baseline: ul.baseline, ul, px, bold: self.bold_face(&key.family), use_bold: key.use_bold, use_italic: key.use_italic, blacklisted, alt_blacklisted, table, table_fonts }
+    }
+
+    /// The Special Font Config a key carries and the font of each entry: every name is resolved
+    /// through the memoized lookups (at most `font_table::MAX_ENTRIES` of them, once per name), and
+    /// a name that is not installed draws as the face does. A key whose text does not parse has no
+    /// table (the app only builds keys from `font_table::normalized`).
+    fn table_of(&self, key: &FaceKey) -> (Option<std::sync::Arc<crate::font_table::Config>>, Vec<TableFont>) {
+        let Some(config) = key.table.as_deref().and_then(crate::font_table::Config::parse).filter(|c| !c.entries.is_empty()) else { return (None, Vec::new()) };
+        let fonts = config
+            .entries
+            .iter()
+            .map(|e| {
+                let family = self.resolve_family(&e.font_name);
+                TableFont { family: self.has_family(&family).then_some(family), px: e.point_size.map(|pt| quantize_px(pt as f32 * 4.0 / 3.0 * self.scale)) }
+            })
+            .collect();
+        (Some(std::sync::Arc::new(config)), fonts)
     }
 
     /// Whether the family's regular face (the one nearest weight 400) has a PostScript name on
@@ -663,6 +698,20 @@ impl Renderer {
         fonts::MaskRules { use_non_ascii_font: k.alt_family.is_some(), ascii_aa: k.ascii_aa, non_ascii_aa: k.non_ascii_aa, retina, force_aa_on_retina, thin: i64::from(k.thin) }
     }
 
+    /// The Special Font Config of face `id` (None: the face has no table).
+    pub fn face_table(&self, id: u16) -> Option<std::sync::Arc<crate::font_table::Config>> {
+        self.face_of(id).table.clone()
+    }
+
+    /// The installed font families, each once, for the Special Exceptions window's picker. Scans
+    /// the font database: called when the window opens, never per frame.
+    pub fn installed_families(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.font_system.db().faces().flat_map(|f| f.families.iter().map(|(n, _)| n.clone())).collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
     /// Whether face `id`'s profile draws Powerline symbols itself.
     pub fn face_powerline(&self, id: u16) -> bool {
         self.face_of(id).key.powerline
@@ -682,7 +731,7 @@ impl Renderer {
         let mut key = FaceKey::new(&self.family, self.alt_family.as_deref(), self.font_px, self.h_spacing, self.v_spacing);
         key.profile_bits = 0;
         let ul = self.ul_metrics.unwrap_or(crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 });
-        let face = Face { key: key.clone(), cell: self.cell, base: self.base_cell, baseline: ul.baseline, ul, px: self.font_px, bold: self.default_bold, use_bold: key.use_bold, use_italic: key.use_italic, blacklisted: false, alt_blacklisted: false };
+        let face = Face { key: key.clone(), cell: self.cell, base: self.base_cell, baseline: ul.baseline, ul, px: self.font_px, bold: self.default_bold, use_bold: key.use_bold, use_italic: key.use_italic, blacklisted: false, alt_blacklisted: false, table: None, table_fonts: Vec::new() };
         if self.faces.is_empty() {
             self.faces.push(face);
         } else {
@@ -714,7 +763,12 @@ impl Renderer {
         }
         self.scans.set(self.scans.get() + 1);
         let r = self.scan_family(name);
-        self.resolved.borrow_mut().insert(name.to_string(), r.clone());
+        let mut resolved = self.resolved.borrow_mut();
+        // A script that keeps naming new fonts (a Special Font Config set over the API) cannot grow this without end.
+        if resolved.len() >= LOOKUP_CAP {
+            resolved.clear();
+        }
+        resolved.insert(name.to_string(), r.clone());
         r
     }
 
@@ -858,7 +912,11 @@ impl Renderer {
         }
         self.scans.set(self.scans.get() + 1);
         let r = self.font_system.db().faces().any(|f| f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)));
-        self.installed.borrow_mut().insert(name.to_string(), r);
+        let mut installed = self.installed.borrow_mut();
+        if installed.len() >= LOOKUP_CAP {
+            installed.clear();
+        }
+        installed.insert(name.to_string(), r);
         r
     }
 
@@ -1170,6 +1228,7 @@ impl Renderer {
             let ((cw, ch), px) = (face.cell, face.px);
             let (family, alt_family) = (face.key.family.clone(), face.key.alt_family.clone());
             let (bold_weight, use_bold, use_italic) = (face.bold, face.use_bold, face.use_italic);
+            let table_fonts = if row.spans.iter().any(|s| s.font != 0) { face.table_fonts.clone() } else { Vec::new() };
             let metrics = Metrics::new(px * row.scale, ch * row.scale);
             buffer.set_metrics_and_size(metrics, Some(row.clip.w + cw * row.scale), Some(ch * row.scale));
             buffer.set_wrap(Wrap::None);
@@ -1182,7 +1241,16 @@ impl Renderer {
             let badge = Attrs::new().family(Family::Name(&self.badge_family));
             let toolbelt = Attrs::new().family(Family::Name(&self.toolbelt_family));
             let spans = row.spans.iter().map(|s| {
-                let start = if s.icon {
+                // A terminal span a Special Font Config entry draws takes that entry's font and size
+                // (an entry past the table, or a font that is not installed, draws as the face does).
+                let entry = (s.font as usize).checked_sub(1).and_then(|i| table_fonts.get(i)).filter(|_| !(s.icon || s.badge || s.toolbelt || s.prose));
+                let start = if let Some(family) = entry.and_then(|e| e.family.as_deref()) {
+                    let attrs = Attrs::new().family(Family::Name(family));
+                    match entry.and_then(|e| e.px) {
+                        Some(px) => attrs.metrics(Metrics::new(px * row.scale, ch * row.scale)),
+                        None => attrs,
+                    }
+                } else if s.icon {
                     icons.clone()
                 } else if s.badge {
                     badge.clone()
@@ -1541,7 +1609,7 @@ mod tests {
         let block = |x: f32, y: f32, face: u16| TextRow {
             x,
             y,
-            spans: vec![Span { text: "\u{2588}".repeat(4), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0 }],
+            spans: vec![Span { text: "\u{2588}".repeat(4), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }],
             clip: Rect { x: 0.0, y, w: w as f32, h: if face == 1 { c1.1 } else { c2.1 } },
             scale: 1.0,
             face,
@@ -1557,6 +1625,49 @@ mod tests {
         assert!((one - 4.0 * c1.0).abs() < c1.0 / 2.0, "face 1 ends at {one}, its cells at {}", 4.0 * c1.0);
         assert!((two - 4.0 * c2.0).abs() < c2.0 / 2.0, "face 2 ends at {two}, its cells at {}", 4.0 * c2.0);
         assert!(two > one + 2.0, "the larger face is wider: {one} {two}");
+    }
+
+    /// A span of terminal text drawn by Special Font Config entry `font` (1 plus its index).
+    fn tabled(text: &str, font: u16) -> Span {
+        Span { font, ..masked(text, false, 0) }
+    }
+
+    fn table_key(family: &str, entries: Vec<crate::font_table::Entry>) -> FaceKey {
+        let text = crate::font_table::Config::with_entries(entries).string();
+        FaceKey { table: Some(std::sync::Arc::from(text.as_str())), ..key(family, 16.0, 1.0, 1.0) }
+    }
+
+    /// Task 9: a face with a table draws a cell its table names from the table's font, in the
+    /// entry's size, while the face's own family draws the rest; a font that is not installed
+    /// draws as the face does.
+    #[test]
+    fn a_face_table_picks_the_font_per_span() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        if !r.has_family("Consolas") || !r.has_family("Cascadia Mono") {
+            println!("skip: Consolas or Cascadia Mono is not installed");
+            return;
+        }
+        let entry = |font: &str, size: Option<f64>| crate::font_table::Entry { start: 0x3A9, count: 1, destination: None, font_name: font.into(), point_size: size };
+        let plain = r.face(&key("Cascadia Mono", 16.0, 1.0, 1.0));
+        let tabled_face = r.face(&table_key("Cascadia Mono", vec![entry("Consolas", None)]));
+        let missing_face = r.face(&table_key("Cascadia Mono", vec![entry("No Such Font Anywhere", None)]));
+        let big_face = r.face(&table_key("Cascadia Mono", vec![entry("Consolas", Some(40.0))]));
+        assert!(plain != tabled_face && tabled_face != missing_face && tabled_face != big_face, "a table makes a face");
+        assert_eq!(r.face_table(plain).map(|t| t.entries.len()), None);
+        assert_eq!(r.face_table(tabled_face).map(|t| t.entries.len()), Some(1));
+        let size = (128u32, 64u32);
+        let mut shot = |face: u16, font: u16| shoot(&mut r, &device, &queue, face, vec![tabled("\u{3a9}", font)], size);
+        let own = shot(plain, 0);
+        assert!(own.chunks(4).any(|p| p[0] > 128), "the face draws the character");
+        assert_eq!(shot(tabled_face, 0), own, "a span that names no entry draws in the face's family");
+        let from_table = shot(tabled_face, 1);
+        assert_ne!(from_table, own, "the cell the table names draws from Consolas");
+        assert_eq!(shot(missing_face, 1), own, "a font that is not installed falls back to the face's");
+        let lit = |px: &[u8]| px.chunks(4).filter(|p| p[0] > 64).count();
+        assert!(lit(&shot(big_face, 1)) > lit(&from_table) * 3 / 2, "the entry's size is used");
+        // An entry number past the table draws as the face does, never panics.
+        assert_eq!(shot(tabled_face, 9), own);
     }
 
     /// The installed families that have a Normal face and no weight that `bold_weight` accepts
@@ -1581,7 +1692,7 @@ mod tests {
         let view = tex.create_view(&Default::default());
         // The pixels of "W" drawn in `face` as a bold and italic span as asked.
         let shot = |r: &mut Renderer, face: u16, bold: bool, italic: bool, mask: u8| -> Vec<u8> {
-            let span = Span { text: "W".into(), color: rgb(255, 255, 255), bold, italic, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: bold, ligatures: 0, mask };
+            let span = Span { text: "W".into(), color: rgb(255, 255, 255), bold, italic, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: bold, ligatures: 0, mask, font: 0 };
             let cell = r.face_cell(face);
             let row = TextRow { x: 4.0, y: 4.0, spans: vec![span], clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 }, scale: 1.0, face };
             let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows: vec![row], ..Default::default() };
@@ -1677,7 +1788,7 @@ mod tests {
         let view = tex.create_view(&Default::default());
         let face = r.face(&key("Cascadia Code", 20.0, 1.0, 1.0));
         let cw = r.face_cell(face).0;
-        let sp = |text: &str, ligatures: u8| Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures, mask: 0 };
+        let sp = |text: &str, ligatures: u8| Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures, mask: 0, font: 0 };
         let clip = Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
         let mut shot = |rows: Vec<TextRow>| -> Vec<u8> {
             let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), rows, ..Default::default() };
@@ -1796,7 +1907,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 0.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0 }],
+                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }],
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
@@ -1853,7 +1964,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 36.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0 }],
+                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }],
                 clip: Rect { x: 32.0, y: 0.0, w: 32.0, h: 32.0 },
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
@@ -1891,7 +2002,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 0.0,
                 y: 0.0,
-                spans: vec![Span { text: " \u{2588} ".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0 }],
+                spans: vec![Span { text: " \u{2588} ".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }],
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
                 scale: 1.0,
                 face: crate::render::DEFAULT_FACE,
@@ -1932,7 +2043,7 @@ mod tests {
         let y = (ch / 2.0).floor();
         let red = rgba(rgb(255, 0, 0), 1.0);
         let clip = Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
-        let span = |text: &str, badge: bool| Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0 };
+        let span = |text: &str, badge: bool| Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
         let row = |x: f32, text: &str, badge: bool| TextRow { x, y: 0.0, spans: vec![span(text, badge)], clip, scale: 1.0, face: crate::render::DEFAULT_FACE };
         let frame = |rows: Vec<TextRow>| Frame {
             clear: rgba(rgb(0, 0, 0), 1.0),
@@ -1958,7 +2069,7 @@ mod tests {
 
     /// A span of terminal text in `mask` mode (0 smooth, 1 aliased, 2 thin strokes).
     fn masked(text: &str, bold: bool, mask: u8) -> Span {
-        Span { text: text.into(), color: rgb(255, 255, 255), bold, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: bold, ligatures: 0, mask }
+        Span { text: text.into(), color: rgb(255, 255, 255), bold, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: bold, ligatures: 0, mask, font: 0 }
     }
 
     /// Draws one row of `spans` in `face` at (4, 4) on black and reads the target back.

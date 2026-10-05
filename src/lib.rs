@@ -164,6 +164,8 @@ pub mod palette;
 pub mod contrast;
 pub mod boxdraw;
 pub mod powerline;
+pub mod font_table;
+pub mod special_exceptions_ui;
 pub mod bidi;
 pub mod bidi_mirror;
 pub mod paste;

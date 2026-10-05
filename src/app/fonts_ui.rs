@@ -26,8 +26,14 @@ pub fn face_key_for(p: &Profile, scale: f32, resolve: &dyn Fn(&str) -> String) -
     (key.ascii_aa, key.non_ascii_aa, key.thin) = (p.bool("ASCII Anti Aliased"), p.bool("Non-ASCII Anti Aliased"), p.int("Thin Strokes").clamp(0, 4) as u8);
     // Draw Powerline Glyphs chooses whether the pane's Powerline symbols are Tandem's.
     key.powerline = p.bool("Draw Powerline Glyphs");
+    // Special Font Config: the table itself, normalized, so two spellings are one face and a value
+    // that does not parse or is out of bounds (a file, the API) is no table (`font_table::Config::parse`).
+    key.table = crate::font_table::normalized(&p.string(SPECIAL_FONT_CONFIG)).map(std::sync::Arc::from);
     key
 }
+
+/// The profile key of the per-Unicode-range font table (`Special Font Config`).
+pub const SPECIAL_FONT_CONFIG: &str = crate::font_table::KEY;
 
 /// The stored key View > Size Changes Update Profile toggles (`kPreferenceKeySizeChangesAffectProfile`).
 pub const SIZE_CHANGES_AFFECT_PROFILE: &str = "Size Changes Affect Profile";
@@ -52,9 +58,17 @@ pub fn pointer_cell(cell: (f32, f32), origin: (f32, f32), x: f32, y: f32, cols: 
 /// leaves the spacings alone; 0 takes the original (saved) profile's fonts and spacings.
 pub fn size_values(current: &Profile, original: &Profile, dir: f32) -> Vec<(String, Option<toml::Value>)> {
     if dir != 0.0 {
-        return ["Normal Font", "Non Ascii Font"].into_iter().map(|k| (k.to_string(), Some(toml::Value::String(profile::grow_font_value(&current.string(k), dir))))).collect();
+        let mut values: Vec<(String, Option<toml::Value>)> = ["Normal Font", "Non Ascii Font"].into_iter().map(|k| (k.to_string(), Some(toml::Value::String(profile::grow_font_value(&current.string(k), dir))))).collect();
+        // The sized entries of the Special Font Config grow with the fonts; a table with none
+        // stays as it is and takes no override.
+        let table = current.string(SPECIAL_FONT_CONFIG);
+        let grown = crate::font_table::grown_value(&table, f64::from(dir));
+        if grown != table {
+            values.push((SPECIAL_FONT_CONFIG.to_string(), Some(toml::Value::String(grown))));
+        }
+        return values;
     }
-    ["Normal Font", "Non Ascii Font", "Horizontal Spacing", "Vertical Spacing"].into_iter().map(|k| (k.to_string(), original.values.get(k).cloned())).collect()
+    ["Normal Font", "Non Ascii Font", "Horizontal Spacing", "Vertical Spacing", SPECIAL_FONT_CONFIG].into_iter().map(|k| (k.to_string(), original.values.get(k).cloned())).collect()
 }
 
 /// The panes a size change reaches (`sessionsToAdjustFontSize`, `AFS:55-67`): the focused pane,
@@ -80,6 +94,11 @@ pub fn grow_saved_profile(store: &mut Store, guid: &str, delta: i32) {
     for k in ["Normal Font", "Non Ascii Font"] {
         let grown = profile::grow_font_value(&p.string(k), delta as f32);
         p.set(k, toml::Value::String(grown));
+    }
+    let table = p.string(SPECIAL_FONT_CONFIG);
+    let grown = crate::font_table::grown_value(&table, f64::from(delta));
+    if grown != table {
+        p.set(SPECIAL_FONT_CONFIG, toml::Value::String(grown));
     }
 }
 
@@ -110,6 +129,8 @@ pub struct RawFont {
     anti_alias: (bool, bool),
     thin: i64,
     powerline: bool,
+    /// The stored Special Font Config text.
+    table: String,
 }
 
 impl RawFont {
@@ -125,6 +146,7 @@ impl RawFont {
             anti_alias: (p.bool("ASCII Anti Aliased"), p.bool("Non-ASCII Anti Aliased")),
             thin: p.int("Thin Strokes"),
             powerline: p.bool("Draw Powerline Glyphs"),
+            table: p.string(SPECIAL_FONT_CONFIG),
         }
     }
 }
@@ -356,6 +378,7 @@ impl App {
             (prefs.ligatures, prefs.alt_level) = g.renderer.face_ligatures(face, prefs.ligatures.prefer_speed);
             prefs.masks = g.renderer.face_masks(face, prefs.masks.retina, prefs.masks.force_aa_on_retina);
             prefs.powerline = g.renderer.face_powerline(face);
+            prefs.table = g.renderer.face_table(face);
         }
         prefs
     }
@@ -574,6 +597,87 @@ mod tests {
         assert_ne!(key(&off), key(&on));
         // The per-pane key cache is keyed on RawFont: a change must change it, or a stale key is served.
         assert_ne!(RawFont::of(&off, 1.0), RawFont::of(&on, 1.0));
+    }
+
+    /// 13n Task 9: the Special Font Config is part of the face, as the table itself (P5).
+    #[test]
+    fn special_font_config_is_part_of_the_face() {
+        let same = |s: &str| s.to_string();
+        let one = r#"{"entries":[{"start":57344,"count":16,"fontName":"Consolas"}],"version":2}"#;
+        let reordered = r#"{"version":2,"entries":[{"fontName":"Consolas","count":16,"start":57344}]}"#;
+        let other = r#"{"entries":[{"start":57344,"count":17,"fontName":"Consolas"}],"version":2}"#;
+        let base = [("Normal Font", toml::Value::from("Cascadia Mono 14"))];
+        let none = profile(&base);
+        let with = |text: &str| profile(&[base[0].clone(), ("Special Font Config", text.into())]);
+        let key = |p: &Profile| face_key_for(p, 1.0, &same);
+        assert_eq!(key(&none).table, None, "no table, no key text");
+        assert_eq!(key(&with("")).table, None);
+        assert_eq!(key(&with("not json")).table, None, "a table that does not parse is no table");
+        assert_eq!(key(&with(r#"{"entries":[{"start":-1,"count":999999999999,"fontName":"A"}],"version":2}"#)).table, None, "nor one out of bounds");
+        assert!(key(&with(one)).table.is_some());
+        assert_eq!(key(&with(one)), key(&with(reordered)), "one table, one face, whatever the spelling");
+        assert_ne!(key(&with(one)), key(&none));
+        assert_ne!(key(&with(one)), key(&with(other)), "the text and not a hash of it decides");
+        // The per-pane key cache is keyed on RawFont: a change must change it, or a stale key is served.
+        assert_ne!(RawFont::of(&none, 1.0), RawFont::of(&with(one), 1.0));
+        assert_ne!(RawFont::of(&with(one), 1.0), RawFont::of(&with(other), 1.0));
+    }
+
+    /// Make Text Bigger and Smaller grow the sized entries of the Special Font Config with the
+    /// fonts (`AFS:90-98`, `PTYSession.m:8297-8337`); Normal Size takes the saved table back.
+    #[test]
+    fn special_font_config_sizes_grow_with_the_text() {
+        let table = |size: f64| crate::font_table::Config::with_entries(vec![crate::font_table::Entry { start: 0xE000, count: 16, destination: None, font_name: "Consolas".into(), point_size: Some(size) }]).string();
+        let (mut store, saved) = store_with("Consolas 12");
+        store.get_mut(&saved).unwrap().set("Special Font Config", table(12.0).into());
+        let first = apply(&mut store, &saved, 1);
+        assert_eq!(store.get(&first).unwrap().string("Special Font Config"), table(13.0));
+        assert_eq!(store.get(&saved).unwrap().string("Special Font Config"), table(12.0), "the saved profile is untouched");
+        apply(&mut store, &first, -3);
+        assert_eq!(store.get(&first).unwrap().string("Special Font Config"), table(10.0));
+        // Normal Size restores the saved profile's table.
+        let restored = size_values(store.get(&first).unwrap(), store.get(&saved).unwrap(), 0.0);
+        store.set_session(&first, &restored);
+        assert_eq!(store.get(&first).unwrap().string("Special Font Config"), table(12.0));
+        assert!(store.sessions.iter().all(|s| !s.overridden.contains("Special Font Config")), "back to the saved size overrides nothing");
+        // A profile with no table, or an unsized one, gets no override for it.
+        let (mut plain, saved) = store_with("Consolas 12");
+        let copy = apply(&mut plain, &saved, 1);
+        assert!(!plain.sessions.iter().any(|s| s.profile.guid() == copy && s.overridden.contains("Special Font Config")));
+        // The size steps stay in the drawn range.
+        let (mut low, saved) = store_with("Consolas 12");
+        low.get_mut(&saved).unwrap().set("Special Font Config", table(4.0).into());
+        let c = apply(&mut low, &saved, -1);
+        assert_eq!(low.get(&c).unwrap().string("Special Font Config"), table(4.0));
+        // Size Changes Affect Profile grows the saved profile's table too.
+        let (mut store, saved) = store_with("Consolas 12");
+        store.get_mut(&saved).unwrap().set("Special Font Config", table(12.0).into());
+        grow_saved_profile(&mut store, &saved, 2);
+        assert_eq!(store.get(&saved).unwrap().string("Special Font Config"), table(14.0));
+        // An APS switch keeps the zoom on the new profile's table as well.
+        let values = size_values(store.get(&saved).unwrap(), store.get(&saved).unwrap(), 2.0);
+        assert!(values.iter().any(|(k, v)| k == "Special Font Config" && v.as_ref().and_then(|v| v.as_str()) == Some(table(16.0).as_str())));
+    }
+
+    /// P16: no installed-font scan on the frame path, a pointer move or a cell lookup.
+    #[test]
+    fn no_font_scan_in_build_frame() {
+        let source = include_str!("mod.rs");
+        let needle = |s: &str| source.find(s).unwrap_or_else(|| panic!("{s} exists"));
+        let body = |from: &str| {
+            let start = needle(from);
+            let end = source[start + 10..].find("\n    fn ").or_else(|| source[start + 10..].find("\n    pub(super) fn ")).map_or(source.len(), |e| e + start + 10);
+            &source[start..end]
+        };
+        let (slow, scan) = (concat!(".fa", "ces()"), concat!(".resolve_", "family("));
+        for name in ["fn build_frame(", "fn cell_at("] {
+            let b = body(name);
+            assert!(!b.contains(slow) && !b.contains(scan), "{name} scans fonts");
+        }
+        let fonts = include_str!("fonts_ui.rs");
+        let pane_cell = &fonts[fonts.find("fn pane_cell(").unwrap()..];
+        let pane_cell = &pane_cell[..pane_cell.find("\n    }").unwrap()];
+        assert!(!pane_cell.contains(slow) && !pane_cell.contains(scan));
     }
 
     #[test]
