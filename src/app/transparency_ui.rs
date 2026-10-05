@@ -231,6 +231,8 @@ impl App {
     /// A `Gpu` for a new window of `kind`: alpha windows on the second instance, everything else exactly as
     /// before (on the first window's device, or a fresh instance for the very first window).
     pub(super) fn gpu_for(&mut self, event_loop: &ActiveEventLoop, window: Arc<Window>, kind: SurfaceKind) -> Result<Gpu, String> {
+        // Every terminal window allows the IME, one that is recreated for alpha too.
+        window.set_ime_allowed(true);
         if kind == SurfaceKind::Alpha {
             let alpha = self.alpha_gpu(event_loop, &window).cloned().ok_or_else(|| UNAVAILABLE.to_string())?;
             let primary = self.gpu.as_ref().ok_or("no window to take the primary device from")?;

@@ -37,6 +37,7 @@ impl App {
             alpha: smooth.unwrap_or(1.0),
             smart,
             geometry: Geometry::from_globals(&self.globals, self.scale(), self.base_cell()),
+            ime: self.ime_drawn(pane).filter(|_| focused),
             ..CursorLook::shown(visible && (smooth.is_some() || self.cursor_visible_now(pane, focused)))
         }
     }
@@ -186,6 +187,7 @@ impl App {
     pub(super) fn prepare_cursors(&mut self) {
         let Some(tab) = self.tabs.get(self.active) else { return };
         let panes: Vec<(PaneId, Rect)> = self.visible(tab).into_iter().map(|(id, rect)| (id, self.inner(rect))).collect();
+        self.ime_drop_unfocused();
         let now = Instant::now();
         let shown: Vec<PaneId> = panes.iter().map(|(id, _)| *id).collect();
         for (id, inner) in panes {

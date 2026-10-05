@@ -400,9 +400,12 @@ pub fn pane_with(
     let (cols, lines) = (term.columns(), term.screen_lines());
     let content = term.renderable_content();
     // Cursor Hidden When Unfocused (`iTermTextDrawingHelper.m:4254-4256`).
-    let cursor = cursor_cell(screen).filter(|_| look.visible && look.alpha > CURSOR_MIN_ALPHA && !(look.hide_unfocused && !focused)).map(|(row, col, _)| (row, col));
-    let wide_cursor = cursor_cell(screen).is_some_and(|(_, _, w)| w);
     let key_cursor = highlights.is_some_and(|h| h.key_cursor);
+    // A composition in progress replaces the terminal cursor (`iTermTextDrawingHelper.m:4267`),
+    // except at a password prompt, where the key glyph is the cursor (P11).
+    let ime = look.ime.as_ref().filter(|_| !key_cursor);
+    let cursor = cursor_cell(screen).filter(|_| ime.is_none() && look.visible && look.alpha > CURSOR_MIN_ALPHA && !(look.hide_unfocused && !focused)).map(|(row, col, _)| (row, col));
+    let wide_cursor = cursor_cell(screen).is_some_and(|(_, _, w)| w);
     let bg_brightness = crate::tab_theme::perceived(palette.bg);
     let bg_alpha = highlights.map_or(1.0, |h| h.bg_alpha);
     let opaque_colors = highlights.is_some_and(|h| h.opaque_colors);
@@ -678,6 +681,22 @@ pub fn pane_with(
     // A smear (`CursorSmearView`) is the cursor color, drawn over the cell, under the dim.
     if let Some(poly) = look.smear.filter(|_| !key_cursor) {
         fill_polygon(&mut frame.overlay, &poly, rgba(palette.cursor, 1.0));
+    }
+
+    // The IME composition: each run on the default background (cut out of the grid's text) in
+    // the default text color with an underline, then the caret in its color.
+    if let Some(d) = ime {
+        for piece in d.pieces.iter().filter(|p| p.row < lines) {
+            let r = Rect { x: rect.x + piece.col as f32 * cw, y: rect.y + piece.row as f32 * ch, w: piece.cells as f32 * cw, h: ch };
+            cut_out(frame, r, ch);
+            frame.popups.push(Quad { rect: r, color: rgba(palette.bg, 1.0) });
+            let span = Span { text: piece.text.clone(), color: palette.fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
+            frame.rows.push(TextRow { x: r.x, y: r.y, spans: vec![span], clip: Rect { w: rect.x + rect.w - r.x, ..r }, scale: 1.0 });
+            frame.overlay.push(Quad { rect: Rect { y: underline_y(piece.row), h: 1.0, ..r }, color: rgba(palette.fg, 1.0) });
+        }
+        if d.caret.0 < lines {
+            frame.overlay.push(Quad { rect: crate::ime::caret_rect(d.caret, (rect.x, rect.y), cell, look.geometry.base_cell.1, cols, look.geometry.scale), color: rgba(d.caret_color, 1.0) });
+        }
     }
 
     // Highlights carry their own dim (the app's gray quad); the preview paths pass none and keep
@@ -4308,6 +4327,29 @@ mod tests {
         assert!(f.quads.iter().any(|q| q.color == cursor && q.rect == Rect { x: 10.0, y: 2.0, w: 10.0, h: 16.0 }), "{:?}", &f.quads[..3]);
         let b = f.rows[0].spans.iter().find(|sp| sp.text == "b").unwrap();
         assert_eq!(b.color, s.palette.cursor_text, "the text takes cursor_text");
+    }
+
+    #[test]
+    fn ime_composition_draws_over_the_grid() {
+        use crate::ime::{Drawn, Piece};
+        let s = screen(b"hello");
+        let cell = (20.0, 20.0);
+        let yellow = rgb(255, 255, 0);
+        let mut look = CursorLook::shown(true);
+        look.geometry.base_cell = (20.0, 20.0);
+        look.ime = Some(Drawn { pieces: vec![Piece { row: 0, col: 5, text: "ab".to_string(), cells: 2 }], caret: (0, 7), caret_color: yellow });
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, cell, true, &look);
+        let bg = rgba(s.palette.bg, 1.0);
+        assert!(f.popups.iter().any(|q| q.color == bg && q.rect == Rect { x: 100.0, y: 0.0, w: 40.0, h: 20.0 }), "{:?}", f.popups);
+        let row = f.rows.iter().find(|r| r.spans.iter().any(|sp| sp.text == "ab")).expect("composition text");
+        assert_eq!((row.x, row.y), (100.0, 0.0));
+        assert_eq!(row.spans[0].color, s.palette.fg);
+        assert!(f.overlay.iter().any(|q| q.rect == Rect { x: 100.0, y: 19.0, w: 40.0, h: 1.0 } && q.color == rgba(s.palette.fg, 1.0)), "underline: {:?}", f.overlay);
+        assert!(f.overlay.iter().any(|q| q.rect.x == 140.0 && q.rect.w == 2.0 && q.color == rgba(yellow, 1.0)), "caret: {:?}", f.overlay);
+        // The grid's cell under the cursor is not a cursor quad: the terminal cursor is hidden.
+        let cursor = rgba(s.palette.cursor, 1.0);
+        assert!(!f.quads.iter().chain(&f.overlay).any(|q| q.color == cursor), "no terminal cursor");
     }
 
     #[test]

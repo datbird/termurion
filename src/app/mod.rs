@@ -75,6 +75,7 @@ mod blocks_ui;
 mod clipboard_ui;
 mod copymode_ui;
 mod cursor_ui;
+mod ime_ui;
 mod files_ui;
 mod find_ui;
 mod infobar_ui;
@@ -4154,6 +4155,11 @@ impl App {
     }
 
     fn key(&mut self, ev: &KeyEvent, event_loop: &ActiveEventLoop) {
+        // While the focused pane has a composition its keys are the IME's, not the session's;
+        // Esc cancels the composition first.
+        if self.ime_holds_key(ev) {
+            return;
+        }
         // Esc ends a title bar drag (the drag session cancels, nothing moves).
         if ev.state == ElementState::Pressed && ev.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) && self.title_drag_lost(pane_move_ui::DragLost::Escape) {
             return;
@@ -5107,6 +5113,8 @@ impl ApplicationHandler<UserEvent> for App {
                 return event_loop.exit();
             }
         };
+        // Every terminal window allows the IME (winit leaves it off otherwise).
+        window.set_ime_allowed(true);
         match init_gpu(window, event_loop) {
             Ok(gpu) => {
                 let k = windows_ui::key(gpu.window.id());
@@ -5627,6 +5635,8 @@ impl ApplicationHandler<UserEvent> for App {
                     self.belt_keys.clear();
                     self.replay_keys.clear();
                     self.composer_keys.clear();
+                    // A half-typed composition is dropped, not committed.
+                    self.ime_cancel();
                 }
                 self.focused = f;
                 // The border takes the focused or unfocused color.
@@ -5737,8 +5747,13 @@ impl ApplicationHandler<UserEvent> for App {
                 if sig != self.font_sig || self.laid_out.as_ref() != Some(&self.room()) {
                     self.relayout();
                 }
-                self.render()
+                self.render();
+                // The IME's candidate window follows the caret of the frame just drawn.
+                self.ime_area();
             }
+            // The IME's composition and commits; the Settings and tool windows (egui) keep
+            // egui-winit's own handling.
+            WindowEvent::Ime(ime) => self.ime_event(ime),
             _ => {}
         }
     }
