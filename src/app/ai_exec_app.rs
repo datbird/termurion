@@ -52,6 +52,12 @@ fn capture(screen: Option<&Screen>, running: &Running) -> Option<Outcome> {
     }
 }
 
+/// A running command's start line after rows were spliced into the history: a row on the
+/// screen (at or after `api_from`) now has a number `by` higher; a history row keeps its own.
+pub(super) fn rebased_start(start_line: i64, api_from: i64, by: i64) -> i64 {
+    if start_line >= api_from { start_line + by } else { start_line }
+}
+
 /// Records `running` for `pane`. A command already running there is cancelled (`PS:342`): its
 /// (chat, request id) goes to `canceled`, for the tick to answer.
 fn replace_running(execs: &mut HashMap<PaneId, Running>, canceled: &mut Vec<(String, String)>, pane: PaneId, running: Running) {
@@ -140,6 +146,31 @@ mod tests {
         assert_eq!(o.notice.as_deref(), Some(ai_exec::lost_notice("dir").as_str()), "lost-output notice, as the marker path");
         assert_ne!(o.model, ai_exec::UNAVAILABLE_MODEL);
         assert!(o.model.contains('x'), "the text from the oldest line kept: {:?}", o.model);
+    }
+
+    /// Task 4 fix round 2: an alternate-screen session that scrolls splices rows into the history
+    /// above the screen; a command the AI ran before it still starts at its own row.
+    #[test]
+    fn exec_start_line_survives_an_alternate_session() {
+        let mut s = Screen::new(40, 6);
+        s.feed(b"\x1b]133;A\x07\x1b]133;B\x07");
+        let mut r = running(Path::Prompt, &s);
+        s.feed(b"git log\r\n\x1b[?1049h");
+        for i in 0..20 {
+            s.feed(format!("pager{i}\r\n").as_bytes());
+        }
+        s.feed(b"\x1b[?1049lback\r\n\x1b]133;D;0\x07\x1b]133;A\x07\x1b]133;B\x07");
+        for req in s.take_requests() {
+            if let crate::screen::Request::HistoryRebased { api_from, by, .. } = req {
+                r.start_line = rebased_start(r.start_line, api_from, by as i64);
+            }
+        }
+        let o = prompt_capture(&s, &r).expect("the new prompt ended the command");
+        assert!(o.model.starts_with("git log"), "{:?}", o.model);
+        assert!(!o.model.contains("pager"), "{:?}", o.model);
+        // A command that began in the history keeps its number.
+        assert_eq!(rebased_start(3, 10, 5), 3);
+        assert_eq!(rebased_start(10, 10, 5), 15);
     }
 
     #[test]

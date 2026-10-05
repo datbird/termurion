@@ -363,7 +363,9 @@ pub struct Capture {
 pub enum Request {
     /// Absolute row numbers below `below` moved down by `by` (rows spliced into the history
     /// when the alternate screen ended); the app moves the ones it holds.
-    HistoryRebased { below: i64, by: i64 },
+    /// `api_from` is the API numbering's first on-screen line before the splice (lost plus kept
+    /// history), where rows named by an absolute line moved down by `by`.
+    HistoryRebased { below: i64, by: i64, api_from: i64 },
     /// CSI 3 J arrived while Prevent CSI 3 J is unset: ask once whether to allow it.
     AskClearHistory,
     /// DECRQCRA arrived while Disable DECRQCRA is unset: ask once whether to allow it.
@@ -1752,8 +1754,14 @@ impl Screen {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32)
         });
         self.parser.advance(&mut self.term, bytes);
-        for (below, by) in self.term.take_history_splices() {
-            self.rebase_history_rows(below, by);
+        let splices = self.term.take_history_splices();
+        let mut after: usize = splices.iter().map(|(_, by)| *by).sum();
+        for (below, by) in splices {
+            // The API numbering's base before this splice: what is above the screen now less the
+            // rows this and later splices added (main output between splices is not counted).
+            let api_from = crate::api_buffer::above(self.term.primary_grid()) - after as i64;
+            after -= by;
+            self.rebase_history_rows(below, by, api_from);
         }
         // DECTCEM: the time the cursor went away (the first, while it stays away).
         match (self.term.mode().contains(TermMode::SHOW_CURSOR), self.cursor_hidden_at) {

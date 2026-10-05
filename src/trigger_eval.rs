@@ -282,7 +282,7 @@ impl Screen {
     /// down so they still name the same text (iTerm2 rebases its marks the same way). Row
     /// numbers on the screen stay as they are. Tells the app, which holds the Captured
     /// Output tool's Clear line.
-    pub(crate) fn rebase_history_rows(&mut self, below: u64, by: usize) {
+    pub(crate) fn rebase_history_rows(&mut self, below: u64, by: usize, api_from: i64) {
         let (below, by) = (below as i64, by as i64);
         let shift = |n: &mut i64| {
             if *n < below {
@@ -301,7 +301,7 @@ impl Screen {
                 shift(&mut c.abs_line);
             }
         }
-        self.requests.push(Request::HistoryRebased { below, by });
+        self.requests.push(Request::HistoryRebased { below, by, api_from });
     }
 
     /// Rows moved (a resize, a fold, a porthole): checking goes on from the cursor.

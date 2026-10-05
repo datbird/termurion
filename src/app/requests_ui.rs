@@ -150,7 +150,11 @@ impl App {
             }
             Request::AskClearHistory => self.ask_clear_history(pane),
             Request::AskDecrqcra => self.ask_decrqcra(pane),
-            Request::HistoryRebased { below, by } => {
+            Request::HistoryRebased { below, by, api_from } => {
+                // A command the AI is running names its first row in the API numbering.
+                if let Some(run) = self.ai_execs.get_mut(&pane) {
+                    run.start_line = super::ai_exec_app::rebased_start(run.start_line, api_from, by);
+                }
                 // The Captured Output tool's Clear line names a row the same way an entry does.
                 if let Some(st) = self.belt.tools.get_mut(&crate::toolbelt::ToolId::CapturedOutput) {
                     if st.cleared_pane == Some(pane) && st.cleared.abs_line != i64::MIN && st.cleared.abs_line < below {
