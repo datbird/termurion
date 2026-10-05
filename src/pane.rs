@@ -1706,6 +1706,10 @@ impl Pane {
 
     pub fn scroll(&mut self, scroll: Scroll) {
         self.screen.term_mut().scroll_display(scroll);
+        // Back at the live view the user's scroll has ended: its remainder goes (`PTYScrollView.m:117-121`).
+        if self.screen.term().grid().display_offset() == 0 {
+            self.wheel.scroll.reset();
+        }
     }
 
     /// What a paste sends: bracketed when the pane's own screen asks for it.
@@ -4021,5 +4025,16 @@ mod tests {
         assert_eq!(old.session_guid, restarted.session_guid);
         let split = Pane::recording(2, 80, 24);
         assert_ne!(old.session_guid, split.session_guid, "a split or duplicate is a new session");
+    }
+
+    /// Task 4 fix: back at the bottom, the history accumulator's remainder is dropped
+    /// (`PTYScrollView.m:117-121`).
+    #[test]
+    fn returning_to_the_bottom_resets_the_scroll_remainder() {
+        let prefs = crate::wheel::Prefs { acceleration: 1.0, fast_trackpad: true, modern: true, sensitive: false };
+        let mut p = Pane::recording(1, 80, 24);
+        assert_eq!(p.wheel.scroll.delta(0.4, true, &prefs), 0.0);
+        p.scroll(Scroll::Bottom);
+        assert_eq!(p.wheel.scroll.delta(0.7, true, &prefs), 0.0, "the 0.4 was dropped, 0.7 alone is not a line");
     }
 }

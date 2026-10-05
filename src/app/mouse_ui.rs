@@ -149,7 +149,8 @@ impl App {
             } else {
                 let n = wheel::report_delta(p.wheel.horizontal.take(dx, ev.precise, cell_pt.0, &prefs), cell_pt.0, prefs.fast_trackpad);
                 let steps = if n == 0.0 { 0 } else { wheel::report_steps(n, proportional, double) as i32 };
-                let left = wheel::natural_swap(n > 0.0, ev.precise, touchpad_natural(), affects);
+                let natural = wheel::needs_touchpad_setting(ev.precise, affects) && touchpad_natural();
+                let left = wheel::natural_swap(n > 0.0, ev.precise, natural, affects);
                 input::horizontal_wheel_reports(modes, mods, steps, left, horizontal_reports, col, row)
             };
             if !bytes.is_empty() {

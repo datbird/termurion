@@ -124,10 +124,6 @@ impl Prefs {
     }
 }
 
-fn round_away(x: f64) -> f64 {
-    if x < 0.0 { x.floor() } else { x.ceil() }
-}
-
 /// `iTermScrollAccumulator`: one remainder, one sensitivity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Accumulator {
@@ -156,7 +152,10 @@ impl Accumulator {
 
     /// The modern accumulator, `deltaForEvent:increment:` (`:48-66`, `:69-99`). `raw` is lines.
     pub fn delta(&mut self, raw: f64, precise: bool, p: &Prefs) -> f64 {
-        let adjusted = if precise && p.fast_trackpad { round_away(raw) } else { raw };
+        // iTerm2 rounds each precise event's deltaY away from zero (`SA:69-86`), coarse on a Mac
+        // trackpad. Windows touchpads send many tiny deltas, so a precise event accumulates and
+        // only whole lines come out, with FastTrackpad on or off (Task 4 fix ruling).
+        let adjusted = raw;
         let got = if precise {
             let d = adjusted * self.sensitivity;
             self.acc += d;
@@ -230,6 +229,12 @@ pub fn natural_swap(dx_positive: bool, precise: bool, natural_on: bool, affects:
     if precise && natural_on && !affects { !dx_positive } else { dx_positive }
 }
 
+/// Whether the touchpad's registry setting can matter for a horizontal report: only a precise
+/// event, and only when the Advanced setting does not already settle the direction.
+pub fn needs_touchpad_setting(precise: bool, affects: bool) -> bool {
+    precise && !affects
+}
+
 /// The precision touchpad's "Down motion scrolls up" (natural) setting. UNVERIFIED mapping:
 /// `ScrollDirection` 0 is natural, 0xFFFFFFFF the classic direction; absent is false.
 #[cfg(windows)]
@@ -301,8 +306,7 @@ mod tests {
         assert_eq!(a.delta(0.3, false, &P0), 1.0, "a wheel moves at least one");
         assert_eq!(a.delta(-0.3, false, &P0), -1.0);
         assert_eq!(a.delta(2.5, false, &P0), 3.0, "half rounds away from zero");
-        assert_eq!(a.delta(0.2, true, &P0), 1.0, "fast trackpad rounds away from zero");
-        let slow = Prefs { fast_trackpad: false, ..P0 };
+                let slow = Prefs { fast_trackpad: false, ..P0 };
         let mut a = Accumulator::new(1.0);
         assert_eq!(a.delta(0.4, true, &slow), 0.0);
         assert_eq!(a.delta(0.4, true, &slow), 0.0);
@@ -414,5 +418,26 @@ mod tests {
         assert_eq!(report_delta(3.0, 17.0, false), 3.0);
         // A default notch (3 lines, fast trackpad on) reports once.
         assert_eq!(report_steps(report_delta(3.0, 17.0, true), true, false), 1);
+    }
+
+    /// Task 4 fix (ruling): on Windows a touchpad sends many tiny deltas, so fast trackpad
+    /// accumulates them and emits whole lines only; a mouse notch keeps iTerm2's rounding.
+    #[test]
+    fn fast_trackpad_accumulates_before_rounding() {
+        let mut a = Accumulator::new(1.0);
+        for _ in 0..3 {
+            assert_eq!(a.delta(0.25, true, &P0), 0.0, "a gentle swipe does not scroll a line per message");
+        }
+        assert_eq!(a.delta(0.25, true, &P0), 1.0, "the whole line arrives once it is there");
+        let mut a = Accumulator::new(1.0);
+        assert_eq!(a.delta(0.3, false, &P0), 1.0, "a notch still moves at least one");
+        assert_eq!(a.delta(3.0, false, &P0), 3.0);
+    }
+
+    #[test]
+    fn touchpad_is_read_only_when_it_decides() {
+        assert!(!needs_touchpad_setting(false, false), "a mouse wheel never swaps");
+        assert!(!needs_touchpad_setting(true, true), "the Advanced setting settles it");
+        assert!(needs_touchpad_setting(true, false));
     }
 }
