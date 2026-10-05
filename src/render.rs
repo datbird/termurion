@@ -1920,6 +1920,7 @@ mod tests {
             popups: vec![],
             scrollbars: vec![],
             backgrounds: vec![],
+            face_heights: vec![],
         };
         r.draw(&frame, &view, w, h).unwrap();
         let px = read(&device, &queue, &tex, w, h);
@@ -1977,6 +1978,7 @@ mod tests {
             popups: vec![],
             scrollbars: vec![],
             backgrounds: vec![],
+            face_heights: vec![],
         };
         r.draw(&frame, &view, w, h).unwrap();
         let px = read(&device, &queue, &tex, w, h);

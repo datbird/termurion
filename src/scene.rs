@@ -117,6 +117,17 @@ pub struct Frame {
     /// Scrollbars and their ticks: no text, drawn after the strokes and before `overlay` (the
     /// dimming covers them). `cut_quads` trims them under a popup, so popups lie over a bar.
     pub scrollbars: Vec<Quad>,
+    /// The line height of each non-default face a pane drew rows in (`pane_with` records it):
+    /// what `cut_out` and `cut_rows_from` measure a pane row by, since a zoomed pane's rows are
+    /// taller than the chrome's line.
+    pub face_heights: Vec<(u16, f32)>,
+}
+
+/// A row's height for the cuts: its own face's line (times its scale) for a pane's row, else the
+/// caller's `line_h`.
+fn row_height_in(heights: &[(u16, f32)], row: &TextRow, line_h: f32) -> f32 {
+    let base = heights.iter().find(|(f, _)| *f == row.face).map_or(line_h, |(_, h)| *h);
+    base * row.scale.max(1.0)
 }
 
 /// Which frame of an animated image shows at `now_ms`.
@@ -774,6 +785,9 @@ pub fn pane_with(
     // target under the pointer gets a solid line in the link color.
     let mut hovered: Vec<(usize, usize)> = Vec::new();
     let (cw, ch) = cell;
+    if face != crate::render::DEFAULT_FACE && !frame.face_heights.iter().any(|(f, _)| *f == face) {
+        frame.face_heights.push((face, ch));
+    }
     let palette = &screen.palette;
     let term = screen.term();
     let (cols, lines) = (term.columns(), term.screen_lines());
@@ -2709,9 +2723,10 @@ pub fn status_bar(frame: &mut Frame, d: &StatusBarDraw, cell: (f32, f32)) {
 /// goes in `popups`, which draw after images and before text.
 pub fn cut_out(frame: &mut Frame, r: Rect, line_h: f32) {
     let mut extra = Vec::new();
+    let heights = &frame.face_heights;
     for row in frame.rows.iter_mut() {
         let c = row.clip;
-        let line_h = line_h * row.scale.max(1.0);
+        let line_h = row_height_in(heights, row, line_h);
         if row.y >= r.y + r.h || row.y + line_h <= r.y || c.y >= r.y + r.h || c.y + c.h <= r.y || c.x >= r.x + r.w || c.x + c.w <= r.x {
             continue;
         }
@@ -2736,10 +2751,12 @@ pub fn cut_rows_from(frame: &mut Frame, r: Rect, line_h: f32) {
     // spaces pushes no text row).
     cut_quads(frame, r);
     let mut bands: Vec<Rect> = Vec::new();
+    let heights = &frame.face_heights;
     for row in frame.rows.iter_mut() {
-        if row.y < r.y + r.h && row.y + line_h > r.y && row.clip.x + row.clip.w > r.x {
+        let h = row_height_in(heights, row, line_h);
+        if row.y < r.y + r.h && row.y + h > r.y && row.clip.x + row.clip.w > r.x {
             row.clip.w = (r.x - row.clip.x).max(0.0);
-            let band = Rect { x: r.x, y: row.y, w: 1.0e6, h: line_h * row.scale.max(1.0) };
+            let band = Rect { x: r.x, y: row.y, w: 1.0e6, h };
             if !bands.iter().any(|b| b.y == band.y) {
                 bands.push(band);
             }
@@ -7029,6 +7046,38 @@ mod tests {
         // The default color is the cell's final text color: a selected cell's.
         let runs = underline_runs(&[CellLook { ul: Some(Ul { style: crate::underline::Style::Single, strike: false, sgr: None }), text: "a".into(), fg: rgb(1, 2, 3), bg: rgb(0, 0, 0), bold: false, italic: false, selected: false, level: 0, mask: 0, cursor: false, joins: false, table: None }], None);
         assert_eq!(runs[0].color, rgb(1, 2, 3));
+    }
+
+    /// 13n final review 1: a zoomed pane's rows are taller than the chrome's line, so a popup cuts
+    /// a row by that row's own height (a row whose top is a default line above the popup still
+    /// reaches into it), and a smaller-font pane's row that ends above the popup is left alone.
+    #[test]
+    fn popups_cut_pane_rows_by_their_own_height() {
+        let mut s = Screen::new(10, 4);
+        s.feed(b"line0\r\nline1\r\nline2");
+        let rows_at = |f: &Frame, y: f32| f.rows.iter().filter(|r| r.y == y).map(|r| (r.clip.x, r.clip.w)).collect::<Vec<_>>();
+        // Whether a piece of the row at `y` draws in the popup's columns.
+        let reaches = |f: &Frame, y: f32, p: Rect| rows_at(f, y).iter().any(|&(x, w)| x < p.x + p.w && x + w > p.x);
+        // A 2x pane: rows 40 tall. Row 1 spans y 40..80; the popup starts at y 70 (30 px below its top).
+        let popup = Rect { x: 0.0, y: 70.0, w: 50.0, h: 20.0 };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, (10.0, 40.0), false, &CursorLook::shown(false), &DrawPrefs::default(), None, 7);
+        assert!(!rows_at(&f, 40.0).is_empty());
+        let mut g = f.clone();
+        cut_out(&mut g, popup, 20.0);
+        assert!(!reaches(&g, 40.0, popup), "row 1 (y 40..80) reaches the popup at y 70 and is cut: {:?}", rows_at(&g, 40.0));
+        let mut g = f.clone();
+        cut_rows_from(&mut g, popup, 20.0);
+        assert!(!reaches(&g, 40.0, popup), "cut_rows_from by the row's height too: {:?}", rows_at(&g, 40.0));
+        // A small-font pane: rows 10 tall. Row 1 is y 10..20, ending above the popup at y 70 (a 20 px chrome line would not reach either) and row 6 (y 60..70) just ends at the popup.
+        let mut small = Screen::new(10, 8);
+        small.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng");
+        let mut f = Frame::default();
+        pane_with(&mut f, &small, RECT, (5.0, 10.0), false, &CursorLook::shown(false), &DrawPrefs::default(), None, 7);
+        let before = rows_at(&f, 60.0);
+        let mut g = f.clone();
+        cut_out(&mut g, Rect { x: 0.0, y: 75.0, w: 50.0, h: 20.0 }, 20.0);
+        assert_eq!(rows_at(&g, 60.0), before, "the row at y 60..70 ends above the popup: left whole");
     }
 
     /// 13m Task 7: a popup, a toast or a find bar over a pane's right edge lies over the
