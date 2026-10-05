@@ -2,6 +2,7 @@
 //! (iTerm2's legacy and overlay scrollers, `SV`, `PTYScroller`). Pure code.
 
 use crate::layout::Rect;
+use crate::palette::{Rgb, rgb};
 
 /// Legacy scrollers take their width from the content; overlay scrollers float over it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,6 +110,75 @@ pub fn system_style() -> Style {
     style_from_value((rc == 0).then_some(data))
 }
 
+/// The kinds of tick along the scrollbar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Series {
+    Success,
+    Other,
+    Error,
+    Manual,
+    Annotation,
+    Search,
+}
+
+pub const TICK_HEIGHT: f32 = 3.0;
+pub const MINIMAP_ALPHA: f32 = 0.62;
+
+/// Ticks for `lines` (buffer lines, 0 the oldest) of a `total` line buffer along `track`
+/// (`MM:85-125`): a line's place is its fraction of the whole buffer, `round(fraction *
+/// (height - 3))` from the top, and a tick less than 2 points below the last drawn is
+/// skipped. Lines are bucketed per pixel row first, so the work is the line count and the
+/// memory the track height, whatever the history; the order of `lines` does not matter.
+/// `style_narrow` is the overlay scroller's narrow state: 11 wide, 5 in (`SV:2626-2629`).
+pub fn ticks(track: Rect, lines: &[usize], total: usize, style_narrow: bool) -> Vec<Rect> {
+    if total == 0 || lines.is_empty() || track.h <= 0.0 {
+        return Vec::new();
+    }
+    let span = (track.h - TICK_HEIGHT).max(0.0);
+    let mut rows = vec![false; span.round() as usize + 1];
+    for &line in lines.iter().filter(|&&l| l < total) {
+        let y = ((line as f64 / total as f64) * f64::from(span)).round() as usize;
+        let last = rows.len() - 1;
+        rows[y.min(last)] = true;
+    }
+    let (x, w) = if style_narrow { (track.x + 5.0, 11.0) } else { (track.x, track.w) };
+    let mut out = Vec::new();
+    let mut last: Option<usize> = None;
+    for (y, _) in rows.iter().enumerate().filter(|(_, hit)| **hit) {
+        if last.is_some_and(|l| y < l + 2) {
+            continue;
+        }
+        out.push(Rect { x, y: track.y + y as f32, w, h: TICK_HEIGHT });
+        last = Some(y);
+    }
+    out
+}
+
+/// A series' outline and fill (`SV:268-299`, `MM:183-186`): the mark colors saturated (hue
+/// kept, saturation and brightness 1) with the fill dimmed 0.2 toward white; other marks keep
+/// their color; manual marks gray; annotations yellow. Ticks ignore Use Theme Mark Colors.
+pub fn series_colors(s: Series) -> (Rgb, Rgb) {
+    use crate::marks::MarkColor;
+    let mark = |c: MarkColor| {
+        let [r, g, b, _] = crate::scene::mark_rgba(c);
+        let u = |v: f32| (v * 255.0).round() as u8;
+        rgb(u(r), u(g), u(b))
+    };
+    let saturated = |c: Rgb| {
+        let (h, _, _) = crate::hexcolor::to_hsb(c);
+        crate::hexcolor::from_hsb(h, 1.0, 1.0)
+    };
+    let dimmed = |c: Rgb| (c, crate::tab_theme::toward_gray(c, 0.2, 1.0));
+    match s {
+        Series::Success => dimmed(saturated(mark(MarkColor::Success))),
+        Series::Other => dimmed(mark(MarkColor::Other)),
+        Series::Error => dimmed(saturated(mark(MarkColor::Error))),
+        Series::Manual => (crate::hexcolor::white(0.5), crate::hexcolor::white(0.7)),
+        Series::Annotation => dimmed(rgb(255, 255, 0)),
+        Series::Search => (rgb(128, 128, 0), rgb(255, 255, 0)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,5 +260,62 @@ mod tests {
         assert_eq!(style_from_value(Some(0)), Style::Legacy);
         assert_eq!(style_from_value(Some(1)), Style::Overlay);
         assert_eq!(style_from_value(None), Style::Overlay);
+    }
+
+    #[test]
+    fn ticks_follow_iterm2() {
+        let track = |h: f32| Rect { x: 10.0, y: 20.0, w: 15.0, h };
+        // Height 203, 100 lines: line 0 at the top, line 99 at round(0.99 * 200).
+        let t = ticks(track(203.0), &[0, 99], 100, false);
+        assert_eq!(t.iter().map(|r| r.y - 20.0).collect::<Vec<_>>(), vec![0.0, 198.0]);
+        assert!(t.iter().all(|r| r.h == TICK_HEIGHT && r.x == 10.0 && r.w == 15.0));
+        // Lines 500 and 501 of 1000 in a 103 high track both land on y 50: one tick.
+        let t = ticks(track(103.0), &[500, 501], 1000, false);
+        assert_eq!(t.iter().map(|r| r.y - 20.0).collect::<Vec<_>>(), vec![50.0]);
+        // Lines 0 and 1 of 100,000: within 2 points, one tick.
+        assert_eq!(ticks(track(203.0), &[0, 1], 100_000, false).len(), 1);
+        // A tick 2 points below the last is kept; 1 point is not.
+        let t = ticks(track(103.0), &[0, 1, 2, 3], 100, false);
+        assert_eq!(t.iter().map(|r| r.y - 20.0).collect::<Vec<_>>(), vec![0.0, 2.0]);
+        assert!(ticks(track(203.0), &[], 100, false).is_empty());
+        assert!(ticks(track(203.0), &[5], 0, false).is_empty());
+        // The narrow overlay style: 11 wide, 5 in.
+        let t = ticks(track(203.0), &[0], 100, true);
+        assert_eq!((t[0].x, t[0].w), (15.0, 11.0));
+    }
+
+    #[test]
+    fn ticks_stay_bounded_and_order_free() {
+        let track = Rect { x: 0.0, y: 0.0, w: 15.0, h: 403.0 };
+        let lines: Vec<usize> = (0..2_000_000).rev().collect();
+        let t = ticks(track, &lines, 2_000_000, false);
+        assert!(t.len() <= 201, "one tick per two pixel rows at most: {}", t.len());
+        assert!(t.windows(2).all(|w| w[1].y - w[0].y >= 2.0), "sorted top-down, 2 apart");
+        assert_eq!(t[0].y, 0.0);
+        let up: Vec<usize> = (0..2_000_000).collect();
+        assert_eq!(ticks(track, &up, 2_000_000, false), t, "the input order does not matter");
+        assert!(ticks(track, &[9, 2_000_000, 5_000_000], 2_000_000, false).len() == 1, "lines past the buffer are ignored");
+    }
+
+    #[test]
+    fn series_follow_iterm2() {
+        use crate::palette::rgb;
+        assert_eq!(series_colors(Series::Search), (rgb(128, 128, 0), rgb(255, 255, 0)));
+        assert_eq!(series_colors(Series::Manual), (rgb(128, 128, 128), rgb(179, 179, 179)));
+        // Success: the success color's hue at full saturation and brightness, its fill 0.2 toward white.
+        let (out, fill) = series_colors(Series::Success);
+        let (h, _, _) = crate::hexcolor::to_hsb(rgb(137, 193, 255));
+        assert_eq!(out, crate::hexcolor::from_hsb(h, 1.0, 1.0));
+        assert_eq!(fill, crate::tab_theme::toward_gray(out, 0.2, 1.0));
+        let (out, fill) = series_colors(Series::Error);
+        let (h, _, _) = crate::hexcolor::to_hsb(rgb(252, 114, 109));
+        assert_eq!(out, crate::hexcolor::from_hsb(h, 1.0, 1.0));
+        assert_eq!(fill, crate::tab_theme::toward_gray(out, 0.2, 1.0));
+        // Other keeps its own color (iTerm2 only dims it); annotations are yellow.
+        let (out, fill) = series_colors(Series::Other);
+        assert_eq!((out, fill), (rgb(219, 216, 109), crate::tab_theme::toward_gray(rgb(219, 216, 109), 0.2, 1.0)));
+        let (out, fill) = series_colors(Series::Annotation);
+        assert_eq!((out, fill), (rgb(255, 255, 0), crate::tab_theme::toward_gray(rgb(255, 255, 0), 0.2, 1.0)));
+        assert_eq!((TICK_HEIGHT, MINIMAP_ALPHA), (3.0, 0.62));
     }
 }

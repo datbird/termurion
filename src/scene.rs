@@ -934,6 +934,24 @@ pub fn scrollbar(frame: &mut Frame, g: &crate::scrollbar::Geometry, style: crate
     }
 }
 
+/// Marks and search results along the scrollbar (`MM:85-125`): per non-empty series, each
+/// tick a 1 px outline around a fill inset by 1, at `MINIMAP_ALPHA`. `track` is the minimap
+/// rectangle (`Geometry::minimap`). Series draw in the order given.
+pub fn scrollbar_ticks(frame: &mut Frame, track: Rect, series: &[(crate::scrollbar::Series, Vec<usize>)], total: usize) {
+    use crate::scrollbar::{MINIMAP_ALPHA, series_colors, ticks};
+    for (kind, lines) in series {
+        let (outline, fill) = series_colors(*kind);
+        for t in ticks(track, lines, total, false) {
+            let c = rgba(outline, MINIMAP_ALPHA);
+            for edge in [Rect { h: 1.0, ..t }, Rect { y: t.y + t.h - 1.0, h: 1.0, ..t }, Rect { w: 1.0, ..t }, Rect { x: t.x + t.w - 1.0, w: 1.0, ..t }] {
+                frame.overlay.push(Quad { rect: edge, color: c });
+            }
+            let inner = Rect { x: t.x + 1.0, y: t.y + 1.0, w: (t.w - 2.0).max(0.0), h: (t.h - 2.0).max(0.0) };
+            frame.overlay.push(Quad { rect: inner, color: rgba(fill, MINIMAP_ALPHA) });
+        }
+    }
+}
+
 /// `iTermTextDrawingHelperLineStyleMarkRightInsetCells`: the cells a line-style mark leaves
 /// free at the right for a command's buttons.
 const LINE_MARK_RIGHT_INSET: usize = 15;
@@ -6396,6 +6414,29 @@ mod drawn_overlay_tests {
         let x1 = quads.iter().map(|q| q.rect.x + q.rect.w).fold(f32::MIN, f32::max);
         let y1 = quads.iter().map(|q| q.rect.y + q.rect.h).fold(f32::MIN, f32::max);
         Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+    }
+
+    #[test]
+    fn scrollbar_ticks_draw_outlined_boxes_at_the_minimap_alpha() {
+        use crate::scrollbar::{MINIMAP_ALPHA, Series, TICK_HEIGHT, series_colors};
+        let track = Rect { x: 100.0, y: 10.0, w: 15.0, h: 203.0 };
+        let mut f = Frame::default();
+        scrollbar_ticks(&mut f, track, &[(Series::Search, vec![0, 99]), (Series::Error, vec![]), (Series::Manual, vec![50])], 100);
+        assert!(f.quads.is_empty() && f.rows.is_empty() && f.popups.is_empty(), "ticks hold no text and sit in the overlay");
+        assert!(f.overlay.iter().all(|q| (q.color[3] - MINIMAP_ALPHA).abs() < 1e-6));
+        // Two search ticks and one manual tick: each is four outline edges and one fill.
+        assert_eq!(f.overlay.len(), 15, "an empty series draws nothing");
+        let (outline, fill) = series_colors(Series::Search);
+        let first = &f.overlay[..5];
+        assert_eq!(first.iter().filter(|q| q.color == rgba(outline, MINIMAP_ALPHA)).count(), 4);
+        let inner = first.iter().find(|q| q.color == rgba(fill, MINIMAP_ALPHA)).unwrap();
+        assert_eq!(inner.rect, Rect { x: 101.0, y: 11.0, w: 13.0, h: TICK_HEIGHT - 2.0 });
+        let top = first.iter().map(|q| q.rect.y).fold(f32::MAX, f32::min);
+        assert_eq!(top, 10.0, "line 0 sits at the top of the track");
+        let none: &[(Series, Vec<usize>)] = &[];
+        let mut g = Frame::default();
+        scrollbar_ticks(&mut g, track, none, 100);
+        assert!(g.overlay.is_empty());
     }
 
     #[test]
