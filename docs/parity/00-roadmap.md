@@ -638,6 +638,12 @@ Character Encoding uses Windows code pages (ISO 2022-JP is not streamed); typed 
 Deferred: DECRQCRA's origin mode and default-0 rectangles, DOCS (ESC % G), directory handles, offers, drags out and the SSH tier of OSC 72,
 AggressiveBaseCharacterDetection off, BufferDepth. Nothing of 13o was checked on screen during the build. Every kept quirk is listed in
 `docs/acceptance/m13o-checklist.md` and ruled on in `docs/superpowers/rulings/m13o-rulings.txt`.
+On the m13p branch, main (13o) merged into 13p's Tasks 1-6 (2026-10-05): 13p changes no parity row before its docs task, so
+the union is 13o's (01: 316 rows, 248 have, 56 partial, 12 missing; 02: 820, 557, 54, 209; 03: 647, 562, 44, 41; 1,783 rows,
+1,367 have, 154 partial, 262 missing). Seams wired at the merge: 13o's TERM (the profile's Terminal Type) reaches a WSL session
+through WSLENV (P17), every 13o Character Encoding choice has a locale name for 13p's locale guess (P18: GB18030, Big5, eucKR,
+KOI8-R), Initial Text is typed through 13o's session encoder, and the offscreen command line reads only the displayed grid (no band
+over 13o's alternate-screen history) and draws in the profile's Unicode Normalization form.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's
