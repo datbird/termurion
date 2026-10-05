@@ -110,7 +110,7 @@ mod icu {
     use std::ffi::c_void;
     use std::sync::OnceLock;
 
-    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+    use windows_sys::Win32::System::LibraryLoader::GetProcAddress;
 
     /// `UBRK_WORD` of `UBreakIteratorType` (`ubrk.h`).
     pub const UBRK_WORD: i32 = 1;
@@ -132,11 +132,8 @@ mod icu {
     pub fn api() -> Option<&'static Api> {
         static API: OnceLock<Option<Api>> = OnceLock::new();
         API.get_or_init(|| unsafe {
-            let name: Vec<u16> = "icu.dll\0".encode_utf16().collect();
-            let module = LoadLibraryW(name.as_ptr());
-            if module.is_null() {
-                return None;
-            }
+            // System32 only: a planted icu.dll beside tandem.exe or in the current folder never loads.
+            let module = crate::dll::load_system("icu.dll")?;
             let get = |n: &std::ffi::CStr| GetProcAddress(module, n.as_ptr().cast());
             Some(Api {
                 open: std::mem::transmute::<unsafe extern "system" fn() -> isize, Open>(get(c"ubrk_open")?),
