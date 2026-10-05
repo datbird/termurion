@@ -22,7 +22,7 @@ divider rows at 100, 150 and 200 percent display scale. Mark each line pass or f
 | 4 | Next Pane then Previous Pane toggles between two panes without changing the order last used (quiet moves are not stamped). A click on a pane does stamp it. | |
 | 5 | With Shortcut to choose a split pane = Alt+Number: Alt+1, Alt+2, Alt+3 pick the panes in the same order Next Pane visits, and each pane's title bar reads its number in that order (the title bar numbers and the Alt+digit agree, also with NavigatePanesInReadingOrder off). | |
 | 6 | Status tool (Toolbelt) pane rows show the same numbers as the title bars. | |
-| 7 | Ninth-pane rule: in a tab with exactly eight panes, Alt+9 picks the last (eighth) pane and its title bar reads 9; Alt+8 picks the seventh. With nine or more panes, 1 to 8 pick by position and 9 is the last. | |
+| 7 | Ninth-pane rule: in a tab with exactly eight panes, Alt+9 and Alt+8 both pick the eighth pane and its title bar reads 9 (the Status tool says Alt+9 too). With nine or more panes, 1 to 8 pick by position and 9 is the last; with ten, the Status tool shows no pane shortcut for the ninth pane (its tab shortcut instead) and Alt+9 for the tenth. | |
 | 8 | Next Pane in a maximized (zoomed) tab steps through every pane and leaves the zoom (a kept difference: iTerm2 swaps the maximized pane). | |
 
 ## Directional moves and WrapFocus
@@ -75,7 +75,7 @@ divider rows at 100, 150 and 200 percent display scale. Mark each line pass or f
 |---|---|---|
 | 28 | Right-click a pane: Lock Pane (checked once locked), Lock All Panes in Tab; with some panes locked also Unlock All Panes in Tab; with all locked only Unlock All. | |
 | 29 | A locked pane's title bar shows the lock mark left of the menu button; the tooltip reads "This pane is locked. It cannot be moved, swapped, or dragged, and closing it requires confirmation. Right-click to unlock."; a click on the mark unlocks. | |
-| 30 | Close a locked pane running a shell: the question reads "This locked session is running ..." (jobs listed with "plus N others"); closing an exited locked pane reads "This locked session will be closed.". A tab with a locked pane reads "This tab (with a locked session) ...", a multi-pane tab "This multi-pane tab (with locked sessions) ...", a window "This window (with locked sessions) ...". Quit lists "This pane is locked.". | |
+| 30 | Close a locked pane running a shell: the question reads "This locked session is running ..." (jobs listed with "plus N others"); a locked pane lists only the lock reason, never also its profile reasons. An exited locked pane closed alone asks nothing; "This locked session will be closed." shows only in a tab or window close that asks for another reason. A tab with a locked pane reads "This tab (with a locked session) ...", a multi-pane tab "This multi-pane tab (with locked sessions) ...", a window "This window (with locked sessions) ...". Quit lists "This pane is locked.". | |
 | 31 | Move Session to Split Pane, Swap With Session, a title bar drag, Move Session to Window and Move Session to Tab on a locked pane all refuse with a beep and nothing moves (the last two look enabled; kept). A swap key action (by direction, next or previous) still works. | |
 | 32 | Lock All and Unlock All Panes in Tab lock and unlock every pane of the tab; the marks update. | |
 | 33 | Settings > Profiles > Session > Default Pane Locked on: a new pane (a split, a new tab, a tmux pane) starts locked. A split of a locked pane starts locked only if its own profile says so. | |
@@ -89,7 +89,7 @@ divider rows at 100, 150 and 200 percent display scale. Mark each line pass or f
 | 36 | Two panes side by side: Window > Split Pane > Lock Split Pane Width on the focused pane shows a check, and the check follows the focused pane (unchecked on the other). | |
 | 37 | With it checked, widen the window: the locked pane never grows past its width and the other pane takes the change; narrow the window: the locked pane shrinks too. | |
 | 38 | Unchecking: both panes scale again on the next resize. A single pane, a tmux pane or a pane only stacked in a column: the item does nothing and shows no check. | |
-| 39 | Drag the divider to widen a locked pane: allowed (kept); the next window resize caps it again. Restart Session keeps the width lock. A pane pinned below 10 percent of its split holds at 10 percent. Two pinned siblings fight in layout order (kept). Pins are not saved in arrangements. | |
+| 39 | Drag the divider to widen a locked pane: allowed (kept); the next window resize or the next split caps it again. Restart Session keeps the width lock. A pane pinned below 10 percent of its split holds at 10 percent. A side-by-side split whose two panes are both pinned is left alone. Pins are not saved in arrangements. | |
 
 ## Kept iTerm2 quirks and rulings a person can see
 
@@ -98,12 +98,12 @@ divider rows at 100, 150 and 200 percent display scale. Mark each line pass or f
 | 40 | A divorced ssh pane splits to a local shell with its own values; the next split of a Tandem-made ssh copy connects to the copy's host (m13i rulings, Task 5). | |
 | 41 | Next Pane unzooms a zoomed tab instead of swapping the maximized pane. | |
 | 42 | Dimming averages toward gray in linear light, so midtones differ slightly from iTerm2's. | |
-| 43 | Dim only text leaves selection, match, cursor and label colors alone, and inline images and portholes are unverified. | |
+| 43 | Dim only text leaves the tab bar undimmed and adds no Minimal outline boost, and leaves selection, match, cursor and label colors alone, and inline images and portholes are unverified. | |
 | 44 | The active pane border has square corners where iTerm2 rounds them at the window's corners. | |
 | 45 | The default divider is scaled: 2 pixels at 150 percent and 200 percent where Tandem drew 1. | |
 | 46 | A pinned and locked tab's close question says "This tab", not "This pinned tab". | |
 | 47 | Move Session to Window and to Tab look enabled for a locked pane and refuse with a beep. | |
 | 48 | Unlock All Panes in Tab is a menu item of its own when some panes are locked (iTerm2 hides it behind Option). | |
-| 49 | Width pins apply only on a window resize (not on a toolbelt toggle or a DPI change); a divider drag can undo one until then. | |
+| 49 | Width pins apply on a window resize and when a split is made (not on a toolbelt toggle or a DPI change); a divider drag can undo one until then. | |
 | 50 | The Dimming section of Appearance holds Dim background windows, moved from Windows. | |
 | 51 | Several kept tests only grep source text (wiring of the gap, the border, the split focus rule): only these rows prove the behavior. | |

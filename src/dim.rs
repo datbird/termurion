@@ -57,6 +57,12 @@ pub fn broadcast_inputs(b: &Broadcast, v: &View, id: PaneId, focused: PaneId) ->
     (b.should_broadcast_to(v, id, Some(focused)), b.should_broadcast_to(v, focused, Some(focused)))
 }
 
+/// The amount a dimmed pane raises the Minimal tab outline by, if any (`PT:10061`: none with Dim
+/// only text, which leaves the tab bar alone).
+pub fn outline_amount(d: Dim) -> Option<f32> {
+    (d.amount > 0.0 && !d.only_text).then_some(d.amount)
+}
+
 /// A text color under `d` (`iTermColorMap.m:343-360`): with Dim Only Text, averaged toward the
 /// default background's brightness; otherwise untouched (the gray quad dims it).
 pub fn text_color(c: Rgb, d: Dim, bg_brightness: f32) -> Rgb {
@@ -120,6 +126,13 @@ mod tests {
         let d = Dim { amount: 0.4, only_text: false };
         assert_eq!(text_color(rgb(255, 255, 255), d, 0.0), rgb(255, 255, 255), "the gray quad does the averaging");
         assert_eq!(bg_color(rgb(255, 0, 0), rgb(0, 0, 0), d, 0.0), rgb(255, 0, 0));
+    }
+
+    #[test]
+    fn outline_amount_skips_dim_only_text() {
+        assert_eq!(outline_amount(Dim { amount: 0.4, only_text: false }), Some(0.4));
+        assert_eq!(outline_amount(Dim { amount: 0.4, only_text: true }), None);
+        assert_eq!(outline_amount(Dim { amount: 0.0, only_text: false }), None);
     }
 
     #[test]

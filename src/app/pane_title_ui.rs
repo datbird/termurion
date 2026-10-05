@@ -130,7 +130,6 @@ impl App {
         }
         // S1: the shortcut ordinals follow the order Alt+digit picks by (`pane_by_number`).
         let panes = self.ordered_panes(tab);
-        let ordinals = pane_title::ordinals(panes.len());
         let tag = self.globals.int("SwitchPaneModifier");
         let (style, resolved) = (self.tab_style(), self.resolved_style());
         let legibility = self.globals.number("MinimalTextLegibilityAdjustment").map_or(1.0, |v| v as f32);
@@ -171,7 +170,7 @@ impl App {
             // P11: the Minimal theme's background alpha (`transparencyAlpha`, `iTermTheme.m:322-353`)
             // comes from `look` via `transparency_alpha` above; text, menu and line stay pre-blended.
             let look = pane_title::look(&parts);
-            let ordinal = panes.iter().position(|&x| x == id).and_then(|i| ordinals.get(i)).copied().unwrap_or(0);
+            let ordinal = pane_title::ordinal_of(&panes, id);
             let text = pane_title::title_text(&self.session_title(id), ordinal, tag);
             let geometry = pane_title::geometry(title, self.scale(), parts.locked);
             scene::pane_title_bar(frame, &scene::TitleBar { geometry, look, text: &text, show_label: !bar_in_title }, cell);

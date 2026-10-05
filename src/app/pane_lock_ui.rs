@@ -2,28 +2,20 @@
 //! its context menu items and its title bar lock mark.
 
 use super::*;
+use super::semantic_ui::CtxItem;
 use crate::close_rules::LOCKED_REASON;
-
-/// One of the context menu's lock items (`CMH:671-713`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum LockItem {
-    /// Lock Pane, with whether the pane is locked (a check item).
-    Pane(bool),
-    All,
-    UnlockAll,
-}
 
 /// The lock items after Toggle Broadcasting Input: Lock Pane, then for a tab with several
 /// panes Unlock All Panes in Tab when all are locked, else Lock All Panes in Tab and, when
 /// any is locked, Unlock All Panes in Tab too (iTerm2 hides that one behind Option).
-pub(super) fn lock_items(tab_panes: usize, locked: bool, all_locked: bool, any_locked: bool) -> Vec<(&'static str, LockItem)> {
-    let mut out = vec![("Lock Pane", LockItem::Pane(locked))];
+pub(super) fn lock_items(tab_panes: usize, locked: bool, all_locked: bool, any_locked: bool) -> Vec<(&'static str, CtxItem)> {
+    let mut out = vec![("Lock Pane", CtxItem::LockPane(locked))];
     if tab_panes > 1 {
         if !all_locked {
-            out.push(("Lock All Panes in Tab", LockItem::All));
+            out.push(("Lock All Panes in Tab", CtxItem::LockAll));
         }
         if any_locked {
-            out.push(("Unlock All Panes in Tab", LockItem::UnlockAll));
+            out.push(("Unlock All Panes in Tab", CtxItem::UnlockAll));
         }
     }
     out
@@ -39,6 +31,12 @@ pub(super) fn move_refused(layout_locked: bool, pane_locked: bool) -> bool {
 /// (`PS:3068-3078`).
 pub(super) fn close_reason_for(exited: bool, locked: bool) -> Option<&'static str> {
     (!exited && locked).then_some(LOCKED_REASON)
+}
+
+/// Whether a pane's profile adds its own close reasons: not an exited pane, and not a live
+/// locked one, whose only reason is the lock (`PS:3069-3078`).
+pub(super) fn profile_reasons_apply(exited: bool, locked: bool) -> bool {
+    !exited && !locked
 }
 
 /// Whether Lock Split Pane Width is offered: a non-tmux pane of a tab with several panes, with a
@@ -82,7 +80,8 @@ impl App {
                 if self.tmux_of(id).is_some() {
                     continue;
                 }
-                self.tabs[ti].layout.pin_width(id, width * scale, area, gap);
+                let pinned = |q: PaneId| self.panes.get(&q).is_some_and(|p| p.pinned_width.is_some());
+                self.tabs[ti].layout.pin_width(id, width * scale, area, gap, &pinned);
             }
         }
     }
@@ -121,7 +120,7 @@ impl App {
     }
 
     /// The lock items for the menu of `pane`: its lock state and its tab's.
-    pub(super) fn lock_items_for(&self, pane: PaneId) -> Vec<(&'static str, LockItem)> {
+    pub(super) fn lock_items_for(&self, pane: PaneId) -> Vec<(&'static str, CtxItem)> {
         let ids = self.tabs.iter().find(|t| t.layout.panes().contains(&pane)).map(|t| t.layout.panes()).unwrap_or_else(|| vec![pane]);
         let locks: Vec<bool> = ids.iter().map(|id| self.panes.get(id).is_some_and(|p| p.locked)).collect();
         lock_items(ids.len(), self.panes.get(&pane).is_some_and(|p| p.locked), locks.iter().all(|l| *l), locks.iter().any(|l| *l))
@@ -133,14 +132,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn splits_reapply_width_pins() {
+        // PTYTab.m resizeSubviewsWithOldSize: runs when a split is made too: the menu path and the
+        // API path both pin before they relayout.
+        let menu = include_str!("mod.rs");
+        let split = menu.split("fn split_as(").nth(1).and_then(|t| t.split("fn close_pane(").next()).unwrap();
+        assert!(split.contains("self.apply_width_pins();"), "split_as re-pins");
+        let api = include_str!("api_requests.rs");
+        let body = api.split("tab.layout.split(target, axis, id);").nth(1).and_then(|t| t.split("SplitResult::Made(id)").next()).unwrap();
+        assert!(body.contains("self.apply_width_pins();"), "api_split re-pins");
+    }
+
+    #[test]
+    fn status_tool_uses_the_title_ordinals() {
+        let tool = include_str!("toolbelt_more_ui.rs");
+        assert!(tool.contains("pane_title::ordinal_of(&ordered, id)"), "the Status tool shares the title bar helper");
+        let titles = include_str!("pane_title_ui.rs");
+        assert!(titles.contains("pane_title::ordinal_of(&panes, id)"), "so do the title bars");
+        assert!(tool.contains("self.ordered_panes(t).hash(h)"), "the Status hash follows the pane order");
+    }
+
+    #[test]
     fn lock_items_follow_iterm2() {
-        assert_eq!(lock_items(1, false, false, false), vec![("Lock Pane", LockItem::Pane(false))]);
-        assert_eq!(lock_items(3, false, false, false), vec![("Lock Pane", LockItem::Pane(false)), ("Lock All Panes in Tab", LockItem::All)]);
+        let ids = |a, b, c, d| lock_items(a, b, c, d).into_iter().map(|(l, i)| (l, i.id())).collect::<Vec<_>>();
+        assert_eq!(ids(1, false, false, false), vec![("Lock Pane", CtxItem::LockPane(false).id())]);
+        assert_eq!(ids(3, false, false, false), vec![("Lock Pane", CtxItem::LockPane(false).id()), ("Lock All Panes in Tab", CtxItem::LockAll.id())]);
         assert_eq!(
-            lock_items(3, true, false, true),
-            vec![("Lock Pane", LockItem::Pane(true)), ("Lock All Panes in Tab", LockItem::All), ("Unlock All Panes in Tab", LockItem::UnlockAll)]
+            ids(3, true, false, true),
+            vec![("Lock Pane", CtxItem::LockPane(true).id()), ("Lock All Panes in Tab", CtxItem::LockAll.id()), ("Unlock All Panes in Tab", CtxItem::UnlockAll.id())]
         );
-        assert_eq!(lock_items(3, true, true, true), vec![("Lock Pane", LockItem::Pane(true)), ("Unlock All Panes in Tab", LockItem::UnlockAll)]);
+        assert!(matches!(lock_items(1, true, true, true)[0].1, CtxItem::LockPane(true)), "the check follows the lock");
+        assert!(matches!(lock_items(1, false, false, false)[0].1, CtxItem::LockPane(false)));
+        assert_eq!(ids(3, true, true, true), vec![("Lock Pane", CtxItem::LockPane(true).id()), ("Unlock All Panes in Tab", CtxItem::UnlockAll.id())]);
     }
 
     #[test]
@@ -152,6 +175,9 @@ mod tests {
         assert_eq!(close_reason_for(false, true), Some(crate::close_rules::LOCKED_REASON));
         assert_eq!(close_reason_for(true, true), None);
         assert_eq!(close_reason_for(false, false), None);
+        assert!(profile_reasons_apply(false, false));
+        assert!(!profile_reasons_apply(false, true), "a locked pane's only reason is the lock");
+        assert!(!profile_reasons_apply(true, false));
     }
 
     #[test]

@@ -8,15 +8,15 @@ use std::cmp::Ordering;
 
 /// Panes in iTerm2's reading order. A stacked root (or one pane) reads top to
 /// bottom then left to right; a side-by-side root reads left to right then top
-/// to bottom. Origins within 1 of each other are equal; ties keep input order.
-pub fn reading_order(rects: &[(PaneId, Rect)], side_by_side_root: bool) -> Vec<PaneId> {
+/// to bottom. Origins within `margin` of each other are equal (1 point, in pixels); ties keep input order.
+pub fn reading_order(rects: &[(PaneId, Rect)], side_by_side_root: bool, margin: f32) -> Vec<PaneId> {
     let cmp = |a: &Rect, b: &Rect| -> Ordering {
         let (a1, a2, b1, b2) = if side_by_side_root {
             (a.x, a.y, b.x, b.y)
         } else {
             (a.y, a.x, b.y, b.x)
         };
-        if (a1 - b1).abs() < 1.0 {
+        if (a1 - b1).abs() < margin {
             a2.partial_cmp(&b2).unwrap_or(Ordering::Equal)
         } else {
             a1.partial_cmp(&b1).unwrap_or(Ordering::Equal)
@@ -93,23 +93,27 @@ mod tests {
             (3, r(100.0, 0.0, 100.0, 50.0)),
             (4, r(0.0, 50.0, 200.0, 50.0)),
         ];
-        assert_eq!(reading_order(&nested, false), vec![1, 3, 2, 4]);
+        assert_eq!(reading_order(&nested, false, 1.0), vec![1, 3, 2, 4]);
         // Row[Column[1, 2], 3]: a side-by-side root reads columns first.
         let row = [
             (1, r(0.0, 0.0, 100.0, 50.0)),
             (2, r(0.0, 50.0, 100.0, 50.0)),
             (3, r(100.0, 0.0, 100.0, 100.0)),
         ];
-        assert_eq!(reading_order(&row, true), vec![1, 2, 3]);
-        assert_eq!(reading_order(&row, false), vec![1, 3, 2]);
+        assert_eq!(reading_order(&row, true, 1.0), vec![1, 2, 3]);
+        assert_eq!(reading_order(&row, false, 1.0), vec![1, 3, 2]);
         // Origins within 1 of each other are equal: x decides.
         let near = [(1, r(50.0, 0.0, 50.0, 10.0)), (2, r(0.0, 0.5, 50.0, 10.0))];
-        assert_eq!(reading_order(&near, false), vec![2, 1]);
+        assert_eq!(reading_order(&near, false, 1.0), vec![2, 1]);
+        // iTerm2's margin is 1 point, so on a 2x display 1.5 pixels apart are still equal.
+        let apart = [(1, r(50.0, 0.0, 50.0, 10.0)), (2, r(0.0, 1.5, 50.0, 10.0))];
+        assert_eq!(reading_order(&apart, false, 1.0), vec![1, 2]);
+        assert_eq!(reading_order(&apart, false, 2.0), vec![2, 1]);
         // Equal origins keep input order; one pane and none are fine.
         let same = [(7, r(0.0, 0.0, 9.0, 9.0)), (5, r(0.0, 0.0, 9.0, 9.0))];
-        assert_eq!(reading_order(&same, true), vec![7, 5]);
-        assert_eq!(reading_order(&same[..1], false), vec![7]);
-        assert!(reading_order(&[], false).is_empty());
+        assert_eq!(reading_order(&same, true, 1.0), vec![7, 5]);
+        assert_eq!(reading_order(&same[..1], false, 1.0), vec![7]);
+        assert!(reading_order(&[], false, 1.0).is_empty());
     }
 
     #[test]
@@ -119,7 +123,7 @@ mod tests {
         let rects: Vec<(PaneId, Rect)> = (0..40)
             .map(|i| (i as PaneId, r((40 - i) as f32, i as f32 * 0.9, 5.0, 5.0)))
             .collect();
-        let mut got = reading_order(&rects, false);
+        let mut got = reading_order(&rects, false, 1.0);
         got.sort();
         assert_eq!(got, (0..40).collect::<Vec<PaneId>>());
     }
@@ -176,6 +180,6 @@ mod tests {
         // A top-down merge sort (split at n/2, left wins ties) gives A, C, B; an insertion
         // sort would give B, A, C.
         let rects = [(1, r(5.0, 0.0, 10.0, 10.0)), (2, r(3.0, 0.9, 10.0, 10.0)), (3, r(1.0, 1.8, 10.0, 10.0))];
-        assert_eq!(reading_order(&rects, false), vec![1, 3, 2]);
+        assert_eq!(reading_order(&rects, false, 1.0), vec![1, 3, 2]);
     }
 }

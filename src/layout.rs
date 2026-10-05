@@ -373,13 +373,18 @@ impl Layout {
     /// Caps `pane` at `width` when its direct parent is a side by side split and the pane is
     /// wider (`TAB:6596-6640`: only a session view that is a direct child of a vertical split is
     /// pinned). The ratio clamps like any other (0.1 to 0.9). True when the split changed.
-    pub fn pin_width(&mut self, pane: PaneId, width: f32, area: Rect, gap: f32) -> bool {
-        fn go(n: &mut Node, r: Rect, pane: PaneId, width: f32, gap: f32) -> bool {
+    pub fn pin_width(&mut self, pane: PaneId, width: f32, area: Rect, gap: f32, pinned: &dyn Fn(PaneId) -> bool) -> bool {
+        fn go(n: &mut Node, r: Rect, pane: PaneId, width: f32, gap: f32, pinned: &dyn Fn(PaneId) -> bool) -> bool {
             let Node::Split { axis, ratio, a, b } = n else { return false };
             let (ra, rb, _) = split_rect(r, *axis, *ratio, gap);
             let direct_a = matches!(**a, Node::Leaf(p) if p == pane);
             let direct_b = matches!(**b, Node::Leaf(p) if p == pane);
             if (direct_a || direct_b) && *axis == Axis::Row {
+                // `adjustSplitSubviewSizesForPinnedSizes:` (`PTYTab.m:6862-6875`) returns early
+                // when every session view of the split is pinned.
+                if matches!((&**a, &**b), (Node::Leaf(x), Node::Leaf(y)) if pinned(*x) && pinned(*y)) {
+                    return false;
+                }
                 let now = if direct_a { ra.w } else { rb.w };
                 if now <= width {
                     return false;
@@ -393,9 +398,9 @@ impl Layout {
                 *ratio = ((first + 0.01) / room).clamp(0.1, 0.9);
                 return true;
             }
-            go(a, ra, pane, width, gap) || go(b, rb, pane, width, gap)
+            go(a, ra, pane, width, gap, pinned) || go(b, rb, pane, width, gap, pinned)
         }
-        go(&mut self.root, area, pane, width, gap)
+        go(&mut self.root, area, pane, width, gap, pinned)
     }
 
     /// The panes B in `from`'s projection looking `dir` (`sessionsInProjectionOfSession:`,
@@ -766,19 +771,25 @@ mod tests {
         let row = || Layout::from_tree(Tree::Split { axis: Axis::Row, ratio: 0.5, a: leaf(1), b: leaf(2) });
         let width = |l: &Layout, id: PaneId| l.rects(area, 0.0).iter().find(|(p, _)| *p == id).unwrap().1.w;
         let mut l = row();
-        assert!(l.pin_width(1, 120.0, area, 0.0));
+        assert!(l.pin_width(1, 120.0, area, 0.0, &|_| false));
         assert_eq!(width(&l, 1), 120.0);
         let mut l = row();
-        assert!(l.pin_width(2, 100.0, area, 0.0));
+        assert!(l.pin_width(2, 100.0, area, 0.0, &|_| false));
         assert_eq!(width(&l, 2), 100.0);
         let mut l = row();
-        assert!(!l.pin_width(1, 300.0, area, 0.0), "a pin only caps");
+        assert!(!l.pin_width(1, 300.0, area, 0.0, &|_| false), "a pin only caps");
         assert_eq!(width(&l, 1), 200.0);
         let mut l = Layout::from_tree(Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(1), b: leaf(2) });
-        assert!(!l.pin_width(1, 120.0, area, 0.0));
+        assert!(!l.pin_width(1, 120.0, area, 0.0, &|_| false));
         let nested = Tree::Split { axis: Axis::Row, ratio: 0.5, a: leaf(1), b: Box::new(Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(2), b: leaf(3) }) };
         let mut l = Layout::from_tree(nested.clone());
-        assert!(!l.pin_width(2, 100.0, area, 0.0), "its direct parent is a Column split");
+        assert!(!l.pin_width(2, 100.0, area, 0.0, &|_| false), "its direct parent is a Column split");
+        // PTYTab.m:6862-6875: a side by side split whose panes are all pinned is left alone.
+        let mut l = row();
+        assert!(!l.pin_width(1, 120.0, area, 0.0, &|_| true), "every pane pinned: skipped");
+        assert_eq!(width(&l, 1), 200.0);
+        assert!(l.pin_width(1, 120.0, area, 0.0, &|p| p == 1), "only the pinned one: capped");
+        assert_eq!(width(&l, 1), 120.0);
         assert!(has_row_ancestor(&nested, 3));
         assert!(!has_row_ancestor(&Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(1), b: leaf(2) }, 1));
     }

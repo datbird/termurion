@@ -244,7 +244,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. I
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Dimming affects only text, not background | DimOnlyText | Restricts the inactive-pane dimming effect to text, leaving the background color undimmed. | have | Milestone 13i: on the Appearance pane, Dimming section. Text and non-default backgrounds dim toward the default background's brightness; the default background stays and the gray quad is not drawn. Selection, match and cursor colors are not dimmed. |
+| Dimming affects only text, not background | DimOnlyText | Restricts the inactive-pane dimming effect to text, leaving the background color undimmed. | have | Milestone 13i: on the Appearance pane, Dimming section. Text and non-default backgrounds dim toward the default background's brightness; the default background stays and the gray quad is not drawn. Selection, match and cursor colors are not dimmed. The tab bar is not dimmed either, and the Minimal outline gets no boost. |
 | Dimming amount | SplitPaneDimmingAmount | Slider (0.01 to 0.6, default 0.4) controlling how strong the inactive-pane/background dimming effect is. | have | Milestone 13i: the real key is SplitPaneDimmingAmount, on the Appearance pane. An inactive pane dims by the amount, an inactive pane of an unfocused window by 1.5 times it (cap 0.9). Colors average toward middle gray in linear light (iTerm2 averages in sRGB). |
 | Dim inactive split panes | DimInactiveSplitPanes | Turns on dimming for split panes that don't have keyboard focus. | have | Milestone 13i: now a key in the schema (default on), so it can be turned off; a broadcast receiver of the focused pane stays lit. |
 

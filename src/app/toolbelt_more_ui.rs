@@ -771,7 +771,7 @@ impl App {
                 let Some(p) = self.panes.get(&id) else { continue };
                 let st = &p.own().tab_status;
                 let generation = p.own().tab_status_gen;
-                let ordinal = ordered.iter().position(|x| *x == id).map_or(0, |i| i + 1);
+                let ordinal = crate::pane_title::ordinal_of(&ordered, id) as usize;
                 rows.push(StatusRow {
                     pane: id,
                     snoozed: self.belt.snoozed.get(&id) == Some(&generation),
@@ -808,6 +808,7 @@ impl App {
     /// modifiers and the patterns.
     pub(super) fn status_extra(&self, h: &mut impl Hasher) {
         for t in &self.tabs {
+            self.ordered_panes(t).hash(h);
             for id in t.layout.panes() {
                 id.hash(h);
                 if let Some(p) = self.panes.get(&id) {

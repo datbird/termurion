@@ -63,7 +63,7 @@ pub(super) fn divider_px(width_pt: f64, scale: f32) -> f32 {
 /// The divider color: a valid `#` color from SplitPaneColor overrides `theme`, the color the
 /// window's decoration control gives (`PTYSplitView.m:110-119`).
 pub(super) fn divider_rgb(custom: &str, theme: crate::palette::Rgb) -> crate::palette::Rgb {
-    crate::hexcolor::parse(custom.trim()).filter(|_| custom.trim().starts_with('#')).unwrap_or(theme)
+    crate::hexcolor::parse(custom).filter(|_| custom.starts_with('#')).unwrap_or(theme)
 }
 
 /// Which order the key picks: reading order with NavigatePanesInReadingOrder, else last use.
@@ -83,7 +83,7 @@ impl App {
     pub(super) fn ordered_panes(&self, tab: &Tab) -> Vec<PaneId> {
         if order_source(self.globals.bool("NavigatePanesInReadingOrder")) == "reading" {
             let side_by_side = matches!(tab.layout.tree(), Tree::Split { axis: Axis::Row, .. });
-            pane_order::reading_order(&tab.layout.rects(self.content_area_for(tab), self.gap()), side_by_side)
+            pane_order::reading_order(&tab.layout.rects(self.content_area_for(tab), self.gap()), side_by_side, self.scale())
         } else {
             pane_order::activity_order(&tab.layout.panes(), &|id| self.panes.get(&id).map_or(0, |p| p.activity))
         }
@@ -294,6 +294,10 @@ mod tests {
         assert_eq!(divider_rgb("", t), t);
         assert_eq!(divider_rgb("ff0000", t), t, "only a # color overrides");
         assert_eq!(divider_rgb("#zzz", t), t);
+        // PTYSplitView.m:112 tests hasPrefix:@"#" on the untrimmed string.
+        assert_eq!(divider_rgb(" #ff0000", t), t, "a leading space is refused");
+        assert_eq!(divider_rgb("#ff0000 ", t), t, "so is a trailing one");
+        assert_eq!(divider_rgb("p3#ff0000", t), t, "p3# is not a # prefix");
     }
 
     #[test]

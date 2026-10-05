@@ -318,11 +318,7 @@ impl App {
             }
             // Lock Pane and the tab-wide items follow Toggle Broadcasting Input (`CMH:671-713`).
             for (label, item) in self.lock_items_for(id) {
-                extra.push((label.into(), match item {
-                    super::pane_lock_ui::LockItem::Pane(on) => CtxItem::LockPane(on),
-                    super::pane_lock_ui::LockItem::All => CtxItem::LockAll,
-                    super::pane_lock_ui::LockItem::UnlockAll => CtxItem::UnlockAll,
-                }));
+                extra.push((label.into(), item));
             }
             pending.get_or_insert_with(|| CtxPending::for_pane(id, Vec::new()));
         }

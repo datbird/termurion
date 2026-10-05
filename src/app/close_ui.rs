@@ -24,7 +24,7 @@ impl App {
                     out.push(reason.to_string());
                 }
             }
-            if p.exited.is_some() {
+            if !super::pane_lock_ui::profile_reasons_apply(p.exited.is_some(), p.locked) {
                 continue;
             }
             let Some(profile) = self.store.get(&p.profile) else { continue };

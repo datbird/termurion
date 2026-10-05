@@ -532,7 +532,7 @@ checked on screen during the build. Every kept quirk is listed in `docs/acceptan
 Milestone 13i built pane navigation (01: 3 rows to have, all from partial; 02: 8 rows to have, 3 from partial, 5 from
 missing; 03: 1 row to have from missing, Lock Split Pane Width). Next Pane, Previous Pane, the pane number shortcut, the title bar
 numbers and the Status tool follow one order: reading order by default (NavigatePanesInReadingOrder), the order last used
-when it is off, with the ninth shortcut always the last pane. Select Pane by direction goes to the neighbor used last and
+when it is off, with the ninth shortcut always the last pane (the Status tool reads the same numbers as the title bars). Select Pane by direction goes to the neighbor used last and
 wraps at the edge (WrapFocus). A new split keeps focus off when it should (FocusNewSplitPaneWithFocusFollowsMouse, and a
 split of a pane that is not active never takes focus) and uses the session's own profile (UseDivorcedProfileToSplit).
 SplitPaneDividerWidth and SplitPaneColor set the dividers, scaled to the screen. Inactive panes dim toward gray by the

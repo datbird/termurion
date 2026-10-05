@@ -2921,7 +2921,7 @@ impl App {
             dark_darkness: g.number("DarkModeInactiveTabDarkness").map_or(0.5, |v| v as f32),
             high_visibility: g.bool("HighVisibility"),
             session_bg,
-            dimming: dimming(g.bool("DimBackgroundWindows"), focused, self.dim_base()),
+            dimming: dimming(g.bool("DimBackgroundWindows"), focused, self.dim_base(), g.bool("DimOnlyText")),
             minimal,
             colored_outline: g.number("ColoredSelectedTabOutlineStrength").map_or(0.5, |v| v as f32),
             colored_text_prominence: g.number("ColoredUnselectedTabTextProminence").map_or(0.5, |v| v as f32),
@@ -2986,8 +2986,7 @@ impl App {
                 Left => r.x <= area.x + 1.0,
                 Right => r.x + r.w >= area.x + area.w - 1.0,
             })
-            .map(|(id, _)| self.pane_dim(tab, id, &bview).amount)
-            .filter(|a| *a > 0.0)
+            .filter_map(|(id, _)| crate::dim::outline_amount(self.pane_dim(tab, id, &bview)))
             .max_by(f32::total_cmp)
     }
 
@@ -3724,6 +3723,7 @@ impl App {
             }
             self.tabs[self.active].zoomed = None;
             self.check_alpha_surfaces();
+            self.apply_width_pins();
             self.relayout();
         }
     }

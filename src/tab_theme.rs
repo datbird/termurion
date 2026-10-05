@@ -456,8 +456,11 @@ pub fn dimmed(c: Rgb, amount: f32) -> Rgb {
 
 /// The dimming amount of a background window (`iTermDimmingAmount`, `PT:10038-10051`): none in the
 /// key window or unless Dim background windows is on, else `dim::amount` of the
-/// `SplitPaneDimmingAmount` (clamped to 0 to 0.9).
-pub fn dimming(dim_background_windows: bool, focused: bool, amount: f32) -> f32 {
+/// `SplitPaneDimmingAmount` (clamped to 0 to 0.9). Dim only text leaves the bar undimmed (`PT:10045`).
+pub fn dimming(dim_background_windows: bool, focused: bool, amount: f32, only_text: bool) -> f32 {
+    if only_text {
+        return 0.0;
+    }
     crate::dim::amount(false, crate::dim::background(dim_background_windows, focused), amount)
 }
 
@@ -835,11 +838,12 @@ mod tests {
         assert_eq!(minimal_outline(white, 0.2), fill(0, 0, 0, 0.2));
         assert_eq!(dimmed(black, 0.4), rgb(51, 51, 51));
         assert_eq!(dimmed(white, 0.0), white);
-        assert_eq!(dimming(true, false, 0.4), 0.4);
-        assert_eq!(dimming(true, true, 0.4), 0.0);
-        assert_eq!(dimming(false, false, 0.4), 0.0);
-        assert_eq!(dimming(true, false, 0.95), 0.9);
-        assert_eq!(dimming(true, false, -1.0), 0.0);
+        assert_eq!(dimming(true, false, 0.4, false), 0.4);
+        assert_eq!(dimming(true, false, 0.4, true), 0.0, "Dim only text leaves the tab bar alone (PT:10045)");
+        assert_eq!(dimming(true, true, 0.4, false), 0.0);
+        assert_eq!(dimming(false, false, 0.4, false), 0.0);
+        assert_eq!(dimming(true, false, 0.95, false), 0.9);
+        assert_eq!(dimming(true, false, -1.0, false), 0.0);
         // A background window's bar is dimmed, and its unselected tabs dimmed once more (`MIN:218-244`).
         let dim = palette(TabStyle::Minimal, &Inputs { dimming: 0.4, ..inputs(false) });
         assert_eq!(dim.bar, rgb(51, 51, 51));

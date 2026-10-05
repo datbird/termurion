@@ -638,6 +638,7 @@ impl App {
             tab.focused = id;
         }
         tab.zoomed = None;
+        self.apply_width_pins();
         self.relayout();
         SplitResult::Made(id)
     }
