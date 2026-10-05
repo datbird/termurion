@@ -226,9 +226,105 @@ pub struct Metrics {
     pub scrolled: usize,
 }
 
-/// A smear of the cursor between two positions (Task 8).
-#[derive(Clone, Debug, Default)]
-pub struct Smear {}
+/// CoreAnimation's easeInEaseOut: the cubic Bezier (0.42, 0) (0.58, 1), solved for x
+/// (`CursorSmearView.swift:62`).
+pub fn ease_in_out_ca(t: f64) -> f64 {
+    if t <= 0.0 {
+        return 0.0;
+    }
+    if t >= 1.0 {
+        return 1.0;
+    }
+    let bez = |a: f64, b: f64, u: f64| 3.0 * (1.0 - u) * (1.0 - u) * u * a + 3.0 * (1.0 - u) * u * u * b + u * u * u;
+    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+    for _ in 0..40 {
+        let mid = (lo + hi) / 2.0;
+        if bez(0.42, 0.58, mid) < t {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    bez(0.0, 1.0, (lo + hi) / 2.0)
+}
+
+/// Whether two cursor rects are at least `min_distance_px` apart, origin to origin
+/// (`CursorSmearView.swift:31`).
+pub fn far_enough(a: Rect, b: Rect, min_distance_px: f32) -> bool {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    dx * dx + dy * dy >= min_distance_px * min_distance_px
+}
+
+/// The smear's three hexagon keyframes (`CursorSmearView.swift:77-110`), by the quadrant of
+/// `b`'s center from `a`'s (y down, `dx >= 0 && dy >= 0` first).
+pub fn smear_keyframes(a: Rect, b: Rect) -> [[(f32, f32); 6]; 3] {
+    let corners = |r: Rect| ((r.x, r.y), (r.x + r.w, r.y), (r.x + r.w, r.y + r.h), (r.x, r.y + r.h));
+    let (a_tl, a_tr, a_br, a_bl) = corners(a);
+    let (b_tl, b_tr, b_br, b_bl) = corners(b);
+    let dx = (b.x + b.w / 2.0) - (a.x + a.w / 2.0);
+    let dy = (b.y + b.h / 2.0) - (a.y + a.h / 2.0);
+    if dx >= 0.0 && dy >= 0.0 {
+        [[a_tl, a_tr, a_tr, a_br, a_bl, a_bl], [a_tl, a_tr, b_tr, b_br, b_bl, a_bl], [b_tl, b_tr, b_tr, b_br, b_bl, b_bl]]
+    } else if dx < 0.0 && dy >= 0.0 {
+        [[a_tr, a_br, a_br, a_bl, a_tl, a_tl], [a_tr, a_br, b_br, b_bl, b_tl, a_tl], [b_tr, b_br, b_br, b_bl, b_tl, b_tl]]
+    } else if dx < 0.0 {
+        [[a_tl, a_tr, a_tr, a_br, a_bl, a_bl], [b_tl, b_tr, a_tr, a_br, a_bl, b_bl], [b_tl, b_tr, b_tr, b_br, b_bl, b_bl]]
+    } else {
+        [[a_bl, a_tl, a_tl, a_tr, a_br, a_br], [a_bl, a_tl, b_tl, b_tr, b_br, a_br], [b_bl, b_tl, b_tl, b_tr, b_br, b_br]]
+    }
+}
+
+/// The hexagon at `progress` (0 to 1) along the keyframes, which sit at 0, 0.5 and 1.
+pub fn smear_at(keys: &[[(f32, f32); 6]; 3], progress: f64) -> [(f32, f32); 6] {
+    let p = progress.clamp(0.0, 1.0);
+    let (from, to, f) = if p < 0.5 { (&keys[0], &keys[1], p * 2.0) } else { (&keys[1], &keys[2], (p - 0.5) * 2.0) };
+    let f = f as f32;
+    let mut out = *from;
+    for i in 0..6 {
+        out[i] = (from[i].0 + (to[i].0 - from[i].0) * f, from[i].1 + (to[i].1 - from[i].1) * f);
+    }
+    out
+}
+
+/// A smear of the cursor between two pixel rects (`CursorSmearView`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Smear {
+    pub keys: [[(f32, f32); 6]; 3],
+    pub start: Instant,
+}
+
+impl Smear {
+    /// The hexagon to fill at `now`: None once `duration` has passed (or when it is not
+    /// positive). The timing is easeInEaseOut.
+    pub fn polygon(&self, now: Instant, duration: Duration) -> Option<[(f32, f32); 6]> {
+        let p = now.saturating_duration_since(self.start).as_secs_f64() / duration.as_secs_f64();
+        if !(p < 1.0) {
+            return None;
+        }
+        Some(smear_at(&self.keys, ease_in_out_ca(p)))
+    }
+}
+
+/// What decides a move's animation: the profile's switches and the advanced limits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MoveRule {
+    pub slide_ok: bool,
+    pub max_cells: i64,
+    pub cell_w: f32,
+    pub smear_ok: bool,
+    pub min_distance: f32,
+}
+
+/// The animation a move starts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Started {
+    Slide(Rect, Rect),
+    Smear(Rect, Rect),
+}
+
+fn inside(r: Rect, visible: Rect) -> bool {
+    r.x >= visible.x && r.y >= visible.y && r.x + r.w <= visible.x + visible.w && r.y + r.h <= visible.y + visible.h
+}
 
 /// What one pane remembers about its cursor from frame to frame.
 #[derive(Clone, Debug, Default)]
@@ -274,9 +370,25 @@ impl Motion {
     /// a previous rect known, sliding allowed and `should_slide`. `last_rect` always becomes
     /// `rect`.
     pub fn moved_to(&mut self, rect: Rect, visible: Rect, slide_ok: bool, max_cells: i64, cell_w: f32, _now: Instant) -> Option<(Rect, Rect)> {
-        let inside = |r: Rect| r.x >= visible.x && r.y >= visible.y && r.x + r.w <= visible.x + visible.w && r.y + r.h <= visible.y + visible.h;
         let prev = self.last_rect.replace(rect)?;
-        (slide_ok && prev != rect && inside(prev) && inside(rect) && should_slide(prev, rect, cell_w, max_cells)).then_some((prev, rect))
+        (slide_ok && prev != rect && inside(prev, visible) && inside(rect, visible) && should_slide(prev, rect, cell_w, max_cells)).then_some((prev, rect))
+    }
+
+    /// Notes the pixel rect and answers the animation the move starts: a slide when it
+    /// qualifies, else a smear when allowed and far enough (`PTYTextView.m:1620-1641`: the
+    /// slide wins when both apply).
+    pub fn classify(&mut self, rect: Rect, visible: Rect, rule: MoveRule) -> Option<Started> {
+        let prev = self.last_rect;
+        if let Some((from, to)) = self.moved_to(rect, visible, rule.slide_ok, rule.max_cells, rule.cell_w, Instant::now()) {
+            return Some(Started::Slide(from, to));
+        }
+        let prev = prev?;
+        (rule.smear_ok && prev != rect && inside(prev, visible) && inside(rect, visible) && far_enough(prev, rect, rule.min_distance)).then_some(Started::Smear(prev, rect))
+    }
+
+    /// Starts a smear; it replaces a running one.
+    pub fn begin_smear(&mut self, from: Rect, to: Rect, now: Instant) {
+        self.smear = Some(Smear { keys: smear_keyframes(from, to), start: now });
     }
 
     /// Starts a slide. One still running hands over where it is drawn now as the start
@@ -520,5 +632,100 @@ mod tests {
         assert_eq!(preset_matching(&FadeTimes { fade_in: 0.2005, ..fast }), Some(2));
         assert_eq!(preset_matching(&FadeTimes { fade_in: 0.202, ..fast }), None);
         assert_eq!(preset_matching(&FadeTimes { in_curve: Curve::Linear, ..fast }), None);
+    }
+
+    #[test]
+    fn ease_in_out_ca_follows_core_animation() {
+        let near = |a: f64, b: f64| assert!((a - b).abs() < 0.0005, "{a} vs {b}");
+        assert_eq!(ease_in_out_ca(0.0), 0.0);
+        assert_eq!(ease_in_out_ca(1.0), 1.0);
+        near(ease_in_out_ca(0.5), 0.5);
+        near(ease_in_out_ca(0.25), 0.1292);
+        near(ease_in_out_ca(0.75), 0.8708);
+        near(ease_in_out_ca(0.1), 0.0197);
+    }
+
+    fn rect(x: f32, y: f32) -> Rect {
+        Rect { x, y, w: 10.0, h: 20.0 }
+    }
+
+    #[test]
+    fn smear_keyframes_follow_iterm2() {
+        let a = rect(0.0, 0.0);
+        let k = smear_keyframes(a, rect(100.0, 200.0));
+        assert_eq!(k[0], [(0.0, 0.0), (10.0, 0.0), (10.0, 0.0), (10.0, 20.0), (0.0, 20.0), (0.0, 20.0)]);
+        assert_eq!(k[1], [(0.0, 0.0), (10.0, 0.0), (110.0, 200.0), (110.0, 220.0), (100.0, 220.0), (0.0, 20.0)]);
+        assert_eq!(k[2], [(100.0, 200.0), (110.0, 200.0), (110.0, 200.0), (110.0, 220.0), (100.0, 220.0), (100.0, 220.0)]);
+        // Up left.
+        let k = smear_keyframes(a, rect(-100.0, -200.0));
+        assert_eq!(k[0], [(0.0, 0.0), (10.0, 0.0), (10.0, 0.0), (10.0, 20.0), (0.0, 20.0), (0.0, 20.0)]);
+        assert_eq!(k[1], [(-100.0, -200.0), (-90.0, -200.0), (10.0, 0.0), (10.0, 20.0), (0.0, 20.0), (-100.0, -180.0)]);
+        assert_eq!(k[2], [(-100.0, -200.0), (-90.0, -200.0), (-90.0, -200.0), (-90.0, -180.0), (-100.0, -180.0), (-100.0, -180.0)]);
+        // Down left: [aTR, aBR, aBR, aBL, aTL, aTL] / [aTR, aBR, bBR, bBL, bTL, aTL] / [bTR, bBR, bBR, bBL, bTL, bTL].
+        let k = smear_keyframes(a, rect(-100.0, 200.0));
+        assert_eq!(k[0], [(10.0, 0.0), (10.0, 20.0), (10.0, 20.0), (0.0, 20.0), (0.0, 0.0), (0.0, 0.0)]);
+        assert_eq!(k[1], [(10.0, 0.0), (10.0, 20.0), (-90.0, 220.0), (-100.0, 220.0), (-100.0, 200.0), (0.0, 0.0)]);
+        assert_eq!(k[2], [(-90.0, 200.0), (-90.0, 220.0), (-90.0, 220.0), (-100.0, 220.0), (-100.0, 200.0), (-100.0, 200.0)]);
+        // Up right: [aBL, aTL, aTL, aTR, aBR, aBR] / [aBL, aTL, bTL, bTR, bBR, aBR] / [bBL, bTL, bTL, bTR, bBR, bBR].
+        let k = smear_keyframes(a, rect(100.0, -200.0));
+        assert_eq!(k[0], [(0.0, 20.0), (0.0, 0.0), (0.0, 0.0), (10.0, 0.0), (10.0, 20.0), (10.0, 20.0)]);
+        assert_eq!(k[1], [(0.0, 20.0), (0.0, 0.0), (100.0, -200.0), (110.0, -200.0), (110.0, -180.0), (10.0, 20.0)]);
+        assert_eq!(k[2], [(100.0, -180.0), (100.0, -200.0), (100.0, -200.0), (110.0, -200.0), (110.0, -180.0), (110.0, -180.0)]);
+        // The path runs through the keyframes at progress 0, 0.5 and 1.
+        let k = smear_keyframes(a, rect(100.0, 200.0));
+        assert_eq!(smear_at(&k, 0.0), k[0]);
+        assert_eq!(smear_at(&k, 0.5), k[1]);
+        assert_eq!(smear_at(&k, 1.0), k[2]);
+        let half = |x: [(f32, f32); 6], y: [(f32, f32); 6]| {
+            let mut o = x;
+            for i in 0..6 {
+                o[i] = ((x[i].0 + y[i].0) / 2.0, (x[i].1 + y[i].1) / 2.0);
+            }
+            o
+        };
+        assert_eq!(smear_at(&k, 0.25), half(k[0], k[1]));
+        assert_eq!(smear_at(&k, 0.75), half(k[1], k[2]));
+    }
+
+    #[test]
+    fn smear_rule_follows_iterm2() {
+        let a = rect(0.0, 0.0);
+        assert!(far_enough(a, rect(150.0, 0.0), 150.0));
+        assert!(!far_enough(a, rect(149.9, 0.0), 150.0));
+        assert!(far_enough(a, rect(90.0, 120.0), 150.0), "the distance is Euclidean");
+        let t0 = Instant::now();
+        let b = rect(100.0, 200.0);
+        let keys = smear_keyframes(a, b);
+        let s = Smear { keys, start: t0 };
+        let d = ms(100);
+        assert_eq!(s.polygon(t0, d), Some(keys[0]));
+        assert_eq!(s.polygon(t0 + ms(50), d), Some(keys[1]));
+        assert_eq!(s.polygon(t0 + ms(100), d), None);
+        assert_eq!(s.polygon(t0, Duration::ZERO), None);
+    }
+
+    #[test]
+    fn motion_starts_a_smear() {
+        let t0 = Instant::now();
+        let visible = Rect { x: 0.0, y: 0.0, w: 1000.0, h: 1000.0 };
+        let rule = MoveRule { slide_ok: true, max_cells: 1, cell_w: 10.0, smear_ok: true, min_distance: 150.0 };
+        let mut m = Motion::default();
+        let a = rect(20.0, 20.0);
+        assert_eq!(m.classify(a, visible, rule), None, "no previous rect");
+        // A one-cell step on a sliding cursor slides, even with the smear enabled.
+        assert_eq!(m.classify(rect(30.0, 20.0), visible, rule), Some(Started::Slide(rect(20.0, 20.0), rect(30.0, 20.0))));
+        // A near move that does not slide does not smear.
+        assert_eq!(m.classify(rect(80.0, 20.0), visible, rule), None);
+        // A far move smears, from the previous rect.
+        assert_eq!(m.classify(rect(400.0, 300.0), visible, rule), Some(Started::Smear(rect(80.0, 20.0), rect(400.0, 300.0))));
+        // Smear off: nothing. A move out of the visible area: nothing.
+        assert_eq!(m.classify(rect(0.0, 0.0), visible, MoveRule { smear_ok: false, ..rule }), None);
+        assert_eq!(m.classify(rect(2000.0, 0.0), visible, rule), None);
+        assert_eq!(m.classify(rect(0.0, 0.0), visible, rule), None, "the previous rect was outside");
+        // A new smear replaces a running one.
+        m.begin_smear(a, rect(400.0, 300.0), t0);
+        let first = m.smear.clone().unwrap();
+        m.begin_smear(rect(400.0, 300.0), a, t0 + ms(30));
+        assert_ne!(m.smear.unwrap(), first);
     }
 }

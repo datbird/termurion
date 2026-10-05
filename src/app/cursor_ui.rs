@@ -26,8 +26,10 @@ impl App {
         let shadow = profile.is_some_and(|p| p.bool("Cursor Shadow"));
         let outline = self.globals.bool("DrawOutlineAroundCursor");
         let offset = self.panes.get(&pane).and_then(|p| p.motion.slide.as_ref()).and_then(|s| s.offset(Instant::now(), self.slide_duration())).unwrap_or((0.0, 0.0));
+        let smear = self.panes.get(&pane).and_then(|p| p.motion.smear.as_ref()).and_then(|s| s.polygon(Instant::now(), self.smear_duration()));
         CursorLook {
             offset,
+            smear,
             boost,
             shadow,
             outline,
@@ -69,36 +71,52 @@ impl App {
         Duration::try_from_secs_f64(self.globals.number("CursorSlideAnimationDuration").unwrap_or(0.05)).unwrap_or(Duration::ZERO)
     }
 
-    /// Keeps frames coming while a slide runs: a frame each `FAST_GAP`, and a last one at rest
-    /// when it ends. Returns the next frame's time, None when no slide runs.
+    /// `CursorSmearAnimationDuration` as a Duration (default 0.1 s).
+    fn smear_duration(&self) -> Duration {
+        Duration::try_from_secs_f64(self.globals.number("CursorSmearAnimationDuration").unwrap_or(0.1)).unwrap_or(Duration::ZERO)
+    }
+
+    /// Keeps frames coming while a slide or smear runs (one clock for both): a frame each
+    /// `FAST_GAP`, and a last one at rest when it ends. Returns the next frame's time, None
+    /// when nothing runs.
     fn tick_slides(&mut self, now: Instant) -> Option<Instant> {
         let duration = self.slide_duration();
+        let smear_duration = self.smear_duration();
         let ids: Vec<PaneId> = self.tabs.get(self.active).map(|t| self.visible(t).into_iter().map(|(id, _)| id).collect()).unwrap_or_default();
         let mut running = false;
         let mut ended = false;
         for id in ids {
             let Some(m) = self.panes.get_mut(&id).map(|p| &mut p.motion) else { continue };
-            let Some(s) = m.slide.as_ref() else { continue };
-            if s.offset(now, duration).is_some() {
-                running = true;
-            } else {
-                m.slide = None;
-                ended = true;
+            if let Some(s) = m.slide.as_ref() {
+                if s.offset(now, duration).is_some() {
+                    running = true;
+                } else {
+                    m.slide = None;
+                    ended = true;
+                }
+            }
+            if let Some(s) = m.smear.as_ref() {
+                if s.polygon(now, smear_duration).is_some() {
+                    running = true;
+                } else {
+                    m.smear = None;
+                    ended = true;
+                }
             }
         }
         if ended {
             self.redraw();
         }
         if !running {
-            self.slide_frame = None;
+            self.anim_frame = None;
             return None;
         }
-        let due = self.slide_frame.unwrap_or(now);
+        let due = self.anim_frame.unwrap_or(now);
         if now >= due {
             self.redraw();
-            self.slide_frame = Some(now + crate::cadence::FAST_GAP);
+            self.anim_frame = Some(now + crate::cadence::FAST_GAP);
         }
-        self.slide_frame
+        self.anim_frame
     }
 
     /// The blink clocks: the smooth blink's, else the on/off blink's.
@@ -184,7 +202,9 @@ impl App {
         let geometry = Geometry::from_globals(&self.globals, scale, base);
         let duration = self.slide_duration();
         let max_cells = self.globals.int("CursorSlideAnimationMaxCells");
+        let min_distance = self.globals.number("CursorAnimationMinDistance").unwrap_or(150.0) as f32 * scale;
         let slide_on = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).is_some_and(|p| p.bool("Cursor Smooth Slide"));
+        let (animate, interactive_only) = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).map_or((false, false), |p| (p.bool("Animate Movement"), p.bool("Animate Movement Only in Interactive Apps")));
         let hide_unfocused = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).is_some_and(|p| p.bool("Cursor Hidden When Unfocused"));
         // A cursor that just moved is solid (the blink restarts), so only a hidden one is not drawn.
         let drawn = !(hide_unfocused && !focused);
@@ -205,8 +225,19 @@ impl App {
         let rect = crate::cursor_look::cursor_rect(&geometry, shape, (inner.x, inner.y), cell, row, col, wide);
         let solid_line = matches!(shape, alacritty_terminal::vte::ansi::CursorShape::Underline | alacritty_terminal::vte::ansi::CursorShape::Beam);
         let slide_ok = slide_on && solid_line && drawn && !key_cursor;
-        if let Some((from, to)) = p.motion.moved_to(rect, inner, slide_ok, max_cells, cell.0, now) {
-            p.motion.begin_slide(from, to, now, duration);
+        // iTerm2 animates only a solid rectangle: a bar, an underline or a focused box (the
+        // blink phase does not matter); a hollow box forgets where it was
+        // (`PTYTextView.m:1600`, `iTermTextDrawingHelper.m:3804`).
+        let solid = drawn && !key_cursor && (solid_line || focused);
+        let smear_ok = solid && animate && (!interactive_only || p.screen.alt_screen());
+        let rule = cursor_anim::MoveRule { slide_ok, max_cells, cell_w: cell.0, smear_ok, min_distance };
+        match p.motion.classify(rect, inner, rule) {
+            Some(cursor_anim::Started::Slide(from, to)) => p.motion.begin_slide(from, to, now, duration),
+            Some(cursor_anim::Started::Smear(from, to)) => p.motion.begin_smear(from, to, now),
+            None => {}
+        }
+        if !solid {
+            p.motion.last_rect = None;
         }
     }
 }

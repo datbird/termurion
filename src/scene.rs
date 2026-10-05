@@ -324,6 +324,33 @@ pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cel
     }
 }
 
+/// Fills a convex polygon with one-pixel horizontal bands (a path renderer is not worth it
+/// for the cursor's smear). Fewer than three points push nothing.
+pub fn fill_polygon(quads: &mut Vec<Quad>, points: &[(f32, f32)], color: [f32; 4]) {
+    if points.len() < 3 {
+        return;
+    }
+    let top = points.iter().map(|p| p.1).fold(f32::INFINITY, f32::min).floor();
+    let bottom = points.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max).ceil();
+    let mut y = top;
+    while y < bottom {
+        let cy = y + 0.5;
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        for i in 0..points.len() {
+            let (p, q) = (points[i], points[(i + 1) % points.len()]);
+            if p.1 != q.1 && cy >= p.1.min(q.1) && cy < p.1.max(q.1) {
+                let x = p.0 + (q.0 - p.0) * (cy - p.1) / (q.1 - p.1);
+                lo = lo.min(x);
+                hi = hi.max(x);
+            }
+        }
+        if hi > lo {
+            quads.push(Quad { rect: Rect { x: lo, y, w: hi - lo, h: 1.0 }, color });
+        }
+        y += 1.0;
+    }
+}
+
 /// Find Cursor: the window dims, except a clear circle of `radius` around `center`.
 pub fn find_cursor(frame: &mut Frame, area: Rect, center: (f32, f32), radius: f32) {
     const BAND: f32 = 2.0;
@@ -645,6 +672,11 @@ pub fn pane_with(
             }
             _ => {}
         }
+    }
+
+    // A smear (`CursorSmearView`) is the cursor color, drawn over the cell, under the dim.
+    if let Some(poly) = look.smear.filter(|_| !key_cursor) {
+        fill_polygon(&mut frame.overlay, &poly, rgba(palette.cursor, 1.0));
     }
 
     // Highlights carry their own dim (the app's gray quad); the preview paths pass none and keep
@@ -4399,6 +4431,37 @@ mod tests {
                 assert_eq!((qb.rect.x, qb.rect.y), (qa.rect.x - 6.0, qa.rect.y + 1.5), "{:?} vs {:?}", qa, qb);
             }
         }
+    }
+
+    #[test]
+    fn a_smear_is_drawn_in_the_cursor_color() {
+        let s = screen(b"ab");
+        let hex = [(20.0, 20.0), (60.0, 20.0), (60.0, 20.0), (60.0, 40.0), (20.0, 40.0), (20.0, 40.0)];
+        let look = CursorLook { smear: Some(hex), ..CursorLook::shown(true) };
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &look);
+        let color = rgba(s.palette.cursor, 1.0);
+        let area: f32 = f.overlay.iter().filter(|q| q.color == color && q.rect.w > 20.0).map(|q| q.rect.w * q.rect.h).sum();
+        assert_eq!(area, 800.0, "the 40 by 20 hexagon is filled");
+        let mut none = Frame::default();
+        pane(&mut none, &s, RECT, CELL, true, &CursorLook::shown(true));
+        assert_eq!(f.overlay.len() > none.overlay.len(), true);
+    }
+
+    #[test]
+    fn polygon_fill_covers_the_shape() {
+        let area = |q: &[Quad]| q.iter().map(|q| q.rect.w * q.rect.h).sum::<f32>();
+        let mut q = Vec::new();
+        fill_polygon(&mut q, &[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)], [1.0; 4]);
+        assert_eq!(area(&q), 100.0);
+        assert!(q.iter().all(|q| q.rect.x >= 0.0 && q.rect.y >= 0.0 && q.rect.x + q.rect.w <= 10.0 && q.rect.y + q.rect.h <= 10.0 && q.color == [1.0; 4]));
+        let mut t = Vec::new();
+        fill_polygon(&mut t, &[(0.0, 0.0), (10.0, 10.0), (0.0, 10.0)], [1.0; 4]);
+        assert!((area(&t) - 50.0).abs() <= 5.0, "{}", area(&t));
+        let mut e = Vec::new();
+        fill_polygon(&mut e, &[], [1.0; 4]);
+        fill_polygon(&mut e, &[(0.0, 0.0), (10.0, 10.0)], [1.0; 4]);
+        assert!(e.is_empty());
     }
 
     #[test]

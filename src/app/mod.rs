@@ -885,8 +885,8 @@ pub struct App {
     blink: crate::cursor_anim::Blink,
     /// The next time the cursor clock needs the loop awake, set by `tick_cursor`.
     cursor_due: Option<Instant>,
-    /// When the running cursor slide next asks for a frame.
-    slide_frame: Option<Instant>,
+    /// When the running cursor slide or smear next asks for a frame.
+    anim_frame: Option<Instant>,
     /// The focused pane's smooth-blink fade, advanced by `tick_cursor`.
     blink_fade: crate::cursor_anim::Fade,
     /// The smooth blink's alpha for the key window's focused pane, stored by `tick_cursor`
@@ -1809,7 +1809,7 @@ pub fn run() {
         profiles_win: None,
         blink: crate::cursor_anim::Blink::new(Instant::now()),
         cursor_due: None,
-        slide_frame: None,
+        anim_frame: None,
         blink_fade: crate::cursor_anim::Fade::default(),
         cursor_alpha: None,
         api_server: None,
