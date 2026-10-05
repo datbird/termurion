@@ -5554,6 +5554,63 @@ mod tests {
         assert_eq!(piece.x, 20.0);
     }
 
+    /// Seam S2 (13m x 13n): a box line Tandem draws takes the cell's color AFTER minimum
+    /// contrast, as text does; a block character is exempt (`contrastIneligible`,
+    /// `iTermAttributedStringBuilder.m:755`) and keeps its own color.
+    #[test]
+    fn box_glyph_follows_minimum_contrast() {
+        // Gray box line and gray full block on the same gray.
+        let gray = rgb(100, 100, 100);
+        let mut s = screen("\x1b[38;2;100;100;100m\x1b[48;2;100;100;100m\u{2500}\u{2588}".as_bytes());
+        with_min_contrast(&mut s, 0.5);
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        let color = |c: char| f.glyphs.iter().find(|g| g.c == c).map(|g| g.color);
+        let adjusted = crate::contrast::apply(gray, gray, 0.5);
+        assert_ne!(adjusted, gray, "the rule moves gray on gray");
+        assert_eq!(color('\u{2500}'), Some(adjusted), "{:?}", f.glyphs);
+        assert_eq!(color('\u{2588}'), Some(gray), "a block keeps its color");
+    }
+
+    /// Seam S4 (13m x 13n): a box glyph on a right-to-left row draws at its VISUAL column, with
+    /// the row's display order, right justification included.
+    #[test]
+    fn box_glyphs_follow_the_display_order() {
+        // ab, space, aleph, box line, bet, gimel: the right-to-left run 3..=6 reverses, so the
+        // box line (logical 4) draws at column 5.
+        let s = screen("ab \u{5d0}\u{2502}\u{5d1}\u{5d2}".as_bytes());
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+        assert_eq!(s.visual_col(0, 4), 5);
+        assert_eq!(f.glyphs.iter().map(|g| (g.c, g.rect.x)).collect::<Vec<_>>(), vec![('\u{2502}', 50.0)]);
+        // A right-to-left paragraph sits at the right edge; its box glyph moves with it.
+        let mut s2 = screen("\u{5d0}\u{2502}\u{5d1}".as_bytes());
+        s2.bidi_rules.detect_direction = true;
+        s2.bidi_rules.right_justify = true;
+        let visual = s2.visual_col(0, 1);
+        assert!(visual > 2, "right-justified: {visual}");
+        let mut f = Frame::default();
+        pane(&mut f, &s2, RECT, CELL, false, &CursorLook::shown(false));
+        assert_eq!(f.glyphs.iter().map(|g| g.rect.x).collect::<Vec<_>>(), vec![visual as f32 * CELL.0]);
+    }
+
+    /// Seam S7 (13m x 13n): a blinking box line blinks with the text, and a cell under a label
+    /// draws no box glyph.
+    #[test]
+    fn blinking_box_glyph_follows_the_phase() {
+        let mut s = screen("\x1b[5m\u{2500}\x1b[0m\u{2502}".as_bytes());
+        s.blink_allowed = true;
+        let draw = |hl: &Highlights| {
+            let mut f = Frame::default();
+            pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(hl), crate::render::DEFAULT_FACE);
+            f.glyphs.iter().map(|g| (g.c, g.rect.x)).collect::<Vec<_>>()
+        };
+        assert_eq!(draw(&Highlights { text_blink_on: true, ..see_through(1.0, false) }), vec![('\u{2500}', 0.0), ('\u{2502}', 10.0)]);
+        assert_eq!(draw(&Highlights { text_blink_on: false, ..see_through(1.0, false) }), vec![('\u{2502}', 10.0)], "the off phase hides the blinking one only");
+        let labels = [(crate::find::Pos { row: 0, col: 1 }, "x".to_string())];
+        assert_eq!(draw(&Highlights { labels: &labels, ..see_through(1.0, false) }), vec![('\u{2500}', 0.0)], "a label hides the glyph under it");
+    }
+
     #[test]
     fn contrast_applies_per_cell() {
         // Gray on the same gray: unreadable until minimum contrast moves it.
