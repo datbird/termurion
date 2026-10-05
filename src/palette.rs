@@ -32,6 +32,8 @@ pub struct Palette {
     /// The harmonized 256-color table (indexes 16 to 255) when "Harmonize 256 Colors" is on;
     /// None keeps the standard cube and grays.
     pub cube: Option<Box<[Rgb; 240]>>,
+    /// The profile's Underline Color when "Use Underline Color" is on (the SGR 58 color wins).
+    pub underline_color: Option<Rgb>,
 }
 
 impl Default for Palette {
@@ -76,6 +78,7 @@ impl Palette {
             link: c("Link Color"),
             min_contrast: p.float_for("Minimum Contrast", dark) as f32,
             cube,
+            underline_color: p.bool_for("Use Underline Color", dark).then(|| c("Underline Color")),
         }
     }
 
@@ -252,5 +255,15 @@ mod tests {
     #[test]
     fn spec_colors_pass_through() {
         assert_eq!(Palette::default().color(Color::Spec(rgb(1, 2, 3))), rgb(1, 2, 3));
+    }
+
+    #[test]
+    fn underline_color_follows_the_profile() {
+        let mut p = crate::profile::Profile::default();
+        p.set("Use Separate Colors for Light and Dark Mode", toml::Value::Boolean(false));
+        assert_eq!(Palette::from_profile(&p, true).underline_color, None);
+        p.set("Use Underline Color", toml::Value::Boolean(true));
+        p.set("Underline Color", crate::profile::color_value(rgb(9, 8, 7)));
+        assert_eq!(Palette::from_profile(&p, true).underline_color, Some(rgb(9, 8, 7)));
     }
 }

@@ -278,17 +278,16 @@ fn prefix_runs(c: &composer::Composer) -> Vec<(Range<usize>, Rgb, bool, Rgb)> {
 }
 
 /// Drops what the pane drew into `overlay` from index `from` on (link dashes, annotation and
-/// hover underlines) inside the rows `cover` spans: the rows under an Auto Composer are skipped.
-/// A quad reaching past them (the dimming over the whole pane) stays.
-pub(super) fn skip_covered(overlay: &mut Vec<scene::Quad>, from: usize, cover: Rect) {
-    let mut i = from;
-    while i < overlay.len() {
-        let r = overlay[i].rect;
-        if r.y >= cover.y - 0.5 && r.y + r.h <= cover.y + cover.h + 0.5 {
-            overlay.remove(i);
-        } else {
-            i += 1;
-        }
+/// hover underlines) and into `underlines` from `underline_from` on (SGR underlines and
+/// strikethrough, link dashes) inside the rows `cover` spans: the rows under an Auto Composer
+/// are skipped. A quad reaching past them (the dimming over the whole pane) stays.
+pub(super) fn skip_covered(overlay: &mut Vec<scene::Quad>, from: usize, underlines: &mut Vec<scene::Quad>, underline_from: usize, strikes: &mut Vec<scene::Quad>, strike_from: usize, cover: Rect) {
+    for (quads, from) in [(overlay, from), (underlines, underline_from), (strikes, strike_from)] {
+        let tail = quads.split_off(from.min(quads.len()));
+        quads.extend(tail.into_iter().filter(|q| {
+            let r = q.rect;
+            !(r.y >= cover.y - 0.5 && r.y + r.h <= cover.y + cover.h + 0.5)
+        }));
     }
 }
 
@@ -2585,15 +2584,33 @@ mod tests {
         assert!(composer_takes(m(true, true, false, false), &text("@"), false));
     }
 
+    /// Final review 4: covering a screen of dotted underline is one pass, not a `remove` per quad.
+    #[test]
+    fn skip_covered_is_linear_in_the_quads() {
+        let q = |y: f32| scene::Quad { rect: Rect { x: 0.0, y, w: 1.0, h: 1.0 }, color: [1.0; 4] };
+        let mut underlines: Vec<scene::Quad> = (0..120_000).map(|i| q(if i % 10 == 0 { 500.0 } else { 45.0 })).collect();
+        let (mut overlay, mut strikes) = (Vec::new(), Vec::new());
+        let t = std::time::Instant::now();
+        skip_covered(&mut overlay, 0, &mut underlines, 0, &mut strikes, 0, Rect { x: 0.0, y: 40.0, w: 100.0, h: 30.0 });
+        assert_eq!(underlines.len(), 12_000);
+        assert!(t.elapsed() < std::time::Duration::from_millis(300), "took {:?}", t.elapsed());
+    }
+
     #[test]
     fn auto_composer_covers_its_rows() {
         // Underlines inside the covered rows go; the dimming over the whole pane and anything
         // outside the rows stay; nothing drawn before `from` is touched.
         let q = |y: f32, h: f32| scene::Quad { rect: Rect { x: 0.0, y, w: 10.0, h }, color: [1.0; 4] };
         let mut overlay = vec![q(45.0, 1.0), q(45.0, 1.0), q(0.0, 200.0), q(10.0, 1.0), q(69.0, 1.0)];
-        skip_covered(&mut overlay, 1, Rect { x: 0.0, y: 40.0, w: 100.0, h: 30.0 });
+        let mut underlines = vec![q(45.0, 1.0), q(45.0, 1.0), q(10.0, 1.0), q(69.0, 1.0)];
+        let mut strikes = vec![q(45.0, 1.0), q(10.0, 1.0)];
+        skip_covered(&mut overlay, 1, &mut underlines, 1, &mut strikes, 0, Rect { x: 0.0, y: 40.0, w: 100.0, h: 30.0 });
+        assert_eq!(strikes.iter().map(|o| o.rect.y).collect::<Vec<_>>(), vec![10.0], "strikethrough under the composer goes too");
         let ys: Vec<(f32, f32)> = overlay.iter().map(|o| (o.rect.y, o.rect.h)).collect();
         assert_eq!(ys, vec![(45.0, 1.0), (0.0, 200.0), (10.0, 1.0)]);
+        // `underlines_skip_an_auto_composer_cover`: the same rule for the strokes.
+        let ys: Vec<f32> = underlines.iter().map(|o| o.rect.y).collect();
+        assert_eq!(ys, vec![45.0, 10.0]);
 
         // The prompt prefix's colors map onto the editor's text, line by line.
         use crate::palette::rgb;

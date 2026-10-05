@@ -58,7 +58,7 @@ pub struct ImageQuad {
     pub repeat: bool,
 }
 
-/// Draw order: `quads`, then `images`, then `rows`, then `overlay`.
+/// Draw order: `quads`, then `images`, then `rows`, then `underlines` and `strikes`, then `overlay`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Frame {
     pub clear: [f32; 4],
@@ -68,6 +68,14 @@ pub struct Frame {
     pub images: Vec<ImageQuad>,
     pub rows: Vec<TextRow>,
     pub overlay: Vec<Quad>,
+    /// Underline and strikethrough strokes: drawn after the text, right before `overlay`, so
+    /// the dimming and the cursor extras lie over them. Trimmed under popups by `cut_quads`.
+    pub underlines: Vec<Quad>,
+    /// Strikethrough strokes: drawn with `underlines`, trimmed and covered like them, but never
+    /// broken around glyph ink (iTerm2's mask leaves strikethrough whole).
+    pub strikes: Vec<Quad>,
+    /// Break `underlines` around the ink of glyphs in their row (`SolidUnderlines` off).
+    pub gap_underlines: bool,
     /// Popup boxes over the terminal: drawn after images, before text.
     pub popups: Vec<Quad>,
 }
@@ -172,6 +180,65 @@ pub fn margins(rect: Rect, grid: Rect) -> Vec<Rect> {
     .collect()
 }
 
+/// The strips of `outer` outside `inner` (the cell grid), each with its color: the top and
+/// bottom across the whole width in `fill.default`, then the left and right of each row in that
+/// row's colors (adjacent rows of one color join). They never overlap.
+fn margin_strips(outer: Rect, inner: Rect, cell_h: f32, fill: &crate::margins::Fill) -> Vec<(Rect, Rgb)> {
+    let mut out = Vec::new();
+    let mut put = |rect: Rect, color: Rgb| {
+        if rect.w > 0.0 && rect.h > 0.0 {
+            out.push((rect, color));
+        }
+    };
+    let (bottom, right) = (inner.y + inner.h, inner.x + inner.w);
+    put(Rect { x: outer.x, y: outer.y, w: outer.w, h: inner.y - outer.y }, fill.default);
+    put(Rect { x: outer.x, y: bottom, w: outer.w, h: outer.y + outer.h - bottom }, fill.default);
+    let rows = if cell_h > 0.0 { (inner.h / cell_h).round() as usize } else { 0 };
+    let mut row = 0;
+    while row < rows {
+        let (l, r) = fill.rows.get(row).copied().unwrap_or((fill.default, fill.default));
+        let mut end = row + 1;
+        while end < rows && fill.rows.get(end).copied().unwrap_or((fill.default, fill.default)) == (l, r) {
+            end += 1;
+        }
+        let y = inner.y + row as f32 * cell_h;
+        // The last row runs to the grid's bottom edge.
+        let h = if end == rows { bottom - y } else { (end - row) as f32 * cell_h };
+        put(Rect { x: outer.x, y, w: inner.x - outer.x, h }, l);
+        put(Rect { x: right, y, w: outer.x + outer.w - right, h }, r);
+        row = end;
+    }
+    out
+}
+
+/// Paints the margins of a pane in an opaque window, under its text: the one painter of every
+/// pane's margins (the alternate screen's colors included). A strip the window's clear color
+/// already shows is not drawn.
+pub fn margin_fill(frame: &mut Frame, outer: Rect, inner: Rect, cell_h: f32, fill: &crate::margins::Fill, image_bg: Option<Rgb>) {
+    for (rect, color) in margin_strips(outer, inner, cell_h, fill) {
+        // A pane with a background image: its veil already shows the pane's color here.
+        if image_bg == Some(color) {
+            continue;
+        }
+        let color = rgba(color, 1.0);
+        if color != frame.clear {
+            frame.quads.push(Quad { rect, color });
+        }
+    }
+}
+
+/// `margin_fill` for a see-through window: each strip is one layer at the pane's `alpha`, or
+/// opaque when it is a non-default color (not `pane_bg`) and `opaque_colors` is on (13g).
+pub fn margin_fill_alpha(frame: &mut Frame, outer: Rect, inner: Rect, cell_h: f32, fill: &crate::margins::Fill, pane_bg: Rgb, alpha: f32, opaque_colors: bool, bg_image: bool) {
+    for (rect, color) in margin_strips(outer, inner, cell_h, fill) {
+        if bg_image && color == pane_bg {
+            continue;
+        }
+        let a = if opaque_colors && color != pane_bg { 1.0 } else { alpha };
+        frame.quads.push(Quad { rect, color: crate::transparency::premultiplied([color.r, color.g, color.b], a) });
+    }
+}
+
 /// A color for the quad shader. The target is sRGB, so the shader works in linear light.
 pub fn rgba(c: Rgb, a: f32) -> [f32; 4] {
     [srgb_to_linear(c.r), srgb_to_linear(c.g), srgb_to_linear(c.b), a]
@@ -180,7 +247,101 @@ pub fn rgba(c: Rgb, a: f32) -> [f32; 4] {
 /// iTerm2 draws no cursor at or below this alpha (`iTermTextDrawingHelper.m:3899-3913`).
 const CURSOR_MIN_ALPHA: f32 = 0.001;
 
+/// What a cell's underline asks for (`underline::style_for`, the SGR 58 color).
+#[derive(Clone, Copy, PartialEq)]
+struct Ul {
+    style: crate::underline::Style,
+    strike: bool,
+    sgr: Option<Rgb>,
+}
+
+/// How the app draws underlines: the two Advanced switches, the face's metrics and the
+/// window's scale. The default derives geometry from the cell (previews, tests).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawPrefs {
+    /// `UnderlineHyperlinks`: OSC 8 links get iTerm2's dashes.
+    pub underline_hyperlinks: bool,
+    /// `SolidUnderlines`: underlines do not break around glyph ink (Task 7).
+    pub solid_underlines: bool,
+    pub metrics: crate::underline::Metrics,
+    pub scale: f32,
+}
+
+impl Default for DrawPrefs {
+    fn default() -> Self {
+        DrawPrefs { underline_hyperlinks: true, solid_underlines: false, metrics: crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 }, scale: 1.0 }
+    }
+}
+
+impl DrawPrefs {
+    /// The prefs the live frame and a screenshot both draw with: the two Advanced switches from
+    /// `globals`, the renderer's face metrics and the window's scale.
+    pub fn from_globals(globals: &crate::globals::Globals, metrics: crate::underline::Metrics, scale: f32) -> DrawPrefs {
+        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale }
+    }
+
+    /// The metrics to draw with in a cell of height `ch`: the face's, or (none measured) an
+    /// underline on the cell's last pixel and a strikethrough at mid cell.
+    fn metrics_for(&self, ch: f32) -> crate::underline::Metrics {
+        if self.metrics.thickness > 0.0 {
+            self.metrics
+        } else {
+            crate::underline::Metrics { underline_offset: 0.0, thickness: 1.0, x_height: ch / 2.0, baseline: ch }
+        }
+    }
+}
+
+/// A stretch of cells on one row with one underline style and color.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Run {
+    first: usize,
+    last: usize,
+    style: crate::underline::Style,
+    strike: bool,
+    color: Rgb,
+}
+
+/// The row's underline runs: adjacent cells with the same style, strikethrough and final
+/// color merge. A pure function of the row (13m splits runs into visual spans).
+/// The color is the cell's SGR 58 color, else the profile's, else its final text color.
+fn underline_runs(cells: &[CellLook], profile: Option<Rgb>) -> Vec<Run> {
+    let mut runs: Vec<Run> = Vec::new();
+    for (col, c) in cells.iter().enumerate() {
+        let Some(ul) = c.ul.filter(|u| u.style != crate::underline::Style::None || u.strike) else { continue };
+        let color = crate::underline::color_for(ul.sgr, profile, c.fg);
+        match runs.last_mut() {
+            Some(r) if r.last + 1 == col && r.style == ul.style && r.strike == ul.strike && r.color == color => r.last = col,
+            _ => runs.push(Run { first: col, last: col, style: ul.style, strike: ul.strike, color }),
+        }
+    }
+    runs
+}
+
+/// Pushes one run's strokes into `frame.underlines`. Dashes are phased by x from the pane's
+/// left edge, so a split run keeps the pattern.
+fn emit_run(frame: &mut Frame, rect: Rect, row: usize, cell: (f32, f32), run: &Run, draw: &DrawPrefs) {
+    let (cw, ch) = cell;
+    let scale = draw.scale.max(1.0);
+    let m = draw.metrics_for(ch);
+    let top = rect.y + row as f32 * ch;
+    let t = crate::underline::thickness(&m, scale);
+    let all = crate::underline::strokes(run.style, top + crate::underline::underline_y(&m, ch, scale), top + ch, t, scale);
+    let (x0, x1) = (run.first as f32 * cw, (run.last + 1) as f32 * cw);
+    for s in &all {
+        for (a, b) in crate::underline::dash_pieces(x0, x1, s) {
+            frame.underlines.push(Quad { rect: Rect { x: rect.x + a, y: s.y, w: b - a, h: s.h }, color: rgba(run.color, 1.0) });
+        }
+    }
+    // Strikethrough never breaks around ink (iTerm2's mask leaves it whole), so it has its own list.
+    if run.strike {
+        let s = crate::underline::snap(crate::underline::Stroke { y: top + crate::underline::strike_y(&m, scale), h: t, on: 0.0, off: 0.0, shift: 0.0 });
+        frame.strikes.push(Quad { rect: Rect { x: rect.x + x0, y: s.y, w: x1 - x0, h: s.h }, color: rgba(run.color, 1.0) });
+    }
+}
+
 struct CellLook {
+    /// The underline and strikethrough the cell asks for.
+    ul: Option<Ul>,
     text: String,
     fg: Rgb,
     bg: Rgb,
@@ -231,7 +392,7 @@ pub struct FindBar<'a> {
 /// Draws one pane's visible screen into `rect`.
 /// `look` says how the cursor is drawn; `look.visible` false hides it (the blink phase).
 pub fn pane(frame: &mut Frame, screen: &Screen, rect: Rect, cell: (f32, f32), focused: bool, look: &CursorLook) {
-    pane_with(frame, screen, rect, cell, focused, look, None)
+    pane_with(frame, screen, rect, cell, focused, look, &DrawPrefs::default(), None)
 }
 
 /// The cursor's screen row and column, and whether it sits on a wide character; None when
@@ -280,11 +441,7 @@ pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) 
     let r = Rect { x: pane.x + pane.w - w, y: pane.y, w, h: ch + 8.0 };
     frame.quads.push(Quad { rect: r, color: rgba(FIND_BAR, 1.0) });
     // The pane's text under the bar is cut off where the bar starts.
-    for row in frame.rows.iter_mut() {
-        if row.y < r.y + r.h && row.y + ch > r.y && row.clip.x + row.clip.w > r.x {
-            row.clip.w = (r.x - row.clip.x).max(0.0);
-        }
-    }
+    cut_rows_from(frame, r, ch);
     // The end of a long query stays in view, with a caret after it.
     let shown: String = {
         let n = bar.query.chars().count();
@@ -346,11 +503,12 @@ pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cel
     let (cw, ch) = cell;
     let (fg, bg) = colors;
     let span = |text: &str| Span { text: text.to_string(), color: fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-    // The pane's text on a row stops where its label's block starts.
+    // The pane's text on a row, and its underlines and strikes, stop where its label's block starts.
     let clip_text = |frame: &mut Frame, y: f32, x: f32| {
         for r in frame.rows.iter_mut().filter(|r| r.y == y && r.clip.x + r.clip.w > x) {
             r.clip.w = (x - r.clip.x).max(0.0);
         }
+        cut_quads(frame, Rect { x, y, w: 1.0e6, h: ch });
     };
     if let Some(col) = column {
         let right = col.x + col.w;
@@ -466,12 +624,12 @@ pub fn pane_with(
     cell: (f32, f32),
     focused: bool,
     look: &CursorLook,
+    draw: &DrawPrefs,
     highlights: Option<&Highlights>,
 ) {
     let history = screen.term().grid().history_size() as i32;
-    // Underlines: OSC 8 links get dashes in their text color; the Win-click target under
-    // the pointer gets a solid line in the link color.
-    let mut dashes: Vec<(usize, usize, Rgb)> = Vec::new();
+    // Underlines and strikethrough come from the cells' flags (`CellLook.ul`); the Win-click
+    // target under the pointer gets a solid line in the link color.
     let mut hovered: Vec<(usize, usize)> = Vec::new();
     let (cw, ch) = cell;
     let palette = &screen.palette;
@@ -516,7 +674,7 @@ pub fn pane_with(
     let orders: Vec<Option<std::sync::Arc<crate::bidi::Order>>> = (0..lines).map(|row| screen.row_order(row as i32 - display_offset).filter(|o| o.lut.len() <= cols)).collect();
     let visual_col = |row: usize, col: usize| orders.get(row).and_then(|o| o.as_ref()).and_then(|o| o.lut.get(col)).map_or(col, |&v| v as usize);
     let cursor = cursor_at.map(|(row, col)| (row, visual_col(row, col)));
-    let blank = || CellLook { text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false, joins: false };
+    let blank = || CellLook { ul: None, text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false, joins: false };
     let mut grid: Vec<Vec<CellLook>> = (0..lines).map(|_| (0..cols).map(|_| blank()).collect()).collect();
     for indexed in content.display_iter {
         let Some(vp) = point_to_viewport(content.display_offset, indexed.point) else { continue };
@@ -561,9 +719,6 @@ pub fn pane_with(
                 hover = true;
                 hovered.push((row, visual_col(row, col)));
             }
-        }
-        if !hover && c.hyperlink().is_some() {
-            dashes.push((row, visual_col(row, col), fg));
         }
         let mut hidden = false;
         if let Some(h) = highlights {
@@ -612,7 +767,16 @@ pub fn pane_with(
                 text.extend(extra);
             }
         }
+        // No underline under a label, a picture or a spacer's missing text; a faint cell's SGR 58
+        // color is faint too (`iTermMetalPerFrameState.m:1613-1620`), nothing else touches it.
+        let (style, strike) = crate::underline::style_for(c.flags, !hover && c.hyperlink().is_some(), draw.underline_hyperlinks);
+        let sgr = c.underline_color().map(|u| {
+            let u = palette.color(u);
+            if c.flags.contains(Flags::DIM) { blend(palette.cell(c.fg, c.bg, c.flags - Flags::DIM).1, u, palette.faint_alpha) } else { u }
+        });
+        let ul = (!hidden && c.image().is_none()).then_some(Ul { style, strike, sgr });
         grid[row][col] = CellLook {
+            ul,
             text,
             fg,
             bg,
@@ -731,6 +895,9 @@ pub fn pane_with(
             }
         }
         flush(&mut piece, frame);
+        for run in underline_runs(cells, palette.underline_color) {
+            emit_run(frame, rect, row, cell, &run, draw);
+        }
     }
 
     if let Some(h) = highlights {
@@ -784,12 +951,6 @@ pub fn pane_with(
                 let span = Span { text: shown, color: rgb(0, 0, 0), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
                 frame.rows.push(TextRow { x: x + cw * 0.5, y, spans: vec![span], clip: rect, scale: 1.0 });
             }
-        }
-    }
-    for (row, col, color) in dashes {
-        for part in [0.0, 0.5] {
-            let r = Rect { x: rect.x + (col as f32 + part) * cw, y: underline_y(row), w: (cw / 4.0).max(1.0), h: 1.0 };
-            frame.overlay.push(Quad { rect: r, color: rgba(color, 1.0) });
         }
     }
     // Right-to-left rows reverse the order the hovered cells were found in.
@@ -2180,6 +2341,7 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
             row.clip.w = 0.0;
         }
     }
+    cut_quads(frame, r);
     frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
     let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
     let text_end = l.buttons.first().map_or(l.close.x, |b| b.x);
@@ -2366,6 +2528,37 @@ pub fn cut_out(frame: &mut Frame, r: Rect, line_h: f32) {
         row.clip = Rect { w: (r.x - c.x).max(0.0), ..c };
     }
     frame.rows.extend(extra);
+    cut_quads(frame, r);
+}
+
+/// A box drawn over the pane's rows: the text of the rows it touches stops where the box
+/// starts, and so do those rows' underline and strikethrough strokes (the rule for every surface
+/// that cuts text: its strokes go with it, or a program's SGR 4 line draws through the surface).
+pub fn cut_rows_from(frame: &mut Frame, r: Rect, line_h: f32) {
+    // The box itself cuts every stroke under it, rows with text or not (a row of underlined
+    // spaces pushes no text row).
+    cut_quads(frame, r);
+    let mut bands: Vec<Rect> = Vec::new();
+    for row in frame.rows.iter_mut() {
+        if row.y < r.y + r.h && row.y + line_h > r.y && row.clip.x + row.clip.w > r.x {
+            row.clip.w = (r.x - row.clip.x).max(0.0);
+            let band = Rect { x: r.x, y: row.y, w: 1.0e6, h: line_h * row.scale.max(1.0) };
+            if !bands.iter().any(|b| b.y == band.y) {
+                bands.push(band);
+            }
+        }
+    }
+    for b in bands {
+        cut_quads(frame, b);
+    }
+}
+
+/// The underline and strikethrough strokes already in the frame stop at `r` (a popup drawn over them): each
+/// keeps the parts of it outside `r`. `cut_out` calls this, so every popup trims both.
+pub fn cut_quads(frame: &mut Frame, r: Rect) {
+    for quads in [&mut frame.underlines, &mut frame.strikes] {
+        *quads = quads.drain(..).flat_map(|q| outside(q.rect, r).into_iter().map(move |rect| Quad { rect, ..q })).collect();
+    }
 }
 
 /// Lays `layer` (a flashing tab bar drawn apart) over what the frame has, at opacity
@@ -2379,10 +2572,13 @@ pub fn lay_over(frame: &mut Frame, layer: Frame, area: Rect, alpha: f32, under: 
     if alpha >= 0.5 {
         cut_out(frame, area, line_h);
         frame.overlay = frame.overlay.drain(..).flat_map(|q| outside(q.rect, area).into_iter().map(move |rect| Quad { rect, ..q })).collect();
+        // `cut_out` already trimmed the underlines.
     }
     let faded = |q: Quad| Quad { color: [q.color[0], q.color[1], q.color[2], q.color[3] * alpha], ..q };
     frame.popups.extend(layer.quads.into_iter().chain(layer.popups).map(faded));
     frame.overlay.extend(layer.overlay.into_iter().map(faded));
+    frame.underlines.extend(layer.underlines.into_iter().map(faded));
+    frame.strikes.extend(layer.strikes.into_iter().map(faded));
     // Pictures keep their full opacity and draw before popups (none in the bar yet).
     frame.images.extend(layer.images);
     frame.rows.extend(layer.rows.into_iter().map(|mut row| {
@@ -3561,11 +3757,7 @@ pub fn toast_rect(text: &str, area: Rect, cell: (f32, f32)) -> Rect {
 pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) -> Rect {
     let r = toast_rect(text, area, cell);
     // Text under the box is cut where the box starts, as under the find bar.
-    for row in frame.rows.iter_mut() {
-        if row.y < r.y + r.h && row.y + cell.1 > r.y && row.clip.x + row.clip.w > r.x {
-            row.clip.w = (r.x - row.clip.x).max(0.0);
-        }
-    }
+    cut_rows_from(frame, r, cell.1);
     frame.quads.push(Quad { rect: r, color: rgba(STAMP_BG, 1.0) });
     let span = Span { text: text.to_string(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
     frame.rows.push(TextRow { x: r.x + 2.0 * cell.0, y: r.y + 6.0, spans: vec![span], clip: r, scale: 1.0 });
@@ -3581,15 +3773,46 @@ pub fn banner_rect(area: Rect, cell: (f32, f32)) -> Rect {
 /// text (in `rows`) draws on top.
 pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) -> Rect {
     let r = banner_rect(area, cell);
+    // The pane's text and strokes under the bar go, as under every surface.
+    cut_out(frame, r, cell.1);
     frame.quads.push(Quad { rect: r, color: rgba(BANNER, 1.0) });
     let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
     frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span], clip: r, scale: 1.0 });
     r
 }
 
+/// The FPS meter (`iTermMetalPerFrameState.m:2531-2552`): `text` right-aligned on row 0 of the
+/// pane's text area, one cell per character, magenta on near black. Its box goes in `popups`
+/// with the pane's text under it cut out, so the meter replaces that row's cells there.
+pub fn fps_meter(frame: &mut Frame, text: &str, pane_inner: Rect, cell: (f32, f32)) {
+    let chars = text.chars().count();
+    let w = (chars as f32 * cell.0).min(pane_inner.w);
+    let r = Rect { x: pane_inner.x + pane_inner.w - w, y: pane_inner.y, w, h: cell.1 };
+    if r.w <= 0.0 {
+        return;
+    }
+    let to_rgb = |c: [f32; 4]| rgb((c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8);
+    cut_out(frame, r, cell.1);
+    frame.popups.push(Quad { rect: r, color: rgba(to_rgb(crate::perf_stats::FPS_BG), 1.0) });
+    let span = Span { text: text.to_string(), color: to_rgb(crate::perf_stats::FPS_FG), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
+    frame.rows.push(TextRow { x: r.x, y: r.y, spans: vec![span], clip: r, scale: 1.0 });
+}
+
 #[cfg(test)]
 mod broadcast_tests {
     use super::*;
+
+    #[test]
+    fn fps_meter_sits_right_aligned_on_row_zero() {
+        let mut f = Frame::default();
+        let pane = Rect { x: 10.0, y: 20.0, w: 400.0, h: 300.0 };
+        let text = " [Frame 7: 63 fps] ";
+        fps_meter(&mut f, text, pane, (8.0, 16.0));
+        let w = text.chars().count() as f32 * 8.0;
+        assert_eq!(f.popups.len(), 1);
+        assert_eq!(f.popups[0].rect, Rect { x: 410.0 - w, y: 20.0, w, h: 16.0 });
+        assert_eq!((f.rows.len(), f.rows[0].spans[0].color), (1, rgb(255, 0, 255)));
+    }
 
     #[test]
     fn stripe_tile_matches_iterm2() {
@@ -4634,7 +4857,7 @@ mod tests {
     fn cell_backgrounds_take_the_alpha() {
         let s = red_selected_default();
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), Some(&see_through(0.7, false)));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(0.7, false)));
         assert_eq!(quad_alpha_at(&f, 5.0, 10.0), vec![0.7], "{:?}", f.quads);
         assert_eq!(quad_alpha_at(&f, 15.0, 10.0), vec![0.7], "{:?}", f.quads);
     }
@@ -4643,7 +4866,7 @@ mod tests {
     fn opaque_colors_keep_cells_solid() {
         let s = red_selected_default();
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), Some(&see_through(0.7, true)));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(0.7, true)));
         assert_eq!(quad_alpha_at(&f, 5.0, 10.0), vec![1.0], "{:?}", f.quads);
         assert_eq!(quad_alpha_at(&f, 15.0, 10.0), vec![1.0], "{:?}", f.quads);
         assert_eq!(quad_alpha_at(&f, 25.0, 10.0), vec![0.7], "{:?}", f.quads);
@@ -4653,7 +4876,7 @@ mod tests {
     fn cursor_stays_opaque() {
         let s = screen(b"");
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), Some(&see_through(0.5, false)));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&see_through(0.5, false)));
         let top = f.quads.iter().rev().find(|q| q.rect.contains(5.0, 10.0)).unwrap();
         assert_eq!(top.color, rgba(s.palette.cursor, 1.0), "{:?}", f.quads);
     }
@@ -4662,7 +4885,7 @@ mod tests {
     fn block_cursor_in_a_see_through_pane_keeps_the_cell_background_alpha() {
         let s = screen(b"");
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), Some(&see_through(0.5, false)));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&see_through(0.5, false)));
         assert_eq!(quad_alpha_at(&f, 5.0, 10.0), vec![0.5, 1.0], "{:?}", f.quads);
     }
 
@@ -4785,7 +5008,7 @@ mod tests {
         let draw = |s: &Screen, on: bool| {
             let mut f = Frame::default();
             let hl = Highlights { text_blink_on: on, ..see_through(1.0, false) };
-            pane_with(&mut f, s, RECT, CELL, false, &CursorLook::shown(false), Some(&hl));
+            pane_with(&mut f, s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
             f
         };
         let red = rgba(s.palette.ansi[1], 1.0);
@@ -4802,7 +5025,7 @@ mod tests {
         assert_eq!(row_text(&f, 0).trim_end(), "ab");
         // No highlights (previews, screenshots): drawn.
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), None);
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None);
         assert_eq!(row_text(&f, 0).trim_end(), "ab");
     }
 
@@ -5003,7 +5226,7 @@ mod tests {
         let mut f = Frame::default();
         let yellow = rgb(200, 200, 0);
         let hl = Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook { boost: 0.5, ..CursorLook::shown(false) }, Some(&hl));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook { boost: 0.5, ..CursorLook::shown(false) }, &DrawPrefs::default(), Some(&hl));
         let quad = |c: Rgb, x: f32| f.quads.iter().any(|q| q.color == rgba(c, 1.0) && q.rect.x == x);
         assert!(quad(rgb(100, 50, 0), 0.0), "selection background halfway to black: {:?}", f.quads);
         assert!(quad(rgb(100, 100, 0), 60.0), "match background halfway to black: {:?}", f.quads);
@@ -5176,8 +5399,79 @@ mod tests {
     fn default_background_is_not_a_cell_quad() {
         let s = screen(b"abc");
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), Some(&see_through(1.0, false)));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(1.0, false)));
         assert!(f.quads.is_empty(), "{:?}", f.quads);
+    }
+
+    /// B1: `margin_fill` is the only margin painter, one layer per pixel: a 0.7 pane's margins
+    /// compose to 0.7, never to 0.91.
+    #[test]
+    fn margin_fill_one_layer_in_a_see_through_pane() {
+        let outer = Rect { x: 0.0, y: 0.0, w: 820.0, h: 500.0 };
+        let inner = Rect { x: 10.0, y: 10.0, w: 800.0, h: 480.0 };
+        let (bg, red) = (rgb(0, 0, 0), rgb(255, 0, 0));
+        let mut fill = crate::margins::fill(&vec![(None, None); 24], bg, true, true);
+        fill.rows[2] = (red, bg);
+        let mut f = Frame::default();
+        margin_fill_alpha(&mut f, outer, inner, 20.0, &fill, bg, 0.7, false, false);
+        let a = |x: f32, y: f32| crate::transparency::composite(&f.quads, x, y)[3];
+        for (x, y) in [(3.0, 3.0), (815.0, 495.0), (3.0, 100.0), (815.0, 100.0), (3.0, 55.0), (409.0, 3.0)] {
+            assert!((a(x, y) - 0.7).abs() < 1e-4, "({x},{y}) {}", a(x, y));
+        }
+        assert!(a(400.0, 200.0) == 0.0, "the grid is not a margin");
+        let area: f32 = f.quads.iter().map(|q| q.rect.w * q.rect.h).sum();
+        assert_eq!(area, 820.0 * 500.0 - 800.0 * 480.0, "no pixel is covered twice");
+        // A non-default side color is opaque only with Only The Default BG Color Uses Transparency.
+        let mut g = Frame::default();
+        margin_fill_alpha(&mut g, outer, inner, 20.0, &fill, bg, 0.7, true, false);
+        assert!((crate::transparency::composite(&g.quads, 3.0, 55.0)[3] - 1.0).abs() < 1e-4);
+        assert!((crate::transparency::composite(&g.quads, 815.0, 55.0)[3] - 0.7).abs() < 1e-4);
+    }
+
+    /// In an opaque window a strip the clear color already shows is not drawn; other colors are.
+    #[test]
+    fn margin_fill_opaque_window_skips_clear_colored_strips() {
+        let outer = Rect { x: 0.0, y: 0.0, w: 820.0, h: 500.0 };
+        let inner = Rect { x: 10.0, y: 10.0, w: 800.0, h: 480.0 };
+        let (bg, red) = (rgb(10, 20, 30), rgb(255, 0, 0));
+        let mut f = Frame { clear: rgba(bg, 1.0), ..Default::default() };
+        margin_fill(&mut f, outer, inner, 20.0, &crate::margins::fill(&vec![(None, None); 24], bg, true, true), None);
+        assert!(f.quads.is_empty(), "{:?}", f.quads);
+        let mut fill = crate::margins::fill(&vec![(None, None); 24], bg, true, true);
+        fill.rows[1] = (red, bg);
+        fill.rows[2] = (red, bg);
+        margin_fill(&mut f, outer, inner, 20.0, &fill, None);
+        assert_eq!(f.quads, vec![Quad { rect: Rect { x: 0.0, y: 30.0, w: 10.0, h: 40.0 }, color: rgba(red, 1.0) }], "two red rows join into one strip");
+        // Another pane's color over the window's clear color is drawn everywhere.
+        let mut g = Frame { clear: rgba(red, 1.0), ..Default::default() };
+        margin_fill(&mut g, outer, inner, 20.0, &crate::margins::fill(&vec![(None, None); 24], bg, true, true), None);
+        let area: f32 = g.quads.iter().map(|q| q.rect.w * q.rect.h).sum();
+        assert_eq!(area, 820.0 * 500.0 - 800.0 * 480.0);
+    }
+
+    /// A pane with a background image: its veil already shows the pane's color in the margins,
+    /// so an opaque strip of that color would hide the image there. Other colors still draw.
+    #[test]
+    fn margin_fill_keeps_a_background_image_visible() {
+        let outer = Rect { x: 0.0, y: 0.0, w: 820.0, h: 500.0 };
+        let inner = Rect { x: 10.0, y: 10.0, w: 800.0, h: 480.0 };
+        let (bg, red) = (rgb(10, 20, 30), rgb(255, 0, 0));
+        let mut f = Frame { clear: rgba(red, 1.0), ..Default::default() };
+        let mut fill = crate::margins::fill(&vec![(None, None); 24], bg, true, true);
+        margin_fill(&mut f, outer, inner, 20.0, &fill, Some(bg));
+        assert!(f.quads.is_empty(), "the veil shows the image: {:?}", f.quads);
+        fill.rows[1] = (red, bg);
+        margin_fill(&mut f, outer, inner, 20.0, &fill, Some(bg));
+        assert_eq!(f.quads.len(), 0, "red equals the clear color here, so nothing either");
+        let mut g = Frame { clear: rgba(rgb(1, 1, 1), 1.0), ..Default::default() };
+        margin_fill(&mut g, outer, inner, 20.0, &fill, Some(bg));
+        assert_eq!(g.quads, vec![Quad { rect: Rect { x: 0.0, y: 30.0, w: 10.0, h: 20.0 }, color: rgba(red, 1.0) }], "a row's own edge color still draws over the image");
+        let mut h = Frame { clear: rgba(rgb(1, 1, 1), 1.0), ..Default::default() };
+        margin_fill(&mut h, outer, inner, 20.0, &fill, None);
+        assert!(h.quads.len() > 1, "without an image the pane color is drawn");
+        let mut a = Frame::default();
+        margin_fill_alpha(&mut a, outer, inner, 20.0, &fill, bg, 0.7, false, true);
+        assert_eq!(a.quads.len(), 1, "see-through: the pane-colored strips are skipped too");
     }
 
     #[test]
@@ -5188,8 +5482,8 @@ mod tests {
         let bg = s.palette.bg;
         let build = |opaque: bool| {
             let mut f = Frame::default();
-            f.quads = crate::transparency::backdrop(pane, pane, [0.0; 4], &[(margins(pane, grid), crate::transparency::premultiplied([bg.r, bg.g, bg.b], 0.7))]);
-            pane_with(&mut f, &s, grid, CELL, false, &CursorLook::shown(false), Some(&see_through(0.7, opaque)));
+            margin_fill_alpha(&mut f, pane, grid, CELL.1, &crate::margins::fill(&[], bg, false, false), bg, 0.7, false, false);
+            pane_with(&mut f, &s, grid, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&see_through(0.7, opaque)));
             f
         };
         let a = |f: &Frame, x: f32, y: f32| crate::transparency::composite(&f.quads, x, y)[3];
@@ -5336,7 +5630,7 @@ mod tests {
         let s = screen(b"a\x1b[41mb\x1b[0m");
         let mut f = Frame::default();
         background(&mut f, pane, &pieces, &img, s.palette.bg, 0.25);
-        pane_with(&mut f, &s, pane, CELL, false, &CursorLook::shown(false), None);
+        pane_with(&mut f, &s, pane, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None);
         assert_eq!(f.backgrounds.len(), 1);
         assert_eq!((f.backgrounds[0].key, f.backgrounds[0].repeat), ((7, 0), false));
         assert_eq!(f.quads[0], Quad { rect: pane, color: rgba(s.palette.bg, 0.75) }, "the default background veils the image");
@@ -5846,7 +6140,7 @@ mod tests {
         let m = crate::find::find_all(&s, "ab").unwrap();
         let mut f = Frame::default();
         let yellow = rgb(0xff, 0xff, 0x00);
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true }));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true }));
         let y = rgba(yellow, 1.0);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 30.0, y: 0.0, w: 20.0, h: 20.0 }), "{:?}", f.quads);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 60.0, y: 0.0, w: 20.0, h: 20.0 }));
@@ -5874,12 +6168,162 @@ mod tests {
 
     #[test]
     fn links_draw_a_dashed_underline() {
+        // iTerm2's 4 on, 3 off dashes at the underline position (R3), only with UnderlineHyperlinks.
         let s = screen(b"\x1b]8;;https://x/\x1b\\ab\x1b]8;;\x1b\\ c");
         let mut f = Frame::default();
         pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false));
-        let under: Vec<Rect> = f.overlay.iter().map(|q| q.rect).filter(|r| r.y == CELL.1 - 1.0 && r.h == 1.0).collect();
-        assert!(under.len() >= 4, "{under:?}");
-        assert!(under.iter().all(|r| r.w < CELL.0 && r.x < 2.0 * CELL.0), "{under:?}");
+        let under: Vec<(f32, f32, f32)> = f.underlines.iter().map(|q| (q.rect.x, q.rect.w, q.rect.y)).collect();
+        assert_eq!(under, vec![(0.0, 4.0, 19.0), (7.0, 4.0, 19.0), (14.0, 4.0, 19.0)]);
+        assert!(f.underlines.iter().all(|q| q.rect.h == 1.0));
+        assert!(f.overlay.is_empty(), "the old overlay dashes are gone");
+        let mut off = Frame::default();
+        pane_with(&mut off, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs { underline_hyperlinks: false, ..DrawPrefs::default() }, None);
+        assert!(off.underlines.is_empty());
+    }
+
+    #[test]
+    fn sgr_underlines_and_strikethrough_draw() {
+        let s = screen(b"\x1b[4mab\x1b[0m \x1b[9mcd\x1b[0m\x1b[4:3mx");
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false));
+        let fg = rgba(s.palette.fg, 1.0);
+        // "ab": one merged solid line; "cd": a struck line at the baseline less half the x-height; "x": two curly lines.
+        assert!(f.underlines.contains(&Quad { rect: Rect { x: 0.0, y: 19.0, w: 20.0, h: 1.0 }, color: fg }), "{:?}", f.underlines);
+        assert!(f.strikes.contains(&Quad { rect: Rect { x: 30.0, y: 15.0, w: 20.0, h: 1.0 }, color: fg }), "{:?}", f.strikes);
+        assert!(f.underlines.iter().all(|q| q.rect.y != 15.0 || q.rect.x < 30.0 || q.rect.x >= 50.0), "strikethrough is not an underline");
+        let curly: Vec<&Quad> = f.underlines.iter().filter(|q| q.rect.x >= 50.0).collect();
+        assert!(!curly.is_empty() && curly.iter().all(|q| q.rect.h == 1.0 && q.rect.w <= 3.0), "{curly:?}");
+        assert!(curly.iter().any(|q| q.rect.y == 19.0) && curly.iter().any(|q| q.rect.y == 18.0));
+    }
+
+    #[test]
+    fn underline_colors_follow_iterm2() {
+        let mut s = screen(b"\x1b[4;58:2::255:0:0ma\x1b[0;4mb\x1b[0;4;58;5;2mc\x1b[59md");
+        let red = rgba(rgb(255, 0, 0), 1.0);
+        let find = |f: &Frame, x: f32| f.underlines.iter().find(|q| q.rect.x == x).map(|q| q.color);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false));
+        assert_eq!(find(&f, 0.0), Some(red), "SGR 58 wins");
+        assert_eq!(find(&f, 10.0), Some(rgba(s.palette.fg, 1.0)), "else the text color");
+        assert_eq!(find(&f, 20.0), Some(rgba(s.palette.ansi[2], 1.0)), "indexed SGR 58");
+        // The profile's Underline Color replaces the text color, never an SGR 58 color.
+        let green = rgb(0, 255, 0);
+        s.palette.underline_color = Some(green);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false));
+        assert_eq!(find(&f, 0.0), Some(red));
+        assert_eq!(find(&f, 10.0), Some(rgba(green, 1.0)));
+        // The default color is the cell's final text color: a selected cell's.
+        let runs = underline_runs(&[CellLook { ul: Some(Ul { style: crate::underline::Style::Single, strike: false, sgr: None }), text: "a".into(), fg: rgb(1, 2, 3), bg: rgb(0, 0, 0), bold: false, italic: false, selected: false, joins: false }], None);
+        assert_eq!(runs[0].color, rgb(1, 2, 3));
+    }
+
+    #[test]
+    fn underlines_are_cut_out_under_popups() {
+        let mut f = Frame::default();
+        let q = |x: f32, w: f32| Quad { rect: Rect { x, y: 19.0, w, h: 1.0 }, color: [1.0; 4] };
+        f.underlines = vec![q(0.0, 100.0), q(200.0, 10.0)];
+        cut_out(&mut f, Rect { x: 40.0, y: 0.0, w: 20.0, h: 40.0 }, 20.0);
+        let xs: Vec<(f32, f32)> = f.underlines.iter().map(|q| (q.rect.x, q.rect.w)).collect();
+        assert_eq!(xs, vec![(0.0, 40.0), (60.0, 40.0), (200.0, 10.0)]);
+    }
+
+    /// One rule for every Tandem surface drawn over pane rows: where it cuts the text it cuts the
+    /// underline and strikethrough strokes too, or a program's SGR 4 or 9 line would draw through it.
+    #[test]
+    fn surfaces_over_rows_cut_the_strokes_too() {
+        let line = format!("\x1b[4;9m{}\x1b[0m\r\n", "x".repeat(80)).repeat(23);
+        let s = screen(line.as_bytes());
+        let hits = |f: &Frame, r: Rect| f.underlines.iter().chain(&f.strikes).any(|q| q.rect.x < r.x + r.w && q.rect.x + q.rect.w > r.x && q.rect.y < r.y + r.h && q.rect.y + q.rect.h > r.y);
+        let fresh = || {
+            let mut f = Frame::default();
+            pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false));
+            assert!(hits(&f, RECT), "the strokes are there before the surface");
+            f
+        };
+        let mut f = fresh();
+        let r = toast(&mut f, "saved", RECT, CELL);
+        assert!(!hits(&f, r), "toast {r:?}");
+        let mut f = fresh();
+        let r = banner(&mut f, "oops", RECT, CELL);
+        assert!(!hits(&f, r), "banner {r:?}");
+        let mut f = fresh();
+        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false };
+        let mode = find_bar(&mut f, &bar, RECT, CELL);
+        let r = Rect { x: mode.x, y: 0.0, w: 10.0, h: CELL.1 };
+        assert!(!hits(&f, r), "find bar {r:?}");
+        let mut f = fresh();
+        let ib = crate::infobar::Bar { id: "x".into(), text: "hi".into(), buttons: vec!["_Yes".into()], important: true };
+        let l = crate::infobar::layout(&ib, RECT, CELL);
+        let r = info_bar(&mut f, &ib, &l, CELL);
+        assert!(!hits(&f, r), "info bar {r:?}");
+        let mut f = fresh();
+        timestamps(&mut f, &[(3, "12:00:00".to_string())], RECT, CELL, None, STAMP_COLORS);
+        let r = Rect { x: 800.0 - 100.0, y: 60.0, w: 100.0, h: CELL.1 };
+        assert!(!hits(&f, r), "timestamp {r:?}");
+    }
+
+    /// A row of underlined and struck SPACES pushes no text row, so a cut that follows the text
+    /// rows alone leaves its strokes through the toast and the find bar: they cut by their rect.
+    #[test]
+    fn toast_and_find_bar_cut_strokes_on_blank_rows() {
+        let line = format!("\x1b[4;9m{}\x1b[0m\r\n", " ".repeat(80)).repeat(23);
+        let s = screen(line.as_bytes());
+        let hits = |f: &Frame, r: Rect| f.underlines.iter().chain(&f.strikes).any(|q| q.rect.x < r.x + r.w && q.rect.x + q.rect.w > r.x && q.rect.y < r.y + r.h && q.rect.y + q.rect.h > r.y);
+        let fresh = || {
+            let mut f = Frame::default();
+            pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false));
+            assert!(f.rows.iter().all(|r| r.spans.iter().all(|sp| sp.text.trim().is_empty())), "no row has visible text");
+            assert!(hits(&f, RECT), "the strokes are there before the surface");
+            f
+        };
+        let mut f = fresh();
+        let r = toast(&mut f, "saved", RECT, CELL);
+        assert!(!hits(&f, r), "toast {r:?}");
+        let mut f = fresh();
+        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false };
+        let mode = find_bar(&mut f, &bar, RECT, CELL);
+        assert!(!hits(&f, Rect { x: mode.x, y: 0.0, w: 10.0, h: CELL.1 }), "find bar");
+    }
+
+    #[test]
+    fn draw_prefs_come_from_the_globals() {
+        let mut g = crate::globals::Globals::empty(std::path::Path::new("none.toml"));
+        let m = crate::underline::Metrics { underline_offset: 2.0, thickness: 1.0, x_height: 8.0, baseline: 16.0 };
+        let on = DrawPrefs::from_globals(&g, m, 2.0);
+        assert!(on.underline_hyperlinks && !on.solid_underlines, "iTerm2's defaults");
+        assert_eq!((on.metrics, on.scale), (m, 2.0));
+        g.set("UnderlineHyperlinks", toml::Value::Boolean(false));
+        g.set("SolidUnderlines", toml::Value::Boolean(true));
+        let off = DrawPrefs::from_globals(&g, m, 1.0);
+        assert!(!off.underline_hyperlinks && off.solid_underlines);
+    }
+
+    #[test]
+    fn strikes_are_trimmed_like_underlines() {
+        let q = |x: f32, w: f32| Quad { rect: Rect { x, y: 15.0, w, h: 1.0 }, color: [1.0; 4] };
+        let mut f = Frame::default();
+        f.strikes = vec![q(0.0, 100.0)];
+        cut_out(&mut f, Rect { x: 40.0, y: 0.0, w: 20.0, h: 40.0 }, 20.0);
+        let xs: Vec<(f32, f32)> = f.strikes.iter().map(|q| (q.rect.x, q.rect.w)).collect();
+        assert_eq!(xs, vec![(0.0, 40.0), (60.0, 40.0)]);
+        let mut layer = Frame::default();
+        layer.strikes.push(q(0.0, 10.0));
+        lay_over(&mut f, layer, Rect { x: 0.0, y: 100.0, w: 10.0, h: 10.0 }, 1.0, rgb(0, 0, 0), 16.0);
+        assert_eq!(f.strikes.len(), 3, "the bar's own strike comes");
+    }
+
+    #[test]
+    fn lay_over_clips_underlines() {
+        let bar = Rect { x: 0.0, y: 0.0, w: 100.0, h: 20.0 };
+        let mut f = Frame::default();
+        f.underlines.push(Quad { rect: Rect { x: 0.0, y: 10.0, w: 50.0, h: 1.0 }, color: [1.0; 4] });
+        f.underlines.push(Quad { rect: Rect { x: 0.0, y: 30.0, w: 50.0, h: 1.0 }, color: [1.0; 4] });
+        let mut layer = Frame::default();
+        layer.underlines.push(Quad { rect: Rect { x: 0.0, y: 15.0, w: 10.0, h: 1.0 }, color: [1.0, 1.0, 1.0, 1.0] });
+        lay_over(&mut f, layer, bar, 1.0, rgb(0, 0, 0), 16.0);
+        let ys: Vec<f32> = f.underlines.iter().map(|q| q.rect.y).collect();
+        assert_eq!(ys, vec![30.0, 15.0], "the sessions' underline under the bar goes, the bar's own comes");
     }
 
     #[test]
@@ -5889,7 +6333,7 @@ mod tests {
         let link = rgb(0x06, 0x45, 0xad);
         let hover = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
         let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), Some(&hl));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
         let q = f.overlay.iter().find(|q| q.color == rgba(link, 1.0)).unwrap();
         assert_eq!(q.rect, Rect { x: 40.0, y: CELL.1 - 1.0, w: 40.0, h: 1.0 });
         let x = f.rows.iter().flat_map(|r| &r.spans).find(|sp| sp.text.starts_with("x.rs")).unwrap();
@@ -5912,7 +6356,7 @@ mod tests {
         // A find match over logical 3..4 is one run at visual 3..4.
         let m = [crate::find::Match { start: at(3), end: at(4) }];
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), Some(&hl_with(&m, &[], &[])));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl_with(&m, &[], &[])));
         let yellow: Vec<Rect> = f.quads.iter().filter(|q| q.color == rgba(rgb(0xff, 0xff, 0), 1.0)).map(|q| q.rect).collect();
         assert_eq!(yellow, vec![Rect { x: 30.0, y: 0.0, w: 20.0, h: 20.0 }]);
         // A selection of logical column 3 shades visual column 4.
@@ -5931,18 +6375,18 @@ mod tests {
         // A two-character label over logical 3..5 sits where its cells are, at visual 3.
         let labels = [(at(3), "12".to_string())];
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), Some(&hl_with(&[], &labels, &[])));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl_with(&[], &labels, &[])));
         let tag = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "12")).unwrap();
         assert_eq!(tag.x, 30.0);
         // A one-character label over the aleph sits at its visual column 4.
         let labels = [(at(3), "A".to_string())];
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), Some(&hl_with(&[], &labels, &[])));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl_with(&[], &labels, &[])));
         assert_eq!(f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "A")).unwrap().x, 40.0);
         // A note over logical 3 underlines visual 4; over logical 0..3 it is two pieces.
         let notes = [(crate::find::Match { start: at(3), end: at(3) }, None), (crate::find::Match { start: at(0), end: at(3) }, None)];
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), Some(&hl_with(&[], &[], &notes)));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl_with(&[], &[], &notes)));
         let y = CELL.1 - 3.0;
         let lines: Vec<(f32, f32)> = f.overlay.iter().filter(|q| q.color == rgba(NOTE, 1.0) && q.rect.y == y).map(|q| (q.rect.x, q.rect.w)).collect();
         assert_eq!(lines, vec![(40.0, 10.0), (0.0, 30.0), (40.0, 10.0)], "{lines:?}");
@@ -5965,7 +6409,7 @@ mod tests {
         let mut f = Frame::default();
         let labels = [(crate::find::Pos { row: 0, col: 4 }, "1".to_string())];
         let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &labels, notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), Some(&hl));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
         let texts: Vec<String> = f.rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
         assert!(texts.iter().any(|t| t.starts_with("see  ttps")), "{texts:?}");
         let tag = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "1")).unwrap();
@@ -5997,7 +6441,7 @@ mod tests {
         let m = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
         let notes = [(m, Some("a file".to_string()))];
         let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), Some(&hl));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
         assert!(f.overlay.iter().any(|q| q.color == rgba(NOTE, 1.0) && q.rect == Rect { x: 40.0, y: CELL.1 - 3.0, w: 40.0, h: 1.0 }), "{:?}", f.overlay);
         assert!(f.rows.iter().any(|r| r.spans.iter().any(|s| s.text == "a file")));
     }
@@ -6102,7 +6546,7 @@ mod tests {
         let notes = [(m, Some("n".to_string()))];
         let rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 80.0 };
         let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
-        pane_with(&mut f, &s, rect, CELL, true, &CursorLook::shown(false), Some(&hl));
+        pane_with(&mut f, &s, rect, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl));
         assert!(f.overlay.iter().all(|q| q.rect.x + q.rect.w <= rect.w + 0.01 && q.rect.y + q.rect.h <= rect.h + 0.01), "{:?}", f.overlay);
         assert!(f.overlay.len() < 50);
     }
@@ -6188,7 +6632,7 @@ mod tests {
         let s = screen(b"ab");
         let hl = Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::NONE, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), Some(&hl));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl));
         assert!(!f.overlay.iter().any(|q| q.rect == RECT), "the key pane of a background window keeps its brightness");
         assert!(!f.quads.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0)), "its cursor is hollow");
     }
@@ -6200,18 +6644,18 @@ mod tests {
         let whole = |f: &Frame| f.overlay.iter().any(|q| q.rect == RECT);
         // The render loop lays the gray quad over the whole pane; pane_with draws none with highlights.
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), Some(&hl(crate::dim::Dim::NONE)));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(crate::dim::Dim::NONE)));
         assert!(!whole(&f));
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), Some(&hl(crate::dim::Dim { amount: 0.4, only_text: false })));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(crate::dim::Dim { amount: 0.4, only_text: false })));
         assert!(!whole(&f), "the app draws the gray quad, not pane_with");
         // Dim Only Text: no quad, the text itself carries the dimmed color.
         let first = |f: &Frame| f.rows.iter().flat_map(|r| r.spans.iter()).find(|sp| sp.text.contains('a')).map(|sp| sp.color);
         let mut plain = Frame::default();
-        pane_with(&mut plain, &s, RECT, CELL, false, &CursorLook::shown(true), Some(&hl(crate::dim::Dim::NONE)));
+        pane_with(&mut plain, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(crate::dim::Dim::NONE)));
         let only_text = crate::dim::Dim { amount: 0.4, only_text: true };
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), Some(&hl(only_text)));
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(only_text)));
         assert!(!whole(&f));
         let fg = s.palette.fg;
         assert_eq!(first(&plain), Some(fg));
@@ -6219,10 +6663,10 @@ mod tests {
         assert_ne!(first(&f), first(&plain));
         // No highlights and not focused: today's quad (the screenshot path).
         let mut g = Frame::default();
-        pane_with(&mut g, &s, RECT, CELL, false, &CursorLook::shown(true), None);
+        pane_with(&mut g, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), None);
         assert!(g.overlay.iter().any(|q| q.rect == RECT && q.color == rgba(s.palette.bg, 0.4)));
         let mut g = Frame::default();
-        pane_with(&mut g, &s, RECT, CELL, true, &CursorLook::shown(true), None);
+        pane_with(&mut g, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), None);
         assert!(!whole(&g));
     }
 
@@ -6234,27 +6678,27 @@ mod tests {
         let mut s = screen(b"ab");
         s.palette.bg = rgb(0, 0, 0);
         let mut f = Frame::default();
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), Some(&hl(true)));
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(true)));
         let row = key_row(&f).expect("the key is drawn");
         assert_eq!((row.clip.x, row.clip.y), (20.0, 0.0), "in the cursor's cell");
         assert_eq!(row.spans[0].color, rgb(0xff, 0xff, 0xff), "light on a dark background");
         assert!(!f.quads.iter().chain(&f.overlay).any(|q| q.color == rgba(s.palette.cursor, 1.0)), "no cursor shape");
         s.palette.bg = rgb(0xff, 0xff, 0xff);
         let mut light = Frame::default();
-        pane_with(&mut light, &s, RECT, CELL, true, &CursorLook::shown(true), Some(&hl(true)));
+        pane_with(&mut light, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(true)));
         assert_eq!(key_row(&light).map(|r| r.spans[0].color), Some(rgb(0, 0, 0)), "dark on a light background");
         let mut blink = Frame::default();
-        pane_with(&mut blink, &s, RECT, CELL, true, &CursorLook::shown(false), Some(&hl(true)));
+        pane_with(&mut blink, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl(true)));
         assert!(key_row(&blink).is_none(), "it blinks with the cursor");
         // Over the cell: the character under the cursor is still drawn.
         let on_c = screen(b"abc\x1b[D");
         let mut over = Frame::default();
-        pane_with(&mut over, &on_c, RECT, CELL, true, &CursorLook::shown(true), Some(&hl(true)));
+        pane_with(&mut over, &on_c, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(true)));
         assert!(key_row(&over).is_some_and(|r| r.clip.x == 20.0));
         assert_eq!(row_text(&over, 0).trim_end(), "abc", "the key does not blank the cell");
         let s = screen(b"ab");
         let mut plain = Frame::default();
-        pane_with(&mut plain, &s, RECT, CELL, true, &CursorLook::shown(true), Some(&hl(false)));
+        pane_with(&mut plain, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl(false)));
         assert!(key_row(&plain).is_none());
         assert!(plain.quads.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0)), "the cursor otherwise");
     }

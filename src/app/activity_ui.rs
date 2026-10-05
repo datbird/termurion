@@ -6,6 +6,33 @@ use std::time::{Duration, Instant};
 use super::*;
 use crate::activity::ActivityEvent;
 
+/// What a decision asks of the display (13l: the one place that says when output, a pump or
+/// the activity tick may draw). Nothing here draws at once: input, the mouse, resizes and the
+/// cursor do that on their own paths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Draw {
+    None,
+    Paced,
+}
+
+/// Output on `output_panes` panes, a real tab-bar state change (an indicator that was showing
+/// went away, an idle or new-output event), or a spinner turning: all draw through the pacer;
+/// nothing else draws. An empty pump (no pane got output, nothing changed) never draws.
+pub(super) fn output_draw(output_panes: usize, tab_state_changed: bool, spinning: bool) -> Draw {
+    if output_panes > 0 || tab_state_changed || spinning {
+        Draw::Paced
+    } else {
+        Draw::None
+    }
+}
+
+/// A pane's seen flip changes the tab bar only when its new-output indicator was already
+/// showing before this tick's output: output into a pane being watched is seen in the same
+/// tick and never showed.
+pub(super) fn seen_changed_tab(was_unseen_before_output: bool, looking: bool) -> bool {
+    was_unseen_before_output && looking
+}
+
 impl App {
     /// Whether any of these panes shows the new-output or the idle indicator.
     pub(super) fn activity_icons(&self, panes: &[PaneId]) -> (bool, bool) {
@@ -33,7 +60,11 @@ impl App {
     pub(super) fn tick_activity(&mut self) -> Option<Instant> {
         let now = Instant::now();
         let got: Vec<PaneId> = self.panes.iter_mut().filter_map(|(id, p)| std::mem::take(&mut p.got_output).then_some(*id)).collect();
-        let mut changed = !got.is_empty();
+        // Output alone draws through the pacer (`after_output`), never from here: only a change of
+        // state (seen, an event) draws at once.
+        let mut changed = false;
+        let mut affected: Vec<PaneId> = Vec::new();
+        let was_unseen: Vec<PaneId> = self.activity.iter().filter(|(_, a)| a.unseen()).map(|(id, _)| *id).collect();
         for id in got {
             self.activity.entry(id).or_default().output(now);
         }
@@ -41,7 +72,10 @@ impl App {
         for id in looking {
             if let Some(a) = self.activity.get_mut(&id).filter(|a| a.unseen()) {
                 a.seen();
-                changed = true;
+                if seen_changed_tab(was_unseen.contains(&id), true) {
+                    changed = true;
+                    affected.push(id);
+                }
             }
         }
         self.activity.retain(|id, _| self.panes.contains_key(id));
@@ -51,13 +85,19 @@ impl App {
         }
         let waiting = self.activity.values().any(|a| a.in_burst());
         changed |= !events.is_empty();
+        affected.extend(events.iter().map(|(id, _)| *id));
         for (pane, e) in events {
             self.activity_event(pane, e);
         }
         // A spinner turns at each tick while a session is processing.
         let spinning = !self.globals.bool("HideActivityIndicator") && self.activity.values().any(|a| a.is_processing(now));
-        if changed || spinning {
-            self.redraw();
+        match output_draw(0, changed, spinning) {
+            Draw::None => {}
+            Draw::Paced => {
+                let mut panes: Vec<PaneId> = self.activity.iter().filter(|(_, a)| a.is_processing(now)).map(|(id, _)| *id).collect();
+                panes.extend(affected);
+                self.paced_redraw_state(&panes, now);
+            }
         }
         waiting.then(|| now + Duration::from_millis(500))
     }
@@ -92,7 +132,28 @@ pub(super) fn tab_processing(any_processing: bool, foreground: bool, hide: bool)
 
 #[cfg(test)]
 mod tests {
-    use super::tab_processing;
+    use super::{output_draw, seen_changed_tab, tab_processing, Draw};
+
+    /// 13l review round 2, Critical 1: no source of output alone draws at once. Output (a pty,
+    /// or a tmux or ssh pump that fed a pane), a tab state change and a spinner go through the
+    /// pacer; an empty pump draws nothing.
+    #[test]
+    fn output_sources_draw_through_the_pacer() {
+        assert_eq!(output_draw(1, false, false), Draw::Paced);
+        assert_eq!(output_draw(3, true, true), Draw::Paced);
+        assert_eq!(output_draw(0, true, false), Draw::Paced);
+        assert_eq!(output_draw(0, false, true), Draw::Paced);
+        assert_eq!(output_draw(0, false, false), Draw::None, "a pump that fed no pane draws nothing");
+    }
+
+    /// The focused pane's own output is seen in the tick it arrives and never showed an
+    /// indicator, so it changes nothing in the tab bar; a pane whose indicator was up does.
+    #[test]
+    fn watched_output_does_not_change_the_tab_bar() {
+        assert!(!seen_changed_tab(false, true));
+        assert!(seen_changed_tab(true, true));
+        assert!(!seen_changed_tab(true, false), "not looking: still unseen, nothing flips");
+    }
 
     #[test]
     fn processing_is_apart_from_new_output() {

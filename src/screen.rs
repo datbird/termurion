@@ -11,7 +11,7 @@ use alacritty_terminal::term::{Config, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{ClearMode, CursorShape, CursorStyle, Handler, Processor};
 
 use crate::mouse::{Modes, Tracking};
-use crate::palette::Palette;
+use crate::palette::{Palette, Rgb};
 
 #[derive(Clone)]
 pub struct Listener(Sender<Event>);
@@ -152,6 +152,8 @@ pub struct Screen {
     pub bidi_rules: crate::bidi::Rules,
     /// Display orders by row content (`row_order`); `pane_with` holds `&Screen` and fills it.
     bidi_cache: std::cell::RefCell<std::collections::HashMap<u64, BidiEntry>>,
+    /// When the program hid the cursor (DECTCEM), until it shows it again (Reduce Flicker).
+    pub cursor_hidden_at: Option<std::time::Instant>,
     title: Option<String>,
     /// The profile's Allow Title Setting: whether programs may set the title (OSC 0, 1, 2).
     pub allow_title: bool,
@@ -436,6 +438,7 @@ impl Screen {
             parser: Processor::new(),
             events,
             palette,
+            cursor_hidden_at: None,
             title: None,
             allow_title: true,
             cell_px: (0, 0),
@@ -1427,6 +1430,20 @@ impl Screen {
         })
     }
 
+    /// Each visible row's first and last cell background, None where it is the default
+    /// (`iTermTextDrawingHelper.m:619-647`): the colors the margins of an alternate screen take.
+    pub fn edge_backgrounds(&self) -> Vec<(Option<Rgb>, Option<Rgb>)> {
+        use alacritty_terminal::index::Point;
+        let grid = self.term.grid();
+        let (cols, lines, offset) = (self.term.columns(), self.term.screen_lines(), grid.display_offset() as i32);
+        let edge = |row: usize, col: usize| {
+            let c = &grid[Point::new(Line(row as i32 - offset), Column(col))];
+            let bg = self.palette.cell(c.fg, c.bg, c.flags).1;
+            (bg != self.palette.bg).then_some(bg)
+        };
+        (0..lines).map(|row| (edge(row, 0), edge(row, cols.saturating_sub(1)))).collect()
+    }
+
     pub(crate) fn alt_screen(&self) -> bool {
         self.term.mode().contains(TermMode::ALT_SCREEN)
     }
@@ -1448,6 +1465,12 @@ impl Screen {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32)
         });
         self.parser.advance(&mut self.term, bytes);
+        // DECTCEM: the time the cursor went away (the first, while it stays away).
+        match (self.term.mode().contains(TermMode::SHOW_CURSOR), self.cursor_hidden_at) {
+            (true, Some(_)) => self.cursor_hidden_at = None,
+            (false, None) => self.cursor_hidden_at = Some(std::time::Instant::now()),
+            _ => {}
+        }
         // The alternate screen turns the prompt state machine off (`MS:839-845`).
         let alt = self.term.mode().contains(TermMode::ALT_SCREEN);
         if alt != self.composer_alt {
@@ -1657,6 +1680,21 @@ impl Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The margin colors of an alternate screen come from each row's edge cells.
+    #[test]
+    fn edge_backgrounds_are_the_rows_first_and_last_non_default_cells() {
+        let mut s = Screen::new(10, 4);
+        assert_eq!(s.edge_backgrounds(), vec![(None, None); 4], "a fresh screen is all default");
+        let red = s.palette.color(alacritty_terminal::vte::ansi::Color::Indexed(1));
+        let blue = s.palette.color(alacritty_terminal::vte::ansi::Color::Indexed(4));
+        s.feed(b"\x1b[?1049h\x1b[44m\x1b[2J\x1b[2;1H\x1b[41mX\x1b[0m\x1b[3;1H\x1b[0mY");
+        let e = s.edge_backgrounds();
+        assert_eq!(e.len(), 4);
+        assert_eq!(e[0], (Some(blue), Some(blue)));
+        assert_eq!(e[1], (Some(red), Some(blue)));
+        assert_eq!(e[2], (None, Some(blue)), "a default first cell is None");
+    }
 
     #[test]
     fn blink_flag_follows_sgr() {
@@ -2252,6 +2290,51 @@ mod tests {
         assert_eq!(s.term().cursor_style().shape, Look::default().cursor_shape);
     }
 
+    /// 13l P15: a program's underline style and color are per cell, bounded and reset.
+    #[test]
+    fn underline_state_is_bounded_and_reset() {
+        use alacritty_terminal::term::cell::Flags;
+        let cell = |s: &Screen, col: usize| {
+            let g = s.term().grid();
+            g[alacritty_terminal::index::Point::new(alacritty_terminal::index::Line(0), alacritty_terminal::index::Column(col))].clone()
+        };
+        let mut s = Screen::new(80, 24);
+        // Colon and semicolon forms of SGR 58 and the 4:x styles reach the cells.
+        s.feed(b"\x1b[4:3;58:2::255:0:0mA\x1b[58;2;1;2;3mB\x1b[4:4mC\x1b[4:5mD\x1b[4:2mE\x1b[0mF");
+        assert!(cell(&s, 0).flags.contains(Flags::UNDERCURL));
+        assert_eq!(cell(&s, 0).underline_color(), Some(alacritty_terminal::vte::ansi::Color::Spec(alacritty_terminal::vte::ansi::Rgb { r: 255, g: 0, b: 0 })));
+        assert_eq!(cell(&s, 1).underline_color(), Some(alacritty_terminal::vte::ansi::Color::Spec(alacritty_terminal::vte::ansi::Rgb { r: 1, g: 2, b: 3 })));
+        assert!(cell(&s, 2).flags.contains(Flags::DOTTED_UNDERLINE));
+        assert!(cell(&s, 3).flags.contains(Flags::DASHED_UNDERLINE));
+        assert!(cell(&s, 4).flags.contains(Flags::DOUBLE_UNDERLINE));
+        assert!(!cell(&s, 5).flags.intersects(Flags::ALL_UNDERLINES) && cell(&s, 5).underline_color().is_none(), "SGR 0 clears both");
+        // SGR 59 and 24 clear each on its own.
+        s.feed(b"\r\x1b[4;58;5;9mA\x1b[59mB\x1b[24mC\x1b[0m");
+        assert!(cell(&s, 0).underline_color().is_some());
+        assert!(cell(&s, 1).flags.contains(Flags::UNDERLINE) && cell(&s, 1).underline_color().is_none());
+        assert!(!cell(&s, 2).flags.intersects(Flags::ALL_UNDERLINES));
+        // RIS clears the pen; an erase draws no underline color.
+        s.feed(b"\x1b[4;58;5;9m\x1bc\rX");
+        assert!(!cell(&s, 0).flags.intersects(Flags::ALL_UNDERLINES) && cell(&s, 0).underline_color().is_none());
+        s.feed(b"\x1b[4;58;5;9m\x1b[2J\x1b[H");
+        assert!(cell(&s, 0).underline_color().is_none());
+        // Out of range values and a pseudo-random SGR stream never panic.
+        s.feed(b"\x1b[0m\x1b[58:5:300mA\x1b[58:2:::999mB\x1b[4:9mC\x1b[0m");
+        // Out of range values set no wrong color: A and B carry none, and an unknown 4:n is a Single underline.
+        assert!(cell(&s, 0).underline_color().is_none() && cell(&s, 1).underline_color().is_none());
+        assert!(cell(&s, 2).flags.contains(Flags::UNDERLINE) && !cell(&s, 2).flags.intersects(Flags::UNDERCURL | Flags::DOUBLE_UNDERLINE | Flags::DOTTED_UNDERLINE | Flags::DASHED_UNDERLINE));
+        let mut seed = 12345u32;
+        let mut bytes = Vec::new();
+        for _ in 0..5000 {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            let n = (seed >> 16) % 70;
+            bytes.extend_from_slice(format!("\x1b[{n}m").as_bytes());
+        }
+        s.feed(&bytes);
+        s.feed(b"\x1bc");
+        assert_eq!(s.term().columns(), 80);
+    }
+
     #[test]
     fn exfiltrated_follows_iterm2() {
         let mut s = Screen::new(80, 24);
@@ -2814,6 +2897,19 @@ mod tests {
 
     fn row_text(s: &Screen, l: i32) -> String {
         (0..s.term.columns()).map(|c| s.term.grid()[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string()
+    }
+
+    #[test]
+    fn cursor_hide_is_noticed() {
+        let mut s = Screen::new(20, 4);
+        assert_eq!(s.cursor_hidden_at, None);
+        s.feed(b"\x1b[?25l");
+        let first = s.cursor_hidden_at.expect("hidden");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.feed(b"\x1b[?25l");
+        assert_eq!(s.cursor_hidden_at, Some(first), "hiding twice keeps the first time");
+        s.feed(b"\x1b[?25h");
+        assert_eq!(s.cursor_hidden_at, None);
     }
 
     #[test]

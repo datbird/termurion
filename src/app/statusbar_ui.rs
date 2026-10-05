@@ -347,7 +347,7 @@ impl App {
 
     /// What the current window's terminals are sized for now (see `Room`).
     pub(super) fn room(&self) -> sbl::Room {
-        sbl::Room { area: self.content_area(), panes: self.tabs.iter().flat_map(|t| self.visible(t)).collect() }
+        sbl::Room { area: self.content_area(), panes: self.tabs.iter().flat_map(|t| self.visible(t)).collect(), margins: self.margins() }
     }
 
     /// Lays out again, now, every window whose room changed since its last layout: a bar,

@@ -40,7 +40,7 @@ pub const DONE: &[&str] = &[
     "detachTmux:", "forceDetachTmux:", "newTmuxWindow:", "newTmuxTab:", "toggleTmuxPausePane:", "openDashboard:", "revealCockpit:", "bury:",
     "pasteSelection:", "selectAll:", "clearBuffer:", "clearScrollbackBuffer:", "toggleFullScreenMode:", "toggleFullScreenTabBar:", "toggleUseTransparency:", "toggleDisableTransparencyForActiveWindow:", "toggleLockSplitPaneWidth:",
     "nextTabGroup:", "previousTabGroup:", "addTabToNewGroupAction:", "removeTabFromGroupAction:",
-    "biggerFont:", "smallerFont:", "returnToDefaultSize:|Make Text Normal Size",
+    "copyPerformanceStats:", "gpuRendererAvailability:", "biggerFont:", "smallerFont:", "returnToDefaultSize:|Make Text Normal Size",
     "returnToDefaultSize:|Restore Text and Session Size", "maximizePane:",
     "editCurrentSession:", "reset:", "resetCharset:", "terminalStateReset:",
     "terminalStateToggleAlternateScreen:", "terminalStateToggleFocusReporting:",

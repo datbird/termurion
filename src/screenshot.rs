@@ -262,18 +262,18 @@ mod tests {
         let v = visible(&s);
         let color = scene::rgba(v.palette.cursor, 1.0);
         let mut f = Frame::default();
-        scene::pane_with(&mut f, &v, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), None);
+        scene::pane_with(&mut f, &v, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &scene::DrawPrefs::default(), None);
         assert!(f.quads.iter().any(|q| q.color == color && q.rect.x == 20.0 && q.rect.y == 0.0), "{:?}", f.quads);
         // A hidden cursor is not drawn, nor one below a scrolled-back view.
         let mut hidden = crate::screen::Screen::new(10, 3);
         hidden.feed(b"ab\x1b[?25l");
         let mut f = Frame::default();
-        scene::pane_with(&mut f, &visible(&hidden), rect, cell, true, &crate::cursor_look::CursorLook::shown(true), None);
+        scene::pane_with(&mut f, &visible(&hidden), rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &scene::DrawPrefs::default(), None);
         assert!(!f.quads.iter().any(|q| q.color == color));
         s.feed(b"\r\n1\r\n2\r\n3\r\n4");
         s.term_mut().scroll_display(Scroll::Delta(2));
         let mut f = Frame::default();
-        scene::pane_with(&mut f, &visible(&s), rect, cell, true, &crate::cursor_look::CursorLook::shown(true), None);
+        scene::pane_with(&mut f, &visible(&s), rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &scene::DrawPrefs::default(), None);
         assert!(!f.quads.iter().any(|q| q.color == color));
         // A batch starting below the cursor's row carries no cursor.
         let mut later = slice(&hidden, 1, 2);

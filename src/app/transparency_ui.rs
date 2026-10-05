@@ -241,7 +241,7 @@ impl App {
         }
         match self.gpu.as_ref() {
             Some(g) => init_gpu_shared(window, g),
-            None => init_gpu(window, event_loop),
+            None => init_gpu(window, event_loop, power::chosen_preference(self.globals.bool("preferIntegratedGPU"))),
         }
     }
 
@@ -486,7 +486,7 @@ fn make_alpha_gpu(event_loop: &ActiveEventLoop, window: &Arc<Window>) -> Result<
     let instance = wgpu::Instance::new(desc);
     let adapter = {
         let probe = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(&probe), ..Default::default() })).map_err(|e| e.to_string())?
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: power::chosen(), compatible_surface: Some(&probe), ..Default::default() })).map_err(|e| e.to_string())?
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| e.to_string())?;
     Ok(GpuHandles { instance, adapter, device, queue })

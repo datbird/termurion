@@ -123,13 +123,14 @@ impl App {
         let cell = self.cell();
         let outer = g.window.outer_size();
         let area = self.content_area();
-        let pad = 2.0 * PAD * self.scale();
+        let (side, vert) = self.margins();
+        let (padx, pady) = (2.0 * side, 2.0 * vert);
         Some(Snap {
             cell,
             decoration: (outer.width as f32 - area.w, outer.height as f32 - area.h),
-            margins: (pad, pad),
+            margins: (padx, pady),
             // `grid_size`'s floor: two columns and one row.
-            min: (2.0 * cell.0 + pad, cell.1 + pad),
+            min: (2.0 * cell.0 + padx, cell.1 + pady),
             snap_w,
             snap_h,
         })

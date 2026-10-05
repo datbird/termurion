@@ -258,6 +258,9 @@ impl ImagePipeline {
     }
 }
 
+/// The most glyph placements kept for gap cutting.
+const INK_CACHE_MAX: usize = 16384;
+
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -265,6 +268,9 @@ pub struct Renderer {
     images: ImagePipeline,
     font_system: FontSystem,
     swash: SwashCache,
+    /// Each glyph's ink placement (left, top, width, height) from the swash image, keyed by the
+    /// glyph; `None` for a glyph with no ink. Cleared past `INK_CACHE_MAX`.
+    ink_cache: std::collections::HashMap<glyphon::cosmic_text::CacheKey, Option<(i32, i32, u32, u32)>>,
     atlas: TextAtlas,
     viewport: Viewport,
     text: TextRenderer,
@@ -290,6 +296,8 @@ pub struct Renderer {
     v_spacing: f32,
     font_px: f32,
     pub cell: (f32, f32),
+    /// The primary face's underline numbers (`set_font_px`).
+    ul_metrics: Option<crate::underline::Metrics>,
     /// The font's own cell, without the spacings (`cell_metrics`).
     base_cell: (f32, f32),
     /// The texture format the pipelines draw into.
@@ -318,6 +326,7 @@ impl Renderer {
             images,
             font_system: FontSystem::new(),
             swash: SwashCache::new(),
+            ink_cache: std::collections::HashMap::new(),
             atlas,
             viewport,
             text,
@@ -336,6 +345,7 @@ impl Renderer {
             v_spacing: 1.0,
             font_px,
             cell: (0.0, 0.0),
+            ul_metrics: None,
             base_cell: (0.0, 0.0),
         };
         r.prose_family = if r.has_family("Segoe UI Variable") { "Segoe UI Variable" } else { "Segoe UI" }.to_string();
@@ -357,9 +367,22 @@ impl Renderer {
         b.set_text(&"M".repeat(n), &Attrs::new().family(Family::Name(&self.family)), Shaping::Advanced, None);
         b.shape_until_scroll(&mut self.font_system, false);
         let w = b.layout_runs().next().map(|r| r.line_w / n as f32).filter(|w| *w > 0.0).unwrap_or(px * 0.6);
+        // The primary face's underline numbers at this size (`iTermMetalPerFrameStateConfiguration.m:147-167`).
+        let face = b.layout_runs().next().and_then(|r| r.glyphs.first().map(|g| (r.line_y, g.font_id, g.font_weight)));
+        self.ul_metrics = face.and_then(|(baseline, id, weight)| {
+            let font = self.font_system.get_font(id, weight)?;
+            let m = font.as_swash().metrics(&[]).scale(px);
+            Some(crate::underline::Metrics { underline_offset: m.underline_offset.abs(), thickness: m.stroke_size, x_height: m.x_height, baseline })
+        });
         (self.cell, self.base_cell) = cell_metrics(w, px, self.h_spacing, self.v_spacing);
         self.buffers.clear();
         self.widths.clear();
+    }
+
+    /// The primary face's underline metrics in pixels (all zero when the face did not load, which
+    /// `scene::DrawPrefs` reads as "derive from the cell").
+    pub fn underline_metrics(&mut self) -> crate::underline::Metrics {
+        self.ul_metrics.unwrap_or(crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 })
     }
 
     /// The font's own cell, without the spacings: what iTerm2 calls `cellSizeWithoutSpacing`.
@@ -564,6 +587,49 @@ impl Renderer {
         Ok(out)
     }
 
+    /// `frame.underlines` cut around the ink of the glyphs in their row (`SolidUnderlines` off). Only
+    /// rows that carry a stroke are measured, and each glyph's ink placement is looked up once and
+    /// kept in `ink_cache`, so a steady screen costs a hash lookup per glyph, not a rasterization.
+    fn gapped_underlines(&mut self, frame: &Frame) -> Vec<Quad> {
+        if !frame.gap_underlines || frame.underlines.is_empty() {
+            return frame.underlines.clone();
+        }
+        if self.ink_cache.len() > INK_CACHE_MAX {
+            self.ink_cache.clear();
+        }
+        let ch = self.cell.1;
+        let mut bands = Vec::new();
+        for (slot, row) in self.buffers.iter().zip(&frame.rows) {
+            // A badge is drawn behind the text; iTerm2's mask never sees it.
+            if row.spans.iter().any(|s| s.badge) {
+                continue;
+            }
+            let (top, bottom) = (row.y, row.y + ch * row.scale);
+            let (left, right) = (row.clip.x, row.clip.x + row.clip.w);
+            let holds = |q: &Quad| q.rect.y >= top - 0.5 && q.rect.y + q.rect.h <= bottom + 0.5 && q.rect.x < right && q.rect.x + q.rect.w > left;
+            if !frame.underlines.iter().any(holds) {
+                continue;
+            }
+            let mut inks = Vec::new();
+            for run in slot.0.layout_runs() {
+                let line_y = run.line_y.round() as i32;
+                for g in run.glyphs.iter() {
+                    let p = g.physical((row.x, row.y), 1.0);
+                    let swash = &mut self.swash;
+                    let fonts = &mut self.font_system;
+                    let place = *self.ink_cache.entry(p.cache_key).or_insert_with(|| {
+                        swash.get_image_uncached(fonts, p.cache_key).filter(|i| i.placement.width > 0 && i.placement.height > 0).map(|i| (i.placement.left, i.placement.top, i.placement.width, i.placement.height))
+                    });
+                    if let Some((l, t, w, h)) = place {
+                        inks.push(((p.x + l) as f32, (p.y + line_y - t) as f32, w as f32, h as f32));
+                    }
+                }
+            }
+            crate::underline::merge_band(&mut bands, crate::underline::Band { top, bottom, left, right, inks });
+        }
+        crate::underline::cut_quads_around(&frame.underlines, &bands, 1.0)
+    }
+
     pub fn draw(&mut self, frame: &Frame, view: &wgpu::TextureView, width: u32, height: u32) -> Result<(), String> {
         let (cw, ch) = self.cell;
         let metrics = Metrics::new(self.font_px, ch);
@@ -634,7 +700,10 @@ impl Renderer {
 
         self.queue.write_buffer(&self.quads.uniform, 0, bytemuck::cast_slice(&[width as f32, height as f32, 0.0, 0.0]));
         let under = QuadPipeline::vertices(&frame.quads);
-        let over = QuadPipeline::vertices(&frame.overlay);
+        // Underline strokes lie under the overlay (the dimming, the cursor extras); with gaps on they
+        // break around the ink of the glyphs in their row, strikethrough stays whole.
+        let underlines = self.gapped_underlines(frame);
+        let over = QuadPipeline::vertices(&underlines.iter().chain(&frame.strikes).chain(&frame.overlay).copied().collect::<Vec<_>>());
         let pops = QuadPipeline::vertices(&frame.popups);
         let make = |v: &[f32]| {
             self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -898,6 +967,9 @@ mod tests {
                 scale: 1.0,
             }],
             overlay: vec![],
+            underlines: vec![],
+            strikes: vec![],
+            gap_underlines: false,
             popups: vec![],
             backgrounds: vec![],
         };
@@ -949,6 +1021,9 @@ mod tests {
                 scale: 1.0,
             }],
             overlay: vec![],
+            underlines: vec![],
+            strikes: vec![],
+            gap_underlines: false,
             popups: vec![],
             backgrounds: vec![],
         };
@@ -958,6 +1033,86 @@ mod tests {
         assert_eq!(at(4, 4), &[255, 0, 0]);
         let white = (32..64).flat_map(|x| (0..32).map(move |y| (x, y))).any(|(x, y)| at(x, y)[0] > 200 && at(x, y)[2] > 200);
         assert!(white, "no text pixels drawn");
+    }
+
+    #[test]
+    fn underlines_break_around_glyph_ink() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 24.0);
+        let (cw, ch) = r.cell;
+        // Rows copy out in 256-byte multiples: 64 pixels.
+        let (w, h) = (((cw * 3.0).ceil() as u32 + 2).next_multiple_of(64), ch.ceil() as u32 + 2);
+        let tex = target(&device, w, h);
+        let view = tex.create_view(&Default::default());
+        let y = (ch / 2.0).floor();
+        let red = rgba(rgb(255, 0, 0), 1.0);
+        let frame = |gap: bool| Frame {
+            clear: rgba(rgb(0, 0, 0), 1.0),
+            rows: vec![TextRow {
+                x: 0.0,
+                y: 0.0,
+                spans: vec![Span { text: " \u{2588} ".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false }],
+                clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
+                scale: 1.0,
+            }],
+            underlines: vec![Quad { rect: Rect { x: 0.0, y, w: cw * 3.0, h: 1.0 }, color: red }],
+            strikes: vec![Quad { rect: Rect { x: 0.0, y: y + 2.0, w: cw * 3.0, h: 1.0 }, color: red }],
+            gap_underlines: gap,
+            ..Default::default()
+        };
+        let look = |r: &mut Renderer, f: &Frame| {
+            r.draw(f, &view, w, h).unwrap();
+            let px = read(&device, &queue, &tex, w, h);
+            let at = move |x: f32, y: f32| px[((y as u32 * w + x as u32) * 4) as usize..((y as u32 * w + x as u32) * 4 + 3) as usize].to_vec();
+            (at(cw * 0.5, y), at(cw * 1.5, y), at(cw * 2.5, y), at(cw * 1.5, y + 2.0))
+        };
+        // Gaps on: the block's columns are text, the cells either side carry the line, and the
+        // strikethrough crosses the block whole.
+        let (left, mid, right, strike) = look(&mut r, &frame(true));
+        assert_eq!((left, right), (vec![255, 0, 0], vec![255, 0, 0]));
+        assert_eq!(mid, vec![255, 255, 255], "the underline breaks around the ink");
+        assert_eq!(strike, vec![255, 0, 0], "strikethrough never breaks");
+        // SolidUnderlines: whole.
+        let (_, mid, _, _) = look(&mut r, &frame(false));
+        assert_eq!(mid, vec![255, 0, 0]);
+    }
+
+    /// A stroke gaps around the glyphs of its own line: every piece of the line counts (a
+    /// non-ASCII character splits a line into rows), and a badge's rows, drawn behind the text,
+    /// never cut a pane's underline.
+    #[test]
+    fn underline_gaps_use_the_whole_line_and_never_a_badge() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 24.0);
+        let (cw, ch) = r.cell;
+        let (w, h) = (((cw * 3.0).ceil() as u32 + 2).next_multiple_of(64), ch.ceil() as u32 + 2);
+        let tex = target(&device, w, h);
+        let view = tex.create_view(&Default::default());
+        let y = (ch / 2.0).floor();
+        let red = rgba(rgb(255, 0, 0), 1.0);
+        let clip = Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
+        let span = |text: &str, badge: bool| Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge, toolbelt: false };
+        let row = |x: f32, text: &str, badge: bool| TextRow { x, y: 0.0, spans: vec![span(text, badge)], clip, scale: 1.0 };
+        let frame = |rows: Vec<TextRow>| Frame {
+            clear: rgba(rgb(0, 0, 0), 1.0),
+            rows,
+            underlines: vec![Quad { rect: Rect { x: 0.0, y, w: cw * 3.0, h: 1.0 }, color: red }],
+            gap_underlines: true,
+            ..Default::default()
+        };
+        let mid = |r: &mut Renderer, f: &Frame, col: f32| {
+            r.draw(f, &view, w, h).unwrap();
+            let px = read(&device, &queue, &tex, w, h);
+            let i = ((y as u32 * w + (cw * col) as u32) * 4) as usize;
+            px[i..i + 3].to_vec()
+        };
+        // A blank first piece, then the block two cells in as its own row: the third cell gaps.
+        let f = frame(vec![row(0.0, " ", false), row(cw * 2.0, "\u{2588}", false)]);
+        assert_eq!(mid(&mut r, &f, 2.5), vec![255, 255, 255], "ink in a later piece of the line gaps the stroke");
+        assert_eq!(mid(&mut r, &f, 0.5), vec![255, 0, 0], "the blank cell keeps its line");
+        // A badge row with a full block over the pane's line: the pane's underline stays whole.
+        let f = frame(vec![row(0.0, "\u{2588}\u{2588}\u{2588}", true), row(0.0, " ", false)]);
+        assert_eq!(mid(&mut r, &f, 1.5), vec![255, 0, 0], "badge ink never cuts a pane underline");
     }
 
     fn target(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture {

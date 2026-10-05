@@ -40,6 +40,10 @@ pub fn indicate_non_default() -> bool {
 
 /// The note under General > Experimental's right-to-left checkbox (`XIB:8743`).
 pub const EXPERIMENTAL_NOTE: &str = "This setting also enables ligature support in the GPU renderer.";
+
+/// The banner shown when "Prefer integrated to discrete GPU" changes (`GP:2089`).
+pub const GPU_RESTART: &str = "You must restart Tandem for this change to take effect.";
+
 /// The right-to-left checkbox's tooltip: iTerm2's xib carries this unrelated text on it
 /// (`XIB:8720`), kept as iTerm2 shows it.
 pub const RTL_TOOLTIP: &str = "Buried sessions appear under Session > Buried Sessions. When this setting is enabled, window sizes are restored when attaching to an existing tmux session.";
@@ -729,6 +733,26 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
                 .inner
                 .into()
             }
+            // The margins are drag values; iTerm2 bounds neither (13l). Other Int rows stay as
+            // they were (undrawn or drawn elsewhere): a later milestone gives them a control.
+            Kind::Int if matches!(s.key.as_str(), "TerminalMargin" | "TerminalVMargin") => {
+                ui.horizontal(|ui| {
+                    ui.label(&s.label);
+                    let mut v = g.int(&s.key);
+                    let drag = egui::DragValue::new(&mut v);
+                    let r = ui.add(match (s.min_f64(), s.max_f64()) {
+                        (Some(lo), Some(hi)) => drag.range(lo as i64..=hi as i64),
+                        _ => drag,
+                    });
+                    if r.changed() {
+                        g.set(&s.key, Value::Integer(v));
+                        changed = true;
+                    }
+                    r.rect
+                })
+                .inner
+                .into()
+            }
             _ => None,
         };
         if let Some(rect) = control.filter(|_| indicate_non_default() && !global_is_default(g, s)) {
@@ -1070,7 +1094,14 @@ pub fn sheet_warning(ctx: &egui::Context, g: &mut Globals, w: &mut SheetWarning,
 /// (`GP:2152-2154`), the settings folder only while "Load settings from a custom folder or URL"
 /// is on (`GP:2210-2212`); every other row always.
 pub fn row_enabled(g: &Globals, key: &str) -> bool {
+    row_enabled_with(g, key, crate::power::both_gpu_kinds_known())
+}
+
+/// `row_enabled` with the one fact the settings window cannot read: "Prefer integrated" is live
+/// only when both kinds of GPU exist (`iTermAdvancedGPUSettingsViewController.m:25-34`).
+pub fn row_enabled_with(g: &Globals, key: &str, both_gpu_kinds: bool) -> bool {
     match key {
+        "preferIntegratedGPU" => both_gpu_kinds,
         "API Authentication Method" => g.bool("EnableAPIServer"),
         "CustomScriptsFolder" => g.bool("UseCustomScriptsFolder"),
         crate::remote_prefs::FOLDER_KEY => g.bool(crate::remote_prefs::LOAD_KEY),
@@ -1261,6 +1292,16 @@ pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &m
                 let was_on = g.bool(&s.key);
                 let c = global_control(ui, g, s, enabled);
                 changed |= c;
+                // Preferring the other kind of GPU takes a restart (`GP:2089`); the banner stays for the window.
+                if s.key == "preferIntegratedGPU" {
+                    let id = egui::Id::new("tandem-gpu-restart");
+                    if c {
+                        ui.ctx().data_mut(|d| d.insert_temp(id, true));
+                    }
+                    if ui.ctx().data(|d| d.get_temp::<bool>(id)).unwrap_or(false) {
+                        ui.label(egui::RichText::new(GPU_RESTART).small().weak());
+                    }
+                }
                 if s.key == "Bidi" {
                     ui.label(egui::RichText::new(EXPERIMENTAL_NOTE).small().weak());
                 }
@@ -3140,5 +3181,135 @@ mod tests {
             let drawn = pane.iter().find(|r| r.key == key).unwrap_or_else(|| panic!("{key} not in the pane"));
             assert_eq!((drawn.category, &drawn.kind), (section, &want), "{key}");
         }
+    }
+
+    /// 13l: the Advanced rows for frames and underlines (`AS:563-595`, `AS:479`, `AS:850`): tab, section, kind,
+    /// default, label (the first line of the help) and help, iTerm2's text with "Tandem" for "iTerm2".
+    #[test]
+    fn drawing_rows_follow_iterm2() {
+        use crate::advanced_pane::RowKind;
+        use crate::schema::Kind;
+        let t = Value::Boolean(true);
+        let f = Value::Boolean(false);
+        let rows: Vec<(&str, &str, Kind, Value, &str)> = vec![
+            ("UseAdaptiveFrameRate", "Drawing", Kind::Bool, t.clone(), "Use adaptive framerate.\nWhen throughput is low, the screen will update at 60 frames per second. When throughput is higher, it will drop to a configurable rate (15 fps by default)."),
+            ("DisableAdaptiveFrameRateInInteractiveApps", "Drawing", Kind::Bool, t.clone(), "Disable adaptive framerate in interactive apps.\nTurn off adaptive frame rate while in alternate screen mode for more consistent refresh rate. This works even if alternate screen mode is disabled."),
+            ("MetalSlowFrameRate", "Drawing", Kind::Float, Value::Float(30.0), "When adaptive framerate is enabled and using the Metal renderer, refresh at this rate during high throughput conditions (FPS)."),
+            ("ActiveUpdateCadence", "Drawing", Kind::Float, Value::Float(60.0), "Maximum frame rate (FPS) when adaptive framerate is disabled.\nNote: this is doubled on ARM Macs for displays that support at least 120hz. Modifications to this setting will not affect existing sessions."),
+            ("AdaptiveFrameRateThroughputThreshold", "Drawing", Kind::Int, Value::Integer(10000), "Throughput threshold for adaptive frame rate.\nIf more than this many bytes per second are received, use the lower frame rate of 30 fps."),
+            ("MaximumFrameRate", "Drawing", Kind::Float, Value::Float(60.0), "Frame rate (FPS) when adaptive framerate is enabled and throughput is low but not 0."),
+            ("LowPowerModeFrameRate", "Drawing", Kind::Float, Value::Float(30.0), "Maximum frame rate (FPS) when low power mode is enabled."),
+            ("UseLowPowerGPUWhenUnplugged", "Drawing", Kind::Bool, f.clone(), "Metal renderer uses integrated GPU when not connected to power?\nFor this to be effective you must disable \u{201c}Disable Metal renderer when not connected to power\u{201d}."),
+            ("UnderlineHyperlinks", "Drawing", Kind::Bool, t.clone(), "Underline OSC 8 hyperlinks"),
+            ("SolidUnderlines", "Drawing", Kind::Bool, f.clone(), "Use solid underlines?\nWhen disabled, underlines break near text that would intersect them."),
+            ("UseMultiPassUnderlineRenderer", "Drawing", Kind::Bool, t.clone(), "Use multi-pass underline renderer?\nFixes underline gaps with ligature fonts. Requires restart."),
+            ("ShowMetalFPSmeter", "Drawing", Kind::Bool, f.clone(), "Show FPS meter\nRequires Metal renderer"),
+            ("MetalRedrawPeriod", "Drawing", Kind::Float, Value::Float(0.5), "GPU renderer redraws at least this often, in seconds.\nThis is to work around a problem where the GPU renderer encounters a lot of latency when drawing for the first time after a short period of inactivity. Set this to a big number to render it ineffectual."),
+            ("DisableAppNap", "General", Kind::Bool, f.clone(), "Disable App Nap.\nChange effective after restarting Tandem."),
+            ("ExtendBackgroundColorIntoMargins", "Experimental Features", Kind::Bool, t.clone(), "Extend background color into margins in alternate screen mode?"),
+        ];
+        assert_eq!(rows.len(), 15);
+        let pane = crate::advanced_pane::rows();
+        let g = Globals::empty(std::path::Path::new("drawing-rows-test.toml"));
+        for (key, section, kind, default, help) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str()), ("Advanced", section), "{key}");
+            assert_eq!(s.kind, kind, "{key}");
+            assert_eq!(s.default, Some(default), "{key}");
+            assert_eq!(s.help, help, "{key}");
+            assert_eq!(s.label, help.split('\n').next().unwrap(), "{key}");
+            let want = match kind {
+                Kind::Bool => RowKind::Bool,
+                Kind::Int => RowKind::Int,
+                _ => RowKind::Float,
+            };
+            let drawn = pane.iter().find(|r| r.key == key).unwrap_or_else(|| panic!("{key} not in the pane"));
+            assert_eq!((drawn.category, &drawn.kind), (section, &want), "{key}");
+            // iTerm2 enables every Advanced row; none has a rule here.
+            assert!(row_enabled(&g, key), "{key}");
+        }
+    }
+
+    /// 13l: General > "GPU Renderer" (`GP:2060-2110`): Maximize throughput and the Advanced GPU sheet's rows.
+    #[test]
+    fn prefer_integrated_row_needs_two_gpus() {
+        let g = Globals::empty(std::path::Path::new("gpu-rows-test.toml"));
+        assert!(!row_enabled_with(&g, "preferIntegratedGPU", false));
+        assert!(row_enabled_with(&g, "preferIntegratedGPU", true));
+        assert!(row_enabled_with(&g, "metalMaximizeThroughput", false));
+    }
+
+    #[test]
+    fn gpu_rows_follow_iterm2() {
+        use crate::schema::Kind;
+        let inert = "\nTandem always draws with the GPU; stored for settings you bring from iTerm2.";
+        let rows = [
+            ("metalMaximizeThroughput", "Maximize throughput at the cost of higher latency", String::new()),
+            ("disableMetalWhenUnplugged", "Disable GPU renderer when disconnected from power", inert.to_string()),
+            ("disableMetalInLowPowerMode", "Disable GPU renderer in low power mode", inert.to_string()),
+            ("preferIntegratedGPU", "Prefer integrated to discrete GPU", String::new()),
+        ];
+        for (key, label, note) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str()), ("General", "GPU Renderer"), "{key}");
+            assert_eq!(s.kind, Kind::Bool, "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(true)), "{key}");
+            assert_eq!(s.label, label, "{key}");
+            assert_eq!(s.help, format!("{label}{note}"), "{key}");
+        }
+        assert_eq!(GPU_RESTART, "You must restart Tandem for this change to take effect.");
+    }
+
+    /// 13l: Appearance > Panes margins (`P:112-113`, in points).
+    #[test]
+    fn margin_rows_follow_iterm2() {
+        use crate::schema::Kind;
+        let rows = [
+            ("TerminalMargin", 5, "Side margins", "Space between the terminal text and the left and right edges of a pane, in points."),
+            ("TerminalVMargin", 2, "Top & bottom margins", "Space between the terminal text and the top and bottom edges of a pane, in points."),
+        ];
+        for (key, default, label, help) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str()), ("Appearance", "Panes"), "{key}");
+            assert_eq!(s.kind, Kind::Int, "{key}");
+            assert_eq!(s.default, Some(Value::Integer(default)), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (label, help), "{key}");
+            assert!(s.min.is_none() && s.max.is_none(), "{key} is unbounded, as iTerm2's");
+        }
+    }
+
+    /// 13l P5: an Int row draws a drag value for its stored integer.
+    #[test]
+    fn int_rows_draw_a_control() {
+        let ctx = egui::Context::default();
+        let mut g = Globals::empty(std::path::Path::new("int-row-test.toml"));
+        let s = schema::find_global("TerminalMargin").unwrap();
+        let mut drawn = 0.0;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let before = ui.min_rect().height();
+            global_control(ui, &mut g, s, true);
+            drawn = ui.min_rect().height() - before;
+        });
+        out.textures_delta.clear();
+        assert!(drawn > 0.0, "the Int row drew nothing");
+        assert_eq!(g.int("TerminalMargin"), 5);
+    }
+
+    /// Final review 5: only the margin rows draw a drag value; an Int row such as IRMemory
+    /// (bounded 0..=1000) is not given an unbounded one.
+    #[test]
+    fn other_int_rows_draw_no_unbounded_drag_value() {
+        let ctx = egui::Context::default();
+        let mut g = Globals::empty(std::path::Path::new("int-row-test.toml"));
+        let s = schema::find_global("IRMemory").unwrap();
+        assert_eq!(s.kind, Kind::Int);
+        let mut drawn = 0.0;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let before = ui.min_rect().height();
+            global_control(ui, &mut g, s, true);
+            drawn = ui.min_rect().height() - before;
+        });
+        out.textures_delta.clear();
+        assert_eq!(drawn, 0.0, "IRMemory drew an Int control");
     }
 }

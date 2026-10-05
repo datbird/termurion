@@ -14,7 +14,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | iTerm2 > Check for Updates... | no shortcut | Manually checks the Sparkle updater for a new iTerm2 build. (milestone 13) | missing |
 | iTerm2 > Toggle Debug Logging | no shortcut | Turns internal debug log capture on or off. (milestone 6) | missing |
 | iTerm2 > Save Retrospective Debug Logs | no shortcut | Dumps recent internal debug logs to a file for bug reports. (milestone 13) | missing |
-| iTerm2 > Copy Performance Stats | no shortcut | Copies GPU and CPU performance counters to the clipboard. (milestone 13) | missing |
+| iTerm2 > Copy Performance Stats | no shortcut | Copies GPU and CPU performance counters to the clipboard. (milestone 13) | have, milestone 13l: copies Tandem's renderer timings (start-to-start, surface wait, dropped frames) under iTerm2's text format ("Precise timers Window 1: ..."); numbers are not comparable with iTerm2's |
 | iTerm2 > Capture GPU Frame | Ctrl+Opt+Cmd+G | Captures a single Metal GPU frame for renderer debugging. (milestone 13) | missing |
 | iTerm2 > Check Settings Control Truncation | no shortcut | Debug tool that scans the Preferences UI for truncated control text. (milestone 13) | missing |
 | iTerm2 > Preferences... | Cmd+, | Opens the Preferences/Settings window. | have |
@@ -329,7 +329,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Help > iTerm2 Help | Cmd+? | Opens the iTerm2 help/documentation. | have |
 | Help > Copy Mode Shortcuts | no shortcut | Shows a cheat sheet of Copy Mode keyboard shortcuts. (milestone 13) | missing |
 | Help > Open Source Licenses | no shortcut | Shows license text for bundled open source components. (milestone 13) | missing |
-| Help > GPU Renderer Availability | no shortcut | Shows diagnostic info on which GPU renderer is active and why. (milestone 13) | missing |
+| Help > GPU Renderer Availability | no shortcut | Shows diagnostic info on which GPU renderer is active and why. (milestone 13) | have, milestone 13l: always says enabled and names the adapter and backend |
 
 Note: MainMenu.xib also defines a Web menu (Open Location, Back, Forward, Reload Page, History) for iTerm2's built in browser feature. That menu falls outside the ten requested menus and is not listed here.
 
@@ -400,9 +400,11 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 9 ; 4 ; &lt;state&gt; ; &lt;progress&gt; | Shows or clears a progress bar for the session. | partial, milestone 6b: parsed, and the Progress Bar Changed event trigger fires; no bar is drawn yet |
 | OSC 133 ; H (terminal command) | Sends an arbitrary terminal command token to the delegate. | have, parsed and ignored, as iTerm2 does |
 | OSC 7 ; file://user@host/path | Reports the current directory, user, and host as a URL; iTerm2's current shell scripts use it instead of 1337;CurrentDir and RemoteHost. Without a machineID it also marks a prompt. | have |
-| OSC 8 ; params ; url ST ... text ... OSC 8 ; ; ST | Standard terminal hyperlinks; iTerm2 tracks link start/end and renders clickable text. | have, links draw a dashed underline; Win-click opens them; the right-click menu and a pointer action copy the address |
+| OSC 8 ; params ; url ST ... text ... OSC 8 ; ; ST | Standard terminal hyperlinks; iTerm2 tracks link start/end and renders clickable text. | have, links draw a 4-on, 3-off dashed underline at the underline position (Settings > Advanced > Underline OSC 8 hyperlinks switches it); Win-click opens them; the right-click menu and a pointer action copy the address |
 | OSC 52 (PASTE64) set/query clipboard | Reads or writes the system clipboard, and other X11-style selections, via a base64 payload. | have, writes under Applications in terminal may access clipboard; reads ask, as iTerm2 |
 | OSC 22 ; &lt;pointer name&gt; | A program sets the mouse pointer shape over its pane (iTerm2: VT100XtermParser.m:291, VT100Terminal.m:2723, PTYSession.m:18420). | missing, owned by 13y2 (gaps sweep) |
+| SGR underline styles (4, 4:1 to 4:5, 21) and SGR 58 / 59 underline color | A program underlines text single, double, curly, dotted or dashed, and colors the line apart from the text. | have, milestone 13l: iTerm2's geometry and patterns, the color rules (SGR 58, then the profile's Underline Color, then the text color), gaps at descenders unless Use solid underlines; a program's state is bounded and reset by SGR 24, 0 and 59 and RIS |
+| Strikethrough (SGR 9 / 29) | A program draws a line through text, with or without an underline. | have, milestone 13l: a line at half the x-height above the baseline in the underline color; never gapped |
 | DECRQSS / DECRPSS (SGR, DECSCL, DECSCUSR, DECSCA, DECSTBM, DECSLRM, DECSLPP) | Request/report current terminal settings, graphic rendition, conformance level, cursor style, protection attribute, margins, page size, as an ANSI-standard report-settings sequence. | have, SGR, DECSCL, DECSCUSR, DECSCA, DECSTBM, DECSLRM, DECSLPP; XTVERSION and XTGETTCAP (TN, name, Co, colors, RGB) too |
 | Sixel graphics (DECSIXEL, via VT100SixelParser/VT100DCSParser) | Parses and renders sixel bitmap graphics sent by an application, for example img2sixel. | partial, decoded by Tandem (palette, HLS, repeats, raster size); pixels opaque as in iTerm2; DECSDM is not handled yet |
 | Kitty graphics protocol (transmit, put, delete, animate, compose, query) | Parses and renders the kitty terminal graphics protocol for inline images and animations, rendered via a dedicated Metal renderer. | partial, transmit (direct, file, temp file, zlib, chunks), display, delete, query; z-index, pixel offsets, unicode placeholders, and animation are not drawn (iTerm2 does not animate either) |

@@ -11,7 +11,7 @@ use winit::window::Fullscreen;
 pub(super) struct WinSlot {
     pub(super) gpu: Option<Gpu>,
     pub(super) tabs: Vec<Tab>,
-    active: usize,
+    pub(super) active: usize,
     menu_bar: Option<menu::MenuBar>,
     cursor: (f32, f32),
     drag: Drag,
@@ -122,6 +122,11 @@ pub(super) struct WinSlot {
     pub(super) status_armed: bool,
     /// The IME's composition in this window (13k): per window, since panes are shared.
     pub(super) ime: crate::ime::State,
+    /// When this window may draw after pane output (13l: `cadence::Pacer`).
+    pub(super) pacer: crate::cadence::Pacer,
+    /// The FPS meter's average and frame count for this window (13l).
+    pub(super) fps: crate::perf_stats::MovingAverage,
+    pub(super) frame_number: u64,
 }
 
 impl WinSlot {
@@ -212,6 +217,9 @@ impl WinSlot {
             download_files_shown: None,
             status_armed: false,
             ime: Default::default(),
+            pacer: Default::default(),
+            fps: crate::perf_stats::MovingAverage::new(crate::perf_stats::FPS_ALPHA),
+            frame_number: 0,
         }
     }
 }
@@ -326,6 +334,9 @@ impl App {
         swap(&mut self.download_files_shown, &mut s.download_files_shown);
         swap(&mut self.status_armed, &mut s.status_armed);
         swap(&mut self.ime, &mut s.ime);
+        swap(&mut self.pacer, &mut s.pacer);
+        swap(&mut self.fps, &mut s.fps);
+        swap(&mut self.frame_number, &mut s.frame_number);
     }
 
     /// The terminal window whose password manager is `id`, when it is parked.
@@ -869,6 +880,11 @@ impl App {
         if let Some(g) = self.registry.guid(k) {
             self.api_vars.forget(crate::api_vars::Scope::Window, g);
         }
+        // The saved performance logs and counters of a window number go with it (it is reused).
+        if let Some(n) = self.registry.number(k) {
+            self.perf_frames.remove(&(n + 1));
+            self.perf.forget_window(n + 1);
+        }
         self.registry.close(k);
         self.refresh_window_list();
     }
@@ -976,6 +992,9 @@ impl WinSlot {
             download_files_shown: None,
             status_armed: false,
             ime: Default::default(),
+            pacer: Default::default(),
+            fps: crate::perf_stats::MovingAverage::new(crate::perf_stats::FPS_ALPHA),
+            frame_number: 0,
         }
     }
 }
@@ -1418,8 +1437,8 @@ impl App {
         let pos = g.window.outer_position().unwrap_or_default();
         let (cw, ch) = self.cell();
         let area = self.content_area();
-        let pad = 2.0 * PAD * self.scale();
-        let chrome = (pad, inner.height as f32 - area.h + pad);
+        let (side, vert) = self.margins();
+        let chrome = (2.0 * side, inner.height as f32 - area.h + 2.0 * vert);
         let input = Input {
             style: s,
             percent,

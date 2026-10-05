@@ -12,7 +12,7 @@ impl App {
     pub(super) fn render_lines(&mut self, pane: PaneId, screen: &crate::screen::Screen, first: usize, last: usize, cursor: bool) -> Result<(u32, u32, Vec<u8>), String> {
         use alacritty_terminal::grid::Dimensions;
         let cell = self.cell();
-        let pad = (PAD * self.scale()).round();
+        let pad = self.margins().0.round();
         let cols = screen.term().columns();
         let width = (cols as f32 * cell.0 + 2.0 * pad).ceil();
         let lines = last + 1 - first;
@@ -22,6 +22,7 @@ impl App {
         // A batch must fit in one texture; iTerm2 renders 1000 lines at a time.
         let max_rows = ((8192.0 / cell.1).floor() as usize).clamp(1, 1000);
         let bg = screen.palette.bg;
+        let draw = self.draw_prefs();
         let mut out = Vec::with_capacity((width as usize) * (total_h as usize) * 4);
         for (b0, b1) in screenshot::batches(first, last, max_rows) {
             let count = b1 + 1 - b0;
@@ -30,7 +31,7 @@ impl App {
                 screenshot::carry_cursor(screen, &mut batch, b0 as i32 - history);
             }
             let h = count as f32 * cell.1;
-            let mut frame = Frame { clear: rgba(bg, 1.0), ..Default::default() };
+            let mut frame = Frame { clear: rgba(bg, 1.0), gap_underlines: !draw.solid_underlines, ..Default::default() };
             let area = Rect { x: 0.0, y: 0.0, w: width, h };
             if let Some((image, mode, blend)) = &background {
                 // The image is laid out over the whole screenshot, and this batch shows its slice.
@@ -38,7 +39,7 @@ impl App {
                 let pieces = crate::bgimage::quads(*mode, image.size, container, area);
                 scene::background(&mut frame, area, &pieces, image, bg, *blend);
             }
-            scene::pane_with(&mut frame, &batch, Rect { x: pad, y: 0.0, w: cols as f32 * cell.0, h }, cell, cursor, &crate::cursor_look::CursorLook::shown(cursor), None);
+            scene::pane_with(&mut frame, &batch, Rect { x: pad, y: 0.0, w: cols as f32 * cell.0, h }, cell, cursor, &crate::cursor_look::CursorLook::shown(cursor), &draw, None);
             let gpu = self.gpu.as_mut().ok_or("no window")?;
             out.extend(gpu.renderer.draw_offscreen(&frame, width as u32, h as u32)?);
         }
@@ -171,7 +172,7 @@ impl App {
         let (s, e) = shot.window.panel.range;
         let cell = self.cell();
         let cols = self.panes.get(&shot.pane).map_or(80, |p| { use alacritty_terminal::grid::Dimensions; p.screen.term().columns() });
-        let width = (cols as f32 * cell.0 + 2.0 * (PAD * self.scale()).round()).ceil() as usize;
+        let width = (cols as f32 * cell.0 + 2.0 * self.margins().0.round()).ceil() as usize;
         screenshot::parts(e + 1 - s, cell.1.round().max(1.0) as usize, width, screenshot::MAX_PX).len().max(1)
     }
 
@@ -181,7 +182,7 @@ impl App {
         let panel = self.shot.as_ref()?.window.panel.clone();
         let cell = self.cell();
         let scale = self.scale();
-        let pad = (PAD * scale).round();
+        let pad = self.margins().0.round();
         self.with_snapshot(|app, pane, snap| {
             let (w, h, mut px) = app.render_lines(pane, snap, first, last, false)?;
             let bg = snap.palette.bg;
@@ -233,7 +234,7 @@ impl App {
         let (start, end) = self.shot.as_ref().ok_or("no screenshot")?.window.panel.range;
         let cell = self.cell();
         let cols = self.shot.as_ref().and_then(|s| self.panes.get(&s.pane)).map_or(80, |p| { use alacritty_terminal::grid::Dimensions; p.screen.term().columns() });
-        let width = (cols as f32 * cell.0 + 2.0 * (PAD * self.scale()).round()).ceil() as usize;
+        let width = (cols as f32 * cell.0 + 2.0 * self.margins().0.round()).ceil() as usize;
         let parts = screenshot::parts(end + 1 - start, cell.1.round().max(1.0) as usize, width, screenshot::MAX_PX);
         let paths = screenshot::save_paths(chosen, parts.len());
         let mut first_path = None;

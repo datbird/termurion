@@ -19,6 +19,8 @@ use winit::window::{Window, WindowId};
 
 use crate::conpty::{self, Api, Source};
 use crate::globals::{self, Globals};
+use crate::margins;
+use crate::power;
 use crate::input::{self, Clicks};
 use crate::keyroute::{self, Route};
 use crate::keys::{self, Action, AltSide, Key, KeyOptions};
@@ -44,8 +46,8 @@ use crate::settings_ui::{Edit, How, Mode, SettingsWindow};
 const FONT: &str = "Cascadia Mono";
 /// 12 pt, iTerm2's default size, at 96 dpi.
 const FONT_PX: f32 = 16.0;
-/// Space between a pane's edge and its text, in pixels at 100%.
-const PAD: f32 = 4.0;
+/// The side tab bar's own margin, in pixels at 100% (not the terminal margin).
+const SIDE_TAB_MARGIN: f32 = 4.0;
 /// How often a fading tab bar draws while it fades (60 frames a second).
 const FLASH_FRAME: Duration = Duration::from_millis(16);
 /// How far below the pointer a tab tooltip starts, in points (the arrow pointer's height).
@@ -74,6 +76,7 @@ mod blocks_ui;
 mod clipboard_ui;
 mod copymode_ui;
 mod cursor_ui;
+mod frames_ui;
 mod ime_ui;
 mod files_ui;
 mod find_ui;
@@ -685,6 +688,20 @@ pub struct App {
     status_armed: bool,
     /// The IME's composition for the current window (per window: `WinSlot`).
     ime: crate::ime::State,
+    /// When the current window may draw after pane output (per window: `WinSlot`).
+    pacer: crate::cadence::Pacer,
+    /// The FPS meter's moving average of frame periods (per window: `WinSlot`).
+    fps: crate::perf_stats::MovingAverage,
+    /// Frames drawn while the FPS meter is on (per window: `WinSlot`).
+    frame_number: u64,
+    /// Saved renderer logs for Copy Performance Stats (13l Task 5; app-wide).
+    perf: crate::perf_stats::Logs,
+    /// Each window's frame counters, by window number (app-wide).
+    perf_frames: std::collections::BTreeMap<usize, crate::perf_stats::FrameStats>,
+    /// The last key press in any window (iTerm2's `_lastKeystrokeTime`, `UC:90-94`).
+    last_keystroke: Option<Instant>,
+    /// The power line (13l Task 3): app-wide, sampled when the output path asks, at most once a second.
+    power: crate::power::Poll,
     last_status: HashMap<PaneId, Option<String>>,
     /// The bells on sessions (Session Status', the Cockpit's): each armed session and its status
     /// when armed; the next different status shows the alert, then it disarms
@@ -1735,6 +1752,13 @@ pub fn run() {
         alert_limits: crate::triggers::RateLimit::default(),
         status_armed: false,
         ime: Default::default(),
+        pacer: Default::default(),
+        fps: crate::perf_stats::MovingAverage::new(crate::perf_stats::FPS_ALPHA),
+        frame_number: 0,
+        perf: Default::default(),
+        perf_frames: Default::default(),
+        last_keystroke: None,
+        power: crate::power::Poll::default(),
         last_status: HashMap::new(),
         status_watches: Default::default(),
         status_popover: None,
@@ -2287,7 +2311,7 @@ impl App {
     pub(super) fn side_bar_width(&self) -> f32 {
         let scale = self.scale();
         let w = self.gpu.as_ref().map_or(800.0, |g| g.config.width as f32);
-        (tab_position::side_width(self.side_bar_preferred, w / scale, PAD, self.side_bar_minimum()) * scale).round()
+        (tab_position::side_width(self.side_bar_preferred, w / scale, SIDE_TAB_MARGIN, self.side_bar_minimum()) * scale).round()
     }
 
     /// The window shared out (`tab_position::window_split`): the tab bar's rect, the sessions'
@@ -2818,7 +2842,7 @@ impl App {
         let dx = (x - start_x) / scale;
         let dx = if self.tab_position() == TabPosition::Right { -dx } else { dx };
         let w = self.gpu.as_ref().map_or(800.0, |g| g.config.width as f32) / scale;
-        let preferred = tab_position::side_width(start_width + dx, w, PAD, self.side_bar_minimum()).round();
+        let preferred = tab_position::side_width(start_width + dx, w, SIDE_TAB_MARGIN, self.side_bar_minimum()).round();
         if preferred != self.side_bar_preferred {
             self.side_bar_preferred = preferred;
             self.relayout();
@@ -2877,13 +2901,21 @@ impl App {
 
     /// The text area inside a pane rectangle.
     fn inner(&self, rect: Rect) -> Rect {
-        rect.inset(PAD * self.scale())
+        let (side, vert) = self.margins();
+        rect.inset_xy(side, vert)
     }
 
+    /// The side and the top and bottom margins in pixels (`TerminalMargin`, `TerminalVMargin`,
+    /// iTerm2's 5 and 2 points by default), read on every call.
+    fn margins(&self) -> (f32, f32) {
+        let scale = self.scale();
+        (margins::px(self.globals.int("TerminalMargin"), scale), margins::px(self.globals.int("TerminalVMargin"), scale))
+    }
+
+    /// The one place a pane's pixels become columns and rows, so tmux, resizes, snaps,
+    /// screenshots and hit tests agree.
     fn grid_size(&self, rect: Rect) -> (u16, u16) {
-        let (cw, ch) = self.cell();
-        let inner = self.inner(rect);
-        ((inner.w / cw).floor().max(2.0) as u16, (inner.h / ch).floor().max(1.0) as u16)
+        margins::grid_size((rect.w, rect.h), self.cell(), self.margins())
     }
 
     /// The profile with this Guid, or the default profile.
@@ -3314,13 +3346,14 @@ impl App {
         let now = Instant::now();
         let now_us = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros() as i64);
         let visible = self.replay_visible_panes();
+        let prefs = self.cadence_prefs();
         for (id, p) in self.panes.iter_mut() {
-            // No gap is shorter than FAST_GAP: a pane that captured within it cannot record
-            // yet, so its gap is not worked out.
-            if p.replay_at.is_some_and(|t| now.saturating_duration_since(t) < crate::cadence::FAST_GAP) {
+            // No gap is shorter than 1 ms (`interval`'s floor): a pane that captured within it
+            // cannot record yet, so its gap is not worked out.
+            if p.replay_at.is_some_and(|t| now.saturating_duration_since(t) < Duration::from_millis(1)) {
                 continue;
             }
-            let gap = p.replay_gap(now, visible.contains(id), self.activity.get(id).and_then(|a| a.last_output()));
+            let gap = p.replay_gap(now, visible.contains(id), self.activity.get(id).and_then(|a| a.last_output()), &prefs, false);
             p.record_frame(now, now_us, gap);
         }
     }
@@ -3338,10 +3371,11 @@ impl App {
     fn replay_frame_due(&mut self) -> Option<Instant> {
         let now = Instant::now();
         let visible = self.replay_visible_panes();
+        let prefs = self.cadence_prefs();
         let mut due = None;
         for (id, p) in self.panes.iter_mut() {
             let Some(at) = p.replay_at.filter(|_| !p.gateway) else { continue };
-            let t = at + p.replay_gap(now, visible.contains(id), self.activity.get(id).and_then(|a| a.last_output()));
+            let t = at + p.replay_gap(now, visible.contains(id), self.activity.get(id).and_then(|a| a.last_output()), &prefs, false);
             if t > now && due.is_none_or(|d| t < d) {
                 due = Some(t);
             }
@@ -3661,7 +3695,8 @@ impl App {
     fn size_window(&mut self, guid: Option<&str>) {
         let p = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).clone();
         let (cw, ch) = self.cell();
-        let pad = 2.0 * PAD * self.scale();
+        let (side, vert) = self.margins();
+        let (padx, pady) = (2.0 * side, 2.0 * vert);
         // The line under the title bar is part of the window's decoration (`PT:13235-13237`).
         let line = self.division_height() + self.caption_strip().unwrap_or(0.0);
         let Some(g) = self.gpu.as_ref() else { return };
@@ -3680,7 +3715,7 @@ impl App {
             (Some(pct), Some(work)) => i64::from(crate::frames::percent_cells(pct, ch, work.h)),
             _ => p.int("Rows").max(4),
         };
-        let (mut w, mut h) = (columns as f32 * cw + pad, rows as f32 * ch + pad + line);
+        let (mut w, mut h) = (columns as f32 * cw + padx, rows as f32 * ch + pady + line);
         if let Some(work) = work.filter(|_| pw.is_some() || ph.is_some()) {
             // The whole window stays on the work area.
             let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
@@ -3933,7 +3968,7 @@ impl App {
         self.composer_output(outputs);
         self.check_marks();
         self.sync_checks();
-        self.redraw();
+        self.paced_redraw(outputs, now);
     }
 
     fn relayout(&mut self) {
@@ -4212,6 +4247,10 @@ impl App {
     }
 
     fn key(&mut self, ev: &KeyEvent, event_loop: &ActiveEventLoop) {
+        // iTerm2's `didHandleKeystroke`: an echo within 0.1 s of it draws at once.
+        if ev.state == ElementState::Pressed {
+            self.last_keystroke = Some(Instant::now());
+        }
         // A key press is new input: a cancel stops waiting for the stray commit of the cancelled
         // composition (before the hold below, so the Esc that cancels sets the wait again).
         if ev.state == ElementState::Pressed {
@@ -4832,17 +4871,24 @@ impl App {
         self.route_wheel(id, col, row, ev);
     }
 
+    /// How underlines and strikethrough draw, for the live frame and a screenshot alike: the
+    /// Advanced switches, the renderer's face metrics and the window's scale.
+    pub(super) fn draw_prefs(&mut self) -> scene::DrawPrefs {
+        let metrics = self.gpu.as_mut().map(|g| g.renderer.underline_metrics()).unwrap_or(scene::DrawPrefs::default().metrics);
+        scene::DrawPrefs::from_globals(&self.globals, metrics, self.scale())
+    }
+
     fn build_frame(&mut self) -> Frame {
         let mut attention: Option<Instant> = None;
         let cell = self.cell();
+        let draw = self.draw_prefs();
         let palette_bg = self.panes.values().next().map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
-        let mut frame = Frame { clear: rgba(palette_bg, 1.0), ..Default::default() };
+        let mut frame = Frame { clear: rgba(palette_bg, 1.0), gap_underlines: !draw.solid_underlines, ..Default::default() };
         // Only a window made for alpha draws see-through; its panes' alphas come from their profiles.
         let alphas = self.tabs.get(self.active).map(|t| self.pane_alphas(t)).unwrap_or_default();
         let see_through = self.win_alpha_surface == crate::transparency::SurfaceKind::Alpha && !self.transparency_unavailable && crate::transparency::needs_alpha(&alphas.iter().map(|(_, a)| *a).collect::<Vec<_>>());
         self.frame_alpha = see_through;
         self.warn_transparency_unavailable(&alphas);
-        let mut margin_panes: Vec<(Vec<Rect>, [f32; 4])> = Vec::new();
         if see_through {
             frame.clear = [0.0; 4];
         }
@@ -4917,6 +4963,7 @@ impl App {
         self.prepare_inline_chats();
         let mut porthole_hits = Vec::new();
         let mut overlay_drawn: Vec<(mouse::Overlay, Rect)> = Vec::new();
+        let mut held_updates: Vec<(PaneId, Option<crate::flicker::Held>, Option<Instant>)> = Vec::new();
         let bview = self.broadcast_view();
         let stripes = self.globals.bool("Use background pattern indicator").then(|| self.stripe_tile());
         if let Some(tab) = self.tabs.get(self.active) {
@@ -4939,21 +4986,64 @@ impl App {
                     let opaque_colors = see_through && self.store.get(&p.profile).is_some_and(|pr| pr.bool("Only The Default BG Color Uses Transparency"));
                     let dim = self.pane_dim(tab, id, &bview);
                     let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, dim, key_cursor: self.focused && id == tab.focused && p.at_password_prompt(), bg_alpha, opaque_colors, text_blink_on: self.blink.visible };
-                    if see_through {
-                        // The pane's margins (its rect less the cell grid) carry the default background at the
-                        // pane's alpha; the grid's own background runs cover the rest, one layer per pixel.
+                    // The margins, one layer per pixel and the only margin painter: the pane's
+                    // color, or an alternate screen's edge colors (`ExtendBackgroundColorIntoMargins`).
+                    {
                         let inner = self.inner(rect);
                         let (cols, lines) = (p.screen.term().columns(), p.screen.term().screen_lines());
                         let grid = Rect { x: inner.x, y: inner.y, w: cols as f32 * cell.0, h: lines as f32 * cell.1 };
                         let bg = p.screen.palette.bg;
-                        margin_panes.push((scene::margins(rect, grid), crate::transparency::premultiplied([bg.r, bg.g, bg.b], bg_alpha)));
+                        let has_image = backgrounds.iter().any(|b| b.pane == id);
+                        let (alt, extend) = (p.screen.alt_screen(), self.globals.bool("ExtendBackgroundColorIntoMargins"));
+                        let edges = if alt && extend { p.screen.edge_backgrounds() } else { Vec::new() };
+                        let fill = margins::fill(&edges, bg, extend, alt);
+                        if see_through {
+                            scene::margin_fill_alpha(&mut frame, rect, grid, cell.1, &fill, bg, bg_alpha, opaque_colors, has_image);
+                        } else {
+                            scene::margin_fill(&mut frame, rect, grid, cell.1, &fill, has_image.then_some(bg));
+                        }
                     }
                     // An Auto Composer hides the terminal cursor and the rows it covers.
                     let cover = self.auto_composer_cover(id, rect);
-                    let overlay_from = frame.overlay.len();
-                    scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), Some(&hl));
-                    if let Some(c) = cover {
-                        composer_ui::skip_covered(&mut frame.overlay, overlay_from, c);
+                    let (quad_from, image_from, row_from) = (frame.quads.len(), frame.images.len(), frame.rows.len());
+                    let (overlay_from, underline_from, strike_from) = (frame.overlay.len(), frame.underlines.len(), frame.strikes.len());
+                    // Reduce Flicker: while the program has the cursor hidden, the pane's last
+                    // live picture stands in for the one it is drawing.
+                    let reduce = self.store.get(&p.profile).is_some_and(|pr| pr.bool("Reduce Flicker"));
+                    let hold = crate::flicker::holding(reduce, p.screen.cursor_hidden_at, Instant::now());
+                    let alt = p.screen.alt_screen();
+                    match p.held.as_ref().filter(|h| hold && h.usable(rect, alt, p.screen.cursor_hidden_at)) {
+                        Some(h) => {
+                            frame.quads.extend(h.quads.iter().copied());
+                            frame.images.extend(h.images.iter().cloned());
+                            frame.rows.extend(h.rows.iter().cloned());
+                            frame.overlay.extend(h.overlay.iter().copied());
+                            frame.underlines.extend(h.underlines.iter().copied());
+                            frame.strikes.extend(h.strikes.iter().copied());
+                            if let Some(c) = cover {
+                                composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, c);
+                            }
+                            held_updates.push((id, None, p.screen.cursor_hidden_at.map(|t| t + crate::flicker::HOLD)));
+                        }
+                        None => {
+                            scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), &draw, Some(&hl));
+                            if let Some(c) = cover {
+                                composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, c);
+                            }
+                            // Kept for the next hold; dropped when the switch is off.
+                            let held = reduce.then(|| crate::flicker::Held {
+                                since: Instant::now(),
+                                rect,
+                                alt_screen: alt,
+                                quads: frame.quads[quad_from..].to_vec(),
+                                images: frame.images[image_from..].to_vec(),
+                                rows: frame.rows[row_from..].to_vec(),
+                                overlay: frame.overlay[overlay_from..].to_vec(),
+                                underlines: frame.underlines[underline_from..].to_vec(),
+                                strikes: frame.strikes[strike_from..].to_vec(),
+                            });
+                            held_updates.push((id, held, None));
+                        }
                     }
                     // The gray quad over the whole pane (margins included); Dim Only Text dimmed the cells itself.
                     if dim.amount > 0.0 && !dim.only_text {
@@ -4994,7 +5084,7 @@ impl App {
                     let off = g.display_offset() as i32;
                     let folded = |row: usize| g[alacritty_terminal::index::Line(row as i32 - off)].fold() != 0;
                     let (cols, inner) = (g.columns(), self.inner(rect));
-                    let pad = PAD * self.scale();
+                    let pad = self.margins().0;
                     let mut bars: Vec<(usize, crate::marks::MarkColor)> = Vec::new();
                     for (row, m) in p.screen.visible_marks() {
                         if block_rows.contains(&row) || !(show || m.name.is_some()) {
@@ -5021,6 +5111,11 @@ impl App {
                 // them is cut out.
                 overlay_drawn.extend(self.draw_composer(&mut frame, id, rect, cell));
                 overlay_drawn.extend(self.draw_completion(&mut frame, id, rect, cell).map(|r| (mouse::Overlay::Completion, r)));
+                if id == tab.focused {
+                    if let Some(text) = self.fps_overlay() {
+                        scene::fps_meter(&mut frame, &text, self.inner(rect), cell);
+                    }
+                }
             }
             self.draw_clippings(&mut frame, cell);
             inline_hits = self.draw_inline_chats(&mut frame, cell);
@@ -5038,6 +5133,14 @@ impl App {
                 let mode_rect = scene::find_bar(&mut frame, &bar, rect, cell);
                 self.find_bar_rect = frame.quads.last().map(|q| q.rect);
                 self.find_mode_rect = Some(mode_rect);
+            }
+        }
+        for (id, held, until) in held_updates {
+            if let Some(p) = self.panes.get_mut(&id) {
+                match until {
+                    Some(t) => p.held_until = Some(t),
+                    None => (p.held, p.held_until) = (held, None),
+                }
             }
         }
         if let Some(r) = self.tab_bar_rect().filter(|_| flash_over) {
@@ -5066,7 +5169,7 @@ impl App {
         if see_through {
             let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
             let chrome = rgba(palette_bg, 1.0);
-            let mut quads = crate::transparency::backdrop(Rect { x: 0.0, y: 0.0, w: ww, h: wh }, area, chrome, &margin_panes);
+            let mut quads = crate::transparency::backdrop(Rect { x: 0.0, y: 0.0, w: ww, h: wh }, area, chrome, &[]);
             quads.append(&mut frame.quads);
             frame.quads = quads;
         }
@@ -5086,6 +5189,11 @@ impl App {
     }
 
     fn render(&mut self) {
+        // Recorded first: a frame that finds no surface still ends the wait for one.
+        let now = Instant::now();
+        let before = self.pacer.last();
+        self.pacer.drew(now);
+        self.note_frame(before, now);
         // A status bar field whose bar went away gives the keyboard back before drawing.
         self.check_composer_fields();
         self.sync_menu_hidden();
@@ -5106,9 +5214,18 @@ impl App {
         self.sync_surface_alpha(transparent);
         // Tab switches, focus, restore from minimized: the backdrop follows what this frame shows.
         self.sync_blur();
+        // Window numbers show from 1 in the saved logs (P20).
+        let window_n = self.window_number() + 1;
         let Some(gpu) = self.gpu.as_mut() else { return };
         gpu.window.set_title(&title);
-        let texture = match gpu.surface.get_current_texture() {
+        let wait_start = Instant::now();
+        let acquired = gpu.surface.get_current_texture();
+        // The renderer's timings for Copy Performance Stats: counters and milliseconds only.
+        let dropped = matches!(acquired, wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded);
+        let start_gap = before.map(|b| now.saturating_duration_since(b).as_secs_f64() * 1000.0);
+        let wait = wait_start.elapsed().as_secs_f64() * 1000.0;
+        self.perf_frames.entry(window_n).or_default().frame(start_gap, Some(wait), dropped, &mut self.perf, window_n);
+        let texture = match acquired {
             wgpu::CurrentSurfaceTexture::Success(t) => t,
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
@@ -5179,6 +5296,13 @@ impl ApplicationHandler<UserEvent> for App {
         if self.gpu.is_some() {
             return;
         }
+        // Disable App Nap: opt out of EcoQoS once at start (effective after a restart).
+        #[cfg(windows)]
+        if self.globals.bool("DisableAppNap") {
+            if let Err(e) = power::opt_out_of_power_throttling() {
+                eprintln!("power throttling opt-out unavailable: {e}");
+            }
+        }
         if self.snippets.broken {
             self.banners.set("snippets", format!("Could not read the snippets in {}. The file stays as it is until a snippet is added.", snippets_ui::snippets_path().display()));
         }
@@ -5211,7 +5335,8 @@ impl ApplicationHandler<UserEvent> for App {
         };
         // Every terminal window allows the IME (winit leaves it off otherwise).
         window.set_ime_allowed(true);
-        match init_gpu(window, event_loop) {
+        let prefer = power::chosen_preference(self.globals.bool("preferIntegratedGPU"));
+        match init_gpu(window, event_loop, prefer) {
             Ok(gpu) => {
                 let k = windows_ui::key(gpu.window.id());
                 self.last_window = Some(gpu.window.id());
@@ -5515,7 +5640,9 @@ impl ApplicationHandler<UserEvent> for App {
         let flash_due = self.tick_tab_flash();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
         let cursor_due = self.tick_cursor();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due].into_iter().flatten().min();
+        let frame_due = self.frame_wake();
+        let flicker_due = self.flicker_tick(Instant::now());
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -5588,10 +5715,17 @@ impl ApplicationHandler<UserEvent> for App {
         }
         changed |= self.ssh_pump();
         changed |= self.tmux_pump(event_loop);
+        // Panes a tmux or ssh pump fed got output too (`feed_output`); they draw through the pacer.
+        for (id, p) in self.panes.iter() {
+            if p.got_output && !outputs.contains(id) {
+                outputs.push(*id);
+            }
+        }
         self.stuck_tick();
         self.api_output(&outputs);
         self.api_session_events();
         self.record_replay_frames();
+        let exited_now = exited.clone();
         for id in exited {
             // A git command's short-lived window ends without an alert.
             let short_lived = self.short_lived(id);
@@ -5615,6 +5749,12 @@ impl ApplicationHandler<UserEvent> for App {
         }
         self.check_coprocesses();
         if changed {
+            // An exit shows in the tab bar: a held pane's end draws through the pacer too.
+            for id in exited_now {
+                if !outputs.contains(&id) {
+                    outputs.push(id);
+                }
+            }
             self.after_output(&outputs, now);
         }
     }
@@ -5873,12 +6013,29 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
-fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop) -> Result<Gpu, String> {
+/// Lists the adapters once per run (name, backend, device type; P19) and records whether both
+/// kinds of GPU exist for the settings sheet.
+fn log_adapters_once(instance: &wgpu::Instance) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+        for a in &adapters {
+            let i = a.get_info();
+            eprintln!("adapter available: backend={:?} name={} device_type={:?}", i.backend, i.name, i.device_type);
+        }
+        let kinds: Vec<wgpu::DeviceType> = adapters.iter().map(|a| a.get_info().device_type).collect();
+        power::set_both_gpu_kinds(power::both_gpu_kinds(&kinds));
+    });
+}
+
+fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference: wgpu::PowerPreference) -> Result<Gpu, String> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
         event_loop.owned_display_handle(),
     )));
     let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
+    log_adapters_once(&instance);
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference,
         compatible_surface: Some(&surface),
         ..Default::default()
     }))

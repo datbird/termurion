@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 316 | 219 | 83 | 14 |
-| `02-global-settings.md` | 820 | 504 | 57 | 259 |
-| `03-features-and-menus.md` | 645 | 552 | 47 | 46 |
-| Total | 1,781 | 1,275 | 187 | 319 |
+| `01-profile-settings.md` | 316 | 222 | 80 | 14 |
+| `02-global-settings.md` | 820 | 521 | 53 | 246 |
+| `03-features-and-menus.md` | 647 | 556 | 47 | 44 |
+| Total | 1,783 | 1,299 | 180 | 304 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -570,6 +570,21 @@ six timings and five presets, Smart Cursor Color, Cursor Boost (it mutes text, b
 Cursor shadow, DrawOutlineAroundCursor, Smooth slide and Animate large movements (a smear) follow iTerm2's source, and the
 Windows IME composes at the cursor. Nothing of 13k was checked on screen during the build. Every kept quirk is listed in
 `docs/acceptance/m13k-checklist.md` and ruled on in `docs/superpowers/rulings/m13k-rulings.txt`.
+Milestone 13l built frames and underlines (01: 3 rows from partial to have: Use custom underline color, Underline Color, Reduce Flicker;
+02: 17 rows to have (12 from missing, 5 from partial): Side and Top/bottom margins, disableAppNap, the adaptive-rate
+and cadence keys, underlineHyperlinks, solidUnderlines, showMetalFPSmeter, metalRedrawPeriod, extendBackgroundColorIntoMargins; the
+disable-GPU row (02:151) goes from missing to partial because Tandem has no CPU renderer; 03: Copy Performance Stats and GPU Renderer Availability to
+have, plus two new rows, SGR underline styles with SGR 58 and Strikethrough; 1,783 rows, 1,299 have, 180 partial, 304 missing on its
+branch). iTerm2's defaults now hold, each a change users will see: output draws on iTerm2's update cadence (30 fps over 10,000 bytes
+a second, 60 below, the alternate screen at ActiveUpdateCadence, 1 s when idle, the Windows battery saver caps at 30) instead of every
+vsync, with typed echoes and the cursor drawn at once; a visible window redraws every 0.5 s even idle (MetalRedrawPeriod); the integrated
+GPU is preferred on a machine with two (after a restart); margins are 5 points at the sides and 2 at the top and bottom; OSC 8 links
+use a 4-on, 3-off dash at the underline position. Underlines draw single, double, curly, dotted and dashed with SGR 58 colors, gaps
+at descenders, strikethrough, and every Tandem surface over a pane (toast, banner, find bar, popups) cuts them. The alternate screen's
+margins take its edge color, Reduce Flicker holds the picture while the cursor is hidden, and Copy Performance Stats and the FPS meter
+show Tandem's own renderer timings. The two Disable GPU settings, UseAdaptiveFrameRate, DisableAdaptiveFrameRateInInteractiveApps,
+UseLowPowerGPUWhenUnplugged and UseMultiPassUnderlineRenderer are stored and inert. Nothing of 13l was checked on screen during the
+build. Every kept quirk is listed in `docs/acceptance/m13l-checklist.md` and ruled on in `docs/superpowers/rulings/m13l-rulings.txt`.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's
