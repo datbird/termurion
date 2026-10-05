@@ -158,6 +158,43 @@ pub enum Series {
 pub const TICK_HEIGHT: f32 = 3.0;
 pub const MINIMAP_ALPHA: f32 = 0.62;
 
+/// iTerm2's tick series for a mark by its exit code (`iTermIntervalTreeObjectTypeForObject`): no
+/// code is a manual mark, 0 success, 128 to 160 other, anything else an error.
+pub fn series_of_mark(code: Option<i32>) -> Series {
+    match code {
+        None => Series::Manual,
+        Some(0) => Series::Success,
+        Some(128..=160) => Series::Other,
+        Some(_) => Series::Error,
+    }
+}
+
+/// The series to draw for a pane, in drawing order: search results first (iTerm2 adds the
+/// search minimap before the marks), then the mark series, then annotations. `locations` is
+/// ShowLocationsInScrollbar (it gates everything), `show_marks` ShowMarksInScrollbar (it gates
+/// the marks and the annotations, and only counts with `locations`). Empty series are left out.
+pub fn collect(locations: bool, show_marks: bool, search: &[usize], marks: &[(Series, usize)], notes: &[usize]) -> Vec<(Series, Vec<usize>)> {
+    let mut out = Vec::new();
+    if !locations {
+        return out;
+    }
+    if !search.is_empty() {
+        out.push((Series::Search, search.to_vec()));
+    }
+    if show_marks {
+        for kind in [Series::Success, Series::Other, Series::Error, Series::Manual] {
+            let lines: Vec<usize> = marks.iter().filter(|(k, _)| *k == kind).map(|(_, l)| *l).collect();
+            if !lines.is_empty() {
+                out.push((kind, lines));
+            }
+        }
+        if !notes.is_empty() {
+            out.push((Series::Annotation, notes.to_vec()));
+        }
+    }
+    out
+}
+
 /// Ticks for `lines` (buffer lines, 0 the oldest) of a `total` line buffer along `track`
 /// (`MM:85-125`): a line's place is its fraction of the whole buffer, `round(fraction *
 /// (height - 3))` from the top, and a tick less than 2 points below the last drawn is
@@ -392,5 +429,38 @@ mod tests {
         assert_eq!(press(&g, 790.0, g.thumb.y - 5.0, 100), Press::Page(1), "above the thumb: toward older lines");
         let up = geometry(pane, Style::Legacy, 1.0, 100, 50, 50).unwrap();
         assert_eq!(press(&up, 790.0, up.thumb.y + up.thumb.h + 5.0, 100), Press::Page(-1));
+    }
+
+    /// Task 8 (Review Focus 4): search ticks come from the open find bar's matches only, the two
+    /// keys gate as iTerm2's do, and the marks take their series from their exit codes.
+    #[test]
+    fn ticks_follow_the_find_bar() {
+        let marks = [(Series::Success, 3), (Series::Error, 9), (Series::Manual, 4), (Series::Success, 12)];
+        let kinds = |v: &[(Series, Vec<usize>)]| v.iter().map(|(k, _)| *k).collect::<Vec<_>>();
+        // The find bar is open with 3 matches: 3 search ticks, drawn before the marks.
+        let open = collect(true, true, &[5, 6, 20], &marks, &[7]);
+        assert_eq!(kinds(&open), vec![Series::Search, Series::Success, Series::Error, Series::Manual, Series::Annotation]);
+        assert_eq!(open[0].1, vec![5, 6, 20]);
+        assert_eq!(open[1].1, vec![3, 12]);
+        // Closed: no matches, no search series.
+        let closed = collect(true, true, &[], &marks, &[]);
+        assert_eq!(kinds(&closed), vec![Series::Success, Series::Error, Series::Manual]);
+        // ShowLocationsInScrollbar off: nothing at all.
+        assert!(collect(false, true, &[5], &marks, &[7]).is_empty());
+        assert!(collect(false, false, &[5], &marks, &[7]).is_empty());
+        // ShowMarksInScrollbar off: search ticks, no mark or annotation ticks.
+        assert_eq!(kinds(&collect(true, false, &[5, 6, 20], &marks, &[7])), vec![Series::Search]);
+    }
+
+    #[test]
+    fn mark_series_follow_the_exit_code() {
+        assert_eq!(series_of_mark(None), Series::Manual, "no code: a manual mark");
+        assert_eq!(series_of_mark(Some(0)), Series::Success);
+        assert_eq!(series_of_mark(Some(1)), Series::Error);
+        assert_eq!(series_of_mark(Some(127)), Series::Error);
+        assert_eq!(series_of_mark(Some(128)), Series::Other);
+        assert_eq!(series_of_mark(Some(160)), Series::Other);
+        assert_eq!(series_of_mark(Some(161)), Series::Error);
+        assert_eq!(series_of_mark(Some(-1)), Series::Error);
     }
 }

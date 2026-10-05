@@ -822,6 +822,21 @@ mod tests {
         assert!(MOD.contains("WindowEvent::ThemeChanged(_) => {\n                self.theme_applied = Some(self.dark());\n                self.refresh_scroll_style("), "and a light or dark change");
     }
 
+    /// 13m Task 8 App side: the ticks come from one collection (`scrollbar::collect`) over the
+    /// buffer's marks, the notes and the open find bar's matches, drawn on the minimap rect, and
+    /// the two keys are read when a pane starts, not on every frame.
+    #[test]
+    fn scrollbar_ticks_are_collected_once_per_pane() {
+        let view = include_str!("view_ui.rs");
+        let b = body(view, "scrollbar_series");
+        assert!(b.contains("scrollbar::collect(") && b.contains("series_of_mark(") && b.contains("note_cells(") && b.contains("f.open"), "{b}");
+        let d = body(view, "draw_scrollbar");
+        assert!(d.contains("scene::scrollbar_ticks(") && d.contains(".minimap(") && d.contains("scrollbar_series("), "{d}");
+        assert!(!d.contains("globals.bool(\"Show"), "the keys are read at pane start");
+        let s = body(MOD, "install_pane");
+        assert!(s.contains("scroll_ticks.insert(") && s.contains("ShowLocationsInScrollbar") && s.contains("ShowMarksInScrollbar"), "{s}");
+    }
+
     /// Review Focus 2: every pointer-to-cell path goes through `cell_at`, which maps the visual
     /// cell to the logical one (and turns the cell's halves over in a right-to-left run); the
     /// copy-mode cursor and the IME caret draw through the same order.

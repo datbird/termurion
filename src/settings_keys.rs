@@ -2023,6 +2023,19 @@ mod tests {
     }
 
     #[test]
+    fn scrollbar_tick_rows_follow_iterm2() {
+        let locations = "Show search result and prompt locations in scroll bar.\nChanging this setting will not affect existing sessions until you restart.";
+        let marks = "Show prompt locations in scroll bar?\nChanging this setting will not affect existing sessions until you restart. You must also enable \u{201c}Show search result and prompt locations in scroll bar\u{201d} for this to take effect.";
+        for (key, help) in [("ShowLocationsInScrollbar", locations), ("ShowMarksInScrollbar", marks)] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"), "{key}");
+            assert_eq!((row.kind, row.default.clone()), (Kind::Bool, Some(Value::Boolean(true))), "{key}");
+            assert_eq!(row.help.as_str(), help, "{key}");
+            assert_eq!(row.label.as_str(), help.lines().next().unwrap(), "{key}");
+        }
+    }
+
+    #[test]
     fn hide_scrollbar_row_follows_iterm2() {
         let row = schema::find_global("HideScrollbar").unwrap();
         assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "Windows"));

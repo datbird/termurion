@@ -1295,6 +1295,24 @@ default = true
 help = "Right-justify lines in paragraphs with base writing direction of right-to-left?\nRequires BOTH \u201cright-to-left text support\u201d and \u201cauto-detect paragraph writing detection\u201d to be enabled."
 
 [[setting]]
+key = "ShowLocationsInScrollbar"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Show search result and prompt locations in scroll bar."
+type = "bool"
+default = true
+help = "Show search result and prompt locations in scroll bar.\nChanging this setting will not affect existing sessions until you restart."
+
+[[setting]]
+key = "ShowMarksInScrollbar"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Show prompt locations in scroll bar?"
+type = "bool"
+default = true
+help = "Show prompt locations in scroll bar?\nChanging this setting will not affect existing sessions until you restart. You must also enable \u201cShow search result and prompt locations in scroll bar\u201d for this to take effect."
+
+[[setting]]
 key = "DisableBidiInAlternateScreen"
 tab = "Advanced"
 section = "Experimental Features"

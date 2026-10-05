@@ -644,6 +644,12 @@ impl Screen {
         self.marks.records.values().rev().filter(|m| m.kind == Kind::Prompt).nth(1).and_then(|m| m.code)
     }
 
+    /// A mark's exit code: None when there is no such mark, Some(None) when it has no code
+    /// (iTerm2's `hasCode` false: a manual mark or a command still running).
+    pub fn mark_code(&self, id: u32) -> Option<Option<i32>> {
+        self.marks.records.get(&id).map(|m| m.code)
+    }
+
     /// The marks on rows in view, for the margin indicators: (row on screen, mark). None
     /// while a full-screen app has the alternate screen. Reads only the rows in view.
     pub fn visible_marks(&self) -> Vec<(usize, Mark)> {

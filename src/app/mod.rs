@@ -637,6 +637,8 @@ pub struct App {
     scroll_seen: HashMap<PaneId, (usize, Instant)>,
     /// The pane whose scrollbar the pointer is over.
     scroll_hover: Option<PaneId>,
+    /// Per pane: ShowLocationsInScrollbar and ShowMarksInScrollbar as they were when it started.
+    scroll_ticks: HashMap<PaneId, (bool, bool)>,
     /// The block under the pointer (pane, number, first and last line), and the drawn pill
     /// buttons.
     block_hover: Option<(PaneId, u32, i32, i32)>,
@@ -1816,6 +1818,7 @@ pub fn run() {
         scroll_style: scrollbar::current_style(),
         scroll_seen: HashMap::new(),
         scroll_hover: None,
+        scroll_ticks: HashMap::new(),
         flashes: HashMap::new(),
         fireworks: HashMap::new(),
         tab_colors: HashMap::new(),
@@ -3354,6 +3357,8 @@ impl App {
                 self.jobs.watch_console(pid, paused);
             }
         }
+        // Read once, as iTerm2 does ("will not affect existing sessions until you restart").
+        self.scroll_ticks.insert(id, (self.globals.bool("ShowLocationsInScrollbar"), self.globals.bool("ShowMarksInScrollbar")));
         self.panes.insert(id, pane);
         self.apply_new_pane_defaults(id);
     }

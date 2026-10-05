@@ -124,6 +124,26 @@ impl App {
             || self.scroll_seen.get(&id).is_some_and(|(_, until)| Instant::now() < *until)
     }
 
+    /// The ticks along pane `id`'s bar (buffer lines, 0 the oldest): the open find bar's matches,
+    /// then the buffer's marks by exit code, then the notes (`scrollbar::collect`). The two keys
+    /// are the ones read when the pane started.
+    fn scrollbar_series(&self, id: PaneId) -> Vec<(scrollbar::Series, Vec<usize>)> {
+        let Some(p) = self.panes.get(&id) else { return Vec::new() };
+        let (locations, show_marks) = self.scroll_ticks.get(&id).copied().unwrap_or_else(|| (self.globals.bool("ShowLocationsInScrollbar"), self.globals.bool("ShowMarksInScrollbar")));
+        if !locations {
+            return Vec::new();
+        }
+        let history = p.screen.term().primary_grid().history_size() as i32;
+        let search: Vec<usize> = self.finds.get(&id).filter(|f| f.open).map(|f| f.results.matches.iter().map(|m| m.start.row).collect()).unwrap_or_default();
+        let (marks, notes) = if show_marks {
+            let marks = p.screen.row_marks().into_iter().filter_map(|(line, mid)| Some((scrollbar::series_of_mark(p.screen.mark_code(mid)?), (line + history).max(0) as usize))).collect();
+            (marks, self.note_cells(id).into_iter().map(|(m, _, _)| m.start.row).collect())
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        scrollbar::collect(locations, show_marks, &search, &marks, &notes)
+    }
+
     /// Draws pane `id`'s scrollbar at the right edge of `rect`, in its own layer (popups drawn
     /// later cut it).
     pub(super) fn draw_scrollbar(&self, frame: &mut Frame, id: PaneId, rect: Rect, _cell: (f32, f32)) {
@@ -133,6 +153,13 @@ impl App {
         }
         let hover = self.scroll_hover == Some(id) || matches!(self.drag, Drag::Scrollbar { pane, .. } if pane == id);
         scene::scrollbar(frame, &g, self.scroll_style, self.dark(), hover);
+        // The ticks ride the bar, on its minimap rect (already narrow for the overlay style).
+        let series = self.scrollbar_series(id);
+        if !series.is_empty() {
+            let grid = self.panes[&id].screen.term().grid();
+            let total = grid.history_size() + grid.screen_lines();
+            scene::scrollbar_ticks(frame, g.minimap(self.dark(), self.scale()), &series, total, self.scale());
+        }
     }
 
     /// A press on a scrollbar: the thumb starts a drag, the track pages a screen; with nothing

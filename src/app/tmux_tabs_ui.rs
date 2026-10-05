@@ -769,6 +769,7 @@ impl App {
                 pane.own_mut().shell.vars.insert(name.to_string(), v.clone());
             }
         }
+        self.scroll_ticks.insert(id, (self.globals.bool("ShowLocationsInScrollbar"), self.globals.bool("ShowMarksInScrollbar")));
         self.panes.insert(id, pane);
         self.apply_new_pane_defaults(id);
         // The job is watched only when the profile shows an icon (iTerm2's PS:10098).
