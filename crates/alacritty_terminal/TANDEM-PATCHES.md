@@ -93,7 +93,9 @@ test data) is left out. Changes:
     `Selection::set_visual` (sets the runs and makes the region their hull) and
     `Selection::covers` (inside the runs, or true with none). `Term::selection_to_string` copies
     the runs, each line in logical order, joined by newlines (not across a wrapped line).
-    `Selection::update` and `rotate` drop the runs. Tandem's visual character selection on
+    `Selection::update` drops the runs; `rotate` moves them (and the visual drag's anchor,
+    `set_visual_anchor`/`visual_anchor`, a grid line plus visual column) with the content and
+    drops the runs that scroll out of the region. Tandem's visual character selection on
     bidirectional rows uses it (iTerm2's live visual range, `iTermSelection.m:409`).
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

@@ -121,6 +121,9 @@ pub struct Selection {
     region: Range<Anchor>,
     // Tandem patch: see `set_visual`.
     pub runs: Vec<(Point, Point)>,
+    // Tandem patch: where a visual drag began, `(grid line, visual column)` and the right half
+    // flag; `rotate` moves it with the content like the region.
+    visual_anchor: Option<(Point, bool)>,
 }
 
 impl Selection {
@@ -129,6 +132,7 @@ impl Selection {
             region: Range { start: Anchor::new(location, side), end: Anchor::new(location, side) },
             ty,
             runs: Vec::new(),
+            visual_anchor: None,
         }
     }
 
@@ -136,11 +140,21 @@ impl Selection {
     // the pointer on screen). `runs` are inclusive `(first, last)` cell pairs, each on one
     // line, in reading order: the logical cells the swept screen cells show. The region
     // becomes their hull, so every consumer of the range sees a superset; `covers` and
-    // `Term::selection_to_string` use the runs. A logical `update` or a scroll drops them.
+    // `Term::selection_to_string` use the runs. A logical `update` drops them; a scroll moves them.
     pub fn set_visual(&mut self, runs: Vec<(Point, Point)>) {
         let (Some(first), Some(last)) = (runs.first(), runs.last()) else { return };
         self.region = Range { start: Anchor::new(first.0, Side::Left), end: Anchor::new(last.1, Side::Right) };
         self.runs = runs;
+    }
+
+    /// Where a visual drag began: a grid line, a visual column and whether the press was in
+    /// that cell's right half.
+    pub fn set_visual_anchor(&mut self, (line, column, right): (i32, usize, bool)) {
+        self.visual_anchor = Some((Point::new(Line(line), Column(column)), right));
+    }
+
+    pub fn visual_anchor(&self) -> Option<(i32, usize, bool)> {
+        self.visual_anchor.map(|(p, right)| (p.line.0, p.column.0, right))
     }
 
     /// Whether `point` is selected: inside the range and, for a visual selection, in a run.
@@ -162,11 +176,31 @@ impl Selection {
         range: &Range<Line>,
         delta: i32,
     ) -> Option<Selection> {
-        // Tandem patch: runs are numbered by line; a scroll drops them (the hull stays).
-        self.runs.clear();
         let bottommost_line = dimensions.bottommost_line();
         let range_bottom = range.end;
         let range_top = range.start;
+
+        // Tandem patch: runs and the visual anchor are numbered by line; they move with the
+        // content as the region does. A run that scrolls out of the region is dropped.
+        let moves = |line: Line| (line >= range_top || range_top == 0) && line < range_bottom;
+        let mut runs = Vec::with_capacity(self.runs.len());
+        for &(a, b) in &self.runs {
+            if !moves(a.line) {
+                runs.push((a, b));
+                continue;
+            }
+            let line = a.line - delta;
+            if line >= range_bottom || (line < range_top && range_top != 0) {
+                continue;
+            }
+            runs.push((Point::new(line, a.column), Point::new(line, b.column)));
+        }
+        self.runs = runs;
+        if let Some((p, _)) = self.visual_anchor.as_mut().filter(|(p, _)| moves(p.line)) {
+            // A full-screen scroll sends the line into history, which has no bound here.
+            let line = min(min(p.line - delta, range_bottom - 1), bottommost_line);
+            p.line = if range_top == 0 { line } else { line.max(range_top) };
+        }
 
         let (mut start, mut end) = (&mut self.region.start, &mut self.region.end);
         if start.point > end.point {

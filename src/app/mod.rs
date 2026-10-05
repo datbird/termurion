@@ -232,7 +232,8 @@ struct PointerDown {
 
 enum Drag {
     None,
-    /// `anchor`: the press as a visual position, for a character drag (`visual_pos`).
+    /// `anchor` is Some for a character drag, whose press the selection holds as a visual
+    /// position (`Selection::set_visual_anchor`, moved with scrolling output).
     Select { pane: PaneId, anchor: Option<(i32, usize, bool)> },
     Divider { path: Vec<bool>, axis: Axis, parent: Rect },
     /// A press the program took as a mouse report: its click count and when it came, for
@@ -4558,7 +4559,11 @@ impl App {
                         input::Pick::Type(t) => t,
                         input::Pick::Smart => input::SelectionType::Semantic,
                     };
-                    self.panes.get_mut(&id).unwrap().screen.term_mut().selection = Some(Selection::new(ty, point, side));
+                    let mut sel = Selection::new(ty, point, side);
+                    if let Some(a) = anchor {
+                        sel.set_visual_anchor(a);
+                    }
+                    self.panes.get_mut(&id).unwrap().screen.term_mut().selection = Some(sel);
                 }
                 if smart || pick == input::Pick::Type(input::SelectionType::Semantic) {
                     self.clip_selection_to_dividers(id, point);
@@ -4734,18 +4739,18 @@ impl App {
                 self.title_drag_move(pane, from, x, y);
             }
             Drag::Select { pane, anchor } => {
-                let (pane, anchor) = (*pane, *anchor);
+                let (pane, visual) = (*pane, anchor.is_some());
                 let Some(rect) = self.pane_rect(pane) else { return };
                 let (col, row, side) = self.cell_at(pane, rect, x, y);
                 let point = self.grid_point(pane, col, row);
-                let end = anchor.map(|_| self.visual_pos(pane, rect, x, y));
+                let end = visual.then(|| self.visual_pos(pane, rect, x, y));
                 if let Some(sel) = self.panes.get_mut(&pane).and_then(|p| p.screen.term_mut().selection.as_mut()) {
                     sel.update(point, side);
                 }
                 // On a bidi row the drag is the cells swept on screen (iTerm2's live visual range).
-                if let (Some(a), Some(b)) = (anchor, end) {
+                if let Some(b) = end {
                     if let Some(p) = self.panes.get_mut(&pane) {
-                        p.screen.drag_visual_selection(a, b);
+                        p.screen.drag_visual_to(b);
                     }
                 }
                 self.redraw();

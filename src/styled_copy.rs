@@ -36,9 +36,15 @@ pub fn selection_spans(screen: &Screen) -> (Vec<(i32, usize, usize)>, bool) {
     (spans(screen), is_box)
 }
 
-/// The selection's rows, first to last: `(line, first column, last column)`.
+/// The selection's rows, first to last: `(line, first column, last column)`. A visual drag
+/// selection (`Selection::runs`) gives one span per run, in reading order; several runs on a
+/// line follow each other and make one row (`same_line`). Every reader of the selected cells
+/// goes through here, so the highlight, the plain copy and every other copy agree.
 fn spans(screen: &Screen) -> Vec<(i32, usize, usize)> {
     let term = screen.term();
+    if let Some(sel) = term.selection.as_ref().filter(|s| !s.runs.is_empty()) {
+        return sel.runs.iter().map(|(a, b)| (a.line.0, a.column.0, b.column.0)).collect();
+    }
     let Some(r) = term.selection.as_ref().and_then(|s| s.to_range(term)) else { return Vec::new() };
     let last_col = term.columns() - 1;
     (r.start.line.0..=r.end.line.0)
@@ -52,6 +58,11 @@ fn spans(screen: &Screen) -> Vec<(i32, usize, usize)> {
             }
         })
         .collect()
+}
+
+/// Whether span `i` and the next are runs of one line (they make one row).
+fn same_line(spans: &[(i32, usize, usize)], i: usize) -> bool {
+    spans.get(i + 1).is_some_and(|n| n.0 == spans[i].0)
 }
 
 fn wraps(screen: &Screen, line: i32) -> bool {
@@ -98,15 +109,16 @@ fn runs_spans(screen: &Screen, spans: &[(i32, usize, usize)], exact_last: bool) 
     let g = screen.term().grid();
     let palette = &screen.palette;
     let mut out = Vec::new();
+    let mut row: Vec<Run> = Vec::new();
     for (i, &(line, from, to)) in spans.iter().enumerate() {
         let hard_end = !wraps(screen, line);
         let cells = if exact_last && i + 1 == spans.len() {
             let row = &g[Line(line)];
             (from..to.min(g.columns())).filter(|c| !row[Column(*c)].flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)).collect()
         } else {
-            cells_of(screen, line, from, to.min(g.columns() - 1), hard_end)
+            // A run followed by another on its line keeps its trailing blanks: they are selected.
+            cells_of(screen, line, from, to.min(g.columns() - 1), hard_end && !same_line(spans, i))
         };
-        let mut row: Vec<Run> = Vec::new();
         for c in cells {
             let c = &g[Line(line)][Column(c)];
             let (fg, bg) = palette.cell(c.fg, c.bg, c.flags);
@@ -128,7 +140,9 @@ fn runs_spans(screen: &Screen, spans: &[(i32, usize, usize)], exact_last: bool) 
                 _ => row.push(run),
             }
         }
-        out.push(Row { runs: row, hard_end });
+        if !same_line(spans, i) {
+            out.push(Row { runs: std::mem::take(&mut row), hard_end });
+        }
     }
     out
 }
@@ -293,7 +307,8 @@ fn sgr_grid(g: &alacritty_terminal::grid::Grid<Cell>, spans: &[(i32, usize, usiz
     let mut last: Option<Vec<String>> = None;
     for (i, (line, from, to)) in spans.iter().enumerate() {
         let hard_end = !wraps_in(g, *line);
-        for col in cells_in(g, *line, *from, *to, hard_end) {
+        let more = same_line(spans, i);
+        for col in cells_in(g, *line, *from, *to, hard_end && !more) {
             let c = &g[Line(*line)][Column(col)];
             let codes = sgr_codes(c);
             if last.as_ref() != Some(&codes) {
@@ -305,7 +320,7 @@ fn sgr_grid(g: &alacritty_terminal::grid::Grid<Cell>, spans: &[(i32, usize, usiz
                 out.extend(extra);
             }
         }
-        if hard_end && i + 1 < spans.len() {
+        if hard_end && !more && i + 1 < spans.len() {
             out += "\x1b[0m\n";
             // After the reset the look is the default, and the first cell may say so
             // again only if it differs.
@@ -390,6 +405,41 @@ mod tests {
         select(&mut s, (0, 3), (0, 4));
         assert_eq!(s.term().selection_to_string().as_deref(), Some("\u{5d0}\u{5d1}"));
         assert_eq!(runs(&s)[0].runs[0].text, "\u{5d0}\u{5d1}");
+    }
+
+    /// A visual drag selection (the aleph at logical 3 left out): every reader of the selection
+    /// agrees with the highlight and the plain copy.
+    #[test]
+    fn every_selection_reader_uses_the_visual_runs() {
+        let mut s = Screen::new(10, 3);
+        s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
+        select(&mut s, (0, 0), (0, 0));
+        assert!(s.drag_visual_selection((0, 0, false), (0, 3, true)));
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("ab \u{5d1}"));
+        let text = |rows: &[Row]| rows.iter().map(|r| r.runs.iter().map(|x| x.text.as_str()).collect::<String>()).collect::<Vec<_>>().join("\n");
+        assert_eq!(text(&runs(&s)), "ab \u{5d1}", "Copy with Styles (HTML and RTF)");
+        assert_eq!(text(&crate::print::rows(&s, crate::print::What::Selection)), "ab \u{5d1}", "Print Selection");
+        let plain = |t: String| {
+            let mut out = String::new();
+            let mut esc = false;
+            for c in t.chars() {
+                match (esc, c) {
+                    (_, '\x1b') => esc = true,
+                    (true, 'm') => esc = false,
+                    (false, c) => out.push(c),
+                    _ => {}
+                }
+            }
+            out
+        };
+        assert_eq!(plain(sgr_text(&s)), "ab \u{5d1}", "Copy with Control Sequences");
+        let (spans, _) = selection_spans(&s);
+        let cols: Vec<usize> = spans.iter().flat_map(|&(_, a, b)| a..=b).collect();
+        assert_eq!(cols, vec![0, 1, 2, 4], "the screenshot's selection spans");
+        // Two rows: the rest of row 0 in reading order, then row 1's start.
+        select(&mut s, (0, 0), (0, 0));
+        assert!(s.drag_visual_selection((0, 3, false), (1, 1, true)));
+        assert_eq!(text(&runs(&s)), "\u{5d0}\u{5d1}\npl");
     }
 
     #[test]

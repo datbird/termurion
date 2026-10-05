@@ -664,6 +664,20 @@ impl Screen {
         true
     }
 
+    /// Where the drag in progress began, as `drag_visual_selection` takes it; the selection
+    /// carries it, so output scrolling the grid moves it with the content.
+    pub fn visual_anchor(&self) -> Option<(i32, usize, bool)> {
+        self.term.selection.as_ref().and_then(|s| s.visual_anchor())
+    }
+
+    /// `drag_visual_selection` from the stored anchor to the pointer at `b`.
+    pub fn drag_visual_to(&mut self, b: (i32, usize, bool)) -> bool {
+        match self.visual_anchor() {
+            Some(a) => self.drag_visual_selection(a, b),
+            None => false,
+        }
+    }
+
     pub fn set_look(&mut self, look: Look) {
         // A new profile default for CSI u applies unless the menu chose otherwise.
         if self.keys.csi_u == self.keys.profile_csi_u {
@@ -1739,6 +1753,29 @@ mod tests {
         let mut t = Screen::new(10, 3);
         t.feed(b"abc\r\ndef");
         assert!(!t.drag_visual_selection((0, 0, false), (1, 2, true)));
+    }
+
+    #[test]
+    fn output_scrolling_during_a_drag_keeps_the_anchor_and_the_runs() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut s = Screen::new(10, 3);
+        s.feed("ab \u{5d0}\u{5d1}\r\nx\r\ny".as_bytes());
+        s.term_mut().selection = Some(Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left));
+        s.term_mut().selection.as_mut().unwrap().set_visual_anchor((0, 0, false));
+        assert!(s.drag_visual_to((0, 3, true)));
+        let want = Some("ab \u{5d1}");
+        assert_eq!(s.term().selection_to_string().as_deref(), want);
+        // Two lines of output scroll the row into history.
+        s.feed(b"\r\nz\r\nw");
+        assert_eq!(s.term().selection_to_string().as_deref(), want, "scrolling alone copies only the swept cells");
+        let sel = s.term().selection.as_ref().unwrap();
+        assert_eq!((0..5).filter(|c| sel.covers(Point::new(Line(-2), Column(*c)))).collect::<Vec<_>>(), vec![0, 1, 2, 4], "and highlights them");
+        assert_eq!(s.visual_anchor(), Some((-2, 0, false)), "the anchor stays on the same text");
+        // The next move sweeps from the same text, not from whatever now sits on grid line 0.
+        assert!(s.drag_visual_to((-2, 4, true)));
+        assert_eq!(s.term().selection_to_string().as_deref(), Some("ab \u{5d0}\u{5d1}"));
+        assert_eq!(s.term().selection.as_ref().unwrap().covers(Point::new(Line(0), Column(0))), false);
     }
 
     #[test]
