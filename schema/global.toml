@@ -289,6 +289,24 @@ choices = [ { value = 0, label = "Smart Case" }, { value = 1, label = "Case Sens
 help = "The find bar's search mode, picked from its mode menu. Shared by every session."
 
 [[setting]]
+key = "CopySelection"
+tab = "General"
+section = "Selection"
+label = "Copy to clipboard on selection"
+type = "bool"
+default = true
+help = "Copy to clipboard on selection"
+
+[[setting]]
+key = "CopyLastNewline"
+tab = "General"
+section = "Selection"
+label = "Copied text includes trailing newline"
+type = "bool"
+default = false
+help = "Copied text includes trailing newline"
+
+[[setting]]
 key = "AllowClipboardAccess"
 tab = "General"
 section = "Selection"
@@ -296,6 +314,61 @@ label = "Applications in terminal may access clipboard"
 type = "bool"
 default = false
 help = "Lets programs put text on the clipboard with OSC 52 and OSC 1337 Copy. A program that asks to read the clipboard is asked about separately."
+
+[[setting]]
+key = "WordSelectionMode"
+tab = "General"
+section = "Selection"
+label = "Characters considered part of a word"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "List of Characters" }, { value = 1, label = "Regular Expression" } ]
+help = "How double-click word selection decides what a word is: a list of extra characters, or a regular expression."
+
+[[setting]]
+key = "WordCharacters"
+tab = "General"
+section = "Selection"
+label = "Characters considered part of a word"
+type = "string"
+default = "/-+\\~_."
+help = "Characters considered part of a word"
+
+[[setting]]
+key = "WordSelectionRegexPattern"
+tab = "General"
+section = "Selection"
+label = "Characters considered part of a word"
+type = "string"
+default = "-|\\+|\\\\|~|_"
+help = "Characters considered part of a word"
+
+[[setting]]
+key = "TripleClickSelectsFullWrappedLines"
+tab = "General"
+section = "Selection"
+label = "Triple-click selects entire wrapped lines"
+type = "bool"
+default = true
+help = "If disabled, then triple click selects one line as it appears onscreen."
+
+[[setting]]
+key = "ClickToSelectCommand"
+tab = "General"
+section = "Selection"
+label = "Clicking on a command selects it to restrict Find and Filter"
+type = "bool"
+default = true
+help = "When this is enabled, you can click on a command or its output to restrict Find and Filter to its output. The selected command gets highlighted and other commands get dimmed. This requires shell integration to be installed."
+
+[[setting]]
+key = "WrapDroppedFilenamesInQuotesWhenPasting"
+tab = "General"
+section = "Selection"
+label = "When pasting a dropped filename, wrap it in double quotes"
+type = "bool"
+default = false
+help = "When pasting a dropped filename, wrap it in double quotes"
 
 [[setting]]
 key = "maximumBytesToProvideToPythonAPI"
@@ -4579,3 +4652,167 @@ label = "Save unlimited amount of window contents."
 type = "bool"
 default = true
 help = "Save unlimited amount of window contents.\nThis is going to be slow unless you enable SQLite-based window restoration too."
+
+# Selection, copy and find (13s): the Advanced rows of the selection and find milestone.
+
+[[setting]]
+key = "FractionOfCharacterSelectingNextNeighbor"
+tab = "Advanced"
+section = "Mouse"
+label = "Fraction of character\u2019s width on its right side that can be used to select the character to its right."
+type = "float"
+default = 0.35
+help = "Fraction of character\u2019s width on its right side that can be used to select the character to its right."
+
+[[setting]]
+key = "UseDoubleClickDelayForCommandSelection"
+tab = "Advanced"
+section = "Mouse"
+label = "Wait to be sure it's not a double click before selecting a command"
+type = "bool"
+default = false
+help = "Wait to be sure it's not a double click before selecting a command"
+
+[[setting]]
+key = "FindUrlsRegex"
+tab = "Advanced"
+section = "Terminal"
+label = "Regular expression for \u201CFind URLs\u201D command."
+type = "string"
+default = 'https?://([a-z0-9A-Z]+(:[a-zA-Z0-9]+)?@)?[a-z0-9A-Z\-]+(\.[a-z0-9A-Z\-]+)*((:[0-9]+)?)(/[a-zA-Z0-9;:/\.\-_+%~?&amp;@=#\(\)]*)?'
+help = "Regular expression for \u201CFind URLs\u201D command."
+
+[[setting]]
+key = "FindURLsRespectsSoftBoundaries"
+tab = "Advanced"
+section = "Terminal"
+label = "When using \u201CFind URLs\u201D, extend results across soft boundaries like tmux pane dividers."
+type = "bool"
+default = true
+help = "When using \u201CFind URLs\u201D, extend results across soft boundaries like tmux pane dividers."
+
+[[setting]]
+key = "RequireCmdForDraggingText"
+tab = "Advanced"
+section = "Terminal"
+label = "To drag images or selected text, you must hold Win. This prevents accidental drags."
+type = "bool"
+default = false
+help = "To drag images or selected text, you must hold Win. This prevents accidental drags."
+
+[[setting]]
+key = "FindDelaySeconds"
+tab = "Advanced"
+section = "General"
+label = "Time to wait before performing Find action on 1- or 2- character queries."
+type = "float"
+default = 1.0
+help = "Time to wait before performing Find action on 1- or 2- character queries."
+
+[[setting]]
+key = "SwapFindNextPrevious"
+tab = "Advanced"
+section = "General"
+label = "Swap Find Next and Find Previous."
+type = "bool"
+default = true
+help = "Swap Find Next and Find Previous.\nIf enabled, Find Next will search up and Find Previous will search down (Tandem's traditional behavior, which is a departure from Windows's standard). When disabled, search behaves like a normal Windows app."
+
+[[setting]]
+key = "SynchronizeQueryWithFindPasteboard"
+tab = "Advanced"
+section = "General"
+label = "Synchronize search queries across windows and applications."
+type = "bool"
+default = true
+help = "Synchronize search queries across windows and applications.\nNormally, when you enter a search query in a Find field all find fields in all applications get updated to hold the same value. This is utter nonsense, and can be disabled by setting this preference to No."
+
+[[setting]]
+key = "SmartSelectionRadius"
+tab = "Advanced"
+section = "General"
+label = "Maximum number of lines before and after the click location to include in smart selection."
+type = "int"
+default = 2
+help = "Maximum number of lines before and after the click location to include in smart selection."
+
+[[setting]]
+key = "AlphaForDeselectedCommandShade"
+tab = "Advanced"
+section = "Drawing"
+label = "Alpha value for shade that covers areas outside the currently selected command."
+type = "float"
+default = 0.25
+help = "Alpha value for shade that covers areas outside the currently selected command."
+
+[[setting]]
+key = "RequireSlashInURLGuess"
+tab = "Advanced"
+section = "Semantic History"
+label = "Only consider a two+ part domain-name to be a URL if it also contains a slash."
+type = "bool"
+default = true
+help = "Only consider a two+ part domain-name to be a URL if it also contains a slash.\nThis setting is used when guessing if a string is a URL for semantic history. When enabled, `example.com` would not be considered a URL but `example.com/` would be."
+
+[[setting]]
+key = "TrimWhitespaceOnCopy"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Trim whitespace when copying to pasteboard."
+type = "bool"
+default = true
+help = "Trim whitespace when copying to pasteboard."
+
+[[setting]]
+key = "CopyWithStylesByDefault"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Copy to pasteboard on selection includes color and font style."
+type = "bool"
+default = false
+help = "Copy to pasteboard on selection includes color and font style."
+
+[[setting]]
+key = "CopyBackgroundColor"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Exclude the default background color when text is copied with color and font style?"
+type = "bool"
+default = true
+help = "Exclude the default background color when text is copied with color and font style?\nWhen off, the default background color will be left unset. Non-default background colors will remain."
+
+[[setting]]
+key = "DisallowCopyEmptyString"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Disallow copying empty string to pasteboard."
+type = "bool"
+default = false
+help = "Disallow copying empty string to pasteboard.\nIf enabled, selecting an empty string (or all whitespace if trimming is enabled) will not erase the contents of the pasteboard."
+
+[[setting]]
+key = "TypingClearsSelection"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Pressing a key will remove the selection."
+type = "bool"
+default = true
+help = "Pressing a key will remove the selection."
+
+[[setting]]
+key = "ExcludeBackgroundColorsFromCopiedStyle"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Exclude all background colors when text is copied with color and font style?"
+type = "bool"
+default = false
+help = "Exclude all background colors when text is copied with color and font style?\nThis includes both the default background color and non-default background colors."
+
+[[setting]]
+key = "AutoSearch"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Automatically search for selected text after making a selection?"
+type = "bool"
+default = false
+help = "Automatically search for selected text after making a selection?"

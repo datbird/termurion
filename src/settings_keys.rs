@@ -753,6 +753,18 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
                 .inner
                 .into()
             }
+            // The two word rows are single-line text fields committed on focus loss or Enter, drawn
+            // with no label of their own: the mode popup above them carries the title (`XIB:8010`).
+            // Other String rows stay as they were (drawn elsewhere or on the Advanced pane).
+            Kind::String if matches!(s.key.as_str(), "WordCharacters" | "WordSelectionRegexPattern") => {
+                let mut text = g.string(&s.key);
+                let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(220.0));
+                if r.lost_focus() && text != g.string(&s.key) {
+                    g.set(&s.key, Value::String(text));
+                    changed = true;
+                }
+                Some(r.rect)
+            }
             _ => None,
         };
         if let Some(rect) = control.filter(|_| indicate_non_default() && !global_is_default(g, s)) {
@@ -1237,6 +1249,16 @@ pub fn custom_scripts_folder_row(ui: &mut egui::Ui, g: &mut Globals, home: &std:
     (changed, ended)
 }
 
+/// Whether a row shows now: the word list only in mode 0 and the word regular expression only
+/// in mode 1 (iTerm2 hides the other text field); every other row always.
+pub fn row_visible(g: &Globals, key: &str) -> bool {
+    match key {
+        "WordCharacters" => g.int("WordSelectionMode") == 0,
+        "WordSelectionRegexPattern" => g.int("WordSelectionMode") == 1,
+        _ => true,
+    }
+}
+
 /// Rows a schema page never draws: the Advanced rows that need Apple Intelligence, which is
 /// not available on Windows (ruling 7). Ruling 12e-4 also keeps them out of the schema.
 pub fn row_hidden(key: &str) -> bool {
@@ -1273,6 +1295,9 @@ pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &m
         for section in sections {
             ui.strong(section);
             for s in rows.iter().copied().filter(|s| s.section == section) {
+                if !row_visible(g, &s.key) {
+                    continue;
+                }
                 if s.key == "CustomScriptsFolder" {
                     // The typed text is saved and applied when editing ends, not per key.
                     let (_, ended) = custom_scripts_folder_row(ui, g, &home);
@@ -2207,6 +2232,132 @@ mod tests {
             };
             assert_eq!(drawn.kind, want, "{key}");
         }
+    }
+
+    #[test]
+    fn selection_rows_follow_iterm2() {
+        let word_regex = "-|\\+|\\\\|~|_";
+        let click_help = "When this is enabled, you can click on a command or its output to restrict Find and Filter to its output. The selected command gets highlighted and other commands get dimmed. This requires shell integration to be installed.";
+        let rows: [(&str, Kind, Value, &str, &str); 8] = [
+            ("CopySelection", Kind::Bool, Value::Boolean(true), "Copy to clipboard on selection", "Copy to clipboard on selection"),
+            ("CopyLastNewline", Kind::Bool, Value::Boolean(false), "Copied text includes trailing newline", "Copied text includes trailing newline"),
+            (
+                "WordSelectionMode",
+                Kind::Enum,
+                Value::Integer(0),
+                "Characters considered part of a word",
+                "How double-click word selection decides what a word is: a list of extra characters, or a regular expression.",
+            ),
+            ("WordCharacters", Kind::String, Value::String("/-+\\~_.".into()), "Characters considered part of a word", "Characters considered part of a word"),
+            ("WordSelectionRegexPattern", Kind::String, Value::String(word_regex.into()), "Characters considered part of a word", "Characters considered part of a word"),
+            (
+                "TripleClickSelectsFullWrappedLines",
+                Kind::Bool,
+                Value::Boolean(true),
+                "Triple-click selects entire wrapped lines",
+                "If disabled, then triple click selects one line as it appears onscreen.",
+            ),
+            ("ClickToSelectCommand", Kind::Bool, Value::Boolean(true), "Clicking on a command selects it to restrict Find and Filter", click_help),
+            (
+                "WrapDroppedFilenamesInQuotesWhenPasting",
+                Kind::Bool,
+                Value::Boolean(false),
+                "When pasting a dropped filename, wrap it in double quotes",
+                "When pasting a dropped filename, wrap it in double quotes",
+            ),
+        ];
+        for (key, kind, default, label, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} is not in the schema"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("General", "Selection"), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help), "{key}");
+        }
+        let mode = schema::find_global("WordSelectionMode").unwrap();
+        let choices: Vec<(Value, &str)> = mode.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
+        assert_eq!(choices, vec![(Value::Integer(0), "List of Characters"), (Value::Integer(1), "Regular Expression")]);
+        // iTerm2's pane order: copy, trailing newline, clipboard access, the word rows, triple
+        // click, command click, dropped names.
+        let order: Vec<&str> = page_rows("General").iter().filter(|s| s.section == "Selection").map(|s| s.key.as_str()).collect();
+        assert_eq!(
+            order,
+            [
+                "CopySelection",
+                "CopyLastNewline",
+                "AllowClipboardAccess",
+                "WordSelectionMode",
+                "WordCharacters",
+                "WordSelectionRegexPattern",
+                "TripleClickSelectsFullWrappedLines",
+                "ClickToSelectCommand",
+                "WrapDroppedFilenamesInQuotesWhenPasting"
+            ]
+        );
+    }
+
+    #[test]
+    fn find_rows_follow_iterm2() {
+        use crate::advanced_pane::{self, RowKind};
+        let url_regex = r#"https?://([a-z0-9A-Z]+(:[a-zA-Z0-9]+)?@)?[a-z0-9A-Z\-]+(\.[a-z0-9A-Z\-]+)*((:[0-9]+)?)(/[a-zA-Z0-9;:/\.\-_+%~?&amp;@=#\(\)]*)?"#;
+        let fraction = "Fraction of character\u{2019}s width on its right side that can be used to select the character to its right.";
+        let swap = "Swap Find Next and Find Previous.\nIf enabled, Find Next will search up and Find Previous will search down (Tandem's traditional behavior, which is a departure from Windows's standard). When disabled, search behaves like a normal Windows app.";
+        let sync = "Synchronize search queries across windows and applications.\nNormally, when you enter a search query in a Find field all find fields in all applications get updated to hold the same value. This is utter nonsense, and can be disabled by setting this preference to No.";
+        let slash = "Only consider a two+ part domain-name to be a URL if it also contains a slash.\nThis setting is used when guessing if a string is a URL for semantic history. When enabled, `example.com` would not be considered a URL but `example.com/` would be.";
+        let bg = "Exclude the default background color when text is copied with color and font style?\nWhen off, the default background color will be left unset. Non-default background colors will remain.";
+        let empty = "Disallow copying empty string to pasteboard.\nIf enabled, selecting an empty string (or all whitespace if trimming is enabled) will not erase the contents of the pasteboard.";
+        let nobg = "Exclude all background colors when text is copied with color and font style?\nThis includes both the default background color and non-default background colors.";
+        let b = Value::Boolean;
+        let f = Value::Float;
+        let rows: Vec<(&str, &str, Kind, Value, &str)> = vec![
+            ("FractionOfCharacterSelectingNextNeighbor", "Mouse", Kind::Float, f(0.35), fraction),
+            ("UseDoubleClickDelayForCommandSelection", "Mouse", Kind::Bool, b(false), "Wait to be sure it's not a double click before selecting a command"),
+            ("FindUrlsRegex", "Terminal", Kind::String, Value::String(url_regex.into()), "Regular expression for \u{201c}Find URLs\u{201d} command."),
+            ("FindURLsRespectsSoftBoundaries", "Terminal", Kind::Bool, b(true), "When using \u{201c}Find URLs\u{201d}, extend results across soft boundaries like tmux pane dividers."),
+            ("RequireCmdForDraggingText", "Terminal", Kind::Bool, b(false), "To drag images or selected text, you must hold Win. This prevents accidental drags."),
+            ("FindDelaySeconds", "General", Kind::Float, f(1.0), "Time to wait before performing Find action on 1- or 2- character queries."),
+            ("SwapFindNextPrevious", "General", Kind::Bool, b(true), swap),
+            ("SynchronizeQueryWithFindPasteboard", "General", Kind::Bool, b(true), sync),
+            ("SmartSelectionRadius", "General", Kind::Int, Value::Integer(2), "Maximum number of lines before and after the click location to include in smart selection."),
+            ("AlphaForDeselectedCommandShade", "Drawing", Kind::Float, f(0.25), "Alpha value for shade that covers areas outside the currently selected command."),
+            ("RequireSlashInURLGuess", "Semantic History", Kind::Bool, b(true), slash),
+            ("TrimWhitespaceOnCopy", "Pasteboard", Kind::Bool, b(true), "Trim whitespace when copying to pasteboard."),
+            ("CopyWithStylesByDefault", "Pasteboard", Kind::Bool, b(false), "Copy to pasteboard on selection includes color and font style."),
+            ("CopyBackgroundColor", "Pasteboard", Kind::Bool, b(true), bg),
+            ("DisallowCopyEmptyString", "Pasteboard", Kind::Bool, b(false), empty),
+            ("TypingClearsSelection", "Pasteboard", Kind::Bool, b(true), "Pressing a key will remove the selection."),
+            ("ExcludeBackgroundColorsFromCopiedStyle", "Pasteboard", Kind::Bool, b(false), nobg),
+            ("AutoSearch", "Experimental Features", Kind::Bool, b(false), "Automatically search for selected text after making a selection?"),
+        ];
+        assert_eq!(rows.len(), 18);
+        let pane = advanced_pane::rows();
+        for (key, section, kind, default, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} is not in the schema"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.help, help, "{key}");
+            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
+            let shown = pane.iter().find(|r| r.key == key).unwrap_or_else(|| panic!("{key} is not on the Advanced pane"));
+            let want = match row.kind {
+                Kind::Float => RowKind::Float,
+                Kind::Int => RowKind::Int,
+                Kind::String => RowKind::Text,
+                _ => RowKind::Bool,
+            };
+            assert_eq!(shown.kind, want, "{key}");
+        }
+    }
+
+    #[test]
+    fn word_rows_follow_the_mode() {
+        let mut g = Globals::empty(std::path::Path::new("word-rows-test.toml"));
+        assert!(row_visible(&g, "WordCharacters"));
+        assert!(!row_visible(&g, "WordSelectionRegexPattern"));
+        assert!(row_visible(&g, "FindDelaySeconds"));
+        g.set("WordSelectionMode", Value::Integer(1));
+        assert!(!row_visible(&g, "WordCharacters"));
+        assert!(row_visible(&g, "WordSelectionRegexPattern"));
+        assert!(row_visible(&g, "FindDelaySeconds"));
     }
 
     #[test]
