@@ -576,6 +576,7 @@ impl Pane {
             match out {
                 crate::tmux_hook::Out::Screen(_) if dropping => {}
                 crate::tmux_hook::Out::Screen(bytes) if self.tmux_q.is_empty() => {
+                    self.got_output = true;
                     if let Some(p) = self.echo_probe.as_mut() {
                         p.output(&bytes);
                     }
@@ -654,6 +655,7 @@ impl Pane {
         if let Some(p) = self.echo_probe.as_mut() {
             p.output(bytes);
         }
+        self.got_output = true;
         self.watch_stuck(bytes);
         let reply = self.own_mut().feed(bytes);
         if !reply.is_empty() && self.tmux_io().is_none() {
@@ -2883,6 +2885,19 @@ mod tests {
         p.stuck_seen = false;
         p.route_output(b"$ 0;12;5M0;12;5m".to_vec());
         assert!(!p.stuck_seen, "one occurrence, one notice");
+    }
+
+    /// 13l Task 4 fix: output a tmux or ssh pump feeds counts as output for the pacer, as a
+    /// pty read does (the Wake handler routes by `got_output`).
+    #[test]
+    fn pump_fed_output_counts_as_got_output() {
+        let mut p = Pane::with(1, None, 80, 24);
+        assert!(!p.got_output);
+        p.feed_output(b"hi");
+        assert!(p.got_output, "feed_output");
+        p.got_output = false;
+        p.feed_after_ssh(b"hi");
+        assert!(p.got_output, "feed_after_ssh");
     }
 
     #[test]

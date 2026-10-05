@@ -108,7 +108,8 @@ impl App {
     /// The panes of the current window's front tab, and of its other tabs; both empty when the
     /// window is not on screen.
     fn tab_panes_here(&self) -> (Vec<PaneId>, Vec<PaneId>) {
-        let on_screen = self.gpu.as_ref().is_some_and(|g| g.window.is_minimized() != Some(true) && g.window.is_visible() != Some(false));
+        let shown = self.hotkey.as_ref().map(|h| h.shown);
+        let on_screen = self.gpu.as_ref().is_some_and(|g| window_on_screen(g.window.is_visible(), g.window.is_minimized(), shown));
         if !on_screen {
             return Default::default();
         }
@@ -157,11 +158,10 @@ impl App {
                 drew = true;
             }
         }
-        let on_screen = |w: &Window| w.is_visible() != Some(false) && w.is_minimized() != Some(true);
         let parked: Vec<(u64, Vec<PaneId>, Vec<PaneId>)> = self
             .windows
             .parked()
-            .filter(|(_, s)| s.gpu.as_ref().is_some_and(|g| on_screen(&g.window)))
+            .filter(|(_, s)| s.gpu.as_ref().is_some_and(|g| window_on_screen(g.window.is_visible(), g.window.is_minimized(), s.hotkey.as_ref().map(|h| h.shown))))
             .map(|(k, s)| {
                 let (front, back) = split_tabs(s.tabs.iter().map(|t| t.layout.panes()).collect(), s.active);
                 (*k, front, back)
@@ -241,12 +241,12 @@ impl App {
     pub(super) fn frame_wake(&mut self) -> Option<Instant> {
         let now = Instant::now();
         let period = self.redraw_period();
-        let on_screen = |w: &Window| w.is_visible() != Some(false) && w.is_minimized() != Some(true);
+        let on_screen = |w: &Window, hotkey: Option<&hotkey_ui::HotkeyWin>| window_on_screen(w.is_visible(), w.is_minimized(), hotkey.map(|h| h.shown));
         if self.pacer.take_due(now) {
             self.redraw_here();
         }
         let mut due = self.pacer.due();
-        if self.gpu.as_ref().is_some_and(|g| on_screen(&g.window)) {
+        if self.gpu.as_ref().is_some_and(|g| on_screen(&g.window, self.hotkey.as_ref())) {
             due = [due, forced_frame(self.pacer.last(), period, now, || self.redraw_here())].into_iter().flatten().min();
         }
         for (_, s) in self.windows.parked_mut() {
@@ -256,12 +256,18 @@ impl App {
                 }
             }
             due = [due, s.pacer.due()].into_iter().flatten().min();
-            if let Some(g) = s.gpu.as_ref().filter(|g| on_screen(&g.window)) {
+            if let Some(g) = s.gpu.as_ref().filter(|g| on_screen(&g.window, s.hotkey.as_ref())) {
                 due = [due, forced_frame(s.pacer.last(), period, now, || g.window.request_redraw())].into_iter().flatten().min();
             }
         }
         due
     }
+}
+
+/// Whether a window is on screen: not hidden, not minimized and, for a hotkey window, shown
+/// (`shown` false means DWM-cloaked, which winit still reports as visible).
+fn window_on_screen(visible: Option<bool>, minimized: Option<bool>, shown: Option<bool>) -> bool {
+    visible != Some(false) && minimized != Some(true) && shown != Some(false)
 }
 
 /// One window's minimum-period frame: asks for it when due and returns the next wake (a frame
@@ -278,6 +284,18 @@ fn forced_frame(last: Option<Instant>, period: Duration, now: Instant, draw: imp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 13l Task 4 fix (P18): a window is forced a frame only when it is on screen: not hidden,
+    /// not minimized and, for a hotkey window, not cloaked (winit still calls a cloaked window
+    /// visible).
+    #[test]
+    fn cloaked_hotkey_windows_are_not_on_screen() {
+        assert!(window_on_screen(Some(true), Some(false), None));
+        assert!(window_on_screen(None, None, Some(true)));
+        assert!(!window_on_screen(Some(false), Some(false), None));
+        assert!(!window_on_screen(Some(true), Some(true), None));
+        assert!(!window_on_screen(Some(true), Some(false), Some(false)), "cloaked");
+    }
 
     /// 13l review, Important 2: output in a window's other tabs still reaches the tab bar.
     #[test]
