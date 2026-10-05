@@ -8,5 +8,12 @@ R3 (02:634, Task 3 Step 3a): the blink half period is TimeBetweenBlinks, 0.5 s b
 R3 (Task 3 Step 3b): Tandem showed the cursor on each key press; iTerm2 shows it for half a second after the cursor moves. Fixed (R3). The moved test compares the screen-relative grid cell (B3).
 Patch 17 (Task 3): Term::set_cursor_blink_change; programs change blink only with Allow Change Cursor Blink. DECRQSS ` q` and DECRQM ?12 answer from the permitted state.
 Task 6 fix round 1 (P9 corrected): Cursor Boost mutes the selection background and selected text and the find-match background and text too, before the Dim Only Text step, as iTerm2 does (iTermMetalPerFrameState.m:2191-2193, iTermColorMap.m:327-350 and :514-525); P9's earlier text excluding them was wrong. The cursor, smart colors, link, label and hover colors stay unmuted - cost if wrong: a selection or match brighter or dimmer than iTerm2 at Boost above 0.
+
+Task 7 (smooth slide)
 Task 7: Decision: a step LEFT slides too (iTerm2 takes fabs of the distance, PTYTextView.m:1561; the brief said 0 < dx) - cost if wrong: a left step snaps.
-Task 7: Decision: a slide starts only from a cursor that was seen the frame before; a tab switch is not detected (a hidden pane's stale rect can slide once if its cursor moved a cell while hidden) - cost if wrong: one 50 ms slide after a tab switch.
+Task 7: Decision: a slide starts only from a cursor that was seen the frame before; a pane not on screen forgets its place each frame (Task 7 fix r2), so a tab switch never animates - cost if wrong: none.
+
+Task 8 (animated large movements)
+Task 8: Decision: the smear shares Task 7's Motion, Metrics snap and frame clock (one anim_frame deadline for slide and smear); a slide wins when both apply - cost if wrong: none.
+Task 8: Decision: a smear needs a solid cursor (bar, underline or focused box, blink phase ignored); a hollow or hidden cursor forgets its place as iTerm2 does - cost if wrong: none.
+Task 8: Decision: the minimum distance is CursorAnimationMinDistance times the window scale, origin to origin - cost if wrong: smears start slightly early or late at fractional scales.

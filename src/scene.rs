@@ -469,7 +469,8 @@ pub fn pane_with(
         }
         let mut selected = false;
         if content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) {
-            (fg, bg) = (crate::cursor_look::mute(palette.selected_text.unwrap_or(fg), palette.bg, look.boost), crate::cursor_look::mute(palette.selection, palette.bg, look.boost));
+            // `fg` is already muted: only an explicit Selected Text Color still needs it.
+            (fg, bg) = (palette.selected_text.map_or(fg, |t| crate::cursor_look::mute(t, palette.bg, look.boost)), crate::cursor_look::mute(palette.selection, palette.bg, look.boost));
             selected = true;
         }
         if block_cursor && cursor == Some((row, col)) {
@@ -4409,6 +4410,21 @@ mod tests {
         assert_eq!(text("he"), Some(rgb(50, 100, 50)), "selected text is muted");
         // The match's own text color (black on this light yellow) is muted toward black too.
         assert_eq!(text("ab"), Some(crate::cursor_look::mute(match_text(yellow), s.palette.bg, 0.5)));
+    }
+
+    #[test]
+    fn selected_text_without_a_color_is_muted_once() {
+        let mut s = screen(b"hello");
+        s.palette.bg = rgb(0, 0, 0);
+        s.palette.fg = rgb(200, 100, 0);
+        s.palette.selected_text = None;
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left);
+        sel.update(Point::new(Line(0), Column(1)), Side::Right);
+        s.term_mut().selection = Some(sel);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook { boost: 0.5, ..CursorLook::shown(false) });
+        let text = f.rows[0].spans.iter().find(|sp| sp.text.contains("he")).map(|sp| sp.color);
+        assert_eq!(text, Some(rgb(100, 50, 0)), "halfway to black once, not twice");
     }
 
     #[test]

@@ -224,6 +224,8 @@ pub struct Metrics {
     pub scale: f32,
     pub pane: Rect,
     pub scrolled: usize,
+    /// The alternate screen: entering or leaving it snaps.
+    pub alt: bool,
 }
 
 /// CoreAnimation's easeInEaseOut: the cubic Bezier (0.42, 0) (0.58, 1), solved for x
@@ -371,7 +373,20 @@ impl Motion {
     /// `rect`.
     pub fn moved_to(&mut self, rect: Rect, visible: Rect, slide_ok: bool, max_cells: i64, cell_w: f32, _now: Instant) -> Option<(Rect, Rect)> {
         let prev = self.last_rect.replace(rect)?;
-        (slide_ok && prev != rect && inside(prev, visible) && inside(rect, visible) && should_slide(prev, rect, cell_w, max_cells)).then_some((prev, rect))
+        let slides = slide_ok && prev != rect && inside(prev, visible) && inside(rect, visible) && should_slide(prev, rect, cell_w, max_cells);
+        if !slides && prev != rect {
+            // A jump: a running slide's offset must not carry over to the new place.
+            self.slide = None;
+        }
+        slides.then_some((prev, rect))
+    }
+
+    /// Forgets where the cursor was and any animation: a pane that is not on screen (another
+    /// tab or window) must not slide or smear from a stale place when it shows again.
+    pub fn forget(&mut self) {
+        self.last_rect = None;
+        self.slide = None;
+        self.smear = None;
     }
 
     /// Notes the pixel rect and answers the animation the move starts: a slide when it
@@ -546,7 +561,7 @@ mod tests {
         let t0 = Instant::now();
         let d = ms(50);
         let mut m = Motion::default();
-        let k = Metrics { cell: (10.0, 20.0), base: (10.0, 17.0), scale: 1.0, pane: r(0.0, 0.0), scrolled: 0 };
+        let k = Metrics { cell: (10.0, 20.0), base: (10.0, 17.0), scale: 1.0, pane: r(0.0, 0.0), scrolled: 0, alt: false };
         assert!(!m.metrics_changed(k), "the first frame has nothing to snap from");
         m.last_rect = Some(r(20.0, 26.0));
         m.begin_slide(r(20.0, 26.0), r(30.0, 26.0), t0, d);
@@ -560,6 +575,7 @@ mod tests {
             Metrics { pane: Rect { x: 5.0, ..k.pane }, ..k },
             Metrics { pane: Rect { w: 9.0, ..k.pane }, ..k },
             Metrics { scrolled: 3, ..k },
+            Metrics { alt: true, ..k },
         ] {
             m.metrics_changed(k);
             m.last_rect = Some(r(20.0, 26.0));
@@ -567,6 +583,34 @@ mod tests {
             assert!(m.metrics_changed(k2), "{k2:?}");
             assert_eq!((m.last_rect, m.slide.is_some()), (None, false));
         }
+    }
+
+    #[test]
+    fn a_jump_ends_a_running_slide() {
+        let t0 = Instant::now();
+        let visible = Rect { x: 0.0, y: 0.0, w: 1000.0, h: 1000.0 };
+        let mut m = Motion::default();
+        m.last_rect = Some(r(20.0, 26.0));
+        m.begin_slide(r(20.0, 26.0), r(30.0, 26.0), t0, ms(50));
+        m.last_rect = Some(r(30.0, 26.0));
+        // A move that does not slide drops the old slide's offset.
+        assert_eq!(m.moved_to(r(300.0, 126.0), visible, true, 1, 10.0, t0), None);
+        assert!(m.slide.is_none());
+        // The same rect again leaves a running slide alone.
+        m.begin_slide(r(290.0, 126.0), r(300.0, 126.0), t0, ms(50));
+        assert_eq!(m.moved_to(r(300.0, 126.0), visible, true, 1, 10.0, t0), None);
+        assert!(m.slide.is_some());
+    }
+
+    #[test]
+    fn forgetting_a_pane_clears_its_animation() {
+        let t0 = Instant::now();
+        let mut m = Motion::default();
+        m.last_rect = Some(r(20.0, 26.0));
+        m.begin_slide(r(20.0, 26.0), r(30.0, 26.0), t0, ms(50));
+        m.begin_smear(r(20.0, 26.0), r(300.0, 26.0), t0);
+        m.forget();
+        assert_eq!((m.last_rect, m.slide.is_some(), m.smear.is_some()), (None, false, false));
     }
 
     fn times() -> FadeTimes {

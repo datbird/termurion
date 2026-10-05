@@ -187,8 +187,16 @@ impl App {
         let Some(tab) = self.tabs.get(self.active) else { return };
         let panes: Vec<(PaneId, Rect)> = self.visible(tab).into_iter().map(|(id, rect)| (id, self.inner(rect))).collect();
         let now = Instant::now();
+        let shown: Vec<PaneId> = panes.iter().map(|(id, _)| *id).collect();
         for (id, inner) in panes {
             self.note_cursor_moves(id, inner, now);
+        }
+        // A pane that is not on screen (another tab or window) forgets its place, so showing it
+        // again never animates from a stale rect.
+        for (id, p) in self.panes.iter_mut() {
+            if !shown.contains(id) {
+                p.motion.forget();
+            }
         }
     }
 
@@ -210,6 +218,7 @@ impl App {
         let drawn = !(hide_unfocused && !focused);
         let Some(p) = self.panes.get_mut(&pane) else { return };
         let key_cursor = focused && p.at_password_prompt();
+        let alt = p.screen.alt_screen();
         let content = p.screen.term().renderable_content();
         let shape = content.cursor.shape;
         let scrolled = content.display_offset;
@@ -217,7 +226,7 @@ impl App {
         let point = p.screen.term().grid().cursor.point;
         let hidden_cell = screen_cell.map(|_| (i64::from(point.line.0), point.column.0));
         p.motion.note(hidden_cell, now);
-        p.motion.metrics_changed(Metrics { cell, base, scale, pane: inner, scrolled });
+        p.motion.metrics_changed(Metrics { cell, base, scale, pane: inner, scrolled, alt });
         let Some((row, col, wide)) = screen_cell else {
             p.motion.last_rect = None;
             return;
@@ -229,7 +238,7 @@ impl App {
         // blink phase does not matter); a hollow box forgets where it was
         // (`PTYTextView.m:1600`, `iTermTextDrawingHelper.m:3804`).
         let solid = drawn && !key_cursor && (solid_line || focused);
-        let smear_ok = solid && animate && (!interactive_only || p.screen.alt_screen());
+        let smear_ok = solid && animate && (!interactive_only || alt);
         let rule = cursor_anim::MoveRule { slide_ok, max_cells, cell_w: cell.0, smear_ok, min_distance };
         match p.motion.classify(rect, inner, rule) {
             Some(cursor_anim::Started::Slide(from, to)) => p.motion.begin_slide(from, to, now, duration),
