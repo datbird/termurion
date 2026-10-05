@@ -137,10 +137,13 @@ pub fn local_path_ok(path: &str) -> bool {
 /// in any mix of `\` and `/` (`\\host`, `//host`, `/\host`, `\/host`, `\\?\UNC\`,
 /// `\\.\`) or the NT prefix `\??\`. For values that are not required to be paths at all
 /// (config values), where `local_path_ok` would refuse too much.
+/// The network part is the one rule, `scripts::is_network_path`; a value here also never needs
+/// the long-path drive forms (`\\?\C:\`, `\??\C:\`), so they are refused too.
 pub fn network_path(path: &str) -> bool {
     let b = path.as_bytes();
     let sep = |c: u8| c == b'\\' || c == b'/';
-    (b.len() >= 2 && sep(b[0]) && sep(b[1])) || (b.len() >= 4 && sep(b[0]) && b[1] == b'?' && b[2] == b'?' && sep(b[3]))
+    let long_form = b.len() >= 4 && sep(b[0]) && b[2] == b'?' && sep(b[3]) && (sep(b[1]) || b[1] == b'?');
+    crate::scripts::is_network_path(path) || long_form
 }
 
 /// A ReportVariable name Tandem will look up or ask about: letters, digits, `_`, and `.`.
@@ -612,5 +615,26 @@ mod tests {
             }
             assert!(valid(key, &serde_json::json!("D:\\ok")).is_some(), "{key}");
         }
+    }
+
+    /// One network rule (13r B2, the 74f7d20 sweep; 13q's log and archive folders reach it
+    /// through `start_dir::network_value`): `network_path` is `scripts::is_network_path` plus
+    /// the long-path drive forms (`\\?\C:\`, `\??\C:\`), which a value here never needs.
+    #[test]
+    fn network_path_is_the_one_rule() {
+        let long_drive = ["\\\\?\\C:\\x", "\\??\\C:\\x", "//?/c:/x", "\\\\?\\c:"];
+        for p in long_drive {
+            assert!(network_path(p) && !crate::scripts::is_network_path(p), "{p}");
+        }
+        let cases = [
+            "\\\\host\\s", "//host/s", "/\\host\\s", "\\/host/s", "\\??\\UNC\\h\\s", "\\\\?\\UNC\\h\\s", "\\\\.\\pipe\\x",
+            "//./pipe/x", "\\\\?\\Volume{x}\\", "/??/UNC/h/s", "//", "C:\\x", "c:/x", "relative", "\\rooted", "/rooted", "", "?", "\\?",
+        ];
+        for p in cases {
+            assert_eq!(network_path(p), crate::scripts::is_network_path(p), "{p}");
+        }
+        let src = include_str!("prompted.rs");
+        let f = &src[src.find("pub fn network_path(").unwrap()..];
+        assert!(f[..f.find("\n}\n").unwrap()].contains("crate::scripts::is_network_path(path)"), "delegates, no second body");
     }
 }
