@@ -34,8 +34,17 @@ pub fn printable(report: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Which report a detector was armed by (iTerm2's `PTYSessionTurdType`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Turd {
+    #[default]
+    Mouse,
+    Dec2048,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Detector {
+    kind: Turd,
     pattern: Vec<u8>,
     deadline: Option<Instant>,
     /// The end of the output so far, for a match split across chunks.
@@ -46,6 +55,13 @@ impl Detector {
     /// A report was written: its printable tail joins the pattern while the last report's
     /// deadline holds, else starts it over.
     pub fn armed(&mut self, report: &[u8], now: Instant) {
+        self.armed_as(report, now, Turd::Mouse);
+    }
+
+    /// `armed` for a report of this kind. One detector serves every kind, as iTerm2's one
+    /// `_turdDetector`: the kind of the last report written is kept.
+    pub fn armed_as(&mut self, report: &[u8], now: Instant, kind: Turd) {
+        self.kind = kind;
         if !self.deadline.is_some_and(|d| now < d) {
             self.pattern.clear();
         }
@@ -62,6 +78,11 @@ impl Detector {
             return;
         }
         self.deadline = Some(now + DEADLINE);
+    }
+
+    /// The kind of the last report that armed the detector.
+    pub fn kind(&self) -> Turd {
+        self.kind
     }
 
     /// Armed: the pattern is long enough and its deadline has not passed.
@@ -184,6 +205,25 @@ mod tests {
         // Unrelated output never matches and never arms.
         let mut d = Detector::default();
         assert!(!d.output(b"0;12;5M0;12;5m", t));
+    }
+
+    /// 13o Task 6 (R8): the resize report arms the same detector, and a match says which kind.
+    #[test]
+    fn dec2048_turds_follow_iterm2() {
+        let t = Instant::now();
+        let report = crate::emu::resize_report(24, 80, 400, 640);
+        let mut d = Detector::default();
+        assert_eq!(d.kind(), Turd::Mouse);
+        d.armed_as(report.as_bytes(), t, Turd::Dec2048);
+        assert!(d.is_armed(t), "one report is 16 printable bytes: armed");
+        d.armed_as(report.as_bytes(), t + ms(50), Turd::Dec2048);
+        assert!(d.is_armed(t + ms(50)));
+        assert_eq!(d.kind(), Turd::Dec2048);
+        assert!(d.output(b"$ 8;24;80;400;640t8;24;80;400;640t", t + ms(60)));
+        assert_eq!(d.kind(), Turd::Dec2048, "the kind survives the match");
+        d.armed(b"\x1b[<0;12;5M", t + ms(500));
+        assert_eq!(d.kind(), Turd::Mouse, "the last armed kind wins");
+        assert_eq!((next(None), next(Some(true)), next(Some(false))), (Next::Offer, Next::TurnOff, Next::Nothing));
     }
 
     /// `PTYSession.m:17953-17962`; the bar itself is 13b's host offer (B2).

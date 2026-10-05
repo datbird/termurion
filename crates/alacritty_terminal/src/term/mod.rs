@@ -14,7 +14,7 @@ use log::{debug, trace};
 use unicode_width::UnicodeWidthChar;
 
 use crate::event::{Event, EventListener};
-use crate::grid::{Dimensions, Grid, GridIterator, Scroll};
+use crate::grid::{Dimensions, Grid, GridCell, GridIterator, Scroll};
 use crate::index::{self, Boundary, Column, Direction, Line, Point, Side};
 use crate::selection::{Selection, SelectionRange, SelectionType};
 use crate::term::cell::{Cell, Flags, LineLength};
@@ -39,13 +39,18 @@ pub const MIN_COLUMNS: usize = 2;
 pub const MIN_SCREEN_LINES: usize = 1;
 
 /// Max size of the window title stack.
-const TITLE_STACK_MAX_DEPTH: usize = 4096;
+// Tandem patch: xterm's depth (10), not 4096, and each entry is cut (`TITLE_STACK_MAX_BYTES`), so
+// a program cannot hold gigabytes with `CSI 22 t` (13o, patch 22).
+const TITLE_STACK_MAX_DEPTH: usize = 10;
+
+/// Tandem patch: the longest title kept on the stack, in bytes (cut at a character boundary).
+const TITLE_STACK_MAX_BYTES: usize = 4096;
 
 /// Default semantic escape characters.
 pub const SEMANTIC_ESCAPE_CHARS: &str = ",│`|:\"' ()[]{}<>\t";
 
 /// Max size of the keyboard modes.
-const KEYBOARD_MODE_STACK_MAX_DEPTH: usize = TITLE_STACK_MAX_DEPTH;
+const KEYBOARD_MODE_STACK_MAX_DEPTH: usize = 4096;
 
 /// Default tab interval, corresponding to terminfo `it` value.
 const INITIAL_TABSTOPS: usize = 8;
@@ -265,6 +270,30 @@ impl TermDamageState {
     }
 }
 
+/// Tandem patch: how `Term::input` measures a character (iTerm2's width rules). `width` gives
+/// the cells a character takes (None writes nothing, 0 rides on the previous cell); the rest
+/// are the switches `input` itself needs for U+200B, VS16 and regional indicator pairs.
+#[derive(Clone, Copy, Debug)]
+pub struct WidthRule {
+    pub width: fn(char, &WidthRule) -> Option<usize>,
+    pub ambiguous_wide: bool,
+    pub unicode_version: u8,
+    pub full_width_flags: bool,
+    pub zwsp_advances: bool,
+    pub vs16: bool,
+    pub vs16_primary: bool,
+    pub accepts_vs16: fn(char) -> bool,
+    /// An emoji skin tone modifier: it keeps its own cell, and a ZWJ pictograph after it joins.
+    pub is_modifier: fn(char) -> bool,
+    /// Extended_Pictographic: it joins the cell before it when a ZWJ and a pictograph precede.
+    pub is_pictograph: fn(char) -> bool,
+}
+
+/// A regional indicator symbol (U+1F1E6 to U+1F1FF).
+fn is_regional_indicator(c: char) -> bool {
+    ('\u{1F1E6}'..='\u{1F1FF}').contains(&c)
+}
+
 pub struct Term<T> {
     /// Terminal focus controlling the cursor shape.
     pub is_focused: bool,
@@ -339,6 +368,51 @@ pub struct Term<T> {
     /// `VT100Terminal.m:877-881`). A reset is always honored. Not a mode bit, so a reset keeps it.
     pub alternate_scroll_allowed: bool,
 
+    /// Tandem patch: the tab stop spacing (iTerm2's Default tab stop width), used by every new
+    /// stop list: a session's start, a reset and a wider grid.
+    pub tab_width: usize,
+
+    /// Tandem patch: the version DA2 reports (iTerm2's xtermVersion).
+    pub xterm_version: u32,
+
+    /// Tandem patch: whether color reports (OSC 4, 10 to 19) give 16 bits a channel; off gives 8
+    /// (iTerm2's oscColorReport16Bits).
+    pub color_report_16: bool,
+
+    /// Tandem patch: whether DECSET 1004 may be set (iTerm2's Focus Reporting key). A set is
+    /// refused while false, and DECRQM then answers reset. A reset is always honored.
+    pub focus_reporting_allowed: bool,
+
+    /// Tandem patch: DEC mode 2048 (in-band resize reports) is set. Tandem writes the report
+    /// after a resize; a reset (RIS, DECRST) clears it.
+    pub resize_reports: bool,
+
+    /// Tandem patch: a tab at the last column wraps to the next line (iTerm2's tabsWrapAround).
+    pub tabs_wrap: bool,
+
+    /// Tandem patch: the longest OSC 8 URI `set_hyperlink` accepts (iTerm2's maxURLLength).
+    pub max_url_len: usize,
+
+    /// Tandem patch: whether the alternate screen keeps scrollback (iTerm2's Scrollback in
+    /// Alternate Screen). Lines scrolled off its top are history, which moves into the main
+    /// history when the program leaves. Change it with `set_alt_scrollback`.
+    pub alt_scrollback: bool,
+
+    /// Tandem patch: whether ED 0 from the home cell in the alternate screen first scrolls the
+    /// screen into history (iTerm2's saveScrollBufferWhenClearing).
+    pub save_screen_on_clear: bool,
+
+    /// Tandem patch: `(scrolled_off, rows)` for each time leaving the alternate screen spliced
+    /// rows into the main history. Take them with `take_history_splices`.
+    history_splices: Vec<(u64, usize)>,
+
+    /// Tandem patch: the width rule `input` follows (None keeps upstream's `c.width()`).
+    pub width_rule: Option<WidthRule>,
+
+    /// Tandem patch: characters written to the screen, ever. Tandem compares it between two
+    /// points in the output ("has the program drawn anything since").
+    pub printed: u64,
+
     /// Tandem: whether a scroll region that starts at the top but stops above the bottom row
     /// saves the lines leaving it to scrollback (iTerm2's Scrollback With Status Bar).
     scrollback_with_region: bool,
@@ -412,6 +486,11 @@ pub enum Osc52 {
 }
 
 impl<T> Term<T> {
+    /// Tandem patch: the saved titles (`CSI 22 t`), oldest first.
+    pub fn title_stack(&self) -> &[Option<String>] {
+        &self.title_stack
+    }
+
     #[inline]
     pub fn scroll_display(&mut self, scroll: Scroll)
     where
@@ -440,9 +519,11 @@ impl<T> Term<T> {
 
         let history_size = config.scrolling_history;
         let grid = Grid::new(num_lines, num_cols, history_size);
-        let inactive_grid = Grid::new(num_lines, num_cols, 0);
+        // Tandem patch: the alternate screen keeps history as the main screen does.
+        let inactive_grid = Grid::new(num_lines, num_cols, history_size);
 
-        let tabs = TabStops::new(grid.columns());
+        // Tandem patch: the stop spacing is a parameter (`Term.tab_width`).
+        let tabs = TabStops::new(grid.columns(), INITIAL_TABSTOPS);
 
         let scroll_region = Line(0)..Line(grid.screen_lines() as i32);
 
@@ -465,6 +546,18 @@ impl<T> Term<T> {
             emulation_level: 500,
             da1_clipboard: true,
             alternate_scroll_allowed: true,
+            tab_width: INITIAL_TABSTOPS,
+            xterm_version: 2500,
+            color_report_16: true,
+            focus_reporting_allowed: true,
+            resize_reports: false,
+            tabs_wrap: false,
+            max_url_len: 2_097_152,
+            alt_scrollback: true,
+            save_screen_on_clear: true,
+            history_splices: Vec::new(),
+            width_rule: None,
+            printed: 0,
             scrollback_with_region: true,
             cursor_blink_change: true,
             active_charset: Default::default(),
@@ -544,11 +637,8 @@ impl<T> Term<T> {
 
         self.event_proxy.send_event(title_event);
 
-        if self.mode.contains(TermMode::ALT_SCREEN) {
-            self.inactive_grid.update_history(self.config.scrolling_history);
-        } else {
-            self.grid.update_history(self.config.scrolling_history);
-        }
+        // Tandem patch: both screens' limits (the alternate one's is 0 without alt scrollback).
+        self.update_history_limits();
 
         if self.config.kitty_keyboard != old_config.kitty_keyboard {
             self.keyboard_mode_stack = Vec::new();
@@ -708,6 +798,13 @@ impl<T> Term<T> {
         self.cursor_blink_change = on;
     }
 
+    /// Tandem patch: sets the tab stop spacing and resets every stop to it, as a new session
+    /// does (iTerm2's Default tab stop width, at least 1). Later resets and wider grids use it.
+    pub fn set_tab_width(&mut self, width: usize) {
+        self.tab_width = width.max(1);
+        self.tabs = TabStops::new(self.columns(), self.tab_width);
+    }
+
     /// Tandem: sets whether a top scroll region above the bottom row saves to scrollback.
     pub fn set_scrollback_with_region(&mut self, on: bool) {
         self.scrollback_with_region = on;
@@ -725,6 +822,50 @@ impl<T> Term<T> {
         self.inactive_keyboard_mode_stack.clear();
         self.modify_other_keys = 0;
         self.mode &= !TermMode::KITTY_KEYBOARD_PROTOCOL;
+    }
+
+    /// Tandem patch: the history limit of each screen from the config and `alt_scrollback`.
+    fn update_history_limits(&mut self) {
+        let primary = self.config.scrolling_history;
+        let alt = if self.alt_scrollback { primary } else { 0 };
+        if self.mode.contains(TermMode::ALT_SCREEN) {
+            self.inactive_grid.update_history(primary);
+            self.grid.update_history(alt);
+        } else {
+            self.grid.update_history(primary);
+            self.inactive_grid.update_history(alt);
+        }
+    }
+
+    /// Tandem patch: turns scrollback in the alternate screen on or off. Off drops the
+    /// alternate history kept so far.
+    pub fn set_alt_scrollback(&mut self, on: bool) {
+        self.alt_scrollback = on;
+        self.update_history_limits();
+        self.mark_fully_damaged();
+    }
+
+    /// Tandem patch: iTerm2's `scrollScreenIntoHistory`. The rows through the last non-empty
+    /// one scroll up off the screen into the history of the grid shown, whatever the scroll
+    /// region; the cursor stays where it is.
+    pub fn scroll_screen_into_history(&mut self) {
+        let lines = self.screen_lines();
+        let rows = (0..lines)
+            .rev()
+            .find(|&l| (0..self.columns()).any(|c| !self.grid[Line(l as i32)][Column(c)].is_empty()))
+            .map_or(0, |l| l + 1);
+        if rows == 0 {
+            return;
+        }
+        let region = mem::replace(&mut self.scroll_region, Line(0)..Line(lines as i32));
+        self.scroll_up_relative(Line(0), rows);
+        self.scroll_region = region;
+    }
+
+    /// Tandem patch: the history splices since the last call, oldest first. Absolute row
+    /// numbers (`scrolled_off` plus a line) below `.0` move down by `.1`.
+    pub fn take_history_splices(&mut self) -> Vec<(u64, usize)> {
+        mem::take(&mut self.history_splices)
     }
 
     /// Tandem patch: the main screen's grid, also while the alternate screen is up.
@@ -777,7 +918,8 @@ impl<T> Term<T> {
             self.selection = None;
 
             // Recreate tabs list.
-            self.tabs.resize(num_cols);
+            // Tandem patch: with the configured spacing.
+            self.tabs.resize(num_cols, self.tab_width);
         } else if let Some(selection) = self.selection.take() {
             // Tandem patch: every line moved by `delta`, and the ones now outside the buffer
             // are gone; upstream's `rotate` clamped the hull onto other rows and kept runs and
@@ -818,6 +960,27 @@ impl<T> Term<T> {
 
             // Reset alternate screen contents.
             self.inactive_grid.reset_region(..);
+            // Tandem patch: and its history, from the last time.
+            self.inactive_grid.clear_history();
+        } else {
+            // Tandem patch: the alternate screen's history goes above the main history.
+            let rows = self.grid.take_history();
+            let by = rows.len();
+            if by > 0 {
+                // Tandem patch: every absolute row number below the main grid's `scrolled_off`
+                // named a history row, and `by` rows now sit after them.
+                let below = self.inactive_grid.scrolled_off();
+                match self.history_splices.last_mut() {
+                    Some((b, n)) if *b == below => *n += by,
+                    _ => {
+                        if self.history_splices.len() >= 256 {
+                            self.history_splices.remove(0);
+                        }
+                        self.history_splices.push((below, by));
+                    },
+                }
+            }
+            self.inactive_grid.append_history(rows);
         }
 
         mem::swap(&mut self.keyboard_mode_stack, &mut self.inactive_keyboard_mode_stack);
@@ -1088,6 +1251,15 @@ impl<T> Term<T> {
             return;
         }
 
+        self.wrapline_always();
+    }
+
+    /// Tandem patch: the wrap itself, whatever DECAWM says (a tab with `tabs_wrap` wraps even
+    /// with auto-wrap off, iTerm2 `MS:2814-2817`).
+    fn wrapline_always(&mut self)
+    where
+        T: EventListener,
+    {
         trace!("Wrapping input");
 
         self.grid.cursor_cell().flags.insert(Flags::WRAPLINE);
@@ -1149,6 +1321,94 @@ impl<T> Term<T> {
         cursor_cell.extra = extra;
     }
 
+    /// Tandem patch: the column of the cell just before the cursor (the first half when that is
+    /// a wide character), None when the cursor sits at the left edge with nothing pending.
+    fn previous_cell_column(&self) -> Option<Column> {
+        let point = self.grid.cursor.point;
+        let mut column = point.column.0;
+        if !self.grid.cursor.input_needs_wrap {
+            column = column.checked_sub(1)?;
+        }
+        if self.grid[point.line][Column(column)].flags.contains(Flags::WIDE_CHAR_SPACER) {
+            column = column.checked_sub(1)?;
+        }
+        Some(Column(column))
+    }
+
+    /// Tandem patch: with insert mode on, shifts the cells from the cursor right by `width`.
+    fn insert_shift(&mut self, width: usize) {
+        let columns = self.columns();
+        if self.mode.contains(TermMode::INSERT) && self.grid.cursor.point.column + width < columns {
+            let line = self.grid.cursor.point.line;
+            let col = self.grid.cursor.point.column;
+            let row = &mut self.grid[line][..];
+            for col in (col.0..(columns - width)).rev() {
+                row.swap(col + width, col);
+            }
+        }
+    }
+
+    /// Tandem patch: makes the narrow cell before the cursor two cells wide, as writing a wide
+    /// character there would: its spacer is written and the cursor moves one more column. A
+    /// cell in the last column moves to the next row first when line wrap is on, and stays
+    /// narrow when it is off.
+    fn widen_previous(&mut self)
+    where
+        T: EventListener,
+    {
+        let columns = self.columns();
+        if columns < 2 {
+            return;
+        }
+        let Some(base) = self.previous_cell_column() else { return };
+        let line = self.grid.cursor.point.line;
+        let flags = self.grid[line][base].flags;
+        if flags.intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+            return;
+        }
+
+        let in_place = !self.grid.cursor.input_needs_wrap;
+        if !in_place {
+            // The base sits in the last column: it goes to the next row as a wide character.
+            if !self.mode.contains(TermMode::LINE_WRAP) {
+                return;
+            }
+            let old = self.grid[line][base].clone();
+            self.grid.cursor.input_needs_wrap = false;
+            self.grid.cursor.template.flags.insert(Flags::LEADING_WIDE_CHAR_SPACER);
+            self.write_at_cursor(' ');
+            self.grid.cursor.template.flags.remove(Flags::LEADING_WIDE_CHAR_SPACER);
+            self.wrapline();
+            self.insert_shift(2);
+            self.grid.cursor.template.flags.insert(Flags::WIDE_CHAR);
+            self.write_at_cursor(old.c);
+            self.grid.cursor.template.flags.remove(Flags::WIDE_CHAR);
+            let cell = self.grid.cursor_cell();
+            cell.fg = old.fg;
+            cell.bg = old.bg;
+            cell.flags = (old.flags - Flags::WRAPLINE) | Flags::WIDE_CHAR;
+            cell.extra = old.extra.clone();
+        } else {
+            self.insert_shift(1);
+        }
+
+        if !in_place {
+            self.grid.cursor.point.column += 1;
+        }
+        self.grid.cursor.template.flags.insert(Flags::WIDE_CHAR_SPACER);
+        self.write_at_cursor(' ');
+        self.grid.cursor.template.flags.remove(Flags::WIDE_CHAR_SPACER);
+        if in_place {
+            // After the spacer: writing it clears whatever wide character it landed on.
+            self.grid[line][base].flags.insert(Flags::WIDE_CHAR);
+        }
+        if self.grid.cursor.point.column + 1 < columns {
+            self.grid.cursor.point.column += 1;
+        } else {
+            self.grid.cursor.input_needs_wrap = true;
+        }
+    }
+
     #[inline]
     fn damage_cursor(&mut self) {
         // The normal cursor coordinates are always in viewport.
@@ -1193,10 +1453,54 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline(never)]
     fn input(&mut self, c: char) {
         // Number of cells the char will occupy.
-        let width = match c.width() {
+        // Tandem patch: a width rule measures it (iTerm2's tables, U+200B, ambiguous width).
+        let rule = self.width_rule;
+        let width = match rule {
+            Some(rule) => (rule.width)(c, &rule),
+            None => c.width(),
+        };
+        let width = match width {
             Some(width) => width,
             None => return,
         };
+        // Tandem patch: one more character written.
+        self.printed = self.printed.wrapping_add(1);
+
+        // Tandem patch: the second regional indicator of a flag joins the first one's cell,
+        // and the pair is always two cells (iTerm2 `StringToScreenChars`).
+        if rule.is_some() && is_regional_indicator(c) {
+            if let Some(column) = self.previous_cell_column() {
+                let line = self.grid.cursor.point.line;
+                let cell = &self.grid[line][column];
+                if is_regional_indicator(cell.c) && cell.zerowidth().is_none_or(|z| z.is_empty()) {
+                    let wide = cell.flags.contains(Flags::WIDE_CHAR);
+                    self.grid[line][column].push_zerowidth(c);
+                    if !wide {
+                        self.widen_previous();
+                    }
+                    return;
+                }
+            }
+        }
+
+        // Tandem patch: a pictograph after a ZWJ joins the cell before it (grapheme clusters,
+        // iTerm2 `StringToScreenChars`; `enumerateComposedCharacters` never splits a code point
+        // preceded by a ZWJ). A skin tone modifier keeps its own cell (iTerm2's default
+        // AggressiveBaseCharacterDetection), and the pictograph after a ZWJ that follows one
+        // joins that cell.
+        if let Some(rule) = rule {
+            if (rule.is_pictograph)(c) {
+                if let Some(column) = self.previous_cell_column() {
+                    let line = self.grid.cursor.point.line;
+                    let cell = &self.grid[line][column];
+                    let joins = cell.zerowidth().is_some_and(|z| z.last() == Some(&'\u{200D}'));
+                    if joins && ((rule.is_pictograph)(cell.c) || (rule.is_modifier)(cell.c)) {
+                        self.grid[line][column].push_zerowidth(c);
+                        return;
+                    }
+                }
+            }
+        }
 
         // Handle zero-width characters.
         if width == 0 {
@@ -1213,6 +1517,22 @@ impl<T: EventListener> Handler for Term<T> {
             }
 
             self.grid[line][column].push_zerowidth(c);
+
+            // Tandem patch: VS16 after a narrow emoji base widens it (iTerm2's Vs16Supported and
+            // Vs16SupportedInPrimaryScreen; the primary-screen rule reads the screen itself).
+            if c == '\u{FE0F}' {
+                if let Some(rule) = rule {
+                    let alt = self.mode.contains(TermMode::ALT_SCREEN);
+                    if rule.vs16 || (rule.vs16_primary && !alt) {
+                        if let Some(column) = self.previous_cell_column() {
+                            let cell = &self.grid[line][column];
+                            if !cell.flags.contains(Flags::WIDE_CHAR) && (rule.accepts_vs16)(cell.c) {
+                                self.widen_previous();
+                            }
+                        }
+                    }
+                }
+            }
             return;
         }
 
@@ -1404,7 +1724,8 @@ impl<T: EventListener> Handler for Term<T> {
                     301..=400 => 41,
                     _ => 64,
                 };
-                format!("\x1b[>{vt};2500;0c")
+                // Tandem patch: the version is iTerm2's xtermVersion.
+                format!("\x1b[>{vt};{};0c", self.xterm_version)
             },
             Some('=') if level >= 400 => String::from("\x1bP!|6954726D\x1b\\"),
             _ => return,
@@ -1524,14 +1845,25 @@ impl<T: EventListener> Handler for Term<T> {
     /// Insert tab at cursor position.
     #[inline]
     fn put_tab(&mut self, mut count: u16) {
-        // A tab after the last column is the same as a linebreak.
-        if self.grid.cursor.input_needs_wrap {
-            self.wrapline();
+        // Tandem patch: a tab in the pending-wrap state does nothing (iTerm2: the next stop is
+        // not past the cursor, and `tabsWrapAround` is off by default).
+        if self.grid.cursor.input_needs_wrap && !self.tabs_wrap {
             return;
         }
 
         while self.grid.cursor.point.column < self.columns() && count != 0 {
             count -= 1;
+
+            // Tandem patch: with `tabs_wrap`, a tab where the cursor cannot advance wraps the
+            // line (soft, with auto-wrap on or off) and goes to the first stop after column 0 (iTerm2 `appendTabAtCursor`).
+            if self.tabs_wrap
+                && (self.grid.cursor.input_needs_wrap
+                    || (self.grid.cursor.point.column + 1) == self.columns())
+            {
+                self.wrapline_always();
+            } else if self.grid.cursor.input_needs_wrap {
+                return;
+            }
 
             let c = self.grid.cursor.charsets[self.active_charset].map('\t');
             let cell = self.grid.cursor_cell();
@@ -1841,13 +2173,22 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Requested write of escape sequence for color code {prefix}: color[{index}]");
 
         let terminator = terminator.to_owned();
+        // Tandem patch: 8-bit channels when the 16-bit reports are off (oscColorReport16Bits).
+        let wide = self.color_report_16;
         self.event_proxy.send_event(Event::ColorRequest(
             index,
             Arc::new(move |color| {
-                format!(
-                    "\x1b]{};rgb:{1:02x}{1:02x}/{2:02x}{2:02x}/{3:02x}{3:02x}{4}",
-                    prefix, color.r, color.g, color.b, terminator
-                )
+                if wide {
+                    format!(
+                        "\x1b]{};rgb:{1:02x}{1:02x}/{2:02x}{2:02x}/{3:02x}{3:02x}{4}",
+                        prefix, color.r, color.g, color.b, terminator
+                    )
+                } else {
+                    format!(
+                        "\x1b]{};rgb:{1:02x}/{2:02x}/{3:02x}{4}",
+                        prefix, color.r, color.g, color.b, terminator
+                    )
+                }
             }),
         ));
     }
@@ -1939,6 +2280,16 @@ impl<T: EventListener> Handler for Term<T> {
             },
             ansi::ClearMode::Below => {
                 let cursor = self.grid.cursor.point;
+                // Tandem patch: from the home cell of the alternate screen the screen is saved
+                // first (screen clears with CSI H CSI J; `VT100ScreenMutableState.m:1729`).
+                if cursor.line == 0
+                    && cursor.column == 0
+                    && self.save_screen_on_clear
+                    && self.alt_scrollback
+                    && self.mode.contains(TermMode::ALT_SCREEN)
+                {
+                    self.scroll_screen_into_history();
+                }
                 for cell in &mut self.grid[cursor.line][cursor.column..] {
                     *cell = bg.into();
                 }
@@ -1952,6 +2303,11 @@ impl<T: EventListener> Handler for Term<T> {
             },
             ansi::ClearMode::All => {
                 if self.mode.contains(TermMode::ALT_SCREEN) {
+                    // Tandem patch: iTerm2 always scrolls the alternate screen into its history
+                    // before a full clear (`VT100ScreenMutableState.m:1712-1720`).
+                    if self.alt_scrollback {
+                        self.scroll_screen_into_history();
+                    }
                     self.grid.reset_region(..);
                 } else {
                     let old_offset = self.grid.display_offset();
@@ -2006,9 +2362,12 @@ impl<T: EventListener> Handler for Term<T> {
         self.grid.reset();
         self.inactive_grid.reset();
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
-        self.tabs = TabStops::new(self.columns());
+        // Tandem patch: a reset restores the configured spacing.
+        self.tabs = TabStops::new(self.columns(), self.tab_width);
         self.title_stack = Vec::new();
         self.title = None;
+        // Tandem patch: RIS turns DEC mode 2048 off.
+        self.resize_reports = false;
         self.selection = None;
         self.vi_mode_cursor = Default::default();
         self.keyboard_mode_stack = Default::default();
@@ -2039,6 +2398,11 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn set_hyperlink(&mut self, hyperlink: Option<Hyperlink>) {
         trace!("Setting hyperlink: {hyperlink:?}");
+        // Tandem patch: a URI over the cap is refused before the template is touched, so it
+        // neither starts nor ends a link (iTerm2's executeLink).
+        if hyperlink.as_ref().is_some_and(|h| h.uri.len() > self.max_url_len) {
+            return;
+        }
         self.grid.cursor.template.set_hyperlink(hyperlink.map(|e| e.into()));
     }
 
@@ -2100,6 +2464,11 @@ impl<T: EventListener> Handler for Term<T> {
     fn set_private_mode(&mut self, mode: PrivateMode) {
         let mode = match mode {
             PrivateMode::Named(mode) => mode,
+            PrivateMode::Unknown(2048) => {
+                // Tandem patch: DEC mode 2048, in-band resize reports.
+                self.resize_reports = true;
+                return;
+            },
             PrivateMode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {mode} in set_private_mode");
                 return;
@@ -2132,7 +2501,12 @@ impl<T: EventListener> Handler for Term<T> {
                 self.mode.insert(TermMode::MOUSE_MOTION);
                 self.event_proxy.send_event(Event::MouseCursorDirty);
             },
-            NamedPrivateMode::ReportFocusInOut => self.mode.insert(TermMode::FOCUS_IN_OUT),
+            // Tandem patch: refused when Focus Reporting is not allowed.
+            NamedPrivateMode::ReportFocusInOut => {
+                if self.focus_reporting_allowed {
+                    self.mode.insert(TermMode::FOCUS_IN_OUT)
+                }
+            },
             NamedPrivateMode::BracketedPaste => self.mode.insert(TermMode::BRACKETED_PASTE),
             // Mouse encodings are mutually exclusive.
             NamedPrivateMode::SgrMouse => {
@@ -2170,6 +2544,11 @@ impl<T: EventListener> Handler for Term<T> {
     fn unset_private_mode(&mut self, mode: PrivateMode) {
         let mode = match mode {
             PrivateMode::Named(mode) => mode,
+            PrivateMode::Unknown(2048) => {
+                // Tandem patch: DEC mode 2048, in-band resize reports.
+                self.resize_reports = false;
+                return;
+            },
             PrivateMode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {mode} in unset_private_mode");
                 return;
@@ -2239,8 +2618,10 @@ impl<T: EventListener> Handler for Term<T> {
                 NamedPrivateMode::ReportAllMouseMotion => {
                     self.mode.contains(TermMode::MOUSE_MOTION).into()
                 },
+                // Tandem patch: a refused mode reads as reset.
                 NamedPrivateMode::ReportFocusInOut => {
-                    self.mode.contains(TermMode::FOCUS_IN_OUT).into()
+                    (self.focus_reporting_allowed && self.mode.contains(TermMode::FOCUS_IN_OUT))
+                        .into()
                 },
                 NamedPrivateMode::Utf8Mouse => self.mode.contains(TermMode::UTF8_MOUSE).into(),
                 NamedPrivateMode::SgrMouse => self.mode.contains(TermMode::SGR_MOUSE).into(),
@@ -2259,6 +2640,8 @@ impl<T: EventListener> Handler for Term<T> {
                 NamedPrivateMode::SyncUpdate => ModeState::Reset,
                 NamedPrivateMode::ColumnMode => ModeState::NotSupported,
             },
+            // Tandem patch: DEC mode 2048 answers set or reset.
+            PrivateMode::Unknown(2048) => self.resize_reports.into(),
             PrivateMode::Unknown(_) => ModeState::NotSupported,
         };
 
@@ -2425,7 +2808,18 @@ impl<T: EventListener> Handler for Term<T> {
             );
         }
 
-        self.title_stack.push(self.title.clone());
+        // Tandem patch: an entry is cut at `TITLE_STACK_MAX_BYTES`.
+        let mut title = self.title.clone();
+        if let Some(t) = &mut title {
+            if t.len() > TITLE_STACK_MAX_BYTES {
+                let mut end = TITLE_STACK_MAX_BYTES;
+                while !t.is_char_boundary(end) {
+                    end -= 1;
+                }
+                t.truncate(end);
+            }
+        }
+        self.title_stack.push(title);
     }
 
     #[inline]
@@ -2505,9 +2899,11 @@ struct TabStops {
 }
 
 impl TabStops {
+    /// Tandem patch: a stop every `width` columns (at least 1).
     #[inline]
-    fn new(columns: usize) -> TabStops {
-        TabStops { tabs: (0..columns).map(|i| i % INITIAL_TABSTOPS == 0).collect() }
+    fn new(columns: usize, width: usize) -> TabStops {
+        let width = width.max(1);
+        TabStops { tabs: (0..columns).map(|i| i % width == 0).collect() }
     }
 
     /// Remove all tabstops.
@@ -2519,11 +2915,13 @@ impl TabStops {
     }
 
     /// Increase tabstop capacity.
+    // Tandem patch: `width` is the stop spacing (at least 1).
     #[inline]
-    fn resize(&mut self, columns: usize) {
+    fn resize(&mut self, columns: usize, width: usize) {
+        let width = width.max(1);
         let mut index = self.tabs.len();
         self.tabs.resize_with(columns, || {
-            let is_tabstop = index % INITIAL_TABSTOPS == 0;
+            let is_tabstop = index % width == 0;
             index += 1;
             is_tabstop
         });
@@ -3454,7 +3852,18 @@ mod tests {
         for _ in 0..4097 {
             term.push_title();
         }
-        assert_eq!(term.title_stack.len(), 4096);
+        assert_eq!(term.title_stack.len(), TITLE_STACK_MAX_DEPTH);
+
+        // Tandem patch: nor does it hold big titles (13o, patch 22).
+        term.set_title(Some("\u{e9}".repeat(1 << 19)));
+        for _ in 0..4096 {
+            term.push_title();
+        }
+        assert_eq!(term.title_stack.len(), TITLE_STACK_MAX_DEPTH);
+        let bytes: usize = term.title_stack.iter().flatten().map(String::len).sum();
+        assert!(bytes <= TITLE_STACK_MAX_DEPTH * TITLE_STACK_MAX_BYTES, "{bytes} bytes held");
+        assert!(term.title_stack.last().unwrap().as_ref().is_some_and(|t| t.len() == TITLE_STACK_MAX_BYTES && t.starts_with('\u{e9}')));
+        term.set_title(None);
 
         // Title and title stack reset when terminal state is reset.
         term.push_title();

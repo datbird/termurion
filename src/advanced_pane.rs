@@ -453,6 +453,9 @@ mod tests {
         let mut want = vec![Item::Header("Pasteboard")];
         want.extend(rows.iter().enumerate().filter(|(_, r)| r.category == "Pasteboard").map(|(i, _)| Item::Setting(i)));
         assert!(want.len() > 2);
+        // TabsWrapAround's help (iTerm2's) mentions the pasteboard: the description matches too.
+        want.push(Item::Header("Terminal"));
+        want.push(Item::Setting(index(&rows, "TabsWrapAround")));
         assert_eq!(filtered(&rows, "pasteboard", false, &none, None), want);
         assert_eq!(filtered(&rows, "zzqqxx", false, &none, None), vec![]);
 

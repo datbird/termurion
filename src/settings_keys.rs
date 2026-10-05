@@ -3472,4 +3472,129 @@ mod tests {
         out.textures_delta.clear();
         assert_eq!(drawn, 0.0, "IRMemory drew an Int control");
     }
+
+    #[test]
+    fn terminal_rows_follow_iterm2() {
+        let focus = "Apps may turn on Focus Reporting.";
+        let osc7 = "Accept OSC 7 to set username, hostname, and path. Tandem shell integration now reports this information using OSC 7, so turning this off also disables shell integration\u{2019}s username, hostname, and directory tracking.";
+        let tab = "Default tab stop width for new sessions.";
+        let xterm = "xterm version for secondary device attributes (SDA).";
+        let color = "Report 16-bit color values to OSC 4 and 10 through 19.";
+        let depth = "Maximum number of chunks to buffer.";
+        let rows: [(&str, &str, Kind, Value, &str, String); 6] = [
+            ("FocusReportingEnabled", "Terminal", Kind::Bool, Value::Boolean(true), focus, format!("{focus}\nFocus reporting causes Tandem to send an escape sequence when a session gains or loses focus. It can cause problems when an ssh session dies unexpectedly because it gets left on, so some users prefer to disable it.")),
+            ("AcceptOSC7", "Terminal", Kind::Bool, Value::Boolean(true), osc7, osc7.to_string()),
+            ("DefaultTabStopWidth", "Terminal", Kind::Int, Value::Integer(8), tab, format!("{tab}\nNote: this will break drawing in emacs and other apps.")),
+            ("XtermVersion", "Terminal", Kind::Int, Value::Integer(2500), xterm, format!("{xterm}\nIncreasing this number enables more features in apps but may break things. Use 95 to recover pre-3.4.10 behavior.")),
+            ("OscColorReport16Bits", "Experimental Features", Kind::Bool, Value::Boolean(true), color, format!("{color}\nWorks around a bug in older vim where they could not properly parse 8-bit values.")),
+            ("BufferDepth", "Terminal", Kind::Int, Value::Integer(40), depth, format!("{depth}\nIn general, these chunks are 1024 bytes. A larger value increases buffer bloat but\u{2014}up to a limit\u{2014}can improve performance in the fast path of ASCII text.")),
+        ];
+        for (key, section, kind, default, label, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", section, kind), "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+        }
+    }
+
+    #[test]
+    fn save_rows_follow_iterm2() {
+        let clear = "Save scroll buffer when clearing screen.";
+        let above = "Save the screen to scrollback when an app moves the cursor above the prompt.";
+        let rows: [(&str, &str, String); 2] = [
+            ("SaveScrollBufferWhenClearing", clear, format!("{clear}\nWhen enabled, saves the current screen into scroll back buffer instead of clearing it.")),
+            ("SaveScrollbackWhenCursorMovesAbovePrompt", above, format!("{above}\nSome full-screen programs that don\u{2019}t use the alternate screen buffer repaint by moving the cursor to the top of the screen and overwriting whatever was already there, destroying content you can still see. When enabled, Tandem first scrolls the visible screen into history so that content isn\u{2019}t lost. Requires shell integration.")),
+        ];
+        for (key, label, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "General", Kind::Bool), "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(true)), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+        }
+    }
+
+    /// 13o Task 7: Tabs wrap around (`AS:443`).
+    #[test]
+    fn tabs_wrap_row_follows_iterm2() {
+        let label = "Tabs wrap around to the next line.";
+        let row = schema::find_global("TabsWrapAround").expect("TabsWrapAround missing");
+        assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "Terminal", Kind::Bool));
+        assert_eq!(row.default, Some(Value::Boolean(false)));
+        assert_eq!(row.label, label);
+        assert_eq!(row.help, format!("{label}\nThis is useful for preserving tabs for later copying to the pasteboard. It breaks backward compatibility and may cause layout problems with programs that don\u{2019}t expect this behavior."));
+    }
+
+    #[test]
+    fn stream_rows_follow_iterm2() {
+        let url = "Maximum length for OSC 8 URLs";
+        let rep = "Enable support for REP (Repeat previous character) escape sequence?";
+        let sgr = "Reset colors at shell prompt?";
+        let rows: [(&str, &str, Kind, Value, &str, String); 3] = [
+            ("MaxURLLength", "Terminal", Kind::Int, Value::Integer(2_097_152), url, url.to_string()),
+            ("SupportREPCode", "Experimental Features", Kind::Bool, Value::Boolean(true), rep, rep.to_string()),
+            ("ResetSGROnPrompt", "Experimental Features", Kind::Bool, Value::Boolean(true), sgr, format!("{sgr}\nUses shell integration to detect a shell prompt and, if enabled, resets colors to their defaults.")),
+        ];
+        for (key, section, kind, default, label, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", section, kind), "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+        }
+    }
+
+    /// 13o Task 6: the DECRQCRA row (`AS:493`).
+    #[test]
+    fn decrqcra_row_follows_iterm2() {
+        let row = schema::find_global("NoSyncDisableDECRQCRA").expect("row");
+        assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "General", Kind::Bool));
+        assert_eq!(row.default, Some(Value::Boolean(true)));
+        assert_eq!(row.label, "Disable DECRQCRA?");
+        assert_eq!(row.help, "Disable DECRQCRA?\nThis control sequence allows an app running in the terminal to read its contents.");
+    }
+
+    /// 13o Task 5: the character-width rows.
+    #[test]
+    fn width_rows_follow_iterm2() {
+        let zw = "Zero-Width Space (U+200B) advances cursor?";
+        let a = "Support variation selector 16 making emoji fullwidth in all modes?";
+        let b = "Support variation selector 16 making emoji fullwidth outside of alternate screen mode?";
+        let fw = "Lone regional indicators render full-width.";
+        let ag = "Detect base unicode characters with lookup table.";
+        let rows: [(&str, &str, bool, &str, String); 5] = [
+            ("ZeroWidthSpaceAdvancesCursor", "Terminal", true, zw, format!("{zw}\nWhile a zero-width space should not advance the cursor per the Unicode spec, both Terminal.app and Konsole do this, and Weechat depends on it. You must restart Tandem after changing this setting.")),
+            ("Vs16Supported", "Experimental Features", false, a, a.to_string()),
+            ("Vs16SupportedInPrimaryScreen", "Experimental Features", true, b, b.to_string()),
+            ("FullWidthFlags", "Experimental Features", true, fw, format!("{fw}\nA complete flag is always two columns, which is the width wcwidth reports for the pair.")),
+            ("AggressiveBaseCharacterDetection", "Experimental Features", true, ag, format!("{ag}\nThe system\u{2019}s algorithm for segmenting composed characters makes bad choices, such as for Tamil. Enable this to reduce text overlapping.")),
+        ];
+        for (key, section, default, label, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", section, Kind::Bool), "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(default)), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+        }
+        let uv = schema::find("Unicode Version").unwrap();
+        let choices: Vec<(Value, &str)> = uv.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
+        assert_eq!(choices, [(Value::Integer(8), "Unicode 8"), (Value::Integer(9), "Unicode 9+")]);
+        assert_eq!(uv.default, Some(Value::Integer(9)));
+        // The rules read them under iTerm2's names.
+        let mut g = Globals::empty(std::path::Path::new("width-rows-test.toml"));
+        let d = crate::emu::Rules::from_globals(&g);
+        assert!(d.zwsp_advances && !d.vs16_all && d.vs16_primary && d.full_width_flags);
+        g.set("Vs16Supported", Value::Boolean(true));
+        g.set("FullWidthFlags", Value::Boolean(false));
+        let r = crate::emu::Rules::from_globals(&g);
+        assert!(r.vs16_all && !r.full_width_flags);
+    }
+
+    /// 13o Task 3: the CSI 3 J row.
+    #[test]
+    fn clear_history_row_follows_iterm2() {
+        let label = "Prevent CSI 3 J from clearing scrollback history?";
+        let row = schema::find_global("PreventEscapeSequenceFromClearingHistory").expect("row missing");
+        assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "Terminal", Kind::Bool));
+        assert_eq!(row.default, None);
+        assert_eq!(row.label, label);
+        assert_eq!(row.help, format!("{label}\nThis is also known as the terminfo E3 capability."));
+    }
 }

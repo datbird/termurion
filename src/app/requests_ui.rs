@@ -82,6 +82,7 @@ impl App {
         match r {
             Request::Trigger(t) => self.trigger_request(pane, t),
             Request::Bell => self.ring_bell(pane),
+            Request::Osc7Disabled => self.osc7_disabled(),
             Request::Notify { title, message } => self.terminal_alert(pane, title, message),
             Request::WindowTitle(title) => self.share_window_title(pane, title),
             Request::SetBadge(t) => self.set_badge(pane, Some(t)),
@@ -146,6 +147,21 @@ impl App {
                     None => self.tab_colors.remove(&pane),
                 };
                 self.redraw();
+            }
+            Request::AskClearHistory => self.ask_clear_history(pane),
+            Request::AskDecrqcra => self.ask_decrqcra(pane),
+            Request::Print(job) => self.print_request(pane, job),
+            Request::HistoryRebased { below, by, api_from } => {
+                // A command the AI is running names its first row in the API numbering.
+                if let Some(run) = self.ai_execs.get_mut(&pane) {
+                    run.start_line = super::ai_exec_app::rebased_start(run.start_line, api_from, by);
+                }
+                // The Captured Output tool's Clear line names a row the same way an entry does.
+                if let Some(st) = self.belt.tools.get_mut(&crate::toolbelt::ToolId::CapturedOutput) {
+                    if st.cleared_pane == Some(pane) && st.cleared.abs_line != i64::MIN && st.cleared.abs_line < below {
+                        st.cleared.abs_line -= by;
+                    }
+                }
             }
             Request::SetProfile(name) => self.set_profile_request(pane, name),
             Request::SetProfileProperty(pairs) => self.set_property_request(pane, pairs),

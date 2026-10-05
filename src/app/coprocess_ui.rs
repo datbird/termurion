@@ -215,6 +215,7 @@ impl App {
     /// Files dropped on the window: a silent coprocess when `fileDropCoprocess` is set,
     /// else the paths are pasted (quoted when they hold a space).
     pub(super) fn flush_dropped(&mut self) {
+        self.dnd_flush();
         if self.dropped.is_empty() {
             return;
         }

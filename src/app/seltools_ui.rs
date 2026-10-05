@@ -23,7 +23,7 @@ impl App {
         let Some(p) = self.panes.get(&id) else { return };
         // The user selects in the screen on show: a Filter or Zoom view while one is up.
         let screen = &p.screen;
-        let Some(text) = screen.term().selection_to_string() else { return };
+        let Some(text) = screen.selection_text() else { return };
         let font = self.profile_of(id).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0 });
         let rows = p.styled_rows();
         let html = crate::styled_copy::cf_html(&crate::styled_copy::html(&rows, &font.family, font.size_pt, screen.palette.bg));

@@ -14,9 +14,6 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// start with "0"; it2check compares it with the script's ASCII order.
 pub const ITERM2_VERSION: &str = "3.7.0";
 
-/// The terminfo name XTGETTCAP reports.
-const TERM_NAME: &str = "xterm-256color";
-
 /// At most this many XTGETTCAP keys are answered in one query.
 const MAX_CAPS: usize = 64;
 
@@ -51,7 +48,7 @@ pub fn answer(screen: &Screen, q: &Query) -> Vec<u8> {
             Some(p) => format!("\x1bP1$r{p}\x1b\\"),
             None => "\x1bP0$r\x1b\\".to_string(),
         },
-        Query::XtGetTcap(keys) => match xtgettcap(keys) {
+        Query::XtGetTcap(keys) => match xtgettcap(keys, screen.term_name()) {
             Some(p) => format!("\x1bP1+r{p}\x1b\\"),
             None => "\x1bP0+r\x1b\\".to_string(),
         },
@@ -138,7 +135,7 @@ fn color(c: alacritty_terminal::vte::ansi::Color, base: u16) -> Option<String> {
 }
 
 /// XTGETTCAP: `key=value` pairs (hex) for every key asked, or None when any is unknown.
-fn xtgettcap(keys: &[u8]) -> Option<String> {
+fn xtgettcap(keys: &[u8], term_name: &str) -> Option<String> {
     let mut out = Vec::new();
     for (n, key) in keys.split(|b| *b == b';').enumerate() {
         if n >= MAX_CAPS {
@@ -146,7 +143,7 @@ fn xtgettcap(keys: &[u8]) -> Option<String> {
         }
         let name = String::from_utf8(unhex(key)?).ok()?;
         let value = match name.as_str() {
-            "TN" | "name" => TERM_NAME,
+            "TN" | "name" => term_name,
             "Co" | "colors" => "256",
             "RGB" => "8/8/8",
             _ => return None,
@@ -247,6 +244,11 @@ mod tests {
         assert_eq!(ask(&mut s, b"\x1bP+q544e;436f\x1b\\"), "\x1bP1+r544E=787465726D2D323536636F6C6F72;436F=323536\x1b\\");
         assert_eq!(ask(&mut s, b"\x1bP+q524742\x1b\\"), "\x1bP1+r524742=382F382F38\x1b\\");
         assert_eq!(ask(&mut s, b"\x1bP+q6e616d65;636f6c6f7273\x1b\\"), "\x1bP1+r6E616D65=787465726D2D323536636F6C6F72;636F6C6F7273=323536\x1b\\");
+        // The profile's Terminal Type is what TN and name report (`T:3307-3318`).
+        s.set_term_name("xterm-kitty");
+        assert_eq!(s.term_name(), "xterm-kitty");
+        assert_eq!(ask(&mut s, b"\x1bP+q544e\x1b\\"), format!("\x1bP1+r544E={}\x1b\\", super::hex(b"xterm-kitty")));
+        assert_eq!(ask(&mut s, b"\x1bP+q6e616d65\x1b\\"), format!("\x1bP1+r6E616D65={}\x1b\\", super::hex(b"xterm-kitty")));
     }
 
     #[test]

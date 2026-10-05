@@ -55,6 +55,70 @@ pub struct Look {
     pub csi_u: bool,
     /// The profile's Blink Allowed: text with the blink attribute hides in the off phase.
     pub blink_allowed: bool,
+    /// The profile's Scrollback in Alternate Screen: lines that scroll off the alternate
+    /// screen are kept as history.
+    pub alt_scrollback: bool,
+    /// The profile's Ambiguous Double Width: East Asian ambiguous characters take two cells.
+    pub ambiguous_wide: bool,
+    /// The profile's "Unicode Version" (8 or 9, `osc1337::profile_unicode`): which width table
+    /// applies until an OSC 1337 UnicodeVersion sets one.
+    pub unicode_version: u8,
+    /// The profile's Allow Title Reporting: CSI 20 t and CSI 21 t answer with the title.
+    pub allow_title_reporting: bool,
+    /// The profile's Disable Smcup Rmcup: DECSET 47, 1047, 1048 and 1049 do nothing.
+    pub disable_smcup: bool,
+    /// The profile's Disable Printing: no escape-sequence print starts or is requested.
+    pub disable_printing: bool,
+    /// The profile's Unicode Normalization (`encoding::Form`).
+    pub normalization: crate::encoding::Form,
+}
+
+/// How `Term::input` measures characters (milestone 13o): iTerm2's width tables for the
+/// session's Unicode version (`version_override` is the one an OSC 1337 UnicodeVersion set,
+/// 0 for the profile's), ambiguous width from the profile, and the Advanced switches in `rules`.
+pub fn width_rule(look: &Look, rules: &crate::emu::Rules, version_override: u8) -> alacritty_terminal::term::WidthRule {
+    alacritty_terminal::term::WidthRule {
+        width: rule_width,
+        ambiguous_wide: look.ambiguous_wide,
+        unicode_version: if version_override == 0 { look.unicode_version } else { version_override },
+        full_width_flags: rules.full_width_flags,
+        zwsp_advances: rules.zwsp_advances,
+        vs16: rules.vs16_all,
+        vs16_primary: rules.vs16_primary,
+        accepts_vs16: |c| crate::widths::accepts_vs16(c as u32),
+        is_modifier: |c| crate::widths::is_skin_tone(c as u32),
+        is_pictograph: |c| crate::widths::is_extended_pictographic(c as u32),
+    }
+}
+
+/// iTerm2's default-ignorable set (`iTermIsIgnorableCharacter`, `CS:792-806`), U+200B aside.
+fn is_ignorable(c: char) -> bool {
+    matches!(c as u32,
+        0xAD | 0x34F | 0x61C | 0x115F..=0x1160 | 0x17B4..=0x17B5 | 0x180B..=0x180F | 0x200C..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0x3164 | 0xFE00..=0xFE0F | 0xFEFF | 0xFFA0 | 0xFFF0..=0xFFF8 | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A | 0xE0000..=0xE0FFF)
+}
+
+/// iTerm2's `StringToScreenChars` width of one character: U+200B by its switch, no cell for an
+/// ignorable base, zero for a mark or a selector (it rides on its base: iTerm2 measures only the
+/// base of a cluster, `enumerateComposedCharacters`), two cells by the tables, else one.
+fn rule_width(c: char, rule: &alacritty_terminal::term::WidthRule) -> Option<usize> {
+    use unicode_width::UnicodeWidthChar;
+    if c == '\u{200B}' {
+        return Some(usize::from(rule.zwsp_advances));
+    }
+    // Marks and selectors are asked before the tables: the ambiguous and full-width tables hold
+    // U+0300-036F, U+FE00-FE0F and U+3099-309A, which would otherwise take two cells of their own.
+    if c.width() == Some(0) {
+        return Some(0);
+    }
+    // An ignorable character that is not a zero-width mark (the Hangul fillers, the soft hyphen)
+    // has no cell at all. (Ignorables of width 0 ride on the previous cell, as before.)
+    if is_ignorable(c) {
+        return None;
+    }
+    if crate::widths::is_double_width(c as u32, rule.ambiguous_wide, rule.unicode_version, rule.full_width_flags) {
+        return Some(2);
+    }
+    c.width().map(|w| w.min(1))
 }
 
 impl Look {
@@ -74,6 +138,13 @@ impl Look {
             app_key_modes: p.bool("Allow modifyOtherKeys"),
             csi_u: p.bool("Use libtickit protocol"),
             blink_allowed: p.bool("Blink Allowed"),
+            alt_scrollback: p.bool("Scrollback in Alternate Screen"),
+            ambiguous_wide: p.bool("Ambiguous Double Width"),
+            unicode_version: crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer())),
+            allow_title_reporting: p.bool("Allow Title Reporting"),
+            disable_smcup: p.bool("Disable Smcup Rmcup"),
+            disable_printing: p.bool("Disable Printing"),
+            normalization: crate::encoding::Form::from_profile(p.int("Unicode Normalization")),
         }
     }
 }
@@ -141,6 +212,9 @@ struct BidiEntry {
     order: Option<std::sync::Arc<crate::bidi::Order>>,
 }
 
+/// The most bytes ENQ answers (a profile's Answerback String is cut to this).
+pub const ANSWERBACK_MAX: usize = 256;
+
 pub struct Screen {
     pub(crate) term: Term<Listener>,
     parser: Processor,
@@ -196,6 +270,15 @@ pub struct Screen {
     pub(crate) folds: std::collections::HashMap<u32, Vec<Row<Cell>>>,
     next_fold: u32,
     feeds: u32,
+    /// Whether any byte has been fed: iTerm2's tab width applies to a new session only.
+    fed: bool,
+    /// The Advanced emulation rules this screen follows (`set_rules`).
+    pub(crate) rules: crate::emu::Rules,
+    /// The profile's Terminal Type (`set_term_name`).
+    term_name: String,
+    /// Whether OSC 1337 CurrentDir or RemoteHost arrived: iTerm2's per-session
+    /// `_sawProprietaryLocationCode`, which keeps the OSC 7 conflict warning quiet.
+    pub(crate) saw_location_code: bool,
     /// Moves with every change to the main grid's rows, marks or notes; the scrollbar's tick cache keys on it.
     tick_gen: u64,
     /// `offscreen_facts`' answer for the tick digest it was made at.
@@ -204,6 +287,8 @@ pub struct Screen {
     pub keys: KeyState,
     /// False when the global disablePotentiallyInsecureEscapeSequences is on.
     pub trusted: bool,
+    /// OSC 72 drops: what the program registered for and the drop it may read (13o Task 9).
+    pub dnd: crate::kitty_dnd::Controller,
     /// What output asked the window to do, taken by the app.
     pub requests: Vec<Request>,
     /// OSC 1337 `Copy=` in progress, and `CopyToClipboard` capture.
@@ -212,6 +297,17 @@ pub struct Screen {
     /// The start of an escape sequence split across reads during a capture: dropped if it
     /// turns out to be one Tandem acts on, else added to the capture.
     capture_hold: Vec<u8>,
+    /// An escape-sequence print job collecting text (`CSI 5 i` to `CSI 4 i`); bounded by
+    /// `limits.copy` and by time, ended by RIS, a prompt mark and a command end (B8).
+    pub(crate) print_capture: Option<crate::emu::PrintCapture>,
+    /// Reports answered in the current `feed` (a batch): at most one answerback, and DECRQCRA
+    /// replies up to `DECRQCRA_PER_BATCH`, so a hostile file cannot flood the input queue.
+    answerback_sent: bool,
+    /// A title report was sent in this batch (one reply per `feed`, like the answerback).
+    title_sent: bool,
+    decrqcra_sent: u16,
+    /// OSC 72 messages that produced a reply in this batch (`DND_ANSWERS_PER_BATCH`).
+    pub(crate) dnd_answered: u16,
     /// OSC 1337 Block: the blocks this screen knows.
     pub blocks: crate::blocks::Blocks,
     /// OSC 1337 Button: the buttons written into the text.
@@ -251,6 +347,15 @@ pub struct Screen {
     /// The profile's "Unicode Version" (`osc1337::profile_unicode`), the session's version
     /// until a UnicodeVersion sequence sets one.
     pub profile_unicode: u8,
+    /// The profile's Unicode Normalization Form: applied where text leaves the grid (drawing,
+    /// copy, find, `line_text`, the API), never stored in it.
+    pub normalization: crate::encoding::Form,
+    /// The profile settings last handed to `set_look`; the width rule reads them.
+    look: Look,
+    /// The profile's Answerback String, what ENQ answers (at most `ANSWERBACK_MAX` bytes).
+    answerback: String,
+    /// The code page the answerback leaves in (0 is UTF-8).
+    answerback_cp: u32,
     pub key_labels: crate::osc1337::KeyLabels,
     /// SetColors changes, reapplied over a new profile palette.
     pub(crate) color_sets: Vec<(String, crate::osc1337::Color)>,
@@ -283,6 +388,8 @@ pub struct Screen {
     pub(crate) composer_scanned: u64,
     /// The alternate screen was showing at the last check.
     composer_alt: bool,
+    /// `Term::printed` when the running command's output started (`marks.rs`).
+    pub(crate) printed_at_output: u64,
     /// Instant Replay: the rows and cursor of the last capture, so a line Tandem edited
     /// outside alacritty's damage (image tiles, trigger highlights, folds) is still dirty,
     /// and the cursor line alacritty always damages is dirty only when it changed.
@@ -299,9 +406,37 @@ pub struct Capture {
     pub cursor: (usize, usize),
 }
 
+/// DECRQCRA replies answered in one `feed` (the rest get none).
+const DECRQCRA_PER_BATCH: u16 = 64;
+/// OSC 72 messages answered in one `feed`.
+pub const DND_ANSWERS_PER_BATCH: u16 = 64;
+
+/// What an escape-sequence print prints.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PrintJob {
+    /// The text between `CSI 5 i` and `CSI 4 i`.
+    Text(String),
+    /// The screen (`CSI i`, `CSI 0 i` and any other value).
+    Screen,
+}
+
 /// Something output asked for that the window must do.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
+    /// An escape-sequence print (`CSI 4 i` after `CSI 5 i`, or `CSI i`): the app asks the pane's
+    /// print guard, then the person's print dialog.
+    Print(PrintJob),
+    /// Absolute row numbers below `below` moved down by `by` (rows spliced into the history
+    /// when the alternate screen ended); the app moves the ones it holds.
+    /// `api_from` is the API numbering's first on-screen line before the splice (lost plus kept
+    /// history), where rows named by an absolute line moved down by `by`.
+    HistoryRebased { below: i64, by: i64, api_from: i64 },
+    /// CSI 3 J arrived while Prevent CSI 3 J is unset: ask once whether to allow it.
+    AskClearHistory,
+    /// DECRQCRA arrived while Disable DECRQCRA is unset: ask once whether to allow it.
+    AskDecrqcra,
+    /// OSC 7 with a machine id arrived while Accept OSC 7 is off.
+    Osc7Disabled,
     /// Put text on the clipboard (if the user allows programs to).
     ClipboardWrite(String),
     /// Report the clipboard; the selection parameter to echo.
@@ -434,6 +569,8 @@ impl Screen {
         let (tx, events) = mpsc::channel();
         let mut term = Term::new(config(look), &GridSize { cols, rows }, Listener(tx));
         term.set_cursor_blink_change(look.blink_change);
+        term.set_alt_scrollback(look.alt_scrollback);
+        term.width_rule = Some(width_rule(&look, &crate::emu::Rules::default(), 0));
         Self {
             term,
             blink_allowed: look.blink_allowed,
@@ -466,10 +603,15 @@ impl Screen {
             folds: std::collections::HashMap::new(),
             next_fold: 0,
             feeds: 0,
+            fed: false,
+            rules: crate::emu::Rules::default(),
+            term_name: "xterm-256color".to_string(),
+            saw_location_code: false,
             tick_gen: 0,
             offscreen_cache: None,
             keys: KeyState::new(look.csi_u),
             trusted: true,
+            dnd: Default::default(),
             tab_status: crate::tabstatus::Status::default(),
             tab_status_gen: 0,
             blocks: crate::blocks::Blocks::default(),
@@ -487,7 +629,11 @@ impl Screen {
             ssh_flags: None,
             exec_failed: false,
             unicode: crate::osc1337::Unicode::default(),
-            profile_unicode: 9,
+            profile_unicode: look.unicode_version,
+            normalization: look.normalization,
+            look,
+            answerback: String::new(),
+            answerback_cp: 0,
             key_labels: crate::osc1337::KeyLabels::default(),
             color_sets: Vec::new(),
             clipboard_allowed: false,
@@ -496,6 +642,11 @@ impl Screen {
             copy: crate::clipboard_osc::Copy::default(),
             capture: None,
             capture_hold: Vec::new(),
+            print_capture: None,
+            answerback_sent: false,
+            title_sent: false,
+            dnd_answered: 0,
+            decrqcra_sent: 0,
             color_reports: false,
             last_dark: true,
             prompt_state: Default::default(),
@@ -507,6 +658,7 @@ impl Screen {
             composer_from: None,
             composer_scanned: 0,
             composer_alt: false,
+            printed_at_output: 0,
             replay_rows: Vec::new(),
             replay_cursor: None,
         }
@@ -705,9 +857,33 @@ impl Screen {
             self.keys.csi_u = look.csi_u;
         }
         self.keys.profile_csi_u = look.csi_u;
+        self.term.set_alt_scrollback(look.alt_scrollback);
         self.term.set_options(config(look));
         self.term.set_cursor_blink_change(look.blink_change);
         self.blink_allowed = look.blink_allowed;
+        self.profile_unicode = look.unicode_version;
+        self.normalization = look.normalization;
+        self.look = look;
+        self.push_width_rule();
+    }
+
+    /// Hands the `Term` the width rule for the profile's settings, the Advanced rules and the
+    /// session's Unicode version. Runs on every change of any of them; cells already written
+    /// keep their widths, as in iTerm2.
+    pub(crate) fn push_width_rule(&mut self) {
+        self.term.width_rule = Some(width_rule(&self.look, &self.rules, self.unicode.version));
+    }
+
+    /// The profile's Unicode version, from a profile edit (`screen_follows_profile`).
+    pub fn set_profile_unicode(&mut self, version: u8) {
+        self.profile_unicode = version;
+        self.look.unicode_version = version;
+        self.push_width_rule();
+    }
+
+    /// Whether the profile makes ambiguous-width characters two cells.
+    pub fn ambiguous_wide(&self) -> bool {
+        self.look.ambiguous_wide
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
@@ -805,6 +981,11 @@ impl Screen {
         self.title = title;
     }
 
+    /// A drop may be reported to the program: it registered and the screen is trusted (B7).
+    pub fn dnd_accepting(&self) -> bool {
+        self.trusted && self.dnd.accepting()
+    }
+
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
     }
@@ -812,6 +993,10 @@ impl Screen {
     /// Feeds app output. Returns the bytes the terminal must send back, such as
     /// answers to device, color, and size queries. An app that gets no answer may hang.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.answerback_sent = false;
+        self.title_sent = false;
+        self.decrqcra_sent = 0;
+        self.dnd_answered = 0;
         self.bump_ticks();
         if !bytes.is_empty() && !self.triggers.list.is_empty() {
             self.events_on_output();
@@ -859,6 +1044,11 @@ impl Screen {
         }
         // Shell-integration OSCs act where they appear in the stream, so the output is fed in
         // pieces that end at each one.
+        // A CUP is held only while it could be a running command's first draw (13o Task 4).
+        self.osc.cup_armed = self.rules.save_above_prompt
+            && self.command_pending()
+            && !self.term.mode().contains(TermMode::ALT_SCREEN)
+            && (!self.command_running() || self.term.printed == self.printed_at_output);
         let events = self.osc.scan_spans(bytes);
         let mut pending = self.osc.pending;
         let mut reply = Vec::new();
@@ -882,6 +1072,34 @@ impl Screen {
         }
         for (start, end, osc) in events {
             self.capture_bytes(&bytes[at..start.max(at)]);
+            if let crate::osc::Osc::Held(held) = &osc {
+                // A sequence a setting may drop or rewrite: what came before it is fed, then
+                // whatever `pass` lets through (never the original bytes).
+                reply.extend(self.feed_raw(&bytes[at..start.max(at)]));
+                at = end;
+                if held.reads_state() {
+                    if self.sync_deadline().is_some() {
+                        reply.extend(self.flush_sync());
+                    }
+                    self.composer_accrue();
+                }
+                let fed = match held {
+                    crate::emu::Held::Drop => Vec::new(),
+                    crate::emu::Held::CancelString => vec![0x18],
+                    _ => {
+                        let keep = self.pass(held);
+                        crate::emu::held_bytes(keep)
+                    }
+                };
+                reply.extend(self.feed_raw(&fed));
+                // A cursor move that may be a running command's first draw: iTerm2's rule looks
+                // at where the cursor landed.
+                if matches!(held, crate::emu::Held::Cup { .. }) {
+                    self.cursor_moved_above_output();
+                }
+                reply.append(&mut self.replies);
+                continue;
+            }
             reply.extend(self.feed_raw(&bytes[at..end]));
             at = end;
             match osc {
@@ -927,6 +1145,162 @@ impl Screen {
         self.composer_accrue();
         self.run_triggers_after_feed();
         reply
+    }
+
+    /// REP after a character with combining marks repeats the whole cell, base and marks, as
+    /// iTerm2 does (`lastCharacter` is a cell); vte alone would repeat the last mark. The text to
+    /// feed instead, or None when the cell before the cursor has no marks (vte's repeat is then the
+    /// same).
+    fn rep_cell(&self, n: u16) -> Option<Vec<u8>> {
+        use alacritty_terminal::term::cell::Flags;
+        let g = self.term.grid();
+        let cur = g.cursor.point;
+        let mut col = cur.column.0;
+        if !g.cursor.input_needs_wrap {
+            col = col.saturating_sub(1);
+        }
+        if g[cur.line][Column(col)].flags.contains(Flags::WIDE_CHAR_SPACER) {
+            col = col.saturating_sub(1);
+        }
+        let cell = &g[cur.line][Column(col)];
+        let marks = cell.zerowidth().filter(|m| !m.is_empty())?;
+        let mut one = String::new();
+        one.push(cell.c);
+        one.extend(marks);
+        // The sequence's own bound (vte repeats at most 65535 times; 0 is once).
+        Some(one.repeat(n.max(1) as usize).into_bytes())
+    }
+
+    /// Gives the bytes to a running print job. None: all taken. Some: the job ended (the bound,
+    /// its age or RIS) with nothing printed, and these bytes are for the parser.
+    fn divert_to_print(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
+        let cap = self.print_capture.as_mut()?;
+        if cap.started.elapsed().as_secs() >= crate::emu::PRINT_CAPTURE_SECS {
+            // The capture ends by age. Inside a sequence, its tail is dropped (the parser never saw
+            // its start, so the tail would print as text).
+            let rest = cap.after_sequence(bytes);
+            self.print_capture = None;
+            return rest.map(|(at, esc)| {
+                let mut out = if esc { vec![0x1b] } else { Vec::new() };
+                out.extend_from_slice(&bytes[at..]);
+                out
+            });
+        }
+        match cap.push(bytes, self.limits.copy) {
+            None => None,
+            Some((at, esc)) => {
+                self.print_capture = None;
+                let mut rest = if esc { vec![0x1b] } else { Vec::new() };
+                rest.extend_from_slice(&bytes[at..]);
+                Some(rest)
+            }
+        }
+    }
+
+    /// What reaches the parser for a held sequence: its canonical bytes, a rewrite, or nothing.
+    /// Later tasks add arms; until then every sequence passes as it would without being held.
+    pub(crate) fn pass(&mut self, held: &crate::emu::Held) -> Option<Vec<u8>> {
+        use crate::emu::{rebuild, Held};
+        use crate::prompted::Decision;
+        // While a print job collects, a sequence is text to drop (Decision, P8); only the job's
+        // own end acts.
+        if self.print_capture.is_some() && !matches!(held, Held::Print(_)) {
+            return None;
+        }
+        match held {
+            Held::AltScreen { params, set } if self.look.disable_smcup => {
+                crate::emu::strip_alt_screen(params).map(|params| rebuild(&Held::AltScreen { params, set: *set }))
+            }
+            Held::Print(n) => {
+                match n {
+                    5 if self.look.disable_printing || self.print_capture.is_some() => {}
+                    5 => self.print_capture = Some(crate::emu::PrintCapture::default()),
+                    4 => {
+                        if let Some(job) = self.print_capture.take() {
+                            let text = job.text();
+                            if !text.is_empty() {
+                                self.push_print(PrintJob::Text(text));
+                            }
+                        }
+                    }
+                    _ if self.look.disable_printing || self.print_capture.is_some() => {}
+                    _ => self.push_print(PrintJob::Screen),
+                }
+                None
+            }
+            Held::Rep(_) if !self.rules.rep => None,
+            Held::Rep(n) => Some(self.rep_cell(*n).unwrap_or_else(|| rebuild(held))),
+            Held::ClearHistory => match crate::emu::clear_history_decision(self.rules.clear_history) {
+                Decision::Apply => Some(rebuild(held)),
+                Decision::Deny => None,
+                Decision::Ask => {
+                    // One question at a time: a flood of CSI 3 J queues one request.
+                    if !self.requests.iter().any(|r| matches!(r, Request::AskClearHistory)) {
+                        self.requests.push(Request::AskClearHistory);
+                    }
+                    None
+                }
+            },
+            Held::Decrqcra(p) => {
+                // iTerm2: only at VT400 and up, only when trusted, then the key (`T:2109-2124`).
+                if self.level() >= 400 && self.trusted {
+                    match self.rules.decrqcra_off {
+                        Some(false) if self.decrqcra_sent >= DECRQCRA_PER_BATCH => {}
+                        Some(false) => {
+                            self.decrqcra_sent += 1;
+                            let params: Vec<i64> = p.iter().map(|v| i64::from(*v)).collect();
+                            let sum = crate::emu::decrqcra_rect(&params, self.term.columns(), self.term.screen_lines()).map_or(0, |r| self.checksum_in(r));
+                            self.replies.extend(crate::emu::checksum_reply(params.first().copied().unwrap_or(0), sum).into_bytes());
+                        }
+                        Some(true) => {}
+                        None => {
+                            if !self.requests.iter().any(|r| matches!(r, Request::AskDecrqcra)) {
+                                self.requests.push(Request::AskDecrqcra);
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            Held::TitleReport(k) => {
+                // Only with Allow Title Reporting and trust (`S:18316-18351`); a tmux pane's
+                // replies are dropped by its pane. One title serves 20 and 21 (Decision).
+                if self.look.allow_title_reporting && self.trusted && !std::mem::replace(&mut self.title_sent, true) {
+                    self.replies.extend(crate::emu::title_report(*k, self.title().unwrap_or("")).into_bytes());
+                }
+                None
+            }
+            // ENQs in one batch coalesce: one answerback (a flood would queue 256 bytes each).
+            Held::Enq if std::mem::replace(&mut self.answerback_sent, true) => None,
+            Held::Enq => {
+                let bytes = crate::encoding::encode_whole(self.answerback_cp, &self.answerback, crate::encoding::system());
+                self.replies.extend_from_slice(&bytes);
+                None
+            }
+            h => Some(rebuild(h)),
+        }
+    }
+
+    /// Queues a print, one at a time: while a request waits (a frame has not taken it) further
+    /// ones are dropped, so a flood of CSI i is one question, not one alert each (P21).
+    fn push_print(&mut self, job: PrintJob) {
+        if !self.requests.iter().any(|r| matches!(r, Request::Print(_))) {
+            self.requests.push(Request::Print(job));
+        }
+    }
+
+    /// DECRQCRA's checksum over a rectangle (top, left, bottom, right): the UTF-16 units of every
+    /// cell that holds text. Alacritty cannot tell a written space from an untouched cell, so
+    /// a blank counts 0 (Decision); the spacer of a wide character holds nothing.
+    fn checksum_in(&self, (top, left, bottom, right): (usize, usize, usize, usize)) -> i32 {
+        use alacritty_terminal::term::cell::Flags;
+        let grid = self.term.grid();
+        let cells = (top..=bottom).flat_map(|y| (left..=right).map(move |x| (y, x))).filter_map(|(y, x)| {
+            let cell = &grid[Line(y as i32)][Column(x)];
+            let blank = (cell.c == ' ' || cell.c == '\0') && cell.zerowidth().is_none_or(|z| z.is_empty());
+            (!blank && !cell.flags.contains(Flags::WIDE_CHAR_SPACER)).then_some(cell)
+        });
+        crate::emu::checksum(cells.flat_map(|c| std::iter::once(c.c).chain(c.zerowidth().into_iter().flatten().copied())))
     }
 
     /// What the prompt state machine asked of the app since the last call.
@@ -1219,6 +1593,63 @@ impl Screen {
         self.term.set_scrollback_with_region(on);
     }
 
+    /// The Advanced emulation rules (`emu::Rules`): the Term's own knobs follow them. The tab
+    /// width is iTerm2's "for new sessions": it resets every stop, so it is taken only while
+    /// the screen has fed no byte.
+    pub fn set_rules(&mut self, rules: crate::emu::Rules) {
+        if !self.fed {
+            self.term.set_tab_width(rules.tab_width);
+        }
+        self.term.xterm_version = rules.xterm_version;
+        self.term.color_report_16 = rules.color_16;
+        self.term.focus_reporting_allowed = rules.focus_reporting;
+        self.term.max_url_len = rules.max_url;
+        self.term.save_screen_on_clear = rules.save_on_clear;
+        self.term.tabs_wrap = rules.tabs_wrap;
+        self.rules = rules;
+        self.push_width_rule();
+    }
+
+    /// The profile's Answerback String (iTerm2 sends it, in the session's encoding, for ENQ).
+    pub fn set_answerback(&mut self, mut text: String) {
+        if text.len() > ANSWERBACK_MAX {
+            let mut cut = ANSWERBACK_MAX;
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            text.truncate(cut);
+        }
+        self.answerback = text;
+    }
+
+    /// The code page the answerback leaves in (0 is UTF-8); the pane sets it with its encoding.
+    pub fn set_answerback_encoding(&mut self, cp: u32) {
+        self.answerback_cp = cp;
+    }
+
+    /// DEC mode 2048 (in-band resize reports) is set.
+    pub fn resize_reports(&self) -> bool {
+        self.term.resize_reports
+    }
+
+    /// Sets or clears DEC mode 2048 (a host change turns it off, the stuck-report offer too).
+    pub fn set_resize_reports(&mut self, on: bool) {
+        self.term.resize_reports = on;
+    }
+
+    pub fn rules(&self) -> crate::emu::Rules {
+        self.rules
+    }
+
+    /// The profile's Terminal Type, what XTGETTCAP `TN` and `name` report.
+    pub fn set_term_name(&mut self, name: &str) {
+        self.term_name = name.to_string();
+    }
+
+    pub fn term_name(&self) -> &str {
+        &self.term_name
+    }
+
     /// Whether the profile lets a program turn DECSET 1007 on (iTerm2's Allow Alternate Mouse
     /// Scroll); turning it off again is always allowed.
     pub fn set_alternate_scroll_allowed(&mut self, on: bool) {
@@ -1472,11 +1903,33 @@ impl Screen {
     }
 
     pub(crate) fn feed_raw(&mut self, bytes: &[u8]) -> Vec<u8> {
+        // A print job collects the text and drops the sequences; what follows its end is parsed.
+        let rest;
+        let bytes = if self.print_capture.is_some() {
+            match self.divert_to_print(bytes) {
+                Some(r) => {
+                    rest = r;
+                    &rest[..]
+                }
+                None => return Vec::new(),
+            }
+        } else {
+            bytes
+        };
         self.bump_ticks();
         self.term.stamp = self.clock.unwrap_or_else(|| {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32)
         });
         self.parser.advance(&mut self.term, bytes);
+        let splices = self.term.take_history_splices();
+        let mut after: usize = splices.iter().map(|(_, by)| *by).sum();
+        for (below, by) in splices {
+            // The API numbering's base before this splice: what is above the screen now less the
+            // rows this and later splices added (main output between splices is not counted).
+            let api_from = crate::api_buffer::above(self.term.primary_grid()) - after as i64;
+            after -= by;
+            self.rebase_history_rows(below, by, api_from);
+        }
         // DECTCEM: the time the cursor went away (the first, while it stays away).
         match (self.term.mode().contains(TermMode::SHOW_CURSOR), self.cursor_hidden_at) {
             (true, Some(_)) => self.cursor_hidden_at = None,
@@ -1497,6 +1950,7 @@ impl Screen {
         }
         // Now and then, forget folds and notes whose rows scrolled out of the buffer.
         self.feeds = self.feeds.wrapping_add(1);
+        self.fed = true;
         if self.feeds % 256 == 0 && (!self.folds.is_empty() || !self.notes.by_id.is_empty() || !self.images.by_id.is_empty() || !self.portholes.is_empty()) {
             self.prune_tags();
         }
@@ -1588,9 +2042,36 @@ impl Screen {
         self.tick_gen ^ (u64::from(self.term.mode().contains(TermMode::ALT_SCREEN)) << 63)
     }
 
+    /// `text` in the profile's normalization form.
+    pub fn normalized<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        crate::encoding::normalize(text, self.normalization)
+    }
+
+    /// The selected text as it leaves the grid (Copy, find, the API): normalized.
+    pub fn selection_text(&self) -> Option<String> {
+        self.term.selection_to_string().map(|mut t| {
+            crate::encoding::normalize_in_place(&mut t, self.normalization);
+            t
+        })
+    }
+
     /// Notes that the main grid's rows, marks or notes may have changed.
     pub(crate) fn bump_ticks(&mut self) {
         self.tick_gen = (self.tick_gen.wrapping_add(1)) & !(1 << 63);
+    }
+
+    /// A row's base characters as text, each cell in the profile's form (never across cells).
+    fn push_row_text(&self, out: &mut String, row: &Row<Cell>) {
+        for c in 0..self.term.columns() {
+            let ch = row[Column(c)].c;
+            if self.normalization == crate::encoding::Form::None || ch.is_ascii() {
+                out.push(ch);
+            } else {
+                let mut one = ch.to_string();
+                crate::encoding::normalize_in_place(&mut one, self.normalization);
+                out.push_str(&one);
+            }
+        }
     }
 
     /// One logical line's text starting at `line`: its row and the rows it wraps onto,
@@ -1601,7 +2082,7 @@ impl Screen {
         let mut l = line;
         while l < grid.screen_lines() as i32 {
             let row = &grid[Line(l)];
-            out.extend((0..grid.columns()).map(|c| row[Column(c)].c));
+            self.push_row_text(&mut out, row);
             let wrapped = row[Column(grid.columns() - 1)].flags.contains(alacritty_terminal::term::cell::Flags::WRAPLINE);
             if !wrapped {
                 break;
@@ -1618,7 +2099,8 @@ impl Screen {
         let mut out = String::new();
         for line in top..grid.screen_lines() as i32 {
             let row = &grid[Line(line)];
-            let text: String = (0..grid.columns()).map(|c| row[Column(c)].c).collect();
+            let mut text = String::new();
+            self.push_row_text(&mut text, row);
             out.push_str(text.trim_end());
             out.push('\n');
         }
@@ -1654,11 +2136,18 @@ impl Screen {
     /// to their defaults and the text stays. alacritty has no DECSTR, so the equivalent
     /// sequences are fed in.
     pub fn soft_reset(&mut self) {
+        // The person's Reset ends a print job that is collecting; it must reach the parser.
+        self.print_capture = None;
         const DECSTR: &[u8] = b"\x1b[?25h\x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\
-            \x1b[?2004l\x1b[?1004l\x1b[?1007l\x1b[4l\x1b[0m\x1b[r\x1b[?6l\x1b[?7h\x1b(B";
+            \x1b[?2004l\x1b[?1004l\x1b[?1007l\x1b[4l\x1b[0m\x1b[r\x1b[?6l\x1b[?7h\x1b[?2048l\x1b(B";
         // Straight to the parser: Literal Controls would print the sequence instead.
         let reply = self.feed_raw(DECSTR);
         self.replies.extend(reply);
+        // The ESC in it cancelled any sequence the program left open; the scanner follows (it
+        // reads the program's bytes only, so it would still be inside that sequence).
+        if self.osc.pending.is_some() {
+            self.osc.restart();
+        }
         // Key reporting goes back to the profile's: no program flags, no menu choices.
         self.term.clear_keyboard_modes();
         self.keys = KeyState { literal: self.keys.literal, ..KeyState::new(self.keys.profile_csi_u) };
@@ -1864,9 +2353,9 @@ mod tests {
             s.term_mut().selection.as_mut().unwrap().set_visual_anchor((0, 0, false));
             assert!(s.drag_visual_to(to));
         };
-        // The alternate screen keeps no history: a row scrolled off its top is gone, and so
+        // The alternate screen without scrollback keeps no history: a row scrolled off its top is gone, and so
         // are the runs and the anchor on it. Nothing indexes a line that does not exist.
-        let mut s = Screen::new(10, 3);
+        let mut s = Screen::with_look(10, 3, Palette::default(), Look { alt_scrollback: false, ..Look::default() });
         s.feed(b"\x1b[?1049h");
         s.feed("ab \u{5d0}\u{5d1}".as_bytes());
         drag(&mut s, (0, 3, true));
@@ -1889,6 +2378,29 @@ mod tests {
         assert!(!copy.contains('\u{5d0}'), "{copy:?}");
         let (line, _, _) = s.visual_anchor().unwrap_or((-1, 0, false));
         assert!(line >= -1, "the anchor never leaves the buffer: {line}");
+    }
+
+    /// 13o Task 4: with alternate scrollback the oldest-line rules of patch 19 hold on the
+    /// alternate grid: a full history drops its oldest row, and the runs and the anchor on it.
+    #[test]
+    fn visual_runs_leave_with_the_oldest_alternate_line() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let look = Look { scrollback: 1, alt_scrollback: true, ..Look::default() };
+        let mut s = Screen::with_look(10, 3, Palette::default(), look);
+        s.feed(b"\x1b[?1049h\x1b[H");
+        s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
+        s.term_mut().selection = Some(Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left));
+        s.term_mut().selection.as_mut().unwrap().set_visual_anchor((0, 0, false));
+        assert!(s.drag_visual_to((1, 2, true)));
+        s.feed(b"\r\n\r\n\r\n");
+        let sel = s.term().selection.as_ref().expect("row 1 is still in the buffer");
+        assert!(sel.runs.iter().all(|(a, _)| a.line.0 >= -1), "{:?}", sel.runs);
+        let (line, _, _) = s.visual_anchor().unwrap_or((-1, 0, false));
+        assert!(line >= -1, "the anchor never leaves the buffer: {line}");
+        // Two more scrolls push the oldest line out of the buffer: the selection goes.
+        s.feed(b"\r\n\r\n\r\n\r\n");
+        assert_eq!(s.term().selection_to_string(), None);
     }
 
     /// Lines 0..2 of a 3-row primary screen are a scroll region and Scrollback With Status Bar
@@ -2051,12 +2563,12 @@ mod tests {
         assert_eq!(copied(&s), Some(vec!["r2 \u{5d0}\u{5d1}".to_string()]));
     }
 
-    /// The alternate screen keeps no history: a shrink with the cursor at the bottom pushes
+    /// The alternate screen without scrollback keeps no history: a shrink with the cursor at the bottom pushes
     /// its top rows out, and the runs and the anchor on them go.
     #[test]
     fn a_shrink_at_the_bottom_of_the_alternate_screen_drops_its_top_rows() {
         let five = || {
-            let mut s = Screen::new(10, 5);
+            let mut s = Screen::with_look(10, 5, Palette::default(), Look { alt_scrollback: false, ..Look::default() });
             s.feed(b"\x1b[?1049h");
             s.feed("a0 \u{5d0}\r\na1 \u{5d1}\r\na2 \u{5d2}\r\na3\r\na4".as_bytes());
             s
@@ -2130,6 +2642,7 @@ mod tests {
     fn clears_resets_and_screen_switches_keep_a_visual_selection_exact_or_clear_it() {
         let fresh = || {
             let mut s = Screen::with_scrollback(10, 3, 100);
+            s.set_rules(crate::emu::Rules { clear_history: Some(false), ..Default::default() });
             s.feed("h \u{5d0}\r\nx\r\ny \u{5d1}\r\nz".as_bytes());
             assert_eq!(s.term().topmost_line().0, -1);
             s
@@ -2562,6 +3075,47 @@ mod tests {
         assert_eq!(run(false, b"\x1b[2;4r").0, 0);
     }
 
+    fn normal(form: crate::encoding::Form) -> Screen {
+        Screen::with_look(20, 3, crate::palette::Palette::default(), Look { normalization: form, ..Look::default() })
+    }
+
+    /// Text leaves the grid in the profile's form; the grid keeps what the program wrote.
+    #[test]
+    fn text_leaves_the_grid_normalized() {
+        use crate::encoding::Form;
+        let mut s = normal(Form::Nfd);
+        s.feed("\u{e9}x\r\nab".as_bytes());
+        assert_eq!(s.line_text(0), "e\u{301}x");
+        assert_eq!(s.all_text(), "e\u{301}x\nab\n");
+        assert_eq!(s.term().grid()[Line(0)][Column(0)].c, '\u{e9}', "the grid is not changed");
+        assert_eq!(s.normalized("\u{e9}"), "e\u{301}");
+        let mut sel = alacritty_terminal::selection::Selection::new(alacritty_terminal::selection::SelectionType::Simple, alacritty_terminal::index::Point::new(Line(0), Column(0)), alacritty_terminal::index::Side::Left);
+        sel.update(alacritty_terminal::index::Point::new(Line(0), Column(0)), alacritty_terminal::index::Side::Right);
+        s.term_mut().selection = Some(sel);
+        assert_eq!(s.selection_text().as_deref(), Some("e\u{301}"));
+        let mut none = normal(Form::None);
+        none.feed("\u{e9}".as_bytes());
+        assert_eq!(none.line_text(0), "\u{e9}");
+        assert_eq!(none.normalized("e\u{301}"), "e\u{301}");
+    }
+
+    /// A profile edit reaches the screen through `set_look`, and `Look::from_profile` reads the
+    /// stored Unicode Normalization (HFS+ does nothing on Windows).
+    #[test]
+    fn look_carries_the_normalization_form() {
+        use crate::encoding::Form;
+        let mut p = crate::profile::Profile::stock();
+        assert_eq!(Look::from_profile(&p).normalization, Form::None);
+        for (v, want) in [(1, Form::Nfc), (2, Form::Nfd), (3, Form::None)] {
+            p.set("Unicode Normalization", toml::Value::Integer(v));
+            assert_eq!(Look::from_profile(&p).normalization, want);
+        }
+        let mut s = Screen::new(10, 2);
+        assert_eq!(s.normalization, Form::None);
+        s.set_look(Look { normalization: Form::Nfc, ..Look::default() });
+        assert_eq!(s.normalization, Form::Nfc);
+    }
+
     #[test]
     fn all_text_includes_scrollback() {
         let mut s = Screen::new(20, 3);
@@ -2922,6 +3476,14 @@ mod tests {
     }
     use alacritty_terminal::vte::ansi::Rgb;
 
+    impl Screen {
+        fn backdate_print_capture(&mut self) {
+            if let Some(c) = &mut self.print_capture {
+                c.started -= std::time::Duration::from_secs(crate::emu::PRINT_CAPTURE_SECS + 1);
+            }
+        }
+    }
+
     fn row_text(s: &Screen, l: i32) -> String {
         (0..s.term.columns()).map(|c| s.term.grid()[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string()
     }
@@ -3170,5 +3732,1224 @@ mod tests {
         let cut = crate::screenshot::slice(&s, 0, 3);
         assert!(cut.row_order(0).is_none(), "Bidi off stays off in the slice");
         assert!(cut.blink_allowed);
+    }
+
+    /// 13o Task 1: the plumb rules reach the grid and the scanner as iTerm2's do.
+    #[test]
+    fn plumb_sites_follow_iterm2() {
+        use crate::emu::Rules;
+        let col_of = |s: &Screen, ch: char| (0..20).find(|c| s.term.grid()[Line(0)][Column(*c)].c == ch);
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { tab_width: 4, ..Default::default() });
+        s.feed(b"\ta");
+        assert_eq!(col_of(&s, 'a'), Some(4));
+        let mut s = Screen::new(20, 3);
+        s.feed(b"\ta");
+        assert_eq!(col_of(&s, 'a'), Some(8));
+        // Only a new session takes the width: a screen that has fed bytes keeps its stops.
+        let mut s = Screen::new(20, 3);
+        s.feed(b"x");
+        s.set_rules(Rules { tab_width: 4, ..Default::default() });
+        s.feed(b"\ta");
+        assert_eq!(col_of(&s, 'a'), Some(8));
+        assert_eq!(s.rules().tab_width, 4, "the rules are stored either way");
+
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { xterm_version: 95, ..Default::default() });
+        assert_eq!(String::from_utf8(s.feed(b"\x1b[>c")).unwrap(), "\x1b[>64;95;0c");
+
+        let mut s = Screen::new(20, 3);
+        let bg = s.palette.bg;
+        s.set_rules(Rules { color_16: false, ..Default::default() });
+        let want = format!("\x1b]11;rgb:{:02x}/{:02x}/{:02x}\x07", bg.r, bg.g, bg.b);
+        assert_eq!(String::from_utf8(s.feed(b"\x1b]11;?\x07")).unwrap(), want);
+        let mut s = Screen::new(20, 3);
+        let reply = String::from_utf8(s.feed(b"\x1b]11;?\x07")).unwrap();
+        assert_eq!(reply, format!("\x1b]11;rgb:{0:02x}{0:02x}/{1:02x}{1:02x}/{2:02x}{2:02x}\x07", bg.r, bg.g, bg.b));
+
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { accept_osc7: false, ..Default::default() });
+        s.feed(b"\x1b]7;file://h/tmp\x07");
+        assert_eq!(s.shell.cwd, None);
+        assert!(s.take_requests().is_empty(), "no machine id: no warning");
+        s.feed(b"\x1b]7;file://h/tmp?machineID=ab\x07");
+        assert_eq!(s.shell.cwd, None);
+        let asked = |s: &mut Screen| s.take_requests().iter().filter(|r| matches!(r, Request::Osc7Disabled)).count();
+        assert_eq!(asked(&mut s), 1);
+        s.feed(b"\x1b]7;file://h/tmp?machineID=ab\x07");
+        assert_eq!(asked(&mut s), 1, "the screen does not latch");
+        s.feed(b"\x1b]1337;CurrentDir=/x\x07");
+        s.take_requests();
+        s.feed(b"\x1b]7;file://h/tmp?machineID=ab\x07");
+        assert_eq!(asked(&mut s), 0, "a proprietary code was seen on this screen");
+        let mut other = Screen::new(20, 3);
+        other.set_rules(Rules { accept_osc7: false, ..Default::default() });
+        other.feed(b"\x1b]7;file://h/tmp?machineID=ab\x07");
+        assert_eq!(asked(&mut other), 1);
+        // On, OSC 7 sets the folder and never warns.
+        let mut on = Screen::new(20, 3);
+        on.feed(b"\x1b]7;file://h/tmp?machineID=ab\x07");
+        assert_eq!(on.shell.cwd.as_deref(), Some("/tmp"));
+        assert_eq!(asked(&mut on), 0);
+    }
+
+    /// Preflight B5: the key gates the MODE, so a refused DECSET 1004 shows in DECRQM.
+    #[test]
+    fn focus_reporting_key_gates_the_mode() {
+        use crate::emu::Rules;
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { focus_reporting: false, ..Default::default() });
+        s.feed(b"\x1b[?1004h");
+        assert!(!s.term().mode().contains(TermMode::FOCUS_IN_OUT));
+        assert_eq!(String::from_utf8(s.feed(b"\x1b[?1004$p")).unwrap(), "\x1b[?1004;2$y");
+        s.set_rules(Rules::default());
+        s.feed(b"\x1b[?1004h");
+        assert!(s.term().mode().contains(TermMode::FOCUS_IN_OUT));
+        assert_eq!(String::from_utf8(s.feed(b"\x1b[?1004$p")).unwrap(), "\x1b[?1004;1$y");
+        // A reset is never refused.
+        s.set_rules(Rules { focus_reporting: false, ..Default::default() });
+        s.feed(b"\x1b[?1004l");
+        assert!(!s.term().mode().contains(TermMode::FOCUS_IN_OUT));
+    }
+
+    /// 13o Task 2 (Review Focus 2): a held sequence whose start was fed and whose end is dropped
+    /// leaves the parser in the ground state.
+    #[test]
+    fn held_sequences_survive_split_reads() {
+        use crate::emu::{held_bytes, Rules};
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { rep: false, ..Default::default() });
+        s.feed(b"a\x1b[3");
+        s.feed(b"bc");
+        assert_eq!(row_text(&s, 0), "ac");
+        s.feed(b"\x1b[1md");
+        assert!(s.term.grid()[Line(0)][Column(2)].flags.contains(alacritty_terminal::term::cell::Flags::BOLD), "the parser is in the ground state");
+        assert_eq!(row_text(&s, 0), "acd");
+        // The same drop inside one read, and with the sequence split in two places.
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { rep: false, ..Default::default() });
+        s.feed(b"a\x1b[");
+        s.feed(b"0");
+        s.feed(b"3b");
+        s.feed(b"c");
+        assert_eq!(row_text(&s, 0), "ac");
+        // A CAN goes first whatever happens to the sequence, so the parser is in the ground state.
+        assert_eq!(held_bytes(None), vec![0x18]);
+        assert_eq!(held_bytes(Some(b"\x1b[5b".to_vec())), b"\x18\x1b[5b");
+    }
+
+    /// 13o Task 2: the REP switch, and REP read by number.
+    #[test]
+    fn rep_follows_iterm2() {
+        use crate::emu::Rules;
+        let mut s = Screen::new(20, 3);
+        s.feed(b"a\x1b[3b");
+        assert_eq!(row_text(&s, 0), "aaaa");
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { rep: false, ..Default::default() });
+        s.feed(b"a\x1b[3b");
+        assert_eq!(row_text(&s, 0), "a");
+        assert_eq!(s.term.grid().cursor.point.column, Column(1));
+        // Padding and the colon form still reach the switch, and a padded REP runs shortened.
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { rep: false, ..Default::default() });
+        s.feed(b"a\x1b[0000003b\x1b[3:1b");
+        assert_eq!(row_text(&s, 0), "a");
+        let mut s = Screen::new(20, 3);
+        s.feed(b"a\x1b[0000003b");
+        assert_eq!(row_text(&s, 0), "aaaa");
+        // A huge count is bounded by the parameter width (65535), however many digits.
+        let mut s = Screen::new(10, 2);
+        s.feed(b"a\x1b[99999999999999999999b");
+        assert_eq!(s.term.grid().cursor.point.line, Line(1));
+    }
+
+    /// 13o Task 6 (Review Focus 5): DECRQCRA answers only when allowed, trusted and at VT400.
+    #[test]
+    fn decrqcra_is_gated() {
+        use crate::emu::Rules;
+        let sequence = b"\x1b[1;1;1;1;1;2*y";
+        let make = |off: Option<bool>, level: u16, trusted: bool| {
+            let mut s = Screen::new(20, 3);
+            s.set_rules(Rules { decrqcra_off: off, ..Default::default() });
+            s.set_level(level);
+            s.trusted = trusted;
+            s.feed(b"ab");
+            s
+        };
+        let mut s = make(None, 500, true);
+        assert_eq!(s.feed(sequence), b"", "unset: nothing answered");
+        assert_eq!(s.take_requests(), vec![Request::AskDecrqcra]);
+        s.feed(sequence);
+        s.feed(sequence);
+        assert_eq!(s.take_requests(), vec![Request::AskDecrqcra], "a flood asks once");
+        let mut s = make(Some(true), 500, true);
+        assert_eq!(s.feed(sequence), b"");
+        assert!(s.take_requests().is_empty());
+        let mut s = make(Some(false), 500, true);
+        assert_eq!(s.feed(sequence), b"\x1bP1!~00c3\x1b\\");
+        assert!(s.take_requests().is_empty());
+        assert_eq!(s.feed(b"\x1b[7;1;1;1;1;1*y"), b"\x1bP7!~0061\x1b\\", "the id is echoed; one cell");
+        assert_eq!(s.feed(b"\x1b[7;1;3;3;2;2*y"), b"\x1bP7!~0000\x1b\\", "a negative rectangle is checksum 0");
+        let mut s = make(Some(false), 500, true);
+        s.feed(b"\r\n\x1b[2;1H\xe2\x82\xac");
+        assert_eq!(s.feed(b"\x1b[3;1;2;1;2;1*y"), b"\x1bP3!~20ac\x1b\\", "a euro sign is one UTF-16 unit");
+        for (level, trusted) in [(300, true), (500, false), (300, false)] {
+            let mut s = make(Some(false), level, trusted);
+            assert_eq!(s.feed(sequence), b"", "level {level} trusted {trusted}");
+            assert!(s.take_requests().is_empty());
+            let mut s = make(None, level, trusted);
+            s.feed(sequence);
+            assert!(s.take_requests().is_empty(), "never asks at level {level} trusted {trusted}");
+        }
+        // The sequence is dropped, never printed, and text after it prints.
+        let mut s = make(Some(false), 500, true);
+        s.feed(b"\x1b[1;1;1;1;1;2*yZ");
+        assert_eq!(row_text(&s, 0), "abZ");
+    }
+
+    /// 13o Task 6 (Review Focus 5): CSI 21 t answers only with Allow Title Reporting.
+    #[test]
+    fn title_report_is_gated() {
+        let allow = Look { allow_title_reporting: true, ..Look::default() };
+        let mut s = Screen::new(20, 3);
+        assert_eq!(s.feed(b"\x1b]2;x\x07\x1b[21t"), b"", "off by default");
+        let mut s = Screen::with_look(20, 3, Palette::default(), allow);
+        assert_eq!(s.feed(b"\x1b]2;x\x07\x1b[21t"), b"\x1b]lx\x1b\\");
+        assert_eq!(s.feed(b"\x1b[20t"), b"\x1b]Lx\x1b\\");
+        s.trusted = false;
+        assert_eq!(s.feed(b"\x1b[21t"), b"", "untrusted");
+        s.trusted = true;
+        // A title with controls in it never reaches the shell as controls.
+        s.feed(b"\x1b]2;a|b;c\x03d\x0fe\x07");
+        assert_eq!(s.feed(b"\x1b[21t"), b"\x1b]la b cde\x1b\\", "vte drops C0 inside an OSC; the rest is spaced");
+        let mut t = Screen::with_look(20, 3, Palette::default(), allow);
+        t.feed(b"\x1b]2;\xc2\x9b31m\x07");
+        let report = t.feed(b"\x1b[21t");
+        assert!(!String::from_utf8_lossy(&report).contains('\u{9b}'), "{report:?}");
+        // Rows still print around a held report.
+        s.feed(b"\x1b[21tok");
+        assert!(row_text(&s, 0).ends_with("ok"));
+    }
+
+    /// 13o Task 6: ENQ answers the profile's answerback.
+    #[test]
+    fn answerback_follows_iterm2() {
+        let mut s = Screen::new(20, 3);
+        assert_eq!(s.feed(b"\x05"), b"", "empty by default");
+        s.set_answerback("hi".into());
+        assert_eq!(s.feed(b"\x05"), b"hi");
+        assert_eq!(s.feed(b"a\x05b"), b"hi");
+        assert_eq!(row_text(&s, 0), "ab", "ENQ prints nothing");
+        assert_eq!(s.feed(b"\x1b]2;a\x05b\x07"), b"", "ENQ inside an OSC is data");
+        assert_eq!(s.title(), Some("ab"), "vte drops it from the title");
+        s.set_answerback("x".repeat(1000));
+        assert_eq!(s.feed(b"\x05").len(), 256, "bounded");
+        s.set_answerback("\u{e9}".repeat(200));
+        let r = s.feed(b"\x05");
+        assert!(r.len() <= 256 && String::from_utf8(r).is_ok(), "cut on a character");
+    }
+
+    /// 13o Task 6 (Review Focus 10, R8): DEC mode 2048.
+    #[test]
+    fn resize_reports_follow_iterm2() {
+        let mut s = Screen::new(20, 3);
+        assert!(!s.resize_reports());
+        assert_eq!(s.feed(b"\x1b[?2048$p"), b"\x1b[?2048;2$y");
+        assert_eq!(s.feed(b"\x1b[?1;2048h"), b"", "no report on enabling (iTerm2)");
+        assert!(s.resize_reports());
+        assert_eq!(s.feed(b"\x1b[?2048$p"), b"\x1b[?2048;1$y");
+        s.feed(b"\x1b[?2048l");
+        assert!(!s.resize_reports());
+        s.feed(b"\x1b[?2048h\x1bc");
+        assert!(!s.resize_reports(), "RIS");
+        s.feed(b"\x1b[?2048h");
+        s.soft_reset();
+        assert!(!s.resize_reports(), "DECSTR");
+        s.feed(b"\x1b[?2048h");
+        s.set_resize_reports(false);
+        assert!(!s.resize_reports());
+        s.set_resize_reports(true);
+        assert!(s.resize_reports());
+    }
+
+    /// 13o Task 6 fix: ENQs in one output batch coalesce and DECRQCRA replies are bounded.
+    #[test]
+    fn report_floods_are_bounded() {
+        use crate::emu::Rules;
+        let mut s = Screen::new(20, 3);
+        s.set_answerback("hi".into());
+        assert_eq!(s.feed(&b"\x05".repeat(1000)), b"hi", "one answerback per batch");
+        assert_eq!(s.feed(b"\x05\x05"), b"hi", "the next batch answers again");
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { decrqcra_off: Some(false), ..Default::default() });
+        s.set_level(500);
+        s.trusted = true;
+        let one = b"\x1b[1;1;1;1;1;1*y";
+        let reply = s.feed(&one.repeat(1000));
+        assert_eq!(reply.len(), 64 * b"\x1bP1!~0000\x1b\\".len(), "64 replies a batch");
+    }
+
+    /// 13o Task 7 (Review Focus 6): Disable Smcup Rmcup keeps the primary screen up and the other
+    /// modes of the list apply.
+    #[test]
+    fn disable_smcup_follows_iterm2() {
+        let mut s = Screen::new(20, 3);
+        s.feed(b"\x1b[?1;1049h");
+        assert!(s.alt_screen());
+        let mut s = Screen::new(20, 3);
+        s.set_look(Look { disable_smcup: true, ..Look::default() });
+        s.feed(b"\x1b[?1;1049h");
+        assert!(!s.alt_screen());
+        assert!(s.term().mode().contains(TermMode::APP_CURSOR));
+        // Padded spellings are the same sequence; the alone switch does nothing.
+        s.feed(b"\x1b[?0001049h\x1b[?47h\x1b[?1047h");
+        assert!(!s.alt_screen());
+    }
+
+    /// 13o Task 7 (B8): CSI 5 i collects text until CSI 4 i; the text never reaches the screen.
+    #[test]
+    fn print_capture_follows_iterm2() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"a\x1b[5ib\x1b[31mc\r\nd\x1b[4ie");
+        assert_eq!(row_text(&s, 0), "ae");
+        assert_eq!(s.take_requests(), vec![Request::Print(PrintJob::Text("bc\r\nd".into()))]);
+        s.feed(b"\x1b[i");
+        assert_eq!(s.take_requests(), vec![Request::Print(PrintJob::Screen)]);
+        s.feed(b"\x1b[0i\x1b[2i");
+        assert_eq!(s.take_requests(), vec![Request::Print(PrintJob::Screen)], "one pending print at a time");
+        // Split reads.
+        s.feed(b"\x1b[");
+        s.feed(b"5ixy");
+        s.feed(b"z\x1b[4");
+        s.feed(b"i");
+        assert_eq!(s.take_requests(), vec![Request::Print(PrintJob::Text("xyz".into()))]);
+        // An empty job prints nothing.
+        s.feed(b"\x1b[5i\x1b[4i");
+        assert_eq!(s.take_requests(), vec![]);
+        // Disable Printing: no capture starts, nothing is requested.
+        let mut s = Screen::new(20, 4);
+        s.set_look(Look { disable_printing: true, ..Look::default() });
+        s.take_requests();
+        s.feed(b"\x1b[5iabc\x1b[4i\x1b[i");
+        assert_eq!(row_text(&s, 0), "abc");
+        assert!(!s.take_requests().iter().any(|r| matches!(r, Request::Print(_))));
+    }
+
+    /// Task 7 fix (P21): a flood of CSI i queues one print request, not one alert each.
+    #[test]
+    fn print_floods_are_bounded() {
+        let mut s = Screen::new(20, 4);
+        s.feed(&b"\x1b[i".repeat(1000));
+        assert_eq!(s.take_requests(), vec![Request::Print(PrintJob::Screen)]);
+        s.feed(b"\x1b[i");
+        assert_eq!(s.take_requests(), vec![Request::Print(PrintJob::Screen)], "the next batch asks again once it was taken");
+    }
+
+    /// Task 7 fix: a title report answers once a batch, as the answerback does.
+    #[test]
+    fn title_reports_are_one_per_batch() {
+        let mut s = Screen::new(20, 4);
+        s.set_look(Look { allow_title_reporting: true, ..Look::default() });
+        s.trusted = true;
+        s.feed(b"\x1b]2;hello\x07");
+        let one = s.feed(b"\x1b[21t");
+        assert_eq!(one, b"\x1b]lhello\x1b\\", "a title report answers");
+        assert_eq!(s.feed(&b"\x1b[21t".repeat(1000)), one, "one reply per batch");
+        assert_eq!(s.feed(&b"\x1b[20t\x1b[21t".repeat(10)), b"\x1b]Lhello\x1b\\", "20 and 21 share the one reply");
+    }
+
+    /// 13o Task 7 (B8): a capture with no end is bounded and never swallows all output.
+    #[test]
+    fn print_capture_is_bounded() {
+        let mut s = Screen::new(20, 4);
+        s.limits.copy = 64;
+        s.feed(b"\x1b[5i");
+        for _ in 0..40 {
+            s.feed(b"0123456789");
+        }
+        s.feed(b"\x1b[2J\x1b[Hshown");
+        assert_eq!(row_text(&s, 0), "shown");
+        assert_eq!(s.take_requests(), vec![], "nothing is printed");
+        assert!(s.print_capture.is_none());
+        // Time: a capture older than the bound ends at the next output.
+        s.feed(b"\x1b[5iold");
+        s.backdate_print_capture();
+        s.feed(b"\r\nnew");
+        assert_eq!(row_text(&s, 1), "new");
+        assert_eq!(s.take_requests(), vec![]);
+    }
+
+    /// 13o final review (Task 7 minor 3): a capture that ends by age in the middle of a sequence
+    /// drops the rest of that sequence, so its tail never prints as text.
+    #[test]
+    fn a_print_capture_ending_by_age_mid_sequence_drops_the_tail() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"\x1b[5ihidden\x1b[1");
+        s.backdate_print_capture();
+        s.feed(b";31mshown");
+        assert_eq!(row_text(&s, 0), "shown", "the tail of the sequence is not text");
+        assert!(s.print_capture.is_none());
+        assert_eq!(s.take_requests(), vec![]);
+        // A string (OSC) cut the same way.
+        let mut s = Screen::new(20, 4);
+        s.feed(b"\x1b[5i\x1b]0;ti");
+        s.backdate_print_capture();
+        s.feed(b"tle\x07shown");
+        assert_eq!(row_text(&s, 0), "shown");
+    }
+
+    /// 13o final review (new item 7): Reset cancels a sequence the program left open, in the
+    /// scanner as in the screen's parser, so the tail of that sequence is not read as an event.
+    #[test]
+    fn reset_cancels_an_open_sequence_in_the_scanner() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"\x1b]52;c;QQ==");
+        s.soft_reset();
+        s.feed(b"\x07text");
+        assert_eq!(row_text(&s, 0), "text");
+        assert!(!s.take_requests().iter().any(|r| matches!(r, Request::ClipboardWrite(_))), "the cancelled OSC 52 wrote nothing");
+    }
+
+    /// 13o final review (Task 7 minor 1): the person's Reset works while a print job collects.
+    #[test]
+    fn reset_ends_a_print_capture() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"\x1b[?2004h\x1b[5ihidden");
+        assert!(s.print_capture.is_some());
+        s.soft_reset();
+        assert!(s.print_capture.is_none(), "the capture ends");
+        assert!(!s.term().mode().contains(TermMode::BRACKETED_PASTE), "and the reset reached the parser");
+        s.feed(b"after");
+        assert_eq!(row_text(&s, 0), "after");
+    }
+
+    /// 13o Task 7 (B8): RIS, a prompt mark and a command end each end the capture unprinted.
+    #[test]
+    fn print_capture_ends_at_a_prompt() {
+        for end in [&b"\x1bc"[..], b"\x1b]133;A\x07", b"\x1b]133;D;0\x07"] {
+            let mut s = Screen::new(20, 4);
+            s.feed(b"\x1b[5ihidden");
+            s.feed(end);
+            s.feed(b"visible");
+            assert_eq!(row_text(&s, 0), "visible", "{end:?}");
+            assert_eq!(s.take_requests(), vec![], "{end:?}");
+        }
+    }
+
+    /// 13o final review (Task 7 minor 2): with the switch on, a tab at the last column wraps even
+    /// with auto-wrap off (`MS:2814-2817` does not read DECAWM).
+    #[test]
+    fn tabs_wrap_ignores_auto_wrap() {
+        let cell = |s: &Screen, l: i32, c: usize| s.term.grid()[Line(l)][Column(c)].c;
+        let mut s = Screen::new(10, 3);
+        s.set_rules(crate::emu::Rules { tabs_wrap: true, ..Default::default() });
+        s.feed(b"\x1b[?7l\x1b[1;10H\tx");
+        assert_eq!(cell(&s, 1, 8), 'x', "wrapped to the next row, to the stop after column 0");
+        assert_eq!(cell(&s, 0, 9), ' ');
+    }
+
+    /// 13o Task 7: tabs wrap only with the switch; the pending-wrap tab does nothing either way.
+    #[test]
+    fn tabs_wrap_follows_iterm2() {
+        use alacritty_terminal::term::cell::Flags;
+        let cell = |s: &Screen, l: i32, c: usize| s.term.grid()[Line(l)][Column(c)].c;
+        let mut s = Screen::new(10, 3);
+        s.feed(b"\x1b[1;10H\tx");
+        assert_eq!(cell(&s, 0, 9), 'x');
+        assert_eq!(cell(&s, 1, 8), ' ');
+        let mut s = Screen::new(10, 3);
+        s.set_rules(crate::emu::Rules { tabs_wrap: true, ..Default::default() });
+        s.feed(b"\x1b[1;10H\tx");
+        assert_eq!(cell(&s, 1, 8), 'x');
+        assert!(s.term.grid()[Line(0)][Column(9)].flags.contains(Flags::WRAPLINE), "soft wrap");
+        // Mid-line tabs are unchanged with the switch on.
+        s.feed(b"\x1b[3;1H\ty");
+        assert_eq!(cell(&s, 2, 8), 'y');
+        // A pending wrap: the tab does nothing, and the next character wraps as usual.
+        let mut s = Screen::new(10, 3);
+        s.feed(b"0123456789\tz");
+        assert_eq!(cell(&s, 0, 9), '9');
+        assert_eq!(cell(&s, 1, 0), 'z');
+    }
+
+    /// 13o Task 3 (Review Focus 1): CSI 3 J asks while the key is unset and the history stays.
+    #[test]
+    fn csi_3j_is_held_and_asked() {
+        use crate::emu::Rules;
+        let hist = |s: &Screen| s.term().grid().history_size();
+        let filled = |rules: Rules| {
+            let mut s = Screen::new(20, 3);
+            s.set_rules(rules);
+            for i in 0..52 {
+                s.feed(format!("line{i}\r\n").as_bytes());
+            }
+            s.take_requests();
+            assert_eq!(hist(&s), 50);
+            s
+        };
+        let mut s = filled(Rules::default());
+        s.feed(b"\x1b[3J");
+        assert_eq!(hist(&s), 50);
+        assert_eq!(s.take_requests(), vec![Request::AskClearHistory]);
+        // Output keeps flowing while the ask is pending, and a flood asks once.
+        s.feed(b"\x1b[3J\x1b[3J\x1b[000003J\x1b[3:1Jtail");
+        assert_eq!(hist(&s), 50);
+        assert!(row_text(&s, 2).contains("tail") || row_text(&s, 1).contains("tail"));
+        assert_eq!(s.take_requests(), vec![Request::AskClearHistory]);
+        // A split read leaves the parser clean.
+        s.feed(b"\x1b[");
+        s.feed(b"3Jok");
+        s.take_requests();
+        assert!((0..3).any(|l| row_text(&s, l).contains("ok")));
+        let mut s = filled(Rules { clear_history: Some(false), ..Default::default() });
+        s.feed(b"\x1b[3J");
+        assert_eq!(hist(&s), 0);
+        assert!(s.take_requests().is_empty());
+        let mut s = filled(Rules { clear_history: Some(true), ..Default::default() });
+        s.feed(b"\x1b[3J\x1b[0003J");
+        assert_eq!(hist(&s), 50);
+        assert!(s.take_requests().is_empty());
+        // ED 2 is never held and never touches the history.
+        let mut s = filled(Rules::default());
+        s.feed(b"\x1b[2J");
+        assert!(hist(&s) >= 50);
+        assert!(s.take_requests().is_empty());
+    }
+
+    /// 13o Task 3: the user's clears and OSC 1337 ClearScrollback are never gated.
+    #[test]
+    fn user_clears_are_not_gated() {
+        let hist = |s: &Screen| s.term().grid().history_size();
+        let filled = || {
+            let mut s = Screen::new(20, 3);
+            for i in 0..52 {
+                s.feed(format!("line{i}\r\n").as_bytes());
+            }
+            s
+        };
+        let mut s = filled();
+        assert_eq!(hist(&s), 50);
+        s.clear(true);
+        assert_eq!(hist(&s), 0);
+        let mut s = filled();
+        s.feed(b"\x1b]1337;ClearScrollback\x07");
+        assert_eq!(hist(&s), 0);
+        assert!(s.take_requests().is_empty());
+    }
+
+    /// 13o Task 2: the OSC 8 length cap.
+    #[test]
+    fn url_length_follows_iterm2() {
+        use crate::emu::Rules;
+        let link = |s: &Screen| s.term.grid()[Line(0)][Column(0)].hyperlink().map(|h| h.uri().to_string());
+        let feed = |max: usize, text: &[u8]| {
+            let mut s = Screen::new(20, 3);
+            s.set_rules(Rules { max_url: max, ..Default::default() });
+            s.feed(text);
+            s
+        };
+        let long = b"\x1b]8;;http://a.b/cdefgh\x1b\\x\x1b]8;;\x1b\\";
+        assert_eq!(link(&feed(10, long)), None);
+        assert_eq!(link(&feed(2_097_152, long)).as_deref(), Some("http://a.b/cdefgh"));
+        assert_eq!(link(&feed(10, b"\x1b]8;;http://a\x1b\\y")).as_deref(), Some("http://a"));
+        // A refused link neither starts nor ends one: the open link stays open.
+        let s = feed(10, b"\x1b]8;;http://a\x1b\\x\x1b]8;;http://a.b/cdefgh\x1b\\y");
+        assert_eq!(s.term.grid()[Line(0)][Column(1)].hyperlink().map(|h| h.uri().to_string()).as_deref(), Some("http://a"));
+        // A later OSC 8 with no URL still ends the link.
+        let s = feed(10, b"\x1b]8;;http://a\x1b\\x\x1b]8;;\x1b\\y");
+        assert!(s.term.grid()[Line(0)][Column(1)].hyperlink().is_none());
+    }
+
+    /// 13o Task 2 (B2): a held event that reads state runs after a synchronized update is drawn.
+    #[test]
+    fn held_reads_flush_synchronized_output() {
+        let mut s = Screen::new(20, 3);
+        s.feed(b"\x1b[?2026hab\x1b[5i");
+        assert_eq!(row_text(&s, 0), "ab", "the update was flushed before the held sequence");
+    }
+
+    /// 13o Task 2: a string over the cap is cut at the cap and its tail does not print.
+    #[test]
+    fn a_huge_osc_does_not_print_its_tail() {
+        let mut s = Screen::new(20, 3);
+        let mut big = b"\x1b]0;".to_vec();
+        big.extend(std::iter::repeat_n(b'A', (1 << 20) + 10));
+        big.extend(b"\x07z");
+        s.feed(&big);
+        assert_eq!(row_text(&s, 0), "z");
+        // Like iTerm2, the string is cut at the cap (vte ends it on CAN).
+        assert!(s.title().is_some_and(|t| t.len() <= 1 << 20), "the string is cut at the cap");
+        s.feed(b"\x1b]0;ok\x07");
+        assert_eq!(s.title(), Some("ok"));
+    }
+
+    /// Every spelling vte takes as CSI 3 J is gated, including a C0 byte, DEL or a byte of 0x80 or
+    /// more between the ESC and the `[` (vte stays in Escape through them) and C0 bytes inside the
+    /// sequence (13o Task 2 fix, B1).
+    #[test]
+    fn every_vte_spelling_of_csi_3j_is_gated() {
+        use crate::emu::Rules;
+        let forms: Vec<Vec<u8>> = vec![
+            b"\x1b[3J".to_vec(),
+            b"\x1b\x00[3J".to_vec(),
+            b"\x1b\x07[3J".to_vec(),
+            b"\x1b\r[3J".to_vec(),
+            b"\x1b\x7f[3J".to_vec(),
+            b"\x1b\xc3[3J".to_vec(),
+            b"\x1b\x9b[3J".to_vec(),
+            b"\x1b\x00\x7f\xff[3J".to_vec(),
+            b"\x1b[\x003J".to_vec(),
+            b"\x1b[3\rJ".to_vec(),
+            b"\x1b[3\x7fJ".to_vec(),
+            b"\x1b[0003J".to_vec(),
+            b"\x1b[3:1J".to_vec(),
+            b"\x1b\x1b[3J".to_vec(),
+            b"\x1b[1\x1b[3J".to_vec(),
+        ];
+        for form in forms {
+            let mut s = Screen::with_scrollback(20, 3, 100);
+            for i in 0..52 {
+                s.feed(format!("line{i}\r\n").as_bytes());
+            }
+            s.take_requests();
+            let before = s.term().grid().history_size();
+            s.feed(&form);
+            s.feed(b"after");
+            assert_eq!(s.term().grid().history_size(), before, "{form:?} cleared history");
+            assert_eq!(s.take_requests(), vec![Request::AskClearHistory], "{form:?} did not ask");
+            assert!((0..3).any(|l| row_text(&s, l).contains("after")), "{form:?} left the parser mid-sequence");
+            // The same spelling split at every byte.
+            for cut in 1..form.len() {
+                let mut s = Screen::with_scrollback(20, 3, 100);
+                for i in 0..52 {
+                    s.feed(format!("line{i}\r\n").as_bytes());
+                }
+                s.take_requests();
+                s.feed(&form[..cut]);
+                s.feed(&form[cut..]);
+                s.feed(b"after");
+                assert_eq!(s.term().grid().history_size(), before, "{form:?} split at {cut} cleared history");
+                assert!((0..3).any(|l| row_text(&s, l).contains("after")), "{form:?} split at {cut} swallowed text");
+            }
+            // With the key set to allow, the same spelling clears.
+            let mut s = Screen::with_scrollback(20, 3, 100);
+            s.set_rules(Rules { clear_history: Some(false), ..Default::default() });
+            for i in 0..52 {
+                s.feed(format!("line{i}\r\n").as_bytes());
+            }
+            s.feed(&form);
+            assert_eq!(s.term().grid().history_size(), 0, "{form:?} should clear when allowed");
+        }
+    }
+
+    /// The REP switch and the OSC cut see the same forms vte does.
+    #[test]
+    fn other_gates_see_vte_spellings() {
+        use crate::emu::Rules;
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { rep: false, ..Default::default() });
+        s.feed(b"a\x1b\x00[3b\x1b\x7f[3b\x1b[\x003b");
+        assert_eq!(row_text(&s, 0), "a");
+        let mut s = Screen::new(20, 3);
+        let mut big = b"\x1b\x00]0;".to_vec();
+        big.extend(std::iter::repeat_n(b'A', (1 << 20) + 10));
+        big.extend(b"\x07z");
+        s.feed(&big);
+        assert_eq!(row_text(&s, 0), "z");
+        assert!(s.title().is_some_and(|t| t.len() <= 1 << 20), "the string is cut at the cap");
+    }
+
+    /// Random streams of the bytes that matter never clear history while the key is unset: what
+    /// the scanner holds is what vte (alacritty) would run, whatever the spelling or the splits.
+    #[test]
+    fn random_streams_never_clear_history_unasked() {
+        const ALPHABET: &[u8] = b"\x1b\x1b\x1b\x1b[[[3333JJJ;:0\x00\x07\r\x7f\x18\x1a\xc3\x9b\\]P_X^?q";
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for round in 0..3000 {
+            let mut s = Screen::with_scrollback(20, 3, 100);
+            for i in 0..52 {
+                s.feed(format!("line{i}\r\n").as_bytes());
+            }
+            s.take_requests();
+            let before = s.term().grid().history_size();
+            let len = 4 + (next() % 20) as usize;
+            let stream: Vec<u8> = (0..len).map(|_| ALPHABET[(next() % ALPHABET.len() as u64) as usize]).collect();
+            let mut at = 0;
+            while at < stream.len() {
+                let n = 1 + (next() % 7) as usize;
+                let end = (at + n).min(stream.len());
+                s.feed(&stream[at..end]);
+                at = end;
+            }
+            assert!(s.term().grid().history_size() >= before, "round {round}: {stream:?} cleared history");
+        }
+    }
+    /// 13o Task 2 fix 4: REP after a character with combining marks repeats the whole cell, and a
+    /// cell keeps a bounded number of marks.
+    #[test]
+    fn rep_repeats_the_whole_cell_and_marks_are_bounded() {
+        let cell = |s: &Screen, c: usize| {
+            let cell = &s.term.grid()[Line(0)][Column(c)];
+            let mut t = cell.c.to_string();
+            t.extend(cell.zerowidth().unwrap_or(&[]));
+            t
+        };
+        let mut s = Screen::new(20, 3);
+        s.feed("e\u{301}\x1b[2b".as_bytes());
+        assert_eq!((cell(&s, 0), cell(&s, 1), cell(&s, 2), cell(&s, 3)), ("e\u{301}".to_string(), "e\u{301}".to_string(), "e\u{301}".to_string(), " ".to_string()));
+        // A plain character repeats as before, and so does a wide one.
+        let mut s = Screen::new(20, 3);
+        s.feed("a\x1b[2b".as_bytes());
+        assert_eq!((cell(&s, 0), cell(&s, 1), cell(&s, 2)), ("a".into(), "a".into(), "a".into()));
+        let mut s = Screen::new(20, 3);
+        s.feed("\u{4e2d}\u{301}\x1b[1b".as_bytes());
+        assert_eq!((cell(&s, 0), cell(&s, 2)), ("\u{4e2d}\u{301}".to_string(), "\u{4e2d}\u{301}".to_string()));
+        // The switch still drops it.
+        let mut s = Screen::new(20, 3);
+        s.set_rules(crate::emu::Rules { rep: false, ..Default::default() });
+        s.feed("e\u{301}\x1b[2b".as_bytes());
+        assert_eq!(cell(&s, 1), " ");
+        // A flood adds no marks to the first cell, and no cell holds more than the cap.
+        let mut s = Screen::new(20, 3);
+        s.feed("e\u{301}\x1b[65535b\x1b[65535b".as_bytes());
+        assert_eq!(s.term.grid()[Line(0)][Column(0)].zerowidth().map(<[char]>::len).unwrap_or(0) <= 1, true);
+        let mut s = Screen::new(20, 3);
+        s.feed(format!("e{}", "\u{301}".repeat(100)).as_bytes());
+        let marks = s.term.grid()[Line(0)][Column(0)].zerowidth().map(<[char]>::len).unwrap_or(0);
+        assert_eq!(marks, alacritty_terminal::term::cell::MAX_ZEROWIDTH);
+        s.feed("\x1b[65535b".as_bytes());
+        let most = (0..3).flat_map(|l| (0..20).map(move |c| (l, c))).map(|(l, c)| s.term.grid()[Line(l)][Column(c)].zerowidth().map(<[char]>::len).unwrap_or(0)).max();
+        assert_eq!(most, Some(alacritty_terminal::term::cell::MAX_ZEROWIDTH));
+    }
+    /// 13o Task 2 fix 3: the title stack stays small however long the titles and however many
+    /// pushes (a 1 MiB title pushed 4096 times held 4 GiB).
+    #[test]
+    fn the_title_stack_is_bounded() {
+        let mut s = Screen::new(20, 3);
+        let mut title = b"\x1b]0;".to_vec();
+        title.extend(std::iter::repeat_n(b'T', 600_000));
+        title.push(7);
+        s.feed(&title);
+        for _ in 0..4096 {
+            s.feed(b"\x1b[22t");
+        }
+        let stack = s.term.title_stack();
+        assert!(stack.len() <= 10, "depth {}", stack.len());
+        let bytes: usize = stack.iter().flatten().map(String::len).sum();
+        assert!(bytes <= 10 * 4096, "{bytes} bytes held");
+        // The newest title comes back (cut), and a short title is unchanged.
+        s.feed(b"\x1b]0;short\x07\x1b[22t\x1b]0;other\x07\x1b[23t");
+        assert_eq!(s.title(), Some("short"));
+    }
+
+    /// The text of grid row `l` of the grid shown (history above line 0 is negative).
+    fn shown_row(s: &Screen, l: i32) -> String {
+        row_text(s, l)
+    }
+
+    fn history_texts(g: &alacritty_terminal::grid::Grid<alacritty_terminal::term::cell::Cell>) -> Vec<String> {
+        use alacritty_terminal::grid::Dimensions;
+        (1..=g.history_size() as i32)
+            .rev()
+            .map(|n| (0..g.columns()).map(|c| g[Line(-n)][Column(c)].c).collect::<String>().trim_end().to_string())
+            .collect()
+    }
+
+    /// 13o Task 4 (Review Focus 4, R3): lines that scroll off the alternate screen are kept, move
+    /// into the main history when the program leaves, and are dropped with the switch off.
+    #[test]
+    fn alternate_screen_keeps_history() {
+        let look = |on| Look { alt_scrollback: on, scrollback: 100, ..Look::default() };
+        let mut s = Screen::with_look(10, 3, Palette::default(), look(true));
+        s.feed(b"\x1b[?1049h");
+        s.feed(b"1\r\n2\r\n3\r\n4\r\n5");
+        assert_eq!(s.term().grid().history_size(), 2);
+        assert_eq!(history_texts(s.term().grid()), ["1", "2"]);
+        // The main screen's own history is separate while the alternate screen is up.
+        assert_eq!(s.term().primary_grid().history_size(), 0);
+        s.feed(b"\x1b[?1049l");
+        assert_eq!(history_texts(s.term().grid()), ["1", "2"]);
+        assert_eq!(s.term().grid().history_size(), 2);
+        // Entering again starts the alternate history afresh.
+        s.feed(b"\x1b[?1049h");
+        assert_eq!(s.term().grid().history_size(), 0);
+        s.feed(b"\x1b[?1049l");
+        assert_eq!(s.term().grid().history_size(), 2);
+        // Switch off: nothing kept, nothing added.
+        let mut s = Screen::with_look(10, 3, Palette::default(), look(false));
+        s.feed(b"\x1b[?1049h1\r\n2\r\n3\r\n4\r\n5");
+        assert_eq!(s.term().grid().history_size(), 0);
+        s.feed(b"\x1b[?1049l");
+        assert_eq!(s.term().grid().history_size(), 0);
+        assert!(Look::default().alt_scrollback);
+        // A new profile value reaches a running screen, both ways.
+        let mut s = Screen::with_look(10, 3, Palette::default(), look(false));
+        s.set_look(look(true));
+        s.feed(b"\x1b[?1049h1\r\n2\r\n3\r\n4");
+        assert_eq!(s.term().grid().history_size(), 1);
+        s.set_look(look(false));
+        assert_eq!(s.term().grid().history_size(), 0);
+    }
+
+    /// 13o Task 4: leaving the alternate screen puts its history above the main history without
+    /// renumbering the screen's rows (`scrolled_off`, which marks and triggers number rows by),
+    /// and a full history drops its oldest rows into `dropped`.
+    #[test]
+    fn alternate_history_joins_the_main_history() {
+        let mut s = Screen::with_scrollback(10, 3, 4);
+        s.feed(b"m1\r\nm2\r\nm3\r\nm4");
+        let (scrolled, dropped) = (s.term().grid().scrolled_off(), s.term().grid().dropped());
+        assert_eq!(history_texts(s.term().grid()), ["m1"]);
+        s.feed(b"\x1b[?1049h\x1b[Ha\r\nb\r\nc\r\nd\r\ne");
+        s.feed(b"\x1b[?1049l");
+        assert_eq!(history_texts(s.term().grid()), ["m1", "a", "b"]);
+        assert_eq!(s.term().grid().scrolled_off(), scrolled);
+        assert_eq!(s.term().grid().dropped(), dropped);
+        // Past the limit (4) the oldest rows are lost and counted.
+        s.feed(b"\x1b[?1049h\x1b[H1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\x1b[?1049l");
+        assert_eq!(history_texts(s.term().grid()), ["1", "2", "3", "4"]);
+        assert_eq!(s.term().grid().dropped(), dropped + 3);
+        // RIS in the alternate screen leaves no history behind.
+        s.feed(b"\x1b[?1049h1\r\n2\r\n3\r\n4\x1bc");
+        assert_eq!(s.term().grid().history_size(), 0);
+    }
+
+    /// 13o Task 4 fix: ED 2 in the alternate screen saves the screen first, as iTerm2
+    /// (`MS:1712-1720`), whatever Save Scroll Buffer When Clearing says.
+    #[test]
+    fn full_clear_saves_the_alternate_screen() {
+        let look = |on| Look { alt_scrollback: on, scrollback: 100, ..Look::default() };
+        let mut s = Screen::with_look(10, 4, Palette::default(), look(true));
+        s.feed(b"\x1b[?1049ha\r\nb\x1b[2J");
+        assert_eq!(history_texts(s.term().grid()), ["a", "b"]);
+        assert_eq!(shown_row(&s, 0), "");
+        let mut s = Screen::with_look(10, 4, Palette::default(), look(false));
+        s.feed(b"\x1b[?1049ha\r\nb\x1b[2J");
+        assert_eq!(s.term().grid().history_size(), 0);
+        // The main screen's ED 2 is unchanged.
+        let mut s = Screen::with_look(10, 4, Palette::default(), look(true));
+        s.feed(b"a\r\nb\x1b[2J");
+        assert_eq!(history_texts(s.term().grid()), ["a", "b"]);
+    }
+
+    /// 13o Task 4 (MS:1729-1742): ED 0 at home in the alternate screen saves the screen first.
+    #[test]
+    fn clear_at_home_saves_the_screen() {
+        use crate::emu::Rules;
+        let look = |on| Look { alt_scrollback: on, scrollback: 100, ..Look::default() };
+        let run = |on: bool, rules: Rules, alt: bool| {
+            let mut s = Screen::with_look(10, 4, Palette::default(), look(on));
+            s.set_rules(rules);
+            if alt {
+                s.feed(b"\x1b[?1049h");
+            }
+            s.feed(b"a\r\nb\x1b[H\x1b[J");
+            s
+        };
+        let s = run(true, Rules::default(), true);
+        assert_eq!(history_texts(s.term().grid()), ["a", "b"]);
+        assert_eq!(shown_row(&s, 0), "");
+        assert_eq!(shown_row(&s, 1), "");
+        let s = run(true, Rules { save_on_clear: false, ..Rules::default() }, true);
+        assert_eq!(s.term().grid().history_size(), 0);
+        // The main screen never saves (zsh, issue 8822).
+        let s = run(true, Rules::default(), false);
+        assert_eq!(s.term().grid().history_size(), 0);
+        // Alternate scrollback off: iTerm2 hands a nil line buffer, nothing is saved.
+        let s = run(false, Rules::default(), true);
+        assert_eq!(s.term().grid().history_size(), 0);
+        // Only from the home cell, and a plain ED 0 elsewhere clears below as before.
+        let mut s = Screen::with_look(10, 4, Palette::default(), look(true));
+        s.feed(b"\x1b[?1049ha\r\nb\x1b[2;1H\x1b[J");
+        assert_eq!(s.term().grid().history_size(), 0);
+        assert_eq!(shown_row(&s, 0), "a");
+        // A blank screen saves nothing.
+        let mut s = Screen::with_look(10, 4, Palette::default(), look(true));
+        s.feed(b"\x1b[?1049h\x1b[H\x1b[J");
+        assert_eq!(s.term().grid().history_size(), 0);
+    }
+
+    /// 13o Task 4 (`MS+TD:480-521`): a CUP above the running command's output saves the screen,
+    /// before the command has printed anything.
+    #[test]
+    fn cursor_above_prompt_saves_the_screen() {
+        use crate::emu::Rules;
+        let look = Look { scrollback: 100, ..Look::default() };
+        let start = |rules: Rules| {
+            let mut s = Screen::with_look(10, 6, Palette::default(), look);
+            s.set_rules(rules);
+            s.feed(b"old1\r\nold2\r\n\x1b]133;A\x07\x1b]133;B\x07");
+            s
+        };
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b]133;C\x07");
+        s.feed(b"\x1b[H");
+        assert_eq!(history_texts(s.term().grid()), ["old1", "old2"]);
+        assert_eq!((0..6).map(|l| shown_row(&s, l)).collect::<String>(), "");
+        // Painting then moving home saves nothing more.
+        s.feed(b"x\x1b[3;1Hy\x1b[H");
+        assert_eq!(s.term().grid().history_size(), 2);
+        // Output first, in a read of its own or the same read, saves nothing.
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b]133;C\x07");
+        s.feed(b"x");
+        s.feed(b"\x1b[H");
+        assert_eq!(s.term().grid().history_size(), 0);
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b]133;C\x07x\x1b[H");
+        assert_eq!(s.term().grid().history_size(), 0);
+        assert_eq!(shown_row(&s, 0), "old1");
+        // The same read can also start the command and move home.
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b]133;C\x07\x1b[H");
+        assert_eq!(s.term().grid().history_size(), 2);
+        // CUP with parameters and HVP both count.
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b]133;C\x07\x1b[1;1f");
+        assert_eq!(s.term().grid().history_size(), 2);
+        // A CUP that stays at or below the output start saves nothing.
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b]133;C\x07\x1b[3;1H");
+        assert_eq!(s.term().grid().history_size(), 0);
+        // No running command: nothing.
+        let mut s = Screen::with_look(10, 6, Palette::default(), look);
+        s.feed(b"old1\r\nold2\r\n\x1b[H");
+        assert_eq!(s.term().grid().history_size(), 0);
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b[H");
+        assert_eq!(s.term().grid().history_size(), 0);
+        // The command ended: nothing.
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b]133;C\x07\x1b]133;D;0\x07\x1b[H");
+        assert_eq!(s.term().grid().history_size(), 0);
+        // The switch off: nothing.
+        let mut s = start(Rules { save_above_prompt: false, ..Rules::default() });
+        s.feed(b"\x1b]133;C\x07\x1b[H");
+        assert_eq!(s.term().grid().history_size(), 0);
+        // The alternate screen: nothing.
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b]133;C\x07\x1b[?1049h\x1b[H\x1b[?1049l");
+        assert_eq!(history_texts(s.term().grid()), Vec::<String>::new());
+    }
+
+    // ---- 13o Task 5: character widths ----
+
+    fn width_cell(s: &Screen, line: i32, col: usize) -> Cell {
+        s.term().grid()[alacritty_terminal::index::Point::new(Line(line), Column(col))].clone()
+    }
+
+    /// The column of the first cell holding `ch` on `line`.
+    fn column_of(s: &Screen, line: i32, ch: char) -> Option<usize> {
+        (0..s.term().columns()).find(|&c| width_cell(s, line, c).c == ch)
+    }
+
+    fn wide_look() -> Look {
+        Look::default()
+    }
+
+    #[test]
+    fn widths_follow_iterm2() {
+        use alacritty_terminal::term::cell::Flags;
+        // U+200B advances the cursor by default and takes a cell of its own (R3).
+        let mut s = Screen::new(10, 3);
+        s.feed("a\u{200B}b".as_bytes());
+        assert_eq!(column_of(&s, 0, 'a'), Some(0));
+        assert_eq!(width_cell(&s, 0, 1).c, '\u{200B}');
+        assert_eq!(column_of(&s, 0, 'b'), Some(2));
+        // With the switch off it rides on the previous cell.
+        let mut s = Screen::new(10, 3);
+        s.set_rules(crate::emu::Rules { zwsp_advances: false, ..crate::emu::Rules::default() });
+        s.feed("a\u{200B}b".as_bytes());
+        assert_eq!(column_of(&s, 0, 'b'), Some(1));
+        assert_eq!(width_cell(&s, 0, 0).zerowidth(), Some(&['\u{200B}'][..]));
+        // Ambiguous characters widen only with the profile switch.
+        let mut s = Screen::new(10, 3);
+        s.feed("\u{00A7}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+        let mut s = Screen::with_look(10, 3, Palette::default(), Look { ambiguous_wide: true, ..wide_look() });
+        s.feed("\u{00A7}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        assert!(width_cell(&s, 0, 0).flags.contains(Flags::WIDE_CHAR));
+        assert!(width_cell(&s, 0, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
+        // Emoji are two cells from Unicode 9, one before.
+        let mut s = Screen::with_look(10, 3, Palette::default(), Look { unicode_version: 8, ..wide_look() });
+        s.feed("\u{1F600}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+        let mut s = Screen::with_look(10, 3, Palette::default(), Look { unicode_version: 9, ..wide_look() });
+        s.feed("\u{1F600}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        // A CJK character is two cells in both.
+        let mut s = Screen::with_look(10, 3, Palette::default(), Look { unicode_version: 8, ..wide_look() });
+        s.feed("\u{4E00}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        // OSC 1337 UnicodeVersion changes the table, and a pop restores the profile's.
+        let mut s = Screen::new(10, 3);
+        s.feed(b"\x1b]1337;UnicodeVersion=8\x07");
+        s.feed("\u{1F600}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+        s.feed(b"\r\n\x1b]1337;UnicodeVersion=0\x07");
+        s.feed("\u{1F600}y".as_bytes());
+        assert_eq!(column_of(&s, 1, 'y'), Some(2));
+        // A later profile edit re-sends the rule.
+        let mut s = Screen::new(10, 3);
+        s.set_look(Look { ambiguous_wide: true, ..wide_look() });
+        s.feed("\u{00A7}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        let mut s = Screen::new(10, 3);
+        s.set_profile_unicode(8);
+        s.feed("\u{1F600}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+    }
+
+    /// 13o final review I6: an unterminated OSC 52 of 3 MiB does not wedge the screen, and what
+    /// follows its terminator prints normally.
+    #[test]
+    fn a_runaway_osc52_ends_cleanly() {
+        let mut s = Screen::new(10, 3);
+        s.feed(b"\x1b]52;c;");
+        let chunk = vec![b'A'; 64 * 1024];
+        for _ in 0..48 {
+            s.feed(&chunk);
+        }
+        s.feed(b"\x07ok");
+        assert_eq!(column_of(&s, 0, 'o'), Some(0));
+        assert_eq!(column_of(&s, 0, 'k'), Some(1));
+        assert_eq!(column_of(&s, 0, 'A'), None, "the string never printed");
+    }
+
+    /// 13o final review I5: a mark or a selector never has a width of its own, so it stays on its
+    /// base with Ambiguous Double Width on or off (the tables are only asked about bases), and
+    /// iTerm2's ignorable characters take no cell (`SC:520-522`).
+    #[test]
+    fn ambiguous_wide_keeps_marks_on_their_base() {
+        let x_at = |adw: bool, text: &str| {
+            let mut s = Screen::with_look(12, 3, Palette::default(), Look { ambiguous_wide: adw, ..wide_look() });
+            s.feed(format!("{text}x").as_bytes());
+            column_of(&s, 0, 'x')
+        };
+        for adw in [true, false] {
+            assert_eq!(x_at(adw, "e\u{301}"), Some(1), "e + accent, ADW {adw}");
+            assert_eq!(x_at(adw, "\u{2764}\u{FE0F}"), Some(2), "heart + VS16, ADW {adw}");
+            assert_eq!(x_at(adw, "\u{304B}\u{3099}"), Some(2), "ka + voiced mark, ADW {adw}");
+            assert_eq!(x_at(adw, "a\u{FE00}"), Some(1), "a + VS1, ADW {adw}");
+            // Ignorable characters get no cell (the Hangul fillers are in the full-width tables).
+            for filler in ["\u{115F}", "\u{3164}", "\u{FFA0}", "\u{AD}"] {
+                assert_eq!(x_at(adw, &format!("a{filler}")), Some(1), "{filler:?}, ADW {adw}");
+            }
+        }
+        assert_eq!(x_at(true, "\u{A7}"), Some(2), "a base still widens");
+        assert_eq!(x_at(false, "\u{A7}"), Some(1));
+    }
+
+    /// Task 5 fix round 1: a skin tone modifier joins its base, and a ZWJ sequence is one cell
+    /// run as wide as its first emoji (iTerm2: grapheme clusters, `StringToScreenChars`).
+    #[test]
+    fn skin_tones_keep_their_own_cells_and_zwj_joins() {
+        let x_at = |text: &str, prefix: &str| {
+            let mut s = Screen::new(12, 3);
+            s.feed(format!("{prefix}{text}x").as_bytes());
+            column_of(&s, 0, 'x')
+        };
+        // iTerm2 (AggressiveBaseCharacterDetection, default on): a skin tone takes its own cells
+        // (CharsetTests.swift:453-515): victory hand 1 + 2, thumbs up 2 + 2, a tone alone 2.
+        assert_eq!(x_at("\u{270C}\u{1F3FD}", ""), Some(3));
+        assert_eq!(x_at("\u{1F44D}\u{1F3FD}", ""), Some(4));
+        assert_eq!(x_at("\u{1F44D}\u{1F3FB}", ""), Some(4));
+        assert_eq!(x_at("\u{270C}\u{1F3FD}", "\x1b[?1049h"), Some(3));
+        assert_eq!(x_at("a\u{1F3FD}", ""), Some(3));
+        assert_eq!(x_at("\u{1F3FD}", ""), Some(2));
+        // ZWJ sequences: a family is two cells; a tone after a ZWJ joins the pictograph before it.
+        assert_eq!(x_at("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}", ""), Some(2));
+        assert_eq!(x_at("\u{1F468}\u{1F3FD}\u{200D}\u{1F469}\u{1F3FD}", ""), Some(6), "man | tone ZWJ woman | tone");
+        assert_eq!(x_at("a\u{200D}\u{1F469}", ""), Some(3));
+        assert_eq!(x_at("\u{2764}\u{FE0F}\u{200D}\u{1F525}", ""), Some(2), "heart on fire");
+        // Extended_Pictographic is the exact table: a check mark and a cross are not pictographs.
+        assert_eq!(x_at("\u{2713}\u{200D}\u{2717}", ""), Some(2));
+    }
+
+    #[test]
+    fn vs16_widens_in_place() {
+        use alacritty_terminal::term::cell::Flags;
+        let heart = "\u{2764}\u{FE0F}";
+        // The primary screen widens by default (R3).
+        let mut s = Screen::new(10, 3);
+        s.feed(format!("{heart}x").as_bytes());
+        assert!(width_cell(&s, 0, 0).flags.contains(Flags::WIDE_CHAR));
+        assert!(width_cell(&s, 0, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        assert_eq!(width_cell(&s, 0, 0).zerowidth(), Some(&['\u{FE0F}'][..]), "the mark stays");
+        // The alternate screen leaves it narrow, unless vs16_all.
+        let mut s = Screen::new(10, 3);
+        s.feed(format!("\x1b[?1049h{heart}x").as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+        let mut s = Screen::new(10, 3);
+        s.set_rules(crate::emu::Rules { vs16_all: true, ..crate::emu::Rules::default() });
+        s.feed(format!("\x1b[?1049h{heart}x").as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        // The primary switch off: narrow there too.
+        let mut s = Screen::new(10, 3);
+        s.set_rules(crate::emu::Rules { vs16_primary: false, ..crate::emu::Rules::default() });
+        s.feed(format!("{heart}x").as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+        // A base that does not take VS16 stays narrow.
+        let mut s = Screen::new(10, 3);
+        s.feed("A\u{FE0F}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+        // In the last column the widening wraps the heart as a wide character written there would.
+        let mut s = Screen::new(10, 3);
+        s.feed(format!("123456789{heart}x").as_bytes());
+        assert!(width_cell(&s, 0, 9).flags.contains(Flags::LEADING_WIDE_CHAR_SPACER));
+        assert_eq!(width_cell(&s, 1, 0).c, '\u{2764}');
+        assert!(width_cell(&s, 1, 0).flags.contains(Flags::WIDE_CHAR));
+        assert!(width_cell(&s, 1, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
+        assert_eq!(column_of(&s, 1, 'x'), Some(2));
+        assert_eq!(width_cell(&s, 1, 0).zerowidth(), Some(&['\u{FE0F}'][..]), "the mark moved with it");
+        // With line wrap off it stays narrow.
+        let mut s = Screen::new(10, 3);
+        s.feed(format!("\x1b[?7l123456789{heart}").as_bytes());
+        assert!(!width_cell(&s, 0, 9).flags.contains(Flags::WIDE_CHAR));
+        assert_eq!(width_cell(&s, 0, 9).c, '\u{2764}');
+        // A base that is already wide is left as it is.
+        let mut s = Screen::new(10, 3);
+        s.feed(format!("{heart}\u{FE0F}x").as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        // Insert mode shifts the text to the right of the widened cell.
+        let mut s = Screen::new(10, 3);
+        s.feed(format!("Q\x1b[1G\x1b[4h{heart}").as_bytes());
+        assert!(width_cell(&s, 0, 0).flags.contains(Flags::WIDE_CHAR));
+        assert!(width_cell(&s, 0, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
+        assert_eq!(width_cell(&s, 0, 2).c, 'Q');
+        // The first half of a wide character to its right loses its spacer.
+        let mut s = Screen::new(10, 3);
+        s.feed("a\u{4E00}\x1b[1G".as_bytes());
+        s.feed(heart.as_bytes());
+        assert!(width_cell(&s, 0, 0).flags.contains(Flags::WIDE_CHAR));
+        assert!(width_cell(&s, 0, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
+        assert!(!width_cell(&s, 0, 1).flags.contains(Flags::WIDE_CHAR));
+        assert!(!width_cell(&s, 0, 2).flags.contains(Flags::WIDE_CHAR_SPACER), "no stray spacer");
+        // At the left edge with nothing before it, nothing widens.
+        let mut s = Screen::new(10, 3);
+        s.feed("\u{FE0F}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(0));
+    }
+
+    #[test]
+    fn flags_stay_two_cells() {
+        use alacritty_terminal::term::cell::Flags;
+        let us = "\u{1F1FA}\u{1F1F8}";
+        let off = crate::emu::Rules { full_width_flags: false, ..crate::emu::Rules::default() };
+        // A pair is two cells with the switch on and off, and one cluster.
+        for rules in [crate::emu::Rules::default(), off] {
+            let mut s = Screen::new(10, 3);
+            s.set_rules(rules);
+            s.feed(format!("{us}x").as_bytes());
+            assert_eq!(column_of(&s, 0, 'x'), Some(2), "{rules:?}");
+            assert!(width_cell(&s, 0, 0).flags.contains(Flags::WIDE_CHAR));
+            assert!(width_cell(&s, 0, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
+            assert_eq!(width_cell(&s, 0, 0).zerowidth(), Some(&['\u{1F1F8}'][..]));
+        }
+        // A lone indicator is two cells with the switch on (R3), one with it off.
+        let mut s = Screen::new(10, 3);
+        s.feed("\u{1F1FA}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        let mut s = Screen::new(10, 3);
+        s.set_rules(off);
+        s.feed("\u{1F1FA}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+        // With the switch off a pair starting in the last column wraps as a wide character.
+        let mut s = Screen::new(10, 3);
+        s.set_rules(off);
+        s.feed(format!("123456789{us}x").as_bytes());
+        assert!(width_cell(&s, 0, 9).flags.contains(Flags::LEADING_WIDE_CHAR_SPACER));
+        assert_eq!(width_cell(&s, 1, 0).c, '\u{1F1FA}');
+        assert!(width_cell(&s, 1, 0).flags.contains(Flags::WIDE_CHAR));
+        assert_eq!(column_of(&s, 1, 'x'), Some(2));
+        // With it on the first indicator wraps itself and the second joins.
+        let mut s = Screen::new(10, 3);
+        s.feed(format!("123456789{us}x").as_bytes());
+        assert_eq!(width_cell(&s, 1, 0).c, '\u{1F1FA}');
+        assert_eq!(column_of(&s, 1, 'x'), Some(2));
+        // A third indicator starts a new cell.
+        let mut s = Screen::new(10, 3);
+        s.feed("\u{1F1FA}\u{1F1F8}\u{1F1E6}x".as_bytes());
+        assert_eq!(width_cell(&s, 0, 2).c, '\u{1F1E6}');
+        assert_eq!(column_of(&s, 0, 'x'), Some(4));
+    }
+
+    #[test]
+    fn unicode_version_defaults_to_9() {
+        assert_eq!(Look::default().unicode_version, 9);
+        assert_eq!(Look::from_profile(&crate::profile::Profile::stock()).unicode_version, 9);
+        let mut s = Screen::new(10, 3);
+        s.feed("\u{1F600}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(2));
+        let mut p = crate::profile::Profile::stock();
+        p.values.insert("Unicode Version".into(), toml::Value::Integer(8));
+        let look = Look::from_profile(&p);
+        assert_eq!(look.unicode_version, 8);
+        let mut s = Screen::with_look(10, 3, Palette::default(), look);
+        s.feed("\u{1F600}x".as_bytes());
+        assert_eq!(column_of(&s, 0, 'x'), Some(1));
+        let row = crate::schema::find("Unicode Version").unwrap();
+        assert_eq!(row.default, Some(toml::Value::Integer(9)));
+    }
+
+    #[test]
+    fn capabilities_report_ambiguous_width() {
+        let mut s = Screen::with_look(10, 3, Palette::default(), Look { ambiguous_wide: true, ..wide_look() });
+        s.clipboard_allowed = true;
+        let reply = String::from_utf8(s.feed(b"\x1b]1337;Capabilities\x07")).unwrap();
+        assert!(reply.contains("Aw") && reply.contains("Uw9"), "{reply}");
+        let mut s = Screen::new(10, 3);
+        let reply = String::from_utf8(s.feed(b"\x1b]1337;Capabilities\x07")).unwrap();
+        assert!(!reply.contains("Aw") && reply.contains("Uw9"), "{reply}");
+    }
+
+    /// 13o Task 9: OSC 72 registers a program for drops, and only a trusted screen answers.
+    #[test]
+    fn kitty_dnd_registers_on_the_screen() {
+        let mut s = Screen::new(10, 3);
+        assert!(!s.dnd.accepting());
+        let reply = s.feed(b"\x1b]72;t=q:i=5\x1b\\\x1b]72;t=a;text/uri-list\x1b\\");
+        assert_eq!(reply, b"\x1b]72;t=q:i=5\x1b\\");
+        assert!(s.dnd.accepting());
+        assert!(s.dnd_accepting());
+        s.feed(b"\x1b]72;t=A\x07");
+        assert!(!s.dnd.accepting(), "BEL ends it too");
+        // A split read registers once.
+        s.feed(b"\x1b]72;t=a;text/ur");
+        assert!(!s.dnd.accepting());
+        s.feed(b"i-list\x1b\\");
+        assert!(s.dnd.accepting());
+        // Untrusted: nothing answers and nothing registers (B7); a held registration is dropped.
+        let mut s = Screen::new(10, 3);
+        s.trusted = false;
+        assert_eq!(s.feed(b"\x1b]72;t=q:i=5\x1b\\\x1b]72;t=a;text/uri-list\x1b\\"), b"");
+        assert!(!s.dnd.accepting() && !s.dnd_accepting());
+        s.trusted = true;
+        s.feed(b"\x1b]72;t=a;text/uri-list\x1b\\");
+        s.trusted = false;
+        assert!(s.dnd.accepting() && !s.dnd_accepting(), "trust lost: no drop is reported");
+        // Replies are bounded in a batch: a flood of queries answers 64.
+        let mut s = Screen::new(10, 3);
+        let flood = "\x1b]72;t=q\x1b\\".repeat(1000);
+        assert_eq!(s.feed(flood.as_bytes()).len(), 64 * "\x1b]72;t=q\x1b\\".len());
+        // Only replies are counted: a message of 100 chunks in one read still completes, and its
+        // first and last parts are never joined with the middle skipped.
+        let mut s = Screen::new(10, 3);
+        let mut chunks = "\x1b]72;t=a:m=1;a\x1b\\".repeat(100);
+        chunks.push_str("\x1b]72;t=a:m=0;text/uri-list\x1b\\");
+        s.feed(chunks.as_bytes());
+        assert!(s.dnd.accepting(), "the m=0 chunk was not skipped");
+        // And the next batch starts clean: no leaked half message.
+        s.feed(b"\x1b]72;t=A\x1b\\");
+        assert!(!s.dnd.accepting());
     }
 }

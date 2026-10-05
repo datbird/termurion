@@ -912,7 +912,7 @@ impl App {
                 self.menus_dirty = true;
             }
             "pasteSelection:" => {
-                let text = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).and_then(|p| p.screen.term().selection_to_string());
+                let text = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).and_then(|p| p.screen.selection_text());
                 if let (Some(text), Some(id)) = (text, self.focused_id()) {
                     self.user_paste(id, &text, crate::broadcast::Write::Paste);
                 }
@@ -1062,7 +1062,7 @@ impl App {
 
     fn save_text(&mut self, selection_only: bool) {
         let Some(p) = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)) else { return };
-        let text = if selection_only { p.screen.term().selection_to_string() } else { Some(p.screen.all_text()) };
+        let text = if selection_only { p.screen.selection_text() } else { Some(p.screen.all_text()) };
         let Some(text) = text.filter(|t| !t.is_empty()) else { return };
         let name = if selection_only { "selection.txt" } else { "session.txt" };
         if let Some(path) = rfd::FileDialog::new().set_file_name(name).save_file() {

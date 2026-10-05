@@ -285,7 +285,7 @@ impl App {
             Outcome::Step { up } => self.find_step(id, up),
             Outcome::Grow => self.find_grow(id),
             Outcome::PasteMatch => {
-                let text = self.panes.get(&id).and_then(|p| p.screen.term().selection_to_string());
+                let text = self.panes.get(&id).and_then(|p| p.screen.selection_text());
                 if let (Some(t), Some(p)) = (text, self.panes.get_mut(&id)) {
                     p.scroll(Scroll::Bottom);
                     self.user_paste(id, &t, crate::broadcast::Write::Paste);
@@ -501,7 +501,7 @@ impl App {
                 }
             }
             ("performFindPanelAction:", "Use Selection for Find") => {
-                let Some(text) = self.panes.get(&id).and_then(|p| p.screen.term().selection_to_string()) else { return true };
+                let Some(text) = self.panes.get(&id).and_then(|p| p.screen.selection_text()) else { return true };
                 let query = if matches!(self.find_mode(), find::Mode::RegexSensitive | find::Mode::RegexInsensitive) { regex::escape(&text) } else { text };
                 let f = self.finds.entry(id).or_default();
                 f.set_query(&query, now);
@@ -534,7 +534,7 @@ impl App {
             ("zoomOut:", _) => self.end_view(id),
             ("performFindPanelAction:", "Select Matches") => self.select_matches(id),
             ("openSelection:", _) => {
-                match self.panes.get(&id).and_then(|p| p.screen.term().selection_to_string()).filter(|t| !t.trim().is_empty()) {
+                match self.panes.get(&id).and_then(|p| p.screen.selection_text()).filter(|t| !t.trim().is_empty()) {
                     Some(text) => self.open_text(id, text.trim()),
                     None => beep(),
                 }

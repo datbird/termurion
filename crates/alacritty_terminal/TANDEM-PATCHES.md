@@ -112,4 +112,65 @@ test data) is left out. Changes:
     dropped; a visual selection's hull becomes its remaining runs', and a logical selection
     whose end left the buffer is cleared (None, as when nothing is left).
 
+20. `term/mod.rs`: the plumb knobs of milestone 13o. `Term.tab_width` (default 8) and
+    `Term::set_tab_width`: `TabStops::new(columns, width)` and `TabStops::resize(columns,
+    width)` take the spacing (at least 1) and a reset or a wider grid uses `tab_width`;
+    `set_tab_width` resets every stop, so it runs only on a session's first byte (iTerm2's
+    Default tab stop width). `Term.xterm_version` (default 2500) is the version `identify_terminal`
+    puts in DA2. `Term.color_report_16` (default true): `dynamic_color_sequence` formats `{:02x}`
+    per channel when it is false (oscColorReport16Bits). `Term.focus_reporting_allowed` (default
+    true): a DECSET 1004 is refused while false and DECRQM answers reset (iTerm2's
+    `reportFocus = mode && terminalFocusReportingAllowed`, `VT100Terminal.m:857`, `:5691`); a reset
+    is never refused (the shape of patch 16's `alternate_scroll_allowed`).
+
+21. `term/mod.rs`: `Term.max_url_len` (default 2097152, iTerm2's maxURLLength). `set_hyperlink`
+    returns before touching the template when the URI is longer, so a refused link neither starts
+    nor ends one (`VT100Terminal.m:4189`); a later OSC 8 with no URI still ends an open link.
+22. `term/mod.rs`: the title stack holds at most 10 titles (xterm's depth; it was 4096) and each
+    entry is cut at 4096 bytes on a character boundary, so `CSI 22 t` repeated cannot hold
+    gigabytes of a program's 1 MiB title. `KEYBOARD_MODE_STACK_MAX_DEPTH` keeps 4096 (it shared
+    the constant). A title longer than 4096 bytes comes back cut from `CSI 23 t`. `Term::title_stack()`
+    lets Tandem's tests read the stack.
+23. `term/cell.rs`: `Cell::push_zerowidth` keeps at most `MAX_ZEROWIDTH` (16) marks per cell; later
+    ones are dropped. Without it one `CSI 65535 b` after a combining mark added 65535 marks to a
+    cell (REP now repeats the whole cell, in Tandem's `pass`, but any stream of marks was unbounded).
+24. `term/mod.rs`, `grid/mod.rs`: scrollback in the alternate screen (iTerm2's Scrollback in
+    Alternate Screen, on by default; upstream kept none). `Term.alt_scrollback` and
+    `Term::set_alt_scrollback`: the alternate grid's history limit is the main screen's, or 0
+    (`update_history_limits`, also run by `set_options`). Entering the alternate screen clears its
+    history; leaving moves it into the main grid with `Grid::take_history` and
+    `Grid::append_history` (rows go above line 0, oldest first, past the limit they are dropped
+    from the top and counted in `dropped`; `scrolled_off` does not change, so rows on the screen
+    keep their numbers).
+    `Term::scroll_screen_into_history` (iTerm2's `scrollScreenIntoHistory`: the rows through the
+    last non-empty one scroll up into the shown grid's history, whatever the scroll region).
+    `Term.save_screen_on_clear`: ED 0 from the home cell of the alternate screen calls it first
+    (iTerm2's saveScrollBufferWhenClearing; the main screen never does, zsh issue 8822).
+    `Term.printed` counts characters written, for "has the program drawn anything since".
+25. `term/mod.rs`: `WidthRule` and `Term.width_rule: Option<WidthRule>` (None keeps upstream's
+    `c.width()`). `input` takes the cells of a character from the rule's `width` function
+    (Tandem's: iTerm2's tables, U+200B by `zwsp_advances`). A U+FE0F after a narrow cell whose
+    base `accepts_vs16`, with `vs16` or (`vs16_primary` and not in the alternate screen), widens
+    that cell (`widen_previous`): the spacer is written and the cursor moves one more column; a
+    cell in the last column moves to the next row first when line wrap is on (a leading spacer
+    stays), and stays narrow when it is off. A regional indicator right after a cell holding a
+    lone regional indicator joins it as a zero-width mark (one cluster) and the pair is always
+    two cells: it widens a one-cell first indicator the same way (iTerm2 `StringToScreenChars`).
+    A skin tone modifier keeps its own cell, as in iTerm2 with its default
+    AggressiveBaseCharacterDetection (CharsetTests.swift:453-515); a pictograph (`is_pictograph`)
+    right after a ZWJ in a pictograph's (or a skin tone's) cell joins it, so a ZWJ sequence is as
+    wide as its first emoji.
+26. `term/mod.rs`: ED 2 in the alternate screen first scrolls the screen into its history when
+    `alt_scrollback` is on (iTerm2 `MS:1712-1720`; patch 24 did it for ED 0 at home only).
+    `Term.history_splices` and `take_history_splices`: leaving the alternate screen records
+    `(main scrolled_off, rows spliced)`, so a holder of absolute row numbers (those below
+    `scrolled_off` named history rows) can move them down by the rows inserted after them.
+27. `term/mod.rs`: DEC mode 2048 (in-band resize reports), `Term.resize_reports`. DECSET and
+    DECRST set and clear it (also inside a parameter list), DECRQM answers set or reset instead of
+    not recognized, RIS clears it. The report itself is written by Tandem after a pty resize.
+28. `term/mod.rs`: `Term.tabs_wrap` (iTerm2's tabsWrapAround, default false) and `put_tab`. A
+    tab in the pending-wrap state does nothing (upstream wrapped the line); with `tabs_wrap` a
+    tab at the last column (or pending wrap) wraps the line softly and moves to the first tab
+    stop after column 0 (`MS:2795-2818`), whether DECAWM is on or off (`wrapline_always`).
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

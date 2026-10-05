@@ -195,7 +195,7 @@ impl App {
     /// The selection, else the last command's output (`PS:21211-21258`); None with neither.
     fn explain_found(&mut self, pane: PaneId) -> Option<Found> {
         let screen = self.panes.get_mut(&pane)?.own_mut();
-        if let Some(text) = screen.term().selection_to_string().filter(|t| !t.is_empty()) {
+        if let Some(text) = screen.selection_text().filter(|t| !t.is_empty()) {
             let term = screen.term();
             let range = term.selection.as_ref().and_then(|s| s.to_range(term))?;
             let marks = screen.marks_in_order();

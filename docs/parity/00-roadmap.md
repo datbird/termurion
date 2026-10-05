@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 316 | 238 | 66 | 12 |
-| `02-global-settings.md` | 820 | 540 | 53 | 227 |
-| `03-features-and-menus.md` | 647 | 561 | 43 | 43 |
-| Total | 1,783 | 1,339 | 162 | 282 |
+| `01-profile-settings.md` | 316 | 248 | 56 | 12 |
+| `02-global-settings.md` | 820 | 557 | 54 | 209 |
+| `03-features-and-menus.md` | 647 | 562 | 44 | 41 |
+| Total | 1,783 | 1,367 | 154 | 262 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -619,6 +619,25 @@ Special Exceptions window with Import and Export. Deferred: the Nerd Font bundle
 restoring Columns and Rows (13f's window sizing), a "Font not installed" banner for a non-default profile. Nothing of 13n was checked on
 screen during the build. Every kept quirk is listed in `docs/acceptance/m13n-checklist.md` and ruled on in
 `docs/superpowers/rulings/m13n-rulings.txt`.
+On the m13o branch, main (13n) merged into 13o's Tasks 1-7 (2026-10-05): 13o changes no parity row before its docs task, so
+the union is 13n's (01: 316 rows, 238 have, 66 partial, 12 missing; 02: 820, 540, 53, 227; 03: 647, 561, 43, 43; 1,783 rows,
+1,339 have, 162 partial, 282 missing). Seams wired at the merge: a cell 13o makes wide never joins a Non-ASCII ligature group, a U+200B
+cell draws as a space, and the DEC 2048 report's pixel size uses each pane's own cell.
+Milestone 13o built emulation (01: 10 rows from partial to have: Ambiguous Double Width, Unicode Normalization, Unicode Version,
+Scrollback in Alternate Screen, Character Encoding, Terminal Type, Answerback String, Allow Title Reporting, Disable Printing, Disable
+Smcup Rmcup; 02: 17 rows to have, 1 from partial and 16 from missing: preventEscapeSequenceFromClearingHistory (partial), focusReportingEnabled,
+acceptOSC7, defaultTabStopWidth, xtermVersion, oscColorReport16Bits, zeroWidthSpaceAdvancesCursor, tabsWrapAround, maxURLLength,
+disableDECRQCRA, saveScrollBufferWhenClearing, saveScrollbackWhenCursorMovesAbovePrompt, supportREPCode, resetSGROnPrompt, vs16Supported,
+vs16SupportedInPrimaryScreen, fullWidthFlags, plus bufferDepth and aggressiveBaseCharacterDetection from missing to partial (stored, shown, inert, R2);
+03: DEC mode 2048 from missing to have and the kitty drag-and-drop protocol from missing to partial; 1,783 rows, 1,367 have, 154 partial,
+262 missing). R3 fixes of defaults: CSI 3 J asks before clearing history, the alternate screen keeps scrollback, U+200B advances the cursor,
+emoji plus VS16 widen in the primary screen, lone regional indicators take two cells, and the stock profile uses Unicode 9 widths. The held-sequence
+scanner runs the same (vendored) vte parser as the screen, so no padded or spelled-differently sequence slips past a gate; DECRQCRA, title reports,
+ENQ answerbacks, the print guard, OSC 72 and 2048 reports are trusted-only where iTerm2 has no check, bounded and built rather than echoed.
+Character Encoding uses Windows code pages (ISO 2022-JP is not streamed); typed text and the answerback are encoded, replies leave raw.
+Deferred: DECRQCRA's origin mode and default-0 rectangles, DOCS (ESC % G), directory handles, offers, drags out and the SSH tier of OSC 72,
+AggressiveBaseCharacterDetection off, BufferDepth. Nothing of 13o was checked on screen during the build. Every kept quirk is listed in
+`docs/acceptance/m13o-checklist.md` and ruled on in `docs/superpowers/rulings/m13o-rulings.txt`.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's

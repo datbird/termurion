@@ -89,9 +89,13 @@ pub fn escape_for_tmux(s: &str) -> String {
     out
 }
 
-/// An OSC 10 or 11 color report, 16 bits a channel.
-pub fn color_report(osc: u8, rgb: (u8, u8, u8)) -> String {
+/// An OSC 10 or 11 color report: 16 bits a channel, or 8 with `sixteen` off (iTerm2's
+/// oscColorReport16Bits).
+pub fn color_report(osc: u8, rgb: (u8, u8, u8), sixteen: bool) -> String {
     let (r, g, b) = rgb;
+    if !sixteen {
+        return format!("\x1b]{osc};rgb:{r:02x}/{g:02x}/{b:02x}\x1b\\");
+    }
     format!("\x1b]{osc};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\x1b\\")
 }
 
@@ -170,7 +174,7 @@ mod tests {
 
     #[test]
     fn reports_escape_for_tmux() {
-        let r = color_report(11, (0x1e, 0x1e, 0x1e));
+        let r = color_report(11, (0x1e, 0x1e, 0x1e), true);
         assert_eq!(r, "\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\");
         assert_eq!(report_command(3, &r), "refresh-client -r \"%3:\\033]11;rgb:1e1e/1e1e/1e1e\\033\\\\\"");
         assert_eq!(escape_for_tmux("a\"b\n"), "a\\\"b\\012");
@@ -199,5 +203,11 @@ mod tests {
         assert_eq!(tab_label(None, None, "", "tmux", "bash", "> "), "> bash");
         assert_eq!(tab_label(None, Some(""), "", "tmux", "bash", "> "), "> bash");
         assert_eq!(tab_label(Some("logs"), Some("vim"), "host", "host", "bash", "> "), "> logs", "Edit Tab Title wins");
+    }
+
+    #[test]
+    fn color_reports_follow_the_width_switch() {
+        assert_eq!(color_report(11, (0x12, 0x34, 0x56), true), "\x1b]11;rgb:1212/3434/5656\x1b\\");
+        assert_eq!(color_report(11, (0x12, 0x34, 0x56), false), "\x1b]11;rgb:12/34/56\x1b\\");
     }
 }

@@ -88,7 +88,7 @@ impl App {
         }
         let Some(p) = self.panes.get(&pane) else { return };
         let own = p.own();
-        let query = ai_engage::query_source(own.term().selection_to_string().as_deref(), own.typed_command().as_deref());
+        let query = ai_engage::query_source(own.selection_text().as_deref(), own.typed_command().as_deref());
         let ask = ai_engage::ask_for(&query, self.globals.int(crate::ai_settings::RESPONSE_TOKEN_LIMIT));
         if ai_engage::send_at_once(&ask, self.globals.bool(ai_engage::SKIP_KEY)) {
             self.engage_send(EngageFrom::Terminal(pane), &ask.prefill);

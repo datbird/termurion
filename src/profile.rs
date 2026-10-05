@@ -99,6 +99,16 @@ impl Profile {
         self.values.get(key).cloned().or_else(|| schema::find(key).and_then(|s| s.default.clone()))
     }
 
+    /// The TERM the profile reports. iTerm2 seeds "xterm-256color" into every profile it makes,
+    /// so a profile with no stored type (one made before Tandem had the key) reads that, not the
+    /// schema's "xterm" fallback.
+    pub fn terminal_type(&self) -> String {
+        match self.values.get("Terminal Type") {
+            Some(v) => v.as_str().unwrap_or_default().to_string(),
+            None => "xterm-256color".to_string(),
+        }
+    }
+
     pub fn set(&mut self, key: &str, value: Value) {
         self.values.insert(key.to_string(), value);
     }
@@ -563,5 +573,25 @@ mod tests {
         assert_ne!(a.guid(), b.guid());
         assert_eq!(a.name(), "A");
         assert_eq!(a.font("Normal Font").family, "Cascadia Mono");
+    }
+
+    #[test]
+    fn stock_terminal_type_is_xterm_256color() {
+        assert_eq!(Profile::stock().string("Terminal Type"), "xterm-256color");
+    }
+
+    /// Profiles made before the key existed have none stored: they keep reporting
+    /// xterm-256color (iTerm2's seeded value), and a stored value, even "xterm", wins.
+    #[test]
+    fn a_profile_without_a_terminal_type_reports_xterm_256color() {
+        let mut p = Profile::stock();
+        p.values.remove("Terminal Type");
+        assert_eq!(p.terminal_type(), "xterm-256color");
+        // The editor reads `get`, which must say the same thing as the TERM that is reported.
+        assert_eq!(p.get("Terminal Type"), Some(Value::String("xterm-256color".into())));
+        p.set("Terminal Type", Value::String("xterm".into()));
+        assert_eq!(p.terminal_type(), "xterm");
+        p.set("Terminal Type", Value::String(String::new()));
+        assert_eq!(p.terminal_type(), "", "a stored empty type is reported as it is");
     }
 }

@@ -211,7 +211,7 @@ impl App {
 
     /// Paste... (41) and Paste from Selection... (42) with their configuration, into `id`.
     pub(super) fn paste_special_in(&mut self, id: PaneId, b: &Binding) {
-        let text = if b.action == 41 { self.clipboard_text() } else { self.panes.get(&id).and_then(|p| p.screen.term().selection_to_string()) };
+        let text = if b.action == 41 { self.clipboard_text() } else { self.panes.get(&id).and_then(|p| p.screen.selection_text()) };
         if let Some(t) = text.filter(|t| !t.is_empty()) {
             self.paste_with_config(id, &t, &b.text);
         }
@@ -219,7 +219,7 @@ impl App {
 
     fn copy_or(&mut self, otherwise: impl FnOnce(&mut Self)) {
         let Some(id) = self.focused_pane_id() else { return };
-        let has = self.panes.get(&id).and_then(|p| p.screen.term().selection_to_string()).is_some_and(|s| !s.is_empty());
+        let has = self.panes.get(&id).and_then(|p| p.screen.selection_text()).is_some_and(|s| !s.is_empty());
         if has { self.copy_selection(id) } else { otherwise(self) }
     }
 
@@ -461,7 +461,7 @@ impl App {
                 self.invoke(&b.argument, scope, crate::script_eval::Timeout::Never, true, super::script_ui::Origin::Report(super::script_ui::POINTER_ACTION.into()));
             }
             "kPasteFromSelectionPointerAction" => {
-                let sel = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string());
+                let sel = self.panes.get(&pane).and_then(|p| p.screen.selection_text());
                 if let (Some(s), Some(id)) = (sel, self.focused_id()) {
                     if b.argument.is_empty() {
                         self.user_paste(id, &s, crate::broadcast::Write::Paste);

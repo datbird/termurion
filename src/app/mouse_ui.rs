@@ -366,24 +366,41 @@ impl App {
         }
     }
 
-    /// A pane whose output echoed a mouse report back: reporting is on for a program that has
-    /// gone (`PS:14102-14120`). The saved answer decides, else 13b's offer asks. Each notice is
-    /// taken here, and the detector is spent per match, so one occurrence asks once.
+    /// DEC mode 2048's resize report goes to the program (`Pane::reply`: conductor-routed, never
+    /// held by Buffer Input), and its echo is watched for as a mouse report's is
+    /// (`PS:4664`, `detectTurdsForReportData:type:PTYSessionTurdTypeDEC2048`). Not gated by
+    /// AutodetectMouseReportingStuck, which gates mouse reports only (`PS:14033-14038`).
+    pub(super) fn write_resize_report(&mut self, pane: PaneId, bytes: &[u8]) {
+        use super::host_offers_ui::{Offer, bar_id};
+        let watch = !self.globals.bool("NoSyncNeverAskAboutDEC2048Frustration") && !self.bars.get(&pane).is_some_and(|b| b.has(bar_id(Offer::Dec2048)));
+        if let Some(p) = self.panes.get_mut(&pane) {
+            if watch {
+                p.stuck.get_or_insert_with(Default::default).armed_as(bytes, Instant::now(), crate::stuck_mouse::Turd::Dec2048);
+            }
+            p.reply(bytes);
+        }
+    }
+
+    /// A pane whose output echoed a report back: reporting is on for a program that has gone
+    /// (`PS:14102-14133`). The saved answer decides, else 13b's offer asks. Each notice is taken
+    /// here, and the detector is spent per match, so one occurrence asks once.
     pub(super) fn stuck_tick(&mut self) {
         use super::host_offers_ui::{Offer, bar_id, offer_buttons, offer_key, offer_text};
-        let seen: Vec<PaneId> = self.panes.iter_mut().filter_map(|(id, p)| std::mem::take(&mut p.stuck_seen).then_some(*id)).collect();
-        if self.globals.bool("NoSyncNeverAskAboutMouseReportingFrustration") {
-            return;
-        }
-        for id in seen {
-            if !self.mouse_allowed(id) || self.modes(id).tracking == mouse::Tracking::Off {
+        use crate::stuck_mouse::Turd;
+        let seen: Vec<(PaneId, Turd)> = self.panes.iter_mut().filter_map(|(id, p)| p.stuck_seen.take().map(|k| (*id, k))).collect();
+        for (id, kind) in seen {
+            let (offer, never_ask, on) = match kind {
+                Turd::Mouse => (Offer::Mouse, "NoSyncNeverAskAboutMouseReportingFrustration", self.mouse_allowed(id) && self.modes(id).tracking != mouse::Tracking::Off),
+                Turd::Dec2048 => (Offer::Dec2048, "NoSyncNeverAskAboutDEC2048Frustration", self.panes.get(&id).is_some_and(|p| p.own().resize_reports())),
+            };
+            if self.globals.bool(never_ask) || !on {
                 continue;
             }
-            match crate::stuck_mouse::next(self.globals.optional_bool(offer_key(Offer::Mouse))) {
-                crate::stuck_mouse::Next::TurnOff => self.turn_off(id, Offer::Mouse),
+            match crate::stuck_mouse::next(self.globals.optional_bool(offer_key(offer))) {
+                crate::stuck_mouse::Next::TurnOff => self.turn_off(id, offer),
                 crate::stuck_mouse::Next::Offer => {
-                    if !self.bars.get(&id).is_some_and(|b| b.has(bar_id(Offer::Mouse))) {
-                        self.ask(id, bar_id(Offer::Mouse), offer_text(Offer::Mouse), offer_buttons(Offer::Mouse), false);
+                    if !self.bars.get(&id).is_some_and(|b| b.has(bar_id(offer))) {
+                        self.ask(id, bar_id(offer), offer_text(offer), offer_buttons(offer), false);
                     }
                 }
                 crate::stuck_mouse::Next::Nothing => {}
@@ -641,7 +658,7 @@ mod tests {
             assert!(w.contains(needle), "{needle}");
         }
         let t = body(UI, "stuck_tick");
-        for needle in ["mouse_allowed(", "Tracking::Off", "offer_key(", "offer_text(", "self.turn_off("] {
+        for needle in ["mouse_allowed(", "Tracking::Off", "offer_key(", "offer_text(", "self.turn_off(", "Turd::Dec2048", "resize_reports()"] {
             assert!(t.contains(needle), "{needle}");
         }
         let second_bar = format!("fn {}_bar", "stuck");

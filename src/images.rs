@@ -328,6 +328,7 @@ mod tests {
         s.prune_images();
         assert_eq!(s.images.by_id.len(), 1);
         s.clear(false);
+        s.set_rules(crate::emu::Rules { clear_history: Some(false), ..Default::default() });
         // 2J moves the screen into the scrollback; 3J clears that.
         s.feed(b"\x1b[2J\x1b[3J");
         s.prune_images();
@@ -436,6 +437,7 @@ mod tests {
     fn the_image_store_has_a_budget() {
         let mut s = Screen::new(20, 6);
         s.limits.images = 1000;
+        s.set_rules(crate::emu::Rules { clear_history: Some(false), ..Default::default() });
         let big = |n: usize| Image { frames: vec![Frame { rgba: Arc::new(vec![0; n]), delay_ms: 0 }], ..picture(1, 1) };
         assert_ne!(s.place_image(big(600), true), 0);
         assert_eq!(s.place_image(big(600), true), 0, "over the budget while the first still shows");

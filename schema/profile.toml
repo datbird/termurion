@@ -1480,9 +1480,9 @@ tab = "Text"
 section = "Text"
 label = "Use Unicode version 9+ widths"
 type = "enum"
-default = 8
-choices = [ { value = 8, label = "Unicode 8 (legacy emoji widths)" }, { value = 9, label = "Unicode 9+ (narrow emoji)" } ]
-help = "Toggles the character-width table between Unicode 8 and Unicode 9+, which narrowed most emoji from 2 cells to 1. UI is a single checkbox."
+default = 9
+choices = [ { value = 8, label = "Unicode 8" }, { value = 9, label = "Unicode 9+" } ]
+help = "Toggles the character-width table between Unicode 8 and Unicode 9+, which made most emoji two cells wide. UI is a single checkbox."
 light_dark = false
 macos_only = false
 
@@ -1917,8 +1917,8 @@ section = "Terminal Emulation"
 label = "Character Encoding"
 type = "enum"
 default = 4
-default_note = "4 = NSUTF8StringEncoding. The real popup is populated dynamically from every NSStringEncoding the system reports via localizedNameOfStringEncoding:, not a fixed list; the choices below are a representative subset with their real Foundation raw values."
-choices = [ { value = 1, label = "Western (ASCII)" }, { value = 4, label = "Unicode (UTF-8)" }, { value = 5, label = "Western (ISO Latin 1)" }, { value = 9, label = "Central European (ISO Latin 2)" }, { value = 10, label = "Unicode (UTF-16)" }, { value = 12, label = "Western (Windows Latin 1, CP1252)" }, { value = 30, label = "Western (Mac OS Roman)" }, { value = 3, label = "Japanese (EUC)" }, { value = 8, label = "Japanese (Shift JIS)" }, { value = 21, label = "Japanese (ISO 2022-JP)" } ]
+default_note = "4 = NSUTF8StringEncoding. The real popup is populated dynamically from every NSStringEncoding the system reports via localizedNameOfStringEncoding:, not a fixed list; the choices below are a representative subset with their real Foundation raw values (the Windows code page for each is in src/encoding.rs)."
+choices = [ { value = 1, label = "Western (ASCII)" }, { value = 4, label = "Unicode (UTF-8)" }, { value = 5, label = "Western (ISO Latin 1)" }, { value = 9, label = "Central European (ISO Latin 2)" }, { value = 10, label = "Unicode (UTF-16)" }, { value = 12, label = "Western (Windows Latin 1, CP1252)" }, { value = 30, label = "Western (Mac OS Roman)" }, { value = 3, label = "Japanese (EUC)" }, { value = 8, label = "Japanese (Shift JIS)" }, { value = 21, label = "Japanese (ISO 2022-JP)" }, { value = 11, label = "Cyrillic (Windows)" }, { value = 13, label = "Greek (Windows)" }, { value = 14, label = "Turkish (Windows)" }, { value = 15, label = "Central European (Windows Latin 2)" }, { value = 2147485234, label = "Chinese (GB 18030)" }, { value = 2147486211, label = "Chinese (Big 5)" }, { value = 2147486016, label = "Korean (EUC)" }, { value = 2147486210, label = "Cyrillic (KOI8-R)" } ]
 help = "Text encoding used to interpret the terminal's byte stream."
 light_dark = false
 macos_only = false
@@ -1929,11 +1929,12 @@ tab = "Terminal"
 section = "Terminal Emulation"
 label = "Terminal Type (report as)"
 type = "string"
-default = "xterm"
-default_note = "iTermProfilePreferences.m's fallback default is \"xterm\", but ITAddressBookMgr setDefaultsInBookmark: overwrites it to \"xterm-256color\" when seeding the stock Default profile, matching the shipped DefaultBookmark.plist's own \"xterm\" entry being superseded at creation time."
+default = "xterm-256color"
+default_note = "iTermProfilePreferences.m's fallback default is \"xterm\", but ITAddressBookMgr setDefaultsInBookmark: overwrites it to \"xterm-256color\" when seeding the stock Default profile. Tandem shows and reports xterm-256color for a profile with no stored value (13o ruling), so the editor and the reported TERM agree."
 help = "The TERM value the terminal reports to programs, e.g. xterm-256color."
 light_dark = false
 macos_only = false
+seed = "xterm-256color"
 
 [[setting]]
 key = "Answerback String"

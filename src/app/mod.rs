@@ -98,6 +98,7 @@ mod porthole_ui;
 mod prompted_ui;
 mod triggers_ui;
 mod requests_ui;
+mod emu_ui;
 mod jobs_ui;
 mod close_ui;
 mod coprocess_ui;
@@ -369,6 +370,10 @@ pub struct App {
     key_click: Option<PaneId>,
     /// The alternate-scroll inferrer of each pane the wheel has scrolled (app-wide; the person's input only).
     alt_infer: HashMap<PaneId, crate::alt_infer::Inferrer>,
+    /// iTerm2's once-per-process OSC 7 conflict flag (app-wide, never per window).
+    osc7_latch: crate::emu::Osc7Latch,
+    /// Each pane's escape-sequence print guard (app-wide, not swapped per window).
+    print_guards: HashMap<PaneId, crate::emu::PrintGuard>,
     /// The pane that had the keyboard at the last check (a move resets its inferrer).
     alt_infer_focus: Option<PaneId>,
     /// Mark navigation: the mark each pane is at.
@@ -586,6 +591,9 @@ pub struct App {
     coprocess_errors: HashMap<PaneId, (String, String)>,
     /// Files dropped on the window, handled together once the drop ends.
     dropped: Vec<(PaneId, String)>,
+    /// Files dropped on a pane whose program registered for drops (OSC 72), collected until the
+    /// event loop turn ends so one drop goes to the program whole (13o Task 9).
+    dnd_dropped: Vec<(PaneId, std::path::PathBuf, (f32, f32))>,
     api: Api,
     /// The session host this Tandem runs its shells in, and what it said at the handshake.
     host: Option<crate::host_client::Client>,
@@ -1642,6 +1650,8 @@ pub fn run() {
         alt_click: None,
         key_click: None,
         alt_infer: HashMap::new(),
+        osc7_latch: crate::emu::Osc7Latch::default(),
+        print_guards: HashMap::new(),
         alt_infer_focus: None,
         mark_pos: HashMap::new(),
         finds: HashMap::new(),
@@ -1742,6 +1752,7 @@ pub fn run() {
         url_flood: Default::default(),
         local_host: aps_ui::local_host(),
         dropped: Vec::new(),
+        dnd_dropped: Vec::new(),
         coprocess_errors: HashMap::new(),
         global_find: None,
         api,
@@ -3234,7 +3245,7 @@ impl App {
         let id = id.to_string();
         // The session starts with the profile's Unicode version, as its Capabilities reply does.
         let version = crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer()));
-        let term_features = crate::osc1337::capabilities(crate::osc1337::session_features(self.globals.bool("AllowClipboardAccess"), 0, version));
+        let term_features = crate::osc1337::capabilities(crate::osc1337::session_features(self.globals.bool("AllowClipboardAccess"), 0, version, p.bool("Ambiguous Double Width")));
         let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
         let path = self
             .utilities
@@ -3263,6 +3274,8 @@ impl App {
         // the inherited block.
         let posix = self.posix(p, cmd);
         env.extend(crate::session_env::posix_vars(&posix));
+        // TERM is the profile's Terminal Type, only when nothing else names it (`PS:3253-3255`).
+        env.extend(crate::session_env::term_var(&env, std::env::var_os("TERM").is_some(), &p.terminal_type()));
         (env, cookie)
     }
 
@@ -3358,6 +3371,7 @@ impl App {
         self.script_titles.remove(&id);
         self.host_stacks.remove(&id);
         self.alt_infer.remove(&id);
+        self.print_guards.remove(&id);
         self.pending_title_restores.remove(&id);
         if self.text_popover.as_ref().is_some_and(|(p, _)| *p == id) {
             self.text_popover = None;
@@ -3507,6 +3521,7 @@ impl App {
         // Read once, as iTerm2 does ("will not affect existing sessions until you restart").
         self.scroll_ticks.insert(id, (self.globals.bool("ShowLocationsInScrollbar"), self.globals.bool("ShowMarksInScrollbar")));
         self.panes.insert(id, pane);
+        self.apply_emu_rules(id);
         self.apply_new_pane_defaults(id);
         self.apply_session_start(id);
     }
@@ -3714,6 +3729,12 @@ impl App {
         self.apply_theme_everywhere();
         // The border settings, or the Theme, may have changed.
         self.apply_border_everywhere();
+        // An emulation knob (Advanced > Terminal) may have changed.
+        let ids: Vec<PaneId> = self.panes.keys().copied().collect();
+        for id in ids {
+            self.apply_emu_rules(id);
+        }
+        self.tmux_resend_colors();
         // AllowLiveResize may have changed.
         self.apply_resizable_everywhere();
         // Title bars, the status bar's height or place, or SplitPaneDividerWidth may have
@@ -3798,6 +3819,10 @@ impl App {
             pane.restyle(Palette::from_profile(p, dark), Look::from_profile(p));
             pane.set_bidi_rules(bidi);
             screen_follows_profile(pane.own_mut(), p);
+        }
+        let ids: Vec<PaneId> = self.panes.keys().copied().collect();
+        for id in ids {
+            self.apply_emu_rules(id);
         }
         self.tmux_resend_colors();
         self.tmux_save_tab_colors();
@@ -4205,6 +4230,7 @@ impl App {
         self.pane_faces.mark_laid();
         self.tmux_report_sizes();
         let mut reframe = Vec::new();
+        let mut resize_reports = Vec::new();
         for (id, (cols, rows), (cw, ch)) in sizes {
             if let Some(p) = self.panes.get_mut(&id) {
                 if p.resize(cols, rows) {
@@ -4212,9 +4238,20 @@ impl App {
                     if p.replay.is_some() {
                         reframe.push(id);
                     }
+                    // DEC mode 2048 (13o Task 6): the new grid and the text area it covers in
+                    // physical pixels from the pane's own cell (13n), written after the pty
+                    // was resized.
+                    // The grid the pane really has (it keeps 2x1 when squeezed), not the request.
+                    let (cols, rows) = p.clamped_size(cols, rows);
+                    if let Some(report) = p.resize_report_if_on(rows, cols, resize_report_px(rows, cols, (cw, ch))) {
+                        resize_reports.push((id, report));
+                    }
                 }
                 p.set_cell_px(cw as u16, ch as u16);
             }
+        }
+        for (id, report) in resize_reports {
+            self.write_resize_report(id, &report);
         }
         // A replaying pane's frame is fit to its new size again (the window is never
         // resized to the frame).
@@ -4293,7 +4330,7 @@ impl App {
         if self.copy_porthole_selection(id, porthole_ui::CopyAs::Plain) {
             return;
         }
-        let Some(text) = self.panes.get(&id).and_then(|p| p.screen.term().selection_to_string()) else { return };
+        let Some(text) = self.panes.get(&id).and_then(|p| p.screen.selection_text()) else { return };
         self.remember_paste(&text);
         if let Some(cb) = &mut self.clipboard {
             if let Err(e) = cb.set_text(text) {
@@ -4911,7 +4948,7 @@ impl App {
             // Its press went (the tab moved away under it): the drag ends with nothing dropped.
             Drag::Tab { .. } | Drag::Chip { .. } | Drag::AddButton { .. } | Drag::Window { .. } => self.end_tab_drag(),
             Drag::Select { pane, .. } => {
-                let empty = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string()).map_or(true, |s| s.is_empty());
+                let empty = self.panes.get(&pane).and_then(|p| p.screen.selection_text()).map_or(true, |s| s.is_empty());
                 if empty {
                     if let Some(p) = self.panes.get_mut(&pane) {
                         p.screen.term_mut().selection = None;
@@ -6091,8 +6128,22 @@ impl ApplicationHandler<UserEvent> for App {
                 // A light or dark window may gain or lose its border (`BordersOnlyInLightMode`).
                 self.apply_border();
             }
+            // A drag over a pane whose program registered for drops (OSC 72) is reported to it.
+            WindowEvent::HoveredFile(_) => self.dnd_hover(),
+            WindowEvent::HoveredFileCancelled => self.dnd_cancel(),
             WindowEvent::DroppedFile(path) => {
-                let (x, y) = self.cursor;
+                // The pointer as the system reports it now: the last pointer move is stale during an
+                // OLE drag, and a file must never reach a pane the person did not drop on.
+                let real = self.pointer_now();
+                // Only the pane under the pointer, and only when its program asked: any other
+                // drop keeps the file-name paste (a background pane never gets a file).
+                if let Some((pt, p)) = real.and_then(|pt| self.pane_at(pt.0, pt.1).map(|(p, _)| (pt, p))).filter(|(_, p)| self.dnd_accepts(*p)) {
+                    self.dnd_dropped.push((p, path, pt));
+                    return;
+                }
+                // The drag ends here: a pane told of it (trust lost since) must not stay hovered.
+                self.dnd_forget_hover();
+                let (x, y) = real.unwrap_or(self.cursor);
                 let pane = self.pane_at(x, y).map(|(p, _)| p).or_else(|| self.focused_id());
                 if let Some(p) = pane {
                     self.dropped.push((p, path.to_string_lossy().to_string()));
@@ -6455,7 +6506,7 @@ fn tab_click_count(last: (Instant, Option<usize>, u8), now: Instant, hit: tab_la
 fn screen_follows_profile(screen: &mut crate::screen::Screen, p: &Profile) {
     screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
     screen.allow_title = p.bool("Allow Title Setting");
-    screen.profile_unicode = crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer()));
+    screen.set_profile_unicode(crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer())));
     screen.set_scrollback_with_status_bar(p.bool("Scrollback With Status Bar"));
     screen.set_alternate_scroll_allowed(p.bool("Allow Alternate Mouse Scroll"));
     let (list, prefs) = triggers_ui::triggers_of(p);
@@ -6479,9 +6530,59 @@ pub(super) fn posix_for(cmdline: &str, terminfo_dir: Option<&str>, colorfgbg: Op
     }
 }
 
+/// DEC mode 2048: the text area a `rows` x `cols` grid covers in physical pixels, from the
+/// pane's own cell (13n: each pane has its own face), as (height, width).
+fn resize_report_px(rows: u16, cols: u16, (cw, ch): (f32, f32)) -> (u32, u32) {
+    ((f32::from(rows) * ch).round() as u32, (f32::from(cols) * cw).round() as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DEC mode 2048 x 13n: the report's pixel size is the grid times the pane's OWN cell (its
+    /// face, Make Text Bigger), the same cell its grid was sized from, never the window's.
+    #[test]
+    fn resize_report_uses_the_pane_cell() {
+        assert_eq!(resize_report_px(24, 80, (10.0, 20.0)), (480, 800));
+        assert_eq!(resize_report_px(12, 40, (20.5, 40.25)), (483, 820));
+        let src = include_str!("mod.rs");
+        let body = &src[src.find("    fn relayout(&mut self) {").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        assert!(body.contains(".map(|(id, rect)| (id, self.grid_size_for(id, rect), self.pane_cell(id)))"), "sizes carry each pane's cell");
+        assert!(body.contains("for (id, (cols, rows), (cw, ch)) in sizes {"));
+        assert!(body.contains("p.resize_report_if_on(rows, cols, resize_report_px(rows, cols, (cw, ch)))"), "the report reads the tuple's cell");
+        assert!(!body.contains("self.cell()"), "relayout never reads the window cell");
+    }
+
+    /// Character Encoding (13o Task 8): every path that hands a pane its emulation rules (install,
+    /// refresh, settings change, tmux install) also hands it the profile's encoding, and a tmux
+    /// pane or gateway never gets one.
+    #[test]
+    fn encoding_travels_with_the_emulation_rules() {
+        let src = include_str!("emu_ui.rs");
+        let body = &src[src.find("fn apply_emu_rules").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        assert!(body.contains("\"Character Encoding\""));
+        assert!(body.contains("p.tmux_io().is_none() && !p.gateway"));
+        assert!(body.contains("p.set_encoding("));
+    }
+
+    /// Task 7 fix (P21): one "Allow Printing?" alert is pending per pane, and its answer checks
+    /// the guard again, so an Allow queued before a Disable never prints.
+    #[test]
+    fn print_guard_answers_are_rechecked() {
+        let src = include_str!("emu_ui.rs");
+        let ask = &src[src.find("fn print_request").unwrap()..];
+        let ask = &ask[..ask.find("\n    }\n").unwrap()];
+        assert!(ask.contains("alert_waits(|t| matches!(t, Then::PrintGuard { pane: p, .. } if *p == pane))"), "a pane with a question pending asks no more");
+        assert!(ask.find("alert_waits").unwrap() < ask.find(".check(").unwrap(), "a dropped attempt is not counted");
+        let answer = &src[src.find("fn print_guard_answered").unwrap()..];
+        let answer = &answer[..answer.find("\n    }\n").unwrap()];
+        assert!(answer.contains("print_guards.get_mut(&pane)"), "no guard is made for a pane that closed");
+        assert!(answer.contains(".refused("), "the answer re-checks the guard");
+        assert!(!answer.contains("or_default"));
+    }
 
     #[test]
     fn terminfo_is_for_wsl_only() {

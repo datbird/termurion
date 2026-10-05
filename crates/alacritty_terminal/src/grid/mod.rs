@@ -434,6 +434,39 @@ impl<T> Grid<T> {
         self.dropped += count as u64;
     }
 
+    /// Tandem patch: removes the history and returns its rows, oldest first (the alternate
+    /// screen's lines when the program leaves it). The screen's rows stay put.
+    pub fn take_history(&mut self) -> Vec<Row<T>> {
+        let lines = self.lines;
+        // Raw storage is bottom first: the screen's rows, then the history, newest first.
+        let mut rows = self.raw.take_all();
+        let mut history = rows.split_off(lines.min(rows.len()));
+        history.reverse();
+        self.raw.replace_inner(rows);
+        self.display_offset = 0;
+        history
+    }
+
+    /// Tandem patch: puts `new` (oldest first) into the history above line 0, newer than every
+    /// row already there. The rows past the history limit are lost from the top and counted in
+    /// `dropped`. `scrolled_off` stays as it is: the rows never scrolled off this screen's top,
+    /// and everything numbered from it (triggers, prompt ranges) keeps the numbers of the rows
+    /// on the screen.
+    pub fn append_history(&mut self, new: Vec<Row<T>>) {
+        if new.is_empty() {
+            return;
+        }
+        let lines = self.lines;
+        let mut rows = self.raw.take_all();
+        let old: Vec<Row<T>> = rows.split_off(lines.min(rows.len()));
+        rows.extend(new.into_iter().rev());
+        rows.extend(old);
+        self.add_dropped(rows.len().saturating_sub(self.max_scroll_limit + lines));
+        rows.truncate(self.max_scroll_limit + lines);
+        self.raw.replace_inner(rows);
+        self.display_offset = min(self.display_offset, self.history_size());
+    }
+
     /// Tandem patch: how many lines of history the grid keeps at most.
     #[inline]
     pub fn max_scroll_limit(&self) -> usize {

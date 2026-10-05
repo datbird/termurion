@@ -131,6 +131,9 @@ pub struct Marks {
     pub(crate) last_command: Option<u32>,
     /// Between 133;B and 133;C.
     in_command: bool,
+    /// After 133;C until the command ends or the next prompt starts: a command runs and its
+    /// output started at `output_start`.
+    running: bool,
     command_start: Option<Anchor>,
     output_start: Option<Anchor>,
     last_output: Option<(Anchor, Anchor)>,
@@ -750,6 +753,45 @@ impl Screen {
         rows.into_iter().filter_map(|(l, id)| Some((l, self.marks.records.get(&id)?.clone()))).collect()
     }
 
+    /// Whether a CUP could be the first draw of a running command: between its prompt's end and
+    /// its output, or after the output started (the scanner holds CUPs only then).
+    pub(crate) fn command_pending(&self) -> bool {
+        self.marks.in_command || self.marks.running
+    }
+
+    /// Whether a command's output has started and the command has not ended.
+    pub(crate) fn command_running(&self) -> bool {
+        self.marks.running
+    }
+
+    /// The row (negative in the scrollback) where the running command's output starts.
+    fn running_output_row(&self) -> Option<i32> {
+        if !self.marks.running {
+            return None;
+        }
+        Some(self.resolve(self.marks.output_start?)?.line.0)
+    }
+
+    /// iTerm2's `saveScreenToScrollbackIfCursorMovedAboveCommandOutput` (`MS+TD:480-521`), run
+    /// after a CUP: a program that repaints from the top without the alternate screen would
+    /// overwrite what the person still sees, so while the running command has printed nothing
+    /// and the cursor went above where its output starts, the screen scrolls into history
+    /// first, as CSI 2 J does.
+    pub(crate) fn cursor_moved_above_output(&mut self) {
+        if !self.rules.save_above_prompt
+            || self.term.mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN)
+            || self.term.printed != self.printed_at_output
+        {
+            return;
+        }
+        let Some(start) = self.running_output_row() else { return };
+        if self.term.grid().cursor.point.line.0 >= start {
+            return;
+        }
+        self.bump_ticks();
+        self.term.scroll_screen_into_history();
+    }
+
     /// The output of the last finished command (Select Output of Last Command), or of the
     /// running one.
     pub fn last_output_range(&self) -> Option<(Point, Point)> {
@@ -823,6 +865,7 @@ impl Screen {
         if !matches!(kind, PromptKind::Initial | PromptKind::Unknown) {
             return;
         }
+        self.marks.running = false;
         // A new prompt ends whatever the last program said it was doing (OSC 21337).
         self.clear_tab_status();
         if fresh_line && self.place_prompt_first_column && !self.pty_backed && self.cursor_point().column.0 > 0 {
@@ -854,6 +897,13 @@ impl Screen {
     /// Acts on one shell-integration OSC at the current cursor position. A full-screen app
     /// on the alternate screen makes no marks; its cursor is not on the main screen.
     pub(crate) fn apply(&mut self, osc: Osc) {
+        // A print job drops sequences; a prompt mark or a command end ends it unprinted (B8).
+        if self.print_capture.is_some() {
+            if !matches!(osc, Osc::Prompt { .. } | Osc::CommandEnd { .. }) {
+                return;
+            }
+            self.print_capture = None;
+        }
         use crate::trigger_events::{EventFacts, EventKind};
         let before = (self.shell.cwd.clone(), self.shell.host.clone(), self.shell.user.clone());
         let was_local = self.shell.host_local;
@@ -917,9 +967,10 @@ impl Screen {
                 HostStep::Nothing => {}
             }
         }
-        // iTerm2 also turns DEC 2048 (resize reports) off outright here; Tandem has no resize
-        // reports yet. 13o Task 6 adds `if self.resize_reports() { self.set_resize_reports(false) }`
-        // at this site (R8).
+        // iTerm2 also turns DEC 2048 (resize reports) off outright here, without a question.
+        if self.resize_reports() {
+            self.set_resize_reports(false);
+        }
         let [mouse, focus, paste] = offers;
         LeftOn { mouse, focus, paste }
     }
@@ -942,7 +993,7 @@ impl Screen {
                 let answer = crate::reports::answer(self, &q);
                 self.replies.extend(answer);
             }
-            Osc::Sync(_) => {}
+            Osc::Sync(_) | Osc::Held(_) => {}
             Osc::TabStatus(payload) => {
                 let pairs = crate::tabstatus::parse(&payload);
                 self.apply_tab_status(&pairs);
@@ -963,7 +1014,15 @@ impl Screen {
                 // A prompt redrawn at its own start while a command is typed keeps the range
                 // (`MS:3719-3727`).
                 let at = self.abs_cursor();
-                if counted && !(redraw && self.marks.prompt_range.0 == at) {
+                let fresh = counted && !(redraw && self.marks.prompt_range.0 == at);
+                // iTerm2 resets the graphic rendition when a prompt starts, only for the kinds
+                // that reach `promptDidStartAt` (Initial, Unknown) and not on that redraw
+                // (`MS+TD:2555-2563`, `MS:3719-3749`).
+                if fresh && self.rules.reset_sgr_on_prompt {
+                    use alacritty_terminal::vte::ansi::{Attr, Handler};
+                    self.term.terminal_attribute(Attr::Reset);
+                }
+                if fresh {
                     self.marks.prompt_range = (at, at);
                     self.marks.prompt_anchors = (self.marks.current.and_then(|c| self.anchor_here(c)), None);
                 }
@@ -1011,6 +1070,9 @@ impl Screen {
                 let p = self.cursor_point();
                 let start_at = if p.column.0 > 0 { Point::new(p.line + 1, Column(0)) } else { Point::new(p.line, Column(0)) };
                 self.marks.output_start = self.anchor_at(cur, start_at);
+                self.marks.running = true;
+                // Nothing this command prints has been seen yet (`appendedTextSinceCommandExecuted`).
+                self.printed_at_output = self.term.printed;
                 let now = SystemTime::now();
                 let output_start = self.marks.output_start;
                 if let Some(m) = self.marks.records.get_mut(&cur) {
@@ -1034,6 +1096,7 @@ impl Screen {
             Osc::CommandEnd { code, aid } => {
                 let events = self.prompt_state.d();
                 self.composer_events.extend(events);
+                self.marks.running = false;
                 self.marks.prompt_range = Default::default();
                 self.marks.prompt_anchors = (None, None);
                 if std::mem::take(&mut self.marks.in_command) {
@@ -1084,8 +1147,32 @@ impl Screen {
             }
             Osc::Sixel(data) => self.sixel(&data),
             Osc::Kitty(body) => self.kitty(&body),
+            // Only a trusted screen answers or registers (B7); a batch answers 64 messages at
+            // most. Replies are counted, not chunks: a message of many `m=1` chunks must reach
+            // its last one, or the first and last parts would join with the middle skipped.
+            Osc::KittyDnd(body) => {
+                if self.trusted && self.dnd_answered < crate::screen::DND_ANSWERS_PER_BATCH {
+                    let replies = self.dnd.inbound(&String::from_utf8_lossy(&body));
+                    if !replies.is_empty() {
+                        self.dnd_answered += 1;
+                    }
+                    for r in replies {
+                        self.replies.extend(r.into_bytes());
+                    }
+                }
+            }
             Osc::Location(url) => {
                 let Some((user, host, path, machine)) = parse_location(&url) else { return };
+                // Accept OSC 7 off: the sequence is ignored, after a warning when it carries a
+                // machine id and no proprietary location code was seen (`MS:4555-4565`,
+                // `MS:4636-4655`). One pending request at most, so a flood queues nothing more.
+                if !self.rules.accept_osc7 {
+                    let pending = self.requests.iter().any(|r| matches!(r, crate::screen::Request::Osc7Disabled));
+                    if machine && !self.saw_location_code && !pending {
+                        self.requests.push(crate::screen::Request::Osc7Disabled);
+                    }
+                    return;
+                }
                 if host.is_some() && (user.is_some() || host != self.shell.host) {
                     self.shell.user = user;
                 }
@@ -1099,8 +1186,12 @@ impl Screen {
                 }
             }
             Osc::Kv(key, value) => match key.as_str() {
-                "CurrentDir" if !value.is_empty() => self.shell.cwd = Some(value),
+                "CurrentDir" if !value.is_empty() => {
+                    self.saw_location_code = true;
+                    self.shell.cwd = Some(value)
+                }
                 "RemoteHost" => {
+                    self.saw_location_code = true;
                     let clean: String = value.chars().filter(|c| !c.is_control()).collect();
                     match clean.rsplit_once('@') {
                         Some((u, h)) => {
@@ -1216,7 +1307,10 @@ impl Screen {
                         }
                     }
                 }
-                "UnicodeVersion" => self.unicode.apply(&value),
+                "UnicodeVersion" => {
+                    self.unicode.apply(&value);
+                    self.push_width_rule();
+                }
                 "SetProfile" if self.trusted => self.requests.push(Request::SetProfile(value)),
                 "SetProfileProperty" if self.trusted => {
                     let pairs: Vec<(String, String)> =
@@ -1249,7 +1343,7 @@ impl Screen {
                     }
                 }
                 "Capabilities" if self.trusted => {
-                    let f = crate::osc1337::session_features(self.clipboard_allowed, self.unicode.version, self.profile_unicode);
+                    let f = crate::osc1337::session_features(self.clipboard_allowed, self.unicode.version, self.profile_unicode, self.ambiguous_wide());
                     let reply = format!("\x1b]1337;Capabilities={}\x07", crate::osc1337::capabilities(f));
                     self.replies.extend(reply.into_bytes());
                 }
@@ -2192,4 +2286,34 @@ mod tests {
         assert!(changes(&mut s).is_empty());
         assert!(paste_on(&s), "Never leaves it");
     }
+
+    /// 13o Task 2: a prompt mark resets the colors (iTerm2's Reset colors at shell prompt).
+    #[test]
+    fn prompt_resets_sgr() {
+        use alacritty_terminal::index::{Column, Line};
+        use alacritty_terminal::vte::ansi::{Color, NamedColor};
+        let fg = |s: &Screen| s.term().grid()[Line(0)][Column(0)].fg;
+        let mut s = Screen::new(40, 4);
+        s.feed(b"\x1b[31m\x1b]133;A\x07p");
+        assert_eq!(fg(&s), Color::Named(NamedColor::Foreground));
+        let mut s = Screen::new(40, 4);
+        s.set_rules(crate::emu::Rules { reset_sgr_on_prompt: false, ..Default::default() });
+        s.feed(b"\x1b[31m\x1b]133;A\x07p");
+        assert_eq!(fg(&s), Color::Named(NamedColor::Red));
+        // Only prompts that start a prompt reset: a right, secondary or continuation prompt
+        // keeps the color, and so does a prompt redrawn in place while the command is typed.
+        for kind in ["r", "s", "c"] {
+            let mut s = Screen::new(40, 4);
+            s.feed(format!("\x1b[31m\x1b]133;A;k={kind}\x07p").as_bytes());
+            assert_eq!(fg(&s), Color::Named(NamedColor::Red), "k={kind}");
+        }
+        let mut s = Screen::new(40, 4);
+        s.feed(b"\x1b]133;A\x07\x1b]133;B\x07");
+        s.feed(b"\x1b[1;1H\x1b[31m\x1b]133;A\x07p");
+        assert_eq!(fg(&s), Color::Named(NamedColor::Red), "a prompt redrawn at its own start");
+        let mut s = Screen::new(40, 4);
+        s.feed(b"\x1b[31m\x1b]133;A;k=i\x07p");
+        assert_eq!(fg(&s), Color::Named(NamedColor::Foreground));
+    }
+
 }
