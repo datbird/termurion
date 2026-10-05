@@ -650,7 +650,8 @@ impl App {
                         if archive {
                             // The saved text, then the banner, whatever the text holds (`MS:6580-6581`).
                             let grays = crate::restore_state::banner_grays(p.screen.palette.bg);
-                            p.screen.feed_restored(arrangement::styled_contents(&session).unwrap_or(""), arrangement::saved_cursor(&session), Some((crate::archive::RESTORED_BANNER, grays)));
+                            let text = crate::restore_state::cap_lines(arrangement::styled_contents(&session).unwrap_or(""), crate::archive::MAX_TEXT_LINES);
+                            p.screen.feed_restored(text, arrangement::saved_cursor(&session), Some((crate::archive::RESTORED_BANNER, grays)));
                         } else if let Some(text) = arrangement::styled_contents(&session) {
                             // Session restoration: styled text, then the banner when no job came back.
                             let banner = session.get(arrangement::BANNER_KEY).and_then(|b| b.as_str());
@@ -971,7 +972,7 @@ impl App {
         let hwnd = self.hwnd();
         let text = arrangement::trust_text(&name, &windows);
         let text = if title.starts_with("Restore") { text.replacen("Open the arrangement", "Restore the archive", 1) } else { text };
-        if !trusted(arrangement::has_mark_of_the_web(path), || yes_no(hwnd, title, &text)) {
+        if !trusted(crate::archive::needs_question(arrangement::has_mark_of_the_web(path), windows.len()), || yes_no(hwnd, title, &text)) {
             return false;
         }
         for w in windows {

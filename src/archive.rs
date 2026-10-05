@@ -99,6 +99,51 @@ pub fn failed_text(path: &str, error: &str) -> String {
     format!("Archiving to {path} failed: {error}")
 }
 
+/// The largest archive file Restore Archive reads (the 10,000,000-line save cap fits well
+/// inside it); a bigger file is refused before it is read.
+pub const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
+/// The most windows a restored file may open, and the most tabs in one window.
+pub const MAX_WINDOWS: usize = 64;
+pub const MAX_TABS: usize = 64;
+/// The most lines of styled text one restored pane takes (the save side's cap).
+pub const MAX_TEXT_LINES: usize = 10_000_000;
+
+/// Why a file of this size is refused, if it is.
+pub fn size_refusal(len: u64) -> Option<String> {
+    (len > MAX_FILE_BYTES).then(|| format!("the file is larger than {} MB", MAX_FILE_BYTES / (1024 * 1024)))
+}
+
+/// Why a file with these windows is refused, if it is: too many windows or tabs (the panes of a
+/// tab are bounded by `arrangement::tree_of`).
+pub fn count_refusal(windows: &[Value]) -> Option<String> {
+    if windows.len() > MAX_WINDOWS {
+        return Some(format!("the file holds more than {MAX_WINDOWS} windows"));
+    }
+    let tabs = |w: &Value| w.get("Tabs").and_then(|t| t.as_array()).map_or(0, Vec::len);
+    windows.iter().any(|w| tabs(w) > MAX_TABS).then(|| format!("a window in the file holds more than {MAX_TABS} tabs"))
+}
+
+/// Whether opening the windows of a file asks first: a downloaded file always, and a file with
+/// no mark that opens more than one window.
+pub fn needs_question(marked: bool, windows: usize) -> bool {
+    marked || windows > 1
+}
+
+/// The path an automatic archive is written to: `path` when this run has not written it yet,
+/// else "name (2).itermarchive", "(3)" and so on (`taken` answers from this run's own list, never
+/// from the disk, so a network folder is not probed).
+pub fn unique_path(path: &std::path::Path, taken: &dyn Fn(&std::path::Path) -> bool) -> std::path::PathBuf {
+    if !taken(path) {
+        return path.to_path_buf();
+    }
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    (2..)
+        .map(|n| path.with_file_name(format!("{stem} ({n}){ext}")))
+        .find(|p| !taken(p))
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +219,42 @@ mod tests {
         assert_eq!(recent_title(r"C:\x\My Log.itermarchive"), "My Log");
         assert_eq!(recent_title("/tmp/a.b.itermarchive"), "a.b");
         assert_eq!(recent_title("plain"), "plain");
+    }
+
+    #[test]
+    fn restore_is_bounded() {
+        assert!(size_refusal(MAX_FILE_BYTES).is_none());
+        assert!(size_refusal(MAX_FILE_BYTES + 1).unwrap().contains("512"), "the limit is named");
+        let window = |tabs: usize| {
+            let mut w = toml::Table::new();
+            w.insert("Tabs".into(), Value::Array((0..tabs).map(|_| Value::Table(Default::default())).collect()));
+            Value::Table(w)
+        };
+        assert!(count_refusal(&vec![window(1); MAX_WINDOWS]).is_none());
+        assert!(count_refusal(&vec![window(1); MAX_WINDOWS + 1]).unwrap().contains("64 windows"));
+        assert!(count_refusal(&[window(MAX_TABS)]).is_none());
+        assert!(count_refusal(&[window(MAX_TABS + 1)]).unwrap().contains("64 tabs"));
+        // A crafted file of 65 windows survives a plist round trip and is refused after it.
+        let crafted = arrangement::to_plist(&vec![window(1); 65]).unwrap();
+        assert!(count_refusal(&arrangement::from_plist(&crafted).unwrap()).is_some());
+    }
+
+    #[test]
+    fn many_windows_ask_first() {
+        assert!(needs_question(true, 1), "a downloaded file");
+        assert!(needs_question(true, 0));
+        assert!(!needs_question(false, 1), "one window of a local file opens without a question");
+        assert!(needs_question(false, 2), "an unmarked file that opens several windows asks");
+    }
+
+    #[test]
+    fn automatic_archives_never_share_a_file() {
+        use std::path::{Path, PathBuf};
+        let a = Path::new(r"D:rc\9-27-26_3.04.05_PM - bash.itermarchive");
+        assert_eq!(unique_path(a, &|_| false), a);
+        let first = a.to_path_buf();
+        let second = PathBuf::from(r"D:rc\9-27-26_3.04.05_PM - bash (2).itermarchive");
+        assert_eq!(unique_path(a, &|p| p == first), second);
+        assert_eq!(unique_path(a, &|p| p == first || p == second), PathBuf::from(r"D:rc\9-27-26_3.04.05_PM - bash (3).itermarchive"));
     }
 }

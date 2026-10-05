@@ -14,22 +14,90 @@ const FIXED_ITEMS: usize = 3;
 /// The shared list a worker reports into: the path and how its write went.
 pub(super) type Results = Arc<Mutex<Vec<(String, Result<(), String>)>>>;
 
-/// Writes `bytes` to `path` on a short-lived thread and calls `done` there with the outcome. The
-/// folder is never created or probed first (a share included); a thread that cannot start still
+type Job = (PathBuf, Vec<u8>, Box<dyn FnOnce(Result<(), String>) + Send>);
+
+/// The one archive writer: every archive goes through a single thread, so two writes of one file
+/// never overlap (a window of same-named panes closes in one loop), and `pending` lets Quit wait
+/// for the last one.
+struct Writer {
+    tx: std::sync::mpsc::Sender<Job>,
+    pending: Arc<(Mutex<usize>, std::sync::Condvar)>,
+}
+
+fn writer() -> Option<&'static Writer> {
+    static W: std::sync::OnceLock<Option<Writer>> = std::sync::OnceLock::new();
+    W.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        let pending: Arc<(Mutex<usize>, std::sync::Condvar)> = Default::default();
+        let count = pending.clone();
+        std::thread::Builder::new()
+            .name("archive-write".into())
+            .spawn(move || {
+                for (path, bytes, done) in rx {
+                    let result = std::fs::write(&path, &bytes).map_err(|e| e.to_string());
+                    done(result);
+                    let (n, cv) = &*count;
+                    if let Ok(mut n) = n.lock() {
+                        *n = n.saturating_sub(1);
+                    }
+                    cv.notify_all();
+                }
+            })
+            .ok()
+            .map(|_| Writer { tx, pending })
+    })
+    .as_ref()
+}
+
+/// Queues `bytes` for `path` on the writer thread and calls `done` there with the outcome. The
+/// folder is never created or probed first (a share included); a writer that cannot start still
 /// reports a failure.
 pub(super) fn write_in_background(path: PathBuf, bytes: Vec<u8>, done: impl FnOnce(Result<(), String>) + Send + 'static) {
-    let done = Arc::new(Mutex::new(Some(done)));
-    let worker = done.clone();
-    let spawned = std::thread::Builder::new().name("archive-write".into()).spawn(move || {
-        let result = std::fs::write(&path, &bytes).map_err(|e| e.to_string());
-        if let Some(d) = worker.lock().ok().and_then(|mut g| g.take()) {
-            d(result);
+    let Some(w) = writer() else { return done(Err("the archive writer could not start".to_string())) };
+    if let Ok(mut n) = w.pending.0.lock() {
+        *n += 1;
+    }
+    if let Err(e) = w.tx.send((path, bytes, Box::new(done))) {
+        if let Ok(mut n) = w.pending.0.lock() {
+            *n = n.saturating_sub(1);
         }
-    });
-    if let Err(e) = spawned {
-        if let Some(d) = done.lock().ok().and_then(|mut g| g.take()) {
-            d(Err(e.to_string()));
+        (e.0 .2)(Err("the archive writer stopped".to_string()));
+    }
+}
+
+/// Waits until every queued archive is written, at most `wait` (Quit and the last close: the
+/// process may end right after). True when nothing is left.
+pub(super) fn wait_for_archives(wait: std::time::Duration) -> bool {
+    let Some(w) = writer() else { return true };
+    let deadline = Instant::now() + wait;
+    let Ok(mut n) = w.pending.0.lock() else { return true };
+    while *n > 0 {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
         }
+        n = match w.pending.1.wait_timeout(n, left) {
+            Ok((g, _)) => g,
+            Err(_) => return true,
+        };
+    }
+    true
+}
+
+/// The archive paths this run has written (or queued), so an automatic archive never reuses one.
+fn written_paths() -> &'static Mutex<std::collections::HashSet<PathBuf>> {
+    static P: std::sync::OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = std::sync::OnceLock::new();
+    P.get_or_init(Default::default)
+}
+
+/// Reads a file of at most `limit` bytes; a larger one is an error naming the limit.
+fn read_bounded(path: &std::path::Path, limit: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).map_err(|e| e.to_string())?.take(limit + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    match ar::size_refusal(bytes.len() as u64).filter(|_| limit == ar::MAX_FILE_BYTES).or_else(|| (bytes.len() as u64 > limit).then(|| format!("the file is larger than {limit} bytes"))) {
+        Some(why) => Err(why),
+        None => Ok(bytes),
     }
 }
 
@@ -87,6 +155,15 @@ impl App {
         }
         let name = ar::auto_file_name(&crate::session_log::now_parts().0, &self.session_title(id));
         let path = crate::session_log::join_log_path(&folder, &name, &profile::home());
+        // Two panes of one name closing in one second get two files.
+        let path = match written_paths().lock() {
+            Ok(mut taken) => {
+                let unique = ar::unique_path(&path, &|p| taken.contains(p));
+                taken.insert(unique.clone());
+                unique
+            }
+            Err(_) => path,
+        };
         if !path.is_absolute() {
             let _ = crate::notify::show_with(ar::FAILED_TITLE, &ar::failed_text(&path.display().to_string(), "the archive folder is not a full path"), false);
             return;
@@ -94,6 +171,19 @@ impl App {
         if let Err(e) = self.save_archive_to(id, &path) {
             let _ = crate::notify::show_with(ar::FAILED_TITLE, &ar::failed_text(&path.display().to_string(), &e), false);
         }
+    }
+
+    /// Quit and the last window's close: the sessions that end with Tandem are archived when
+    /// `all` (iTerm2 saves archives synchronously on app quit, `PTYSession.swift:1709`), then
+    /// the exit waits, bounded, for the writer.
+    pub(super) fn finish_archives(&mut self, all: bool) {
+        if all {
+            let ids: Vec<PaneId> = self.panes.keys().copied().collect();
+            for id in ids {
+                self.auto_archive(id);
+            }
+        }
+        wait_for_archives(Duration::from_secs(5));
     }
 
     /// The writers' outcomes: a saved archive joins the recents, a failure is notified.
@@ -119,7 +209,7 @@ impl App {
     /// network filter, as a loaded arrangement does (B10).
     pub(super) fn restore_archive(&mut self, path: Option<PathBuf>) {
         let Some(path) = path.or_else(|| rfd::FileDialog::new().set_title("Restore Archive").add_filter("Archive", &[ar::EXTENSION]).pick_file()) else { return };
-        let windows = match std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| crate::arrangement::from_plist(&b)) {
+        let windows = match read_bounded(&path, ar::MAX_FILE_BYTES).and_then(|b| crate::arrangement::from_plist(&b)).and_then(|w| ar::count_refusal(&w).map_or(Ok(w), Err)) {
             Ok(w) => w,
             Err(e) => {
                 self.banners.set("arrangement", format!("Could not restore {}: {e}", path.display()));
@@ -173,6 +263,60 @@ mod tests {
         rest.split("\n    }\n").next().unwrap()
     }
 
+    /// One writer for every archive: queued writes of one path never mix, and a wait returns
+    /// when the last is on disk.
+    #[test]
+    fn archives_are_written_one_at_a_time() {
+        let dir = std::env::temp_dir().join(format!("tandem-archive-seq-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("same.itermarchive");
+        let done = Arc::new(Mutex::new(0usize));
+        let mut last = Vec::new();
+        for n in 0..8u8 {
+            last = vec![b'a' + n; (9 - n as usize) * 2_000_000];
+            let d = done.clone();
+            super::write_in_background(path.clone(), last.clone(), move |r| {
+                assert!(r.is_ok());
+                *d.lock().unwrap() += 1;
+            });
+        }
+        assert!(super::wait_for_archives(std::time::Duration::from_secs(20)), "everything queued was written");
+        assert_eq!(*done.lock().unwrap(), 8);
+        assert_eq!(std::fs::read(&path).unwrap(), last, "the last queued write is the file, whole");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn archives_finish_before_the_process_ends() {
+        let m = include_str!("mod.rs");
+        let menu = include_str!("menu.rs");
+        let quit = body(menu, "pub(super) fn quit_confirmed(");
+        assert!(quit.contains("self.finish_archives(!keep);"), "Quit archives the sessions that end with it (iTerm2 saves archives on app quit)");
+        assert!(quit.find("self.finish_archives(").unwrap() < quit.find("self.leave_host(keep);").unwrap(), "before leave_host empties the panes");
+        let last = body(m, "    fn close_pane(");
+        assert!(last.find("self.finish_archives(false);").unwrap() < last.find("self.leave_host(false);").unwrap(), "the last close waits for its archive");
+        let fin = body(production(), "    pub(super) fn finish_archives(");
+        assert!(fin.contains("wait_for_archives("));
+    }
+
+    #[test]
+    fn restore_reads_a_bounded_file() {
+        let restore = body(production(), "    pub(super) fn restore_archive(");
+        assert!(restore.contains("read_bounded(") && restore.contains("count_refusal("), "size and counts are checked before anything opens");
+        let dir = std::env::temp_dir().join(format!("tandem-archive-big-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.itermarchive");
+        std::fs::write(&f, b"0123456789").unwrap();
+        assert_eq!(super::read_bounded(&f, 10).unwrap(), b"0123456789");
+        assert!(super::read_bounded(&f, 9).unwrap_err().contains("larger"), "a file past the limit is refused");
+        let _ = std::fs::remove_dir_all(&dir);
+        let arrange = include_str!("arrange_ui.rs");
+        let shared = body(arrange, "    pub(super) fn open_arrangement_windows(");
+        assert!(shared.contains("needs_question("), "several windows of an unmarked file ask first");
+        let tab = body(arrange, "    pub(super) fn build_tab(");
+        assert!(tab.contains("cap_lines(") && tab.contains("MAX_TEXT_LINES"), "a restored pane's text is capped");
+    }
+
     #[test]
     fn the_writer_reports_back_and_never_probes() {
         let dir = std::env::temp_dir().join(format!("tandem-archive-{}", std::process::id()));
@@ -205,7 +349,7 @@ mod tests {
         assert!(shared.contains("has_mark_of_the_web") && shared.contains("trust_text"));
         let load = body(arrange, "    pub(super) fn load_arrangement_file(");
         assert!(load.contains("open_arrangement_windows("), "Load Arrangement uses the same gate");
-        let read = restore.find("std::fs::read").unwrap();
+        let read = restore.find("read_bounded(").unwrap();
         let pick = restore.find("pick_file").unwrap();
         assert!(pick < read, "the dialog returns the path before anything reads it");
     }

@@ -4316,6 +4316,7 @@ impl App {
                 self.flush_notes();
                 // The last window closed: its logs are written out, its shells end (iTerm2), and the
                 // host hears it.
+                self.finish_archives(false);
                 self.close_all_logs();
                 self.leave_host(false);
                 if self.save_due.is_some() {
