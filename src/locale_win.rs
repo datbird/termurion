@@ -6,7 +6,7 @@ use crate::locale_guess::{self, Facts};
 use std::collections::HashSet;
 use std::sync::OnceLock;
 use windows_sys::Win32::Globalization::{
-    EnumSystemLocalesEx, GetLocaleInfoEx, GetUserDefaultLocaleName, GetUserPreferredUILanguages, IsValidLocaleName, LOCALE_SLOCALIZEDCOUNTRYNAME,
+    EnumSystemLocalesEx, GetLocaleInfoEx, GetUserDefaultLocaleName, GetUserPreferredUILanguages, LOCALE_SLOCALIZEDCOUNTRYNAME,
     LOCALE_SLOCALIZEDLANGUAGENAME, LOCALE_SPECIFICDATA, MUI_LANGUAGE_NAME,
 };
 
@@ -83,29 +83,36 @@ pub fn supported(candidate: &str, encoding: Option<&str>) -> bool {
     if !(2..=3).contains(&language.len()) || !language.bytes().all(|b| b.is_ascii_lowercase()) {
         return false;
     }
-    let name = wide(&base.replace('_', "-"));
-    // SAFETY: `name` is NUL-terminated.
-    if unsafe { IsValidLocaleName(name.as_ptr()) } == 0 {
-        return false;
-    }
-    // `IsValidLocaleName` accepts any well-formed name (`xx-QQ`): Windows must also have the
-    // language, or the language with that country, once a script subtag is set aside.
-    let parts: Vec<&str> = base.split('_').filter(|t| !(t.len() == 4 && t.bytes().all(|b| b.is_ascii_alphabetic()))).collect();
     let (languages, specific) = known_locales();
+    known_in(base, languages, specific)
+}
+
+/// Windows must have the language, or the language with that country, once a script subtag is
+/// set aside (`IsValidLocaleName` accepts any well-formed name, `xx-QQ`, so it is not asked).
+fn known_in(base: &str, languages: &HashSet<String>, specific: &HashSet<String>) -> bool {
+    let parts: Vec<&str> = base.split('_').filter(|t| !is_script(t)).collect();
     match parts.as_slice() {
         [l] => languages.contains(*l),
         _ => specific.contains(&parts.join("_")),
     }
 }
 
+/// A script subtag: four letters (`Latn`).
+fn is_script(t: &str) -> bool {
+    t.len() == 4 && t.bytes().all(|b| b.is_ascii_alphabetic())
+}
+
 /// Windows' specific locales (`en_US`) and their languages (`en`), read once.
 fn known_locales() -> &'static (HashSet<String>, HashSet<String>) {
     static KNOWN: OnceLock<(HashSet<String>, HashSet<String>)> = OnceLock::new();
-    KNOWN.get_or_init(|| {
-        let specific: HashSet<String> = system_locales().into_iter().collect();
-        let languages = specific.iter().filter_map(|l| l.split('_').next()).map(str::to_string).collect();
-        (languages, specific)
-    })
+    KNOWN.get_or_init(|| known_from(&system_locales()))
+}
+
+/// The specific locales (script subtags removed: `sr-Latn-RS` is `sr_RS`) and their languages.
+fn known_from(list: &[String]) -> (HashSet<String>, HashSet<String>) {
+    let specific: HashSet<String> = list.iter().map(|l| l.split('_').filter(|t| !is_script(t)).collect::<Vec<_>>().join("_")).collect();
+    let languages = specific.iter().filter_map(|l| l.split('_').next()).map(str::to_string).collect();
+    (languages, specific)
 }
 
 unsafe extern "system" fn collect(name: *const u16, _flags: u32, lparam: isize) -> i32 {
@@ -229,6 +236,16 @@ mod tests {
         let with = facts(4, "C.UTF-8");
         assert_eq!(with.fallback_lc_ctype, "C.UTF-8");
         assert_eq!(facts(999, "").encoding, None);
+    }
+
+    #[test]
+    fn script_locales_are_known_without_their_script() {
+        let list = vec!["sr_Latn_RS".to_string()];
+        let (languages, specific) = known_from(&list);
+        assert!(known_in("sr_RS", &languages, &specific));
+        assert!(known_in("sr_Latn_RS", &languages, &specific));
+        assert!(known_in("sr", &languages, &specific));
+        assert!(!known_in("sr_BA", &languages, &specific));
     }
 
     #[test]
