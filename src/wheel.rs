@@ -248,9 +248,55 @@ pub fn touchpad_natural() -> bool {
     rc == 0 && data == 0
 }
 
+/// The pinch gesture (`PseudoTerminal.m:1751-1773`): a precision touchpad's pinch arrives as
+/// Ctrl+wheel. It restarts when the last piece is older than this.
+pub const MAG_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
+/// A running total past this (either way) changes the font by one step.
+pub const MAG_THRESHOLD: f64 = 0.4;
+/// One wheel notch is this much magnification, so one notch is one font step.
+pub const MAG_PER_NOTCH: f64 = 0.5;
+
+/// Ctrl alone with the Advanced switch `PinchToChangeFontSizeDisabled` off.
+pub fn is_pinch(mods: crate::mouse::Mods, disabled: bool) -> bool {
+    mods.ctrl && !mods.shift && !mods.alt && !mods.cmd && !disabled
+}
+
+/// The magnification of a wheel movement of `lines` lines (`wheel_lines` per notch).
+pub fn pinch_amount(lines: f64, wheel_lines: f64) -> f64 {
+    lines / wheel_lines * MAG_PER_NOTCH
+}
+
+/// The running pinch total of the app.
+#[derive(Default)]
+pub struct Magnifier {
+    total: f64,
+    last: Option<std::time::Instant>,
+}
+
+impl Magnifier {
+    /// Adds `magnification`; -1, 0 or 1 font step.
+    pub fn add(&mut self, magnification: f64, now: std::time::Instant) -> i32 {
+        if self.last.is_some_and(|l| now.saturating_duration_since(l) > MAG_TIMEOUT) {
+            self.total = 0.0;
+        }
+        self.last = Some(now);
+        self.total += magnification;
+        if self.total > MAG_THRESHOLD {
+            self.total = 0.0;
+            1
+        } else if self.total < -MAG_THRESHOLD {
+            self.total = 0.0;
+            -1
+        } else {
+            0
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     const S0: AltSwitches = AltSwitches { advanced: false, profile_auto: false, profile_vertical_only: false, term_1007: false };
 
@@ -438,5 +484,38 @@ mod tests {
         assert!(!needs_touchpad_setting(false, false), "a mouse wheel never swaps");
         assert!(!needs_touchpad_setting(true, true), "the Advanced setting settles it");
         assert!(needs_touchpad_setting(true, false));
+    }
+    /// `PseudoTerminal.m:1751-1773` (`02:608`).
+    #[test]
+    fn pinch_follows_iterm2() {
+        let t = Instant::now();
+        let mut m = Magnifier::default();
+        assert_eq!(m.add(0.3, t), 0);
+        assert_eq!(m.add(0.2, t + Duration::from_millis(50)), 1, "0.5 is past 0.4");
+        assert_eq!(m.add(0.1, t + Duration::from_millis(60)), 0, "the total was cleared");
+        let mut m = Magnifier::default();
+        assert_eq!(m.add(-0.5, t), -1);
+        let mut m = Magnifier::default();
+        assert_eq!(m.add(0.3, t), 0);
+        assert_eq!(m.add(0.3, t + Duration::from_millis(250)), 0, "the timeout cleared the first");
+        let mut m = Magnifier::default();
+        assert_eq!(m.add(MAG_PER_NOTCH * 1.0, t), 1, "one notch is one size step");
+        assert_eq!(MAG_THRESHOLD, 0.4);
+        assert_eq!(MAG_TIMEOUT, Duration::from_millis(200));
+    }
+
+    /// Ctrl alone is the pinch; any other modifier, or the Advanced switch, makes it a wheel.
+    #[test]
+    fn pinch_is_ctrl_alone() {
+        let m = |shift, alt, ctrl, cmd| crate::mouse::Mods { shift, alt, ctrl, cmd };
+        assert!(is_pinch(m(false, false, true, false), false));
+        assert!(!is_pinch(m(false, false, true, false), true), "PinchToChangeFontSizeDisabled");
+        assert!(!is_pinch(m(true, false, true, false), false));
+        assert!(!is_pinch(m(false, true, true, false), false));
+        assert!(!is_pinch(m(false, false, true, true), false));
+        assert!(!is_pinch(m(false, false, false, false), false));
+        // A line-based notch (3 lines) is half a magnification; a touchpad's lines scale alike.
+        assert_eq!(pinch_amount(3.0, 3.0), MAG_PER_NOTCH);
+        assert_eq!(pinch_amount(-1.5, 3.0), -MAG_PER_NOTCH / 2.0);
     }
 }

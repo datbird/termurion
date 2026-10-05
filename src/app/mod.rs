@@ -578,6 +578,11 @@ pub struct App {
     hotkeys_registered: bool,
     /// A Tandem window was in front at the last check (Reopen on activation).
     app_active: bool,
+    /// Focus follows mouse: the pointer's screen point when Tandem lost the foreground, then
+    /// the point activation refuses to move focus from until the pointer moves. App-wide.
+    ffm_saved: Option<(f64, f64)>,
+    /// The Ctrl+wheel pinch's running total. App-wide.
+    magnifier: crate::wheel::Magnifier,
     /// Windows the app hotkey minimized, to bring back on the next press.
     app_hidden: Vec<WindowId>,
     host_welcome: Option<crate::host_client::Welcome>,
@@ -1519,6 +1524,8 @@ pub fn run() {
         hotkey_errors: Default::default(),
         hotkeys_registered: false,
         app_active: false,
+        ffm_saved: None,
+        magnifier: Default::default(),
         app_hidden: Vec::new(),
         host_welcome,
         notify,
@@ -4672,11 +4679,7 @@ impl App {
             }
             Drag::None => {
                 if let Some((id, _)) = self.pane_at(x, y) {
-                    if self.globals.bool("FocusFollowsMouse") && self.tabs.get(self.active).is_some_and(|t| t.focused != id) {
-                        self.tabs[self.active].focused = id;
-                        self.refresh_route();
-                        self.redraw();
-                    }
+                    self.ffm_pane_focus(id);
                     if self.modes(id).tracking == Tracking::Any && self.report_gate(id, mouse::Kind::Hover) {
                         self.send_motion(id, None, x, y);
                     }
@@ -4717,6 +4720,10 @@ impl App {
             return;
         }
         let Some((id, rect)) = self.pane_at(x, y) else { return };
+        // Ctrl+wheel is the pinch gesture: the font size, over a pane only.
+        if self.pinch(ev) {
+            return;
+        }
         let (col, row, _) = self.cell_at(id, rect, x, y);
         self.route_wheel(id, col, row, ev);
     }
@@ -5265,6 +5272,9 @@ impl ApplicationHandler<UserEvent> for App {
         let active = hotkey_ui::tandem_in_front();
         if active && !self.app_active {
             self.hotkey_reactivated();
+            self.ffm_became_active();
+        } else if !active && self.app_active {
+            self.ffm_became_inactive();
         }
         self.app_active = active;
         self.alt_infer_focus_moved();
@@ -5687,6 +5697,8 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             // The pointer left the window: no Help tooltip stays up.
+            // The pointer entered this window: focus follows mouse may make it key.
+            WindowEvent::CursorEntered { .. } => self.ffm_enter(),
             WindowEvent::CursorLeft { .. } => {
                 let composer = self.composer_hover.take().is_some();
                 let tab = self.tab_hover.take().is_some();

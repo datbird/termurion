@@ -972,8 +972,8 @@ impl App {
                     }
                 }
             }
-            "biggerFont:" => self.set_font_offset(self.font_offset + 1.0),
-            "smallerFont:" => self.set_font_offset((self.font_offset - 1.0).max(-8.0)),
+            "biggerFont:" => self.change_font_size(1),
+            "smallerFont:" => self.change_font_size(-1),
             "returnToDefaultSize:" => self.set_font_offset(0.0),
             "maximizePane:" => self.toggle_maximize(),
             "nextTab:" | "previousTab:" => {

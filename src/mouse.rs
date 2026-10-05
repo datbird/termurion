@@ -129,6 +129,64 @@ pub fn first_click(first_mouse: bool, cmd: bool, always_accept: bool, ffm: bool,
     (FirstClick::Normal, first_mouse)
 }
 
+/// What the pointer entering a Tandem window does under focus follows mouse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Enter {
+    Nothing,
+    /// Make that Tandem window key (Tandem is active, so Windows allows it).
+    MakeKey,
+    /// Take the foreground for that window although Tandem is not active (`StealKeyFocus`).
+    Steal,
+}
+
+/// `iTermFocusFollowsMouse.swift:107-165`: nothing when the setting is off or the pointer has
+/// not moved since activation (`mouseLocationToRefuseFirstResponderAt`); an active app makes the
+/// window key; an inactive one only with the steal switch.
+pub fn ffm_on_enter(ffm: bool, steal: bool, app_active: bool, moved_since_refusal: bool) -> Enter {
+    if !ffm || !moved_since_refusal {
+        return Enter::Nothing;
+    }
+    if app_active {
+        Enter::MakeKey
+    } else if steal {
+        Enter::Steal
+    } else {
+        Enter::Nothing
+    }
+}
+
+/// `iTermFocusFollowsMouseController.m:40-94`: on becoming active, aggressive mode activates the
+/// window under the pointer unless the pointer is where it was when Tandem resigned. Regular
+/// activation only refuses the first responder at the current point (no focus change).
+pub fn ffm_on_activate(ffm: bool, aggressive: bool, saved: Option<(f64, f64)>, now: (f64, f64)) -> bool {
+    ffm && aggressive && saved != Some(now)
+}
+
+/// What is in front of the window the pointer entered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Front {
+    /// A Tandem terminal window.
+    Terminal,
+    /// A Tandem window that is not a terminal: a dialog, Settings, a chat or approval window.
+    OtherTandem,
+    /// Another application.
+    Elsewhere,
+}
+
+/// Whether focus follows mouse may act on `enter` now. It never takes focus from a Tandem
+/// dialog (modal prompt, 12f approval window), from a password prompt, or while an approval is
+/// waiting; it takes it from another app only as the steal switch (`Enter::Steal`) says.
+pub fn ffm_may_act(enter: Enter, front: Front, password_prompt: bool, approval_pending: bool) -> bool {
+    if password_prompt || approval_pending {
+        return false;
+    }
+    match enter {
+        Enter::Nothing => false,
+        Enter::MakeKey => front == Front::Terminal,
+        Enter::Steal => front != Front::OtherTandem,
+    }
+}
+
 /// What a left press leaves running after it set its selection (`PTYMouseHandler.m:778-782`,
 /// `:595-597`): the click that activated the window may place a selection but a drag never
 /// extends it, nothing is copied at once, and Alt-click never moves the cursor.
@@ -536,4 +594,38 @@ mod tests {
         assert!(frame.popups.iter().any(|q| q.rect == hit), "the first popup quad is the hit rect");
     }
 
+    /// Review Focus 8 (`02:614`, `02:615`; `iTermFocusFollowsMouse.swift:107-165`,
+    /// `iTermFocusFollowsMouseController.m:40-94`).
+    #[test]
+    fn focus_follows_mouse_follows_iterm2() {
+        // ffm_on_enter(ffm, steal, app_active, moved_since_refusal)
+        assert_eq!(ffm_on_enter(false, true, true, true), Enter::Nothing, "setting off");
+        assert_eq!(ffm_on_enter(true, false, true, true), Enter::MakeKey, "Tandem is active");
+        assert_eq!(ffm_on_enter(true, false, false, true), Enter::Nothing, "inactive, no steal");
+        assert_eq!(ffm_on_enter(true, true, false, true), Enter::Steal);
+        assert_eq!(ffm_on_enter(true, true, true, false), Enter::Nothing, "the pointer has not moved since activation");
+        assert_eq!(ffm_on_enter(true, false, true, false), Enter::Nothing);
+        // ffm_on_activate(ffm, aggressive, saved, now)
+        assert!(ffm_on_activate(true, true, Some((1.0, 1.0)), (5.0, 5.0)));
+        assert!(!ffm_on_activate(true, true, Some((1.0, 1.0)), (1.0, 1.0)), "same point");
+        assert!(!ffm_on_activate(true, false, Some((1.0, 1.0)), (5.0, 5.0)), "regular activation only refuses the first responder");
+        assert!(!ffm_on_activate(false, true, Some((1.0, 1.0)), (5.0, 5.0)));
+        assert!(ffm_on_activate(true, true, None, (5.0, 5.0)), "no saved point counts as moved");
+    }
+
+    /// Focus follows mouse never takes focus from a modal prompt, a password prompt, an
+    /// approval, or (without the opt-in) another app.
+    #[test]
+    fn focus_follows_mouse_never_steals_from_a_prompt() {
+        let ok = |e, front, pw, ap| ffm_may_act(e, front, pw, ap);
+        assert!(ok(Enter::MakeKey, Front::Terminal, false, false));
+        assert!(!ok(Enter::MakeKey, Front::OtherTandem, false, false), "a dialog, settings or chat window is in front");
+        assert!(!ok(Enter::MakeKey, Front::Terminal, true, false), "a password prompt holds focus");
+        assert!(!ok(Enter::MakeKey, Front::Terminal, false, true), "an approval is waiting");
+        assert!(!ok(Enter::MakeKey, Front::Elsewhere, false, false), "MakeKey is only for an active Tandem");
+        assert!(ok(Enter::Steal, Front::Elsewhere, false, false), "the opt-in steals from another app");
+        assert!(!ok(Enter::Steal, Front::Elsewhere, true, false));
+        assert!(!ok(Enter::Steal, Front::OtherTandem, false, false));
+        assert!(!ok(Enter::Nothing, Front::Terminal, false, false));
+    }
 }

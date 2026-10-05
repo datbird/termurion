@@ -22,6 +22,155 @@ impl App {
         }
     }
 
+    /// Make Text Bigger (1) and Make Text Smaller (-1): the menu and the pinch. The shared
+    /// font offset moves one step (clamped as the menu always did; `apply_fonts` holds the
+    /// upper clamp). The caller lays out. 13k reads the font metrics this changes.
+    pub(super) fn change_font_size(&mut self, dir: i32) {
+        let offset = if dir > 0 { self.font_offset + 1.0 } else { (self.font_offset - 1.0).max(-8.0) };
+        self.set_font_offset(offset);
+    }
+
+    /// Ctrl+wheel as the pinch gesture (`PseudoTerminal.m:1751-1773`): true when the event was
+    /// the pinch's. One notch is one font step. Only `wheel` calls it, after every UI wheel
+    /// handler and the overlay hold, over a pane (P15).
+    pub(super) fn pinch(&mut self, ev: wheel::Event) -> bool {
+        if !wheel::is_pinch(self.mods, self.globals.bool("PinchToChangeFontSizeDisabled")) {
+            return false;
+        }
+        let step = self.magnifier.add(wheel::pinch_amount(ev.dy, WHEEL_LINES as f64), Instant::now());
+        if step != 0 {
+            self.change_font_size(step);
+            self.relayout();
+            self.redraw();
+        }
+        true
+    }
+
+    /// The pointer entered this window (`WindowEvent::CursorEntered`, the window already
+    /// current): with focus follows mouse it makes the window key while Tandem is active, or
+    /// takes the foreground for it when `StealKeyFocus` says so (`FFM:107-165`). Never from a
+    /// Tandem dialog, a password prompt or a waiting approval, and never for a hidden hotkey
+    /// window. The pane under the pointer is focused by `mouse_move` as before.
+    pub(super) fn ffm_enter(&mut self) {
+        let ffm = self.globals.bool("FocusFollowsMouse");
+        if !ffm || !matches!(self.drag, Drag::None) {
+            return;
+        }
+        let now = pointer_screen();
+        // The refusal point (the pointer where Tandem became active) holds until it moves.
+        let moved = self.ffm_saved.is_none_or(|s| Some(s) != now);
+        if moved {
+            self.ffm_saved = None;
+        }
+        let enter = mouse::ffm_on_enter(ffm, self.globals.bool("StealKeyFocus"), self.app_active, moved);
+        let Some(hwnd) = self.hwnd() else { return };
+        let front = hotkey_ui::foreground();
+        if front == hwnd || self.windows.current().is_some_and(|k| self.hidden_hotkey_key(k)) {
+            return;
+        }
+        if !mouse::ffm_may_act(enter, self.ffm_front(front), self.focused_password_prompt(), !self.orch_waits.is_empty()) {
+            return;
+        }
+        match enter {
+            mouse::Enter::MakeKey => {
+                if let Some(id) = self.current_window() {
+                    self.focus_terminal_window(id);
+                }
+            }
+            mouse::Enter::Steal => {
+                // Windows may refuse and flash the taskbar button instead; that is its rule.
+                use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+                unsafe { SetForegroundWindow(hwnd as _) };
+            }
+            mouse::Enter::Nothing => {}
+        }
+    }
+
+    /// Plain focus follows mouse inside a window: the pane under the pointer takes focus.
+    pub(super) fn ffm_pane_focus(&mut self, id: PaneId) {
+        if self.globals.bool("FocusFollowsMouse") && self.tabs.get(self.active).is_some_and(|t| t.focused != id) {
+            self.tabs[self.active].focused = id;
+            self.refresh_route();
+            self.redraw();
+        }
+    }
+
+    /// Tandem lost the foreground: the pointer is remembered (`FFMC:99-102`).
+    pub(super) fn ffm_became_inactive(&mut self) {
+        self.ffm_saved = pointer_screen();
+    }
+
+    /// Tandem became active (`FFMC:40-94`): with Aggressive Focus Follows Mouse the Tandem
+    /// window under the pointer comes forward and its pane takes focus, unless the pointer is
+    /// where it was when Tandem resigned; otherwise the pointer is the refusal point.
+    pub(super) fn ffm_became_active(&mut self) {
+        let ffm = self.globals.bool("FocusFollowsMouse");
+        let Some(now) = pointer_screen() else { return };
+        let go = mouse::ffm_on_activate(ffm, self.globals.bool("AggressiveFocusFollowsMouse"), self.ffm_saved, now);
+        if !go {
+            if ffm {
+                self.ffm_saved = Some(now);
+            }
+            return;
+        }
+        self.ffm_saved = None;
+        let front = hotkey_ui::foreground();
+        if self.ffm_front(front) != mouse::Front::Terminal || self.focused_password_prompt() || !self.orch_waits.is_empty() {
+            return;
+        }
+        let Some((id, hwnd)) = self.terminal_window_under(now) else { return };
+        if hwnd != front {
+            self.focus_terminal_window(id);
+        }
+        self.focus_pane_at_screen(hwnd, now);
+    }
+
+    /// What is in front, as focus follows mouse needs it.
+    fn ffm_front(&self, front: isize) -> mouse::Front {
+        if !hotkey_ui::ours(front) {
+            mouse::Front::Elsewhere
+        } else if self.is_terminal_hwnd(front) {
+            mouse::Front::Terminal
+        } else {
+            mouse::Front::OtherTandem
+        }
+    }
+
+    fn is_terminal_hwnd(&self, h: isize) -> bool {
+        self.hwnd() == Some(h) || self.windows.parked().any(|(_, s)| s.gpu.as_ref().and_then(|g| menu::hwnd_of(&g.window)) == Some(h))
+    }
+
+    /// A focused pane of any window sits at a password prompt.
+    fn focused_password_prompt(&self) -> bool {
+        let mut tabs = self.tabs.iter().chain(self.windows.parked().flat_map(|(_, s)| s.tabs.iter()));
+        tabs.any(|t| self.panes.get(&t.focused).is_some_and(|p| p.at_password_prompt()))
+    }
+
+    /// The Tandem terminal window under the screen point: its id and handle.
+    fn terminal_window_under(&self, screen: (f64, f64)) -> Option<(winit::window::WindowId, isize)> {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetAncestor, WindowFromPoint, GA_ROOT};
+        let under = unsafe { GetAncestor(WindowFromPoint(POINT { x: screen.0 as i32, y: screen.1 as i32 }), GA_ROOT) } as isize;
+        if under == 0 {
+            return None;
+        }
+        let here = self.gpu.as_ref().filter(|g| menu::hwnd_of(&g.window) == Some(under)).map(|g| g.window.id());
+        here.or_else(|| self.windows.parked().find_map(|(_, s)| s.gpu.as_ref().filter(|g| menu::hwnd_of(&g.window) == Some(under)).map(|g| g.window.id()))).map(|id| (id, under))
+    }
+
+    /// Focuses the pane of the (current) window under the screen point, as focus follows mouse.
+    fn focus_pane_at_screen(&mut self, hwnd: isize, screen: (f64, f64)) {
+        use windows_sys::Win32::Foundation::{HWND, POINT};
+        use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+        let mut p = POINT { x: screen.0 as i32, y: screen.1 as i32 };
+        if unsafe { ScreenToClient(hwnd as HWND, &mut p) } == 0 {
+            return;
+        }
+        if let Some((id, _)) = self.pane_at(p.x as f32, p.y as f32) {
+            self.ffm_pane_focus(id);
+        }
+    }
+
     /// Every Tandem overlay inside the terminal rectangle or over the window, in ONE list (B5):
     /// the front info bar of each visible pane, portholes, block pills, session pickers, AI
     /// indicators, the find bar of the focused pane, the completion list, each shown composer
@@ -322,6 +471,11 @@ impl App {
     }
 }
 
+/// The pointer's screen point as floats.
+fn pointer_screen() -> Option<(f64, f64)> {
+    tab_drag_ui::cursor_screen().map(|(x, y)| (x as f64, y as f64))
+}
+
 /// The touchpad's natural scrolling (false off Windows).
 fn touchpad_natural() -> bool {
     #[cfg(windows)]
@@ -520,5 +674,58 @@ mod tests {
         assert!(MOD.contains("firstmouse_win::watch"), "the first window, in resumed");
         assert!(include_str!("transparency_ui.rs").contains("firstmouse_win::watch"), "a recreated window");
         assert!(body(w, "drop_current_window").contains("firstmouse_win::forget"));
+    }
+    /// Task 8: Ctrl+wheel is the pinch after every UI wheel handler and the overlay hold,
+    /// over a pane only (P15).
+    #[test]
+    fn pinch_runs_after_the_ui_wheel_handlers() {
+        let b = body(MOD, "wheel");
+        let ui = b.find("self.porthole_wheel(").expect("the UI handlers");
+        let held = b.find("self.tandem_ui_at(").expect("the overlay hold");
+        let pane = b.find("self.pane_at(x, y)").expect("pane_at");
+        let pinch = b.find("self.pinch(").expect("pinch is called from wheel");
+        assert!(ui < pinch && held < pinch, "never over a bar or an overlay");
+        assert!(pane < pinch, "only over a pane");
+        assert!(body(UI, "pinch").contains("is_pinch(") && body(UI, "pinch").contains("PinchToChangeFontSizeDisabled"), "Ctrl alone and the Advanced switch");
+        assert!(body(UI, "pinch").contains("change_font_size("), "the existing zoom path");
+        assert!(body(UI, "change_font_size").contains("set_font_offset("));
+    }
+
+    /// B3: the activation edge is the existing `app_active` edge; no second field, no Focused
+    /// heuristic. The pointer is saved on the falling edge.
+    #[test]
+    fn activation_edge_is_the_app_active_edge() {
+        let b = body(MOD, "about_to_wait");
+        let edge = b.find("let active = hotkey_ui::tandem_in_front()").unwrap();
+        let set = b.find("self.app_active = active").unwrap();
+        let (up, down) = (b.find("self.ffm_became_active()").expect("rising edge"), b.find("self.ffm_became_inactive()").expect("falling edge"));
+        assert!(edge < up && up < set && edge < down && down < set, "both before the flag is overwritten");
+        assert_eq!(MOD.matches("app_active: bool").count(), 1);
+        assert!(MOD.contains("ffm_saved: Option<(f64, f64)>") && MOD.contains("magnifier: crate::wheel::Magnifier"));
+        let w = include_str!("windows_ui.rs");
+        assert!(!w.contains("ffm_saved") && !w.contains("magnifier"), "both are app-wide, not per window");
+    }
+
+    /// The pointer entering a window is a `CursorEntered` event; the plain-FFM pane focus in
+    /// `mouse_move` is the one `ffm_enter` also serves.
+    #[test]
+    fn cursor_entered_runs_ffm_enter() {
+        assert!(MOD.contains("WindowEvent::CursorEntered"));
+        let enter = body(UI, "ffm_enter");
+        for needle in ["ffm_on_enter(", "ffm_may_act(", "focus_terminal_window(", "SetForegroundWindow", "hidden_hotkey_key", "StealKeyFocus"] {
+            assert!(enter.contains(needle), "{needle}");
+        }
+        assert!(!enter.contains("Drag::App"), "a held press keeps its pane");
+        let act = body(UI, "ffm_became_active");
+        assert!(act.contains("ffm_on_activate(") && act.contains("AggressiveFocusFollowsMouse"));
+        assert!(!body(MOD, "mouse_move").contains("self.tabs[self.active].focused = id"), "the pane focus moved into one helper");
+    }
+
+    /// The menu's bigger and smaller text use `change_font_size`, one clamp.
+    #[test]
+    fn menu_font_arms_use_change_font_size() {
+        let m = include_str!("menu.rs");
+        assert!(m.contains("\"biggerFont:\" => self.change_font_size(1)"));
+        assert!(m.contains("\"smallerFont:\" => self.change_font_size(-1)"));
     }
 }
