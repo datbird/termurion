@@ -77,7 +77,7 @@ pub fn is_rtl_letter(c: char) -> bool {
 }
 
 /// The explicit embedding, override and isolate controls.
-fn is_explicit_control(c: char) -> bool {
+pub fn is_explicit_control(c: char) -> bool {
     matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
@@ -427,6 +427,16 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Ruling: the implicit marks RLM, ALM and LRM keep driving the order, as in UAX 9 and
+    /// iTerm2 (real right-to-left text needs them). Only the explicit controls are neutralized.
+    #[test]
+    fn implicit_marks_still_reorder() {
+        let o = order(&cells("a\u{200f}b"), on(), false).expect("an RLM makes the row right to left");
+        assert!(o.rtl[1], "the RLM sits at an odd level");
+        let o = order(&cells("1\u{61c}2 \u{5d0}"), on(), false).expect("an ALM is a strong Arabic letter");
+        assert!(o.rtl[1]);
     }
 
     /// A pathological row of controls is quick: they are dropped before the algorithm runs.

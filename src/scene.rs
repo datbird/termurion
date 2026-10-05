@@ -665,9 +665,12 @@ pub fn pane_with(
                 let end = (col..cells.len()).find(|&k| !cells[k].joins).unwrap_or(cells.len());
                 let mut spans: Vec<Span> = Vec::new();
                 for c in cells[col..end].iter().rev() {
+                    // The shaper runs its own bidi over the piece: explicit controls riding on a
+                    // cell must not reach it (P9).
+                    let text: String = c.text.chars().filter(|&ch| !crate::bidi::is_explicit_control(ch)).collect();
                     match spans.last_mut() {
-                        Some(s) if s.color == c.fg && s.bold == c.bold && s.italic == c.italic => s.text.push_str(&c.text),
-                        _ => spans.push(Span { text: c.text.clone(), color: c.fg, bold: c.bold, italic: c.italic, alt_font: true, icon: false, prose: false, badge: false, toolbelt: false }),
+                        Some(s) if s.color == c.fg && s.bold == c.bold && s.italic == c.italic => s.text.push_str(&text),
+                        _ => spans.push(Span { text, color: c.fg, bold: c.bold, italic: c.italic, alt_font: true, icon: false, prose: false, badge: false, toolbelt: false }),
                     }
                 }
                 piece = Some((col, spans));
@@ -4762,6 +4765,23 @@ mod tests {
         let at = f.rows.iter().find(|r| r.x == 40.0).unwrap();
         assert_eq!(at.spans[0].text, "\u{5d0}");
         assert_eq!(at.spans[0].color, s.palette.cursor_text);
+    }
+
+    /// P9: an explicit override riding on an Arabic cell never reaches the shaper, which would
+    /// run its own bidi over the joined piece and honor it.
+    #[test]
+    fn arabic_runs_drop_explicit_controls() {
+        let piece_text = |bytes: &str| {
+            let s = screen(bytes.as_bytes());
+            let mut f = Frame::default();
+            pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+            let piece = f.rows.iter().find(|r| r.spans.iter().any(|sp| sp.text.contains('\u{633}'))).unwrap();
+            piece.spans.iter().map(|sp| sp.text.as_str()).collect::<String>()
+        };
+        let plain = piece_text("x \u{633}\u{644}\u{627}\u{645}");
+        for ctl in ['\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}'] {
+            assert_eq!(piece_text(&format!("x \u{633}{ctl}\u{644}\u{627}\u{645}")), plain, "{ctl:?} must not reach the shaper");
+        }
     }
 
     #[test]
