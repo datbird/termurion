@@ -900,16 +900,19 @@ impl Screen {
                 let events = self.prompt_state.a();
                 self.composer_events.extend(events);
                 let redraw = self.marks.in_command;
-                // iTerm2 resets the graphic rendition at the prompt mark (`MS:3747-3749`).
-                if self.rules.reset_sgr_on_prompt {
-                    use alacritty_terminal::vte::ansi::{Attr, Handler};
-                    self.term.terminal_attribute(Attr::Reset);
-                }
                 self.prompt_start(kind, aid, fresh_line);
                 // A prompt redrawn at its own start while a command is typed keeps the range
                 // (`MS:3719-3727`).
                 let at = self.abs_cursor();
-                if counted && !(redraw && self.marks.prompt_range.0 == at) {
+                let fresh = counted && !(redraw && self.marks.prompt_range.0 == at);
+                // iTerm2 resets the graphic rendition when a prompt starts, only for the kinds
+                // that reach `promptDidStartAt` (Initial, Unknown) and not on that redraw
+                // (`MS+TD:2555-2563`, `MS:3719-3749`).
+                if fresh && self.rules.reset_sgr_on_prompt {
+                    use alacritty_terminal::vte::ansi::{Attr, Handler};
+                    self.term.terminal_attribute(Attr::Reset);
+                }
+                if fresh {
                     self.marks.prompt_range = (at, at);
                     self.marks.prompt_anchors = (self.marks.current.and_then(|c| self.anchor_here(c)), None);
                 }
@@ -2146,6 +2149,20 @@ mod tests {
         s.set_rules(crate::emu::Rules { reset_sgr_on_prompt: false, ..Default::default() });
         s.feed(b"\x1b[31m\x1b]133;A\x07p");
         assert_eq!(fg(&s), Color::Named(NamedColor::Red));
+        // Only prompts that start a prompt reset: a right, secondary or continuation prompt
+        // keeps the color, and so does a prompt redrawn in place while the command is typed.
+        for kind in ["r", "s", "c"] {
+            let mut s = Screen::new(40, 4);
+            s.feed(format!("\x1b[31m\x1b]133;A;k={kind}\x07p").as_bytes());
+            assert_eq!(fg(&s), Color::Named(NamedColor::Red), "k={kind}");
+        }
+        let mut s = Screen::new(40, 4);
+        s.feed(b"\x1b]133;A\x07\x1b]133;B\x07");
+        s.feed(b"\x1b[1;1H\x1b[31m\x1b]133;A\x07p");
+        assert_eq!(fg(&s), Color::Named(NamedColor::Red), "a prompt redrawn at its own start");
+        let mut s = Screen::new(40, 4);
+        s.feed(b"\x1b[31m\x1b]133;A;k=i\x07p");
+        assert_eq!(fg(&s), Color::Named(NamedColor::Foreground));
     }
 
 }
