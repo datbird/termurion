@@ -99,6 +99,44 @@ pub fn short_time(p: &Parts) -> String {
     wide_text(&buf, n)
 }
 
+/// iTerm2's right extra for Adjacent timestamps, in points (`PTYSession.m`,
+/// `desiredRightExtraForProfile:session:`).
+pub const ADJACENT_POINTS: f32 = 100.0;
+
+/// How a pane shows its timestamps (the "Timestamps Style" values in Tandem's schema).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// 1: over the text.
+    Over,
+    /// 2: over the text, only while the pointer is near the right edge.
+    Hover,
+    /// 3: in a column right of the text.
+    Adjacent,
+}
+
+impl Mode {
+    /// The stored style; a value outside 1 to 3 is iTerm2's default, Over.
+    pub fn from_style(v: i64) -> Mode {
+        match v {
+            2 => Mode::Hover,
+            3 => Mode::Adjacent,
+            _ => Mode::Over,
+        }
+    }
+}
+
+/// The width a pane's grid gives up for its timestamps: only Adjacent takes room.
+pub fn room(mode: Mode, scale: f32) -> f32 {
+    if mode == Mode::Adjacent { ADJACENT_POINTS * scale } else { 0.0 }
+}
+
+/// The width of the label block: the widest label plus one cell of margin (iTerm2's
+/// `frameForStringGivenWidth:`: the maximum label width plus the side margin).
+pub fn block_width(cell_w: f32, labels: &[(usize, String)]) -> f32 {
+    let widest = labels.iter().map(|(_, t)| t.chars().count()).max();
+    widest.map_or(0.0, |n| (n as f32 + 1.0) * cell_w)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,5 +180,25 @@ mod tests {
         // Seconds are not shown, and a date that does not exist gives no text rather than a wrong one.
         assert_eq!(short_time(&p), short_time(&Parts { second: 0, ..p }));
         assert_eq!(short_date(&Parts { month: 13, ..p }), "");
+    }
+
+    #[test]
+    fn adjacent_room_follows_iterm2() {
+        assert_eq!(room(Mode::Adjacent, 1.5), 150.0);
+        assert_eq!(room(Mode::Adjacent, 1.0), 100.0);
+        assert_eq!(room(Mode::Over, 1.5), 0.0);
+        assert_eq!(room(Mode::Hover, 1.5), 0.0);
+        assert_eq!(Mode::from_style(1), Mode::Over);
+        assert_eq!(Mode::from_style(2), Mode::Hover);
+        assert_eq!(Mode::from_style(3), Mode::Adjacent);
+        assert_eq!(Mode::from_style(0), Mode::Over);
+        assert_eq!(Mode::from_style(9), Mode::Over);
+    }
+
+    #[test]
+    fn block_width_is_the_widest_label_plus_a_cell() {
+        let labels = vec![(0, "14:02:09".to_string()), (1, "Sat 14:02:09".to_string())];
+        assert_eq!(block_width(10.0, &labels), 130.0);
+        assert_eq!(block_width(10.0, &[]), 0.0);
     }
 }

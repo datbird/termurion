@@ -40,6 +40,18 @@ impl App {
         self.show_stamps.get(&id).copied().unwrap_or_else(|| self.profile_of(id).is_some_and(|p| p.bool("Timestamps Visible")))
     }
 
+    /// The width a pane's grid gives up for Adjacent timestamps, in pixels (0 for Over, Hover,
+    /// or timestamps off).
+    // Phase B (text_rect) is its first caller.
+    #[allow(dead_code)]
+    pub(super) fn stamp_room(&self, id: PaneId) -> f32 {
+        if !self.stamps_on(id) {
+            return 0.0;
+        }
+        let mode = stamps::Mode::from_style(self.profile_of(id).map_or(1, |pr| pr.int("Timestamps Style")));
+        stamps::room(mode, self.scale())
+    }
+
     /// The cursor guide shows in a pane: its own choice, else its profile's Use Cursor Guide.
     pub(super) fn guide_on(&self, id: PaneId) -> bool {
         self.show_guide.get(&id).copied().unwrap_or_else(|| self.profile_of(id).is_some_and(|p| p.bool("Use Cursor Guide")))
@@ -76,7 +88,7 @@ impl App {
                         (t > 0).then(|| (row as usize, stamps::label(now.saturating_sub(t), &stamps::local(t))))
                     })
                     .collect();
-                scene::timestamps(frame, &labels, inner, cell);
+                scene::timestamps(frame, &labels, inner, cell, None);
             }
         }
     }

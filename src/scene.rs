@@ -334,9 +334,32 @@ pub fn cursor_guide(frame: &mut Frame, rect: Rect, cell: (f32, f32), row: usize,
     frame.quads.push(Quad { rect: r, color });
 }
 
-/// Per-line timestamps: each label right-aligned on its screen row, over the text.
-pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cell: (f32, f32)) {
+/// Per-line timestamps. With no `column` each label is right-aligned on its screen row, over
+/// the text, which stops where the label starts. With a `column` (Adjacent) the labels form
+/// one block at the column's right edge, as iTerm2 draws them: every label starts at the same x,
+/// the text is never clipped, and a label equal to the one on the row above is two 1 px lines
+/// (`iTermTimestampDrawHelper.m` `drawString:...`, `rowIsRepeat:`).
+pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cell: (f32, f32), column: Option<Rect>) {
     let (cw, ch) = cell;
+    if let Some(col) = column {
+        let x = (col.x + col.w - crate::stamps::block_width(cw, labels)).max(col.x);
+        let mut prev: Option<(usize, &str)> = None;
+        for (row, text) in labels {
+            let y = col.y + *row as f32 * ch;
+            let repeat = prev.is_some_and(|(r, t)| r + 1 == *row && t == text);
+            prev = Some((*row, text));
+            if repeat {
+                // The center of a repeat is 10 px into the block (`center = x + 10`).
+                for dx in [-1.0, 1.0] {
+                    frame.quads.push(Quad { rect: Rect { x: x + 10.0 + dx, y, w: 1.0, h: ch }, color: rgba(TAB_TEXT, 1.0) });
+                }
+                continue;
+            }
+            let span = Span { text: text.clone(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
+            frame.rows.push(TextRow { x, y, spans: vec![span], clip: col, scale: 1.0 });
+        }
+        return;
+    }
     let right = rect.x + rect.w;
     for (row, text) in labels {
         let n = text.chars().count() as f32;
@@ -5975,10 +5998,42 @@ mod tests {
     #[test]
     fn timestamps_sit_at_the_right() {
         let mut f = Frame::default();
-        timestamps(&mut f, &[(2, "14:02:09".into())], RECT, CELL);
+        timestamps(&mut f, &[(2, "14:02:09".into())], RECT, CELL, None);
         let r = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "14:02:09")).unwrap();
         assert_eq!((r.x, r.y), (800.0 - 90.0, 40.0));
         assert!(f.quads.iter().any(|q| q.rect.x < 710.0 && q.rect.x + q.rect.w == 800.0 && q.rect.y == 40.0));
+    }
+
+    #[test]
+    fn adjacent_labels_follow_iterm2() {
+        let col = Rect { x: 700.0, y: 0.0, w: 100.0, h: 200.0 };
+        let labels: Vec<(usize, String)> = vec![(2, "14:02:09".into()), (3, "14:02:09".into()), (4, "14:02:10".into())];
+        let text_row = |y: f32| TextRow { x: 0.0, y, spans: vec![], clip: Rect { x: 0.0, y, w: 800.0, h: 20.0 }, scale: 1.0 };
+        let mut f = Frame::default();
+        f.rows.push(text_row(40.0));
+        timestamps(&mut f, &labels, Rect { x: 0.0, y: 0.0, w: 700.0, h: 200.0 }, CELL, Some(col));
+        // No text row is clipped, and nothing is cut out of the text.
+        assert_eq!(f.rows[0].clip.w, 800.0);
+        let stamp = |t: &str| f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == t));
+        // One block, left aligned at the column's right edge less the widest label and a cell.
+        let a = stamp("14:02:09").unwrap();
+        assert_eq!((a.x, a.y), (710.0, 40.0));
+        assert_eq!(stamp("14:02:10").unwrap().x, 710.0);
+        // The row right below with the same text is a repeat: two 1 px lines, no text.
+        assert_eq!(f.rows.iter().filter(|r| r.spans.iter().any(|s| s.text == "14:02:09")).count(), 1);
+        let lines: Vec<_> = f.quads.iter().filter(|q| q.rect.y == 60.0 && q.rect.w == 1.0 && q.rect.h == CELL.1).map(|q| q.rect.x).collect();
+        assert_eq!(lines, vec![719.0, 721.0]);
+        // Everything stays inside the column.
+        assert!(f.rows.iter().skip(1).all(|r| r.clip == col));
+        assert!(f.quads.iter().all(|q| q.rect.x >= col.x && q.rect.x + q.rect.w <= col.x + col.w));
+    }
+
+    #[test]
+    fn adjacent_labels_wider_than_the_column_start_at_its_edge() {
+        let col = Rect { x: 700.0, y: 0.0, w: 40.0, h: 100.0 };
+        let mut f = Frame::default();
+        timestamps(&mut f, &[(0, "2026 Mar 7 14:02:09".into())], Rect { x: 0.0, y: 0.0, w: 700.0, h: 100.0 }, CELL, Some(col));
+        assert_eq!(f.rows[0].x, 700.0);
     }
 
     #[test]
