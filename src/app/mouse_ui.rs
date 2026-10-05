@@ -846,6 +846,16 @@ mod tests {
         assert!(!include_str!("frames_ui.rs").contains("scan_text_blinks"), "the cadence asks the clock");
     }
 
+    /// 13m final minors 7 and 9: Find Cursor points at the cell where the row draws the cursor,
+    /// and the Auto Composer's separator is a linear color like every other quad.
+    #[test]
+    fn find_cursor_and_the_composer_rule_use_drawn_positions_and_linear_colors() {
+        assert!(body(include_str!("view_ui.rs"), "draw_find_cursor").contains("visual_col("), "an RTL row draws the cursor elsewhere");
+        let composer = include_str!("composer_ui.rs");
+        let sep = composer.lines().find(|l| l.contains("separator: auto.then(")).unwrap();
+        assert!(!sep.contains("mark_rgba(") && sep.contains("scene::rgba(scene::mark_color("), "{sep}");
+    }
+
     /// 13m Task 8 App side: the ticks come from one collection (`scrollbar::collect`) over the
     /// buffer's marks, the notes and the open find bar's matches, drawn on the minimap rect, and
     /// the two keys are read when a pane starts, not on every frame.

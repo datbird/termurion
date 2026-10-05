@@ -88,6 +88,8 @@ pub fn slice(from: &crate::screen::Screen, first: i32, count: usize) -> crate::s
     let rows = (first..first + count as i32).map(|l| if (top..=bottom).contains(&l) { g[Line(l)].clone() } else { alacritty_terminal::grid::Row::new(cols) }).collect();
     s.splice_rows(0, count as i32 - 1, rows);
     s.images = from.images.clone();
+    s.bidi_rules = from.bidi_rules;
+    s.blink_allowed = from.blink_allowed;
     s
 }
 
@@ -112,6 +114,8 @@ pub fn pick(from: &crate::screen::Screen, lines: &[usize]) -> crate::screen::Scr
         .collect();
     s.splice_rows(0, count as i32 - 1, picked);
     s.images = from.images.clone();
+    s.bidi_rules = from.bidi_rules;
+    s.blink_allowed = from.blink_allowed;
     s
 }
 
@@ -165,6 +169,8 @@ pub fn snapshot(from: &crate::screen::Screen) -> crate::screen::Screen {
     // Splicing in more rows than the screen holds pushes the rest into scrollback.
     s.splice_rows(0, rows as i32 - 1, all);
     s.images = from.images.clone();
+    s.bidi_rules = from.bidi_rules;
+    s.blink_allowed = from.blink_allowed;
     s
 }
 
@@ -250,6 +256,20 @@ pub fn png(w: u32, h: u32, rgba: Vec<u8>) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A screenshot or preview draws rows as the pane does: Bidi off stays off, and Blink
+    /// Allowed carries over.
+    #[test]
+    fn a_slice_keeps_the_bidi_and_blink_rules() {
+        let mut s = crate::screen::Screen::new(10, 3);
+        s.feed("\u{5d0}\u{5d1}".as_bytes());
+        assert!(slice(&s, 0, 3).row_order(0).is_some(), "Bidi on reorders the slice");
+        s.bidi_rules.enabled = false;
+        s.blink_allowed = true;
+        let cut = slice(&s, 0, 3);
+        assert!(cut.row_order(0).is_none(), "Bidi off stays off in the slice");
+        assert!(cut.blink_allowed);
+    }
 
     #[test]
     fn screenshots_draw_the_cursor() {

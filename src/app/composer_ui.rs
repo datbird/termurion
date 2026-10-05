@@ -2289,7 +2289,7 @@ impl App {
             line_h,
             // The Auto Composer's 1 point line above it in the success mark color
             // (`PS:24640-24650`, `MCVC:221-246`).
-            separator: auto.then(|| (scene::mark_rgba(crate::marks::MarkColor::Success), scale.max(1.0))),
+            separator: auto.then(|| (scene::rgba(scene::mark_color(crate::marks::MarkColor::Success, pal, false), 1.0), scale.max(1.0))),
             backs: &backs,
         };
         out.extend(scene::composer(frame, &d, cell).map(|r| (Overlay::Composer, r)));

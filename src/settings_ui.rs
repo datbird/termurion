@@ -1131,9 +1131,6 @@ fn blink_presets_row(ui: &mut egui::Ui, p: &mut Profile) -> bool {
     }
 }
 
-/// One control for one setting. Returns true when a change is committed: at once for
-/// checkboxes, pickers, and colors; when a drag ends for sliders; when the field loses
-/// focus (or Enter) for text. Uncommitted edits still update the profile in memory.
 /// The "Use background image" checkbox row's text (`PP`).
 pub const USE_BACKGROUND_IMAGE: &str = "Use background image";
 /// The picker's message (`PWP:815-827`).
@@ -1197,6 +1194,9 @@ fn contrast_warning(key: &str, value: f64) -> Option<&'static str> {
     (key == "Minimum Contrast" && crate::contrast::warns(value)).then_some(crate::contrast::WARNING_TEXT)
 }
 
+/// One control for one setting. Returns true when a change is committed: at once for
+/// checkboxes, pickers, and colors; when a drag ends for sliders; when the field loses
+/// focus (or Enter) for text. Uncommitted edits still update the profile in memory.
 fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is_default: bool) -> bool {
     let font_locked = !is_default && FONT_KEYS.contains(&s.key.as_str());
     let key = edit_key(profile, s, dark);

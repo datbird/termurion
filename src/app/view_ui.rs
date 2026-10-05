@@ -415,7 +415,9 @@ impl App {
         let grid = p.screen.term().grid();
         let row = grid.cursor.point.line.0 + grid.display_offset() as i32;
         let inner = self.text_rect(tab.focused, rect);
-        let center = (inner.x + (grid.cursor.point.column.0 as f32 + 0.5) * cell.0, inner.y + (row as f32 + 0.5) * cell.1);
+        // Where the row draws the cursor's cell (a right-to-left row reorders it).
+        let col = if row >= 0 { p.screen.visual_col(row as usize, grid.cursor.point.column.0) } else { grid.cursor.point.column.0 };
+        let center = (inner.x + (col as f32 + 0.5) * cell.0, inner.y + (row as f32 + 0.5) * cell.1);
         scene::find_cursor(frame, area, center, FIND_CURSOR_RADIUS * self.scale());
     }
 
