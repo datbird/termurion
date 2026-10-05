@@ -279,8 +279,11 @@ impl App {
         let (host, user) = self.host_user(id)?;
         let text = |escape| smartsel::expand(&a.parameter, captures, cwd, &host, &user, escape);
         Some(match a.action.as_str() {
-            "openFile:" => semantic::open_file_run(&text(Escape::None), has_code()),
+            "openFile:" => semantic::open_file_run(&text(Escape::None), (!cwd.is_empty()).then(|| std::path::Path::new(cwd)), has_code()),
             "openUrl:" => semantic::open_url_run(&text(Escape::None), has_code()),
+            "runCommand:" | "runCommandInWindow:" | "runCoprocess:" if smartsel::cmd_unsafe_values(&a.parameter, captures, cwd, &host, &user) => {
+                Run::Blocked("Tandem did not run this command: a value in it holds % or a quote that cmd.exe would read.".into())
+            }
             "runCommand:" | "runCommandInWindow:" => Run::Command(text(Escape::Cmd)),
             "runCoprocess:" => Run::Coprocess(text(Escape::Cmd)),
             "sendText:" => Run::Send(text(Escape::None)),
@@ -332,8 +335,36 @@ impl App {
             Run::Coprocess(command) => self.start_coprocess(id, &command, false, crate::coprocess::Entry::SemanticHistory),
             Run::Blocked(why) => self.banners.set("action", why),
             Run::Reveal(path) => self.reveal_in_explorer(&path),
+            Run::Spawn { program, args } => self.spawn_direct(&program, &args, cwd),
         }
         self.redraw();
+    }
+
+    /// Starts a program directly (one `CreateProcessW`, no shell). A name without a folder is
+    /// found on the PATH; a batch file is refused any argument cmd.exe would read as syntax.
+    fn spawn_direct(&mut self, program: &std::path::Path, args: &[String], cwd: Option<&std::path::Path>) {
+        let found = semantic::resolve_program(program, std::env::var_os("PATH").as_deref());
+        let Some(exe) = found else {
+            self.banners.set("action", format!("Could not start {}: not found.", program.display()));
+            return;
+        };
+        if semantic::is_batch(&exe) && args.iter().any(|a| semantic::batch_unsafe(a)) {
+            self.banners.set("action", "Tandem did not start this program: a batch file would read special characters in the file name.");
+            return;
+        }
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.args(args);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000);
+        }
+        if let Some(d) = cwd.filter(|d| d.is_dir() && !crate::scripts::is_network_path(&d.to_string_lossy())) {
+            cmd.current_dir(d);
+        }
+        if let Err(e) = cmd.spawn() {
+            self.banners.set("action", format!("Could not start {}: {e}", exe.display()));
+        }
     }
 
     /// Shows `path` selected in Explorer; nothing runs it. Used by semantic history and the AI's
@@ -871,6 +902,7 @@ mod tests {
         ("app/semantic_ui.rs", "smart_action_run", "builds the Run; its callers are checked"),
         ("app/semantic_ui.rs", "shell_open", "the sink itself; its callers are checked"),
         ("app/semantic_ui.rs", "reveal_in_explorer", "the sink itself; its callers are checked"),
+        ("app/semantic_ui.rs", "spawn_direct", "the sink itself; execute's callers are checked"),
         ("semantic.rs", "plan", "builds a Run and opens nothing; its callers are checked"),
         ("semantic.rs", "open_url_run", "builds a Run and opens nothing; smart_action_run's callers are checked"),
         ("coproc_win.rs", "spawn", "the coprocess start; start_coprocess's callers are checked"),

@@ -311,8 +311,52 @@ pub enum Run {
     Coprocess(String),
     /// Show a file in Explorer instead of running it.
     Reveal(String),
+    /// A program started directly with arguments, never through a shell.
+    Spawn { program: PathBuf, args: Vec<String> },
     /// Not opened, and why.
     Blocked(String),
+}
+
+/// Whether a substituted value could be read by cmd.exe as more than text: `%` expands even
+/// inside quotes, a `"` ends the quoting, and a control character splits the line (B3).
+pub fn cmd_unsafe(v: &str) -> bool {
+    v.contains(['%', '"']) || v.chars().any(char::is_control)
+}
+
+/// `fill` for a cmd.exe command line: every substituted value quoted, and None when any of them
+/// is `cmd_unsafe` (the template's own text is the person's and stays).
+fn fill_cmd(template: &str, values: [&str; 5]) -> Option<String> {
+    let bad = std::cell::Cell::new(false);
+    let text = fill(template, values, |v| {
+        bad.set(bad.get() || cmd_unsafe(v));
+        cmd_quote(v)
+    });
+    (!bad.get()).then_some(text)
+}
+
+const CMD_REFUSED: &str = "Tandem did not run this command: a value in it holds % or a quote that cmd.exe would read.";
+
+/// Arguments a batch file (or cmd.exe) would re-read as syntax: refused for a `.cmd` or `.bat`
+/// program (the BatchUnsafe set).
+pub fn batch_unsafe(arg: &str) -> bool {
+    arg.contains(['%', '^', '&', '|', '<', '>', '"']) || arg.chars().any(char::is_control)
+}
+
+/// The program `name` names: as given when it has a folder, else the first of `name`, `.exe`,
+/// `.cmd` found on `path`.
+pub fn resolve_program(name: &Path, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    if name.components().count() > 1 || name.is_absolute() {
+        return Some(name.to_path_buf());
+    }
+    let path = path?;
+    std::env::split_paths(path).find_map(|d| {
+        ["", ".exe", ".cmd"].iter().map(|ext| d.join(format!("{}{ext}", name.to_string_lossy()))).find(|p| p.is_file())
+    })
+}
+
+/// Whether a program is a batch file, which re-parses its arguments through cmd.exe.
+pub fn is_batch(program: &Path) -> bool {
+    program.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"))
 }
 
 /// The link schemes that open in the browser or mail app.
@@ -356,13 +400,41 @@ pub fn guard_open(target: &str, has_code: bool) -> Run {
     }
 }
 
-/// A Smart Selection `openFile:`: the parameter is a path, never probed or opened when it is
-/// a network path or leads through a link to one, and a program or script is shown, not run.
-pub fn open_file_run(path: &str, has_code: bool) -> Run {
-    if crate::scripts::is_network_path(path) || !crate::scripts::stays_local(Path::new(path)) {
+/// A Smart Selection `openFile:`: the parameter is capture text, so it is only ever a path
+/// (never a protocol), resolved against the pane's folder, local, existing, and opened by its
+/// default app; a program or script is shown, not run, and no editor command line is built.
+pub fn open_file_run(path: &str, cwd: Option<&Path>, _has_code: bool) -> Run {
+    let blocked = |why: &str| Run::Blocked(format!("Tandem did not open this file: {why}"));
+    if path.chars().any(char::is_control) {
+        return blocked("its name holds a control character.");
+    }
+    if crate::scripts::is_network_path(path) {
         return Run::Blocked(format!("Tandem does not open network paths: {path}"));
     }
-    file_open(path, None, None, has_code)
+    if scheme(path).is_some() {
+        return blocked("it is a link, not a path.");
+    }
+    let given = Path::new(path);
+    let full = if given.is_absolute() {
+        given.to_path_buf()
+    } else {
+        match cwd {
+            Some(c) => c.join(given),
+            None => return blocked("it has no folder to start from."),
+        }
+    };
+    let text = full.to_string_lossy().to_string();
+    if crate::scripts::is_network_path(&text) || !crate::scripts::stays_local(&full) {
+        return Run::Blocked(format!("Tandem does not open network paths: {path}"));
+    }
+    if !full.exists() {
+        return blocked("it does not exist.");
+    }
+    if runnable(&text) {
+        Run::Reveal(text)
+    } else {
+        Run::Open(text)
+    }
 }
 
 /// A Smart Selection `openUrl:`: a link, through the same guard as every other.
@@ -414,21 +486,23 @@ fn file_url_path(url: &str) -> Option<String> {
     (!path.starts_with("//")).then(|| path.replace('/', "\\"))
 }
 
+/// VS Code's `-g` argument: file:line:column.
+fn goto_text(p: &str, line: Option<u32>, column: Option<u32>) -> String {
+    let mut at = p.to_string();
+    if let Some(n) = line {
+        at.push_str(&format!(":{n}"));
+        if let Some(c) = column {
+            at.push_str(&format!(":{c}"));
+        }
+    }
+    at
+}
+
 /// Opening a file: its default app, except a program or script, which VS Code opens when
 /// it is on the PATH and Explorer shows otherwise.
 fn file_open(p: &str, line: Option<u32>, column: Option<u32>, has_code: bool) -> Run {
-    let goto = || {
-        let mut at = p.to_string();
-        if let Some(n) = line {
-            at.push_str(&format!(":{n}"));
-            if let Some(c) = column {
-                at.push_str(&format!(":{c}"));
-            }
-        }
-        cmd_quote(&at)
-    };
     if has_code && (line.is_some() || runnable(p)) {
-        Run::Command(format!("code -g {}", goto()))
+        Run::Spawn { program: PathBuf::from("code"), args: vec!["-g".into(), goto_text(p, line, column)] }
     } else if runnable(p) {
         Run::Reveal(p.to_string())
     } else {
@@ -486,29 +560,23 @@ pub fn plan(target: &Target, prefs: &Prefs, around: &Around, has_code: bool) -> 
     match target {
         Target::Link(u) | Target::Url(u) => Some(guard_open(u, has_code)),
         Target::Action { .. } => None,
-        Target::RawCommand(word) => (prefs.action == "raw command")
-            .then(|| Run::Command(fill(&prefs.text, [word, "", around.prefix, around.suffix, around.cwd], cmd_quote))),
+        Target::RawCommand(word) => (prefs.action == "raw command").then(|| {
+            fill_cmd(&prefs.text, [word, "", around.prefix, around.suffix, around.cwd]).map_or_else(|| Run::Blocked(CMD_REFUSED.into()), Run::Command)
+        }),
         Target::File { path, line, column } => {
             let p = path.to_string_lossy().to_string();
             let l = line.map(|n| n.to_string()).unwrap_or_default();
             let values = [p.as_str(), l.as_str(), around.prefix, around.suffix, around.cwd];
-            // VS Code's -g takes file:line:column.
-            let goto = || {
-                let mut at = p.clone();
-                if let Some(n) = line {
-                    at.push_str(&format!(":{n}"));
-                    if let Some(c) = column {
-                        at.push_str(&format!(":{c}"));
-                    }
-                }
-                cmd_quote(&at)
-            };
+            let cmd = |make: fn(String) -> Run| fill_cmd(&prefs.text, values).map_or_else(|| Run::Blocked(CMD_REFUSED.into()), make);
             Some(match prefs.action.as_str() {
                 "url" => guard_open(&fill(&prefs.text, values, percent_encode), has_code),
-                "editor" if prefs.editor.to_lowercase().contains("code") => Run::Command(format!("{} -g {}", cmd_quote(&prefs.editor), goto())),
-                "editor" => Run::Command(format!("{} {}", cmd_quote(&prefs.editor), cmd_quote(&p))),
-                "command" | "raw command" => Run::Command(fill(&prefs.text, values, cmd_quote)),
-                "coprocess" => Run::Coprocess(fill(&prefs.text, values, cmd_quote)),
+                // The editor starts directly with the path as one argument, never through cmd.exe.
+                "editor" if prefs.editor.to_lowercase().contains("code") => {
+                    Run::Spawn { program: PathBuf::from(&prefs.editor), args: vec!["-g".into(), goto_text(&p, *line, *column)] }
+                }
+                "editor" => Run::Spawn { program: PathBuf::from(&prefs.editor), args: vec![p.clone()] },
+                "command" | "raw command" => cmd(Run::Command),
+                "coprocess" => cmd(Run::Coprocess),
                 "send text" => Run::Send(fill(&prefs.text, values, str::to_string)),
                 _ => file_open(&p, *line, *column, has_code),
             })
@@ -668,13 +736,14 @@ mod tests {
         let prefs = Prefs { action: "command".into(), text: "vim \\1 +\\2".into(), editor: String::new() };
         assert_eq!(plan(&file, &prefs, &around, false), Some(Run::Command("vim \"C:\\a b\\x.rs\" +\"3\"".into())));
         let raw = Prefs { action: "raw command".into(), text: "echo \\1 in \\5".into(), editor: String::new() };
-        assert_eq!(plan(&Target::RawCommand("w\"x".into()), &raw, &around, false), Some(Run::Command("echo \"w\"\"x\" in \"C:\\w\"".into())));
+        assert_eq!(plan(&Target::RawCommand("w x".into()), &raw, &around, false), Some(Run::Command("echo \"w x\" in \"C:\\w\"".into())));
+        assert!(matches!(plan(&Target::RawCommand("w\"x".into()), &raw, &around, false), Some(Run::Blocked(_))), "a quote is refused (B3)");
         let best = Prefs::from_value(None);
         assert_eq!(best.action, "best editor");
         assert_eq!(plan(&file, &best, &around, false), Some(Run::Open("C:\\a b\\x.rs".into())));
-        assert_eq!(plan(&file, &best, &around, true), Some(Run::Command("code -g \"C:\\a b\\x.rs:3\"".into())));
+        assert_eq!(plan(&file, &best, &around, true), Some(Run::Spawn { program: PathBuf::from("code"), args: vec!["-g".into(), "C:\\a b\\x.rs:3".into()] }));
         let editor = Prefs { action: "editor".into(), text: String::new(), editor: "C:\\ed\\ed.exe".into() };
-        assert_eq!(plan(&file, &editor, &around, false), Some(Run::Command("\"C:\\ed\\ed.exe\" \"C:\\a b\\x.rs\"".into())));
+        assert_eq!(plan(&file, &editor, &around, false), Some(Run::Spawn { program: PathBuf::from("C:\\ed\\ed.exe"), args: vec!["C:\\a b\\x.rs".into()] }));
         let send = Prefs { action: "send text".into(), text: "open \\1\\n".into(), editor: String::new() };
         assert_eq!(plan(&file, &send, &around, false), Some(Run::Send("open C:\\a b\\x.rs\\n".into())));
         let co = Prefs { action: "coprocess".into(), text: "x".into(), editor: String::new() };
@@ -734,7 +803,7 @@ mod tests {
             assert_eq!(plan(&file, &best, &Around::default(), false), Some(Run::Reveal(format!("C:\\w\\{name}"))), "{name}");
         }
         let script = Target::File { path: PathBuf::from("C:\\w\\setup.py"), line: Some(2), column: None };
-        assert_eq!(plan(&script, &best, &Around::default(), true), Some(Run::Command("code -g \"C:\\w\\setup.py:2\"".into())));
+        assert_eq!(plan(&script, &best, &Around::default(), true), Some(Run::Spawn { program: PathBuf::from("code"), args: vec!["-g".into(), "C:\\w\\setup.py:2".into()] }));
         let text = Target::File { path: PathBuf::from("C:\\w\\notes.txt"), line: None, column: None };
         assert_eq!(plan(&text, &best, &Around::default(), false), Some(Run::Open("C:\\w\\notes.txt".into())));
     }
@@ -777,12 +846,70 @@ mod tests {
 
     #[test]
     fn open_file_action_never_probes_a_network_path() {
-        assert!(matches!(open_file_run(r"\\evil\s\a.txt", false), Run::Blocked(_)));
-        assert!(matches!(open_file_run("//evil/s/a.txt", false), Run::Blocked(_)));
-        assert_eq!(open_file_run(r"C:\no\such\a.txt", false), Run::Open(r"C:\no\such\a.txt".into()));
+        assert!(matches!(open_file_run(r"\\evil\s\a.txt", None, false), Run::Blocked(_)));
+        assert!(matches!(open_file_run("//evil/s/a.txt", None, false), Run::Blocked(_)));
         assert!(matches!(open_url_run("ms-msdt:/id x", false), Run::Blocked(_)));
         assert!(matches!(open_url_run(r"\\evil\s\a.exe", false), Run::Blocked(_)));
         assert_eq!(open_url_run("https://a.b/x", false), Run::Open("https://a.b/x".into()));
+    }
+
+    #[test]
+    fn open_file_is_never_a_protocol_open() {
+        let d = dir("openfile", &["a b.txt", "run.exe"]);
+        for text in ["ms-msdt:/id PCWDiagnostic", "search-ms:query=x", "https://a/x.exe", "ms-settings:network", "file:///C:/x", "javascript:alert(1)"] {
+            assert!(matches!(open_file_run(text, Some(&d), true), Run::Blocked(_)), "{text}");
+        }
+        let full = d.join("a b.txt");
+        assert_eq!(open_file_run(&full.to_string_lossy(), None, false), Run::Open(full.to_string_lossy().to_string()));
+        assert_eq!(open_file_run("a b.txt", Some(&d), true), Run::Open(full.to_string_lossy().to_string()), "relative to the pane folder; never code -g");
+        assert!(matches!(open_file_run("a b.txt", None, false), Run::Blocked(_)), "no folder to resolve against");
+        assert!(matches!(open_file_run("missing.txt", Some(&d), false), Run::Blocked(_)));
+        let exe = d.join("run.exe");
+        assert_eq!(open_file_run(&exe.to_string_lossy(), None, true), Run::Reveal(exe.to_string_lossy().to_string()));
+        assert!(matches!(open_file_run("a\u{1b}b.txt", Some(&d), false), Run::Blocked(_)));
+        let pct = r"C:\t\a%CMDCMDLINE%&calc.exe";
+        assert!(!matches!(open_file_run(pct, None, true), Run::Command(_) | Run::Open(_)));
+    }
+
+    #[test]
+    fn percent_never_reaches_cmd() {
+        assert!(cmd_unsafe("a%CMDCMDLINE%b") && cmd_unsafe("a\"b") && cmd_unsafe("a\nb") && cmd_unsafe("a\u{1b}"));
+        assert!(!cmd_unsafe(r"C:\a&b\x.txt"), "inside quotes & is inert");
+        let evil = Target::File { path: PathBuf::from(r"C:\t\a%CMDCMDLINE%&calc.txt"), line: None, column: None };
+        let cmd = Prefs { action: "command".into(), text: "vim \\1".into(), editor: String::new() };
+        assert!(matches!(plan(&evil, &cmd, &Around::default(), false), Some(Run::Blocked(_))), "\\1");
+        let ok = Target::File { path: PathBuf::from(r"C:\t\x.txt"), line: None, column: None };
+        let around = Around { prefix: "x%CMDCMDLINE%&calc", suffix: "", cwd: "" };
+        let three = Prefs { action: "command".into(), text: "echo \\3".into(), editor: String::new() };
+        assert!(matches!(plan(&ok, &three, &around, false), Some(Run::Blocked(_))), "\\3");
+        let co = Prefs { action: "coprocess".into(), text: "echo \\4".into(), editor: String::new() };
+        let around = Around { prefix: "", suffix: "\"&calc", cwd: "" };
+        assert!(matches!(plan(&ok, &co, &around, false), Some(Run::Blocked(_))), "\\4 with a quote");
+        let raw = Prefs { action: "raw command".into(), text: "echo \\1".into(), editor: String::new() };
+        assert!(matches!(plan(&Target::RawCommand("%COMSPEC%".into()), &raw, &Around::default(), false), Some(Run::Blocked(_))));
+        // The person's own template text is theirs: a % in it is not a substituted value.
+        let own = Prefs { action: "command".into(), text: "echo %USERNAME% \\1".into(), editor: String::new() };
+        assert!(matches!(plan(&ok, &own, &Around::default(), false), Some(Run::Command(_))));
+    }
+
+    #[test]
+    fn editor_spawns_without_a_shell() {
+        let file = Target::File { path: PathBuf::from(r"C:\a b\x.rs"), line: Some(3), column: Some(2) };
+        let ed = Prefs { action: "editor".into(), text: String::new(), editor: r"C:\Program Files\Ed\ed.exe".into() };
+        assert_eq!(
+            plan(&file, &ed, &Around::default(), false),
+            Some(Run::Spawn { program: PathBuf::from(r"C:\Program Files\Ed\ed.exe"), args: vec![r"C:\a b\x.rs".into()] })
+        );
+        let code = Prefs { action: "editor".into(), text: String::new(), editor: "code".into() };
+        assert_eq!(
+            plan(&file, &code, &Around::default(), false),
+            Some(Run::Spawn { program: PathBuf::from("code"), args: vec!["-g".into(), r"C:\a b\x.rs:3:2".into()] })
+        );
+        let best = Prefs { action: "best editor".into(), text: String::new(), editor: String::new() };
+        assert_eq!(
+            plan(&file, &best, &Around::default(), true),
+            Some(Run::Spawn { program: PathBuf::from("code"), args: vec!["-g".into(), r"C:\a b\x.rs:3:2".into()] })
+        );
     }
 
     #[test]

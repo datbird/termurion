@@ -139,9 +139,46 @@ pub fn expand(parameter: &str, captures: &[String], cwd: &str, host: &str, user:
     out
 }
 
+/// Whether any value `parameter` substitutes is unsafe for cmd.exe (B3): `%`, a quote or a
+/// control character, which `Escape::Cmd` quoting does not neutralize.
+pub fn cmd_unsafe_values(parameter: &str, captures: &[String], cwd: &str, host: &str, user: &str) -> bool {
+    let mut chars = parameter.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            continue;
+        }
+        let value = match chars.peek().copied() {
+            Some(d @ '0'..='8') => captures.get(d as usize - '0' as usize).map_or("", String::as_str),
+            Some('d') => cwd,
+            Some('h') => host,
+            Some('u') => user,
+            Some('\\') | Some('n') => {
+                chars.next();
+                continue;
+            }
+            _ => continue,
+        };
+        if crate::semantic::cmd_unsafe(value) {
+            return true;
+        }
+        chars.next();
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cmd_unsafe_values_are_found() {
+        let caps = vec!["a".to_string(), "%COMSPEC%".to_string()];
+        assert!(!cmd_unsafe_values("run \\0 %PATH%", &caps, "", "", ""), "the template's own text stays");
+        assert!(cmd_unsafe_values("run \\1", &caps, "", "", ""));
+        assert!(cmd_unsafe_values("run \\d", &caps, "C:\\a\"b", "", ""));
+        assert!(cmd_unsafe_values("run \\h", &caps, "", "ho\nst", ""));
+        assert!(!cmd_unsafe_values("run \\\\1 \\9", &caps, "", "", ""), "an escaped backslash and an unset capture");
+    }
 
     #[test]
     fn rules_parse_with_their_actions() {
