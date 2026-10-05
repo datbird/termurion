@@ -4200,3 +4200,21 @@ label = "Top & bottom margins"
 type = "int"
 default = 2
 help = "Space between the terminal text and the top and bottom edges of a pane, in points."
+
+[[setting]]
+key = "FontChangeAffectsBroadcastingSessions"
+tab = "Advanced"
+section = "Windows"
+label = "Should growing or shrinking the font in a session that's broadcasting input affect all session that broadcast input?"
+type = "bool"
+default = false
+help = "Should growing or shrinking the font in a session that's broadcasting input affect all session that broadcast input?\nThis only applies to changing the font size with Make Text Bigger, Make Text Normal Size, and Make Text Smaller"
+
+[[setting]]
+key = "Size Changes Affect Profile"
+tab = "Stored"
+section = "Windows"
+label = "Size Changes Update Profile"
+type = "bool"
+default = false
+help = "Make Text Bigger and Make Text Smaller also change the font of the session's saved profile, so a new session opens at the new size."

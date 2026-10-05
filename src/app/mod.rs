@@ -339,7 +339,6 @@ pub struct App {
     proxy: Arc<Mutex<EventLoopProxy<UserEvent>>>,
     menu_bar: Option<menu::MenuBar>,
     /// Make Text Bigger and Smaller, in points, on top of the profile font size.
-    font_offset: f32,
     /// Keys > Remap Modifiers, read by the keyboard hook's thread.
     remap_tags: Arc<std::sync::RwLock<crate::remap::Tags>>,
     /// What the keyboard hook needs to decide which Win chords Tandem takes.
@@ -1599,7 +1598,6 @@ pub fn run() {
         jobs,
         proxy,
         menu_bar: None,
-        font_offset: 0.0,
         remap_tags: Arc::new(std::sync::RwLock::new(crate::remap::Tags::from_globals(&globals))),
         route_snapshot: Arc::new(std::sync::RwLock::new(keyroute::Snapshot::default())),
         exempt_map: Arc::new(std::sync::RwLock::new(toml::Table::new())),
@@ -2940,13 +2938,6 @@ impl App {
         margins::pane_grid((rect.w, rect.h), cell, self.margins(), room)
     }
 
-    /// The columns and rows `rect` holds at the default cell: for a window's content area when no
-    /// pane is named (a window's first pane). The legacy scrollbar's room is out of it, as it is
-    /// out of every pane's. A pane's own grid is `grid_size_for`.
-    fn grid_size(&self, rect: Rect) -> (u16, u16) {
-        self.grid_size_in(rect, self.cell(), self.scroll_room())
-    }
-
     /// The profile with this Guid, or the default profile.
     fn profile(&self, guid: Option<&str>) -> Profile {
         guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).clone()
@@ -3660,7 +3651,6 @@ impl App {
         let p = self.store.default_profile().clone();
         let mut normal = p.font("Normal Font");
         let mut alt = p.bool("Use Non-ASCII Font").then(|| p.font("Non Ascii Font").family);
-        normal.size_pt = (normal.size_pt + self.font_offset).clamp(4.0, 128.0);
         // Re-measuring the font re-shapes all text, so only do it when a font setting changed.
         // The settings are compared before the font names are looked up (every frame asks).
         let sig = format!("{normal:?} {alt:?} {} {} {} {} {} {} {}", p.float("Horizontal Spacing"), p.float("Vertical Spacing"), self.scale(), p.font("Badge Font").family, self.globals.string("FontsForGenerousRounding"), self.globals.int("MinimumWeightDifferenceForBoldFont"), self.globals.bool("EnableContextualAlternates"));
@@ -3701,26 +3691,6 @@ impl App {
             self.banners.set("font", format!("Font not installed: {}. Text uses a fallback font.", missing.join(", ")));
         }
         self.ensure_faces();
-    }
-
-    /// Make Text Bigger, Make Text Smaller and Make Text Normal Size: the shared font offset
-    /// becomes `offset`. With `AdjustWindowForFontSizeChange`, a window that may change size
-    /// (`window_can_fit`: a Normal or No Title Bar window that is not full screen, maximized,
-    /// minimized, snapped, size-locked or a hotkey window) then keeps its
-    /// tab's grid at the new cell (`reallyChangeSessionFontSize:adjustWindow:`,
-    /// `TAB:2189-2205`); else the panes refit the window as it is, and a tmux tab tells tmux
-    /// through the size report. The caller lays out. 13n's `change_font_size` takes this over.
-    fn set_font_offset(&mut self, offset: f32) {
-        let grid = match self.tabs.get(self.active) {
-            Some(t) => self.grid_size_for(t.focused, self.content_area()),
-            None => self.grid_size(self.content_area()),
-        };
-        self.font_offset = offset;
-        let sig = self.font_sig.clone();
-        self.apply_fonts();
-        if sig != self.font_sig && self.globals.bool("AdjustWindowForFontSizeChange") && self.window_can_fit() {
-            self.fit_window_to_grid(grid);
-        }
     }
 
     /// Resizes the current window so its tab shows `grid` at the current cell, the top-left

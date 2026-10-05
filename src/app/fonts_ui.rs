@@ -10,12 +10,11 @@ use std::collections::HashMap;
 use super::*;
 use crate::render::{FaceKey, Renderer};
 
-/// The face key of a profile: its Normal Font (plus the shared font offset) at `scale`, the
+/// The face key of a profile: its Normal Font at `scale`, the
 /// Non-ASCII Font when the profile uses one, and the spacings. `resolve` turns an iTerm2 font
 /// name into an installed family (the renderer's memoized lookup, or the identity).
-pub fn face_key_for(p: &Profile, scale: f32, offset: f32, resolve: &dyn Fn(&str) -> String) -> FaceKey {
-    let mut normal = p.font("Normal Font");
-    normal.size_pt = (normal.size_pt + offset).clamp(4.0, 128.0);
+pub fn face_key_for(p: &Profile, scale: f32, resolve: &dyn Fn(&str) -> String) -> FaceKey {
+    let normal = p.font("Normal Font");
     let alt = p.bool("Use Non-ASCII Font").then(|| resolve(&p.font("Non Ascii Font").family));
     let px = normal.size_pt * 4.0 / 3.0 * scale;
     let mut key = FaceKey::new(&resolve(&normal.family), alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
@@ -29,6 +28,9 @@ pub fn face_key_for(p: &Profile, scale: f32, offset: f32, resolve: &dyn Fn(&str)
     key.powerline = p.bool("Draw Powerline Glyphs");
     key
 }
+
+/// The stored key View > Size Changes Update Profile toggles (`kPreferenceKeySizeChangesAffectProfile`).
+pub const SIZE_CHANGES_AFFECT_PROFILE: &str = "Size Changes Affect Profile";
 
 /// The columns and rows `rect` (width, height) holds at `cell`, with the margins taken out
 /// (`margins::grid_size`): the one path a pane's pixels become a grid.
@@ -45,6 +47,42 @@ pub fn pointer_cell(cell: (f32, f32), origin: (f32, f32), x: f32, y: f32, cols: 
     (col, row, side)
 }
 
+/// The values `changeFontSizeDirection:` writes to a session's profile (`PTYSession.m:8297-8337`):
+/// a nonzero `dir` (points) grows the pane's current Normal Font and Non Ascii Font by `dir` points and
+/// leaves the spacings alone; 0 takes the original (saved) profile's fonts and spacings.
+pub fn size_values(current: &Profile, original: &Profile, dir: f32) -> Vec<(String, Option<toml::Value>)> {
+    if dir != 0.0 {
+        return ["Normal Font", "Non Ascii Font"].into_iter().map(|k| (k.to_string(), Some(toml::Value::String(profile::grow_font_value(&current.string(k), dir))))).collect();
+    }
+    ["Normal Font", "Non Ascii Font", "Horizontal Spacing", "Vertical Spacing"].into_iter().map(|k| (k.to_string(), original.values.get(k).cloned())).collect()
+}
+
+/// The panes a size change reaches (`sessionsToAdjustFontSize`, `AFS:55-67`): the focused pane,
+/// or, with `FontChangeAffectsBroadcastingSessions` on and the focused pane receiving
+/// broadcast input, every pane of `all` that receives it.
+pub fn adjust_targets(focused: PaneId, all: &[PaneId], key_on: bool, receives: &dyn Fn(PaneId) -> bool) -> Vec<PaneId> {
+    if key_on && receives(focused) {
+        return all.iter().copied().filter(|p| receives(*p)).collect();
+    }
+    vec![focused]
+}
+
+/// The zoom an Automatic Profile Switch keeps (`PTYSession.m:20830-20895`): how many points the
+/// session's Normal Font is over its original profile's, 0 when the key is off.
+pub fn zoom_delta(current: &Profile, original: &Profile, keep: bool) -> f32 {
+    if keep { profile::font_delta(&current.string("Normal Font"), &original.string("Normal Font")) } else { 0.0 }
+}
+
+/// Grows the saved profile `guid`'s Normal Font and Non Ascii Font by `delta` (`AFS:90-98`,
+/// "Size Changes Affect Profile"), so a new session opens at the new size.
+pub fn grow_saved_profile(store: &mut Store, guid: &str, delta: i32) {
+    let Some(p) = store.get_mut(guid) else { return };
+    for k in ["Normal Font", "Non Ascii Font"] {
+        let grown = profile::grow_font_value(&p.string(k), delta as f32);
+        p.set(k, toml::Value::String(grown));
+    }
+}
+
 /// The face and cell of every pane of a window, measured ahead of the frame: `pane_cell` only
 /// reads it, so a new pane is sized at its own cell before it ever draws.
 #[derive(Default)]
@@ -58,15 +96,14 @@ pub struct PaneFaces {
     laid: HashMap<PaneId, (f32, f32)>,
 }
 
-/// What a face key is built from, as the profile stores it, plus the window's scale and the
-/// shared offset (`face_key_for`'s inputs).
+/// What a face key is built from, as the profile stores it, plus the window's scale
+/// (`face_key_for`'s inputs).
 #[derive(Clone, Debug, PartialEq)]
 pub struct RawFont {
     normal: String,
     alt: Option<String>,
     spacing: (u64, u64),
     scale: u32,
-    offset: u32,
     bold: bool,
     italic: bool,
     ligatures: (bool, bool),
@@ -76,13 +113,12 @@ pub struct RawFont {
 }
 
 impl RawFont {
-    fn of(p: &Profile, scale: f32, offset: f32) -> RawFont {
+    fn of(p: &Profile, scale: f32) -> RawFont {
         RawFont {
             normal: p.string("Normal Font"),
             alt: p.bool("Use Non-ASCII Font").then(|| p.string("Non Ascii Font")),
             spacing: (p.float("Horizontal Spacing").to_bits(), p.float("Vertical Spacing").to_bits()),
             scale: scale.to_bits(),
-            offset: offset.to_bits(),
             bold: p.bool("Use Bold Font"),
             italic: p.bool("Use Italic Font"),
             ligatures: (p.bool("ASCII Ligatures"), p.bool("Non-ASCII Ligatures")),
@@ -141,14 +177,14 @@ impl App {
     /// The face key of `p` in this window (`face_key_for`, with the renderer's memoized lookup).
     pub(super) fn face_key(&self, p: &Profile) -> FaceKey {
         let renderer = self.gpu.as_ref().map(|g| &g.renderer);
-        face_key_for(p, self.scale(), self.font_offset, &|name| renderer.map_or_else(|| name.to_string(), |r| r.resolve_family(name)))
+        face_key_for(p, self.scale(), &|name| renderer.map_or_else(|| name.to_string(), |r| r.resolve_family(name)))
     }
 
     /// The face key of the profile `pane` runs (the default profile when it is gone).
     /// Returns the raw values with it, and reuses the cached key while they are unchanged.
     fn pane_face_key(&self, id: PaneId, pane: &Pane) -> (RawFont, FaceKey) {
         let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
-        let raw = RawFont::of(p, self.scale(), self.font_offset);
+        let raw = RawFont::of(p, self.scale());
         let key = self.pane_faces.cached(id, &raw).unwrap_or_else(|| self.face_key(p));
         (raw, key)
     }
@@ -234,6 +270,84 @@ impl App {
         g.renderer.face_cell(id)
     }
 
+    /// The panes Make Text Bigger, Smaller and Normal Size act on (`sessionsToAdjustFontSize`,
+    /// `AFS:55-67`): the focused pane, or its broadcast group with
+    /// `FontChangeAffectsBroadcastingSessions`. A tmux pane takes its whole tmux window along
+    /// (their sizes are tmux's, so the window's panes share one text size).
+    pub(super) fn sessions_to_adjust(&self) -> Vec<PaneId> {
+        let Some(tab) = self.tabs.get(self.active) else { return Vec::new() };
+        let all: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
+        let view = self.broadcast_view();
+        let mut targets = adjust_targets(tab.focused, &all, self.globals.bool("FontChangeAffectsBroadcastingSessions"), &|p| self.broadcast.receives(&view, p));
+        let windows: Vec<(PaneId, u32)> = targets.iter().filter_map(|p| self.tmux_of(*p).map(|(gateway, _, window)| (gateway, window))).collect();
+        for p in all {
+            if !targets.contains(&p) && self.tmux_of(p).is_some_and(|(gateway, _, window)| windows.contains(&(gateway, window))) {
+                targets.push(p);
+            }
+        }
+        targets
+    }
+
+    /// `changeFontSizeDirection:` (`PTYSession.m:8297-8337`) on one pane: a nonzero `dir` grows its
+    /// fonts by `dir` points, 0 restores its saved profile's fonts and spacings. The pane's
+    /// profile becomes a private copy holding them. Writes only: the caller refreshes and lays
+    /// out once for every pane it changed.
+    pub(super) fn change_font_size(&mut self, pane: PaneId, dir: i32) {
+        self.write_font_size(pane, dir as f32);
+    }
+
+    /// `change_font_size` with a fractional delta (an Automatic Profile Switch keeps one).
+    pub(super) fn write_font_size(&mut self, pane: PaneId, delta: f32) {
+        let Some(guid) = self.panes.get(&pane).map(|p| p.profile.clone()) else { return };
+        // Make Text Normal Size on a pane with no copy has nothing to restore (`dir || isDivorced`).
+        if delta == 0.0 && !self.store.is_session(&guid) {
+            return;
+        }
+        let Some(own) = self.divorce(pane) else { return };
+        let original = self.store.get(&self.store.shared_guid(&own)).unwrap_or_else(|| self.store.default_profile()).clone();
+        let Some(current) = self.store.get(&own).cloned() else { return };
+        self.store.set_session(&own, &size_values(&current, &original, delta));
+    }
+
+    /// Make Text Bigger (1) and Make Text Smaller (-1) from the menu and the pinch
+    /// (`iTermAdjustFontSizeHelper` `biggerFont:`, `AFS:22-110`): the pane or its broadcast group
+    /// changes, and with "Size Changes Affect Profile" their saved profiles too.
+    pub(super) fn adjust_font_size(&mut self, delta: i32) {
+        self.resize_text(delta);
+    }
+
+    /// Make Text Normal Size: the pane or its broadcast group takes its saved profile's fonts
+    /// again. (Restore Text and Session Size does the same until 13f's window sizing restores
+    /// the rows and columns.)
+    pub(super) fn return_to_default_size(&mut self) {
+        self.resize_text(0);
+    }
+
+    fn resize_text(&mut self, dir: i32) {
+        let targets = self.sessions_to_adjust();
+        let Some(focused) = self.tabs.get(self.active).map(|t| t.focused) else { return };
+        let (cell, grid) = (self.pane_cell(focused), self.grid_size_for(focused, self.content_area()));
+        for pane in &targets {
+            self.change_font_size(*pane, dir);
+        }
+        if dir != 0 && self.globals.bool(SIZE_CHANGES_AFFECT_PROFILE) {
+            let saved: std::collections::BTreeSet<String> = targets.iter().filter_map(|p| self.panes.get(p)).map(|p| self.store.shared_guid(&p.profile)).collect();
+            for guid in saved {
+                grow_saved_profile(&mut self.store, &guid, dir);
+            }
+            self.save_due = Some(Instant::now() + SAVE_DELAY);
+        }
+        // Every copy is written: one refresh measures the new faces, one layout resizes the
+        // panes whose cell moved (a tmux pane's grid stays tmux's; its report follows).
+        self.refresh_panes();
+        self.relayout();
+        // The window keeps the tab's grid at the new cell (`reallyChangeSessionFontSize:adjustWindow:`,
+        // `TAB:2189-2205`); no fit when the focused pane's cell did not change.
+        if self.pane_cell(focused) != cell && self.globals.bool("AdjustWindowForFontSizeChange") && self.window_can_fit() {
+            self.fit_window_to_grid(grid);
+        }
+    }
+
     /// The underline numbers and scale of a pane's face for `scene::pane_with`.
     pub(super) fn draw_prefs_for(&self, face: u16) -> scene::DrawPrefs {
         let metrics = self.gpu.as_ref().map(|g| g.renderer.face_underline(face)).unwrap_or(scene::DrawPrefs::default().metrics);
@@ -259,6 +373,116 @@ mod tests {
         p
     }
 
+    fn store_with(font: &str) -> (Store, String) {
+        let mut store = Store::fresh(std::path::Path::new("none.toml"));
+        let mut p = Profile::new("Work");
+        p.set("Normal Font", font.into());
+        p.set("Non Ascii Font", font.into());
+        let guid = p.guid();
+        store.add(p);
+        (store, guid)
+    }
+
+    fn apply(store: &mut Store, guid: &str, dir: i32) -> String {
+        let new = store.divorce(guid);
+        let values = size_values(store.get(&new).unwrap(), store.get(&store.shared_guid(&new)).unwrap(), dir as f32);
+        store.set_session(&new, &values);
+        new
+    }
+
+    /// Review Focus 5 (R3: the focused session only, was every pane).
+    #[test]
+    fn size_commands_follow_iterm2() {
+        let (mut store, saved) = store_with("Consolas 12");
+        for k in ["Horizontal Spacing", "Vertical Spacing"] {
+            store.get_mut(&saved).unwrap().set(k, 1.2.into());
+        }
+        // Two panes on one saved profile; the first one grows.
+        let first = apply(&mut store, &saved, 1);
+        assert_ne!(first, saved, "the pane has a copy of its own");
+        let copy = store.get(&first).unwrap();
+        assert_eq!(copy.string("Normal Font"), "Consolas 13");
+        assert_eq!(copy.string("Non Ascii Font"), "Consolas 13", "the non-ASCII font grew too");
+        assert_eq!(copy.float("Horizontal Spacing"), 1.2, "spacing is kept");
+        let second = store.get(&saved).unwrap();
+        assert_eq!(second.string("Normal Font"), "Consolas 12", "the other pane keeps the saved profile");
+        // A second step grows from the copy.
+        let again = apply(&mut store, &first, -1);
+        assert_eq!(again, first);
+        assert_eq!(store.get(&first).unwrap().string("Normal Font"), "Consolas 12");
+        // Zoom the copy and give it other spacing, then Make Text Normal Size.
+        apply(&mut store, &first, 3);
+        store.set_session(&first, &[("Horizontal Spacing".into(), Some(1.5.into())), ("Vertical Spacing".into(), Some(0.9.into()))]);
+        let restored = size_values(store.get(&first).unwrap(), store.get(&saved).unwrap(), 0.0);
+        store.set_session(&first, &restored);
+        let copy = store.get(&first).unwrap();
+        assert_eq!(copy.string("Normal Font"), "Consolas 12");
+        assert_eq!(copy.string("Non Ascii Font"), "Consolas 12");
+        assert_eq!((copy.float("Horizontal Spacing"), copy.float("Vertical Spacing")), (1.2, 1.2));
+        assert!(store.sessions.iter().all(|s| !s.overridden.contains("Normal Font")), "back to the saved size overrides nothing");
+        // The drawn range holds: no press is hidden at either end.
+        let (mut store, saved) = store_with("Consolas 4");
+        let low = apply(&mut store, &saved, -1);
+        assert_eq!(store.get(&low).unwrap().string("Normal Font"), "Consolas 4");
+        let (mut store, saved) = store_with("Consolas 200");
+        let high = apply(&mut store, &saved, -1);
+        assert_eq!(store.get(&high).unwrap().font("Normal Font").size_pt, 127.0, "a size above the drawn range steps from 128");
+    }
+
+    #[test]
+    fn broadcast_sizes_follow_iterm2() {
+        let (a, b, c, outside) = (1, 2, 3, 9);
+        let all = [a, b, c, outside];
+        let receives = |p: PaneId| p != outside;
+        assert_eq!(adjust_targets(a, &all, false, &receives), vec![a], "the key off: the focused pane only");
+        assert_eq!(adjust_targets(a, &all, true, &receives), vec![a, b, c], "the key on: every receiving pane");
+        assert_eq!(adjust_targets(outside, &all, true, &receives), vec![outside], "a pane outside the broadcast grows alone");
+    }
+
+    #[test]
+    fn profile_sizes_follow_iterm2() {
+        let (mut store, saved) = store_with("Consolas 12");
+        let pane = apply(&mut store, &saved, 1);
+        let original = store.shared_guid(&pane);
+        grow_saved_profile(&mut store, &original, 1);
+        let p = store.get(&saved).unwrap();
+        assert_eq!(p.string("Normal Font"), "Consolas 13", "a new session opens at the new size");
+        assert_eq!(p.string("Non Ascii Font"), "Consolas 13");
+        // The menu item shows the check.
+        let menu = include_str!("menu.rs");
+        assert!(menu.contains("\"toggleSizeChangesAffectProfile:\""), "the toggle has an arm and a check");
+        assert!(menu.contains("check(\"Size Changes Update Profile\", self.globals.bool(fonts_ui::SIZE_CHANGES_AFFECT_PROFILE))"));
+        assert_eq!(SIZE_CHANGES_AFFECT_PROFILE, "Size Changes Affect Profile");
+        let key = crate::schema::find_global("Size Changes Affect Profile").expect("the stored key");
+        assert_eq!(key.default, Some(toml::Value::Boolean(false)));
+    }
+
+    #[test]
+    fn aps_keeps_the_zoom() {
+        let (mut store, a) = store_with("Consolas 12");
+        let mut other = Profile::new("Other");
+        other.set("Normal Font", "Consolas 10".into());
+        other.set("Non Ascii Font", "Consolas 10".into());
+        let b = other.guid();
+        store.add(other);
+        let pane = apply(&mut store, &a, 2);
+        assert_eq!(store.get(&pane).unwrap().string("Normal Font"), "Consolas 14");
+        let delta = |keep: bool| zoom_delta(store.get(&pane).unwrap(), store.get(&store.shared_guid(&pane)).unwrap(), keep);
+        assert_eq!(delta(true), 2.0);
+        assert_eq!(delta(false), 0.0, "the key off keeps nothing");
+        // The switch: the copy goes, the pane takes B, then the delta is applied once.
+        let kept = delta(true);
+        let new = store.divorce(&b);
+        let values = size_values(store.get(&new).unwrap(), store.get(&b).unwrap(), kept);
+        store.set_session(&new, &values);
+        assert_eq!(store.get(&new).unwrap().string("Normal Font"), "Consolas 12", "10 and the kept 2");
+        assert_eq!(store.get(&b).unwrap().string("Normal Font"), "Consolas 10", "the saved profile is untouched");
+        let source = include_str!("aps_ui.rs");
+        let (zoom, remarry) = (source.find("zoom_delta(").expect("measured"), source.find("self.remarry(").unwrap());
+        assert!(zoom < remarry, "measured before the switch");
+        assert!(source[remarry..].contains("write_font_size("), "re-applied after it");
+    }
+
     #[test]
     fn face_key_follows_profile() {
         let same = |s: &str| s.to_string();
@@ -269,19 +493,19 @@ mod tests {
             ("Horizontal Spacing", 1.1.into()),
             ("Vertical Spacing", 1.0.into()),
         ]);
-        let k = face_key_for(&p, 1.5, 0.0, &same);
+        let k = face_key_for(&p, 1.5, &same);
         assert_eq!(k.family, "Cascadia Mono");
         assert_eq!(k.alt_family.as_deref(), Some("MS Gothic"));
         assert_eq!(k.px(), 28.0);
         assert_eq!((k.h_bits, k.v_bits), (1.1f32.to_bits(), 1.0f32.to_bits()));
         let off = profile(&[("Normal Font", "Cascadia Mono 14".into()), ("Use Non-ASCII Font", false.into())]);
-        assert_eq!(face_key_for(&off, 1.0, 0.0, &same).alt_family, None);
-        // The shared font offset grows every face, kept inside the drawn range.
-        assert_eq!(face_key_for(&off, 1.0, 2.0, &same).px(), crate::render::quantize_px(16.0 * 4.0 / 3.0));
-        assert_eq!(face_key_for(&off, 1.0, 500.0, &same).px(), crate::render::quantize_px(128.0 * 4.0 / 3.0));
+        assert_eq!(face_key_for(&off, 1.0, &same).alt_family, None);
+        // A size outside the drawn range is drawn at the range's end.
+        let huge = profile(&[("Normal Font", "Cascadia Mono 500".into())]);
+        assert_eq!(face_key_for(&huge, 1.0, &same).px(), crate::render::quantize_px(128.0 * 4.0 / 3.0));
         // Names go through the resolver.
         let up = |s: &str| s.to_uppercase();
-        assert_eq!(face_key_for(&p, 1.0, 0.0, &up).family, "CASCADIA MONO");
+        assert_eq!(face_key_for(&p, 1.0, &up).family, "CASCADIA MONO");
     }
 
     #[test]
@@ -290,15 +514,15 @@ mod tests {
         let on = profile(&[("Normal Font", "Cascadia Mono 14".into())]);
         let no_bold = profile(&[("Normal Font", "Cascadia Mono 14".into()), ("Use Bold Font", false.into())]);
         let no_italic = profile(&[("Normal Font", "Cascadia Mono 14".into()), ("Use Italic Font", false.into())]);
-        let key = |p: &Profile| face_key_for(p, 1.0, 0.0, &same);
+        let key = |p: &Profile| face_key_for(p, 1.0, &same);
         assert!(key(&on).use_bold && key(&on).use_italic, "iTerm2's defaults are on");
         assert!(!key(&no_bold).use_bold && key(&no_bold).use_italic);
         assert!(key(&no_italic).use_bold && !key(&no_italic).use_italic);
         assert_ne!(key(&on), key(&no_bold));
         assert_ne!(key(&on), key(&no_italic));
         // The per-pane cache is keyed on RawFont: a switch change must change it, or a stale key is served.
-        assert_ne!(RawFont::of(&on, 1.0, 0.0), RawFont::of(&no_bold, 1.0, 0.0));
-        assert_ne!(RawFont::of(&on, 1.0, 0.0), RawFont::of(&no_italic, 1.0, 0.0));
+        assert_ne!(RawFont::of(&on, 1.0), RawFont::of(&no_bold, 1.0));
+        assert_ne!(RawFont::of(&on, 1.0), RawFont::of(&no_italic, 1.0));
     }
 
     #[test]
@@ -308,14 +532,14 @@ mod tests {
         let off = profile(&base);
         let ascii = profile(&[base[0].clone(), ("ASCII Ligatures", true.into())]);
         let non_ascii = profile(&[base[0].clone(), ("Non-ASCII Ligatures", true.into())]);
-        let key = |p: &Profile| face_key_for(p, 1.0, 0.0, &same);
+        let key = |p: &Profile| face_key_for(p, 1.0, &same);
         assert!(!key(&off).ascii_ligatures && !key(&off).non_ascii_ligatures, "iTerm2's defaults are off");
         assert!(key(&ascii).ascii_ligatures && !key(&ascii).non_ascii_ligatures);
         assert!(!key(&non_ascii).ascii_ligatures && key(&non_ascii).non_ascii_ligatures);
         assert_ne!(key(&off), key(&ascii));
         assert_ne!(key(&off), key(&non_ascii));
-        assert_ne!(RawFont::of(&off, 1.0, 0.0), RawFont::of(&ascii, 1.0, 0.0));
-        assert_ne!(RawFont::of(&off, 1.0, 0.0), RawFont::of(&non_ascii, 1.0, 0.0));
+        assert_ne!(RawFont::of(&off, 1.0), RawFont::of(&ascii, 1.0));
+        assert_ne!(RawFont::of(&off, 1.0), RawFont::of(&non_ascii, 1.0));
     }
 
     #[test]
@@ -326,7 +550,7 @@ mod tests {
         let ascii_off = profile(&[base[0].clone(), ("ASCII Anti Aliased", false.into())]);
         let non_ascii_off = profile(&[base[0].clone(), ("Non-ASCII Anti Aliased", false.into())]);
         let thin_never = profile(&[base[0].clone(), ("Thin Strokes", 0.into())]);
-        let key = |p: &Profile| face_key_for(p, 1.0, 0.0, &same);
+        let key = |p: &Profile| face_key_for(p, 1.0, &same);
         // The stock profile is anti-aliased with Thin Strokes at Retina only.
         assert_eq!((key(&stock).ascii_aa, key(&stock).non_ascii_aa, key(&stock).thin), (true, true, 4));
         assert!(!key(&ascii_off).ascii_aa && key(&ascii_off).non_ascii_aa);
@@ -335,7 +559,7 @@ mod tests {
         for other in [&ascii_off, &non_ascii_off, &thin_never] {
             assert_ne!(key(&stock), key(other));
             // The per-pane key cache is keyed on RawFont: a change must change it, or a stale key is served.
-            assert_ne!(RawFont::of(&stock, 1.0, 0.0), RawFont::of(other, 1.0, 0.0));
+            assert_ne!(RawFont::of(&stock, 1.0), RawFont::of(other, 1.0));
         }
     }
 
@@ -345,11 +569,11 @@ mod tests {
         let base = [("Normal Font", toml::Value::from("Cascadia Mono 14"))];
         let off = profile(&base);
         let on = profile(&[base[0].clone(), ("Draw Powerline Glyphs", true.into())]);
-        let key = |p: &Profile| face_key_for(p, 1.0, 0.0, &same);
+        let key = |p: &Profile| face_key_for(p, 1.0, &same);
         assert!(!key(&off).powerline && key(&on).powerline, "iTerm2's default is off");
         assert_ne!(key(&off), key(&on));
         // The per-pane key cache is keyed on RawFont: a change must change it, or a stale key is served.
-        assert_ne!(RawFont::of(&off, 1.0, 0.0), RawFont::of(&on, 1.0, 0.0));
+        assert_ne!(RawFont::of(&off, 1.0), RawFont::of(&on, 1.0));
     }
 
     #[test]

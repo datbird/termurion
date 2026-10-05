@@ -145,7 +145,7 @@ impl App {
                 // Disconnect is enabled by `refresh_ssh_menu`, for a session that has a conductor.
                 let enabled = Self::menu_enabled(item) && item.selector != "sshDisconnect:" && item.selector != "explainOutputWithAI:" && (item.selector != "downloadFiles:" || self.download_files_enabled()) && (item.selector != "performNaturalLanguageQuery:" || self.globals.bool(crate::ai_settings::ADMIN));
                 let parent = &item.path[..item.path.len() - 1];
-                let alert_check = super::marks_ui::CHECKS.iter().any(|(s, _)| *s == item.selector) || super::seltools_ui::CHECKED.contains(&item.selector.as_str()) || matches!(item.selector.as_str(), "toggleMultiLinePasteWarning:" | "promptToConvertTabsToSpacesWhenPasting:");
+                let alert_check = super::marks_ui::CHECKS.iter().any(|(s, _)| *s == item.selector) || super::seltools_ui::CHECKED.contains(&item.selector.as_str()) || matches!(item.selector.as_str(), "toggleMultiLinePasteWarning:" | "promptToConvertTabsToSpacesWhenPasting:" | "toggleSizeChangesAffectProfile:");
                 let state_check = parent.iter().any(|p| p == "Terminal State") && item.label() != "Reset";
                 if alert_check || state_check {
                     let c = CheckMenuItem::with_id(item.id(), menu_text(item), enabled, false, None);
@@ -553,6 +553,7 @@ impl App {
             check(label, screen.is_some_and(|s| s.level() == level));
         }
         check("Literal Controls", screen.is_some_and(|s| s.keys.literal));
+        check("Size Changes Update Profile", self.globals.bool(fonts_ui::SIZE_CHANGES_AFFECT_PROFILE));
         let alert_next = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).is_some_and(|p| p.own().marks.alert_next);
         let action = self.globals.string("Mark Alert Action");
         self.refresh_named_marks();
@@ -979,9 +980,15 @@ impl App {
                     }
                 }
             }
-            "biggerFont:" => self.change_font_size(1),
-            "smallerFont:" => self.change_font_size(-1),
-            "returnToDefaultSize:" => self.set_font_offset(0.0),
+            "biggerFont:" => self.adjust_font_size(1),
+            "smallerFont:" => self.adjust_font_size(-1),
+            "returnToDefaultSize:" => self.return_to_default_size(),
+            "toggleSizeChangesAffectProfile:" => {
+                let on = !self.globals.bool(fonts_ui::SIZE_CHANGES_AFFECT_PROFILE);
+                self.globals.set(fonts_ui::SIZE_CHANGES_AFFECT_PROFILE, toml::Value::Boolean(on));
+                self.save_globals();
+                self.menus_dirty = true;
+            }
             "maximizePane:" => self.toggle_maximize(),
             "nextTab:" | "previousTab:" => {
                 let n = self.tabs.len();

@@ -264,13 +264,6 @@ pub fn is_pinch(mods: crate::mouse::Mods, disabled: bool) -> bool {
     mods.ctrl && !mods.shift && !mods.alt && !mods.cmd && !disabled
 }
 
-/// The shared font offset held to the range the drawn size can show: `base + offset` stays in
-/// 4..=128 pt (`apply_fonts`' clamp) and the offset never goes under -8 (the menu's floor), so
-/// the opposite step always acts.
-pub fn clamp_font_offset(base: f32, offset: f32) -> f32 {
-    offset.max((4.0 - base).max(-8.0)).min(128.0 - base)
-}
-
 /// The magnification of a wheel movement of `lines` lines (`wheel_lines` per notch).
 pub fn pinch_amount(lines: f64, wheel_lines: f64) -> f64 {
     lines / wheel_lines * MAG_PER_NOTCH
@@ -305,17 +298,6 @@ impl Magnifier {
 
 #[cfg(test)]
 mod tests {
-    /// The shared font offset never leaves the range the drawn size can show (4 to 128 pt), so
-    /// no step is hidden: from the top, one smaller always acts.
-    #[test]
-    fn font_offset_stays_in_the_drawn_range() {
-        assert_eq!(super::clamp_font_offset(12.0, 200.0), 116.0);
-        assert_eq!(super::clamp_font_offset(12.0, -50.0), -8.0);
-        assert_eq!(super::clamp_font_offset(12.0, 3.0), 3.0);
-        assert_eq!(super::clamp_font_offset(2.0, 0.0), 2.0, "a base under the floor is lifted to it");
-        assert_eq!(super::clamp_font_offset(200.0, 0.0), -72.0, "a base over the ceiling is pulled to it");
-    }
-
     use super::*;
     use std::time::{Duration, Instant};
 

@@ -40,7 +40,7 @@ pub const DONE: &[&str] = &[
     "detachTmux:", "forceDetachTmux:", "newTmuxWindow:", "newTmuxTab:", "toggleTmuxPausePane:", "openDashboard:", "revealCockpit:", "bury:",
     "pasteSelection:", "selectAll:", "clearBuffer:", "clearScrollbackBuffer:", "toggleFullScreenMode:", "toggleFullScreenTabBar:", "toggleUseTransparency:", "toggleDisableTransparencyForActiveWindow:", "toggleLockSplitPaneWidth:",
     "nextTabGroup:", "previousTabGroup:", "addTabToNewGroupAction:", "removeTabFromGroupAction:",
-    "copyPerformanceStats:", "gpuRendererAvailability:", "biggerFont:", "smallerFont:", "returnToDefaultSize:|Make Text Normal Size",
+    "copyPerformanceStats:", "gpuRendererAvailability:", "biggerFont:", "smallerFont:", "toggleSizeChangesAffectProfile:", "returnToDefaultSize:|Make Text Normal Size",
     "returnToDefaultSize:|Restore Text and Session Size", "maximizePane:",
     "editCurrentSession:", "reset:", "resetCharset:", "terminalStateReset:",
     "terminalStateToggleAlternateScreen:", "terminalStateToggleFocusReporting:",
@@ -98,8 +98,6 @@ const NOT_APPLICABLE: &[(&str, &str)] = &[(
 
 /// Commands that work with a known difference for now.
 const PARTIAL: &[(&str, &str)] = &[
-    ("biggerFont:", "Changes every pane, since all panes share one font until per-pane fonts arrive."),
-    ("smallerFont:", "Changes every pane, since all panes share one font until per-pane fonts arrive."),
     ("filter:", "Shows the matching lines without their colors."),
     ("toggleSelectionRespectsSoftBoundaries:", "Double-click and Smart Selection stop at pane dividers; a drag still crosses them."),
     ("zoomOnSelection:", "Shows the selected lines without their colors."),

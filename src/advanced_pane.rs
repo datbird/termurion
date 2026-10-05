@@ -345,6 +345,7 @@ mod tests {
             ("NoSyncAppSupportMoved", "Warnings", Kind::Bool, bool(false)),
             ("NoSyncAutoProvideConsent", "AI", Kind::Int, int(0)),
             ("DisableTransparencyForKeyWindow", "Transparency", Kind::Bool, bool(false)),
+            ("Size Changes Affect Profile", "Windows", Kind::Bool, bool(false)),
         ];
         for (key, section, kind, default) in &expect {
             let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));

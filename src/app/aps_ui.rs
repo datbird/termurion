@@ -52,6 +52,11 @@ impl App {
             return;
         }
         let current = self.store.shared_guid(&p.profile);
+        // The zoom to keep: measured against the original profile before the switch (`S:20830-20895`).
+        let zoom = match (self.store.get(&p.profile), self.store.get(&current)) {
+            (Some(now), Some(original)) => fonts_ui::zoom_delta(now, original, self.globals.bool("preserveFontSizeOnAutomaticProfileSwitch")),
+            _ => 0.0,
+        };
         let s = &p.own().shell;
         let host = s.host.clone().unwrap_or_else(|| self.local_host.clone());
         let user = s.user.clone().unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_default());
@@ -86,6 +91,11 @@ impl App {
             return self.banners.set("aps", format!("Can't switch to profile {guid}: it no longer exists."));
         };
         self.remarry(pane, &guid);
+        // Re-applied after it, to the new profile's font, through the size change's own path.
+        if zoom != 0.0 {
+            self.write_font_size(pane, zoom);
+            self.refresh_panes();
+        }
         if self.globals.bool("showAutomaticProfileSwitchingBanner") {
             self.banners.set("aps", format!("Switched to profile \u{201c}{name}\u{201d}."));
         }

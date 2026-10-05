@@ -41,3 +41,13 @@ Task 7 (built-in Powerline glyphs)
 Task 6 fix round 1
 - Ruling (the source wins): the shades U+2591 to U+2593 are left to the font. iTerm2 leaves them out of boxDrawingCharactersWithBezierPathsExcludingPowerline and shapeBuilderForSolidBoxesForCode returns nil for them; they are only in blockDrawingCharacters (the minimum contrast exemption), so is_block keeps them and drawn() does not. Shape::Shade, Piece::Shade and the flat 25/50/75 fills are gone. Cost if wrong: a font with no shade glyphs falls back to another font's, as in iTerm2.
 - Decision: the timestamp labels and the announcement bar cut box glyphs like every other surface that clips rows (cut_glyphs), so no glyph draws through them. Cost if wrong: none.
+
+Task 8
+- R3: Make Text Bigger and Smaller change the focused session only (was: every pane). With FontChangeAffectsBroadcastingSessions on and the focused pane receiving broadcast input, every receiving pane changes; a pane outside the broadcast never does.
+- Ruling (pre-flight B4, P2): App::change_font_size(pane, dir) replaces 13f's set_font_offset, 13j's change_font_size(dir), the app-wide font_offset and wheel::clamp_font_offset; the menu and the pinch call adjust_font_size(dir); the window fit (13f) runs after the focused pane's cell changed. grow_font_value keeps 4 to 128 pt (the drawn range), not iTerm2's 2 to 200, and reads a stored size outside the range as drawn. Cost if wrong: Tandem cannot reach 2-3 pt or 129-200 pt text.
+- Decision (the source wins): the help of FontChangeAffectsBroadcastingSessions is iTerm2's whole text (AS:695), "This only applies to changing the font size with Make Text Bigger, Make Text Normal Size, and Make Text Smaller" on a second line, not the label alone. Cost if wrong: none.
+- Decision: a size change on a tmux pane reaches every pane of its tmux window; the grids stay tmux's, only the report follows the focused pane's cell. Cost if wrong: none.
+- Decision: Restore Text and Session Size acts as Make Text Normal Size until 13f's window sizing restores Columns and Rows. Cost if wrong: rows and columns are not restored.
+- Decision: Make Text Normal Size on a pane that has no private profile copy writes nothing (iTerm2: dir || isDivorced). Cost if wrong: none.
+- Decision: an Automatic Profile Switch writes the kept zoom into the pane's new session copy (Tandem derives faces from the profile; iTerm2 sets the view's font table only). The font keys the switch would restore from a divorced copy are dropped with the copy, as before. Cost if wrong: a profile the pane switches back to starts from its saved font, not the zoom.
+- Deferred: Special Font Config sizes (Task 9) are not grown yet; Task 9 adds them to size_values and grow_saved_profile.

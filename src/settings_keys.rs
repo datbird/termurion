@@ -2288,6 +2288,25 @@ mod tests {
         assert!(!indicate_non_default());
     }
 
+    /// `AS:695`, `AS:670`, `iTermPreferences.m:219`: the text size rows (Task 8).
+    #[test]
+    fn size_rows_follow_iterm2() {
+        let label = "Should growing or shrinking the font in a session that's broadcasting input affect all session that broadcast input?";
+        let row = schema::find_global("FontChangeAffectsBroadcastingSessions").expect("FontChangeAffectsBroadcastingSessions");
+        assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "Windows", Kind::Bool));
+        assert_eq!(row.default, Some(Value::Boolean(false)));
+        // The help is the whole DEFINE text (`AS:695`, with no closing period); the label its first line.
+        assert_eq!((row.label.as_str(), row.help.as_str()), (label, format!("{label}\nThis only applies to changing the font size with Make Text Bigger, Make Text Normal Size, and Make Text Smaller").as_str()));
+        let help = "Preserve font zoom level when Automatic Profile Switching changes profiles.";
+        let row = schema::find_global("preserveFontSizeOnAutomaticProfileSwitch").expect("preserveFontSizeOnAutomaticProfileSwitch");
+        assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "Session", Kind::Bool));
+        assert_eq!(row.default, Some(Value::Boolean(true)));
+        assert_eq!((row.label.as_str(), row.help.as_str()), (help, help));
+        let row = schema::find_global("Size Changes Affect Profile").expect("Size Changes Affect Profile");
+        assert_eq!((row.tab.as_str(), row.kind), (crate::advanced_pane::STORED_TAB, Kind::Bool));
+        assert_eq!(row.default, Some(Value::Boolean(false)));
+    }
+
     /// `XIB:8708-8750`, `GP:2559-2566`, `PREF:105-106`, `PREF:757-758`: General > Experimental.
     #[test]
     fn experimental_rows_follow_iterm2() {
