@@ -1241,6 +1241,15 @@ default = -1
 help = "When pasting more than this many characters, require confirmation.\nSet to -1 to disable warning.\nCharacters are counted in UTF-16."
 
 [[setting]]
+key = "FontsForGenerousRounding"
+tab = "Advanced"
+section = "Experimental Features"
+label = "List of fonts to use alternate rounding algorithm for line height calculation."
+type = "string"
+default = "consolas"
+help = "List of fonts to use alternate rounding algorithm for line height calculation.\nThis fixes consolas and emulates Terminal.app\u2019s behavior on macOS 10.15. This is a comma-delimited list of font family substrings."
+
+[[setting]]
 key = "EscapeWithQuotes"
 tab = "Advanced"
 section = "Experimental Features"

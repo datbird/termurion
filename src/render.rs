@@ -6,6 +6,7 @@ use glyphon::{
 };
 use wgpu::util::DeviceExt;
 
+use crate::fonts;
 use crate::scene::{Frame, Quad, Span};
 
 /// Rectangles: two triangles each, position and color per vertex.
@@ -348,8 +349,10 @@ pub struct Renderer {
     pub cell: (f32, f32),
     /// The primary face's underline numbers (`set_font_px`).
     ul_metrics: Option<crate::underline::Metrics>,
-    /// The font's own cell, without the spacings (`cell_metrics`).
+    /// The font's own cell, without the spacings (`fonts::cell_size`).
     base_cell: (f32, f32),
+    /// `FontsForGenerousRounding`: the families that get the generous line height.
+    generous_list: String,
     /// The texture format the pipelines draw into.
     format: wgpu::TextureFormat,
     /// The faces, by id; id 0 is the default face `set_fonts` makes.
@@ -363,13 +366,6 @@ pub struct Renderer {
     scale: f32,
     /// The face cap was reached and logged.
     capped: bool,
-}
-
-/// The cell for a font of `px` pixels whose glyph advance is `advance`, with the horizontal and
-/// vertical spacings applied, and the spacing-free cell `(advance, (px * 1.2).round())` the
-/// cursor is measured against (`cellSizeWithoutSpacing`).
-pub fn cell_metrics(advance: f32, px: f32, h_spacing: f32, v_spacing: f32) -> ((f32, f32), (f32, f32)) {
-    ((advance * h_spacing, (px * 1.2 * v_spacing).round()), (advance, (px * 1.2).round()))
 }
 
 impl Renderer {
@@ -408,6 +404,7 @@ impl Renderer {
             cell: (0.0, 0.0),
             ul_metrics: None,
             base_cell: (0.0, 0.0),
+            generous_list: "consolas".into(),
             faces: Vec::new(),
             face_ids: std::collections::HashMap::new(),
             resolved: Default::default(),
@@ -422,7 +419,8 @@ impl Renderer {
         r
     }
 
-    /// Sets the font size and measures the cell: the font's own advance, by 1.2 lines.
+    /// Sets the font size and measures the cell: the advance of "W" by the font's own line
+    /// height (`fonts::cell_size`; R3, it was 1.2 times the size).
     /// The width is not rounded. Glyphs advance by the exact width, so a rounded cell
     /// would drift away from the text along a row (the cursor landed two cells short).
     pub fn set_font_px(&mut self, px: f32) {
@@ -435,26 +433,57 @@ impl Renderer {
         self.widths.clear();
     }
 
-    /// A face's cell, spacing-free cell and underline numbers at `px` pixels: the advance of
-    /// 100 "M"s, by the `cell_metrics` line.
-    fn measure(&mut self, family: &str, px: f32, h: f32, v: f32) -> ((f32, f32), (f32, f32), Option<crate::underline::Metrics>) {
-        let line = (px * 1.2 * v).round();
-        let n = 100;
-        let mut b = Buffer::new(&mut self.font_system, Metrics::new(px, line));
+    /// A font's vertical metrics and the advance of one shaped "W" at `px` pixels (iTerm2
+    /// measures "W", `FontSizeEstimator.m:75-120`), with the font the "W" came from for the
+    /// underline numbers. None when the family has no glyph for "W".
+    fn read_metrics(&mut self, family: &str, px: f32) -> Option<(fonts::Metrics, crate::underline::Metrics)> {
+        let mut b = Buffer::new(&mut self.font_system, Metrics::new(px, px * 1.2));
         b.set_size(None, None);
         b.set_wrap(Wrap::None);
-        b.set_text(&"M".repeat(n), &Attrs::new().family(Family::Name(family)), Shaping::Advanced, None);
+        b.set_text("W", &Attrs::new().family(Family::Name(family)), Shaping::Advanced, None);
         b.shape_until_scroll(&mut self.font_system, false);
-        let w = b.layout_runs().next().map(|r| r.line_w / n as f32).filter(|w| *w > 0.0).unwrap_or(px * 0.6);
-        // The face's underline numbers at this size (`iTermMetalPerFrameStateConfiguration.m:147-167`).
-        let face = b.layout_runs().next().and_then(|r| r.glyphs.first().map(|g| (r.line_y, g.font_id, g.font_weight)));
-        let ul = face.and_then(|(baseline, id, weight)| {
-            let font = self.font_system.get_font(id, weight)?;
-            let m = font.as_swash().metrics(&[]).scale(px);
-            Some(crate::underline::Metrics { underline_offset: m.underline_offset.abs(), thickness: m.stroke_size, x_height: m.x_height, baseline })
-        });
-        let (cell, base) = cell_metrics(w, px, h, v);
-        (cell, base, ul)
+        let run = b.layout_runs().next()?;
+        let g = run.glyphs.first()?;
+        let advance_w = run.line_w;
+        let font = self.font_system.get_font(g.font_id, g.font_weight)?;
+        let m = font.as_swash().metrics(&[]).scale(px);
+        let metrics = fonts::Metrics { ascent: m.ascent, descent: m.descent, leading: m.leading, advance_w };
+        let ul = crate::underline::Metrics { underline_offset: m.underline_offset.abs(), thickness: m.stroke_size, x_height: m.x_height, baseline: 0.0 };
+        (advance_w > 0.0).then_some((metrics, ul))
+    }
+
+    /// The metrics `fonts::cell_size` is fed for a family at `px` (tests).
+    pub fn face_font_metrics(&mut self, family: &str, px: f32) -> Option<fonts::Metrics> {
+        self.read_metrics(family, px).map(|(m, _)| m)
+    }
+
+    /// A face's cell, spacing-free cell and underline numbers at `px` pixels.
+    fn measure(&mut self, family: &str, px: f32, h: f32, v: f32) -> ((f32, f32), (f32, f32), Option<crate::underline::Metrics>) {
+        let generous = fonts::generous(family, &self.generous_list);
+        let Some((m, mut ul)) = self.read_metrics(family, px) else {
+            // The family did not load: a plain 1.2 line with 0.6 em advance, until it does.
+            let m = fonts::Metrics { ascent: px * 0.95, descent: px * 0.25, leading: 0.0, advance_w: px * 0.6 };
+            let (cell, base) = fonts::cell_size(m, false, h, v);
+            return (cell, base, None);
+        };
+        let (cell, base) = fonts::cell_size(m, generous, h, v);
+        ul.baseline = fonts::baseline(m, cell.1);
+        (cell, base, Some(ul))
+    }
+
+    /// A new `FontsForGenerousRounding`: every face is measured again in place (ids stay valid).
+    pub fn set_generous_list(&mut self, list: &str) {
+        if list == self.generous_list {
+            return;
+        }
+        self.generous_list = list.to_string();
+        self.set_font_px(self.font_px);
+        for i in 1..self.faces.len() {
+            let key = self.faces[i].key.clone();
+            self.faces[i] = self.build_face(&key);
+        }
+        self.buffers.clear();
+        self.widths.clear();
     }
 
     /// The face a key describes, measured now.
@@ -1053,10 +1082,42 @@ mod tests {
     #[test]
     fn cell_metrics_keep_the_spacing_free_cell() {
         let close = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 1e-4 && (a.1 - b.1).abs() < 1e-4;
-        let (cell, base) = cell_metrics(9.6, 16.0, 1.0, 1.0);
-        assert!(close(cell, (9.6, 19.0)) && close(base, (9.6, 19.0)), "{cell:?} {base:?}");
-        let (cell, base) = cell_metrics(9.6, 16.0, 1.2, 1.25);
-        assert!(close(cell, (11.52, 24.0)) && close(base, (9.6, 19.0)), "{cell:?} {base:?}");
+        let m = fonts::Metrics { ascent: 12.4, descent: 3.2, leading: 0.0, advance_w: 9.6 };
+        let (cell, base) = fonts::cell_size(m, false, 1.0, 1.0);
+        assert!(close(cell, (9.6, 16.0)) && close(base, (9.6, 16.0)), "{cell:?} {base:?}");
+        let (cell, base) = fonts::cell_size(m, false, 1.2, 1.25);
+        assert!(close(cell, (11.52, 20.0)) && close(base, (9.6, 16.0)), "{cell:?} {base:?}");
+    }
+
+    #[test]
+    fn cells_follow_font_metrics() {
+        // R3: the cell height is the font's own (swash metrics, generous list), not round(px * 1.2).
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Consolas", 16.0);
+        r.set_fonts("Consolas", None, 16.0, 1.0, 1.0);
+        let m = r.face_font_metrics("Consolas", 16.0).expect("Consolas is installed on the test machine");
+        let (cell, base) = fonts::cell_size(m, fonts::generous("Consolas", "consolas"), 1.0, 1.0);
+        assert_eq!(r.cell, cell);
+        assert_eq!(r.base_cell(), base);
+        assert_ne!(r.cell.1, (16.0f32 * 1.2).round(), "still the old 1.2 line");
+        // The width is the unrounded advance of "W".
+        assert!((r.cell.0 - m.advance_w).abs() < 1e-3);
+        // Underline baseline is where the shaped line puts the glyphs.
+        let mut b = Buffer::new(&mut r.font_system, Metrics::new(16.0, r.cell.1));
+        b.set_size(None, None);
+        b.set_text("W", &Attrs::new().family(Family::Name("Consolas")), Shaping::Advanced, None);
+        b.shape_until_scroll(&mut r.font_system, false);
+        let y = b.layout_runs().next().unwrap().line_y;
+        assert!((r.face_underline(DEFAULT_FACE).baseline - y).abs() < 0.51, "{} vs {y}", r.face_underline(DEFAULT_FACE).baseline);
+        // Cascadia Mono is not in the generous list: ascent plus descent.
+        let c = r.face(&key("Cascadia Mono", 16.0, 1.0, 1.0));
+        if let Some(m) = r.face_font_metrics("Cascadia Mono", 16.0) {
+            assert_eq!(r.face_cell(c), fonts::cell_size(m, false, 1.0, 1.0).0);
+        }
+        // A new generous list re-measures every face in place.
+        r.set_generous_list("");
+        assert_eq!(r.face_cell(c), fonts::cell_size(r.face_font_metrics("Cascadia Mono", 16.0).unwrap(), true, 1.0, 1.0).0);
+        r.set_generous_list("consolas");
     }
 
     fn device() -> (wgpu::Device, wgpu::Queue) {
@@ -1209,7 +1270,8 @@ mod tests {
         assert_eq!(r.face_base(spaced), r.face_base(big));
         let (cell, base) = (r.face_cell(spaced), r.face_base(spaced));
         assert!((cell.0 - base.0 * 1.25).abs() < 1e-3, "{cell:?} {base:?}");
-        assert_eq!(cell.1, (32.0f32 * 1.2 * 1.5).round());
+        let m = r.face_font_metrics("Cascadia Mono", 32.0).unwrap();
+        assert_eq!(cell.1, fonts::cell_size(m, false, 1.25, 1.5).0.1);
         // An id that is not a face reads the default face.
         assert_eq!(r.face_cell(999), r.cell);
     }

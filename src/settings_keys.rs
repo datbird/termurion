@@ -2023,6 +2023,16 @@ mod tests {
     }
 
     #[test]
+    fn generous_row_follows_iterm2() {
+        let row = schema::find_global("FontsForGenerousRounding").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"));
+        assert_eq!(row.kind, Kind::String);
+        assert_eq!(row.default, Some(Value::String("consolas".into())));
+        assert_eq!(row.label, "List of fonts to use alternate rounding algorithm for line height calculation.");
+        assert!(row.help.starts_with(&row.label) && row.help.contains("Terminal.app\u{2019}s behavior"), "{}", row.help);
+    }
+
+    #[test]
     fn scripting_rows_follow_iterm2() {
         for (key, default, help) in [
             ("pythonRuntimeDownloadURL", "https://iterm2.com/downloads/pyenv/manifest.json", "URL to check for new versions of the Python scripting runtime."),

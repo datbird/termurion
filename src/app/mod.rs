@@ -3628,7 +3628,7 @@ impl App {
         normal.size_pt = (normal.size_pt + self.font_offset).clamp(4.0, 128.0);
         // Re-measuring the font re-shapes all text, so only do it when a font setting changed.
         // The settings are compared before the font names are looked up (every frame asks).
-        let sig = format!("{normal:?} {alt:?} {} {} {} {}", p.float("Horizontal Spacing"), p.float("Vertical Spacing"), self.scale(), p.font("Badge Font").family);
+        let sig = format!("{normal:?} {alt:?} {} {} {} {} {}", p.float("Horizontal Spacing"), p.float("Vertical Spacing"), self.scale(), p.font("Badge Font").family, self.globals.string("FontsForGenerousRounding"));
         if sig == self.font_sig {
             return;
         }
@@ -3637,10 +3637,12 @@ impl App {
             normal.family = g.renderer.resolve_family(&normal.family);
             alt = alt.map(|a| g.renderer.resolve_family(&a));
         }
+        let generous = self.globals.string("FontsForGenerousRounding");
         let Some(g) = self.gpu.as_mut() else { return };
         let px = normal.size_pt * 4.0 / 3.0 * g.window.scale_factor() as f32;
         // The other panes' faces re-measure in place at a new scale (their ids stay valid).
         g.renderer.set_scale(g.window.scale_factor() as f32);
+        g.renderer.set_generous_list(&generous);
         g.renderer.set_fonts(&normal.family, alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
         let badge = p.font("Badge Font").family;
         g.renderer.set_badge_family(if badge.is_empty() { "Helvetica" } else { &badge });
