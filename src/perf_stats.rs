@@ -44,6 +44,17 @@ pub fn fps_text(frame: u64, period: f64) -> String {
 pub const GPU_TITLE: &str = "GPU Renderer Availability";
 pub const GPU_ENABLED: &str = "GPU rendering is enabled for the current session.";
 
+/// Said for a window that has no GPU device (it never claims "enabled" then).
+pub const GPU_NONE: &str = "GPU rendering is not available for this window.";
+
+/// The alert's text: enabled with the adapter's name and backend, or `GPU_NONE`.
+pub fn gpu_text(adapter: Option<(&str, &str)>) -> String {
+    match adapter {
+        Some((name, backend)) => format!("{GPU_ENABLED}\n\n{}", gpu_adapter_line(name, backend)),
+        None => GPU_NONE.to_string(),
+    }
+}
+
 /// Tandem's second paragraph: the adapter the window draws on.
 pub fn gpu_adapter_line(name: &str, backend: &str) -> String {
     format!("Adapter: {name} ({backend})")
@@ -55,39 +66,80 @@ fn num(v: f64) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
+/// How many values the histogram keeps for its percentiles (`iTermHistogram.mm:258`).
+const RESERVOIR: usize = 100;
+
 /// iTerm2's histogram summary without the sparkline glyphs (`iTermHistogram.mm:511-528`).
-/// Percentiles interpolate linearly between ranks.
-#[derive(Clone, Debug, Default)]
+/// Like iTerm2's sampler it keeps a reservoir of `RESERVOIR` values (reservoir sampling,
+/// `:60-76`) plus the exact count, sum, min and max, so memory and the cost of a summary stay
+/// bounded however many frames are timed. Percentiles interpolate linearly between ranks.
+#[derive(Clone, Debug)]
 pub struct Histogram {
     samples: Vec<f64>,
+    count: u64,
+    sum: f64,
+    min: f64,
+    max: f64,
+    /// xorshift state for the reservoir's random slot (no clock or crate needed).
+    rng: u64,
+}
+
+impl Default for Histogram {
+    fn default() -> Self {
+        Histogram { samples: Vec::new(), count: 0, sum: 0.0, min: 0.0, max: 0.0, rng: 0x9E37_79B9_7F4A_7C15 }
+    }
 }
 
 impl Histogram {
     pub fn add(&mut self, v: f64) {
-        self.samples.push(v);
+        if self.count == 0 {
+            (self.min, self.max) = (v, v);
+        } else {
+            self.min = self.min.min(v);
+            self.max = self.max.max(v);
+        }
+        self.sum += v;
+        if self.samples.len() < RESERVOIR {
+            self.samples.push(v);
+        } else {
+            self.rng ^= self.rng << 13;
+            self.rng ^= self.rng >> 7;
+            self.rng ^= self.rng << 17;
+            // A slot in 0..=count: only the first RESERVOIR slots keep the value.
+            let r = (self.rng % (self.count + 1)) as usize;
+            if r < RESERVOIR {
+                self.samples[r] = v;
+            }
+        }
+        self.count += 1;
+    }
+
+    #[cfg(test)]
+    fn stored(&self) -> usize {
+        self.samples.len()
     }
 
     pub fn summary(&self) -> String {
-        if self.samples.is_empty() {
+        if self.count == 0 {
             return "No data".to_string();
         }
         let mut s = self.samples.clone();
         s.sort_by(|a, b| a.total_cmp(b));
         let n = s.len();
-        let sum: f64 = s.iter().sum();
         let pct = |p: f64| {
             let r = (n - 1) as f64 * p;
             let (lo, hi) = (r.floor() as usize, r.ceil() as usize);
             s[lo] + (s[hi] - s[lo]) * (r - lo as f64)
         };
         format!(
-            "{} {}  Count={n} Mean={} p50={} p95={} Sum={}",
-            num(s[0]),
-            num(s[n - 1]),
-            num(sum / n as f64),
+            "{} {}  Count={} Mean={} p50={} p95={} Sum={}",
+            num(self.min),
+            num(self.max),
+            self.count,
+            num(self.sum / self.count as f64),
             num(pct(0.5)),
             num(pct(0.95)),
-            num(sum)
+            num(self.sum)
         )
     }
 }
@@ -108,6 +160,12 @@ pub struct Logs {
 impl Logs {
     pub fn save(&mut self, id: &str, log: &str) {
         self.saved.insert(id.to_string(), log.to_string());
+    }
+
+    /// A closed window's logs go (keys "Window {n}: ...").
+    pub fn forget_window(&mut self, n: usize) {
+        let prefix = format!("Window {n}: ");
+        self.saved.retain(|k, _| !k.starts_with(&prefix));
     }
 
     /// What Copy Performance Stats puts on the clipboard.
@@ -196,6 +254,41 @@ mod tests {
             h.add(v);
         }
         assert_eq!(h.summary(), "1 4  Count=4 Mean=2.5 p50=2.5 p95=3.85 Sum=10");
+    }
+
+    /// A closed window's saved logs and counters go, so a new window that reuses its number
+    /// starts clean; other windows' logs stay.
+    #[test]
+    fn a_closed_windows_logs_are_forgotten() {
+        let mut logs = Logs::default();
+        logs.save("Window 1: Dropped frames", "0.0%\n");
+        logs.save("Window 12: Dropped frames", "1.0%\n");
+        logs.save("Window 2: Dropped frames", "2.0%\n");
+        logs.forget_window(1);
+        let t = logs.text();
+        assert!(!t.contains("Window 1:") && t.contains("Window 12:") && t.contains("Window 2:"), "{t}");
+    }
+
+    /// The availability text says "enabled" only for a window that has a GPU.
+    #[test]
+    fn gpu_text_needs_a_gpu() {
+        assert_eq!(gpu_text(Some(("Radeon", "Dx12"))), format!("{GPU_ENABLED}\n\nAdapter: Radeon (Dx12)"));
+        assert_eq!(gpu_text(None), GPU_NONE);
+        assert_ne!(GPU_NONE, GPU_ENABLED);
+    }
+
+    /// iTerm2's sampler keeps a reservoir (100 values) and the exact count, sum, min and max
+    /// (`iTermHistogram.mm:20-76`, `:360-369`): memory stays bounded however long the app runs.
+    #[test]
+    fn histogram_memory_is_bounded() {
+        let mut h = Histogram::default();
+        for i in 1..=100_000u32 {
+            h.add(i as f64);
+        }
+        assert!(h.stored() <= 100, "{} samples kept", h.stored());
+        let s = h.summary();
+        assert!(s.starts_with("1 100000  Count=100000 Mean=50000.5 "), "{s}");
+        assert!(s.ends_with("Sum=5000050000"), "{s}");
     }
 
     /// Every tenth frame (`total % 10 == 1`) saves the three logs under the window's name;

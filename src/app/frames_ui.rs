@@ -188,8 +188,10 @@ impl App {
     /// timings only, `iTermPreciseTimerGetSavedLogs`).
     pub(super) fn copy_performance_stats(&mut self) {
         let text = self.perf.text();
-        if let Some(Err(e)) = self.clipboard.as_mut().map(|cb| cb.set_text(text).map_err(|e| e.to_string())) {
-            self.banners.set("clipboard", format!("Copy failed: {e}"));
+        match self.clipboard.as_mut().map(|cb| cb.set_text(text).map_err(|e| e.to_string())) {
+            Some(Err(e)) => self.banners.set("clipboard", format!("Copy failed: {e}")),
+            None => self.banners.set("clipboard", "Copy failed: the clipboard is not available"),
+            Some(Ok(())) => {}
         }
     }
 
@@ -197,11 +199,9 @@ impl App {
     /// the adapter and backend this window draws on.
     pub(super) fn gpu_renderer_availability(&mut self) {
         use crate::perf_stats as ps;
-        let mut text = ps::GPU_ENABLED.to_string();
-        if let Some(g) = &self.gpu {
-            let info = g.render_adapter().get_info();
-            text = format!("{text}\n\n{}", ps::gpu_adapter_line(&info.name, &format!("{:?}", info.backend)));
-        }
+        let info = self.gpu.as_ref().map(|g| g.render_adapter().get_info());
+        let backend = info.as_ref().map(|i| format!("{:?}", i.backend));
+        let text = ps::gpu_text(info.as_ref().zip(backend.as_deref()).map(|(i, b)| (i.name.as_str(), b)));
         let ask = super::scripts_alerts::ask(ps::GPU_TITLE, &text, &[crate::api_auth::OK], None, crate::warnings::Kind::Persistent, super::scripts_alerts::Then::Nothing);
         self.ask_scripts(ask);
     }

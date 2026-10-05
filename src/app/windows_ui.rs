@@ -880,6 +880,11 @@ impl App {
         if let Some(g) = self.registry.guid(k) {
             self.api_vars.forget(crate::api_vars::Scope::Window, g);
         }
+        // The saved performance logs and counters of a window number go with it (it is reused).
+        if let Some(n) = self.registry.number(k) {
+            self.perf_frames.remove(&(n + 1));
+            self.perf.forget_window(n + 1);
+        }
         self.registry.close(k);
         self.refresh_window_list();
     }
