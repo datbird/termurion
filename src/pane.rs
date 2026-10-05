@@ -1703,11 +1703,17 @@ impl Pane {
         resize_report_bytes(self.own().resize_reports(), self.tmux_io().is_some(), rows, cols, px)
     }
 
+    /// The grid a request for `cols` by `rows` really gets: tmux's size for a tmux pane, and a
+    /// pane squeezed to nothing keeps 2x1.
+    pub fn clamped_size(&self, cols: u16, rows: u16) -> (u16, u16) {
+        let (cols, rows) = self.tmux_size.unwrap_or((cols, rows));
+        (cols.max(2), rows.max(1))
+    }
+
     /// Resizes the screen and the pty. A pane squeezed to nothing keeps 2x1. True when the
     /// size changed.
     pub fn resize(&mut self, cols: u16, rows: u16) -> bool {
-        let (cols, rows) = self.tmux_size.unwrap_or((cols, rows));
-        let (cols, rows) = (cols.max(2), rows.max(1));
+        let (cols, rows) = self.clamped_size(cols, rows);
         if (self.own().term().columns(), self.own().term().screen_lines()) == (cols as usize, rows as usize) {
             return false;
         }
@@ -3085,6 +3091,17 @@ mod tests {
         assert_eq!(p.resize_report_if_on(4, 20, (64, 160)), None);
         p.screen.feed(b"\x1b[?2048h");
         assert_eq!(p.resize_report_if_on(4, 20, (64, 160)), Some(b"\x1b[48;4;20;64;160t".to_vec()));
+    }
+
+    /// 13o final review (Task 6): a pane squeezed below 2x1 reports the grid it really has.
+    #[test]
+    fn a_squeezed_pane_reports_its_clamped_grid() {
+        let p = Pane::with(1, None, 20, 4);
+        assert_eq!(p.clamped_size(0, 0), (2, 1));
+        assert_eq!(p.clamped_size(1, 0), (2, 1));
+        assert_eq!(p.clamped_size(80, 24), (80, 24));
+        let (cols, rows) = p.clamped_size(0, 0);
+        assert_eq!(resize_report_bytes(true, false, rows, cols, (16, 32)), Some(b"\x1b[48;1;2;16;32t".to_vec()));
     }
 
     /// 13o Task 6 fix: the report follows the session's own screen while a view or a freeze is up.

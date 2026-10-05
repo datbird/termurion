@@ -147,6 +147,8 @@ impl App {
 
     /// Opens the print dialog for the job (the person cancels there or prints).
     fn print_job(&mut self, pane: PaneId, job: &crate::screen::PrintJob) {
+        // The pane's own window parents the dialog, whichever window is current.
+        self.enter_pane_window(pane);
         let Some(hwnd) = self.hwnd() else { return };
         let Some(p) = self.panes.get(&pane) else { return };
         let screen = &p.screen;
@@ -314,6 +316,19 @@ fn read_dropped(path: &std::path::Path) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
     std::fs::File::open(path).ok()?.take(crate::kitty_dnd::MAX_FILE_BYTES as u64 + 1).read_to_end(&mut bytes).ok()?;
     Some(bytes)
+}
+
+#[cfg(test)]
+mod print_tests {
+    /// 13o final review (new item 8): the print dialog is parented to the window that holds the
+    /// pane, not to whichever window is current.
+    #[test]
+    fn print_job_enters_the_panes_window() {
+        let own = include_str!("emu_ui.rs");
+        let f = own.find("fn print_job").unwrap();
+        let body = &own[f..];
+        assert!(body.find("self.enter_pane_window(pane)").expect("enters the pane's window") < body.find("self.hwnd()").unwrap());
+    }
 }
 
 #[cfg(test)]

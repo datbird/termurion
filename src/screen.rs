@@ -1173,8 +1173,15 @@ impl Screen {
     fn divert_to_print(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
         let cap = self.print_capture.as_mut()?;
         if cap.started.elapsed().as_secs() >= crate::emu::PRINT_CAPTURE_SECS {
+            // The capture ends by age. Inside a sequence, its tail is dropped (the parser never saw
+            // its start, so the tail would print as text).
+            let rest = cap.after_sequence(bytes);
             self.print_capture = None;
-            return Some(bytes.to_vec());
+            return rest.map(|(at, esc)| {
+                let mut out = if esc { vec![0x1b] } else { Vec::new() };
+                out.extend_from_slice(&bytes[at..]);
+                out
+            });
         }
         match cap.push(bytes, self.limits.copy) {
             None => None,
@@ -2126,11 +2133,18 @@ impl Screen {
     /// to their defaults and the text stays. alacritty has no DECSTR, so the equivalent
     /// sequences are fed in.
     pub fn soft_reset(&mut self) {
+        // The person's Reset ends a print job that is collecting; it must reach the parser.
+        self.print_capture = None;
         const DECSTR: &[u8] = b"\x1b[?25h\x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\
             \x1b[?2004l\x1b[?1004l\x1b[?1007l\x1b[4l\x1b[0m\x1b[r\x1b[?6l\x1b[?7h\x1b[?2048l\x1b(B";
         // Straight to the parser: Literal Controls would print the sequence instead.
         let reply = self.feed_raw(DECSTR);
         self.replies.extend(reply);
+        // The ESC in it cancelled any sequence the program left open; the scanner follows (it
+        // reads the program's bytes only, so it would still be inside that sequence).
+        if self.osc.pending.is_some() {
+            self.osc.restart();
+        }
         // Key reporting goes back to the profile's: no program flags, no menu choices.
         self.term.clear_keyboard_modes();
         self.keys = KeyState { literal: self.keys.literal, ..KeyState::new(self.keys.profile_csi_u) };
@@ -4063,6 +4077,50 @@ mod tests {
         assert_eq!(s.take_requests(), vec![]);
     }
 
+    /// 13o final review (Task 7 minor 3): a capture that ends by age in the middle of a sequence
+    /// drops the rest of that sequence, so its tail never prints as text.
+    #[test]
+    fn a_print_capture_ending_by_age_mid_sequence_drops_the_tail() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"\x1b[5ihidden\x1b[1");
+        s.backdate_print_capture();
+        s.feed(b";31mshown");
+        assert_eq!(row_text(&s, 0), "shown", "the tail of the sequence is not text");
+        assert!(s.print_capture.is_none());
+        assert_eq!(s.take_requests(), vec![]);
+        // A string (OSC) cut the same way.
+        let mut s = Screen::new(20, 4);
+        s.feed(b"\x1b[5i\x1b]0;ti");
+        s.backdate_print_capture();
+        s.feed(b"tle\x07shown");
+        assert_eq!(row_text(&s, 0), "shown");
+    }
+
+    /// 13o final review (new item 7): Reset cancels a sequence the program left open, in the
+    /// scanner as in the screen's parser, so the tail of that sequence is not read as an event.
+    #[test]
+    fn reset_cancels_an_open_sequence_in_the_scanner() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"\x1b]52;c;QQ==");
+        s.soft_reset();
+        s.feed(b"\x07text");
+        assert_eq!(row_text(&s, 0), "text");
+        assert!(!s.take_requests().iter().any(|r| matches!(r, Request::ClipboardWrite(_))), "the cancelled OSC 52 wrote nothing");
+    }
+
+    /// 13o final review (Task 7 minor 1): the person's Reset works while a print job collects.
+    #[test]
+    fn reset_ends_a_print_capture() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"\x1b[?2004h\x1b[5ihidden");
+        assert!(s.print_capture.is_some());
+        s.soft_reset();
+        assert!(s.print_capture.is_none(), "the capture ends");
+        assert!(!s.term().mode().contains(TermMode::BRACKETED_PASTE), "and the reset reached the parser");
+        s.feed(b"after");
+        assert_eq!(row_text(&s, 0), "after");
+    }
+
     /// 13o Task 7 (B8): RIS, a prompt mark and a command end each end the capture unprinted.
     #[test]
     fn print_capture_ends_at_a_prompt() {
@@ -4074,6 +4132,18 @@ mod tests {
             assert_eq!(row_text(&s, 0), "visible", "{end:?}");
             assert_eq!(s.take_requests(), vec![], "{end:?}");
         }
+    }
+
+    /// 13o final review (Task 7 minor 2): with the switch on, a tab at the last column wraps even
+    /// with auto-wrap off (`MS:2814-2817` does not read DECAWM).
+    #[test]
+    fn tabs_wrap_ignores_auto_wrap() {
+        let cell = |s: &Screen, l: i32, c: usize| s.term.grid()[Line(l)][Column(c)].c;
+        let mut s = Screen::new(10, 3);
+        s.set_rules(crate::emu::Rules { tabs_wrap: true, ..Default::default() });
+        s.feed(b"\x1b[?7l\x1b[1;10H\tx");
+        assert_eq!(cell(&s, 1, 8), 'x', "wrapped to the next row, to the stop after column 0");
+        assert_eq!(cell(&s, 0, 9), ' ');
     }
 
     /// 13o Task 7: tabs wrap only with the switch; the pending-wrap tab does nothing either way.

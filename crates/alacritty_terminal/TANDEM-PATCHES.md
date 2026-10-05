@@ -171,6 +171,6 @@ test data) is left out. Changes:
 28. `term/mod.rs`: `Term.tabs_wrap` (iTerm2's tabsWrapAround, default false) and `put_tab`. A
     tab in the pending-wrap state does nothing (upstream wrapped the line); with `tabs_wrap` a
     tab at the last column (or pending wrap) wraps the line softly and moves to the first tab
-    stop after column 0 (`MS:2795-2818`).
+    stop after column 0 (`MS:2795-2818`), whether DECAWM is on or off (`wrapline_always`).
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

@@ -262,6 +262,12 @@ fn could_be_wanted(buf: &[u8]) -> bool {
 }
 
 impl Scanner {
+    /// Back between sequences, as after Tandem wrote an ESC of its own that cancelled the one
+    /// the program left open. The armed state stays.
+    pub fn restart(&mut self) {
+        *self = Scanner { cup_armed: self.cup_armed, ..Scanner::default() };
+    }
+
     /// The events in `bytes`, each with the offset just past its terminator.
     pub fn scan(&mut self, bytes: &[u8]) -> Vec<(usize, Osc)> {
         self.scan_spans(bytes).into_iter().map(|(_, end, osc)| (end, osc)).collect()

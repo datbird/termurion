@@ -4065,6 +4065,8 @@ impl App {
                     // DEC mode 2048 (13o Task 6): the new grid and the text area it covers in
                     // physical pixels from the pane's own cell (13n), written after the pty
                     // was resized.
+                    // The grid the pane really has (it keeps 2x1 when squeezed), not the request.
+                    let (cols, rows) = p.clamped_size(cols, rows);
                     if let Some(report) = p.resize_report_if_on(rows, cols, resize_report_px(rows, cols, (cw, ch))) {
                         resize_reports.push((id, report));
                     }

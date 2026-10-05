@@ -330,6 +330,15 @@ impl Default for PrintCapture {
 }
 
 impl PrintCapture {
+    /// For a capture that ends by age: what of `bytes` is left after the sequence it stopped
+    /// inside. Same answer as `push`: None when every byte belongs to that sequence.
+    pub fn after_sequence(&self, bytes: &[u8]) -> Option<(usize, bool)> {
+        if self.state == Cap::Ground {
+            return Some((0, false));
+        }
+        PrintCapture { buf: Vec::new(), state: self.state, started: self.started }.push(bytes, 0)
+    }
+
     /// Takes the bytes the program wrote. None: all taken. Some((at, esc)): the capture ends and
     /// the parser resumes from `bytes[at..]`, after an ESC first when `esc` (a RIS whose ESC came
     /// in an earlier read).

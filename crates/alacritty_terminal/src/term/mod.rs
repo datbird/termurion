@@ -1251,6 +1251,15 @@ impl<T> Term<T> {
             return;
         }
 
+        self.wrapline_always();
+    }
+
+    /// Tandem patch: the wrap itself, whatever DECAWM says (a tab with `tabs_wrap` wraps even
+    /// with auto-wrap off, iTerm2 `MS:2814-2817`).
+    fn wrapline_always(&mut self)
+    where
+        T: EventListener,
+    {
         trace!("Wrapping input");
 
         self.grid.cursor_cell().flags.insert(Flags::WRAPLINE);
@@ -1846,13 +1855,12 @@ impl<T: EventListener> Handler for Term<T> {
             count -= 1;
 
             // Tandem patch: with `tabs_wrap`, a tab where the cursor cannot advance wraps the
-            // line (soft) and goes to the first stop after column 0 (iTerm2 `appendTabAtCursor`).
+            // line (soft, with auto-wrap on or off) and goes to the first stop after column 0 (iTerm2 `appendTabAtCursor`).
             if self.tabs_wrap
                 && (self.grid.cursor.input_needs_wrap
                     || (self.grid.cursor.point.column + 1) == self.columns())
-                && self.mode.contains(TermMode::LINE_WRAP)
             {
-                self.wrapline();
+                self.wrapline_always();
             } else if self.grid.cursor.input_needs_wrap {
                 return;
             }

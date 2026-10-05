@@ -204,13 +204,14 @@ pub fn encode_input(cp: u32, text: &str, sys: &dyn CodePage) -> Vec<u8> {
     sys.encode(cp, text)
 }
 
-/// Bytes bound for the session, with the text in them encoded: what is typed, pasted or a
-/// text reply (the answerback, a title). Bytes below 0x80 and anything that is not UTF-8
-/// pass unchanged, so reports and escape sequences are never touched; the three raw bytes of a
-/// legacy mouse report (`CSI M`) are never read as text. Only non-ASCII runs are converted, in
-/// UTF-16 too.
+/// Bytes bound for the session, with the text in them encoded: what is typed or pasted (the
+/// answerback is encoded where it is set, and replies leave raw). Bytes below 0x80 and anything
+/// that is not UTF-8 pass unchanged in a byte code page, so reports and escape sequences are
+/// never touched; the three raw bytes of a legacy mouse report (`CSI M`) are never read as text.
+/// In UTF-16 every run of text is converted, ASCII too (a stream of two-byte units must not mix
+/// with single bytes), while escape sequences and C0 controls leave raw.
 pub fn encode_stream(cp: u32, bytes: &[u8], sys: &dyn CodePage) -> Vec<u8> {
-    if cp == 0 || bytes.is_ascii() {
+    if cp == 0 || (bytes.is_ascii() && cp != UTF16) {
         return bytes.to_vec();
     }
     let mut out = Vec::with_capacity(bytes.len());
@@ -230,6 +231,11 @@ pub fn encode_stream(cp: u32, bytes: &[u8], sys: &dyn CodePage) -> Vec<u8> {
             // sequence, leaves as it is, also in UTF-16 (iTerm2 sends keys and reports raw).
             let valid = chunk.valid();
             let mut rest = valid;
+            if cp == UTF16 {
+                utf16_text_runs(valid, &mut out, sys);
+                out.extend_from_slice(chunk.invalid());
+                continue;
+            }
             while !rest.is_empty() {
                 let ascii = rest.starts_with(|c: char| c.is_ascii());
                 let n = rest.find(|c: char| c.is_ascii() != ascii).unwrap_or(rest.len());
@@ -245,6 +251,49 @@ pub fn encode_stream(cp: u32, bytes: &[u8], sys: &dyn CodePage) -> Vec<u8> {
         at += stop;
     }
     out
+}
+
+/// `text` for a UTF-16 session: each run between escape sequences and C0 controls (and DEL) is
+/// converted whole; the sequences and controls are copied. A sequence is `ESC [ ... final`,
+/// `ESC O x` or `ESC` and one more character.
+fn utf16_text_runs(text: &str, out: &mut Vec<u8>, sys: &dyn CodePage) {
+    let mut rest = text;
+    while !rest.is_empty() {
+        let control = |c: char| c < ' ' || c == '\u{7f}';
+        let n = rest.find(control).unwrap_or(rest.len());
+        if n > 0 {
+            out.extend_from_slice(&sys.encode(UTF16, &rest[..n]));
+            rest = &rest[n..];
+            continue;
+        }
+        // At a control: ESC takes its whole sequence, any other control is one byte.
+        let mut chars = rest.char_indices();
+        let (_, first) = chars.next().expect("not empty");
+        let mut end = first.len_utf8();
+        if first == '\x1b' {
+            match chars.next() {
+                Some((i, '[')) => {
+                    end = i + 1;
+                    for (j, c) in chars {
+                        end = j + c.len_utf8();
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                Some((i, c)) => end = i + c.len_utf8(),
+                None => {}
+            }
+            // SS3: ESC O and the one character after it.
+            if rest[..end].ends_with("\x1bO") {
+                if let Some(c) = rest[end..].chars().next() {
+                    end += c.len_utf8();
+                }
+            }
+        }
+        out.extend_from_slice(rest[..end].as_bytes());
+        rest = &rest[end..];
+    }
 }
 
 /// The Windows conversions.
@@ -522,7 +571,13 @@ mod tests {
         // The three raw bytes of a legacy mouse report are never text, even when they look like it.
         assert_eq!(encode_stream(28591, b"\x1b[M \xc3\xa9", &fake), b"\x1b[M \xc3\xa9");
         // UTF-16 sessions get everything as UTF-16.
-        assert_eq!(encode_stream(1200, b"a\xc3\xa9", &fake), vec![0x61, 0xe9, 0], "only the non-ASCII text is UTF-16 (iTerm2 sends keys and reports raw)");
+        // The text of a UTF-16 session is UTF-16 whole (ASCII too, or the stream is misaligned);
+        // escape sequences and C0 controls leave raw (iTerm2 sends keys and reports raw).
+        assert_eq!(encode_stream(1200, b"a\xc3\xa9", &fake), vec![0x61, 0, 0xe9, 0]);
+        assert_eq!(encode_stream(1200, b"ls\r", &fake), vec![b'l', 0, b's', 0, b'\r']);
+        assert_eq!(encode_stream(1200, b"\x1b[1;2R", &fake), b"\x1b[1;2R");
+        assert_eq!(encode_stream(1200, b"a\x1b[Ab\x1bOPc\t", &fake), vec![b'a', 0, 0x1b, b'[', b'A', b'b', 0, 0x1b, b'O', b'P', b'c', 0, b'\t']);
+        assert_eq!(encode_stream(1200, b"\x1b[M a\xc3\xa9", &fake), b"\x1b[M a\xc3\xa9", "a legacy mouse report is raw to its end");
         assert_eq!(encode_stream(0, b"\xc3\xa9", &fake), b"\xc3\xa9");
     }
 
