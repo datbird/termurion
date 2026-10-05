@@ -898,6 +898,41 @@ pub fn line_mark(frame: &mut Frame, rect: Rect, row: usize, cell: (f32, f32), co
     frame.overlay.push(Quad { rect: Rect { x: rect.x, y, w: cells as f32 * cell.0, h: 1.0 }, color: rgba(color, 1.0) });
 }
 
+/// A pane's scrollbar, over the text and the pane's backdrop margins (it holds no text).
+/// The legacy style is an opaque track with a rounded knob when there is history; the
+/// overlay style is a translucent thumb, 7 points wide, widening to the track's width
+/// under the pointer. Gray, light or dark with the window.
+pub fn scrollbar(frame: &mut Frame, g: &crate::scrollbar::Geometry, style: crate::scrollbar::Style, dark: bool, hover: bool) {
+    use crate::scrollbar::{LEGACY_WIDTH, OVERLAY_WIDTH, Style};
+    let gray = |v: f32, a: f32| [v, v, v, a];
+    match style {
+        Style::Legacy => {
+            let scale = g.track.w / LEGACY_WIDTH;
+            frame.overlay.push(Quad { rect: g.track, color: gray(if dark { 0.13 } else { 0.96 }, 1.0) });
+            let edge = Rect { w: 1.0, ..g.track };
+            frame.overlay.push(Quad { rect: edge, color: gray(if dark { 0.24 } else { 0.86 }, 1.0) });
+            if g.thumb.h < g.track.h {
+                let inset = 3.0 * scale;
+                let knob = Rect { x: g.thumb.x + inset, y: g.thumb.y + 2.0, w: g.thumb.w - 2.0 * inset, h: (g.thumb.h - 4.0).max(1.0) };
+                let v = match (dark, hover) {
+                    (false, false) => 0.62,
+                    (false, true) => 0.48,
+                    (true, false) => 0.42,
+                    (true, true) => 0.58,
+                };
+                rounded_box(&mut frame.overlay, knob, knob.w / 2.0, gray(v, 1.0));
+            }
+        }
+        Style::Overlay => {
+            let scale = g.track.w / OVERLAY_WIDTH;
+            let w = if hover { g.track.w } else { 7.0 * scale };
+            let thumb = Rect { x: g.track.x + g.track.w - w, w, ..g.thumb };
+            let (v, a) = (if dark { 1.0 } else { 0.0 }, if hover { 0.65 } else { 0.45 });
+            rounded_box(&mut frame.overlay, thumb, w / 2.0, gray(v, a));
+        }
+    }
+}
+
 /// `iTermTextDrawingHelperLineStyleMarkRightInsetCells`: the cells a line-style mark leaves
 /// free at the right for a command's buttons.
 const LINE_MARK_RIGHT_INSET: usize = 15;
@@ -6352,5 +6387,60 @@ mod drawn_overlay_tests {
         let drawn = composer_popup(&mut f, &d, CELL);
         let widest = (2.0 + 3.0) * CELL.0;
         assert_eq!(drawn, composer_popup_frame(d.caret, AREA, 1, Some(0), false, widest, 1.0).0);
+    }
+
+    fn bbox(quads: &[Quad]) -> Rect {
+        let x0 = quads.iter().map(|q| q.rect.x).fold(f32::MAX, f32::min);
+        let y0 = quads.iter().map(|q| q.rect.y).fold(f32::MAX, f32::min);
+        let x1 = quads.iter().map(|q| q.rect.x + q.rect.w).fold(f32::MIN, f32::max);
+        let y1 = quads.iter().map(|q| q.rect.y + q.rect.h).fold(f32::MIN, f32::max);
+        Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+    }
+
+    #[test]
+    fn scrollbar_draws_the_track_and_thumb() {
+        use crate::scrollbar::{Style, geometry};
+        let pane = Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 };
+        for dark in [false, true] {
+            let g = geometry(pane, Style::Legacy, 1.0, 100, 50, 0).unwrap();
+            let mut f = Frame::default();
+            scrollbar(&mut f, &g, Style::Legacy, dark, false);
+            let track = f.overlay[0];
+            assert_eq!((track.rect, track.color[3]), (g.track, 1.0), "the legacy track is opaque and fills its strip");
+            let thumb = bbox(&f.overlay[2..]);
+            assert!(thumb.x > g.track.x && thumb.x + thumb.w < g.track.x + g.track.w, "the knob sits inside the track");
+            assert_eq!((thumb.y, thumb.h), (g.thumb.y + 2.0, g.thumb.h - 4.0), "the knob follows the thumb");
+            assert!(f.overlay.iter().all(|q| q.rect.x >= g.track.x - 0.001), "nothing draws left of the strip");
+            assert!(f.quads.is_empty() && f.rows.is_empty() && f.popups.is_empty());
+
+            let flat = geometry(pane, Style::Legacy, 1.0, 0, 50, 0).unwrap();
+            let mut f = Frame::default();
+            scrollbar(&mut f, &flat, Style::Legacy, dark, false);
+            assert_eq!(f.overlay.len(), 2, "no history: the track and its edge alone");
+        }
+        let (mut a, mut b) = (Frame::default(), Frame::default());
+        let g = geometry(pane, Style::Legacy, 1.0, 100, 50, 0).unwrap();
+        scrollbar(&mut a, &g, Style::Legacy, false, false);
+        scrollbar(&mut b, &g, Style::Legacy, true, false);
+        assert_ne!(a.overlay[0].color, b.overlay[0].color, "colors follow the theme");
+    }
+
+    #[test]
+    fn overlay_scrollbar_is_a_thin_thumb_that_widens_on_hover() {
+        use crate::scrollbar::{OVERLAY_WIDTH, Style, geometry};
+        let pane = Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 };
+        let g = geometry(pane, Style::Overlay, 1.0, 100, 50, 0).unwrap();
+        let (mut calm, mut over) = (Frame::default(), Frame::default());
+        scrollbar(&mut calm, &g, Style::Overlay, false, false);
+        scrollbar(&mut over, &g, Style::Overlay, false, true);
+        let (c, o) = (bbox(&calm.overlay), bbox(&over.overlay));
+        assert_eq!((c.w, o.w), (7.0, OVERLAY_WIDTH));
+        assert_eq!((c.x + c.w, o.x + o.w), (800.0, 800.0), "both hug the pane's right edge");
+        assert_eq!((c.y, c.h), (g.thumb.y, g.thumb.h));
+        assert!(calm.overlay.iter().all(|q| q.color[3] < 1.0), "no track, the thumb is translucent");
+        let mut dark = Frame::default();
+        scrollbar(&mut dark, &g, Style::Overlay, true, false);
+        assert_ne!(dark.overlay[0].color[..3], calm.overlay[0].color[..3]);
+        assert!(over.overlay[0].color[3] > calm.overlay[0].color[3], "hover is stronger");
     }
 }
