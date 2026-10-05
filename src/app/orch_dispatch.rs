@@ -1045,7 +1045,7 @@ impl App {
         let now = Instant::now();
         let spawned = self.orch_spawned.get(chat).cloned().unwrap_or_default();
         let recent = spawned.iter().filter(|(at, _)| now.duration_since(*at) < Duration::from_secs(60)).count();
-        let live = spawned.iter().filter(|(_, p)| self.panes.contains_key(p)).count();
+        let live = spawned.iter().filter(|(_, p)| self.panes.get(p).is_some_and(|q| q.exited.is_none())).count();
         let profile_command = if found { self.orch_profile_command(a.profile.as_deref()) } else { None };
         match spawn_step(&a, found, profile_command, recent, live) {
             SpawnStep::Refuse(e) => Err(e),
@@ -1108,7 +1108,7 @@ impl App {
         opened?;
         let new = self.panes.keys().copied().find(|p| !before.contains(p)).ok_or_else(|| OrchError::Unsupported(ot::LAUNCH_FAILED.to_string()))?;
         if self.panes.get(&new).is_none_or(|p| p.exited.is_some()) {
-            return Err(OrchError::Unsupported("The new session was created but is no longer reachable. The command likely exited immediately (e.g. binary not on PATH or a non-zero startup script) and the window auto-closed.".to_string()));
+            return Err(OrchError::Unsupported("The new session was created but is no longer reachable. The command likely exited immediately (e.g. binary not on PATH or a non-zero startup script) and the session ended.".to_string()));
         }
         let title = self.chat_row(&s.chat).map(|c| c.title);
         self.orch_provenance.insert(new, ot::provenance(title.as_deref(), &s.chat));

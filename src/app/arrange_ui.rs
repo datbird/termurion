@@ -164,7 +164,7 @@ impl App {
             }
         }
         // Session restoration: the host session, so a later launch can take the shell back.
-        if let (Contents::Styled(_) | Contents::KeysOnly, Some((host_id, offset)), Some(pid), Some(t)) = (contents, p.host_session(), p.shell_pid(), v.as_table_mut()) {
+        if let (Contents::Styled(_) | Contents::KeysOnly, Some((host_id, offset)), Some(pid), Some(t)) = (contents, p.host_session().filter(|_| p.exited.is_none()), p.shell_pid(), v.as_table_mut()) {
             t.insert(crate::restore_state::HOST_KEY.into(), super::restore_ui::host_key_value(host_id, pid, offset));
             // The shell's cookie, so it still works when the shell is taken back (`PS:7395-7396`).
             // Decision (Task 6): saved only under this gate (session restoration of a hosted

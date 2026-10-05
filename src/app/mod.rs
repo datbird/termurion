@@ -88,6 +88,7 @@ mod fold_ui;
 mod labels_ui;
 mod screenshot_ui;
 mod semantic_ui;
+mod session_end_ui;
 mod session_ui;
 mod seltools_ui;
 mod view_ui;
@@ -1283,9 +1284,6 @@ pub struct App {
     /// window opens on the next loop pass (which has the event loop).
     repl_after_enable: Option<PathBuf>,
     repl_pending: Option<PathBuf>,
-    /// Panes that stay open with their output when their program ends (the REPL's), each
-    /// with whether its end was already reported (`scripts_app::on_exit`).
-    held_on_exit: HashMap<PaneId, bool>,
     /// The import under way (one at a time, iTerm2's `sInstallingScript`) and the files
     /// waiting behind it (iTerm2's serial install queue), each with whether it is an archive
     /// found in the Scripts folder (recycled once installed) and whether it is imported with
@@ -2064,7 +2062,6 @@ pub fn run() {
         script_after_enable: Vec::new(),
         repl_after_enable: None,
         repl_pending: None,
-        held_on_exit: HashMap::new(),
         importing: None,
         import_queue: VecDeque::new(),
         archives_asked: std::collections::HashSet::new(),
@@ -3250,7 +3247,6 @@ impl App {
         self.api_session_subs.forget_session(id);
         // The shell a model's held text was typed into is gone (Task 10 fix round 2).
         self.orch_held.remove(&id);
-        self.held_on_exit.remove(&id);
         self.unread_session_counts.retain(|(p, _), _| *p != id);
         self.script_templates.retain(|(p, _), _| *p != id);
         self.script_components.retain(|(p, _), _| *p != id);
@@ -5744,7 +5740,8 @@ impl ApplicationHandler<UserEvent> for App {
         let cursor_due = self.tick_cursor();
         let frame_due = self.frame_wake();
         let flicker_due = self.flicker_tick(Instant::now());
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due].into_iter().flatten().min();
+        let ended_due = self.tick_ended(event_loop);
+        let wake = [ended_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -5791,7 +5788,6 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Wake => {}
         }
         let mut changed = false;
-        let mut exited = Vec::new();
         let mut outputs = Vec::new();
         let now = Instant::now();
         self.sync_output_policy();
@@ -5810,10 +5806,6 @@ impl ApplicationHandler<UserEvent> for App {
                 outputs.push(*id);
             }
             changed |= got;
-            // A held pane's end is reported once.
-            if p.exited.is_some() && self.held_on_exit.get(id) != Some(&true) {
-                exited.push(*id);
-            }
         }
         changed |= self.ssh_pump();
         changed |= self.tmux_pump(event_loop);
@@ -5827,28 +5819,9 @@ impl ApplicationHandler<UserEvent> for App {
         self.api_output(&outputs);
         self.api_session_events();
         self.record_replay_frames();
-        let exited_now = exited.clone();
-        for id in exited {
-            // A git command's short-lived window ends without an alert.
-            let short_lived = self.short_lived(id);
-            self.single_use_ended(id);
-            self.deps_command_ended(id);
-            if !short_lived {
-                self.session_ended(id);
-            }
-            if let Some(p) = self.panes.get_mut(&id) {
-                p.own_mut().fire_event(crate::trigger_events::EventKind::SessionEnded, &Default::default(), &[]);
-            }
-            self.take_requests();
-            match scripts_app::on_exit(self.held_on_exit.get(&id).copied()) {
-                scripts_app::OnExit::Close => self.close_pane(id, event_loop),
-                scripts_app::OnExit::Keep => {
-                    self.held_on_exit.insert(id, true);
-                    changed = true;
-                }
-                scripts_app::OnExit::Handled => {}
-            }
-        }
+        // A pane whose shell exited stays and follows its end action, once its output drained.
+        let (exited_now, _) = self.handle_ended(event_loop);
+        changed |= !exited_now.is_empty();
         self.check_coprocesses();
         if changed {
             // An exit shows in the tab bar: a held pane's end draws through the pacer too.

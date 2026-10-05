@@ -24,6 +24,14 @@ impl App {
                     out.push(reason.to_string());
                 }
             }
+            // What an exited shell left running ends with the pane (13q B7).
+            let left = p.live_survivors();
+            if !left.is_empty() {
+                let reason = format!("{} still running after the session ended: {}.", if left.len() == 1 { "A program is".to_string() } else { format!("{} programs are", left.len()) }, left.join(", "));
+                if !out.contains(&reason) {
+                    out.push(reason);
+                }
+            }
             if !super::pane_lock_ui::profile_reasons_apply(p.exited.is_some(), p.locked) {
                 continue;
             }
@@ -59,7 +67,12 @@ impl App {
     fn job_names(&self, panes: &[PaneId]) -> (Vec<String>, Vec<String>) {
         let (mut out, mut notes) = (Vec::new(), Vec::new());
         for id in panes {
-            let Some(p) = self.panes.get(id).filter(|p| p.exited.is_none()) else { continue };
+            let Some(p) = self.panes.get(id) else { continue };
+            // An ended pane's running programs are the survivors of its shell.
+            if p.exited.is_some() {
+                out.extend(p.live_survivors());
+                continue;
+            }
             if let Some(names) = p.remote_process_names() {
                 out.extend(names);
                 continue;
@@ -109,7 +122,7 @@ impl App {
                 return confirm(self.hwnd(), "Quit Tandem?", &close_rules::quit_text(&reasons, self.keep_jobs_on_quit()));
             }
         };
-        let running = panes.iter().filter(|id| self.panes.get(id).is_some_and(|p| p.exited.is_none())).count();
+        let running = panes.iter().filter(|id| self.panes.get(id).is_some_and(|p| p.exited.is_none() || !p.live_survivors().is_empty())).count();
         let has_reason = !self.close_reasons(&panes).is_empty();
         if !close_rules::must_ask(kind, running, has_reason, self.globals.bool("OnlyWhenMoreTabs")) && pinned.is_empty() {
             return true;

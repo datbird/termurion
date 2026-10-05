@@ -280,6 +280,14 @@ pub fn toggle_off(label: &str) -> &'static [u8] {
     TOGGLES.iter().find(|t| t.0 == label).map_or(&[], |t| t.2.as_bytes())
 }
 
+impl Marks {
+    /// The program ended: no command is typed or running any more (13q).
+    pub(crate) fn program_ended(&mut self) {
+        self.in_command = false;
+        self.running = false;
+    }
+}
+
 impl Screen {
     /// Clears from grid line `line` to the end (iTerm2 clearFromAbsoluteLineToEnd). The
     /// cursor's row (the prompt) goes to the top of the screen, and the rows kept above move

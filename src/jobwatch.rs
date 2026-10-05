@@ -472,6 +472,59 @@ pub fn descendants_now(shell: u32) -> Result<Vec<Proc>, String> {
     Ok(proctree::descendants(&procs, shell).into_iter().cloned().collect())
 }
 
+/// The processes still alive under a shell that already exited (its children and theirs, found
+/// by the parent id they kept), with creation times: what a `start /b` left attached to the
+/// console. Console hosts are not programs and are left out.
+pub fn orphans_of(dead: u32) -> Result<Vec<Proc>, String> {
+    let all = toolhelp()?;
+    let mut kids: HashMap<u32, Vec<usize>> = HashMap::new();
+    for (i, (pid, ppid, _)) in all.iter().enumerate() {
+        if pid != ppid {
+            kids.entry(*ppid).or_default().push(i);
+        }
+    }
+    let mut want: Vec<usize> = kids.get(&dead).cloned().unwrap_or_default();
+    let mut seen: HashSet<usize> = want.iter().copied().collect();
+    let mut i = 0;
+    while i < want.len() && want.len() < 4096 {
+        for &k in kids.get(&all[want[i]].0).map(Vec::as_slice).unwrap_or(&[]) {
+            if seen.insert(k) {
+                want.push(k);
+            }
+        }
+        i += 1;
+    }
+    let mut cache = Cache::default();
+    let mut out = Vec::new();
+    for i in want {
+        let (pid, ppid, ref name) = all[i];
+        let bare = proctree::strip_exe(name);
+        if bare.eq_ignore_ascii_case("conhost") || bare.eq_ignore_ascii_case("OpenConsole") {
+            continue;
+        }
+        let h = open(pid);
+        let made = h.as_ref().map_or(0, created);
+        let gui = h.as_ref().and_then(image_path).is_some_and(|p| *cache.gui.entry(p.clone()).or_insert_with(|| is_gui_exe(&p)));
+        out.push(Proc { pid, ppid, name: name.clone(), created: made, gui, cmdline: None });
+    }
+    Ok(out)
+}
+
+/// The names (no ".exe") of those of `set` ((pid, creation time)) that still run: a reused pid
+/// has another creation time and is not counted.
+pub fn still_running(set: &[(u32, u64)]) -> Vec<String> {
+    let Ok(all) = toolhelp() else { return Vec::new() };
+    set.iter()
+        .filter_map(|(pid, made)| {
+            let (_, _, name) = all.iter().find(|(p, _, _)| p == pid)?;
+            let h = open(*pid)?;
+            let mut code = 0u32;
+            let alive = unsafe { GetExitCodeProcess(h.0, &mut code) } != 0 && code == STILL_ACTIVE as u32;
+            (alive && created(&h) == *made).then(|| proctree::strip_exe(name).to_string())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

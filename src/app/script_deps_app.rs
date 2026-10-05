@@ -436,7 +436,9 @@ impl App {
         self.start_env_override = None;
         let pane = made.ok().and_then(|_| self.tabs.get(self.active).map(|t| t.focused));
         if let Some(p) = pane {
-            self.held_on_exit.insert(p, false);
+            if let Some(pane) = self.panes.get_mut(&p) {
+                pane.hold_open = true;
+            }
             self.script_deps_pending = Some((p, run.pending));
         }
         self.deps_push();

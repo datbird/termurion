@@ -1535,4 +1535,18 @@ mod tests {
         assert!((0..4).any(|l| (0..20).map(|c| g[Line(l)][Column(c)].c).collect::<String>().starts_with("main")), "the main grid is kept");
     }
 
+    #[test]
+    fn program_ended_leaves_the_message_readable() {
+        // Task 2 carry: an open print job (CSI 5 i) or a half-read string never swallows the
+        // end message once the program is ended; the text of the screen stays.
+        let mut s = Screen::new(20, 4);
+        s.feed(b"keep\r\n\x1b[5iprinting\x1b]0;half");
+        s.program_ended();
+        s.append_end_message("Session Ended", "=");
+        let all = s.all_text();
+        assert!(all.contains("== Session Ended ==="), "{all:?}");
+        assert!(all.contains("keep"), "{all:?}");
+        assert!(!all.contains("printing"), "the print job is closed, not shown: {all:?}");
+    }
+
 }

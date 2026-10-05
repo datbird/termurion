@@ -2157,6 +2157,40 @@ impl Screen {
         }
     }
 
+    /// The program on this screen has ended (an exit, before a restart): everything bound to it
+    /// goes (held output, an inline file's question, captures, transfers in progress, drop
+    /// registrations, status, host and user the shell reported, an open command mark) and the
+    /// terminal leaves what it left on (13q B3, B9): the alternate screen, SGR, charset, an
+    /// open hyperlink, the scroll region, origin mode, wrap, insert mode, key reporting, and a
+    /// string the scanner was inside. The text, scrollback, marks and images stay.
+    pub fn program_ended(&mut self) {
+        self.held_output.clear();
+        self.inline_hold = None;
+        self.multipart = None;
+        self.capture = None;
+        self.capture_hold.clear();
+        self.print_capture = None;
+        self.copy = Default::default();
+        self.dnd = Default::default();
+        self.kitty.pending = None;
+        self.tab_status = Default::default();
+        self.progress_shown = false;
+        self.unicode = Default::default();
+        self.exec_failed = false;
+        self.color_sets.clear();
+        self.key_labels = Default::default();
+        self.shell.host = None;
+        self.shell.user = None;
+        self.shell.host_local = None;
+        self.marks.program_ended();
+        self.restart_scanner();
+        // The reset reaches the parser itself (the answers to it are not wanted).
+        let _ = self.feed_raw(b"\x1b[?1049l\x1b[0m\x1b(B\x0f\x1b]8;;\x1b\\\x1b[r\x1b[?6l\x1b[?7h\x1b[4l");
+        self.restart_scanner();
+        self.term.clear_keyboard_modes();
+        self.keys = KeyState { literal: self.keys.literal, ..KeyState::new(self.keys.profile_csi_u) };
+    }
+
     /// What an SSH conductor restores when it unhooks (iTerm2's savedState, Decision: the
     /// remote host and the working directory).
     pub fn ssh_saved(&self) -> crate::conductor::SavedState {

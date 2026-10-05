@@ -192,6 +192,11 @@ impl Io {
     }
 }
 
+/// How long after an exit its end waits for the output to drain (13q P6).
+const END_DRAIN: Duration = Duration::from_millis(50);
+/// The most the end waits beyond that for a stream that will not stop.
+const END_DRAIN_CAP: Duration = Duration::from_millis(200);
+
 /// The most `%notif search` texts a pane holds between two passes of the app.
 const SEARCH_QUEUE_MAX: usize = 1024;
 
@@ -328,6 +333,33 @@ pub struct Pane {
     pub ssh: crate::ssh_session::PaneSsh,
     /// The cursor's motion between frames (13k): where it was, and when it moved.
     pub motion: crate::cursor_anim::Motion,
+    /// The session ended and its end was handled (the divider is drawn, the end action ran): the
+    /// pane stays, as iTerm2's does, and takes no input (13q R3, `PS:5214`). The one flag for
+    /// every kept-open pane, a REPL's included.
+    pub ended: bool,
+    /// When the session was created (`_creationDate`): the clock of the short-lived warning, the
+    /// log file name's `creationTimeString`; a restart keeps it.
+    pub created: std::time::SystemTime,
+    pub created_at: Instant,
+    /// A random number for the log file name's `autoLogId` (`PS:885-897`); a restart keeps it.
+    pub auto_log_id: u32,
+    /// A REPL window or a dependency run: it stays when its program ends, and is never offered a
+    /// restart (iTerm2 gives them no CloseOnTermination, `IC:2189-2191`).
+    pub hold_open: bool,
+    /// Programs the shell left running when it exited, as (pid, creation time): they stay
+    /// attached to the console, and closing the pane ends them (13q B7).
+    pub survivors: Vec<(u32, u64)>,
+    /// When the exit was first seen: the end is handled once the output has drained.
+    exit_seen: Option<Instant>,
+    /// The shell's pid at its exit, for the survivor survey only (`shell_pid` is None then).
+    exit_pid: Option<u32>,
+}
+
+/// A random u32 for a session's `autoLogId`.
+fn new_auto_log_id() -> u32 {
+    let mut b = [0u8; 4];
+    let _ = getrandom::fill(&mut b);
+    u32::from_le_bytes(b)
 }
 
 /// A fresh session reference for a pane.
@@ -336,6 +368,26 @@ pub fn new_session_guid() -> String {
 }
 
 impl Pane {
+    /// The pane's inline file question is gone with its program: reading is no longer paused.
+    pub fn inline_paused_off(&mut self) {
+        self.inline_paused = false;
+    }
+
+    /// The session ended: every SSH conductor goes (the hop list stays, so a restart reconnects
+    /// through the profile), what was held for a setup is dropped, and registry changes not yet
+    /// applied are discarded (13q P5).
+    pub fn drop_ssh_at_exit(&mut self) {
+        for _ in 0..16 {
+            if self.conductor.is_none() {
+                break;
+            }
+            self.ssh_unhook_conductor();
+        }
+        self.ssh_hook.unhook();
+        self.ssh_held.clear();
+        self.ssh_registry_out.clear();
+    }
+
     /// Takes `guid` as the pane's reference: a restored pane keeps the one it saved, and a
     /// restarted session keeps its own (iTerm2 keeps a session's guid, `PTYSession.m:2403-2420`).
     pub fn keep_reference(&mut self, guid: &str) {
@@ -420,6 +472,9 @@ impl Pane {
     /// A forced repaint: the pty one column wider, then back (a reattach whose output was
     /// cut short, or an adopted orphan).
     pub fn jiggle(&mut self) {
+        if self.exited.is_some() {
+            return;
+        }
         let (cols, rows) = (self.screen.term().columns() as u16, self.screen.term().screen_lines() as u16);
         if let Some(io) = &self.pty {
             for (c, r) in crate::reattach::jiggle(cols, rows) {
@@ -450,7 +505,7 @@ impl Pane {
     fn with(id: PaneId, pty: Option<Io>, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = pty.is_some();
-        Pane { id, activity: 0, locked: false, pinned_width: None, session_guid: new_session_guid(), stable_id: crate::stable_id::generate(), screen, encoding: 0, decoder: None, pty, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() }
+        Pane { id, activity: 0, locked: false, pinned_width: None, session_guid: new_session_guid(), stable_id: crate::stable_id::generate(), screen, encoding: 0, decoder: None, pty, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default(), ended: false, created: std::time::SystemTime::now(), created_at: Instant::now(), auto_log_id: new_auto_log_id(), hold_open: false, survivors: Vec::new(), exit_seen: None, exit_pid: None }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -500,6 +555,8 @@ impl Pane {
         if self.exited.is_none() {
             if let Some(code) = pty.exit_code() {
                 self.exited = Some(code);
+                self.exit_pid = pty.pid();
+                self.exit_seen = Some(Instant::now());
                 changed = true;
             }
         }
@@ -787,6 +844,9 @@ impl Pane {
     /// a conductor's `send_keys` when one sends for the session (the app applies its effects
     /// in `ssh_pump`), else the connecting queue, else `send_routed`.
     pub fn write_session(&mut self, bytes: &[u8]) {
+        if self.exited.is_some() {
+            return;
+        }
         if self.ssh_route() == crate::conductor::Route::Conductor(0) || !self.ssh.queue(bytes) {
             self.send_routed(bytes);
         }
@@ -800,7 +860,9 @@ impl Pane {
     /// the pty refused it.
     pub fn send_routed(&mut self, bytes: &[u8]) -> bool {
         use crate::conductor::Route;
-        if bytes.is_empty() {
+        // An ended session takes nothing: its console is dead, and `ssh_held` would only grow
+        // (13q B8).
+        if bytes.is_empty() || self.exited.is_some() {
             return true;
         }
         self.composer.probe = None;
@@ -826,6 +888,9 @@ impl Pane {
     /// framing conductor has no conductor.sh to read it, an unhooked one's is gone).
     fn write_unless_held(&mut self, bytes: &[u8]) {
         use crate::conductor::Route;
+        if self.exited.is_some() {
+            return;
+        }
         let setting_up = self.conductor.as_deref().is_some_and(|c| !c.framing() && !c.unhooked());
         let above = self.conductor.as_deref().and_then(|c| c.framing_ancestor());
         match self.ssh_route() {
@@ -1505,7 +1570,8 @@ impl Pane {
     /// What the live session itself sends (a trigger's Send Text, an upload its program
     /// asked for): a replay view does not stop it, as the live session keeps running.
     pub fn live_input(&mut self, bytes: &[u8]) {
-        if self.gateway {
+        // An ended session takes no input (`insertText:` returns when exited, `PS:5214`).
+        if self.gateway || self.exited.is_some() {
             return;
         }
         // Typed text, pastes and a trigger's Send Text leave in the session's encoding
@@ -1650,9 +1716,58 @@ impl Pane {
         }
     }
 
-    /// The shell's process id, while it has a pty.
+    /// The shell's process id, while it runs: None once it exited, since Windows reuses pids and
+    /// the job watcher, the close prompt and the process waits would read a stranger's tree
+    /// (13q B7).
     pub fn shell_pid(&self) -> Option<u32> {
+        if self.exited.is_some() {
+            return None;
+        }
         self.pty.as_ref().and_then(|p| p.pid())
+    }
+
+    /// The pid the shell had when it exited, for the survivor survey only.
+    pub fn exit_pid(&self) -> Option<u32> {
+        self.exit_pid
+    }
+
+    /// Takes the survey of what the exited shell left running (once, at the end), by process id
+    /// and creation time: the creation time guards against a reused pid (13q B7).
+    pub fn survey_survivors(&mut self) {
+        let Some(pid) = self.exit_pid.filter(|_| self.owns_console() || self.host_session().is_some()) else { return };
+        if let Ok(left) = crate::jobwatch::orphans_of(pid) {
+            self.survivors = left.into_iter().filter(|p| !p.gui).map(|p| (p.pid, p.created)).filter(|(_, made)| *made != 0).collect();
+        }
+    }
+
+    /// The names of the programs the exited shell left that still run; they end when the pane
+    /// closes (the console goes), so the close asks.
+    pub fn live_survivors(&self) -> Vec<String> {
+        if self.survivors.is_empty() {
+            return Vec::new();
+        }
+        crate::jobwatch::still_running(&self.survivors)
+    }
+
+    /// When the end of an exited session is due: once its output has drained (a short wait after
+    /// the exit is seen, `P6`); None when it is handled or running.
+    pub fn end_due_at(&self) -> Option<Instant> {
+        if self.exited.is_none() || self.ended {
+            return None;
+        }
+        self.exit_seen.map(|t| t + END_DRAIN)
+    }
+
+    /// Whether the end may be handled at `now`: the drain wait has passed and the output is
+    /// quiet, or the hard cap passed.
+    pub fn end_ready(&mut self, now: Instant) -> bool {
+        let Some(due) = self.end_due_at() else { return false };
+        if now < due {
+            return false;
+        }
+        // One more read: output still arriving holds the end back, up to the cap.
+        let more = self.pump();
+        !more || now >= due + END_DRAIN_CAP
     }
 
     /// What the terminal answers the program (reports), and Tandem's own writes that iTerm2
@@ -1661,6 +1776,9 @@ impl Pane {
     /// (`PS:4364-4376`, `PS:4276-4294`), and routed as `writeTaskNoBroadcast` routes them
     /// (`send_routed`).
     pub fn reply(&mut self, bytes: &[u8]) {
+        if self.exited.is_some() {
+            return;
+        }
         self.composer.probe = None;
         // Replies are raw: a report, a title report (UTF-8, `PTYSession.m:18338`), a tmux command,
         // a key the SSH queue already encoded. Only typed text, pastes and the answerback take
@@ -1683,6 +1801,9 @@ impl Pane {
 
     /// The pty write itself. False when the pty refused it.
     fn write_pty(&mut self, bytes: &[u8]) -> bool {
+        if self.exited.is_some() {
+            return true;
+        }
         if let Some(pty) = &self.pty {
             if let Err(e) = pty.write(bytes) {
                 self.error = Some(e);
@@ -1779,7 +1900,8 @@ impl Pane {
     pub fn clear(&mut self) {
         self.end_view();
         self.screen.clear(false);
-        if let Some(pty) = &self.pty {
+        // A dead console has nothing to clear (13q B8).
+        if let Some(pty) = self.pty.as_ref().filter(|_| self.exited.is_none()) {
             if let Err(e) = pty.clear() {
                 self.error = Some(e);
             }
@@ -3153,7 +3275,7 @@ mod tests {
 
     #[test]
     fn gateway_panes_take_no_input() {
-        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
+        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default(), ended: false, created: std::time::SystemTime::UNIX_EPOCH, created_at: Instant::now(), auto_log_id: 0, hold_open: false, survivors: Vec::new(), exit_seen: None, exit_pid: None };
         p.buffer.on = true;
         p.input(b"a");
         p.gateway = true;
@@ -3166,7 +3288,7 @@ mod tests {
         // During a replay iTerm2's tab shows the task-less synthetic session, so nothing
         // the user sends reaches the live shell; the live session's own writes (a
         // trigger's Send Text) still do.
-        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
+        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: Screen::new(10, 4), encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default(), ended: false, created: std::time::SystemTime::UNIX_EPOCH, created_at: Instant::now(), auto_log_id: 0, hold_open: false, survivors: Vec::new(), exit_seen: None, exit_pid: None };
         p.buffer.on = true;
         p.input(b"a");
         p.replay = Some(replay::Replay { decoder: None, read_only: false });
@@ -3181,7 +3303,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: own, encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default() };
+        let mut p = Pane { id: 1, activity: 0, locked: false, pinned_width: None, session_guid: String::new(), stable_id: String::new(), screen: own, encoding: 0, decoder: None, pty: None, exited: None, error: None, profile: String::new(), command: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), ssh_hook: Default::default(), ssh_q: Vec::new(), conductor: None, ssh_registry_out: Vec::new(), ssh_answers: Vec::new(), ssh_files_out: Vec::new(), ssh_search_out: Vec::new(), ssh_clock: Default::default(), ssh_held: Vec::new(), pending_jumps: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), held: None, held_until: None, replay: None, echo_probe: None, stuck: None, stuck_seen: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false, frustration: Default::default(), wheel: crate::wheel::PaneWheel::new(0.1), arrangement: None, ssh: Default::default(), motion: Default::default(), ended: false, created: std::time::SystemTime::UNIX_EPOCH, created_at: Instant::now(), auto_log_id: 0, hold_open: false, survivors: Vec::new(), exit_seen: None, exit_pid: None };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);
@@ -3211,6 +3333,76 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         false
+    }
+
+    #[test]
+    fn ended_pane_keeps_its_screen() {
+        let mut p = start("cmd.exe /c echo tandem-end");
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
+        // The rest of the output may still be on its way.
+        assert!(pump_until(&mut p, |p| p.screen.all_text().contains("tandem-end")), "{:?}", p.screen.all_text());
+        assert_eq!(p.exited, Some(0));
+        p.own_mut().append_end_message("Session Ended", "");
+        let text = p.screen.all_text();
+        assert!(text.contains("tandem-end"), "{text:?}");
+        assert!(text.contains(" Session Ended "), "{text:?}");
+    }
+
+    #[test]
+    fn ended_pane_takes_no_input() {
+        let mut p = start("cmd.exe /c exit 0");
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
+        // Buffer Input holds what is typed: an ended pane holds nothing.
+        p.buffer.on = true;
+        p.input(b"x");
+        p.paste("y");
+        p.reply(b"z");
+        assert!(p.send_routed(b"w"));
+        p.write_no_broadcast(b"v");
+        p.write_unless_held(b"u");
+        p.write_session(b"t");
+        p.live_input(b"s");
+        assert!(p.error.is_none(), "{:?}", p.error);
+        assert!(p.ssh_held.is_empty(), "nothing queues for a dead console");
+        assert!(p.buffer.release().is_empty());
+    }
+
+    #[test]
+    fn ended_pane_has_no_shell_pid() {
+        let mut p = start("cmd.exe /c exit 0");
+        assert!(p.shell_pid().is_some(), "a running shell has its pid");
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
+        assert_eq!(p.shell_pid(), None, "Windows reuses pids");
+        assert!(p.exit_pid().is_some(), "kept for the survivor survey only");
+    }
+
+    #[test]
+    fn close_asks_for_survivors_of_an_ended_pane() {
+        // `start /b` leaves ping running and attached to the console after cmd exits.
+        let mut p = start("cmd.exe /c start /b ping -n 30 127.0.0.1");
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
+        p.survey_survivors();
+        let names = p.live_survivors();
+        let pids: Vec<u32> = p.survivors.iter().map(|(pid, _)| *pid).collect();
+        assert!(names.iter().any(|n| n.eq_ignore_ascii_case("ping")), "{names:?} {:?}", p.survivors);
+        // Only what this test started is stopped.
+        for pid in pids {
+            let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).output();
+        }
+        let end = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < end && !p.live_survivors().is_empty() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(p.live_survivors().is_empty(), "a stopped program is no survivor");
+    }
+
+    #[test]
+    fn clear_buffer_skips_an_ended_pane() {
+        let mut p = start("cmd.exe /c echo gone");
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
+        p.clear();
+        p.jiggle();
+        assert!(p.error.is_none(), "{:?}", p.error);
     }
 
     #[test]
