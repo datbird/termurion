@@ -63,6 +63,17 @@ pub(super) fn handle(
     }
 }
 
+/// A finished handler's Script Console text and banner. Ruling: "URL Handler Command Failed"
+/// is only for a program that cannot start (`handle`); a non-zero exit is noted in the Script
+/// Console, never a banner (explorer.exe exits 1 after handing a URL off).
+fn finished(d: &HandlerDone) -> (String, Option<&'static str>) {
+    let mut log = d.output.clone();
+    if d.failed {
+        log.push_str("The handler exited with a non-zero status.\n");
+    }
+    (log, None)
+}
+
 /// Output text for the Script Console: controls other than newline and tab are shown as `?`.
 fn clean_output(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).chars().map(|c| if c.is_control() && !matches!(c, '\n' | '\t') { '?' } else { c }).collect()
@@ -165,10 +176,11 @@ impl App {
         }
         let stamp = self.history_stamp();
         for d in done {
-            self.script_history.add_log(&d.id, &d.output, &stamp);
+            let (log, banner) = finished(&d);
+            self.script_history.add_log(&d.id, &log, &stamp);
             self.script_history.stop(&d.id);
-            if d.failed {
-                self.banners.set("action", HANDLER_FAILED);
+            if let Some(b) = banner {
+                self.banners.set("action", b);
             }
         }
         self.redraw();
@@ -258,6 +270,16 @@ mod tests {
             assert!(calls.is_empty(), "{t}");
             assert_eq!(r, Err(semantic::Refusal::VariableInProgram.text().to_string()), "{t}");
         }
+    }
+
+    /// Ruling: the failure banner is only for a program that cannot start; a handler that
+    /// started and exits non-zero (explorer.exe exits 1 after handing a URL off) shows none, and
+    /// its Script Console entry says how it ended.
+    #[test]
+    fn a_nonzero_exit_is_not_a_failure_banner() {
+        let done = |failed| HandlerDone { id: "url-handler-0".into(), output: "out\n".into(), failed };
+        assert_eq!(finished(&done(true)), ("out\nThe handler exited with a non-zero status.\n".to_string(), None));
+        assert_eq!(finished(&done(false)), ("out\n".to_string(), None));
     }
 
     #[test]
