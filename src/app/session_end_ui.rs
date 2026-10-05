@@ -80,12 +80,11 @@ impl App {
     pub(super) fn session_exited(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
         let Some(p) = self.panes.get_mut(&id) else { return };
         let tmux = p.tmux_io().is_some();
-        // The pid is reusable from now on: the watcher forgets it, and what the shell left
-        // running is surveyed once (B7).
+        // The pid is reusable from now on: the watcher forgets it (B7; the survivors were
+        // surveyed when the exit was seen).
         if let Some(pid) = p.exit_pid() {
             self.jobs.forget(pid);
         }
-        p.survey_survivors();
         p.inline_paused_off();
         // Everything bound to the program goes; the message below is written to the pane's own
         // screen, never a Filter or Zoom view or a replay frame (B9).

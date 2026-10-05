@@ -878,7 +878,6 @@ impl Screen {
         self.push_width_rule();
     }
 
-    /// Whether the profile makes ambiguous-width characters two cells.
     /// The cells `text` takes under this screen's width rule (the profile's Ambiguous Double
     /// Width, Unicode version and the Advanced switches), as the grid draws it.
     pub(crate) fn text_width(&self, text: &str) -> usize {
@@ -888,6 +887,7 @@ impl Screen {
         }
     }
 
+    /// Whether the profile makes ambiguous-width characters two cells.
     pub fn ambiguous_wide(&self) -> bool {
         self.look.ambiguous_wide
     }

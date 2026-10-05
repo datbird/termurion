@@ -115,6 +115,18 @@ impl TmuxIo {
     }
 }
 
+// Test-only: how many times this thread reached a pty (a write, a resize or a clear), so a
+// test can prove an ended pane touches its dead console never (13q B8).
+#[cfg(test)]
+thread_local! {
+    pub static PTY_TOUCHES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn touched() {
+    PTY_TOUCHES.with(|c| c.set(c.get() + 1));
+}
+
 impl Io {
     pub fn try_read(&self) -> Read {
         match self {
@@ -128,6 +140,8 @@ impl Io {
     }
 
     pub fn write(&self, bytes: &[u8]) -> Result<(), String> {
+        #[cfg(test)]
+        touched();
         match self {
             Io::Local(p) => p.write(bytes),
             Io::Hosted(p) => p.write(bytes),
@@ -139,6 +153,8 @@ impl Io {
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
+        #[cfg(test)]
+        touched();
         match self {
             Io::Local(p) => p.resize(cols, rows),
             Io::Hosted(p) => p.resize(cols, rows),
@@ -148,6 +164,8 @@ impl Io {
     }
 
     pub fn clear(&self) -> Result<(), String> {
+        #[cfg(test)]
+        touched();
         match self {
             Io::Local(p) => p.clear(),
             Io::Hosted(p) => p.clear(),
@@ -600,6 +618,9 @@ impl Pane {
                 self.exited = Some(code);
                 self.exit_pid = pty.pid();
                 self.exit_seen = Some(Instant::now());
+                // What the shell left running is taken now, not when the end is handled: a close or
+                // a restart inside the drain wait must still count it (13q B7).
+                self.survey_survivors();
                 changed = true;
             }
         }
@@ -3473,12 +3494,17 @@ mod tests {
         assert!(new.screen.pty_backed);
     }
 
+    fn touches() -> u32 {
+        PTY_TOUCHES.with(|c| c.get())
+    }
+
     #[test]
     fn ended_pane_takes_no_input() {
         let mut p = start("cmd.exe /c exit 0");
         assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
         // Buffer Input holds what is typed: an ended pane holds nothing.
         p.buffer.on = true;
+        let before = touches();
         p.input(b"x");
         p.paste("y");
         p.reply(b"z");
@@ -3487,9 +3513,17 @@ mod tests {
         p.write_unless_held(b"u");
         p.write_session(b"t");
         p.live_input(b"s");
+        p.buffer.on = false;
+        p.input(b"r");
+        // The routes of a trigger's Send Text, a broadcast, the API's text, a report and the
+        // composer all end in these.
+        p.own_mut().feed(b"\x1b[?1000h\x1b[?1006h");
+        p.reply(b"\x1b[<0;1;1M");
+        p.send_routed(b"q");
         assert!(p.error.is_none(), "{:?}", p.error);
         assert!(p.ssh_held.is_empty(), "nothing queues for a dead console");
         assert!(p.buffer.release().is_empty());
+        assert_eq!(touches(), before, "no byte reaches a dead console");
     }
 
     #[test]
@@ -3525,9 +3559,27 @@ mod tests {
     fn clear_buffer_skips_an_ended_pane() {
         let mut p = start("cmd.exe /c echo gone");
         assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
+        let before = touches();
         p.clear();
         p.jiggle();
         assert!(p.error.is_none(), "{:?}", p.error);
+        assert_eq!(touches(), before, "Clear Buffer's resize and clear never reach a dead console");
+    }
+
+    #[test]
+    fn survivors_are_taken_at_the_exit() {
+        // A close or restart before the end is handled (the drain wait) still sees what the
+        // shell left running; so does the pid kept for the job watcher.
+        let mut p = start("cmd.exe /c start /b ping -n 30 127.0.0.1");
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
+        assert!(!p.ended, "the end is not handled yet");
+        let names = p.live_survivors();
+        let pids: Vec<u32> = p.survivors.iter().map(|(pid, _)| *pid).collect();
+        assert!(names.iter().any(|n| n.eq_ignore_ascii_case("ping")), "{names:?} {:?}", p.survivors);
+        assert!(p.exit_pid().is_some());
+        for pid in pids {
+            let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).output();
+        }
     }
 
     #[test]

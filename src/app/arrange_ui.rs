@@ -615,7 +615,7 @@ impl App {
                 self.bars.remove(&id);
                 self.forget_scrollbar(id);
                 if let Some(p) = self.panes.remove(&id) {
-                    if let Some(pid) = p.shell_pid() {
+                    if let Some(pid) = p.shell_pid().or(p.exit_pid()) {
                         self.jobs.forget(pid);
                     }
                     self.ssh_pane_dropped(&p);
