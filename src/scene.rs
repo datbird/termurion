@@ -177,6 +177,9 @@ pub fn rgba(c: Rgb, a: f32) -> [f32; 4] {
     [srgb_to_linear(c.r), srgb_to_linear(c.g), srgb_to_linear(c.b), a]
 }
 
+/// iTerm2 draws no cursor at or below this alpha (`iTermTextDrawingHelper.m:3899-3913`).
+const CURSOR_MIN_ALPHA: f32 = 0.001;
+
 struct CellLook {
     text: String,
     fg: Rgb,
@@ -370,7 +373,7 @@ pub fn pane_with(
     let (cols, lines) = (term.columns(), term.screen_lines());
     let content = term.renderable_content();
     // Cursor Hidden When Unfocused (`iTermTextDrawingHelper.m:4254-4256`).
-    let cursor = cursor_cell(screen).filter(|_| look.visible && !(look.hide_unfocused && !focused)).map(|(row, col, _)| (row, col));
+    let cursor = cursor_cell(screen).filter(|_| look.visible && look.alpha > CURSOR_MIN_ALPHA && !(look.hide_unfocused && !focused)).map(|(row, col, _)| (row, col));
     let wide_cursor = cursor_cell(screen).is_some_and(|(_, _, w)| w);
     let key_cursor = highlights.is_some_and(|h| h.key_cursor);
     let bg_brightness = crate::tab_theme::perceived(palette.bg);
@@ -422,7 +425,8 @@ pub fn pane_with(
         }
         if block_cursor && cursor == Some((row, col)) {
             // The cursor box is its own quad (after the background runs); the text takes its color.
-            fg = palette.cursor_text;
+            // A fading cursor (smooth blink) takes the text color part of the way.
+            fg = if look.alpha < 1.0 { blend(fg, palette.cursor_text, look.alpha) } else { palette.cursor_text };
         }
         if let Some(t) = c.image() {
             if let Some(img) = screen.images.by_id.get(&t.image) {
@@ -476,7 +480,7 @@ pub fn pane_with(
         if block_cursor && cursor.is_some_and(|(r, _)| r == row) {
             let (_, col) = cursor.unwrap();
             let r = box_rect(&look.geometry, (rect.x, rect.y), cell, row, col, wide_cursor);
-            frame.quads.push(Quad { rect: r, color: rgba(palette.cursor, 1.0) });
+            frame.quads.push(Quad { rect: r, color: rgba(palette.cursor, look.alpha) });
         }
         // Text pieces. An ASCII run shares one piece. Any other character gets its own
         // piece at its cell's x, because fallback fonts (CJK, emoji) are not monospace
@@ -587,7 +591,7 @@ pub fn pane_with(
         let origin = (rect.x, rect.y);
         let r = box_rect(&look.geometry, origin, cell, row, col, wide_cursor);
         let solid = cursor_rect(&look.geometry, content.cursor.shape, origin, cell, row, col, wide_cursor);
-        let color = rgba(palette.cursor, 1.0);
+        let color = rgba(palette.cursor, look.alpha);
         match content.cursor.shape {
             CursorShape::Beam | CursorShape::Underline => frame.overlay.push(Quad { rect: solid, color }),
             _ if !block_cursor => {
@@ -597,7 +601,7 @@ pub fn pane_with(
                     Rect { w: 1.0, ..r },
                     Rect { x: r.x + r.w - 1.0, w: 1.0, ..r },
                 ] {
-                    frame.overlay.push(Quad { rect: edge, color });
+                    frame.overlay.push(Quad { rect: edge, color: rgba(palette.cursor, 1.0) });
                 }
             }
             _ => {}
@@ -4232,6 +4236,29 @@ mod tests {
         assert!(f.quads.iter().any(|q| q.color == cursor && q.rect == Rect { x: 10.0, y: 2.0, w: 10.0, h: 16.0 }), "{:?}", &f.quads[..3]);
         let b = f.rows[0].spans.iter().find(|sp| sp.text == "b").unwrap();
         assert_eq!(b.color, s.palette.cursor_text, "the text takes cursor_text");
+    }
+
+    #[test]
+    fn smooth_blink_fades_the_cursor() {
+        // A block at alpha 0.5: the quad is half opaque and the text is halfway to cursor_text.
+        let s = screen(b"ab\x1b[1;2H");
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook { alpha: 0.5, ..CursorLook::shown(true) });
+        assert!(f.quads.iter().any(|q| q.color == rgba(s.palette.cursor, 0.5) && q.rect.x == 10.0), "{:?}", f.quads);
+        let b = f.rows[0].spans.iter().find(|sp| sp.text == "b").unwrap();
+        assert_eq!(b.color, blend(s.palette.fg, s.palette.cursor_text, 0.5));
+        // A beam at alpha 0.5 is a half opaque quad.
+        let s = screen(b"ab\x1b[6 q\x1b[1;2H");
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook { alpha: 0.5, ..CursorLook::shown(true) });
+        assert!(f.overlay.iter().any(|q| q.color == rgba(s.palette.cursor, 0.5)), "{:?}", f.overlay);
+        // At 0.001 and below iTerm2 draws no cursor: no quad, and the text keeps its own color.
+        let s = screen(b"ab\x1b[1;2H");
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook { alpha: 0.0005, ..CursorLook::shown(true) });
+        let c = rgba(s.palette.cursor, 1.0)[..3].to_vec();
+        assert!(!f.quads.iter().chain(f.overlay.iter()).any(|q| q.color[..3] == c[..]), "{:?}", f.quads);
+        assert!(f.rows[0].spans.iter().all(|sp| sp.color == s.palette.fg), "{:?}", f.rows[0].spans);
     }
 
     #[test]
