@@ -837,6 +837,20 @@ mod tests {
         assert!(s.contains("scroll_ticks.insert(") && s.contains("ShowLocationsInScrollbar") && s.contains("ShowMarksInScrollbar"), "{s}");
     }
 
+    /// 13m Task 9 App side: the Adjacent column is the rect between the text and the bar, the
+    /// timestamps draw into it, and a toggle (or a profile's style) relays out at once.
+    #[test]
+    fn adjacent_timestamps_are_wired_through_the_pane_room() {
+        let view = include_str!("view_ui.rs");
+        let extras = body(view, "draw_view_extras");
+        assert!(extras.contains("self.stamp_column(id, rect)") && !extras.contains("cell, None,"), "{extras}");
+        let toggle = body(view, "run_view_command");
+        assert!(toggle.contains("self.relayout()"), "the grid narrows and widens at once: {toggle}");
+        assert!(body(view, "stamp_room").contains("stamps::room("));
+        assert!(body(MOD, "build_frame").contains("stamp_column("), "the column is filled with the pane color");
+        assert!(!include_str!("../commands.rs").split("\n#[cfg(test)]").next().unwrap().contains("(\"toggleShowTimestamps:\", \"Next to contents"));
+    }
+
     /// Review Focus 2: every pointer-to-cell path goes through `cell_at`, which maps the visual
     /// cell to the logical one (and turns the cell's halves over in a right-to-left run); the
     /// copy-mode cursor and the IME caret draw through the same order.

@@ -5059,6 +5059,19 @@ mod tests {
         assert!(at(&f.underlines, 0.0) && at(&f.strikes, 0.0));
     }
 
+    /// Phase B (preflight T2 -> T7): a line-style mark takes the pane's text rect, so it stops
+    /// at the text's last column and never runs under the scrollbar strip or the stamp column.
+    #[test]
+    fn line_marks_stay_in_the_text_rect() {
+        let text = Rect { x: 5.0, y: 2.0, w: 800.0 - 10.0 - 15.0, h: 480.0 };
+        let mut f = Frame::default();
+        line_mark(&mut f, text, 3, CELL, rgb(1, 2, 3), false, 77);
+        let q = f.overlay[0].rect;
+        assert_eq!((q.x, q.y, q.h), (5.0, (2.0 + 2.5 * 20.0f32).round(), 1.0));
+        assert!(q.x + q.w <= text.x + text.w, "{q:?} ends inside the text rect");
+        assert_eq!(q.w, 770.0);
+    }
+
     /// Phase B: underline, strikethrough and OSC 8 runs on a right-to-left row sit under the
     /// cells where they draw (the display order), and a logical run that is not contiguous on
     /// screen is several runs.

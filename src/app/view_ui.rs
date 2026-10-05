@@ -19,6 +19,8 @@ impl App {
             "toggleShowTimestamps:" => {
                 let on = !self.stamps_on(id);
                 self.show_stamps.insert(id, on);
+                // An Adjacent column takes room or gives it back: the pty and tmux follow now.
+                self.relayout();
             }
             "toggleCursorGuide:" => {
                 let on = !self.guide_on(id);
