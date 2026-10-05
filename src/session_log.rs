@@ -928,48 +928,22 @@ pub fn is_network_log_path(path: &Path) -> bool {
     crate::start_dir::network_value("Log Directory", &path.to_string_lossy())
 }
 
-/// A folder template with its path backslashes kept: the interpolation reads `\t` as a tab and
-/// `\\` as one backslash, which would turn `C:\temp` into a tab and `\\host` into `\host`. Only
-/// the `\(` that opens an expression stays an escape; a backslash anywhere else is a path
-/// separator. The text inside an expression is not touched.
-fn literal_backslashes(template: &str) -> String {
-    let chars: Vec<char> = template.chars().collect();
-    let mut out = String::with_capacity(template.len() + 8);
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] != '\\' {
-            out.push(chars[i]);
-            i += 1;
-        } else if chars.get(i + 1) == Some(&'(') {
-            // Copy `\(` through its matching `)`; a quoted string inside may hold a `)`.
-            let (mut depth, mut quoted, mut j) = (0usize, false, i + 1);
-            while j < chars.len() {
-                let c = chars[j];
-                if quoted {
-                    if c == '\\' {
-                        j += 1;
-                    } else if c == '"' {
-                        quoted = false;
-                    }
-                } else if c == '"' {
-                    quoted = true;
-                } else if c == '(' {
-                    depth += 1;
-                } else if c == ')' {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                j += 1;
-            }
-            let end = (j + 1).min(chars.len());
-            out.extend(&chars[i..end]);
-            i = end;
-        } else {
-            out.push_str("\\\\");
-            i += 1;
-        }
+/// The values Tandem itself sets for a log name (the profile's name, the creation time and the
+/// ids): they keep their dots. Every other variable is set by a program (the title, OSC 7, user
+/// variables, a job name) and loses them.
+const OWN_VALUES: [&str; 5] = ["creationTimeString", "profileName", "termid", "iterm2.pid", "autoLogId"];
+
+/// A substituted value as one path segment (13p B4, applied to the write): separators, drive
+/// colons and controls become "_", so do the dots of a program's value (it can add no
+/// extension) and the leading or doubled dots of Tandem's own, so the value can neither move the
+/// folder nor name a parent.
+fn path_segment(value: &str, keep_dots: bool) -> String {
+    let mut out: String = value.chars().map(|c| if matches!(c, '/' | '\\' | ':') || c.is_control() || (c == '.' && !keep_dots) { '_' } else { c }).collect();
+    while out.contains("..") {
+        out = out.replace("..", "__");
+    }
+    if out.starts_with('.') {
+        out.replace_range(..1, "_");
     }
     out
 }
@@ -981,14 +955,16 @@ fn literal_backslashes(template: &str) -> String {
 /// joined to Tandem's working folder).
 pub fn auto_log_path(raw_dir: &str, name_template: &str, lookup: &dyn Fn(&str) -> Option<String>, home: &Path) -> Result<PathBuf, String> {
     // An unclosed `\(` evaluates as text; the person is told instead.
-    let dir_template = literal_backslashes(raw_dir);
-    crate::interp::check(&dir_template)?;
+    crate::interp::check(raw_dir)?;
     crate::interp::check(name_template)?;
-    let dir = crate::interp::evaluate(&dir_template, lookup, &[])?;
-    let name = crate::interp::evaluate(name_template, lookup, &[])?;
-    let joined = join_log_path(&dir, &name, home);
-    // A share is the person's only when the template names it in plain text.
+    // Every substituted value is one path segment, whoever set it.
+    let segment = |n: &str| lookup(n).map(|v| path_segment(&v, OWN_VALUES.contains(&n.strip_prefix("session.").unwrap_or(n))));
+    // A share is the person's only when the template names it in plain text, and then it is
+    // used as written (the parser would read the `\\` of `\\host` as an escape).
     let typed = !raw_dir.contains("\\(") && crate::start_dir::network_folder(raw_dir);
+    let dir = if typed { raw_dir.to_string() } else { crate::interp::evaluate(raw_dir, &segment, &[])? };
+    let name = crate::interp::evaluate(name_template, &segment, &[])?;
+    let joined = join_log_path(&dir, &name, home);
     if is_network_log_path(&joined) && !typed {
         return Err("the log folder is a network path".to_string());
     }
@@ -1442,13 +1418,15 @@ mod tests {
         let home = Path::new(r"C:\Users\u");
         let name = "\\(creationTimeString).\\(profileName).\\(termid).\\(iterm2.pid).\\(autoLogId).log";
         assert_eq!(auto_log_path("", name, &look, home).unwrap(), PathBuf::from(r"C:\Users\u\20260927_150405.Default.w0t0p0.3.1234.42.log"));
-        assert_eq!(auto_log_path("~\\logs\\\\(profileName)", name, &look, home).unwrap(), PathBuf::from(r"C:\Users\u\logs\Default\20260927_150405.Default.w0t0p0.3.1234.42.log"));
-        // A Windows folder keeps its backslashes: `\t` is not a tab and `\\host` stays a share.
-        assert_eq!(auto_log_path("C:\\temp\\new", "a.log", &look, home).unwrap(), PathBuf::from(r"C:\temp\new\a.log"));
-        assert_eq!(literal_backslashes("a\\b\\(x ?? \"q\\)\")\\c"), "a\\\\b\\(x ?? \"q\\)\")\\\\c");
+        // One parser, as iTerm2 and 13p's working directory read it: `\\` is an escaped backslash
+        // (so `\\(x)` is literal text) and the working Windows forms are `\\\(` or `/` before `\(`.
+        assert_eq!(auto_log_path("~\\logs\\\\\\(profileName)", name, &look, home).unwrap(), PathBuf::from(r"C:\Users\u\logs\Default\20260927_150405.Default.w0t0p0.3.1234.42.log"));
+        assert_eq!(auto_log_path("~/logs/\\(profileName)", name, &look, home).unwrap(), PathBuf::from(r"C:\Users\u\logs\Default\20260927_150405.Default.w0t0p0.3.1234.42.log"));
+        assert_eq!(auto_log_path("D:\\w\\\\(profileName)", "a.log", &look, home).unwrap(), PathBuf::from(r"D:\w\(profileName)\a.log"), "`\\\\(` is a literal, as for a working directory");
         // A name that evaluates to "a/b" is "a__b" (`PSA:160-166`).
         let slash = [("x", "a/b")];
-        assert_eq!(auto_log_path("", "\\(x)", &lookup_for(&slash), home).unwrap(), PathBuf::from(r"C:\Users\u\a__b"));
+        assert_eq!(auto_log_path("", "\\(x)", &lookup_for(&slash), home).unwrap(), PathBuf::from(r"C:\Users\u\a_b"), "a program's value is one segment");
+        assert_eq!(auto_log_path("", "a/b.log", &lookup_for(&[]), home).unwrap(), PathBuf::from(r"C:\Users\u\a__b.log"), "the template's own slash is iTerm2's");
         // An unclosed interpolation is an error the person reads.
         assert!(auto_log_path("", "\\(creationTimeString", &look, home).is_err());
         let when = Parts { year: 2026, month: 9, day: 27, weekday: 0, hour: 15, minute: 4, second: 5 };
@@ -1481,6 +1459,25 @@ mod tests {
         assert!(auto_log_path("D:logs", "a.log", &lookup_for(&[]), home).is_err());
         assert!(!is_network_log_path(Path::new(r"D:\logs\a.log")));
         assert!(is_network_log_path(Path::new(" \\\\host\\share\\a.log")));
+    }
+
+    /// A value a program can set is one path segment: it can never move the folder or add an
+    /// extension (13p B4's rule, applied to the write).
+    #[test]
+    fn program_set_values_are_one_path_segment() {
+        let home = Path::new(r"C:\Users\u");
+        for (value, segment) in [("..\\..\\x", "______x"), ("C:\\Windows", "C__Windows"), ("/x", "_x"), (".hidden", "_hidden"), ("a/../b", "a____b")] {
+            let pairs = [("session.name", value)];
+            let p = auto_log_path("D:/logs/\\(session.name)", "a.log", &lookup_for(&pairs), home).unwrap();
+            assert_eq!(p, PathBuf::from("D:/logs").join(segment).join("a.log"), "{value:?}");
+        }
+        let pairs = [("session.name", "x.bat")];
+        let p = auto_log_path("D:/logs", "\\(session.name)", &lookup_for(&pairs), home).unwrap();
+        assert!(p.extension().is_none_or(|e| !e.eq_ignore_ascii_case("bat")), "{p:?}");
+        // What Tandem itself sets keeps its dots (`termid` is "w0t0p0.3").
+        let pairs = [("termid", "w0t0p0.3"), ("profileName", "A/B")];
+        let p = auto_log_path("D:/logs", "\\(termid).\\(profileName).log", &lookup_for(&pairs), home).unwrap();
+        assert_eq!(p, PathBuf::from("D:/logs").join("w0t0p0.3.A_B.log"));
     }
 
     #[test]
