@@ -387,6 +387,9 @@ pub struct Term<T> {
     /// after a resize; a reset (RIS, DECRST) clears it.
     pub resize_reports: bool,
 
+    /// Tandem patch: how many times RIS has run, for a holder that must react to a reset.
+    pub resets: u64,
+
     /// Tandem patch: a tab at the last column wraps to the next line (iTerm2's tabsWrapAround).
     pub tabs_wrap: bool,
 
@@ -551,6 +554,7 @@ impl<T> Term<T> {
             color_report_16: true,
             focus_reporting_allowed: true,
             resize_reports: false,
+            resets: 0,
             tabs_wrap: false,
             max_url_len: 2_097_152,
             alt_scrollback: true,
@@ -2368,6 +2372,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.title = None;
         // Tandem patch: RIS turns DEC mode 2048 off.
         self.resize_reports = false;
+        self.resets += 1;
         self.selection = None;
         self.vi_mode_cursor = Default::default();
         self.keyboard_mode_stack = Default::default();

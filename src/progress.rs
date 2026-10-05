@@ -489,4 +489,25 @@ mod tests {
         s.feed(b"\x1b]9;4;3\x07\x1b]9;4;\x07");
         assert_eq!(s.progress, Progress::Indeterminate);
     }
+
+    /// RIS stops the bar (`terminalDidReset`, `VT100ScreenMutableState+TerminalDelegate.m:903-906`):
+    /// a program that died with a bar up and a `reset` leaves none. A bar set after the reset in the
+    /// same chunk stays.
+    #[test]
+    fn ris_stops_the_bar() {
+        use crate::screen::{Request, Screen};
+        let mut s = Screen::new(40, 4);
+        let progress = |s: &mut Screen| s.take_requests().into_iter().filter_map(|r| if let Request::Progress(b) = r { Some(b) } else { None }).collect::<Vec<_>>();
+        s.feed(b"\x1b]9;4;3\x07\x1bc");
+        assert_eq!(s.progress, Progress::Stopped);
+        assert_eq!(progress(&mut s), vec![true, false], "the bar appeared, then went away");
+        s.feed(b"\x1b]9;4;3\x07");
+        s.feed(b"\x1bc\x1b]9;4;1;30\x07");
+        assert_eq!(s.progress, Progress::Success(30), "set after the reset");
+        // A reset with no bar says nothing.
+        s.feed(b"\x1b]9;4\x07");
+        progress(&mut s);
+        s.feed(b"\x1bc");
+        assert!(progress(&mut s).is_empty());
+    }
 }

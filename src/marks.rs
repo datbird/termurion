@@ -896,6 +896,18 @@ impl Screen {
 
     /// Acts on one shell-integration OSC at the current cursor position. A full-screen app
     /// on the alternate screen makes no marks; its cursor is not on the main screen.
+    /// Sets the progress bar's state; the request and the event follow a change of whether it
+    /// shows (`PTYSession.m:24278-24279`).
+    pub(crate) fn set_progress(&mut self, next: crate::progress::Progress) {
+        let (was, shown) = (self.progress.visible(), next.visible());
+        self.progress = next;
+        if shown != was {
+            self.requests.push(crate::screen::Request::Progress(shown));
+            let word = if shown { "appeared" } else { "disappeared" };
+            self.fire_event(crate::trigger_events::EventKind::ProgressBarChanged, &crate::trigger_events::EventFacts { appeared: shown, ..Default::default() }, &[word.to_string()]);
+        }
+    }
+
     pub(crate) fn apply(&mut self, osc: Osc) {
         // A print job drops sequences; a prompt mark or a command end ends it unprinted (B8).
         if self.print_capture.is_some() {
@@ -1139,13 +1151,7 @@ impl Screen {
                 // 9;4 reads as iTerm2 does (`TDEL:1607-1660`): a bare 9;4 stops, a bad or
                 // out-of-range field is ignored. The event fires when the bar appears or goes.
                 if let Some(next) = crate::progress::parse(body.as_deref(), self.progress) {
-                    let (was, shown) = (self.progress.visible(), next.visible());
-                    self.progress = next;
-                    if shown != was {
-                        self.requests.push(crate::screen::Request::Progress(shown));
-                        let word = if shown { "appeared" } else { "disappeared" };
-                        self.fire_event(crate::trigger_events::EventKind::ProgressBarChanged, &crate::trigger_events::EventFacts { appeared: shown, ..Default::default() }, &[word.to_string()]);
-                    }
+                    self.set_progress(next);
                 }
             }
             Osc::Sixel(data) => self.sixel(&data),

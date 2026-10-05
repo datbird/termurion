@@ -318,6 +318,8 @@ pub struct Screen {
     pub bell_count: u64,
     /// What OSC 9;4 last reported (`VT100ScreenProgress`).
     pub progress: crate::progress::Progress,
+    /// `Term::resets` as last looked at.
+    resets_seen: u64,
     /// When output last arrived (Idle and Activity After Idle event triggers).
     pub last_output: Option<std::time::Instant>,
     /// Variables the window owns, for interpolated strings (`session.name`, `tab.title`).
@@ -621,6 +623,7 @@ impl Screen {
             app_vars: std::collections::HashMap::new(),
             bell_count: 0,
             progress: crate::progress::Progress::Stopped,
+            resets_seen: 0,
             last_output: None,
             next_porthole: 0,
             porthole_wide_default: false,
@@ -1921,6 +1924,11 @@ impl Screen {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32)
         });
         self.parser.advance(&mut self.term, bytes);
+        // RIS stops the progress bar (`terminalDidReset`).
+        if self.term.resets != self.resets_seen {
+            self.resets_seen = self.term.resets;
+            self.set_progress(crate::progress::Progress::Stopped);
+        }
         let splices = self.term.take_history_splices();
         let mut after: usize = splices.iter().map(|(_, by)| *by).sum();
         for (below, by) in splices {
