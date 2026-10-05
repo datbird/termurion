@@ -623,4 +623,21 @@ mod tests {
         let got = from_plist_bytes(plist.as_bytes()).unwrap();
         assert_eq!((got[0].string("Working Directory"), got[0].string("AWDS Window Directory")), (String::new(), String::new()));
     }
+
+    /// Task 4 ruling: the same for every path key, in both import formats.
+    #[test]
+    fn imported_profiles_lose_every_network_path() {
+        let json = r#"{"Profiles":[{"Name":"X","Guid":"g","Log Directory":"\\\\evil\\logs","Archive Directory":" //evil/a","Custom Icon Path":"\\\\evil\\i.png","Background Image Location":"\\\\evil\\b.png","Background Image Folder Location":"//evil/pics","SSH":{"pathToSSH":"\\\\evil\\ssh.exe","filesToCopy":[["\\\\evil\\k","~"],["D:\\ok","~"]]}}]}"#;
+        let got = from_dynamic_json(json).unwrap();
+        for k in ["Log Directory", "Archive Directory", "Custom Icon Path", "Background Image Location", "Background Image Folder Location"] {
+            assert_eq!(got[0].string(k), "", "{k}");
+        }
+        let ssh = crate::ssh_config::from_profile(&got[0]);
+        assert_eq!((ssh.path_to_ssh, ssh.files_to_copy), (None, vec![("D:\\ok".to_string(), "~".to_string())]));
+        let plist = r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>New Bookmarks</key><array><dict>
+<key>Name</key><string>P</string><key>Guid</key><string>g2</string>
+<key>Log Directory</key><string>\\evil\logs</string><key>Custom Icon Path</key><string>D:\i.png</string></dict></array></dict></plist>"#;
+        let got = from_plist_bytes(plist.as_bytes()).unwrap();
+        assert_eq!((got[0].string("Log Directory"), got[0].string("Custom Icon Path")), (String::new(), "D:\\i.png".to_string()));
+    }
 }

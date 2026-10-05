@@ -768,4 +768,21 @@ mod tests {
         assert_eq!(store.profiles[0].string("AWDS Tab Directory"), "D:\\ok");
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    /// Task 4 ruling: and no network log, archive, icon or background image path either.
+    #[test]
+    fn a_loaded_snapshot_loses_every_network_path() {
+        let dir = std::env::temp_dir().join(format!("tandem-prefs-unc2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut g, mut store) = local(&dir, "x");
+        let keys = ["Log Directory", "Archive Directory", "Custom Icon Path", "Background Image Location", "Background Image Folder Location"];
+        let mut pairs = vec![("Guid", Value::String("g1".into())), ("Name", Value::String("R".into()))];
+        pairs.extend(keys.iter().map(|k| (*k, Value::String("\t\\\\evil\\share".into()))));
+        let snap = Snapshot { settings: map(&[]), default: "g1".into(), profiles: vec![map(&pairs)] };
+        apply_snapshot(&snap, &mut g, &mut store);
+        for k in keys {
+            assert_eq!(store.profiles[0].string(k), "", "{k}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

@@ -612,7 +612,7 @@ pub fn trust_text(name: &str, windows: &[Value]) -> String {
                 }
                 let mut shown = prof.clone();
                 if !without_network_folders(&mut shown).is_empty() {
-                    lines.push(format!("Profile \u{201c}{pname}\u{201d} names a network folder to start in; Tandem ignores it and starts in your home folder."));
+                    lines.push(format!("Profile \u{201c}{pname}\u{201d} names a network path (a folder, icon, image or ssh file); Tandem ignores it."));
                 }
                 if prof.get("Triggers").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty()) {
                     lines.push(format!("Profile \u{201c}{pname}\u{201d} has triggers."));
@@ -628,17 +628,17 @@ pub fn trust_text(name: &str, windows: &[Value]) -> String {
     lines.join("\n")
 }
 
-pub use crate::start_dir::FOLDER_KEYS;
+pub use crate::start_dir::PATH_KEYS;
 
-/// Empties every start folder of an arrangement's embedded profile that names a network or
-/// device path (`\\host`, `//host`, `\\?\`), however it is padded: `CreateProcessW` connects to
-/// the host at process start, so a file from elsewhere could make the person's PC authenticate
-/// to it. The profile the person typed themselves keeps its UNC folder; one from a file never
-/// does (`start_dir::scrub_value` is the one filter every such ingress uses). Returns the keys
-/// emptied.
+/// Empties every path of an arrangement's embedded profile that names a network or device path
+/// (`\\host`, `//host`, `\\?\`), however it is padded, and drops such a program or file from
+/// its SSH dictionary: Windows connects to the host, so a file from elsewhere could make the
+/// person's PC authenticate to it. The profile the person typed themselves keeps its UNC path;
+/// one from a file never does (`start_dir::scrub_value` is the one filter every such ingress
+/// uses). Returns the keys changed.
 pub fn without_network_folders(copy: &mut Table) -> Vec<String> {
     let mut gone = Vec::new();
-    for key in FOLDER_KEYS {
+    for key in crate::start_dir::SCRUBBED_KEYS {
         if copy.get_mut(key).is_some_and(|v| crate::start_dir::scrub_value(key, v)) {
             gone.push(key.to_string());
         }
@@ -947,12 +947,24 @@ mod tests {
         assert_eq!(t["Name"].as_str(), Some(r"\\keep"), "only folder keys are looked at");
         // Whitespace or quotes in front do not hide it from the filter (`resolve` trims first).
         for (i, v) in [" \\\\evil\\share", "\t//evil/share", "\n\\\\?\\UNC\\evil\\s", "\"\\\\evil\\share\""].into_iter().enumerate() {
-            let key = FOLDER_KEYS[i];
+            let key = PATH_KEYS[i];
             let mut t = Table::new();
             t.insert(key.into(), Value::String(v.into()));
             assert_eq!(without_network_folders(&mut t), [key], "{v:?}");
             assert_eq!(t[key].as_str(), Some(""));
         }
+        // Every other path key of the embedded profile too (Task 4 ruling), and the SSH files.
+        let mut t = Table::new();
+        for k in ["Log Directory", "Archive Directory", "Custom Icon Path", "Background Image Location", "Background Image Folder Location"] {
+            t.insert(k.into(), Value::String(r"\\evil\s".into()));
+        }
+        let mut ssh = Table::new();
+        ssh.insert("pathToSSH".into(), Value::String(r"\\evil\ssh.exe".into()));
+        t.insert("SSH".into(), Value::Table(ssh));
+        let mut gone = without_network_folders(&mut t);
+        gone.sort();
+        assert_eq!(gone, ["Archive Directory", "Background Image Folder Location", "Background Image Location", "Custom Icon Path", "Log Directory", "SSH"]);
+        assert!(t["SSH"].as_table().unwrap().get("pathToSSH").is_none());
         // A saved arrangement's `~` or interpolated folder stays too.
         let mut t = Table::new();
         t.insert("Working Directory".into(), Value::String(r"~\src".into()));
@@ -965,7 +977,7 @@ mod tests {
         p.insert("Name".into(), Value::String("Ops".into()));
         p.insert("AWDS Tab Directory".into(), Value::String(r"\\evil\share".into()));
         let t = trust_text("x.itermarrangement", &one_window(p));
-        assert!(t.contains("Ops") && t.contains("network folder"), "{t}");
+        assert!(t.contains("Ops") && t.contains("network path"), "{t}");
     }
 
     /// The copy an arrangement's profile becomes is filtered before it can start a session.

@@ -33,8 +33,9 @@ pub fn valid(key: &str, json: &serde_json::Value) -> Option<Value> {
         (Kind::Float, J::Number(n)) => Value::Float(n.as_f64()?),
         // A program may only point the background image at a local file.
         (Kind::String, J::String(t)) if matches!(key, "Background Image Location" | "Background Image Folder Location") && !t.is_empty() && !local_path_ok(t) => return None,
-        // Nor may it start sessions in a network folder: CreateProcessW connects to the host.
-        (Kind::String, J::String(t)) if crate::start_dir::FOLDER_KEYS.contains(&key) && crate::start_dir::network_folder(t) => return None,
+        // Nor may it start sessions in, log to, archive to or read an icon from a network path:
+        // Windows connects to the host.
+        (Kind::String, J::String(t)) if crate::start_dir::PATH_KEYS.contains(&key) && crate::start_dir::network_folder(t) => return None,
         (Kind::String | Kind::Font, J::String(t)) => Value::String(t.clone()),
         (Kind::Enum, J::Number(n)) => {
             let v = Value::Integer(n.as_i64()?);
@@ -583,10 +584,22 @@ mod tests {
         assert_eq!(open_url(&b("ms-settings:privacy")), None);
     }
 
+    /// A program never sets a network log, archive, icon or image path either (Task 4 ruling).
+    #[test]
+    fn a_program_cannot_set_any_network_path() {
+        for key in ["Log Directory", "Archive Directory", "Custom Icon Path", "Background Image Location", "Background Image Folder Location"] {
+            for bad in [" \\\\evil\\share", "//evil/s", "\"\\\\evil\\s\""] {
+                assert_eq!(valid(key, &serde_json::json!(bad)), None, "{key} {bad:?}");
+            }
+        }
+        assert!(valid("Log Directory", &serde_json::json!("D:\\logs")).is_some());
+        assert!(valid("Custom Icon Path", &serde_json::json!("D:\\i.png")).is_some());
+    }
+
     /// A program (OSC 1337 SetProfileProperty) never sets a network start folder.
     #[test]
     fn a_program_cannot_set_a_network_start_folder() {
-        for key in crate::start_dir::FOLDER_KEYS {
+        for key in crate::start_dir::PATH_KEYS {
             for bad in [" \\\\evil\\share", "//evil/s", "\"\\\\evil\\s\""] {
                 assert_eq!(valid(key, &serde_json::json!(bad)), None, "{key} {bad:?}");
             }

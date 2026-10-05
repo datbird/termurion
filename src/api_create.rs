@@ -155,4 +155,16 @@ mod tests {
         assert_eq!(got[1].1, Some(Value::String("D:\\ok".into())));
         assert_eq!(got[2].1, Some(Value::String("//keep".into())));
     }
+
+    /// Task 4 ruling: nor any other path key, nor the SSH dictionary's program and files.
+    #[test]
+    fn custom_values_blank_every_network_path() {
+        let got = custom_values(&[prop("Log Directory", "\"\\\\\\\\evil\\\\l\""), prop("Custom Icon Path", "\"//evil/i.png\""), prop("Archive Directory", "\"D:\\\\ok\""), prop("SSH", "{\"pathToSSH\":\"\\\\\\\\evil\\\\ssh.exe\",\"filesToCopy\":[[\"//evil/k\",\"~\"]]}")]).unwrap();
+        assert_eq!(got[0].1, Some(Value::String(String::new())));
+        assert_eq!(got[1].1, Some(Value::String(String::new())));
+        assert_eq!(got[2].1, Some(Value::String("D:\\ok".into())));
+        let ssh = got[3].1.as_ref().unwrap().as_table().unwrap();
+        assert!(ssh.get("pathToSSH").is_none());
+        assert!(ssh["filesToCopy"].as_array().unwrap().is_empty());
+    }
 }

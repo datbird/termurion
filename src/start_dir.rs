@@ -5,29 +5,75 @@
 use crate::profile::Profile;
 use std::path::{Path, PathBuf};
 
-/// The profile keys holding a start folder (the custom directory and the three Advanced ones).
-pub const FOLDER_KEYS: [&str; 4] = ["Working Directory", "AWDS Window Directory", "AWDS Tab Directory", "AWDS Pane Directory"];
+/// The profile keys holding a path (the custom directory and the three Advanced ones, then the
+/// log and archive folders, the custom icon and the two background image keys).
+pub const PATH_KEYS: [&str; 9] = [
+    "Working Directory",
+    "AWDS Window Directory",
+    "AWDS Tab Directory",
+    "AWDS Pane Directory",
+    "Log Directory",
+    "Archive Directory",
+    "Custom Icon Path",
+    "Background Image Location",
+    "Background Image Folder Location",
+];
 
-/// Whether a stored start folder names a network or device path after the trimming `resolve`
-/// does.
+/// Every key `scrub_value` acts on: the path keys and the SSH dictionary (its program and files).
+pub const SCRUBBED_KEYS: [&str; 10] = [
+    "Working Directory",
+    "AWDS Window Directory",
+    "AWDS Tab Directory",
+    "AWDS Pane Directory",
+    "Log Directory",
+    "Archive Directory",
+    "Custom Icon Path",
+    "Background Image Location",
+    "Background Image Folder Location",
+    crate::ssh_config::KEY,
+];
+
+/// Whether a stored path (a start folder or any other path key) names a network or device path
+/// after the trimming `resolve` does.
 pub fn network_folder(v: &str) -> bool {
     // Whitespace, control characters and quotes around the text are not part of the path the
     // person meant: a leading space must not hide `\\host` from this filter while `resolve` trims it.
     crate::prompted::network_path(v.trim_matches(|c: char| c.is_whitespace() || c.is_control() || c == '"' || c == '\''))
 }
 
-/// Empties `v` (stored under `key`) when it is a start folder naming a network path. True when it did.
+/// Empties `v` (stored under `key`) when it is a path key naming a network or device path; a
+/// network program or file in the SSH dictionary is dropped from it. True when it changed `v`.
+/// The one filter every ingress other than Settings uses: Windows connects to the host (and
+/// offers the person's credentials) when it opens such a path.
 pub fn scrub_value(key: &str, v: &mut toml::Value) -> bool {
-    if FOLDER_KEYS.contains(&key) && v.as_str().is_some_and(network_folder) {
+    if PATH_KEYS.contains(&key) && v.as_str().is_some_and(network_folder) {
         *v = toml::Value::String(String::new());
         return true;
     }
-    false
+    match v.as_table_mut() {
+        Some(t) if key == crate::ssh_config::KEY => scrub_ssh(t),
+        _ => false,
+    }
 }
 
-/// `scrub_value` over every folder key of a profile's values. Answers the keys emptied.
+/// The SSH dictionary's `pathToSSH` (a program) and the source of each `filesToCopy` entry.
+fn scrub_ssh(t: &mut toml::Table) -> bool {
+    let mut changed = false;
+    if t.get("pathToSSH").and_then(toml::Value::as_str).is_some_and(network_folder) {
+        t.remove("pathToSSH");
+        changed = true;
+    }
+    if let Some(files) = t.get_mut("filesToCopy").and_then(toml::Value::as_array_mut) {
+        let before = files.len();
+        files.retain(|e| !e.as_array().and_then(|a| a.first()).and_then(toml::Value::as_str).is_some_and(network_folder));
+        changed |= files.len() != before;
+    }
+    changed
+}
+
+/// `scrub_value` over every key it acts on in a profile's values. Answers the keys changed.
 pub fn scrub_map(values: &mut std::collections::BTreeMap<String, toml::Value>) -> Vec<String> {
-    FOLDER_KEYS.iter().filter(|k| values.get_mut(**k).is_some_and(|v| scrub_value(k, v))).map(|k| k.to_string()).collect()
+    SCRUBBED_KEYS.iter().filter(|k| values.get_mut(**k).is_some_and(|v| scrub_value(k, v))).map(|k| k.to_string()).collect()
 }
 
 /// What the new session is for: a window's first tab, a tab, or a split (`iTermObjectType`).
@@ -331,9 +377,69 @@ mod tests {
         let mut other = toml::Value::String(" \\\\evil\\share".into());
         assert!(!scrub_value("Name", &mut other), "only folder keys");
         assert_eq!(other.as_str(), Some(" \\\\evil\\share"));
-        let mut map: std::collections::BTreeMap<String, toml::Value> = FOLDER_KEYS.iter().map(|k| (k.to_string(), toml::Value::String("\t//evil/s".into()))).collect();
+        let mut map: std::collections::BTreeMap<String, toml::Value> = PATH_KEYS.iter().map(|k| (k.to_string(), toml::Value::String("\t//evil/s".into()))).collect();
         map.insert("Name".into(), toml::Value::String("//keep".into()));
-        assert_eq!(scrub_map(&mut map).len(), 4);
-        assert!(FOLDER_KEYS.iter().all(|k| map[*k].as_str() == Some("")) && map["Name"].as_str() == Some("//keep"));
+        assert_eq!(scrub_map(&mut map).len(), PATH_KEYS.len());
+        assert!(PATH_KEYS.iter().all(|k| map[*k].as_str() == Some("")) && map["Name"].as_str() == Some("//keep"));
+    }
+    /// Task 4 ruling: the one network-path filter covers EVERY path-valued profile key, not only
+    /// the start folders. Any string key named like a path must be listed (a new one fails here).
+    #[test]
+    fn path_keys_cover_every_path_valued_profile_key() {
+        for k in ["Working Directory", "AWDS Window Directory", "AWDS Tab Directory", "AWDS Pane Directory", "Log Directory", "Archive Directory", "Custom Icon Path", "Background Image Location", "Background Image Folder Location"] {
+            assert!(PATH_KEYS.contains(&k), "{k}");
+        }
+        for s in crate::schema::profile() {
+            let named = ["directory", "path", "location", "folder"].iter().any(|w| s.key.to_lowercase().contains(w));
+            if named && s.kind == crate::schema::Kind::String {
+                assert!(PATH_KEYS.contains(&s.key.as_str()), "{} looks like a path and is not filtered", s.key);
+            }
+        }
+    }
+
+    /// Each class of key is emptied by the filter in every network spelling, and keeps a local path.
+    #[test]
+    fn scrub_value_blanks_every_path_class() {
+        let evil = [" \\\\evil\\share\\x", "//evil/s/x.png", "\"\\\\?\\UNC\\evil\\s\"", "\t\\??\\UNC\\evil"];
+        for key in PATH_KEYS {
+            for v in evil {
+                let mut value = toml::Value::String(v.into());
+                assert!(scrub_value(key, &mut value), "{key} {v:?}");
+                assert_eq!(value.as_str(), Some(""), "{key}");
+            }
+            for ok in ["D:\\logs", "~\\logs", "", "relative\\x"] {
+                let mut value = toml::Value::String(ok.into());
+                assert!(!scrub_value(key, &mut value), "{key} {ok:?}");
+                assert_eq!(value.as_str(), Some(ok));
+            }
+        }
+        let mut map: std::collections::BTreeMap<String, toml::Value> = PATH_KEYS.iter().map(|k| (k.to_string(), toml::Value::String("\t//evil/s".into()))).collect();
+        map.insert("Name".into(), toml::Value::String("//keep".into()));
+        assert_eq!(scrub_map(&mut map).len(), PATH_KEYS.len());
+        assert!(PATH_KEYS.iter().all(|k| map[*k].as_str() == Some("")) && map["Name"].as_str() == Some("//keep"));
+    }
+
+    /// The SSH dictionary holds two more paths: the ssh program and the files copied to the
+    /// remote host. A network one is dropped, the rest of the dictionary stays.
+    #[test]
+    fn scrub_value_cleans_the_ssh_dict() {
+        let table = |ssh: &str, files: &[(&str, &str)]| {
+            let mut t = toml::Table::new();
+            t.insert("pathToSSH".into(), toml::Value::String(ssh.into()));
+            t.insert("sshIntegration".into(), toml::Value::Boolean(true));
+            t.insert("filesToCopy".into(), toml::Value::Array(files.iter().map(|(a, b)| toml::Value::Array(vec![toml::Value::String(a.to_string()), toml::Value::String(b.to_string())])).collect()));
+            toml::Value::Table(t)
+        };
+        let mut v = table(" \\\\evil\\s\\ssh.exe", &[("\\\\evil\\s\\key", "~"), ("D:\\a", "~"), ("//evil/x", "~/x")]);
+        assert!(scrub_value(crate::ssh_config::KEY, &mut v));
+        let t = v.as_table().unwrap();
+        assert!(t.get("pathToSSH").is_none(), "a network ssh program is dropped");
+        assert_eq!(t["sshIntegration"].as_bool(), Some(true));
+        let files: Vec<&str> = t["filesToCopy"].as_array().unwrap().iter().map(|e| e.as_array().unwrap()[0].as_str().unwrap()).collect();
+        assert_eq!(files, ["D:\\a"], "only the local file stays");
+        let mut ok = table("C:\\Windows\\System32\\OpenSSH\\ssh.exe", &[("D:\\a", "~")]);
+        assert!(!scrub_value(crate::ssh_config::KEY, &mut ok));
+        assert_eq!(ok.as_table().unwrap()["pathToSSH"].as_str(), Some("C:\\Windows\\System32\\OpenSSH\\ssh.exe"));
+        assert!(SCRUBBED_KEYS.contains(&crate::ssh_config::KEY));
     }
 }
