@@ -134,5 +134,18 @@ test data) is left out. Changes:
 23. `term/cell.rs`: `Cell::push_zerowidth` keeps at most `MAX_ZEROWIDTH` (16) marks per cell; later
     ones are dropped. Without it one `CSI 65535 b` after a combining mark added 65535 marks to a
     cell (REP now repeats the whole cell, in Tandem's `pass`, but any stream of marks was unbounded).
+24. `term/mod.rs`, `grid/mod.rs`: scrollback in the alternate screen (iTerm2's Scrollback in
+    Alternate Screen, on by default; upstream kept none). `Term.alt_scrollback` and
+    `Term::set_alt_scrollback`: the alternate grid's history limit is the main screen's, or 0
+    (`update_history_limits`, also run by `set_options`). Entering the alternate screen clears its
+    history; leaving moves it into the main grid with `Grid::take_history` and
+    `Grid::append_history` (rows go above line 0, oldest first, past the limit they are dropped
+    from the top and counted in `dropped`; `scrolled_off` does not change, so rows on the screen
+    keep their numbers).
+    `Term::scroll_screen_into_history` (iTerm2's `scrollScreenIntoHistory`: the rows through the
+    last non-empty one scroll up into the shown grid's history, whatever the scroll region).
+    `Term.save_screen_on_clear`: ED 0 from the home cell of the alternate screen calls it first
+    (iTerm2's saveScrollBufferWhenClearing; the main screen never does, zsh issue 8822).
+    `Term.printed` counts characters written, for "has the program drawn anything since".
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

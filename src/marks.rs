@@ -131,6 +131,9 @@ pub struct Marks {
     pub(crate) last_command: Option<u32>,
     /// Between 133;B and 133;C.
     in_command: bool,
+    /// After 133;C until the command ends or the next prompt starts: a command runs and its
+    /// output started at `output_start`.
+    running: bool,
     command_start: Option<Anchor>,
     output_start: Option<Anchor>,
     last_output: Option<(Anchor, Anchor)>,
@@ -691,6 +694,45 @@ impl Screen {
         rows.into_iter().filter_map(|(l, id)| Some((l, self.marks.records.get(&id)?.clone()))).collect()
     }
 
+    /// Whether a CUP could be the first draw of a running command: between its prompt's end and
+    /// its output, or after the output started (the scanner holds CUPs only then).
+    pub(crate) fn command_pending(&self) -> bool {
+        self.marks.in_command || self.marks.running
+    }
+
+    /// Whether a command's output has started and the command has not ended.
+    pub(crate) fn command_running(&self) -> bool {
+        self.marks.running
+    }
+
+    /// The row (negative in the scrollback) where the running command's output starts.
+    fn running_output_row(&self) -> Option<i32> {
+        if !self.marks.running {
+            return None;
+        }
+        Some(self.resolve(self.marks.output_start?)?.line.0)
+    }
+
+    /// iTerm2's `saveScreenToScrollbackIfCursorMovedAboveCommandOutput` (`MS+TD:480-521`), run
+    /// after a CUP: a program that repaints from the top without the alternate screen would
+    /// overwrite what the person still sees, so while the running command has printed nothing
+    /// and the cursor went above where its output starts, the screen scrolls into history
+    /// first, as CSI 2 J does.
+    pub(crate) fn cursor_moved_above_output(&mut self) {
+        if !self.rules.save_above_prompt
+            || self.term.mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN)
+            || self.term.printed != self.printed_at_output
+        {
+            return;
+        }
+        let Some(start) = self.running_output_row() else { return };
+        if self.term.grid().cursor.point.line.0 >= start {
+            return;
+        }
+        self.bump_ticks();
+        self.term.scroll_screen_into_history();
+    }
+
     /// The output of the last finished command (Select Output of Last Command), or of the
     /// running one.
     pub fn last_output_range(&self) -> Option<(Point, Point)> {
@@ -764,6 +806,7 @@ impl Screen {
         if !matches!(kind, PromptKind::Initial | PromptKind::Unknown) {
             return;
         }
+        self.marks.running = false;
         // A new prompt ends whatever the last program said it was doing (OSC 21337).
         self.clear_tab_status();
         if fresh_line && self.place_prompt_first_column && !self.pty_backed && self.cursor_point().column.0 > 0 {
@@ -960,6 +1003,9 @@ impl Screen {
                 let p = self.cursor_point();
                 let start_at = if p.column.0 > 0 { Point::new(p.line + 1, Column(0)) } else { Point::new(p.line, Column(0)) };
                 self.marks.output_start = self.anchor_at(cur, start_at);
+                self.marks.running = true;
+                // Nothing this command prints has been seen yet (`appendedTextSinceCommandExecuted`).
+                self.printed_at_output = self.term.printed;
                 let now = SystemTime::now();
                 let output_start = self.marks.output_start;
                 if let Some(m) = self.marks.records.get_mut(&cur) {
@@ -983,6 +1029,7 @@ impl Screen {
             Osc::CommandEnd { code, aid } => {
                 let events = self.prompt_state.d();
                 self.composer_events.extend(events);
+                self.marks.running = false;
                 self.marks.prompt_range = Default::default();
                 self.marks.prompt_anchors = (None, None);
                 if std::mem::take(&mut self.marks.in_command) {

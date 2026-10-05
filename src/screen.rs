@@ -55,6 +55,9 @@ pub struct Look {
     pub csi_u: bool,
     /// The profile's Blink Allowed: text with the blink attribute hides in the off phase.
     pub blink_allowed: bool,
+    /// The profile's Scrollback in Alternate Screen: lines that scroll off the alternate
+    /// screen are kept as history.
+    pub alt_scrollback: bool,
 }
 
 impl Look {
@@ -74,6 +77,7 @@ impl Look {
             app_key_modes: p.bool("Allow modifyOtherKeys"),
             csi_u: p.bool("Use libtickit protocol"),
             blink_allowed: p.bool("Blink Allowed"),
+            alt_scrollback: p.bool("Scrollback in Alternate Screen"),
         }
     }
 }
@@ -290,6 +294,8 @@ pub struct Screen {
     pub(crate) composer_scanned: u64,
     /// The alternate screen was showing at the last check.
     composer_alt: bool,
+    /// `Term::printed` when the running command's output started (`marks.rs`).
+    pub(crate) printed_at_output: u64,
     /// Instant Replay: the rows and cursor of the last capture, so a line Tandem edited
     /// outside alacritty's damage (image tiles, trigger highlights, folds) is still dirty,
     /// and the cursor line alacritty always damages is dirty only when it changed.
@@ -445,6 +451,7 @@ impl Screen {
         let (tx, events) = mpsc::channel();
         let mut term = Term::new(config(look), &GridSize { cols, rows }, Listener(tx));
         term.set_cursor_blink_change(look.blink_change);
+        term.set_alt_scrollback(look.alt_scrollback);
         Self {
             term,
             blink_allowed: look.blink_allowed,
@@ -521,6 +528,7 @@ impl Screen {
             composer_from: None,
             composer_scanned: 0,
             composer_alt: false,
+            printed_at_output: 0,
             replay_rows: Vec::new(),
             replay_cursor: None,
         }
@@ -719,6 +727,7 @@ impl Screen {
             self.keys.csi_u = look.csi_u;
         }
         self.keys.profile_csi_u = look.csi_u;
+        self.term.set_alt_scrollback(look.alt_scrollback);
         self.term.set_options(config(look));
         self.term.set_cursor_blink_change(look.blink_change);
         self.blink_allowed = look.blink_allowed;
@@ -873,6 +882,11 @@ impl Screen {
         }
         // Shell-integration OSCs act where they appear in the stream, so the output is fed in
         // pieces that end at each one.
+        // A CUP is held only while it could be a running command's first draw (13o Task 4).
+        self.osc.cup_armed = self.rules.save_above_prompt
+            && self.command_pending()
+            && !self.term.mode().contains(TermMode::ALT_SCREEN)
+            && (!self.command_running() || self.term.printed == self.printed_at_output);
         let events = self.osc.scan_spans(bytes);
         let mut pending = self.osc.pending;
         let mut reply = Vec::new();
@@ -916,6 +930,11 @@ impl Screen {
                     }
                 };
                 reply.extend(self.feed_raw(&fed));
+                // A cursor move that may be a running command's first draw: iTerm2's rule looks
+                // at where the cursor landed.
+                if matches!(held, crate::emu::Held::Cup { .. }) {
+                    self.cursor_moved_above_output();
+                }
                 reply.append(&mut self.replies);
                 continue;
             }
@@ -1314,6 +1333,7 @@ impl Screen {
         self.term.color_report_16 = rules.color_16;
         self.term.focus_reporting_allowed = rules.focus_reporting;
         self.term.max_url_len = rules.max_url;
+        self.term.save_screen_on_clear = rules.save_on_clear;
         self.rules = rules;
     }
 
@@ -1976,9 +1996,9 @@ mod tests {
             s.term_mut().selection.as_mut().unwrap().set_visual_anchor((0, 0, false));
             assert!(s.drag_visual_to(to));
         };
-        // The alternate screen keeps no history: a row scrolled off its top is gone, and so
+        // The alternate screen without scrollback keeps no history: a row scrolled off its top is gone, and so
         // are the runs and the anchor on it. Nothing indexes a line that does not exist.
-        let mut s = Screen::new(10, 3);
+        let mut s = Screen::with_look(10, 3, Palette::default(), Look { alt_scrollback: false, ..Look::default() });
         s.feed(b"\x1b[?1049h");
         s.feed("ab \u{5d0}\u{5d1}".as_bytes());
         drag(&mut s, (0, 3, true));
@@ -2001,6 +2021,29 @@ mod tests {
         assert!(!copy.contains('\u{5d0}'), "{copy:?}");
         let (line, _, _) = s.visual_anchor().unwrap_or((-1, 0, false));
         assert!(line >= -1, "the anchor never leaves the buffer: {line}");
+    }
+
+    /// 13o Task 4: with alternate scrollback the oldest-line rules of patch 19 hold on the
+    /// alternate grid: a full history drops its oldest row, and the runs and the anchor on it.
+    #[test]
+    fn visual_runs_leave_with_the_oldest_alternate_line() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let look = Look { scrollback: 1, alt_scrollback: true, ..Look::default() };
+        let mut s = Screen::with_look(10, 3, Palette::default(), look);
+        s.feed(b"\x1b[?1049h\x1b[H");
+        s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
+        s.term_mut().selection = Some(Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left));
+        s.term_mut().selection.as_mut().unwrap().set_visual_anchor((0, 0, false));
+        assert!(s.drag_visual_to((1, 2, true)));
+        s.feed(b"\r\n\r\n\r\n");
+        let sel = s.term().selection.as_ref().expect("row 1 is still in the buffer");
+        assert!(sel.runs.iter().all(|(a, _)| a.line.0 >= -1), "{:?}", sel.runs);
+        let (line, _, _) = s.visual_anchor().unwrap_or((-1, 0, false));
+        assert!(line >= -1, "the anchor never leaves the buffer: {line}");
+        // Two more scrolls push the oldest line out of the buffer: the selection goes.
+        s.feed(b"\r\n\r\n\r\n\r\n");
+        assert_eq!(s.term().selection_to_string(), None);
     }
 
     /// Lines 0..2 of a 3-row primary screen are a scroll region and Scrollback With Status Bar
@@ -2163,12 +2206,12 @@ mod tests {
         assert_eq!(copied(&s), Some(vec!["r2 \u{5d0}\u{5d1}".to_string()]));
     }
 
-    /// The alternate screen keeps no history: a shrink with the cursor at the bottom pushes
+    /// The alternate screen without scrollback keeps no history: a shrink with the cursor at the bottom pushes
     /// its top rows out, and the runs and the anchor on them go.
     #[test]
     fn a_shrink_at_the_bottom_of_the_alternate_screen_drops_its_top_rows() {
         let five = || {
-            let mut s = Screen::new(10, 5);
+            let mut s = Screen::with_look(10, 5, Palette::default(), Look { alt_scrollback: false, ..Look::default() });
             s.feed(b"\x1b[?1049h");
             s.feed("a0 \u{5d0}\r\na1 \u{5d1}\r\na2 \u{5d2}\r\na3\r\na4".as_bytes());
             s
@@ -3689,5 +3732,177 @@ mod tests {
         // The newest title comes back (cut), and a short title is unchanged.
         s.feed(b"\x1b]0;short\x07\x1b[22t\x1b]0;other\x07\x1b[23t");
         assert_eq!(s.title(), Some("short"));
+    }
+
+    /// The text of grid row `l` of the grid shown (history above line 0 is negative).
+    fn shown_row(s: &Screen, l: i32) -> String {
+        row_text(s, l)
+    }
+
+    fn history_texts(g: &alacritty_terminal::grid::Grid<alacritty_terminal::term::cell::Cell>) -> Vec<String> {
+        use alacritty_terminal::grid::Dimensions;
+        (1..=g.history_size() as i32)
+            .rev()
+            .map(|n| (0..g.columns()).map(|c| g[Line(-n)][Column(c)].c).collect::<String>().trim_end().to_string())
+            .collect()
+    }
+
+    /// 13o Task 4 (Review Focus 4, R3): lines that scroll off the alternate screen are kept, move
+    /// into the main history when the program leaves, and are dropped with the switch off.
+    #[test]
+    fn alternate_screen_keeps_history() {
+        let look = |on| Look { alt_scrollback: on, scrollback: 100, ..Look::default() };
+        let mut s = Screen::with_look(10, 3, Palette::default(), look(true));
+        s.feed(b"\x1b[?1049h");
+        s.feed(b"1\r\n2\r\n3\r\n4\r\n5");
+        assert_eq!(s.term().grid().history_size(), 2);
+        assert_eq!(history_texts(s.term().grid()), ["1", "2"]);
+        // The main screen's own history is separate while the alternate screen is up.
+        assert_eq!(s.term().primary_grid().history_size(), 0);
+        s.feed(b"\x1b[?1049l");
+        assert_eq!(history_texts(s.term().grid()), ["1", "2"]);
+        assert_eq!(s.term().grid().history_size(), 2);
+        // Entering again starts the alternate history afresh.
+        s.feed(b"\x1b[?1049h");
+        assert_eq!(s.term().grid().history_size(), 0);
+        s.feed(b"\x1b[?1049l");
+        assert_eq!(s.term().grid().history_size(), 2);
+        // Switch off: nothing kept, nothing added.
+        let mut s = Screen::with_look(10, 3, Palette::default(), look(false));
+        s.feed(b"\x1b[?1049h1\r\n2\r\n3\r\n4\r\n5");
+        assert_eq!(s.term().grid().history_size(), 0);
+        s.feed(b"\x1b[?1049l");
+        assert_eq!(s.term().grid().history_size(), 0);
+        assert!(Look::default().alt_scrollback);
+        // A new profile value reaches a running screen, both ways.
+        let mut s = Screen::with_look(10, 3, Palette::default(), look(false));
+        s.set_look(look(true));
+        s.feed(b"\x1b[?1049h1\r\n2\r\n3\r\n4");
+        assert_eq!(s.term().grid().history_size(), 1);
+        s.set_look(look(false));
+        assert_eq!(s.term().grid().history_size(), 0);
+    }
+
+    /// 13o Task 4: leaving the alternate screen puts its history above the main history without
+    /// renumbering the screen's rows (`scrolled_off`, which marks and triggers number rows by),
+    /// and a full history drops its oldest rows into `dropped`.
+    #[test]
+    fn alternate_history_joins_the_main_history() {
+        let mut s = Screen::with_scrollback(10, 3, 4);
+        s.feed(b"m1\r\nm2\r\nm3\r\nm4");
+        let (scrolled, dropped) = (s.term().grid().scrolled_off(), s.term().grid().dropped());
+        assert_eq!(history_texts(s.term().grid()), ["m1"]);
+        s.feed(b"\x1b[?1049h\x1b[Ha\r\nb\r\nc\r\nd\r\ne");
+        s.feed(b"\x1b[?1049l");
+        assert_eq!(history_texts(s.term().grid()), ["m1", "a", "b"]);
+        assert_eq!(s.term().grid().scrolled_off(), scrolled);
+        assert_eq!(s.term().grid().dropped(), dropped);
+        // Past the limit (4) the oldest rows are lost and counted.
+        s.feed(b"\x1b[?1049h\x1b[H1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\x1b[?1049l");
+        assert_eq!(history_texts(s.term().grid()), ["1", "2", "3", "4"]);
+        assert_eq!(s.term().grid().dropped(), dropped + 3);
+        // RIS in the alternate screen leaves no history behind.
+        s.feed(b"\x1b[?1049h1\r\n2\r\n3\r\n4\x1bc");
+        assert_eq!(s.term().grid().history_size(), 0);
+    }
+
+    /// 13o Task 4 (MS:1729-1742): ED 0 at home in the alternate screen saves the screen first.
+    #[test]
+    fn clear_at_home_saves_the_screen() {
+        use crate::emu::Rules;
+        let look = |on| Look { alt_scrollback: on, scrollback: 100, ..Look::default() };
+        let run = |on: bool, rules: Rules, alt: bool| {
+            let mut s = Screen::with_look(10, 4, Palette::default(), look(on));
+            s.set_rules(rules);
+            if alt {
+                s.feed(b"\x1b[?1049h");
+            }
+            s.feed(b"a\r\nb\x1b[H\x1b[J");
+            s
+        };
+        let s = run(true, Rules::default(), true);
+        assert_eq!(history_texts(s.term().grid()), ["a", "b"]);
+        assert_eq!(shown_row(&s, 0), "");
+        assert_eq!(shown_row(&s, 1), "");
+        let s = run(true, Rules { save_on_clear: false, ..Rules::default() }, true);
+        assert_eq!(s.term().grid().history_size(), 0);
+        // The main screen never saves (zsh, issue 8822).
+        let s = run(true, Rules::default(), false);
+        assert_eq!(s.term().grid().history_size(), 0);
+        // Alternate scrollback off: iTerm2 hands a nil line buffer, nothing is saved.
+        let s = run(false, Rules::default(), true);
+        assert_eq!(s.term().grid().history_size(), 0);
+        // Only from the home cell, and a plain ED 0 elsewhere clears below as before.
+        let mut s = Screen::with_look(10, 4, Palette::default(), look(true));
+        s.feed(b"\x1b[?1049ha\r\nb\x1b[2;1H\x1b[J");
+        assert_eq!(s.term().grid().history_size(), 0);
+        assert_eq!(shown_row(&s, 0), "a");
+        // A blank screen saves nothing.
+        let mut s = Screen::with_look(10, 4, Palette::default(), look(true));
+        s.feed(b"\x1b[?1049h\x1b[H\x1b[J");
+        assert_eq!(s.term().grid().history_size(), 0);
+    }
+
+    /// 13o Task 4 (`MS+TD:480-521`): a CUP above the running command's output saves the screen,
+    /// before the command has printed anything.
+    #[test]
+    fn cursor_above_prompt_saves_the_screen() {
+        use crate::emu::Rules;
+        let look = Look { scrollback: 100, ..Look::default() };
+        let start = |rules: Rules| {
+            let mut s = Screen::with_look(10, 6, Palette::default(), look);
+            s.set_rules(rules);
+            s.feed(b"old1\r\nold2\r\n\x1b]133;A\x07\x1b]133;B\x07");
+            s
+        };
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b]133;C\x07");
+        s.feed(b"\x1b[H");
+        assert_eq!(history_texts(s.term().grid()), ["old1", "old2"]);
+        assert_eq!((0..6).map(|l| shown_row(&s, l)).collect::<String>(), "");
+        // Painting then moving home saves nothing more.
+        s.feed(b"x\x1b[3;1Hy\x1b[H");
+        assert_eq!(s.term().grid().history_size(), 2);
+        // Output first, in a read of its own or the same read, saves nothing.
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b]133;C\x07");
+        s.feed(b"x");
+        s.feed(b"\x1b[H");
+        assert_eq!(s.term().grid().history_size(), 0);
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b]133;C\x07x\x1b[H");
+        assert_eq!(s.term().grid().history_size(), 0);
+        assert_eq!(shown_row(&s, 0), "old1");
+        // The same read can also start the command and move home.
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b]133;C\x07\x1b[H");
+        assert_eq!(s.term().grid().history_size(), 2);
+        // CUP with parameters and HVP both count.
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b]133;C\x07\x1b[1;1f");
+        assert_eq!(s.term().grid().history_size(), 2);
+        // A CUP that stays at or below the output start saves nothing.
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b]133;C\x07\x1b[3;1H");
+        assert_eq!(s.term().grid().history_size(), 0);
+        // No running command: nothing.
+        let mut s = Screen::with_look(10, 6, Palette::default(), look);
+        s.feed(b"old1\r\nold2\r\n\x1b[H");
+        assert_eq!(s.term().grid().history_size(), 0);
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b[H");
+        assert_eq!(s.term().grid().history_size(), 0);
+        // The command ended: nothing.
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b]133;C\x07\x1b]133;D;0\x07\x1b[H");
+        assert_eq!(s.term().grid().history_size(), 0);
+        // The switch off: nothing.
+        let mut s = start(Rules { save_above_prompt: false, ..Rules::default() });
+        s.feed(b"\x1b]133;C\x07\x1b[H");
+        assert_eq!(s.term().grid().history_size(), 0);
+        // The alternate screen: nothing.
+        let mut s = start(Rules::default());
+        s.feed(b"\x1b]133;C\x07\x1b[?1049h\x1b[H\x1b[?1049l");
+        assert_eq!(history_texts(s.term().grid()), Vec::<String>::new());
     }
 }

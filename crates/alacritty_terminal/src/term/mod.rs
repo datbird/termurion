@@ -14,7 +14,7 @@ use log::{debug, trace};
 use unicode_width::UnicodeWidthChar;
 
 use crate::event::{Event, EventListener};
-use crate::grid::{Dimensions, Grid, GridIterator, Scroll};
+use crate::grid::{Dimensions, Grid, GridCell, GridIterator, Scroll};
 use crate::index::{self, Boundary, Column, Direction, Line, Point, Side};
 use crate::selection::{Selection, SelectionRange, SelectionType};
 use crate::term::cell::{Cell, Flags, LineLength};
@@ -362,6 +362,19 @@ pub struct Term<T> {
     /// Tandem patch: the longest OSC 8 URI `set_hyperlink` accepts (iTerm2's maxURLLength).
     pub max_url_len: usize,
 
+    /// Tandem patch: whether the alternate screen keeps scrollback (iTerm2's Scrollback in
+    /// Alternate Screen). Lines scrolled off its top are history, which moves into the main
+    /// history when the program leaves. Change it with `set_alt_scrollback`.
+    pub alt_scrollback: bool,
+
+    /// Tandem patch: whether ED 0 from the home cell in the alternate screen first scrolls the
+    /// screen into history (iTerm2's saveScrollBufferWhenClearing).
+    pub save_screen_on_clear: bool,
+
+    /// Tandem patch: characters written to the screen, ever. Tandem compares it between two
+    /// points in the output ("has the program drawn anything since").
+    pub printed: u64,
+
     /// Tandem: whether a scroll region that starts at the top but stops above the bottom row
     /// saves the lines leaving it to scrollback (iTerm2's Scrollback With Status Bar).
     scrollback_with_region: bool,
@@ -468,7 +481,8 @@ impl<T> Term<T> {
 
         let history_size = config.scrolling_history;
         let grid = Grid::new(num_lines, num_cols, history_size);
-        let inactive_grid = Grid::new(num_lines, num_cols, 0);
+        // Tandem patch: the alternate screen keeps history as the main screen does.
+        let inactive_grid = Grid::new(num_lines, num_cols, history_size);
 
         // Tandem patch: the stop spacing is a parameter (`Term.tab_width`).
         let tabs = TabStops::new(grid.columns(), INITIAL_TABSTOPS);
@@ -499,6 +513,9 @@ impl<T> Term<T> {
             color_report_16: true,
             focus_reporting_allowed: true,
             max_url_len: 2_097_152,
+            alt_scrollback: true,
+            save_screen_on_clear: true,
+            printed: 0,
             scrollback_with_region: true,
             cursor_blink_change: true,
             active_charset: Default::default(),
@@ -578,11 +595,8 @@ impl<T> Term<T> {
 
         self.event_proxy.send_event(title_event);
 
-        if self.mode.contains(TermMode::ALT_SCREEN) {
-            self.inactive_grid.update_history(self.config.scrolling_history);
-        } else {
-            self.grid.update_history(self.config.scrolling_history);
-        }
+        // Tandem patch: both screens' limits (the alternate one's is 0 without alt scrollback).
+        self.update_history_limits();
 
         if self.config.kitty_keyboard != old_config.kitty_keyboard {
             self.keyboard_mode_stack = Vec::new();
@@ -768,6 +782,44 @@ impl<T> Term<T> {
         self.mode &= !TermMode::KITTY_KEYBOARD_PROTOCOL;
     }
 
+    /// Tandem patch: the history limit of each screen from the config and `alt_scrollback`.
+    fn update_history_limits(&mut self) {
+        let primary = self.config.scrolling_history;
+        let alt = if self.alt_scrollback { primary } else { 0 };
+        if self.mode.contains(TermMode::ALT_SCREEN) {
+            self.inactive_grid.update_history(primary);
+            self.grid.update_history(alt);
+        } else {
+            self.grid.update_history(primary);
+            self.inactive_grid.update_history(alt);
+        }
+    }
+
+    /// Tandem patch: turns scrollback in the alternate screen on or off. Off drops the
+    /// alternate history kept so far.
+    pub fn set_alt_scrollback(&mut self, on: bool) {
+        self.alt_scrollback = on;
+        self.update_history_limits();
+        self.mark_fully_damaged();
+    }
+
+    /// Tandem patch: iTerm2's `scrollScreenIntoHistory`. The rows through the last non-empty
+    /// one scroll up off the screen into the history of the grid shown, whatever the scroll
+    /// region; the cursor stays where it is.
+    pub fn scroll_screen_into_history(&mut self) {
+        let lines = self.screen_lines();
+        let rows = (0..lines)
+            .rev()
+            .find(|&l| (0..self.columns()).any(|c| !self.grid[Line(l as i32)][Column(c)].is_empty()))
+            .map_or(0, |l| l + 1);
+        if rows == 0 {
+            return;
+        }
+        let region = mem::replace(&mut self.scroll_region, Line(0)..Line(lines as i32));
+        self.scroll_up_relative(Line(0), rows);
+        self.scroll_region = region;
+    }
+
     /// Tandem patch: the main screen's grid, also while the alternate screen is up.
     pub fn primary_grid(&self) -> &Grid<Cell> {
         if self.mode.contains(TermMode::ALT_SCREEN) { &self.inactive_grid } else { &self.grid }
@@ -860,6 +912,12 @@ impl<T> Term<T> {
 
             // Reset alternate screen contents.
             self.inactive_grid.reset_region(..);
+            // Tandem patch: and its history, from the last time.
+            self.inactive_grid.clear_history();
+        } else {
+            // Tandem patch: the alternate screen's history goes above the main history.
+            let rows = self.grid.take_history();
+            self.inactive_grid.append_history(rows);
         }
 
         mem::swap(&mut self.keyboard_mode_stack, &mut self.inactive_keyboard_mode_stack);
@@ -1239,6 +1297,8 @@ impl<T: EventListener> Handler for Term<T> {
             Some(width) => width,
             None => return,
         };
+        // Tandem patch: one more character written.
+        self.printed = self.printed.wrapping_add(1);
 
         // Handle zero-width characters.
         if width == 0 {
@@ -1991,6 +2051,16 @@ impl<T: EventListener> Handler for Term<T> {
             },
             ansi::ClearMode::Below => {
                 let cursor = self.grid.cursor.point;
+                // Tandem patch: from the home cell of the alternate screen the screen is saved
+                // first (screen clears with CSI H CSI J; `VT100ScreenMutableState.m:1729`).
+                if cursor.line == 0
+                    && cursor.column == 0
+                    && self.save_screen_on_clear
+                    && self.alt_scrollback
+                    && self.mode.contains(TermMode::ALT_SCREEN)
+                {
+                    self.scroll_screen_into_history();
+                }
                 for cell in &mut self.grid[cursor.line][cursor.column..] {
                     *cell = bg.into();
                 }

@@ -3360,6 +3360,22 @@ mod tests {
     }
 
     #[test]
+    fn save_rows_follow_iterm2() {
+        let clear = "Save scroll buffer when clearing screen.";
+        let above = "Save the screen to scrollback when an app moves the cursor above the prompt.";
+        let rows: [(&str, &str, String); 2] = [
+            ("SaveScrollBufferWhenClearing", clear, format!("{clear}\nWhen enabled, saves the current screen into scroll back buffer instead of clearing it.")),
+            ("SaveScrollbackWhenCursorMovesAbovePrompt", above, format!("{above}\nSome full-screen programs that don\u{2019}t use the alternate screen buffer repaint by moving the cursor to the top of the screen and overwriting whatever was already there, destroying content you can still see. When enabled, Tandem first scrolls the visible screen into history so that content isn\u{2019}t lost. Requires shell integration.")),
+        ];
+        for (key, label, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "General", Kind::Bool), "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(true)), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+        }
+    }
+
+    #[test]
     fn stream_rows_follow_iterm2() {
         let url = "Maximum length for OSC 8 URLs";
         let rep = "Enable support for REP (Repeat previous character) escape sequence?";

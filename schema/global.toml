@@ -4201,6 +4201,24 @@ default = 2097152
 help = "Maximum length for OSC 8 URLs"
 
 [[setting]]
+key = "SaveScrollBufferWhenClearing"
+tab = "Advanced"
+section = "General"
+label = "Save scroll buffer when clearing screen."
+type = "bool"
+default = true
+help = "Save scroll buffer when clearing screen.\nWhen enabled, saves the current screen into scroll back buffer instead of clearing it."
+
+[[setting]]
+key = "SaveScrollbackWhenCursorMovesAbovePrompt"
+tab = "Advanced"
+section = "General"
+label = "Save the screen to scrollback when an app moves the cursor above the prompt."
+type = "bool"
+default = true
+help = "Save the screen to scrollback when an app moves the cursor above the prompt.\nSome full-screen programs that don\u2019t use the alternate screen buffer repaint by moving the cursor to the top of the screen and overwriting whatever was already there, destroying content you can still see. When enabled, Tandem first scrolls the visible screen into history so that content isn\u2019t lost. Requires shell integration."
+
+[[setting]]
 key = "SupportREPCode"
 tab = "Advanced"
 section = "Experimental Features"
