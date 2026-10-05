@@ -4672,7 +4672,6 @@ impl App {
         self.inline_move(x, y);
         self.update_hover();
         self.update_block_hover();
-        self.refresh_pointer_shape();
         // Hover timestamps show while the pointer is at a pane's right edge.
         let near = self.near_stamp_edge();
         if near != self.stamp_near {

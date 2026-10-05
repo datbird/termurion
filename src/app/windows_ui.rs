@@ -80,6 +80,7 @@ pub(super) struct WinSlot {
     theme_applied: Option<bool>,
     menu_hidden: bool,
     first_mouse_down: bool,
+    ffm_entered: bool,
     caption_hover: Option<crate::caption::Button>,
     caption_pressed: Option<crate::caption::Button>,
     caption_label_w: f32,
@@ -184,6 +185,7 @@ impl WinSlot {
             theme_applied: None,
             menu_hidden: false,
             first_mouse_down: false,
+            ffm_entered: false,
             caption_hover: None,
             caption_pressed: None,
             caption_label_w: 0.0,
@@ -297,6 +299,7 @@ impl App {
         swap(&mut self.theme_applied, &mut s.theme_applied);
         swap(&mut self.menu_hidden, &mut s.menu_hidden);
         swap(&mut self.first_mouse_down, &mut s.first_mouse_down);
+        swap(&mut self.ffm_entered, &mut s.ffm_entered);
         swap(&mut self.caption_hover, &mut s.caption_hover);
         swap(&mut self.caption_pressed, &mut s.caption_pressed);
         swap(&mut self.caption_label_w, &mut s.caption_label_w);
@@ -946,6 +949,7 @@ impl WinSlot {
             theme_applied: None,
             menu_hidden: false,
             first_mouse_down: false,
+            ffm_entered: false,
             caption_hover: None,
             caption_pressed: None,
             caption_label_w: 0.0,

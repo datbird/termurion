@@ -88,6 +88,8 @@ pub struct Gates {
     pub first_mouse_blocks: bool,
     /// The pointer is over one of Tandem's own overlays inside the pane (B5).
     pub ui_over: bool,
+    /// The pane has the keyboard in the key window (iTerm2's `mouseHandlerViewHasFocus`).
+    pub view_focused: bool,
 }
 
 /// Whether an event is reported to the program (`shouldReportMouseEvent:at:`): tracking on, Alt
@@ -99,8 +101,9 @@ pub fn should_report(modes: Modes, mods: Mods, kind: Kind, g: Gates) -> bool {
     }
     match kind {
         Kind::Wheel { horizontal } => g.wheel && (g.horizontal || !horizontal) && !g.ui_over,
-        Kind::Click | Kind::Drag => g.clicks && !g.first_mouse_blocks && !g.ui_over,
-        Kind::Hover => !g.first_mouse_blocks && !g.ui_over,
+        Kind::Click => g.clicks && !g.first_mouse_blocks && !g.ui_over && g.view_focused,
+        Kind::Drag => g.clicks && !g.first_mouse_blocks && !g.ui_over,
+        Kind::Hover => !g.first_mouse_blocks && !g.ui_over && g.view_focused,
     }
 }
 
@@ -186,6 +189,13 @@ pub fn ffm_may_act(enter: Enter, front: Front, password_prompt: bool, approval_p
         Enter::MakeKey => front == Front::Terminal,
         Enter::Steal => front != Front::OtherTandem,
     }
+}
+
+/// Whether plain focus follows mouse may move the pane focus inside a window
+/// (`iTermFocusFollowsMouse.swift:118-158`: key window and no modal window). Tandem also holds
+/// it at a password prompt (ruling, final review 2) and during an IME composition (13k).
+pub fn ffm_pane_may_focus(window_key: bool, approval_pending: bool, password_prompt: bool, composing: bool) -> bool {
+    window_key && !approval_pending && !password_prompt && !composing
 }
 
 /// A split divider's grab zone: the divider grown by `grab` on every side.
@@ -443,8 +453,31 @@ mod tests {
         assert_eq!(cell_at(5000.0, 9000.0, 10.0, 20.0, 80, 24), (79, 23));
     }
 
-    const ALL: Gates = Gates { clicks: true, wheel: true, horizontal: true, first_mouse_blocks: false, ui_over: false };
+    const ALL: Gates = Gates { clicks: true, wheel: true, horizontal: true, first_mouse_blocks: false, ui_over: false, view_focused: true };
     const KINDS: [Kind; 5] = [Kind::Click, Kind::Drag, Kind::Hover, Kind::Wheel { horizontal: false }, Kind::Wheel { horizontal: true }];
+
+    /// Final review 7: a click or hover reaches only a pane that has the keyboard
+    /// (`PTYMouseHandler.m:1464-1494`); a drag or release continues a click already seen.
+    #[test]
+    fn clicks_and_hover_need_the_view_to_have_focus() {
+        let m = Mods::default();
+        let unfocused = Gates { view_focused: false, ..ALL };
+        assert!(!should_report(SGR_ANY, m, Kind::Click, unfocused));
+        assert!(!should_report(SGR_ANY, m, Kind::Hover, unfocused));
+        assert!(should_report(SGR_ANY, m, Kind::Drag, unfocused));
+        assert!(should_report(SGR_ANY, m, Kind::Wheel { horizontal: false }, unfocused));
+    }
+
+    /// Final review 2: plain focus follows mouse inside a window acts only in the key window,
+    /// with no approval waiting, no password prompt and no IME composition.
+    #[test]
+    fn pane_focus_follows_the_mouse_only_in_the_key_window() {
+        assert!(ffm_pane_may_focus(true, false, false, false));
+        assert!(!ffm_pane_may_focus(false, false, false, false), "a window that is not key");
+        assert!(!ffm_pane_may_focus(true, true, false, false), "an approval or dialog is waiting");
+        assert!(!ffm_pane_may_focus(true, false, true, false), "a password prompt");
+        assert!(!ffm_pane_may_focus(true, false, false, true), "an IME composition");
+    }
 
     #[test]
     fn reporting_gates_follow_iterm2() {

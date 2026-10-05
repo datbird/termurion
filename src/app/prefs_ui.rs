@@ -247,6 +247,11 @@ impl App {
     /// difference from what the folder held (or nothing held), the folder is written half a
     /// second later.
     pub(super) fn prefs_changed(&mut self) {
+        // The cached pointer shape may depend on a preference (UseSystemCursorWhenPossible):
+        // forget it in every window so the next move redraws it.
+        for g in self.gpu.iter_mut().chain(self.windows.parked_mut().filter_map(|(_, s)| s.gpu.as_mut())) {
+            g.shape = None;
+        }
         self.prefs_note_location();
         let g = &self.globals;
         if !g.bool(rp::LOAD_KEY) || rp::save_mode(g.bool(rp::HAVE_SELECTION_KEY), g.int(rp::SELECTION_KEY)) != rp::SaveMode::Always || self.prefs_save_due.is_some() {

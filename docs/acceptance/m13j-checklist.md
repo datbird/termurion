@@ -57,7 +57,7 @@ touchpad for the touchpad rows. Mark each line pass or fail.
 | 26 | Advanced AlwaysAcceptFirstMouse off: the click only activates the window (no selection, no report). A Win-click on a link still acts. | |
 | 27 | The activating click never selects, copies or moves a cursor: a click-drag that activates the window selects nothing and copies nothing (check the clipboard); an Alt-click that activates it does not move the prompt cursor; a double click that activates does not copy a smart selection. | |
 | 28 | Clicking the title bar, a divider, the status bar or the tab bar of a background window is NOT first mouse: a divider drag still drags, and the next click in the terminal is reported normally. | |
-| 29 | Hover (mode 1003) in the activating window is not reported until the next press (kept). | |
+| 29 | Hover (mode 1003) in the activating window is not reported until the next press (kept). Hover reaches only the focused pane of the key window; a click reaches only a pane that has focus (final review 5). | |
 | 30 | Kept, ruled: a right click in a background window or on an unfocused pane only focuses it (the context menu waits for the next right click). A pen or touch activation may hold one report afterward (flag is not expired; deferred). | |
 
 ## Stuck reporting
@@ -73,7 +73,7 @@ touchpad for the touchpad rows. Mark each line pass or fail.
 | # | Check | Result |
 |---|---|---|
 | 34 | Focus follows mouse on: moving between two Tandem windows makes the one under the pointer key while Tandem is active (new in 13j). Moving over a tab bar, title bar, status bar or any bar or popup does not move focus. | |
-| 35 | Hovering a pane while a Tandem dialog, a password prompt or an approval is waiting does not take focus. With focus follows mouse (and steal, aggressive) on, start a Microsoft Pinyin composition in a pane, then move the pointer over another pane and into another Tandem window: neither the pane nor the window takes focus and the composition stays until Enter or Esc (13k merge). | |
+| 35 | Hovering a pane in a window that is not key (another app in front, or another Tandem window), or while a Tandem dialog, a password prompt or an approval is waiting does not take focus. With focus follows mouse (and steal, aggressive) on, start a Microsoft Pinyin composition in a pane, then move the pointer over another pane and into another Tandem window: neither the pane nor the window takes focus and the composition stays until Enter or Esc (13k merge). | |
 | 36 | StealKeyFocus on (with focus follows mouse): from another app, moving the pointer into a Tandem window brings Tandem forward, or Windows flashes the taskbar button instead (partial, expected). A hidden hotkey window never pops up under a hover. | |
 | 37 | AggressiveFocusFollowsMouse on: Alt+Tab back to Tandem activates the window under the pointer; if the pointer has not moved since Tandem lost activation, nothing changes. Switching between two Tandem windows does not trigger it. | |
 | 38 | Ctrl+wheel (Ctrl only) over a pane changes the font size, one notch one step; Ctrl+wheel over a title bar or status bar does not. A touchpad pinch does the same. With a mouse-reporting `vim`, Ctrl+wheel changes the font and is not reported. The font size cannot run away: keep spinning, it stops at the drawn limits. All windows change together (app-wide, ruled). | |

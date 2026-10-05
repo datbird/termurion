@@ -67,12 +67,15 @@ pub fn arrow_count(delta: f64) -> usize {
 
 /// The delta mouse reporting uses (`PTYTextView.m:8446-8471`): under fast trackpad the lines
 /// divided by the unit (the cell height or width in points), floored when negative, else
-/// ceiled, so a notch of three lines reports one step; otherwise the lines as they are.
-pub fn report_delta(lines: f64, unit_pt: f64, fast_trackpad: bool) -> f64 {
+/// ceiled, so a notch of three lines reports one step (a precise event's lines are points over
+/// the unit already, so they come out whole); otherwise the lines as they are.
+pub fn report_delta(lines: f64, precise: bool, unit_pt: f64, fast_trackpad: bool) -> f64 {
     if !fast_trackpad || unit_pt <= 0.0 {
         return lines;
     }
-    let frac = lines / unit_pt;
+    // A touchpad event is already in lines; iTerm2 divides its points, so go back to points.
+    let points = if precise { lines * unit_pt } else { lines };
+    let frac = points / unit_pt;
     if frac < 0.0 { frac.floor() } else { frac.ceil() }
 }
 
@@ -475,12 +478,17 @@ mod tests {
     #[test]
     fn a_notch_reports_one_step() {
         // report_delta(lines, unit_pt, fast_trackpad): PTYTextView.m:8446-8471.
-        assert_eq!(report_delta(3.0, 17.0, true), 1.0);
-        assert_eq!(report_delta(-3.0, 17.0, true), -1.0);
-        assert_eq!(report_delta(0.0, 17.0, true), 0.0);
-        assert_eq!(report_delta(3.0, 17.0, false), 3.0);
+        assert_eq!(report_delta(3.0, false, 17.0, true), 1.0);
+        assert_eq!(report_delta(-3.0, false, 17.0, true), -1.0);
+        assert_eq!(report_delta(0.0, false, 17.0, true), 0.0);
+        assert_eq!(report_delta(3.0, false, 17.0, false), 3.0);
+        // A touchpad event is already lines: iTerm2 divides its POINTS by the unit, so
+        // three lines report three steps, not one (final review 3).
+        assert_eq!(report_delta(3.0, true, 17.0, true), 3.0);
+        assert_eq!(report_delta(-3.0, true, 17.0, true), -3.0);
+        assert_eq!(report_delta(3.0, true, 17.0, false), 3.0);
         // A default notch (3 lines, fast trackpad on) reports once.
-        assert_eq!(report_steps(report_delta(3.0, 17.0, true), true, false), 1);
+        assert_eq!(report_steps(report_delta(3.0, false, 17.0, true), true, false), 1);
     }
 
     /// Task 4 fix (ruling): on Windows a touchpad sends many tiny deltas, so fast trackpad

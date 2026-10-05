@@ -96,9 +96,11 @@ impl App {
     }
 
     /// Plain focus follows mouse inside a window: the pane under the pointer takes focus.
-    /// Never over one of Tandem's overlays (the one list), never while composing (13k).
+    /// Only in the key window with no dialog or approval waiting (`iTermFocusFollowsMouse.swift:
+    /// 118-158`), never at a password prompt (Tandem's own guard), never over one of Tandem's
+    /// overlays (the one list), never while composing (13k).
     pub(super) fn ffm_pane_focus(&mut self, id: PaneId, at: (f32, f32)) {
-        if self.ffm_composing() || self.tandem_ui_at(at.0, at.1) {
+        if !mouse::ffm_pane_may_focus(self.focused, !self.orch_waits.is_empty(), self.focused_password_prompt(), self.ffm_composing()) || self.tandem_ui_at(at.0, at.1) {
             return;
         }
         if self.globals.bool("FocusFollowsMouse") && self.tabs.get(self.active).is_some_and(|t| t.focused != id) {
@@ -347,6 +349,7 @@ impl App {
             horizontal: self.globals.bool("ReportHorizontalScrollEvents"),
             first_mouse_blocks: self.first_mouse_down && !self.globals.bool("ReportOnFirstMouse"),
             ui_over: !matches!(kind, mouse::Kind::Drag) && self.tandem_ui_at(x, y),
+            view_focused: self.focused && self.tabs.get(self.active).is_some_and(|t| t.focused == pane),
         };
         mouse::should_report(self.modes(pane), mods, kind, gates)
     }
@@ -444,11 +447,11 @@ impl App {
             let Some(p) = self.panes.get_mut(&id) else { return };
             // Positive x moves the content right: the view scrolls left.
             let bytes = if vertical {
-                let chosen = wheel::report_delta(p.wheel.report.take(dy, ev.precise, cell_pt.1, &prefs), cell_pt.1, prefs.fast_trackpad);
+                let chosen = wheel::report_delta(p.wheel.report.take(dy, ev.precise, cell_pt.1, &prefs), ev.precise, cell_pt.1, prefs.fast_trackpad);
                 let steps = if chosen == 0.0 { 0 } else { wheel::report_steps(chosen, proportional, double) as i32 };
                 input::wheel_reports_with(modes, mods, if chosen > 0.0 { steps } else { -steps }, col, row)
             } else {
-                let n = wheel::report_delta(p.wheel.horizontal.take(dx, ev.precise, cell_pt.0, &prefs), cell_pt.0, prefs.fast_trackpad);
+                let n = wheel::report_delta(p.wheel.horizontal.take(dx, ev.precise, cell_pt.0, &prefs), ev.precise, cell_pt.0, prefs.fast_trackpad);
                 let steps = if n == 0.0 { 0 } else { wheel::report_steps(n, proportional, double) as i32 };
                 let natural = wheel::needs_touchpad_setting(ev.precise, affects) && touchpad_natural();
                 let left = wheel::natural_swap(n > 0.0, ev.precise, natural, affects);
@@ -577,9 +580,10 @@ mod tests {
         let writers: usize = [MOD, UI, SEMANTIC].into_iter().map(|s| prod(s).matches(".set_cursor(").count()).sum();
         assert_eq!(writers, 1, "one set_cursor call in the whole app");
         assert!(body(UI, "refresh_pointer_shape").contains(".set_cursor("));
-        for (src, f) in [(SEMANTIC, "update_hover"), (MOD, "update_side_handle_hover"), (MOD, "mouse_move")] {
+        for (src, f) in [(SEMANTIC, "update_hover"), (MOD, "update_side_handle_hover")] {
             assert!(body(src, f).contains("refresh_pointer_shape()"), "{f}");
         }
+        assert!(body(MOD, "mouse_move").contains("self.update_hover()"), "a move refreshes the shape once, through update_hover");
     }
 
     #[test]
@@ -764,6 +768,31 @@ mod tests {
     fn report_gate_reads_the_first_mouse_flag() {
         let b = body(UI, "report_gate_with");
         assert!(b.contains("first_mouse_blocks: self.first_mouse_down && !self.globals.bool(\"ReportOnFirstMouse\")"));
+    }
+
+    /// Final review 1: the pointer-entered flag belongs to one window, so another window's late
+    /// CursorLeft never clears it.
+    #[test]
+    fn ffm_entered_is_per_window() {
+        let w = include_str!("windows_ui.rs");
+        assert!(w.contains("swap(&mut self.ffm_entered, &mut s.ffm_entered)"));
+        assert!(w.matches("ffm_entered: false").count() >= 2, "WinSlot::new and new_empty");
+        assert!(w.contains("    ffm_entered: bool,"), "a WinSlot field");
+    }
+
+    /// Final review 2, 3, 5: the pane focus asks the pure decision with the live window's
+    /// state; the wheel report divides a touchpad's lines once; the pointer shape is refreshed
+    /// once per move; a preference change forgets every window's cached shape.
+    #[test]
+    fn final_review_wiring() {
+        let f = body(UI, "ffm_pane_focus");
+        assert!(f.contains("mouse::ffm_pane_may_focus(self.focused") && f.contains("orch_waits.is_empty()") && f.contains("focused_password_prompt()"));
+        let wheel = body(UI, "route_wheel");
+        assert!(wheel.contains("ev.precise, cell_pt.1, prefs.fast_trackpad") && wheel.contains("ev.precise, cell_pt.0, prefs.fast_trackpad"));
+        assert!(!body(MOD, "mouse_move").contains("refresh_pointer_shape"), "update_hover refreshes it");
+        assert!(body(UI, "report_gate_with").contains("view_focused:"));
+        let p = include_str!("prefs_ui.rs");
+        assert!(body(p, "prefs_changed").contains("shape = None"), "UseSystemCursorWhenPossible");
     }
 
     #[test]

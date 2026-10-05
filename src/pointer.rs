@@ -343,7 +343,7 @@ mod tests {
     fn a_refused_click_is_not_reportable_to_its_readers() {
         use crate::mouse::{should_report, Gates, Kind, Modes, Tracking};
         let modes = Modes { tracking: Tracking::Click, sgr: true };
-        let gates = Gates { clicks: false, wheel: true, horizontal: true, first_mouse_blocks: false, ui_over: false };
+        let gates = Gates { clicks: false, wheel: true, horizontal: true, first_mouse_blocks: false, ui_over: false, view_focused: true };
         let reportable = should_report(modes, crate::mouse::Mods::default(), Kind::Click, gates);
         assert!(!reportable);
         assert_eq!(on_down(2, 1, NONE, true, true, &defaults(), &P), Down::Report);
