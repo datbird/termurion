@@ -2969,6 +2969,8 @@ pub fn offscreen_band(frame: &mut Frame, screen: &Screen, band: Rect, text_origi
         if let Some(extra) = c.zerowidth() {
             text.extend(extra);
         }
+        // In the profile's Unicode Normalization form, as the pane draws it (S12, 13o).
+        crate::encoding::normalize_in_place(&mut text, screen.normalization);
         let ascii = text.is_ascii();
         let fg = if c.flags.contains(Flags::HIDDEN) { palette.cell(c.fg, c.bg, c.flags).1 } else { palette.cell(c.fg, c.bg, c.flags).0 };
         let (bold, italic) = (c.flags.contains(Flags::BOLD), c.flags.contains(Flags::ITALIC));
@@ -5229,6 +5231,21 @@ mod tests {
         assert_eq!(draw(&normal_screen("e\u{301}x", Form::Nfc)), vec![(0.0, "\u{e9}".to_string()), (10.0, "x".to_string())]);
         assert_eq!(draw(&normal_screen("\u{e9}x", Form::Nfd)), vec![(0.0, "e\u{301}".to_string()), (10.0, "x".to_string())]);
         assert_eq!(draw(&normal_screen("e\u{301}x", Form::None)), vec![(0.0, "e\u{301}".to_string()), (10.0, "x".to_string())]);
+    }
+
+    /// S12 (13o x 13p): the offscreen band's text is in the profile's normalization form, like
+    /// the pane's own rows.
+    #[test]
+    fn offscreen_band_normalizes() {
+        use crate::encoding::Form;
+        let band = |s: &Screen| {
+            let mut f = Frame::default();
+            offscreen_band(&mut f, s, RECT, (0.0, 0.0), CELL, 0, ([0.0; 4], [1.0; 4]), crate::render::DEFAULT_FACE);
+            f.rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect::<String>()).collect::<Vec<_>>()
+        };
+        assert_eq!(band(&normal_screen("\u{e9}x", Form::Nfd)), vec!["e\u{301}".to_string(), "x".to_string()]);
+        assert_eq!(band(&normal_screen("e\u{301}x", Form::Nfc)), vec!["\u{e9}".to_string(), "x".to_string()]);
+        assert_eq!(band(&normal_screen("e\u{301}x", Form::None)), vec!["e\u{301}".to_string(), "x".to_string()]);
     }
 
     /// 13m bidi and 13j cells: the display order, the cells and the columns of a row are the

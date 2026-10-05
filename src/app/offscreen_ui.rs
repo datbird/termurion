@@ -45,10 +45,11 @@ impl App {
             enabled: profile.bool("Show Offscreen Command line"),
             for_current: profile.bool("Show Offscreen Command line for Current Command"),
             alt_screen: p.screen.alt_screen(),
+            // The displayed grid's lines (S12: 13o's alternate screen has its own history).
             top_line: -(offset as i32),
             lines_above: grid.history_size().saturating_sub(offset),
             history_top: -(grid.history_size() as i32),
-            prompts: prompts.clone(),
+            prompts: offscreen::displayed_prompts(p.screen.alt_screen(), prompts),
         };
         let line = offscreen::command_line(&facts)?;
         let scale = self.scale();
@@ -99,5 +100,8 @@ mod tests {
         let me = include_str!("offscreen_ui.rs").split("#[cfg(test)]").next().unwrap();
         assert!(me.contains("self.pane_faces.face(id)") && me.contains("self.text_outer(id, rect)") && !me.contains("marks_in_order"));
         assert!(!me.contains("frame.overlay"), "never text in the overlay");
+        // S12: the geometry is the displayed grid's and the prompts are dropped off the main screen.
+        assert!(me.contains("let grid = p.screen.term().grid();") && !me.contains("primary_grid"));
+        assert!(me.contains("prompts: offscreen::displayed_prompts(p.screen.alt_screen(), prompts),"));
     }
 }

@@ -85,6 +85,14 @@ pub fn command_line(f: &Facts) -> Option<i32> {
     Some(line)
 }
 
+/// The prompts the band may read for the grid on display (S12, 13o x 13p). Marks live on the
+/// main screen's lines; 13o gives the alternate screen a history of its own, so while it is
+/// shown no main-screen line is on display and the band shows nothing (its line would be read
+/// from the alternate grid's rows).
+pub fn displayed_prompts(alt_screen: bool, prompts: &[PromptFacts]) -> Vec<PromptFacts> {
+    if alt_screen { Vec::new() } else { prompts.to_vec() }
+}
+
 /// The band over the top of the text area `pane`.
 pub fn band_rect(pane: Rect, cell: (f32, f32), scale: f32) -> Rect {
     Rect { h: cell.1 + 2.0 * PADDING * scale, ..pane }
@@ -110,6 +118,17 @@ mod tests {
 
     fn prompt() -> PromptFacts {
         PromptFacts { prompt_line: -60, command_line: Some(-60), command_end_line: Some(-60), has_code: true, running: false, ended: true, output_rows: 30, command_empty: false }
+    }
+
+    /// S12: the alternate screen (13o: its own history) shows no main-screen prompt, so the
+    /// band refuses there even when the scrolled-off rule alone would show one.
+    #[test]
+    fn alternate_screen_history_shows_no_band() {
+        let main = Facts { prompts: displayed_prompts(false, &[prompt()]), ..base() };
+        assert_eq!(command_line(&main), Some(-60));
+        let alt = Facts { alt_screen: true, prompts: displayed_prompts(true, &[prompt()]), ..base() };
+        assert_eq!(command_line(&alt), None);
+        assert!(displayed_prompts(true, &[prompt()]).is_empty());
     }
 
     fn base() -> Facts {
