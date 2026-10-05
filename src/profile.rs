@@ -563,6 +563,8 @@ mod tests {
         let mut p = Profile::stock();
         p.values.remove("Terminal Type");
         assert_eq!(p.terminal_type(), "xterm-256color");
+        // The editor reads `get`, which must say the same thing as the TERM that is reported.
+        assert_eq!(p.get("Terminal Type"), Some(Value::String("xterm-256color".into())));
         p.set("Terminal Type", Value::String("xterm".into()));
         assert_eq!(p.terminal_type(), "xterm");
         p.set("Terminal Type", Value::String(String::new()));
