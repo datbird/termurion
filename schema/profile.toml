@@ -836,7 +836,7 @@ type = "float"
 default = 0.0
 min = 0.0
 max = 0.8
-help = "Increases the cursor color's saturation relative to surrounding text so it stands out."
+help = "Amount to dim non-cursor text to highlight cursor"
 light_dark = true
 macos_only = false
 
@@ -1220,7 +1220,7 @@ section = "Cursor"
 label = "Cursor shadow"
 type = "bool"
 default = false
-help = "Draws a soft drop shadow under the cursor; only for underline and bar styles."
+help = "Whether the cursor has a shadow"
 light_dark = false
 macos_only = false
 

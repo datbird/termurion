@@ -3009,4 +3009,43 @@ mod tests {
         assert_eq!(s.label, "Add notification area icon when excluded from taskbar?");
         assert_eq!(s.help, "Add notification area icon when excluded from taskbar?\nWhen you turn on \u{201c}Exclude from taskbar and Alt+Tab switcher\u{201d} a notification area icon is added so you can switch the setting back off. Disable this to remove the icon. Doing so makes it very hard to get to Settings. You must restart Tandem after changing this setting.");
     }
+
+    #[test]
+    fn cursor_rows_follow_iterm2() {
+        use crate::advanced_pane::{self, RowKind};
+        let lead = |s: &str| s.split('\n').next().unwrap().to_string();
+        let thr = |what: &str, side: &str| {
+            format!("Threshold for Smart Cursor Color for {what} (0 to 1).\n0 means the cursor\u{2019}s {side} color will always be the cell\u{2019}s {}, while 1 means it will always be black or white.", if what == "background color" { "text color" } else { "background color" })
+        };
+        let rows: [(&str, &str, Kind, Value, String); 12] = [
+            ("TimeBetweenBlinks", "Terminal", Kind::Float, Value::Float(0.5), "Cursor blink speed (seconds).".into()),
+            ("SmartCursorColorBgThreshold", "Terminal", Kind::Float, Value::Float(0.5), thr("background color", "background")),
+            ("SmartCursorColorFgThreshold", "Terminal", Kind::Float, Value::Float(0.75), thr("text color", "text")),
+            ("FullHeightCursor", "Terminal", Kind::Bool, Value::Boolean(false), "Cursor occupies line spacing area.\nIf lines have more than 100% vertical spacing and this setting is enabled the bottom of the cursor will be aligned to the bottom of the spacing area.".into()),
+            ("UnderlineCursorOffset", "Terminal", Kind::Float, Value::Float(0.0), "Vertical offset for underline cursor.\nPositive values move it up, negative values move it down.".into()),
+            ("VerticalBarCursorWidth", "Terminal", Kind::Float, Value::Float(1.0), "Width of vertical bar cursor.".into()),
+            ("DrawOutlineAroundCursor", "Drawing", Kind::Bool, Value::Boolean(false), "Draw outline around underline and vertical bar cursors using background color.".into()),
+            ("UnderlineCursorHeight", "Drawing", Kind::Float, Value::Float(2.0), "Thickness of underline cursor.".into()),
+            ("CursorAnimationMinDistance", "Drawing", Kind::Float, Value::Float(150.0), "When animated cursor movement is enabled, only perform animation if the cursor moves at least this distance in points.".into()),
+            ("CursorSmearAnimationDuration", "Drawing", Kind::Float, Value::Float(0.1), "Duration in seconds for the \u{201c}Animate large movements\u{201d} cursor animation.".into()),
+            ("CursorSlideAnimationDuration", "Drawing", Kind::Float, Value::Float(0.05), "Duration in seconds for smooth cursor slide animation.\nThis affects the \"Smooth slide\" cursor movement option.".into()),
+            ("CursorSlideAnimationMaxCells", "Drawing", Kind::Int, Value::Integer(1), "Maximum horizontal distance in cells for smooth cursor slide animation.\nCursor movements larger than this will not animate.".into()),
+        ];
+        let pane = advanced_pane::rows();
+        for (key, section, kind, default, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!((row.label.clone(), row.help.clone()), (lead(&help), help.clone()), "{key}");
+            // The Advanced pane draws the row with the matching editor (no global_control arm).
+            let want = match kind {
+                Kind::Bool => RowKind::Bool,
+                Kind::Int => RowKind::Int,
+                _ => RowKind::Float,
+            };
+            let drawn = pane.iter().find(|r| r.key == key).unwrap_or_else(|| panic!("{key} not in the pane"));
+            assert_eq!((drawn.category, &drawn.kind), (section, &want), "{key}");
+        }
+    }
 }
