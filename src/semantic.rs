@@ -355,6 +355,21 @@ fn fill_cmd(template: &str, values: [&str; 5]) -> Option<String> {
     (!bad.get()).then_some(text)
 }
 
+/// The arguments cmd.exe gets for a command line that holds substituted program text: `/s`
+/// makes it strip exactly the quotes added here, so the quotes around a value (which may be
+/// the first thing on the line) stay and `& | < > ^ ( )` inside them are inert; `/v:off` stops
+/// `!VAR!` rewriting a value when the registry turns delayed expansion on; `/d` skips
+/// AutoRun. The one place a Tandem command line for cmd.exe is built (Semantic History,
+/// Smart Selection, triggers and coprocesses).
+pub fn cmd_args(line: &str) -> String {
+    format!("/d /v:off /s /c \"{line}\"")
+}
+
+/// `cmd_args` as the whole command line handed to CreateProcess.
+pub fn cmd_command_line(line: &str) -> String {
+    format!("cmd.exe {}", cmd_args(line))
+}
+
 const CMD_REFUSED: &str = "Tandem did not run this command: a value in it holds % or a quote that cmd.exe would read.";
 
 /// Arguments a batch file (or cmd.exe) would re-read as syntax: refused for a `.cmd` or `.bat`
@@ -952,6 +967,24 @@ mod tests {
         // The person's own template text is theirs: a % in it is not a substituted value.
         let own = Prefs { action: "command".into(), text: "echo %USERNAME% \\1".into(), editor: String::new() };
         assert!(matches!(plan(&ok, &own, &Around::default(), false), Some(Run::Command(_))));
+    }
+
+    #[test]
+    fn command_line_never_lets_a_value_add_a_command() {
+        // The exact arguments: cmd strips only the outer quotes added here.
+        assert_eq!(cmd_args(r#""x.txt" y"#), r#"/d /v:off /s /c ""x.txt" y""#);
+        assert_eq!(cmd_command_line("dir"), r#"cmd.exe /d /v:off /s /c "dir""#);
+        // A template that starts with a substituted value: its first quote must survive.
+        let line = fill_cmd("\\1", ["foo&cd.>pwned.txt", "", "", "", ""]).unwrap();
+        assert_eq!(cmd_args(&line), r##"/d /v:off /s /c ""foo&cd.>pwned.txt"""##);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let d = dir("inject", &[]);
+            std::fs::create_dir_all(&d).unwrap();
+            let out = std::process::Command::new("cmd.exe").raw_arg(cmd_args(&line)).current_dir(&d).output().unwrap();
+            assert!(!d.join("pwned.txt").exists(), "a second command ran: {out:?}");
+        }
     }
 
     #[test]

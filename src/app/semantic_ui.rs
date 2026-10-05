@@ -324,7 +324,7 @@ impl App {
                 {
                     use std::os::windows::process::CommandExt;
                     // CREATE_NO_WINDOW: the command's own windows still show.
-                    cmd.raw_arg(format!("/c {line}")).creation_flags(0x0800_0000);
+                    cmd.raw_arg(semantic::cmd_args(&line)).creation_flags(0x0800_0000);
                 }
                 if let Some(d) = cwd.filter(|d| d.is_dir()) {
                     cmd.current_dir(d);
