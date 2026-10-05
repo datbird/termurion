@@ -288,6 +288,8 @@ impl Screen {
         let line = line.max(top);
         let cursor = grid.cursor.point;
         let mut saved = grid[cursor.line].clone();
+        // Rows go and move: no selection maps onto them.
+        self.term.selection = None;
         let cur = self.marks.current;
         // A prompt mark above the cursor row (a two-line prompt) moves down to it.
         if let Some(cur) = cur.filter(|_| saved.mark() == 0) {

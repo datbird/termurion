@@ -161,6 +161,36 @@ impl Selection {
         !(had_runs && self.runs.is_empty())
     }
 
+    // Tandem patch: a height-only resize moved every buffer line by `delta` (pulled from or
+    // pushed into history) and dropped the lines outside `topmost..=bottommost` (rows cut
+    // below a high cursor, the oldest history, the alternate screen's top rows). Only what
+    // still maps exactly stays: runs and the visual anchor on a dropped line are dropped, and
+    // a visual selection's hull becomes its remaining runs'. None when nothing selected is
+    // left, or a logical selection's end left the buffer (it would select other cells).
+    pub fn shift_lines(mut self, delta: i32, topmost: Line, bottommost: Line) -> Option<Selection> {
+        let inside = |line: Line| line >= topmost && line <= bottommost;
+        if let Some((p, _)) = self.visual_anchor.as_mut() {
+            p.line += delta;
+        }
+        self.visual_anchor = self.visual_anchor.filter(|(p, _)| inside(p.line));
+        if !self.runs.is_empty() {
+            let runs: Vec<_> = self
+                .runs
+                .iter()
+                .map(|&(a, b)| (Point::new(a.line + delta, a.column), Point::new(b.line + delta, b.column)))
+                .filter(|(a, _)| inside(a.line))
+                .collect();
+            let (Some(first), Some(last)) = (runs.first(), runs.last()) else { return None };
+            // As `set_visual` makes it.
+            self.region = Range { start: Anchor::new(first.0, Side::Left), end: Anchor::new(last.1, Side::Right) };
+            self.runs = runs;
+            return Some(self);
+        }
+        self.region.start.point.line += delta;
+        self.region.end.point.line += delta;
+        (inside(self.region.start.point.line) && inside(self.region.end.point.line)).then_some(self)
+    }
+
     // Tandem patch: the visual drag anchor.
     /// Where a visual drag began: a grid line, a visual column and whether the press was in
     /// that cell's right half.

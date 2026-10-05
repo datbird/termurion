@@ -106,5 +106,10 @@ test data) is left out. Changes:
     scrolls in place (patch 14's `keep`) and `scroll_down_relative` always (a scroll down never
     moves history). History stays put; runs, the anchor and the hull leaving the region's top
     are dropped or clamped to it as below a fixed top.
+    `Selection::shift_lines` replaces upstream's `rotate` in a height-only `Term::resize`: every
+    line moved by `delta`, and runs and the visual anchor on a line now outside the buffer (rows
+    cut below a high cursor, the oldest full scrollback, the alternate screen's top rows) are
+    dropped; a visual selection's hull becomes its remaining runs', and a logical selection
+    whose end left the buffer is cleared (None, as when nothing is left).
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

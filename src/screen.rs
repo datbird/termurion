@@ -1933,6 +1933,177 @@ mod tests {
         assert!(s.visual_selection_is_whole_lines(a, b));
     }
 
+    /// The copy, a line per row with the padding trimmed.
+    fn copied(s: &Screen) -> Option<Vec<String>> {
+        s.term().selection_to_string().map(|t| t.lines().map(|l| l.trim_end().to_string()).collect())
+    }
+
+    /// Every run and the drag anchor sit on a line the buffer holds, and the highlight
+    /// (`selection_spans`) is the runs.
+    fn in_buffer(s: &Screen) {
+        let (top, bottom) = (s.term().topmost_line().0, s.term().bottommost_line().0);
+        if let Some(sel) = s.term().selection.as_ref() {
+            assert!(sel.runs.iter().all(|(a, _)| a.line.0 >= top && a.line.0 <= bottom), "{:?} outside {top}..={bottom}", sel.runs);
+        }
+        if let Some((line, _, _)) = s.visual_anchor() {
+            assert!(line >= top && line <= bottom, "anchor {line} outside {top}..={bottom}");
+        }
+        let spans = crate::styled_copy::selection_spans(s).0;
+        assert!(spans.iter().all(|(l, _, _)| *l >= top && *l <= bottom), "{spans:?}");
+    }
+
+    /// A height-only shrink with the cursor high cuts the rows below the new bottom: runs on
+    /// them go (the selection with them when nothing is left), and a later grow never
+    /// highlights, copies or reports the fresh rows put there.
+    #[test]
+    fn a_shrink_with_the_cursor_high_drops_the_cut_rows() {
+        let five = || {
+            let mut s = Screen::new(10, 5);
+            s.feed("r0\r\nr1\r\nr2 \u{5d0}\u{5d1}\r\nr3 \u{5d2}\u{5d3}\r\nr4 \u{5d4}\x1b[H".as_bytes());
+            s
+        };
+        // Only the cut rows selected: nothing is left.
+        let mut s = five();
+        visual_drag(&mut s, (3, 0, false), (4, 9, true));
+        s.resize(10, 3);
+        in_buffer(&s);
+        assert!(s.term().selection.is_none());
+        assert_eq!(s.term().selection_to_string(), None);
+        assert_eq!(s.visual_anchor(), None);
+        s.resize(10, 5);
+        assert!(s.term().selection.is_none(), "the fresh rows are not selected");
+        assert!(crate::styled_copy::selection_spans(&s).0.is_empty());
+        // Across the new bottom: row 2 stays as it was, row 3's run goes.
+        let mut s = five();
+        visual_drag(&mut s, (2, 0, false), (3, 9, true));
+        s.resize(10, 3);
+        in_buffer(&s);
+        assert_eq!(runs(&s), vec![(2, 0, 9)]);
+        assert_eq!(copied(&s), Some(vec!["r2 \u{5d0}\u{5d1}".to_string()]));
+        assert_eq!(s.visual_anchor(), Some((2, 0, false)));
+        s.resize(10, 5);
+        assert_eq!(runs(&s), vec![(2, 0, 9)], "the rows grown back are not selected");
+        assert_eq!(copied(&s), Some(vec!["r2 \u{5d0}\u{5d1}".to_string()]));
+    }
+
+    /// The alternate screen keeps no history: a shrink with the cursor at the bottom pushes
+    /// its top rows out, and the runs and the anchor on them go.
+    #[test]
+    fn a_shrink_at_the_bottom_of_the_alternate_screen_drops_its_top_rows() {
+        let five = || {
+            let mut s = Screen::new(10, 5);
+            s.feed(b"\x1b[?1049h");
+            s.feed("a0 \u{5d0}\r\na1 \u{5d1}\r\na2 \u{5d2}\r\na3\r\na4".as_bytes());
+            s
+        };
+        let mut s = five();
+        visual_drag(&mut s, (0, 0, false), (1, 9, true));
+        s.resize(10, 3);
+        in_buffer(&s);
+        assert!(s.term().selection.is_none());
+        assert_eq!(s.term().selection_to_string(), None);
+        // Across the top: row 2 moves up to row 0 and stays selected; the anchor's row is gone.
+        let mut s = five();
+        visual_drag(&mut s, (1, 0, false), (2, 9, true));
+        s.resize(10, 3);
+        in_buffer(&s);
+        assert_eq!(runs(&s), vec![(0, 0, 9)]);
+        assert_eq!(copied(&s), Some(vec!["a2 \u{5d2}".to_string()]));
+        assert_eq!(s.visual_anchor(), None, "the press row is gone");
+        assert!(!s.drag_visual_to((0, 4, true)), "no drag goes on from a row that is gone");
+    }
+
+    /// A full scrollback loses its oldest lines when a shrink at the bottom pushes rows into
+    /// it: runs and the anchor on them go, the rest move up with their text.
+    #[test]
+    fn a_shrink_with_a_full_scrollback_drops_the_oldest_lines() {
+        let filled = || {
+            let mut s = Screen::with_scrollback(10, 5, 1);
+            s.feed("h0\r\ns0 \u{5d0}\r\ns1 \u{5d1}\r\ns2\r\ns3\r\ns4".as_bytes());
+            assert_eq!(s.term().topmost_line().0, -1);
+            s
+        };
+        let mut s = filled();
+        visual_drag(&mut s, (-1, 0, false), (0, 9, true));
+        s.resize(10, 3);
+        in_buffer(&s);
+        assert!(s.term().selection.is_none());
+        assert_eq!(s.term().selection_to_string(), None);
+        let mut s = filled();
+        visual_drag(&mut s, (0, 0, false), (1, 9, true));
+        s.resize(10, 3);
+        in_buffer(&s);
+        assert_eq!(runs(&s), vec![(-1, 0, 9)]);
+        assert_eq!(copied(&s), Some(vec!["s1 \u{5d1}".to_string()]));
+        assert_eq!(s.visual_anchor(), None);
+        // A grow pulls history back: the run moves down with its text.
+        s.resize(10, 5);
+        in_buffer(&s);
+        assert_eq!(copied(&s), Some(vec!["s1 \u{5d1}".to_string()]));
+    }
+
+    /// A width change (with or without a height change, and the reflow it brings) clears a
+    /// visual selection as alacritty clears any selection: nothing maps cell for cell.
+    #[test]
+    fn a_width_change_clears_a_visual_selection() {
+        for (cols, rows) in [(12, 3), (4, 3), (12, 5), (4, 2)] {
+            let mut s = Screen::new(10, 3);
+            s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
+            visual_drag(&mut s, (0, 0, false), (1, 3, true));
+            s.resize(cols, rows);
+            assert!(s.term().selection.is_none(), "{cols}x{rows}");
+            assert_eq!(s.term().selection_to_string(), None);
+            assert_eq!(s.visual_anchor(), None);
+            assert!(crate::styled_copy::selection_spans(&s).0.is_empty());
+        }
+    }
+
+    /// Clearing scrollback, the screen or the lines under a visual selection, a reset, a
+    /// screen switch and Clear To Mark leave it exact or clear it: no run or anchor points at
+    /// a row that moved or went.
+    #[test]
+    fn clears_resets_and_screen_switches_keep_a_visual_selection_exact_or_clear_it() {
+        let fresh = || {
+            let mut s = Screen::with_scrollback(10, 3, 100);
+            s.feed("h \u{5d0}\r\nx\r\ny \u{5d1}\r\nz".as_bytes());
+            assert_eq!(s.term().topmost_line().0, -1);
+            s
+        };
+        // Clear scrollback: a selection on the screen stays on its text; one reaching into
+        // history goes.
+        let mut s = fresh();
+        visual_drag(&mut s, (1, 0, false), (1, 9, true));
+        s.feed(b"\x1b[3J");
+        assert_eq!(runs(&s), vec![(1, 0, 9)]);
+        assert_eq!(copied(&s), Some(vec!["y \u{5d1}".to_string()]));
+        let mut s = fresh();
+        visual_drag(&mut s, (-1, 0, false), (1, 9, true));
+        s.feed(b"\x1b[3J");
+        assert!(s.term().selection.is_none());
+        // The rest clear it.
+        for (what, bytes) in [
+            ("clear screen", &b"\x1b[2J"[..]),
+            ("erase above", b"\x1b[3;1H\x1b[1J"),
+            ("erase below", b"\x1b[1;1H\x1b[0J"),
+            ("erase line", b"\x1b[2;1H\x1b[2K"),
+            ("reset", b"\x1bc"),
+            ("alternate screen", b"\x1b[?1049h"),
+        ] {
+            let mut s = fresh();
+            visual_drag(&mut s, (1, 0, false), (1, 9, true));
+            s.feed(bytes);
+            assert!(s.term().selection.is_none(), "{what}");
+            assert_eq!(s.visual_anchor(), None, "{what}");
+            in_buffer(&s);
+        }
+        // Clear To Mark cuts rows and moves the cursor row to the top.
+        let mut s = fresh();
+        visual_drag(&mut s, (1, 0, false), (1, 9, true));
+        s.clear_from(0);
+        assert!(s.term().selection.is_none(), "clear to mark");
+        in_buffer(&s);
+    }
+
     #[test]
     fn pointer_maps_through_the_order() {
         let mut s = Screen::new(10, 3);

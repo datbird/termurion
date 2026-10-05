@@ -779,9 +779,11 @@ impl<T> Term<T> {
             // Recreate tabs list.
             self.tabs.resize(num_cols);
         } else if let Some(selection) = self.selection.take() {
-            let max_lines = cmp::max(num_lines, old_lines) as i32;
-            let range = Line(0)..Line(max_lines);
-            self.selection = selection.rotate(self, &range, -delta);
+            // Tandem patch: every line moved by `delta`, and the ones now outside the buffer
+            // are gone; upstream's `rotate` clamped the hull onto other rows and kept runs and
+            // the visual anchor on lines the grid no longer holds.
+            let (topmost, bottommost) = (self.topmost_line(), self.bottommost_line());
+            self.selection = selection.shift_lines(delta, topmost, bottommost);
         }
 
         // Clamp vi cursor to viewport.
