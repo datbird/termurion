@@ -1934,6 +1934,7 @@ default_note = "iTermProfilePreferences.m's fallback default is \"xterm\", but I
 help = "The TERM value the terminal reports to programs, e.g. xterm-256color."
 light_dark = false
 macos_only = false
+seed = "xterm-256color"
 
 [[setting]]
 key = "Answerback String"

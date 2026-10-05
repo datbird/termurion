@@ -339,6 +339,21 @@ pub struct Term<T> {
     /// `VT100Terminal.m:877-881`). A reset is always honored. Not a mode bit, so a reset keeps it.
     pub alternate_scroll_allowed: bool,
 
+    /// Tandem patch: the tab stop spacing (iTerm2's Default tab stop width), used by every new
+    /// stop list: a session's start, a reset and a wider grid.
+    pub tab_width: usize,
+
+    /// Tandem patch: the version DA2 reports (iTerm2's xtermVersion).
+    pub xterm_version: u32,
+
+    /// Tandem patch: whether color reports (OSC 4, 10 to 19) give 16 bits a channel; off gives 8
+    /// (iTerm2's oscColorReport16Bits).
+    pub color_report_16: bool,
+
+    /// Tandem patch: whether DECSET 1004 may be set (iTerm2's Focus Reporting key). A set is
+    /// refused while false, and DECRQM then answers reset. A reset is always honored.
+    pub focus_reporting_allowed: bool,
+
     /// Tandem: whether a scroll region that starts at the top but stops above the bottom row
     /// saves the lines leaving it to scrollback (iTerm2's Scrollback With Status Bar).
     scrollback_with_region: bool,
@@ -442,7 +457,7 @@ impl<T> Term<T> {
         let grid = Grid::new(num_lines, num_cols, history_size);
         let inactive_grid = Grid::new(num_lines, num_cols, 0);
 
-        let tabs = TabStops::new(grid.columns());
+        let tabs = TabStops::new(grid.columns(), INITIAL_TABSTOPS);
 
         let scroll_region = Line(0)..Line(grid.screen_lines() as i32);
 
@@ -465,6 +480,10 @@ impl<T> Term<T> {
             emulation_level: 500,
             da1_clipboard: true,
             alternate_scroll_allowed: true,
+            tab_width: INITIAL_TABSTOPS,
+            xterm_version: 2500,
+            color_report_16: true,
+            focus_reporting_allowed: true,
             scrollback_with_region: true,
             cursor_blink_change: true,
             active_charset: Default::default(),
@@ -708,6 +727,13 @@ impl<T> Term<T> {
         self.cursor_blink_change = on;
     }
 
+    /// Tandem patch: sets the tab stop spacing and resets every stop to it, as a new session
+    /// does (iTerm2's Default tab stop width, at least 1). Later resets and wider grids use it.
+    pub fn set_tab_width(&mut self, width: usize) {
+        self.tab_width = width.max(1);
+        self.tabs = TabStops::new(self.columns(), self.tab_width);
+    }
+
     /// Tandem: sets whether a top scroll region above the bottom row saves to scrollback.
     pub fn set_scrollback_with_region(&mut self, on: bool) {
         self.scrollback_with_region = on;
@@ -777,7 +803,7 @@ impl<T> Term<T> {
             self.selection = None;
 
             // Recreate tabs list.
-            self.tabs.resize(num_cols);
+            self.tabs.resize(num_cols, self.tab_width);
         } else if let Some(selection) = self.selection.take() {
             // Tandem patch: every line moved by `delta`, and the ones now outside the buffer
             // are gone; upstream's `rotate` clamped the hull onto other rows and kept runs and
@@ -1404,7 +1430,8 @@ impl<T: EventListener> Handler for Term<T> {
                     301..=400 => 41,
                     _ => 64,
                 };
-                format!("\x1b[>{vt};2500;0c")
+                // Tandem patch: the version is iTerm2's xtermVersion.
+                format!("\x1b[>{vt};{};0c", self.xterm_version)
             },
             Some('=') if level >= 400 => String::from("\x1bP!|6954726D\x1b\\"),
             _ => return,
@@ -1841,13 +1868,22 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Requested write of escape sequence for color code {prefix}: color[{index}]");
 
         let terminator = terminator.to_owned();
+        // Tandem patch: 8-bit channels when the 16-bit reports are off (oscColorReport16Bits).
+        let wide = self.color_report_16;
         self.event_proxy.send_event(Event::ColorRequest(
             index,
             Arc::new(move |color| {
-                format!(
-                    "\x1b]{};rgb:{1:02x}{1:02x}/{2:02x}{2:02x}/{3:02x}{3:02x}{4}",
-                    prefix, color.r, color.g, color.b, terminator
-                )
+                if wide {
+                    format!(
+                        "\x1b]{};rgb:{1:02x}{1:02x}/{2:02x}{2:02x}/{3:02x}{3:02x}{4}",
+                        prefix, color.r, color.g, color.b, terminator
+                    )
+                } else {
+                    format!(
+                        "\x1b]{};rgb:{1:02x}/{2:02x}/{3:02x}{4}",
+                        prefix, color.r, color.g, color.b, terminator
+                    )
+                }
             }),
         ));
     }
@@ -2006,7 +2042,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.grid.reset();
         self.inactive_grid.reset();
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
-        self.tabs = TabStops::new(self.columns());
+        self.tabs = TabStops::new(self.columns(), self.tab_width);
         self.title_stack = Vec::new();
         self.title = None;
         self.selection = None;
@@ -2132,7 +2168,12 @@ impl<T: EventListener> Handler for Term<T> {
                 self.mode.insert(TermMode::MOUSE_MOTION);
                 self.event_proxy.send_event(Event::MouseCursorDirty);
             },
-            NamedPrivateMode::ReportFocusInOut => self.mode.insert(TermMode::FOCUS_IN_OUT),
+            // Tandem patch: refused when Focus Reporting is not allowed.
+            NamedPrivateMode::ReportFocusInOut => {
+                if self.focus_reporting_allowed {
+                    self.mode.insert(TermMode::FOCUS_IN_OUT)
+                }
+            },
             NamedPrivateMode::BracketedPaste => self.mode.insert(TermMode::BRACKETED_PASTE),
             // Mouse encodings are mutually exclusive.
             NamedPrivateMode::SgrMouse => {
@@ -2239,8 +2280,10 @@ impl<T: EventListener> Handler for Term<T> {
                 NamedPrivateMode::ReportAllMouseMotion => {
                     self.mode.contains(TermMode::MOUSE_MOTION).into()
                 },
+                // Tandem patch: a refused mode reads as reset.
                 NamedPrivateMode::ReportFocusInOut => {
-                    self.mode.contains(TermMode::FOCUS_IN_OUT).into()
+                    (self.focus_reporting_allowed && self.mode.contains(TermMode::FOCUS_IN_OUT))
+                        .into()
                 },
                 NamedPrivateMode::Utf8Mouse => self.mode.contains(TermMode::UTF8_MOUSE).into(),
                 NamedPrivateMode::SgrMouse => self.mode.contains(TermMode::SGR_MOUSE).into(),
@@ -2505,9 +2548,11 @@ struct TabStops {
 }
 
 impl TabStops {
+    /// Tandem patch: a stop every `width` columns (at least 1).
     #[inline]
-    fn new(columns: usize) -> TabStops {
-        TabStops { tabs: (0..columns).map(|i| i % INITIAL_TABSTOPS == 0).collect() }
+    fn new(columns: usize, width: usize) -> TabStops {
+        let width = width.max(1);
+        TabStops { tabs: (0..columns).map(|i| i % width == 0).collect() }
     }
 
     /// Remove all tabstops.
@@ -2520,10 +2565,11 @@ impl TabStops {
 
     /// Increase tabstop capacity.
     #[inline]
-    fn resize(&mut self, columns: usize) {
+    fn resize(&mut self, columns: usize, width: usize) {
+        let width = width.max(1);
         let mut index = self.tabs.len();
         self.tabs.resize_with(columns, || {
-            let is_tabstop = index % INITIAL_TABSTOPS == 0;
+            let is_tabstop = index % width == 0;
             index += 1;
             is_tabstop
         });

@@ -82,6 +82,7 @@ impl App {
         match r {
             Request::Trigger(t) => self.trigger_request(pane, t),
             Request::Bell => self.ring_bell(pane),
+            Request::Osc7Disabled => self.osc7_disabled(),
             Request::Notify { title, message } => self.terminal_alert(pane, title, message),
             Request::WindowTitle(title) => self.share_window_title(pane, title),
             Request::SetBadge(t) => self.set_badge(pane, Some(t)),

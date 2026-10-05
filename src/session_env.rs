@@ -53,6 +53,14 @@ pub struct Facts<'a> {
     pub ssh_transport: Option<&'a str>,
 }
 
+/// The `TERM=<type>` entry a new session gets: only when no entry of its own names TERM (any
+/// case) and Tandem's environment has none, as iTerm2 sets it only when the environment lacks
+/// it (`PS:3253-3255`).
+pub fn term_var(env: &[String], inherited_has_term: bool, term: &str) -> Option<String> {
+    let named = env.iter().any(|e| e.split('=').next().is_some_and(|n| n.eq_ignore_ascii_case("TERM")));
+    (!named && !inherited_has_term).then(|| format!("TERM={term}"))
+}
+
 /// iTerm2's `TERM_PROGRAM` (`PS:3357`).
 pub const TERM_PROGRAM: &str = "iTerm.app";
 
@@ -243,5 +251,13 @@ mod tests {
         assert_eq!(numbers(&[], None, None), (0, 0));
         // The holding tab wins over a split target.
         assert_eq!(numbers(&[1, 2], Some(0), Some(1)), (0, 0));
+    }
+
+    #[test]
+    fn term_follows_iterm2() {
+        assert_eq!(term_var(&[], false, "xterm-256color").as_deref(), Some("TERM=xterm-256color"));
+        assert_eq!(term_var(&["Term=x".into()], false, "xterm"), None);
+        assert_eq!(term_var(&["ITERM_PROFILE=a".into()], false, "xterm").as_deref(), Some("TERM=xterm"));
+        assert_eq!(term_var(&[], true, "xterm"), None);
     }
 }

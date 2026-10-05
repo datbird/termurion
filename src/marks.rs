@@ -1027,6 +1027,16 @@ impl Screen {
             Osc::Kitty(body) => self.kitty(&body),
             Osc::Location(url) => {
                 let Some((user, host, path, machine)) = parse_location(&url) else { return };
+                // Accept OSC 7 off: the sequence is ignored, after a warning when it carries a
+                // machine id and no proprietary location code was seen (`MS:4555-4565`,
+                // `MS:4636-4655`). One pending request at most, so a flood queues nothing more.
+                if !self.rules.accept_osc7 {
+                    let pending = self.requests.iter().any(|r| matches!(r, crate::screen::Request::Osc7Disabled));
+                    if machine && !self.saw_location_code && !pending {
+                        self.requests.push(crate::screen::Request::Osc7Disabled);
+                    }
+                    return;
+                }
                 if host.is_some() && (user.is_some() || host != self.shell.host) {
                     self.shell.user = user;
                 }
@@ -1040,8 +1050,12 @@ impl Screen {
                 }
             }
             Osc::Kv(key, value) => match key.as_str() {
-                "CurrentDir" if !value.is_empty() => self.shell.cwd = Some(value),
+                "CurrentDir" if !value.is_empty() => {
+                    self.saw_location_code = true;
+                    self.shell.cwd = Some(value)
+                }
                 "RemoteHost" => {
+                    self.saw_location_code = true;
                     let clean: String = value.chars().filter(|c| !c.is_control()).collect();
                     match clean.rsplit_once('@') {
                         Some((u, h)) => {

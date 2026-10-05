@@ -96,6 +96,7 @@ mod porthole_ui;
 mod prompted_ui;
 mod triggers_ui;
 mod requests_ui;
+mod emu_ui;
 mod jobs_ui;
 mod close_ui;
 mod coprocess_ui;
@@ -367,6 +368,8 @@ pub struct App {
     key_click: Option<PaneId>,
     /// The alternate-scroll inferrer of each pane the wheel has scrolled (app-wide; the person's input only).
     alt_infer: HashMap<PaneId, crate::alt_infer::Inferrer>,
+    /// iTerm2's once-per-process OSC 7 conflict flag (app-wide, never per window).
+    osc7_latch: crate::emu::Osc7Latch,
     /// The pane that had the keyboard at the last check (a move resets its inferrer).
     alt_infer_focus: Option<PaneId>,
     /// Mark navigation: the mark each pane is at.
@@ -1613,6 +1616,7 @@ pub fn run() {
         alt_click: None,
         key_click: None,
         alt_infer: HashMap::new(),
+        osc7_latch: crate::emu::Osc7Latch::default(),
         alt_infer_focus: None,
         mark_pos: HashMap::new(),
         finds: HashMap::new(),
@@ -3226,7 +3230,10 @@ impl App {
             ssh_path: ssh_path.as_deref(),
             ssh_transport: transport,
         };
-        (crate::session_env::overlay(crate::session_env::vars(&facts), &extra), cookie)
+        let mut env = crate::session_env::overlay(crate::session_env::vars(&facts), &extra);
+        // TERM is the profile's Terminal Type, only when nothing else names it (`PS:3253-3255`).
+        env.extend(crate::session_env::term_var(&env, std::env::var_os("TERM").is_some(), &p.string("Terminal Type")));
+        (env, cookie)
     }
 
     /// A pane dropped for good takes its cookie out of the jar (a pane stashed for Undo Close
@@ -3369,6 +3376,7 @@ impl App {
         // Read once, as iTerm2 does ("will not affect existing sessions until you restart").
         self.scroll_ticks.insert(id, (self.globals.bool("ShowLocationsInScrollbar"), self.globals.bool("ShowMarksInScrollbar")));
         self.panes.insert(id, pane);
+        self.apply_emu_rules(id);
         self.apply_new_pane_defaults(id);
     }
 
@@ -3543,6 +3551,12 @@ impl App {
         self.apply_theme_everywhere();
         // The border settings, or the Theme, may have changed.
         self.apply_border_everywhere();
+        // An emulation knob (Advanced > Terminal) may have changed.
+        let ids: Vec<PaneId> = self.panes.keys().copied().collect();
+        for id in ids {
+            self.apply_emu_rules(id);
+        }
+        self.tmux_resend_colors();
         // AllowLiveResize may have changed.
         self.apply_resizable_everywhere();
         // Title bars, the status bar's height or place, or SplitPaneDividerWidth may have
@@ -3627,6 +3641,10 @@ impl App {
             pane.restyle(Palette::from_profile(p, dark), Look::from_profile(p));
             pane.set_bidi_rules(bidi);
             screen_follows_profile(pane.own_mut(), p);
+        }
+        let ids: Vec<PaneId> = self.panes.keys().copied().collect();
+        for id in ids {
+            self.apply_emu_rules(id);
         }
         self.tmux_resend_colors();
         self.tmux_save_tab_colors();

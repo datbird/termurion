@@ -757,6 +757,8 @@ impl App {
         if self.globals.bool("translateScreenToXterm") && crate::screenterm::screen_like(&term, self.globals.bool("convertItalicsToReverseVideoForTmuxBugwardsCompatible")) {
             pane.screen_filter = Some(crate::screenterm::Filter::new(self.globals.bool("convertItalicsToReverseVideoForTmux")));
         }
+        // The rules go in before the restore is fed (the tab width is for a screen's first byte).
+        pane.set_emu(self.emu_rules(), Some(&term));
         pane.own_mut().feed_tmux_restore(&p.restore);
         let pending = match pane.screen_filter.as_mut() {
             Some(f) => f.feed(&p.pending),
@@ -771,7 +773,9 @@ impl App {
         }
         self.scroll_ticks.insert(id, (self.globals.bool("ShowLocationsInScrollbar"), self.globals.bool("ShowMarksInScrollbar")));
         self.panes.insert(id, pane);
+        self.apply_emu_rules(id);
         self.apply_new_pane_defaults(id);
+        let sixteen = self.emu_rules().color_16;
         // The job is watched only when the profile shows an icon (iTerm2's PS:10098).
         let job = profile.int("Icon") != 0;
         let pal = Palette::from_profile(&profile, self.dark());
@@ -779,7 +783,7 @@ impl App {
             t.panes.insert(p.pane, (id, window));
             t.ctl.watch_pane(p.pane, job, &mut t.gw);
             // tmux answers OSC 10 and 11 in the pane from these (3.4 and later).
-            t.ctl.color_reports(p.pane, (pal.fg.r, pal.fg.g, pal.fg.b), (pal.bg.r, pal.bg.g, pal.bg.b), &mut t.gw);
+            t.ctl.color_reports(p.pane, (pal.fg.r, pal.fg.g, pal.fg.b), (pal.bg.r, pal.bg.g, pal.bg.b), sixteen, &mut t.gw);
         }
         self.tmux_flush(gw);
         id
@@ -1005,6 +1009,7 @@ impl App {
     /// Every tmux pane's colors go to tmux again (a profile or the appearance changed).
     pub(super) fn tmux_resend_colors(&mut self) {
         let dark = self.dark();
+        let sixteen = self.emu_rules().color_16;
         let panes: Vec<(PaneId, u32, (u8, u8, u8), (u8, u8, u8))> = self
             .panes
             .values()
@@ -1017,7 +1022,7 @@ impl App {
             .collect();
         for (gw, pane, fg, bg) in panes {
             if let Some(t) = self.tmux.get_mut(&gw) {
-                t.ctl.color_reports(pane, fg, bg, &mut t.gw);
+                t.ctl.color_reports(pane, fg, bg, sixteen, &mut t.gw);
             }
             self.tmux_flush(gw);
         }

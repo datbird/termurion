@@ -3334,4 +3334,28 @@ mod tests {
         out.textures_delta.clear();
         assert_eq!(drawn, 0.0, "IRMemory drew an Int control");
     }
+
+    #[test]
+    fn terminal_rows_follow_iterm2() {
+        let focus = "Apps may turn on Focus Reporting.";
+        let osc7 = "Accept OSC 7 to set username, hostname, and path. Tandem shell integration now reports this information using OSC 7, so turning this off also disables shell integration\u{2019}s username, hostname, and directory tracking.";
+        let tab = "Default tab stop width for new sessions.";
+        let xterm = "xterm version for secondary device attributes (SDA).";
+        let color = "Report 16-bit color values to OSC 4 and 10 through 19.";
+        let depth = "Maximum number of chunks to buffer.";
+        let rows: [(&str, &str, Kind, Value, &str, String); 6] = [
+            ("FocusReportingEnabled", "Terminal", Kind::Bool, Value::Boolean(true), focus, format!("{focus}\nFocus reporting causes Tandem to send an escape sequence when a session gains or loses focus. It can cause problems when an ssh session dies unexpectedly because it gets left on, so some users prefer to disable it.")),
+            ("AcceptOSC7", "Terminal", Kind::Bool, Value::Boolean(true), osc7, osc7.to_string()),
+            ("DefaultTabStopWidth", "Terminal", Kind::Int, Value::Integer(8), tab, format!("{tab}\nNote: this will break drawing in emacs and other apps.")),
+            ("XtermVersion", "Terminal", Kind::Int, Value::Integer(2500), xterm, format!("{xterm}\nIncreasing this number enables more features in apps but may break things. Use 95 to recover pre-3.4.10 behavior.")),
+            ("OscColorReport16Bits", "Experimental Features", Kind::Bool, Value::Boolean(true), color, format!("{color}\nWorks around a bug in older vim where they could not properly parse 8-bit values.")),
+            ("BufferDepth", "Terminal", Kind::Int, Value::Integer(40), depth, format!("{depth}\nIn general, these chunks are 1024 bytes. A larger value increases buffer bloat but\u{2014}up to a limit\u{2014}can improve performance in the fast path of ASCII text.")),
+        ];
+        for (key, section, kind, default, label, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", section, kind), "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+        }
+    }
 }

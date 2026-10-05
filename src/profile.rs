@@ -540,4 +540,9 @@ mod tests {
         assert_eq!(a.name(), "A");
         assert_eq!(a.font("Normal Font").family, "Cascadia Mono");
     }
+
+    #[test]
+    fn stock_terminal_type_is_xterm_256color() {
+        assert_eq!(Profile::stock().string("Terminal Type"), "xterm-256color");
+    }
 }

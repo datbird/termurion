@@ -4128,3 +4128,57 @@ label = "Top & bottom margins"
 type = "int"
 default = 2
 help = "Space between the terminal text and the top and bottom edges of a pane, in points."
+
+[[setting]]
+key = "FocusReportingEnabled"
+tab = "Advanced"
+section = "Terminal"
+label = "Apps may turn on Focus Reporting."
+type = "bool"
+default = true
+help = "Apps may turn on Focus Reporting.\nFocus reporting causes Tandem to send an escape sequence when a session gains or loses focus. It can cause problems when an ssh session dies unexpectedly because it gets left on, so some users prefer to disable it."
+
+[[setting]]
+key = "AcceptOSC7"
+tab = "Advanced"
+section = "Terminal"
+label = "Accept OSC 7 to set username, hostname, and path. Tandem shell integration now reports this information using OSC 7, so turning this off also disables shell integration\u2019s username, hostname, and directory tracking."
+type = "bool"
+default = true
+help = "Accept OSC 7 to set username, hostname, and path. Tandem shell integration now reports this information using OSC 7, so turning this off also disables shell integration\u2019s username, hostname, and directory tracking."
+
+[[setting]]
+key = "DefaultTabStopWidth"
+tab = "Advanced"
+section = "Terminal"
+label = "Default tab stop width for new sessions."
+type = "int"
+default = 8
+help = "Default tab stop width for new sessions.\nNote: this will break drawing in emacs and other apps."
+
+[[setting]]
+key = "XtermVersion"
+tab = "Advanced"
+section = "Terminal"
+label = "xterm version for secondary device attributes (SDA)."
+type = "int"
+default = 2500
+help = "xterm version for secondary device attributes (SDA).\nIncreasing this number enables more features in apps but may break things. Use 95 to recover pre-3.4.10 behavior."
+
+[[setting]]
+key = "OscColorReport16Bits"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Report 16-bit color values to OSC 4 and 10 through 19."
+type = "bool"
+default = true
+help = "Report 16-bit color values to OSC 4 and 10 through 19.\nWorks around a bug in older vim where they could not properly parse 8-bit values."
+
+[[setting]]
+key = "BufferDepth"
+tab = "Advanced"
+section = "Terminal"
+label = "Maximum number of chunks to buffer."
+type = "int"
+default = 40
+help = "Maximum number of chunks to buffer.\nIn general, these chunks are 1024 bytes. A larger value increases buffer bloat but\u2014up to a limit\u2014can improve performance in the fast path of ASCII text."

@@ -196,6 +196,13 @@ pub struct Screen {
     pub(crate) folds: std::collections::HashMap<u32, Vec<Row<Cell>>>,
     next_fold: u32,
     feeds: u32,
+    /// The Advanced emulation rules this screen follows (`set_rules`).
+    pub(crate) rules: crate::emu::Rules,
+    /// The profile's Terminal Type (`set_term_name`).
+    term_name: String,
+    /// Whether OSC 1337 CurrentDir or RemoteHost arrived: iTerm2's per-session
+    /// `_sawProprietaryLocationCode`, which keeps the OSC 7 conflict warning quiet.
+    pub(crate) saw_location_code: bool,
     /// Moves with every change to the main grid's rows, marks or notes; the scrollbar's tick cache keys on it.
     tick_gen: u64,
     /// Key reporting chosen in the menu (on top of the program's requests).
@@ -300,6 +307,8 @@ pub struct Capture {
 /// Something output asked for that the window must do.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
+    /// OSC 7 with a machine id arrived while Accept OSC 7 is off.
+    Osc7Disabled,
     /// Put text on the clipboard (if the user allows programs to).
     ClipboardWrite(String),
     /// Report the clipboard; the selection parameter to echo.
@@ -464,6 +473,9 @@ impl Screen {
             folds: std::collections::HashMap::new(),
             next_fold: 0,
             feeds: 0,
+            rules: crate::emu::Rules::default(),
+            term_name: "xterm-256color".to_string(),
+            saw_location_code: false,
             tick_gen: 0,
             keys: KeyState::new(look.csi_u),
             trusted: true,
@@ -1218,6 +1230,32 @@ impl Screen {
 
     /// Whether the profile lets a program turn DECSET 1007 on (iTerm2's Allow Alternate Mouse
     /// Scroll); turning it off again is always allowed.
+    /// The Advanced emulation rules (`emu::Rules`): the Term's own knobs follow them. The tab
+    /// width is iTerm2's "for new sessions": it resets every stop, so it is taken only while
+    /// the screen has fed no byte.
+    pub fn set_rules(&mut self, rules: crate::emu::Rules) {
+        if self.feeds == 0 {
+            self.term.set_tab_width(rules.tab_width);
+        }
+        self.term.xterm_version = rules.xterm_version;
+        self.term.color_report_16 = rules.color_16;
+        self.term.focus_reporting_allowed = rules.focus_reporting;
+        self.rules = rules;
+    }
+
+    pub fn rules(&self) -> crate::emu::Rules {
+        self.rules
+    }
+
+    /// The profile's Terminal Type, what XTGETTCAP `TN` and `name` report.
+    pub fn set_term_name(&mut self, name: &str) {
+        self.term_name = name.to_string();
+    }
+
+    pub fn term_name(&self) -> &str {
+        &self.term_name
+    }
+
     pub fn set_alternate_scroll_allowed(&mut self, on: bool) {
         self.term.alternate_scroll_allowed = on;
     }
@@ -3167,5 +3205,83 @@ mod tests {
         let cut = crate::screenshot::slice(&s, 0, 3);
         assert!(cut.row_order(0).is_none(), "Bidi off stays off in the slice");
         assert!(cut.blink_allowed);
+    }
+
+    /// 13o Task 1: the plumb rules reach the grid and the scanner as iTerm2's do.
+    #[test]
+    fn plumb_sites_follow_iterm2() {
+        use crate::emu::Rules;
+        let col_of = |s: &Screen, ch: char| (0..20).find(|c| s.term.grid()[Line(0)][Column(*c)].c == ch);
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { tab_width: 4, ..Default::default() });
+        s.feed(b"\ta");
+        assert_eq!(col_of(&s, 'a'), Some(4));
+        let mut s = Screen::new(20, 3);
+        s.feed(b"\ta");
+        assert_eq!(col_of(&s, 'a'), Some(8));
+        // Only a new session takes the width: a screen that has fed bytes keeps its stops.
+        let mut s = Screen::new(20, 3);
+        s.feed(b"x");
+        s.set_rules(Rules { tab_width: 4, ..Default::default() });
+        s.feed(b"\ta");
+        assert_eq!(col_of(&s, 'a'), Some(8));
+        assert_eq!(s.rules().tab_width, 4, "the rules are stored either way");
+
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { xterm_version: 95, ..Default::default() });
+        assert_eq!(String::from_utf8(s.feed(b"\x1b[>c")).unwrap(), "\x1b[>64;95;0c");
+
+        let mut s = Screen::new(20, 3);
+        let bg = s.palette.bg;
+        s.set_rules(Rules { color_16: false, ..Default::default() });
+        let want = format!("\x1b]11;rgb:{:02x}/{:02x}/{:02x}\x07", bg.r, bg.g, bg.b);
+        assert_eq!(String::from_utf8(s.feed(b"\x1b]11;?\x07")).unwrap(), want);
+        let mut s = Screen::new(20, 3);
+        let reply = String::from_utf8(s.feed(b"\x1b]11;?\x07")).unwrap();
+        assert_eq!(reply, format!("\x1b]11;rgb:{0:02x}{0:02x}/{1:02x}{1:02x}/{2:02x}{2:02x}\x07", bg.r, bg.g, bg.b));
+
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { accept_osc7: false, ..Default::default() });
+        s.feed(b"\x1b]7;file://h/tmp\x07");
+        assert_eq!(s.shell.cwd, None);
+        assert!(s.take_requests().is_empty(), "no machine id: no warning");
+        s.feed(b"\x1b]7;file://h/tmp?machineID=ab\x07");
+        assert_eq!(s.shell.cwd, None);
+        let asked = |s: &mut Screen| s.take_requests().iter().filter(|r| matches!(r, Request::Osc7Disabled)).count();
+        assert_eq!(asked(&mut s), 1);
+        s.feed(b"\x1b]7;file://h/tmp?machineID=ab\x07");
+        assert_eq!(asked(&mut s), 1, "the screen does not latch");
+        s.feed(b"\x1b]1337;CurrentDir=/x\x07");
+        s.take_requests();
+        s.feed(b"\x1b]7;file://h/tmp?machineID=ab\x07");
+        assert_eq!(asked(&mut s), 0, "a proprietary code was seen on this screen");
+        let mut other = Screen::new(20, 3);
+        other.set_rules(Rules { accept_osc7: false, ..Default::default() });
+        other.feed(b"\x1b]7;file://h/tmp?machineID=ab\x07");
+        assert_eq!(asked(&mut other), 1);
+        // On, OSC 7 sets the folder and never warns.
+        let mut on = Screen::new(20, 3);
+        on.feed(b"\x1b]7;file://h/tmp?machineID=ab\x07");
+        assert_eq!(on.shell.cwd.as_deref(), Some("/tmp"));
+        assert_eq!(asked(&mut on), 0);
+    }
+
+    /// Preflight B5: the key gates the MODE, so a refused DECSET 1004 shows in DECRQM.
+    #[test]
+    fn focus_reporting_key_gates_the_mode() {
+        use crate::emu::Rules;
+        let mut s = Screen::new(20, 3);
+        s.set_rules(Rules { focus_reporting: false, ..Default::default() });
+        s.feed(b"\x1b[?1004h");
+        assert!(!s.term().mode().contains(TermMode::FOCUS_IN_OUT));
+        assert_eq!(String::from_utf8(s.feed(b"\x1b[?1004$p")).unwrap(), "\x1b[?1004;2$y");
+        s.set_rules(Rules::default());
+        s.feed(b"\x1b[?1004h");
+        assert!(s.term().mode().contains(TermMode::FOCUS_IN_OUT));
+        assert_eq!(String::from_utf8(s.feed(b"\x1b[?1004$p")).unwrap(), "\x1b[?1004;1$y");
+        // A reset is never refused.
+        s.set_rules(Rules { focus_reporting: false, ..Default::default() });
+        s.feed(b"\x1b[?1004l");
+        assert!(!s.term().mode().contains(TermMode::FOCUS_IN_OUT));
     }
 }

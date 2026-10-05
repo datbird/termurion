@@ -1805,6 +1805,17 @@ impl Pane {
         self.live.as_mut().unwrap_or(&mut self.screen)
     }
 
+    /// The Advanced emulation rules and, when given, the profile's Terminal Type, on the pane's
+    /// own screen and any view.
+    pub fn set_emu(&mut self, rules: crate::emu::Rules, term: Option<&str>) {
+        for screen in self.live.iter_mut().chain(std::iter::once(&mut self.screen)) {
+            screen.set_rules(rules);
+            if let Some(t) = term {
+                screen.set_term_name(t);
+            }
+        }
+    }
+
     /// The right-to-left display rules, on the pane's own screen and any view.
     pub fn set_bidi_rules(&mut self, rules: crate::bidi::Rules) {
         if let Some(live) = &mut self.live {

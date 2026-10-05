@@ -112,4 +112,15 @@ test data) is left out. Changes:
     dropped; a visual selection's hull becomes its remaining runs', and a logical selection
     whose end left the buffer is cleared (None, as when nothing is left).
 
+20. `term/mod.rs`: the plumb knobs of milestone 13o. `Term.tab_width` (default 8) and
+    `Term::set_tab_width`: `TabStops::new(columns, width)` and `TabStops::resize(columns,
+    width)` take the spacing (at least 1) and a reset or a wider grid uses `tab_width`;
+    `set_tab_width` resets every stop, so it runs only on a session's first byte (iTerm2's
+    Default tab stop width). `Term.xterm_version` (default 2500) is the version `identify_terminal`
+    puts in DA2. `Term.color_report_16` (default true): `dynamic_color_sequence` formats `{:02x}`
+    per channel when it is false (oscColorReport16Bits). `Term.focus_reporting_allowed` (default
+    true): a DECSET 1004 is refused while false and DECRQM answers reset (iTerm2's
+    `reportFocus = mode && terminalFocusReportingAllowed`, `VT100Terminal.m:857`, `:5691`); a reset
+    is never refused (the shape of patch 16's `alternate_scroll_allowed`).
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

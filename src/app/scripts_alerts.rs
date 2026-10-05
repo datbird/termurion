@@ -122,6 +122,9 @@ pub(super) enum Then {
     AlreadyInstalled(String),
     /// "Script Imported Successfully": OK (0), or Launch (1) the installed path.
     ImportDone(std::path::PathBuf),
+    /// "Shell Integration Setting Conflict": Turn On OSC 7 (0) sets Accept OSC 7, unless the
+    /// question was silenced when it was raised (a remembered answer never flips it).
+    TurnOnOsc7 { was_silenced: bool },
     /// "Could Not Install Script": OK (0), or Try Again (1) with the same file.
     ImportFailed(std::path::PathBuf),
     /// Manage Dependencies' "Run this Command?": OK (0) runs the pip command in a window on
@@ -407,6 +410,7 @@ impl App {
     pub(super) fn scripts_answered(&mut self, then: Then, index: usize) {
         match then {
             Then::Nothing | Then::ErrorRunning | Then::ExportFailed => {}
+            Then::TurnOnOsc7 { was_silenced } => self.osc7_answered(was_silenced, index),
             Then::Paste(pane) => self.paste_answered(pane, Some(index)),
             Then::TmuxClose(anchor, id) => self.tmux_close_answered(anchor, &id, index),
             Then::BroadcastInput(anchor, selector) => {
