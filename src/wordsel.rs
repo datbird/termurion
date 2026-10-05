@@ -12,6 +12,11 @@ pub const ATOM_MAX: usize = 256;
 pub const ATOM_BUDGET: usize = 20_000;
 /// With a regex, atoms are laid out from this many cells before the click, to bound the work.
 const REGEX_REACH: usize = ATOM_BUDGET / 2;
+/// The most atoms the segmenter looks at each way of the click (I2: a bounded window, so a
+/// long run costs no more than a short one).
+pub const SEG_REACH: usize = ATOM_MAX;
+/// The most segmenter calls one click makes; the run's refinement then stands as far as it got.
+pub const SEG_CALLS: usize = ATOM_MAX;
 /// Backtracking steps one regex call may take (the crate's default is a million).
 const BACKTRACK_LIMIT: usize = 20_000;
 
@@ -79,6 +84,12 @@ pub fn class_of(ch: &str, rule: &Rule) -> Class {
 pub trait Segmenter {
     /// The byte range of the word around byte offset `at` of `text`.
     fn word(&self, text: &str, at: usize) -> Range<usize>;
+
+    /// `word` over one text asked many times: a segmenter with set-up cost (ICU's UTF-16 copy and
+    /// iterator) does it once here instead of in every call.
+    fn session<'a>(&'a self, text: &'a str) -> Box<dyn Fn(usize) -> Range<usize> + 'a> {
+        Box::new(move |at| self.word(text, at))
+    }
 }
 
 /// No segmentation: the whole run stands.
@@ -153,26 +164,45 @@ pub struct IcuSegmenter;
 #[cfg(windows)]
 impl Segmenter for IcuSegmenter {
     fn word(&self, text: &str, at: usize) -> Range<usize> {
+        self.session(text)(at)
+    }
+
+    /// The UTF-16 copy and the break iterator are made once and closed when the session drops.
+    fn session<'a>(&'a self, text: &'a str) -> Box<dyn Fn(usize) -> Range<usize> + 'a> {
         let whole = 0..text.len();
-        let Some(api) = icu::api() else { return whole };
+        let Some(api) = icu::api() else { return Box::new(move |_| whole.clone()) };
         let (units, byte_of) = utf16_map(text);
-        let (Ok(len), Some(at16)) = (i32::try_from(units.len()), byte_of.iter().position(|b| *b >= at)) else { return whole };
+        let Ok(len) = i32::try_from(units.len()) else { return Box::new(move |_| whole.clone()) };
         let mut status = 0i32;
-        // SAFETY: `units` outlives the iterator, which is closed before returning.
-        unsafe {
-            let it = (api.open)(icu::UBRK_WORD, c"".as_ptr().cast(), units.as_ptr(), len, &mut status);
-            if it.is_null() || status > 0 {
-                return whole;
-            }
-            let start = (api.preceding)(it, at16 as i32 + 1);
-            let end = (api.following)(it, at16 as i32);
-            (api.close)(it);
-            let back = |i: i32| if i == icu::UBRK_DONE { None } else { byte_of.get(i as usize).copied() };
-            match (back(start).or(Some(0)), back(end).or(Some(text.len()))) {
-                (Some(a), Some(b)) if a <= at && at < b => a..b,
-                _ => whole,
+        // SAFETY: `units` is moved into the session beside the iterator and outlives it (the
+        // guard closes the iterator first when dropped).
+        let it = unsafe { (api.open)(icu::UBRK_WORD, c"".as_ptr().cast(), units.as_ptr(), len, &mut status) };
+        if it.is_null() || status > 0 {
+            return Box::new(move |_| whole.clone());
+        }
+        struct Guard {
+            api: &'static icu::Api,
+            it: *mut std::ffi::c_void,
+            _units: Vec<u16>,
+        }
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                // SAFETY: `it` came from `ubrk_open` and is closed once.
+                unsafe { (self.api.close)(self.it) }
             }
         }
+        let guard = Guard { api, it, _units: units };
+        let text_len = text.len();
+        Box::new(move |at| {
+            let Some(at16) = Some(byte_of.partition_point(|b| *b < at)).filter(|i| *i < byte_of.len()) else { return whole.clone() };
+            // SAFETY: the iterator lives as long as `guard`, which this closure owns.
+            let (start, end) = unsafe { ((guard.api.preceding)(guard.it, at16 as i32 + 1), (guard.api.following)(guard.it, at16 as i32)) };
+            let back = |i: i32| if i == icu::UBRK_DONE { None } else { byte_of.get(i as usize).copied() };
+            match (back(start).or(Some(0)), back(end).or(Some(text_len))) {
+                (Some(a), Some(b)) if a <= at && at < b => a..b,
+                _ => whole.clone(),
+            }
+        })
     }
 }
 
@@ -300,7 +330,8 @@ fn run(atoms: &mut Atoms, ci: usize, seg: &dyn Segmenter) -> Range<usize> {
     if class != Class::Word || big {
         return atoms.byte(atoms.list[s].start)..atoms.byte(atoms.list[e - 1].end);
     }
-    segment(atoms, s, e, ci, seg)
+    // I2: only a window around the click is refined, so the cost no longer grows with the run.
+    segment(atoms, s.max(ci.saturating_sub(SEG_REACH)), e.min(ci + SEG_REACH + 1), ci, seg)
 }
 
 /// `applyICUSegmentationToAtoms`: the run `s..e` refined by the segmenter from the click atom
@@ -309,6 +340,13 @@ fn segment(atoms: &Atoms, s: usize, e: usize, ci: usize, seg: &dyn Segmenter) ->
     let base = atoms.byte(atoms.list[s].start);
     let combined = &atoms.line.text[base..atoms.byte(atoms.list[e - 1].end)];
     let at = |i: usize| atoms.byte(atoms.list[i].start) - base;
+    let session = seg.session(combined);
+    let calls = std::cell::Cell::new(0usize);
+    // The segmenter's answer, or the whole window once the call budget is spent.
+    let word = |at: usize| {
+        calls.set(calls.get() + 1);
+        if calls.get() > SEG_CALLS { 0..combined.len() } else { session(at) }
+    };
     // Forward.
     let mut new_end = ci;
     let mut i = ci;
@@ -318,7 +356,7 @@ fn segment(atoms: &Atoms, s: usize, e: usize, ci: usize, seg: &dyn Segmenter) ->
             i += 1;
             continue;
         }
-        let end = seg.word(combined, at(i)).end;
+        let end = word(at(i)).end;
         for j in i..e {
             if at(j) < end {
                 new_end = j + 1;
@@ -344,7 +382,7 @@ fn segment(atoms: &Atoms, s: usize, e: usize, ci: usize, seg: &dyn Segmenter) ->
             i -= 1;
             continue;
         }
-        let start = seg.word(combined, at(i)).start;
+        let start = word(at(i)).start;
         for j in (s..=i).rev() {
             if at(j) >= start {
                 new_start = j;
@@ -516,5 +554,31 @@ mod tests {
             assert!(calls <= ATOM_BUDGET, "{pattern}: {calls} regex calls");
             assert!(!range.is_empty());
         }
+    }
+
+    /// I2: ICU splitting a long run at every other character costs a bounded window and a
+    /// bounded number of calls, however long the run is.
+    #[test]
+    fn segmentation_is_bounded() {
+        use std::cell::Cell;
+        struct Counting {
+            calls: Cell<usize>,
+            widest: Cell<usize>,
+        }
+        impl Segmenter for Counting {
+            fn word(&self, text: &str, at: usize) -> Range<usize> {
+                self.calls.set(self.calls.get() + 1);
+                self.widest.set(self.widest.get().max(text.len()));
+                let c = text[at..].chars().next().unwrap();
+                at..at + c.len_utf8()
+            }
+        }
+        let text = "\u{65e5}_".repeat(60_000);
+        let seg = Counting { calls: Cell::new(0), widest: Cell::new(0) };
+        let l = line(&text);
+        let range = word_at(&l, 4 * 30_000, &rule("_"), &seg);
+        assert!(!range.is_empty());
+        assert!(seg.calls.get() <= SEG_CALLS, "{} segmenter calls", seg.calls.get());
+        assert!(seg.widest.get() <= (2 * SEG_REACH + 1) * 4, "the segmenter saw {} bytes", seg.widest.get());
     }
 }
