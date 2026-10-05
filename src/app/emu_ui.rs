@@ -174,11 +174,20 @@ impl App {
         self.panes.get(&pane).is_some_and(|p| p.own().dnd_accepting())
     }
 
-    /// The pane under the pointer, with the cell and the pixel (inside its text area) the
-    /// protocol names. winit 0.30 sends no pointer move during a drag, so this is where the
-    /// pointer last was (Decision).
-    fn dnd_place(&self) -> Option<(PaneId, (i64, i64), (i64, i64))> {
-        let (x, y) = self.cursor;
+    /// The pointer in this window's client pixels as the system reports it now
+    /// (`GetCursorPos`, less the client origin). winit 0.30 sends no `CursorMoved` during an OLE
+    /// drag, so `self.cursor` is where the pointer was before the drag began: never a drop target.
+    /// None when the system does not say, and then nothing is routed (fail closed).
+    pub(super) fn pointer_now(&self) -> Option<(f32, f32)> {
+        let screen = super::tab_drag_ui::cursor_screen()?;
+        let origin = self.gpu.as_ref()?.window.inner_position().ok()?;
+        Some(client_point(screen, (origin.x, origin.y)))
+    }
+
+    /// The registered pane at `point`, with the cell and the pixel (inside its text area) the
+    /// protocol names.
+    pub(super) fn dnd_place(&self, point: (f32, f32)) -> Option<(PaneId, (i64, i64), (i64, i64))> {
+        let (x, y) = point;
         let (id, rect) = self.pane_at(x, y)?;
         if !self.dnd_accepts(id) {
             return None;
@@ -189,9 +198,10 @@ impl App {
         Some((id, (i64::from(col), i64::from(row)), px))
     }
 
-    /// winit's `HoveredFile` (once per file): the first one starts the drag over the pane.
+    /// winit's `HoveredFile` (once per file): the first one starts the drag over the pane the
+    /// pointer is over now.
     pub(super) fn dnd_hover(&mut self) {
-        let Some((id, cell, px)) = self.dnd_place() else { return };
+        let Some((id, cell, px)) = self.pointer_now().and_then(|pt| self.dnd_place(pt)) else { return };
         let Some(p) = self.panes.get_mut(&id) else { return };
         let replies = p.own_mut().dnd.drag_entered(cell, px, &[crate::kitty_dnd::MIME_URI_LIST.to_string()]);
         Self::dnd_send(p, replies);
@@ -214,15 +224,11 @@ impl App {
             return;
         }
         let dropped = std::mem::take(&mut self.dnd_dropped);
-        let pane = dropped[0].0;
+        let (pane, _, point) = dropped[0].clone();
         self.enter_pane_window(pane);
-        // Where the pointer is now stands for where it was released (Decision).
-        let (cell, px) = self.dnd_place().filter(|(id, ..)| *id == pane).map_or(((0, 0), (0, 0)), |(_, c, p)| (c, p));
-        let files: Vec<std::path::PathBuf> = dropped
-            .into_iter()
-            .filter(|(id, _)| *id == pane)
-            .map(|(_, f)| if !is_network_path(&f) && f.is_dir() { f.join("") } else { f })
-            .collect();
+        // The pointer as the drop event saw it (`GetCursorPos`), not a later or an older one.
+        let (cell, px) = self.dnd_place(point).filter(|(id, ..)| *id == pane).map_or(((0, 0), (0, 0)), |(_, c, p)| (c, p));
+        let files: Vec<std::path::PathBuf> = dropped.into_iter().filter(|(id, ..)| *id == pane).map(|(_, f, _)| if !is_network_path(&f) && f.is_dir() { f.join("") } else { f }).collect();
         let Some(p) = self.panes.get_mut(&pane) else { return };
         if !p.own().dnd_accepting() {
             return;
@@ -237,6 +243,12 @@ impl App {
             p.reply(r.as_bytes());
         }
     }
+}
+
+/// A screen point in a window's client pixels (`ScreenToClient`): the screen point less the
+/// client area's screen origin.
+fn client_point(screen: (i32, i32), origin: (i32, i32)) -> (f32, f32) {
+    ((screen.0 - origin.0) as f32, (screen.1 - origin.1) as f32)
 }
 
 /// `\\host\share` and `//host/share`: never probed as files.
@@ -269,13 +281,31 @@ mod dnd_tests {
         let hover = src.find("WindowEvent::HoveredFile(_) => self.dnd_hover()").expect("hover arm");
         assert!(src.contains("WindowEvent::HoveredFileCancelled => self.dnd_cancel()"));
         let drop = src.find("WindowEvent::DroppedFile(path)").unwrap();
-        let routed = src[drop..].find("filter(|p| self.dnd_accepts(*p))").expect("registered pane first") + drop;
+        let routed = src[drop..].find("self.dnd_accepts(*p)").expect("registered pane first") + drop;
         let paste = src[drop..].find("self.dropped.push").unwrap() + drop;
         assert!(hover < drop && routed < paste, "the OSC 72 route comes before the name paste");
         assert!(!src[drop..routed].contains("focused_id"), "the focused pane is not a drop target for OSC 72");
         let flush = include_str!("coprocess_ui.rs");
         let f = flush.find("fn flush_dropped").unwrap();
         assert!(flush[f..].contains("self.dnd_flush()"));
+    }
+
+    /// 13o final review I1: a drop is placed by the pointer as the system reports it, never by
+    /// the last pointer move the window saw (stale during an OLE drag).
+    #[test]
+    fn drop_point_is_the_real_pointer() {
+        assert_eq!(client_point((1300, 700), (100, 50)), (1200.0, 650.0));
+        assert_eq!(client_point((90, 40), (100, 50)), (-10.0, -10.0), "outside the window is negative, so no pane");
+        let src = include_str!("mod.rs");
+        let arm = src.find("WindowEvent::DroppedFile(path)").unwrap();
+        let end = src[arm..].find("self.dnd_dropped.push").unwrap() + arm;
+        let hover = src.find("WindowEvent::HoveredFile(_)").unwrap();
+        assert!(!src[arm..end].contains("self.cursor"), "a drop to a registered pane never reads the stale pointer");
+        assert!(!src[hover..arm].contains("self.cursor"));
+        let own = include_str!("emu_ui.rs");
+        let place = own.find("fn dnd_place").unwrap();
+        let place_end = own[place..].find("/// winit's `HoveredFile`").unwrap() + place;
+        assert!(!own[place..place_end].contains("self.cursor"));
     }
 
     #[test]

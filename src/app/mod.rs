@@ -577,7 +577,7 @@ pub struct App {
     dropped: Vec<(PaneId, String)>,
     /// Files dropped on a pane whose program registered for drops (OSC 72), collected until the
     /// event loop turn ends so one drop goes to the program whole (13o Task 9).
-    dnd_dropped: Vec<(PaneId, std::path::PathBuf)>,
+    dnd_dropped: Vec<(PaneId, std::path::PathBuf, (f32, f32))>,
     api: Api,
     /// The session host this Tandem runs its shells in, and what it said at the handshake.
     host: Option<crate::host_client::Client>,
@@ -5938,13 +5938,16 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::HoveredFile(_) => self.dnd_hover(),
             WindowEvent::HoveredFileCancelled => self.dnd_cancel(),
             WindowEvent::DroppedFile(path) => {
-                let (x, y) = self.cursor;
+                // The pointer as the system reports it now: the last pointer move is stale during an
+                // OLE drag, and a file must never reach a pane the person did not drop on.
+                let real = self.pointer_now();
                 // Only the pane under the pointer, and only when its program asked: any other
                 // drop keeps the file-name paste (a background pane never gets a file).
-                if let Some(p) = self.pane_at(x, y).map(|(p, _)| p).filter(|p| self.dnd_accepts(*p)) {
-                    self.dnd_dropped.push((p, path));
+                if let Some((pt, p)) = real.and_then(|pt| self.pane_at(pt.0, pt.1).map(|(p, _)| (pt, p))).filter(|(_, p)| self.dnd_accepts(*p)) {
+                    self.dnd_dropped.push((p, path, pt));
                     return;
                 }
+                let (x, y) = real.unwrap_or(self.cursor);
                 let pane = self.pane_at(x, y).map(|(p, _)| p).or_else(|| self.focused_id());
                 if let Some(p) = pane {
                     self.dropped.push((p, path.to_string_lossy().to_string()));
