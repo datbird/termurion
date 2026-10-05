@@ -41,6 +41,12 @@ pub fn encoding_name(ns_encoding: i64) -> Option<&'static str> {
         0x9400_0100 => "UTF-16LE",
         0x9800_0100 => "UTF-32BE",
         0x9c00_0100 => "UTF-32LE",
+        // 13o's CoreFoundation-derived choices (P18): CF's IANA names, `Big5` kept in mixed
+        // case (iTerm2's EncodingsWithLowerCase.plist lists it), `EUC-KR` as `eucKR`.
+        0x8000_0632 => "GB18030",
+        0x8000_0A03 => "Big5",
+        0x8000_0940 => "eucKR",
+        0x8000_0A02 => "KOI8-R",
         _ => return None,
     })
 }
@@ -408,6 +414,28 @@ mod tests {
             let f = Facts { fallback_lc_ctype: bad.into(), ..facts(&["en-US"], Some("US"), Some("UTF-8")) };
             assert_eq!(lc_ctype(&f, &all).as_deref(), Some("UTF-8"), "{bad:?}: ignored, the encoding name is used");
             assert_eq!(locale_vars(Mode::Minimal, "", &f, true, &all), Outcome::Vars(vec![("LC_CTYPE".into(), "UTF-8".into())]));
+        }
+    }
+
+    /// P18 (13o x 13p): every encoding the profile can name, 13o's `encoding::CHOICES` and the
+    /// schema's Character Encoding choices, has a locale name, so no choice guesses a UTF-8
+    /// locale; the two tables list the same values; only 4 is UTF-8.
+    #[test]
+    fn every_encoding_choice_has_a_locale_name() {
+        for (v, label, _) in crate::encoding::CHOICES {
+            let n = encoding_name(*v).unwrap_or_else(|| panic!("{label} ({v:#x}) has no locale name"));
+            assert!(is_plain(n), "{n}");
+            assert_eq!(n == "UTF-8", *v == crate::encoding::UTF8, "{label}");
+        }
+        let schema: toml::Value = toml::from_str(include_str!("../schema/profile.toml")).unwrap();
+        let row = schema["setting"].as_array().unwrap().iter().find(|r| r["key"].as_str() == Some("Character Encoding")).unwrap();
+        let mut listed: Vec<i64> = row["choices"].as_array().unwrap().iter().map(|c| c["value"].as_integer().unwrap()).collect();
+        let mut table: Vec<i64> = crate::encoding::CHOICES.iter().map(|c| c.0).collect();
+        listed.sort_unstable();
+        table.sort_unstable();
+        assert_eq!(listed, table, "the popup and 13o's table agree");
+        for (v, n) in [(0x8000_0632, "GB18030"), (0x8000_0A03, "Big5"), (0x8000_0940, "eucKR"), (0x8000_0A02, "KOI8-R")] {
+            assert_eq!(encoding_name(v), Some(n));
         }
     }
 
