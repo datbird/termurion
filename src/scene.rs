@@ -215,6 +215,12 @@ impl Default for DrawPrefs {
 }
 
 impl DrawPrefs {
+    /// The prefs the live frame and a screenshot both draw with: the two Advanced switches from
+    /// `globals`, the renderer's face metrics and the window's scale.
+    pub fn from_globals(globals: &crate::globals::Globals, metrics: crate::underline::Metrics, scale: f32) -> DrawPrefs {
+        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale }
+    }
+
     /// The metrics to draw with in a cell of height `ch`: the face's, or (none measured) an
     /// underline on the cell's last pixel and a strikethrough at mid cell.
     fn metrics_for(&self, ch: f32) -> crate::underline::Metrics {
@@ -365,11 +371,7 @@ pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) 
     let r = Rect { x: pane.x + pane.w - w, y: pane.y, w, h: ch + 8.0 };
     frame.quads.push(Quad { rect: r, color: rgba(FIND_BAR, 1.0) });
     // The pane's text under the bar is cut off where the bar starts.
-    for row in frame.rows.iter_mut() {
-        if row.y < r.y + r.h && row.y + ch > r.y && row.clip.x + row.clip.w > r.x {
-            row.clip.w = (r.x - row.clip.x).max(0.0);
-        }
-    }
+    cut_rows_from(frame, r, ch);
     // The end of a long query stays in view, with a caret after it.
     let shown: String = {
         let n = bar.query.chars().count();
@@ -432,6 +434,7 @@ pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cel
         for r in frame.rows.iter_mut().filter(|r| r.y == y && r.clip.x + r.clip.w > bg.x) {
             r.clip.w = (bg.x - r.clip.x).max(0.0);
         }
+        cut_quads(frame, Rect { w: right - bg.x + 1.0e6, ..bg });
         let span = Span { text: text.clone(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
         frame.rows.push(TextRow { x: right - (n + 1.0) * cw, y, spans: vec![span], clip: rect, scale: 1.0 });
     }
@@ -2028,6 +2031,7 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
             row.clip.w = 0.0;
         }
     }
+    cut_quads(frame, r);
     frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
     let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
     let text_end = l.buttons.first().map_or(l.close.x, |b| b.x);
@@ -2215,6 +2219,25 @@ pub fn cut_out(frame: &mut Frame, r: Rect, line_h: f32) {
     }
     frame.rows.extend(extra);
     cut_quads(frame, r);
+}
+
+/// A box drawn over the pane's rows: the text of the rows it touches stops where the box
+/// starts, and so do those rows' underline and strikethrough strokes (the rule for every surface
+/// that cuts text: its strokes go with it, or a program's SGR 4 line draws through the surface).
+pub fn cut_rows_from(frame: &mut Frame, r: Rect, line_h: f32) {
+    let mut bands: Vec<Rect> = Vec::new();
+    for row in frame.rows.iter_mut() {
+        if row.y < r.y + r.h && row.y + line_h > r.y && row.clip.x + row.clip.w > r.x {
+            row.clip.w = (r.x - row.clip.x).max(0.0);
+            let band = Rect { x: r.x, y: row.y, w: 1.0e6, h: line_h * row.scale.max(1.0) };
+            if !bands.iter().any(|b| b.y == band.y) {
+                bands.push(band);
+            }
+        }
+    }
+    for b in bands {
+        cut_quads(frame, b);
+    }
 }
 
 /// The underline and strikethrough strokes already in the frame stop at `r` (a popup drawn over them): each
@@ -3421,11 +3444,7 @@ pub fn toast_rect(text: &str, area: Rect, cell: (f32, f32)) -> Rect {
 pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) -> Rect {
     let r = toast_rect(text, area, cell);
     // Text under the box is cut where the box starts, as under the find bar.
-    for row in frame.rows.iter_mut() {
-        if row.y < r.y + r.h && row.y + cell.1 > r.y && row.clip.x + row.clip.w > r.x {
-            row.clip.w = (r.x - row.clip.x).max(0.0);
-        }
-    }
+    cut_rows_from(frame, r, cell.1);
     frame.quads.push(Quad { rect: r, color: rgba(STAMP_BG, 1.0) });
     let span = Span { text: text.to_string(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
     frame.rows.push(TextRow { x: r.x + 2.0 * cell.0, y: r.y + 6.0, spans: vec![span], clip: r, scale: 1.0 });
@@ -3441,6 +3460,8 @@ pub fn banner_rect(area: Rect, cell: (f32, f32)) -> Rect {
 /// text (in `rows`) draws on top.
 pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) -> Rect {
     let r = banner_rect(area, cell);
+    // The pane's text and strokes under the bar go, as under every surface.
+    cut_out(frame, r, cell.1);
     frame.quads.push(Quad { rect: r, color: rgba(BANNER, 1.0) });
     let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
     frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span], clip: r, scale: 1.0 });
@@ -5582,6 +5603,54 @@ mod tests {
         cut_out(&mut f, Rect { x: 40.0, y: 0.0, w: 20.0, h: 40.0 }, 20.0);
         let xs: Vec<(f32, f32)> = f.underlines.iter().map(|q| (q.rect.x, q.rect.w)).collect();
         assert_eq!(xs, vec![(0.0, 40.0), (60.0, 40.0), (200.0, 10.0)]);
+    }
+
+    /// One rule for every Tandem surface drawn over pane rows: where it cuts the text it cuts the
+    /// underline and strikethrough strokes too, or a program's SGR 4 or 9 line would draw through it.
+    #[test]
+    fn surfaces_over_rows_cut_the_strokes_too() {
+        let line = format!("\x1b[4;9m{}\x1b[0m\r\n", "x".repeat(80)).repeat(23);
+        let s = screen(line.as_bytes());
+        let hits = |f: &Frame, r: Rect| f.underlines.iter().chain(&f.strikes).any(|q| q.rect.x < r.x + r.w && q.rect.x + q.rect.w > r.x && q.rect.y < r.y + r.h && q.rect.y + q.rect.h > r.y);
+        let fresh = || {
+            let mut f = Frame::default();
+            pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false));
+            assert!(hits(&f, RECT), "the strokes are there before the surface");
+            f
+        };
+        let mut f = fresh();
+        let r = toast(&mut f, "saved", RECT, CELL);
+        assert!(!hits(&f, r), "toast {r:?}");
+        let mut f = fresh();
+        let r = banner(&mut f, "oops", RECT, CELL);
+        assert!(!hits(&f, r), "banner {r:?}");
+        let mut f = fresh();
+        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false };
+        let mode = find_bar(&mut f, &bar, RECT, CELL);
+        let r = Rect { x: mode.x, y: 0.0, w: 10.0, h: CELL.1 };
+        assert!(!hits(&f, r), "find bar {r:?}");
+        let mut f = fresh();
+        let ib = crate::infobar::Bar { id: "x".into(), text: "hi".into(), buttons: vec!["_Yes".into()], important: true };
+        let l = crate::infobar::layout(&ib, RECT, CELL);
+        let r = info_bar(&mut f, &ib, &l, CELL);
+        assert!(!hits(&f, r), "info bar {r:?}");
+        let mut f = fresh();
+        timestamps(&mut f, &[(3, "12:00:00".to_string())], RECT, CELL);
+        let r = Rect { x: 800.0 - 100.0, y: 60.0, w: 100.0, h: CELL.1 };
+        assert!(!hits(&f, r), "timestamp {r:?}");
+    }
+
+    #[test]
+    fn draw_prefs_come_from_the_globals() {
+        let mut g = crate::globals::Globals::empty(std::path::Path::new("none.toml"));
+        let m = crate::underline::Metrics { underline_offset: 2.0, thickness: 1.0, x_height: 8.0, baseline: 16.0 };
+        let on = DrawPrefs::from_globals(&g, m, 2.0);
+        assert!(on.underline_hyperlinks && !on.solid_underlines, "iTerm2's defaults");
+        assert_eq!((on.metrics, on.scale), (m, 2.0));
+        g.set("UnderlineHyperlinks", toml::Value::Boolean(false));
+        g.set("SolidUnderlines", toml::Value::Boolean(true));
+        let off = DrawPrefs::from_globals(&g, m, 1.0);
+        assert!(!off.underline_hyperlinks && off.solid_underlines);
     }
 
     #[test]

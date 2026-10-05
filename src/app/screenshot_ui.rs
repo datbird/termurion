@@ -22,6 +22,7 @@ impl App {
         // A batch must fit in one texture; iTerm2 renders 1000 lines at a time.
         let max_rows = ((8192.0 / cell.1).floor() as usize).clamp(1, 1000);
         let bg = screen.palette.bg;
+        let draw = self.draw_prefs();
         let mut out = Vec::with_capacity((width as usize) * (total_h as usize) * 4);
         for (b0, b1) in screenshot::batches(first, last, max_rows) {
             let count = b1 + 1 - b0;
@@ -30,7 +31,7 @@ impl App {
                 screenshot::carry_cursor(screen, &mut batch, b0 as i32 - history);
             }
             let h = count as f32 * cell.1;
-            let mut frame = Frame { clear: rgba(bg, 1.0), ..Default::default() };
+            let mut frame = Frame { clear: rgba(bg, 1.0), gap_underlines: !draw.solid_underlines, ..Default::default() };
             let area = Rect { x: 0.0, y: 0.0, w: width, h };
             if let Some((image, mode, blend)) = &background {
                 // The image is laid out over the whole screenshot, and this batch shows its slice.
@@ -38,7 +39,7 @@ impl App {
                 let pieces = crate::bgimage::quads(*mode, image.size, container, area);
                 scene::background(&mut frame, area, &pieces, image, bg, *blend);
             }
-            scene::pane_with(&mut frame, &batch, Rect { x: pad, y: 0.0, w: cols as f32 * cell.0, h }, cell, cursor, &crate::cursor_look::CursorLook::shown(cursor), &scene::DrawPrefs::default(), None);
+            scene::pane_with(&mut frame, &batch, Rect { x: pad, y: 0.0, w: cols as f32 * cell.0, h }, cell, cursor, &crate::cursor_look::CursorLook::shown(cursor), &draw, None);
             let gpu = self.gpu.as_mut().ok_or("no window")?;
             out.extend(gpu.renderer.draw_offscreen(&frame, width as u32, h as u32)?);
         }

@@ -4820,11 +4820,17 @@ impl App {
         self.route_wheel(id, col, row, ev);
     }
 
+    /// How underlines and strikethrough draw, for the live frame and a screenshot alike: the
+    /// Advanced switches, the renderer's face metrics and the window's scale.
+    pub(super) fn draw_prefs(&mut self) -> scene::DrawPrefs {
+        let metrics = self.gpu.as_mut().map(|g| g.renderer.underline_metrics()).unwrap_or(scene::DrawPrefs::default().metrics);
+        scene::DrawPrefs::from_globals(&self.globals, metrics, self.scale())
+    }
+
     fn build_frame(&mut self) -> Frame {
         let mut attention: Option<Instant> = None;
         let cell = self.cell();
-        let metrics = self.gpu.as_mut().map(|g| g.renderer.underline_metrics()).unwrap_or(scene::DrawPrefs::default().metrics);
-        let draw = scene::DrawPrefs { underline_hyperlinks: self.globals.bool("UnderlineHyperlinks"), solid_underlines: self.globals.bool("SolidUnderlines"), metrics, scale: self.scale() };
+        let draw = self.draw_prefs();
         let palette_bg = self.panes.values().next().map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
         let mut frame = Frame { clear: rgba(palette_bg, 1.0), gap_underlines: !draw.solid_underlines, ..Default::default() };
         // Only a window made for alpha draws see-through; its panes' alphas come from their profiles.

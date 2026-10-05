@@ -1517,6 +1517,9 @@ mod tests {
         assert!(cell(&s, 0).underline_color().is_none());
         // Out of range values and a pseudo-random SGR stream never panic.
         s.feed(b"\x1b[0m\x1b[58:5:300mA\x1b[58:2:::999mB\x1b[4:9mC\x1b[0m");
+        // Out of range values set no wrong color: A and B carry none, and an unknown 4:n is a Single underline.
+        assert!(cell(&s, 0).underline_color().is_none() && cell(&s, 1).underline_color().is_none());
+        assert!(cell(&s, 2).flags.contains(Flags::UNDERLINE) && !cell(&s, 2).flags.intersects(Flags::UNDERCURL | Flags::DOUBLE_UNDERLINE | Flags::DOTTED_UNDERLINE | Flags::DASHED_UNDERLINE));
         let mut seed = 12345u32;
         let mut bytes = Vec::new();
         for _ in 0..5000 {
