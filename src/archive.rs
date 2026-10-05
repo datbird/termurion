@@ -91,6 +91,14 @@ pub fn session_archived(session: &Value) -> bool {
     session.get(ARCHIVED_KEY).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
+/// Why an automatic archive may not go to `path` (the folder joined to the name, "~" and an empty
+/// folder being the home folder): a network or device path is refused unless the person typed it
+/// in "Archive Directory" themselves, as an automatic log's folder is (13q final fix 25).
+pub fn network_refusal(folder: &str, path: &std::path::Path) -> Option<String> {
+    let typed = crate::start_dir::network_folder(folder) && !folder.contains("\\(");
+    (crate::session_log::is_network_log_path(path) && !typed).then(|| "the archive folder is a network path".to_string())
+}
+
 /// The recent list with `path` appended (`AMB:43-51`: duplicates kept), the oldest dropped
 /// past ten.
 pub fn add_recent(list: &[String], path: &str) -> Vec<String> {
@@ -209,6 +217,20 @@ mod tests {
         assert!(!session_archived(&session), "an ordinary session");
         mark_archived(&mut session);
         assert!(session_archived(&session), "the mark is on the session table");
+    }
+
+    /// A network home folder gets no archive, a share the person typed does.
+    #[test]
+    fn archive_folders_follow_the_log_network_rule() {
+        let home = std::path::Path::new(r"\\fileserver\home\u");
+        for folder in ["", "~", "~\\arch", "~/arch"] {
+            let path = crate::session_log::join_log_path(folder, "a.itermarchive", home);
+            assert!(network_refusal(folder, &path).is_some(), "{folder:?}");
+        }
+        let typed = r"\\srv\arch";
+        assert_eq!(network_refusal(typed, &crate::session_log::join_log_path(typed, "a.itermarchive", home)), None, "a share the person typed is theirs");
+        let local = std::path::Path::new(r"C:\Users\u");
+        assert_eq!(network_refusal("~", &crate::session_log::join_log_path("~", "a.itermarchive", local)), None);
     }
 
     #[test]

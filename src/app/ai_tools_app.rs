@@ -144,16 +144,21 @@ impl App {
                 done(ai_actions::DONE, "Current line deleted by AI.")
             }
             Call::RestartSession => {
-                // `api_restart_session`'s rule (`isRestartable`).
-                let restartable = self.panes.get(&pane).is_some_and(|p| p.tmux_io().is_none() && !p.gateway && !p.dvr.read_only);
+                // `api_restart_session`'s rule (`isRestartable`), with the same refusals as the
+                // menu's Restart Session (a git window, a kept-open pane, a recording).
+                let restartable = self.panes.get(&pane).is_some_and(|p| (p.exited.is_some() || !p.gateway) && self.restartable(pane));
                 if !restartable {
                     return Some(done(ai_actions::NOT_RESTARTABLE, "AI tried to restart the session but it is not restartable."));
                 }
                 self.enter_pane_window(pane);
-                self.restart_via(pane, crate::session_end::Via::Api);
+                let step = self.restart_via(pane, crate::session_end::Via::Api);
                 self.ai_staged.remove(&pane);
                 self.redraw();
-                done(ai_actions::RESTARTING, "Session restarted by AI.")
+                match step {
+                    // Programs the ended shell left are named to the person first.
+                    crate::session_end::RestartStep::AskRunningJobs | crate::session_end::RestartStep::AskSurvivors | crate::session_end::RestartStep::Offer => done(ai_actions::WAITING, "AI asked to restart the session; waiting for the person."),
+                    crate::session_end::RestartStep::Now => done(ai_actions::RESTARTING, "Session restarted by AI."),
+                }
             }
             Call::GetManPage { cmd } => {
                 let (kind, ..) = self.ai_shell_of(pane);

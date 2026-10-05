@@ -1838,16 +1838,19 @@ impl Pane {
             return;
         }
         let (parts, millis) = crate::session_log::now_parts();
+        // The pane's own palette, not a Filter or Zoom view's.
+        let own_palette = self.own().palette.clone();
         if let Some(log) = self.log.as_mut() {
-            log.cooked(bytes, &self.screen.palette, (&parts, millis));
+            log.cooked(bytes, &own_palette, (&parts, millis));
         }
     }
 
     /// Compact logging's own text (the revealed prompt, a sent command): plain text and HTML only.
     pub fn log_text(&mut self, text: &str) {
+        let own_palette = self.own().palette.clone();
         let Some(log) = self.log.as_mut() else { return };
         let (parts, millis) = crate::session_log::now_parts();
-        log.cooked_text(text, (&parts, millis));
+        log.cooked_text(text, &own_palette, (&parts, millis));
     }
 
     /// Ends the log: nothing is written after this (`PS:4728`, the close). What was queued still
@@ -2018,6 +2021,10 @@ impl Pane {
     /// commands, already framed by every framer they pass through): straight to the pty, past
     /// the connecting queue, Buffer Input and `send_routed`. Nothing else writes this way.
     fn write_no_broadcast(&mut self, bytes: &[u8]) {
+        // A dead console takes nothing, and the probe is about bytes that were really sent.
+        if self.exited.is_some() {
+            return;
+        }
         self.composer.probe = None;
         self.write_pty(bytes);
     }
@@ -2067,7 +2074,7 @@ impl Pane {
         if let Some(live) = &mut self.live {
             live.resize(cols as usize, rows as usize);
         }
-        if let Some(pty) = &self.pty {
+        if let Some(pty) = self.pty.as_ref().filter(|_| self.exited.is_none()) {
             if let Err(e) = pty.resize(cols, rows) {
                 self.error = Some(e);
             }
@@ -2087,7 +2094,7 @@ impl Pane {
         let start = crate::marks::clear_start(&lines, self.screen.current_prompt_line(), cursor);
         self.screen.clear_from(start);
         self.screen.term_mut().selection = None;
-        if let Some(pty) = &self.pty {
+        if let Some(pty) = self.pty.as_ref().filter(|_| self.exited.is_none()) {
             if let Err(e) = pty.clear() {
                 self.error = Some(e);
             }
@@ -3668,6 +3675,31 @@ mod tests {
         assert!(c.shell_gen > live, "ending a live shell is an exit");
     }
 
+    /// Item 17: an ended pane's screen still resizes and clears, but nothing reaches its dead
+    /// console (B8's ruling counts resizes).
+    #[test]
+    fn an_ended_pane_resizes_its_screen_not_its_console() {
+        let mut p = start("cmd.exe /c exit 0");
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
+        let before = touches();
+        assert!(p.resize(40, 9), "the size changed");
+        assert_eq!((p.own().term().columns(), p.own().term().screen_lines()), (40, 9), "the screen followed");
+        p.clear_to_last_mark();
+        assert_eq!(touches(), before, "no resize or clear reaches a dead console");
+        assert!(p.error.is_none(), "{:?}", p.error);
+    }
+
+    /// Item 22: a write that a dead pane refuses leaves the composer's probe alone.
+    #[test]
+    fn a_refused_write_keeps_the_composer_probe() {
+        let mut p = start("cmd.exe /c exit 0");
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
+        p.composer.probe = crate::prompt_state::ClearProbe::start(b"\x08", Instant::now());
+        assert!(p.composer.probe.is_some());
+        p.write_no_broadcast(b"x");
+        assert!(p.composer.probe.is_some(), "the guard comes before the probe is cleared");
+    }
+
     /// Every field of a Pane is classified here: a new field fails to compile until it is named,
     /// and the test says which pane it comes from after a relaunch.
     #[test]
@@ -3698,6 +3730,8 @@ mod tests {
         old.session_note = "note".into();
         old.arrangement = Some(("arr".into(), "sess".into()));
         old.created = std::time::SystemTime::UNIX_EPOCH;
+        let old_created_at = Instant::now().checked_sub(Duration::from_secs(5)).unwrap();
+        old.created_at = old_created_at;
         old.auto_log_id = 99;
         old.composer.probe = crate::prompt_state::ClearProbe::start(b"\x08", Instant::now());
         // The dead shell's state.
@@ -3738,6 +3772,7 @@ mod tests {
         assert_eq!(new.session_note, "note");
         assert_eq!(new.arrangement, Some(("arr".into(), "sess".into())));
         assert_eq!(new.created, std::time::SystemTime::UNIX_EPOCH, "a restart keeps the creation time (B6)");
+        assert_eq!(new.created_at, old_created_at, "and the clock of the short-lived warning");
         assert_eq!(new.auto_log_id, 99);
         assert!(new.composer.probe.is_none());
         // From the fresh one.
@@ -3845,8 +3880,8 @@ mod tests {
 
     #[test]
     fn a_live_shell_ends_before_its_restart() {
-        let mut p = Pane::recording(1, 10, 3);
-        p.exited = None;
+        let mut p = start("cmd.exe /q /k");
+        assert!(p.pty.is_some() && p.exited.is_none(), "a running shell");
         p.end_live_shell();
         assert!(p.exited.is_some(), "the pane is ended");
         assert!(p.ended, "its end is handled: nothing reports it again");

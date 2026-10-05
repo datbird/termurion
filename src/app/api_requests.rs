@@ -1010,6 +1010,8 @@ impl App {
     /// RestartSession (`H:3497-3522`): buried sessions are found; tmux panes, gateways and
     /// loaded recordings have no program to run again (`isRestartable`). The session's window
     /// is entered first, so the new shell gets that window's numbers.
+    /// RestartSession answers OK also when the restart only queued the survivors question (the
+    /// status is iTerm2's: the request was accepted; the person decides).
     fn api_restart_session(&mut self, r: &pb::RestartSessionRequest) -> pb::restart_session_response::Status {
         use pb::restart_session_response::Status;
         let pane = self.api_session_pane(r.session_id.as_deref());

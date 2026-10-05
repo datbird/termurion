@@ -170,6 +170,10 @@ impl App {
             }
             Err(_) => path,
         };
+        if let Some(why) = ar::network_refusal(&folder, &path) {
+            let _ = crate::notify::show_with(ar::FAILED_TITLE, &ar::failed_text(&path.display().to_string(), &why), false);
+            return;
+        }
         if !path.is_absolute() {
             let _ = crate::notify::show_with(ar::FAILED_TITLE, &ar::failed_text(&path.display().to_string(), "the archive folder is not a full path"), false);
             return;
@@ -186,6 +190,9 @@ impl App {
         if all {
             let ids: Vec<PaneId> = self.panes.keys().copied().collect();
             for id in ids {
+                // The archive is built from the pane's own window (a parked window's frame and
+                // title are its own).
+                self.enter_pane_window(id);
                 self.auto_archive(id);
             }
         }
@@ -349,7 +356,9 @@ mod tests {
         }
         assert!(out.lock().unwrap()[0].is_err(), "a missing folder is a failure, never created");
         assert!(!dir.exists(), "no folder was created");
-        let src = production();
+        // Restore Archive stats the file the person picked (its size, before reading it); the
+        // folders of the writer are never probed.
+        let src = production().replace("std::fs::metadata(path)", "");
         for forbidden in ["create_dir", ".exists()", "is_dir()", "metadata(", "canonicalize"] {
             assert!(!src.contains(forbidden), "archive_ui never probes or creates a folder: {forbidden}");
         }

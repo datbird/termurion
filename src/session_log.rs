@@ -905,12 +905,12 @@ impl Logger {
 
     /// Compact logging's prompt and command text. Escapes in it are dropped like the
     /// program's.
-    pub fn cooked_text(&mut self, text: &str, now: (&Parts, u16)) {
+    pub fn cooked_text(&mut self, text: &str, palette: &Palette, now: (&Parts, u16)) {
         if !self.style.cooked() || self.error.is_some() || self.sink.is_none() {
             return;
         }
         let items = Cooker::new().feed(text.replace("\r\n", "\n").as_bytes());
-        self.emit(items, &Palette::default(), now);
+        self.emit(items, palette, now);
     }
 
     fn emit(&mut self, items: Vec<Cooked>, palette: &Palette, now: (&Parts, u16)) {
@@ -1340,7 +1340,7 @@ mod tests {
         let mut l = Logger::new(Style::PlainText, sink, None, None, None);
         l.cooked(b"a\r\nb\r\n", &pal, (&p, 7));
         assert_eq!(text(&out), "a\nb\n");
-        l.cooked_text("p> ls\n", (&p, 7));
+        l.cooked_text("p> ls\n", &Palette::default(), (&p, 7));
         assert_eq!(text(&out), "a\nb\np> ls\n");
 
         let (sink, out) = vec_sink();
@@ -1754,7 +1754,7 @@ mod tests {
         assert_eq!(text(&shared), "col1col2\n\n");
         let (html_sink, html) = vec_sink();
         let mut h = Logger::new(Style::Html, html_sink, None, None, None);
-        h.cooked_text("a\tb", (&parts(), 0));
+        h.cooked_text("a\tb", &Palette::default(), (&parts(), 0));
         assert!(!text(&html).contains('\t'), "{:?}", text(&html));
     }
 }

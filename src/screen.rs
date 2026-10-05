@@ -530,6 +530,11 @@ impl KeyState {
 /// The tick behind `Screen::tab_status_gen`.
 static TAB_STATUS_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// What a program's end (and a restart's end message) writes to the parser before the cursor is
+/// put back: SGR, charset, an open hyperlink, the scroll region, origin mode, wrap, insert mode,
+/// and a synchronized update or color scheme reports the program left on (13q B9).
+pub(crate) const END_RESET: &str = "\x1b[0m\x1b(B\x0f\x1b]8;;\x1b\\\x1b[r\x1b[?6l\x1b[?7h\x1b[4l\x1b[?2026l\x1b[?2031l";
+
 impl Screen {
     /// Applies OSC 21337 or Set Tab Status fields (`tabstatus::Status::apply`); a change moves
     /// `tab_status_gen`. True when something changed.
@@ -2165,9 +2170,7 @@ impl Screen {
         let _ = self.feed_raw(format!("\x1b[{};{}H", c.line.0.max(0) + 1, c.column.0 + 1).as_bytes());
         // The ESC in it cancelled any sequence the program left open; the scanner follows (it
         // reads the program's bytes only, so it would still be inside that sequence).
-        if self.osc.pending.is_some() {
-            self.osc.restart();
-        }
+        self.restart_scanner();
         // Key reporting goes back to the profile's: no program flags, no menu choices.
         self.term.clear_keyboard_modes();
         self.keys = KeyState { literal: self.keys.literal, ..KeyState::new(self.keys.profile_csi_u) };
@@ -2216,7 +2219,9 @@ impl Screen {
             (c.line.0.max(0) + 1, c.column.0 + 1)
         };
         // DECSTBM homes the cursor, so it is put back: the text stays where it was.
-        let _ = self.feed_raw(format!("\x1b[0m\x1b(B\x0f\x1b]8;;\x1b\\\x1b[r\x1b[?6l\x1b[?7h\x1b[4l\x1b[{row};{col}H").as_bytes());
+        let _ = self.feed_raw(format!("{END_RESET}\x1b[{row};{col}H").as_bytes());
+        // The parser has no mode 2031; the scanner's own flag goes off here.
+        self.set_color_scheme_reports(false);
         self.restart_scanner();
         self.term.clear_keyboard_modes();
         self.keys = KeyState { literal: self.keys.literal, ..KeyState::new(self.keys.profile_csi_u) };
@@ -5049,5 +5054,33 @@ mod tests {
         s.program_ended();
         assert!(!s.progress.visible());
         assert!(s.take_requests().iter().any(|r| matches!(r, Request::Progress(false))));
+    }
+
+    /// A program that ended mid synchronized update, or with color reports on, leaves neither
+    /// behind, through either reset (one string, item 20).
+    #[test]
+    fn the_end_reset_clears_sync_and_color_reports() {
+        for ended in [true, false] {
+            let mut s = Screen::new(20, 4);
+            s.feed(b"\x1b[?2031h\x1b[?2026hheld");
+            assert!(s.sync_deadline().is_some() && s.color_reports, "set up");
+            if ended {
+                s.program_ended();
+            } else {
+                s.append_end_message("Session Ended", "-");
+            }
+            assert_eq!(s.sync_deadline(), None, "ended={ended}: the synchronized update is over");
+            assert!(!s.color_reports, "ended={ended}: color reports are off");
+        }
+    }
+
+    /// A soft reset leaves a string the program left open, as the scanner restart does.
+    #[test]
+    fn a_soft_reset_restarts_the_scanner() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"\x1b]0;half a title");
+        s.soft_reset();
+        s.feed(b"ok");
+        assert!(s.all_text().contains("ok"), "{:?}", s.all_text());
     }
 }

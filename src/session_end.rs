@@ -157,6 +157,9 @@ pub const TMUX_CLOSE_QUESTION: &str = "Close tmux windows after detaching?";
 pub const ALWAYS: &str = "Always";
 pub const NEVER: &str = "Never";
 pub const RESTART_BAR: &str = "session-end-restart";
+/// The bar of a pane that keeps ending (P11): its own, so its buttons never reach the restart
+/// offer's "Don't Ask Again".
+pub const STORM_BAR: &str = "session-end-storm";
 pub const TMUX_CLOSE_BAR: &str = "session-end-tmux-close";
 
 /// The words of the end message: the custom text (Advanced) when set, for every message as

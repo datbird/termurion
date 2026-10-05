@@ -46,7 +46,7 @@ impl App {
     /// A problem starting the automatic log (`PSA:116-129`).
     fn log_problem(&mut self, profile: &str, error: &str) {
         let text = sl::cannot_start_text(profile, error);
-        self.ask_scripts(ask(sl::LOGGING_PROBLEM_HEADING, &text, &["OK"], Some("NoSyncCannotStartLogging"), Kind::Permanent, Then::LogProblem));
+        self.ask_scripts(ask(sl::LOGGING_PROBLEM_HEADING, &text, &["OK"], Some("NoSyncCannotStartLogging"), Kind::Persistent, Then::LogProblem));
     }
 
     /// Automatic logging at a session's start, at its restart and for a restored session
@@ -112,7 +112,7 @@ impl App {
             return Err("the session has ended".into());
         }
         let profile = self.store.get(&p.profile).unwrap_or_else(|| self.store.default_profile()).clone();
-        let palette = p.screen.palette.clone();
+        let palette = p.own().palette.clone();
         let timestamps = (style == Style::PlainText && self.globals.bool("LogTimestampsWithPlainText")).then(|| self.globals.string("LogTimestampFormat"));
         let stylesheet = (style == Style::Html).then(|| {
             let font = profile::parse_font(&profile.string("Normal Font"));

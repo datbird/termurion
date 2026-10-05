@@ -3203,12 +3203,14 @@ impl App {
 
     /// A restart asked for by `via` (13q B7): what it does first follows `restart_step`. A running
     /// shell's question is the menu's only (the API never asks); programs an ended shell left ask
-    /// on every route, and the timer shows the offer instead.
-    pub(super) fn restart_via(&mut self, id: PaneId, via: crate::session_end::Via) {
+    /// on every route, and the timer shows the offer instead. Returns what it did first, so a caller
+    /// can tell a restart from a question that is waiting for the person.
+    pub(super) fn restart_via(&mut self, id: PaneId, via: crate::session_end::Via) -> crate::session_end::RestartStep {
         use crate::session_end::{restart_step, RestartStep};
-        let Some(p) = self.panes.get(&id) else { return };
+        let Some(p) = self.panes.get(&id) else { return RestartStep::Offer };
         let left = if p.exited.is_some() { p.live_survivors() } else { Vec::new() };
-        match restart_step(via, p.exited.is_some(), left.len()) {
+        let step = restart_step(via, p.exited.is_some(), left.len());
+        match step {
             RestartStep::Now => self.restart_pane(id),
             RestartStep::AskRunningJobs => {
                 if !self.alert_waits(|then| matches!(then, scripts_alerts::Then::Restart(p, _) if *p == id)) {
@@ -3224,6 +3226,7 @@ impl App {
             }
             RestartStep::Offer => self.offer_restart(id),
         }
+        step
     }
 
     /// The restart itself, after whatever question it needed was answered.
@@ -3259,6 +3262,11 @@ impl App {
                 self.ssh_pane_dropped(&old);
                 self.forget_cookie(&old);
                 old.own_mut().append_end_message(&text, &divider);
+                // A start that then fails leaves a whole ended pane: its log written out, its
+                // program's state (progress bar, drops, held output) gone. Decision: the failure
+                // fires no SessionEnded; the person asked for the restart.
+                old.stop_log();
+                old.own_mut().program_ended();
                 old.end_live_shell();
                 self.panes.insert(id, old);
             }
@@ -3279,7 +3287,7 @@ impl App {
         crate::session_log::wait_for_writers(Duration::from_millis(500));
         // The offer and the tmux question are about the shell that is gone (`willRecycleSession`).
         if let Some(b) = self.bars.get_mut(&id) {
-            b.retain(|x| x.id != crate::session_end::RESTART_BAR && x.id != crate::session_end::TMUX_CLOSE_BAR);
+            b.retain(|x| ![crate::session_end::RESTART_BAR, crate::session_end::STORM_BAR, crate::session_end::TMUX_CLOSE_BAR, session_end_ui::SURVIVORS_BAR].contains(&x.id.as_str()));
         }
         // The pid is reusable once the shell is gone: the watcher forgets the one the pane has or had.
         if let Some(pid) = old.shell_pid().or(old.exit_pid()) {
@@ -3317,7 +3325,7 @@ impl App {
             }
         }
         if let Some(b) = self.bars.get_mut(&id) {
-            b.retain(|x| x.id != crate::session_end::RESTART_BAR);
+            b.retain(|x| x.id != crate::session_end::RESTART_BAR && x.id != crate::session_end::STORM_BAR);
         }
         self.ask(id, crate::session_end::RESTART_BAR, crate::session_end::FAILED_TO_START, &[], true);
     }
@@ -3331,7 +3339,9 @@ impl App {
         self.enter_pane_window(id);
         match crate::session_end::answer_step(asked, &now) {
             crate::session_end::AnswerStep::Restart => self.restart_confirmed(id),
-            crate::session_end::AnswerStep::AskAgain => self.restart_via(id, crate::session_end::Via::Menu),
+            crate::session_end::AnswerStep::AskAgain => {
+                self.restart_via(id, crate::session_end::Via::Menu);
+            }
         }
     }
 
@@ -4191,6 +4201,9 @@ impl App {
 
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        // The pane's own window is current for all that follows: an archive of a pane closed in
+        // a background window is built from that window's frame, style and title.
+        self.enter_pane_window(id);
         // Archive On Closure writes first, while the pane still has its text (`PS:4057-4065`).
         self.auto_archive(id);
         // An ended session closed too soon warns first (`terminate`, `PS:3887`).
@@ -4327,6 +4340,14 @@ impl App {
                 self.flush_notes();
                 // The last window closed: its logs are written out, its shells end (iTerm2), and the
                 // host hears it.
+                // Panes held for Undo Close (the stack, and this close's own capture) release their
+                // logs too: nothing else would wait for their writers.
+                self.clear_undo();
+                if let Some(c) = self.undo_capture.as_mut() {
+                    for p in &mut c.panes {
+                        p.stop_log();
+                    }
+                }
                 self.finish_archives(false, std::time::Duration::from_secs(5));
                 self.close_all_logs();
                 self.leave_host(false);

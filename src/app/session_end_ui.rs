@@ -7,7 +7,7 @@ use crate::session_end::{self as se, EndAction, Exit, Message, Outcome, TmuxAfte
 use super::scripts_alerts::{Ask, Then};
 
 /// The bar that lists programs an exited shell left running (13q P8; Tandem's own).
-const SURVIVORS_BAR: &str = "session-end-survivors";
+pub(super) const SURVIVORS_BAR: &str = "session-end-survivors";
 
 /// The panes whose end is new: exited and not yet handled. Each end is handled once.
 pub(super) fn newly_ended(panes: &[(PaneId, bool, bool)]) -> Vec<PaneId> {
@@ -169,6 +169,10 @@ impl App {
         let left = self.panes.get(&id).map(|p| p.live_survivors()).unwrap_or_default();
         match outcome {
             Outcome::Close | Outcome::Finished { close: true } if !left.is_empty() => {
+                // A buried window comes back to show it (`PS:4786`), as the Finished arm does.
+                if self.buried.contains(id) {
+                    self.disinter(id);
+                }
                 let text = format!("{} still running: {}. Closing this pane ends them.", if left.len() == 1 { "1 program is".to_string() } else { format!("{} programs are", left.len()) }, left.join(", "));
                 self.ask(id, SURVIVORS_BAR, &text, &["OK"], true);
             }
@@ -190,7 +194,7 @@ impl App {
                     history.push(now);
                     self.pending_restarts.insert(id, now + delay);
                 } else {
-                    self.ask(id, se::RESTART_BAR, se::KEEPS_ENDING, &[se::RESTART, se::DONT_ASK_AGAIN], true);
+                    self.ask(id, se::STORM_BAR, se::KEEPS_ENDING, &[se::RESTART], true);
                 }
             }
             Outcome::Finished { close } => {
@@ -240,6 +244,14 @@ impl App {
     pub(super) fn session_end_bar(&mut self, pane: PaneId, id: &str, button: Option<&str>, event_loop: &ActiveEventLoop) -> bool {
         match id {
             SURVIVORS_BAR => true,
+            // The keeps-ending bar: Restart asks the way the offer does; there is no Don't Ask Again.
+            se::STORM_BAR => {
+                if button == Some(se::RESTART) && self.panes.contains_key(&pane) {
+                    self.enter_pane_window(pane);
+                    self.restart_via(pane, se::Via::Bar);
+                }
+                true
+            }
             se::RESTART_BAR => {
                 match button {
                     Some(b) if b == se::RESTART => {
@@ -367,9 +379,74 @@ mod tests {
     fn a_restart_answer_checks_the_shell_it_was_asked_about() {
         let m = include_str!("mod.rs");
         let a = body(m, "pub(super) fn restart_answered(");
-        assert!(a.contains("answer_step(asked, &now)") && a.contains("AnswerStep::AskAgain => self.restart_via("), "a stale answer asks again");
+        assert!(a.contains("answer_step(asked, &now)") && a.contains("self.restart_via(id, crate::session_end::Via::Menu)"), "a stale answer asks again");
         let v = body(m, "pub(super) fn restart_via(");
         assert_eq!(v.matches("Then::Restart(id, about)").count(), 2, "each question carries its shell");
         assert!(body(include_str!("session_end_ui.rs"), "pub(super) fn tick_restarts(").contains("let asked = self.alert_waits("), "the timer waits for the answer");
+    }
+
+    /// Final review item 11: a restart over a live shell stops its log and ends its program's
+    /// state before the shell is ended, so a failed start leaves nothing half-ended. Decision: the
+    /// failure fires no SessionEnded (the person restarted it; nothing ended on its own).
+    #[test]
+    fn a_failed_restart_leaves_a_whole_ended_pane() {
+        let r = body(include_str!("mod.rs"), "    fn restart_confirmed(");
+        let live = r.find("old.end_live_shell();").unwrap();
+        assert!(r[..live].contains("old.stop_log();") && r[..live].contains("old.own_mut().program_ended();"), "the log and the program's state end first");
+    }
+
+    /// Items 12 and 13: an archive is built from the pane's own window, and the last close writes
+    /// out the logs of panes held for Undo Close too.
+    #[test]
+    fn archives_and_last_close_use_the_right_window_and_panes() {
+        let m = include_str!("mod.rs");
+        let close = body(m, "    fn close_pane(");
+        assert!(close.find("self.enter_pane_window(id);").unwrap() < close.find("self.auto_archive(id);").unwrap(), "a background pane archives its own window");
+        assert!(close.find("self.enter_pane_window(id);").unwrap() < close.find("self.warn_short_lived(id);").unwrap());
+        let fin = body(include_str!("archive_ui.rs"), "    pub(super) fn finish_archives(");
+        assert!(fin.find("self.enter_pane_window(id);").unwrap() < fin.find("self.auto_archive(id);").unwrap(), "Quit enters each pane's window first");
+        let last = &close[close.find("The last window closed: its logs are written out").unwrap()..];
+        assert!(last.find("self.clear_undo();").unwrap() < last.find("self.close_all_logs();").unwrap(), "held panes release their logs first");
+        assert!(last.find("self.undo_capture").unwrap() < last.find("self.close_all_logs();").unwrap(), "so do the panes held by this close");
+    }
+
+    /// Items 14 and 15: a restart clears the survivors bar; the keeps-ending bar is its own bar,
+    /// and its buttons never silence every restart offer.
+    #[test]
+    fn restart_bars_are_cleaned_and_the_storm_bar_is_its_own() {
+        let r = body(include_str!("mod.rs"), "    fn restart_confirmed(");
+        assert!(r.contains("super::session_end_ui::SURVIVORS_BAR") || r.contains("SURVIVORS_BAR"), "a restart removes the survivors bar");
+        assert_ne!(se::STORM_BAR, se::RESTART_BAR);
+        let ui = include_str!("session_end_ui.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(ui.contains("self.ask(id, se::STORM_BAR, se::KEEPS_ENDING, &[se::RESTART], true)"), "the storm bar asks under its own id, with no Don't Ask Again");
+        let bar = body(ui, "    pub(super) fn session_end_bar(");
+        assert!(bar.contains("se::STORM_BAR =>"), "its own handler");
+    }
+
+    /// Item 16: the AI tool follows the API's restartable rule and says when the person was asked.
+    #[test]
+    fn the_ai_restart_tool_follows_the_api_rule() {
+        let t = body(include_str!("ai_tools_app.rs"), "            Call::RestartSession => {");
+        assert!(t.contains("self.restartable(pane)") && t.contains("p.exited.is_some() || !p.gateway"), "the API's rule");
+        assert!(t.contains("ai_actions::WAITING") && t.contains("RestartStep::"), "a queued question is not reported as a restart");
+    }
+
+    /// Item 21: a buried pane whose end shows the survivors bar comes back first.
+    #[test]
+    fn the_survivors_bar_brings_a_buried_pane_back() {
+        let ui = include_str!("session_end_ui.rs").split("#[cfg(test)]").next().unwrap();
+        let arm = &ui[ui.find("Outcome::Close | Outcome::Finished { close: true } if !left.is_empty() =>").unwrap()..];
+        assert!(arm.find("self.disinter(id);").unwrap() < arm.find("self.ask(id, SURVIVORS_BAR").unwrap());
+    }
+
+    /// Items 18 and 19: the log reads the pane's own palette, and its refusal is Persistent.
+    #[test]
+    fn the_log_reads_the_own_palette_and_refuses_persistently() {
+        let log = include_str!("log_ui.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(body(log, "    pub(super) fn start_log(").contains("p.own().palette.clone()"));
+        assert!(log.contains("Some(\"NoSyncCannotStartLogging\"), Kind::Persistent"));
+        let pane = include_str!("../pane.rs");
+        assert!(pane.contains("log.cooked(bytes, &self.screen.own().palette, ") || pane.contains("log.cooked(bytes, &own_palette, "), "log_cooked reads the own palette");
+        assert!(pane.contains("log.cooked_text(text, &own_palette, "), "so does compact logging's text");
     }
 }
