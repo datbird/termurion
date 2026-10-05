@@ -2070,6 +2070,22 @@ mod tests {
     }
 
     #[test]
+    fn powerline_rows_follow_iterm2() {
+        let wide = schema::find_global("MakeSomePowerlineSymbolsWide").expect("a row");
+        assert_eq!((wide.tab.as_str(), wide.section.as_str()), ("Advanced", "Drawing"));
+        assert_eq!(wide.kind, Kind::Bool);
+        assert_eq!(wide.default, Some(Value::Boolean(true)));
+        assert_eq!(wide.label, "Draw certain Powerline symbols double-width?");
+        assert_eq!(wide.help, "Draw certain Powerline symbols double-width?\nThis matches how most \u{201c}nerd\u{201d} fonts render them, but your favorite one might not do this. An example code point that is affected is U+E0B8.");
+        let ext = schema::find_global("SupportPowerlineExtendedSymbols").expect("a row");
+        assert_eq!((ext.tab.as_str(), ext.section.as_str()), ("Advanced", "Drawing"));
+        assert_eq!(ext.kind, Kind::Bool);
+        assert_eq!(ext.default, Some(Value::Boolean(true)));
+        assert_eq!(ext.label, "Include extended symbols when drawing Powerline natively.");
+        assert_eq!(ext.help, ext.label);
+    }
+
+    #[test]
     fn anti_alias_rows_follow_iterm2() {
         let row = schema::find_global("ForceAntialiasingOnRetina").expect("a row");
         assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Drawing"));

@@ -324,11 +324,13 @@ pub struct FaceKey {
     pub non_ascii_aa: bool,
     /// The profile's Thin Strokes setting (0 to 4).
     pub thin: u8,
+    /// The profile's Draw Powerline Glyphs (a face that ignores the switch is another face).
+    pub powerline: bool,
 }
 
 impl FaceKey {
     pub fn new(family: &str, alt_family: Option<&str>, px: f32, h: f32, v: f32) -> FaceKey {
-        FaceKey { family: family.to_string(), alt_family: alt_family.map(str::to_string), px_bits: quantize_px(px).to_bits(), h_bits: h.to_bits(), v_bits: v.to_bits(), profile_bits: 0, use_bold: true, use_italic: true, ascii_ligatures: false, non_ascii_ligatures: false, ascii_aa: true, non_ascii_aa: true, thin: 4 }
+        FaceKey { family: family.to_string(), alt_family: alt_family.map(str::to_string), px_bits: quantize_px(px).to_bits(), h_bits: h.to_bits(), v_bits: v.to_bits(), profile_bits: 0, use_bold: true, use_italic: true, ascii_ligatures: false, non_ascii_ligatures: false, ascii_aa: true, non_ascii_aa: true, thin: 4, powerline: false }
     }
 
     pub fn px(&self) -> f32 {
@@ -659,6 +661,11 @@ impl Renderer {
     pub fn face_masks(&self, id: u16, retina: bool, force_aa_on_retina: bool) -> fonts::MaskRules {
         let k = &self.face_of(id).key;
         fonts::MaskRules { use_non_ascii_font: k.alt_family.is_some(), ascii_aa: k.ascii_aa, non_ascii_aa: k.non_ascii_aa, retina, force_aa_on_retina, thin: i64::from(k.thin) }
+    }
+
+    /// Whether face `id`'s profile draws Powerline symbols itself.
+    pub fn face_powerline(&self, id: u16) -> bool {
+        self.face_of(id).key.powerline
     }
 
     /// The ligature rules of face `id` for `scene::DrawPrefs`: the profile's two switches, the

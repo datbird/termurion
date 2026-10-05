@@ -308,11 +308,17 @@ pub struct DrawPrefs {
     pub masks: crate::fonts::MaskRules,
     /// Tandem draws box and block characters itself (`DisableCustomBoxDrawing` off).
     pub custom_boxes: bool,
+    /// The pane's profile draws Powerline symbols itself (Draw Powerline Glyphs).
+    pub powerline: bool,
+    /// `SupportPowerlineExtendedSymbols`.
+    pub powerline_extended: bool,
+    /// `MakeSomePowerlineSymbolsWide`.
+    pub powerline_wide: bool,
 }
 
 impl Default for DrawPrefs {
     fn default() -> Self {
-        DrawPrefs { underline_hyperlinks: true, solid_underlines: false, metrics: crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 }, scale: 1.0, ligatures: STOCK_LIGATURES, alt_level: 2, masks: crate::fonts::MaskRules::STOCK, custom_boxes: true }
+        DrawPrefs { underline_hyperlinks: true, solid_underlines: false, metrics: crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 }, scale: 1.0, ligatures: STOCK_LIGATURES, alt_level: 2, masks: crate::fonts::MaskRules::STOCK, custom_boxes: true, powerline: false, powerline_extended: true, powerline_wide: true }
     }
 }
 
@@ -323,7 +329,7 @@ impl DrawPrefs {
     /// The prefs the live frame and a screenshot both draw with: the two Advanced switches from
     /// `globals`, the renderer's face metrics and the window's scale.
     pub fn from_globals(globals: &crate::globals::Globals, metrics: crate::underline::Metrics, scale: f32) -> DrawPrefs {
-        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale, ligatures: crate::fonts::LigatureRules { prefer_speed: globals.bool("PreferSpeedToFullLigatureSupport"), ..STOCK_LIGATURES }, alt_level: STOCK_LIGATURES.level, masks: crate::fonts::MaskRules { retina: scale >= 2.0, force_aa_on_retina: globals.bool("ForceAntialiasingOnRetina"), ..crate::fonts::MaskRules::STOCK }, custom_boxes: !globals.bool("DisableCustomBoxDrawing") }
+        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale, ligatures: crate::fonts::LigatureRules { prefer_speed: globals.bool("PreferSpeedToFullLigatureSupport"), ..STOCK_LIGATURES }, alt_level: STOCK_LIGATURES.level, masks: crate::fonts::MaskRules { retina: scale >= 2.0, force_aa_on_retina: globals.bool("ForceAntialiasingOnRetina"), ..crate::fonts::MaskRules::STOCK }, custom_boxes: !globals.bool("DisableCustomBoxDrawing"), powerline: false, powerline_extended: globals.bool("SupportPowerlineExtendedSymbols"), powerline_wide: globals.bool("MakeSomePowerlineSymbolsWide") }
     }
 
     /// The metrics to draw with in a cell of height `ch`: the face's, or (none measured) an
@@ -992,9 +998,12 @@ pub fn pane_with(
             // contrast, blocks exempt (S2); a blinked-out or hidden cell's text is a space (S7).
             let mut chars = c.text.chars();
             if let (true, Some(drawn), None) = (draw.custom_boxes, chars.next(), chars.next()) {
-                if crate::boxdraw::drawn(drawn, false, false) {
+                if crate::boxdraw::drawn_with(drawn, draw.powerline, draw.powerline_extended, false) {
                     flush(&mut piece, frame);
-                    frame.glyphs.push(CellGlyph { c: drawn, rect: Rect { x: rect.x + at as f32 * cw, y, w: cw, h: ch }, color: c.fg, face, clip: rect });
+                    // A wide Powerline symbol draws over the next cell too; the grid keeps one cell
+                    // (the next cell's text still lays out at its own column), as in iTerm2.
+                    let span = if draw.powerline && crate::powerline::wide(u32::from(drawn), draw.powerline_wide) { 2.0 } else { 1.0 };
+                    frame.glyphs.push(CellGlyph { c: drawn, rect: Rect { x: rect.x + at as f32 * cw, y, w: cw * span, h: ch }, color: c.fg, face, clip: rect });
                     before = None;
                     continue;
                 }
@@ -5592,6 +5601,60 @@ mod tests {
         let mut f = Frame::default();
         pane(&mut f, &s2, RECT, CELL, false, &CursorLook::shown(false));
         assert_eq!(f.glyphs.iter().map(|g| g.rect.x).collect::<Vec<_>>(), vec![visual as f32 * CELL.0]);
+    }
+
+    /// Task 7: a wide Powerline symbol is one glyph two cells wide; the grid keeps one cell.
+    #[test]
+    fn powerline_glyphs_follow_iterm2() {
+        let on = DrawPrefs { powerline: true, powerline_wide: true, powerline_extended: true, ..DrawPrefs::default() };
+        let draw = |s: &Screen, prefs: &DrawPrefs| {
+            let mut f = Frame::default();
+            pane_with(&mut f, s, RECT, CELL, false, &CursorLook::shown(false), prefs, None, crate::render::DEFAULT_FACE);
+            f
+        };
+        let s = screen("\u{E0B8}x".as_bytes());
+        let f = draw(&s, &on);
+        assert_eq!(f.glyphs.iter().map(|g| (g.c, g.rect.x, g.rect.w)).collect::<Vec<_>>(), vec![('\u{E0B8}', 0.0, 2.0 * CELL.0)], "two cells wide at column 0");
+        assert_eq!(f.rows.iter().map(|r| (r.x, r.spans.iter().map(|s| s.text.as_str()).collect::<String>().trim_end().to_string())).collect::<Vec<_>>(), vec![(CELL.0, "x".to_string())], "x stays at column 1");
+        // The wide key off: one cell. The profile switch off: no glyph, the font draws it.
+        let narrow = draw(&s, &DrawPrefs { powerline_wide: false, ..on.clone() });
+        assert_eq!(narrow.glyphs.iter().map(|g| g.rect.w).collect::<Vec<_>>(), vec![CELL.0]);
+        assert!(draw(&s, &DrawPrefs { powerline: false, ..on.clone() }).glyphs.is_empty());
+        // An extended symbol only with the extended key; a core one always.
+        let s2 = screen("\u{E0C0}\u{E0B0}".as_bytes());
+        assert_eq!(draw(&s2, &on).glyphs.len(), 2);
+        let core_only = draw(&s2, &DrawPrefs { powerline_extended: false, ..on.clone() });
+        assert_eq!(core_only.glyphs.iter().map(|g| g.c).collect::<Vec<_>>(), vec!['\u{E0B0}']);
+        // The symbol takes the cell's color and ends the text piece around it.
+        let s3 = screen("a\u{E0B0}b".as_bytes());
+        let f = draw(&s3, &on);
+        assert_eq!(f.glyphs.len(), 1);
+        assert_eq!(f.rows.len(), 2, "a and b are separate pieces");
+    }
+
+    /// Seam S4 (13m x 13n), Task 7: a wide Powerline glyph on a right-to-left row sits at the
+    /// visual column of its cell, two cells wide, and the grid width is unchanged.
+    #[test]
+    fn powerline_wide_in_rtl_row() {
+        let on = DrawPrefs { powerline: true, ..DrawPrefs::default() };
+        // A right-to-left paragraph of aleph, bet, the symbol and x: the symbol and x are one
+        // left-to-right run to the left of the Hebrew, so the symbol (logical 2) is not at column 2.
+        let mut s = screen("\u{5d0}\u{5d1}\u{E0B8}x".as_bytes());
+        s.bidi_rules.detect_direction = true;
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &on, None, crate::render::DEFAULT_FACE);
+        let visual = s.visual_col(0, 2);
+        assert_ne!(visual, 2, "the display order moved the symbol");
+        assert_eq!(f.glyphs.iter().map(|g| (g.c, g.rect.x, g.rect.w)).collect::<Vec<_>>(), vec![('\u{E0B8}', visual as f32 * CELL.0, 2.0 * CELL.0)]);
+        // A right-to-left paragraph sits at the right edge; the glyph moves with it.
+        let mut s2 = screen("\u{5d0}\u{E0B8}\u{5d1}".as_bytes());
+        s2.bidi_rules.detect_direction = true;
+        s2.bidi_rules.right_justify = true;
+        let visual = s2.visual_col(0, 1);
+        assert!(visual > 2, "right-justified: {visual}");
+        let mut f = Frame::default();
+        pane_with(&mut f, &s2, RECT, CELL, false, &CursorLook::shown(false), &on, None, crate::render::DEFAULT_FACE);
+        assert_eq!(f.glyphs.iter().map(|g| (g.rect.x, g.rect.w)).collect::<Vec<_>>(), vec![(visual as f32 * CELL.0, 2.0 * CELL.0)]);
     }
 
     /// Seam S7 (13m x 13n): a blinking box line blinks with the text, and a cell under a label

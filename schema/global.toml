@@ -1331,6 +1331,24 @@ default = false
 help = "Use your typeface\u2019s box-drawing characters instead of Tandem\u2019s custom drawing code.\nYou must restart Tandem after changing this setting."
 
 [[setting]]
+key = "MakeSomePowerlineSymbolsWide"
+tab = "Advanced"
+section = "Drawing"
+label = "Draw certain Powerline symbols double-width?"
+type = "bool"
+default = true
+help = "Draw certain Powerline symbols double-width?\nThis matches how most \u201cnerd\u201d fonts render them, but your favorite one might not do this. An example code point that is affected is U+E0B8."
+
+[[setting]]
+key = "SupportPowerlineExtendedSymbols"
+tab = "Advanced"
+section = "Drawing"
+label = "Include extended symbols when drawing Powerline natively."
+type = "bool"
+default = true
+help = "Include extended symbols when drawing Powerline natively."
+
+[[setting]]
 key = "DetectParagraphDirection"
 tab = "Advanced"
 section = "Experimental Features"

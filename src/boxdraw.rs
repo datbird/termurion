@@ -306,10 +306,15 @@ fn shape(c: char) -> Option<Shape> {
 }
 
 /// Whether Tandem draws `c` itself: never with `disabled` (`DisableCustomBoxDrawing`). The
-/// Powerline set (`powerline`, the profile's Draw Powerline Glyphs) joins it in Task 7.
+/// Powerline set joins it with `powerline` (the profile's Draw Powerline Glyphs), with its
+/// extended symbols too (`SupportPowerlineExtendedSymbols`, on here).
 pub fn drawn(c: char, powerline: bool, disabled: bool) -> bool {
-    let _ = powerline;
-    !disabled && shape(c).is_some()
+    drawn_with(c, powerline, true, disabled)
+}
+
+/// `drawn` with the extended Powerline symbols chosen by `extended`.
+pub fn drawn_with(c: char, powerline: bool, extended: bool, disabled: bool) -> bool {
+    !disabled && (shape(c).is_some() || (powerline && crate::powerline::drawn(u32::from(c), extended)))
 }
 
 /// One stroke of a components string: the letters of its ends and, for a curve, of its controls.
@@ -408,52 +413,56 @@ pub fn pieces(c: char) -> Vec<Piece> {
                 Piece::Solid(vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
             })
             .collect(),
-        Some(Shape::Path(components, true)) => {
-            let mut polygons: Vec<Vec<(f32, f32)>> = Vec::new();
-            let mut current: Vec<(f32, f32)> = Vec::new();
-            for seg in parse(components) {
-                let (a, b) = (unit_point(seg.from), unit_point(seg.to));
-                if current.last() != Some(&a) {
-                    if !current.is_empty() {
-                        polygons.push(std::mem::take(&mut current));
-                    }
-                    current.push(a);
+        Some(Shape::Path(components, solid)) => path_pieces(components, solid),
+    }
+}
+
+/// The pieces of one components string (`solid` fills it): the summary `pieces` gives a path.
+pub(crate) fn path_pieces(components: &str, solid: bool) -> Vec<Piece> {
+    if solid {
+        let mut polygons: Vec<Vec<(f32, f32)>> = Vec::new();
+        let mut current: Vec<(f32, f32)> = Vec::new();
+        for seg in parse(components) {
+            let (a, b) = (unit_point(seg.from), unit_point(seg.to));
+            if current.last() != Some(&a) {
+                if !current.is_empty() {
+                    polygons.push(std::mem::take(&mut current));
                 }
-                current.push(b);
+                current.push(a);
             }
-            polygons.push(current);
-            polygons
-                .into_iter()
-                .map(|mut p| {
-                    if p.len() > 2 && p.first() == p.last() {
-                        p.pop();
-                    }
-                    Piece::Solid(p)
-                })
-                .collect()
+            current.push(b);
         }
-        Some(Shape::Path(components, false)) => {
-            let mut out: Vec<Piece> = Vec::new();
-            for seg in parse(components) {
-                let (a, b) = (unit_point(seg.from), unit_point(seg.to));
-                if let Some((c1, c2)) = seg.controls {
-                    // Written from the end the arc starts at, vertical first.
-                    out.push(Piece::Curve { from: b, c1: unit_point(c2), c2: unit_point(c1), to: a, weight: Weight::Light });
-                    continue;
+        polygons.push(current);
+        polygons
+            .into_iter()
+            .map(|mut p| {
+                if p.len() > 2 && p.first() == p.last() {
+                    p.pop();
                 }
-                let weight = weight_of(&seg);
-                let same = |p: &Piece| matches!(p, Piece::Line { from, to, .. } if (*from, *to) == (a, b) || (*from, *to) == (b, a));
-                match out.iter().position(same) {
-                    Some(i) => {
-                        if let Piece::Line { weight: w, .. } = &mut out[i] {
-                            *w = w.max_by_rank(weight);
-                        }
-                    }
-                    None => out.push(Piece::Line { from: a, to: b, weight }),
-                }
+                Piece::Solid(p)
+            })
+            .collect()
+    } else {
+        let mut out: Vec<Piece> = Vec::new();
+        for seg in parse(components) {
+            let (a, b) = (unit_point(seg.from), unit_point(seg.to));
+            if let Some((c1, c2)) = seg.controls {
+                // Written from the end the arc starts at, vertical first.
+                out.push(Piece::Curve { from: b, c1: unit_point(c2), c2: unit_point(c1), to: a, weight: Weight::Light });
+                continue;
             }
-            out
+            let weight = weight_of(&seg);
+            let same = |p: &Piece| matches!(p, Piece::Line { from, to, .. } if (*from, *to) == (a, b) || (*from, *to) == (b, a));
+            match out.iter().position(same) {
+                Some(i) => {
+                    if let Piece::Line { weight: w, .. } = &mut out[i] {
+                        *w = w.max_by_rank(weight);
+                    }
+                }
+                None => out.push(Piece::Line { from: a, to: b, weight }),
+            }
         }
+        out
     }
 }
 
@@ -484,7 +493,9 @@ pub fn rasterize(c: char, w: u16, h: u16, scale: f32) -> Vec<u8> {
     }
     let scale = if scale.is_finite() && scale >= 1.0 { scale.round().min(8.0) } else { 1.0 };
     match shape(c) {
-        None => {}
+        None => {
+            crate::powerline::draw(c, &mut mask, w, h, scale);
+        }
         Some(Shape::Shade(n)) => mask.fill(n * 64),
         Some(Shape::Boxes(parts)) => {
             for part in &parts {
@@ -510,7 +521,7 @@ fn fill_rect(mask: &mut [u8], w: u16, h: u16, x0: f32, y0: f32, x1: f32, y1: f32
 /// (center letters a pixel or half a pixel either side of the middle, by the scale), points of a
 /// stroked path move onto half pixels so a one pixel line is crisp, and a stroke is `scale`
 /// wide with square caps, clipped to the cell.
-fn draw_path(mask: &mut [u8], w: u16, h: u16, components: &str, solid: bool, scale: f32) {
+pub(crate) fn draw_path(mask: &mut [u8], w: u16, h: u16, components: &str, solid: bool, scale: f32) {
     use zeno::{Cap, Command, Join, Mask, Point, Stroke};
     let (cw, ch) = (f32::from(w), f32::from(h));
     let (hc, vc) = (cw / 2.0, ch / 2.0);

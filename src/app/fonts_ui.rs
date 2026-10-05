@@ -25,6 +25,8 @@ pub fn face_key_for(p: &Profile, scale: f32, offset: f32, resolve: &dyn Fn(&str)
     (key.ascii_ligatures, key.non_ascii_ligatures) = (p.bool("ASCII Ligatures"), p.bool("Non-ASCII Ligatures"));
     // ASCII Anti Aliased, Non-ASCII Anti Aliased and Thin Strokes decide how the pane's glyph masks are drawn.
     (key.ascii_aa, key.non_ascii_aa, key.thin) = (p.bool("ASCII Anti Aliased"), p.bool("Non-ASCII Anti Aliased"), p.int("Thin Strokes").clamp(0, 4) as u8);
+    // Draw Powerline Glyphs chooses whether the pane's Powerline symbols are Tandem's.
+    key.powerline = p.bool("Draw Powerline Glyphs");
     key
 }
 
@@ -70,6 +72,7 @@ pub struct RawFont {
     ligatures: (bool, bool),
     anti_alias: (bool, bool),
     thin: i64,
+    powerline: bool,
 }
 
 impl RawFont {
@@ -85,6 +88,7 @@ impl RawFont {
             ligatures: (p.bool("ASCII Ligatures"), p.bool("Non-ASCII Ligatures")),
             anti_alias: (p.bool("ASCII Anti Aliased"), p.bool("Non-ASCII Anti Aliased")),
             thin: p.int("Thin Strokes"),
+            powerline: p.bool("Draw Powerline Glyphs"),
         }
     }
 }
@@ -237,6 +241,7 @@ impl App {
         if let Some(g) = self.gpu.as_ref() {
             (prefs.ligatures, prefs.alt_level) = g.renderer.face_ligatures(face, prefs.ligatures.prefer_speed);
             prefs.masks = g.renderer.face_masks(face, prefs.masks.retina, prefs.masks.force_aa_on_retina);
+            prefs.powerline = g.renderer.face_powerline(face);
         }
         prefs
     }
@@ -332,6 +337,19 @@ mod tests {
             // The per-pane key cache is keyed on RawFont: a change must change it, or a stale key is served.
             assert_ne!(RawFont::of(&stock, 1.0, 0.0), RawFont::of(other, 1.0, 0.0));
         }
+    }
+
+    #[test]
+    fn powerline_switch_is_part_of_the_face() {
+        let same = |s: &str| s.to_string();
+        let base = [("Normal Font", toml::Value::from("Cascadia Mono 14"))];
+        let off = profile(&base);
+        let on = profile(&[base[0].clone(), ("Draw Powerline Glyphs", true.into())]);
+        let key = |p: &Profile| face_key_for(p, 1.0, 0.0, &same);
+        assert!(!key(&off).powerline && key(&on).powerline, "iTerm2's default is off");
+        assert_ne!(key(&off), key(&on));
+        // The per-pane key cache is keyed on RawFont: a change must change it, or a stale key is served.
+        assert_ne!(RawFont::of(&off, 1.0, 0.0), RawFont::of(&on, 1.0, 0.0));
     }
 
     #[test]
