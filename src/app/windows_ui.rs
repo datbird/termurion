@@ -119,6 +119,8 @@ pub(super) struct WinSlot {
     download_files_shown: Option<bool>,
     /// Window > Notify on Status Change is armed for this window (`PseudoTerminal.m:1350`).
     pub(super) status_armed: bool,
+    /// The IME's composition in this window (13k): per window, since panes are shared.
+    pub(super) ime: crate::ime::State,
 }
 
 impl WinSlot {
@@ -207,6 +209,7 @@ impl WinSlot {
             ssh_menu_shown: None,
             download_files_shown: None,
             status_armed: false,
+            ime: Default::default(),
         }
     }
 }
@@ -319,6 +322,7 @@ impl App {
         swap(&mut self.ssh_menu_shown, &mut s.ssh_menu_shown);
         swap(&mut self.download_files_shown, &mut s.download_files_shown);
         swap(&mut self.status_armed, &mut s.status_armed);
+        swap(&mut self.ime, &mut s.ime);
     }
 
     /// The terminal window whose password manager is `id`, when it is parked.
@@ -941,6 +945,7 @@ impl WinSlot {
             ssh_menu_shown: None,
             download_files_shown: None,
             status_armed: false,
+            ime: Default::default(),
         }
     }
 }

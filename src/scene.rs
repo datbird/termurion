@@ -241,6 +241,17 @@ pub fn cursor_cell(screen: &Screen) -> Option<(usize, usize, bool)> {
     Some((p.line, p.column.0, wide))
 }
 
+/// Where a composition starts: the cursor's cell, whether or not a program hid the cursor
+/// (iTerm2 draws marked text regardless); the bottom-left of the visible grid when a scrolled
+/// view has the cursor off screen.
+pub fn ime_cell(screen: &Screen) -> (usize, usize) {
+    let term = screen.term();
+    match point_to_viewport(term.grid().display_offset(), term.grid().cursor.point).filter(|p| p.line < term.screen_lines()) {
+        Some(p) => (p.line, p.column.0),
+        None => (term.screen_lines().saturating_sub(1), 0),
+    }
+}
+
 /// Draws the find bar at the top right of `pane`, over the text. Returns the mode label's
 /// rectangle, which opens the mode menu when clicked.
 pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) -> Rect {
@@ -692,7 +703,8 @@ pub fn pane_with(
             frame.popups.push(Quad { rect: r, color: rgba(palette.bg, 1.0) });
             let span = Span { text: piece.text.clone(), color: palette.fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
             frame.rows.push(TextRow { x: r.x, y: r.y, spans: vec![span], clip: Rect { w: rect.x + rect.w - r.x, ..r }, scale: 1.0 });
-            frame.overlay.push(Quad { rect: Rect { y: underline_y(piece.row), h: 1.0, ..r }, color: rgba(palette.fg, 1.0) });
+            let line = look.geometry.scale.max(1.0).round();
+            frame.overlay.push(Quad { rect: Rect { y: r.y + ch - line, h: line, ..r }, color: rgba(palette.fg, 1.0) });
         }
         if d.caret.0 < lines {
             frame.overlay.push(Quad { rect: crate::ime::caret_rect(d.caret, (rect.x, rect.y), cell, look.geometry.base_cell.1, cols, look.geometry.scale), color: rgba(d.caret_color, 1.0) });
@@ -4350,6 +4362,16 @@ mod tests {
         // The grid's cell under the cursor is not a cursor quad: the terminal cursor is hidden.
         let cursor = rgba(s.palette.cursor, 1.0);
         assert!(!f.quads.iter().chain(&f.overlay).any(|q| q.color == cursor), "no terminal cursor");
+    }
+
+    #[test]
+    fn ime_cell_survives_a_hidden_cursor_and_a_scrolled_view() {
+        // A program that hid the cursor: the composition is still at its cell.
+        assert_eq!(ime_cell(&screen(b"ab\x1b[?25l")), (0, 2));
+        // Scrolled back so the cursor is off the view: the bottom-left of the visible grid.
+        let mut s = screen(&b"x\r\n".repeat(60));
+        s.term_mut().scroll_display(alacritty_terminal::grid::Scroll::Delta(10));
+        assert_eq!(ime_cell(&s), (23, 0));
     }
 
     #[test]

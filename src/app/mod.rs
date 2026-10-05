@@ -660,6 +660,8 @@ pub struct App {
     alert_limits: crate::triggers::RateLimit<PaneId>,
     /// Window > Notify on Status Change for the current window (per window: `WinSlot`).
     status_armed: bool,
+    /// The IME's composition for the current window (per window: `WinSlot`).
+    ime: crate::ime::State,
     last_status: HashMap<PaneId, Option<String>>,
     /// The bells on sessions (Session Status', the Cockpit's): each armed session and its status
     /// when armed; the next different status shows the alert, then it disarms
@@ -1703,6 +1705,7 @@ pub fn run() {
         last_notified: None,
         alert_limits: crate::triggers::RateLimit::default(),
         status_armed: false,
+        ime: Default::default(),
         last_status: HashMap::new(),
         status_watches: Default::default(),
         status_popover: None,
@@ -4275,21 +4278,28 @@ impl App {
     }
 
     /// A key with no binding: the Windows extras, movement-key scrolling, else the pane.
+    /// A pane showing a frozen screenshot copy takes no keys until its panel closes, nor
+    /// a replaying pane (the replay view has no shell).
+    pub(super) fn terminal_refuses_keys(&self) -> bool {
+        self.shot.as_ref().is_some_and(|s| Some(s.pane) == self.focused_id()) || self.focused_id().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.replay.is_some())
+    }
+
+    /// Filter and Zoom views are read-only: typing ends the view. True when one ended.
+    pub(super) fn end_read_only_view(&mut self) -> bool {
+        let Some(id) = self.focused_id().filter(|id| self.panes.get(id).is_some_and(|p| p.live.is_some())) else { return false };
+        self.end_view(id);
+        true
+    }
+
     fn to_terminal(&mut self, key: &Key, base: Option<&Key>, bytes: Option<Vec<u8>>, event_loop: &ActiveEventLoop) {
         if let Some(action) = base.and_then(|b| keys::shortcut(b, self.mods)) {
             return self.action(action, event_loop);
         }
-        // A pane showing a frozen screenshot copy takes no keys until its panel closes, nor
-        // a replaying pane (the replay view has no shell).
-        if self.shot.as_ref().is_some_and(|s| Some(s.pane) == self.focused_id()) || self.focused_id().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.replay.is_some()) {
+        if self.terminal_refuses_keys() {
             return;
         }
-        // Filter and Zoom views are read-only: a key ends the view (Esc only that).
-        if let Some(id) = self.focused_id().filter(|id| self.panes.get(id).is_some_and(|p| p.live.is_some())) {
-            self.end_view(id);
-            if matches!(key, Key::Escape) {
-                return;
-            }
+        if self.end_read_only_view() && matches!(key, Key::Escape) {
+            return;
         }
         let mods = self.mods;
         let movement = self.focused_profile().is_some_and(|p| p.bool("Movement Keys Scroll Outside Interactive Apps"));

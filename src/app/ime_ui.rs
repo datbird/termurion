@@ -1,91 +1,125 @@
-//! IME composition (13k Task 9): the person's uncommitted text is kept on the focused pane and
-//! drawn at the cursor; it reaches the program only when committed. The candidate window follows
-//! the caret.
+//! IME composition (13k Task 9): the person's uncommitted text is kept in the window's IME
+//! state, owned by its focused pane, and drawn at the cursor; it reaches anything only when
+//! committed, and then as typed text, through the owners a typed key goes to. The candidate
+//! window follows the caret.
 
 use super::*;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::Ime;
 
-use crate::ime::{self, Step};
+use crate::ime::{self, Dest, Owners, Step};
 
 impl App {
-    /// One `WindowEvent::Ime`. Composition is the focused pane's; a commit is typed input.
+    /// One `WindowEvent::Ime`. A composition is the focused pane's; a commit is typed input.
     pub(super) fn ime_event(&mut self, ime: Ime) {
         let Some(id) = self.focused_id() else { return };
         match ime::step(&ime) {
             Step::Ignore => {}
-            Step::Clear => self.ime_clear(id),
-            Step::Store(p) => {
-                if let Some(pane) = self.panes.get_mut(&id) {
-                    pane.preedit = Some(p);
+            Step::Clear => {
+                if self.ime.preedit.is_some() {
+                    self.ime.cancel();
+                    self.redraw();
                 }
+            }
+            Step::End => {
+                self.ime.end();
+                self.redraw();
+            }
+            Step::Store(p) => {
+                self.ime.store(id, p);
                 self.redraw();
             }
             Step::Commit(text) => {
-                self.ime_clear(id);
-                // Typed input: broadcast input and the composer see it as the person's typing.
+                // Only to the pane that owns the composition, while it is still this window's
+                // focused pane; after a cancel or a pane switch the text is dropped.
+                if self.ime.commit(Some(id), self.focused) == Some(id) {
+                    self.ime_type(id, &text);
+                }
+                self.redraw();
+            }
+        }
+    }
+
+    /// Committed text is typed text: it goes to whatever owns the keyboard, in `key`'s order,
+    /// else to the terminal as `to_terminal` writes a key (the view returns to the bottom, a
+    /// Filter or Zoom view ends, a frozen or replaying pane takes nothing).
+    fn ime_type(&mut self, id: PaneId, text: &str) {
+        let (composer, field) = self.composer_keys_owner();
+        let other = self.belt.focus.is_some()
+            || self.copy_modes.contains_key(&id)
+            || self.completion.is_some()
+            || self.shortcuts.is_some()
+            || self.chat_picker.is_some()
+            || self.clips.get(&id).is_some_and(|c| c.keys && c.model.visible)
+            || self.inline.get(&id).is_some_and(|s| s.keys && s.binding.visible);
+        let owners = Owners { find: self.typing_in_find().is_some(), composer, field, other };
+        match ime::dest(&owners) {
+            Dest::Drop => {}
+            Dest::Find => self.find_type_text(id, text),
+            Dest::Composer | Dest::Field => {
+                self.composer_type_text(text);
+            }
+            Dest::Terminal => {
+                if self.terminal_refuses_keys() {
+                    return;
+                }
+                self.end_read_only_view();
+                let Some(pane) = self.panes.get_mut(&id) else { return };
+                pane.scroll(Scroll::Bottom);
                 self.user_write(id, text.as_bytes(), crate::broadcast::Write::Key);
             }
         }
     }
 
-    /// Drops `pane`'s composition without committing it.
-    fn ime_clear(&mut self, pane: PaneId) {
-        if self.panes.get_mut(&pane).is_some_and(|p| p.preedit.take().is_some()) {
-            self.redraw();
-        }
-    }
-
-    /// Ends every composition (focus lost, a pane switch, Esc), including the system IME's own:
-    /// turning the IME off and on again makes Windows cancel its composition.
+    /// Ends this window's composition (focus lost, a pane switch, Esc), including the system
+    /// IME's own: turning the IME off and on again makes Windows cancel it. Whatever it commits
+    /// afterwards is dropped.
     pub(super) fn ime_cancel(&mut self) {
-        let mut any = false;
-        for p in self.panes.values_mut() {
-            any |= p.preedit.take().is_some();
+        if self.ime.preedit.is_none() {
+            return;
         }
-        if any {
-            if let Some(g) = &self.gpu {
-                g.window.set_ime_allowed(false);
-                g.window.set_ime_allowed(true);
-            }
-            self.redraw();
+        self.ime.cancel();
+        self.ime_reset_system();
+        self.redraw();
+    }
+
+    fn ime_reset_system(&self) {
+        if let Some(g) = &self.gpu {
+            g.window.set_ime_allowed(false);
+            g.window.set_ime_allowed(true);
         }
     }
 
-    /// True while the focused pane has a composition: its keys are the IME's. Esc cancels it
-    /// first, as Windows IMEs expect.
+    /// True while the focused pane has a composition: its key presses are the IME's. Esc
+    /// cancels it first, as Windows IMEs expect. Releases pass, so a key held down from before
+    /// the composition still reports its release.
     pub(super) fn ime_holds_key(&mut self, ev: &KeyEvent) -> bool {
-        let composing = self.focused_id().and_then(|id| self.panes.get(&id)).is_some_and(|p| ime::holds_keys(p.preedit.as_ref()));
-        if composing && ev.state == ElementState::Pressed && ev.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) {
+        let composing = self.focused_id().is_some_and(|id| self.ime.of(id).is_some_and(|p| ime::holds_keys(Some(p))));
+        if !composing || ev.state != ElementState::Pressed {
+            return false;
+        }
+        if ev.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) {
             self.ime_cancel();
         }
-        composing
+        true
     }
 
-    /// A composition belongs to the focused pane of the key window: any other pane's is
-    /// dropped (a pane or tab switch loses a half-typed composition, uncommitted).
-    pub(super) fn ime_drop_unfocused(&mut self) {
-        let owner = self.focused.then(|| self.focused_id()).flatten();
-        if self.panes.iter().any(|(id, p)| p.preedit.is_some() && Some(*id) != owner) {
-            for (id, p) in self.panes.iter_mut() {
-                if Some(*id) != owner {
-                    p.preedit = None;
-                }
-            }
-            if let Some(g) = &self.gpu {
-                g.window.set_ime_allowed(false);
-                g.window.set_ime_allowed(true);
-            }
+    /// Run at each frame of this window: a composition belongs to the focused pane of the key
+    /// window, so a pane or tab switch drops it, uncommitted. Only this window's own state is
+    /// read, so another window's frames never touch it.
+    pub(super) fn ime_sync(&mut self) {
+        if self.ime.sync(self.focused_id(), self.focused) {
+            self.ime_reset_system();
         }
     }
 
-    /// What the focused pane's composition looks like on the grid, for `cursor_look_for`.
+    /// What `pane`'s composition looks like on the grid, for `cursor_look_for`.
     pub(super) fn ime_drawn(&self, pane: PaneId) -> Option<ime::Drawn> {
         let p = self.panes.get(&pane)?;
-        let pre = p.preedit.as_ref().filter(|p| !p.text.is_empty())?;
-        let (row, col, _) = scene::cursor_cell(&p.screen)?;
+        let pre = self.ime.of(pane).filter(|p| !p.text.is_empty())?;
+        let start = scene::ime_cell(&p.screen);
         let cols = p.screen.term().columns();
-        let (pieces, caret) = ime::layout(pre, (row, col), cols);
+        let (pieces, caret) = ime::layout(pre, start, cols);
         let dark = self.dark();
         let color = self.store.get(&p.profile).map_or(crate::palette::rgb(255, 255, 0), |pr| pr.color_for("IME Cursor Color", dark));
         // The caret color goes through Cursor Boost's mute like any processed background.
@@ -93,8 +127,9 @@ impl App {
         Some(ime::Drawn { pieces, caret, caret_color: crate::cursor_look::mute(color, p.screen.palette.bg, boost) })
     }
 
-    /// Puts the IME's candidate window at the caret (at the cursor when nothing is composing),
-    /// in physical pixels of the window's client area. Called after each frame; the animated
+    /// Puts the IME's candidate window at the caret (at the cursor cell when nothing is
+    /// composing), in physical pixels of the window's client area; set only when it changed.
+    /// A hidden cursor or a scrolled view still has a cell (`scene::ime_cell`). The animated
     /// cursor's slide or smear is not followed, the cell is.
     pub(super) fn ime_area(&mut self) {
         let Some(tab) = self.tabs.get(self.active) else { return };
@@ -106,13 +141,19 @@ impl App {
         let geometry = crate::cursor_look::Geometry::from_globals(&self.globals, scale, self.base_cell());
         let r = match self.ime_drawn(id) {
             Some(d) => ime::caret_rect(d.caret, (inner.x, inner.y), cell, geometry.base_cell.1, p.screen.term().columns(), scale),
-            None => match scene::cursor_cell(&p.screen) {
-                Some((row, col, wide)) => crate::cursor_look::box_rect(&geometry, (inner.x, inner.y), cell, row, col, wide),
-                None => return,
-            },
+            None => {
+                let (row, col) = scene::ime_cell(&p.screen);
+                let wide = scene::cursor_cell(&p.screen).is_some_and(|(_, _, w)| w);
+                crate::cursor_look::box_rect(&geometry, (inner.x, inner.y), cell, row, col, wide)
+            }
         };
+        let area = [r.x as i32, r.y as i32, r.w.max(1.0) as i32, r.h.max(1.0) as i32];
+        if self.ime.area == Some(area) {
+            return;
+        }
+        self.ime.area = Some(area);
         if let Some(g) = &self.gpu {
-            g.window.set_ime_cursor_area(PhysicalPosition::new(r.x as f64, r.y as f64), PhysicalSize::new(r.w.max(1.0) as f64, r.h.max(1.0) as f64));
+            g.window.set_ime_cursor_area(PhysicalPosition::new(area[0] as f64, area[1] as f64), PhysicalSize::new(area[2] as f64, area[3] as f64));
         }
     }
 }

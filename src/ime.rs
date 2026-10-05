@@ -32,8 +32,10 @@ pub struct Drawn {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
     Ignore,
-    /// The composition ended (cancelled, emptied, or the IME went away): nothing is sent.
+    /// The IME went away: a composition in progress is dropped, nothing is sent.
     Clear,
+    /// The composition ended with nothing to draw (an empty Preedit; its Commit may follow).
+    End,
     /// A composition is in progress: draw it, send nothing.
     Store(Preedit),
     /// The person accepted this text: it is typed input now.
@@ -47,9 +49,9 @@ pub fn step(ime: &winit::event::Ime) -> Step {
     match ime {
         Ime::Enabled => Step::Ignore,
         Ime::Disabled => Step::Clear,
-        Ime::Preedit(text, _) if text.is_empty() => Step::Clear,
+        Ime::Preedit(text, _) if text.is_empty() => Step::End,
         Ime::Preedit(text, cursor) => Step::Store(Preedit { text: text.clone(), cursor: cursor.map(|(start, _)| start) }),
-        Ime::Commit(text) if text.is_empty() => Step::Clear,
+        Ime::Commit(text) if text.is_empty() => Step::End,
         Ime::Commit(text) => Step::Commit(text.clone()),
     }
 }
@@ -57,6 +59,117 @@ pub fn step(ime: &winit::event::Ime) -> Step {
 /// Keys belong to the IME, not the session, while a composition is non-empty.
 pub fn holds_keys(p: Option<&Preedit>) -> bool {
     p.is_some_and(|p| !p.text.is_empty())
+}
+
+/// One window's IME state. Panes are shared by every window but the key window and its focused
+/// pane are not, so the composition is owned by (this window, a pane) and carries a generation
+/// that every cancel bumps: a Commit is delivered only to its owner, only while that pane is
+/// still this window's focused pane and the window is key.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct State {
+    /// The composition being drawn, on the owner pane.
+    pub preedit: Option<Preedit>,
+    /// The pane that owns the composition, and the generation it began in. Kept after the IME
+    /// ends the composition with an empty Preedit, since its Commit follows.
+    owner: Option<(u64, u64)>,
+    generation: u64,
+    /// A cancel is waiting for the stray Commit it may provoke; the next one is dropped.
+    dropping: bool,
+    /// The candidate window's area `ime_area` last gave the system, to set it only on a change.
+    pub area: Option<[i32; 4]>,
+}
+
+impl State {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The composition of `pane`, if it owns one.
+    pub fn of(&self, pane: u64) -> Option<&Preedit> {
+        self.preedit.as_ref().filter(|_| self.owner.is_some_and(|(p, g)| p == pane && g == self.generation))
+    }
+
+    /// The IME reports a composition on `pane`.
+    pub fn store(&mut self, pane: u64, p: Preedit) {
+        self.owner = Some((pane, self.generation));
+        self.dropping = false;
+        self.preedit = Some(p);
+    }
+
+    /// The IME ended the composition (an empty Preedit): nothing is drawn, a Commit may follow.
+    pub fn end(&mut self) {
+        self.preedit = None;
+    }
+
+    /// Our own cancel (focus lost, a pane switch, Esc): the composition is gone uncommitted, and
+    /// so is whatever the IME commits for it afterwards.
+    pub fn cancel(&mut self) {
+        self.preedit = None;
+        self.owner = None;
+        self.generation += 1;
+        self.dropping = true;
+    }
+
+    /// The IME commits text. Returns the pane that takes it as typed input, None to drop it.
+    pub fn commit(&mut self, focused: Option<u64>, key_window: bool) -> Option<u64> {
+        self.preedit = None;
+        if std::mem::take(&mut self.dropping) {
+            self.owner = None;
+            return None;
+        }
+        match self.owner.take() {
+            Some((pane, g)) => Some(pane).filter(|p| g == self.generation && Some(*p) == focused && key_window),
+            None => focused.filter(|_| key_window),
+        }
+    }
+
+    /// Called at each frame of this window: a composition belongs to its focused pane while the
+    /// window is key; anything else cancels it. True when it did.
+    pub fn sync(&mut self, focused: Option<u64>, key_window: bool) -> bool {
+        let Some((pane, _)) = self.owner.filter(|_| self.preedit.is_some()) else { return false };
+        if key_window && Some(pane) == focused {
+            return false;
+        }
+        self.cancel();
+        true
+    }
+}
+
+/// Who has the keyboard: a commit goes where a typed key would (`App::key`'s order).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Owners {
+    /// The find bar is being typed in.
+    pub find: bool,
+    /// A Composer dropdown has the keyboard.
+    pub composer: bool,
+    /// A Composer status bar field has the keyboard.
+    pub field: bool,
+    /// A toolbelt tool, Copy Mode, the completion list, the shortcut labels, a panel or a bar:
+    /// owners with no text entry for a commit.
+    pub other: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dest {
+    Terminal,
+    Find,
+    Composer,
+    Field,
+    Drop,
+}
+
+pub fn dest(o: &Owners) -> Dest {
+    if o.other {
+        Dest::Drop
+    } else if o.composer {
+        Dest::Composer
+    } else if o.field {
+        Dest::Field
+    } else if o.find {
+        Dest::Find
+    } else {
+        Dest::Terminal
+    }
 }
 
 /// Lays `p` over the grid from `start` (row, col) in `cols` columns, as iTerm2 does
@@ -152,11 +265,11 @@ mod tests {
         assert_eq!(step(&Ime::Enabled), Step::Ignore);
         assert_eq!(step(&Ime::Disabled), Step::Clear);
         // An empty preedit ends a composition; it is not drawn as an empty one.
-        assert_eq!(step(&Ime::Preedit(String::new(), None)), Step::Clear);
+        assert_eq!(step(&Ime::Preedit(String::new(), None)), Step::End);
         assert_eq!(step(&Ime::Preedit("\u{306b}".to_string(), Some((3, 3)))), Step::Store(pre("\u{306b}", Some(3))));
         assert_eq!(step(&Ime::Preedit("ab".to_string(), None)), Step::Store(pre("ab", None)));
         assert_eq!(step(&Ime::Commit("\u{65e5}\u{672c}".to_string())), Step::Commit("\u{65e5}\u{672c}".to_string()));
-        assert_eq!(step(&Ime::Commit(String::new())), Step::Clear);
+        assert_eq!(step(&Ime::Commit(String::new())), Step::End);
     }
 
     #[test]
@@ -164,5 +277,68 @@ mod tests {
         assert!(!holds_keys(None));
         assert!(!holds_keys(Some(&pre("", None))));
         assert!(holds_keys(Some(&pre("a", None))));
+    }
+
+    #[test]
+    fn a_commit_goes_to_its_owner_pane() {
+        let mut s = State::default();
+        s.store(7, pre("\u{306b}", Some(3)));
+        // winit ends the composition with an empty Preedit, then Commits.
+        s.end();
+        assert_eq!(s.commit(Some(7), true), Some(7));
+        // A commit with no composition before it is plain typed input for the focused pane.
+        assert_eq!(s.commit(Some(7), true), Some(7));
+        assert_eq!(s.commit(None, true), None);
+    }
+
+    #[test]
+    fn a_commit_after_a_cancel_is_dropped() {
+        let mut s = State::default();
+        s.store(7, pre("a", None));
+        s.cancel();
+        assert!(s.preedit.is_none());
+        assert_eq!(s.commit(Some(7), true), None, "the stray commit of a cancelled composition");
+        // The next composition works again.
+        s.store(7, pre("b", None));
+        assert_eq!(s.commit(Some(7), true), Some(7));
+    }
+
+    #[test]
+    fn a_commit_after_a_pane_switch_is_dropped() {
+        let mut s = State::default();
+        s.store(7, pre("a", None));
+        assert_eq!(s.commit(Some(8), true), None, "pane 8 is focused now, pane 7 owned it");
+        let mut s = State::default();
+        s.store(7, pre("a", None));
+        assert_eq!(s.commit(Some(7), false), None, "its window is not the key window");
+    }
+
+    #[test]
+    fn another_windows_repaint_keeps_the_preedit() {
+        // Each window has its own state: a frame of a window with nothing composing, whatever its
+        // focus, never touches the key window's.
+        let mut key = State::default();
+        key.store(7, pre("a", None));
+        let mut other = State::default();
+        assert!(!other.sync(None, false));
+        assert!(!key.sync(Some(7), true), "its own frame keeps it");
+        assert!(key.preedit.is_some());
+        // Its own pane switch drops it, and bumps the generation.
+        let before = key.generation();
+        assert!(key.sync(Some(8), true));
+        assert!(key.preedit.is_none());
+        assert_ne!(key.generation(), before);
+    }
+
+    #[test]
+    fn a_commit_goes_where_typed_keys_go() {
+        let none = Owners::default();
+        assert_eq!(dest(&none), Dest::Terminal);
+        assert_eq!(dest(&Owners { find: true, ..none }), Dest::Find);
+        assert_eq!(dest(&Owners { composer: true, ..none }), Dest::Composer);
+        assert_eq!(dest(&Owners { field: true, ..none }), Dest::Field);
+        // A toolbelt tool, Copy Mode and the like have no text entry here: the text is dropped.
+        assert_eq!(dest(&Owners { other: true, ..none }), Dest::Drop);
+        assert_eq!(dest(&Owners { other: true, find: true, ..none }), Dest::Drop);
     }
 }

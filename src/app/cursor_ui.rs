@@ -187,7 +187,7 @@ impl App {
     pub(super) fn prepare_cursors(&mut self) {
         let Some(tab) = self.tabs.get(self.active) else { return };
         let panes: Vec<(PaneId, Rect)> = self.visible(tab).into_iter().map(|(id, rect)| (id, self.inner(rect))).collect();
-        self.ime_drop_unfocused();
+        self.ime_sync();
         let now = Instant::now();
         let shown: Vec<PaneId> = panes.iter().map(|(id, _)| *id).collect();
         for (id, inner) in panes {
