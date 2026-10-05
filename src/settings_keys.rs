@@ -713,6 +713,22 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
                 .inner
                 .into()
             }
+            // A ranged float is a slider with two decimals (the Dimming amount, `APV:351-374`).
+            Kind::Float if s.min_f64().is_some() && s.max_f64().is_some() => {
+                let (lo, hi) = (s.min_f64().unwrap_or(0.0), s.max_f64().unwrap_or(1.0));
+                ui.horizontal(|ui| {
+                    ui.label(&s.label);
+                    let mut v = g.number(&s.key).unwrap_or(lo).clamp(lo, hi);
+                    let r = ui.add(egui::Slider::new(&mut v, lo..=hi).fixed_decimals(2));
+                    if r.changed() {
+                        g.set(&s.key, Value::Float(v));
+                        changed = true;
+                    }
+                    r.rect
+                })
+                .inner
+                .into()
+            }
             _ => None,
         };
         if let Some(rect) = control.filter(|_| indicate_non_default() && !global_is_default(g, s)) {
@@ -1066,6 +1082,8 @@ pub fn row_enabled(g: &Globals, key: &str) -> bool {
         "RestoreWindowsToSameSpaces" => crate::desktops::restore_row_enabled(g.bool("OpenArrangementAtStartup"), g.bool("OpenNoWindowsAtStartup")),
         // Narrows the first (`APV:285-290`).
         crate::presence::REQUIRES_HOTKEYS_KEY => g.bool(crate::presence::UI_ELEMENT_KEY),
+        // The amount and Only Text apply while either dimming switch is on (`PT:12402-12422`, `SV:1497-1508`).
+        "DimOnlyText" | "SplitPaneDimmingAmount" => g.bool("DimInactiveSplitPanes") || g.bool("DimBackgroundWindows"),
         "PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges" => g.bool("PreserveWindowSizeWhenTabBarVisibilityChanges"),
         _ => true,
     }
@@ -1780,6 +1798,62 @@ mod tests {
         // The rows sit before "Save copy/paste and command history to disk" (Task 8's order).
         let general: Vec<&str> = schema::global().iter().filter(|s| s.tab == "General" && s.section == "Settings").map(|s| s.key.as_str()).collect();
         assert_eq!(&general[..3], ["LoadPrefsFromCustomFolder", "PrefsCustomFolder", "SavePasteHistory"]);
+    }
+
+    /// m13i Task 1: the pane navigation rows (`AS:311`, `:510`, `:667`, `:715`, `:716`, `:881`).
+    #[test]
+    fn navigation_rows_follow_iterm2() {
+        for (key, section, kind, default, label) in [
+            ("NavigatePanesInReadingOrder", "Tabs", Kind::Bool, Value::Boolean(true), "Next Pane and Previous Pane commands use reading order, not the time of last use."),
+            ("WrapFocus", "General", Kind::Bool, Value::Boolean(true), "Should split pane navigation by direction wrap around?"),
+            ("FocusNewSplitPaneWithFocusFollowsMouse", "Session", Kind::Bool, Value::Boolean(true), "When focus follows mouse is enabled, should new split panes automatically be focused?"),
+            ("SplitPaneColor", "Windows", Kind::String, Value::String(String::new()), "Custom color for split pane dividers. Leave empty to use default color."),
+            ("SplitPaneDividerWidth", "Windows", Kind::Float, Value::Float(0.0), "Custom width for split pane dividers in points (1-5). Set to 0 to use default width."),
+            ("UseDivorcedProfileToSplit", "Experimental Features", Kind::Bool, Value::Boolean(true), "When splitting a pane, use the profile with local modifications, not the backing profile."),
+        ] {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", section, kind), "{key}");
+            assert_eq!(s.default, Some(default), "{key}");
+            assert_eq!(s.label, label, "{key}");
+            let help = if key == "SplitPaneColor" { format!("{label}\nThis should be an HTML-style color, like #aabbcc.") } else { label.to_string() };
+            assert_eq!(s.help, help, "{key}");
+            assert!(page_rows("Advanced").iter().any(|r| r.key == key), "{key} is shown");
+        }
+    }
+
+    /// m13i Task 1: the Appearance pane's Dimming box (`APV:351-374`, `PREF:134-142`).
+    #[test]
+    fn dimming_rows_follow_iterm2() {
+        for (key, kind, default, label) in [
+            ("DimInactiveSplitPanes", Kind::Bool, Value::Boolean(true), "Dim inactive split panes"),
+            ("DimOnlyText", Kind::Bool, Value::Boolean(false), "Dimming affects only text, not background."),
+            ("SplitPaneDimmingAmount", Kind::Float, Value::Float(0.4), "Dimming amount:"),
+            ("DimBackgroundWindows", Kind::Bool, Value::Boolean(false), "Dim background windows"),
+        ] {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Appearance", "Dimming", kind), "{key}");
+            assert_eq!(s.default, Some(default), "{key}");
+            assert_eq!(s.label, label, "{key}");
+        }
+        // iTerm2's xib order: the slider, then the three checkboxes.
+        let order: Vec<&str> = page_rows("Appearance").iter().filter(|s| s.section == "Dimming").map(|s| s.key.as_str()).collect();
+        assert_eq!(order, ["SplitPaneDimmingAmount", "DimInactiveSplitPanes", "DimBackgroundWindows", "DimOnlyText"]);
+        let amount = schema::find_global("SplitPaneDimmingAmount").unwrap();
+        assert_eq!((amount.min_f64(), amount.max_f64()), (Some(0.01), Some(0.6)));
+        assert_eq!(amount.help, "Inactive sessions get dimmed to help find the active session.");
+        let mut g = Globals::empty(std::path::Path::new("dimming-rows-test.toml"));
+        g.set("DimInactiveSplitPanes", Value::Boolean(false));
+        g.set("DimBackgroundWindows", Value::Boolean(false));
+        for key in ["DimOnlyText", "SplitPaneDimmingAmount"] {
+            assert!(!row_enabled(&g, key), "{key} off with both switches off");
+            g.set("DimInactiveSplitPanes", Value::Boolean(true));
+            assert!(row_enabled(&g, key), "{key} on with the panes switch");
+            g.set("DimInactiveSplitPanes", Value::Boolean(false));
+            g.set("DimBackgroundWindows", Value::Boolean(true));
+            assert!(row_enabled(&g, key), "{key} on with the windows switch");
+            g.set("DimBackgroundWindows", Value::Boolean(false));
+        }
+        assert!(row_enabled(&g, "DimInactiveSplitPanes") && row_enabled(&g, "DimBackgroundWindows"));
     }
 
     #[test]

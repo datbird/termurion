@@ -478,9 +478,8 @@ impl App {
             "select_pane_in_direction" => {
                 let Some(dir) = bf::direction(str_arg(args, "direction").unwrap_or_default()) else { return failed(bf::INVALID_DIRECTION) };
                 let Some(i) = self.tabs.iter().position(|t| t.id == tab) else { return HostOutcome::Done(Value::Null) };
-                let area = self.content_area_for(&self.tabs[i]);
+                let Some(next) = self.pane_in_direction(&self.tabs[i], dir) else { return HostOutcome::Done(Value::Null) };
                 let t = &mut self.tabs[i];
-                let Some(next) = t.layout.neighbor(t.focused, dir, area) else { return HostOutcome::Done(Value::Null) };
                 t.focused = next;
                 t.zoomed = None;
                 self.relayout();

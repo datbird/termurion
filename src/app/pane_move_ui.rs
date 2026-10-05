@@ -310,10 +310,10 @@ impl App {
         }
     }
 
-    /// The pane may not be moved: Lock Layout of its window (13i adds the pane lock), a loaded
+    /// The pane may not be moved: Lock Layout of its window or the pane's own lock, a loaded
     /// recording, or a tmux gateway pane (P17, `compatible` cannot see it).
     pub(super) fn pane_move_refused(&self, pane: PaneId) -> bool {
-        self.pane_window_forbids(pane, crate::winmodel::LayoutOp::MovePane) || self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) || self.tmux.contains_key(&pane)
+        super::pane_lock_ui::move_refused(self.pane_window_forbids(pane, crate::winmodel::LayoutOp::MovePane), self.panes.get(&pane).is_some_and(|p| p.locked)) || self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) || self.tmux.contains_key(&pane)
     }
 
     /// The panes of `tabs` showing a live Instant Replay.
@@ -344,7 +344,7 @@ impl App {
     /// overlay covers the whole session view).
     fn pick_rects(&self) -> Vec<(PaneId, Rect)> {
         let Some(tab) = self.tabs.get(self.active) else { return Vec::new() };
-        visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), GAP)
+        visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), self.gap())
     }
 
     /// A press while the pick is on. Left presses are all taken: on a pane it drops with the

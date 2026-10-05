@@ -44,9 +44,8 @@ use crate::settings_ui::{Edit, How, Mode, SettingsWindow};
 const FONT: &str = "Cascadia Mono";
 /// 12 pt, iTerm2's default size, at 96 dpi.
 const FONT_PX: f32 = 16.0;
-/// Space between a pane's edge and its text, and the divider width, in pixels at 100%.
+/// Space between a pane's edge and its text, in pixels at 100%.
 const PAD: f32 = 4.0;
-const GAP: f32 = 1.0;
 /// How often a fading tab bar draws while it fades (60 frames a second).
 const FLASH_FRAME: Duration = Duration::from_millis(16);
 /// How far below the pointer a tab tooltip starts, in points (the arrow pointer's height).
@@ -120,12 +119,14 @@ mod bury_ui;
 mod statusbar_ui;
 mod pane_title_ui;
 mod pane_move_ui;
+mod pane_lock_ui;
 mod statusbar_content;
 mod metrics_ui;
 mod git_ui;
 mod toolbelt_ui;
 mod toolbelt_tools_ui;
 mod toolbelt_more_ui;
+mod pane_nav_ui;
 mod open_quickly_app;
 mod replay_ui;
 mod pwm_app;
@@ -696,6 +697,11 @@ pub struct App {
     open_quickly: Option<open_quickly_app::Quickly>,
     quickly_query: String,
     focus_order: HashMap<PaneId, u64>,
+    /// App-wide last-use sequence; each focus change takes two numbers (`activityCounter`).
+    activity_seq: u64,
+    /// The pane each tab was focused on when `sync_pane_activity` last looked, by tab id (a tab
+    /// keeps its id across windows, so this is not per window).
+    pane_seen: HashMap<u64, PaneId>,
     focus_seq: u64,
     status_prompt: Option<crate::prompt_ui::PromptWindow>,
     /// The Notes tool's global note (one for every window) and its file.
@@ -1722,6 +1728,8 @@ pub fn run() {
         open_quickly: None,
         quickly_query: String::new(),
         focus_order: HashMap::new(),
+        activity_seq: 0,
+        pane_seen: HashMap::new(),
         focus_seq: 0,
         status_prompt: None,
         global_note: crate::notes::GlobalNote::new(toolbelt_more_ui::notes_path(&std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir))),
@@ -2899,7 +2907,7 @@ impl App {
     /// The colors the tab bar draws with (`tab_theme::palette`), from the Theme, Windows' modes,
     /// the window being key, the three tab darkness keys and the focused pane's background.
     pub(super) fn tab_palette(&self) -> crate::tab_theme::TabPalette {
-        use crate::tab_theme::{Inputs, MinimalKnobs, dimming, DIMMING_AMOUNT};
+        use crate::tab_theme::{Inputs, MinimalKnobs, dimming};
         let g = &self.globals;
         let session_bg = self
             .tabs
@@ -2919,8 +2927,8 @@ impl App {
         };
         // `shouldTweakMinimalTabOutlineAlpha` (`PT:10053-10107`): a dimmed inactive pane against the
         // bar raises the outline toward 1 by the dimming amount x 0.375.
-        if self.dimmed_pane_touches_bar() {
-            let a = DIMMING_AMOUNT * 0.375;
+        if let Some(amount) = self.dimmed_pane_touches_bar() {
+            let a = amount * 0.375;
             minimal.outline = a + minimal.outline * (1.0 - a);
         }
         let inputs = Inputs {
@@ -2931,7 +2939,7 @@ impl App {
             dark_darkness: g.number("DarkModeInactiveTabDarkness").map_or(0.5, |v| v as f32),
             high_visibility: g.bool("HighVisibility"),
             session_bg,
-            dimming: dimming(g.bool("DimBackgroundWindows"), focused, DIMMING_AMOUNT),
+            dimming: dimming(g.bool("DimBackgroundWindows"), focused, self.dim_base(), g.bool("DimOnlyText")),
             minimal,
             colored_outline: g.number("ColoredSelectedTabOutlineStrength").map_or(0.5, |v| v as f32),
             colored_text_prominence: g.number("ColoredUnselectedTabTextProminence").map_or(0.5, |v| v as f32),
@@ -2952,37 +2960,52 @@ impl App {
         let decoration_bg = current.and_then(bg).unwrap_or_else(|| crate::palette::Palette::default().bg);
         let prominence = self.globals.number("MinimalSplitPaneDividerProminence").map_or(0.15, |v| v as f32);
         let panes: Vec<(PaneId, crate::palette::Rgb)> = self.tabs.iter().flat_map(|t| t.layout.panes()).filter_map(|id| bg(id).map(|c| (id, c))).collect();
-        let invisible = crate::tab_theme::single_other_background(&panes, current);
-        crate::tab_theme::divider_color(self.tab_style(), self.resolved_style(), decoration_bg, prominence, invisible)
+        // The invisible divider needs the other panes' backgrounds to dim away: Dim inactive split
+        // panes on and Dim only text off (P12), on top of 13e's prominence 0 gate.
+        let invisible = (self.globals.bool("DimInactiveSplitPanes") && !self.globals.bool("DimOnlyText")).then(|| crate::tab_theme::single_other_background(&panes, current)).flatten();
+        let theme = crate::tab_theme::divider_color(self.tab_style(), self.resolved_style(), decoration_bg, prominence, invisible);
+        pane_nav_ui::divider_rgb(&self.globals.string("SplitPaneColor"), theme)
     }
 
-    /// Whether a pane is drawn undimmed: the focused pane of a window that is not key while Dim
-    /// background windows is off, or (in the key window) a pane the broadcast input reaches.
-    fn pane_undimmed(&self, id: PaneId, focused_pane: PaneId, receives: bool, bview: &crate::broadcast::View) -> bool {
-        (!self.focused && id == focused_pane && !self.globals.bool("DimBackgroundWindows")) || (self.focused && receives && self.broadcast.should_broadcast_to(bview, focused_pane, Some(focused_pane)))
+    /// `SplitPaneDimmingAmount`, the base of every dimming amount.
+    pub(super) fn dim_base(&self) -> f32 {
+        self.globals.number("SplitPaneDimmingAmount").map_or(0.4, |v| v as f32)
     }
 
-    /// Whether a dimmed pane other than the tab's focused one lies against the tab bar's edge
-    /// (`shouldTweakMinimalTabOutlineAlpha`): not in a background window that dims as a whole,
-    /// whose dimming looks fine under the outline.
-    fn dimmed_pane_touches_bar(&self) -> bool {
+    /// How a pane of `tab` dims (the model of `crate::dim`): the one place the settings become a
+    /// `Dim`, read by the render loop, the title bars, the tab bar's outline and the tab palette.
+    /// Broadcast inputs use the focused pane as the sender (`PT:12402-12422`); the window being key
+    /// is `self.focused`.
+    fn pane_dim(&self, tab: &Tab, id: PaneId, bview: &crate::broadcast::View) -> crate::dim::Dim {
+        use crate::dim;
+        let (receives, current_receives) = dim::broadcast_inputs(&self.broadcast, bview, id, tab.focused);
+        let split = dim::inactive_split(self.globals.bool("DimInactiveSplitPanes"), id == tab.focused, receives, current_receives);
+        let background = dim::background(self.globals.bool("DimBackgroundWindows"), self.focused);
+        dim::Dim { amount: dim::amount(split, background, self.dim_base()), only_text: self.globals.bool("DimOnlyText") }
+    }
+
+    /// The largest dimming amount of a dimmed pane lying against the tab bar's edge
+    /// (`shouldTweakMinimalTabOutlineAlpha`), when there is one: not in a background window that
+    /// dims as a whole, whose dimming looks fine under the outline.
+    fn dimmed_pane_touches_bar(&self) -> Option<f32> {
         use tab_position::TabPosition::{Bottom, Left, Right, Top};
         if self.tab_style() != crate::tab_theme::TabStyle::Minimal || (self.globals.bool("DimBackgroundWindows") && !self.focused) {
-            return false;
+            return None;
         }
-        let Some(tab) = self.tabs.get(self.active) else { return false };
+        let tab = self.tabs.get(self.active)?;
         let area = self.content_area_for(tab);
         let bview = self.broadcast_view();
         let position = self.tab_position();
-        self.visible(tab).into_iter().any(|(id, r)| {
-            let touches = match position {
+        self.visible(tab)
+            .into_iter()
+            .filter(|(_, r)| match position {
                 Top => r.y <= area.y + 1.0,
                 Bottom => r.y + r.h >= area.y + area.h - 1.0,
                 Left => r.x <= area.x + 1.0,
                 Right => r.x + r.w >= area.x + area.w - 1.0,
-            };
-            touches && id != tab.focused && !self.pane_undimmed(id, tab.focused, self.broadcast.receives(&bview, id), &bview)
-        })
+            })
+            .filter_map(|(id, _)| crate::dim::outline_amount(self.pane_dim(tab, id, &bview)))
+            .max_by(f32::total_cmp)
     }
 
     /// The Theme setting (`TabStyleWithAutomaticOption`), Automatic when unset.
@@ -3013,7 +3036,7 @@ impl App {
     fn restart_pane(&mut self, id: PaneId) {
         let in_tab = || {
             let tab = self.tabs.iter().find(|t| t.layout.panes().contains(&id))?;
-            tab.layout.rects(self.content_area_for(tab), GAP).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r)
+            tab.layout.rects(self.content_area_for(tab), self.gap()).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r)
         };
         let Some(rect) = self.pane_rect(id).or_else(in_tab).or_else(|| self.buried.contains(id).then(|| self.content_area())) else { return };
         // Instant Replay closes first; the new shell starts live.
@@ -3022,6 +3045,9 @@ impl App {
         // The session keeps its chat reference across a restart (`PTYSession.m:2403-2420`).
         let reference = self.panes.get(&id).map(|p| p.session_guid.clone());
         let stable = self.panes.get(&id).map(|p| p.stable_id.clone());
+        // Restart Session keeps the lock, the pinned width and the last-use stamp (B5); the new pane would otherwise
+        // read Default Pane Locked.
+        let (locked, activity, pinned) = self.panes.get(&id).map_or((false, 0, None), |p| (p.locked, p.activity, p.pinned_width));
         // The new shell never saw what a model typed into the old one.
         self.orch_held.remove(&id);
         if let Some(old) = self.panes.remove(&id) {
@@ -3035,6 +3061,11 @@ impl App {
         // Its inline files went with its screen.
         self.close_inline_questions_of(id);
         if self.start_pane_as(id, rect, guid.as_deref()) {
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.locked = locked;
+                p.activity = activity;
+                p.pinned_width = pinned;
+            }
             if let (Some(reference), Some(p)) = (reference.clone(), self.panes.get_mut(&id)) {
                 p.keep_reference(&reference);
             }
@@ -3249,6 +3280,7 @@ impl App {
             }
         }
         self.panes.insert(id, pane);
+        self.apply_new_pane_defaults(id);
     }
 
     /// Instant Replay: every pane, background tabs and tmux panes included, records a frame
@@ -3422,8 +3454,9 @@ impl App {
         self.apply_border_everywhere();
         // AllowLiveResize may have changed.
         self.apply_resizable_everywhere();
-        // Title bars or the status bar's height or place may have changed (P13, P21): panes
-        // gain or lose room in every window, parked ones and their tmux reports too.
+        // Title bars, the status bar's height or place, or SplitPaneDividerWidth may have
+        // changed (13h P13, P21; 13i S11): panes gain or lose room in every window, parked
+        // ones and their tmux reports too.
         self.relayout_changed_windows();
         // Disable Transparency or a profile value may have changed the blur.
         self.sync_blur();
@@ -3693,8 +3726,9 @@ impl App {
             return;
         }
         let tab = &self.tabs[self.active];
+        let target_was_active = target == tab.focused;
         let area = self.content_area();
-        let Some((_, rect)) = tab.layout.rects(area, GAP).into_iter().find(|(id, _)| *id == target) else { return };
+        let Some((_, rect)) = tab.layout.rects(area, self.gap()).into_iter().find(|(id, _)| *id == target) else { return };
         let half = match axis {
             Axis::Row => Rect { w: rect.w / 2.0, ..rect },
             Axis::Column => Rect { h: rect.h / 2.0, ..rect },
@@ -3705,9 +3739,12 @@ impl App {
         if let Some(id) = started {
             let tab = &mut self.tabs[self.active];
             tab.layout.split(target, axis, id);
-            tab.focused = id;
-            tab.zoomed = None;
+            if pane_nav_ui::focus_new_split(self.globals.bool("FocusFollowsMouse"), self.globals.bool("FocusNewSplitPaneWithFocusFollowsMouse"), target_was_active) {
+                self.tabs[self.active].focused = id;
+            }
+            self.tabs[self.active].zoomed = None;
             self.check_alpha_surfaces();
+            self.apply_width_pins();
             self.relayout();
         }
     }
@@ -3814,6 +3851,7 @@ impl App {
             } else {
                 let gone = self.tabs.remove(t);
                 self.mru.forget(gone.id);
+                self.pane_seen.remove(&gone.id);
                 self.api_vars.forget(crate::api_vars::Scope::Tab, &gone.id.to_string());
                 self.active = crate::close_rules::active_after_close(self.active, t, self.tabs.len(), self.globals.bool("moveLeftAfterClosingTab"));
                 // The neighbor selected may be hidden in a collapsed group.
@@ -3994,21 +4032,9 @@ impl App {
             Action::SplitRight => self.split(Axis::Row, None),
             Action::SplitDown => self.split(Axis::Column, None),
             Action::NextPane | Action::PrevPane => {
-                if let Some(tab) = self.tabs.get_mut(self.active) {
-                    let panes = tab.layout.panes();
-                    let i = panes.iter().position(|p| *p == tab.focused).unwrap_or(0);
-                    let step = if action == Action::NextPane { 1 } else { panes.len() - 1 };
-                    tab.focused = panes[(i + step) % panes.len()];
-                }
+                self.step_pane(action == Action::NextPane);
             }
-            Action::Focus(dir) => {
-                let area = self.content_area();
-                if let Some(tab) = self.tabs.get_mut(self.active) {
-                    if let Some(id) = tab.layout.neighbor(tab.focused, dir, area) {
-                        tab.focused = id;
-                    }
-                }
-            }
+            Action::Focus(dir) => self.select_pane_dir(dir),
             Action::NextTab if n > 0 => self.select_tab((self.active + 1) % n),
             Action::PrevTab if n > 0 => self.select_tab((self.active + n - 1) % n),
             Action::SelectTab(i) if i < n => self.select_tab(i),
@@ -4224,13 +4250,9 @@ impl App {
             // One window until milestone 7: window 1 is this one.
             Route::SelectWindow(d) => self.select_window_number(d),
             Route::SelectPane(d) => {
-                if let Some(t) = self.tabs.get_mut(self.active) {
-                    let panes = t.layout.panes();
-                    let i = if d == 9 { panes.len() - 1 } else { d as usize - 1 };
-                    if let Some(id) = panes.get(i) {
-                        t.focused = *id;
-                        t.zoomed = None;
-                    }
+                let pick = self.tabs.get(self.active).and_then(|t| self.pane_by_number(t, d));
+                if let Some(id) = pick {
+                    self.focus_quietly(self.active, id);
                 }
             }
             Route::SelectTab(d) => {
@@ -4397,16 +4419,14 @@ impl App {
         match kind {
             mouse::FirstClick::ActivateOnly => return,
             mouse::FirstClick::FocusOnly => {
-                self.tabs[self.active].focused = id;
-                self.refresh_route();
+                self.focus_stamped(id);
                 return self.redraw();
             }
             mouse::FirstClick::Normal => {}
         }
         // A left click always focuses its pane; right and middle only when the setting says so.
         if b == 0 || self.globals.bool("FocusOnRightOrMiddleClick") {
-            self.tabs[self.active].focused = id;
-            self.refresh_route();
+            self.focus_stamped(id);
         }
         // The press makes the terminal first responder (`notifyActive`): the focused pane's
         // Auto Composer takes the keyboard back; the press still selects in the output.
@@ -4838,7 +4858,8 @@ impl App {
                     let notes: Vec<(crate::find::Match, Option<String>)> = self.note_cells(id).into_iter().map(|(m, _, t)| (m, t)).collect();
                     let bg_alpha = if see_through { alphas.iter().find(|(a, _)| *a == id).map_or(1.0, |(_, a)| *a) } else { 1.0 };
                     let opaque_colors = see_through && self.store.get(&p.profile).is_some_and(|pr| pr.bool("Only The Default BG Color Uses Transparency"));
-                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, undimmed: self.pane_undimmed(id, tab.focused, receives, &bview), key_cursor: self.focused && id == tab.focused && p.at_password_prompt(), bg_alpha, opaque_colors };
+                    let dim = self.pane_dim(tab, id, &bview);
+                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, dim, key_cursor: self.focused && id == tab.focused && p.at_password_prompt(), bg_alpha, opaque_colors };
                     if see_through {
                         // The pane's margins (its rect less the cell grid) carry the default background at the
                         // pane's alpha; the grid's own background runs cover the rest, one layer per pixel.
@@ -4855,6 +4876,11 @@ impl App {
                     if let Some(c) = cover {
                         composer_ui::skip_covered(&mut frame.overlay, overlay_from, c);
                     }
+                    // The gray quad over the whole pane (margins included); Dim Only Text dimmed the cells itself.
+                    if dim.amount > 0.0 && !dim.only_text {
+                        frame.overlay.push(scene::Quad { rect, color: scene::rgba(crate::palette::rgb(128, 128, 128), dim.amount) });
+                    }
+                    self.draw_active_border(&mut frame, tab, id, rect);
                     // Broadcast stripes: over the cell backgrounds, under the text.
                     if let (Some((n, px)), true) = (&stripes, receives) {
                         let r = self.inner(rect);
@@ -4903,7 +4929,7 @@ impl App {
             self.draw_clippings(&mut frame, cell);
             inline_hits = self.draw_inline_chats(&mut frame, cell);
             if tab.zoomed.is_none() {
-                scene::dividers(&mut frame, &tab.layout.dividers(area, GAP), self.divider_color());
+                scene::dividers(&mut frame, &tab.layout.dividers(area, self.gap()), self.divider_color());
             }
             self.find_bar_rect = None;
             self.find_mode_rect = None;
@@ -5244,6 +5270,7 @@ impl ApplicationHandler<UserEvent> for App {
         if let Some(w) = self.last_window {
             self.enter(w);
         }
+        self.sync_pane_activity();
         self.flush_dropped();
         self.ssh_suggest_purge();
         for w in std::mem::take(&mut self.pending_windows) {
@@ -5286,7 +5313,9 @@ impl ApplicationHandler<UserEvent> for App {
             self.ffm_became_inactive();
         }
         self.app_active = active;
-        self.alt_infer_focus_moved();
+        // Again after 13j's edge (S9): a pane focused by aggressive focus follows mouse stamps in
+        // this pass, and the inferrer's focus check runs inside it (P20).
+        self.sync_pane_activity();
         let hotkey_due = self.tick_hotkeys();
         let find_due = self.run_due_searches();
         let spotlight = self.tick_find_cursor();
@@ -5594,6 +5623,8 @@ impl ApplicationHandler<UserEvent> for App {
                     g.config.height = h;
                     g.surface.configure(g.render_device(), &g.config);
                 }
+                // Locked split pane widths hold through the resize (`TAB:6596-6640`).
+                self.apply_width_pins();
                 self.relayout();
                 self.sync_blur();
                 self.tmux_save_all_windows();

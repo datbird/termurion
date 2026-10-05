@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 315 | 198 | 102 | 15 |
-| `02-global-settings.md` | 820 | 484 | 60 | 276 |
-| `03-features-and-menus.md` | 645 | 551 | 47 | 47 |
-| Total | 1,780 | 1,233 | 209 | 338 |
+| `01-profile-settings.md` | 315 | 201 | 99 | 15 |
+| `02-global-settings.md` | 820 | 492 | 57 | 271 |
+| `03-features-and-menus.md` | 645 | 552 | 47 | 46 |
+| Total | 1,780 | 1,245 | 203 | 332 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -529,6 +529,18 @@ and RequireOptionToDragSplitPaneTitleBar asks for Alt. Lock Layout refuses (a be
 The documented gap of 11c (a per-pane title bar menu adding context menu provider items) is closed. Nothing of 13h was
 checked on screen during the build. Every kept quirk is listed in `docs/acceptance/m13h-checklist.md` and ruled on in
 `docs/superpowers/rulings/m13h-rulings.txt`.
+Milestone 13i built pane navigation (01: 3 rows to have, all from partial; 02: 8 rows to have, 3 from partial, 5 from
+missing; 03: 1 row to have from missing, Lock Split Pane Width). Next Pane, Previous Pane, the pane number shortcut, the title bar
+numbers and the Status tool follow one order: reading order by default (NavigatePanesInReadingOrder), the order last used
+when it is off, with the ninth shortcut always the last pane (the Status tool reads the same numbers as the title bars). Select Pane by direction goes to the neighbor used last and
+wraps at the edge (WrapFocus). A new split keeps focus off when it should (FocusNewSplitPaneWithFocusFollowsMouse, and a
+split of a pane that is not active never takes focus) and uses the session's own profile (UseDivorcedProfileToSplit).
+SplitPaneDividerWidth and SplitPaneColor set the dividers, scaled to the screen. Inactive panes dim toward gray by the
+Dimming amount (0.01 to 0.6), with Dim inactive split panes, Dim only text and Dim background windows in a Dimming section
+of Appearance, and the active pane gets its border. Lock Pane (context menu, title bar mark, Default Pane Locked, saved
+arrangements) makes closing ask and moving refuse; Lock Split Pane Width caps a pane's width through window resizes.
+Nothing of 13i was checked on screen during the build. Every kept quirk is listed in
+`docs/acceptance/m13i-checklist.md` and ruled on in `docs/superpowers/rulings/m13i-rulings.txt`.
 Milestone 13j built the mouse and the scroll wheel (01: 7 rows to have, all from partial; 02: 20 rows to have, 10 from missing
 and 10 from partial, StealKeyFocus from missing to partial, one row added: NoSyncNeverAskAboutSettingAlternateMouseScroll; 03: one row added, OSC 22, missing).
 iTerm2's defaults now hold, each a change users will see: in the alternate screen the wheel scrolls Tandem's history and

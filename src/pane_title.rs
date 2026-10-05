@@ -3,7 +3,7 @@
 //! colors. Pure; the drawing and clicks live in `app::pane_title_ui`.
 
 use crate::hexcolor;
-use crate::layout::Rect;
+use crate::layout::{PaneId, Rect};
 use crate::palette::Rgb;
 use crate::tab_theme::{self, TabStyle};
 
@@ -49,6 +49,13 @@ pub fn ordinals(n: usize) -> Vec<u32> {
         }
     }
     out
+}
+
+/// The shortcut ordinal of `pane` among `ordered` (0 when it has none), the one number the
+/// title bars and the Status tool both show (`PTYTab.m:678-691`).
+pub fn ordinal_of(ordered: &[PaneId], pane: PaneId) -> u32 {
+    let labels = ordinals(ordered.len());
+    ordered.iter().position(|&x| x == pane).map_or(0, |i| labels[i])
 }
 
 /// The label (`SessionTitleView.m:250-277`): the shortcut prefix, the ordinal and three spaces
@@ -337,6 +344,18 @@ mod tests {
         let twelve = ordinals(12);
         assert_eq!(&twelve[7..], &[8, 0, 0, 0, 9]);
         assert_eq!(ordinals(1), vec![1]);
+    }
+
+    #[test]
+    fn ordinal_of_follows_the_ninth_pane_rule() {
+        let eight: Vec<PaneId> = (1..=8).collect();
+        assert_eq!(ordinal_of(&eight, 8), 9, "the eighth of eight shows 9");
+        assert_eq!(ordinal_of(&eight, 3), 3);
+        let ten: Vec<PaneId> = (1..=10).collect();
+        assert_eq!(ordinal_of(&ten, 8), 8);
+        assert_eq!(ordinal_of(&ten, 9), 0, "no shortcut past the eighth");
+        assert_eq!(ordinal_of(&ten, 10), 9);
+        assert_eq!(ordinal_of(&ten, 99), 0, "a pane not in the tab has none");
     }
 
     #[test]

@@ -100,8 +100,7 @@ impl App {
             return;
         }
         if self.globals.bool("FocusFollowsMouse") && self.tabs.get(self.active).is_some_and(|t| t.focused != id) {
-            self.tabs[self.active].focused = id;
-            self.refresh_route();
+            self.focus_stamped(id);
             self.redraw();
         }
     }
@@ -295,7 +294,7 @@ impl App {
         if self.tabs.get(self.active)?.zoomed.is_some() {
             return None;
         }
-        self.tabs.get(self.active)?.layout.dividers(area, GAP).into_iter().find(|d| mouse::divider_grab(d.rect, grab).contains(x, y))
+        self.tabs.get(self.active)?.layout.dividers(area, self.gap()).into_iter().find(|d| mouse::divider_grab(d.rect, grab).contains(x, y))
     }
 
     /// A button a program drew on a line of its output (Tandem acts on it, not the program).
@@ -907,6 +906,28 @@ mod tests {
         assert!(include_str!("pane_move_ui.rs").contains("fn draw_pane_move(&self, frame: &mut scene::Frame, cell: (f32, f32)) -> Vec<Rect>"));
     }
 
+    /// 13i seams S2, P20, P21, S9: a click, a first-mouse FocusOnly click and focus follows mouse
+    /// focus through the one stamped helper (last use counts; a locked pane is not refused), and
+    /// the inferrer's focus reset rides on 13i's per-pass focus check, run again after 13j's
+    /// active edge.
+    #[test]
+    fn pane_focus_goes_through_13i() {
+        const NAV: &str = include_str!("pane_nav_ui.rs");
+        let press = body(MOD, "mouse_press");
+        assert!(press.matches("self.focus_stamped(id)").count() >= 2, "click and FocusOnly");
+        assert!(body(UI, "ffm_pane_focus").contains("self.focus_stamped(id)"));
+        for b in [press, body(UI, "ffm_pane_focus")] {
+            assert!(!b.contains("focus_quietly") && !b.contains("pane_locked"));
+        }
+        let stamped = body(NAV, "focus_stamped");
+        assert!(!stamped.contains("pane_seen") && !stamped.contains("locked"), "a stamp, no lock check");
+        assert!(body(NAV, "sync_pane_activity").contains("self.alt_infer_focus_moved()"));
+        let wait = body(MOD, "about_to_wait");
+        assert!(!wait.contains("alt_infer_focus_moved"), "one focus-change check, inside 13i's");
+        let edge = wait.find("self.ffm_became_active()").unwrap();
+        assert!(wait[edge..].contains("self.sync_pane_activity()"), "a focus change at the edge stamps in this pass");
+    }
+
     /// A right or middle press on a divider's grab zone is Tandem's too.
     #[test]
     fn a_divider_press_never_reaches_the_program() {
@@ -917,5 +938,7 @@ mod tests {
         let after = &b[grab..];
         assert!(after.contains("button == MouseButton::Left"), "only the left button starts the drag");
         assert!(body(UI, "divider_at").contains("divider_grab("));
+        // 13i: the grab zone sits around a divider as wide as SplitPaneDividerWidth.
+        assert!(body(UI, "divider_at").contains("self.gap()"), "divider_at reads 13i's gap()");
     }
 }

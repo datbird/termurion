@@ -19,7 +19,12 @@ impl App {
         let mut out = Vec::new();
         for id in panes {
             let Some(p) = self.panes.get(id) else { continue };
-            if p.exited.is_some() {
+            if let Some(reason) = super::pane_lock_ui::close_reason_for(p.exited.is_some(), p.locked) {
+                if !out.iter().any(|r| r == reason) {
+                    out.push(reason.to_string());
+                }
+            }
+            if !super::pane_lock_ui::profile_reasons_apply(p.exited.is_some(), p.locked) {
                 continue;
             }
             let Some(profile) = self.store.get(&p.profile) else { continue };
@@ -111,7 +116,7 @@ impl App {
         }
         let (names, notes) = self.job_names(&panes);
         let notes: Vec<String> = pinned.into_iter().chain(notes).collect();
-        let body = close_rules::with_notes(close_rules::body(close_rules::subject(kind, panes.len()), &close_rules::counted(&names)), &notes);
+        let body = close_rules::with_notes(close_rules::body(close_rules::subject(kind, panes.len(), panes.iter().any(|id| self.panes.get(id).is_some_and(|p| p.locked))), &close_rules::counted(&names)), &notes);
         confirm(self.hwnd(), &title, &body)
     }
 

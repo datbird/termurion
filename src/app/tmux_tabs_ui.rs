@@ -769,6 +769,7 @@ impl App {
             }
         }
         self.panes.insert(id, pane);
+        self.apply_new_pane_defaults(id);
         // The job is watched only when the profile shows an icon (iTerm2's PS:10098).
         let job = profile.int("Icon") != 0;
         let pal = Palette::from_profile(&profile, self.dark());

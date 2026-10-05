@@ -102,6 +102,21 @@ impl<T> Tree<T> {
     }
 }
 
+/// Whether a side by side split lies above `pane` (`PS:21736-21754`: a vertical split view
+/// somewhere up the chain), its direct parent or not.
+pub fn has_row_ancestor(tree: &Tree<PaneId>, pane: PaneId) -> bool {
+    fn go(t: &Tree<PaneId>, pane: PaneId, row: bool) -> Option<bool> {
+        match t {
+            Tree::Leaf(p) => (*p == pane).then_some(row),
+            Tree::Split { axis, a, b, .. } => {
+                let row = row || *axis == Axis::Row;
+                go(a, pane, row).or_else(|| go(b, pane, row))
+            }
+        }
+    }
+    go(tree, pane, false).unwrap_or(false)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum Node {
     Leaf(PaneId),
@@ -133,10 +148,6 @@ fn split_rect(r: Rect, axis: Axis, ratio: f32, gap: f32) -> (Rect, Rect, Rect) {
             )
         }
     }
-}
-
-fn overlaps(a0: f32, alen: f32, b0: f32, blen: f32) -> bool {
-    a0 < b0 + blen && b0 < a0 + alen
 }
 
 impl Layout {
@@ -359,29 +370,130 @@ impl Layout {
         }
     }
 
-    /// The nearest pane in direction `dir` from `from` that overlaps it on the other axis.
-    pub fn neighbor(&self, from: PaneId, dir: Dir, area: Rect) -> Option<PaneId> {
-        let rects = self.rects(area, 0.0);
-        let (_, f) = *rects.iter().find(|(id, _)| *id == from)?;
-        let (cx, cy) = (f.x + f.w / 2.0, f.y + f.h / 2.0);
-        let dist = |r: &Rect| {
-            let (dx, dy) = (r.x + r.w / 2.0 - cx, r.y + r.h / 2.0 - cy);
-            dx * dx + dy * dy
+    /// Caps `pane` at `width` when its direct parent is a side by side split and the pane is
+    /// wider (`TAB:6596-6640`: only a session view that is a direct child of a vertical split is
+    /// pinned). The ratio clamps like any other (0.1 to 0.9). True when the split changed.
+    pub fn pin_width(&mut self, pane: PaneId, width: f32, area: Rect, gap: f32, pinned: &dyn Fn(PaneId) -> bool) -> bool {
+        fn go(n: &mut Node, r: Rect, pane: PaneId, width: f32, gap: f32, pinned: &dyn Fn(PaneId) -> bool) -> bool {
+            let Node::Split { axis, ratio, a, b } = n else { return false };
+            let (ra, rb, _) = split_rect(r, *axis, *ratio, gap);
+            let direct_a = matches!(**a, Node::Leaf(p) if p == pane);
+            let direct_b = matches!(**b, Node::Leaf(p) if p == pane);
+            if (direct_a || direct_b) && *axis == Axis::Row {
+                // `adjustSplitSubviewSizesForPinnedSizes:` (`PTYTab.m:6862-6875`) returns early
+                // when every session view of the split is pinned.
+                if matches!((&**a, &**b), (Node::Leaf(x), Node::Leaf(y)) if pinned(*x) && pinned(*y)) {
+                    return false;
+                }
+                let now = if direct_a { ra.w } else { rb.w };
+                if now <= width {
+                    return false;
+                }
+                let room = r.w - gap;
+                if room <= 0.0 {
+                    return false;
+                }
+                // The first side is floored, so the nudge keeps a whole width from losing a point.
+                let first = if direct_a { width } else { room - width };
+                *ratio = ((first + 0.01) / room).clamp(0.1, 0.9);
+                return true;
+            }
+            go(a, ra, pane, width, gap, pinned) || go(b, rb, pane, width, gap, pinned)
+        }
+        go(&mut self.root, area, pane, width, gap, pinned)
+    }
+
+    /// The panes B in `from`'s projection looking `dir` (`sessionsInProjectionOfSession:`,
+    /// `TAB:1454-1487`): B overlaps `from` on the cross axis by more than `margin` and starts at
+    /// or past where `from` ends. `rects` are the pane rectangles (`after` false mirrors them).
+    fn projection(rects: &[(PaneId, Rect)], from: PaneId, vertical: bool, after: bool, margin: f32) -> Vec<PaneId> {
+        let Some(a) = rects.iter().find(|(id, _)| *id == from).map(|(_, r)| Span::of(r, vertical, after)) else {
+            return Vec::new();
         };
         rects
             .iter()
             .filter(|(id, r)| {
-                *id != from
-                    && match dir {
-                        Dir::Left => r.x + r.w <= f.x + 0.5 && overlaps(r.y, r.h, f.y, f.h),
-                        Dir::Right => r.x >= f.x + f.w - 0.5 && overlaps(r.y, r.h, f.y, f.h),
-                        Dir::Up => r.y + r.h <= f.y + 0.5 && overlaps(r.x, r.w, f.x, f.w),
-                        Dir::Down => r.y >= f.y + f.h - 0.5 && overlaps(r.x, r.w, f.x, f.w),
-                    }
+                let b = Span::of(r, vertical, after);
+                *id != from && b.bottom >= a.top + margin && b.top + margin < a.bottom && b.left >= a.right
             })
-            .min_by(|(_, a), (_, b)| dist(a).total_cmp(&dist(b)))
             .map(|(id, _)| *id)
+            .collect()
     }
+
+    /// The panes adjacent to `from` looking `dir`: in its projection with no other pane of the
+    /// projection between them (`sessionsAdjacentToSession:`, `TAB:1489-1531`). `margin` is
+    /// iTerm2's 1-point safety margin in pixels.
+    pub fn adjacent(&self, from: PaneId, dir: Dir, area: Rect, gap: f32, margin: f32) -> Vec<PaneId> {
+        let rects = self.rects(area, gap);
+        let (vertical, after) = axis_of(dir);
+        let candidates = Self::projection(&rects, from, vertical, after, margin);
+        let span = |id: PaneId| rects.iter().find(|(p, _)| *p == id).map(|(_, r)| Span::of(r, vertical, after));
+        let Some(a) = span(from) else { return Vec::new() };
+        candidates
+            .iter()
+            .copied()
+            .filter(|&b| {
+                let Some(b) = span(b) else { return false };
+                !candidates.iter().any(|&c| {
+                    let Some(c) = span(c) else { return false };
+                    c != b
+                        && c.bottom >= a.top
+                        && c.top < a.bottom
+                        && c.bottom >= b.top
+                        && c.top < b.bottom
+                        && c.left >= a.right
+                        && c.right < b.left
+                })
+            })
+            .collect()
+    }
+
+    /// The panes to wrap to when nothing is adjacent: those in the projection looking the other
+    /// way with the smallest `left`, the far edge (`TAB:1543-1560`).
+    pub fn wraparound(&self, from: PaneId, dir: Dir, area: Rect, gap: f32, margin: f32) -> Vec<PaneId> {
+        let rects = self.rects(area, gap);
+        let (vertical, after) = axis_of(dir);
+        let far = Self::projection(&rects, from, vertical, !after, margin);
+        let left = |id: PaneId| rects.iter().find(|(p, _)| *p == id).map_or(f32::MAX, |(_, r)| Span::of(r, vertical, after).left);
+        let min = far.iter().map(|&id| left(id)).fold(f32::MAX, f32::min);
+        far.into_iter().filter(|&id| left(id) - min < 0.01).collect()
+    }
+}
+
+/// A pane's extent in the projection's frame: `top` and `bottom` across, `left` and `right`
+/// along the direction (negated when looking before, so "after" always means larger).
+#[derive(Clone, Copy, PartialEq)]
+struct Span {
+    top: f32,
+    bottom: f32,
+    left: f32,
+    right: f32,
+}
+
+impl Span {
+    fn of(r: &Rect, vertical: bool, after: bool) -> Span {
+        let (x, w, y, h) = if vertical { (r.y, r.h, r.x, r.w) } else { (r.x, r.w, r.y, r.h) };
+        let (left, right) = if after { (x, x + w) } else { (-(x + w), -x) };
+        Span { top: y, bottom: y + h, left, right }
+    }
+}
+
+/// Whether a direction is vertical (x and y swap) and looks after (right or down).
+fn axis_of(dir: Dir) -> (bool, bool) {
+    match dir {
+        Dir::Left => (false, false),
+        Dir::Right => (false, true),
+        Dir::Up => (true, false),
+        Dir::Down => (true, true),
+    }
+}
+
+/// The candidate with the highest stamp; ties keep the first (`maxWithComparator:`).
+pub fn most_recent(candidates: &[PaneId], activity: &dyn Fn(PaneId) -> u64) -> Option<PaneId> {
+    candidates.iter().copied().fold(None, |best: Option<PaneId>, id| match best {
+        Some(b) if activity(id) <= activity(b) => Some(b),
+        _ => Some(id),
+    })
 }
 
 /// The most panes a line along `axis` crosses: for `Axis::Column`, the tallest column's pane
@@ -510,14 +622,71 @@ mod tests {
     }
 
     #[test]
-    fn neighbors_by_direction() {
+    fn adjacency_follows_iterm2() {
+        let big = Rect { x: 0.0, y: 0.0, w: 200.0, h: 100.0 };
         let mut l = Layout::new(1);
         l.split(1, Axis::Row, 2);
         l.split(2, Axis::Column, 3);
-        assert_eq!(l.neighbor(3, Dir::Left, AREA), Some(1));
-        assert_eq!(l.neighbor(2, Dir::Down, AREA), Some(3));
-        assert_eq!(l.neighbor(3, Dir::Up, AREA), Some(2));
-        assert_eq!(l.neighbor(1, Dir::Left, AREA), None);
+        assert_eq!(l.adjacent(1, Dir::Right, big, 1.0, 1.0), vec![2, 3]);
+        assert_eq!(l.adjacent(2, Dir::Left, big, 1.0, 1.0), vec![1]);
+        assert_eq!(l.adjacent(2, Dir::Down, big, 1.0, 1.0), vec![3]);
+        assert_eq!(l.adjacent(3, Dir::Left, big, 1.0, 1.0), vec![1]);
+        assert_eq!(l.adjacent(3, Dir::Up, big, 1.0, 1.0), vec![2]);
+        assert_eq!(l.adjacent(1, Dir::Left, big, 1.0, 1.0), Vec::<PaneId>::new());
+        // Three columns: 2 sits between 1 and 3.
+        let mut c = Layout::new(1);
+        c.split(1, Axis::Row, 2);
+        c.split(2, Axis::Row, 3);
+        assert_eq!(c.adjacent(1, Dir::Right, big, 1.0, 1.0), vec![2]);
+        // The 1-point margin with fractional geometry (gap 1.5): the left column splits at 49, the
+        // right one at 48.5 (a 0.5 overlap with 1, excluded) or 47.5 (a 1.5 overlap, included).
+        let build = |ratio: f32| {
+            let mut s = Layout::new(1);
+            s.split(1, Axis::Row, 2);
+            s.split(1, Axis::Column, 4);
+            s.split(2, Axis::Column, 3);
+            s.set_ratio(&[true], ratio);
+            s
+        };
+        let (half, deep) = (build(0.48), build(0.47));
+        assert_eq!(half.rect_of(3, big, 1.5).map(|r| r.y), Some(48.5));
+        assert_eq!(deep.rect_of(3, big, 1.5).map(|r| r.y), Some(47.5));
+        assert_eq!(half.adjacent(1, Dir::Right, big, 1.5, 1.0), vec![2], "a 0.5 overlap is under the margin");
+        assert_eq!(deep.adjacent(1, Dir::Right, big, 1.5, 1.0), vec![2, 3], "a 1.5 overlap is in the projection");
+        let mut t = Layout::new(1);
+        t.split(1, Axis::Column, 2);
+        t.split(1, Axis::Row, 3);
+        // 3 is the top-left quarter, 1 its neighbor: 2 spans the bottom; 3 looking down sees 2 only.
+        assert_eq!(t.adjacent(3, Dir::Down, big, 1.0, 1.0), vec![2]);
+        // A margin wider than the overlap drops the neighbor (the 1-point rule).
+        assert_eq!(l.adjacent(2, Dir::Left, big, 1.0, 60.0), Vec::<PaneId>::new());
+    }
+
+    #[test]
+    fn wraparound_follows_iterm2() {
+        let big = Rect { x: 0.0, y: 0.0, w: 200.0, h: 100.0 };
+        let mut l = Layout::new(1);
+        l.split(1, Axis::Row, 2);
+        l.split(2, Axis::Column, 3);
+        assert_eq!(l.wraparound(2, Dir::Right, big, 1.0, 1.0), vec![1]);
+        assert_eq!(l.wraparound(3, Dir::Down, big, 1.0, 1.0), vec![2]);
+        let mut c = Layout::new(1);
+        c.split(1, Axis::Row, 2);
+        c.split(2, Axis::Row, 3);
+        assert_eq!(c.wraparound(1, Dir::Left, big, 1.0, 1.0), vec![3]);
+        let one = Layout::new(1);
+        for d in [Dir::Left, Dir::Right, Dir::Up, Dir::Down] {
+            assert!(one.adjacent(1, d, big, 1.0, 1.0).is_empty());
+            assert!(one.wraparound(1, d, big, 1.0, 1.0).is_empty());
+        }
+    }
+
+    #[test]
+    fn direction_pick_follows_iterm2() {
+        let stamps = |id: PaneId| if id == 2 { 5 } else { 9 };
+        assert_eq!(most_recent(&[2, 3], &stamps), Some(3));
+        assert_eq!(most_recent(&[], &stamps), None);
+        assert_eq!(most_recent(&[4, 5], &|_| 7), Some(4), "ties keep the first");
     }
 
     #[test]
@@ -593,5 +762,35 @@ mod tests {
         let t = Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(1), b: Box::new(Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(2), b: leaf(3) }) };
         assert_eq!(max_stack(&t, Axis::Column), 3);
         assert_eq!(max_stack(&t, Axis::Row), 1);
+    }
+
+    #[test]
+    fn width_pins_follow_iterm2() {
+        let leaf = |p: PaneId| Box::new(Tree::Leaf(p));
+        let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 };
+        let row = || Layout::from_tree(Tree::Split { axis: Axis::Row, ratio: 0.5, a: leaf(1), b: leaf(2) });
+        let width = |l: &Layout, id: PaneId| l.rects(area, 0.0).iter().find(|(p, _)| *p == id).unwrap().1.w;
+        let mut l = row();
+        assert!(l.pin_width(1, 120.0, area, 0.0, &|_| false));
+        assert_eq!(width(&l, 1), 120.0);
+        let mut l = row();
+        assert!(l.pin_width(2, 100.0, area, 0.0, &|_| false));
+        assert_eq!(width(&l, 2), 100.0);
+        let mut l = row();
+        assert!(!l.pin_width(1, 300.0, area, 0.0, &|_| false), "a pin only caps");
+        assert_eq!(width(&l, 1), 200.0);
+        let mut l = Layout::from_tree(Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(1), b: leaf(2) });
+        assert!(!l.pin_width(1, 120.0, area, 0.0, &|_| false));
+        let nested = Tree::Split { axis: Axis::Row, ratio: 0.5, a: leaf(1), b: Box::new(Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(2), b: leaf(3) }) };
+        let mut l = Layout::from_tree(nested.clone());
+        assert!(!l.pin_width(2, 100.0, area, 0.0, &|_| false), "its direct parent is a Column split");
+        // PTYTab.m:6862-6875: a side by side split whose panes are all pinned is left alone.
+        let mut l = row();
+        assert!(!l.pin_width(1, 120.0, area, 0.0, &|_| true), "every pane pinned: skipped");
+        assert_eq!(width(&l, 1), 200.0);
+        assert!(l.pin_width(1, 120.0, area, 0.0, &|p| p == 1), "only the pinned one: capped");
+        assert_eq!(width(&l, 1), 120.0);
+        assert!(has_row_ancestor(&nested, 3));
+        assert!(!has_row_ancestor(&Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(1), b: leaf(2) }, 1));
     }
 }

@@ -6,21 +6,6 @@ use crate::layout::visible_rects;
 use crate::pane_title;
 use crate::statusbar_layout::{self as sbl, Position};
 
-/// Whether the scene lays the dim quad on a pane (`pane_undimmed` and the render loop's rule),
-/// so the title bar dims exactly when its pane does (B3): not the focused pane of a key
-/// window, and not undimmed (the focused pane of a background window unless Dim background
-/// windows is on, or in the key window a pane the broadcast input reaches). 13i replaces this
-/// with its dimming model.
-pub(super) fn dimmed_for(focused_pane: bool, window_focused: bool, broadcast_undims: bool, dim_background: bool) -> bool {
-    let undimmed = (!window_focused && focused_pane && !dim_background) || (window_focused && broadcast_undims);
-    !(window_focused && focused_pane) && !undimmed
-}
-
-/// `adjustedDimmingAmount` for a dimmed pane (the scene's `DIM_ALPHA`).
-pub(super) fn dim_amount(dimmed: bool) -> f32 {
-    if dimmed { 0.4 } else { 0.0 }
-}
-
 /// `sessionTabHasMultipleDistinctTabColors` (`PTYTab.m:7333-7348`): more than one distinct
 /// color among the panes that have one.
 pub(super) fn distinct_tab_colors(colors: impl IntoIterator<Item = Option<crate::palette::Rgb>>) -> bool {
@@ -143,35 +128,34 @@ impl App {
         if !self.tab_shows_titles(tab) {
             return;
         }
-        let panes = tab.layout.panes();
-        let ordinals = pane_title::ordinals(panes.len());
+        // S1: the shortcut ordinals follow the order Alt+digit picks by (`pane_by_number`).
+        let panes = self.ordered_panes(tab);
         let tag = self.globals.int("SwitchPaneModifier");
         let (style, resolved) = (self.tab_style(), self.resolved_style());
         let legibility = self.globals.number("MinimalTextLegibilityAdjustment").map_or(1.0, |v| v as f32);
         let (custom_bg, custom_text) = (self.globals.string("PaneTitleBarBackgroundColor"), self.globals.string("PaneTitleBarTextColor"));
         let distinct = distinct_tab_colors(panes.iter().map(|&p| self.pane_tab_color(p)));
         let bview = self.broadcast_view();
-        let dim_background = self.globals.bool("DimBackgroundWindows");
+        let dim_inactive = self.globals.bool("DimInactiveSplitPanes");
         // A see-through frame (`build_frame` set `frame_alpha`) gives each pane its 13g alpha, as
         // the pane's own background takes it; an opaque window draws every bar opaque.
         let alphas = if self.frame_alpha { self.pane_alphas(tab) } else { Vec::new() };
         let mut drawn = Vec::new();
-        for (id, rect) in visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), GAP) {
+        for (id, rect) in visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), self.gap()) {
             let chrome = self.pane_chrome(tab, id, rect);
             let (Some(title), Some(p)) = (chrome.title, self.panes.get(&id)) else { continue };
             // A status bar in the title bar replaces the label (`STV:190-194`) and may color it.
             let bar_in_title = chrome.bar.is_some_and(|b| title.contains(b.x, b.y));
             let bar_bg = bar_in_title.then(|| self.bar_layout(id).0.advanced.background_color.as_ref().and_then(statusbar_ui::color_of).map(|(c, _)| c)).flatten();
             let focused_pane = id == tab.focused;
-            let broadcast_undims = self.broadcast.receives(&bview, id) && self.broadcast.should_broadcast_to(&bview, tab.focused, Some(tab.focused));
-            let dimmed = dimmed_for(focused_pane, self.focused, broadcast_undims, dim_background);
+            let dim = self.pane_dim(tab, id, &bview);
             let parts = pane_title::Parts {
                 style,
                 resolved,
                 dimmed: !focused_pane,
-                dim_amount: dim_amount(dimmed),
-                dim_only_text: false,
-                dim_inactive: true,
+                dim_amount: dim.amount,
+                dim_only_text: dim.only_text,
+                dim_inactive,
                 window_focused: self.focused,
                 session_bg: p.screen.palette.bg,
                 tab_color: self.pane_tab_color(id),
@@ -180,13 +164,13 @@ impl App {
                 custom_text: &custom_text,
                 bar_bg,
                 legibility,
-                locked: false,
+                locked: p.locked,
                 transparency_alpha: alphas.iter().find(|(a, _)| *a == id).map_or(1.0, |(_, a)| *a),
             };
             // P11: the Minimal theme's background alpha (`transparencyAlpha`, `iTermTheme.m:322-353`)
             // comes from `look` via `transparency_alpha` above; text, menu and line stay pre-blended.
             let look = pane_title::look(&parts);
-            let ordinal = panes.iter().position(|&x| x == id).and_then(|i| ordinals.get(i)).copied().unwrap_or(0);
+            let ordinal = pane_title::ordinal_of(&panes, id);
             let text = pane_title::title_text(&self.session_title(id), ordinal, tag);
             let geometry = pane_title::geometry(title, self.scale(), parts.locked);
             scene::pane_title_bar(frame, &scene::TitleBar { geometry, look, text: &text, show_label: !bar_in_title }, cell);
@@ -247,8 +231,7 @@ impl App {
                 }
             }
             TitleAction::Menu => self.show_context_menu_at(Some((pane, None))),
-            // 13i's `toggle_pane_lock` goes here; until it lands the lock mark is never drawn.
-            TitleAction::ToggleLock => {}
+            TitleAction::ToggleLock => self.toggle_pane_lock(pane),
             TitleAction::Maximize | TitleAction::Focus => {}
         }
         self.redraw();
@@ -353,15 +336,6 @@ mod tests {
 
     #[test]
     fn title_parts_follow_the_pane() {
-        // (is the tab's focused pane, window focused, broadcast reaches it, Dim background windows)
-        assert!(!dimmed_for(true, true, false, false));
-        assert!(dimmed_for(false, true, false, false));
-        assert!(!dimmed_for(true, false, false, false), "the focused pane of a background window stays lit");
-        assert!(dimmed_for(true, false, false, true), "unless Dim background windows is on");
-        assert!(!dimmed_for(false, true, true, false), "a pane the broadcast reaches in the key window is lit");
-        assert!(dimmed_for(false, false, true, false), "broadcast undims only in the key window");
-        assert_eq!(dim_amount(true), 0.4);
-        assert_eq!(dim_amount(false), 0.0);
         use crate::palette::rgb;
         let (a, b) = (rgb(1, 2, 3), rgb(9, 9, 9));
         assert!(!distinct_tab_colors([None, Some(a), None, Some(a)]));

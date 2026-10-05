@@ -292,7 +292,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Window > Split Pane > Resize Split Pane > Move Divider Down | Ctrl+Cmd+Down | Resizes the pane by nudging its divider down via keyboard. | have |
 | Window > Split Pane > Resize Split Pane > Move Divider Left | Ctrl+Cmd+Left | Resizes the pane by nudging its divider left via keyboard. | have |
 | Window > Split Pane > Resize Split Pane > Move Divider Right | Ctrl+Cmd+Right | Resizes the pane by nudging its divider right via keyboard. | have |
-| Window > Split Pane > Lock Split Pane Width | no shortcut | Locks the current pane's width so window resizes do not change it. (milestone 7) | missing |
+| Window > Split Pane > Lock Split Pane Width | no shortcut | Caps the current pane's width through window resizes (a pane in a side-by-side split of a tab with several panes; the pane still shrinks with a smaller window and is capped again when a split is made, a split whose two panes are both pinned is left alone, and a divider drag can widen it until the next resize). Milestone 13i; shown checked on that pane; tmux panes cannot be locked. | have |
 | Window > Window Style > Normal | no shortcut | Sets the window style to a normal title-barred window. | have |
 | Window > Window Style > Full Screen | no shortcut | Sets the window style to native full screen. | have |
 | Window > Window Style > Maximized | no shortcut | Sets the window style to maximized, fills the screen and keeps chrome. | have |

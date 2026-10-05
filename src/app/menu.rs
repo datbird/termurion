@@ -281,7 +281,11 @@ impl App {
         for slot in context_layout(extra.len(), providers.len(), tab_has_many) {
             results.push(match slot {
                 Slot::Separator => context.append(&PredefinedMenuItem::separator()),
-                Slot::Extra(i) => context.append(&own(&extra[i])),
+                Slot::Extra(i) => match &extra[i] {
+                    // Lock Pane is a check item (`CMH:671-678`).
+                    (label, item @ super::semantic_ui::CtxItem::LockPane(on)) => context.append(&CheckMenuItem::with_id(item.id(), label.replace('&', "&&"), true, *on, None)),
+                    other => context.append(&own(other)),
+                },
                 Slot::Provider(i) => context.append(&own(&providers[i])),
                 Slot::Swap => context.append(&own(&(super::semantic_ui::swap_label().to_string(), super::semantic_ui::CtxItem::SwapPane))),
                 Slot::Command(id) => match menus::by_id(id) {
@@ -716,6 +720,7 @@ impl App {
                 }
             }
             "toggleSizeLocked:" => self.toggle_lock(false),
+            "toggleLockSplitPaneWidth:" => self.toggle_width_lock(),
             "toggleLayoutLocked:" => self.toggle_lock(true),
             "decreaseHeight:" => self.resize_window_by_cell(crate::winmodel::Resize::Height(-1)),
             "increaseHeight:" => self.resize_window_by_cell(crate::winmodel::Resize::Height(1)),
@@ -1003,22 +1008,10 @@ impl App {
                     "selectPaneLeft:" => Dir::Left,
                     _ => Dir::Right,
                 };
-                let area = self.content_area();
-                if let Some(t) = self.tabs.get_mut(self.active) {
-                    if let Some(id) = t.layout.neighbor(t.focused, dir, area) {
-                        t.focused = id;
-                        t.zoomed = None;
-                    }
-                }
+                self.select_pane_dir(dir);
             }
             "nextPane:" | "previousPane:" => {
-                if let Some(t) = self.tabs.get_mut(self.active) {
-                    let panes = t.layout.panes();
-                    let i = panes.iter().position(|p| *p == t.focused).unwrap_or(0);
-                    let step = if item.selector == "nextPane:" { 1 } else { panes.len() - 1 };
-                    t.focused = panes[(i + step) % panes.len()];
-                    t.zoomed = None;
-                }
+                self.step_pane(item.selector == "nextPane:");
             }
             "movePaneDividerUp:" | "movePaneDividerDown:" | "movePaneDividerLeft:" | "movePaneDividerRight:" => {
                 let dir = match item.selector.as_str() {
@@ -1108,7 +1101,7 @@ impl App {
     /// The rectangles the active tab shows (only the zoomed pane when one is zoomed).
     /// Each shown pane's terminal rectangle (Clippings and the inline chat take the right of it).
     pub(super) fn visible(&self, tab: &Tab) -> Vec<(PaneId, Rect)> {
-        visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), GAP).into_iter().map(|(id, r)| (id, self.gutter_split(id, self.pane_bar_split(tab, id, r).0).0)).collect()
+        visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), self.gap()).into_iter().map(|(id, r)| (id, self.gutter_split(id, self.pane_bar_split(tab, id, r).0).0)).collect()
     }
 }
 

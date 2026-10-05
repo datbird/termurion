@@ -115,22 +115,20 @@ impl App {
         self.banners.set("action", format!("{name} comes in milestone {milestone}."));
     }
 
-    fn select_pane_dir(&mut self, dir: Dir) {
-        let area = self.content_area();
-        if let Some(t) = self.tabs.get_mut(self.active) {
-            if let Some(id) = t.layout.neighbor(t.focused, dir, area) {
-                t.focused = id;
-                t.zoomed = None;
-            }
+    /// Select Pane Left, Right, Above, Below: a stamped move (`setActiveSession:`, so the
+    /// activity pass sees the focus change).
+    pub(super) fn select_pane_dir(&mut self, dir: Dir) {
+        let next = self.tabs.get(self.active).and_then(|t| self.pane_in_direction(t, dir));
+        if let (Some(id), Some(t)) = (next, self.tabs.get_mut(self.active)) {
+            t.focused = id;
+            t.zoomed = None;
         }
     }
 
-    fn step_pane(&mut self, forward: bool) {
-        if let Some(t) = self.tabs.get_mut(self.active) {
-            if let Some(id) = t.layout.next(t.focused, forward) {
-                t.focused = id;
-                t.zoomed = None;
-            }
+    pub(super) fn step_pane(&mut self, forward: bool) {
+        let next = self.tabs.get(self.active).and_then(|t| self.pane_in_order(t, if forward { 1 } else { -1 }));
+        if let Some(id) = next {
+            self.focus_quietly(self.active, id);
         }
     }
 
@@ -361,12 +359,11 @@ impl App {
             52 => self.grow_focused(Axis::Row, true),
             53..=56 => {
                 let dir = [Dir::Left, Dir::Right, Dir::Up, Dir::Down][(b.action - 53) as usize];
-                let area = self.content_area();
-                let other = self.tabs.get(self.active).and_then(|t| t.layout.neighbor(t.focused, dir, area));
+                let other = self.tabs.get(self.active).and_then(|t| self.pane_in_direction(t, dir));
                 self.swap_with(other);
             }
             67 | 68 => {
-                let other = self.tabs.get(self.active).and_then(|t| t.layout.next(t.focused, b.action == 67));
+                let other = self.tabs.get(self.active).and_then(|t| self.pane_in_order(t, if b.action == 67 { 1 } else { -1 }));
                 self.swap_with(other);
             }
             59 => {

@@ -1,6 +1,7 @@
 //! SSH integration at level 2 in the app (milestone 14c): Shell > ssh > Disconnect and its
 //! menu title. The framer's other app-side work rides on `App::tick_ssh` and `Pane` effects.
 
+use super::pane_nav_ui::{split_from, SplitFrom};
 use super::scripts_alerts::{ask, Then};
 use super::*;
 use crate::warnings::Kind;
@@ -103,6 +104,13 @@ impl App {
     /// saved profile.
     pub(super) fn ssh_split_profile(&mut self, pane: PaneId) -> Option<String> {
         let identity = self.panes.get(&pane).and_then(|p| p.conductor.as_deref()).and_then(|c| c.split_identity());
+        let is_copy = self.panes.get(&pane).is_some_and(|p| self.store.sessions.iter().any(|s| s.profile.guid() == p.profile));
+        let from = split_from(self.globals.bool("UseDivorcedProfileToSplit"), is_copy, identity.is_some());
+        // iTerm2 tests the divorced profile before the conductor (`PS:2916-2921`): the pane's
+        // own copy, cloned under a fresh Guid.
+        if from == SplitFrom::Divorced {
+            return self.profile_for_new_session(pane);
+        }
         match identity {
             Some(id) => {
                 let saved = self.store.shared_guid(&self.panes.get(&pane)?.profile);
@@ -173,6 +181,17 @@ mod tests {
         assert_eq!(v[0], ("Custom Command".to_string(), Some("SSH".into())));
         assert_eq!(v[1], ("Command".to_string(), Some("-l u h".into())));
         assert_eq!(v[2], ("SSH".to_string(), Some(toml::Value::Table(toml::Table::new()))));
+    }
+
+    #[test]
+    fn divorced_split_runs_before_the_conductor() {
+        // B1: the one split path tests the divorced profile first, then the conductor.
+        let src = include_str!("ssh_framer_app.rs");
+        let start = src.find("fn ssh_split_profile").unwrap();
+        let body = &src[start..start + src[start..].find("fn split_current").unwrap()];
+        let divorced = body.find("SplitFrom::Divorced").unwrap();
+        assert!(divorced < body.find("Some(id) =>").unwrap(), "the divorced arm comes before the conductor arm");
+        assert!(body.contains("profile_for_new_session(pane)"));
     }
 
     #[test]
