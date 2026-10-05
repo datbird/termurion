@@ -901,9 +901,10 @@ impl Screen {
                 HostStep::Nothing => {}
             }
         }
-        // iTerm2 also turns DEC 2048 (resize reports) off outright here; Tandem has no resize
-        // reports yet. 13o Task 6 adds `if self.resize_reports() { self.set_resize_reports(false) }`
-        // at this site (R8).
+        // iTerm2 also turns DEC 2048 (resize reports) off outright here, without a question.
+        if self.resize_reports() {
+            self.set_resize_reports(false);
+        }
         let [mouse, focus, paste] = offers;
         LeftOn { mouse, focus, paste }
     }

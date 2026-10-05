@@ -97,6 +97,68 @@ pub fn clear_history_decision(prevent: Option<bool>) -> crate::prompted::Decisio
     }
 }
 
+/// Identifier of the DECRQCRA question (iTerm2's `NoSyncDisableDECRQCRA` announcement).
+pub const DECRQCRA_ID: &str = "NoSyncDisableDECRQCRA";
+pub const DECRQCRA_TEXT: &str = "An app tried to read screen contents with DECRQCRA. Enable this feature?";
+
+/// The rectangle a DECRQCRA names, `params` being `Pid;Pp;Pt;Pl;Pb;Pr` (a missing or 0 value is
+/// the default): (top, left, bottom, right), 0-based and inclusive, clipped to the screen, as
+/// iTerm2's `rectangleInToken` without origin mode. None for an empty or negative rectangle.
+pub fn decrqcra_rect(params: &[i64], cols: usize, lines: usize) -> Option<(usize, usize, usize, usize)> {
+    if cols == 0 || lines == 0 {
+        return None;
+    }
+    // 1-based, with -1 for a default, as iTerm2's parser hands them over.
+    let at = |i: usize, default: i64| match params.get(i).copied() {
+        Some(v) if v > 0 => v,
+        _ => default,
+    };
+    let (top, left) = (at(2, 1), at(3, 1));
+    let (bottom, right) = (at(4, lines as i64), at(5, cols as i64));
+    if bottom < top || right < left || top > lines as i64 || left > cols as i64 {
+        return None;
+    }
+    Some((top as usize - 1, left as usize - 1, bottom.min(lines as i64) as usize - 1, right.min(cols as i64) as usize - 1))
+}
+
+/// The sum of the UTF-16 code units of the characters given (one cell's text after another).
+pub fn checksum(chars: impl Iterator<Item = char>) -> i32 {
+    let mut units = [0u16; 2];
+    chars.fold(0i32, |sum, c| c.encode_utf16(&mut units).iter().fold(sum, |sum, u| sum.wrapping_add(i32::from(*u))))
+}
+
+/// The DECRQCRA answer, `DCS Pid ! ~ xxxx ST`: iTerm2 prints `(short)checksum` with `%04x`, so a
+/// sum past 32767 sign-extends.
+pub fn checksum_reply(id: i64, sum: i32) -> String {
+    format!("\x1bP{id}!~{:04x}\x1b\\", sum as i16 as i32 as u32)
+}
+
+/// A title as it may go into a report: iTerm2 replaces `|`, `;`, CR, LF and ESC with spaces.
+/// Tandem also replaces every other control (C0, DEL, C1, U+2028, U+2029) and cuts at
+/// `host_state::MAX_TITLE`, since the report is typed into the shell's input.
+pub fn safe_title(t: &str) -> String {
+    t.chars()
+        .take(crate::host_state::MAX_TITLE)
+        .map(|c| if matches!(c, '|' | ';' | '\u{2028}' | '\u{2029}') || c.is_control() { ' ' } else { c })
+        .collect()
+}
+
+/// `CSI 20 t` (icon title, `ESC ] L`) or `CSI 21 t` (window title, `ESC ] l`) answered with
+/// `title`, made safe. Empty for any other kind.
+pub fn title_report(kind: u8, title: &str) -> String {
+    let letter = match kind {
+        20 => 'L',
+        21 => 'l',
+        _ => return String::new(),
+    };
+    format!("\x1b]{letter}{}\x1b\\", safe_title(title))
+}
+
+/// DEC mode 2048's report after a resize (`VT100Output.m:1231-1238`).
+pub fn resize_report(rows: u16, cols: u16, height_px: u32, width_px: u32) -> String {
+    format!("\x1b[48;{rows};{cols};{height_px};{width_px}t")
+}
+
 /// A control sequence a setting may drop or rewrite before it reaches the parser. The scanner
 /// reads parameters as vte does (numbers, never raw text), so padding, leading zeros and the
 /// colon form cannot slip past a gate; `rebuild` writes the canonical sequence back.
@@ -240,5 +302,42 @@ mod tests {
         assert!(a.first());
         assert!(!a.first());
         assert!(Osc7Latch::default().first());
+    }
+
+    /// 13o Task 6 (Review Focus 5): DECRQCRA's rectangle, checksum and reply.
+    #[test]
+    fn decrqcra_follows_iterm2() {
+        assert_eq!(decrqcra_rect(&[1, 1, 1, 1, 2, 2], 80, 24), Some((0, 0, 1, 1)));
+        assert_eq!(decrqcra_rect(&[1, 1], 80, 24), Some((0, 0, 23, 79)), "defaults are the whole screen");
+        assert_eq!(decrqcra_rect(&[1, 1, 0, 0, 0, 0], 80, 24), Some((0, 0, 23, 79)), "0 is a default");
+        assert_eq!(decrqcra_rect(&[1, 1, 3, 3, 2, 2], 80, 24), None);
+        assert_eq!(decrqcra_rect(&[1, 1, 1, 1, 99, 200], 80, 24), Some((0, 0, 23, 79)), "clipped to the screen");
+        assert_eq!(decrqcra_rect(&[1, 1, 30, 1, 40, 2], 80, 24), None, "below the screen");
+        assert_eq!(checksum("ab".chars()), 195);
+        assert_eq!(checksum("\u{1F600}".chars()), 0xD83D + 0xDE00, "UTF-16 units");
+        assert_eq!(checksum_reply(1, 195), "\x1bP1!~00c3\x1b\\");
+        assert_eq!(checksum_reply(1, 40000), "\x1bP1!~ffff9c40\x1b\\");
+    }
+
+    /// 13o Task 6 (B6): a title in a report is never able to type into the shell.
+    #[test]
+    fn title_reports_follow_iterm2() {
+        assert_eq!(safe_title("a|b;c\rd\ne\x1bf"), "a b c d e f");
+        assert_eq!(title_report(21, "t"), "\x1b]lt\x1b\\");
+        assert_eq!(title_report(20, "i"), "\x1b]Li\x1b\\");
+        assert_eq!(title_report(22, "t"), "");
+        for c in ['\u{3}', '\u{f}', '\t', '\u{7f}', '\u{80}', '\u{9b}', '\u{9f}', '\u{2028}', '\u{2029}', '\0', '\u{18}'] {
+            assert_eq!(safe_title(&format!("a{c}b")), "a b", "{c:?}");
+        }
+        assert_eq!(safe_title("caf\u{e9} \u{1F600}"), "caf\u{e9} \u{1F600}", "text stays");
+        let long = "x".repeat(10_000);
+        assert_eq!(safe_title(&long).chars().count(), crate::host_state::MAX_TITLE);
+        assert_eq!(title_report(21, &long).chars().count(), crate::host_state::MAX_TITLE + 5);
+    }
+
+    /// 13o Task 6 (R8): the resize report's bytes.
+    #[test]
+    fn resize_report_follows_iterm2() {
+        assert_eq!(resize_report(24, 80, 400, 640), "\x1b[48;24;80;400;640t");
     }
 }

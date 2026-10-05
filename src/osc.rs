@@ -192,6 +192,18 @@ fn dcs_event(hook: &Hook, body: Vec<u8>) -> Option<Osc> {
 /// A DCS string kept up to this size (a large sixel image).
 const DCS_LIMIT: usize = 64 << 20;
 
+/// A DECRQSS (`DCS $ q`) or XTGETTCAP (`DCS + q`) request is a few names: past this it is
+/// dropped, not buffered (13o pre-flight P9).
+const QUERY_LIMIT: usize = 4096;
+
+/// How much of a DCS string is kept: a query's few names, or an image.
+fn dcs_limit(hook: &Hook) -> usize {
+    match (hook.inters.as_slice(), hook.action) {
+        ([b'$' | b'+'], b'q') => QUERY_LIMIT,
+        _ => DCS_LIMIT,
+    }
+}
+
 /// The payload of an OSC string being read.
 struct OscBuf {
     buf: Vec<u8>,
@@ -361,9 +373,12 @@ impl Scanner {
     /// The parser ended a DCS string at the byte `b`.
     fn end_dcs(&mut self, b: u8, i: usize, out: &mut Vec<(usize, usize, Osc)>) {
         let Str::Dcs { buf, hook, over } = std::mem::take(&mut self.string) else { return };
-        if over {
-            return;
-        }
+        // A query past the cap is answered as an invalid one (an error reply), not dropped.
+        let buf = match (over, dcs_limit(&hook) == QUERY_LIMIT) {
+            (true, true) => b"zz".to_vec(),
+            (true, false) => return,
+            _ => buf,
+        };
         let Some(ev) = dcs_event(&hook, buf) else { return };
         match b {
             0x9c => out.push((self.sbegan, i + 1, ev)),
@@ -439,14 +454,15 @@ impl Scanner {
                     p += 1;
                 }
             }
-            Str::Dcs { buf, over, .. } => {
+            Str::Dcs { buf, over, hook } => {
                 if *over {
                     return;
                 }
+                let limit = dcs_limit(hook);
                 // The parser passes on every byte up to DEL; DEL and bytes of 0x80 or more are
                 // ignored.
                 let n = run.iter().filter(|c| **c <= 0x7e).count();
-                if buf.len() + n <= DCS_LIMIT {
+                if buf.len() + n <= limit {
                     buf.extend(run.iter().copied().filter(|c| *c <= 0x7e));
                 } else {
                     buf.clear();
@@ -606,6 +622,24 @@ mod tests {
     fn held_in(bytes: &[u8]) -> Vec<(usize, usize, crate::emu::Held)> {
         let mut s = Scanner::default();
         s.scan_spans(bytes).into_iter().filter_map(|(a, b, o)| if let Osc::Held(h) = o { Some((a, b, h)) } else { None }).collect()
+    }
+
+    /// 13o Task 6 (P9): DECRQSS and XTGETTCAP requests are cut at 4 KiB; an image is not.
+    #[test]
+    fn dcs_queries_are_capped() {
+        use crate::reports::Query;
+        let events = |head: &[u8], n: usize| {
+            let mut bytes = head.to_vec();
+            bytes.extend(std::iter::repeat_n(b'm', n));
+            bytes.extend_from_slice(b"\x1b\\");
+            let mut s = Scanner::default();
+            s.scan_spans(&bytes).into_iter().map(|(_, _, o)| o).collect::<Vec<_>>()
+        };
+        assert!(matches!(events(b"\x1bP$q", 4096).as_slice(), [Osc::Query(Query::Decrqss(b))] if b.len() == 4096));
+        assert!(matches!(events(b"\x1bP$q", 4097).as_slice(), [Osc::Query(Query::Decrqss(b))] if b == b"zz"), "past the cap it is an invalid query");
+        assert!(matches!(events(b"\x1bP+q", 4096).as_slice(), [Osc::Query(Query::XtGetTcap(_))]));
+        assert!(matches!(events(b"\x1bP+q", 100_000).as_slice(), [Osc::Query(Query::XtGetTcap(b))] if b == b"zz"));
+        assert!(matches!(events(b"\x1bPq", 100_000).as_slice(), [Osc::Sixel(b)] if b.len() == 100_000), "an image keeps its size");
     }
 
     #[test]

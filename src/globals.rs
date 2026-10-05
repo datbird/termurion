@@ -59,7 +59,7 @@ pub fn default_path() -> PathBuf {
 /// Keys whose presence means something even at the default: "AI Safety Check" chosen by the
 /// person, on or off, ends its one-time question (`RemoteCommand+Mac.swift:36-38`,
 /// `object(forKey:) != nil`).
-const KEPT_WHEN_DEFAULT: [&str; 1] = [crate::ai_settings::SAFETY_CHECK];
+const KEPT_WHEN_DEFAULT: [&str; 2] = [crate::ai_settings::SAFETY_CHECK, "NoSyncDisableDECRQCRA"];
 
 /// What iTerm2 reads for a key that is not set. The AI prompts' defaults live in their
 /// resource files, not the schema.
@@ -231,6 +231,21 @@ mod tests {
         // Removing a key never set does nothing.
         g.unset("PreventEscapeSequenceFromChangingProfile");
         assert!(g.values.is_empty());
+    }
+
+    /// 13o Task 6 (B4): a "No" to the DECRQCRA question is "Disable DECRQCRA" true, the schema
+    /// default; it must stay in the file or the question comes back every time.
+    #[test]
+    fn decrqcra_no_is_remembered() {
+        let path = scratch("decrqcra");
+        let mut g = Globals::empty(&path);
+        assert_eq!(g.optional_bool("NoSyncDisableDECRQCRA"), None);
+        g.set("NoSyncDisableDECRQCRA", Value::Boolean(true));
+        g.save().unwrap();
+        assert_eq!(Globals::load(&path).unwrap().optional_bool("NoSyncDisableDECRQCRA"), Some(true));
+        let mut g = Globals::empty(&path);
+        g.set("NoSyncDisableDECRQCRA", Value::Boolean(false));
+        assert_eq!(g.optional_bool("NoSyncDisableDECRQCRA"), Some(false));
     }
 
     #[test]

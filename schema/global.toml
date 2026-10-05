@@ -4219,6 +4219,15 @@ default = true
 help = "Save the screen to scrollback when an app moves the cursor above the prompt.\nSome full-screen programs that don\u2019t use the alternate screen buffer repaint by moving the cursor to the top of the screen and overwriting whatever was already there, destroying content you can still see. When enabled, Tandem first scrolls the visible screen into history so that content isn\u2019t lost. Requires shell integration."
 
 [[setting]]
+key = "NoSyncDisableDECRQCRA"
+tab = "Advanced"
+section = "General"
+label = "Disable DECRQCRA?"
+type = "bool"
+default = true
+help = "Disable DECRQCRA?\nThis control sequence allows an app running in the terminal to read its contents."
+
+[[setting]]
 key = "SupportREPCode"
 tab = "Advanced"
 section = "Experimental Features"

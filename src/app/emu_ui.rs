@@ -26,6 +26,11 @@ impl App {
         if let Some(p) = self.panes.get_mut(&pane) {
             p.set_emu(rules, term.as_deref());
         }
+        // The profile's Answerback String (`PS:6207`); a tmux pane has none of its own.
+        let answerback = self.panes.get(&pane).filter(|p| p.tmux_io().is_none()).map(|p| self.store.get(&p.profile).unwrap_or_else(|| self.store.default_profile()).string("Answerback String"));
+        if let (Some(text), Some(p)) = (answerback, self.panes.get_mut(&pane)) {
+            p.set_answerback(&text);
+        }
     }
 
     /// CSI 3 J with Prevent CSI 3 J unset (`N:795-815`): the pane's bar asks once. The sequence
@@ -39,6 +44,25 @@ impl App {
     /// the key the same way); every pane takes the new rules. A closed bar stores nothing.
     pub(super) fn clear_history_answered(&mut self, button: &str) {
         self.globals.set("PreventEscapeSequenceFromClearingHistory", toml::Value::Boolean(button.contains("Deny")));
+        self.save_globals();
+        let ids: Vec<PaneId> = self.panes.keys().copied().collect();
+        for id in ids {
+            self.apply_emu_rules(id);
+        }
+    }
+
+    /// DECRQCRA with Disable DECRQCRA unset (`PS:17182-17212`): the pane's bar asks once. The
+    /// sequence that asked was not answered.
+    pub(super) fn ask_decrqcra(&mut self, pane: PaneId) {
+        use crate::emu::{DECRQCRA_ID, DECRQCRA_TEXT};
+        self.ask(pane, DECRQCRA_ID, DECRQCRA_TEXT, &["Yes", "No"], false);
+    }
+
+    /// "Yes" stores Disable DECRQCRA false, "No" true (iTerm2's `NoSyncDisableDECRQCRA`); either
+    /// is kept in the file (`KEPT_WHEN_DEFAULT`), so the question is asked once. A closed bar
+    /// stores nothing.
+    pub(super) fn decrqcra_answered(&mut self, button: &str) {
+        self.globals.set(crate::emu::DECRQCRA_ID, toml::Value::Boolean(button == "No"));
         self.save_globals();
         let ids: Vec<PaneId> = self.panes.keys().copied().collect();
         for id in ids {

@@ -17,9 +17,11 @@ pub(super) enum Offer {
     Focus,
     Mouse,
     Paste,
+    /// DEC mode 2048 (resize reports), offered by 13o's stuck-report detector.
+    Dec2048,
 }
 
-const OFFERS: [Offer; 3] = [Offer::Focus, Offer::Mouse, Offer::Paste];
+const OFFERS: [Offer; 4] = [Offer::Focus, Offer::Mouse, Offer::Paste, Offer::Dec2048];
 
 /// Paste bracketing's Help button (`NC:560`).
 pub(super) const PASTE_HELP_URL: &str = "https://iterm2.com/paste_bracketing";
@@ -30,6 +32,7 @@ pub(super) fn offer_key(o: Offer) -> &'static str {
         Offer::Focus => "NoSyncTurnOffFocusReportingOnHostChange",
         Offer::Mouse => "NoSyncTurnOffMouseReportingOnHostChange",
         Offer::Paste => "NoSyncTurnOffBracketedPasteOnHostChange",
+        Offer::Dec2048 => "NoSyncTurnOffDEC2048OnHostChange",
     }
 }
 
@@ -39,6 +42,7 @@ pub(super) fn bar_id(o: Offer) -> &'static str {
         Offer::Focus => "TurnOffFocusReportingOnHostChange",
         Offer::Mouse => "TurnOffMouseReportingOnHostChange",
         Offer::Paste => "TurnOffBracketedPasteOnHostChange",
+        Offer::Dec2048 => "TurnOffDEC2048OnHostChange",
     }
 }
 
@@ -47,12 +51,13 @@ pub(super) fn offer_text(o: Offer) -> &'static str {
         Offer::Focus => "Looks like focus reporting was left on when an ssh session ended unexpectedly or an app misbehaved. Turn it off?",
         Offer::Mouse => "Looks like mouse reporting was left on when an ssh session ended unexpectedly or an app misbehaved. Turn it off?",
         Offer::Paste => "Looks like paste bracketing was left on when an ssh session ended unexpectedly or an app misbehaved. Turn it off?",
+        Offer::Dec2048 => "Looks like resize reporting was left on when an ssh session ended unexpectedly or an app misbehaved. Turn it off?",
     }
 }
 
 pub(super) fn offer_buttons(o: Offer) -> &'static [&'static str] {
     match o {
-        Offer::Focus | Offer::Mouse => &["_Yes", "Always", "Never"],
+        Offer::Focus | Offer::Mouse | Offer::Dec2048 => &["_Yes", "Always", "Never"],
         Offer::Paste => &["_Yes", "Always", "Never", "Help"],
     }
 }
@@ -69,11 +74,13 @@ pub(super) fn answer(button: Option<&str>) -> (Option<bool>, bool) {
 }
 
 /// The Terminal State toggle an offer turns off.
-fn toggle_label(o: Offer) -> &'static str {
+fn toggle_label(o: Offer) -> Option<&'static str> {
     match o {
-        Offer::Focus => "Focus Reporting",
-        Offer::Mouse => "Mouse Reporting",
-        Offer::Paste => "Paste Bracketing",
+        Offer::Focus => Some("Focus Reporting"),
+        Offer::Mouse => Some("Mouse Reporting"),
+        Offer::Paste => Some("Paste Bracketing"),
+        // No toggle: the mode is switched off on the screen itself.
+        Offer::Dec2048 => None,
     }
 }
 
@@ -126,9 +133,13 @@ impl App {
 
     /// Turns a mode off with its Terminal State toggle's "off" sequence.
     pub(super) fn turn_off(&mut self, pane: PaneId, o: Offer) {
-        let off = crate::marks::toggle_off(toggle_label(o));
         if let Some(p) = self.panes.get_mut(&pane) {
-            p.own_mut().feed(off);
+            match toggle_label(o) {
+                Some(label) => {
+                    p.own_mut().feed(crate::marks::toggle_off(label));
+                }
+                None => p.own_mut().set_resize_reports(false),
+            }
             self.redraw();
         }
     }
@@ -164,6 +175,12 @@ mod tests {
         assert_eq!(answer(Some("Never")), (Some(false), false));
         assert_eq!(answer(None), (None, false), "closed");
         assert_eq!(answer(Some("Help")), (None, false));
+        // 13o Task 6 (B3): DEC mode 2048's offer shares the answers; iTerm2 has no Advanced row for its key.
+        assert_eq!(offer_text(Dec2048), left_on("resize reporting"));
+        assert_eq!(offer_buttons(Dec2048), ["_Yes", "Always", "Never"]);
+        assert_eq!(offer_key(Dec2048), "NoSyncTurnOffDEC2048OnHostChange");
+        assert_eq!(bar_id(Dec2048), "TurnOffDEC2048OnHostChange");
+        assert!(crate::schema::find_global("NoSyncTurnOffDEC2048OnHostChange").is_none());
         assert_eq!(PASTE_HELP_URL, "https://iterm2.com/paste_bracketing");
     }
 }

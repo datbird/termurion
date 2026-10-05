@@ -63,6 +63,8 @@ pub struct Look {
     /// The profile's "Unicode Version" (8 or 9, `osc1337::profile_unicode`): which width table
     /// applies until an OSC 1337 UnicodeVersion sets one.
     pub unicode_version: u8,
+    /// The profile's Allow Title Reporting: CSI 20 t and CSI 21 t answer with the title.
+    pub allow_title_reporting: bool,
 }
 
 /// How `Term::input` measures characters (milestone 13o): iTerm2's width tables for the
@@ -114,6 +116,7 @@ impl Look {
             alt_scrollback: p.bool("Scrollback in Alternate Screen"),
             ambiguous_wide: p.bool("Ambiguous Double Width"),
             unicode_version: crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer())),
+            allow_title_reporting: p.bool("Allow Title Reporting"),
         }
     }
 }
@@ -180,6 +183,9 @@ struct BidiEntry {
     texts: Vec<crate::bidi::CellText>,
     order: Option<std::sync::Arc<crate::bidi::Order>>,
 }
+
+/// The most bytes ENQ answers (a profile's Answerback String is cut to this).
+pub const ANSWERBACK_MAX: usize = 256;
 
 pub struct Screen {
     pub(crate) term: Term<Listener>,
@@ -300,6 +306,8 @@ pub struct Screen {
     pub profile_unicode: u8,
     /// The profile settings last handed to `set_look`; the width rule reads them.
     look: Look,
+    /// The profile's Answerback String, what ENQ answers (at most `ANSWERBACK_MAX` bytes).
+    answerback: String,
     pub key_labels: crate::osc1337::KeyLabels,
     /// SetColors changes, reapplied over a new profile palette.
     pub(crate) color_sets: Vec<(String, crate::osc1337::Color)>,
@@ -358,6 +366,8 @@ pub enum Request {
     HistoryRebased { below: i64, by: i64 },
     /// CSI 3 J arrived while Prevent CSI 3 J is unset: ask once whether to allow it.
     AskClearHistory,
+    /// DECRQCRA arrived while Disable DECRQCRA is unset: ask once whether to allow it.
+    AskDecrqcra,
     /// OSC 7 with a machine id arrived while Accept OSC 7 is off.
     Osc7Disabled,
     /// Put text on the clipboard (if the user allows programs to).
@@ -552,6 +562,7 @@ impl Screen {
             unicode: crate::osc1337::Unicode::default(),
             profile_unicode: look.unicode_version,
             look,
+            answerback: String::new(),
             key_labels: crate::osc1337::KeyLabels::default(),
             color_sets: Vec::new(),
             clipboard_allowed: false,
@@ -1093,8 +1104,53 @@ impl Screen {
                     None
                 }
             },
+            Held::Decrqcra(p) => {
+                // iTerm2: only at VT400 and up, only when trusted, then the key (`T:2109-2124`).
+                if self.level() >= 400 && self.trusted {
+                    match self.rules.decrqcra_off {
+                        Some(false) => {
+                            let params: Vec<i64> = p.iter().map(|v| i64::from(*v)).collect();
+                            let sum = crate::emu::decrqcra_rect(&params, self.term.columns(), self.term.screen_lines()).map_or(0, |r| self.checksum_in(r));
+                            self.replies.extend(crate::emu::checksum_reply(params.first().copied().unwrap_or(0), sum).into_bytes());
+                        }
+                        Some(true) => {}
+                        None => {
+                            if !self.requests.iter().any(|r| matches!(r, Request::AskDecrqcra)) {
+                                self.requests.push(Request::AskDecrqcra);
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            Held::TitleReport(k) => {
+                // Only with Allow Title Reporting and trust (`S:18316-18351`); a tmux pane's
+                // replies are dropped by its pane. One title serves 20 and 21 (Decision).
+                if self.look.allow_title_reporting && self.trusted {
+                    self.replies.extend(crate::emu::title_report(*k, self.title().unwrap_or("")).into_bytes());
+                }
+                None
+            }
+            Held::Enq => {
+                self.replies.extend_from_slice(self.answerback.as_bytes());
+                None
+            }
             h => Some(rebuild(h)),
         }
+    }
+
+    /// DECRQCRA's checksum over a rectangle (top, left, bottom, right): the UTF-16 units of every
+    /// cell that holds text. Alacritty cannot tell a written space from an untouched cell, so
+    /// a blank counts 0 (Decision); the spacer of a wide character holds nothing.
+    fn checksum_in(&self, (top, left, bottom, right): (usize, usize, usize, usize)) -> i32 {
+        use alacritty_terminal::term::cell::Flags;
+        let grid = self.term.grid();
+        let cells = (top..=bottom).flat_map(|y| (left..=right).map(move |x| (y, x))).filter_map(|(y, x)| {
+            let cell = &grid[Line(y as i32)][Column(x)];
+            let blank = (cell.c == ' ' || cell.c == '\0') && cell.zerowidth().is_none_or(|z| z.is_empty());
+            (!blank && !cell.flags.contains(Flags::WIDE_CHAR_SPACER)).then_some(cell)
+        });
+        crate::emu::checksum(cells.flat_map(|c| std::iter::once(c.c).chain(c.zerowidth().into_iter().flatten().copied())))
     }
 
     /// What the prompt state machine asked of the app since the last call.
@@ -1401,6 +1457,28 @@ impl Screen {
         self.term.save_screen_on_clear = rules.save_on_clear;
         self.rules = rules;
         self.push_width_rule();
+    }
+
+    /// The profile's Answerback String (iTerm2 sends it, in the session's encoding, for ENQ).
+    pub fn set_answerback(&mut self, mut text: String) {
+        if text.len() > ANSWERBACK_MAX {
+            let mut cut = ANSWERBACK_MAX;
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            text.truncate(cut);
+        }
+        self.answerback = text;
+    }
+
+    /// DEC mode 2048 (in-band resize reports) is set.
+    pub fn resize_reports(&self) -> bool {
+        self.term.resize_reports
+    }
+
+    /// Sets or clears DEC mode 2048 (a host change turns it off, the stuck-report offer too).
+    pub fn set_resize_reports(&mut self, on: bool) {
+        self.term.resize_reports = on;
     }
 
     pub fn rules(&self) -> crate::emu::Rules {
@@ -1856,7 +1934,7 @@ impl Screen {
     /// sequences are fed in.
     pub fn soft_reset(&mut self) {
         const DECSTR: &[u8] = b"\x1b[?25h\x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\
-            \x1b[?2004l\x1b[?1004l\x1b[?1007l\x1b[4l\x1b[0m\x1b[r\x1b[?6l\x1b[?7h\x1b(B";
+            \x1b[?2004l\x1b[?1004l\x1b[?1007l\x1b[4l\x1b[0m\x1b[r\x1b[?6l\x1b[?7h\x1b[?2048l\x1b(B";
         // Straight to the parser: Literal Controls would print the sequence instead.
         let reply = self.feed_raw(DECSTR);
         self.replies.extend(reply);
@@ -3525,6 +3603,115 @@ mod tests {
         let mut s = Screen::new(10, 2);
         s.feed(b"a\x1b[99999999999999999999b");
         assert_eq!(s.term.grid().cursor.point.line, Line(1));
+    }
+
+    /// 13o Task 6 (Review Focus 5): DECRQCRA answers only when allowed, trusted and at VT400.
+    #[test]
+    fn decrqcra_is_gated() {
+        use crate::emu::Rules;
+        let sequence = b"\x1b[1;1;1;1;1;2*y";
+        let make = |off: Option<bool>, level: u16, trusted: bool| {
+            let mut s = Screen::new(20, 3);
+            s.set_rules(Rules { decrqcra_off: off, ..Default::default() });
+            s.set_level(level);
+            s.trusted = trusted;
+            s.feed(b"ab");
+            s
+        };
+        let mut s = make(None, 500, true);
+        assert_eq!(s.feed(sequence), b"", "unset: nothing answered");
+        assert_eq!(s.take_requests(), vec![Request::AskDecrqcra]);
+        s.feed(sequence);
+        s.feed(sequence);
+        assert_eq!(s.take_requests(), vec![Request::AskDecrqcra], "a flood asks once");
+        let mut s = make(Some(true), 500, true);
+        assert_eq!(s.feed(sequence), b"");
+        assert!(s.take_requests().is_empty());
+        let mut s = make(Some(false), 500, true);
+        assert_eq!(s.feed(sequence), b"\x1bP1!~00c3\x1b\\");
+        assert!(s.take_requests().is_empty());
+        assert_eq!(s.feed(b"\x1b[7;1;1;1;1;1*y"), b"\x1bP7!~0061\x1b\\", "the id is echoed; one cell");
+        assert_eq!(s.feed(b"\x1b[7;1;3;3;2;2*y"), b"\x1bP7!~0000\x1b\\", "a negative rectangle is checksum 0");
+        let mut s = make(Some(false), 500, true);
+        s.feed(b"\r\n\x1b[2;1H\xe2\x82\xac");
+        assert_eq!(s.feed(b"\x1b[3;1;2;1;2;1*y"), b"\x1bP3!~20ac\x1b\\", "a euro sign is one UTF-16 unit");
+        for (level, trusted) in [(300, true), (500, false), (300, false)] {
+            let mut s = make(Some(false), level, trusted);
+            assert_eq!(s.feed(sequence), b"", "level {level} trusted {trusted}");
+            assert!(s.take_requests().is_empty());
+            let mut s = make(None, level, trusted);
+            s.feed(sequence);
+            assert!(s.take_requests().is_empty(), "never asks at level {level} trusted {trusted}");
+        }
+        // The sequence is dropped, never printed, and text after it prints.
+        let mut s = make(Some(false), 500, true);
+        s.feed(b"\x1b[1;1;1;1;1;2*yZ");
+        assert_eq!(row_text(&s, 0), "abZ");
+    }
+
+    /// 13o Task 6 (Review Focus 5): CSI 21 t answers only with Allow Title Reporting.
+    #[test]
+    fn title_report_is_gated() {
+        let allow = Look { allow_title_reporting: true, ..Look::default() };
+        let mut s = Screen::new(20, 3);
+        assert_eq!(s.feed(b"\x1b]2;x\x07\x1b[21t"), b"", "off by default");
+        let mut s = Screen::with_look(20, 3, Palette::default(), allow);
+        assert_eq!(s.feed(b"\x1b]2;x\x07\x1b[21t"), b"\x1b]lx\x1b\\");
+        assert_eq!(s.feed(b"\x1b[20t"), b"\x1b]Lx\x1b\\");
+        s.trusted = false;
+        assert_eq!(s.feed(b"\x1b[21t"), b"", "untrusted");
+        s.trusted = true;
+        // A title with controls in it never reaches the shell as controls.
+        s.feed(b"\x1b]2;a|b;c\x03d\x0fe\x07");
+        assert_eq!(s.feed(b"\x1b[21t"), b"\x1b]la b cde\x1b\\", "vte drops C0 inside an OSC; the rest is spaced");
+        let mut t = Screen::with_look(20, 3, Palette::default(), allow);
+        t.feed(b"\x1b]2;\xc2\x9b31m\x07");
+        let report = t.feed(b"\x1b[21t");
+        assert!(!String::from_utf8_lossy(&report).contains('\u{9b}'), "{report:?}");
+        // Rows still print around a held report.
+        s.feed(b"\x1b[21tok");
+        assert!(row_text(&s, 0).ends_with("ok"));
+    }
+
+    /// 13o Task 6: ENQ answers the profile's answerback.
+    #[test]
+    fn answerback_follows_iterm2() {
+        let mut s = Screen::new(20, 3);
+        assert_eq!(s.feed(b"\x05"), b"", "empty by default");
+        s.set_answerback("hi".into());
+        assert_eq!(s.feed(b"\x05"), b"hi");
+        assert_eq!(s.feed(b"a\x05b"), b"hi");
+        assert_eq!(row_text(&s, 0), "ab", "ENQ prints nothing");
+        assert_eq!(s.feed(b"\x1b]2;a\x05b\x07"), b"", "ENQ inside an OSC is data");
+        assert_eq!(s.title(), Some("ab"), "vte drops it from the title");
+        s.set_answerback("x".repeat(1000));
+        assert_eq!(s.feed(b"\x05").len(), 256, "bounded");
+        s.set_answerback("\u{e9}".repeat(200));
+        let r = s.feed(b"\x05");
+        assert!(r.len() <= 256 && String::from_utf8(r).is_ok(), "cut on a character");
+    }
+
+    /// 13o Task 6 (Review Focus 10, R8): DEC mode 2048.
+    #[test]
+    fn resize_reports_follow_iterm2() {
+        let mut s = Screen::new(20, 3);
+        assert!(!s.resize_reports());
+        assert_eq!(s.feed(b"\x1b[?2048$p"), b"\x1b[?2048;2$y");
+        assert_eq!(s.feed(b"\x1b[?1;2048h"), b"", "no report on enabling (iTerm2)");
+        assert!(s.resize_reports());
+        assert_eq!(s.feed(b"\x1b[?2048$p"), b"\x1b[?2048;1$y");
+        s.feed(b"\x1b[?2048l");
+        assert!(!s.resize_reports());
+        s.feed(b"\x1b[?2048h\x1bc");
+        assert!(!s.resize_reports(), "RIS");
+        s.feed(b"\x1b[?2048h");
+        s.soft_reset();
+        assert!(!s.resize_reports(), "DECSTR");
+        s.feed(b"\x1b[?2048h");
+        s.set_resize_reports(false);
+        assert!(!s.resize_reports());
+        s.set_resize_reports(true);
+        assert!(s.resize_reports());
     }
 
     /// 13o Task 3 (Review Focus 1): CSI 3 J asks while the key is unset and the history stays.

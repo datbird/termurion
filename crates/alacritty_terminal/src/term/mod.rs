@@ -379,6 +379,10 @@ pub struct Term<T> {
     /// refused while false, and DECRQM then answers reset. A reset is always honored.
     pub focus_reporting_allowed: bool,
 
+    /// Tandem patch: DEC mode 2048 (in-band resize reports) is set. Tandem writes the report
+    /// after a resize; a reset (RIS, DECRST) clears it.
+    pub resize_reports: bool,
+
     /// Tandem patch: the longest OSC 8 URI `set_hyperlink` accepts (iTerm2's maxURLLength).
     pub max_url_len: usize,
 
@@ -539,6 +543,7 @@ impl<T> Term<T> {
             xterm_version: 2500,
             color_report_16: true,
             focus_reporting_allowed: true,
+            resize_reports: false,
             max_url_len: 2_097_152,
             alt_scrollback: true,
             save_screen_on_clear: true,
@@ -2314,6 +2319,8 @@ impl<T: EventListener> Handler for Term<T> {
         self.tabs = TabStops::new(self.columns(), self.tab_width);
         self.title_stack = Vec::new();
         self.title = None;
+        // Tandem patch: RIS turns DEC mode 2048 off.
+        self.resize_reports = false;
         self.selection = None;
         self.vi_mode_cursor = Default::default();
         self.keyboard_mode_stack = Default::default();
@@ -2410,6 +2417,11 @@ impl<T: EventListener> Handler for Term<T> {
     fn set_private_mode(&mut self, mode: PrivateMode) {
         let mode = match mode {
             PrivateMode::Named(mode) => mode,
+            PrivateMode::Unknown(2048) => {
+                // Tandem patch: DEC mode 2048, in-band resize reports.
+                self.resize_reports = true;
+                return;
+            },
             PrivateMode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {mode} in set_private_mode");
                 return;
@@ -2485,6 +2497,11 @@ impl<T: EventListener> Handler for Term<T> {
     fn unset_private_mode(&mut self, mode: PrivateMode) {
         let mode = match mode {
             PrivateMode::Named(mode) => mode,
+            PrivateMode::Unknown(2048) => {
+                // Tandem patch: DEC mode 2048, in-band resize reports.
+                self.resize_reports = false;
+                return;
+            },
             PrivateMode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {mode} in unset_private_mode");
                 return;
@@ -2576,6 +2593,8 @@ impl<T: EventListener> Handler for Term<T> {
                 NamedPrivateMode::SyncUpdate => ModeState::Reset,
                 NamedPrivateMode::ColumnMode => ModeState::NotSupported,
             },
+            // Tandem patch: DEC mode 2048 answers set or reset.
+            PrivateMode::Unknown(2048) => self.resize_reports.into(),
             PrivateMode::Unknown(_) => ModeState::NotSupported,
         };
 

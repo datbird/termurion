@@ -4052,6 +4052,7 @@ impl App {
             .collect();
         self.tmux_report_sizes();
         let mut reframe = Vec::new();
+        let mut resize_reports = Vec::new();
         for (id, (cols, rows)) in sizes {
             if let Some(p) = self.panes.get_mut(&id) {
                 if p.resize(cols, rows) {
@@ -4059,9 +4060,18 @@ impl App {
                     if p.replay.is_some() {
                         reframe.push(id);
                     }
+                    // DEC mode 2048 (13o Task 6): the new grid and the text area it covers in
+                    // physical pixels, written after the pty was resized.
+                    let px = ((f32::from(rows) * ch).round() as u32, (f32::from(cols) * cw).round() as u32);
+                    if let Some(report) = p.resize_report_if_on(rows, cols, px) {
+                        resize_reports.push((id, report));
+                    }
                 }
                 p.set_cell_px(cw as u16, ch as u16);
             }
+        }
+        for (id, report) in resize_reports {
+            self.write_resize_report(id, &report);
         }
         // A replaying pane's frame is fit to its new size again (the window is never
         // resized to the frame).

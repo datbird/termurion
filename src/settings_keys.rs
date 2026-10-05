@@ -3393,6 +3393,16 @@ mod tests {
         }
     }
 
+    /// 13o Task 6: the DECRQCRA row (`AS:493`).
+    #[test]
+    fn decrqcra_row_follows_iterm2() {
+        let row = schema::find_global("NoSyncDisableDECRQCRA").expect("row");
+        assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "General", Kind::Bool));
+        assert_eq!(row.default, Some(Value::Boolean(true)));
+        assert_eq!(row.label, "Disable DECRQCRA?");
+        assert_eq!(row.help, "Disable DECRQCRA?\nThis control sequence allows an app running in the terminal to read its contents.");
+    }
+
     /// 13o Task 5: the character-width rows.
     #[test]
     fn width_rows_follow_iterm2() {

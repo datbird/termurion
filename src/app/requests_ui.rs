@@ -149,6 +149,7 @@ impl App {
                 self.redraw();
             }
             Request::AskClearHistory => self.ask_clear_history(pane),
+            Request::AskDecrqcra => self.ask_decrqcra(pane),
             Request::HistoryRebased { below, by } => {
                 // The Captured Output tool's Clear line names a row the same way an entry does.
                 if let Some(st) = self.belt.tools.get_mut(&crate::toolbelt::ToolId::CapturedOutput) {

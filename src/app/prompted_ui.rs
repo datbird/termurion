@@ -7,6 +7,8 @@ use super::*;
 use crate::prompted::{self, Decision};
 
 pub(super) const ASK_PROFILE: &str = "AskAboutChangingProfile";
+/// DECRQCRA's question (`crate::emu::DECRQCRA_ID`).
+pub(super) const ASK_DECRQCRA: &str = crate::emu::DECRQCRA_ID;
 pub(super) const ASK_PROPERTY: &str = "SetProfileProperty";
 pub(super) const ASK_BACKGROUND: &str = "SetBackgroundImageFile";
 pub(super) const ASK_VARIABLE: &str = "ShouldReportVariable";
@@ -163,6 +165,8 @@ impl App {
             }
             (crate::emu::CLEAR_HISTORY_ID, Some(b)) => self.clear_history_answered(b),
             (crate::emu::CLEAR_HISTORY_ID, None) => {}
+            (ASK_DECRQCRA, Some(b)) => self.decrqcra_answered(b),
+            (ASK_DECRQCRA, None) => {}
             (ASK_PROFILE, None) => {}
             (UPLOAD_FORMAT, _) => {}
             (UPLOAD_KIND, Some(b @ ("Files" | "Folders"))) => self.upload_pick(pane, b == "Folders"),

@@ -161,5 +161,8 @@ test data) is left out. Changes:
     `Term.history_splices` and `take_history_splices`: leaving the alternate screen records
     `(main scrolled_off, rows spliced)`, so a holder of absolute row numbers (those below
     `scrolled_off` named history rows) can move them down by the rows inserted after them.
+27. `term/mod.rs`: DEC mode 2048 (in-band resize reports), `Term.resize_reports`. DECSET and
+    DECRST set and clear it (also inside a parameter list), DECRQM answers set or reset instead of
+    not recognized, RIS clears it. The report itself is written by Tandem after a pty resize.
 
 To update alacritty_terminal, copy the new version here and apply these changes again.
