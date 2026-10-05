@@ -998,8 +998,12 @@ pub fn auto_log_path(raw_dir: &str, name_template: &str, lookup: &dyn Fn(&str) -
     // A share is the person's only when the template names it in plain text, and then it is
     // used as written (the parser would read the `\\` of `\\host` as an escape).
     let typed = !raw_dir.contains("\\(") && crate::start_dir::network_folder(raw_dir);
-    let dir = if typed { raw_dir.to_string() } else { crate::interp::evaluate(raw_dir, &segment, &[])? };
-    let name = crate::interp::evaluate(name_template, &segment, &[])?;
+    // As 13p's working directory reads a Custom folder (`start_dir::resolve`): text with no `\(`
+    // is used as written, so `C:\temp\new` keeps its backslashes (the parser would read `\t` and
+    // `\n` as a tab and a line feed); only a template with `\(` is evaluated.
+    let plain = |t: &str| !t.contains("\\(");
+    let dir = if plain(raw_dir) { raw_dir.to_string() } else { crate::interp::evaluate(raw_dir, &segment, &[])? };
+    let name = if plain(name_template) { name_template.to_string() } else { crate::interp::evaluate(name_template, &segment, &[])? };
     let joined = join_log_path(&dir, &name, home);
     if is_network_log_path(&joined) && !typed {
         return Err("the log folder is a network path".to_string());
@@ -1463,6 +1467,11 @@ mod tests {
         let slash = [("x", "a/b")];
         assert_eq!(auto_log_path("", "\\(x)", &lookup_for(&slash), home).unwrap(), PathBuf::from(r"C:\Users\u\a_b"), "a program's value is one segment");
         assert_eq!(auto_log_path("", "a/b.log", &lookup_for(&[]), home).unwrap(), PathBuf::from(r"C:\Users\u\a__b.log"), "the template's own slash is iTerm2's");
+        // A plain local folder is used as written, as 13p's working directory reads it.
+        assert_eq!(auto_log_path(r"C:\temp\new", "a.log", &look, home).unwrap(), PathBuf::from(r"C:\temp\new\a.log"));
+        assert_eq!(auto_log_path(r"C:\Users\bob\logs", "a.log", &look, home).unwrap(), PathBuf::from(r"C:\Users\bob\logs\a.log"));
+        assert_eq!(auto_log_path(r"D:\archive\bell", "a.log", &look, home).unwrap(), PathBuf::from(r"D:\archive\bell\a.log"));
+        assert_eq!(auto_log_path(r"D:\work\\\(profileName)", "a.log", &look, home).unwrap(), PathBuf::from(r"D:\work\Default\a.log"));
         // An unclosed interpolation is an error the person reads.
         assert!(auto_log_path("", "\\(creationTimeString", &look, home).is_err());
         let when = Parts { year: 2026, month: 9, day: 27, weekday: 0, hour: 15, minute: 4, second: 5 };
