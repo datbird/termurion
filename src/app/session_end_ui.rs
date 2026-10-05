@@ -475,4 +475,18 @@ mod tests {
         assert!(run.contains("run_window_single_use(owner, end)"));
         assert!(!run.contains("SingleUse {"), "one constructor");
     }
+
+    /// 13q restart_via x 13r Run Command in Window: every route (menu, bar, timer, API, AI tool)
+    /// goes through `restart_via`, which refuses a pane that cannot restart before it asks
+    /// anything; the AI tool reports the refusal as not restartable.
+    #[test]
+    fn restart_via_refuses_single_use_windows_first() {
+        let v = body(include_str!("mod.rs"), "    pub(super) fn restart_via(");
+        let first = v.find("restart_first(self.restartable(id),").expect("restart_via asks restartable first");
+        assert!(first < v.find("self.ask_scripts(").unwrap() && first < v.find("self.offer_restart(id)").unwrap());
+        assert!(v.contains("RestartStep::Refused => {}"), "a refused restart does nothing");
+        let ai = include_str!("ai_tools_app.rs");
+        assert!(ai.contains("RestartStep::Refused => done(ai_actions::NOT_RESTARTABLE"));
+    }
+
 }

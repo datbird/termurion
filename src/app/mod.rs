@@ -3216,10 +3216,12 @@ impl App {
     /// on every route, and the timer shows the offer instead. Returns what it did first, so a caller
     /// can tell a restart from a question that is waiting for the person.
     pub(super) fn restart_via(&mut self, id: PaneId, via: crate::session_end::Via) -> crate::session_end::RestartStep {
-        use crate::session_end::{restart_step, RestartStep};
+        use crate::session_end::{restart_first, RestartStep};
         let Some(p) = self.panes.get(&id) else { return RestartStep::Offer };
         let left = if p.exited.is_some() { p.live_survivors() } else { Vec::new() };
-        let step = restart_step(via, p.exited.is_some(), left.len());
+        // A single-use window (git, Run Command in Window) and the other panes with nothing of
+        // their own to start are refused before any question.
+        let step = restart_first(self.restartable(id), via, p.exited.is_some(), left.len());
         match step {
             RestartStep::Now => self.restart_pane(id),
             RestartStep::AskRunningJobs => {
@@ -3235,6 +3237,7 @@ impl App {
                 }
             }
             RestartStep::Offer => self.offer_restart(id),
+            RestartStep::Refused => {}
         }
         step
     }
