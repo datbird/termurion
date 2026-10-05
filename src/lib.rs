@@ -79,6 +79,7 @@ pub mod expr;
 pub mod emu;
 pub mod widths;
 pub mod encoding;
+pub mod kitty_dnd;
 pub mod interp;
 pub mod script_fn;
 pub mod script_eval;

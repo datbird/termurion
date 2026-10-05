@@ -268,6 +268,8 @@ pub struct Screen {
     pub keys: KeyState,
     /// False when the global disablePotentiallyInsecureEscapeSequences is on.
     pub trusted: bool,
+    /// OSC 72 drops: what the program registered for and the drop it may read (13o Task 9).
+    pub dnd: crate::kitty_dnd::Controller,
     /// What output asked the window to do, taken by the app.
     pub requests: Vec<Request>,
     /// OSC 1337 `Copy=` in progress, and `CopyToClipboard` capture.
@@ -285,6 +287,8 @@ pub struct Screen {
     /// A title report was sent in this batch (one reply per `feed`, like the answerback).
     title_sent: bool,
     decrqcra_sent: u16,
+    /// OSC 72 messages answered in this batch (`DND_ANSWERS_PER_BATCH`).
+    pub(crate) dnd_answered: u16,
     /// OSC 1337 Block: the blocks this screen knows.
     pub blocks: crate::blocks::Blocks,
     /// OSC 1337 Button: the buttons written into the text.
@@ -383,6 +387,8 @@ pub struct Capture {
 
 /// DECRQCRA replies answered in one `feed` (the rest get none).
 const DECRQCRA_PER_BATCH: u16 = 64;
+/// OSC 72 messages answered in one `feed`.
+pub const DND_ANSWERS_PER_BATCH: u16 = 64;
 
 /// What an escape-sequence print prints.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -583,6 +589,7 @@ impl Screen {
             tick_gen: 0,
             keys: KeyState::new(look.csi_u),
             trusted: true,
+            dnd: Default::default(),
             tab_status: crate::tabstatus::Status::default(),
             tab_status_gen: 0,
             blocks: crate::blocks::Blocks::default(),
@@ -615,6 +622,7 @@ impl Screen {
             print_capture: None,
             answerback_sent: false,
             title_sent: false,
+            dnd_answered: 0,
             decrqcra_sent: 0,
             color_reports: false,
             last_dark: true,
@@ -950,6 +958,11 @@ impl Screen {
         self.title = title;
     }
 
+    /// A drop may be reported to the program: it registered and the screen is trusted (B7).
+    pub fn dnd_accepting(&self) -> bool {
+        self.trusted && self.dnd.accepting()
+    }
+
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
     }
@@ -960,6 +973,7 @@ impl Screen {
         self.answerback_sent = false;
         self.title_sent = false;
         self.decrqcra_sent = 0;
+        self.dnd_answered = 0;
         self.bump_ticks();
         if !bytes.is_empty() && !self.triggers.list.is_empty() {
             self.events_on_output();
@@ -4757,5 +4771,36 @@ mod tests {
         let mut s = Screen::new(10, 3);
         let reply = String::from_utf8(s.feed(b"\x1b]1337;Capabilities\x07")).unwrap();
         assert!(!reply.contains("Aw") && reply.contains("Uw9"), "{reply}");
+    }
+
+    /// 13o Task 9: OSC 72 registers a program for drops, and only a trusted screen answers.
+    #[test]
+    fn kitty_dnd_registers_on_the_screen() {
+        let mut s = Screen::new(10, 3);
+        assert!(!s.dnd.accepting());
+        let reply = s.feed(b"\x1b]72;t=q:i=5\x1b\\\x1b]72;t=a;text/uri-list\x1b\\");
+        assert_eq!(reply, b"\x1b]72;t=q:i=5\x1b\\");
+        assert!(s.dnd.accepting());
+        assert!(s.dnd_accepting());
+        s.feed(b"\x1b]72;t=A\x07");
+        assert!(!s.dnd.accepting(), "BEL ends it too");
+        // A split read registers once.
+        s.feed(b"\x1b]72;t=a;text/ur");
+        assert!(!s.dnd.accepting());
+        s.feed(b"i-list\x1b\\");
+        assert!(s.dnd.accepting());
+        // Untrusted: nothing answers and nothing registers (B7); a held registration is dropped.
+        let mut s = Screen::new(10, 3);
+        s.trusted = false;
+        assert_eq!(s.feed(b"\x1b]72;t=q:i=5\x1b\\\x1b]72;t=a;text/uri-list\x1b\\"), b"");
+        assert!(!s.dnd.accepting() && !s.dnd_accepting());
+        s.trusted = true;
+        s.feed(b"\x1b]72;t=a;text/uri-list\x1b\\");
+        s.trusted = false;
+        assert!(s.dnd.accepting() && !s.dnd_accepting(), "trust lost: no drop is reported");
+        // Replies are bounded in a batch: a flood of queries answers 64.
+        let mut s = Screen::new(10, 3);
+        let flood = "\x1b]72;t=q\x1b\\".repeat(1000);
+        assert_eq!(s.feed(flood.as_bytes()).len(), 64 * "\x1b]72;t=q\x1b\\".len());
     }
 }

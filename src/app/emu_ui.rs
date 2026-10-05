@@ -165,3 +165,129 @@ impl App {
         }
     }
 }
+
+/// OSC 72 drops (13o Task 9): the pane under the pointer whose program registered gets the
+/// drag and the drop; every other pane keeps the file-name paste.
+impl App {
+    /// The pane's program registered for drops and its screen is trusted.
+    pub(super) fn dnd_accepts(&self, pane: PaneId) -> bool {
+        self.panes.get(&pane).is_some_and(|p| p.own().dnd_accepting())
+    }
+
+    /// The pane under the pointer, with the cell and the pixel (inside its text area) the
+    /// protocol names. winit 0.30 sends no pointer move during a drag, so this is where the
+    /// pointer last was (Decision).
+    fn dnd_place(&self) -> Option<(PaneId, (i64, i64), (i64, i64))> {
+        let (x, y) = self.cursor;
+        let (id, rect) = self.pane_at(x, y)?;
+        if !self.dnd_accepts(id) {
+            return None;
+        }
+        let (col, row, _) = self.cell_at(id, rect, x, y);
+        let inner = self.text_rect(id, rect);
+        let px = ((x - inner.x).max(0.0) as i64, (y - inner.y).max(0.0) as i64);
+        Some((id, (i64::from(col), i64::from(row)), px))
+    }
+
+    /// winit's `HoveredFile` (once per file): the first one starts the drag over the pane.
+    pub(super) fn dnd_hover(&mut self) {
+        let Some((id, cell, px)) = self.dnd_place() else { return };
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        let replies = p.own_mut().dnd.drag_entered(cell, px, &[crate::kitty_dnd::MIME_URI_LIST.to_string()]);
+        Self::dnd_send(p, replies);
+    }
+
+    /// `HoveredFileCancelled`: the drag left every pane that was told about it.
+    pub(super) fn dnd_cancel(&mut self) {
+        for p in self.panes.values_mut() {
+            if p.own().dnd.hovering() {
+                let replies = p.own_mut().dnd.drag_exited();
+                Self::dnd_send(p, replies);
+            }
+        }
+    }
+
+    /// The files of one drop, handed to the program that registered. A folder's path ends
+    /// with a separator; a network path or anything that is not a plain file is never read.
+    pub(super) fn dnd_flush(&mut self) {
+        if self.dnd_dropped.is_empty() {
+            return;
+        }
+        let dropped = std::mem::take(&mut self.dnd_dropped);
+        let pane = dropped[0].0;
+        self.enter_pane_window(pane);
+        // Where the pointer is now stands for where it was released (Decision).
+        let (cell, px) = self.dnd_place().filter(|(id, ..)| *id == pane).map_or(((0, 0), (0, 0)), |(_, c, p)| (c, p));
+        let files: Vec<std::path::PathBuf> = dropped
+            .into_iter()
+            .filter(|(id, _)| *id == pane)
+            .map(|(_, f)| if !is_network_path(&f) && f.is_dir() { f.join("") } else { f })
+            .collect();
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        if !p.own().dnd_accepting() {
+            return;
+        }
+        let replies = p.own_mut().dnd.drop(cell, px, files, &read_dropped);
+        Self::dnd_send(p, replies);
+    }
+
+    /// The program's replies, written to its input.
+    fn dnd_send(p: &mut crate::pane::Pane, replies: Vec<String>) {
+        for r in replies {
+            p.reply(r.as_bytes());
+        }
+    }
+}
+
+/// `\\host\share` and `//host/share`: never probed as files.
+fn is_network_path(path: &std::path::Path) -> bool {
+    let s = path.to_string_lossy();
+    s.starts_with("\\\\") || s.starts_with("//")
+}
+
+/// A dropped file's bytes for an OSC 72 reader: a plain local file, at most the size the
+/// protocol serves plus one byte (so the controller can tell a file that is too big).
+fn read_dropped(path: &std::path::Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    if is_network_path(path) || !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).ok()?.take(crate::kitty_dnd::MAX_FILE_BYTES as u64 + 1).read_to_end(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+#[cfg(test)]
+mod dnd_tests {
+    use super::*;
+
+    /// 13o Task 9 (Review Focus 8): a drop goes to the registered pane under the pointer first,
+    /// and anything else keeps the file-name paste.
+    #[test]
+    fn dnd_routes_drops_to_registered_panes() {
+        let src = include_str!("mod.rs");
+        let hover = src.find("WindowEvent::HoveredFile(_) => self.dnd_hover()").expect("hover arm");
+        assert!(src.contains("WindowEvent::HoveredFileCancelled => self.dnd_cancel()"));
+        let drop = src.find("WindowEvent::DroppedFile(path)").unwrap();
+        let routed = src[drop..].find("filter(|p| self.dnd_accepts(*p))").expect("registered pane first") + drop;
+        let paste = src[drop..].find("self.dropped.push").unwrap() + drop;
+        assert!(hover < drop && routed < paste, "the OSC 72 route comes before the name paste");
+        assert!(!src[drop..routed].contains("focused_id"), "the focused pane is not a drop target for OSC 72");
+        let flush = include_str!("coprocess_ui.rs");
+        let f = flush.find("fn flush_dropped").unwrap();
+        assert!(flush[f..].contains("self.dnd_flush()"));
+    }
+
+    #[test]
+    fn dropped_files_are_read_only_when_plain_and_local() {
+        assert_eq!(read_dropped(std::path::Path::new("\\\\host\\share\\a.txt")), None);
+        assert_eq!(read_dropped(std::path::Path::new("//host/share/a.txt")), None);
+        let dir = std::env::temp_dir();
+        assert_eq!(read_dropped(&dir), None, "a folder has no bytes");
+        let file = dir.join(format!("tandem-dnd-{}.txt", std::process::id()));
+        std::fs::write(&file, b"hello").unwrap();
+        assert_eq!(read_dropped(&file).as_deref(), Some(&b"hello"[..]));
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(read_dropped(&file), None);
+    }
+}

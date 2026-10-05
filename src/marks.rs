@@ -1088,6 +1088,16 @@ impl Screen {
             }
             Osc::Sixel(data) => self.sixel(&data),
             Osc::Kitty(body) => self.kitty(&body),
+            // Only a trusted screen answers or registers (B7); a batch answers 64 messages at most.
+            Osc::KittyDnd(body) => {
+                if self.trusted && self.dnd_answered < crate::screen::DND_ANSWERS_PER_BATCH {
+                    self.dnd_answered += 1;
+                    let replies = self.dnd.inbound(&String::from_utf8_lossy(&body));
+                    for r in replies {
+                        self.replies.extend(r.into_bytes());
+                    }
+                }
+            }
             Osc::Location(url) => {
                 let Some((user, host, path, machine)) = parse_location(&url) else { return };
                 // Accept OSC 7 off: the sequence is ignored, after a warning when it carries a

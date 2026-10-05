@@ -575,6 +575,9 @@ pub struct App {
     coprocess_errors: HashMap<PaneId, (String, String)>,
     /// Files dropped on the window, handled together once the drop ends.
     dropped: Vec<(PaneId, String)>,
+    /// Files dropped on a pane whose program registered for drops (OSC 72), collected until the
+    /// event loop turn ends so one drop goes to the program whole (13o Task 9).
+    dnd_dropped: Vec<(PaneId, std::path::PathBuf)>,
     api: Api,
     /// The session host this Tandem runs its shells in, and what it said at the handshake.
     host: Option<crate::host_client::Client>,
@@ -1718,6 +1721,7 @@ pub fn run() {
         url_flood: Default::default(),
         local_host: aps_ui::local_host(),
         dropped: Vec::new(),
+        dnd_dropped: Vec::new(),
         coprocess_errors: HashMap::new(),
         global_find: None,
         api,
@@ -5930,8 +5934,17 @@ impl ApplicationHandler<UserEvent> for App {
                 // A light or dark window may gain or lose its border (`BordersOnlyInLightMode`).
                 self.apply_border();
             }
+            // A drag over a pane whose program registered for drops (OSC 72) is reported to it.
+            WindowEvent::HoveredFile(_) => self.dnd_hover(),
+            WindowEvent::HoveredFileCancelled => self.dnd_cancel(),
             WindowEvent::DroppedFile(path) => {
                 let (x, y) = self.cursor;
+                // Only the pane under the pointer, and only when its program asked: any other
+                // drop keeps the file-name paste (a background pane never gets a file).
+                if let Some(p) = self.pane_at(x, y).map(|(p, _)| p).filter(|p| self.dnd_accepts(*p)) {
+                    self.dnd_dropped.push((p, path));
+                    return;
+                }
                 let pane = self.pane_at(x, y).map(|(p, _)| p).or_else(|| self.focused_id());
                 if let Some(p) = pane {
                     self.dropped.push((p, path.to_string_lossy().to_string()));

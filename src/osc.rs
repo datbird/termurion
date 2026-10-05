@@ -5,6 +5,9 @@
 /// The longest payload kept. Longer ones (an inline image, say) are not ours and are dropped.
 const LIMIT: usize = 64 * 1024;
 
+/// OSC 72 bodies: a MIME list may pass 64 KiB (to be refused), a chunk is 4 KiB.
+const DND_LIMIT: usize = 128 * 1024;
+
 /// OSC 1337 files (inline images, downloads) may be this large.
 const FILE_LIMIT: usize = 512 << 20;
 
@@ -16,6 +19,9 @@ fn limit_for(buf: &[u8]) -> usize {
         FILE_LIMIT
     } else if buf.starts_with(b"52;") {
         OSC_CAP
+    } else if buf.starts_with(b"72;") {
+        // A registration list over 64 KiB must reach the controller to be answered EFBIG.
+        DND_LIMIT
     } else {
         LIMIT
     }
@@ -27,7 +33,7 @@ fn cut_at_cap(buf: &[u8]) -> bool {
 }
 
 /// OSC payload prefixes Tandem acts on.
-const WANTED: [&[u8]; 6] = [b"133;", b"7;", b"1337;", b"52;", b"21337;", b"9;"];
+const WANTED: [&[u8]; 7] = [b"133;", b"7;", b"1337;", b"52;", b"21337;", b"9;", b"72;"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptKind {
@@ -70,6 +76,8 @@ pub enum Osc {
     Progress(String),
     /// A sequence a setting may drop or rewrite (milestone 13o).
     Held(crate::emu::Held),
+    /// OSC 72: the kitty drag-and-drop protocol, everything after `72;` (13o Task 9).
+    KittyDnd(Vec<u8>),
 }
 
 use alacritty_terminal::vte::{self, Params, Perform, State as VState};
@@ -546,6 +554,7 @@ pub fn parse(payload: &str) -> Option<Osc> {
         }
         "52" => Some(Osc::Clipboard(rest.as_bytes().to_vec())),
         "21337" => Some(Osc::TabStatus(rest.to_string())),
+        "72" => Some(Osc::KittyDnd(rest.as_bytes().to_vec())),
         "1337" => {
             let (k, v) = rest.split_once('=').unwrap_or((rest, ""));
             Some(Osc::Kv(k.to_string(), v.to_string()))
@@ -767,5 +776,23 @@ mod tests {
         // Queries too.
         let mut s = Scanner::default();
         assert_eq!(s.scan(b"\x1b\x00[>q").len(), 1);
+    }
+
+    /// 13o Task 9: OSC 72 reaches the screen, split reads and both terminators.
+    #[test]
+    fn finds_osc_72() {
+        let mut s = Scanner::default();
+        let ev = s.scan(b"a\x1b]72;t=a;text/uri-list\x1b\\b\x1b]72;t=q:i=1\x07");
+        let bodies: Vec<&Osc> = ev.iter().map(|(_, o)| o).collect();
+        assert_eq!(bodies, [&Osc::KittyDnd(b"t=a;text/uri-list".to_vec()), &Osc::KittyDnd(b"t=q:i=1".to_vec())]);
+        let mut s = Scanner::default();
+        assert!(s.scan(b"\x1b]72;t=a;te").is_empty());
+        assert_eq!(s.scan(b"xt\x07").len(), 1);
+        assert!(Scanner::default().scan(b"\x1b]72x\x07").is_empty());
+        // A list over 64 KiB still arrives, so the controller can answer EFBIG.
+        let mut long = b"\x1b]72;t=a;".to_vec();
+        long.extend(std::iter::repeat(b'x').take(70 * 1024));
+        long.push(7);
+        assert_eq!(Scanner::default().scan(&long).len(), 1);
     }
 }
