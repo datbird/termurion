@@ -134,6 +134,10 @@ impl App {
         let ssh_profile = self.store.get(&p.profile).is_some_and(crate::profile::is_ssh);
         let cwd = saved_cwd(self.remote_text(id), ssh_profile, s.shell.cwd.as_deref());
         let mut v = arrangement::session(grid.columns() as u16, grid.screen_lines() as u16, profile, &id.to_string(), cwd.as_deref());
+        // The folder the shell first started in, which a restored pane's restart reuses (P9).
+        if let (Some(start), Some(t)) = (arrangement::saved_start(p.start_dir.as_deref(), self.remote_text(id)), v.as_table_mut()) {
+            t.insert(arrangement::START_KEY.into(), Value::String(start));
+        }
         let saved = match contents {
             Contents::None => None,
             Contents::Plain => Some((arrangement::CONTENTS_KEY, crate::restore_state::cap_lines(&s.all_text(), CONTENT_LINES).to_string())),
@@ -627,6 +631,11 @@ impl App {
                     }
                     self.adopt_stable_id(id, &session, launch);
                     // PS:7325: the saved lock overrides Default Pane Locked.
+                    // A restored pane keeps the folder its shell first started in (P9), not the
+                    // current folder it was saved in.
+                    if let (Some(dir), Some(p)) = (arrangement::start_folder(&session), self.panes.get_mut(&id)) {
+                        p.start_dir = Some(dir);
+                    }
                     if let (Some(locked), Some(p)) = (session.get("Locked").and_then(|v| v.as_bool()), self.panes.get_mut(&id)) {
                         p.locked = locked;
                     }
@@ -984,6 +993,14 @@ mod tests {
     use super::*;
     use crate::arrangement::{self, Value};
     use crate::tab_groups::{self, TabGroup};
+
+    #[test]
+    fn restored_panes_keep_their_start_folder() {
+        let src = include_str!("arrange_ui.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(src.contains("arrangement::saved_start(p.start_dir.as_deref(), self.remote_text(id))"), "a saved session records the folder its shell started in");
+        assert!(src.contains("arrangement::start_folder(&session)"), "a restored pane reads it back, attached or archived or started");
+        assert!(src.contains("p.start_dir = Some(dir)"));
+    }
 
     #[test]
     fn a_downloaded_file_asks_before_it_opens() {

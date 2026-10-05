@@ -307,6 +307,12 @@ pub fn restart_survivors_spec(names: &[String]) -> crate::warnings::Spec {
     }
 }
 
+/// Whether WM_ENDSESSION ends the hosted shells (`iTermController.m:1746-1751`): both
+/// `KillSessionsOnLogout` and `runJobsInServers` on, and the session really ending.
+pub fn kill_on_logout(key: bool, run_jobs_in_servers: bool, ending: bool) -> bool {
+    key && run_jobs_in_servers && ending
+}
+
 /// The folder a restarted shell starts in (P13): the folder it first started in while that is
 /// still a local folder (13p's probe: never a network path), else the profile's rule with no
 /// previous session (a restart never reads OSC 7 or the focused pane; Recycle then is home).
@@ -338,6 +344,14 @@ mod tests {
         assert_eq!(after_exit(exit(Close, true, true), false), (Message::Finished, Outcome::Finished { close: true }));
         assert_eq!(after_exit(exit(NoAction, true, true), false), (Message::Finished, Outcome::Finished { close: false }));
         assert_eq!(after_exit(exit(Restart, true, true), false), (Message::Finished, Outcome::Finished { close: false }));
+    }
+
+    #[test]
+    fn kill_on_logout_follows_iterm2() {
+        assert!(kill_on_logout(true, true, true));
+        assert!(!kill_on_logout(false, true, true), "the key is off");
+        assert!(!kill_on_logout(true, false, true), "no jobs run in the host");
+        assert!(!kill_on_logout(true, true, false), "the logoff was cancelled (wParam zero)");
     }
 
     #[test]

@@ -91,6 +91,8 @@ mod semantic_ui;
 mod session_end_ui;
 mod log_ui;
 mod archive_ui;
+#[cfg(windows)]
+mod logout_ui;
 mod session_ui;
 mod seltools_ui;
 mod view_ui;
@@ -6033,6 +6035,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_recording_windows(event_loop);
         self.open_git_log(event_loop);
         let pwm_due = self.tick_pwm();
+        #[cfg(windows)]
+        self.tick_logout();
         self.open_pwm_windows(event_loop);
         self.api_tick(event_loop);
         self.api_notify_tick();

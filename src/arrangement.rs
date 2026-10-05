@@ -187,6 +187,31 @@ pub fn session(cols: u16, rows: u16, profile: Table, guid: &str, cwd: Option<&st
     Value::Table(t)
 }
 
+/// The key a saved session keeps its start folder under (P9): the folder the shell first
+/// started in, which a restart reuses (`PS:4890-4896`), never OSC 7's current folder.
+pub const START_KEY: &str = "Start Directory";
+
+/// The start folder a session table saves: a local drive folder only. A pane whose text came
+/// through a framing conductor (`remote`), a network or device path and anything that is not a
+/// drive path save none, so a restore never starts a shell in a folder somebody else named.
+pub fn saved_start(start: Option<&std::path::Path>, remote: bool) -> Option<String> {
+    let text = start?.to_string_lossy();
+    (!remote && local_drive_folder(&text)).then(|| text.into_owned())
+}
+
+/// `X:\...` or `X:/...`, and not a network or device path.
+fn local_drive_folder(text: &str) -> bool {
+    let b = text.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/') && !crate::start_dir::network_folder(text)
+}
+
+/// A restored pane's start folder (P9): the saved one while it is a local drive folder, else
+/// None (the profile's rule decides at a restart). Never probed here.
+pub fn start_folder(session: &Value) -> Option<std::path::PathBuf> {
+    let text = session.get(START_KEY)?.as_str()?;
+    local_drive_folder(text).then(|| std::path::PathBuf::from(text))
+}
+
 /// A session's profile: its Guid, its Name, and the whole table.
 pub fn profile_of(session: &Value) -> Option<(String, String, &Table)> {
     let b = session.get("Bookmark")?.as_table()?;
@@ -663,6 +688,26 @@ pub fn change_profile(windows: &mut [Value], profile: &Table) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn start_folder_is_saved_and_restored_locally() {
+        use std::path::{Path, PathBuf};
+        let mut table = toml::Table::new();
+        assert_eq!(start_folder(&Value::Table(table.clone())), None);
+        let saved = saved_start(Some(Path::new(r"C:\work\app")), false).unwrap();
+        assert_eq!(saved, r"C:\work\app");
+        table.insert(START_KEY.into(), Value::String(saved));
+        assert_eq!(start_folder(&Value::Table(table.clone())), Some(PathBuf::from(r"C:\work\app")));
+        assert_eq!(saved_start(None, false), None);
+        assert_eq!(saved_start(Some(Path::new(r"C:\x")), true), None, "a framed pane saves no start folder");
+        for bad in [r"\\host\share\x", "//host/share", r"\\?\C:\x", r"..\x", "rel", "/etc", ""] {
+            assert_eq!(saved_start(Some(Path::new(bad)), false), None, "{bad} is never saved");
+            table.insert(START_KEY.into(), Value::String(bad.into()));
+            assert_eq!(start_folder(&Value::Table(table.clone())), None, "{bad} is never restored");
+        }
+        table.insert(START_KEY.into(), Value::String("D:/logs".into()));
+        assert_eq!(start_folder(&Value::Table(table)), Some(PathBuf::from("D:/logs")), "a slash form of a drive path is local");
+    }
+
     use super::*;
 
     #[test]
