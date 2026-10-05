@@ -5077,23 +5077,28 @@ mod tests {
     /// screen is several runs.
     #[test]
     fn underline_runs_follow_the_display_order() {
-        // Logical aleph bet gimel; underline the aleph and the gimel, strike the bet. A hebrew
-        // row draws gimel bet aleph from the left, so the underlines are at columns 0 and 2.
-        let s = screen("\x1b[4m\u{5d0}\x1b[0;9m\u{5d1}\x1b[0;4m\u{5d2}".as_bytes());
-        let mut f = Frame::default();
-        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
         let xs = |qs: &[Quad]| -> Vec<(f32, f32)> { qs.iter().map(|q| (q.rect.x, q.rect.x + q.rect.w)).collect() };
+        let draw = |bytes: &str| {
+            let s = screen(bytes.as_bytes());
+            let mut f = Frame::default();
+            pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
+            f
+        };
+        // Underline only the aleph of aleph bet gimel. A hebrew row draws gimel bet aleph from
+        // the left, so the aleph is the third cell: x 20..30, never 0..10.
+        let f = draw("\x1b[4m\u{5d0}\x1b[0m\u{5d1}\u{5d2}");
+        assert_eq!(xs(&f.underlines), vec![(20.0, 30.0)], "the aleph draws third");
+        // Strike only the bet: the middle cell either way, so a strike on the gimel pins order too.
+        let f = draw("\u{5d0}\u{5d1}\x1b[9m\u{5d2}");
+        assert_eq!(xs(&f.strikes), vec![(0.0, 10.0)], "the gimel draws first");
+        // An OSC 8 link over the aleph only of "ab " + aleph bet: the aleph draws at column 4.
+        let f = draw("ab \x1b]8;;http://x\x07\u{5d0}\x1b]8;;\x07\u{5d1}");
         let u = xs(&f.underlines);
-        assert!(u.iter().all(|&(a, b)| (a >= 0.0 && b <= 10.0) || (a >= 20.0 && b <= 30.0)), "{u:?}");
-        assert!(u.iter().any(|&(a, _)| a == 0.0) && u.iter().any(|&(_, b)| b == 30.0), "{u:?}");
-        assert_eq!(xs(&f.strikes), vec![(10.0, 20.0)], "the bet is the middle cell");
-        // An OSC 8 link over the logical cells 3 and 4 of "ab " + aleph bet draws over visual
-        // columns 3 and 4 (the pair swapped), one run.
-        let s = screen("ab \x1b]8;;http://x\x07\u{5d0}\u{5d1}\x1b]8;;\x07".as_bytes());
-        let mut f = Frame::default();
-        pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
-        let u = xs(&f.underlines);
-        assert!(u.iter().all(|&(a, b)| a >= 30.0 && b <= 50.0) && !u.is_empty(), "{u:?}");
+        assert!(!u.is_empty() && u.iter().all(|&(a, b)| a >= 40.0 && b <= 50.0), "the link is a dash under column 4 only: {u:?}");
+        // A pair that crosses a direction change: a, aleph, bet, b with the underline on logical
+        // cells 0 and 1 (a and aleph). Display order is a, bet, aleph, b: columns 0 and 2, two runs.
+        let f = draw("\x1b[4ma\u{5d0}\x1b[0m\u{5d1}b");
+        assert_eq!(xs(&f.underlines), vec![(0.0, 10.0), (20.0, 30.0)], "two runs, not one");
     }
 
     /// The x of the first text piece holding `ch`.
