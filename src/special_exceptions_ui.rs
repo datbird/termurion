@@ -561,6 +561,34 @@ mod tests {
         assert_eq!(w.config().entries[0].range(), 4096..4112);
     }
 
+    /// 13n final 3: a table imported from iTerm2 (an overlap, an ASCII start) opens whole in the
+    /// editor and OK hands every entry back, so it never wipes what it did not show.
+    #[test]
+    fn an_imported_overlapping_table_opens_whole_and_ok_keeps_it() {
+        let text = r#"{"entries":[{"start":57344,"count":16,"fontName":"A"},{"start":57352,"count":16,"fontName":"B"},{"start":65,"count":4,"fontName":"C"}],"version":2}"#;
+        let config = Config::parse(text).expect("kept");
+        let mut w = Window::open(config, fonts());
+        assert_eq!(w.config().entries.len(), 3, "every row is shown");
+        // A new row still may not overlap, or start in ASCII.
+        w.begin_add();
+        let sheet = w.sheet_mut().unwrap();
+        sheet.start = "U+e004".into();
+        sheet.end = "U+e005".into();
+        sheet.font = "Meiryo".into();
+        assert!(!w.accept_sheet(), "the editor still refuses an overlap for a new row");
+        // Editing a row that still overlaps another is refused and changes nothing.
+        w.select(Some(0));
+        w.begin_edit();
+        w.sheet_mut().unwrap().font = "Meiryo".into();
+        assert!(!w.accept_sheet());
+        assert_eq!(w.config().entries.len(), 3, "a refused edit never drops an entry");
+        // Deleting one row keeps the others as they were, overlapping or not.
+        w.select(Some(2));
+        w.delete_selected();
+        assert_eq!(w.config().entries.len(), 2);
+        assert_eq!(Config::parse(&w.config().string()).map(|c| c.entries.len()), Some(2));
+    }
+
     #[test]
     fn the_font_list_is_built_once_and_capped() {
         let many: Vec<String> = (0..10_000).map(|i| format!("Font {}", i % 6000)).collect();

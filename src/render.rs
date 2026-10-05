@@ -654,7 +654,7 @@ impl Renderer {
     /// a name that is not installed draws as the face does. A key whose text does not parse has no
     /// table (the app only builds keys from `font_table::normalized`).
     fn table_of(&self, key: &FaceKey) -> (Option<std::sync::Arc<crate::font_table::Config>>, Vec<TableFont>) {
-        let Some(config) = key.table.as_deref().and_then(crate::font_table::Config::parse).filter(|c| !c.entries.is_empty()) else { return (None, Vec::new()) };
+        let Some(config) = key.table.as_deref().and_then(crate::font_table::Config::parse).map(|c| c.resolved()).filter(|c| !c.entries.is_empty()) else { return (None, Vec::new()) };
         let fonts = config
             .entries
             .iter()
@@ -1668,6 +1668,20 @@ mod tests {
         assert!(lit(&shot(big_face, 1)) > lit(&from_table) * 3 / 2, "the entry's size is used");
         // An entry number past the table draws as the face does, never panics.
         assert_eq!(shot(tabled_face, 9), own);
+    }
+
+    /// 13n final 3: a face built from an overlapping table with an ASCII start carries the resolved
+    /// table (disjoint, nothing below U+80), and one font per resolved entry.
+    #[test]
+    fn a_face_carries_the_resolved_table() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let text = r#"{"entries":[{"start":57344,"count":16,"fontName":"A"},{"start":57352,"count":16,"fontName":"B"},{"start":32,"count":16,"fontName":"C"}],"version":2}"#;
+        let face = r.face(&FaceKey { table: Some(std::sync::Arc::from(text)), ..key("Cascadia Mono", 16.0, 1.0, 1.0) });
+        let table = r.face_table(face).expect("a table");
+        let ranges: Vec<_> = table.entries.iter().map(|e| e.range()).collect();
+        assert_eq!(ranges, vec![0xE000..0xE010, 0xE010..0xE018], "clipped, and the ASCII entry gone");
+        assert_eq!(r.face_of(face).table_fonts.len(), 2);
     }
 
     /// The installed families that have a Normal face and no weight that `bold_weight` accepts

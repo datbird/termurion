@@ -3,8 +3,9 @@
 //! as JSON text under "Special Font Config"; a face with a table picks the font per character
 //! and may remap the code point it draws. The value comes from a profile, an imported file or
 //! the API, so `Config::parse` is bounded and total (13n preflight P6): no entry list longer than
-//! `MAX_ENTRIES`, every number inside the Unicode range, no overlap (so `lookup` is a binary
-//! search), and a size the renderer can draw.
+//! `MAX_ENTRIES`, every number inside the Unicode range, and a size the renderer can draw. A
+//! table iTerm2 accepts is kept whole (overlaps and ASCII starts included, the import ruling in
+//! m13n-rulings.txt); `Config::resolved` is the disjoint copy lookups, faces and the face key use.
 
 use std::ops::Range;
 
@@ -98,12 +99,10 @@ impl Entry {
     /// Whether every number is inside its bounds (P6).
     fn valid(&self) -> bool {
         let in_range = |v: i64| (0..=UNICODE_LIMIT).contains(&v);
-        let tty = self.range();
         in_range(self.start)
             && self.count >= 1
             && self.start.saturating_add(self.count) <= UNICODE_LIMIT
             && self.destination.is_none_or(|d| in_range(d) && d.saturating_add(self.count) <= UNICODE_LIMIT)
-            && tty.start >= ASCII_LIMIT
             && self.point_size.is_none_or(f64::is_finite)
             && !self.font_name.is_empty()
             && self.font_name.chars().count() <= MAX_FONT_NAME
@@ -128,8 +127,9 @@ pub struct Config {
 }
 
 impl Config {
-    /// The table `s` holds, entries sorted by the code points the program sends. None for an
-    /// empty string, malformed JSON, or any value outside its bounds (P6).
+    /// The table `s` holds, entries sorted by the code points the program sends (ties keep their
+    /// order). None for an empty string, malformed JSON, or any value outside its bounds (P6);
+    /// overlaps and ASCII starts are kept (`resolved` deals with them).
     pub fn parse(s: &str) -> Option<Config> {
         if s.is_empty() || s.len() > MAX_TEXT {
             return None;
@@ -142,11 +142,34 @@ impl Config {
             e.point_size = e.point_size.map(clamp_size);
         }
         config.entries.sort_by_key(|e| e.range().start);
-        // Neighbors may not overlap: `lookup` is a binary search.
-        if config.entries.windows(2).any(|w| w[0].range().end > w[1].range().start) {
-            return None;
-        }
         Some(config)
+    }
+
+    /// The table lookups use: sorted by the code points the program sends, disjoint, and with
+    /// nothing below U+80. Where entries overlap the one that starts first wins (a tie, the one
+    /// listed first) and a later entry keeps only what lies past it, its font run and destination
+    /// moving together; an entry with nothing left goes. iTerm2's own lookup is undefined for an
+    /// overlap, so this is Tandem's rule (m13n-rulings.txt).
+    pub fn resolved(&self) -> Config {
+        let mut entries: Vec<Entry> = self.entries.clone();
+        entries.sort_by_key(|e| e.range().start);
+        let mut covered = ASCII_LIMIT;
+        let mut kept = Vec::with_capacity(entries.len());
+        for mut e in entries {
+            let range = e.range();
+            if range.end <= covered {
+                continue;
+            }
+            let shift = (covered - range.start).max(0);
+            if shift > 0 {
+                e.start += shift;
+                e.destination = e.destination.map(|d| d + shift);
+                e.count -= shift;
+            }
+            covered = e.range().end;
+            kept.push(e);
+        }
+        Config { entries: kept, version: self.version }
     }
 
     /// The JSON text a profile stores (`stringValue`).
@@ -154,7 +177,8 @@ impl Config {
         serde_json::to_string(self).unwrap_or_default()
     }
 
-    /// The index of the entry that draws code point `c` and the code point it draws.
+    /// The index of the entry that draws code point `c` and the code point it draws. A binary
+    /// search: call it on a `resolved()` table (or one the editor built, which has no overlaps).
     pub fn find(&self, c: u32) -> Option<(usize, u32)> {
         let c = i64::from(c);
         let i = self.entries.partition_point(|e| e.range().end <= c);
@@ -190,10 +214,10 @@ pub fn grown_value(value: &str, delta: f64) -> String {
     }
 }
 
-/// The normalized text of a stored value: what a face keys on, so two spellings of one table
-/// are one face. None for no table (empty, malformed or out of bounds, or no entries).
+/// The normalized text of a stored value: the resolved table, what a face keys on, so two
+/// spellings of one table are one face. None for no table (empty, malformed or out of bounds, or no entries).
 pub fn normalized(value: &str) -> Option<String> {
-    Config::parse(value).filter(|c| !c.entries.is_empty()).map(|c| c.string())
+    Config::parse(value).map(|c| c.resolved()).filter(|c| !c.entries.is_empty()).map(|c| c.string())
 }
 
 /// Reads an imported file (`importString`): the table it holds, or the text of what is wrong. A
@@ -235,10 +259,11 @@ pub fn check(start: Option<i64>, end: Option<i64>, destination: Option<i64>, oth
     if begin < ASCII_LIMIT {
         return Check::Ascii;
     }
-    if count <= 0 {
+    if count <= 0 || start < 0 {
         return Check::Inverted;
     }
-    if begin.saturating_add(count) > UNICODE_LIMIT {
+    // The font's own run is bounded too, whether or not a destination moves it.
+    if begin.saturating_add(count) > UNICODE_LIMIT || start.saturating_add(count) > UNICODE_LIMIT {
         return Check::LimitTooLarge;
     }
     let last = begin + count;
@@ -375,8 +400,9 @@ mod tests {
         assert!(ok(r#"{"start":9223372036854775807,"count":1,"fontName":"A"}"#).is_none());
         assert!(ok(r#"{"start":4096,"count":16,"destination":9223372036854775800,"fontName":"A"}"#).is_none());
         assert!(ok(r#"{"start":4096,"count":16,"destination":-5,"fontName":"A"}"#).is_none());
-        assert!(ok(r#"{"start":65,"count":26,"fontName":"A"}"#).is_none());
-        assert!(ok(r#"{"start":4096,"count":16,"destination":65,"fontName":"A"}"#).is_none());
+        // ASCII starts are kept (the import ruling): resolving drops them, parsing does not.
+        assert!(ok(r#"{"start":65,"count":26,"fontName":"A"}"#).is_some());
+        assert!(ok(r#"{"start":4096,"count":16,"destination":65,"fontName":"A"}"#).is_some());
         // No font, a control character, a huge name.
         assert!(ok(r#"{"start":4096,"count":16,"fontName":""}"#).is_none());
         assert!(ok(r#"{"start":4096,"count":16,"fontName":"A\u0007"}"#).is_none());
@@ -384,8 +410,8 @@ mod tests {
         // A size is kept in the drawn range.
         assert_eq!(ok(r#"{"start":4096,"count":16,"fontName":"A","pointSize":100000000}"#).unwrap().entries[0].point_size, Some(128.0));
         assert_eq!(ok(r#"{"start":4096,"count":16,"fontName":"A","pointSize":0.5}"#).unwrap().entries[0].point_size, Some(4.0));
-        // Overlap makes `lookup` ambiguous.
-        assert!(ok(r#"{"start":4096,"count":16,"fontName":"A"},{"start":4100,"count":16,"fontName":"B"}"#).is_none());
+        // Overlap is kept; `resolved` makes `lookup` unambiguous.
+        assert!(ok(r#"{"start":4096,"count":16,"fontName":"A"},{"start":4100,"count":16,"fontName":"B"}"#).is_some());
         assert!(ok(r#"{"start":4096,"count":16,"fontName":"A"},{"start":4112,"count":16,"fontName":"B"}"#).is_some());
         // Too many entries, too much text.
         let many = |n: i64| (0..n).map(|i| format!(r#"{{"start":{},"count":1,"fontName":"A"}}"#, 0x100 + i)).collect::<Vec<_>>().join(",");
@@ -404,6 +430,61 @@ mod tests {
         assert_eq!(normalized(r#"{"entries":[],"version":2}"#), None);
         assert_eq!(normalized(&one(r#"{"fontName":"A","count":16,"start":4096}"#)), normalized(&one(r#"{"start":4096,"count":16,"fontName":"A"}"#)));
         assert!(normalized(&one(r#"{"start":4096,"count":16,"fontName":"A"}"#)).is_some());
+    }
+
+    /// 13n final 3 (the Special Font Config import ruling): a table iTerm2 accepts is kept whole,
+    /// overlaps and ASCII starts included; only `resolved()` (what lookups, faces and the face
+    /// key use) clips it, first start winning, and nothing below U+80 is ever drawn from it.
+    #[test]
+    fn an_imported_overlapping_table_is_kept_and_resolved() {
+        let text = r#"{"entries":[
+            {"start":57344,"count":16,"fontName":"X"},
+            {"start":57352,"count":16,"fontName":"Y"},
+            {"start":32,"count":48,"fontName":"Z"},
+            {"start":256,"count":32,"destination":112,"fontName":"W"},
+            {"start":57346,"count":2,"fontName":"Inside"}],"version":2}"#;
+        let c = Config::parse(text).expect("an overlapping table with ASCII starts is kept");
+        assert_eq!(c.entries.len(), 5, "the stored table keeps every well-bounded entry");
+        let stored = c.string();
+        assert_eq!(Config::parse(&stored).map(|c| c.entries.len()), Some(5), "and its text round-trips");
+        let r = c.resolved();
+        let font = |c: u32| r.lookup(c).map(|(e, d)| (e.font_name.clone(), d));
+        assert_eq!(font(0xE00C), Some(("X".into(), 0xE00C)), "the earlier start wins an overlap");
+        assert_eq!(font(0xE00F), Some(("X".into(), 0xE00F)));
+        assert_eq!(font(0xE010), Some(("Y".into(), 0xE010)), "the later entry is clipped to what is left");
+        assert_eq!(font(0xE017), Some(("Y".into(), 0xE017)));
+        assert_eq!(font(0xE018), None);
+        assert_eq!(font(0xE002), Some(("X".into(), 0xE002)), "an entry wholly inside an earlier one draws nothing");
+        assert_eq!(font(0x30), None, "an ASCII range is never drawn from the table");
+        assert_eq!(font(0x70), None);
+        // A run that starts below U+80 keeps its part from U+80, with its destination shifted.
+        assert_eq!(font(0x85), Some(("W".into(), 0x115)), "the sent U+85 draws the font's U+115");
+        assert!(r.entries.iter().all(|e| e.range().start >= ASCII_LIMIT && e.count >= 1));
+        assert!(r.entries.windows(2).all(|w| w[0].range().end <= w[1].range().start), "sorted and disjoint");
+        // The face key is the resolved table: the same table written any way is one face.
+        assert_eq!(normalized(text), normalized(&r.string()));
+        assert!(normalized(text).is_some());
+        // A table of nothing but ASCII entries has no table.
+        assert_eq!(normalized(r#"{"entries":[{"start":32,"count":16,"fontName":"A"}],"version":2}"#), None);
+        // Resolving is idempotent and never grows the table.
+        assert_eq!(r.resolved(), r);
+    }
+
+    /// 13n final 4: with a destination, the font's own run `start..start + count` is bounded too,
+    /// or OK could store an entry `Entry::valid` refuses (the table would be lost, or the entry).
+    #[test]
+    fn the_editor_bounds_the_fonts_own_run() {
+        assert_eq!(check(Some(0x110000), Some(0x110010), Some(0x1000), &[]), Check::LimitTooLarge);
+        assert_eq!(check(Some(0x10FFF0), Some(0x110010), Some(0x1000), &[]), Check::LimitTooLarge);
+        assert_eq!(check(Some(-5), Some(10), Some(0x1000), &[]), Check::Inverted);
+        assert_eq!(check(Some(0x10FFF0), Some(0x10FFFF), Some(0x1000), &[]), Check::Valid);
+        // Whatever the editor accepts is an entry the table accepts.
+        for (s, e, d) in [(0x10FFF0, 0x10FFFF, 0x1000), (0x0, 0xF, 0x2000)] {
+            if check(Some(s), Some(e), Some(d), &[]) == Check::Valid {
+                let entry = entry(s, e - s + 1, Some(d), "A", None);
+                assert!(Config::parse(&Config::with_entries(vec![entry]).string()).is_some(), "{s:x} {e:x} {d:x}");
+            }
+        }
     }
 
     #[test]
